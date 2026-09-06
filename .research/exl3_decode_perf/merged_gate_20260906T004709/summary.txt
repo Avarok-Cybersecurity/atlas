@@ -1,0 +1,32 @@
+=== arm default start 2026-09-06T04:47:09Z
+env: <none>
+READY after ~47s
+2026-09-06T04:47:53.581079Z  INFO spark_model::layers::moe::ptr_table_build: EXL3 native MoE state allocated: 5120 decode slots (512 tokens x top_k 10) + prefill batch 4096 tokens (fused C=6 x 1024 rows/expert [Default] = 78.6 MB temp slabs, overflow chunk 102
+2026-09-06T04:47:53.589758Z  INFO spark_model::layers::ops::exl3_dense::stage: EXL3 dense reconstruct tier off (default): every m > 8 call runs the cooperative trellis GEMM; ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=<rows> arms it
+SUMMARY target~8000: prompt_tokens~7988 prefill_tok_s_median=454
+SUMMARY target~11000: prompt_tokens~10971 prefill_tok_s_median=453
+SUMMARY n=3 gap_median_ms=0.70 decode_tok_s_median=30.82 ttft_ms=[490, 465, 464]
+sample default: 779 bytes sha256 b6e9fa3cb5590a1b
+agentic default: exit=0 wall=127s
+  status: Completed
+  summary: [{'label': 'webserver_ok', 'value': '1/1', 'unit': '', 'style': 'Good'}, {'label': 'followed_directions', 'value': '1/1', 'unit': '', 'style': 'Good'}, {'label'
+  verdict: {'kind': 'Pass', 'reason': '1/1 webserver_ok · 1/1 followed_directions · 12.381s/turn (unbounded) · Σwall 125s ≤ 1000s'}
+  webserver_ok: 1.0
+MTP accept lines: 11
+=== arm default done 2026-09-06T04:52:09Z
+=== arm recon512 start 2026-09-06T04:52:09Z
+env: ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=512
+READY after ~48s
+2026-09-06T04:52:54.792082Z  INFO spark_model::layers::moe::ptr_table_build: EXL3 native MoE state allocated: 5120 decode slots (512 tokens x top_k 10) + prefill batch 4096 tokens (fused C=6 x 1024 rows/expert [Default] = 78.6 MB temp slabs, overflow chunk 102
+2026-09-06T04:52:54.809520Z  INFO spark_model::layers::ops::exl3_dense::reconstruct: EXL3 dense reconstruct tier ARMED: calls with m >= 512 rows reconstruct the trellis weight to BF16 once and run dense_gemm_bf16_pipelined; scratch 302.0 MB (f16 [in, out] + bf
+SUMMARY target~8000: prompt_tokens~7992 prefill_tok_s_median=491
+SUMMARY target~11000: prompt_tokens~10970 prefill_tok_s_median=485
+SUMMARY n=3 gap_median_ms=0.66 decode_tok_s_median=30.55 ttft_ms=[486, 467, 465]
+sample recon512: 779 bytes sha256 b6e9fa3cb5590a1b
+agentic recon512: exit=0 wall=88s
+  status: Completed
+  summary: [{'label': 'webserver_ok', 'value': '1/1', 'unit': '', 'style': 'Good'}, {'label': 'followed_directions', 'value': '1/1', 'unit': '', 'style': 'Good'}, {'label'
+  verdict: {'kind': 'Pass', 'reason': '1/1 webserver_ok · 1/1 followed_directions · 14.306s/turn (unbounded) · Σwall 87s ≤ 1000s'}
+  webserver_ok: 1.0
+MTP accept lines: 8
+=== arm recon512 done 2026-09-06T04:56:25Z

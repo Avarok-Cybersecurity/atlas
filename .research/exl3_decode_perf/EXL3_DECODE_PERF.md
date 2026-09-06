@@ -366,7 +366,7 @@ levers: nsys an 8K EXL3 prefill first; raise the fused MoE tier's 128-row-per-ex
 is 2048; ours overflows at every 4K chunk); a dense reconstruct-to-BF16 GEMM tier above a row
 threshold using the byte-identical `exl3_reconstruct.cu` Atlas already has.
 
-### Prefill lever 3, built and UNMEASURED: dense reconstruct-to-BF16 tier (branch `perf/exl3-dense-reconstruct-prefill-tier`)
+### Prefill lever 3, measured: dense reconstruct-to-BF16 tier (branch `perf/exl3-dense-reconstruct-prefill-tier`, DEFAULT 512 rows since the merged gate)
 
 `ops/exl3_dense/reconstruct.rs`: for `m >= ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS` (presence arms; unset =
 off, the default; `ATLAS_NO_EXL3_DENSE_RECONSTRUCT` kills) each dense weight is reconstructed once per
@@ -386,6 +386,24 @@ speed: one trellis decode per weight per call instead of `rows/16` (512x at an 8
 ~50 TFLOP/s GEMM in place of a kernel upstream measured at 0.59 TFLOP/s at m=128; nothing is a number
 until `ab_dense_reconstruct.sh` runs (arms: off / 512 / 1024 on `measure_prefill.py` 8000/11000,
 decode sanity, greedy samples recorded — expected to differ from the off arm).
+
+**Measured 2026-09-06 00:32-00:41** (`ab_dense_reconstruct/`, binary `0ca060220467bfea` at `5e8b5cb46`
+— the tier on the 128-row MoE cap base, so its "off" arm is also a clean 128-cap prefill baseline;
+named preset verbatim, fresh server per arm, `measure_prefill.py` 8000/11000 x2, `measure_decode.py` x3):
+
+| arm | 8K prefill tok/s | 11K prefill tok/s | decode tok/s | long greedy sample | short sample |
+|---|---:|---:|---:|---|---|
+| off (default) | 411 | 406 | 30.61 | `aef9543d…` 830 B | `c5d02cf5…` |
+| `ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=512` | **439 (+6.8%)** | **433 (+6.7%)** | 30.59 | `69e8a436…` 834 B (differs, coherent) | identical |
+| `ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=1024` | 435 | 427 | 30.47 | `69e8a436…` = 512 arm | identical |
+
+Everything the module predicted held: decode (m ≤ 8) untouched, short prompt untouched (m < threshold),
+the two armed arms byte-identical to each other, the long sample a one-time numerics change. The gain
+is +7%, smaller than the "15% of GPU time" share suggested because the BF16 GEMM at 4096 rows is not
+free either. On the merged binary (row cap 1024 + egress; "Merged-binary gate" below) the arm at 512 rows gives
+491 / 485 tok/s against 454 / 453 (+8%) and PASSES the model-card agentic gate, so the DEFAULT is now
+512 rows (`EXL3_DENSE_RECONSTRUCT_DEFAULT_ROWS`; `ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=<n>` moves it,
+`ATLAS_NO_EXL3_DENSE_RECONSTRUCT` restores the trellis-only prefill).
 
 ## BF16 ingress fused into the dense GEMM prologue (seventh lever, bit-exact)
 
@@ -664,8 +682,15 @@ bf16-ulp are printed — the "one-time fp32-order change" becomes a measured num
 512 and 768 runs are asserted bit-identical to each other where their grids coincide (GB10: C=6,
 48 SMs → 8 SMs/group either way). `EXL3_MOE_PREFILL_ONLY=1` runs just legs G+G2, and
 `ab_moe_row_cap.sh` runs that as step 0 before any server boots — a parity failure aborts the A/B.
-UNRUN as of this writing (GPU owned by another process); the wide sub-leg's assertions are
-predictions until it runs. A batch with no expert above 128 rows (any prompt ≤ 128 tokens) must
+**RUN 2026-09-06 00:47 on the merged binary** (`parity_moe_prefill_wide/parity_moe_prefill_20260906.txt`,
+`EXL3_MOE_PREFILL_ONLY=1`, exit 0): every assertion held. At cap 512 (host-sync) the fused tier served
+all 16 non-empty experts including expert 0 at 487 rows (`num_active=16, overflow_experts=0`); at cap
+768 the no-sync shortcut (`num_active=-1, overflow 0`); both match the f64 truth at rel_rms 1.860e-3 /
+max_z 2.515e-2 — the SAME max_z as the cap-128 overflow run, i.e. the worst token is unchanged and the
+moved experts sit inside the existing gate. The 5,120 bf16 outputs of tokens that never touched expert
+0 are bit-identical to the cap-128 run; the expert-0 tokens differ in 26% of their bf16 bits (max |Δ|
+128 on outputs whose scale makes that z < 0.025; the 33,164-ulp figure is sign flips of near-zero
+values, not a numerics defect). Cap 512 and cap 768 are bit-identical to each other (same 6x8-SM grid). A batch with no expert above 128 rows (any prompt ≤ 128 tokens) must
 be BYTE-IDENTICAL across arms; the A/B asserts it on the 200-token greedy LRU-cache sample. Side
 effect, also upstream's semantics: the S ≤ cap no-sync shortcut now covers S ≤ 1024 slots
 (≤ 102 tokens at top-10), removing the one host D2H for short batches (HYP: small TTFT win at
@@ -679,6 +704,31 @@ cap-line gate against inert arms, `measure_prefill.py --tokens 8000 11000 --repe
 `measure_decode.py --repeats 2 --max-tokens 300`, short-sample byte-equality assertion, long-prompt
 cold/warm and cross-arm samples (reported; the numerics gate is step 0's parity run, whose
 `moe-prefill WIDE` lines are copied into the verdicts). Baseline: ~390 tok/s flat 6K–11K (`prefill_baseline_8k_11k.txt`); measured 455 / 448 above.
+
+## Merged-binary gate (2026-09-06 00:47-00:56, all round-2 levers on `wip/exl3-research`)
+
+`merged_gate.sh` → `merged_gate_20260906T004709/`: the named preset verbatim on the merged binary
+(fused egress default, MoE row cap 1024 default, reconstruct tier still opt-in at this commit), one boot
+per arm, then prefill 8K/11K x2 (cold, salted), decode x3, a 200-token greedy sample, and ONE
+agentic-webserver iteration with model-card sampling and preserved thinking, prefix caching ON.
+
+| arm | 8K prefill tok/s | 11K | decode tok/s (MTP-2) | greedy sample | agentic (model-card) |
+|---|---:|---:|---:|---|---|
+| default | 454 | 453 | 30.82 | `b6e9fa3c…` 779 B | **PASS** 1/1 webserver_ok, 1/1 followed, 127 s, 11 MTP accept lines |
+| `ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=512` | **491** | **485** | 30.55 | `b6e9fa3c…` identical (92-token prompt is below the threshold) | **PASS** 1/1, 1/1, 88 s |
+
+Against the session's opening state (prefill ~390 flat, decode 12.25 serial / ~13 MTP) the merged
+binary reads 491 / 485 prefill and 30.8 MTP-2 decode. Both arms produce identical greedy text on the
+short prompt and coherent webserver trajectories (`agentic_*_trajectories/`). The reconstruct arm's
+agentic pass is what flips its default to 512 rows in the following commit; the parity gate for the
+row cap (`parity_moe_prefill_wide/`) ran on this same binary just before the gate.
+
+**Final gate on the shipped defaults** (`merged_gate_20260906T010442/`, binary rebuilt with
+`EXL3_DENSE_RECONSTRUCT_DEFAULT_ROWS = 512`, no env at all): boot log shows `1024 rows/expert
+[Default]` and `reconstruct tier ARMED: m >= 512`; prefill **478 / 486** tok/s (8K / 11K), decode
+**30.64** tok/s (MTP-2), greedy sample `b6e9fa3c…` identical to both arms above, agentic model-card
+**PASS** 1/1 webserver_ok, 1/1 followed, 92 s, 9 MTP accept lines. Session totals: prefill ~390 → ~480
+tok/s (+23%), decode 12.25 serial / ~13 MTP → 23.9 serial / 30.7 MTP-2 (2.5x / 2.4x).
 
 ## Concurrency (measured 2026-09-05 late, preset `qwen3.8-flash-next-exl3`: 4 slots, 128K)
 
@@ -734,3 +784,12 @@ to 5 GB in the 30K arm; the box has swapped under similar pressure before).
 - `serve_exl3.sh`, `serve_nvfp4.sh` — the serve profiles used (`SPARK_BIN` selects the binary).
 - `baseline_*` — pass A/B measurements and the raw stage-profile probes.
 - `nsys_baseline_kern_sum.csv`, `nsys_baseline_api_sum.csv` — the trace summaries.
+- `ab_fused_egress/`, `ab_moe_row_cap/`, `ab_mtp_gpu_greedy/`, `ab_dense_reconstruct/` — round-2 lever
+  A/B records (2026-09-06; fingerprint, per-arm measurements, samples; server logs dropped) from
+  `ab_fused_egress.sh`, `ab_moe_row_cap.sh`, `ab_mtp_gpu_greedy.sh`, `ab_dense_reconstruct.sh`.
+- `parity_moe_prefill_wide/` — the `exl3_native_parity` legs G+G2 run with the wide-cap sub-leg.
+- `merged_gate.sh`, `merged_gate_<stamp>/` — the merged-binary gate (prefill, decode, sample, model-card
+  agentic run per arm) on the named preset.
+- `GPU_SAMPLER_DESIGN.md` — design record for the (negative) GPU-greedy scaffold and a full GPU sampler.
+- `MEASUREMENT_PLAN.md`, `prefill_profile.sh`, `concurrency_sweep.sh`, `measure_common.sh`,
+  `nsys_kern_table.py` — the operator measurement plan (nsys prefill split, C=1/2/4 sweep with memory watchdogs).
