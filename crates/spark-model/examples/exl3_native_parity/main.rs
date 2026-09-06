@@ -31,7 +31,11 @@
 //!     reconstruct overflow path) — 16 experts K=4 MUL1, top_k=4, T in
 //!     {3 (no-sync shortcut), 64 (host-sync fused), 64-EP (sentinel tail +
 //!     exact-zero + control), 192 skewed (overflow >128 rows, asserted via
-//!     stats)} (legs_moe_prefill.rs).
+//!     stats)} (legs_moe_prefill.rs); plus the WIDE re-run of the skewed
+//!     batch at caps 512/768 — the ~460-row expert served by the FUSED
+//!     kernel (the serving default's regime), gated, tier stats asserted,
+//!     bf16 bits diffed against the cap-128 run per token class
+//!     (legs_moe_prefill_wide.rs).
 //!  G2. prefill-MoE DETERMINISM (legs_moe_prefill_det.rs): 8 identical T=192
 //!     skewed batches must give ONE distinct fp32 routed accumulator on the
 //!     deterministic epilogue (the serving default), with the kill-switch
@@ -71,10 +75,11 @@ mod legs_dense_gdn;
 mod legs_kladder;
 mod legs_moe;
 mod legs_moe_ingress;
-mod legs_moe_verify_grid;
 mod legs_moe_prefill;
 mod legs_moe_prefill_debug;
 mod legs_moe_prefill_det;
+mod legs_moe_prefill_wide;
+mod legs_moe_verify_grid;
 mod truth;
 mod util;
 
@@ -205,7 +210,20 @@ fn main() -> Result<()> {
     }
 
     if std::env::var("EXL3_VERIFY_GRID_ONLY").as_deref() == Ok("1") {
-        anyhow::ensure!(legs_moe_verify_grid::run(&ctx)?, "EXL3 verify grid parity failed");
+        anyhow::ensure!(
+            legs_moe_verify_grid::run(&ctx)?,
+            "EXL3 verify grid parity failed"
+        );
+        return Ok(());
+    }
+
+    // Legs G + G2 only (the fused/overflow prefill tiers, the wide-cap
+    // re-run and the determinism gate): the row-cap A/B's GPU precondition.
+    if std::env::var("EXL3_MOE_PREFILL_ONLY").as_deref() == Ok("1") {
+        let mut clean = legs_moe_prefill::leg_moe_prefill(&ctx, &mut rng)?;
+        clean &= legs_moe_prefill_det::leg_moe_prefill_determinism(&ctx, &mut rng)?;
+        anyhow::ensure!(clean, "EXL3 MoE prefill parity failed");
+        println!("PASS — EXL3 MoE prefill legs (G, G2) match the CPU truth.");
         return Ok(());
     }
 

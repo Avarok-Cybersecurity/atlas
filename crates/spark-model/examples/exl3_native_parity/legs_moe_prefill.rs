@@ -18,6 +18,12 @@
 //!  * T=192 skewed — ~60% of all slots routed to expert 0 (count ~460 >
 //!    128), forcing the OVERFLOW path (asserted via the returned stats)
 //!    through multiple ov_chunk=256 GEMM chunks, mixed with fused experts.
+//!  * T=192 skewed WIDE (`legs_moe_prefill_wide`) — the SAME batch re-run on
+//!    slabs sized at 512 (host-sync, every expert fused, expert 0 at ~460
+//!    rows INSIDE the fused kernel) and at S=768 (no-sync shortcut); gated
+//!    at the same tolerance, tier stats asserted, bf16 bits diffed against
+//!    this arm per token class (clean tokens asserted identical, expert-0
+//!    tokens' mismatch fraction recorded).
 //!
 //! Tolerances: the fused tier stages/computes in f16 with an fp32
 //! accumulator — the decode-leg boundary model applies, gates reused
@@ -44,14 +50,15 @@ const OV_MAX_Z: f64 = MOE_MAX_Z;
 
 pub const H: usize = 2560;
 pub const I: usize = 640;
-const E: usize = 16;
+pub const E: usize = 16;
 pub const TOP_K: usize = 4;
-const T_MAX: usize = 192;
+pub const T_MAX: usize = 192;
 const OV_CHUNK: usize = 256;
 /// The LEGACY per-expert row cap, pinned here on purpose: the skewed sub-leg
 /// below forces the overflow tier at ~460 rows, which the serving default
-/// (1024) would keep fused. Slabs are sized at it and the scratch carries it.
-const ROWS_PER_EXPERT: usize = 128;
+/// (1024) would keep fused. `alloc_slabs` sizes at it; the wide sub-leg
+/// (`legs_moe_prefill_wide`) re-allocates above it via `alloc_slabs_with_cap`.
+pub const ROWS_PER_EXPERT: usize = 128;
 
 pub struct Slabs {
     pub scratch: Exl3MoePrefillScratch,
@@ -66,7 +73,16 @@ pub struct Slabs {
     pub token_to_perm: DevicePtr,
 }
 
+/// Slabs at the legacy 128-row cap (the tier boundary every sub-leg here
+/// is written against).
 pub fn alloc_slabs(ctx: &Ctx) -> Result<Slabs> {
+    alloc_slabs_with_cap(ctx, ROWS_PER_EXPERT)
+}
+
+/// Slabs with the fused tier's temp slabs sized at `rows_per_expert` rows;
+/// the scratch carries the same cap so tier select and the kernel's slab
+/// stride follow it (exactly how `Exl3MoeState` sizes production).
+pub fn alloc_slabs_with_cap(ctx: &Ctx, rows_per_expert: usize) -> Result<Slabs> {
     let g = ctx.g;
     let s_max = T_MAX * TOP_K;
     let c = ((ctx.sms as usize) / 8).clamp(1, 64);
@@ -81,10 +97,10 @@ pub fn alloc_slabs(ctx: &Ctx) -> Result<Slabs> {
     // Deterministic epilogue's per-sorted-slot rows (the serving default), so
     // every sub-leg below gates the arm production actually runs.
     let slot_f32 = a(s_max * H * 4)?;
-    let temp_state_g = a(c * ROWS_PER_EXPERT * H * 2)?;
-    let temp_state_u = a(c * ROWS_PER_EXPERT * H * 2)?;
-    let temp_inter_g = a(c * ROWS_PER_EXPERT * I * 2)?;
-    let temp_inter_u = a(c * ROWS_PER_EXPERT * I * 2)?;
+    let temp_state_g = a(c * rows_per_expert * H * 2)?;
+    let temp_state_u = a(c * rows_per_expert * H * 2)?;
+    let temp_inter_g = a(c * rows_per_expert * I * 2)?;
+    let temp_inter_u = a(c * rows_per_expert * I * 2)?;
     let token_sorted = a(s_max * 8)?;
     let weight_sorted = a(s_max * 2)?;
     let expert_count = a((E + 1) * 8)?;
@@ -122,7 +138,7 @@ pub fn alloc_slabs(ctx: &Ctx) -> Result<Slabs> {
             slot_cap: s_max,
             e_cap: E,
             concurrency: c,
-            rows_per_expert: ROWS_PER_EXPERT,
+            rows_per_expert,
             ov_chunk: OV_CHUNK,
         },
         owned,
@@ -409,7 +425,7 @@ pub fn leg_moe_prefill(ctx: &Ctx, rng: &mut Lcg) -> Result<bool> {
             })
             .collect();
         let hot = ids.iter().filter(|&&v| v == 0).count();
-        let (y_gpu, _, num_active, n_ov) = run_native(
+        let (y_gpu, bits_128, num_active, n_ov) = run_native(
             ctx,
             &sl,
             &full,
@@ -435,6 +451,22 @@ pub fn leg_moe_prefill(ctx: &Ctx, rng: &mut Lcg) -> Result<bool> {
              overflow_experts={n_ov}, fused num_active={num_active}) = {exercised}"
         );
         ok &= exercised;
+
+        // ── Sub-leg 4: the same batch with the ~460-row expert INSIDE the
+        // fused kernel (caps 512 and 768), gated + bit-diffed against this
+        // cap-128 run. ──
+        ok &= crate::legs_moe_prefill_wide::subleg_wide(
+            ctx,
+            &full,
+            &ov_full,
+            &crate::legs_moe_prefill_wide::SkewCase {
+                input_bf16: &input_bf16,
+                ids: &ids,
+                probs: &probs,
+                bits_128: &bits_128,
+                y64: &y64,
+            },
+        )?;
     }
 
     for p in sl.owned.iter() {

@@ -88,7 +88,7 @@ fn launch(
 }
 
 pub fn run(ctx: &Ctx) -> Result<bool> {
-    let mut rng = Lcg(0x5EED_38F1_A5);
+    let mut rng = Lcg(0x005E_ED38_F1A5);
     let mut clean = true;
     let mut control_diffs = 0;
     let slab = alloc_slabs(ctx, MAX_ROWS * EXPERTS, MAX_ROWS)?;
