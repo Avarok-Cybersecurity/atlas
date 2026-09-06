@@ -11,6 +11,7 @@ use super::super::ctx::MultiSeqCtx;
 use crate::layers::ops;
 use crate::layers::qwen3_attention::HeadGateActivation;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
+use crate::weight_map::WeightQuantFormat;
 
 impl Qwen3AttentionLayer {
     /// Phase 6: gate multiply (when gated) + O projection. Writes to
@@ -178,21 +179,44 @@ impl Qwen3AttentionLayer {
                 )?;
             }
         } else if let Some(o_fp8) = self.o_weight.as_ref().and_then(|w| w.as_fp8()) {
-            // FP8 native: per-token w8a16_gemv for O projection.
-            for i in 0..n {
+            // Both matrices are contiguous. Share each block-scaled weight
+            // pass across up to four rows without staging or requantization.
+            // Keep the scalar route for single-row decode and older bundles.
+            let batched = n > 1
+                && self.w8a16_gemv_batch4_k.0 != 0
+                && o_fp8.scale_format == WeightQuantFormat::Fp8BlockScaled
+                && h % 128 == 0
+                && q_dim % 128 == 0;
+            let step = if batched { 4 } else { 1 };
+            for i in (0..n).step_by(step) {
                 let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
                 let o_out_i = o_out.offset(i * h * bf16);
-                ops::w8a16_gemv(
-                    fwd.gpu,
-                    self.w8a16_gemv_k,
-                    attn_out_i,
-                    o_fp8.weight,
-                    o_fp8.row_scale,
-                    o_out_i,
-                    h as u32,
-                    nq * hd,
-                    stream,
-                )?;
+                if batched {
+                    ops::w8a16_gemv_batch4(
+                        fwd.gpu,
+                        self.w8a16_gemv_batch4_k,
+                        attn_out_i,
+                        o_fp8.weight,
+                        o_fp8.row_scale,
+                        o_out_i,
+                        (n - i).min(4) as u32,
+                        h as u32,
+                        nq * hd,
+                        stream,
+                    )?;
+                } else {
+                    ops::w8a16_gemv(
+                        fwd.gpu,
+                        self.w8a16_gemv_k,
+                        attn_out_i,
+                        o_fp8.weight,
+                        o_fp8.row_scale,
+                        o_out_i,
+                        h as u32,
+                        nq * hd,
+                        stream,
+                    )?;
+                }
             }
         } else if n == 3 && !self.attn.o_proj.is_null() {
             ops::w4a16_gemv_batch3(
@@ -275,3 +299,7 @@ impl Qwen3AttentionLayer {
         Ok(o_out)
     }
 }
+
+#[cfg(test)]
+#[path = "o_proj_tests.rs"]
+mod tests;
