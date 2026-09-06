@@ -211,6 +211,31 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
             // Architecture flags
             config.attn_gated = false;
             config.weight_prefix = "backbone".to_string();
+            // Nemotron-H attention is NoPE: the reference NemotronHAttention
+            // projects q/k/v straight into attention with NO rotary embedding
+            // (position is carried by the mamba layers; config.json ships a
+            // vestigial rope_theta that the reference never reads). Applying
+            // RoPE here scrambled long-range q·k addressing: in-context
+            // retrieval died beyond ~50 tokens (needle-probe verified against
+            // the checkpoint's own vLLM serving) while short-range fluency
+            // survived on the SSM state. rotary_dim() == 0 makes every rope
+            // wrapper skip its launch.
+            config.partial_rotary_factor = 0.0;
+            config.rotary_dim = 0;
+            // MTP: transformers-5.x Nemotron-H (3.5 Lightning) ships a
+            // DeepSeek-style 1-step draft head under `mtp.layers.*`
+            // (enorm/hnorm/eh_proj combiner + attention block + relu² MoE
+            // block), declared as `num_nextn_predict_layers`. Map it onto the
+            // Atlas-canonical `mtp_num_hidden_layers` so `--speculative` can
+            // build the Nemotron MTP proposer (factory/build.rs) and the SSM
+            // pool sizes its verify checkpoint/intermediate slots.
+            if config.mtp_num_hidden_layers == 0
+                && let Some(n) = raw_mut
+                    .get("num_nextn_predict_layers")
+                    .and_then(serde_json::Value::as_u64)
+            {
+                config.mtp_num_hidden_layers = n as usize;
+            }
             // Parse hybrid_override_pattern → layer_types (Nano / Super)
             if !config.hybrid_override_pattern.is_empty() && config.layer_types.is_empty() {
                 config.layer_types = config
@@ -223,6 +248,23 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
                         other => panic!("Unknown hybrid_override_pattern char: '{other}'"),
                     })
                     .collect();
+            }
+            // transformers-5.x Nemotron-H (3.5 Lightning) drops the pattern
+            // string and ships the schedule as a `layers_block_type` list.
+            // Without this the layer schedule is EMPTY on Lightning — the
+            // hybrid_override_pattern branch above finds nothing to parse.
+            if config.layer_types.is_empty()
+                && let Some(blocks) = raw_mut.get("layers_block_type").and_then(|v| v.as_array())
+            {
+                config.layer_types = blocks
+                    .iter()
+                    .map(|b| match b.as_str() {
+                        Some("mamba") => Ok(LayerType::LinearAttention),
+                        Some("moe") => Ok(LayerType::Moe),
+                        Some("attention") => Ok(LayerType::FullAttention),
+                        other => anyhow::bail!("Unknown layers_block_type entry: {other:?}"),
+                    })
+                    .collect::<Result<_>>()?;
             }
             // Puzzle: layers_block_type + block_configs → layer_types + per-layer MoE dims
             if top_model_type == "nemotron_h_puzzle" {

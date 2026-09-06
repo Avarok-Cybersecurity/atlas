@@ -78,6 +78,10 @@ pub(crate) struct ParsedBehavior {
     pub rollback_resteer: bool,
     pub rom_head: String,
     pub tool_retry: bool,
+    /// Suppress CUDA decode-graph capture for this model family.
+    /// Nemotron-H models crash under graph replay (CUDA 700/716 at
+    /// specific prompt lengths) and graphs are a measured no-op on GB10.
+    pub no_decode_graphs: bool,
     /// Tri-state `preserve_thinking` chat-template flag. `None` (key absent)
     /// = do not inject the Jinja variable; the model template's own default
     /// applies. See `ModelBehavior::preserve_thinking`.
@@ -117,6 +121,7 @@ impl Default for ParsedBehavior {
             rollback_resteer: true,
             rom_head: String::new(),
             tool_retry: true,
+            no_decode_graphs: false,
             preserve_thinking: None,
         }
     }
@@ -276,6 +281,10 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.get("tool_retry"))
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    let no_decode_graphs = b
+        .and_then(|v| v.get("no_decode_graphs"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     // Tri-state: absent key stays `None` (template default), no unwrap_or.
     let preserve_thinking = b
         .and_then(|v| v.get("preserve_thinking"))
@@ -292,6 +301,7 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         disable_cwd_hint_injection,
         use_sampling_presets_for_core,
         tool_call_parser,
+        no_decode_graphs,
         enable_loop_watchdog,
         enable_think_loop_watchdog,
         honor_eos_inside_thinking,
