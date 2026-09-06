@@ -17,7 +17,7 @@
 //! The assertions are therefore on the transport seam the API layer actually
 //! consumes, not on the return value: `Err` alone was always there.
 
-use super::lifecycle::swap_out_sequence;
+use super::lifecycle::{resume_swapped_seq, swap_out_sequence};
 use super::preempt_tests::{PreemptStubModel, active_seq, streaming_seq};
 use super::types::ActiveSeq;
 use spark_runtime::kv_spill::KvSpillManager;
@@ -129,4 +129,73 @@ fn a_successful_swap_out_still_hands_back_the_sink_untouched() {
         ),
         "a parked request's client must hear nothing yet"
     );
+}
+
+// ── swap-IN (`lifecycle::resume_swapped_seq`) ────────────────────────────
+//
+// The mirror image of the above. The scheduler's swap-in loop does
+// `swapped.remove(idx)` and hands the `SwappedSeq` to `resume_swapped_seq`
+// BY VALUE, and its only `Err` handling is `tracing::error!("Swap-in
+// failed")`. So every fallible step inside that function was the last owner
+// of a live request, and returning early erased it.
+
+/// Park `victim` on disk so it can be handed back to the swap-in path, and
+/// return the spill pool holding its image. Uses the real spill+restore
+/// round trip rather than a hand-built `SwappedSeq` so the test cannot drift
+/// from the shape the scheduler actually produces.
+fn park(
+    model: &PreemptStubModel,
+    victim: ActiveSeq,
+    name: &str,
+) -> (super::types::SwappedSeq, KvSpillManager) {
+    let mut sp = spill(name);
+    let (a0, a2) = three_actives();
+    let mut active = vec![a0, victim, a2];
+    let s = swap_out_sequence(model, &mut active, 1, &mut sp).expect("park");
+    (s, sp)
+}
+
+#[test]
+fn swap_in_failure_reaches_the_blocking_client_instead_of_dropping_it() {
+    let model = PreemptStubModel::default();
+    let (victim, mut victim_rx) = active_seq(1, 2);
+    let (s, mut sp) = park(&model, victim, "swapin-blocking");
+
+    // `restore_sequence_state` is the stub's trait default, which bails —
+    // the same shape as a real restore failing on a short or corrupt image.
+    let r = resume_swapped_seq(None, None, &model, s, &mut sp);
+    assert!(r.is_err(), "restore failed, so the resume must fail");
+
+    let sent = victim_rx.try_recv().expect(
+        "the parked request's sink was DROPPED — its client reads a server-side \
+         swap-in failure as its own abort",
+    );
+    let Err(err) = sent else {
+        panic!("a failed swap-in must not report success to the client");
+    };
+    assert!(
+        format!("{err:#}").contains("swap-in failed"),
+        "got: {err:#}"
+    );
+}
+
+#[test]
+fn swap_in_failure_sends_a_terminal_frame_to_a_streaming_client() {
+    let model = PreemptStubModel::default();
+    let (victim, mut victim_rx) = streaming_seq(1, 2);
+    let (s, mut sp) = park(&model, victim, "swapin-streaming");
+
+    assert!(resume_swapped_seq(None, None, &model, s, &mut sp).is_err());
+
+    match victim_rx.try_recv() {
+        Ok(crate::api::StreamEvent::Error(msg)) => assert!(
+            msg.contains("swap-in failed"),
+            "terminal frame must name the failure, got: {msg}"
+        ),
+        Ok(_) => panic!("expected an Error frame, got a different StreamEvent"),
+        Err(e) => panic!(
+            "no terminal frame on the parked request's stream ({e:?}) — the body \
+             is truncated under an already-committed HTTP 200"
+        ),
+    }
 }

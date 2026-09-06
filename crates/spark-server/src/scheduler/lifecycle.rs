@@ -325,22 +325,71 @@ pub fn swap_out_sequence(
     }
 }
 
+/// Rebuild the GPU sequence for a parked request from its spill image.
+///
+/// Split out so [`resume_swapped_seq`] has exactly ONE fallible step to
+/// handle. Every `?` in here used to be a `?` in that function, where the
+/// caller's stack frame was the sole owner of the `SwappedSeq` — so each of
+/// them dropped the request's `ResponseSink` on the floor. Keeping them
+/// behind one boundary makes it impossible to add a fifth failure mode that
+/// forgets the client.
+///
+/// A sequence allocated before a later step fails is freed here rather than
+/// leaked, and the spill file is removed on every exit so a failed swap-in
+/// cannot strand it on disk.
+fn restore_swapped_image(
+    model: &dyn Model,
+    s: &SwappedSeq,
+    spill: &mut KvSpillManager,
+) -> Result<SequenceState> {
+    let mut seq = model.alloc_sequence()?;
+    // `reader` is dropped at the end of the closure, before `remove_file`.
+    let restored = spill
+        .open_file(s.swap_id)
+        .and_then(|mut reader| model.restore_sequence_state(&mut seq, s.num_blocks, &mut reader));
+    if let Err(e) = restored {
+        if let Err(fe) = model.free_sequence(&mut seq) {
+            tracing::error!("restore_swapped_image: free_sequence after failed restore: {fe:#}");
+        }
+        let _ = spill.remove_file(s.swap_id);
+        return Err(e);
+    }
+    if let Err(e) = spill.remove_file(s.swap_id) {
+        if let Err(fe) = model.free_sequence(&mut seq) {
+            tracing::error!("restore_swapped_image: free_sequence after failed unlink: {fe:#}");
+        }
+        return Err(e);
+    }
+    Ok(seq)
+}
+
 /// Resume a swapped-out sequence by restoring its state from disk.
 pub fn resume_swapped_seq(
     _think_end_token: Option<u32>,
     _think_start_token: Option<u32>,
     model: &dyn Model,
-    s: SwappedSeq,
+    mut s: SwappedSeq,
     spill: &mut KvSpillManager,
 ) -> Result<ActiveSeq> {
     // Starvation guard: a just-resumed sequence must not be the next KV
     // victim before it makes real progress (see `preempt` module docs).
     let immune_until = s.output_tokens.len() + super::preempt::PREEMPT_IMMUNITY_TOKENS;
-    let mut seq = model.alloc_sequence()?;
-    let mut reader = spill.open_file(s.swap_id)?;
-    model.restore_sequence_state(&mut seq, s.num_blocks, &mut reader)?;
-    drop(reader);
-    spill.remove_file(s.swap_id)?;
+    let mut seq = match restore_swapped_image(model, &s, spill) {
+        Ok(seq) => seq,
+        Err(e) => {
+            // The caller (`scheduler::run`'s swap-in loop) has already taken
+            // this request out of `swapped`, and it only logs the `Err` — so
+            // returning without touching the sink drops the client's channel.
+            // That is not a quiet failure: the blocking side turns the closed
+            // oneshot into `500 "Inference cancelled"`, which is what the
+            // server says when the CLIENT aborted, and the streaming side
+            // just ends the SSE body under an HTTP 200 that has already been
+            // committed and already carries partial output. A swap-in failure
+            // is entirely server-side; the client has to be able to tell.
+            send_error_to_sink(&mut s.sink, &format!("swap-in failed: {e:#}"));
+            return Err(e);
+        }
+    };
 
     // Restore CPU-side metadata.
     seq.tokens = s.tokens;
