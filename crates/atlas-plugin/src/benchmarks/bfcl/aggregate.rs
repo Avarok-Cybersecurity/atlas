@@ -203,3 +203,35 @@ pub fn union(shards: &[BTreeMap<String, Tally>]) -> BTreeMap<String, Tally> {
     }
     out
 }
+
+/// Recover per-subset tallies from a gate record's flattened metrics.
+///
+/// The inverse of what `report.rs` writes: `subset.<name>.hits` /
+/// `subset.<name>.n`. Returns `None` when a record carries no tallies at all —
+/// a pre-shard record, which the caller must treat as "this member cannot be
+/// aggregated", never as an empty contribution. An empty contribution would
+/// silently shrink the union and score the group over fewer samples than the
+/// draw.
+pub fn tallies_from_metrics(metrics: &BTreeMap<String, f64>) -> Option<BTreeMap<String, Tally>> {
+    let mut out: BTreeMap<String, Tally> = BTreeMap::new();
+    for (k, v) in metrics {
+        let Some(rest) = k.strip_prefix("subset.") else {
+            continue;
+        };
+        if let Some(name) = rest.strip_suffix(".hits") {
+            out.entry(name.to_string()).or_default().hits = *v as u64;
+        } else if let Some(name) = rest.strip_suffix(".n") {
+            out.entry(name.to_string()).or_default().n = *v as u64;
+        }
+    }
+    if out.is_empty() {
+        return None;
+    }
+    // A subset with hits but no n (or vice versa) means the record was written
+    // by something that half-understood the format. Refuse rather than average
+    // over a denominator of zero.
+    if out.values().any(|t| t.n == 0 && t.hits > 0) {
+        return None;
+    }
+    Some(out)
+}

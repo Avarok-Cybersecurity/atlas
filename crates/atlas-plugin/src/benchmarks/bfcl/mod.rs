@@ -134,6 +134,11 @@ struct Scores {
     subset_scores: BTreeMap<String, f64>,
     total_samples: usize,
     unmatched_responses: usize,
+    /// Per-subset `(hits, n)` from `score.py`. The only thing that recombines
+    /// exactly across shards — see `benchmarks::bfcl::aggregate`. `default` so
+    /// a record written before the scorer emitted these still deserializes.
+    #[serde(default)]
+    subset_totals: BTreeMap<String, (u64, u64)>,
 }
 
 /// Where the state machine is.
