@@ -259,10 +259,20 @@ jobs:
           # Re-running is safe for a seal: it adds no commit, and a seal is
           # voided by commits, not by CI runs.
           if [ "$VERB" = "/stamp" ] || [ "$VERB" = "/seal" ]; then
-            run_id=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=50" \
-              --jq '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .id' \
+            # id AND status. Re-running a run that has not finished returns
+            # 403 "This workflow is already running", which the warning below
+            # would then report as a failure -- and it is not one. A run still
+            # in flight reads the mark when its gate jobs execute, so there is
+            # nothing to re-run. This was found the first time the warning
+            # printed the API's own words, which is what it is for.
+            run_meta=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=50" \
+              --jq '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | "\(.id) \(.status)"' \
               2>/dev/null || true)
-            if [ -n "${run_id:-}" ] && [ "$run_id" != "null" ]; then
+            run_id=${run_meta%% *}
+            run_status=${run_meta##* }
+            if [ -n "${run_id:-}" ] && [ "$run_id" != "null" ] && [ "$run_status" != "completed" ]; then
+              echo "::notice title=CI is still running::run $run_id is '$run_status'. Its gate jobs read the $name when they execute, so nothing is re-run. If they already ran, re-run CI once this one finishes."
+            elif [ -n "${run_id:-}" ] && [ "$run_id" != "null" ]; then
               # Capture stderr rather than discarding it. The first time this
               # failed in production the reason went to /dev/null, the Stamp
               # check went green, and the gate stayed red telling the operator
