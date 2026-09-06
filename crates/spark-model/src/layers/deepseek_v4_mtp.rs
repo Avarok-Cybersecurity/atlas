@@ -336,6 +336,7 @@ impl DeepseekV4MtpHead {
             comm: None,
             graph_capture: false,
             gdn_exact_replay: false,
+            gdn_write_on_accept: false,
             token_ids: ctx.token_ids,
             host_token_ids: None,
             routed_lora_layers: None, // #30: MTP draft body; no prefill LoRA route.

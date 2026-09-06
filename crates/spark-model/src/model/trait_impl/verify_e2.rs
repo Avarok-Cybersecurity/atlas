@@ -250,6 +250,7 @@ impl TransformerModel {
         seqs: &[&mut SequenceState],
         ks: &[usize],
         wy_tables_null: bool,
+        write_on_accept: bool,
     ) -> Option<Vec<u32>> {
         let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(seqs.len());
         for (i, s) in seqs.iter().enumerate() {
@@ -258,6 +259,7 @@ impl TransformerModel {
         Some(crate::speculative::verify_key::verify_graph_key(
             &pairs,
             wy_tables_null,
+            write_on_accept,
         ))
     }
 

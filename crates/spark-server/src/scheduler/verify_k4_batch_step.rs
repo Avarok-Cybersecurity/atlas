@@ -116,7 +116,11 @@ pub(super) fn step_verify_k4_batched(
     let t_verify = Instant::now();
     let results: Vec<u32> = {
         let mut seq_refs: Vec<&mut SequenceState> = batch.iter_mut().map(|a| &mut a.seq).collect();
-        match model.decode_verify_batched(&tokens, ks, &mut seq_refs, 0) {
+        // No write-on-accept here: this path commits through
+        // `verify_k4_verdict`, which restores from the parent kernel's
+        // intermediates and never folds.
+        let opts = spark_model::traits::VerifyBatchedOpts::default();
+        match model.decode_verify_batched(&tokens, ks, &mut seq_refs, 0, opts) {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("decode_verify_batched (n={n} ks={ks:?}): {e:#}");

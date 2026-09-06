@@ -55,9 +55,14 @@ impl BlockDiffusionDraftHead {
         // Rows per SEQUENCE vs TOTAL rows in this forward. Weight-bearing ops
         // take the total; per-sequence things (attention, KV slot writes, the
         // selector's chain seed) index by band.
-        let block_g = self.gamma as u32;
+        // The drafter width for THIS forward, read ONCE. `block_g` is an
+        // atomic the scheduler writes before the propose; every row count
+        // below derives from this local so one forward cannot disagree
+        // with itself (review of #845).
+        let width = self.block_g();
+        let block_g = width as u32;
         let g = block_g * n_seq as u32;
-        let rows_total = self.gamma * n_seq;
+        let rows_total = width * n_seq;
         let h = self.hidden_size as u32;
         let q_dim = (self.num_q_heads * self.head_dim) as u32;
         let kv_dim = (self.num_kv_heads * self.head_dim) as u32;
@@ -106,7 +111,7 @@ impl BlockDiffusionDraftHead {
         // every row-bounded op take, so leaving it at one band's worth means
         // only band 0 gets embedded and every other sequence drafts from
         // whatever the previous propose left in stream_buf.
-        let n_attn = (eff_ctx + self.gamma * n_seq) as u32;
+        let n_attn = (eff_ctx + width * n_seq) as u32;
         let target_hidden_dim = self.target_layer_ids.len() * self.target_hidden_size;
         let ctx_slot_bytes = target_hidden_dim * bf16;
 
@@ -261,7 +266,7 @@ impl BlockDiffusionDraftHead {
                     eff_ctx,
                     self.target_layer_ids.len(),
                     self.target_hidden_size,
-                    self.gamma,
+                    width,
                     self.hidden_size,
                     self.num_kv_heads,
                     self.head_dim,
@@ -321,7 +326,7 @@ impl BlockDiffusionDraftHead {
             .chain((0..n_seq).flat_map(|b| {
                 // Each sequence ropes from ITS OWN absolute position.
                 let base = batch.map_or(position, |x| x.positions[b]);
-                (0..self.gamma).map(move |i| (base + i) as i32)
+                (0..width).map(move |i| (base + i) as i32)
             }))
             .collect();
         let pos_bytes: Vec<u8> = pos_host.iter().flat_map(|p| p.to_le_bytes()).collect();
@@ -356,10 +361,8 @@ impl BlockDiffusionDraftHead {
             .chain((0..n_seq).flat_map(|b| {
                 // Band b: that sequence's own anchor, then gamma-1 masks.
                 let anchor = batch.map_or(last_token, |x| x.last_tokens[b]);
-                std::iter::once(anchor as i32).chain(std::iter::repeat_n(
-                    self.mask_token_id as i32,
-                    self.gamma - 1,
-                ))
+                std::iter::once(anchor as i32)
+                    .chain(std::iter::repeat_n(self.mask_token_id as i32, width - 1))
             }))
             .collect();
         if debug_dump {
@@ -403,8 +406,8 @@ impl BlockDiffusionDraftHead {
             .as_deref()
             == Some("1");
         if force_noise_pattern {
-            let mut bytes = Vec::with_capacity(self.gamma * self.hidden_size * 2);
-            for t in 0..self.gamma {
+            let mut bytes = Vec::with_capacity(width * self.hidden_size * 2);
+            for t in 0..width {
                 for j in 0..self.hidden_size {
                     let v =
                         0.001_f32 * ((t + 1) as f32) * ((j + 1) as f32) / (self.hidden_size as f32);
@@ -446,10 +449,10 @@ impl BlockDiffusionDraftHead {
                 ops::fill_slots_from_block_table(
                     gpu,
                     self.kernels.fill_slots,
-                    self.scratch.slot_mapping_dev.offset(b * self.gamma * 8),
+                    self.scratch.slot_mapping_dev.offset(b * width * 8),
                     bt_b,
                     cc_b,
-                    self.gamma as u32,
+                    width as u32,
                     16,
                     stream,
                 )?;
@@ -756,7 +759,7 @@ impl BlockDiffusionDraftHead {
             if self.markov_active() {
                 self.markov_argmax_block(ctx, norm_noise_local, stream)?;
             } else {
-                for i in 0..self.gamma {
+                for i in 0..width {
                     let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16_local);
                     let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
                     ops::argmax_bf16(
@@ -805,7 +808,7 @@ impl BlockDiffusionDraftHead {
                 {
                     gpu.synchronize(stream)?;
                     // Full γ × vocab logits (BF16).
-                    let n_logits_bytes = self.gamma * self.vocab_size * bf16_local;
+                    let n_logits_bytes = width * self.vocab_size * bf16_local;
                     let mut lbuf = vec![0u8; n_logits_bytes];
                     if let Err(e) = gpu.copy_d2h(self.scratch.logits, &mut lbuf) {
                         tracing::warn!("DFLASH BLOCK_DUMP: logits copy failed: {e}");
@@ -813,9 +816,9 @@ impl BlockDiffusionDraftHead {
                         tracing::warn!("DFLASH BLOCK_DUMP: logits write failed: {e}");
                     } else {
                         // Live argmax drafts (γ × u32).
-                        let mut dbuf = vec![0u8; self.gamma * 4];
+                        let mut dbuf = vec![0u8; width * 4];
                         gpu.copy_d2h(self.scratch.draft_tokens_dev, &mut dbuf)?;
-                        let drafts: Vec<u32> = (0..self.gamma)
+                        let drafts: Vec<u32> = (0..width)
                             .map(|i| {
                                 u32::from_le_bytes([
                                     dbuf[i * 4],
@@ -830,7 +833,7 @@ impl BlockDiffusionDraftHead {
                             drafts,
                             last_token,
                             position,
-                            self.gamma,
+                            width,
                             self.vocab_size,
                             self.hidden_size,
                             self.mask_token_id,
@@ -878,7 +881,7 @@ impl BlockDiffusionDraftHead {
                     // Noise/mask embedding rows: on the Option-B path eff_ctx=0 so the
                     // γ noise rows sit at the START of stream_buf. Dump γ × hidden BF16.
                     let noise_off = eff_ctx * self.hidden_size * bf16_local;
-                    let n_noise_bytes = self.gamma * self.hidden_size * bf16_local;
+                    let n_noise_bytes = width * self.hidden_size * bf16_local;
                     let mut nbuf = vec![0u8; n_noise_bytes];
                     if let Err(e) =
                         gpu.copy_d2h(self.scratch.stream_buf.offset(noise_off), &mut nbuf)
@@ -891,8 +894,8 @@ impl BlockDiffusionDraftHead {
                     // and the γ queries at [q_offset..q_offset+γ). Record what the
                     // paged attention actually used so the harness stops guessing.
                     let (kv_len_dump, q_offset_dump) = match option_b {
-                        Some((_, cc)) => (cc + self.gamma as u32, cc),
-                        None => (eff_ctx as u32 + self.gamma as u32, eff_ctx as u32),
+                        Some((_, cc)) => (cc + width as u32, cc),
+                        None => (eff_ctx as u32 + width as u32, eff_ctx as u32),
                     };
                     // q_rope_pos: the RoPE rotation base for γ queries. After
                     // the id249 fix this equals `position` (true decode pos),
@@ -902,19 +905,19 @@ impl BlockDiffusionDraftHead {
                     let input_meta = format!(
                         "{{\"eff_ctx\":{},\"gamma\":{},\"hidden_size\":{},\"option_b_kv_len\":{},\"option_b_q_offset\":{},\"q_rope_pos\":{},\"q_block_positions\":{:?}}}",
                         eff_ctx,
-                        self.gamma,
+                        width,
                         self.hidden_size,
                         kv_len_dump,
                         q_offset_dump,
                         q_rope_pos_dump,
-                        (0..self.gamma)
+                        (0..width)
                             .map(|r| q_rope_pos_dump as usize + r)
                             .collect::<Vec<_>>(),
                     );
                     let _ = std::fs::write("/tmp/atlas_block_input_meta.json", input_meta);
                     tracing::info!(
                         "DFLASH BLOCK_INPUT: wrote noise_embed ({}×{} BF16) + input_meta (q_offset={}, kv_len={}, position={})",
-                        self.gamma,
+                        width,
                         self.hidden_size,
                         q_offset_dump,
                         kv_len_dump,
@@ -951,13 +954,16 @@ impl BlockDiffusionDraftHead {
             let total_slots = num_layers * 2 + 1;
             let tail_slot = num_layers * 2;
 
+            // Graphs are keyed by the ACTIVE block width: the resolver's widths
+            // each capture once and replay forever after, so a width switch
+            // costs a capture only the first time that width is seen.
             let mut g = self.propose_graphs.lock();
-            let cached_ready = matches!(*g, Some(ref v) if v.len() == total_slots);
+            let cached_ready = matches!(g.by_width.get(&width), Some(v) if v.len() == total_slots);
 
             if cached_ready {
                 // Hot replay path: launch each cached subgraph in order,
                 // running attention eagerly between pre and post.
-                let graphs = g.as_ref().unwrap();
+                let graphs = g.by_width.get(&width).unwrap();
                 for (layer_idx, layer) in self.layers.iter().enumerate() {
                     let args = make_paged_args(layer_idx).expect("option_b args available");
 
@@ -995,13 +1001,10 @@ impl BlockDiffusionDraftHead {
                     run_tail()?;
                 }
             } else {
-                let warmed = self
-                    .propose_warmup_count
-                    .load(std::sync::atomic::Ordering::Relaxed);
+                let warmed = g.warmup.get(&width).copied().unwrap_or(0);
                 if warmed < warmup_target {
-                    // Warm-up: eager only, no capture.
-                    self.propose_warmup_count
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    // Warm-up: eager only, no capture (per width).
+                    g.warmup.insert(width, warmed + 1);
                     run_all_eager()?;
                 } else {
                     // Capture pass: build all subgraphs in one propose
@@ -1010,7 +1013,7 @@ impl BlockDiffusionDraftHead {
                     // empty-capture sentinel; we store the zero so the
                     // replay path falls back to eager for that slot.
                     tracing::info!(
-                        "DFlash piecewise capture: starting (warmup_count={}, target={}, slots={})",
+                        "DFlash piecewise capture: starting (warmup_count={}, target={}, slots={}, block width {width})",
                         warmed,
                         warmup_target,
                         total_slots
@@ -1073,11 +1076,12 @@ impl BlockDiffusionDraftHead {
 
                     let success_count = new_graphs.iter().filter(|g| g.0 != 0).count();
                     tracing::info!(
-                        "DFlash piecewise capture: complete ({}/{} subgraphs captured)",
+                        "DFlash piecewise capture: complete ({}/{} subgraphs captured, block width {})",
                         success_count,
-                        total_slots
+                        total_slots,
+                        width
                     );
-                    *g = Some(new_graphs);
+                    g.by_width.insert(width, new_graphs);
                 }
             }
         } else {
@@ -1107,21 +1111,23 @@ impl BlockDiffusionDraftHead {
             .draft_tokens_host_pinned
             .load(std::sync::atomic::Ordering::Relaxed);
         // `draft_tokens_host_pinned` is written exactly once, in
-        // `from_weights.rs` (`alloc_host_pinned(gamma_val * 4)`), and the same
-        // `gamma_val` is stored as `self.gamma` — but the two live in different
-        // files, so pin the equality here rather than trust it silently. A failed
-        // `alloc_host_pinned` propagates as an Err at construction, so a null here
-        // would mean the field was never initialised.
+        // `from_weights.rs` (`alloc_host_pinned(gamma_val * 4)`), and
+        // `gamma_val` is the head's `gamma` (the cap). `width` is at most
+        // that: `set_block_g` clamps to `2..=gamma`. The two live in different
+        // files, so the bound is stated here rather than trusted silently. A
+        // failed `alloc_host_pinned` propagates as an Err at construction, so
+        // a null here would mean the field was never initialised.
         anyhow::ensure!(
             !pinned_ptr.is_null(),
             "DFlash draft-token pinned staging buffer is null (γ={}, rows={rows_total})",
-            self.gamma
+            width
         );
         // SAFETY: `pinned_ptr` is the page-locked allocation made by
-        // `alloc_host_pinned(gamma_val * 4)` in `DFlashHead::from_weights`, and
-        // `self.gamma == gamma_val` (both set from the same local in that
-        // constructor; `gamma` is a plain `usize` field never reassigned), so
-        // `self.gamma * 4` is exactly the allocation size — not one byte past it.
+        // `alloc_host_pinned(gamma_val * 4)` in `DFlashHead::from_weights`,
+        // where `gamma_val` is `self.gamma` (a plain `usize` never
+        // reassigned). The read length is `width * 4`, and `width <= gamma`
+        // by `set_block_g`'s clamp (and equals it when no resolver runs), so
+        // the read is at most the allocation size — never one byte past it.
         // Non-null is checked immediately above; `cuMemAllocHost` returns
         // 64-byte-aligned memory, which trivially satisfies `u8`'s alignment of 1.
         //
@@ -1179,10 +1185,10 @@ impl BlockDiffusionDraftHead {
             && std::env::var("ATLAS_DSPARK_ANCHOR_BIAS").ok().as_deref() != Some("0")
         {
             let tau = Self::conf_tau();
-            let mut cbuf = vec![0u8; self.gamma * 2];
+            let mut cbuf = vec![0u8; width * 2];
             gpu.copy_d2h(self.scratch.conf_out, &mut cbuf)?;
             if std::env::var("ATLAS_DSPARK_CONF_TRACE").ok().as_deref() == Some("1") {
-                let logits: Vec<f32> = (0..self.gamma)
+                let logits: Vec<f32> = (0..width)
                     .map(|j| {
                         let bits = u16::from_le_bytes([cbuf[j * 2], cbuf[j * 2 + 1]]);
                         f32::from_bits((bits as u32) << 16)
@@ -1199,8 +1205,8 @@ impl BlockDiffusionDraftHead {
             }
             // sigmoid(x) < τ  ⇔  x < logit(τ) — compare in logit space.
             let tau_logit = (tau / (1.0 - tau)).ln();
-            let mut keep = self.gamma; // rows kept (slot 0 discard + drafts)
-            for j in 0..self.gamma.saturating_sub(1) {
+            let mut keep = width; // rows kept (slot 0 discard + drafts)
+            for j in 0..width.saturating_sub(1) {
                 let bits = u16::from_le_bytes([cbuf[j * 2], cbuf[j * 2 + 1]]);
                 let logit = f32::from_bits((bits as u32) << 16);
                 if logit < tau_logit {
@@ -1222,7 +1228,7 @@ impl BlockDiffusionDraftHead {
         {
             tracing::info!(
                 "DFLASH DUMP_FULL drafts (γ={}, last_token={}, position={}, eff_ctx={}): {:?}",
-                self.gamma,
+                width,
                 last_token,
                 position,
                 eff_ctx,
@@ -1238,9 +1244,9 @@ impl BlockDiffusionDraftHead {
 mod tests {
     use super::rt2_16_covers_the_batch;
 
-    /// The regression: the guard tested `self.gamma` while the kernel was
-    /// handed `self.gamma`, so the two agreed with each other and disagreed
-    /// with reality. At n_seq >= 2 the batch is `gamma * n_seq` rows and the
+    /// The regression (recorded as it was): the guard tested the per-sequence
+    /// gamma while the kernel was handed that same gamma, so the two agreed
+    /// with each other and disagreed with reality. At n_seq >= 2 the batch is `gamma * n_seq` rows and the
     /// rt2 kernel covered only the first band; the rest kept the previous
     /// propose's logits, already masked to -1e30 by `dflash2_topk16`.
     ///

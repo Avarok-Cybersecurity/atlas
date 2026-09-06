@@ -93,6 +93,10 @@ name = "gdn_cdh_vblock_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "gdn_woa_oracle"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "w4a16_lmhead_716_repro"
 required-features = ["cuda", "gpu-examples"]
 

@@ -109,6 +109,8 @@ pub fn step_verify_dflash(
     // Adaptive speculation (ATLAS_DFLASH_ADAPTIVE=1): feed the rolling
     // accept window; may suspend this seq's speculation (see adaptive_spec).
     crate::scheduler::adaptive_spec::record_verify(a, num_accepted, sched);
+    // Gamma resolver: single-stream accept signal (first draft accepted).
+    crate::scheduler::dflash_rung::observe_step(num_accepted >= 1);
 
     // Roll back the over-extended `seq_len` and `seq.tokens`. The verify
     // advanced both by `tokens.len() = γ+1` (all γ drafts + the prefix
