@@ -22,6 +22,10 @@
 # TCP — STOP, do not benchmark, do not believe a tok/s figure taken that way.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/glm53-launch-safety.sh
+source "$SCRIPT_DIR/lib/glm53-launch-safety.sh"
+
 IMAGE="${IMAGE:-atlas-glm53:t3}"
 MODEL_DIR="${MODEL_DIR:-/home/cluster/glm53-ckpt}"
 NODES=(10.10.10.1 10.10.10.2)
@@ -41,6 +45,14 @@ EXTRA_ENV="${EXTRA_ENV:-}"
 # Extra `serve` flags, space separated (e.g. --ngram-speculative --num-drafts 1). Empty by
 # default so the sealed spec-off command line is exactly what it always was.
 EXTRA_ARGS="${EXTRA_ARGS:-}"
+
+if ! SAFE_EXTRA_ARGS="$(glm53_safe_serve_tail "$EXTRA_ARGS")"; then
+  echo "ERROR: EXTRA_ARGS must be simple space-separated tokens (they are" \
+    "interpolated into a remote shell command) and must not set --swap-space-gb;" \
+    "this launcher pins it to 0 on top of the engine's own model capability gate" >&2
+  exit 2
+fi
+readonly SAFE_EXTRA_ARGS
 
 for RANK in 0 1; do
   IP=${NODES[$RANK]}
@@ -70,7 +82,8 @@ for RANK in 0 1; do
       --max-seq-len $MAX_SEQ_LEN --kv-cache-dtype fp8 \
       --gpu-memory-utilization $GPU_UTIL \
       --oom-guard-mb $OOM_GUARD_MB \
-      --max-batch-size 1 $EXTRA_ARGS"
+      --max-batch-size 1 \
+      $SAFE_EXTRA_ARGS"
   [ "$RANK" -eq 0 ] && echo "waiting 10s for rank 0 to bind the master port..." && sleep 10
 done
 

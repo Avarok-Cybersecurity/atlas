@@ -467,6 +467,28 @@ jobs:
       # Exercise release evidence and subprocess failure paths without a GPU.
       - run: python3 -m unittest discover -s tests -p 'test_gate_results*.py' -v
 
+  launch-contract:
+    name: GLM-5.3 launcher EXTRA_ARGS contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # scripts/launch-atlas-glm53-tp2ep2.sh interpolates $EXTRA_ARGS into a
+      # remote shell command. The contract it documents -- simple
+      # space-separated tokens -- was never enforced, so a value carrying `;`,
+      # `$(...)`, a glob or a newline reached the remote shell as syntax. The
+      # validator is a pure function and this is its regression suite: the
+      # accept cases, every rejected injection shape, and the --swap-space-gb
+      # pin the GLM launcher applies on top of the engine's own capability
+      # gate. Shell-only -- no GPU, no model, no network.
+      - name: Shell syntax and the launcher contract suite
+        run: |
+          set -euo pipefail
+          bash -n \
+            scripts/launch-atlas-glm53-tp2ep2.sh \
+            scripts/lib/glm53-launch-safety.sh \
+            scripts/test-launch-atlas-glm53-safety.sh
+          scripts/test-launch-atlas-glm53-safety.sh
+
   test:
     name: cargo test --workspace
     needs: [changes]
