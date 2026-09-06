@@ -456,7 +456,13 @@ impl DenseFfnLayer {
         // NULL — the Q4_K prefill copy is built by dequant-ing those (NULL) NVFP4
         // blocks, so running it here is a null-ptr kernel launch (CUDA 700).
         // Packed-Q2 has its own prefill path (transient dequant), so skip.
-        if self.q2_weights.is_some() {
+        // Guard on the POINTER, not on the owning format: a NULL NVFP4 source
+        // means some other format owns this FFN, and repacking/dequanting from
+        // it is a null-ptr kernel launch — CUDA 700 at LOAD. Packed-Q2
+        // (ATLAS_GGUF_NATIVE_Q2) was the first such owner; native BF16 hit the
+        // identical launch on the identical null (2026-08-16, a BF16 fine-tune
+        // of Qwen3.8-27B). Testing the pointer covers the next one for free.
+        if self.q2_weights.is_some() || self.weights.gate_proj.weight.is_null() {
             return Ok(());
         }
         let q4k_active = self.q4k_mmq_nc_k.0 != 0
@@ -554,7 +560,13 @@ impl DenseFfnLayer {
         // NULL. This W4A4-MMQ finalize is active by DEFAULT (SiLU + kernels
         // present) and repacks the NVFP4 gate/up — over NULL pointers that's a
         // CUDA-700 illegal access. Packed-Q2 uses its own decode/prefill path.
-        if self.q2_weights.is_some() {
+        // Guard on the POINTER, not on the owning format: a NULL NVFP4 source
+        // means some other format owns this FFN, and repacking/dequanting from
+        // it is a null-ptr kernel launch — CUDA 700 at LOAD. Packed-Q2
+        // (ATLAS_GGUF_NATIVE_Q2) was the first such owner; native BF16 hit the
+        // identical launch on the identical null (2026-08-16, a BF16 fine-tune
+        // of Qwen3.8-27B). Testing the pointer covers the next one for free.
+        if self.q2_weights.is_some() || self.weights.gate_proj.weight.is_null() {
             return Ok(());
         }
         let active = self.nvfp4_mmq_nc_k.0 != 0
