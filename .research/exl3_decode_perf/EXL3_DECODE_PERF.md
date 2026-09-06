@@ -390,6 +390,41 @@ A/B (`spark-abf16` vs the previous binary's control arms, fresh server per arm):
 per token), with both greedy samples unchanged — the first lever today with zero numerics
 exposure. Records: `ab_abf16_*`.
 
+## BF16 egress fused into the dense GEMM epilogue (eighth lever, bit-exact, UNMEASURED)
+
+Branch `perf/exl3-gemm-bf16-egress`. The other half of the seventh lever: after the `_abf16`
+GEMM the dense decode arm still launched `exl3_f32_to_bf16` (contiguous destination) or
+`exl3_f32_to_bf16_2d` (a column block of the GDN `[Q|K|V|Z]` arena row) per projection — 252
+launches per 2-draft MTP step in the `nsys_mtp2b_*` trace, ~61 per serial token. The inner
+kernel's output-Hadamard epilogue (`output_had_sh_gl` → `had_ff_r_128_inner<false, true>`) is
+where the final f32 C values exist in registers: only the LAST split-K block of a column runs
+it, after the rotate and the `svh` post-scale, so the values it stores are exactly the ones the
+converter would read back. The new `out_bf16` template arm (`had_ff_r_128_inner_obf16`) keeps
+the f32 store and ALSO stores `__float2bfloat16_rn(v)` of the same four registers into a pitched
+BF16 destination (`C_bf16 + row * ld_bf16 + col`), which is the converter's rounding on the
+identical value — byte-identical to convert-after by construction, and the `_2d` pitch becomes a
+kernel argument. Kernel twins `exl3_gemm_k{K}_cb{cb}_sh{S}_f32_abf16_obf16` (two extra trailing
+args; `EXL3_GEMM_ARGS` and every existing instance untouched), host `exl3_gemm_abf16_obf16`
+(`exl3_matmul/gemm.rs`, the GEMM launchers split out of `exl3_matmul.rs` for the LoC cap),
+probed at load by `exl3_dense_kernel_names`, dispatched by `exl3_dense_linear_shared_a` on the
+m ≤ 8, K ∉ 2..=4 path — one launch per dense projection instead of two (three before the
+ingress lever). The GEMV tier (K in 2..=4) and the m > 8 tier are untouched.
+
+Kill switch `ATLAS_EXL3_NO_FUSED_EGRESS` (presence) restores the `_abf16` + converter form;
+the arm logs `EXL3 dense decode egress: …` once so an A/B record can prove which arm was live.
+Launch-plan tests pin both plans (`exl3_dense/tests.rs`), the name list pins the probe.
+
+**Hypothesis, not a measurement:** the same launch-gap arithmetic as the ingress lever
+(~61 launches x ~2.6 us + ~1-2 us of converter kernel per serial token ≈ 0.2-0.3 ms of a ~42 ms
+token; ~252 per MTP step) puts the expected gain at +0.5-1.5% in each profile, i.e. at the edge
+of run-to-run spread, and the greedy samples must be byte-identical in both profiles (a
+differing sample is a bug). Nothing here is measured until `ab_fused_egress.sh` has run on the
+GPU: `.research/exl3_decode_perf/ab_fused_egress.sh` boots the branch's release binary with the
+named preset (MTP profile) and the `serve_exl3.sh` flag set (serial profile — the preset cannot
+drop `--speculative`), kill switch off then on per profile, `measure_decode.py` x3 + the
+200-token greedy sample, asserts byte-equality and that the logged arm matches, writes
+`ab_fused_egress_<stamp>/SUMMARY.txt`.
+
 ## PLE verify snapshots on device (fourth lever, this commit)
 
 `push_verify_row` snapshotted the PLE carry to a host blob with `copy_d2h_on_stream` after

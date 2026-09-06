@@ -43,6 +43,12 @@
 //   Blackwell heuristic for K in {2,4}, k <= 2048, single-matrix, so it is
 //   instantiated only for those K.
 //
+// exl3_gemm_k{K}_cb{CB}_sh{S}_f32_abf16 / _f32_abf16_obf16 — the same launch
+//   geometry with A a RAW BF16 [m, k] (converted in the prologue); the _obf16
+//   twin takes two more args (C_bf16 BF16 dst, ld_bf16 row stride in elems,
+//   >= n; must not alias C) and stores BF16(C) from the epilogue. Both are
+//   byte-identical to the converter-bracketed f32 kernel.
+//
 // exl3_mgemm_k{K}_cb{CB}_sh{S}_{f16|f32}  (pointer-table multi-matrix / MoE;
 //   S in 2,3,4 — the heuristic never picks shape 1 for multi)
 //   args: EXL3_MGEMM_ARGS (19 slots; B_list/suh_list/svh_list are device
@@ -263,6 +269,46 @@ EXL3_GEMM_WRAP_ABF16(2, 1, 1, 256)
 EXL3_GEMM_WRAP_ABF16(2, 2, 1, 256)
 EXL3_GEMM_WRAP_ABF16(4, 1, 1, 256)
 EXL3_GEMM_WRAP_ABF16(4, 2, 1, 256)
+
+// BF16-in / BF16-out GEMM twins (`_abf16_obf16`): the `_abf16` prologue plus
+// the `OUT_BF16` epilogue — the output-Hadamard store also writes
+// `__float2bfloat16_rn(c)` into `C_bf16[row * ld_bf16 + col]` (the
+// `exl3_f32_to_bf16[_2d]` arithmetic on the same values, so byte-identical to
+// convert-after). Two extra trailing arguments beyond EXL3_GEMM_ARGS; the
+// f32 C is still written (split-K scratch). Consumer: the dense decode arm's
+// m <= 8, K outside 2..=4 path (`exl3_gemm_abf16_obf16`), which then skips its
+// egress launch. Kill switch on the host: ATLAS_EXL3_NO_FUSED_EGRESS.
+#define EXL3_GEMM_WRAP_ABF16_OBF16(K, CB, S, BLKDIM)                          \
+    extern "C" __global__ void __launch_bounds__(BLKDIM)                      \
+    exl3_gemm_k##K##_cb##CB##_sh##S##_f32_abf16_obf16                         \
+        (EXL3_GEMM_ARGS, __nv_bfloat16* __restrict__ C_bf16, const int ld_bf16) \
+    {                                                                         \
+        exl3_gemm_kernel_body<K, true, CB, EXL3_GEMM_SHAPE_##S, true, true>   \
+            (A, B, C, size_m, size_k, size_n, locks, suh, A_had, svh,         \
+             C_bf16, ld_bf16);                                                \
+    }
+
+#define EXL3_GEMM_SET_ABF16_OBF16(K, CB)                                      \
+    EXL3_GEMM_WRAP_ABF16_OBF16(K, CB, 2, 512)                                 \
+    EXL3_GEMM_WRAP_ABF16_OBF16(K, CB, 3, 512)                                 \
+    EXL3_GEMM_WRAP_ABF16_OBF16(K, CB, 4, 256)
+
+EXL3_GEMM_SET_ABF16_OBF16(2, 1)
+EXL3_GEMM_SET_ABF16_OBF16(2, 2)
+EXL3_GEMM_SET_ABF16_OBF16(3, 1)
+EXL3_GEMM_SET_ABF16_OBF16(3, 2)
+EXL3_GEMM_SET_ABF16_OBF16(4, 1)
+EXL3_GEMM_SET_ABF16_OBF16(4, 2)
+EXL3_GEMM_SET_ABF16_OBF16(5, 1)
+EXL3_GEMM_SET_ABF16_OBF16(5, 2)
+EXL3_GEMM_SET_ABF16_OBF16(6, 1)
+EXL3_GEMM_SET_ABF16_OBF16(6, 2)
+EXL3_GEMM_SET_ABF16_OBF16(8, 1)
+EXL3_GEMM_SET_ABF16_OBF16(8, 2)
+EXL3_GEMM_WRAP_ABF16_OBF16(2, 1, 1, 256)
+EXL3_GEMM_WRAP_ABF16_OBF16(2, 2, 1, 256)
+EXL3_GEMM_WRAP_ABF16_OBF16(4, 1, 1, 256)
+EXL3_GEMM_WRAP_ABF16_OBF16(4, 2, 1, 256)
 
 // ── dtype boundary converters ──────────────────────────────────────────────
 

@@ -11,8 +11,17 @@
 //     the Atlas kernel build promotes warnings to errors
 //   * the never-referenced `index_m` lambda removed (same reason; upstream had
 //     already commented out its use)
+//   * Atlas `out_bf16` epilogue arm (template flag + two trailing defaulted
+//     parameters, default off = upstream): the final row-major store in
+//     `output_had_sh_gl` ALSO writes `__float2bfloat16_rn(c)` to a pitched
+//     BF16 destination — the standalone `exl3_f32_to_bf16[_2d]` converter's
+//     arithmetic on the same register values, so convert-after and fused are
+//     byte-identical. Split-K partials (`write_sum_gl`/`read_sum_gl`) are
+//     untouched: only the LAST block of a column writes final values.
 
 #pragma once
+
+#include <cuda_bf16.h>
 
 #include "ptx.cuh"
 #include "exl3_compat.cuh"
@@ -35,7 +44,88 @@
     #define EXL3_GEMM_H_ACC 0
 #endif
 
-template<EXL3_GEMM_T_ARGS, bool shmem_out_had>
+// Atlas adaptation: `had_ff_r_128_inner<false, true>` (post-scale by svh) with
+// a SECOND destination. Body identical to the vendored template up to and
+// including the f32 store; then the same four register values are rounded
+// with `__float2bfloat16_rn` — exactly what `exl3_f32_to_bf16[_2d]` does to the
+// f32 it reads back — and stored to `out_bf16[t*4 .. t*4+4)`. Vector store when
+// the 8-byte alignment holds (row stride and column base multiples of 4),
+// scalar stores otherwise; same bytes either way.
+__device__ __forceinline__
+void had_ff_r_128_inner_obf16
+(
+    const float* __restrict__ input_ptr,
+    float* __restrict__ output_ptr,
+    const half* __restrict__ scale,
+    const float r_scale,
+    __nv_bfloat16* __restrict__ out_bf16
+)
+{
+    int t = threadIdx.x & 31;
+
+    // Load
+    float4 v = ((float4*) input_ptr)[t];
+
+    // 4 element had
+    float v0 = v.x;
+    float v1 = v.y;
+    float v2 = v.z;
+    float v3 = v.w;
+    float s0 = v0 + v1;
+    float d0 = v0 - v1;
+    float s1 = v2 + v3;
+    float d1 = v2 - v3;
+    v.x = s0 + s1;
+    v.y = d0 + d1;
+    v.z = s0 - s1;
+    v.w = d0 - d1;
+
+    // 32 element had, warp shuffle
+    shuffle_had_f2x32(v.x, v.y, t);
+    shuffle_had_f2x32(v.z, v.w, t);
+    v.x *= r_scale;
+    v.y *= r_scale;
+    v.z *= r_scale;
+    v.w *= r_scale;
+
+    // Post scale
+    {
+        int i = blockIdx.y * 32 + t;
+        half4 scales = ((half4*) scale)[i];
+        v.x *= __low2float(scales.x);
+        v.y *= __high2float(scales.x);
+        v.z *= __low2float(scales.y);
+        v.w *= __high2float(scales.y);
+    }
+
+    // Store (f32, as upstream)
+    ((float4*) output_ptr)[t] = v;
+
+    // Store (BF16 egress): the converter's rounding on the same values
+    __nv_bfloat16 b0 = __float2bfloat16_rn(v.x);
+    __nv_bfloat16 b1 = __float2bfloat16_rn(v.y);
+    __nv_bfloat16 b2 = __float2bfloat16_rn(v.z);
+    __nv_bfloat16 b3 = __float2bfloat16_rn(v.w);
+    __nv_bfloat16* dst = out_bf16 + t * 4;
+    if ((reinterpret_cast<size_t>(dst) & 7) == 0)
+    {
+        __nv_bfloat162 p01; p01.x = b0; p01.y = b1;
+        __nv_bfloat162 p23; p23.x = b2; p23.y = b3;
+        uint2 raw;
+        raw.x = *reinterpret_cast<uint32_t*>(&p01);
+        raw.y = *reinterpret_cast<uint32_t*>(&p23);
+        *reinterpret_cast<uint2*>(dst) = raw;
+    }
+    else
+    {
+        dst[0] = b0;
+        dst[1] = b1;
+        dst[2] = b2;
+        dst[3] = b3;
+    }
+}
+
+template<EXL3_GEMM_T_ARGS, bool shmem_out_had, bool out_bf16 = false>
 inline __device__
 void exl3_gemm_kernel_inner
 (
@@ -46,9 +136,13 @@ void exl3_gemm_kernel_inner
     const int size_k,
     const int size_n,
     int* __restrict__ locks,
-    const half* post_scale
+    const half* post_scale,
+    __nv_bfloat16* __restrict__ C_bf16 = nullptr,
+    const int ld_bf16 = 0
 )
 {
+    static_assert(!out_bf16 || (c_fp32 && shmem_out_had),
+                  "out_bf16 egress exists for the f32-C, output-Hadamard path only");
     const int TILEBLOCKS_M = TILESIZE_M / 16;
     const int TILEBLOCKS_K = TILESIZE_K / 16;
     const int TILEBLOCKS_N = TILESIZE_N / 16;
@@ -484,7 +578,14 @@ void exl3_gemm_kernel_inner
             if constexpr (c_fp32)
             {
                 float* had_out = gl_c_ptr_32 + row * size_n + col * 128;
-                had_ff_r_128_inner<false, true>(had_in, had_out, post_scale_c, 0.088388347648f);
+                if constexpr (out_bf16)
+                    had_ff_r_128_inner_obf16
+                    (
+                        had_in, had_out, post_scale_c, 0.088388347648f,
+                        C_bf16 + (size_t) row * ld_bf16 + slice2_n * gl_c_stride_n + col * 128
+                    );
+                else
+                    had_ff_r_128_inner<false, true>(had_in, had_out, post_scale_c, 0.088388347648f);
             }
             else
             {

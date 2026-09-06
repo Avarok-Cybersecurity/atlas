@@ -10,12 +10,19 @@
 //! Data path per call (all stream-ordered, no host sync, no allocation):
 //!
 //! ```text
-//!   A bf16 [m, k] --exl3_bf16_to_f16--> stage.a_f16 (raw fp16)
-//!   m <= 8 : exl3_gemv (fp32 C into stage.c_f32; gemm fallthrough when the
-//!            GEMV heuristic declines, and ALWAYS for K outside the GEMV
-//!            set 2..=4 — K in {5,6,8} has gemm instances only)
-//!            --exl3_f32_to_bf16[_2d]--> dst
-//!   m >  8 : per row batch of stage.rows_cap:
+//!   m <= 8, K outside 2..=4 (every dense projection at 4.05bpw):
+//!            exl3_gemm_abf16_obf16 — ONE launch: BF16 A converted in the
+//!            input-Hadamard prologue, fp32 C into stage.c_f32, BF16(C)
+//!            stored into dst (contiguous or pitched) by the output-Hadamard
+//!            epilogue. Bit-identical to the bracketed form below; kill
+//!            switch ATLAS_EXL3_NO_FUSED_EGRESS (presence) restores
+//!            exl3_gemm_abf16 + exl3_f32_to_bf16[_2d].
+//!   m <= 8, K in 2..=4:
+//!            A bf16 --exl3_bf16_to_f16--> stage.a_f16 (raw fp16), then
+//!            exl3_gemv (fp32 C into stage.c_f32; gemm fallthrough when the
+//!            GEMV heuristic declines) --exl3_f32_to_bf16[_2d]--> dst
+//!   m >  8 : A bf16 --exl3_bf16_to_f16--> stage.a_f16, then
+//!            per row batch of stage.rows_cap:
 //!              contiguous dst: exl3_gemm fp16 C straight into dst, then
 //!                              exl3_f16_to_bf16 IN PLACE (lm_head precedent)
 //!              strided dst:    exl3_gemm fp16 C into stage.c_f16, then
@@ -32,6 +39,8 @@
 //! MoE arm. Cooperative launches are not graph-capturable: the calling arm
 //! must sit behind the model's `exl3_graph_veto` and refuse `graph_capture`.
 
+use std::sync::OnceLock;
+
 use anyhow::{Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::exl3::{Exl3Codebook, Exl3Weight};
@@ -47,9 +56,36 @@ pub use stage::{EXL3_DENSE_STAGE_ROWS_DEFAULT, Exl3DenseStage};
 
 use super::exl3_matmul::{
     EXL3_GEMM_K_BITS, EXL3_GEMV_MAX_M, exl3_bf16_to_f16, exl3_f16_to_bf16, exl3_f16_to_bf16_2d,
-    exl3_f32_to_bf16, exl3_f32_to_bf16_2d, exl3_gemm, exl3_gemm_abf16, exl3_gemm_serves_k,
-    exl3_gemv, exl3_gemv_serves_k,
+    exl3_f32_to_bf16, exl3_f32_to_bf16_2d, exl3_gemm, exl3_gemm_abf16, exl3_gemm_abf16_obf16,
+    exl3_gemm_serves_k, exl3_gemv, exl3_gemv_serves_k,
 };
+
+/// Fused BF16 egress on the dense decode arm (default ON): the m <= 8,
+/// K-outside-2..=4 GEMM stores BF16(C) from its epilogue and the separate
+/// `exl3_f32_to_bf16[_2d]` launch is skipped. `ATLAS_EXL3_NO_FUSED_EGRESS`
+/// (PRESENCE — `=0` is not off, house convention) restores the two-launch
+/// form for A/B; the two are byte-identical by construction, so the switch
+/// exists to measure the launch saving, not to guard numerics.
+pub fn exl3_fused_egress_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let fused = std::env::var_os("ATLAS_EXL3_NO_FUSED_EGRESS").is_none();
+        // Logged once so an A/B record can prove which arm was live (the
+        // "inert arm" trap: a wrong binary or an env that never reached the
+        // process measures nothing).
+        tracing::info!(
+            fused,
+            "EXL3 dense decode egress: {} (ATLAS_EXL3_NO_FUSED_EGRESS {})",
+            if fused {
+                "fused into the GEMM epilogue (_abf16_obf16)"
+            } else {
+                "separate exl3_f32_to_bf16 launch"
+            },
+            if fused { "unset" } else { "set" }
+        );
+        fused
+    })
+}
 
 /// One packed dense linear as the kernels address it: device pointers +
 /// geometry + the KERNEL codebook index (1 = MCG, 2 = MUL1). Built from the
@@ -205,6 +241,30 @@ pub fn exl3_dense_linear_shared_a(
     stage: &Exl3DenseStage,
     stream: u64,
 ) -> Result<()> {
+    dense_linear_shared_a(
+        gpu,
+        ws,
+        a_bf16,
+        m,
+        stage,
+        stream,
+        exl3_fused_egress_enabled(),
+    )
+}
+
+/// [`exl3_dense_linear_shared_a`] with the fused-egress arm chosen
+/// explicitly (the public entry reads the kill switch once per process; the
+/// launch-plan tests pin BOTH plans through this).
+#[allow(clippy::too_many_arguments)]
+fn dense_linear_shared_a(
+    gpu: &dyn GpuBackend,
+    ws: &[(Exl3DenseWeight, Exl3DenseOut)],
+    a_bf16: DevicePtr,
+    m: usize,
+    stage: &Exl3DenseStage,
+    stream: u64,
+    fused_egress: bool,
+) -> Result<()> {
     ensure!(!ws.is_empty(), "exl3_dense_linear: no weights");
     ensure!(m >= 1, "exl3_dense_linear: m == 0");
     let k = ws[0].0.in_dim;
@@ -258,6 +318,32 @@ pub fn exl3_dense_linear_shared_a(
         for (w, out) in ws {
             let n = w.out_dim;
             if !exl3_gemv_serves_k(w.k_bits) {
+                if fused_egress {
+                    // One launch: BF16 ingress in the prologue, BF16(C) into
+                    // the (contiguous or pitched) destination from the
+                    // epilogue. Same bytes as the bracketed form below.
+                    exl3_gemm_abf16_obf16(
+                        gpu,
+                        a_bf16,
+                        w.trellis,
+                        stage.c_f32,
+                        out.ptr,
+                        out.ld.unwrap_or(n),
+                        m,
+                        k,
+                        n,
+                        w.k_bits,
+                        w.cb,
+                        launch.locks,
+                        w.suh,
+                        stage.a_had_f16,
+                        w.svh,
+                        None,
+                        launch.sm_count,
+                        stream,
+                    )?;
+                    continue;
+                }
                 exl3_gemm_abf16(
                     gpu,
                     a_bf16,

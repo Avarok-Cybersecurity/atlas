@@ -14,6 +14,11 @@
 //   * include paths made local; cooperative_groups included here (upstream
 //     got it from the host .cu)
 //   * the dead commented-out post-pass output rotation block was dropped
+//   * Atlas `A_BF16` / `OUT_BF16` template arms on exl3_gemm_kernel_body
+//     (both default off = upstream): BF16 activation converted in the input
+//     Hadamard prologue; BF16 copy of C stored by the output Hadamard
+//     epilogue (two trailing defaulted parameters). Bit-identical to the
+//     standalone converters they replace, see the notes at each site.
 //   * upstream's commented-out `// if (suh)` guard is preserved as-is:
 //     suh / A_had / svh are all unconditionally dereferenced and therefore
 //     MANDATORY (the host must never pass null)
@@ -95,9 +100,18 @@ void had_bf16_hf_r_128_inner
 // `A_BF16` (Atlas adaptation, default false = upstream): `A` is a BF16
 // activation reinterpreted through the half* parameter; the prologue converts
 // while rotating and every later stage reads `A_had` as before.
-template<EXL3_GEMM_T_ARGS, bool A_BF16 = false>
+// `OUT_BF16` (Atlas adaptation, default false = upstream): the inner kernel's
+// output-Hadamard epilogue also stores the final f32 C values as BF16 into
+// `C_bf16` (row stride `ld_bf16` elements, >= size_n) — see
+// exl3_gemm_inner.cuh. f32 C only; `C_bf16` must not alias `C`.
+template<EXL3_GEMM_T_ARGS, bool A_BF16 = false, bool OUT_BF16 = false>
 inline __device__
-void exl3_gemm_kernel_body(EXL3_GEMM_ARGS)
+void exl3_gemm_kernel_body
+(
+    EXL3_GEMM_ARGS,
+    __nv_bfloat16* __restrict__ C_bf16 = nullptr,
+    const int ld_bf16 = 0
+)
 {
     auto grid = cg::this_grid();
 
@@ -134,16 +148,18 @@ void exl3_gemm_kernel_body(EXL3_GEMM_ARGS)
     int size_m_ = size_m;
     const half* A_ = A;
     void* C_ = C;
+    __nv_bfloat16* C_bf16_ = C_bf16;
 
     while (size_m_ > 0)
     {
         exl3_gemm_kernel_inner
-        <bits, c_fp32, cb, TILESIZE_M, TILESIZE_K, TILESIZE_N, SH_STAGES, FRAG_STAGES, true>
-        (A_, B, C_, MIN(size_m_, 16), size_k, size_n, locks, svh);
+        <bits, c_fp32, cb, TILESIZE_M, TILESIZE_K, TILESIZE_N, SH_STAGES, FRAG_STAGES, true, OUT_BF16>
+        (A_, B, C_, MIN(size_m_, 16), size_k, size_n, locks, svh, C_bf16_, ld_bf16);
 
         A_ += 16 * size_k;
         if constexpr (c_fp32) C_ = (void*) (((float*) C_) + 16 * size_n);
         else                  C_ = (void*) (((half*) C_) + 16 * size_n);
+        if constexpr (OUT_BF16) C_bf16_ += 16 * ld_bf16;
         size_m_ -= 16;
 
         if (size_m_ > 0 || svh)

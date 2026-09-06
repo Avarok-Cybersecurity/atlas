@@ -108,11 +108,11 @@ fn launch_plan_gemv_tier_and_row_batched_gemm_tier() {
 
 #[test]
 fn launch_plan_k6_skips_the_gemv_tier_at_small_m() {
-    // K in {5,6,8} has no GEMV instances: the m<=8 tier goes straight to the
-    // f32-C GEMM's BF16-ingress twin (`_f32_abf16` — the bf16->f16 convert is
-    // fused into its input-Hadamard prologue, so NO separate ingress launch
-    // and never a k6 gemv name), then egress from the same f32 slab. m>8 is
-    // the ordinary GEMM tier.
+    // K in {5,6,8} has no GEMV instances: the m<=8 tier is ONE launch of the
+    // f32-C GEMM's BF16-in/BF16-out twin (`_f32_abf16_obf16` — bf16->f16
+    // convert fused into the input-Hadamard prologue, f32->bf16 egress fused
+    // into the output-Hadamard epilogue, so no converter launch on either
+    // side and never a k6 gemv name). m>8 is the ordinary GEMM tier.
     let gpu = MockGpuBackend::new();
     let launch = std::sync::Arc::new(Exl3LaunchState::new(&gpu).unwrap());
     let stage = Exl3DenseStage::new(&gpu, launch, 256, 6144, 12288).unwrap();
@@ -122,19 +122,14 @@ fn launch_plan_k6_skips_the_gemv_tier_at_small_m() {
         let w = weight_k(&gpu, 2560, 10240, k_bits);
         for m in [1usize, 8] {
             let before = gpu.kernel_lookups_snapshot().len();
-            exl3_dense_linear(&gpu, &w, a, contiguous(dst), m, &stage, 0).unwrap();
+            let ws = [(w, contiguous(dst))];
+            dense_linear_shared_a(&gpu, &ws, a, m, &stage, 0, true).unwrap();
             let names = kernel_names(&gpu)[before..].to_vec();
-            assert_eq!(names.len(), 2, "K={k_bits} m={m}: {names:?}");
+            assert_eq!(names.len(), 1, "K={k_bits} m={m}: {names:?}");
             assert!(
                 names[0].starts_with(&format!("exl3_gemm_k{k_bits}_cb2_sh"))
-                    && names[0].ends_with("_f32_abf16"),
+                    && names[0].ends_with("_f32_abf16_obf16"),
                 "K={k_bits} m={m}: {names:?}"
-            );
-            assert_eq!(names[1], "exl3_f32_to_bf16");
-            assert!(
-                !names
-                    .iter()
-                    .any(|n| n.contains("gemv") || n == "exl3_bf16_to_f16")
             );
         }
         let before = gpu.kernel_lookups_snapshot().len();
@@ -153,6 +148,83 @@ fn launch_plan_k6_skips_the_gemv_tier_at_small_m() {
     assert!(
         names[1].starts_with("exl3_gemv_k3_cb2_m0_cfg") || names[1].starts_with("exl3_gemm_k3_"),
         "{names:?}"
+    );
+}
+
+#[test]
+fn launch_plan_fused_egress_kill_switch_restores_the_converter() {
+    // `ATLAS_EXL3_NO_FUSED_EGRESS` (the A/B control arm): the `_f32_abf16`
+    // twin followed by the standalone f32 egress — `exl3_f32_to_bf16` for a
+    // contiguous destination, `_2d` for a pitched one. The fused arm's plan
+    // for the same calls is a single `_abf16_obf16` launch each, with the
+    // pitch carried as a kernel argument. Each shared-A weight is one launch
+    // in both arms; the ingress launch never appears at K=6.
+    let gpu = MockGpuBackend::new();
+    let launch = std::sync::Arc::new(Exl3LaunchState::new(&gpu).unwrap());
+    let stage = Exl3DenseStage::new(&gpu, launch, 256, 6144, 12288).unwrap();
+    let a = gpu.alloc(8 * 2560 * 2).unwrap();
+    let arena = gpu.alloc(8 * 16384 * 2).unwrap();
+    let qkv = weight_k(&gpu, 2560, 10240, 6);
+    let z = weight_k(&gpu, 2560, 6144, 6);
+    let ws = [
+        (qkv, Exl3DenseOut::strided(arena, 16384)),
+        (z, Exl3DenseOut::strided(arena.offset(10240 * 2), 16384)),
+    ];
+    for m in [1usize, 3, 8] {
+        let before = gpu.kernel_lookups_snapshot().len();
+        dense_linear_shared_a(&gpu, &ws, a, m, &stage, 0, false).unwrap();
+        let names = kernel_names(&gpu)[before..].to_vec();
+        assert_eq!(names.len(), 4, "control m={m}: {names:?}");
+        for (i, sh) in [(0usize, "sh3"), (2, "sh3")] {
+            assert_eq!(
+                names[i],
+                format!("exl3_gemm_k6_cb2_{sh}_f32_abf16"),
+                "{names:?}"
+            );
+            assert_eq!(names[i + 1], "exl3_f32_to_bf16_2d", "{names:?}");
+        }
+
+        let before = gpu.kernel_lookups_snapshot().len();
+        dense_linear_shared_a(&gpu, &ws, a, m, &stage, 0, true).unwrap();
+        let names = kernel_names(&gpu)[before..].to_vec();
+        assert_eq!(
+            names,
+            vec![
+                "exl3_gemm_k6_cb2_sh3_f32_abf16_obf16",
+                "exl3_gemm_k6_cb2_sh3_f32_abf16_obf16"
+            ],
+            "fused m={m}"
+        );
+    }
+    // Contiguous destination, control arm: the 1-D converter.
+    let dst = gpu.alloc(8 * 10240 * 2).unwrap();
+    let before = gpu.kernel_lookups_snapshot().len();
+    dense_linear_shared_a(&gpu, &[(qkv, contiguous(dst))], a, 1, &stage, 0, false).unwrap();
+    let names = kernel_names(&gpu)[before..].to_vec();
+    assert_eq!(
+        names,
+        vec!["exl3_gemm_k6_cb2_sh3_f32_abf16", "exl3_f32_to_bf16"]
+    );
+    // The GEMV tier (K=4) is untouched by the switch: same plan both ways.
+    let w4 = weight(&gpu, 2560, 10240);
+    let mut plans = Vec::new();
+    for fused in [false, true] {
+        let before = gpu.kernel_lookups_snapshot().len();
+        dense_linear_shared_a(&gpu, &[(w4, contiguous(dst))], a, 1, &stage, 0, fused).unwrap();
+        plans.push(kernel_names(&gpu)[before..].to_vec());
+    }
+    assert_eq!(plans[0], plans[1]);
+    assert_eq!(plans[0][0], "exl3_bf16_to_f16");
+    assert_eq!(plans[0][2], "exl3_f32_to_bf16");
+    // The public entry reads the switch: no env in the test process, so it
+    // takes the fused plan.
+    let before = gpu.kernel_lookups_snapshot().len();
+    exl3_dense_linear(&gpu, &qkv, a, contiguous(dst), 1, &stage, 0).unwrap();
+    let names = kernel_names(&gpu)[before..].to_vec();
+    assert_eq!(
+        names,
+        vec!["exl3_gemm_k6_cb2_sh3_f32_abf16_obf16"],
+        "default plan must be the fused one (is ATLAS_EXL3_NO_FUSED_EGRESS set?)"
     );
 }
 
