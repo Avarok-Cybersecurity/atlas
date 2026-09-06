@@ -339,6 +339,8 @@ fn qwen38_flash_next_exl3_preset_carries_the_validated_configuration() {
     // Round-2 prefill levers pinned to their measured values (2026-09-06).
     assert_eq!(get("ATLAS_EXL3_MOE_ROWS_PER_EXPERT"), "1024");
     assert_eq!(get("ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS"), "512");
+    // Marconi restore floor: 3x TTFT on short warm prompts (2026-09-06).
+    assert_eq!(get("ATLAS_MARCONI_MIN_TOKENS"), "64");
     assert!(get("ATLAS_PLE_MAX_TOKENS").parse::<usize>().unwrap() >= args.max_prefill_tokens);
 
     // An operator override of --max-seq-len carries into the QSA cap.

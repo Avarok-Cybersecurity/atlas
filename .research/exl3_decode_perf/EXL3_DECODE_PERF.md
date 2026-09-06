@@ -863,6 +863,40 @@ open question: the per-row work inside the verify, not the sweeps. The next prob
 one-row attention bodies and the per-sequence GDN/metadata staging directly (nsys of one C=4 step),
 before anyone writes another batching lever.
 
+## Marconi restore floor — the 128-token TTFT anomaly, FIXED for this preset (2026-09-06)
+
+The warm-restore probe above showed a short exact prefix hit being reported as cached and then
+recomputed. The cause is a deliberate floor: `mtp_carry::marconi_min_tokens()` declines a Marconi SSM
+snapshot restore below **256 tokens**, set on 2026-07-28 from a DECODE measurement (restoring a
+~99-token prefix cost -9.7% tok/s; the crossover sat between 99 and 219 matched tokens). Anchors below
+the floor are declined by name in `prefix_lookup.rs`, so the KV blocks count as cached while the pass
+is recomputed — which is what the operator's TUI row and my probe both saw.
+
+**Measured** (`ab_marconi_floor/`, branch `perf/concurrent-prefill-ttft` binary `b4ea6fb127f07f48`,
+named preset, one boot per arm, `ATLAS_MARCONI_MIN_TOKENS` the only variable, primed (cached) prompts,
+128 output tokens, 3 reps per cell, arm proven live from the boot line `Marconi min-tokens floor: 64
+tokens [env]`):
+
+| primed prompt | floor | TTFT C=1 | TTFT C=4 (per stream) | aggregate incl. TTFT, C=4 |
+|---|---:|---:|---|---:|
+| ~168 tokens | 256 (compiled default) | 0.65-0.66 s | 0.65 / 1.35 / 2.01 / 2.65 | 25.1-26.0 |
+| ~168 tokens | **64** | **0.21-0.22 s** | **0.22 / 0.49 / 0.70 / 0.91** | **28.0-28.2** |
+| ~550 tokens | 256 | 0.21-0.22 s | 0.21 / 0.46 / 0.66 / 0.87 | 27.6-28.6 |
+| ~550 tokens | 64 | 0.21-0.23 s | 0.21 / 0.46 / 0.66 / 0.88 | 27.2-28.6 |
+
+Three things are true at once. The short-prompt TTFT improves **3x** at C=1 and **2.9x** on the last
+stream at C=4. The 512-token cell is untouched, which is the control that proves the lever is scoped to
+prompts below the floor. And the 2026-07-28 decode finding REPRODUCES: pure decode at C=1 on the short
+prompt falls from 29.6 to ~27.5 tok/s (-7%) because the restore is now taken. So this is a TRADEOFF,
+not a free win — it pays whenever a request's output is short relative to its TTFT, which is exactly
+agentic and concurrent traffic, and the aggregate INCLUDING TTFT wins at every concurrency here.
+C=1 greedy samples are byte-identical across arms.
+
+Shipped as a PRESET pin (`ATLAS_MARCONI_MIN_TOKENS = "64"` in the `qwen3.8-flash-next-exl3` preset),
+NOT as a compiled-default change: the 256 default is shared with models whose traffic was measured
+differently. Set the variable to 256 to restore it. Floor 0 (always restore) is UNMEASURED — the E1
+arm `B0` exists for it.
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17

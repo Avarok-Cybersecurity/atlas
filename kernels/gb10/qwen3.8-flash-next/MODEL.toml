@@ -381,3 +381,16 @@ ATLAS_EXL3_MOE_ROWS_PER_EXPERT = "1024"
 # restores the trellis-only prefill. The fused BF16 egress of the dense decode
 # GEMM is also default-on (bit-exact; ATLAS_EXL3_NO_FUSED_EGRESS=1 disarms).
 ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS = "512"
+# Marconi SSM-snapshot restore floor. The compiled default is 256 tokens (set
+# 2026-07-28 from a DECODE measurement: restoring a ~99-token prefix cost -9.7%
+# tok/s, the crossover sitting between 99 and 219 matched tokens). That floor is
+# why a short warm prompt pays a FULL cold prefill: measured 2026-09-06, a
+# ~168-token primed prompt read TTFT 0.65 s at floor 256 versus 0.22 s at floor
+# 64 (3x), and at C=4 the last stream 2.65 s versus 0.91 s, while a 512-token
+# prompt was unchanged (0.21-0.23 s in both — the lever only touches prompts
+# below the floor). The decode side of the old finding reproduces (29.6 ->
+# ~27.5 tok/s at C=1), so this is a TRADEOFF: at 64 the aggregate INCLUDING
+# TTFT still wins (C=4: 28.0-28.2 vs 25.1-26.0), which is the right call for the
+# agentic, concurrent traffic this preset serves. Set 256 to restore the
+# compiled default. Records: .research/exl3_decode_perf/ab_marconi_floor/.
+ATLAS_MARCONI_MIN_TOKENS = "64"
