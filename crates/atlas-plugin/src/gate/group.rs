@@ -37,9 +37,32 @@ pub struct BenchmarkGroup {
     pub members: &'static [&'static str],
 }
 
-/// Every group. Empty until the shard descriptors land; the machinery and its
-/// rules are proved against fixtures first so that wiring them is mechanical.
-pub const GROUPS: &[BenchmarkGroup] = &[];
+/// Every group.
+///
+/// The ids here are the GATE ids that `coverage::REQUIRED`, `BENCH.toml` and
+/// `pr-taxonomy.json` already know — deliberately unchanged, so none of those
+/// move. The members are ordinary registered benchmarks that are NOT required
+/// in their own right.
+pub const GROUPS: &[BenchmarkGroup] = &[
+    BenchmarkGroup {
+        id: "bfcl-subset",
+        members: &[
+            "bfcl-subset-a",
+            "bfcl-subset-b",
+            "bfcl-subset-c",
+            "bfcl-subset-d",
+        ],
+    },
+    BenchmarkGroup {
+        id: "bfcl-subset-echolp",
+        members: &[
+            "bfcl-subset-echolp-a",
+            "bfcl-subset-echolp-b",
+            "bfcl-subset-echolp-c",
+            "bfcl-subset-echolp-d",
+        ],
+    },
+];
 
 /// The group a benchmark id names, if any.
 pub fn find(id: &str) -> Option<&'static BenchmarkGroup> {

@@ -126,11 +126,59 @@ fn a_duplicate_member_does_not_stand_in_for_a_missing_one() {
     }
 }
 
-/// Until the shard descriptors land there are no groups, and nothing may be
-/// treated as a member. Pinned so an empty GROUPS table cannot silently mean
-/// "everything is a member of nothing in particular".
+/// Every group id and every member id must be a REGISTERED benchmark, or the
+/// group names something nothing can run.
 #[test]
-fn nothing_is_a_group_member_yet() {
-    assert!(member_of("bfcl-subset-a").is_none());
-    assert!(member_of("decode-floor").is_none());
+fn every_group_and_member_resolves_in_the_registry() {
+    for g in super::group::GROUPS {
+        assert!(
+            crate::registry::find(g.id).is_some(),
+            "group {} is not a registered benchmark",
+            g.id
+        );
+        for m in g.members {
+            assert!(
+                crate::registry::find(m).is_some(),
+                "{m} is a member of {} but is not registered",
+                g.id
+            );
+        }
+    }
+}
+
+/// A MEMBER must never be a required gate in its own right: `REQUIRED` names
+/// the group, and requiring the members too would demand four records where the
+/// group needs one verdict.
+#[test]
+fn no_group_member_is_itself_a_required_gate() {
+    for g in super::group::GROUPS {
+        for m in g.members {
+            assert!(
+                !super::coverage::REQUIRED.iter().any(|r| r.id == *m),
+                "{m} is a group member AND a required gate"
+            );
+        }
+        assert!(
+            super::coverage::REQUIRED.iter().any(|r| r.id == g.id),
+            "group {} is not in REQUIRED — then nothing asks for it",
+            g.id
+        );
+    }
+}
+
+/// Members belong to exactly one group; a shard shared between two groups would
+/// be counted twice.
+#[test]
+fn no_benchmark_is_a_member_of_two_groups() {
+    let mut seen = std::collections::BTreeSet::new();
+    for g in super::group::GROUPS {
+        for m in g.members {
+            assert!(seen.insert(*m), "{m} is a member of more than one group");
+        }
+    }
+    assert!(
+        member_of("decode-floor").is_none(),
+        "a plain gate is not a member"
+    );
+    assert!(member_of("bfcl-subset-a").is_some(), "a shard IS a member");
 }
