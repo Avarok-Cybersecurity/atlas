@@ -272,6 +272,11 @@ mod card_tests;
 
 /// Ed25519 record signatures: round trips and, mostly, negative controls.
 pub mod agreement;
+pub mod group;
+
+#[cfg(test)]
+#[path = "group_tests.rs"]
+mod group_tests;
 
 #[cfg(test)]
 #[path = "agreement_tests.rs"]
