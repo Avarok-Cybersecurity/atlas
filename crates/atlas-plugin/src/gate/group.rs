@@ -182,3 +182,22 @@ pub fn composition_ok(
     }
     Ok(())
 }
+
+/// Which id's BENCH.toml entry describes how to RUN this benchmark.
+///
+/// A shard has no entry of its own — it serves exactly what its group serves,
+/// on the same recipe and checkpoint, and differs only in which rows of the
+/// draw it measures. Without this a member cannot be run at all: `serve_for`
+/// resolves the recipe from a baseline keyed on the benchmark id, and
+/// `baseline_for` drops entries with no `metrics`, so giving each shard a
+/// thresholds-less entry would not work either.
+///
+/// Thresholds are a separate question and deliberately NOT inherited: a shard
+/// is judged by nothing, and the group's aggregate is judged by the group's
+/// bars. This answers "what do I serve", not "what must I beat".
+pub fn serve_baseline_id(benchmark_id: &str) -> &str {
+    match member_of(benchmark_id) {
+        Some(g) => g.id,
+        None => benchmark_id,
+    }
+}
