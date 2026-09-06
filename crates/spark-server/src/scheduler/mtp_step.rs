@@ -422,7 +422,7 @@ pub fn step_mtp(
             // without a slot sort last; the model re-checks the layout and
             // declines safely if a gap remains.
             let mut by_slot = batchable_idxs.clone();
-            by_slot.sort_by_key(|&i| (active[i].seq.ssm_slot_idx().unwrap_or(usize::MAX), i));
+            sort_batch_by_slot(&mut by_slot, |i| active[i].seq.ssm_slot_idx());
             for chunk in by_slot.chunks(m_max) {
                 if chunk.len() >= 2 {
                     // Borrow in ascending active-index order (one forward
@@ -698,3 +698,17 @@ pub fn step_mtp(
         .timing
         .record(crate::scheduler::mtp_timing::Phase::StepOuter, t_step_outer);
 }
+
+/// Pure core of the batched-verify dispatch order: SLOT ORDER, not arrival
+/// order. The batched conv+WY GDN path requires the batch to sit on
+/// CONSECUTIVE ssm-pool slots in batch order, and the pool freelist is LIFO
+/// (see the call-site comment in `step_mtp`), so arrival order is reverse
+/// finish order after the first fill. Slotless sequences sort last; the
+/// active index breaks ties so the order is total.
+fn sort_batch_by_slot(by_slot: &mut [usize], slot_of: impl Fn(usize) -> Option<usize>) {
+    by_slot.sort_by_key(|&i| (slot_of(i).unwrap_or(usize::MAX), i));
+}
+
+#[cfg(test)]
+#[path = "mtp_step_tests.rs"]
+mod tests;
