@@ -388,6 +388,19 @@ jobs:
       # GPU, no network.
       - run: bash .github/scripts/harvest-triage-test.sh
 
+  governance-evict:
+    name: governance eviction decision table
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Eviction is the ONLY operation that removes anything from the ledger,
+      # and the failure it guards against is silent: `intent_source()` looks a
+      # ledger up by bare path with no fallback, so evicting an open PR's file
+      # does not raise — that PR just quietly drops to path-only gating. A
+      # decision that can be wrong without saying so is a decision that gets a
+      # test table.
+      - run: bash .github/scripts/governance-evict-test.sh
+
   test:
     name: cargo test --workspace
     needs: [changes]
