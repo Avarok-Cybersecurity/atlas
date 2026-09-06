@@ -537,3 +537,54 @@ THREE WRONG ATTRIBUTIONS, each retired by measurement not reconsideration:
 **The sieve predicted the cluster.** Wave 1's sonnet sieve gave #844 `sieve:integrity` for exactly the commits lacking in-tree tests, resting on hardware receipts. The cure I wrote added a slot-ORDERING test — it passes — but ordering correctness and throughput-under-concurrency are different properties. Only the composed-tree campaign could see the second.
 
 **CITED:** R-control-or-it-did-not-happen (the same-box main leg is what turned "inconclusive, probably thermals" into a real regression); R-verify-dont-accept (three hypotheses named and dropped on evidence); R-stacks-see-what-constituents-cannot (nine individual campaigns would all have gone green — the defect exists only in the composed tree).
+
+---
+
+## Run 25 — 2026-09-06T01:30Z — the Metal lane had never tested Metal; decode floor ratcheted with a control
+
+```text
+2026-09-06T01:15Z  tool       polled all three boxes. dgx2 CALIB_COMPLETE (10/10 rc=0), dgx3 ttft-cold PASS
+                              -> 9 of 10 records valid at pin f3f77c82fc. dgx1 bfcl-subset-echolp still running.
+2026-09-06T01:15Z  aggregate  MY OWN TRAP, TWICE IN ONE SESSION: `pgrep -cf "spark benchmark"` returned 1 on both
+                              peers and I read it as "a gate is running". It was matching its own ssh command line.
+                              Self-filtered and found BOTH boxes idle -- 25 minutes of GPU sat unused because a
+                              counter counted the observer.
+2026-09-06T01:20Z  spawn      dgx3 (idle) -> decode-floor NEGATIVE CONTROL for the 20.5 -> 22.2 ratchet
+2026-09-06T01:22Z  spawn      wave 9, four opus-5 lanes: dx / rob / ctl / thresh(rotating: threshold honesty)
+2026-09-06T01:24Z  return     CONTROL_VERDICT=PASS
+                                leg A  min=40.0 -> "Fail: BELOW THE DECODE FLOOR -- median 23.6 vs the 39.5 floor"  rc=2
+                                leg B  min=22.7 -> "Pass: median 23.5 ... clears the 22.2 tok/s floor"              rc=0
+                              First attempt of the control returned rc=127 on BOTH legs (libnccl.so.2 unresolved).
+                              rcA was nonzero, so a control asserting only "leg A fails" would have reported a
+                              FALSE PASS. It required rcB==0 as well, so it returned INVALID and was rerun.
+                              A negative control needs a positive leg or it is just a broken command.
+2026-09-06T01:25Z  tool       deleted dgx3's leg-B gate record: written with min=22.7 in force but pinned to a sha
+                              whose committed BENCH.toml says 21.0. A record that misdescribes its own pin is worse
+                              than no record. The honest f3f77c82fc decode-floor record lives on dgx2.
+2026-09-06T01:29Z  aggregate  read the bfcl progress counter wrong -- grepped `parallel ·` and got a FINISHED
+                              category's last line (659) while the live counter was `parallel_multiple` at 730.
+                              Reported 659, corrected to 730 in the same breath.
+```
+
+**The finding of this wave — the Metal lane has never once tested Metal.**
+
+The self-hosted `apple-48gb-metal` runner came back online after last wave's host-side hook fix, and immediately failed 35 of 35 parity tests in 0.06 s with `Metal: unknown module 'noop_smoke'`. #909 was open to route the lane back to hosted `macos-14`, where it is green. Both facts are true and the conclusion is the opposite of the obvious one:
+
+| | hosted `macos-14` | self-hosted `apple-48gb-metal` |
+|---|---|---|
+| Metal device | absent | **present** |
+| `maybe_backend()` | `Err` → `None` | `Ok` → `Some` |
+| test body | `let Some(b) = … else { return }` — returns | reaches the kernel lookup |
+| result | `35 passed` in **0.07 s** | `35 failed` in 0.06 s |
+
+`ATLAS_SKIP_BUILD: "1"` is set workflow-wide in `ci.yml` so clippy can run without nvcc; `atlas-kernels/build.rs` short-circuits on it and emits `metallib_modules() -> Vec::new()`. `ATLAS_TARGET_HW: metal` on the step does not override it. So the registry is empty on every runner — invisible where there is no device, fatal where there is. The step's own comment says it will "Build the metal kernel set"; the inherited env has been silently defeating that for the life of the job.
+
+**The self-hosted failure is the runner doing its job.** #909 has been reversed: runner restored, `ATLAS_SKIP_BUILD: "0"` on the test step. Hardening `maybe_backend()` so a lost device cannot go quietly green touches `crates/` — a PERF_PATH owing a ~5 GPU-hour campaign — so it is queued for the next stack rather than spending a campaign on a one-line guard. That deferral is the stacking economics working as designed.
+
+**On the floor.** dgx2's ten runs give mean 22.78, sigma 0.063, range 22.7-22.9. But dgx3's control legs measured 23.1-23.6 on the same gate and the same pin, and dgx1 measured 23.7 earlier. So the correct reading is **not** "23.7 was an outlier" as I said an hour ago — it is that **dgx2 is the slow box** and 22.78 is dgx2's mean, not the fleet's. A floor must hold on the slowest box, so calibrating on dgx2 is the conservative choice and 22.2 stands — but for a different reason than I first gave.
+
+**CITED:** R-16 (pipeline/grep masking — twice more: `pgrep -cf` self-match, and a stale progress counter); R-24 (a control needs a positive leg, else a broken command reads as a pass); R-record-pins-must-be-honest (deleted a record whose enforced threshold differed from its committed one).
+
+**AMENDED — new rule for the skill's rulebook:**
+
+> **R-31. A green check on a capability-gated lane is worthless until you have seen it RED on hardware that has the capability.** Tests that skip gracefully when a device is absent (`let Some(x) = maybe_device() else { return }`) report `passed`, not `skipped`, and the runner that lacks the device is exactly the runner where nobody looks. EVIDENCE: the Metal lane reported `35 passed` in 0.07 s for its entire existence; the first execution on a box with a real GPU failed 35/35 instantly. CHECK: for every hardware-gated suite, find the runner that HAS the hardware and confirm a real failure is reachable there — and prefer a hard failure over a silent skip when an env var declares the hardware is expected.
