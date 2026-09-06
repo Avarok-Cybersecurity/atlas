@@ -1,6 +1,6 @@
 ---
 name: automerger
-description: "Find, group and land open PRs as certified STACKS — one certification campaign per stack instead of one per PR. Invoke when a PR backlog needs triage, when related PRs should be composed onto one branch, or when asking 'which of these are already merged?'. Wraps /iterate for the wave loop and adds merge economics, a supervised agent ladder, and a rulebook of 30 traps mined from real incidents (each with the check that proves compliance). Born from a 98-PR backlog where 12 of the first 19 PRs triaged were ALREADY on main — closed only because nobody deleted them after batching."
+description: "Find, group and land open PRs as certified STACKS — one certification campaign per stack instead of one per PR. Invoke when a PR backlog needs triage, when related PRs should be stacked on one base chain, or when asking 'which of these are already merged?'. Wraps /iterate for the wave loop and adds merge economics, a supervised agent ladder, and an O.R.A.C.L.E order gate that must clear a stack's SEQUENCE before it is registered (order cannot be changed afterwards), and a rulebook of 33 traps mined from real incidents (each with the check that proves compliance). Born from a 98-PR backlog where 12 of the first 19 PRs triaged were ALREADY on main — closed only because nobody deleted them after batching."
 argument-hint: "<repo or scope> [every <N>m]"
 ---
 
@@ -158,6 +158,29 @@ review. Make the stack out of the BASE CHAIN and then register it.
 
 Reference: `https://docs.github.com/en/rest/pulls/stacks`.
 
+★ **ORDER IS THE ONE DECISION YOU CANNOT TAKE BACK.** Everything else in
+this protocol is revisable — a constituent can be dropped, a base retargeted,
+a branch force-pushed. The SEQUENCE cannot. A registered native stack has no
+reorder endpoint, and every workaround costs something:
+
+| you try | what actually happens |
+|---|---|
+| `PATCH /pulls/{n} -f base=...` on a stacked PR | **422** — *"Cannot change the base branch because the pull request is part of a stack."* |
+| `POST /stacks/{n}/unstack` with every member | removes all but one; the survivor sits in a stack reporting `open: false` and then refuses `unstack` with *"cannot be removed from this stack"* |
+| force-push the reordered chain first | if a PR's commits land UNDER its own base branch, GitHub sees its head as an ancestor of its base and marks it **MERGED into that branch** — the PR is gone as a review unit |
+
+So the order is decided BEFORE step 2, it is cleared by O.R.A.C.L.E (C2), and
+its justification is restated in every wave report (below) for as long as the
+stack is open.
+
+**Two placement rules that follow from bottom-up merging:**
+
+- **A fix more than one layer needs goes at the BOTTOM.** Every layer *below* a
+  fix is unprotected by it, and lower layers merge first.
+- **A repair belongs in the layer that broke it, not above it.** A stack merges
+  bottom-up, so a repair riding one layer above the damage leaves the damaged
+  layer red and unmergeable while the tip looks green.
+
 **What this changes downstream, and it is not cosmetic:**
 
 - The **top** PR is the one whose merge lands the whole stack, so it is the one
@@ -171,6 +194,42 @@ Reference: `https://docs.github.com/en/rest/pulls/stacks`.
   first, then merge the base.
 - Dropping a bad constituent is a `PATCH base` on the PR above it plus an
   `unstack`, not a branch rebuild.
+
+### C2 — O.R.A.C.L.E clears the ORDER before the stack is registered
+
+**O**rdering **R**eview **A**nd **C**hain-**L**egitimacy **E**xaminer. An
+`opus` subagent (`.claude/agents/oracle.md`), spawned once per proposed stack,
+**before** C1 step 2. Its verdict is blocking: no `POST /stacks` without an
+`ORDER-OK` on the trace.
+
+It is deliberately NOT the Adversary. The Adversary asks whether this GROUP
+should be certified together; ORACLE asks whether this SEQUENCE is the right
+one — and that is the question whose answer cannot be revised afterwards.
+
+**Give it verbatim inputs, never a summary:** every PR number, title, head
+branch and `gh pr diff --name-only`; the proposed bottom-to-top order; per
+adjacent pair the `git merge-base --is-ancestor` result and the `comm -12`
+file overlap; and which PRs are red on which required checks.
+
+**It answers six questions in writing, each with evidence:**
+
+1. **Dependency direction** — does any layer need something a layer ABOVE it
+   introduces? Bottom-up merging means that layer would land broken.
+2. **Shared-fix placement** — is any fix needed by more than one layer? It
+   belongs at the bottom, not wherever its author happened to put it.
+3. **Independence** — is each layer reviewable and mergeable on its own? A
+   layer that only makes sense with the one above it should be one PR.
+4. **Blast radius of the top** — the top pays for certification. If the top is
+   also the layer most likely to fail a gate, a failure cannot be attributed
+   without bisecting; reorder or split.
+5. **Merge-order safety** — does any layer delete, rename or move a file a
+   lower layer depends on?
+6. **Irreversibility** — state the cost of being wrong here, and whether the
+   proposer is confident enough to spend it.
+
+**Verdict is `ORDER-OK` or `ORDER-WRONG` plus the corrected order.** Anything
+hedged is `ORDER-WRONG`. Record the verdict, its timestamp and its reasoning
+on the trace; the reasoning becomes the wave report's justification table.
 
 ### D — Gate the top of the stack offline
 
@@ -283,6 +342,29 @@ for N PRs — which is why the Adversary must ask whether a failure here could b
 attributed, and why every source branch is kept intact so a suspect component
 can be dropped and the rest re-certified.
 
+## Wave reports (required)
+
+Every periodic wave report — the tabular update to the user, not just the
+trace — **must carry the ordering justification for every open stack**: the
+bottom-to-top order, one line per layer saying why it sits where it does, and
+ORACLE's verdict with its timestamp.
+
+```
+Stack #947 — ORACLE 21:14Z: ORDER-OK
+
+| # | layer | why it sits here |
+|---|---|---|
+| 1 | #946 ffmpeg ETXTBSY | BOTTOM: three layers above hit this flake, and a stack merges bottom-up |
+| 2 | #937 /stamp in-flight | depends on nothing above; its selftest stub conflicts with main and is resolved here |
+| 3 | #938 concurrency group | independent of #937, but shares certification-selftest.sh so it follows it |
+| 4 | #939 gate classification | TOP: PERF_PATHS, so this is the layer that pays for the campaign |
+```
+
+This is not decoration. Order is the only decision in this protocol that
+cannot be revised after registration, so it is restated every wave while there
+is still time to act on it — **and a justification nobody can write is an
+order nobody checked.**
+
 ## Comment protocol (required)
 
 For a stack `D → C → B → A` (arrow = *targets*), **A** is the bottom
@@ -299,7 +381,7 @@ For a stack `D → C → B → A` (arrow = *targets*), **A** is the bottom
 comment first, **bare command second** — a `/stamp` appended to prose is
 silently ignored.
 
-## Supervision — four agents around the loop
+## Supervision — five agents around the loop
 
 Cheapest tier first, so monitoring never burns an expensive model and
 escalation is triggered by **measurement**, not by feel.
@@ -308,6 +390,7 @@ escalation is triggered by **measurement**, not by feel.
 |---|---|---|
 | **Monitor** | `haiku` | timestamp each wave, record deltas, detect stalls. **Reports only** — never kills, pauses or retries |
 | **Triage** | `sonnet` | read the **ledger, not the world**; return `continue` / `slump` / `blocker` / `external` |
+| **ORACLE** | `opus` | **stack ORDER only** (C2). Blocking, once per proposed stack, before registration |
 | **Adversary** | `fable` (fallback `opus`) | gate every stack before publish |
 | **Breaker** | `opus` | root-cause a confirmed blocker. **One at a time**, never twice on the same signature without new evidence |
 
@@ -389,12 +472,12 @@ recording it. Treat that as a defect and say so.
 
 # RULEBOOK
 
-30 rules, distilled by three adversarial passes from 59 lessons mined from real
+33 rules, distilled by three adversarial passes from 59 lessons mined from real
 incidents. Every rule carries **EVIDENCE** (what it cost) and **CHECK** (the
 command or comparison that proves compliance). A rule you cannot check is
 decoration; a rule without evidence is an opinion.
 
-AUTOMERGER RULEBOOK — 30 rules (distilled from 59 candidates × 3 adversarial reviews)
+AUTOMERGER RULEBOOK — 33 rules (30 distilled from 59 candidates × 3 adversarial reviews, + 3 on stack order)
 
 ═══ DO NOT (highest cost first) ═══
 
@@ -468,7 +551,7 @@ AUTOMERGER RULEBOOK — 30 rules (distilled from 59 candidates × 3 adversarial 
     EVIDENCE: "main has only 6 commits locally" produced a public wrong "#621 is an orphan touching 3573 files" claim; properly cloned (375 commits) it has merge base c1ae36af and touches 2 files. The trap recurred in the very next worktree, after a written warning.
     CHECK: `git rev-list --count origin/main` is sane before any merge-base verdict.
 
-18. DO compose stacks deliberately: confirm chain ancestry with `git merge-base --is-ancestor` per PR pair first, run file-overlap (`comm -12` of the two sorted `git diff --name-only` sets, classifying each hit — module-declaration lists are usually additive) before any stack-of-stacks, then cherry-pick the chain TIP once (`merge-base(main,tip)..tip`) and only each descendant's UNIQUE commits (`pr-tip..pr-descendant`) — never `merge-base(main,prN)..prN` per PR.
+18. DO compose stacks deliberately: confirm chain ancestry with `git merge-base --is-ancestor` per PR pair first, run file-overlap (`comm -12` of the two sorted `git diff --name-only` sets, classifying each hit — module-declaration lists are usually additive) before any stack-of-stacks. The cherry-pick arithmetic here is for the CONTAINMENT sweep (R-16) and for rebasing a layer onto a new base — **never for building the stack itself**, which is a base chain plus a registration (C1), never composed commits.
     EVIDENCE: the naive per-PR loop made #838 come out "empty" and #844/#845 fake-conflict; the tip+unique redo produced "a clean 8-commit stack with no conflicts"; skipping is-ancestor risks re-certifying contained work at ~5 GPU-hours/campaign.
     CHECK: no "empty" picks mid-chain; the overlap listing exists in the plan before the first pick runs.
 
@@ -525,4 +608,18 @@ AUTOMERGER RULEBOOK — 30 rules (distilled from 59 candidates × 3 adversarial 
 30. DO put a bot command as the first word of the first line of its own bare comment — explanation comment first, command comment second.
     EVIDENCE: "Parser confirmed: first word of the first line — that's why my explanation ate the /stamp; the standalone one registered (Stamp: success)."
     CHECK: the command comment matches `^/<cmd>` and the dispatch appears in `gh run list` (or the bot replies).
+
+═══ STACK ORDER (the irreversible decision) ═══
+
+31. DO settle the ORDER of a stack before registering it — a native stack cannot be reordered. `PATCH /pulls/{n} -f base=` on a stacked PR returns 422 "Cannot change the base branch because the pull request is part of a stack"; `POST /stacks/{n}/unstack` can strand one member in a stack reporting `open: false` that then refuses further unstacking; and if a reorder push puts a PR's commits underneath its own base branch, GitHub marks that PR MERGED into the branch and it is gone as a review unit. O.R.A.C.L.E (C2) must return `ORDER-OK` first.
+    EVIDENCE: reordering stack #940 on 2026-09-06 to move the ffmpeg fix to the bottom cost #944 — auto-merged into `fix/gate-sources-must-be-classified`, reopened as #946 under a rebuilt stack #947.
+    CHECK: an `ORDER-OK` verdict on the trace before any `POST /stacks`, and `gh api repos/$REPO/stacks/<n>` read back showing the intended order.
+
+32. DO put a fix that more than one layer needs at the BOTTOM, and a repair in the layer that broke it — a stack merges bottom-up, so everything below a fix is unprotected by it and a repair above the damage leaves the damaged layer red.
+    EVIDENCE: the ETXTBSY flake fixed at the TOP of #940 still failed the required `cargo test --workspace` on #880 (19:32Z) and #938 (20:10Z) 40 minutes apart; moving it to the bottom turned #938 green with no other change. Separately #881 sat red on clippy+fmt while the tip was green, because the repair rode one layer above the code it repaired.
+    CHECK: run each layer's local checks AT THAT LAYER, not only at the tip — every layer independently green.
+
+33. DO print the stack's ordering justification in every wave report while the stack is open — one line per layer, plus ORACLE's verdict and timestamp.
+    EVIDENCE: on 2026-09-06 a wrong order sat visible in the base chain for six hours and nobody, the author included, articulated it until the same flake failed the same test twice.
+    CHECK: the wave report contains an ordering table for every open stack; a stack with no justification is treated as unchecked, not as fine.
 
