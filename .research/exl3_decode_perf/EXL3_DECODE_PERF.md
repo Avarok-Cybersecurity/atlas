@@ -390,7 +390,7 @@ A/B (`spark-abf16` vs the previous binary's control arms, fresh server per arm):
 per token), with both greedy samples unchanged — the first lever today with zero numerics
 exposure. Records: `ab_abf16_*`.
 
-## BF16 egress fused into the dense GEMM epilogue (eighth lever, bit-exact, UNMEASURED)
+## BF16 egress fused into the dense GEMM epilogue (eighth lever, bit-exact, measured)
 
 Branch `perf/exl3-gemm-bf16-egress`. The other half of the seventh lever: after the `_abf16`
 GEMM the dense decode arm still launched `exl3_f32_to_bf16` (contiguous destination) or
@@ -424,6 +424,51 @@ named preset (MTP profile) and the `serve_exl3.sh` flag set (serial profile — 
 drop `--speculative`), kill switch off then on per profile, `measure_decode.py` x3 + the
 200-token greedy sample, asserts byte-equality and that the logged arm matches, writes
 `ab_fused_egress_<stamp>/SUMMARY.txt`.
+
+**Measured 2026-09-06 00:16-00:23** (`ab_fused_egress/ab_fused_egress_20260906_001602/`, binary
+`d086972fa45bf1cd` at `6a54a005f`, dgx-00, port 8899, 4.05bpw checkpoint, kill switch the only
+variable, fresh server per arm, `measure_decode.py` x3, code prompt, 300 tokens, temp 0, effort low):
+
+| profile | arm | decode tok/s (tokens/wall) | gap median ms | greedy sample |
+|---|---|---:|---:|---|
+| MTP-2 preset | off (`ATLAS_EXL3_NO_FUSED_EGRESS=1`) | 30.05 | — | `c5d02cf5…` 775 B |
+| MTP-2 preset | on (default) | **30.66 (+2.0%)** | — | `c5d02cf5…` byte-identical |
+| serial (`serve_exl3.sh`) | off | 22.63 | 43.38 | `36dc8fc6…` 814 B |
+| serial (`serve_exl3.sh`) | on (default) | **23.51** | **42.16 (+2.9%)** | `36dc8fc6…` byte-identical |
+
+Same order as the ingress lever and bit-exact in both profiles, as predicted. One caveat on the
+record: the script's arm-liveness grep for the "on" arm is vacuous (review finding), so the arm is
+proven live by the timing difference plus the kill-switch default, not by the log line. Ships as the
+default.
+
+## GPU-greedy pick for the wide-verify tail (tenth lever, NEGATIVE, opt-in scaffold not merged)
+
+Branch `perf/mtp-gpu-sampler-scaffold` (`scheduler/verify_mtp_wide/gpu_greedy.rs`, design in
+`GPU_SAMPLER_DESIGN.md`): `verify_mtp_wide::finish` copies the `[K, vocab]` BF16 verify logits to the
+host and runs `process_seq_logits` per row (the 1.55 ms end-of-step gap in the launch-count trace).
+The arm (`ATLAS_MTP_GPU_GREEDY=1`) runs a device argmax for greedy-eligible rows and only copies the
+picks; `ATLAS_MTP_GPU_GREEDY_CHECK=1` runs both pickers, emits the host pick, and logs every
+disagreement as either an exact bf16 tie or a defect.
+
+**Measured 2026-09-06 00:23-00:32** (`ab_mtp_gpu_greedy/`, binary `66fe19e15e8f8dfa` at `fdacc652c`,
+named preset verbatim, arms off/on/off/on, `measure_decode.py` x3 each, code prompt, 300 tokens,
+temp 0, effort low):
+
+| arm | decode tok/s (tokens/wall) | greedy sample |
+|---|---:|---|
+| off (control) | 30.49, 30.51 | `c5d02cf5…` 775 B |
+| on (`ATLAS_MTP_GPU_GREEDY=1`) | **29.36, 29.37 (−3.7%)** | `5c619b45…` 812 B — DIFFERS |
+| check (both pickers, host pick emitted) | 29.05 | `c5d02cf5…` (= control); **4 exact bf16 ties, 0 defects** |
+
+Two findings. (1) The device argmax over 248K x 3 BF16 logits plus its own sync costs MORE than the
+host gap it removes — the hypothesis (+1.8%) had the sign wrong; the step tail was never the host
+sampler alone. (2) The sample divergence is NOT a defect: `check_ties.txt` shows the disagreements
+are exact bf16 ties at the maximum (e.g. `host=2577 device=586 logit=22.25`, twice at the same
+position across requests), where the host picker keeps the LAST index and the device kernel the
+FIRST. bf16 logits tie at the top a few times per 300 tokens on this model, so any GPU picker that
+ships must reproduce the host tie-break or greedy output changes. The branch stays unmerged (kept
+locally as the design record); the residual lever here is a GPU sampler that also does penalties /
+top-k / top-p (the design doc), and it only pays if the whole finish path moves, not the argmax.
 
 ## PLE verify snapshots on device (fourth lever, this commit)
 
@@ -520,6 +565,42 @@ layer. Raising the cap (upstream derives it from the temp slab; vllm-exl3 runs 2
 first prefill lever, worth up to ~1.9x if the fused kernel absorbs those rows at its current
 efficiency — hypothesis until the A/B. Next: QSA attention (13%), then the dense K=6 trellis GEMMs
 (15% combined) which a reconstruct-to-BF16 GEMM tier would replace.
+
+## MoE prefill per-expert row cap 128 -> 1024 (ninth lever, prefill, measured)
+
+Branch `perf/exl3-moe-prefill-row-cap` (`moe_prefill/cap.rs`): the fused `exl3_moe` prefill kernel's
+`max_tokens_per_expert` was only the temp-slab height — the kernel's GEMM loops walk any row count in
+16-row tiles — so the 128-row constant that sent 48% of prefill GPU time through the serialized
+overflow tier was a slab-sizing choice, not a kernel limit. The cap is now 1024 rows per expert by
+default (`ATLAS_EXL3_MOE_ROWS_PER_EXPERT=<n>` to override, `ATLAS_NO_EXL3_MOE_WIDE_ROWS=1` restores
+128); the boot line `EXL3 native MoE state allocated: … fused C=6 x 1024 rows/expert [Default] =
+78.6 MB temp slabs` proves the arm.
+
+**Measured 2026-09-06 00:06-00:13** (`ab_moe_row_cap/20260906T000603/`, binary `c1001dfb90b9d0dd` at
+`b72022fe5`, the named preset verbatim: 128K x 4, util 0.72, 2 MTP drafts, prefix cache ON, prefill
+chunk 8192 so the 11K prompt is two chunks; MoE prefill batch 4096; salted-unique cold prompts, x2 per
+size; fresh server per arm, kill switch the only variable):
+
+| arm | 8K prefill tok/s (2 reps → median) | 11K prefill tok/s | decode tok/s (MTP) |
+|---|---:|---:|---:|
+| legacy 128 (`ATLAS_NO_EXL3_MOE_WIDE_ROWS=1`) | 379, 304 → 341 | 312, 386 → 349 | 27.88 |
+| **default 1024** | **454, 456 → 455** | **447, 448 → 448** | 30.18 |
+
+The legacy arm's reps are 20% apart because workflow agents were compiling on the host during that arm
+(the same perturbation seen on 2026-09-05); the clean baseline for this preset measured the day before
+is 387 / 391 (section "Prefill baseline"). Read the gain as **+15-17% against the clean baseline and up
+to +30% against the in-run control**, not 1.9x: the overflow tier is gone from the common case but the
+fused kernel now spends longer per layer (it was 3% of GPU time at 128 rows). The decode column is a
+sanity check only (the cap has no decode path); the MTP profile's 27.9 vs 30.2 is the same host-load
+effect. Outputs: the 200-token greedy sample and a 6K cold prompt are text-identical across arms
+(the harness's byte-compare flagged the usage JSON line, whose only differences are
+`time_to_first_token_ms` and `response_token/s`; the compare must strip timing fields — review
+finding, fixed on the branch). The 6K cold-vs-warm-restore difference is the known prefix-cache
+restore class ([[qwen4exp-phantom-corruption]]), present in both arms.
+
+Remaining prefill headroom after this: QSA prefill attention (13% of the old profile, now a larger
+share), the dense K=6 trellis GEMMs at 4096 rows (15%; the reconstruct-to-BF16 tier below), the shared
+expert through `w4a16_gemm` (4%), and a fresh nsys to re-rank.
 
 ## Concurrency (measured 2026-09-05 late, preset `qwen3.8-flash-next-exl3`: 4 slots, 128K)
 

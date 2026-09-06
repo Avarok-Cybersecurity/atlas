@@ -1,0 +1,45 @@
+=== arm legacy128  env: [ATLAS_NO_EXL3_MOE_WIDE_ROWS=1]  00:06:03
+short sample: 1146 bytes sha=54a5b5bd8c1b329b
+long run1: sha=51e7f9f6b118d670 {"prompt_tokens": 6037, "completion_tokens": 24, "total_tokens": 6061, "prompt_tokens_details": {"cached_tokens": 32, "a
+long run2: sha=185f40b5ac621b63 {"prompt_tokens": 6037, "completion_tokens": 24, "total_tokens": 6061, "prompt_tokens_details": {"cached_tokens": 6032, 
+FINGERPRINT port=8899 model=qwen3.8-flash-next max_tokens=1 temp=0 salted-unique-prompts date=2026-09-06T00:07:38
+target~8000: prompt_tokens=8008 wall=21.15s prefill=379 tok/s
+target~8000: prompt_tokens=7999 wall=26.35s prefill=304 tok/s
+SUMMARY target~8000: prompt_tokens~8008 prefill_tok_s_median=341
+target~11000: prompt_tokens=10983 wall=35.25s prefill=312 tok/s
+target~11000: prompt_tokens=10985 wall=28.48s prefill=386 tok/s
+SUMMARY target~11000: prompt_tokens~10983 prefill_tok_s_median=349
+FINGERPRINT port=8899 model=qwen3.8-flash-next prompt=code max_tokens=300 temp=0 effort=low stream=1 date=2026-09-06T00:09:30
+SUMMARY n=2 gap_median_ms=0.95 decode_tok_s_median=27.88 ttft_ms=[566, 542]
+arm legacy128 done 00:09:52
+=== arm default1024  env: [<none>]  00:09:57
+short sample: 1154 bytes sha=cff6a07fbd4ac48d
+long run1: sha=048dc23be240a7cc {"prompt_tokens": 6037, "completion_tokens": 24, "total_tokens": 6061, "prompt_tokens_details": {"cached_tokens": 32, "a
+long run2: sha=779184428cfbddf9 {"prompt_tokens": 6037, "completion_tokens": 24, "total_tokens": 6061, "prompt_tokens_details": {"cached_tokens": 6032, 
+FINGERPRINT port=8899 model=qwen3.8-flash-next max_tokens=1 temp=0 salted-unique-prompts date=2026-09-06T00:11:08
+target~8000: prompt_tokens=8020 wall=17.68s prefill=454 tok/s
+target~8000: prompt_tokens=8001 wall=17.55s prefill=456 tok/s
+SUMMARY target~8000: prompt_tokens~8020 prefill_tok_s_median=455
+target~11000: prompt_tokens=10970 wall=24.52s prefill=447 tok/s
+target~11000: prompt_tokens=10997 wall=24.52s prefill=448 tok/s
+SUMMARY target~11000: prompt_tokens~10970 prefill_tok_s_median=448
+FINGERPRINT port=8899 model=qwen3.8-flash-next prompt=code max_tokens=300 temp=0 effort=low stream=1 date=2026-09-06T00:12:33
+SUMMARY n=2 gap_median_ms=0.75 decode_tok_s_median=30.18 ttft_ms=[483, 468]
+arm default1024 done 00:12:53
+
+=== VERDICTS (/home/ms/atlas/.claude/worktrees/wf_7ddada6f-077-2/.research/exl3_decode_perf/ab_moe_row_cap/20260906T000603) ===
+ASSERT short-sample byte-identical across arms: FAIL — a batch with no expert above 128 rows took a different path; treat as a BUG (diff below)
+22c22
+< {"prompt_tokens": 92, "completion_tokens": 200, "total_tokens": 292, "prompt_tokens_details": {"cached_tokens": 0, "audio_tokens": 0}, "completion_tokens_details": {"reasoning_tokens": 189, "audio_tokens": 0, "accepted_prediction_tokens": 121, "rejected_prediction_tokens": 0}, "time_to_first_token_ms": 756.809274, "response_token/s": 27.71594482026919}
+---
+> {"prompt_tokens": 92, "completion_tokens": 200, "total_tokens": 292, "prompt_tokens_details": {"cached_tokens": 0, "audio_tokens": 0}, "completion_tokens_details": {"reasoning_tokens": 189, "audio_tokens": 0, "accepted_prediction_tokens": 121, "rejected_prediction_tokens": 0}, "time_to_first_token_ms": 482.04659399999997, "response_token/s": 30.48210735972772}
+INFO legacy128 long prompt cold vs warm-restore: DIFFER (prefix-cache restore path, see qwen4exp-phantom-corruption)
+INFO default1024 long prompt cold vs warm-restore: DIFFER (prefix-cache restore path, see qwen4exp-phantom-corruption)
+INFO long prompt COLD across arms: DIFFER — expected class: experts with 128 < rows <= 1024 changed fp32 accumulation order (overflow exl3_gemm -> fused MoE tile); one-time, not run-to-run
+legacy128 prefill SUMMARY target~8000: prompt_tokens~8008 prefill_tok_s_median=341
+legacy128 prefill SUMMARY target~11000: prompt_tokens~10983 prefill_tok_s_median=349
+legacy128 decode  SUMMARY n=2 gap_median_ms=0.95 decode_tok_s_median=27.88 ttft_ms=[566, 542]
+default1024 prefill SUMMARY target~8000: prompt_tokens~8020 prefill_tok_s_median=455
+default1024 prefill SUMMARY target~11000: prompt_tokens~10970 prefill_tok_s_median=448
+default1024 decode  SUMMARY n=2 gap_median_ms=0.75 decode_tok_s_median=30.18 ttft_ms=[483, 468]
+Quote prefill tok/s ONLY with this fingerprint file: /home/ms/atlas/.claude/worktrees/wf_7ddada6f-077-2/.research/exl3_decode_perf/ab_moe_row_cap/20260906T000603/fingerprint.txt (rule 1); one pass is not a result — rerun with ORDER reversed (rule: counterbalance).
