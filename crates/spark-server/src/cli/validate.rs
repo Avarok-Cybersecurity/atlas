@@ -444,3 +444,9 @@ fn format_violations(v: &[Violation]) -> String {
 #[cfg(test)]
 #[path = "validate_tests.rs"]
 mod tests;
+
+// ...and its second half. This stack took validate_tests.rs from 441 to 506
+// lines against a 500 cap; split rather than allow-listed.
+#[cfg(test)]
+#[path = "validate_tests_b.rs"]
+mod validate_tests_b;

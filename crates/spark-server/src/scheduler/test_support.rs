@@ -17,7 +17,11 @@ use super::types::{ActiveSeq, ResponseSink};
 use super::{DEFAULT_LZ_PENALTY, SsmDecodeRing};
 use crate::api::InferenceResponse;
 use anyhow::Result;
+use spark_model::traits::Model;
 use spark_model::traits::SequenceState;
+use spark_runtime::gpu::DevicePtr;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 pub(super) const EOS: &[u32] = &[151645];
@@ -221,3 +225,270 @@ pub(super) fn test_prefill_ident(
     };
     (p, rx)
 }
+
+// ── Preemption fixtures ──────────────────────────────────────────────────
+// Moved here from `preempt_tests.rs`, which this stack pushed from 481 to 510
+// lines against a 500 cap. Copying the stub into a sibling file would have
+// satisfied the cap and broken SSOT; this module's own header already declares
+// it the home for shared scheduler fixtures, and `shutdown_drain_tests` will
+// want the same stub. Byte-exact move.
+
+/// Scripted stub: `decode_batch` fails with the KV-exhausted error for the
+/// first `fail_decodes` calls, then succeeds. Records every free/cache/
+/// prefill so the tests can assert the preemption side effects.
+#[derive(Default)]
+pub(super) struct PreemptStubModel {
+    pub(super) fail_decodes: AtomicUsize,
+    /// When set, `decode_batch` always fails with this message instead.
+    pub(super) hard_error: Option<&'static str>,
+    /// When set, `compact_sequence` always fails with this message.
+    pub(super) fail_compact: Option<&'static str>,
+    pub(super) compact_calls: AtomicUsize,
+    pub(super) decode_calls: AtomicUsize,
+    pub(super) freed_slots: Mutex<Vec<usize>>,
+    pub(super) cached_seqs: AtomicUsize,
+    pub(super) prefilled: Mutex<Vec<Vec<u32>>>,
+    pub(super) vision_pad: Option<u32>,
+    pub(super) free_blocks: AtomicUsize,
+    pub(super) total_blocks: usize,
+    pub(super) reclaimable: AtomicUsize,
+}
+
+impl PreemptStubModel {
+    pub(super) fn failing(n: usize) -> Self {
+        Self {
+            fail_decodes: AtomicUsize::new(n),
+            ..Default::default()
+        }
+    }
+
+    /// A stub whose `compact_sequence` always fails — the swap-out tests'
+    /// entry point (`swap_out_tests.rs`). Lives here so the stub's fields
+    /// stay private to their own module.
+    pub(super) fn failing_compact(msg: &'static str) -> Self {
+        Self {
+            fail_compact: Some(msg),
+            ..Default::default()
+        }
+    }
+}
+
+impl Model for PreemptStubModel {
+    fn prefill(&self, t: &[u32], s: &mut SequenceState, _st: u64) -> Result<DevicePtr> {
+        self.prefilled.lock().unwrap().push(t.to_vec());
+        // Mirror the real contract: prefill populates tokens/seq_len/prompt_len.
+        s.tokens.extend_from_slice(t);
+        s.seq_len = s.tokens.len();
+        s.prompt_len = t.len();
+        Ok(DevicePtr::NULL)
+    }
+    fn decode(&self, _t: u32, _s: &mut SequenceState, _st: u64) -> Result<DevicePtr> {
+        anyhow::bail!("unused in preempt tests")
+    }
+    fn prefill_chunk(
+        &self,
+        _t: &[u32],
+        _s: &mut SequenceState,
+        _cs: usize,
+        _cl: usize,
+        _last: bool,
+        _st: u64,
+    ) -> Result<DevicePtr> {
+        anyhow::bail!("unused in preempt tests")
+    }
+    fn decode_batch(
+        &self,
+        _t: &[u32],
+        _s: &mut [&mut SequenceState],
+        _st: u64,
+    ) -> Result<DevicePtr> {
+        self.decode_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(msg) = self.hard_error {
+            anyhow::bail!("{msg}");
+        }
+        if self
+            .fail_decodes
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            anyhow::bail!("KV cache exhausted: no free blocks");
+        }
+        Ok(DevicePtr::NULL)
+    }
+    fn decode_verify(&self, _t: &[u32], _s: &mut SequenceState, _st: u64) -> Result<Vec<u32>> {
+        anyhow::bail!("unused in preempt tests")
+    }
+    fn generate_speculative(
+        &self,
+        _p: &[u32],
+        _params: &spark_runtime::sampler::SamplingParams,
+        _n: usize,
+    ) -> Result<spark_model::engine::GenerateResult> {
+        anyhow::bail!("unused in preempt tests")
+    }
+    fn decode_verify_graphed(
+        &self,
+        _t: &[u32; 2],
+        _s: &mut SequenceState,
+        _st: u64,
+    ) -> Result<[u32; 2]> {
+        anyhow::bail!("unused in preempt tests")
+    }
+    fn decode_verify_graphed_k3(
+        &self,
+        _t: &[u32; 3],
+        _s: &mut SequenceState,
+        _st: u64,
+    ) -> Result<[u32; 3]> {
+        anyhow::bail!("unused in preempt tests")
+    }
+    fn decode_verify_graphed_k4(
+        &self,
+        _t: &[u32; 4],
+        _s: &mut SequenceState,
+        _st: u64,
+    ) -> Result<[u32; 4]> {
+        anyhow::bail!("unused in preempt tests")
+    }
+    fn run_mtp_propose(
+        &self,
+        _t: u32,
+        _p: usize,
+        _s: &mut SequenceState,
+        _st: u64,
+    ) -> Result<Option<u32>> {
+        anyhow::bail!("unused in preempt tests")
+    }
+    fn run_mtp_propose_multi(
+        &self,
+        _t: u32,
+        _p: usize,
+        _n: usize,
+        _s: &mut SequenceState,
+        _st: u64,
+        _bm: Option<&[i32]>,
+    ) -> Result<Vec<u32>> {
+        anyhow::bail!("unused in preempt tests")
+    }
+    fn trim_proposer_state(&self, _s: &mut SequenceState, _n: usize, _st: u64) -> Result<()> {
+        Ok(())
+    }
+    fn vocab_size(&self) -> usize {
+        0
+    }
+    fn bind_gpu_to_thread(&self) -> Result<()> {
+        Ok(())
+    }
+    fn alloc_sequence(&self) -> Result<SequenceState> {
+        Ok(SequenceState::host_only(0))
+    }
+    fn copy_logits_to_host(&self, _p: DevicePtr, _d: &mut [u8]) -> Result<()> {
+        Ok(())
+    }
+    fn logits_buffer_ptr(&self) -> DevicePtr {
+        DevicePtr::NULL
+    }
+    fn argmax_on_device(&self, _p: DevicePtr, _st: u64) -> Result<u32> {
+        anyhow::bail!("unused in preempt tests")
+    }
+    fn argmax_batch(&self, _p: DevicePtr, _n: usize, _st: u64) -> Result<Vec<u32>> {
+        anyhow::bail!("unused in preempt tests")
+    }
+    fn hidden_after_norm(&self) -> DevicePtr {
+        DevicePtr::NULL
+    }
+    fn checkpoint_ssm_states(&self, _s: &mut SequenceState) -> Result<()> {
+        Ok(())
+    }
+    fn rollback_ssm_states(&self, _s: &mut SequenceState, _n: usize) -> Result<()> {
+        Ok(())
+    }
+    fn has_proposer(&self) -> bool {
+        false
+    }
+    fn has_self_speculative(&self) -> bool {
+        false
+    }
+    fn decode_draft(&self, _t: u32, _s: &mut SequenceState, _st: u64) -> Result<DevicePtr> {
+        anyhow::bail!("unused in preempt tests")
+    }
+    fn cache_sequence(&self, _s: &SequenceState) {
+        self.cached_seqs.fetch_add(1, Ordering::SeqCst);
+    }
+    fn free_sequence(&self, s: &mut SequenceState) -> Result<()> {
+        self.freed_slots.lock().unwrap().push(s.slot_idx);
+        Ok(())
+    }
+    fn compact_sequence(&self, _s: &mut SequenceState, _slot: usize) -> Result<()> {
+        self.compact_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(msg) = self.fail_compact {
+            anyhow::bail!("{msg}");
+        }
+        Ok(())
+    }
+    /// The trait default bails ("swap not supported"); the swap-out tests
+    /// need the SUCCESS path to reach `spill_out_sequence`, so record a
+    /// byte and return Ok. Preempt tests all pass `spill: None` and never
+    /// reach this.
+    fn save_sequence_state(
+        &self,
+        _seq: &SequenceState,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<()> {
+        writer.write_all(&[0u8])?;
+        Ok(())
+    }
+    fn detach_slot_for_reuse(&self, _s: &mut SequenceState) {}
+    fn save_hidden_for_mtp(&self, _i: usize, _st: u64) -> Result<()> {
+        Ok(())
+    }
+    fn tokens_contain_vision_pad(&self, tokens: &[u32]) -> bool {
+        self.vision_pad
+            .map(|pad| tokens.contains(&pad))
+            .unwrap_or(false)
+    }
+    fn num_free_blocks(&self) -> usize {
+        self.free_blocks.load(Ordering::SeqCst)
+    }
+    fn num_total_blocks(&self) -> usize {
+        self.total_blocks
+    }
+    fn reclaim_prefix_blocks(&self, num_blocks: usize) -> usize {
+        let take = num_blocks.min(self.reclaimable.load(Ordering::SeqCst));
+        self.reclaimable.fetch_sub(take, Ordering::SeqCst);
+        self.free_blocks.fetch_add(take, Ordering::SeqCst);
+        take
+    }
+}
+
+/// An unfinished decode-active sequence at `slot` with `n_out` generated
+/// tokens and a known prompt in `seq.tokens`.
+pub(super) fn active_seq(slot: usize, n_out: usize) -> (ActiveSeq, super::test_support::RespRx) {
+    let out: Vec<u32> = (100..100 + n_out as u32).collect();
+    let (mut a, rx) = test_seq(out, 50, None, 4 + n_out);
+    a.finished = false;
+    a.seq.slot_idx = slot;
+    // prompt [1,2,3,4] + all PROCESSED outputs (everything but last_token).
+    a.seq.tokens = vec![1, 2, 3, 4];
+    let n = a.output_tokens.len();
+    a.seq
+        .tokens
+        .extend_from_slice(&a.output_tokens[..n.saturating_sub(1)]);
+    (a, rx)
+}
+
+pub(super) fn streaming_seq(
+    slot: usize,
+    n_out: usize,
+) -> (
+    ActiveSeq,
+    tokio::sync::mpsc::Receiver<crate::api::StreamEvent>,
+) {
+    let (a, _rx) = active_seq(slot, n_out);
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    let mut a = a;
+    a.sink = ResponseSink::Streaming(tx);
+    (a, rx)
+}
+
+// ── decode_batch_with_preemption ─────────────────────────────────────────

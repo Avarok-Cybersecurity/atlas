@@ -18,7 +18,7 @@
 //! consumes, not on the return value: `Err` alone was always there.
 
 use super::lifecycle::{resume_swapped_seq, swap_out_sequence};
-use super::preempt_tests::{PreemptStubModel, active_seq, streaming_seq};
+use super::test_support::{PreemptStubModel, active_seq, streaming_seq};
 use super::types::ActiveSeq;
 use spark_runtime::kv_spill::KvSpillManager;
 use std::sync::atomic::Ordering;

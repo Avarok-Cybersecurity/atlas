@@ -11,8 +11,13 @@
 //! A rolling restart lands on exactly these states.
 
 use super::lifecycle::swap_out_sequence;
-use super::lifecycle_tests::StubModel;
+// PreemptStubModel, not lifecycle_tests::StubModel: this test drives the
+// swap-out path, and only the shared fixture implements `save_sequence_state`.
+// #911's richer StubModel would also have served, but that commit is
+// superseded here by 963e22f684, and test_support is the declared home for
+// scheduler fixtures anyway.
 use super::shutdown_drain::abort_in_flight_on_shutdown;
+use super::test_support::PreemptStubModel;
 use super::test_support::{RespRx, test_prefill, test_seq};
 use super::types::PreemptedSeq;
 use spark_runtime::kv_spill::KvSpillManager;
@@ -27,7 +32,7 @@ fn message(label: &str, mut rx: RespRx) -> String {
 
 #[test]
 fn shutdown_tells_every_parked_request_which_state_it_died_in() {
-    let model = StubModel::default();
+    let model = PreemptStubModel::default();
     let dir = std::env::temp_dir().join(format!("atlas-shutdown-drain-{}", std::process::id()));
     let mut spill = KvSpillManager::new(dir, 8 * 1024 * 1024).expect("spill manager");
 

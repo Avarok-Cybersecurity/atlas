@@ -207,7 +207,14 @@ mod tests {
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
             .collect();
-        assert_eq!(pins, ["bfcl-eval==2026.3.23"]);
+        // EXACT, not "contains": every pin here is a scorer input, and a
+        // dependency that floats can move the score between runs and silently
+        // invalidate a stored baseline. soundfile is a TRANSITIVE import
+        // bfcl-eval does not declare (bfcl-eval -> qwen_agent, whose utils.py
+        // does a bare `import soundfile as sf` at module scope), so without it
+        // the venv provisions "successfully" and the scorer then fails to
+        // import — which made the gate unrunnable from a clean provision.
+        assert_eq!(pins, ["bfcl-eval==2026.3.23", "soundfile==0.14.0"]);
 
         let dir = temp_dir("cli");
         let provision = dir.join("provision.py");

@@ -481,3 +481,9 @@ fn array_non_strict_adds_any_items() {
 // this file under the 500-LoC cap.
 #[path = "tests_objects.rs"]
 mod objects;
+
+// ...and its second half. #897's oracle work pushed tests_objects.rs from 495
+// to 579 lines; the cap is 500 and the allow-list wants a rationale plus a
+// tracking issue, so it is split rather than excused.
+#[path = "tests_objects_b.rs"]
+mod objects_b;
