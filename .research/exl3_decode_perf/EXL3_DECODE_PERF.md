@@ -289,6 +289,48 @@ card's non-thinking preset applies): **Pass** — webserver_ok 1/1, followed_dir
 11 turns / 126 s, 0 `[reasoning]` blocks in the trajectory (thinking confirmed off), 0 mangling
 markers (`agentic/run-1788657924008552574.json`).
 
+## Launch count (fifth lever): batched shared-expert GEMV; the router must stay per-row
+
+Fresh trace on the row-exact-off binary (`nsys_mtp2b_*`, `spark-plesnap`, 2 drafts, prefix cache
+on): 86.0 ms/step wall, 72.5 ms busy, 13.5 ms idle = 10.8 ms of ~2.6 us gaps over 4,147
+launches + 2.7 ms in four stalls. Launches per step, top of the list: `w4a16_gemv_sw` 580
+(router 3 rows x 48 + shared expert 3 projections x 3 rows x 48), cuBLASLt cutlass 378 + splitK
+reduce 225 (hc collapse at M=3, 11.2 ms busy ≈ 48% of DRAM peak), EXL3 converters 510
+(`f32_to_bf16` 252, `bf16_to_f16` 183, `_2d` 75), D2D copies 197 (GDN conv-state shifts and hc
+staging, 1-3 us each), hc glue ~610, per-row router+top-k 290.
+
+Step tail: verify lm_head → three separate argmax+D2H pairs → **one 1.55 ms host gap** → draft 1
+(MTP layer ~0.8 ms + lm_head 2 ms + argmax/D2H) → draft 2 with no gap → next step. The host gap
+is `verify_mtp_wide::finish`: it copies all K verify logits rows to the host (3 x 248320 x bf16)
+and runs `process_seq_logits` per row on the CPU — bf16→f32 dequant of 248K entries, penalties,
+top-k/top-p/min-p — rows sequentially dependent. Removing it needs a GPU sampler (the GPU argmax
+already runs and is ignored on this path); ~1.8%/step, ranked below.
+
+`nvfp4_rows_proj` (forward_exl3_shared.rs): rows 1 → single-warp GEMV, 2/3 → the existing
+`w4a16_gemv_batch2/3` (weights read once for all rows), else per-row loop; never the prefill-tiled
+`w4a16_gemm`. Used by the shared expert (3 launches per layer per step instead of 9) and by the
+verify router's non-row path, which had been falling into `w4a16_gemm` at M=3 — the reason the
+profile had to arm `ATLAS_VERIFY_EXL3_ROW_ROUTER=1`.
+
+A/B (`spark-batchgemv`, MTP profile, fresh server per arm, greedy 200-token sample vs the
+`c5d02cf5…` reference):
+
+| arm | tok/s | accepted/step | sample |
+|---|---:|---:|---|
+| previous binary (`spark-plesnap`) | 29.89 | 1.47 | identical |
+| batched shared GEMV, per-row router (flag on) | **30.45** | 1.47 | identical |
+| batched shared GEMV, batched router (batch3 GEMV + batched top-k) | 28.25 | **1.27** | differs |
+
+Batching the router loses: verify routing that does not reproduce the serial rows' numerics
+lowers draft agreement, the same effect as the hc leg earlier — routing and hc feed the drafter's
+conditioning. So the per-row router and the stable one-token grid become the DEFAULTS
+(`ATLAS_NO_VERIFY_EXL3_ROW_ROUTER` / `ATLAS_NO_VERIFY_EXL3_STABLE_GRID` disarm; the old `=1` arms
+stay accepted as no-ops), and a bare serve gets the fast configuration.
+
+Confirmation (`spark-defaults`, MTP profile with NO `ATLAS_VERIFY_EXL3_*` env at all): **30.34
+tok/s**, accepted/step 1.47, sample identical. Cumulative on the operating profile today:
+12.9-13.7 (pre-fix TUI log) → 25.95 → 26.58 → 29.89 → 30.34 tok/s.
+
 ## PLE verify snapshots on device (fourth lever, this commit)
 
 `push_verify_row` snapshotted the PLE carry to a host blob with `copy_d2h_on_stream` after

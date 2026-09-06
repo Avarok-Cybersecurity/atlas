@@ -11,14 +11,17 @@ use super::*;
 /// Experimental single-token expert geometry with additional slot waves.
 /// Independent of the router switch so attribution can isolate both stages.
 pub(super) fn stable_grid_enabled(ctx: &ForwardContext, rows: usize) -> bool {
+    // Default ON (2026-09-05): without it a 30-slot verify batch gets one
+    // block per slot. `ATLAS_NO_VERIFY_EXL3_STABLE_GRID` (presence) disarms;
+    // `ATLAS_VERIFY_EXL3_STABLE_GRID=1` remains accepted as a no-op.
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let enabled = *ENABLED
-        .get_or_init(|| std::env::var("ATLAS_VERIFY_EXL3_STABLE_GRID").as_deref() == Ok("1"));
+    let enabled =
+        *ENABLED.get_or_init(|| std::env::var_os("ATLAS_NO_VERIFY_EXL3_STABLE_GRID").is_none());
     row_router_required(enabled, ctx.gdn_exact_replay, rows)
 }
 
 impl MoeLayer {
-    /// Opt in with `ATLAS_VERIFY_EXL3_ROW_ROUTER=1`. Only the router's
+    /// Default ON; `ATLAS_NO_VERIFY_EXL3_ROW_ROUTER` disarms. Only the router's
     /// projection and top-k use decode kernels; packed experts stay batched.
     /// Pair with `ATLAS_NO_VERIFY_ROW_FFN=1` to isolate routing from experts
     /// in the mHC verifier. No normal decode or prefill dispatch changes.
@@ -30,9 +33,15 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<bool> {
+        // Default ON (2026-09-05). Measured on the 2-draft mHC verify: the
+        // batched router (batch3 GEMV + batched top-k) lowered draft
+        // acceptance 1.47 -> 1.27 per step and decode 30.45 -> 28.25 tok/s —
+        // verify routing has to reproduce the serial rows' numerics or the
+        // drafts stop agreeing. `ATLAS_NO_VERIFY_EXL3_ROW_ROUTER` (presence)
+        // disarms for A/B; `ATLAS_VERIFY_EXL3_ROW_ROUTER=1` stays a no-op.
         static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let enabled = *ENABLED
-            .get_or_init(|| std::env::var("ATLAS_VERIFY_EXL3_ROW_ROUTER").as_deref() == Ok("1"));
+        let enabled =
+            *ENABLED.get_or_init(|| std::env::var_os("ATLAS_NO_VERIFY_EXL3_ROW_ROUTER").is_none());
         if !row_router_required(enabled, ctx.gdn_exact_replay, rows) {
             return Ok(false);
         }

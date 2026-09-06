@@ -94,36 +94,27 @@ impl MoeLayer {
             return Ok(());
         }
 
-        let h_row = hidden as usize * 2; // bf16 row strides
-        let i_row = shared_inter as usize * 2;
         let w = &self.weights.shared_expert;
-        for row in 0..num_tokens as usize {
-            let src = input.offset(row * h_row);
-            ops::w4a16_decode_gemv(
-                ctx.gpu,
-                self.w4a16_gemv,
-                self.w4a16_gemv_sw,
-                ctx.levers.gemv_sw,
-                src,
-                &w.gate_proj,
-                gate_out.offset(row * i_row),
-                shared_inter,
-                hidden,
-                stream,
-            )?;
-            ops::w4a16_decode_gemv(
-                ctx.gpu,
-                self.w4a16_gemv,
-                self.w4a16_gemv_sw,
-                ctx.levers.gemv_sw,
-                src,
-                &w.up_proj,
-                up_out.offset(row * i_row),
-                shared_inter,
-                hidden,
-                stream,
-            )?;
-        }
+        self.nvfp4_rows_proj(
+            input,
+            &w.gate_proj,
+            gate_out,
+            num_tokens,
+            shared_inter,
+            hidden,
+            ctx,
+            stream,
+        )?;
+        self.nvfp4_rows_proj(
+            input,
+            &w.up_proj,
+            up_out,
+            num_tokens,
+            shared_inter,
+            hidden,
+            ctx,
+            stream,
+        )?;
         // Same activation kernel as the prefill arm (in place into gate_out).
         ops::silu_mul(
             ctx.gpu,
@@ -134,21 +125,79 @@ impl MoeLayer {
             num_tokens * shared_inter,
             stream,
         )?;
-        for row in 0..num_tokens as usize {
-            ops::w4a16_decode_gemv(
+        self.nvfp4_rows_proj(
+            gate_out,
+            &w.down_proj,
+            down_out,
+            num_tokens,
+            hidden,
+            shared_inter,
+            ctx,
+            stream,
+        )
+    }
+
+    /// `out[rows, n] = a[rows, k] @ wᵀ` for a small row count through the
+    /// DECODE kernels: the single-warp GEMV at one row, the batch2/batch3
+    /// twins (weights read once for all rows) at two and three, and a
+    /// per-row GEMV loop above that. Never the prefill-tiled `w4a16_gemm`,
+    /// whose 64-row tile costs ~274 us at m=1 on these shapes (the
+    /// shared-expert defect this module exists for; the K-row verify router
+    /// took the same GEMM whenever `ATLAS_VERIFY_EXL3_ROW_ROUTER` was unset).
+    /// Rows are contiguous `[rows, k]` / `[rows, n]` BF16, as every caller's
+    /// buffers are laid out.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn nvfp4_rows_proj(
+        &self,
+        a: DevicePtr,
+        w: &crate::weight_map::QuantizedWeight,
+        out: DevicePtr,
+        rows: u32,
+        n: u32,
+        k: u32,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        match rows {
+            0 => Ok(()),
+            1 => ops::w4a16_decode_gemv(
                 ctx.gpu,
                 self.w4a16_gemv,
                 self.w4a16_gemv_sw,
                 ctx.levers.gemv_sw,
-                gate_out.offset(row * i_row),
-                &w.down_proj,
-                down_out.offset(row * h_row),
-                hidden,
-                shared_inter,
+                a,
+                w,
+                out,
+                n,
+                k,
                 stream,
-            )?;
+            ),
+            2 if self.w4a16_gemv_batch2.0 != 0 => {
+                ops::w4a16_gemv_batch2(ctx.gpu, self.w4a16_gemv_batch2, a, w, out, n, k, stream)
+            }
+            3 if self.w4a16_gemv_batch3.0 != 0 => {
+                ops::w4a16_gemv_batch3(ctx.gpu, self.w4a16_gemv_batch3, a, w, out, n, k, stream)
+            }
+            _ => {
+                let a_row = k as usize * 2;
+                let o_row = n as usize * 2;
+                for r in 0..rows as usize {
+                    ops::w4a16_decode_gemv(
+                        ctx.gpu,
+                        self.w4a16_gemv,
+                        self.w4a16_gemv_sw,
+                        ctx.levers.gemv_sw,
+                        a.offset(r * a_row),
+                        w,
+                        out.offset(r * o_row),
+                        n,
+                        k,
+                        stream,
+                    )?;
+                }
+                Ok(())
+            }
         }
-        Ok(())
     }
 }
 

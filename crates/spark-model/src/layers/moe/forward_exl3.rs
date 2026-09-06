@@ -65,17 +65,35 @@ impl MoeLayer {
         if row_router {
             // Decode-shaped projections already populated every router row.
         } else if let Some(ref nvfp4) = self.gate_nvfp4 {
-            ops::w4a16_gemm(
-                ctx.gpu,
-                self.w4a16_gemm,
-                router_in,
-                nvfp4,
-                gate_logits,
-                n,
-                num_experts,
-                h,
-                stream,
-            )?;
+            if n <= 8 {
+                // Decode-shaped: one batch2/batch3 GEMV (weights read once)
+                // or a per-row GEMV loop. The prefill-tiled `w4a16_gemm`
+                // below costs ~274 us per call at these row counts (its
+                // 64-row tile), which is why the profile had to arm
+                // ATLAS_VERIFY_EXL3_ROW_ROUTER to avoid it.
+                self.nvfp4_rows_proj(
+                    router_in,
+                    nvfp4,
+                    gate_logits,
+                    n,
+                    num_experts,
+                    h,
+                    ctx,
+                    stream,
+                )?;
+            } else {
+                ops::w4a16_gemm(
+                    ctx.gpu,
+                    self.w4a16_gemm,
+                    router_in,
+                    nvfp4,
+                    gate_logits,
+                    n,
+                    num_experts,
+                    h,
+                    stream,
+                )?;
+            }
         } else {
             ops::dense_gemm(
                 ctx.gpu,
@@ -94,7 +112,14 @@ impl MoeLayer {
         let indices_dev = scratch;
         let weights_dev = scratch.offset(num_tokens * top_k as usize * 4);
         if row_router {
-            self.exl3_row_topk(gate_logits, indices_dev, weights_dev, num_tokens, ctx, stream)?;
+            self.exl3_row_topk(
+                gate_logits,
+                indices_dev,
+                weights_dev,
+                num_tokens,
+                ctx,
+                stream,
+            )?;
         } else if let Some(bias) = self.correction_bias_dev {
             // Same envelope as the prefill arm: a bias-carrying model with
             // softmax/sqrtsoftplus scoring must refuse here too, not silently
