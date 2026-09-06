@@ -338,6 +338,11 @@ pub struct Qwen3SsmLayer {
     /// HARD ERROR at dispatch (never a silent FP32 fallback over FP16
     /// state). provenance-id: 526f6e616c6420522e205374657369616b
     gdn_wyn_f16_k: [KernelHandle; 12],
+    /// Pointer-table twins for the cross-sequence batched verify
+    /// (K=5..16, `state_is_table` compiled in); index = K - 5.
+    gdn_wyn_table_k: [KernelHandle; 12],
+    /// FP16 twins of the above; same index contract.
+    gdn_wyn_f16_table_k: [KernelHandle; 12],
     // State allocation sizes (pre-computed from config)
     h_state_bytes: usize,
     conv_state_bytes: usize,
