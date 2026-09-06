@@ -36,6 +36,32 @@ pub(crate) fn build_prefix_cache(
     }
 }
 
+/// Resolve the effective `--swap-space-gb` for this model.
+///
+/// The spill image is KV-only (`save_sequence_state_dispatch` writes KV blocks
+/// plus linear-attention `SsmLayerState`, then `free_sequence` releases the
+/// rest), so a model that is not KV-complete would resume against a zeroed
+/// pool and answer wrongly with no error anywhere. The capability belongs to
+/// the model, so the engine refuses it here — the launcher's `--swap-space-gb 0`
+/// pin is defense in depth for one script, not the boundary.
+///
+/// Fail-closed, not fatal: the flag defaults to 3, so every GLM serve would
+/// otherwise have to opt out by hand, and erroring on a default nobody typed
+/// is a worse contract than disabling the feature the model cannot support.
+pub(crate) fn resolve_swap_space_gb(args: &cli::ServeArgs, config: &ModelConfig) -> usize {
+    if args.swap_space_gb > 0 && !config.kv_only_swap_out_is_safe() {
+        tracing::warn!(
+            model_type = %config.model_type,
+            requested_gb = args.swap_space_gb,
+            "Swap space: DISABLED because this model builds per-sequence state outside KV; \
+             the KV-only spill image cannot restore it. Decode preemption falls back to \
+             requeue-resume, which re-prefills and is always correct."
+        );
+        return 0;
+    }
+    args.swap_space_gb
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_model(
     args: &cli::ServeArgs,
@@ -329,6 +355,58 @@ mod prefix_cache_tests {
 
         let cache = build_prefix_cache(&enabled_args(), &config);
         assert!(!cache.is_active());
+    }
+}
+
+#[cfg(test)]
+mod swap_space_tests {
+    use atlas_core::config::ModelConfig;
+    use clap::Parser;
+
+    use super::resolve_swap_space_gb;
+    use crate::cli::ServeArgs;
+
+    fn args_with(swap_gb: &str) -> ServeArgs {
+        ServeArgs::parse_from(["spark", "--swap-space-gb", swap_gb])
+    }
+
+    #[test]
+    fn a_kv_complete_model_keeps_the_requested_swap_space() {
+        let config = ModelConfig::qwen3_next_80b_nvfp4();
+        assert_eq!(resolve_swap_space_gb(&args_with("3"), &config), 3);
+    }
+
+    /// The default is 3, not 0 — so a GLM serve that types no swap flag at all
+    /// is exactly the case the gate has to catch.
+    #[test]
+    fn the_default_swap_space_is_nonzero_so_the_gate_has_work_to_do() {
+        assert!(ServeArgs::parse_from(["spark"]).swap_space_gb > 0);
+    }
+
+    #[test]
+    fn a_model_with_state_outside_kv_gets_zero() {
+        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+
+        for model_type in ["glm5_next", "glm5_next_text"] {
+            config.model_type = model_type.to_string();
+            assert_eq!(
+                resolve_swap_space_gb(&ServeArgs::parse_from(["spark"]), &config),
+                0
+            );
+            assert_eq!(resolve_swap_space_gb(&args_with("64"), &config), 0);
+        }
+
+        config.model_type = "deepseek_v4".to_string();
+        config.compress_ratios = vec![0, 4, 128];
+        assert_eq!(resolve_swap_space_gb(&args_with("64"), &config), 0);
+    }
+
+    #[test]
+    fn an_explicit_zero_stays_zero_for_every_model() {
+        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+        assert_eq!(resolve_swap_space_gb(&args_with("0"), &config), 0);
+        config.model_type = "glm5_next".to_string();
+        assert_eq!(resolve_swap_space_gb(&args_with("0"), &config), 0);
     }
 }
 

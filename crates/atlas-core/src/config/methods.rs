@@ -427,16 +427,41 @@ impl ModelConfig {
             .count()
     }
 
-    /// Whether the radix prefix cache captures every state needed to resume
-    /// this model exactly. Compressed DeepSeek V4 carries a prompt-built
-    /// compressor pool and ring; GLM-5.3 carries prompt-built DSA indexer
-    /// rows (`Glm5NextDsaState`). Neither is represented by KV blocks, so a
-    /// KV-only reuse cannot resume either exactly.
-    pub fn kv_only_prefix_cache_is_safe(&self) -> bool {
+    /// Whether every byte of a sequence's per-layer state is represented by
+    /// its KV blocks.
+    ///
+    /// False for models whose PREFILL builds per-sequence state that KV pages
+    /// do not carry: GLM-5.3's DSA indexer rows (`Glm5NextDsaState`) and
+    /// compressed DeepSeek V4's compressor pool/ring. Every KV-only mechanism
+    /// — radix prefix reuse and the `--swap-space-gb` spill image alike — is
+    /// unsafe for those models, and this is the single fact both gates below
+    /// are asking about.
+    fn per_sequence_state_is_kv_complete(&self) -> bool {
         match self.model_type.as_str() {
             "glm5_next" | "glm5_next_text" => false,
             "deepseek_v4" => self.compress_ratios.iter().all(|&ratio| ratio == 0),
             _ => true,
         }
+    }
+
+    /// Whether the radix prefix cache captures every state needed to resume
+    /// this model exactly. Preflight SSOT for `build_prefix_cache`.
+    pub fn kv_only_prefix_cache_is_safe(&self) -> bool {
+        self.per_sequence_state_is_kv_complete()
+    }
+
+    /// Whether a sequence may be swapped out to the `--swap-space-gb` pool and
+    /// restored from it. Preflight SSOT for `resolve_swap_space_gb`.
+    ///
+    /// `save_sequence_state_dispatch` writes KV blocks plus the `SsmLayerState`
+    /// of each `LayerType::LinearAttention` layer, and nothing else; the
+    /// swap-out then calls `free_sequence`, which hands every remaining
+    /// per-layer state to #821's `release_state`. A model that is not
+    /// KV-complete therefore resumes with a freshly ZEROED pool behind a KV
+    /// image that assumes a populated one — a silently wrong answer, not a
+    /// crash. Distinct from the prefix-cache predicate because they are
+    /// distinct guarantees; they happen to have the same answer today.
+    pub fn kv_only_swap_out_is_safe(&self) -> bool {
+        self.per_sequence_state_is_kv_complete()
     }
 }

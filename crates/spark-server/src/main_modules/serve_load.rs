@@ -969,7 +969,10 @@ pub(crate) fn load_model(
 
     // Use prefill_budget (which accounts for SSM no-chunking override) instead of raw CLI arg.
     let max_prefill_tokens = prefill_budget;
-    let swap_space_gb = args.swap_space_gb;
+    // Model capability gate, not a flag default: the spill image is KV-only, so
+    // a model whose prefill builds state outside KV must not swap out at all.
+    // Sibling of `build_prefix_cache`'s gate above — same fact, second mechanism.
+    let swap_space_gb = serve_phases::resolve_swap_space_gb(&args, &config);
     let block_size = args.block_size;
 
     // ── --high-speed-swap config validation (PCND: required-when-set) ──
