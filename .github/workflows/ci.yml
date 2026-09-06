@@ -315,6 +315,26 @@ jobs:
       # violation. Stdlib-only; the runner's system python3 suffices.
       - run: python3 scripts/check_kernel_shadows.py
 
+  bench-threshold-prose:
+    name: BENCH.toml threshold prose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # A threshold's comment is what a reader consults to decide whether a
+      # measurement is healthy, and nothing made it track the value beside it.
+      # It drifted: c9a682734f moved `server_decode_tok_s` from 27.0 to 21.0
+      # in a one-line TOML-only change and left the paragraph above it saying
+      # "Floor 27.0", so the file advertised a bar 6 tok/s above the gate for
+      # weeks. This is its own job rather than a step appended to another
+      # suite -- an appended check that lands after a summary/exit line never
+      # runs, which has already happened here four times.
+      #
+      # The script runs its OWN fixtures first and fails if any rule proves
+      # unable to fire, so a rule loosened into inertness is caught here and
+      # not by nobody. Deliberately narrow; its limits are in its docstring.
+      # Seconds, stdlib-only python3, no GPU, no network.
+      - run: python3 scripts/check_bench_threshold_prose.py
+
   harvest-triage:
     name: harvest triage decision table
     runs-on: ubuntu-latest
