@@ -137,3 +137,105 @@ pub const SUBSET_ECHOLP_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     sensitivity: Sensitivity::Correctness,
     ctor: || Box::new(Bfcl::new(Variant::SubsetEcholp)),
 };
+
+// ── Shards ───────────────────────────────────────────────────────────────────
+//
+// Each gate above is also a BENCHMARK GROUP of four shards that can run at the
+// same time on different boxes. The group id is unchanged (`bfcl-subset`,
+// `bfcl-subset-echolp`), so `coverage::REQUIRED` keeps its eleven entries and
+// the BENCH.toml thresholds are untouched — only the way the number is produced
+// changes. See `gate::group` for the composition rules and
+// `benchmarks::bfcl::aggregate` for why the members' scores are recombined over
+// COUNTS rather than averaged.
+//
+// The members carry NO `threshold_params`: a shard is not a gate and has no
+// bars of its own. Its verdict is informational; the group's aggregate is what
+// `check_record` judges.
+//
+// `duration_hint` is the whole draw's ~3.5 h divided four ways. That is the
+// entire point: the two BFCL legs are the floor on every campaign's wall-clock,
+// and on 2026-09-06 they were 3.5 h each even after being split across two
+// boxes.
+macro_rules! shard_descriptor {
+    ($konst:ident, $id:literal, $name:literal, $variant:expr, $index:literal, $base:ident) => {
+        pub const $konst: BenchmarkDescriptor = BenchmarkDescriptor {
+            id: $id,
+            name: $name,
+            summary: $base.summary,
+            detail: $base.detail,
+            duration_hint: "~55 min (one quarter of the draw)",
+            updated: $base.updated,
+            needs_confirmation: false,
+            intended_for: $base.intended_for,
+            // Not a gate: the GROUP owns the thresholds.
+            threshold_params: &[],
+            sensitivity: Sensitivity::Correctness,
+            ctor: || Box::new(Bfcl::sharded($variant, $index, 4)),
+        };
+    };
+}
+
+shard_descriptor!(
+    SUBSET_A,
+    "bfcl-subset-a",
+    "BFCL (subset) shard A",
+    Variant::Subset,
+    0,
+    SUBSET_DESCRIPTOR
+);
+shard_descriptor!(
+    SUBSET_B,
+    "bfcl-subset-b",
+    "BFCL (subset) shard B",
+    Variant::Subset,
+    1,
+    SUBSET_DESCRIPTOR
+);
+shard_descriptor!(
+    SUBSET_C,
+    "bfcl-subset-c",
+    "BFCL (subset) shard C",
+    Variant::Subset,
+    2,
+    SUBSET_DESCRIPTOR
+);
+shard_descriptor!(
+    SUBSET_D,
+    "bfcl-subset-d",
+    "BFCL (subset) shard D",
+    Variant::Subset,
+    3,
+    SUBSET_DESCRIPTOR
+);
+shard_descriptor!(
+    ECHOLP_A,
+    "bfcl-subset-echolp-a",
+    "BFCL (echolp) shard A",
+    Variant::SubsetEcholp,
+    0,
+    SUBSET_ECHOLP_DESCRIPTOR
+);
+shard_descriptor!(
+    ECHOLP_B,
+    "bfcl-subset-echolp-b",
+    "BFCL (echolp) shard B",
+    Variant::SubsetEcholp,
+    1,
+    SUBSET_ECHOLP_DESCRIPTOR
+);
+shard_descriptor!(
+    ECHOLP_C,
+    "bfcl-subset-echolp-c",
+    "BFCL (echolp) shard C",
+    Variant::SubsetEcholp,
+    2,
+    SUBSET_ECHOLP_DESCRIPTOR
+);
+shard_descriptor!(
+    ECHOLP_D,
+    "bfcl-subset-echolp-d",
+    "BFCL (echolp) shard D",
+    Variant::SubsetEcholp,
+    3,
+    SUBSET_ECHOLP_DESCRIPTOR
+);

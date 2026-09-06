@@ -234,22 +234,29 @@ fn required_gates_is_derived_from_the_coverage_table() {
     assert_eq!(REQUIRED_GATES.to_vec(), ids);
 }
 
-/// Every registered benchmark is accounted for: gated, or explicitly not gated
-/// with a reason. Silence about a benchmark is how one drifts out of the gate
-/// without anyone deciding that it should.
+/// Every registered benchmark is accounted for: gated, a member of a gated
+/// GROUP, or explicitly not gated with a reason. Silence about a benchmark is
+/// how one drifts out of the gate without anyone deciding that it should.
+///
+/// Group membership counts as coverage, and is checked rather than written down
+/// as prose: `no_group_member_is_itself_a_required_gate` separately proves the
+/// member's group IS in REQUIRED, so "covered by my group" cannot become a
+/// stale excuse the way a NOT_REQUIRED string could.
 #[test]
 fn every_registered_benchmark_is_either_required_or_explicitly_excused() {
     for descriptor in crate::registry::all() {
         let gated = REQUIRED.iter().any(|g| g.id == descriptor.id);
+        let in_group = super::group::member_of(descriptor.id).is_some();
         let excused = NOT_REQUIRED.iter().any(|(id, _)| *id == descriptor.id);
         assert!(
-            gated ^ excused,
+            (gated || in_group) ^ excused,
             "{} is {}",
             descriptor.id,
             if gated {
                 "both gated and excused"
             } else {
-                "neither gated nor listed in NOT_REQUIRED with a reason"
+                "neither gated, nor a member of a gated group, nor listed in \
+                 NOT_REQUIRED with a reason"
             }
         );
     }
