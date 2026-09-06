@@ -1,0 +1,4 @@
+FINGERPRINT port=8899 model=qwen3.8-flash-next prompt_tokens~2000 max_tokens=300 temp=0 effort=low stream=1 date=2026-09-05T23:38:18
+C=1: streams_ok=1/1 errors=0 per_stream_tok_s=[27.6] median_per_stream=27.6 aggregate_tok_s=19.5 ttft_s=[4.6] prompt_tokens=[2064] wall=15.4s min_host_avail_GB=22 max_swap_used_GB=1
+C=2: streams_ok=2/2 errors=0 per_stream_tok_s=[13.2, 10.8] median_per_stream=12.0 aggregate_tok_s=18.6 ttft_s=[9.0, 4.5] prompt_tokens=[2069] wall=32.2s min_host_avail_GB=21 max_swap_used_GB=1
+C=4: streams_ok=4/4 errors=0 per_stream_tok_s=[5.2, 6.1, 5.5, 6.3] median_per_stream=5.8 aggregate_tok_s=18.3 ttft_s=[4.5, 13.7, 9.0, 18.3] prompt_tokens=[2056] wall=65.6s min_host_avail_GB=20 max_swap_used_GB=1

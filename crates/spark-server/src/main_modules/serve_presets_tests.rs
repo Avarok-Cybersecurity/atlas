@@ -291,6 +291,8 @@ fn qwen38_flash_next_exl3_preset_carries_the_validated_configuration() {
     assert_eq!(args.max_batch_size, 4);
     assert_eq!(args.gpu_memory_utilization, 0.72);
     assert_eq!(args.ssm_cache_slots, 64);
+    // Four queued 30K prefills exceed the 300 s default (measured 2026-09-05).
+    assert_eq!(args.request_timeout, 1800);
     assert!(args.fast_load_prefetch_shards);
     assert!(args.speculative);
     assert_eq!(args.num_drafts, Some(2));

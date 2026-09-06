@@ -458,9 +458,78 @@ ctx, default `--max-prefill-tokens` 8192 so the 11K prompt is two chunks), port 
 | (6379 / 8777, first sizing pass) | 17.2 / 22.8 s | 377 / 389 |
 
 Flat at ~390 tok/s from 6K to 11K. User-supplied reference points: other engines ~1.1K tok/s at
-8K on this model, NVFP4 ~2.6K; Atlas historically ≤~500. The EXL3 prefill tier
-(`exl3_moe_k4_n128_cb2`, 3.2 ms per launch in the baseline trace) and the 2026-08-27 prefill
-profile (QSA 34%, grouped MoE 31%) are the starting points for that separate investigation.
+8K on this model, NVFP4 ~2.6K; Atlas historically ≤~500.
+
+### Prefill profile (nsys, one cold 7,993-token prefill, preset binary at `ffdffa467`)
+
+`nsys_prefill8k_kern_sum.csv`; 407 tok/s under the profiler, 18.7 s of GPU kernel time in a 19.6 s wall.
+
+| kernel | % | ms | instances | what |
+|---|---:|---:|---:|---|
+| `exl3_gemm_k4_cb2_sh2_f16` | 34.0 | 6364 | 11748 | **MoE OVERFLOW tier**: chunked per-expert GEMM for experts above the 128-row cap (gate/up) |
+| `qsa_prefill_attn` | 13.4 | 2509 | 48 | QSA selected attention |
+| `exl3_gemm_k4_cb2_sh1_f32` | 10.5 | 1959 | 5874 | overflow tier, down projection |
+| `exl3_gemm_k6_cb2_sh3_f16` | 9.1 | 1705 | 252 | dense GDN/attn trellis GEMM at 4096 rows (16-row slabs) |
+| `gated_delta_rule_prefill_regresident` | 4.8 | 894 | 72 | GDN chunked recurrence |
+| `exl3_gemm_k6_cb2_sh2_f32` | 4.5 | 840 | 144 | dense trellis GEMM |
+| `w4a16_gemm` | 4.1 | 770 | 384 | shared expert (NVFP4) at prefill M |
+| `dense_gemm_bf16_pipelined` | 3.3 | 611 | 1164 | mHC collapse + PLE projections |
+| `exl3_moe_k4_n128_cb2` | 3.1 | 585 | 144 | the FUSED MoE tier itself |
+| overflow gather / store / reduce (`exl3_moe_gather_rows_h16`, `_store_slots_f32`, `_reduce_slots_f32`) | 3.0 | 567 | 11892 | overflow tier plumbing |
+| `inferspark_prefill_64` | 1.6 | 301 | 12 | full attention |
+
+**48% of prefill GPU time is the overflow tier** (8.9 s of 18.7 s), while the fused kernel that the
+overflow spills from is 3%. At the default 4096-token chunk the mean is 80 rows per expert with a heavy
+tail, so most experts exceed the 128-row cap and take ~245 serialized cooperative GEMM launches per
+layer. Raising the cap (upstream derives it from the temp slab; vllm-exl3 runs 2048) is therefore the
+first prefill lever, worth up to ~1.9x if the fused kernel absorbs those rows at its current
+efficiency — hypothesis until the A/B. Next: QSA attention (13%), then the dense K=6 trellis GEMMs
+(15% combined) which a reconstruct-to-BF16 GEMM tier would replace.
+
+## Concurrency (measured 2026-09-05 late, preset `qwen3.8-flash-next-exl3`: 4 slots, 128K)
+
+`measure_concurrency.py`: C simultaneous streaming requests with distinct salted ~2K prompts,
+300 tokens, temp 0; per-stream decode tok/s from server-attested completion_tokens / decode wall;
+host memory sampled every 5 s. Records `concurrency_*.txt`.
+
+| arm | C=1 | C=2 | C=4 |
+|---|---:|---:|---:|
+| MTP 2 drafts (preset) — per-stream | 27.6 | 13.2 / 10.8 | 5.2–6.3 |
+| MTP 2 drafts — aggregate | 19.5* | 18.6 | 18.3 |
+| speculation OFF (same flags otherwise) — per-stream | 12.7 | 11.6 / 14.4 | 5.7–7.9 |
+| speculation OFF — aggregate | 10.1* | 19.3 | 20.9 |
+
+\*aggregate at C=1 includes the ~5 s TTFT in its wall. **With MTP on, aggregate is flat at 18-19
+tok/s from C=1 to C=4**: the mHC K-row verify runs per sequence (serialized), so drafts buy nothing
+once a second sequence is active. Without MTP the batched highway decode scales (10 → 19 → 21) but
+from a lower base. The C=1 speculation-off figure of 12.7 is under investigation (an nsys of the same
+path at C=1 with a short prompt decoded 19.1 tok/s with a healthy kernel mix — `nsys_batched_c1_*`);
+see the follow-up measurement below.
+
+At 30K-token prompts: C=2 completed with 141–157 s TTFT (two ~30K prefills queue at ~400 tok/s);
+at C=4 three of four streams ended `finish_reason=timeout` at 250–275 s TTFT — the 300 s default
+request timeout, not KV (the pool holds 183K tokens at util 0.72 with 70.1 GB pre-KV, so 4 x 128K
+is NOT resident either: the 128K preset bounds one sequence, four of them queue/preempt). Host
+available memory fell to 7 GB during that arm. The preset now sets `request_timeout = 1800` (the
+TUI launcher's value).
+
+Implications, ranked: (1) prefill throughput is the concurrency wall at long prompts (the overflow
+tier above); (2) an MTP policy that disables speculation once ≥2 sequences are active would recover
+the batched path's scaling (hypothesis: ~21 aggregate at C=4 vs 18 today) — the `mtp_gate` already
+arbitrates by measured verify cost per sequence, not by concurrency; (3) KV at util 0.72 is 4.2 GB
+on this checkpoint — 4 x 128K needs either fp8 KV (refused: QSA needs bf16) or a higher util with the
+host-memory watch the 30K arm just tripped.
+
+Follow-up on the 12.7 (fresh speculation-off server, same preset): short prompt 300 tokens x2 →
+18.0 tok/s (gap median 45.2 ms but gap MEAN 56.1 ms — ~25% of decode time in periodic stalls, 5
+`Saved SSM snapshot` decode-time checkpoints logged); 2K prompt C=1 three times → 19.5, 20.6, 21.8
+tok/s (the third a prefix-cache hit, TTFT 0.2 s). So 12.7 was a cold first-request outlier (host
+swap use peaked at 5 GB during it). Steady state on the 4-slot preset without speculation is 18-22
+tok/s at C=1 versus 23.9 on the single-slot serial profile with prefix caching off, whose gap mean
+equalled its median. Two levers fall out: the decode-time snapshot stalls (~20% at C=1 on this path;
+prefix caching stays on by rule, so the fix is making the snapshot D2H asynchronous or less frequent,
+not turning it off), and host memory headroom on the 128K x 4 preset (available fell to 7 GB and swap
+to 5 GB in the 30K arm; the box has swapped under similar pressure before).
 
 ## Files
 

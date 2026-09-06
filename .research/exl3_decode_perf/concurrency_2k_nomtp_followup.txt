@@ -1,0 +1,15 @@
+[1]+  Done                    setsid /home/ms/.claude/jobs/5a7bd33d/tmp/exl3bench/serve_preset_nomtp.sh 8899 > serve_nomtp2.log 2>&1 < /dev/null
+READY
+--- short prompt, 300 tok, x2
+run 0: {'chunks': 298, 'ttft_ms': 518.39740795549, 'gap_med_ms': 45.48498091753572, 'gap_mean_ms': 56.13404008231368, 'tps_from_gaps': 17.81450254664768, 'completion_tokens': 300, 'tps_server_tokens':
+run 1: {'chunks': 298, 'ttft_ms': 1344.704848015681, 'gap_med_ms': 44.93047052528709, 'gap_mean_ms': 56.15106655471345, 'tps_from_gaps': 17.80910072341373, 'completion_tokens': 300, 'tps_server_tokens
+SUMMARY n=2 gap_median_ms=45.21 decode_tok_s_median=17.99 ttft_ms=[518, 1345]
+--- 2K prompt C=1, x2
+C=1: streams_ok=1/1 errors=0 per_stream_tok_s=[19.5] median_per_stream=19.5 aggregate_tok_s=13.2 ttft_s=[7.3] prompt_tokens=[2065] wall=22.8s min_host_avail_GB=19 max_swap_used_GB=5
+C=1: streams_ok=1/1 errors=0 per_stream_tok_s=[20.6] median_per_stream=20.6 aggregate_tok_s=20.2 ttft_s=[0.3] prompt_tokens=[2065] wall=14.8s min_host_avail_GB=16 max_swap_used_GB=2
+--- 2K prompt C=1 again (same salt -> prefix hit)
+C=1: streams_ok=1/1 errors=0 per_stream_tok_s=[21.8] median_per_stream=21.8 aggregate_tok_s=21.5 ttft_s=[0.2] prompt_tokens=[2065] wall=14.0s min_host_avail_GB=19 max_swap_used_GB=2
+5
+stopped
+
+[exited with code 0]

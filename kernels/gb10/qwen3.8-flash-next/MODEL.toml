@@ -322,6 +322,10 @@ max_batch_size = 4
 gpu_memory_utilization = 0.72
 # The TUI launcher's value for this model (GDN state slots).
 ssm_cache_slots = 64
+# Long-context prefill queues behind other sequences at ~400 tok/s: four 30K
+# prompts took 250-275 s to first token and the 300 s default cut three of
+# them with finish_reason=timeout (2026-09-05 sweep). The TUI launcher's value.
+request_timeout = 1800
 fast_load_prefetch_shards = true
 # MTP with two drafts — the profile the agentic gate ran under.
 speculative = true
