@@ -1023,3 +1023,69 @@ touches the file. It goes in a later stack with the cost stated.
 
 **CITED:** R-38 (verified the fix by what `ldd` resolves and what
 `spark --version` answers, not by the symlink existing).
+
+---
+
+## Run 33 — 2026-09-06T20:20Z — the stack paid off, and unstacking dissolved it
+
+```text
+13:13Z  land     #912. 15:12Z #935. 12:2xZ #934 — 22 PRs, 11/11 gates, ONE campaign.
+17:1xZ  aggregate BISECT COMPLETE over stack #885's eight layers:
+                   L4 #881 gdn-tables    min tok 320  GOOD
+                   L5 #880 gdn-switch    min tok 320  GOOD
+                   L6 #879 dflash-2      min tok 159  FIRST BAD
+                 corroborated: pre-stack a87687880a x3 -> 274/320/320 PASS,
+                 whole stack composed x2 -> 137/119 FAIL. Disjoint.
+17:3xZ  land     #879 labelled BROKEN; stack truncated at L5; #891 campaign away.
+```
+
+**THE STACK EARNED ITS KEEP TWICE IN ONE DAY.** #934 certified 22 PRs with one
+campaign — that is the whole thesis, and it worked. Then the bisect over #885's
+eight layers found a regression that no single-PR workflow would have located
+as cheaply: three probes, ~25 min each, against eight candidates.
+
+**THE REGRESSION IS NOT A SLOWDOWN, AND THAT MATTERS.** C=8 aggregate throughput
+was 59.4/58.4 against a historical band of 56.9-63.7 (mean 60.0, n=14). The
+pre-stack run that passed did so at 63.7 — the HIGHEST of the fourteen. Reading
+"it passed before, it fails now" as a throughput regression would have sent the
+investigation at the GEMM twins. What actually moved was `min tok`: one request
+in eight ending early, `err`=0, only at C=8. That is the accept/verify path.
+
+> **R-44. When a gate fails, check WHICH statistic moved before naming a cause.**
+> A cell can fail its floor while the headline number is mid-band, and the
+> headline is the one everybody reads. EVIDENCE: 2026-09-06, `concurrency-sweep`
+> INCONCLUSIVE at C=8 with throughput normal; the failing statistic was
+> `min tok` (137/119 vs a ~256 floor), which NO committed record retains — its
+> distribution had to be established from scratch with three control runs before
+> anything could be convicted. CHECK: before blaming a PR, get the failing
+> statistic's normal range. If no record carries it, that is itself a finding.
+
+**UNSTACKING DISSOLVED THE STACK.** `POST /repos/{o}/{r}/stacks/885/unstack`
+with three of eight PRs did not trim the stack — it deleted it. The base chain
+survived and no PR was harmed, but the registration was gone and the remaining
+five had to be re-created as #945.
+
+> **R-45. `unstack` is not `trim` — read the stack back afterwards.** Removing a
+> subset can dissolve the whole registration. EVIDENCE: 2026-09-06, unstacking
+> #879/#878/#877 from #885 left `GET /stacks/885` returning 404 with all eight
+> base links intact. CHECK: `GET /repos/{o}/{r}/stacks` after every unstack, and
+> be ready to re-register the survivors.
+
+**AND THE DEPENDENCY RAN UPWARDS.** Dropping L6 was not a base repoint, because
+#877 (L8) carries three commits that TEST L6's code — the fp8 twin byte-parity
+oracle, the slot-order dispatch pin, and the vacuous-control fix. Rebasing #877
+without L6 conflicts. Worse, repointing #878's base alone would have been WORSE
+THAN DOING NOTHING: with the base no longer containing L6, its commits reappear
+inside #878's own diff and land that way.
+
+> **R-46. A layer's dependents are not always above it in the diff.** Tests for
+> layer N routinely live in layer N+2, so "drop one layer" can be impossible
+> without dropping its testers too. EVIDENCE: 2026-09-06, #877 tested #879.
+> CHECK: before promising a drop-one-recertify, `git log base..top` for commits
+> that NAME the layer you intend to remove. If they exist, truncate the stack
+> instead of splicing it.
+
+**CITED:** R-34 (the preflight was 7/7 on Stack D before a second of GPU);
+R-41 (every campaign script now aborts on an implausibly short gate);
+R-36 (containment proved by tree, never by title — 22 PRs closed on
+`merge-tree` evidence, 16 tree-identical and 6 by file-in-the-squash).
