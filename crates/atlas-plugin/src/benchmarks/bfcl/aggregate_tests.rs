@@ -284,3 +284,117 @@ fn a_shard_index_outside_the_count_takes_nothing() {
     assert_eq!(draw::shard_take(100, 4, 4), 0);
     assert_eq!(draw::shard_take(100, 0, 0), 0);
 }
+
+// ── Sharded loading ──────────────────────────────────────────────────────────
+
+use super::dataset::{self, Shard};
+
+/// Local scratch dir — `gate::tests::tempdir` is private to that module and
+/// reaching across for it would couple two unrelated test trees.
+struct ScratchDir(std::path::PathBuf);
+impl ScratchDir {
+    fn new() -> Self {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let p = std::env::temp_dir().join(format!("atlas-bfcl-shard-{n}"));
+        std::fs::create_dir_all(&p).expect("scratch");
+        Self(p)
+    }
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Build a dataset file with the given per-subset row counts.
+fn fixture(counts: &[(&str, usize)]) -> (ScratchDir, std::path::PathBuf) {
+    let d = ScratchDir::new();
+    let p = d.path().join("dataset.jsonl");
+    let mut s = String::new();
+    for (subset, n) in counts {
+        for i in 0..*n {
+            s.push_str(&format!(
+                r#"{{"sample_id":"{subset}-{i}","subset":"{subset}","messages":[],"tools":[],"tool_choice":"auto","ground_truth":"[]","func_description":"[]"}}"#
+            ));
+            s.push('\n');
+        }
+    }
+    std::fs::write(&p, s).expect("write fixture");
+    (d, p)
+}
+
+/// THE END-TO-END PROPERTY: the four shards of a draw, loaded from the same
+/// file, are a PARTITION of the unsharded draw — same sample_ids, no gaps, no
+/// duplicates. The arithmetic tests above prove the counts; this proves the
+/// loader actually selects those rows.
+#[test]
+fn the_four_shards_of_a_load_partition_the_unsharded_draw() {
+    let (_d, path) = fixture(&[
+        ("simple_python", 40),
+        ("live_simple", 26),
+        ("live_parallel", 16),
+        ("irrelevance", 24),
+    ]);
+    let spec = draw::DrawSpec::golden();
+
+    let whole = dataset::load(&path, &spec).expect("whole draw");
+    let mut union: Vec<String> = Vec::new();
+    for k in 0..4 {
+        let part =
+            dataset::load_shard(&path, &spec, Some(Shard { index: k, count: 4 })).expect("shard");
+        union.extend(part.iter().map(|s| s.sample_id.clone()));
+    }
+
+    let mut whole_ids: Vec<String> = whole.iter().map(|s| s.sample_id.clone()).collect();
+    whole_ids.sort();
+    let mut union_sorted = union.clone();
+    union_sorted.sort();
+
+    assert_eq!(
+        union_sorted.len(),
+        union.len(),
+        "a sample_id appeared in two shards"
+    );
+    union_sorted.dedup();
+    assert_eq!(
+        union_sorted, whole_ids,
+        "the union of the four shards is not the unsharded draw"
+    );
+}
+
+/// A shard is roughly a quarter — not the whole draw, which is what a broken
+/// filter would silently produce.
+#[test]
+fn one_shard_is_not_the_whole_draw() {
+    let (_d, path) = fixture(&[("simple_python", 40), ("live_simple", 26)]);
+    let spec = draw::DrawSpec::golden();
+    let whole = dataset::load(&path, &spec).expect("whole").len();
+    let one = dataset::load_shard(&path, &spec, Some(Shard { index: 0, count: 4 }))
+        .expect("shard")
+        .len();
+    assert!(one < whole, "shard {one} vs whole {whole}");
+    assert!(
+        one * 4 >= whole && one * 4 <= whole + 4,
+        "shard {one} is not ~a quarter of {whole}"
+    );
+}
+
+/// `None` must behave EXACTLY like the old `load` — the unsharded path is what
+/// every existing gate uses and it must not have moved.
+#[test]
+fn an_absent_shard_loads_the_whole_draw() {
+    let (_d, path) = fixture(&[("simple_python", 40), ("irrelevance", 24)]);
+    let spec = draw::DrawSpec::golden();
+    let a = dataset::load(&path, &spec).expect("load");
+    let b = dataset::load_shard(&path, &spec, None).expect("load_shard(None)");
+    assert_eq!(
+        a.iter().map(|s| &s.sample_id).collect::<Vec<_>>(),
+        b.iter().map(|s| &s.sample_id).collect::<Vec<_>>()
+    );
+}
