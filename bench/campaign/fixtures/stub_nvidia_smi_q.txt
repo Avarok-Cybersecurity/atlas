@@ -1,0 +1,8 @@
+==============NVSMI LOG==============
+
+Driver Version                            : 580.65.06
+CUDA Version                              : 13.0
+
+Attached GPUs                             : 1
+GPU 00000000:1B:00.0
+    Product Name                          : NVIDIA H200

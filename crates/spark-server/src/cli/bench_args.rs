@@ -139,6 +139,12 @@ pub struct RunArgs {
     /// when a benchmark has thresholds for more than one box class. With a
     /// single entry it is inferred; with several, omitting it is an error
     /// rather than a guess.
+    ///
+    /// The value must be a registered box class
+    /// (`atlas_plugin::hardware::ids::KNOWN_HARDWARE_IDS`). A registered class
+    /// this benchmark has never been measured on is refused by saying exactly
+    /// that — it is the state every hardware port is in until its first record
+    /// lands, and it must not read as a misspelling.
     #[arg(long)]
     pub hardware: Option<String>,
     /// Which model VARIANT of the benchmark to run, as the checkpoint id its

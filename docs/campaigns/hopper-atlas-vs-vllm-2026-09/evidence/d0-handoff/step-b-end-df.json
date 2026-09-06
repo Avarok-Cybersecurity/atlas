@@ -1,0 +1,11 @@
+{
+  "timestamp_utc": "2026-09-05T05:12:37.283214+00:00",
+  "step": "B",
+  "argv": [
+    "ssh",
+    "pidtom@spark2.local",
+    "df -h /"
+  ],
+  "exit_code": 0,
+  "stdout": "Filesystem      Size  Used Avail Use% Mounted on\n/dev/nvme0n1p2  916G  807G   62G  93% /\n"
+}

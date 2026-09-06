@@ -1,0 +1,120 @@
+{
+  "_fixture": "Hand-written, not measured. Two rungs and two reps each -- the smallest shape that still exercises the per-rep averaging and can carry one WIN and one LOSS. Field names and nesting are copied from bench/ladder38/harness_w55_conc_ladder.py's real output.",
+  "label": "atlas",
+  "url": "http://127.0.0.1:8888",
+  "model": "unsloth/Qwen3.8-27B-NVFP4",
+  "isl": 1024,
+  "osl": 256,
+  "reps": 2,
+  "warmup": 1,
+  "temperature": 0.0,
+  "seed": 42,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  },
+  "driver_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "started_utc": "2026-09-04T00:00:00Z",
+  "rungs": [
+    {
+      "concurrency": 1,
+      "reps": [
+        {
+          "rep": 0,
+          "tok_s": 40.0,
+          "ttft_p50_ms": 100.0,
+          "ttft_p99_ms": 140.0,
+          "tpot_p50_ms": 24.0,
+          "n_ok": 1,
+          "n_err": 0,
+          "completion_tokens_per_req": [
+            256
+          ]
+        },
+        {
+          "rep": 1,
+          "tok_s": 40.0,
+          "ttft_p50_ms": 100.0,
+          "ttft_p99_ms": 140.0,
+          "tpot_p50_ms": 24.0,
+          "n_ok": 1,
+          "n_err": 0,
+          "completion_tokens_per_req": [
+            256
+          ]
+        }
+      ],
+      "tok_s_series": [
+        40.0,
+        40.0
+      ],
+      "tok_s_mean": 40.0,
+      "errors_total": 0
+    },
+    {
+      "concurrency": 16,
+      "reps": [
+        {
+          "rep": 0,
+          "tok_s": 200.0,
+          "ttft_p50_ms": 300.0,
+          "ttft_p99_ms": 480.0,
+          "tpot_p50_ms": 60.0,
+          "n_ok": 16,
+          "n_err": 0,
+          "completion_tokens_per_req": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ]
+        },
+        {
+          "rep": 1,
+          "tok_s": 200.0,
+          "ttft_p50_ms": 300.0,
+          "ttft_p99_ms": 480.0,
+          "tpot_p50_ms": 60.0,
+          "n_ok": 16,
+          "n_err": 0,
+          "completion_tokens_per_req": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ]
+        }
+      ],
+      "tok_s_series": [
+        200.0,
+        200.0
+      ],
+      "tok_s_mean": 200.0,
+      "errors_total": 0
+    }
+  ],
+  "finished_utc": "2026-09-04T00:10:00Z"
+}

@@ -1,0 +1,152 @@
+# B200 target: kernel set inherited from gb10 via symlink; expected_absent
+# NOT yet harvested on B200 hardware (`spark serve --check-kernels`).
+# Every other table below is gb10's, copied verbatim — sampling and behaviour
+# are checkpoint properties, not device properties. The [expected_absent]
+# tables are NOT: they were harvested on GB10 and are carried here only so
+# the target parses. Re-harvest them on a B200/GB200 before trusting a
+# startup kernel audit on this hardware.
+[model]
+name = "nemotron-3-nano-30b-a3b"
+hf_id = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4"
+model_type = "nemotron_h"
+architecture = "hybrid_mamba2_moe_attention"
+parameters = "30B"
+active_parameters = "3.5B"
+
+[[model_types]]
+model_type = "nemotron_h"
+# 2026-06-06: pin hidden_size so this stays an EXACT match. Without it this is a "nemotron_h"
+# wildcard; since nemotron-super pins hidden_size=4096, any future nemotron_h whose hidden_size
+# isn't 4096 would silently route to THIS (nano's) kernels. Pinning 2688 removes the catch-all.
+hidden_size = 2688
+
+# Nemotron-H uses ChatML format. No official sampling recommendations.
+# Conservative defaults to prevent repetition in hybrid SSM architecture.
+# 2026-05-24 empirical band-aid. NVIDIA's temp=1.0/top_p=1.0 reasoning
+# recipe risked max_tokens wandering on agentic clients (lesson from
+# Qwen3.6); reverted to temp=0.6 thinking. rep_pen=1.1 + dry=0.5 for
+# loop suppression. Tools at temp=0.6 per NVIDIA agentic recommendation.
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; NVIDIA ships penalty-free (greedy example) — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; if loop reappears use targeted dry on tools only
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; NVIDIA ships penalty-free (greedy example) — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; if loop reappears use targeted dry on tools only
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; NVIDIA ships penalty-free (greedy example) — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; if loop reappears use targeted dry on tools only
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0  # 2026-06-06: 1.1->1.0; NVIDIA ships penalty-free (greedy example) — band-aid removed
+dry_multiplier = 0.0      # 2026-06-06: 0.5->0.0; no vendor DRY. Re-gate; if loop reappears use targeted dry on tools only
+
+[behavior]
+# 2026-05-23 sweep: false → true. Project-wide default flipped to true
+# after F1 reflection-penalty removal eliminated the original Qwen3.6
+# <tool_call>-inside-<think> attractor that previously motivated
+# disabling. If Nemotron-H Nano's Think-Satisfy reappears in practice,
+# re-disable per-model here; see project_qwen36_thinking_fix.md.
+# This checkpoint's generation_config.json carries temperature=1.0 AND top_p=1.0
+# — the HF evaluation default, not a serving recipe. WITHOUT this opt-in, core
+# sampling falls through to those values and every preset above (0.6 thinking /
+# 0.7 non-thinking / 0.6 tools, top_p 0.95, top_k 20) is SILENTLY IGNORED, so any
+# client that does not send its own sampling params — opencode does not — decodes
+# completely unfiltered. Same fix and same reasoning as the Puzzle-75B sibling,
+# where it took tool-call pass rate 4/8 -> 7/8 on Holo. Explicit per-request
+# values from the client always win.
+use_sampling_presets_for_core = true
+thinking_in_tools = true
+# Bumped 256 → 1024 in pass-17: fib prompt's reasoning trace needs room to
+# complete (before bump, model hit budget mid-step and force-end-thinking
+# fired with the model still mid-reasoning, causing prose to spill into the
+# post-</think> content slot and break code extraction).
+max_thinking_budget = 2048
+# Nemotron-H Nano is a thinking-first model: it is trained to produce a
+# <think>...</think> reasoning trace before the final answer. Default to
+# thinking enabled so the server's reasoning parser (`deepseek_r1` style,
+# matching NVIDIA's shipped `nano_v3` parser) strips the block and returns
+# clean `content`. A tagless thinking-on output (cut off mid-think) is
+# treated as reasoning, never leaked into `content`.
+# Thinking OFF by default. Measured 2026-07-28 with the empty-system-block fix
+# already in place, so this is NOT that bug resurfacing: thinking ON leaks
+# training-corpus text into the answer ("My dog is named Rufus. What is my dog
+# called?" -> "The name you gave is **NAME_1**") and returns EMPTY content on
+# other prompts, exactly the pathology documented on the Puzzle-75B sibling.
+# Thinking OFF answers the same prompts correctly. Clients can still opt in
+# per request with chat_template_kwargs.enable_thinking.
+thinking_default = false
+# `max_thinking_budget` is the SOLE thinking cap — drop Atlas's second,
+# 90%-of-max_tokens clamp, which vLLM has no equivalent of and which
+# force-closes `</think>` mid-reasoning. Same fix as the Puzzle/Laguna
+# siblings.
+cap_thinking_at_max_tokens = false
+
+# This checkpoint's own chat template renders an EMPTY system turn when the
+# request carries no system message: `<|im_start|>system\n<|im_end|>`. That
+# empty turn ALONE degrades the model. Measured 2026-07-28, temperature 0,
+# identical user text, only the system block differing:
+#   empty system block   -> "My dog is named Rufus. What is my dog called?"
+#                           answers "Your dog's name is Rex."
+#   any system text      -> "Rufus"  (correct)
+#   no system block      -> "Rufus"  (correct)
+# The same user text through /v1/completions with no template at all is also
+# correct ("My dog is named Rufus. My dog is called" -> "Rufus"), so this is a
+# TEMPLATE pathology, not numerics: every weight in this checkpoint is consumed
+# in its own dtype (BF16 attention, 12 BF16 + 34 NVFP4 SSM projections, NVFP4
+# MoE) with no requantization anywhere.
+default_system_prompt = "You are a helpful assistant."
+
+# ── Kernel lookups this model may legitimately fail to resolve ──
+# Harvested 2026-08-03 from `spark serve --check-kernels` (9 lookups).
+# All are try_kernel() probes; every fallback path dispatch reaches
+# resolves on this target.
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = """
+3-deep weight-pipeline twin shipped ONLY in qwen3.6-27b's shadow.
+layers::tgemm_kernel probes it, falls back to w4a16_gemm_t (resolves
+on this target's shadow). UNMEASURED for this target — candidate, not
+loss."""
+w4a16_gemm_t_k64_p3 = "Same family; layers::k64_kernel falls back to the required w4a16_gemm_t_k64 (resolves here)."
+w4a16_gemm_t_k64_n64_p3 = "Narrow-N twin; layers::k64_n64_kernel returns 0-handle, dispatch gates on handle != 0."
+w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin; prefill_weights gates on handle != 0, falls back through the resolved w4a16 path."
+fp8_gemm_t_m128_mfast = """
+M128-mfast FP8 GEMM; nemotron_mamba2/prefill gates the probe
+(handle != 0 && n >= 512) and falls back to the bf16-A FP8 path that
+resolves from common w4a16."""
+fp8_fp8_gemm_t_m128_mfast = "Same family — the pre-cast-A fp8 path falls back to the bf16-A arm that resolves."
+
+[expected_absent.w4a4]
+w4a4_gemm_mfast = """
+Shipped only in nemotron-labs-3-puzzle-75b-a9b. nemotron_mamba2 probes
+it and falls back to w4a4_gemm (resolves from common). UNMEASURED."""
+
+[expected_absent.moe_w4a16]
+moe_w4a16_grouped_gemm_ptrtable_relu2 = """
+ReLU^2-gated grouped GEMM; shipped only in nemotron-labs-3-puzzle-75b's
+shadow. prefill_sorted gates on handle != 0 ('let fused = ...') and
+falls back to the base ptrtable grouped GEMM (resolves)."""
+
+[expected_absent.moe_w4a4]
+moe_w4a4_grouped_gemm_relu2 = """
+ReLU^2-gated W4A4 grouped GEMM; shipped only in nemotron-labs-3-puzzle's
+moe_w4a4_grouped.cu shadow. prefill_sorted gates on handle != 0 before
+firing; the base MoE path served by moe_w4a16 remains available."""

@@ -1,0 +1,546 @@
+{
+  "schema": 1,
+  "campaign": "hopper-atlas-vs-vllm-2026-09",
+  "note": "Atlas serve recipes for the campaign, one entry per (model_key, sku). Sourced from the campaign PRD section 6 (common flags and the per-model table) and the repo's own recipe fixtures under crates/spark-server/tests/fixtures/recipes/**.yaml; every flag name was checked against crates/spark-server/src/cli/serve_args.rs. A (model_key, sku) pair with no entry has no Atlas recipe and run_cell.sh exits 3 on it -- the PRD's reconstructed topologies (Qwen3-Next on 2xH100, GLM/Kimi/MiniMax/Qwen3.8 on Atlas at all) are absent on purpose rather than invented here. Every FP8-checkpoint entry carries --fp8-kv-calibration-tokens 256 (see per-entry notes); remove it only for a checkpoint proven to ship k_scale tensors.",
+  "launcher": "scripts/start-node-ep.sh",
+  "launcher_note": "The launcher owns --rank/--world-size/--ep-size/--tp-size/--gpu-ordinal/--port/--master-addr/--master-port/--no-tui, and adds --bind on rank 0 and --warmup-prompt from WARMUP_PROMPT. Those are therefore NOT in common_args: EXTRA_ARGS is appended verbatim to every rank and its header says not to put topology flags in it. The PRD section 6 common block lists --bind/--port/--no-tui/--warmup-prompt alongside the rest; this file splits them by owner so the same flag is never set twice from two places.",
+  "launcher_env": {
+    "BIND": "0.0.0.0",
+    "PORT_BASE": "8888",
+    "NCCL_PROFILE": "default",
+    "BOOT_TIMEOUT_S": "1800",
+    "WARMUP_PROMPT": "bench/hopper_ab/warmup_1024.txt"
+  },
+  "launcher_env_note": "NCCL_PROFILE=default is the Hopper/Blackwell setting and emits no NCCL_* variable at all: the gb10-roce block pins a NIC that does not exist on an H100 box, disables NVLink SHARP on a machine that has NVLink, and forces Ring/Simple onto an intra-node transport (PRD section 6.2). BOOT_TIMEOUT_S 1800 is the PRD boot gate. WARMUP_PROMPT is the autotune-killer; the file does not exist in-tree yet, so run_cell.sh drops it with a loud warning and records warmup_prompt null in the artifact rather than silently serving a cold first request.",
+  "common_args": [
+    "--request-timeout",
+    "0",
+    "--gpu-memory-utilization",
+    "0.90",
+    "--max-num-seqs",
+    "128",
+    "--max-batch-size",
+    "32",
+    "--enable-prefix-caching",
+    "true",
+    "--scheduling-policy",
+    "slai",
+    "--kv-cache-dtype",
+    "fp8",
+    "--kv-high-precision-layers",
+    "auto"
+  ],
+  "common_args_source": "PRD section 6, 'Common flags for every cell (from the ladder38 Atlas leg, adapted)'.",
+  "think_off_args": [
+    "--disable-thinking"
+  ],
+  "think_off_source": "PRD section 6: 'Think-off rows add --disable-thinking'.",
+  "spec_args": [
+    "--speculative",
+    "--num-drafts",
+    "3",
+    "--mtp-quantization",
+    "bf16"
+  ],
+  "spec_args_source": "PRD section 6: 'Spec-on rows add --speculative --num-drafts 3 --mtp-quantization bf16 (K=4) and the vLLM leg must use num_speculative_tokens: 3'. num-drafts is therefore matched 1:1 against the vLLM recipe's num_speculative_tokens; an entry whose paired vLLM recipe renders a different K carries its own spec_args override.",
+  "known_flag_prefixes": [
+    "--disable-thinking",
+    "--enable-prefix-caching",
+    "--gpu-memory-utilization",
+    "--kv-cache-dtype",
+    "--kv-high-precision-layers",
+    "--lm-head-dtype",
+    "--max-batch-size",
+    "--max-num-seqs",
+    "--max-prefill-tokens",
+    "--max-seq-len",
+    "--mtp-quantization",
+    "--num-drafts",
+    "--oom-guard-mb",
+    "--request-timeout",
+    "--scheduling-policy",
+    "--speculative",
+    "--ssm-cache-slots",
+    "--tool-call-parser",
+    "--fp8-kv-calibration-tokens"
+  ],
+  "known_flag_prefixes_note": "Frozen from this file's own contents at authoring time and cross-checked against the clap definitions in crates/spark-server/src/cli/serve_args.rs. Not re-derived from `entries` at load: a flag present in an entry but absent here was hand-edited in, which is exactly what the audit has to catch.",
+  "entries": [
+    {
+      "model_key": "nemotron-3-nano-fp8",
+      "sku": "h100",
+      "hf_id": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
+      "quant": "fp8",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {},
+      "extra_args": [
+        "--max-seq-len",
+        "32768",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": false,
+      "spec_args": null,
+      "pairable": true,
+      "sources": [
+        "PRD section 6.1 row 'Nemotron 3 Nano FP8'",
+        "crates/spark-server/tests/fixtures/recipes/nemotron-3-nano/nemotron-3-nano-30b-a3b-nvfp4.yaml"
+      ],
+      "notes": "No MTP: the recipe fixture states 'No MTP support' and the paired vLLM recipe declares no spec_decoding feature either, so both-or-neither resolves to spec off with no argument. FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "nemotron-3-nano-fp8",
+      "sku": "h200",
+      "hf_id": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
+      "quant": "fp8",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {},
+      "extra_args": [
+        "--max-seq-len",
+        "32768",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": false,
+      "spec_args": null,
+      "pairable": true,
+      "sources": [
+        "PRD section 6.1 row 'Nemotron 3 Nano FP8'",
+        "crates/spark-server/tests/fixtures/recipes/nemotron-3-nano/nemotron-3-nano-30b-a3b-nvfp4.yaml"
+      ],
+      "notes": "Same single-GPU shape as H100; H200's extra HBM is headroom, not a topology change. FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "nemotron-3-nano-fp8",
+      "sku": "b200",
+      "hf_id": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
+      "quant": "fp8",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {},
+      "extra_args": [
+        "--max-seq-len",
+        "32768",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": false,
+      "spec_args": null,
+      "pairable": true,
+      "sources": [
+        "PRD section 6.1 row 'Nemotron 3 Nano FP8'",
+        "PRD section 8 B200 row"
+      ],
+      "notes": "FP8 on B200, not NVFP4: the hand-written W4A4 MoE GEMM uses a consumer-Blackwell warp instruction ptxas rejects on sm_100a, so Atlas B200 rows stay FP8 until a tcgen05/Sm100 port (PRD section 8). FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "nemotron-3-nano-fp8",
+      "sku": "gb10",
+      "hf_id": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
+      "quant": "nvfp4",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {
+        "--gpu-memory-utilization": "0.88"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "8192"
+      ],
+      "spec_supported": false,
+      "spec_args": null,
+      "pairable": false,
+      "sources": [
+        "crates/spark-server/tests/fixtures/recipes/nemotron-3-nano/nemotron-3-nano-30b-a3b-nvfp4.yaml"
+      ],
+      "notes": "Rehearsal row on the GB10 dev box. NOT pairable: the upstream vLLM recipe endpoint 404s for dgx_spark_gb10, so no control leg exists and a gb10 cell can never reach CERTIFIED. Quant is nvfp4 and max-seq-len 8192 because that is what the fixture pins; both differ from the scored Hopper rows."
+    },
+    {
+      "model_key": "nemotron-3-super-fp8",
+      "sku": "h100",
+      "hf_id": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+      "quant": "fp8",
+      "ngpus": 2,
+      "ep_size": 2,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {},
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--ssm-cache-slots",
+        "0",
+        "--tool-call-parser",
+        "bare_json",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": false,
+      "spec_args": null,
+      "pairable": true,
+      "sources": [
+        "PRD section 6.1 row 'Nemotron 3 Super FP8'",
+        "crates/spark-server/tests/fixtures/recipes/nemotron-3-super/nemotron-3-super-120b-a12b-nvfp4.yaml",
+        "kernels/gb10/nemotron-super-120b-a12b/MODEL.toml"
+      ],
+      "notes": "EP=2 is the only validated Super layout. Tool parser is bare_json, not the fixture's qwen3_coder: MODEL.toml pins bare_json and documents the qwen3_coder token loop. Spec is off by default -- the fixture's `speculative: true` conflicts with MTP_SUPPORTED_MODEL_TYPES in crates/spark-model/src/preflight.rs and has to be verified on the box before it can be turned on. The paired vLLM recipe DOES declare MTP K3, so both-or-neither resolves to spec off for the pair. FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "nemotron-3-super-fp8",
+      "sku": "h200",
+      "hf_id": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+      "quant": "fp8",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": false,
+      "overrides": {
+        "--gpu-memory-utilization": "0.92"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--ssm-cache-slots",
+        "0",
+        "--tool-call-parser",
+        "bare_json",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": false,
+      "spec_args": null,
+      "pairable": true,
+      "sources": [
+        "PRD section 6.1 row 'Nemotron 3 Super FP8' ('1xH200 / 1xB200 may fit at util 0.92')"
+      ],
+      "notes": "Single-GPU fit at util 0.92 is a PRD best guess, not a measurement -- UNVERIFIED until the box says so. The paired vLLM h200 recipe is TP8, so topology.matched will be false and recipe_max false for this row; that is a footnoted matched-topology cell (PRD phase C stop rule), not a defect. FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "nemotron-3-super-fp8",
+      "sku": "b200",
+      "hf_id": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+      "quant": "fp8",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": false,
+      "overrides": {
+        "--gpu-memory-utilization": "0.92"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--ssm-cache-slots",
+        "0",
+        "--tool-call-parser",
+        "bare_json",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": false,
+      "spec_args": null,
+      "pairable": true,
+      "sources": [
+        "PRD section 6.1 row 'Nemotron 3 Super FP8'",
+        "PRD section 7 row 'Nemotron 3 Super FP8 | 1xB200'"
+      ],
+      "notes": "The paired vLLM b200 recipe is TP1 on one GPU, so this is the one Super row where the topologies match. recipe_max is false all the same: EP=2 is the layout the PRD calls validated, and one GPU is a step down from it. FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "nemotron-3-super-fp8",
+      "sku": "gb10",
+      "hf_id": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+      "quant": "nvfp4",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": false,
+      "overrides": {
+        "--gpu-memory-utilization": "0.92"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--ssm-cache-slots",
+        "0",
+        "--tool-call-parser",
+        "bare_json"
+      ],
+      "spec_supported": false,
+      "spec_args": null,
+      "pairable": false,
+      "sources": [
+        "crates/spark-server/tests/fixtures/recipes/nemotron-3-super/nemotron-3-super-120b-a12b-nvfp4.yaml"
+      ],
+      "notes": "Rehearsal row on the GB10 dev box; not pairable (no vLLM gb10 profile)."
+    },
+    {
+      "model_key": "qwen3.6-35b-a3b-fp8",
+      "sku": "h100",
+      "hf_id": "Qwen/Qwen3.6-35B-A3B-FP8",
+      "quant": "fp8",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {},
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--max-prefill-tokens",
+        "32768",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": true,
+      "spec_args": null,
+      "pairable": true,
+      "sources": [
+        "PRD section 6.1 row 'Qwen3.6-35B-A3B FP8'",
+        "crates/spark-server/tests/fixtures/recipes/qwen3.6/qwen3.6-35b-a3b-fp8-mtp.yaml"
+      ],
+      "notes": "Two deliberate divergences from the GB10 fixture, both because the campaign's common block is the SSOT for a cell: the fixture pins bf16 KV and max_batch_size 2 (a GB10 memory constraint plus the atlas#110 workaround), the campaign pins fp8 KV and max-batch-size 32. Record the divergence in the artifact notes if a Hopper OOM forces the fixture values back. Spec matches the vLLM recipe's mtp K3 with the default --num-drafts 3. FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "qwen3.6-35b-a3b-fp8",
+      "sku": "h200",
+      "hf_id": "Qwen/Qwen3.6-35B-A3B-FP8",
+      "quant": "fp8",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {},
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--max-prefill-tokens",
+        "32768",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": true,
+      "spec_args": null,
+      "pairable": true,
+      "sources": [
+        "PRD section 6.1 row 'Qwen3.6-35B-A3B FP8'",
+        "crates/spark-server/tests/fixtures/recipes/qwen3.6/qwen3.6-35b-a3b-fp8-mtp.yaml"
+      ],
+      "notes": "The 27B head-to-head SKU in the PRD section 5 rental order. Topology matches the vLLM TP1 recipe. FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "qwen3.6-35b-a3b-fp8",
+      "sku": "b200",
+      "hf_id": "Qwen/Qwen3.6-35B-A3B-FP8",
+      "quant": "fp8",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {},
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--max-prefill-tokens",
+        "32768",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": true,
+      "spec_args": null,
+      "pairable": true,
+      "sources": [
+        "PRD section 6.1 row 'Qwen3.6-35B-A3B FP8'",
+        "PRD section 8 B200 row"
+      ],
+      "notes": "FP8 on B200 until the NVFP4 Sm100 port lands (PRD section 8). FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "qwen3.6-35b-a3b-fp8",
+      "sku": "gb10",
+      "hf_id": "Qwen/Qwen3.6-35B-A3B-FP8",
+      "quant": "fp8",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {
+        "--gpu-memory-utilization": "0.88"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "65536",
+        "--max-prefill-tokens",
+        "32768",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": true,
+      "spec_args": null,
+      "pairable": false,
+      "sources": [
+        "crates/spark-server/tests/fixtures/recipes/qwen3.6/qwen3.6-35b-a3b-fp8-mtp.yaml"
+      ],
+      "notes": "Rehearsal row on the GB10 dev box; not pairable (no vLLM gb10 profile). The fixture's own gpu_memory_utilization 0.88 is restored here because on GB10 it is a hard fit, not a preference. FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "qwen3-next-80b-fp8",
+      "sku": "h200",
+      "hf_id": "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8",
+      "quant": "fp8",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {},
+      "extra_args": [
+        "--max-seq-len",
+        "32768",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": true,
+      "spec_args": [
+        "--speculative",
+        "--num-drafts",
+        "2",
+        "--mtp-quantization",
+        "bf16"
+      ],
+      "pairable": true,
+      "sources": [
+        "PRD section 6.1 row 'Qwen3-Next-80B-A3B Instruct FP8'",
+        "crates/spark-server/tests/fixtures/recipes/qwen3-next/qwen3-next-80b-a3b-nvfp4.yaml"
+      ],
+      "notes": "--num-drafts 2 overrides the common 3 to match the vLLM recipe's qwen3_next_mtp num_speculative_tokens: 2 (the PRD's own 1:1 mapping between the two knobs). --max-seq-len 32768 is Atlas's own default pinned explicitly; the fixture's 8192 is a GB10 memory constraint and does not apply here -- UNVERIFIED on H200. Instruct supports only non-thinking, so think-on rows are not defined for this model. FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "qwen3-next-80b-fp8",
+      "sku": "b200",
+      "hf_id": "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8",
+      "quant": "fp8",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {},
+      "extra_args": [
+        "--max-seq-len",
+        "32768",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": true,
+      "spec_args": [
+        "--speculative",
+        "--num-drafts",
+        "2",
+        "--mtp-quantization",
+        "bf16"
+      ],
+      "pairable": true,
+      "sources": [
+        "PRD section 6.1 row 'Qwen3-Next-80B-A3B Instruct FP8'"
+      ],
+      "notes": "Same shape as H200. There is deliberately NO h100 entry: the PRD marks the requested 2xH100 layout reconstructed and the rendered vLLM h100 profile is TP8, so an Atlas h100 row would be a guess on both sides. FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "qwen3-next-80b-fp8",
+      "sku": "gb10",
+      "hf_id": "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4",
+      "quant": "nvfp4",
+      "ngpus": 1,
+      "ep_size": 1,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {
+        "--gpu-memory-utilization": "0.88"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "8192"
+      ],
+      "spec_supported": true,
+      "spec_args": [
+        "--speculative",
+        "--num-drafts",
+        "2",
+        "--mtp-quantization",
+        "bf16"
+      ],
+      "pairable": false,
+      "sources": [
+        "crates/spark-server/tests/fixtures/recipes/qwen3-next/qwen3-next-80b-a3b-nvfp4.yaml"
+      ],
+      "notes": "Rehearsal row on the GB10 dev box; not pairable (no vLLM gb10 profile)."
+    },
+    {
+      "model_key": "deepseek-v4-flash",
+      "sku": "h200",
+      "hf_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "quant": "fp8",
+      "ngpus": 8,
+      "ep_size": 8,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {
+        "--max-batch-size": "1"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "32768",
+        "--oom-guard-mb",
+        "512",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": false,
+      "spec_args": null,
+      "pairable": true,
+      "sources": [
+        "PRD section 6.1 row 'DeepSeek V4-Flash FP8'",
+        "crates/spark-server/tests/fixtures/recipes/deepseek-v4/deepseek-v4-flash-nvfp4-ep2.yaml"
+      ],
+      "notes": "TP is impossible: num_key_value_heads=1 (MQA), so EP=8 TP=1 is the only layout. --max-batch-size 1 is the PRD's start value, to be raised stepwise once the cell boots. No --tool-call-parser: deepseek_v4 is accepted by the parser but missing from flag_values.rs, so auto-resolution is the supported path. Spec OFF on Atlas -- the public checkpoint ships no usable MTP and docs/deepseek_v4_mtp_support.md is a design, not shipped -- while the vLLM h200 recipe renders DSpark K1 ON by default, so the control leg must be run with --spec off to keep both-or-neither. hf_id is the -0731 checkpoint the vLLM recipe serves, chosen for weight parity; that Atlas loads that exact checkpoint is UNVERIFIED. FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    },
+    {
+      "model_key": "deepseek-v4-flash",
+      "sku": "b200",
+      "hf_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "quant": "fp8",
+      "ngpus": 4,
+      "ep_size": 4,
+      "tp_size": 1,
+      "recipe_max": true,
+      "overrides": {
+        "--max-batch-size": "1"
+      },
+      "extra_args": [
+        "--max-seq-len",
+        "32768",
+        "--oom-guard-mb",
+        "512",
+        "--fp8-kv-calibration-tokens",
+        "256"
+      ],
+      "spec_supported": false,
+      "spec_args": null,
+      "pairable": true,
+      "sources": [
+        "PRD section 6.1 row 'DeepSeek V4-Flash FP8' ('4xB200 EP=4')"
+      ],
+      "notes": "The paired vLLM b200 recipe is TEP8 on eight GPUs, so topology.matched is false for this row -- a footnoted matched-topology cell. recipe_max stays true: EP=4 on four B200s is what the PRD's own Atlas row renders, not a step down from it. Spec off on both, as on H200. FP8 KV calibration: FP8 checkpoints that ship no *.k_scale tensors get scale 1.0, which clips BF16 into E4M3 (spark-runtime weights.rs fp8_kv_scale_count); the GB10 rehearsal of 2026-09-05 (Nano FP8 through the nvfp4 bundle, 'missing FP8 KV scale tensors, default 1.0') produced degenerate output. 256 calibration tokens is the value kernels/gb10/qwen3.6-35b-a3b/MODEL.toml uses for its FP8 checkpoint. Applies only with --kv-cache-dtype fp8."
+    }
+  ],
+  "recipe_max_note": "recipe_max is true when the entry's topology is the maximum Atlas's own recipe renders for that SKU, and false when the campaign stepped down from it. It is independent of topology.matched, which is about the OTHER engine."
+}

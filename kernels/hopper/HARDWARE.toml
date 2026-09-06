@@ -1,0 +1,34 @@
+[hardware]
+name = "hopper"
+vendor = "nvidia"
+# H100 SXM5 / H200 SXM5 — both SM 9.0. `sm_90a` enables the arch-specific
+# Hopper feature set (wgmma/TMA/setmaxnreg) for kernels that opt in; the
+# shared gb10-derived kernels below use none of it yet and compile as
+# plain sm_90 code. PTX built for sm_90a is NOT forward-compatible with
+# sm_100/sm_120 devices — this target is Hopper-only by design.
+arch = "sm_90a"
+compute_capability = "9.0"
+# H100 SXM5 80 GB HBM3: 3350 GB/s. H200 SXM5 141 GB HBM3e: 4800 GB/s.
+# Sized to the smaller SKU; the runtime reads real free memory via
+# cuMemGetInfo, this is documentation + roofline input only.
+memory_bandwidth_gbps = 3350
+memory_type = "HBM3"
+memory_gb = 80
+
+# Flags added to EVERY kernel compiled for this hardware, under
+# common/KERNEL.toml's and the model's (build_flags::merge_extra_flags).
+#
+# ATLAS_NO_WARP_BLOCKSCALE_MMA compiles out the W4A4 path in
+# qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu. Hopper has no NVFP4
+# datapath, so `cvt.rn.satfinite.e2m1x2.f32` and the warp-level
+# `mma.sync ... .kind::mxf4nvf4.block_scale` do not exist here — ptxas:
+# "Instruction 'cvt with .e2m1x2' not supported on .target 'sm_90a'"
+# (measured 2026-09-05, CUDA 13.0.88; receipt under
+# docs/campaigns/hopper-atlas-vs-vllm-2026-09/receipts/).
+#
+# A hardware-level define, not a per-model one, because it is a fact about
+# the ISA and because every KERNEL.toml under this tree is a symlink into
+# kernels/gb10 — saying it per model would fork a shared file once per
+# model, which tests/inherited_targets.rs forbids.
+[build]
+extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]

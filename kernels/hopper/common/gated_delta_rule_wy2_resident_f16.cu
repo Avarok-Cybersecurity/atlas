@@ -1,0 +1,1 @@
+../../gb10/common/gated_delta_rule_wy2_resident_f16.cu

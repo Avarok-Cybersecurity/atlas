@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use atlas_core::registry::AtlasRegistry;
 
+pub mod arch_preflight;
 mod fault_probe;
 mod gpu_copy;
 mod gpu_impl;
@@ -48,6 +49,11 @@ unsafe extern "C" {
     /// Device of the calling context, then any `CUdevice_attribute` on it.
     /// Used for `sm_count` (attribute 16 = MULTIPROCESSOR_COUNT).
     pub(super) fn cuCtxGetDevice(device: *mut i32) -> i32;
+    /// The `CUdevice` for a device ORDINAL. Unlike `cuCtxGetDevice` this reads
+    /// no thread-current state — it needs `cuInit` and nothing else — so it is
+    /// the only one of the pair usable before a context is bound to the
+    /// calling thread. See `arch_preflight`.
+    pub(super) fn cuDeviceGet(device: *mut i32, ordinal: i32) -> i32;
     pub(super) fn cuDeviceGetAttribute(pi: *mut i32, attrib: u32, dev: i32) -> i32;
     pub(super) fn cuMemsetD8Async(dst: u64, value: u8, n: usize, stream: u64) -> i32;
     // CUDA graph capture/replay

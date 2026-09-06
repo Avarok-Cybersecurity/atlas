@@ -206,3 +206,163 @@ jobs:
           # resolved target has at least 31 modules, and default-model lookup
           # resolves.
           cargo test -p atlas-kernels -- --ignored
+
+  # The second NVIDIA architecture. `kernels/hopper/` is 218 symlinks into
+  # `kernels/gb10/`, so nothing above compiles a single line of it for sm_90a —
+  # the gb10 job builds those same sources for sm_121f and a target that
+  # differs only in `-arch=` is exactly the kind of difference a compile finds.
+  #
+  # A SEPARATE JOB, not a matrix leg on `compile`. Turning that job into a
+  # matrix renames its check (`nvcc -> PTX (all gb10 targets)` becomes
+  # `... (gb10)`), and it is in the required set: branch protection would keep
+  # waiting on a check name that no longer exists, and every PR would hang on
+  # it. Renaming a required check needs a branch-protection change that cannot
+  # be made or verified from inside a PR, so this adds a check instead of
+  # moving one.
+  #
+  # One model, not `*`: hopper's five model targets share the same 171
+  # `common/` sources, so the additional five-sixths of the work re-compiles
+  # the same files with the same flags and finds nothing the first target did
+  # not. `scripts/hopper_ptx_gate.sh` is what covers all five; it runs on a
+  # CUDA box, off the PR path.
+  compile-hopper:
+    name: nvcc -> PTX (hopper, sm_90a)
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    container: nvidia/cuda:13.0.2-devel-ubuntu24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust
+        run: |
+          set -euo pipefail
+          apt-get update -qq && apt-get install -y -qq curl build-essential pkg-config >/dev/null
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Compile the hopper Nemotron-Super target
+        env:
+          # ★ NOT set to 1, same as the gb10 job.
+          ATLAS_TARGET_HW: hopper
+          ATLAS_TARGET_MODEL: nemotron-super-120b-a12b
+          CUDARC_CUDA_VERSION: "13000"
+          PATH_CUDA: /usr/local/cuda/bin
+        run: |
+          set -euo pipefail
+          export PATH="$PATH_CUDA:$PATH"
+          nvcc --version | tail -2
+          cargo build -p atlas-kernels 2>&1 | tail -40
+
+      - name: Confirm kernels were actually compiled
+        run: |
+          set -euo pipefail
+          # Same reasoning as the gb10 job: assert a REAL generated registry
+          # exists, not that no stub does — cargo keeps one `out/` per
+          # build-script fingerprint and never prunes the old ones.
+          real=$(find target -name 'target_ptx.rs' -exec head -1 {} + 2>/dev/null \
+                   | grep -c 'do not edit' || true)
+          if [ "${real:-0}" -eq 0 ]; then
+            echo "::error::the generated target_ptx.rs is build.rs's SKIP STUB — nvcc was never invoked."
+            exit 1
+          fi
+          ptx=$(find target -name '*.ptx' | wc -l)
+          echo "compiled $ptx PTX module(s) for sm_90a"
+          # One target over `kernels/hopper/common` (171 sources) plus its own
+          # shadows. 50 only asserts resolution did not collapse.
+          if [ "$ptx" -lt 50 ]; then
+            echo "::error::only $ptx PTX modules — the build resolved too few targets"
+            exit 1
+          fi
+
+      # Deliberately NOT `cargo test -p atlas-kernels -- --ignored` here. Those
+      # registry tests pin a gb10 MULTI-target build by name — `ptx_for_model`
+      # expects a compiled qwen3-next target, and the dense-27B tie-break case
+      # expects qwen3.6-27b and qwen3.8-27b. Running them against a
+      # single-target hopper registry would fail for reasons that say nothing
+      # about Hopper.
+
+  # The third NVIDIA architecture. `kernels/b200/` is 218 symlinks into
+  # `kernels/gb10/`, so — exactly as with hopper — nothing above compiles a
+  # line of it for sm_100a, and sm_100a is not a superset of anything already
+  # built: `sm_121f` is a different major family, and the warp-level
+  # `mma ... kind::mxf4nvf4.block_scale` the gb10 job compiles happily does NOT
+  # exist there. A target that differs only in `-arch=` is exactly the kind of
+  # difference a compile finds.
+  #
+  # A SEPARATE JOB for the same reason `compile-hopper` is one: `compile` is in
+  # the required set, and folding these into a matrix renames its check, which
+  # branch protection would then wait on forever.
+  #
+  # One model, not `*`: b200's five model targets share the same 171 `common/`
+  # sources, so the other four-fifths recompile the same files with the same
+  # flags. `scripts/hopper_ptx_gate.sh --hw b200` covers all five; it runs on a
+  # CUDA box, off the PR path.
+  #
+  # nemotron-super-120b-a12b, matching the hopper job — and deliberately NOT
+  # qwen3.6-35b-a3b, whose `moe_w4a16_grouped_gemm.cu` is known not to compile
+  # for sm_100a (measured; see docs/HARDWARE.md). A required check must be red
+  # only for regressions, and that one is a documented gap with an open fix.
+  compile-b200:
+    name: nvcc -> PTX (b200, sm_100a)
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    container: nvidia/cuda:13.0.2-devel-ubuntu24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust
+        run: |
+          set -euo pipefail
+          apt-get update -qq && apt-get install -y -qq curl build-essential pkg-config >/dev/null
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Compile the b200 Nemotron-Super target
+        env:
+          # ★ NOT set to 1, same as the gb10 and hopper jobs.
+          ATLAS_TARGET_HW: b200
+          ATLAS_TARGET_MODEL: nemotron-super-120b-a12b
+          CUDARC_CUDA_VERSION: "13000"
+          PATH_CUDA: /usr/local/cuda/bin
+        run: |
+          set -euo pipefail
+          export PATH="$PATH_CUDA:$PATH"
+          nvcc --version | tail -2
+          cargo build -p atlas-kernels 2>&1 | tail -40
+
+      - name: Confirm kernels were actually compiled
+        run: |
+          set -euo pipefail
+          # Same reasoning as the other two jobs: assert a REAL generated
+          # registry exists, not that no stub does — cargo keeps one `out/` per
+          # build-script fingerprint and never prunes the old ones.
+          real=$(find target -name 'target_ptx.rs' -exec head -1 {} + 2>/dev/null \
+                   | grep -c 'do not edit' || true)
+          if [ "${real:-0}" -eq 0 ]; then
+            echo "::error::the generated target_ptx.rs is build.rs's SKIP STUB — nvcc was never invoked."
+            exit 1
+          fi
+          ptx=$(find target -name '*.ptx' | wc -l)
+          echo "compiled $ptx PTX module(s) for sm_100a"
+          if [ "$ptx" -lt 50 ]; then
+            echo "::error::only $ptx PTX modules — the build resolved too few targets"
+            exit 1
+          fi
+
+      # Deliberately NOT `cargo test -p atlas-kernels -- --ignored`, for the
+      # same reason as the hopper job: those registry tests pin a gb10
+      # MULTI-target build by name.
