@@ -462,7 +462,13 @@ jobs:
           run "harvest triage decision table" bash .github/scripts/harvest-triage-test.sh
           run "Enforce <=500 LoC per source file" bash .github/scripts/check-file-size-cap.sh
           run "Verify committed GDN binaries match PINS.sha256" bash .github/scripts/check-gdn-so-pins.sh
-          run "No block_on under tui/ or recipe/"  bash .github/scripts/check-no-block-on.sh
+          # SCAN_DIRS is the SSOT for the trees the render-thread rule covers;
+          # the standalone job passes it via `env:`, so the batch must too, or
+          # the script dies on `set -u`. Read it from the workflow rather than
+          # repeating the value — a third copy is a third opinion.
+          run "No block_on under tui/ or recipe/" \
+            env SCAN_DIRS="$(python3 -c "import yaml;d=yaml.safe_load(open('.github/workflows/tui-threading.yml'));j=d['jobs'][list(d['jobs'])[0]];print(next(s['env']['SCAN_DIRS'] for s in j['steps'] if s.get('env',{}).get('SCAN_DIRS')))")" \
+            bash .github/scripts/check-no-block-on.sh
           run "Merge-ancestry guard self-test" bash scripts/check_merge_ancestry_test.sh
           run "the certification self-test is still wired" python3 .github/scripts/assert-selftest-wired.py
 
@@ -530,6 +536,26 @@ jobs:
       # violation. Stdlib-only; the runner's system python3 suffices.
       - run: python3 scripts/check_kernel_shadows.py
 
+  bench-threshold-prose:
+    name: BENCH.toml threshold prose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # A threshold's comment is what a reader consults to decide whether a
+      # measurement is healthy, and nothing made it track the value beside it.
+      # It drifted: c9a682734f moved `server_decode_tok_s` from 27.0 to 21.0
+      # in a one-line TOML-only change and left the paragraph above it saying
+      # "Floor 27.0", so the file advertised a bar 6 tok/s above the gate for
+      # weeks. This is its own job rather than a step appended to another
+      # suite -- an appended check that lands after a summary/exit line never
+      # runs, which has already happened here four times.
+      #
+      # The script runs its OWN fixtures first and fails if any rule proves
+      # unable to fire, so a rule loosened into inertness is caught here and
+      # not by nobody. Deliberately narrow; its limits are in its docstring.
+      # Seconds, stdlib-only python3, no GPU, no network.
+      - run: python3 scripts/check_bench_threshold_prose.py
+
   harvest-triage:
     name: harvest triage decision table
     runs-on: >-
@@ -547,6 +573,14 @@ jobs:
       # now a script with a table of those exact cases behind it. Seconds, no
       # GPU, no network.
       - run: bash .github/scripts/harvest-triage-test.sh
+
+  serve-matrix-gate:
+    name: serve matrix verdict contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Exercise release evidence and subprocess failure paths without a GPU.
+      - run: python3 -m unittest discover -s tests -p 'test_gate_results*.py' -v
 
   test:
     name: cargo test --workspace
@@ -664,13 +698,40 @@ jobs:
       # run on a developer machine; default `cargo test` skips them.
       - name: cargo test -p spark-runtime --features metal
         env:
-          # The workflow-wide ATLAS_SKIP_BUILD=1 stubs atlas-kernels' build
-          # script, so `metallib_modules()` is EMPTY and every parity test
-          # fails with `Metal: unknown module '...'`. That never showed on
-          # GitHub-hosted macOS runners because MTLCreateSystemDefaultDevice
-          # returns null there and the tests skip themselves; on a real Mac
-          # (the self-hosted M5) they run and go red. This step is the one
-          # place the metal kernel set must actually be built.
+          # ★ ATLAS_SKIP_BUILD=0, overriding the workflow-level "1".
+          #
+          # Reached independently three times (TheTom's #907, #909, #911); this
+          # is #911's writeup, kept because it names the guards.
+          #
+          # This job used to inherit `ATLAS_SKIP_BUILD: "1"` from the top of
+          # this file, which exists so the ubuntu jobs can type-check without
+          # nvcc. atlas-kernels' build.rs honours it FIRST -- before the
+          # macOS/ATLAS_TARGET_HW logic -- and emits a stub whose
+          # `metallib_modules()` returns `Vec::new()`. `MetalGpuBackend::new`
+          # then builds an EMPTY library cache (an empty module slice is not an
+          # error to it) and every pipeline lookup dies with
+          # `Metal: unknown module '<name>'`, so all 35 parity tests failed
+          # instantly and this required context was red on every non-web PR --
+          # red about the stub, never about the kernels.
+          #
+          # The Metal compile path is implemented, not stubbed:
+          # build_target.rs `AppleTarget` (xcrun -sdk macosx metal -> AIR ->
+          # metallib), reached from `resolve_compute_target("apple")`, over the
+          # 43 `.metal` sources under kernels/metal/ whose HARDWARE.toml
+          # declares `vendor = "apple"`. So the fix is to let it run, not to
+          # skip the suite: a suite told not to build the thing it tests can
+          # neither fail for a real defect nor pass meaningfully, and a skip
+          # that survived Phase 2 would be the same bug wearing green.
+          #
+          # `.github/scripts/assert-gates-are-wired.py` pins this statically and
+          # `metal_backend::tests::embedded_kernels` refuses at RUNTIME if the
+          # embedded metallib set is ever empty again, so the stub cannot come
+          # back quietly by either route.
+          #
+          # This never showed on GitHub-hosted macOS runners: there
+          # MTLCreateSystemDefaultDevice returns null and the tests skip
+          # themselves. On a real Mac (the self-hosted M5) they run, and go
+          # red. This step is the one place the metal kernel set is built.
           ATLAS_SKIP_BUILD: "0"
           ATLAS_TARGET_HW: metal
           ATLAS_TARGET_MODEL: qwen3-5-4b-vlm-mlx-int8
@@ -859,7 +920,28 @@ jobs:
               printf '%s\n' "$d"
             } >> "$GITHUB_OUTPUT"
           }
-          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed.txt || true
+          # ★ NO `|| true` HERE. The redirect truncates `changed.txt` before
+          # git runs, so a failed diff leaves it EMPTY -- and empty is not a
+          # value this step is allowed to emit. Every consumer reads it as a
+          # measurement: `count=0`, an empty histogram, an empty path list,
+          # and a classifier prompt that says "Changed paths (0 total)". That
+          # is the classifier running on the PR's TITLE AND BODY ALONE, which
+          # is exactly the bypass the ★ note on the classify step says was
+          # closed -- reopened by a transient git failure, silently, and with
+          # the model's confident answer appended to the journey ledger as
+          # evidence. The deterministic fallback cannot save it either: its
+          # `all_match` requires `total > 0`, so it abstains too.
+          #
+          # `base.sha` can genuinely be unreachable (force-pushed away from the
+          # base branch and garbage-collected) even under `fetch-depth: 0`. That
+          # is a real condition, and the honest response is to fail this job --
+          # it is advisory and nothing `needs:` it, so red here blocks no merge
+          # and buys a cause one click away, the same trade `implied_benches`
+          # below already makes.
+          if ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed.txt; then
+            echo "::error title=Changed paths unavailable::git diff $BASE_SHA..$HEAD_SHA failed. Refusing to classify from the title and body alone -- an empty path list would read as a PR that changes nothing."
+            exit 1
+          fi
           total=$(wc -l < changed.txt)
           echo "count=$total" >> "$GITHUB_OUTPUT"
           # TWO views of the same diff, complementary by construction:
@@ -1420,20 +1502,39 @@ jobs:
         # individually valid and signed, which is exactly the "different records
         # at different commits" this feature exists to prevent.
         #
-        # It lives here rather than in `gate/check.rs` for one blunt reason:
-        # `crates/` is a measured input (PERF_PATHS), so editing the Rust gate
-        # would invalidate every record the campaign certifying THIS PR just
-        # produced, costing a five-hour re-measure to add a rule about
-        # bookkeeping. @human-review: fold it into the Rust gate in a follow-up
-        # so the verdict has a single home.
+        # The verdict itself is in Rust now (`gate::agreement`, invoked below).
+        # It lived in bash only because `crates/` is a measured input, so
+        # editing the Rust gate would have invalidated the in-flight campaign's
+        # records for the sake of a bookkeeping rule. What stays here is the
+        # collection of the added files and the unsigned-record check, which
+        # need git and the working tree rather than the registry.
         if: github.event_name == 'pull_request'
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           base=$(git merge-base "$BASE" HEAD)
+          # ★ The enumeration is checked SEPARATELY from the filter.
+          #
+          # `mapfile -t added < <(git diff ... | grep ...)` reports the status
+          # of `mapfile`, never of the pipeline inside the process
+          # substitution -- `set -euo pipefail` does not reach in there. So a
+          # failed `git diff` produced an EMPTY list, and an empty list is the
+          # one input this guard reads as "nothing to check": it printed "this
+          # PR adds no records" and exited 0, waving through every unsigned
+          # record, every cross-commit record set, and every second signer it
+          # exists to stop. A guard that cannot see its input must not report
+          # that the input was clean.
+          #
+          # `|| true` stays on the GREP, where it means what it says: no match
+          # is grep's normal "nothing found", not a failure to look.
+          if ! git diff --name-only --diff-filter=AM "$base"...HEAD -- .benchmarks \
+               > added_all.txt; then
+            echo "::error title=Cannot enumerate added records::git diff $base...HEAD failed, so this step could not see which records the PR adds. It is NOT reporting that the PR adds none."
+            exit 1
+          fi
           # `.json$` also drops the `.json.sig` sidecars, which are read below.
-          mapfile -t added < <(git diff --name-only --diff-filter=AM "$base"...HEAD -- .benchmarks | grep '\.json$' || true)
+          mapfile -t added < <(grep '\.json$' added_all.txt || true)
           if [ "${#added[@]}" -eq 0 ]; then
             echo "this PR adds no records — nothing to agree on."
             exit 0
@@ -1463,17 +1564,21 @@ jobs:
             echo "::error title=Unsigned record added::${#missing[@]} record(s) added by this PR have no .json.sig. A record introduced by a PR is never exempt from signing, whatever its recorded_at says. Commit the sidecar the CLI wrote beside each record."
             exit 1
           fi
-          us=$(printf '%s\n' "${shas[@]}" | sort -u | wc -l)
-          uk=$(printf '%s\n' "${keys[@]}" | sort -u | wc -l)
-          if [ "$us" -ne 1 ]; then
-            echo "::error title=Records span more than one commit::This PR adds records measured at $us different commits. A certification is ONE campaign at ONE commit; re-measure the stragglers at the head you intend to merge."
-            exit 1
-          fi
-          if [ "$uk" -ne 1 ]; then
-            echo "::error title=Records carry more than one signer::$uk distinct signing keys across the added records. One campaign, one box, one identity."
-            exit 1
-          fi
-          echo "all ${#added[@]} added record(s) agree: one commit (${shas[0]}), one signer (${keys[0]})."
+          # The commit/signer verdict now lives in Rust
+          # (`gate::agreement`), which is the only place that can read a
+          # benchmark's Sensitivity from the registry. Signer agreement is
+          # class-conditional: Speed gates (thermally corruptible, and measured
+          # 0.66 tok/s apart between two boxes against a 0.07 within-box sigma)
+          # must come from ONE box; Correctness gates are box-independent (the
+          # same BFCL gate on two boxes at one sha returned byte-identical
+          # 86.55 / 86.95 / n=1004), so they may span registered signers -- which
+          # is what lets a sharded gate run four ways at once. One COMMIT is
+          # still universal.
+          #
+          # This resolves the @human-review left above: the rule was in bash
+          # only because editing crates/ would have invalidated the records of
+          # the campaign then in flight. This PR is buying a campaign anyway.
+          cargo run --locked -q -p atlas-plugin --bin record_agreement -- "${added[@]}"
 
       - name: Check committed benchmark records against their baselines
         env:

@@ -52,15 +52,22 @@ mod preempt_tests;
 mod prefill_a_step;
 mod prefill_a_step_params;
 mod prefill_b_step;
+#[cfg(test)]
+mod prefill_fifo_tests;
 mod repetition;
 mod rollback;
 mod sample_step;
 pub mod sched_ctx;
+mod shutdown_drain;
+#[cfg(test)]
+mod shutdown_drain_tests;
 pub mod snapshot;
 mod spec_capacity;
 pub mod spec_stats;
 mod spec_step;
 mod ssm_decode_ring;
+#[cfg(test)]
+mod swap_out_tests;
 mod teardown;
 #[cfg(test)]
 mod test_support;
@@ -1101,22 +1108,13 @@ pub fn run(
     for mut a in active {
         finish_sequence(&*model, &mut a, sched.limits.max_seq_len);
     }
-    if let Some(ref mut spill) = spill_manager {
-        for s in swapped {
-            let _ = spill.remove_file(s.swap_id);
-        }
-    }
-    for mut p in preempted {
-        send_error_to_sink(
-            &mut p.a.sink,
-            "server shutting down before preempted resume",
-        );
-    }
-    for p in prefilling {
-        let mut seq = p.seq;
-        let _ = model.free_sequence(&mut seq);
-        let _ = model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF1);
-    }
+    shutdown_drain::abort_in_flight_on_shutdown(
+        &*model,
+        prefilling,
+        swapped,
+        preempted,
+        spill_manager.as_mut(),
+    );
     // Shutdown applies to every slot the worker has; seq_id is ignored.
     let _ = model.ep_broadcast_cmd_for_seq(0, 0xFFFFFFFF);
 

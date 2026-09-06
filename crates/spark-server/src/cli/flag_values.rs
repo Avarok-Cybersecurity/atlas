@@ -23,6 +23,65 @@
 //! authority on the enumerated VALUES; `validate.rs` is the one place they
 //! are enforced.
 
+/// What `--kv-high-precision-layers auto` resolves to.
+///
+/// Named here rather than written as a literal at the resolve site so the
+/// number the help text calls "recommended" and the number the server uses
+/// are the same number.
+pub(crate) const AUTO_KV_HIGH_PRECISION_LAYERS: usize = 2;
+
+/// The accepted forms of `--kv-high-precision-layers`.
+///
+/// This flag is not a closed enum — it takes a count as well as keywords — so
+/// it cannot go through `check_enum`. It gets a parse of its own, in this
+/// module, for the same reason the lists above live here: TWO consumers read
+/// it, `validate_serve_args` (which refuses a typo in milliseconds) and
+/// `serve_phases::kv_cache` (which resolves it against the checkpoint), and a
+/// second copy of the accepted forms is how the two come to disagree.
+///
+/// It replaces a `s.parse().unwrap_or_else(|_| { warn!(...); 0 })` at the
+/// resolve site. That fallback ran AFTER the multi-minute weight load and
+/// turned `--kv-high-precision-layers atuo` into `0` — which is not merely the
+/// default, because `0` is the value that hands the decision to
+/// `auto_high_precision_layers`. So a typo did not get the operator the
+/// default; it got them a third config, announced in one `warn!` line among
+/// hundreds, in a run they had already waited minutes for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KvHighPrecisionLayers {
+    /// `max` / `all` — every attention layer stays BF16.
+    All,
+    /// `auto` — the recommended boundary pair.
+    Auto,
+    /// An explicit first-N-and-last-N count. `0` defers to the automatic
+    /// per-dtype choice, which is the documented default.
+    Count(usize),
+}
+
+impl std::str::FromStr for KvHighPrecisionLayers {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_lowercase().as_str() {
+            "max" | "all" => Ok(Self::All),
+            "auto" => Ok(Self::Auto),
+            s => s.parse::<usize>().map(Self::Count).map_err(|_| {
+                "expected a whole number of layers, or one of: auto, max, all".to_string()
+            }),
+        }
+    }
+}
+
+impl KvHighPrecisionLayers {
+    /// Resolve against the checkpoint's attention-layer count.
+    pub(crate) fn resolve(self, num_attn_layers: usize) -> usize {
+        match self {
+            Self::All => num_attn_layers,
+            Self::Auto => AUTO_KV_HIGH_PRECISION_LAYERS,
+            Self::Count(n) => n,
+        }
+    }
+}
+
 pub(crate) const LM_HEAD_DTYPES: &[&str] = &["default", "bf16", "nvfp4", "fp8"];
 pub(crate) const MTP_QUANTS: &[&str] = &["bf16", "fp8", "nvfp4"];
 pub(crate) const SCHEDULING_POLICIES: &[&str] = &["fifo", "slai"];

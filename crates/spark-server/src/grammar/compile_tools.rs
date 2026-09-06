@@ -226,16 +226,21 @@ pub(crate) fn xml_param_value_body_ebnf_opts(
     // `</parameter<parameter=` attractor. Opt-in allows the empty value
     // (immediate close). Trade-off: re-opens the Epoch-3 empty-garbage-call
     // shape — hence opt-in + BFCL A/B gate before default-on.
+    // Keep first_content at the start of its own sequence so the grammar
+    // optimizer can inline it into rest's scanner. Otherwise multi-byte value
+    // tokens cross a rule boundary and require contextual trials at value entry.
+    // Factoring this sequence preserves the language, including the empty opt-in.
     let value_rule = if allow_empty_value {
-        "value ::= leading_ws (first_content rest)?"
+        "value ::= leading_ws nonempty_value?"
     } else {
-        "value ::= leading_ws first_content rest"
+        "value ::= leading_ws nonempty_value"
     };
     format!(
         r#"root ::= param ("\n" param)*
 param ::= "<parameter=" paramname ">" value "{value_close}"
 {paramname_rule}
 {value_rule}
+nonempty_value ::= first_content rest
 leading_ws ::= [ \t\r\n]*
 first_content ::= [^ \t\r\n<=>] | {first_lt_arms}
 {rest_rule}

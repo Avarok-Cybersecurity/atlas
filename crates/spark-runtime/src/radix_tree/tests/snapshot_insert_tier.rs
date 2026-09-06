@@ -104,7 +104,16 @@ fn insert_tail_rehomes_a_spilled_entry_to_hbm() {
     );
 }
 
-/// `insert_tail_sibling` — the third path, same contract.
+/// `insert_tail_sibling` — the third path, same contract, AND the same
+/// re-home obligation `insert_tail` carries (see the test above).
+///
+/// The re-home half was the suite's blind spot: deleting `entry.tiered =
+/// false` from this arm survived the WHOLE 86-check `radix_tree` registry.
+/// `reinsert_unspills` covers the plain-`insert` arm and
+/// `insert_tail_rehomes_a_spilled_entry_to_hbm` covers the tail arm; nothing
+/// covered this one, so a sibling save over a spilled prefix could strand its
+/// fresh slot — skipped by `lookup` and by both victim scans, hence reachable
+/// by nothing and freeable by nothing — for the process lifetime.
 #[test]
 fn insert_tail_sibling_over_a_spilled_entry_hands_back_no_slot() {
     let (mut idx, ph, freed) = spilled(0xD4, 8);
@@ -114,6 +123,15 @@ fn insert_tail_sibling_over_a_spilled_entry_hands_back_no_slot() {
     assert_eq!(
         displaced, None,
         "slot {freed} was already freed at spill time"
+    );
+    assert!(
+        !idx.entries[0].tiered,
+        "a fresh HBM save re-homes the prefix; leaving it `tiered` strands slot 14"
+    );
+    assert_eq!(
+        idx.evict_lru(),
+        Some(14),
+        "a re-homed sibling must be evictable — otherwise its slot leaks"
     );
 }
 

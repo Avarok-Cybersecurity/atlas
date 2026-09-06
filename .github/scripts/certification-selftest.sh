@@ -622,19 +622,32 @@ if [ -s "$TMP/oc.sh" ]; then
   BASE=$( cd "$R" && git rev-parse HEAD )
   mk() { printf '{"git_sha":"%s","recorded_at":1788300000}' "$2" > "$R/.benchmarks/b/$1.json"; }
   sg() { printf '{"v":1,"key":"%s","sig":"x"}' "$2" > "$R/.benchmarks/b/$1.json.sig"; }
+  # ── What this step still does in bash ────────────────────────────────────
+  # The commit/signer VERDICT moved into `gate::agreement` (Rust), because only
+  # the registry knows a benchmark's Sensitivity and the rule is now
+  # class-conditional. This selftest step is deliberately pure-Python with NO
+  # Rust toolchain, so it cannot and must not run that half; the verdict has ten
+  # tests with red/green controls under `cargo test -p atlas-plugin agreement`,
+  # including the two that matter — a Speed set spanning signers is refused, a
+  # Correctness set spanning signers is allowed.
+  #
+  # What remains here is the part that is still shell: collecting the records a
+  # PR adds, and refusing an added record with no signature.
   mk r1 aaaaaaaaaa; sg r1 k1; ( cd "$R" && git add -A && git commit -qm r1 ) >/dev/null 2>&1
-  want_rc 0 "records that agree pass" sh -c "cd '$R' && BASE=$BASE bash '$TMP/oc.sh'"
-  mk r2 bbbbbbbbbb; sg r2 k1; ( cd "$R" && git add -A && git commit -qm r2 ) >/dev/null 2>&1
-  want_rc_msg 1 "span more than one commit" "control: records from two commits are refused" \
-    sh -c "cd '$R' && BASE=$BASE bash '$TMP/oc.sh'"
-  mk r2 aaaaaaaaaa; sg r2 k2; ( cd "$R" && git add -A && git commit -qm r3 ) >/dev/null 2>&1
-  want_rc_msg 1 "more than one signer" "control: records from two signers are refused" \
-    sh -c "cd '$R' && BASE=$BASE bash '$TMP/oc.sh'"
-  # The backdating bypass: an ADDED record with no signature at all.
-  rm -f "$R/.benchmarks/b/r2.json.sig"; sg r1 k1
-  ( cd "$R" && git add -A && git rm -q --cached .benchmarks/b/r2.json.sig 2>/dev/null; git commit -qm r4 ) >/dev/null 2>&1
+  # The backdating bypass: an ADDED record with no signature at all. `recorded_at`
+  # lives INSIDE the file being authenticated, so backdating it below the signing
+  # cutover would skip the signature entirely — git, not the file's own contents,
+  # decides what a PR introduced.
+  mk r2 aaaaaaaaaa
+  ( cd "$R" && git add -A && git commit -qm r2 ) >/dev/null 2>&1
   want_rc_msg 1 "Unsigned record added" "control: an added record with no signature is refused" \
     sh -c "cd '$R' && BASE=$BASE bash '$TMP/oc.sh'"
+  # WIRING: the step must still hand the verdict to the Rust gate. Without this
+  # the class rule could be deleted from ci.yml and every test above would stay
+  # green — the shell would simply stop asking.
+  grep -q "record_agreement" "$TMP/oc.sh" \
+    && ok "the step delegates the verdict to the Rust gate" \
+    || bad "the step no longer invokes record_agreement — the commit/signer verdict is gone"
 else
   bad "could not extract the one-commit-one-signer shell from ci.yml"
 fi
@@ -1217,7 +1230,12 @@ cp .github/scripts/assert-gates-are-wired.py "$TMP/sg/scripts/"
 # does not land, and the control then passes against unmodified input -- which
 # is a green light that measured nothing. Caught exactly that way once already.
 sg_sabotage() {
-  for w in site.yml merge-ancestry.yml; do cp ".github/workflows/$w" "$TMP/sg/workflows/$w"; done
+  # EVERY workflow, not just the sabotaged one: the assertions read across
+  # files (ci.yml calls release-build.yml, and the required-context list
+  # spans nine of them). Staging a subset made the script die with
+  # FileNotFoundError -- rc=1 for the wrong reason, which want_rc_msg
+  # catches only because it also pins the message.
+  for w in .github/workflows/*.yml; do cp "$w" "$TMP/sg/workflows/"; done
   python3 - "$TMP/sg/workflows/$1" "$2" <<'PY'
 import pathlib, sys, yaml
 p = pathlib.Path(sys.argv[1]); d = yaml.safe_load(p.read_text())
@@ -1257,6 +1275,191 @@ want_rc_msg 1 "every entry would deadlock" "control: dropping merge_group suppor
 sg_sabotage merge-ancestry.yml 'd["jobs"]["guard"]["name"] = "Ancestry"'
 want_rc_msg 1 "leaves the required context uncreated" "control: renaming a required job is caught" \
   python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# ---------------------------------------------------------------------------
+# A required check whose verdict is not about the thing it claims to test
+# ---------------------------------------------------------------------------
+# `cargo test --features metal (macOS aarch64)` inherited ci.yml's
+# workflow-level ATLAS_SKIP_BUILD=1 (there so the ubuntu jobs type-check
+# without nvcc). atlas-kernels' build.rs honours it first and emits a stub
+# whose `metallib_modules()` is Vec::new(), so MetalGpuBackend loaded ZERO
+# libraries and all 35 parity tests died with `Metal: unknown module`. The
+# check was permanently red about a stub, and the merge queue was impassable
+# for every non-web PR. Same family as a check that passes vacuously: the
+# verdict is not about the capability named on the tin.
+#
+# Staged with the same sg_sabotage helper above -- it copies every workflow,
+# which these assertions need.
+#
+# The metal step's env, addressed by name so a sabotage that does not land is
+# an AssertionError rather than a control that silently measured nothing.
+rc_metal_env='
+steps = [s for s in d["jobs"]["test-macos-metal"]["steps"] if s.get("name","").startswith("cargo test -p spark-runtime")]
+assert len(steps) == 1, f"sabotage would not land: {len(steps)} metal test steps"
+env = steps[0]["env"]
+'
+
+want_rc 0 "every required context resolves to a live job that a failed dependency cannot skip" \
+  python3 .github/scripts/assert-gates-are-wired.py
+
+# The regression itself: put the stub env back on the metal test step.
+sg_sabotage ci.yml "$rc_metal_env"'env["ATLAS_SKIP_BUILD"] = "1"'
+want_rc_msg 1 "is about the stub, not the kernels" \
+  "control: running the metal suite against a kernel-build stub is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# Inheritance, not just the step: deleting the step override lets ci.yml's
+# workflow-level ATLAS_SKIP_BUILD=1 reach the job again. A guard that only
+# looked at the step's own env would pass here.
+sg_sabotage ci.yml "$rc_metal_env"'env.pop("ATLAS_SKIP_BUILD")'
+want_rc_msg 1 "is about the stub, not the kernels" \
+  "control: dropping the override so the workflow-level stub env is inherited is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# Without ATLAS_TARGET_HW, build.rs takes its macOS auto-skip and embeds
+# nothing even with ATLAS_SKIP_BUILD=0 -- the same empty set by another route.
+sg_sabotage ci.yml "$rc_metal_env"'env.pop("ATLAS_TARGET_HW")'
+want_rc_msg 1 "build.rs takes the macOS auto-skip" \
+  "control: dropping ATLAS_TARGET_HW from the metal suite is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# The other half of the family: a required job that a FAILED dependency
+# silently skips. Branch protection counts a skipped check as satisfied, so
+# the gate reports safety it never measured. This is the exact pre-fix state
+# of docs.yml `build` -- `needs: [changes]` with no `if:` at all.
+sg_sabotage docs.yml 'd["jobs"]["build"].pop("if")'
+want_rc_msg 1 "would pass vacuously" \
+  "control: a required job a failed dependency can skip is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# Renames and deletes across the whole required list, not just the two GATES.
+sg_sabotage security.yml 'd["jobs"]["cargo-deny"]["name"] = "deny"'
+want_rc_msg 1 "a renamed job leaves the required context uncreated" \
+  "control: renaming cargo deny is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+sg_sabotage gdn-so-pin.yml 'd["jobs"].pop("verify-gdn-so-pins")'
+want_rc_msg 1 "every PR would hang" \
+  "control: deleting the GDN pin job is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# The nested reusable-workflow context. `release matrix / dry-run summary` is
+# TWO names -- the caller's and the callee's -- and renaming either one leaves
+# protection waiting on a string nothing emits.
+sg_sabotage release-build.yml 'd["jobs"]["dry-run-summary"]["name"] = "summary"'
+want_rc_msg 1 "would never be created" \
+  "control: renaming the nested dry-run summary job is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+sg_sabotage ci.yml 'd["jobs"]["release-matrix"]["uses"] = "./.github/workflows/release.yml"'
+want_rc_msg 1 "no longer calls release-build.yml" \
+  "control: repointing the release-matrix caller is caught" \
+  python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
+
+# ---------------------------------------------------------------------------
+# A grep-based gate that scanned nothing and said OK
+# ---------------------------------------------------------------------------
+# `No block_on under tui/ or recipe/` is a required context implemented as
+# `if hits=$(grep -r ... dirs 2>/dev/null); then fail; fi`. On a MISSING
+# directory grep exits 2, the redirect hides the reason, and the `if` reads any
+# non-zero as "no hits" -- so the check printed OK and exited 0 against a tree
+# with no tui/ at all. Verified in an empty directory before the fix. A rename
+# of either tree would have retired the rule while the check stayed green.
+#
+# Run the step's REAL shell, extracted from the workflow, so the control cannot
+# drift from what CI executes.
+mkdir -p "$TMP/bo"
+python3 - "$TMP/bo/step.sh" "$TMP/bo/scan_dirs" <<'PY'
+import pathlib, sys, yaml
+d = yaml.safe_load(pathlib.Path(".github/workflows/tui-threading.yml").read_text())
+job = d["jobs"]["no-blocking-on-the-render-thread"]
+steps = [s for s in job["steps"] if s.get("name", "").startswith("Check the render thread")]
+assert len(steps) == 1, f"expected one render-thread step, found {len(steps)}"
+# ★ The step now DELEGATES to a script under .github/scripts/, because the
+# same body is run by both the standalone job and the batched `cheap checks`
+# job and must not be able to differ between them. These controls execute the
+# extracted step from inside a fixture directory, where a RELATIVE script path
+# does not resolve — the step exits 127 and the control passes for the wrong
+# reason, or fails for one. Rewrite it to an absolute path against the repo
+# root so the control still runs the real implementation.
+import os
+body = steps[0]["run"].replace(".github/scripts/", os.getcwd() + "/.github/scripts/")
+pathlib.Path(sys.argv[1]).write_text(body)
+pathlib.Path(sys.argv[2]).write_text(steps[0]["env"]["SCAN_DIRS"])
+PY
+BO_DIRS=$(cat "$TMP/bo/scan_dirs")
+
+want_rc 0 "the render-thread gate passes on the real tree" \
+  env SCAN_DIRS="$BO_DIRS" bash "$TMP/bo/step.sh"
+
+# A tree where one scanned directory does not exist. Pre-fix this printed
+# "OK: no block_on/block_in_place under tui/ or recipe/" and exited 0.
+mkdir -p "$TMP/bo/moved/crates/spark-server/src/recipe"
+want_rc_msg 1 "does not exist, so this check scanned nothing" \
+  "control: the render-thread gate refuses a tree it cannot scan" \
+  env -C "$TMP/bo/moved" SCAN_DIRS="$BO_DIRS" bash "$TMP/bo/step.sh"
+
+# ...and the existence assertion did not neuter the rule it guards: a real
+# block_on in a present tree is still caught.
+mkdir -p "$TMP/bo/dirty/crates/spark-server/src/tui" "$TMP/bo/dirty/crates/spark-server/src/recipe"
+printf 'fn f() { handle.block_on(fut); }\n' > "$TMP/bo/dirty/crates/spark-server/src/tui/draw.rs"
+want_rc_msg 1 "must never poll a future" \
+  "control: the render-thread gate still catches a real block_on" \
+  env -C "$TMP/bo/dirty" SCAN_DIRS="$BO_DIRS" bash "$TMP/bo/step.sh"
+
+# The same defect twice more, in the two other gates that decide by scanning a
+# tree. Both were verified passing on a tree they could not see.
+#
+# `Enforce <=500 LoC per source file`: `find crates ...` on a missing directory
+# feeds the loop nothing, `violations` stays 0, and the step printed its tick
+# and exited 0 -- the cap unenforced repo-wide. `set -euo pipefail` does not
+# catch it: the find lives in a process substitution whose status is not the
+# command's.
+mkdir -p "$TMP/fs"
+python3 - "$TMP/fs/step.sh" <<'PY'
+import pathlib, sys, yaml
+d = yaml.safe_load(pathlib.Path(".github/workflows/file-size-cap.yml").read_text())
+steps = [s for s in d["jobs"]["check-file-sizes"]["steps"]
+         if s.get("name", "").startswith("Check no .rs file")]
+assert len(steps) == 1, f"expected one file-size step, found {len(steps)}"
+# ★ The step now DELEGATES to a script under .github/scripts/, because the
+# same body is run by both the standalone job and the batched `cheap checks`
+# job and must not be able to differ between them. These controls execute the
+# extracted step from inside a fixture directory, where a RELATIVE script path
+# does not resolve — the step exits 127 and the control passes for the wrong
+# reason, or fails for one. Rewrite it to an absolute path against the repo
+# root so the control still runs the real implementation.
+import os
+body = steps[0]["run"].replace(".github/scripts/", os.getcwd() + "/.github/scripts/")
+pathlib.Path(sys.argv[1]).write_text(body)
+PY
+want_rc 0 "the 500-LoC cap passes on the real tree" bash "$TMP/fs/step.sh"
+
+mkdir -p "$TMP/fs/nocrates"
+want_rc_msg 1 "the 500-line cap scanned nothing" \
+  "control: the 500-LoC cap refuses a tree with no crates/ to scan" \
+  env -C "$TMP/fs/nocrates" bash "$TMP/fs/step.sh"
+
+# `kernel shadow structure`: the scan loop skipped any hardware tree that was
+# not present, so an empty (or renamed) kernels/ printed
+# "kernel shadow structure: OK" and exited 0. HW_SOURCE_EXT is the list of
+# trees the check CLAIMS to cover; every one of them must be there.
+want_rc 0 "the kernel-shadow check passes on the real kernels/ tree" \
+  python3 scripts/check_kernel_shadows.py
+
+mkdir -p "$TMP/ks/kernels"
+want_rc_msg 1 "is missing hardware tree(s)" \
+  "control: the kernel-shadow check refuses a kernels/ tree it cannot scan" \
+  python3 scripts/check_kernel_shadows.py "$TMP/ks/kernels"
+
+# ...and it still catches the violation it exists for: a shadow byte-identical
+# to the common file it overrides is a dead override.
+mkdir -p "$TMP/ks/live/gb10/common" "$TMP/ks/live/gb10/m1/q" \
+         "$TMP/ks/live/metal" "$TMP/ks/live/strix" "$TMP/ks/live/strix-hip"
+printf '__global__ void k() {}\n' > "$TMP/ks/live/gb10/common/k.cu"
+cp "$TMP/ks/live/gb10/common/k.cu" "$TMP/ks/live/gb10/m1/q/k.cu"
+want_rc_msg 1 "RULE1" "control: the kernel-shadow check still catches a dead override" \
+  python3 scripts/check_kernel_shadows.py "$TMP/ks/live"
 
 # ---------------------------------------------------------------------------
 # A write whose failure is swallowed, and no probe behind it
@@ -1458,6 +1661,266 @@ STUB
   fi
 else
   bad "could not extract the /stamp step"
+fi
+
+# ---------------------------------------------------------------------------
+# PR telemetry must not record an unreadable diff as an empty one
+# ---------------------------------------------------------------------------
+# The collector calls `pulls/N/files` once per PR, and that call can fail. It
+# used to fall through to `paths='[]'` with no warning, and every consumer of
+# the record reads an empty path list as a MEASUREMENT: no targets, no owners,
+# no promotion debt, no collisions -- the most reassuring record this view can
+# emit, manufactured out of an API error and posted to the tracking issue.
+#
+# The Rust half (gate/telemetry.rs) has tests for how the marker is HONOURED.
+# Nothing tested that the shell half still EMITS it, and the shell half is the
+# one with no other coverage, so this runs the real step against a gh stub.
+echo "== pr telemetry marks an unreadable diff =="
+python3 - > "$TMP/collect.sh" <<'TELPY'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/pr-telemetry.yml").read_text())
+for st in d["jobs"]["render"]["steps"]:
+    if st.get("name", "").startswith("Collect open PRs"):
+        print(st["run"]); break
+TELPY
+if [ -s "$TMP/collect.sh" ]; then
+  mkdir -p "$TMP/tbin" "$TMP/trun"
+  # #1's files come back; #2's call fails the way a 404 does -- non-zero exit
+  # AND an error body on stdout, so a length check would read that body as a
+  # filename. That shape is why the collector guards on the exit status.
+  cat > "$TMP/tbin/gh" <<'TELSTUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"pulls?state=all"*)
+    echo '[{"number":1,"title":"one","author":"a","draft":false,"merged":false},{"number":2,"title":"two","author":"b","draft":false,"merged":false}]' ;;
+  *"pulls/1/files"*) printf 'kernels/gb10/x.cu\n' ;;
+  *"pulls/2/files"*) echo '{"message":"Not Found","status":"404"}'; exit 1 ;;
+  *) exit 1 ;;
+esac
+TELSTUB
+  chmod +x "$TMP/tbin/gh"
+  tel_run() {  # $1 = step script -> facts.json on stdout
+    ( cd "$TMP/trun" && rm -f facts.json prs.json prs.ndjson enriched.ndjson
+      PATH="$TMP/tbin:$PATH" GH_TOKEN=x REPO=o/r bash "$1" >/dev/null 2>&1 )
+    jq -c '.' "$TMP/trun/facts.json" 2>/dev/null
+  }
+  tel_run "$TMP/collect.sh" > "$TMP/facts.txt"
+  if jq -e 'any(.[]; .number == 2 and .paths_unknown == true)' "$TMP/facts.txt" >/dev/null 2>&1; then
+    ok "a PR whose files could not be read is recorded as paths_unknown"
+  else
+    bad "an API failure was recorded as a PR that changes nothing"
+    sed 's/^/       /' "$TMP/facts.txt" | head -2
+  fi
+  # The marker must DISCRIMINATE. A collector that stamped every record
+  # `paths_unknown: true` would pass the check above and make the view useless,
+  # so the readable PR must come back marked known, with its path.
+  if jq -e 'any(.[]; .number == 1 and .paths_unknown == false and (.changed_paths | length) == 1)' \
+       "$TMP/facts.txt" >/dev/null 2>&1; then
+    ok "a PR whose files WERE read is recorded as known"
+  else
+    bad "the marker does not discriminate: a readable diff came back unknown"
+    sed 's/^/       /' "$TMP/facts.txt" | head -2
+  fi
+  # CONTROL: the pre-fix behaviour, reconstructed by flipping the one flag.
+  # It must turn the first check red and leave the second green, which is what
+  # proves the check measures the failure path and not the happy one.
+  sed 's/^\( *\)unknown=true$/\1unknown=false/' "$TMP/collect.sh" > "$TMP/collect-bad.sh"
+  if cmp -s "$TMP/collect.sh" "$TMP/collect-bad.sh"; then
+    bad "control: the sabotage did not change the step -- it would measure nothing"
+  else
+    tel_run "$TMP/collect-bad.sh" > "$TMP/facts-bad.txt"
+    if jq -e 'any(.[]; .number == 2 and .paths_unknown == false)' "$TMP/facts-bad.txt" >/dev/null 2>&1 \
+       && jq -e 'any(.[]; .number == 1 and .paths_unknown == false)' "$TMP/facts-bad.txt" >/dev/null 2>&1; then
+      ok "control: dropping the marker is caught (#2 renders as changing nothing)"
+    else
+      bad "control: the sabotaged collector did not reproduce the defect"
+      sed 's/^/       /' "$TMP/facts-bad.txt" | head -2
+    fi
+  fi
+else
+  bad "could not extract the telemetry collect step"
+fi
+
+# ---------------------------------------------------------------------------
+# The PR classifier must never run on a diff that could not be computed
+# ---------------------------------------------------------------------------
+# `pr-categorize` builds the model's context from the changed paths, and the
+# ★ note on that step records why: when the paths were computed and never
+# read, "the classifier's entire input was attacker-authored prose -- titling
+# a decode-kernel PR 'docs: tidy a comment' was a complete bypass".
+#
+# The collection step reopened that bypass from the other end. `git diff ... >
+# changed.txt || true` truncates the file BEFORE git runs, so a failed diff
+# leaves it empty and the prompt reads "Changed paths (0 total)" -- a PR that
+# changes nothing, classified from its title and body, with the model's answer
+# appended to the journey ledger as evidence. The deterministic fallback
+# abstains too (`all_match` needs total > 0), so nothing catches it.
+echo "== the pr classifier refuses an uncomputable diff =="
+python3 - > "$TMP/diffstep.sh" <<'DFPY'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/ci.yml").read_text())
+for st in d["jobs"]["pr-categorize"]["steps"]:
+    if st.get("name") == "Collect the changed paths":
+        print(st["run"]); break
+DFPY
+if [ -s "$TMP/diffstep.sh" ]; then
+  mkdir -p "$TMP/gbin" "$TMP/grun"
+  cat > "$TMP/gbin/git" <<'GITSTUB'
+#!/usr/bin/env bash
+# `diff` answers per GIT_STUB_MODE; anything else is not this step's business.
+case "$1" in
+  diff)
+    case "${GIT_STUB_MODE:-ok}" in
+      # The real failure: a base sha that is no longer reachable. git writes
+      # nothing to stdout, so the redirect leaves an empty file behind.
+      fail) echo "fatal: bad object $2" >&2; exit 128 ;;
+      *)    printf 'kernels/gb10/x.cu\ncrates/spark-server/src/lib.rs\n' ;;
+    esac ;;
+  *) exit 0 ;;
+esac
+GITSTUB
+  chmod +x "$TMP/gbin/git"
+  df_run() {  # $1 = step script, $2 = stub mode -> rc; step outputs in $TMP/gout
+    : > "$TMP/gout"
+    ( cd "$TMP/grun" && rm -f changed.txt histogram.txt sorted.txt paths.txt
+      PATH="$TMP/gbin:$PATH" GITHUB_OUTPUT="$TMP/gout" GIT_STUB_MODE="$2" \
+        BASE_SHA=aaaaaaa HEAD_SHA=bbbbbbb bash "$1" >"$TMP/gerr" 2>&1 )
+  }
+  df_run "$TMP/diffstep.sh" ok
+  if [ $? -eq 0 ] && grep -q '^count=2$' "$TMP/gout"; then
+    ok "a diff that CAN be computed is emitted with its real count"
+  else
+    bad "the step no longer works on a readable diff"
+    sed 's/^/       /' "$TMP/gerr" | head -3
+  fi
+  df_run "$TMP/diffstep.sh" fail
+  drc=$?
+  if [ "$drc" -ne 0 ]; then
+    ok "a diff that cannot be computed fails the step"
+  else
+    bad "a failed git diff was recorded as a PR that changes nothing ($(grep -m1 '^count=' "$TMP/gout"))"
+  fi
+  # The reason has to reach the run, not just the exit code: this job is
+  # advisory, so a bare non-zero with no annotation is a red X nobody can act
+  # on -- which is how it gets rerun-until-green instead of fixed.
+  if grep -q '::error title=Changed paths unavailable' "$TMP/gerr"; then
+    ok "the failure names itself in the run's annotations"
+  else
+    bad "the step failed silently; no annotation says why"
+  fi
+  # CONTROL: put the `|| true` back and watch the failure become "0 paths".
+  sed 's|^\( *\)if ! git diff --name-only "\$BASE_SHA" "\$HEAD_SHA" > changed.txt; then|\1git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed.txt \|\| true\n\1if false; then|' \
+    "$TMP/diffstep.sh" > "$TMP/diffstep-bad.sh"
+  if cmp -s "$TMP/diffstep.sh" "$TMP/diffstep-bad.sh"; then
+    bad "control: the sabotage did not change the step -- it would measure nothing"
+  else
+    df_run "$TMP/diffstep-bad.sh" fail
+    if [ $? -eq 0 ] && grep -q '^count=0$' "$TMP/gout"; then
+      ok "control: with '|| true' restored, a failed diff emits count=0"
+    else
+      bad "control: the sabotage did not reproduce the fail-open defect"
+      sed 's/^/       /' "$TMP/gerr" | head -3
+    fi
+  fi
+else
+  bad "could not extract the changed-paths step"
+fi
+
+# ---------------------------------------------------------------------------
+# The unsigned-record guard must not pass on a diff it could not read
+# ---------------------------------------------------------------------------
+# "One PR, one commit, one signer" is the check that stops a PR adding an
+# UNSIGNED benchmark record -- the ci.yml comment beside it records the
+# experiment: an unsigned record dated 1700000000 claiming 999 tok/s passes
+# the Rust gate, so this shell step is the thing standing in its way.
+#
+# Its entire input was `mapfile -t added < <(git diff ... | grep ...)`, and a
+# process substitution's exit status is invisible to `set -euo pipefail`. A
+# failed enumeration therefore produced an empty array, and empty is the one
+# value this guard reads as "nothing to check": it printed "this PR adds no
+# records" and exited 0, waving through every unsigned record, every
+# cross-commit set and every second signer at once.
+echo "== the unsigned-record guard reads its own input =="
+python3 - > "$TMP/signer.sh" <<'SGPY'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/ci.yml").read_text())
+for st in d["jobs"]["pr-benchmark-gate"]["steps"]:
+    if st.get("name") == "One PR, one commit, one signer":
+        print(st["run"]); break
+SGPY
+if [ -s "$TMP/signer.sh" ]; then
+  mkdir -p "$TMP/sgbin" "$TMP/sgrun/.benchmarks/x"
+  # An added record with NO .json.sig beside it -- the case the guard exists
+  # for. It must be caught when the diff works, and must NOT be silently
+  # excused when the diff does not.
+  echo '{"git_sha":"abc1234567"}' > "$TMP/sgrun/.benchmarks/x/2026-01-01-abc1234567.json"
+  cat > "$TMP/sgbin/git" <<'SGSTUB'
+#!/usr/bin/env bash
+case "$1" in
+  merge-base) echo base0000000 ;;
+  diff)
+    case "${GIT_STUB_MODE:-ok}" in
+      fail) echo "fatal: bad revision" >&2; exit 128 ;;
+      *)    echo ".benchmarks/x/2026-01-01-abc1234567.json" ;;
+    esac ;;
+  *) exit 0 ;;
+esac
+SGSTUB
+  chmod +x "$TMP/sgbin/git"
+  sg_run() {  # $1 = step script, $2 = stub mode -> rc, output in $TMP/sgout
+    ( cd "$TMP/sgrun" && rm -f added_all.txt
+      PATH="$TMP/sgbin:$PATH" GIT_STUB_MODE="$2" BASE=deadbeef \
+        bash "$1" >"$TMP/sgout" 2>&1 )
+  }
+  sg_run "$TMP/signer.sh" ok
+  if [ $? -ne 0 ] && grep -q 'Unsigned record added' "$TMP/sgout"; then
+    ok "an added record with no sidecar is refused"
+  else
+    bad "the guard stopped catching an unsigned record"
+    sed 's/^/       /' "$TMP/sgout" | head -3
+  fi
+  sg_run "$TMP/signer.sh" fail
+  sgrc=$?
+  if [ "$sgrc" -ne 0 ] && ! grep -q 'adds no records' "$TMP/sgout"; then
+    ok "an unreadable diff fails the guard instead of clearing the PR"
+  else
+    bad "a failed enumeration was reported as a PR that adds no records"
+    sed 's/^/       /' "$TMP/sgout" | head -3
+  fi
+  if grep -q 'It is NOT reporting that the PR adds none' "$TMP/sgout"; then
+    ok "the annotation distinguishes 'could not look' from 'found nothing'"
+  else
+    bad "the guard failed without saying it had been blinded"
+  fi
+  # CONTROL: the pre-fix single line, restored. The unsigned record must go
+  # through, which is the defect this guard is here to make impossible.
+  python3 - "$TMP/signer.sh" "$TMP/signer-bad.sh" <<'SGSAB'
+import pathlib, sys, re
+t = pathlib.Path(sys.argv[1]).read_text()
+new = re.sub(
+    r'if ! git diff --name-only --diff-filter=AM "\$base"\.\.\.HEAD -- \.benchmarks \\\n'
+    r' *> added_all\.txt; then\n.*?\n *exit 1\n *fi\n',
+    '', t, count=1, flags=re.S)
+new = new.replace(
+    "mapfile -t added < <(grep '\\.json$' added_all.txt || true)",
+    "mapfile -t added < <(git diff --name-only --diff-filter=AM \"$base\"...HEAD "
+    "-- .benchmarks | grep '\\.json$' || true)", 1)
+assert new != t, "sabotage did not change the step -- it would measure nothing"
+pathlib.Path(sys.argv[2]).write_text(new)
+SGSAB
+  if [ -s "$TMP/signer-bad.sh" ]; then
+    sg_run "$TMP/signer-bad.sh" fail
+    if [ $? -eq 0 ] && grep -q 'adds no records' "$TMP/sgout"; then
+      ok "control: the old form clears an unsigned record when the diff fails"
+    else
+      bad "control: the sabotage did not reproduce the fail-open defect"
+      sed 's/^/       /' "$TMP/sgout" | head -3
+    fi
+  else
+    bad "control: could not build the sabotaged step"
+  fi
+else
+  bad "could not extract the one-signer step"
 fi
 
 # ---------------------------------------------------------------------------

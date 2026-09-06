@@ -91,6 +91,19 @@ jobs:
     # This job must RUN on a web-only diff: its mdBook half IS the gate for
     # `book/`, and it is a required context. Only the rustdoc half is skipped,
     # at STEP level — see the steps below.
+    #
+    # ★ `!cancelled()` is what makes that true even when `changes` FAILS.
+    # Default `needs:` semantics carry an implicit `success()`, so a broken
+    # classify-diff.sh SKIPPED this job — and a skipped required context is
+    # counted as satisfied by branch protection and the merge queue. The docs
+    # gate would then have waved a PR through while reporting nothing, which is
+    # the same defect class as a check that tests a stub. Naming a status
+    # function suppresses the implicit success(); `web_only` then resolves to
+    # the empty string, the step-level `!= 'true'` guards are true, and the
+    # rustdoc half runs. Fails OPEN, exactly as ci.yml's clippy/test and
+    # coverage.yml already do — this job was the one that did not.
+    # Pinned by .github/scripts/assert-gates-are-wired.py.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

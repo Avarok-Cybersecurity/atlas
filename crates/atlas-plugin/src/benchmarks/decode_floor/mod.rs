@@ -8,10 +8,14 @@
 //! and the one number it reports — the MEDIAN server decode rate across three
 //! runs — is judged against a committed BENCH.toml threshold under
 //! `--pull-request-gate`. REQUIRED (`gate::coverage::REQUIRED`) since
-//! 2026-08-15: the promotion precondition — a >=10-run sigma calibration of
-//! the floor on the gate's own instrument — was met by the 12-run set (mean
-//! 28.03 tok/s, sigma ~0.05, every run 28.0-28.1), and the BENCH.toml floor
-//! is set from it.
+//! 2026-08-15. The BENCH.toml floor is 22.7 (effective 22.2 after noise),
+//! set 2026-09-06 from ten consecutive gate runs on dgx2 — mean 22.78, sigma
+//! 0.063, range 22.7-22.9.
+//!
+//! It is NOT set from the 12-run 28.03 / sigma-0.05 set that justified the
+//! promotion. That set ran on a hand-built serve with the default lm head;
+//! this gate serves the recipe, which pins lm_head_dtype bf16, and that head
+//! costs ~20%. These lines claimed otherwise until 2026-09-06.
 //!
 //! # The pins (the benchmark's definition, not parameters)
 //!
@@ -84,8 +88,8 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              deterministic 915), report the server rate, and show accept_len_mean >= 1.5 \
              derived from usage.completion_tokens_details.accepted_prediction_tokens \
              (requires the accept-stats instrumentation; a serve that is not speculating \
-             cannot pass this gate's floor honestly). REQUIRED since 2026-08-15, promoted \
-             on the 12-run sigma calibration (mean 28.03 tok/s, sigma ~0.05).",
+             cannot pass this gate's floor honestly). REQUIRED since 2026-08-15; the \
+             floor in force is 22.7, from a 10-run set on the gate's own serve (2026-09-06).",
     duration_hint: "~3–6 min",
     updated: "2026-08-15",
     // The floor in BENCH.toml is measured on the dense Qwen3.8-27B NVFP4
@@ -93,9 +97,10 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     // that family has a committed baseline to judge against.
     intended_for: Some(ModelExpectation {
         families: &["qwen3.8-27b"],
-        note: "The decode floor is recorded for unsloth/Qwen3.8-27B-NVFP4 (12-run sigma \
-               calibration, 2026-08-15). Other checkpoints run fine but have no committed \
-               floor to be judged against — a number with no baseline gates nothing.",
+        note: "The decode floor is recorded for unsloth/Qwen3.8-27B-NVFP4 (10-run \
+               calibration on the gate's own serve, 2026-09-06). Other checkpoints run fine \
+               but have no committed floor to be judged against — a number with no baseline \
+               gates nothing.",
     }),
     // Under --pull-request-gate `min_tok_s` is auto-filled from the variant's
     // BENCH.toml floor, so a Measured run self-verdicts PASS/FAIL (see

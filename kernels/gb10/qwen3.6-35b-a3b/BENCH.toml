@@ -45,17 +45,19 @@ best-of-2, or a mean with a floor), or keep the exact bar and accept re-runs. Lo
 counts to today's draw is still the wrong move, which is why they are unchanged. The ENGINE \
 is not in question: the shell harness scored webserver_ok 10/10 and cargo_valid 10/10 on \
 this same binary. || original: Gate A (benchmark-pr skill): N=10 agentic-webserver on the \
-35B MoE flagship — 10/10 webserver_ok, 10/10 followed_directions, Σwall <= 1300 s. The two \
+35B MoE flagship — 10/10 webserver_ok, 10/10 followed_directions, Σwall <= 1300 s \
+(SUPERSEDED: the ceiling in force is `sum_wall_s` <= 1800, raised 2026-08-18 — read its \
+metric comment below, not this paragraph). The two \
 10/10 counts are ABSOLUTE correctness bounds and take no noise. ★ Σwall is DELIBERATELY NOT \
 RATCHETED to the 978.13 s best (PR #388, dgx3): unlike the BFCL scores, tier Σwall carries \
 +/-200-300 s of run-to-run noise from single 230-320 s outlier iterations, so a ~978 s \
-ceiling would fail constantly on healthy builds. 1300 s is a BLOWUP DETECTOR, not a perf \
+ceiling would fail constantly on healthy builds. 1300 s was a BLOWUP DETECTOR, not a perf \
 gate — it cannot see a 5-10% TTFT regression, which is what the two TTFT gates are for. \
 Historical band Σwall 950-1287 s; high-water (fastest) 978.13 s recorded here for reference \
 only. Walls are box-specific: compare like-for-like or not at all. || ★ `iterations` is \
 PINNED at exactly 10, the N the two 10/10 bounds are written for. A count bound alone does \
 not describe the run that produced it: `webserver_ok >= 10` is satisfied by 12 successes out \
-of 20, and Σwall <= 1300 s is satisfied by 5 iterations. Neither is the gate. This adds a \
+of 20, and `sum_wall_s` <= 1800 is satisfied by 5 iterations. Neither is the gate. This adds a \
 threshold, it does not relax one -- the recorded runs all carry iterations 10."""
 
 [benchmarks.metrics.followed_directions]

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# Refuse .block_on( / .block_in_place( under tui/ and recipe/.
+# Refuse .block_on( / .block_in_place( under the SCAN_DIRS trees.
 #
-# Extracted verbatim from tui-threading.yml so the standalone job and the batched
-# `cheap checks` job run THE SAME CODE during the transition. If these two
-# ever disagree, the batch is not a faithful merge and the transition is not
-# safe to complete.
+# Extracted from tui-threading.yml so the standalone job and the batched
+# `cheap checks` job run THE SAME CODE. Regenerated 2026-09-06 after
+# main added an existence assertion for the scanned tree: an extracted
+# copy goes stale the moment the original is improved, and taking the
+# extraction side of that conflict would have silently reverted the fix.
+#
+# Expects SCAN_DIRS in the environment where the original used it.
 set -euo pipefail
 # Only real call syntax counts -- comments explaining the rule are
 # allowed to name it.
@@ -25,10 +28,27 @@ set -euo pipefail
 # production code is ever put in a file named that way, this check
 # will not see it -- that is the cost, and it is smaller than the
 # alternative.
+# ★ The scanned trees must EXIST. `grep -r` on a missing directory
+# exits 2, the `2>/dev/null` hides the reason, and `if hits=$(...)`
+# reads any non-zero as "no hits" -- so this required check printed
+# OK and exited 0 against a tree with no `tui/` at all. Verified:
+# running the block below in an empty directory passes. A rename or a
+# move of either tree would silently retire the rule while the check
+# stayed green, which is the failure mode this whole gate exists to
+# prevent. Assert the inputs before trusting the absence of output.
+for d in $SCAN_DIRS; do
+  [ -d "$d" ] || {
+    echo "::error::$d does not exist, so this check scanned nothing."
+    echo "The render-thread rule is pinned to these trees. If one moved,"
+    echo "update SCAN_DIRS in this workflow in the same commit -- an"
+    echo "unscanned tree is an unenforced rule, and it would have gone"
+    echo "green without this line."
+    exit 1
+  }
+done
 if hits=$(grep -rnE '\.(block_on|block_in_place)\(' \
             --include='*.rs' --exclude='*_tests.rs' \
-            crates/spark-server/src/tui/ \
-            crates/spark-server/src/recipe/ 2>/dev/null); then
+            $SCAN_DIRS 2>/dev/null); then
   echo "::error::The TUI render thread must never poll a future."
   echo "$hits"
   echo

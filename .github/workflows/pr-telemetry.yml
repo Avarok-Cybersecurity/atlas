@@ -94,10 +94,29 @@ jobs:
                        --paginate --jq '.[].filename' 2>/dev/null); then
               paths=$(printf '%s' "$raw" \
                       | jq -R -s -c 'split("\n") | map(select(length > 0))')
+              unknown=false
             else
+              # ★ A failed files call is NOT "this PR changes nothing". It used
+              # to fall through to a bare `paths='[]'`, and every consumer reads
+              # an empty list as a measurement: no targets, no owners, no
+              # promotion debt, no collisions. That is this view understating a
+              # blast radius all the way to zero — the one direction the comment
+              # above says it must never fail in — and it did it silently, from
+              # a transient API error, into a record posted to the tracking
+              # issue and parsed by gate/telemetry.rs.
+              #
+              # The record is kept and MARKED rather than dropped: dropping it
+              # makes the PR absent from the comment, and absent reads as "no
+              # such PR" — the same understatement, and it also removes the PR
+              # from the collision table and the merge order it should be
+              # blocking. Marked, the renderer counts it at maximum radius and
+              # labels every row it contributes as assumed.
+              echo "::warning::PR #$number: changed files unreadable; recorded as paths_unknown, counted at maximum blast radius." >&2
               paths='[]'
+              unknown=true
             fi
-            jq -c --argjson p "$paths" '. + {changed_paths: $p}' <<<"$pr" >> enriched.ndjson
+            jq -c --argjson p "$paths" --argjson u "$unknown" \
+              '. + {changed_paths: $p, paths_unknown: $u}' <<<"$pr" >> enriched.ndjson
           done < prs.ndjson
           jq -s '.' enriched.ndjson > facts.json
 

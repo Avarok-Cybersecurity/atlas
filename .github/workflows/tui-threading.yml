@@ -60,4 +60,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check the render thread never blocks on a future
         shell: bash
+        env:
+          # SSOT for the trees this rule covers: the existence assertion and
+          # the grep must never be able to disagree about which they are.
+          SCAN_DIRS: "crates/spark-server/src/tui/ crates/spark-server/src/recipe/"
         run: bash .github/scripts/check-no-block-on.sh
