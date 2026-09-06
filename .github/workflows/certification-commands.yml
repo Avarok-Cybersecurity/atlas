@@ -259,18 +259,50 @@ jobs:
           # Re-running is safe for a seal: it adds no commit, and a seal is
           # voided by commits, not by CI runs.
           if [ "$VERB" = "/stamp" ] || [ "$VERB" = "/seal" ]; then
-            # id AND status. Re-running a run that has not finished returns
-            # 403 "This workflow is already running", which the warning below
-            # would then report as a failure -- and it is not one. A run still
-            # in flight reads the mark when its gate jobs execute, so there is
-            # nothing to re-run. This was found the first time the warning
-            # printed the API's own words, which is what it is for.
-            run_meta=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=50" \
-              --jq '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | "\(.id) \(.status)"' \
-              2>/dev/null || true)
-            run_id=${run_meta%% *}
-            run_status=${run_meta##* }
-            if [ -n "${run_id:-}" ] && [ "$run_id" != "null" ] && [ "$run_status" != "completed" ]; then
+            # TWO HOLES, ONE LOOKUP, CLOSED TOGETHER — this is a merge of
+            # `stack/ci-honesty` and what landed on main, and taking either
+            # side alone reopens the other's bug.
+            #
+            # (1) `2>/dev/null || true` made an UNANSWERED API indistinguishable
+            # from "this sha has no CI run". The benign branch then said
+            # "nothing to re-run", left $rerun_note empty, posted "**Stamp
+            # recorded.** ... This holds for the life of the PR." and exited 0
+            # — while the held lane kept its `skipped` result and the gate
+            # stayed red telling the operator to comment /stamp, which they had
+            # just done. Same defect as #847, one call earlier. Absent and
+            # unanswered are different answers and must not share a branch.
+            #
+            # (2) The run's STATUS matters as much as its id. Re-running a run
+            # that has not finished returns 403 "This workflow is already
+            # running", which the warning below would report as a failure — and
+            # it is not one. A run still in flight reads the mark when its gate
+            # jobs execute, so there is nothing to re-run. That was found the
+            # first time the warning printed the API's own words, which is what
+            # it is for.
+            run_id=""; run_status=""; list_err=""
+            if runs_json=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=50" 2>&1); then
+              run_meta=$(printf '%s' "$runs_json" \
+                | jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | "\(.id) \(.status)"' 2>&1) \
+                || { list_err="$run_meta"; run_meta=""; }
+              run_id=${run_meta%% *}
+              run_status=${run_meta##* }
+            else
+              list_err="$runs_json"
+            fi
+            if [ -n "$list_err" ]; then
+              echo "::error title=$name recorded, but CI was NOT re-run::could not list the CI runs for $HEAD_SHA: $list_err"
+              rerun_note="
+
+          > [!WARNING]
+          > **The $name is recorded, but CI was not re-run.** The CI run for \`$SHORT\` could not even be looked up, so certification and the nine release-matrix builds still show the \`skipped\` result they reported before this command. Re-run the CI workflow by hand, or push any commit to this PR.
+          >
+          > <details><summary>what the API said</summary>
+          >
+          > \`\`\`
+          > $list_err
+          > \`\`\`
+          > </details>"
+            elif [ -n "${run_id:-}" ] && [ "$run_id" != "null" ] && [ "$run_status" != "completed" ]; then
               echo "::notice title=CI is still running::run $run_id is '$run_status'. Its gate jobs read the $name when they execute, so nothing is re-run. If they already ran, re-run CI once this one finishes."
             elif [ -n "${run_id:-}" ] && [ "$run_id" != "null" ]; then
               # Capture stderr rather than discarding it. The first time this

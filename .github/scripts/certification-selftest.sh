@@ -660,6 +660,72 @@ state_is pr-certification-blocked "control: blocked outranks stage 3"    false d
 state_is pr-certification-stage-2-both "control: a failed Seal is not a seal" false clean success failure ""
 state_is pr-certification-stage-2-needs-seal "control: a failed Seal with records still needs a seal" false clean success failure success
 
+# AN UNREADABLE API IS NOT A BOARD OF "NO"s. `pr_json=$(gh api ... || echo '{}')`
+# and `conclusion_of`'s `2>/dev/null` made an outage look like a PR with nothing
+# stamped, nothing sealed and no records. With a stage-2/3/queued marker already
+# on the comment -- the bot's normal case -- the demotion branch then rendered
+# "A new commit landed. The seal is void and the records no longer cover this
+# tree — a perf path moved" over a matching diagram, and wrote that state into
+# the marker, so the next run could not tell it had ever demoted. A fabricated
+# event, posted as the PR's one status comment.
+st_broken() {  # st_broken <which call fails: pulls|check-runs>
+  mkdir -p "$TMP/bin"
+  cat > "$TMP/bin/gh" <<STUB
+#!/bin/bash
+args="\$*"
+case "\$args" in
+  *check-runs*) [ "$1" = check-runs ] && { echo "gh: HTTP 502" >&2; exit 1; }; printf '\\n'; exit 0 ;;
+  *"/pulls/"*)  [ "$1" = pulls ] && { echo "gh: HTTP 502" >&2; exit 1; }
+                printf '{"merged":false,"head":{"sha":"abc1234567"},"mergeable_state":"clean"}\n'; exit 0 ;;
+  *) echo "" ;;
+esac
+STUB
+  chmod +x "$TMP/bin/gh"
+}
+st_run() {  # st_run -> "<exit>|<stdout>"
+  local out rc
+  out=$(PATH="$TMP/bin:$PATH" REPO=o/r PREV_STATE=pr-certification-stage-3 \
+        bash .github/scripts/certification-state.sh 7 2>/dev/null); rc=$?
+  printf '%s|%s' "$rc" "$out"
+}
+for which in pulls check-runs; do
+  st_broken "$which"
+  got=$(st_run)
+  case "$got" in
+    0\|*) bad "an unreadable $which API classified anyway, as '${got#*|}'" ;;
+    *demoted*) bad "an unreadable $which API invented a demotion: ${got#*|}" ;;
+    *) ok "an unreadable $which API refuses to classify, instead of inventing a demotion" ;;
+  esac
+done
+
+# CONTROL: the pre-fix fallbacks, restored in a COPY, on the same broken API.
+# They must produce the fabricated demotion -- that is what proves the two
+# checks above are not passing by construction.
+mkdir -p "$TMP/st"
+cp .github/scripts/certification-state.sh "$TMP/st/state.sh"
+python3 - "$TMP/st/state.sh" <<'STSAB'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1]); t = p.read_text()
+# Restore both pre-fix fallbacks: swallow the error and carry on with empties.
+t = t.replace('''pr_json=$(gh api "repos/$REPO/pulls/$PR" 2>&1) || {''',
+              '''pr_json=$(gh api "repos/$REPO/pulls/$PR" 2>/dev/null || echo '{"merged":false,"head":{"sha":"abc1234567"},"mergeable_state":"clean"}')
+false && {''')
+t = t.replace('''          --jq ".check_runs[] | select(.name == \\"$1\\") | .conclusion" 2>&1) || {''',
+              '''          --jq ".check_runs[] | select(.name == \\"$1\\") | .conclusion" 2>/dev/null) || out=""
+  false && {''')
+t = t.replace('stamp=$(conclusion_of "Stamp") || exit 3', 'stamp=$(conclusion_of "Stamp")')
+t = t.replace('seal=$(conclusion_of "Seal") || exit 3', 'seal=$(conclusion_of "Seal")')
+t = t.replace('records=$(conclusion_of "PR Benchmark Certifications") || exit 3',
+              'records=$(conclusion_of "PR Benchmark Certifications")')
+p.write_text(t)
+STSAB
+st_broken check-runs
+sab=$(PATH="$TMP/bin:$PATH" REPO=o/r PREV_STATE=pr-certification-stage-3 \
+      bash "$TMP/st/state.sh" 7 2>/dev/null | cut -f1)
+[ "$sab" = "pr-certification-demoted-push-both" ] \
+  && ok "control: swallowing the API error invents 'the seal is void — a perf path moved'" \
+  || bad "control: the sabotage did not reproduce the fabrication (got '$sab')"
+
 echo "== command handlers: who may do what =="
 # The handlers live in certification-commands.yml. What matters is not only that
 # a refusal prints a message, but that a REFUSED command creates NO check run --
@@ -1532,7 +1598,16 @@ if [ -s "$TMP/stamp.sh" ]; then
 all="$*"
 case "$all" in
   *"actions/runs/"*"/rerun"*) printf 'RERUN %s\n' "$all" >> "$SCALLS"; echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
-  *"actions/runs?head_sha"*)  echo "${RUNMETA:-12345 completed}"; exit 0 ;;
+  # The merged lookup fetches JSON and pipes it through jq ITSELF (so an
+  # unanswered API is distinguishable from "no run"), and jq reads `.status`
+  # (so an in-flight run is not re-run). The stub therefore has to be JSON,
+  # like #908's, AND carry a status, like main's. `RUNMETA` stays the knob the
+  # in-flight control turns -- "<id> <status>" -- so that control is unchanged.
+  *"actions/runs?head_sha"*)
+    _rm="${RUNMETA:-12345 completed}"
+    printf '{"workflow_runs":[{"id":%s,"name":"CI","created_at":"2026-01-01T00:00:00Z","status":"%s"}]}\n' \
+      "${_rm%% *}" "${_rm##* }"
+    exit 0 ;;
   *"issues/"*"/comments"*)    printf '%s\n' "$all" >> "$SCALLS"; exit 0 ;;
   *)                          exit 0 ;;
 esac
@@ -1557,6 +1632,65 @@ STUB
   else
     bad "control: the API's reason was discarded again"
   fi
+
+  # THE LISTING, not just the re-run. `run_id=$(gh api ... 2>/dev/null || true)`
+  # made an unanswered API indistinguishable from "this sha has no CI run": the
+  # benign branch said "nothing to re-run", $rerun_note stayed empty, the comment
+  # read "**Stamp recorded.** ... This holds for the life of the PR." and the job
+  # went green -- while the held lane kept its `skipped` result and the gate went
+  # on telling the operator to comment /stamp. Same defect as #847, one call
+  # earlier, and the checks above could not see it because their stub answers.
+  s_run() {  # s_run <gh stub body>  -> echoes the step's exit code
+    cat > "$TMP/sbin/gh" <<STUB
+#!/usr/bin/env bash
+all="\$*"
+$1
+STUB
+    chmod +x "$TMP/sbin/gh"
+    : > "$TMP/scalls"
+    ( PATH="$TMP/sbin:$PATH" SCALLS="$TMP/scalls" REPO=o/r PR=1 VERB=/stamp ACTOR=me AUTHOR=me \
+      PERM=write HEAD_SHA=abc1234567 SHORT=abc1234 bash "$TMP/stamp.sh" >/dev/null 2>&1 )
+    echo $?
+  }
+
+  rc=$(s_run 'case "$all" in
+  *"actions/runs?head_sha"*) echo "gh: Bad credentials (HTTP 401)" >&2; exit 1 ;;
+  *"issues/"*"/comments"*)   printf "%s\n" "$all" >> "$SCALLS"; exit 0 ;;
+  *)                         exit 0 ;;
+esac')
+  [ "$rc" -ne 0 ] \
+    && ok "a stamp whose CI run could not be LOOKED UP fails the command job" \
+    || bad "the stamp reported success after the run listing failed -- the lane is still held"
+  grep -q "but CI was not re-run" "$TMP/scalls" \
+    && ok "and the comment says CI was not re-run" \
+    || bad "the comment claimed a clean stamp after the run listing failed"
+  grep -q "401" "$TMP/scalls" \
+    && ok "and it carries what the API actually said" \
+    || bad "the listing failure's reason was discarded"
+
+  # CONTROL, the other side: an API that ANSWERS "no CI run for this sha" is a
+  # different fact and must stay benign, or every stamp before CI starts would
+  # refuse. Absent and unanswered must not collapse into one branch.
+  rc=$(s_run 'case "$all" in
+  *"actions/runs?head_sha"*) echo "{\"workflow_runs\":[]}"; exit 0 ;;
+  *"issues/"*"/comments"*)   printf "%s\n" "$all" >> "$SCALLS"; exit 0 ;;
+  *)                         exit 0 ;;
+esac')
+  [ "$rc" -eq 0 ] \
+    && ok "control: a sha that genuinely has no CI run still stamps cleanly" \
+    || bad "control: a PR stamped before CI started was refused"
+  grep -q "but CI was not re-run" "$TMP/scalls" \
+    && bad "control: it warned about a re-run that was never needed" \
+    || ok "control: and says nothing about a re-run that was never needed"
+
+  # s_run leaves its last stub behind; the /seal control below wants the
+  # original one (a listing that answers, a re-run that 403s).
+  s_run 'case "$all" in
+  *"actions/runs/"*"/rerun"*) printf "RERUN %s\n" "$all" >> "$SCALLS"; echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
+  *"actions/runs?head_sha"*)  _rm="${RUNMETA:-12345 completed}"; printf "{\"workflow_runs\":[{\"id\":%s,\"name\":\"CI\",\"created_at\":\"2026-01-01T00:00:00Z\",\"status\":\"%s\"}]}\n" "${_rm%% *}" "${_rm##* }"; exit 0 ;;
+  *"issues/"*"/comments"*)    printf "%s\n" "$all" >> "$SCALLS"; exit 0 ;;
+  *)                          exit 0 ;;
+esac' >/dev/null
 
   # CONTROL: a SEAL must re-run too. `seal status` reads the Seal check run,
   # and ci.yml has no `check_run` trigger -- so minting the mark alone left a
@@ -1858,6 +1992,167 @@ SGSAB
   fi
 else
   bad "could not extract the one-signer step"
+fi
+
+# A required check that cannot vouch for the tree must not say OK
+# ---------------------------------------------------------------------------
+# "No block_on under tui/ or recipe/" is one of main's required contexts, and it
+# is one grep. grep exits 2 when the SCAN fails -- a renamed or deleted
+# directory, an unreadable file -- and GNU grep returns 2 even when it also
+# found matches. Written as `if hits=$(grep ... 2>/dev/null); then`, exit 2 is
+# "false", so the step fell through to `echo "OK: ..."` and went green for a
+# scan that never happened. The two directory names are hard-coded again in the
+# workflow's push `paths:` filter, so renaming one is exactly the change that
+# would have hit it -- and it would have taken the gate with it, silently.
+mkdir -p "$TMP/tt"
+python3 - > "$TMP/tt/step.sh" <<'TTX'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/tui-threading.yml").read_text())
+for st in d["jobs"]["no-blocking-on-the-render-thread"]["steps"]:
+    if "run" in st:
+        print(st["run"]); break
+TTX
+tt_tree() {  # tt_tree <clean|dirty|renamed>
+  rm -rf "$TMP/tt/w"; mkdir -p "$TMP/tt/w/crates/spark-server/src/tui"
+  case "$1" in
+    renamed) mkdir -p "$TMP/tt/w/crates/spark-server/src/recipes" ;;
+    *)       mkdir -p "$TMP/tt/w/crates/spark-server/src/recipe" ;;
+  esac
+  printf 'fn tick() { let _ = rx.try_recv(); }\n' > "$TMP/tt/w/crates/spark-server/src/tui/chat.rs"
+  [ "$1" = dirty ] && printf 'fn tick() { rt.block_on(f); }\n' > "$TMP/tt/w/crates/spark-server/src/tui/bad.rs"
+  return 0
+}
+# SCAN_DIRS comes from the job's `env:` in the workflow, so the extracted step
+# dies on `set -u` without it. Read it OUT OF the workflow rather than
+# repeating the value: the point of SCAN_DIRS is that the existence assertion
+# and the grep cannot disagree about which trees they cover, and a hard-coded
+# copy here would be a third opinion able to drift from both.
+TT_SCAN_DIRS=$(python3 - <<'SDPY'
+import yaml
+d = yaml.safe_load(open(".github/workflows/tui-threading.yml"))
+jid = list(d["jobs"])[0]
+for st in d["jobs"][jid]["steps"]:
+    if st.get("env", {}).get("SCAN_DIRS"):
+        print(st["env"]["SCAN_DIRS"]); break
+SDPY
+)
+[ -n "$TT_SCAN_DIRS" ] || bad "setup: could not read SCAN_DIRS out of tui-threading.yml"
+tt_run() { ( cd "$TMP/tt/w" && SCAN_DIRS="$TT_SCAN_DIRS" bash "$1" ) >"$TMP/tt/out" 2>&1; echo $?; }
+
+if [ -s "$TMP/tt/step.sh" ]; then
+  tt_tree clean
+  [ "$(tt_run "$TMP/tt/step.sh")" = 0 ] && grep -q '^OK: ' "$TMP/tt/out" \
+    && ok "a clean tree passes the render-thread check" \
+    || bad "a clean tree did not pass: $(head -2 "$TMP/tt/out")"
+  tt_tree dirty
+  [ "$(tt_run "$TMP/tt/step.sh")" != 0 ] \
+    && ok "control: a real block_on under tui/ is caught" \
+    || bad "control: a block_on under tui/ passed"
+  # THE ONE THAT SHIPPED: the scan could not read the tree.
+  tt_tree renamed
+  if [ "$(tt_run "$TMP/tt/step.sh")" != 0 ]; then
+    ok "a scan that could not read the tree fails, instead of reporting OK"
+  else
+    bad "a renamed directory made this required check report 'OK' on a tree it never read"
+  fi
+  grep -q '^OK: ' "$TMP/tt/out" \
+    && bad "and it printed OK for a scan that did not run" \
+    || ok "and it does not print OK for a scan that did not run"
+
+  # CONTROL: the pre-fix form -- `if hits=$(grep ... 2>/dev/null)` -- restored in
+  # a COPY, on the same unreadable tree. It must go green, which is what proves
+  # the two checks above are not passing by construction.
+  cat > "$TMP/tt/step-sab.sh" <<'SAB'
+set -euo pipefail
+if hits=$(grep -rnE '\.(block_on|block_in_place)\(' \
+            --include='*.rs' --exclude='*_tests.rs' \
+            crates/spark-server/src/tui/ \
+            crates/spark-server/src/recipe/ 2>/dev/null); then
+  echo "::error::The TUI render thread must never poll a future."
+  echo "$hits"
+  exit 1
+fi
+echo "OK: no block_on/block_in_place under tui/ or recipe/"
+SAB
+  tt_tree renamed
+  [ "$(tt_run "$TMP/tt/step-sab.sh")" = 0 ] && grep -q '^OK: ' "$TMP/tt/out" \
+    && ok "control: the pre-fix form reports OK on a tree it could not read" \
+    || bad "control: the sabotage did not reproduce the defect -- the checks above prove nothing"
+else
+  bad "setup: could not extract the render-thread check's step"
+fi
+
+# ---------------------------------------------------------------------------
+# The install canary must not report a probe it could not make
+# ---------------------------------------------------------------------------
+# `code=$(curl ... --write-out '%{http_code}' ... || echo 000)`. curl prints
+# `000` on a transport failure ALREADY -- --write-out runs either way -- so the
+# `|| echo 000` appended a second one and `code` became the two-line string
+# "000\n000". That matches neither `5*` nor `000`, so the case fell through to
+# `ok   /control -> 000000 (fallback, not an error)` and the nightly canary
+# called a timed-out or TLS-failed /control healthy. This probe has no --retry,
+# unlike the `check` helper above it, so it is the likeliest one to trip.
+mkdir -p "$TMP/ic/bin"
+python3 - > "$TMP/ic/step.sh" <<'ICX'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/install-canary.yml").read_text())
+for st in d["jobs"]["pages"]["steps"]:
+    if "run" in st:
+        print(st["run"]); break
+ICX
+# A curl that serves a healthy site, except that /control can be made to fail at
+# the transport level -- printing 000 and exiting non-zero, exactly as curl does.
+ic_curl() {  # ic_curl <"break" to fail the /control probe>
+  cat > "$TMP/ic/bin/curl" <<STUB
+#!/bin/bash
+url=""; for a in "\$@"; do case "\$a" in https://*) url="\$a" ;; esac; done
+case "\$url" in
+  */control)      [ "$1" = break ] && { printf '000'; exit 7; }; printf '200'; exit 0 ;;
+  */control.html) printf '<title>Control plane</title>' ;;
+  */install.sh)   printf '#!/bin/sh\nexit 0\n' ;;
+  */install.ps1)  printf '# atlas installer\n' ;;
+  *)              printf '<title>Atlas, pure Rust inference</title>' ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMP/ic/bin/curl"
+}
+ic_run() { ( PATH="$TMP/ic/bin:$PATH" bash "$1" ) >"$TMP/ic/out" 2>&1; echo $?; }
+
+if [ -s "$TMP/ic/step.sh" ]; then
+  ic_curl healthy
+  [ "$(ic_run "$TMP/ic/step.sh")" = 0 ] \
+    && ok "a healthy site passes the install canary" \
+    || bad "a healthy site failed the canary: $(grep -m1 error "$TMP/ic/out")"
+
+  ic_curl break
+  if [ "$(ic_run "$TMP/ic/step.sh")" != 0 ]; then
+    ok "a /control probe that could not be made fails the canary"
+  else
+    bad "a /control probe that never completed was reported as healthy"
+  fi
+  grep -q 'fallback, not an error' "$TMP/ic/out" \
+    && bad "and it called the unmade probe 'ok ... (fallback, not an error)'" \
+    || ok "and it does not call the unmade probe a fallback"
+
+  # CONTROL: the pre-fix `|| echo 000` restored in a COPY, same broken curl.
+  python3 - "$TMP/ic/step.sh" "$TMP/ic/step-sab.sh" <<'ICSAB'
+import pathlib, sys
+t = pathlib.Path(sys.argv[1]).read_text()
+old = "--location --max-time 20 https://atlasinference.io/control) || true"
+new = "--location --max-time 20 https://atlasinference.io/control || echo 000)"
+pathlib.Path(sys.argv[2]).write_text(t.replace(old, new, 1))
+ICSAB
+  if ! cmp -s "$TMP/ic/step.sh" "$TMP/ic/step-sab.sh"; then
+    ic_curl break
+    [ "$(ic_run "$TMP/ic/step-sab.sh")" = 0 ] && grep -q 'fallback, not an error' "$TMP/ic/out" \
+      && ok "control: the pre-fix form calls a failed /control probe healthy" \
+      || bad "control: the sabotage did not reproduce the defect -- the checks above prove nothing"
+  else
+    bad "control setup: the sabotage did not land; the probe's shape has changed"
+  fi
+else
+  bad "setup: could not extract the install canary's page step"
 fi
 
 # ---------------------------------------------------------------------------

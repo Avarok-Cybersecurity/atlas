@@ -83,14 +83,23 @@ jobs:
           # production code is ever put in a file named that way, this check
           # will not see it -- that is the cost, and it is smaller than the
           # alternative.
-          # ★ The scanned trees must EXIST. `grep -r` on a missing directory
-          # exits 2, the `2>/dev/null` hides the reason, and `if hits=$(...)`
-          # reads any non-zero as "no hits" -- so this required check printed
-          # OK and exited 0 against a tree with no `tui/` at all. Verified:
-          # running the block below in an empty directory passes. A rename or a
-          # move of either tree would silently retire the rule while the check
-          # stayed green, which is the failure mode this whole gate exists to
-          # prevent. Assert the inputs before trusting the absence of output.
+          # ★ TWO WAYS THIS CHECK WENT GREEN WITHOUT SCANNING, BOTH CLOSED.
+          # Each of the two branches that met here caught one and missed the
+          # other.
+          #
+          # (1) THE TREES MUST EXIST. `grep -r` on a missing directory exits 2,
+          # `2>/dev/null` hid the reason, and `if hits=$(...)` read any non-zero
+          # as "no hits" — so this required check printed OK against a tree with
+          # no `tui/` at all. Verified: the old block passed in an empty
+          # directory. A rename would have retired the rule silently.
+          #
+          # (2) EXIT 2 MEANS THE SCAN FAILED — a missing directory OR an
+          # unreadable file — and GNU grep returns 2 even when it ALSO found
+          # matches. Asserting the directories exist still lets an unreadable
+          # file report clean, so capture the status and refuse on >= 2.
+          #
+          # Stderr no longer goes to /dev/null: the reason belongs in the log of
+          # the job that refuses.
           for d in $SCAN_DIRS; do
             [ -d "$d" ] || {
               echo "::error::$d does not exist, so this check scanned nothing."
@@ -101,9 +110,15 @@ jobs:
               exit 1
             }
           done
-          if hits=$(grep -rnE '\.(block_on|block_in_place)\(' \
-                      --include='*.rs' --exclude='*_tests.rs' \
-                      $SCAN_DIRS 2>/dev/null); then
+          rc=0
+          hits=$(grep -rnE '\.(block_on|block_in_place)\(' \
+                   --include='*.rs' --exclude='*_tests.rs' \
+                   $SCAN_DIRS) || rc=$?
+          if [ "$rc" -ge 2 ]; then
+            echo "::error::The block_on scan did not run (grep exited $rc). This check cannot vouch for a tree it failed to read. The directories exist (asserted above), so this is most likely an unreadable file; grep's own message is in the log."
+            exit 1
+          fi
+          if [ "$rc" -eq 0 ]; then
             echo "::error::The TUI render thread must never poll a future."
             echo "$hits"
             echo
