@@ -694,3 +694,65 @@ CONCURRENTLY on two runners, not sequentially); R-33 (`force-cancel` on a run
 that never started, which had held a concurrency group for 40 minutes);
 R-control-or-it-did-not-happen (removing the group's whole-draw fallback turned
 EIGHT tests red — the outage made visible before it shipped).
+
+---
+
+## Run 28 — 2026-09-06T08:55Z — the merge that did NOT cost a campaign
+
+```text
+08:22Z  land     #933 MERGED — cheap-check routing onto avarok-pr1..8, metal lane repaired.
+08:32Z  spawn    dgx1  bfcl-subset       re-measure at pin a87687880a. 7/7 offline gates
+                       (R-34's new preflight) green in 23s, build 70s, gate away 08:34Z.
+                 dgx2  bfcl-subset-echolp already away since 08:07Z at the same pin.
+08:38Z  return   #934 is DIRTY. #933's ci.yml landed on main under my own head.
+08:39Z  aggregate ONE conflict, .github/workflows/ci.yml, and it is a COMMENT — my #911
+                 writeup of the ATLAS_SKIP_BUILD=0 fix against TheTom's #907 wording.
+                 Kept mine (it names the two guards) and folded in the fact only theirs
+                 carried: hosted macOS returns a null MTLCreateSystemDefaultDevice, so
+                 the suite self-skipped there and only went red on the real Mac.
+08:41Z  aggregate git diff a87687880a..HEAD -- <PERF_PATHS> is EMPTY. The two records
+                 still in flight will cover the merged head. Pushed 2e84c11e1f.
+08:44Z  return   145/145 certification-selftest, both runner assertions green, 0 failures
+                 on the new head.
+```
+
+**The question worth asking before the merge, not after.** A 3.5-hour measurement
+was in flight against `a87687880a` when main moved. The instinct is to wait for
+the campaign and merge afterwards. That is backwards: the merge either
+invalidates the records or it does not, and which one is a **checkable fact** —
+the same tree diff `record_covers` makes:
+
+```bash
+git diff --name-only <record-pin>..HEAD -- \
+  crates kernels Cargo.toml Cargo.lock vendor jinja-templates rust-toolchain.toml
+```
+
+Empty, so the merge was free. Running it by hand cost two seconds and turned a
+four-hour serialisation into a parallel one. Had it been non-empty, the same two
+seconds would have said so before the push rather than after the re-measure.
+
+**A containment audit that was wrong the first time.** Checking whether #934
+really holds the 22 folded PRs, I grepped its commit subjects for each PR's
+title and got 11 of 20 "missing" — and nearly reported it. The commits were all
+there under rewritten subjects. **Title-matching is not containment.** Reading
+the 87-commit list settled it in one pass; the tell was that "missing" PRs like
+#886 had their content sitting in commits 79-87 under `test(core):` prefixes.
+
+> **R-35. A record survives a merge iff the PERF_PATHS tree diff is empty — so
+> run the diff, do not serialise on the guess.** `record_covers` never asks about
+> ancestry (Atlas squash-merges; ancestry died the day it landed). It diffs
+> trees. EVIDENCE: 2026-09-06, main moved under a running 3.5 h campaign; the
+> conflict was one comment block in `ci.yml` and the perf diff was empty, so the
+> merge landed mid-campaign at zero cost. CHECK: `git diff --name-only
+> <pin>..HEAD -- <PERF_PATHS>` before the push, and treat a non-empty result as
+> the campaign's death certificate, not a warning.
+
+> **R-36. Containment is a diff question, never a title question.** A stack
+> rewrites subjects as it folds; grepping PR titles against stack commits
+> reports absent PRs that are fully present. EVIDENCE: 2026-09-06, 11 of 20
+> TheTom PRs reported missing from #934; all 20 were in it. CHECK: compare
+> trees or read the commit list — `git log --oneline base..head` — and only
+> claim a PR is missing when its diff still applies forward.
+
+**CITED:** R-34 (the new 7-gate preflight ran and passed before either box
+touched the GPU — first campaign it has guarded); R-33 not needed this run.
