@@ -287,3 +287,7 @@ required-features = ["cuda", "gpu-examples"]
 # module in `examples/common/native_fp8_bf16_compare.rs`, which the example
 # pulls in with `#[path]`.
 test = true
+
+[[example]]
+name = "native_fp8_oproj_batch_microtest"
+required-features = ["cuda", "gpu-examples"]
