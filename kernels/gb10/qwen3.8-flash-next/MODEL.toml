@@ -308,15 +308,17 @@ max_thinking_budget = 2048
 name = "qwen3.8-flash-next-exl3"
 hf_id = "turboderp/Qwen3.8-Flash-Next-exl3"
 hf_revision = "4.05bpw_h6_ng6"
-description = "Qwen3.8-Flash-Next, EXL3 4.05 bpw (turboderp), native EXL3 kernels, bf16 KV, 2 MTP drafts, prefix caching — the 2026-09-05 gate-passing single-GB10 configuration"
+description = "Qwen3.8-Flash-Next, EXL3 4.05 bpw (turboderp), native EXL3 kernels, bf16 KV, 2 MTP drafts, prefix caching, thinking preserved, 4 sequences x 128K — the 2026-09-05 gate-passing single-GB10 kernels at the operator's serving envelope"
 
 [serve_presets.flags]
-# 32K context on one GB10 at util 0.72 alongside the packed EXL3 weights; the
-# QSA cap below tracks this value, so raising it here raises both.
-max_seq_len = 32768
-# One sequence: the EXL3 decode path was tuned and gated single-stream.
-max_num_seqs = 1
-max_batch_size = 1
+# 128K context on one GB10 at util 0.72 alongside the packed EXL3 weights; the
+# QSA cap below tracks this value, so raising it here raises both. (The
+# 2026-09-05 gates ran at 32K / one sequence; 128K x 4 is the operator's
+# requested serving envelope, sized by the self-relative KV budget at boot.)
+max_seq_len = 131072
+# Four sequences; the mHC MTP verify runs per sequence (serialized) above one.
+max_num_seqs = 4
+max_batch_size = 4
 gpu_memory_utilization = 0.72
 # The TUI launcher's value for this model (GDN state slots).
 ssm_cache_slots = 64
@@ -326,8 +328,11 @@ speculative = true
 num_drafts = 2
 # Prefix caching ON (house rule); the gate ran with it on.
 enable_prefix_caching = true
-# Card-native brief reasoning; the template needs a defined effort.
-default_chat_template_kwargs = '{"reasoning_effort":"low"}'
+# Card-native brief reasoning (the template needs a defined effort), and keep
+# prior turns' reasoning in the rendered history (`preserve_thinking`) — the
+# agentic-webserver gates passed with thinking preserved; a request's own
+# chat_template_kwargs still win over this default.
+default_chat_template_kwargs = '{"reasoning_effort":"low","preserve_thinking":true}'
 
 [serve_presets.env]
 # The native EXL3 weight path — MoE, dense projections and lm_head — instead
@@ -356,3 +361,6 @@ ATLAS_VERIFY_EXL3_ROW_ROUTER = "1"
 ATLAS_VERIFY_EXL3_STABLE_GRID = "1"
 ATLAS_NO_VERIFY_ROW_FFN = "1"
 ATLAS_NO_THINKENDED_GPU_ARGMAX = "1"
+# Size the private MTP draft KV pool to the preset's four sequence slots (the
+# compiled default cap is 32); the 2026-09-05 C=2 validation set this to 2.
+ATLAS_MTP_MAX_SEQS = "4"

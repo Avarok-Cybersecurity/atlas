@@ -285,18 +285,20 @@ fn qwen38_flash_next_exl3_preset_carries_the_validated_configuration() {
             .chain(argv.iter().map(String::as_str))
             .collect::<Vec<_>>(),
     );
-    assert_eq!(args.max_seq_len, 32768);
-    assert_eq!(args.max_num_seqs, 1);
-    assert_eq!(args.max_batch_size, 1);
+    // 128K context, four sequences (operator's serving envelope, 2026-09-05).
+    assert_eq!(args.max_seq_len, 131072);
+    assert_eq!(args.max_num_seqs, 4);
+    assert_eq!(args.max_batch_size, 4);
     assert_eq!(args.gpu_memory_utilization, 0.72);
     assert_eq!(args.ssm_cache_slots, 64);
     assert!(args.fast_load_prefetch_shards);
     assert!(args.speculative);
     assert_eq!(args.num_drafts, Some(2));
     assert!(args.enable_prefix_caching, "prefix caching is ON by rule");
+    // Brief reasoning + prior turns' thinking preserved in the rendered history.
     assert_eq!(
         args.default_chat_template_kwargs.as_deref(),
-        Some("{\"reasoning_effort\":\"low\"}")
+        Some("{\"reasoning_effort\":\"low\",\"preserve_thinking\":true}")
     );
     // fp8 KV is not a flag default here: `[behavior].default_kv_dtype = bf16`
     // already owns it, and preflight refuses anything else for QSA.
@@ -329,7 +331,9 @@ fn qwen38_flash_next_exl3_preset_carries_the_validated_configuration() {
     assert_eq!(get("ATLAS_INTHINK_TOOL_LEAK_OPENERS"), "0");
     assert_eq!(get("ATLAS_PLE_CACHE_SLOTS"), "4194304");
     // The QSA cap tracks --max-seq-len; the PLE cap covers the default chunk.
-    assert_eq!(get("ATLAS_QSA_MAX_TOKENS"), "32768");
+    assert_eq!(get("ATLAS_QSA_MAX_TOKENS"), "131072");
+    // The private MTP draft KV pool is sized to the preset's sequence slots.
+    assert_eq!(get("ATLAS_MTP_MAX_SEQS"), "4");
     assert!(get("ATLAS_PLE_MAX_TOKENS").parse::<usize>().unwrap() >= args.max_prefill_tokens);
 
     // An operator override of --max-seq-len carries into the QSA cap.
