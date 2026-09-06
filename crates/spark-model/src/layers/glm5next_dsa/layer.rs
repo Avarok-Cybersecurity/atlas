@@ -151,6 +151,31 @@ pub struct Glm5NextDsaWeights {
     pub ape: DevicePtr,
 }
 
+/// `ATLAS_DSA_SELECT_ROWS=1` runs the PREFILL selector once for the whole row group
+/// instead of once per token.
+///
+/// Bit-identical by construction, and the kernels are untouched. `dsa_index_scores`
+/// already carries the row axis on `gridDim.y` with a per-row `q_pos[Q]`, and its
+/// candidacy test (`dsa_indexer.cu`) is *"a pool is a candidate only when it is complete
+/// AND its LAST token is visible to this query"* — `pool_valid[p] && end_c <= q_pos[r]`.
+/// Both terms are per-row or per-pool; neither reads the scalar `P`. So widening `P` from
+/// row `r`'s own pool count to the group's is a no-op for row `r`: every extra pool is
+/// either incomplete or ends past `q_pos[r]`, scores `-FLT_MAX`, and `dsa_topk_pools`
+/// excludes it under a TOTAL order (score DESC, then pool index ASC — unique, so the
+/// top-`select_k` prefix is unique). There is no partial-pool scoring to disagree about.
+///
+/// OFF by default, and every buffer it needs is allocated ONLY when it is on, so the
+/// control arm keeps today's heap layout byte for byte. That matters here: this
+/// workspace is the one where merely making an allocation unconditionally was itself
+/// enough to move the model's sampled output (see `bt`/`sl` below, and A55).
+///
+/// 🔴 PREFILL ONLY. The K-token verify keeps its per-row selection: it runs the
+/// device-geometry (`replay_safe`) path, and `select_tokens` refuses a ceiling launch at
+/// `q_rows > 1` because a replayed graph would index the wrong rows.
+pub(crate) fn dsa_select_rows_enabled() -> bool {
+    std::env::var("ATLAS_DSA_SELECT_ROWS").as_deref() == Ok("1")
+}
+
 /// Scratch reused across decode steps. Allocated once per layer.
 pub struct Glm5NextDsaWorkspace {
     q_a: DevicePtr,
@@ -161,6 +186,13 @@ pub struct Glm5NextDsaWorkspace {
     head_weights: DevicePtr,
     q_pos: DevicePtr,
     q_mask: DevicePtr,
+    /// `[max_rows, ...]` twins of `q_idx` / `head_weights` / `q_pos` / `q_mask`, used only
+    /// by the batched prefill selector. NULL unless `ATLAS_DSA_SELECT_ROWS=1` — see
+    /// [`dsa_select_rows_enabled`] for why they are not allocated unconditionally.
+    q_idx_rows: DevicePtr,
+    head_weights_rows: DevicePtr,
+    q_pos_rows: DevicePtr,
+    q_mask_rows: DevicePtr,
     slot: DevicePtr,
     attn_out: DevicePtr,
     /// Block table for the paged gather, `[max_dsa_context]` i32. PERSISTENT.
@@ -202,6 +234,7 @@ impl Glm5NextDsaWorkspace {
             super::select::DsaSelectGeometry::plan(cfg, super::state::max_dsa_context(cfg), rows)?;
         let bt_cap = super::state::max_dsa_context(cfg).max(1);
         let persist = std::env::var("ATLAS_GLM_DSA_ALLOC_PER_STEP").as_deref() != Ok("1");
+        let batch_select = dsa_select_rows_enabled();
         Ok(Self {
             q_a: gpu.alloc(rows * (cfg.q_lora_rank * 2))?,
             q_resid: gpu.alloc(rows * (cfg.q_lora_rank * 2))?,
@@ -210,6 +243,31 @@ impl Glm5NextDsaWorkspace {
             q_idx: gpu.alloc(cfg.index_heads * cfg.index_head_dim * 4)?,
             head_weights: gpu.alloc(cfg.index_heads * 4)?,
             q_pos: gpu.alloc(4)?,
+            q_idx_rows: if batch_select {
+                gpu.alloc(rows * cfg.index_heads * cfg.index_head_dim * 4)?
+            } else {
+                DevicePtr(0)
+            },
+            head_weights_rows: if batch_select {
+                gpu.alloc(rows * cfg.index_heads * 4)?
+            } else {
+                DevicePtr(0)
+            },
+            q_pos_rows: if batch_select {
+                gpu.alloc(rows * 4)?
+            } else {
+                DevicePtr(0)
+            },
+            q_mask_rows: if batch_select {
+                // Same "one real query position per row" the scalar `q_mask` encodes,
+                // written once so the batched pass never needs a per-step H2D for it.
+                let p = gpu.alloc(rows)?;
+                gpu.memset_async(p, 1, rows, 0)?;
+                gpu.synchronize(0)?;
+                p
+            } else {
+                DevicePtr(0)
+            },
             q_mask: {
                 // Decode always presents one real query position. Set ONCE — writing it per
                 // token cost a blocking H2D per DSA layer and made the step uncapturable.
@@ -476,6 +534,98 @@ impl Glm5NextDsaLayer {
         )?;
         use crate::layers::glm5next_layer::profile;
         profile::end(profile::DSA_SELECT, t, gpu, stream);
+        Ok(())
+    }
+
+    /// The selection for ALL `k` query rows in ONE pass — the prefill twin of
+    /// [`Self::attend_rows`], enabled by `ATLAS_DSA_SELECT_ROWS=1`.
+    ///
+    /// Per 9,000-token prefill this replaces 4 x 9,000 x 11 single-row launches. Measured
+    /// at `6228baa2` (nsys s3-candcap, n3+n4): `dsa_topk_pools` and `dsa_expand_selection`
+    /// each run **grid(1,1,1)** — one block, 48 SMs idle — 99,000 times for 5.773 s and
+    /// 5.071 s, with `dsa_index_scores` a further 4.211 s. 15.06 s of a 147.8 s prefill
+    /// spent at ~2 % occupancy. Each row's block does exactly the work its own launch did;
+    /// only the launch count changes.
+    ///
+    /// Exactness, in three parts, all of them properties the kernels already have:
+    ///   1. `q_pos` is `[Q]` and the candidacy test reads `q_pos[r]`, so causality is
+    ///      per-row. A pool that ends past row `r` is not a candidate for row `r`.
+    ///   2. `pool_valid[p]` gates completeness, so the in-progress pool is excluded for
+    ///      every row exactly as it is today.
+    ///   3. Non-candidates score `-FLT_MAX` and `dsa_topk_pools` selects under a total
+    ///      order over (score, pool index), so a longer `P` walk reaches the identical
+    ///      top-`select_k` set AND order.
+    /// Widening `P` to the group's pool count therefore cannot change any row's selection.
+    ///
+    /// The `q_idx` projections stay per-row: there is no FP32-out `batchm` twin, and they
+    /// are 2.765 s of `dense_gemv_bf16_fp32out` that this lane does not claim.
+    #[allow(clippy::too_many_arguments)]
+    fn select_rows_batched(
+        &self,
+        gpu: &dyn GpuBackend,
+        k: usize,
+        state: &Glm5NextDsaState,
+        q_pos_host: &[i32],
+        stream: u64,
+    ) -> Result<()> {
+        let w = &self.workspace;
+        // `q_rows = k`, and `len` is the cache length AFTER all k indexer writes — which is
+        // the point: `P` is the group's final pool count and each row masks itself back down
+        // to its own horizon via `q_pos[r]`.
+        let geom = state.geometry(&self.cfg, k)?;
+        let idx_row = self.cfg.index_heads * self.cfg.index_head_dim;
+        for row in 0..k {
+            gemm(
+                gpu,
+                self.kernels.gemm_f32,
+                self.kernels.gemv_f32,
+                // Same as `select_row`: no FP32-out batchm twin exists.
+                KernelHandle(0),
+                w.q_resid.offset(row * self.cfg.q_lora_rank * 2),
+                self.weights.wq_b,
+                w.q_idx_rows.offset(row * idx_row * 4),
+                1,
+                idx_row,
+                self.cfg.q_lora_rank,
+                stream,
+            )?;
+        }
+        let q_pos_bytes: Vec<u8> = q_pos_host.iter().flat_map(|p| p.to_le_bytes()).collect();
+        gpu.copy_h2d(&q_pos_bytes, w.q_pos_rows)?;
+        let inputs = DsaSelectInputs {
+            k_normed: state.k_normed,
+            gate: state.gate,
+            valid: state.valid,
+            ape: self.weights.ape,
+            q: w.q_idx_rows,
+            weights: w.head_weights_rows,
+            q_pos: w.q_pos_rows,
+            q_mask: w.q_mask_rows,
+            first_key: 0,
+            // Host geometry only. The device-geometry path is decode-only and
+            // `select_tokens` refuses it at `q_rows > 1`.
+            geom_dev: DevicePtr::NULL,
+        };
+        let t = crate::layers::glm5next_layer::profile::start();
+        // The BASE of the `[max_rows, out_width]` scratch, not a row slice: the kernels
+        // carry the row axis themselves, so rows 0..k land in their own slots and
+        // `attend_rows` reads all k exactly as before.
+        select_tokens(
+            gpu,
+            &self.select_kernels,
+            &self.cfg,
+            &geom,
+            &inputs,
+            &w.select,
+            super::select::DsaSelectLaunch::Exact,
+            stream,
+        )?;
+        crate::layers::glm5next_layer::profile::end(
+            crate::layers::glm5next_layer::profile::DSA_SELECT,
+            t,
+            gpu,
+            stream,
+        );
         Ok(())
     }
 
@@ -772,6 +922,12 @@ impl Glm5NextDsaLayer {
         // after the attend, which reads it. ANOMALIES A65.
         let mut owns_scratch = false;
         let mut attend_paging: Option<DsaDecodePaging> = None;
+        // PREFILL ONLY: `ctx.graph_capture` marks the verify/decode path, which keeps its
+        // per-row selection (a replayed graph would index the wrong rows). The buffers are
+        // NULL unless `ATLAS_DSA_SELECT_ROWS=1`, so this is false on the control arm and the
+        // heap layout is unchanged there.
+        let batch_select = w.q_idx_rows.0 != 0 && !ctx.graph_capture && k > 1;
+        let mut batch_q_pos: Vec<i32> = Vec::with_capacity(if batch_select { k } else { 0 });
         for row in 0..k {
             let pos = seq_len + row;
             let block_size = kv_cache.config().block_size;
@@ -963,7 +1119,19 @@ impl Glm5NextDsaLayer {
                     .arg_u32(super::select::topk_tile() as u32)
                     .launch(stream)?;
             }
-            self.select_row(gpu, row, st, q_pos_dev, replay_safe, stream)?;
+            if batch_select {
+                // `indexer_forward` left THIS row's head weights in the scalar slot; stash
+                // them at row stride so the one batched pass below can read `weights[r*H]`.
+                gpu.copy_d2d_async(
+                    w.head_weights,
+                    w.head_weights_rows.offset(row * self.cfg.index_heads * 4),
+                    self.cfg.index_heads * 4,
+                    stream,
+                )?;
+                batch_q_pos.push(pos as i32);
+            } else {
+                self.select_row(gpu, row, st, q_pos_dev, replay_safe, stream)?;
+            }
             // The attend needs the BASE of the K-row metadata, not this row's slice: it
             // carries the row axis on `gridDim.y`. On the no-metadata path k is 1 and these
             // are the single-row `w.bt`/`w.sl`, so the base IS the row.
@@ -974,6 +1142,15 @@ impl Glm5NextDsaLayer {
                 owns_scratch = owns_bt && !self.persist_bt;
             }
 
+        }
+
+        // ── ONE selection pass for all K rows (ATLAS_DSA_SELECT_ROWS=1) ──
+        // AFTER the row loop, so every row's indexer write is already in the cache. That
+        // ordering is what makes the hoist exact rather than merely cheaper: row `r` gates
+        // on `end_c <= q_pos[r]`, so rows appended after it stay invisible to it, and the
+        // pools this pass compresses over are the group's final set.
+        if batch_select && !batch_q_pos.is_empty() {
+            self.select_rows_batched(gpu, k, st, &batch_q_pos, stream)?;
         }
 
         // ── ONE gather-attend for all K rows ──
