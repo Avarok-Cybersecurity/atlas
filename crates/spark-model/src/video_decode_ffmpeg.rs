@@ -121,6 +121,35 @@ pub fn probe(policy: &FfmpegPolicy) -> Availability {
     }
 }
 
+/// Why the decoder could not be started, without guessing.
+///
+/// The message this replaced said "is ffmpeg installed and on PATH?" for EVERY
+/// spawn error. That is a diagnosis, and only one of the errno values it
+/// covered had ever been checked. On 2026-09-06 a CI job failed here against a
+/// binary the test had just written and chmod'd 0755 in `/tmp` — installed,
+/// present, executable — and the operator was told to install ffmpeg. The real
+/// errno never reached the log at all.
+///
+/// So: keep the hint where it is actually implied (`NotFound`), and otherwise
+/// say what the OS said. `PermissionDenied` means the mode or a `noexec` mount;
+/// `ExecutableFileBusy` (ETXTBSY) means something still holds a write handle to
+/// it, which on a busy multi-job runner is a race, not a misconfiguration.
+fn spawn_failure(binary: &str, err: std::io::Error) -> anyhow::Error {
+    let hint = match err.kind() {
+        std::io::ErrorKind::NotFound => {
+            " — is ffmpeg installed and on PATH? (set --video-ffmpeg-path to point at it)"
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            " — not executable by this user, or its filesystem is mounted noexec"
+        }
+        std::io::ErrorKind::ExecutableFileBusy => {
+            " — another process still holds it open for writing (ETXTBSY)"
+        }
+        _ => "",
+    };
+    anyhow::anyhow!("could not run {binary:?}: {err}{hint}")
+}
+
 /// Decode `bytes` to RGB frames sampled at `target_fps`.
 ///
 /// ffmpeg performs the temporal sampling itself (`-vf fps=`), which is both
@@ -166,13 +195,7 @@ pub fn decode_frames(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| {
-            format!(
-                "could not run {:?} — is ffmpeg installed and on PATH? \
-                 (set --video-ffmpeg-path to point at it)",
-                policy.binary
-            )
-        })?;
+        .map_err(|err| spawn_failure(&policy.binary, err))?;
 
     let mut stdin = child.stdin.take().context("no stdin pipe")?;
     let mut stdout = child.stdout.take().context("no stdout pipe")?;
