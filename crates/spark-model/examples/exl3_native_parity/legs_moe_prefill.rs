@@ -6,8 +6,9 @@
 //! reconstruct→f64→silu→weighted-sum reference the decode leg uses.
 //!
 //! Synthetic layer: 16 experts at the real qwen4_exp projection geometry
-//! (gate/up [2560 -> 640], down [640 -> 2560]), K=4 MUL1, top_k = 4.
-//! Sub-legs:
+//! (gate/up [2560 -> 640], down [640 -> 2560]), K=4 MUL1, top_k = 4, and the
+//! LEGACY 128-row per-expert cap (`ROWS_PER_EXPERT`) so the tier boundary is
+//! exercised at this harness's scale. Sub-legs:
 //!  * T=3  — the T*top_k <= 128 NO-SYNC shortcut (num_active = -1, no D2H).
 //!  * T=64 — the host-sync fused tier, every expert 0 < count <= 128.
 //!  * T=64 EP — experts [4, 16) local (dense table over 12), GLOBAL ids,
@@ -47,6 +48,10 @@ const E: usize = 16;
 pub const TOP_K: usize = 4;
 const T_MAX: usize = 192;
 const OV_CHUNK: usize = 256;
+/// The LEGACY per-expert row cap, pinned here on purpose: the skewed sub-leg
+/// below forces the overflow tier at ~460 rows, which the serving default
+/// (1024) would keep fused. Slabs are sized at it and the scratch carries it.
+const ROWS_PER_EXPERT: usize = 128;
 
 pub struct Slabs {
     pub scratch: Exl3MoePrefillScratch,
@@ -76,10 +81,10 @@ pub fn alloc_slabs(ctx: &Ctx) -> Result<Slabs> {
     // Deterministic epilogue's per-sorted-slot rows (the serving default), so
     // every sub-leg below gates the arm production actually runs.
     let slot_f32 = a(s_max * H * 4)?;
-    let temp_state_g = a(c * 128 * H * 2)?;
-    let temp_state_u = a(c * 128 * H * 2)?;
-    let temp_inter_g = a(c * 128 * I * 2)?;
-    let temp_inter_u = a(c * 128 * I * 2)?;
+    let temp_state_g = a(c * ROWS_PER_EXPERT * H * 2)?;
+    let temp_state_u = a(c * ROWS_PER_EXPERT * H * 2)?;
+    let temp_inter_g = a(c * ROWS_PER_EXPERT * I * 2)?;
+    let temp_inter_u = a(c * ROWS_PER_EXPERT * I * 2)?;
     let token_sorted = a(s_max * 8)?;
     let weight_sorted = a(s_max * 2)?;
     let expert_count = a((E + 1) * 8)?;
@@ -117,6 +122,7 @@ pub fn alloc_slabs(ctx: &Ctx) -> Result<Slabs> {
             slot_cap: s_max,
             e_cap: E,
             concurrency: c,
+            rows_per_expert: ROWS_PER_EXPERT,
             ov_chunk: OV_CHUNK,
         },
         owned,

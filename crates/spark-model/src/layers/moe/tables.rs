@@ -101,7 +101,8 @@ pub(crate) struct Exl3ExpertPtrTable {
     pub(crate) svh_ptrs: DevicePtr,
     /// `[num_local]` host copies of the same `[trellis, suh, svh]` raw
     /// device addresses the arrays above hold — the prefill OVERFLOW path
-    /// (an expert routed > 128 rows in one batch) launches per-expert
+    /// (an expert routed more rows than the fused tier's per-expert cap in
+    /// one batch) launches per-expert
     /// `exl3_gemm`s on that expert's trellis and needs its pointers without
     /// a D2H of the table.
     pub(crate) host_ptrs: Vec<[u64; 3]>,
@@ -169,8 +170,11 @@ pub(crate) const EXL3_MOE_SLOT_BATCH_TOKENS: usize = 512;
 /// batch; larger prefill chunks are sorted and served per batch slice.
 pub(crate) const EXL3_MOE_PREFILL_BATCH_TOKENS_DEFAULT: usize = 4096;
 
-/// Row chunk of the prefill overflow (count > 128) dense GEMMs — fixed slab
-/// rows, so an arbitrarily hot expert never scales the scratch.
+/// Row chunk of the prefill overflow (count > the fused tier's row cap)
+/// dense GEMMs — fixed slab rows, so an arbitrarily hot expert never scales
+/// the scratch. Equal to the default row cap
+/// (`ops::EXL3_MOE_ROWS_PER_EXPERT_DEFAULT`, pinned by test): an expert that
+/// still overflows fills at least one whole chunk.
 pub(crate) const EXL3_MOE_OVERFLOW_CHUNK_ROWS: usize = 1024;
 
 /// Construction-time launch state for native EXL3 expert mgemm calls —
@@ -246,10 +250,12 @@ pub(crate) struct Exl3MoeState {
     /// unordered fp32-atomicAdd epilogue AND gives the memory back. Sized
     /// ONCE here, at load, inside the util pledge — never on the hot path.
     pub(crate) pf_slot_f32: Option<DevicePtr>,
-    /// f16 `[pf_concurrency, 128, hidden]` x2 staging slabs (no zero-init).
+    /// f16 `[pf_concurrency, pf_rows_per_expert, hidden]` x2 staging slabs
+    /// (no zero-init).
     pub(crate) pf_temp_state_g: DevicePtr,
     pub(crate) pf_temp_state_u: DevicePtr,
-    /// f16 `[pf_concurrency, 128, inter]` x2 intermediate slabs.
+    /// f16 `[pf_concurrency, pf_rows_per_expert, inter]` x2 intermediate
+    /// slabs.
     pub(crate) pf_temp_inter_g: DevicePtr,
     pub(crate) pf_temp_inter_u: DevicePtr,
     /// i64 / f16 `[pf_t_cap * top_k]` LOCAL-sorted slot maps.
@@ -271,6 +277,12 @@ pub(crate) struct Exl3MoeState {
     pub(crate) pf_e_cap: usize,
     /// Fused-kernel temp-slab count C (`sm_count / 8`, clamped to 1..=64).
     pub(crate) pf_concurrency: usize,
+    /// Fused-kernel per-expert row cap = the temp slabs' height, resolved
+    /// ONCE at build (`ops::exl3_moe_row_cap_from_env`: default 1024,
+    /// `ATLAS_EXL3_MOE_ROWS_PER_EXPERT` override, `ATLAS_NO_EXL3_MOE_WIDE_ROWS`
+    /// pins the legacy 128). Experts routed more rows than this in one batch
+    /// take the overflow tier.
+    pub(crate) pf_rows_per_expert: usize,
 }
 
 impl Exl3MoeState {
@@ -317,6 +329,7 @@ impl Exl3MoeState {
             },
             e_cap: self.pf_e_cap,
             concurrency: self.pf_concurrency,
+            rows_per_expert: self.pf_rows_per_expert,
             ov_chunk: EXL3_MOE_OVERFLOW_CHUNK_ROWS,
         }
     }

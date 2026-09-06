@@ -55,7 +55,7 @@ pub use mgemm::{
 };
 #[path = "exl3_matmul/moe_ingress.rs"]
 mod moe_ingress;
-pub use moe_ingress::exl3_moe_stage_ingress;
+pub use moe_ingress::{exl3_moe_stage_ingress, exl3_moe_stage_sorted};
 #[path = "exl3_matmul/moe_decode.rs"]
 mod moe_decode;
 pub use moe_decode::{
@@ -70,9 +70,13 @@ pub use moe_prefill_det::{
 #[path = "exl3_matmul/moe_prefill.rs"]
 mod moe_prefill;
 pub use moe_prefill::{
-    EXL3_MOE_FUSED_K_BITS, EXL3_MOE_MAX_TOKENS_PER_EXPERT, EXL3_MOE_MIXED_K_BITS,
-    Exl3MoeOverflowCtx, Exl3MoePrefillScratch, Exl3MoePrefillStats, exl3_moe_fused,
-    exl3_moe_fused_serves, exl3_moe_prefill_routed, exl3_moe_stage_sorted,
+    EXL3_MOE_FUSED_K_BITS, EXL3_MOE_MIXED_K_BITS, EXL3_MOE_ROWS_PER_EXPERT_DEFAULT,
+    EXL3_MOE_ROWS_PER_EXPERT_ENV, EXL3_MOE_ROWS_PER_EXPERT_LEGACY, EXL3_MOE_ROWS_PER_EXPERT_MIN,
+    EXL3_MOE_WIDE_ROWS_KILL_ENV, Exl3MoeExpertTier, Exl3MoeOverflowCtx, Exl3MoePrefillScratch,
+    Exl3MoePrefillStats, Exl3MoeRowCap, Exl3MoeRowCapGeometry, Exl3MoeRowCapSource,
+    exl3_moe_expert_tier, exl3_moe_fused, exl3_moe_fused_serves, exl3_moe_needs_host_sync,
+    exl3_moe_prefill_routed, exl3_moe_row_cap_from_env, exl3_moe_row_cap_kernel_max,
+    exl3_moe_temp_slab_bytes, resolve_exl3_moe_row_cap,
 };
 
 /// Dynamic shared memory every gemm/mgemm instance is launched with (the
@@ -327,38 +331,7 @@ pub fn exl3_gemv(
     Ok(true)
 }
 
+// Shape-heuristic / locks-sizing tests — split on the 500-LoC cap.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn blackwell_shape_heuristic_matches_upstream_branch() {
-        // Shape 1: K in {2,4}, !multi, k <= 2048.
-        assert_eq!(select_exl3_gemm_shape(2048, 640, 4, false, 1, 1), 1);
-        assert_eq!(select_exl3_gemm_shape(2048, 640, 2, false, 1, 1), 1);
-        // multi never takes shape 1.
-        assert_ne!(select_exl3_gemm_shape(2048, 640, 4, true, 1, 1), 1);
-        // K=3 small-n mod-256: shape 2 unless k > 8192.
-        assert_eq!(select_exl3_gemm_shape(2560, 1024, 3, false, 1, 1), 2);
-        assert_eq!(select_exl3_gemm_shape(9216, 1024, 3, false, 1, 1), 3);
-        // Wide n, mod-512: shape 4.
-        assert_eq!(select_exl3_gemm_shape(2560, 248320, 4, true, 1, 1), 4);
-        // qwen4_exp lm_head-ish n % 256 != 0 -> universal shape 2 fallback.
-        assert_eq!(select_exl3_gemm_shape(2560, 640, 5, false, 1, 1), 2);
-        // bszm scaling: mod_256 uses UNSCALED n, comparisons use scaled.
-        assert_eq!(select_exl3_gemm_shape(2560, 512, 6, true, 1, 64), 4);
-    }
-
-    #[test]
-    fn shape_compat_gates_divisibility() {
-        assert!(exl3_gemm_shape_compat(2, 2560, 640));
-        assert!(!exl3_gemm_shape_compat(3, 2560, 640)); // 640 % 256 != 0
-        assert!(!exl3_gemm_shape_compat(2, 2504, 640)); // k % 32 != 0
-        assert!(exl3_gemm_shape_compat(4, 2560, 1024));
-    }
-
-    #[test]
-    fn locks_sizing_matches_upstream_devctx() {
-        assert_eq!(EXL3_LOCKS_BYTES, 4_202_760);
-    }
-}
+#[path = "exl3_matmul/tests.rs"]
+mod tests;

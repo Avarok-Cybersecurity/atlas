@@ -257,6 +257,25 @@ impl Exl3MoeState {
             .unwrap_or(EXL3_MOE_PREFILL_BATCH_TOKENS_DEFAULT);
         let pf_concurrency = (sm_count as usize / 8).clamp(1, 64);
         let pf_e_cap = num_experts; // >= any EP-local width
+        // Fused-kernel per-expert row cap = temp-slab height (default 1024;
+        // `ATLAS_EXL3_MOE_ROWS_PER_EXPERT` / kill switch
+        // `ATLAS_NO_EXL3_MOE_WIDE_ROWS` -> legacy 128), clamped loudly to the
+        // batch cap and the kernel's 32-bit slab-index bound — arithmetic and
+        // rationale in `ops/exl3_matmul/moe_prefill_cap.rs`.
+        let row_cap = crate::layers::ops::exl3_moe_row_cap_from_env(
+            crate::layers::ops::Exl3MoeRowCapGeometry {
+                t_cap: pf_t_cap,
+                hidden,
+                inter,
+                concurrency: pf_concurrency,
+            },
+        );
+        for w in &row_cap.warnings {
+            tracing::warn!("EXL3 native MoE state: {w}");
+        }
+        let pf_rows = row_cap.rows;
+        let temp_bytes =
+            crate::layers::ops::exl3_moe_temp_slab_bytes(pf_concurrency, pf_rows, hidden, inter);
         let locks = launch.locks;
         let mut owned: Vec<DevicePtr> = Vec::new();
         let mut alloc = |bytes: usize| -> Result<DevicePtr> {
@@ -300,10 +319,10 @@ impl Exl3MoeState {
         } else {
             None
         };
-        let pf_temp_state_g = alloc(pf_concurrency * 128 * hidden * 2)?;
-        let pf_temp_state_u = alloc(pf_concurrency * 128 * hidden * 2)?;
-        let pf_temp_inter_g = alloc(pf_concurrency * 128 * inter * 2)?;
-        let pf_temp_inter_u = alloc(pf_concurrency * 128 * inter * 2)?;
+        let pf_temp_state_g = alloc(pf_concurrency * pf_rows * hidden * 2)?;
+        let pf_temp_state_u = alloc(pf_concurrency * pf_rows * hidden * 2)?;
+        let pf_temp_inter_g = alloc(pf_concurrency * pf_rows * inter * 2)?;
+        let pf_temp_inter_u = alloc(pf_concurrency * pf_rows * inter * 2)?;
         let pf_token_sorted = alloc(pf_t_cap * top_k * 8)?;
         let pf_weight_sorted = alloc(pf_t_cap * top_k * 2)?;
         let pf_expert_count = alloc((pf_e_cap + 1) * 8)?;
@@ -319,17 +338,20 @@ impl Exl3MoeState {
         };
         let total: usize = s_cap * (hidden * 2 * 2 + inter * 4 * 2 + hidden * 4 + inter * 2 + 12)
             + pf_t_cap * (hidden * 6 + top_k * 10)
-            + pf_concurrency * 128 * (hidden + inter) * 4
+            + temp_bytes
             + (pf_e_cap + 1) * 8
             + ov * (hidden * 8 + inter * 4)
             + slot_bytes;
         tracing::info!(
             "EXL3 native MoE state allocated: {s_cap} decode slots \
              ({EXL3_MOE_SLOT_BATCH_TOKENS} tokens x top_k {top_k}) + prefill \
-             batch {pf_t_cap} tokens (fused C={pf_concurrency}, overflow \
-             chunk {ov}), {:.1} MB slabs over the shared launch state (locks + \
-             fence; shared across all MoE layers and the dense arms); \
-             deterministic prefill epilogue {} ({:.1} MB per-slot scratch)",
+             batch {pf_t_cap} tokens (fused C={pf_concurrency} x {pf_rows} \
+             rows/expert [{:?}] = {:.1} MB temp slabs, overflow chunk {ov}), \
+             {:.1} MB slabs over the shared launch state (locks + fence; shared \
+             across all MoE layers and the dense arms); deterministic prefill \
+             epilogue {} ({:.1} MB per-slot scratch)",
+            row_cap.source,
+            temp_bytes as f64 / 1e6,
             total as f64 / 1e6,
             if det_prefill { "ON" } else { "OFF (atomic)" },
             slot_bytes as f64 / 1e6,
@@ -368,6 +390,7 @@ impl Exl3MoeState {
             pf_t_cap,
             pf_e_cap,
             pf_concurrency,
+            pf_rows_per_expert: pf_rows,
         })
     }
 

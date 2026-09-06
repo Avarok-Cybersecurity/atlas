@@ -9,8 +9,9 @@
 //! the grouped prefill path, Atlas's `moe_sort_by_expert` counting sort over
 //! the batch's GLOBAL expert ids, then `ops::exl3_moe_prefill_routed`
 //! (staging → fused `exl3_moe` persistent kernel for every local expert with
-//! `0 < count <= 128` sorted rows → chunked `exl3_gemm` overflow for hotter
-//! experts → fp32-accumulated, prob-weighted egress). The routing
+//! `0 < count <= pf_rows_per_expert` sorted rows (default 1024; the legacy
+//! 128 via `ATLAS_NO_EXL3_MOE_WIDE_ROWS`) → chunked `exl3_gemm` overflow for
+//! hotter experts → fp32-accumulated, prob-weighted egress). The routing
 //! probabilities are applied INSIDE the fp32 accumulator, so the tail must
 //! not re-apply them; the shared expert stays NVFP4/FP8/BF16 and is blended
 //! once after the (EP all-reduced) routed sums — the exact tail the decode

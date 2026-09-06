@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Overflow tier of the native EXL3 MoE prefill pipeline — an expert routed
-//! more than 128 sorted rows in one batch exceeds the fused `exl3_moe`
-//! kernel's temp slabs (`EXL3_MOE_MAX_TOKENS_PER_EXPERT`) and is served by
+//! more sorted rows in one batch than the fused `exl3_moe` kernel's temp-slab
+//! height (`Exl3MoePrefillScratch::rows_per_expert`, resolved in
+//! `moe_prefill_cap.rs`; default 1024, legacy 128) is served by
 //! upstream's `run_single_expert` tier instead: the SAME packed trellis
 //! through the cooperative [`exl3_gemm`](super::super::exl3_gemm) — chunked
 //! gather of its sorted rows (fp16) -> gate/up trellis GEMM (fp16 C) ->
@@ -23,7 +24,7 @@ use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 use super::super::moe_decode::Exl3MoeProj;
 use super::Exl3MoePrefillScratch;
 
-/// Host-side context for the overflow (count > 128) path: per-local-expert
+/// Host-side context for the overflow (count > cap) path: per-local-expert
 /// raw device addresses `[trellis, suh, svh]` for each projection (the same
 /// pointers the device tables hold — `Exl3ExpertPtrTable::host_ptrs`).
 pub struct Exl3MoeOverflowCtx<'a> {
@@ -86,7 +87,7 @@ fn scatter_add_f32(
         .launch(stream)
 }
 
-/// One overflow expert (count > 128 rows): chunked native trellis GEMMs over
+/// One overflow expert (count > cap rows): chunked native trellis GEMMs over
 /// its sorted rows, weighted scatter-add into the fp32 accumulator. The
 /// `A_had` slab is dedicated (never aliases the gathered A) because the same
 /// gathered rows feed BOTH the gate and the up GEMM, each with its own `suh`.

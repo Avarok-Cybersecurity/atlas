@@ -656,3 +656,44 @@ to 5 GB in the 30K arm; the box has swapped under similar pressure before).
 - `serve_exl3.sh`, `serve_nvfp4.sh` — the serve profiles used (`SPARK_BIN` selects the binary).
 - `baseline_*` — pass A/B measurements and the raw stage-profile probes.
 - `nsys_baseline_kern_sum.csv`, `nsys_baseline_api_sum.csv` — the trace summaries.
+
+## Prefill lever 1 — fused MoE tier row cap 128 → 1024 (IMPLEMENTED 2026-09-05, UNMEASURED)
+
+Branch `perf/exl3-moe-prefill-row-cap`. Mechanism, from `vllm_exl3_prefill_review.md` R2: the
+fused `exl3_moe` kernel's `max_tokens_per_expert` is only the temp-slab height (a runtime
+argument; upstream derives it from `temp_state_g.shape[1]`, vllm-exl3 runs 2048). Atlas passed
+the constant 128, so at the 4096-token prefill batch (40,960 slots over 512 experts, mean 80
+rows/expert, heavy tail) most hot experts fell to the overflow tier — per expert, per 1024-row
+chunk, five host-issued launches, three of them cooperative `exl3_gemm` grids of ≤48 blocks that
+serialize behind each other. The cap is now resolved at model build
+(`ops/exl3_matmul/moe_prefill_cap.rs`): default **1024**, `ATLAS_EXL3_MOE_ROWS_PER_EXPERT=<n>`
+overrides, kill switch `ATLAS_NO_EXL3_MOE_WIDE_ROWS` (presence) pins the legacy 128 and wins over
+the numeric knob. Clamped loudly to the token-batch cap (no expert can hold more rows than tokens)
+and to the kernel's only bound, its 32-bit slab-index arithmetic (`C·rows·max(H,I) < 2^31`; at
+C=6, H=2560 that is ~139K rows). The boot log prints the resolved cap, its source and the temp-slab
+bytes: `fused C=6 x 1024 rows/expert [Default] = 78.6 MB temp slabs`.
+
+Slab arithmetic (C=6, H=2560, I=640, four f16 slabs): 128 → 9.8 MB, 512 → 39.3 MB, **1024 →
+78.6 MB**, 2048 → 157 MB, 4096 → 315 MB — versus the 419 MB deterministic slot slab already paid.
+1024 = 12.8× the mean and equals the overflow chunk; beyond it a single expert holding a quarter of
+the chunk is routing pathology where an 8-SM group walking 64 sixteen-row passes is the
+load-balance risk (HYP) and the overflow tier's 48-block GEMMs fit better.
+
+Numerics: same kernel, same grid policy, same deterministic per-slot epilogue for every expert the
+fused tier serves — the cap only changes WHICH experts it serves. Experts with 128 < rows ≤ 1024
+move from the overflow tier's cooperative `exl3_gemm` onto the fused kernel's 16×32×128 MoE tile:
+same trellis decode and f16 activation precision, different fp32 accumulation order — a one-time
+bit change, not run-to-run. A batch with no expert above 128 rows (any prompt ≤ 128 tokens) must
+be BYTE-IDENTICAL across arms; the A/B asserts it on the 200-token greedy LRU-cache sample. Side
+effect, also upstream's semantics: the S ≤ cap no-sync shortcut now covers S ≤ 1024 slots
+(≤ 102 tokens at top-10), removing the one host D2H for short batches (HYP: small TTFT win at
+MTP-verify/short-prompt shapes).
+
+**Everything above is a hypothesis until the GPU A/B runs**:
+`.research/exl3_decode_perf/ab_moe_row_cap.sh` — preset
+`spark serve qwen3.8-flash-next-exl3 --model-from-path /tank/exl3-ckpt/qwen38-flash-next-4.05bpw
+--bind 127.0.0.1 --port 8899`, fresh server per arm, kill switch the only variable, boot-log
+cap-line gate against inert arms, `measure_prefill.py --tokens 8000 11000 --repeats 2`,
+`measure_decode.py --repeats 2 --max-tokens 300`, short-sample byte-equality assertion, long-prompt
+cold/warm and cross-arm samples (informational). Baseline to beat: ~390 tok/s flat 6K–11K
+(`prefill_baseline_8k_11k.txt`). Run it twice with `ORDER` reversed before quoting a number.

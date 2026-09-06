@@ -131,3 +131,36 @@ fn slot_index_maps_local_dense_and_remote_negative() {
     assert_eq!(exl3_expert_slot_index(0, 0, 512), 0);
     assert_eq!(exl3_expert_slot_index(511, 0, 512), 511);
 }
+
+/// The prefill tier's sizing constants agree: the default fused row cap
+/// equals the overflow chunk (an expert that still overflows fills at least
+/// one whole chunk) and fits inside the default token batch (so the default
+/// is never clamped at the canonical geometry).
+#[test]
+fn prefill_row_cap_default_matches_overflow_chunk_and_fits_the_batch() {
+    use super::tables::{EXL3_MOE_OVERFLOW_CHUNK_ROWS, EXL3_MOE_PREFILL_BATCH_TOKENS_DEFAULT};
+    use crate::layers::ops::{
+        EXL3_MOE_ROWS_PER_EXPERT_DEFAULT, EXL3_MOE_ROWS_PER_EXPERT_LEGACY, Exl3MoeRowCapGeometry,
+        resolve_exl3_moe_row_cap,
+    };
+    assert_eq!(
+        EXL3_MOE_ROWS_PER_EXPERT_DEFAULT,
+        EXL3_MOE_OVERFLOW_CHUNK_ROWS
+    );
+    const _: () =
+        assert!(EXL3_MOE_ROWS_PER_EXPERT_DEFAULT <= EXL3_MOE_PREFILL_BATCH_TOKENS_DEFAULT);
+    const _: () = assert!(EXL3_MOE_ROWS_PER_EXPERT_LEGACY < EXL3_MOE_ROWS_PER_EXPERT_DEFAULT);
+    // qwen4_exp on one GB10 (48 SMs -> C = 6): the default resolves unclamped.
+    let r = resolve_exl3_moe_row_cap(
+        false,
+        None,
+        Exl3MoeRowCapGeometry {
+            t_cap: EXL3_MOE_PREFILL_BATCH_TOKENS_DEFAULT,
+            hidden: 2560,
+            inter: 640,
+            concurrency: 6,
+        },
+    );
+    assert_eq!(r.rows, EXL3_MOE_ROWS_PER_EXPERT_DEFAULT);
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+}

@@ -56,11 +56,11 @@
 //        MOE_SMS_PER_EXPERT);
 //     num_groups = min(concurrency, MOE_MAX_GROUPS=64);
 //     group_size = MOE_SMS_PER_EXPERT = 8;
-//     if (num_active > 0)   // count of experts with 0 < count <= 128 rows
+//     if (num_active > 0)   // count of experts with 0 < count <= max_tokens_per_expert
 //         num_groups = min(num_groups, num_active),
 //         group_size = min(num_sms / num_groups, MOE_MAX_SMS_PER_EXPERT=32);
 //     (num_active == 0 → do not launch; num_active unknown (-1, the no-sync
-//      T*top_k <= 128 shortcut) → keep the defaults.)
+//      T*top_k <= max_tokens_per_expert shortcut) → keep the defaults.)
 //   dynamic smem = SMEM_MAX (92160 B): raise
 //     CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES once per function per
 //     device first, exactly like the exl3_matmul entries.
@@ -85,15 +85,16 @@
 //                  `output_state`, whose commit order the dynamic expert
 //                  ticket scheduler makes nondeterministic. NO zero-init
 //                  needed: every LOCAL slot is written exactly once, by this
-//                  kernel (0 < count <= 128) or the overflow tier
-//                  (count > 128), and the reduce skips EP-remote slots.
+//                  kernel (0 < count <= max_tokens_per_expert) or the
+//                  overflow tier (count above it), and the reduce skips
+//                  EP-remote slots.
 //   hidden_state   fp16 (T, hidden_dim)  — token-major activations (RAW, the
 //                  kernel applies suh+Hadamard itself while gathering)
-//   temp_state_g/u fp16 (C, 128, hidden_dim)         C = concurrency
-//   temp_intermediate_g/u fp16 (C, 128, intermediate_dim)
-//                  (qwen4_exp, C=6: 2×3.75 MB + 2×0.94 MB ≈ 9.4 MB total;
-//                  no zero-init needed, protected by the group barriers;
-//                  allocate ONCE at construction — 901 playbook)
+//   temp_state_g/u fp16 (C, R, hidden_dim)     C = concurrency,
+//   temp_intermediate_g/u fp16 (C, R, intermediate_dim)   R = max_tokens_per_expert
+//                  (qwen4_exp, C=6: R=128 → 9.8 MB, R=1024 → 78.6 MB, R=2048 →
+//                  157 MB; no zero-init needed, protected by the group
+//                  barriers; allocate ONCE at construction — 901 playbook)
 //   output_state   fp32 (T, hidden_dim) — the atomicAdd arm (output_slots
 //                  == nullptr) accumulates weight-scaled expert outputs here
 //                  and REQUIRES it zero-initialized every call; the
@@ -108,8 +109,13 @@
 //                  via the sentinel bucket, NEVER by null entries at
 //                  reachable indices)
 //   hidden_dim, intermediate_dim, num_experts (LOCAL count = len(count)-1),
-//   num_experts_per_tok, max_tokens_per_expert (= temp rows = 128,
-//   TEMP_ROWS_FUSED), concurrency,
+//   num_experts_per_tok, max_tokens_per_expert (= temp-slab rows R — a HOST
+//   sizing choice, not a kernel constant: upstream's TEMP_ROWS_FUSED is 128,
+//   vllm-exl3 runs 2048, Atlas resolves it at model build (default 1024,
+//   `ATLAS_EXL3_MOE_ROWS_PER_EXPERT`; the kill switch
+//   `ATLAS_NO_EXL3_MOE_WIDE_ROWS` pins 128). The kernel's only bound is its
+//   32-bit slab-index arithmetic: C * R * max(hidden_dim, intermediate_dim)
+//   must fit an int — the host clamps to that), concurrency,
 //   act_limit      f32, 0.0f = no clamp (qwen4_exp: 0.0f)
 //   act_function   0 = SiLU (qwen4_exp), 1 = GELU, 2 = RELU2_NOGATE
 //   K_gate/K_up/K_down  bits per projection (k0 instances only; fixed-K
@@ -119,8 +125,8 @@
 //
 // Experts with token_count > max_tokens_per_expert are SKIPPED by the kernel
 // before ticket matching (they consume no ticket — num_active must count
-// only experts with 0 < count <= 128) and must be served by the overflow
-// path (per-expert reconstruct + GEMM).
+// only experts with 0 < count <= max_tokens_per_expert) and must be served
+// by the overflow path (chunked cooperative exl3_gemm over the same trellis).
 
 #include <cstdint>
 #include <cuda_fp16.h>

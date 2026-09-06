@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Fuse independent route casts and activation replication before expert GEMM.
+//! Staging launches ahead of the expert GEMMs: the DECODE ingress (route
+//! casts and activation replication fused into one launch) and the PREFILL
+//! tier's sort-output staging into the fused kernel's LOCAL-expert-ordered
+//! forms.
 
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
@@ -43,6 +46,43 @@ pub fn exl3_moe_stage_ingress(
         .arg_u64(hidden as u64)
         .arg_u64(slots as u64)
         .arg_u64(total as u64)
+        .launch(stream)
+}
+
+/// Stage Atlas's `moe_sort_by_expert` outputs into the fused kernel's
+/// LOCAL-expert-ordered forms (plain launch; kernel contract at its
+/// definition in `exl3_matmul.cu`).
+#[allow(clippy::too_many_arguments)]
+pub fn exl3_moe_stage_sorted(
+    gpu: &dyn GpuBackend,
+    token_to_perm: DevicePtr,
+    probs_f32: DevicePtr,
+    expert_offsets: DevicePtr,
+    token_sorted: DevicePtr,
+    weight_sorted: DevicePtr,
+    expert_count: DevicePtr,
+    local_start: usize,
+    num_local: usize,
+    top_k: usize,
+    s: usize,
+    stream: u64,
+) -> Result<()> {
+    let h = gpu.kernel("exl3_matmul", "exl3_moe_stage_sorted")?;
+    let work = s.max(num_local + 1);
+    let grid = div_ceil(work as u32, 256).clamp(1, 4096);
+    KernelLaunch::new(gpu, h)
+        .grid([grid, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(token_to_perm)
+        .arg_ptr(probs_f32)
+        .arg_ptr(expert_offsets)
+        .arg_ptr(token_sorted)
+        .arg_ptr(weight_sorted)
+        .arg_ptr(expert_count)
+        .arg_i32(local_start as i32)
+        .arg_i32(num_local as i32)
+        .arg_i32(top_k as i32)
+        .arg_u64(s as u64)
         .launch(stream)
 }
 
