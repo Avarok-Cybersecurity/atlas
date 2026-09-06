@@ -564,6 +564,51 @@ if [ -s "$TMP/rbsum.sh" ]; then
   want_rc_msg 0 "builds_binaries=true" \
     "classify: a schedule event never fast-paths and emits all four outputs" \
     wildcard_classify
+
+  # ── The API path: the classifier no longer reads a clone ──────────────────
+  # The rows above drive stdin mode, which is unchanged. These drive the
+  # pull_request/merge_group branches, where the file list now comes from
+  # `gh api`. Both new failure modes must land on "build everything", because
+  # a classifier that cannot see the diff must never fast-path past a gate.
+  mkdir -p "$TMP/cdbin"
+  api_classify() {   # api_classify <event> <gh stub body>
+    cat > "$TMP/cdbin/gh" <<STUB
+#!/usr/bin/env bash
+$2
+STUB
+    chmod +x "$TMP/cdbin/gh"
+    # ★ The `| cat` is load-bearing. `emit` writes to $GITHUB_OUTPUT, which is
+    # /dev/stdout here; when stdout is a regular FILE (which want_rc_msg makes
+    # it) that second open gets its own offset 0, and the script's later
+    # diagnostics — written through the shell's own fd, also at 0 — overwrite
+    # the emitted lines. Piping makes stdout a pipe, where both writes append.
+    # The `classify()` helper above is immune only because it already pipes.
+    env PATH="$TMP/cdbin:$PATH" GITHUB_OUTPUT=/dev/stdout GITHUB_EVENT_NAME="$1" \
+        REPO=o/r PR_NUM=1 MG_BASE_SHA=aaa MG_HEAD_SHA=bbb GH_TOKEN=t \
+        bash .github/scripts/classify-diff.sh 2>&1 | cat
+  }
+  want_rc_msg 0 "builds_binaries=false" "classify: a docs-only PR is fast-pathed from the API list" \
+    api_classify pull_request 'printf "docs/x.md\nREADME.md\n"'
+  want_rc_msg 0 "builds_binaries=true" "classify: one crates/ file from the API list builds" \
+    api_classify pull_request 'printf "docs/x.md\ncrates/spark-model/src/lib.rs\n"'
+  # CONTROL: an UNANSWERED api is not an empty diff. Before the API move this
+  # branch could not exist; after it, `files=""` on error would have classified
+  # as "nothing changed" and silently set web_touched=false.
+  want_rc_msg 0 "could not list the PR's files" \
+    "control: an API failure refuses to classify rather than reading as an empty diff" \
+    api_classify pull_request 'echo "gh: Bad credentials (HTTP 401)" >&2; exit 1'
+  # CONTROL: the endpoint truncates. 3000 for pulls/files, 300 for compare —
+  # at the ceiling every rule below would be reasoning about a partial diff.
+  want_rc_msg 0 "the API list is truncated" \
+    "control: a >=3000-file PR is not classified from a truncated list" \
+    api_classify pull_request 'seq 1 3000 | sed "s|^|docs/f|;s|$|.md|"'
+  want_rc_msg 0 "may be truncated" \
+    "control: a >=300-file queue entry is not classified from a truncated compare" \
+    api_classify merge_group 'seq 1 300 | sed "s|^|docs/f|;s|$|.md|"'
+  # ...and the truncation guards must answer BUILD, not skip.
+  want_rc_msg 0 "builds_binaries=true" \
+    "control: a truncated list answers build-everything, never fast-path" \
+    api_classify pull_request 'seq 1 3000 | sed "s|^|docs/f|;s|$|.md|"'
 else
   bad "could not extract the dry-run summary shell from release-build.yml"
 fi
@@ -1330,7 +1375,16 @@ d = yaml.safe_load(pathlib.Path(".github/workflows/tui-threading.yml").read_text
 job = d["jobs"]["no-blocking-on-the-render-thread"]
 steps = [s for s in job["steps"] if s.get("name", "").startswith("Check the render thread")]
 assert len(steps) == 1, f"expected one render-thread step, found {len(steps)}"
-pathlib.Path(sys.argv[1]).write_text(steps[0]["run"])
+# ★ The step now DELEGATES to a script under .github/scripts/, because the
+# same body is run by both the standalone job and the batched `cheap checks`
+# job and must not be able to differ between them. These controls execute the
+# extracted step from inside a fixture directory, where a RELATIVE script path
+# does not resolve — the step exits 127 and the control passes for the wrong
+# reason, or fails for one. Rewrite it to an absolute path against the repo
+# root so the control still runs the real implementation.
+import os
+body = steps[0]["run"].replace(".github/scripts/", os.getcwd() + "/.github/scripts/")
+pathlib.Path(sys.argv[1]).write_text(body)
 pathlib.Path(sys.argv[2]).write_text(steps[0]["env"]["SCAN_DIRS"])
 PY
 BO_DIRS=$(cat "$TMP/bo/scan_dirs")
@@ -1368,7 +1422,16 @@ d = yaml.safe_load(pathlib.Path(".github/workflows/file-size-cap.yml").read_text
 steps = [s for s in d["jobs"]["check-file-sizes"]["steps"]
          if s.get("name", "").startswith("Check no .rs file")]
 assert len(steps) == 1, f"expected one file-size step, found {len(steps)}"
-pathlib.Path(sys.argv[1]).write_text(steps[0]["run"])
+# ★ The step now DELEGATES to a script under .github/scripts/, because the
+# same body is run by both the standalone job and the batched `cheap checks`
+# job and must not be able to differ between them. These controls execute the
+# extracted step from inside a fixture directory, where a RELATIVE script path
+# does not resolve — the step exits 127 and the control passes for the wrong
+# reason, or fails for one. Rewrite it to an absolute path against the repo
+# root so the control still runs the real implementation.
+import os
+body = steps[0]["run"].replace(".github/scripts/", os.getcwd() + "/.github/scripts/")
+pathlib.Path(sys.argv[1]).write_text(body)
 PY
 want_rc 0 "the 500-LoC cap passes on the real tree" bash "$TMP/fs/step.sh"
 

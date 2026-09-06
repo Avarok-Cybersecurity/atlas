@@ -62,6 +62,10 @@ jobs:
           || 'ubuntu-latest' }}
     permissions:
       contents: read
+      # The classifier reads the changed-file list from the API now, not from a
+      # clone, so it needs to see the pull request. `contents: read` alone was
+      # enough when the answer came from git.
+      pull-requests: read
     outputs:
       web_only: ${{ steps.classify.outputs.web_only }}
       web_touched: ${{ steps.classify.outputs.web_touched }}
@@ -69,15 +73,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # The whole commit graph but no blob contents: `git diff --name-only`
-          # compares tree entries, so the file bodies are never needed.
-          fetch-depth: 0
+          # Depth 1: the classifier asks the API for the file list, so no
+          # commit graph is needed here — only the script itself. This job used
+          # to fetch the WHOLE history, six times per push, to compute three
+          # booleans.
+          fetch-depth: 1
           filter: blob:none
           sparse-checkout: .github/scripts
       - id: classify
         env:
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
           MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: bash .github/scripts/classify-diff.sh
@@ -317,7 +324,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
-          components: clippy
+          # rustfmt as well as clippy: the formatter runs as this job's first
+          # cargo step now, so the two required checks share ONE toolchain
+          # install and ONE cache restore instead of two.
+          components: clippy,rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # Lint policy lives in the workspace `Cargo.toml` `[workspace.lints]`
       # block (deny `warnings` + `clippy::all`, with a few targeted
@@ -325,6 +335,18 @@ jobs:
       # `[lints] workspace = true`, and `lib.rs` / `main.rs` re-add the
       # same denies as inner attributes so they apply even when the
       # workspace lints table isn't honoured (e.g. older tooling).
+      # Formatting first: it is ~6s against clippy's ~88s, and a formatting
+      # failure reported before the long run is a much shorter round trip than
+      # one reported after it.
+      #
+      # NOTE the behavioural difference this inherits, which matters when the
+      # standalone `cargo fmt --check` job is retired: that job is UNGATED,
+      # while this one is skipped on a web-only diff. A web-only diff touches
+      # only site/blog/book/web-shared and so contains no .rs file for the
+      # formatter to reject — skipping is sound, but it IS a change, and it
+      # should be stated rather than discovered.
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --tests
 
   license-headers:
@@ -362,6 +384,112 @@ jobs:
       # should live only in a workflow file.
       - name: every bot command is documented
         run: python3 .github/scripts/assert-commands-documented.py
+
+  # ── Nine checks that did no work, in one job ──────────────────────────────
+  #
+  # Measured across 11 completed runs, on the self-hosted pool:
+  #
+  #     job                              queue   wall   real work
+  #     classify diff (web-only?)          28s     5s     0s
+  #     kernel shadow structure            28s     6s     0s
+  #     harvest triage decision table      15s     6s     0s
+  #     SPDX license headers               15s     9s     1s
+  #     typos                              26s     9s     2s
+  #
+  # Eight of these cost 151s of QUEUE and 48s of wall to do about 7s of work —
+  # queue was 76% of their total, and several spent zero measurable seconds on
+  # the thing they exist for. The pool is 12 runners wide, so the slots matter
+  # more than the seconds: eight jobs held eight slots to run eight scripts.
+  #
+  # ★ EVERY CHECK RUNS. NO FAIL-FAST. Nine checks in one job is a loss of
+  # signal unless the job runs all of them and reports all of them — otherwise
+  # one red PR becomes nine sequential round trips, which is worse than the
+  # nine jobs this replaces. Failures are collected and reported together, each
+  # `::error` naming the context it stands in for.
+  #
+  # ★ EACH CHECK STILL CALLS THE SAME SCRIPT ITS OWN JOB CALLS. The bodies were
+  # extracted to `.github/scripts/check-*.sh` first, so during the transition —
+  # while both this job and the nine originals run — they cannot disagree. If
+  # they ever could, this would not be a faithful merge and the originals could
+  # not safely be deleted.
+  #
+  # NOT batched: `PR shares history with its base` (merge-ancestry `guard`)
+  # needs `fetch-depth: 0` to resolve the base, and giving this job full history
+  # would hand back most of what the batch saves. It stays its own job.
+  cheap-checks:
+    name: cheap checks
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prerequisites
+        run: python3 -m pip install --quiet PyYAML
+      # `typos` is a compiled action, not a script, so it cannot join the
+      # collector below. `continue-on-error` keeps it from short-circuiting the
+      # rest; its outcome is folded into the verdict.
+      - id: typos
+        continue-on-error: true
+        uses: crate-ci/typos@5e38bf262baaf477ca9f241b3a7cd3d277fd7df8 # master
+      - id: checks
+        env:
+          TYPOS_OUTCOME: ${{ steps.typos.outcome }}
+        run: |
+          set -uo pipefail
+          failed=()
+          # run <context-name> <command...>
+          run() {
+            local ctx=$1; shift
+            echo "::group::$ctx"
+            if "$@"; then
+              echo "  ok   $ctx"
+            else
+              echo "  FAIL $ctx"
+              failed+=("$ctx")
+            fi
+            echo "::endgroup::"
+          }
+
+          run "SPDX license headers"          python3 scripts/check_spdx.py
+          run "SPDX license headers (vhost)"  python3 .github/scripts/assert-vhost-headers.py
+          run "SPDX license headers (links)"  python3 .github/scripts/assert-doc-links.py
+          run "SPDX license headers (cmds)"   python3 .github/scripts/assert-commands-documented.py
+          run "kernel shadow structure"       python3 scripts/check_kernel_shadows.py
+          run "harvest triage decision table" bash .github/scripts/harvest-triage-test.sh
+          run "Enforce <=500 LoC per source file" bash .github/scripts/check-file-size-cap.sh
+          run "Verify committed GDN binaries match PINS.sha256" bash .github/scripts/check-gdn-so-pins.sh
+          # SCAN_DIRS is the SSOT for the trees the render-thread rule covers;
+          # the standalone job passes it via `env:`, so the batch must too, or
+          # the script dies on `set -u`. Read it from the workflow rather than
+          # repeating the value — a third copy is a third opinion.
+          run "No block_on under tui/ or recipe/" \
+            env SCAN_DIRS="$(python3 -c "import yaml;d=yaml.safe_load(open('.github/workflows/tui-threading.yml'));j=d['jobs'][list(d['jobs'])[0]];print(next(s['env']['SCAN_DIRS'] for s in j['steps'] if s.get('env',{}).get('SCAN_DIRS')))")" \
+            bash .github/scripts/check-no-block-on.sh
+          run "Merge-ancestry guard self-test" bash scripts/check_merge_ancestry_test.sh
+          run "the certification self-test is still wired" python3 .github/scripts/assert-selftest-wired.py
+
+          # `typos` ran as its own step; fold its verdict in here so the summary
+          # below is the whole truth rather than most of it.
+          if [ "${TYPOS_OUTCOME}" = "success" ]; then
+            echo "  ok   typos"
+          else
+            echo "  FAIL typos (outcome: ${TYPOS_OUTCOME})"
+            failed+=("typos")
+          fi
+
+          if [ "${#failed[@]}" -eq 0 ]; then
+            echo "all cheap checks pass"
+            exit 0
+          fi
+          for c in "${failed[@]}"; do
+            echo "::error title=$c::this check failed. It runs inside the batched \`cheap checks\` job; the group above carries its output."
+          done
+          echo "${#failed[@]} cheap check(s) failed: ${failed[*]}"
+          exit 1
 
   typos:
     name: typos
@@ -707,8 +835,8 @@ jobs:
           (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
           (needs.test.result == 'success' || needs.test.result == 'skipped') &&
           (needs.test-macos-metal.result == 'success' || needs.test-macos-metal.result == 'skipped') &&
-          needs.stamp.outputs.stamped != 'false' }}
-    needs: [changes, stamp, fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
+          (needs.stamp.outputs.stamped != 'false' || needs.seal.result == 'success') }}
+    needs: [changes, stamp, seal, fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
     uses: ./.github/workflows/release-build.yml
     with:
       version: 0.0.0-pr${{ github.event.number || 'queue' }}

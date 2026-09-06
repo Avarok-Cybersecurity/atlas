@@ -57,6 +57,10 @@ jobs:
           || 'ubuntu-latest' }}
     permissions:
       contents: read
+      # The classifier reads the changed-file list from the API now, not from a
+      # clone, so it needs to see the pull request. `contents: read` alone was
+      # enough when the answer came from git.
+      pull-requests: read
     outputs:
       web_only: ${{ steps.classify.outputs.web_only }}
       web_touched: ${{ steps.classify.outputs.web_touched }}
@@ -64,15 +68,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # The whole commit graph but no blob contents: `git diff --name-only`
-          # compares tree entries, so the file bodies are never needed.
-          fetch-depth: 0
+          # Depth 1: the classifier asks the API for the file list, so no
+          # commit graph is needed here — only the script itself. This job used
+          # to fetch the WHOLE history, six times per push, to compute three
+          # booleans.
+          fetch-depth: 1
           filter: blob:none
           sparse-checkout: .github/scripts
       - id: classify
         env:
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
           MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: bash .github/scripts/classify-diff.sh

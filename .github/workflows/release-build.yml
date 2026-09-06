@@ -114,7 +114,7 @@ jobs:
                 has("id") and has("os") and has("runner") and has("target")
                 and has("platform") and has("cargo_features")
                 and has("toolchain") and has("experimental")
-                and has("pr_validate") | not
+                and has("pr_validate") and has("test_mode") | not
               ) | .id // "<no id>" ] | join(", ")' .github/release-matrix.json)
           [ -z "$missing" ] || { echo "::error::entries missing keys: $missing"; exit 1; }
           dupes=$(jq -r '[.[].id] | group_by(.) | map(select(length>1) | .[0]) | join(", ")' \
@@ -511,6 +511,55 @@ jobs:
           set -euo pipefail
           cargo build --release -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
 
+      # ── The matrix now TESTS, it does not only build ─────────────────────
+      #
+      # `cargo build` proves the crate compiles and links for a target. It says
+      # nothing about whether the tests even compile, and this matrix was the
+      # repo's only cross-platform coverage — the release legs never ran
+      # `cargo test` at all.
+      #
+      # `--no-run` is the default for every leg, deliberately. All nine targets
+      # are GPU platforms (nvidia/amd/metal) and no hosted runner has the
+      # device, so EXECUTING the suite would gamble nine legs at once on
+      # hardware that is not there. `--no-run` still compiles and links every
+      # test binary for the target — strictly more than `cargo build` checked
+      # before — at the cost of the harnesses only, since the object cache from
+      # the step above is reused.
+      #
+      # `test_mode: run` promotes a leg to full execution. Promote ONE AT A
+      # TIME, each with its own evidence that the suite passes on that runner;
+      # a leg flipped speculatively turns a required context red for everyone.
+      - name: Test spark (unix)
+        if: matrix.os != 'windows'
+        run: |
+          set -euo pipefail
+          case "${{ matrix.test_mode }}" in
+            run)
+              cargo test --release -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+              ;;
+            no-run)
+              cargo test --release --no-run -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+              ;;
+            skip)
+              # ★ WHY A LEG IS SKIPPED, AND WHAT IT COSTS.
+              # `skip` preserves the pre-existing behaviour for a leg whose
+              # TESTS do not compile yet — the build above still runs, so the
+              # leg is no weaker than it was, but it gains nothing either.
+              # Both macOS legs are here because `cargo test --no-run
+              # --no-default-features --features metal` fails with
+              #   error[E0433]: could not find `cuda_backend` in `spark_runtime`
+              # spark-server's test code references cuda-only items with no cfg
+              # gate, so the metal configuration's tests have NEVER compiled.
+              # `cargo build` never touched them, which is precisely the gap
+              # this change exists to close — it found one immediately.
+              echo "::warning title=${{ matrix.id }}: tests not compiled::test_mode=skip. This leg builds but does not compile its tests. See the note in release-matrix.json."
+              ;;
+            *)
+              echo "::error::unknown test_mode '${{ matrix.test_mode }}' for ${{ matrix.id }}"
+              exit 1
+              ;;
+          esac
+
       - name: Build spark (windows)
         if: matrix.os == 'windows'
         shell: pwsh
@@ -521,6 +570,24 @@ jobs:
           # -- instead of the MSVC linker. It fails with "extra operand" on the
           # first object file.
           cargo build --release -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Same reasoning as the unix leg. pwsh for the same PATH reason: under
+      # `shell: bash` Git Bash's /usr/bin shadows the MSVC linker.
+      - name: Test spark (windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          if ("${{ matrix.test_mode }}" -eq "run") {
+            cargo test --release -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+          } elseif ("${{ matrix.test_mode }}" -eq "no-run") {
+            cargo test --release --no-run -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+          } elseif ("${{ matrix.test_mode }}" -eq "skip") {
+            Write-Output "::warning title=${{ matrix.id }}: tests not compiled::test_mode=skip. This leg builds but does not compile its tests."
+          } else {
+            Write-Output "::error::unknown test_mode '${{ matrix.test_mode }}' for ${{ matrix.id }}"
+            exit 1
+          }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package
