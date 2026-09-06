@@ -3,9 +3,19 @@ name: "CLA Assistant"
 # Keyed on the PR: `issue_comment` and `pull_request_target` both fire for the
 # same pull request but carry different `github.ref` shapes, so grouping on the
 # ref alone would let the two trigger types queue against each other.
+# NOT cancel-in-progress. `CLAAssistant` is a REQUIRED context, and a cancelled
+# required check is indistinguishable from a failed one in `gh pr checks` and in
+# branch protection — it reads as red and the PR stops. Because this workflow
+# fires on `issue_comment`, two comments posted seconds apart made the second run
+# cancel the first and left the PR blocked on a check that had simply been shot.
+# Observed on #907 on 2026-09-06: an explanatory comment followed immediately by
+# a bare `/stamp` cancelled the CLA run, and the PR sat red until it was
+# re-dispatched by hand. A required check must not be cancellable by the timing
+# of unrelated comments; the runner-seconds this used to save are worth far less
+# than a PR that cannot merge. Serialised, not cancelled.
 concurrency:
   group: cla-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 on:
   issue_comment:
