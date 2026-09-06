@@ -5,11 +5,12 @@ use anyhow::{Result, ensure};
 use half::bf16;
 use spark_model::layers::ops;
 use spark_runtime::cuda_backend::AtlasCudaBackend;
-use spark_runtime::gpu::{DevicePtr, GpuBackend};
+use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelLaunch};
 
 const N: usize = 5120;
 const K: usize = 6144;
-const MAX_M: usize = 5;
+const MAX_M: usize = 16;
+const ORIGINAL_M: usize = 5;
 const GUARD: usize = 64;
 
 fn upload(gpu: &dyn GpuBackend, bytes: &[u8]) -> Result<DevicePtr> {
@@ -58,6 +59,7 @@ fn main() -> Result<()> {
     let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
     let scalar = gpu.kernel("w8a16_gemv", "w8a16_gemv")?;
     let batch4 = gpu.kernel("w8a16_gemv_batch4", "w8a16_gemv_batch4")?;
+    let batch16 = gpu.kernel("w8a16_gemv_batch4", "w8a16_gemv_batch16")?;
     let mut state = 0x51a7_8a16_2026_u64;
     let mut random = || {
         state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
@@ -69,7 +71,7 @@ fn main() -> Result<()> {
             ((x % 127) as u8) | (((x >> 7) & 1) as u8 * 128)
         })
         .collect();
-    let acts: Vec<u8> = (0..MAX_M * K)
+    let mut acts: Vec<u8> = (0..ORIGINAL_M * K)
         .flat_map(|_| {
             bf16::from_f32(((random() % 2049) as f32 - 1024.0) / 1024.0)
                 .to_bits()
@@ -79,6 +81,13 @@ fn main() -> Result<()> {
     let scales: Vec<u8> = (0..N / 128 * (K / 128))
         .flat_map(|_| (((random() % 16 + 1) as f32) / 1024.0).to_le_bytes())
         .collect();
+    // Keep the observed M4 red fixture's first five rows and scales unchanged.
+    // Additional rows are generated only after the original scale draws.
+    acts.extend((0..(MAX_M - ORIGINAL_M) * K).flat_map(|_| {
+        bf16::from_f32(((random() % 2049) as f32 - 1024.0) / 1024.0)
+            .to_bits()
+            .to_le_bytes()
+    }));
     let weight = upload(&gpu, &weights)?;
     let input_base = upload(&gpu, &[vec![0x5a; GUARD], acts, vec![0x5a; GUARD]].concat())?;
     let input = input_base.offset(GUARD);
@@ -90,7 +99,7 @@ fn main() -> Result<()> {
     let scalar_out = scalar_base.offset(GUARD);
     let batch_out = batch_base.offset(GUARD);
     let mut first_oracle = true;
-    for m in [2_usize, 4, 5] {
+    for m in [2_usize, 4, 5, 8, 16] {
         gpu.copy_h2d(&sentinel, scalar_base)?;
         gpu.copy_h2d(&sentinel, batch_base)?;
         for row in 0..m {
@@ -106,19 +115,34 @@ fn main() -> Result<()> {
                 0,
             )?;
         }
-        for first in (0..m).step_by(4) {
-            ops::w8a16_gemv_batch4(
-                &gpu,
-                batch4,
-                input.offset(first * K * 2),
-                weight,
-                scale,
-                batch_out.offset(first * N * 2),
-                (m - first).min(4) as u32,
-                N as u32,
-                K as u32,
-                0,
-            )?;
+        if m > 5 {
+            // The same CUDA template also exports M<=16; exercise it directly.
+            KernelLaunch::new(&gpu, batch16)
+                .grid([N.div_ceil(4) as u32, 1, 1])
+                .block([256, 1, 1])
+                .arg_ptr(input)
+                .arg_ptr(weight)
+                .arg_ptr(scale)
+                .arg_ptr(batch_out)
+                .arg_u32(m as u32)
+                .arg_u32(N as u32)
+                .arg_u32(K as u32)
+                .launch(0)?;
+        } else {
+            for first in (0..m).step_by(4) {
+                ops::w8a16_gemv_batch4(
+                    &gpu,
+                    batch4,
+                    input.offset(first * K * 2),
+                    weight,
+                    scale,
+                    batch_out.offset(first * N * 2),
+                    (m - first).min(4) as u32,
+                    N as u32,
+                    K as u32,
+                    0,
+                )?;
+            }
         }
         gpu.synchronize(0)?;
         let mut baseline = vec![0_u8; sentinel.len()];
@@ -163,6 +187,8 @@ fn main() -> Result<()> {
         );
         check_output(&observed, &baseline, &sentinel, bytes)?;
     }
-    println!("ALL PASS: actual O projection M2/M4/M5, scalar equivalence and offset guards");
+    println!(
+        "ALL PASS: actual O shape batch4 M2/M4/M5 and batch16 M8/M16, exact scalar equivalence and guards"
+    );
     Ok(())
 }
