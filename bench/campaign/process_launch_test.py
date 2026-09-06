@@ -29,10 +29,10 @@ class ProcessEnvironmentTests(unittest.TestCase):
             return process_launch.launch_environment(SimpleNamespace(env_json=str(path), env=[]))
 
     def test_multisequence_profile_is_explicit_and_preserved(self):
-        for value in ("0", "1"):
-            with self.subTest(value=value):
-                self.assertEqual(self.environment({"ATLAS_MS_PROFILE": value})["ATLAS_MS_PROFILE"],
-                                 value)
+        for key in ("ATLAS_MS_PROFILE", "ATLAS_SSM_MS_PROFILE", "ATLAS_SSM_DETAIL_PROFILE"):
+            for value in ("0", "1"):
+                with self.subTest(key=key, value=value):
+                    self.assertEqual(self.environment({key: value})[key], value)
 
     def test_unknown_diagnostic_still_refuses(self):
         with self.assertRaisesRegex(ValueError, "environment key is not allowed: UNLISTED_DIAGNOSTIC"):
@@ -117,7 +117,8 @@ class ProcessLaunchTests(unittest.TestCase):
         self.assertEqual(self.call("capture").returncode, 0)
 
     def test_recorded_diagnostics_are_explicit_and_preserved_in_actual_process_evidence(self):
-        for key in ("ATLAS_DECODE_TIMING", "ATLAS_DENSE_FP8", "ATLAS_MS_PROFILE"):
+        for key in ("ATLAS_DECODE_TIMING", "ATLAS_DENSE_FP8", "ATLAS_MS_PROFILE",
+                    "ATLAS_SSM_MS_PROFILE", "ATLAS_SSM_DETAIL_PROFILE"):
             env_file = self.root / "env.json"
             self.argv_file.write_text(json.dumps([sys.executable, "-c", "import time; time.sleep(300)"]))
             env_file.write_text(json.dumps({key: "1", "UNLISTED_DIAGNOSTIC": "1"}))
