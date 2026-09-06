@@ -280,3 +280,35 @@ pub fn qsa_prefill_attn(
         .arg_f32(inv_sqrt_d)
         .launch(stream)
 }
+
+/// Device top-k for prefill selection: `scores [rows, stride]` -> `lists
+/// [rows, topk]` block ids.
+///
+/// Replaces a D2H of every score plus a per-row CPU sort. One block per row,
+/// radix select (4 fixed passes) rather than K argmax passes — K is 512 here,
+/// so the moe_topk approach would be 512 sweeps.
+#[allow(clippy::too_many_arguments)]
+pub fn qsa_topk_rows(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    scores: DevicePtr,
+    lists: DevicePtr,
+    rows: u32,
+    stride: u32,
+    topk: u32,
+    first_pos: u32,
+    ratio: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([rows, 1, 1]) // one block per query row
+        .block([256, 1, 1])
+        .arg_ptr(scores)
+        .arg_ptr(lists)
+        .arg_u32(rows)
+        .arg_u32(stride)
+        .arg_u32(topk)
+        .arg_u32(first_pos)
+        .arg_u32(ratio)
+        .launch(stream)
+}
