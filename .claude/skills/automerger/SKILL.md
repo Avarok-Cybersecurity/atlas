@@ -255,8 +255,32 @@ Comment protocol and stack map, below.
 
 ### G — Certify once, then merge
 
-Stamp → **stop for approval** → campaign → seal **last**. A seal is voided by
-the next commit; a stamp is not.
+Stamp → **stop for approval to spend the GPU** → campaign → seal **last**.
+A seal is voided by the next commit; a stamp is not.
+
+**★ SEALING IS DELEGATED BY DEFAULT.** Granted by the repo owner 2026-09-06:
+*"the auto-merger should /seal for me by default unless human intervention is
+deemed required."* So a stack that is certified, green and final gets sealed
+and merged without asking. Waiting for a human on a clean stack is not caution,
+it is a stall — and stalling is the failure mode this skill was written against.
+
+The judgement is therefore no longer *"may I seal?"* but *"is this one of the
+cases a human must see?"* Those cases are enumerated, so the answer is a check
+and not a mood. **STOP AND ASK when any of these is true:**
+
+| hold | why a human must see it |
+|---|---|
+| a gate failed, and re-running it made it green | a green re-run is not evidence; the cause must be named first (the C=2 tail took six hours and a cross-box sweep to explain) |
+| records are not all at ONE commit, or a Speed-class gate spans signers | `Disagreement::Commits` is fatal in every class; the signer split is class-conditional and easy to get wrong |
+| the campaign did not run at the CURRENT head | a record that does not cover the tree being merged certifies nothing |
+| O.R.A.C.L.E returned `ORDER-WRONG`, or the order changed after it ruled | order is irreversible and the repair destroys PRs (R-31) |
+| a threshold moved in the same PR the campaign certifies | that is a bar certifying itself |
+| the stack contains an EXTERNAL contributor's commits | authorship, CLA and intent are theirs, not yours |
+| the merge would land a `BOUNDARY_FILE` change whose only evidence is this campaign | the gate machinery judging its own change |
+| the user has said to hold this one | always |
+
+Absent all of those: post the evidence comment, then the bare `/seal`, then
+merge. Say in the wave report that you sealed and on what authority.
 
 ## One certification per stack
 
@@ -434,7 +458,7 @@ queue, escalation that would spawn Opus every tick.
 
 Stop when:
 
-- a stack is published and a campaign is requested → **stop, await approval**;
+- a stack is certified but hits one of the SEAL HOLDS in section G → **stop, surface it with the evidence**;
 - the Adversary blocks the same stack twice → **stop, surface to the user**;
 - a queue stall is confirmed over a window → **stop spawning work**, and report
   the measurement that discriminates between hypotheses;
