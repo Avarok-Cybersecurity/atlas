@@ -82,6 +82,18 @@ want_rc() {
   fi
 }
 
+# want_out <expected-stdout> <label> <cmd...> -- for checks whose answer is a
+# VALUE rather than an exit code. Asserting on rc would conflate "the step
+# decided false" with "the step crashed", and those must stay distinguishable:
+# one is a verdict, the other is the fail-safe path.
+want_out() {
+  local want=$1 label=$2; shift 2
+  local got; got=$("$@" 2>"$TMP/out")
+  if [ "$got" = "$want" ]; then ok "$label"; else
+    bad "$label (expected output '$want', got '$got')"; sed 's/^/       /' "$TMP/out" | head -4
+  fi
+}
+
 echo "== seal coverage =="
 printf 'README.md\n' > "$TMP/one.txt"
 want_rc 0 "a codeowner of every path covers the diff" \
@@ -370,8 +382,188 @@ if [ -s "$TMP/alias.sh" ]; then
   # ever passed, any diff could skip certification by breaking classify-diff.
   want_rc 1 "control: a broken classifier (empty web_only) stays red" \
     env RESULT=skipped WEB_ONLY= STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+
+  # ── Stack-aware certification ───────────────────────────────────────────
+  # A lower layer of a stack defers its campaign to the aggregation PR, so its
+  # deliberate skip must report GREEN -- otherwise branch protection blocks a
+  # layer that was never meant to certify.
+  want_rc 0 "alias: a lower stack layer passes on a deliberate skip" \
+    env RESULT=skipped WEB_ONLY=false IS_STACK_LAYER=true STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+  # Same trap as the web_only one above, and the reason the condition is
+  # positive: if a BROKEN stack query (empty) ever passed, any PR could skip
+  # certification by breaking the `gh pr list` call in the classify job.
+  want_rc 1 "control: a broken stack query (empty is_stack_layer) stays red" \
+    env RESULT=skipped WEB_ONLY=false IS_STACK_LAYER= STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+  # An explicit "not a layer" is the aggregation PR itself: it owes the campaign,
+  # so a skip there is a hole, not a pass.
+  want_rc 1 "control: the aggregation PR skipping certification stays red" \
+    env RESULT=skipped WEB_ONLY=false IS_STACK_LAYER=false STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+  # The branch keys on `skipped` on purpose. A layer whose certification RAN and
+  # FAILED must not be waved through by being a layer.
+  want_rc 1 "control: a failed certification on a stack layer stays red" \
+    env RESULT=failure WEB_ONLY=false IS_STACK_LAYER=true STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
 else
   bad "could not extract the alias shell from ci.yml"
+fi
+
+# ── The classify side: what DECIDES is_stack_layer ──────────────────────────
+# The alias rows above prove the verdict is translated correctly. These prove
+# the verdict itself is reached correctly -- including that every way the
+# lookup can go wrong lands on "certify".
+extract 'changes/Stack position' > "$TMP/stack.sh"
+if [ -s "$TMP/stack.sh" ]; then
+  # `gh pr list ... --jq length` prints the number of open PRs stacked on top.
+  stub_gh_count() { printf '#!/bin/bash\nprintf "%s\\n"\n' "$1" > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"; }
+  # stack_says <event> <head_repo> -- head ref fixed; the layer test must not
+  # depend on the base ref at all (see the workflow comment: the top of a
+  # native stack has a non-main base and is the PR that lands on main).
+  stack_says() {
+    mkdir -p "$TMP/bin"; : > "$TMP/gh_out"
+    env PATH="$TMP/bin:$PATH" GITHUB_OUTPUT="$TMP/gh_out" \
+        GITHUB_EVENT_NAME="$1" HEAD_REPO="$2" HEAD_REF=feat/mine REPO=o/r \
+        bash "$TMP/stack.sh" >/dev/null 2>&1
+    grep -c "^is_stack_layer=true$" "$TMP/gh_out"
+  }
+
+  stub_gh_count 0
+  want_out 0 "stack: a PR with nothing stacked above it certifies — whatever its base" stack_says pull_request o/r
+  stub_gh_count 2
+  want_out 1 "stack: a PR with 2 PRs stacked above it is a lower layer" stack_says pull_request o/r
+
+  # FAIL-SAFE, every way the classification can break. Each must CERTIFY
+  # (false), never skip: an extra campaign is recoverable, an uncertified
+  # merge is not.
+  printf '#!/bin/bash\nexit 1\n' > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"
+  want_out 0 "control: a failing gh call certifies rather than skipping" stack_says pull_request o/r
+  stub_gh_count "not-a-number"
+  want_out 0 "control: garbage from gh certifies rather than skipping" stack_says pull_request o/r
+  stub_gh_count 2
+  want_out 0 "control: a merge_group run certifies (no PR context to read)" stack_says merge_group o/r
+  # A FORK PR's head branch name can coincide with a stack's base branch in
+  # this repo -- `--base` matches by name. If that coincidence ever counted as
+  # "stacked above", any fork could skip certification by naming its branch.
+  stub_gh_count 2
+  want_out 0 "control: a fork PR certifies even when its branch name matches a stack base" stack_says pull_request someone/fork
+
+  # Native stacked-PR payload (github.event.pull_request.stack.*): when
+  # present and numeric it decides alone -- below the top is a layer, the top
+  # certifies -- and garbage falls through to the query, never to a skip.
+  stack_native() {
+    mkdir -p "$TMP/bin"; : > "$TMP/gh_out"
+    env PATH="$TMP/bin:$PATH" GITHUB_OUTPUT="$TMP/gh_out" \
+        GITHUB_EVENT_NAME=pull_request HEAD_REPO=o/r HEAD_REF=feat/mine REPO=o/r \
+        STACK_POSITION="$1" STACK_SIZE="$2" \
+        bash "$TMP/stack.sh" >/dev/null 2>&1
+    grep -c "^is_stack_layer=true$" "$TMP/gh_out"
+  }
+  stub_gh_count 0
+  want_out 1 "stack: native payload 2 of 5 is a lower layer, no API call consulted" stack_native 2 5
+  want_out 0 "stack: native payload top of the stack (5 of 5) certifies" stack_native 5 5
+  stub_gh_count 2
+  want_out 1 "stack: garbage native fields fall through to the query" stack_native garbage 5
+  printf '#!/bin/bash\nexit 1\n' > "$TMP/bin/gh"; chmod +x "$TMP/bin/gh"
+  want_out 0 "control: garbage native fields with a failing query still certifies" stack_native garbage 5
+else
+  bad "could not extract the stack-position shell from ci.yml"
+fi
+
+# ── release matrix: the summary's skip-acceptance logic ─────────────────────
+# `dry-run summary` is a required context; its first step converts upstream
+# results into a verdict. Exactly two skips are acceptable, and each must be
+# NAMED by its input -- a bare skip is still a failure.
+extract_rb() { python3 -c '
+import sys, yaml
+d = yaml.safe_load(open(".github/workflows/release-build.yml"))
+for st in d["jobs"]["dry-run-summary"]["steps"]:
+    if (st.get("name") or "") == sys.argv[1]:
+        print(st["run"]); break
+' "$1"; }
+extract_rb 'Fail explicitly if anything upstream failed' > "$TMP/rbsum.sh"
+if [ -s "$TMP/rbsum.sh" ]; then
+  want_rc 0 "matrix summary: a stack layer's skipped build passes" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
+  want_rc 1 "control: an UNEXPLAINED skipped build stays red" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=false bash "$TMP/rbsum.sh"
+  want_rc 1 "control: a FAILED build on a stack layer stays red" \
+    env VALIDATE_RESULT=success BUILD_RESULT=failure WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
+  want_rc 1 "control: being a stack layer does not excuse a failed validate" \
+    env VALIDATE_RESULT=failure BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=true bash "$TMP/rbsum.sh"
+  # The inert-diff skip. Before this acceptance branch existed, ci-cost-controls
+  # added the builds_binaries SKIP without teaching the summary that it was
+  # legitimate -- so `dry-run summary` went red on exactly the diffs the
+  # feature was built for. The pair below is the fix and its control.
+  want_rc 0 "matrix summary: an inert diff's skipped build passes" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=false BUILDS_BINARIES=false bash "$TMP/rbsum.sh"
+  want_rc 1 "control: builds_binaries=true with a skipped build stays red" \
+    env VALIDATE_RESULT=success BUILD_RESULT=skipped WEB_ONLY=false STACK_LAYER=false BUILDS_BINARIES=true bash "$TMP/rbsum.sh"
+
+  # The classifier that decides builds_binaries, driven through its stdin mode.
+  # GITHUB_OUTPUT must be pinned: inside Actions it points at the step-output
+  # file and emit's lines silently vanish from the pipe -- these rows passed
+  # locally (var unset -> /dev/stdout) and failed on the runner exactly so.
+  classify() { printf '%s\n' "$@" | env GITHUB_OUTPUT=/dev/stdout GITHUB_EVENT_NAME=pull_request bash .github/scripts/classify-diff.sh - 2>/dev/null | grep "^builds_binaries="; }
+  want_rc_msg 0 "builds_binaries=false" "classify: a docs-only diff cannot change a binary" \
+    classify docs/AUTOMERGER.md README.md
+  want_rc_msg 0 "builds_binaries=true" "control: touching release-build.yml builds, .github or not" \
+    classify docs/AUTOMERGER.md .github/workflows/release-build.yml
+  want_rc_msg 0 "builds_binaries=true" "control: one crates/ file makes the whole diff build" \
+    classify docs/AUTOMERGER.md crates/spark-model/src/lib.rs
+  # The wildcard (push/schedule/workflow_call) branch must emit ALL FOUR
+  # outputs: under `set -u` a three-argument emit would die on unbound $4,
+  # and no row exercised that branch until a wrong-tree read made us LOOK.
+  wildcard_classify() { env GITHUB_OUTPUT=/dev/stdout GITHUB_EVENT_NAME=schedule bash .github/scripts/classify-diff.sh 2>/dev/null | grep "^builds_binaries="; }
+  want_rc_msg 0 "builds_binaries=true" "classify: a schedule event never fast-paths and emits all four outputs" wildcard_classify
+
+# ── /stamp vs an in-flight CI run ────────────────────────────────────────────
+# Stamping a freshly-opened PR always races its first CI run: the rerun API
+# refuses 403 "already running" while it is in flight, and the handler used to
+# treat that as fatal (observed live on #877, 2026-09-04). The benign race must
+# succeed; a rerun failure with any OTHER cause must still fail loudly.
+extract_cc() { python3 -c '
+import sys, yaml
+d = yaml.safe_load(open(".github/workflows/certification-commands.yml"))
+for st in d["jobs"]["command"]["steps"]:
+    if (st.get("name") or "") == sys.argv[1]:
+        print(st["run"]); break
+' "$1"; }
+extract_cc '/stamp and /seal' > "$TMP/cmd.sh"
+if [ -s "$TMP/cmd.sh" ]; then
+  # gh stub: rerun always 403s "already running"; the stamp job status and the
+  # run status come from files so each row can steer the scenario.
+  mkdir -p "$TMP/bin"
+  cat > "$TMP/bin/gh" <<'STUB'
+#!/bin/bash
+case "$*" in
+  *"/rerun"*)
+    # refuses while the run is in flight, succeeds once it has completed --
+    # the actual API contract the handler must survive
+    if grep -q completed "$TMP_STATE/run_status"; then exit 0; fi
+    echo "HTTP 403: This workflow is already running" >&2; exit 1 ;;
+  *"/jobs?"*)          cat "$TMP_STATE/stamp_job_status" ;;
+  *"actions/runs?"*)   echo "9001" ;;
+  *"actions/runs/9001"*)
+    # self-advancing clock: report the current status, then complete the run,
+    # so the wait loop observes in_progress -> completed across two polls
+    cat "$TMP_STATE/run_status"; echo completed > "$TMP_STATE/run_status" ;;
+  *check-runs*)        echo "{}" ;;
+  *) echo "" ;;
+esac
+STUB
+  chmod +x "$TMP/bin/gh"
+  printf '#!/bin/bash\nexit 0\n' > "$TMP/bin/sleep"; chmod +x "$TMP/bin/sleep"
+  cmd_env() { env PATH="$TMP/bin:$PATH" TMP_STATE="$TMP" \
+      REPO=o/r PR=1 ACTOR=t VERB=/stamp PERM=admin AUTHOR=t HEAD_SHA=abc SHORT=abc GH_TOKEN=x \
+      bash "$TMP/cmd.sh"; }
+
+  echo queued > "$TMP/stamp_job_status"; echo in_progress > "$TMP/run_status"
+  want_rc_msg 0 "no re-run needed" "stamp: racing an in-flight run whose stamp job has not decided is benign" cmd_env
+  echo completed > "$TMP/stamp_job_status"; echo in_progress > "$TMP/run_status"
+  want_rc_msg 0 "after it finished" "stamp: a frozen pre-stamp run is re-run once it completes" cmd_env
+else
+  bad "could not extract the /stamp step from certification-commands.yml"
+fi
+else
+  bad "could not extract the dry-run summary shell from release-build.yml"
 fi
 
 echo "== one PR, one commit, one signer =="

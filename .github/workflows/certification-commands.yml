@@ -280,6 +280,38 @@ jobs:
               # job log, and the log had thrown the answer away.
               if err=$(gh api -X POST "repos/$REPO/actions/runs/$run_id/rerun" 2>&1); then
                 echo "re-ran CI run $run_id to release the held lane"
+              elif grep -q "already running" <<<"$err"; then
+                # NOT a failure: stamping a freshly-opened PR always races its
+                # first CI run, and the rerun API refuses with 403 while it is
+                # in flight. Two sub-cases, split by whether that run's
+                # `stamp status` job has already fixed its verdict:
+                #   - not yet completed: the job reads the Stamp CHECK RUN at
+                #     execution time, and the check was recorded above, so the
+                #     in-flight run picks the stamp up by itself. No re-run.
+                #   - completed (pre-stamp): its gates are frozen on
+                #     stamped=false, so wait for the run to finish, then re-run.
+                stamp_state=$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100"                   --jq '[.jobs[] | select(.name == "stamp status")][0].status' 2>/dev/null || echo unknown)
+                if [ "$stamp_state" != "completed" ]; then
+                  echo "CI run $run_id is in flight and its stamp job ($stamp_state) has not decided yet — it will read the fresh Stamp itself; no re-run needed"
+                else
+                  echo "CI run $run_id already fixed stamped=false; waiting for it to finish before re-running"
+                  deadline=$((SECONDS + 900))
+                  status=in_progress
+                  while [ "$SECONDS" -lt "$deadline" ]; do
+                    sleep 30
+                    status=$(gh api "repos/$REPO/actions/runs/$run_id" --jq .status 2>/dev/null || echo unknown)
+                    [ "$status" = "completed" ] && break
+                  done
+                  if [ "$status" = "completed" ]                      && err=$(gh api -X POST "repos/$REPO/actions/runs/$run_id/rerun" 2>&1); then
+                    echo "re-ran CI run $run_id after it finished ($((SECONDS/60))m wait)"
+                  else
+                    echo "::error title=$name recorded, but CI was NOT re-run::run $run_id still '$status' after 15m (or the re-run failed: $err)"
+                    rerun_note="
+
+          > [!WARNING]
+          > **The $name is recorded, but CI was not re-run.** [CI run \`$run_id\`](https://github.com/$REPO/actions/runs/$run_id) was still running when the stamp landed and did not finish within 15 minutes. Certification still shows the pre-stamp \`skipped\` result. Re-run that workflow by hand once it completes, or push any commit to this PR."
+                  fi
+                fi
               else
                 echo "::error title=$name recorded, but CI was NOT re-run::re-running CI run $run_id failed: $err"
                 rerun_note="
