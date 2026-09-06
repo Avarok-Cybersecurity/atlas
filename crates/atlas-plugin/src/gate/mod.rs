@@ -272,6 +272,10 @@ mod card_tests;
 
 /// Ed25519 record signatures: round trips and, mostly, negative controls.
 #[cfg(test)]
+#[path = "signer_registry_tests.rs"]
+mod signer_registry_tests;
+
+#[cfg(test)]
 #[path = "signing_tests.rs"]
 mod signing_tests;
 
