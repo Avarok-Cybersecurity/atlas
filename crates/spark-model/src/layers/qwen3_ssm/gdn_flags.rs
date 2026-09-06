@@ -240,20 +240,49 @@ pub const fn verify_row_exact_required(
     (exact_verify || (pass_exact_replay && lever)) && !h_f16
 }
 
-/// Kill switch for the pass-scoped row-exact verify arms
-/// (`ATLAS_NO_VERIFY_ROW_EXACT`). PRESENCE check per the house convention
-/// (`=0` is NOT "off"), read once per process. `--exact-verify` is a separate,
-/// wider opt-in and is unaffected.
+/// The pass-scoped row-exact verify arms are OPT-IN: `ATLAS_VERIFY_ROW_EXACT`
+/// (PRESENCE, `=0` is NOT "off") arms them; `ATLAS_NO_VERIFY_ROW_EXACT` still
+/// disarms and wins over both. Read once per process. `--exact-verify` is a
+/// separate, wider opt-in and is unaffected.
+///
+/// Polarity flipped 2026-09-05 (was default-ON). The mHC MTP verify was the
+/// only body running the exact chain by default, against the crate's own
+/// rule that exactness is opt-in because of its decode-step cost
+/// (`legacy_wy_verify_is_the_default`). Measured on qwen3.8-flash-next EXL3
+/// 4.05bpw, one GB10, 2 drafts, prefix cache on, 300-token greedy code
+/// prompt, fresh server per arm: chain on 26.56 tok/s, chain off 29.92 tok/s
+/// (+12.6%) with a byte-identical 200-token greedy sample, draft acceptance
+/// 1.47 vs 1.49 accepted/step, and `agentic-webserver` PASS 1/1 on the
+/// disarmed arm (8 turns / 118 s). Per leg: disarming only `hc_pre` bought
+/// nothing (the extra rows' GEMMs hit L2) and lowered acceptance to 1.32;
+/// the GDN leg is where the time was. Records in
+/// `.research/exl3_decode_perf/`.
 fn row_exact_lever() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_VERIFY_ROW_EXACT").is_none())
+    *ON.get_or_init(|| {
+        row_exact_lever_from(
+            std::env::var_os("ATLAS_VERIFY_ROW_EXACT").is_some(),
+            std::env::var_os("ATLAS_NO_VERIFY_ROW_EXACT").is_some(),
+        )
+    })
+}
+
+/// Pure form of [`row_exact_lever`]: armed only when asked for, and the kill
+/// switch wins over the arm.
+pub const fn row_exact_lever_from(arm: bool, kill: bool) -> bool {
+    arm && !kill
 }
 
 /// [`verify_row_exact_required`] resolved against the process flags, for a pass
 /// whose `ForwardContext::gdn_exact_replay` is `pass_exact_replay`.
 pub fn verify_row_exact_for_pass(pass_exact_replay: bool) -> bool {
     let f = flags();
-    verify_row_exact_required(f.exact_verify, pass_exact_replay, row_exact_lever(), f.h_f16)
+    verify_row_exact_required(
+        f.exact_verify,
+        pass_exact_replay,
+        row_exact_lever(),
+        f.h_f16,
+    )
 }
 
 /// Which stage of the row-exact chain a caller is asking about.
@@ -265,7 +294,8 @@ pub fn verify_row_exact_for_pass(pass_exact_replay: bool) -> bool {
 /// (K single-row expert passes instead of the fused K=2 one). Naming them
 /// separately is what makes "which leg buys the bit-equality, and what does it
 /// cost" a measurement rather than an argument — each has its own PRESENCE
-/// kill switch, and `ATLAS_NO_VERIFY_ROW_EXACT` still disarms all four.
+/// kill switch. The whole chain is OPT-IN (`ATLAS_VERIFY_ROW_EXACT`, see
+/// [`row_exact_lever`]); `ATLAS_NO_VERIFY_ROW_EXACT` still disarms all four.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RowExactLeg {
     /// The two mHC `hc_pre` sites (`ATLAS_NO_VERIFY_ROW_HC`).
@@ -346,7 +376,7 @@ pub(crate) fn ssm_m128_min_m() -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{GdnFlags, ssm_h_dtype_bits, verify_row_exact_required};
+    use super::{GdnFlags, row_exact_lever_from, ssm_h_dtype_bits, verify_row_exact_required};
 
     const BASE: GdnFlags = GdnFlags {
         h_f16: false,
@@ -355,7 +385,6 @@ mod tests {
         batched_recurrent: false,
         exact_verify: false,
     };
-
 
     // ── The pass-scoped row-exact contract (2026-09-03) ──
     //
@@ -402,6 +431,40 @@ mod tests {
     #[test]
     fn the_kill_switch_restores_the_batched_arms() {
         assert!(!verify_row_exact_required(false, true, false, false));
+    }
+
+    /// The pass-scoped lever is OPT-IN (2026-09-05 polarity): unset → the
+    /// batched arms; `ATLAS_VERIFY_ROW_EXACT` arms the exact chain; the kill
+    /// switch wins when both are present.
+    #[test]
+    fn row_exact_lever_is_opt_in_and_the_kill_switch_wins() {
+        assert!(
+            !row_exact_lever_from(false, false),
+            "default is the batched arms"
+        );
+        assert!(
+            row_exact_lever_from(true, false),
+            "ATLAS_VERIFY_ROW_EXACT arms it"
+        );
+        assert!(!row_exact_lever_from(false, true));
+        assert!(
+            !row_exact_lever_from(true, true),
+            "kill switch wins over the arm"
+        );
+        // Composed with the pass predicate: a declaring pass with the lever
+        // unset runs batched; armed, it runs the exact chain.
+        assert!(!verify_row_exact_required(
+            false,
+            true,
+            row_exact_lever_from(false, false),
+            false
+        ));
+        assert!(verify_row_exact_required(
+            false,
+            true,
+            row_exact_lever_from(true, false),
+            false
+        ));
     }
 
     /// POSITIVE: `--exact-verify` is the WIDER opt-in and is untouched by the

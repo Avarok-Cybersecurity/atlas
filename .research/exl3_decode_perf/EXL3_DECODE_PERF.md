@@ -227,6 +227,54 @@ on this kernel — the remaining gain there is bytes, not scheduling; (d) launch
 launches/step at ~12 us host each is ~57 ms of host time hiding under 83 ms of GPU time — a graph
 of the routed block would also take the 9 syncs/step off the critical path.
 
+## MTP step: one step's anatomy and the row-exact chain (third lever, this commit)
+
+One step from the trace (`nsys_mtp2_fixed_*`, `spark-grid`, 2 drafts, prefix cache on):
+verify lm_head at t=0 → 92.5 ms 3-row verify pass over 48 layers → draft 1 (lm_head at 92.6) →
+draft 2 (lm_head at 97.2) → next step at ~100 ms. 5,085 launches, 83.2 ms GPU busy, 17.0 ms idle:
+
+| idle component | ms/step | mechanism |
+|---|---:|---|
+| ~2.6 us gaps between 5,085 consecutive launches | 13.4 | launch count, not host syncs |
+| PLE at layer 2: 2 x (D2H carry snapshot → host hash+gather → H2D) + the first row's host gather | 2.3 | per-row `forward_row` + `push_verify_row` (`copy_d2h_on_stream`) |
+| end of step: argmax D2H → host accept decision → next step | 1.3 | scheduler |
+
+Inside the pass, per GDN layer: hc_pre attn ~0.19 ms (row 0's three GEMMs 35+12+12 us, rows 1-2
+~29 us each — L2 hits), qkv/z 101+59 us (m=3 costs m=1), GDN recurrence 3 x ~55 us + conv/norm/
+memcpy per row, out_proj 67 us, hc_pre ffn ~0.2 ms, router 3 rows 37 us, routed mgemm 285+143 us
+(S=30, the one-wave plan), egress. ≈1.35 ms x 36 GDN layers + 12 attention layers ≈ 90 ms.
+
+### The row-exact chain A/B (env only, `spark-grid`, MTP profile, fresh server per arm)
+
+The mHC verify sets `gdn_exact_replay`, which by default ran the `hc_pre` and conv+GDN legs once
+per row so the K-row verify reproduces K serial decode rows bit-for-bit (`gdn_flags.rs`
+`RowExactLeg`). The crate's own tests pin "exact verify is opt-in" for every other body because of
+its 22-36% cost; this was the one body running it by default.
+
+| arm | tok/s | accepted/step | 200-token greedy sample |
+|---|---:|---:|---|
+| default (chain armed) | 26.56 | 1.49 | `c5d02cf5…` |
+| `ATLAS_NO_VERIFY_ROW_HC=1` (hc leg off) | 26.19 | 1.32 | `5aee81be…` (differs) |
+| `…_HC=1 …_GDN=1` (both off) | 29.84 | 1.47 | `c5d02cf5…` (identical to default) |
+| `ATLAS_NO_VERIFY_ROW_EXACT=1` (all legs off) | **29.92** | 1.47 | `c5d02cf5…` (identical to default) |
+
+Disarming only the hc leg buys nothing (its extra rows were already L2-served) and costs
+acceptance; the GDN leg is the time. All legs off: **+12.6%** with the greedy sample unchanged.
+Quality gate on the disarmed arm: `agentic-webserver` **Pass** — webserver_ok 1/1,
+followed_directions 1/1, 8 turns / 118 s, harness decode_tps 19.2 (vs 17.5 with the chain armed),
+0 mangling markers (`agentic/run-1788655475375096580.json`).
+
+Change: `row_exact_lever` polarity flipped — the chain is opt-in via `ATLAS_VERIFY_ROW_EXACT`;
+`ATLAS_NO_VERIFY_ROW_EXACT` still disarms and wins. Consequence, stated plainly: spec-on output is
+no longer guaranteed bit-equal to spec-off on the mHC MTP path (the #435 divergence the rest of the
+engine already ships by default); it was byte-equal on the probes above.
+
+Confirmation on the rebuilt binary (`spark-noexact`, no env overrides, same MTP profile):
+**29.89 tok/s**, accepted/step 1.47, greedy sample `c5d02cf5…` — identical to the env arm.
+Cumulative on the operating profile (2 drafts, prefix cache on): 25.95 → 29.89 tok/s across the
+grid and row-exact changes; on top of the shared-expert fix, the pre-fix TUI server logged
+12.9-13.7 tok/s under this profile earlier the same day (longer context, observation not A/B).
+
 ## What is left after the fix, ranked (hypotheses from the trace, not yet measured e2e)
 
 Post-fix serial token budget is roughly: EXL3 trellis kernels ~21 ms + cuBLASLt mHC ~7.5 ms +
