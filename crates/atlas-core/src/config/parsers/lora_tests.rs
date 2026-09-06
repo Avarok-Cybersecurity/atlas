@@ -25,20 +25,38 @@ fn base_json() -> serde_json::Value {
 }
 
 #[test]
-fn happy_path_scaling_alpha_over_r() {
+fn standard_lora_scaling_preserves_inputs_and_uses_alpha_over_rank() {
     let cfg = parse_peft_adapter_config(&base_json().to_string()).unwrap();
     assert_eq!(cfg.r, 16);
     assert_eq!(cfg.lora_alpha, 32.0);
     assert!(!cfg.use_rslora);
     assert_eq!(cfg.scaling(), 2.0);
-    assert_eq!(cfg.target_modules.len(), 6);
 }
 
 #[test]
-fn rslora_scaling_alpha_over_sqrt_r() {
+fn explicit_target_modules_are_preserved_verbatim() {
+    let cfg = parse_peft_adapter_config(&base_json().to_string()).unwrap();
+    assert_eq!(
+        cfg.target_modules,
+        [
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ]
+    );
+}
+
+#[test]
+fn rslora_scaling_preserves_inputs_and_uses_alpha_over_sqrt_rank() {
     let mut j = base_json();
     j["use_rslora"] = serde_json::json!(true);
     let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
+    assert_eq!(cfg.r, 16);
+    assert_eq!(cfg.lora_alpha, 32.0);
+    assert!(cfg.use_rslora);
     assert_eq!(cfg.scaling(), 8.0); // 32 / sqrt(16)
 }
 
@@ -51,13 +69,12 @@ fn float_alpha_accepted() {
 }
 
 #[test]
-fn layers_to_transform_array_accepted() {
-    // The generated Holo fixture carries layers_to_transform=[3,7,...];
-    // it must be ACCEPTED (kept for logging), not rejected.
+fn layers_to_transform_array_does_not_block_adapter_loading() {
+    // Generated Holo configs carry this restriction. The tensor audit owns
+    // actual layer coverage, but parsing must not reject the PEFT field.
     let mut j = base_json();
     j["layers_to_transform"] = serde_json::json!([3, 7, 11, 15, 19, 23]);
-    let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
-    assert_eq!(cfg.layers_to_transform, Some(vec![3, 7, 11, 15, 19, 23]));
+    parse_peft_adapter_config(&j.to_string()).expect("supported PEFT layer list");
 }
 
 #[test]
@@ -85,7 +102,15 @@ fn q_proj_accepted() {
 fn gdn_module_rejected_named() {
     // `out_proj` is deliberately NOT in this list any more — see
     // `gdn_out_proj_is_accepted` below. Everything here feeds the recurrence.
-    for m in ["in_proj_qkvz", "in_proj_qkv", "in_proj_z", "conv1d"] {
+    for m in [
+        "in_proj_qkvz",
+        "in_proj_ba",
+        "in_proj_qkv",
+        "in_proj_z",
+        "in_proj_a",
+        "in_proj_b",
+        "conv1d",
+    ] {
         let mut j = base_json();
         j["target_modules"] = serde_json::json!([m]);
         let err = parse_peft_adapter_config(&j.to_string())
@@ -121,7 +146,7 @@ fn all_linear_rejected_named() {
 }
 
 #[test]
-fn dora_bias_rank_pattern_rejected_named() {
+fn unsupported_inference_controls_are_rejected_by_name() {
     for (key, val, tag) in [
         ("use_dora", serde_json::json!(true), "REJECT(use_dora)"),
         ("bias", serde_json::json!("lora_only"), "REJECT(bias)"),
@@ -131,11 +156,9 @@ fn dora_bias_rank_pattern_rejected_named() {
             "REJECT(rank_pattern)",
         ),
         (
-            // `lm_head`/`embed_tokens` now ACCEPT (token overlay); an
-            // arbitrary module still rejects.
-            "modules_to_save",
-            serde_json::json!(["classifier"]),
-            "REJECT(modules_to_save)",
+            "alpha_pattern",
+            serde_json::json!({"k_proj": 8.0}),
+            "REJECT(alpha_pattern)",
         ),
         (
             "target_parameters",
@@ -166,10 +189,25 @@ fn full_path_target_validates_on_leaf() {
 }
 
 #[test]
-fn zero_rank_rejected() {
+fn zero_rank_rejected_by_name() {
     let mut j = base_json();
     j["r"] = serde_json::json!(0);
-    assert!(parse_peft_adapter_config(&j.to_string()).is_err());
+    let err = parse_peft_adapter_config(&j.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REJECT(r)"), "{err}");
+}
+
+#[test]
+fn nonpositive_alpha_rejected_by_name() {
+    for alpha in [0.0, -1.0] {
+        let mut j = base_json();
+        j["lora_alpha"] = serde_json::json!(alpha);
+        let err = parse_peft_adapter_config(&j.to_string())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("REJECT(lora_alpha)"), "{alpha}: {err}");
+    }
 }
 
 // ---- Feature 2: token overlay (embed / lm_head / vocab-extension) ----
@@ -201,35 +239,96 @@ fn modules_to_save_unknown_leaf_rejected() {
 }
 
 #[test]
-fn trainable_token_indices_list_form_parsed() {
+fn trainable_token_indices_list_form_preserves_row_order() {
     let mut j = base_json();
-    j["trainable_token_indices"] = serde_json::json!([256205, 42, 42, 7]);
+    j["trainable_token_indices"] = serde_json::json!([7, 42, 256205]);
     let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
-    // deduped, first-occurrence order preserved (delta rows align to it)
-    assert_eq!(cfg.trainable_token_indices, vec![256205, 42, 7]);
+    assert_eq!(cfg.trainable_token_indices, vec![7, 42, 256205]);
 }
 
 #[test]
-fn trainable_token_indices_dict_form_unioned() {
+fn duplicate_trainable_token_index_rejected() {
     let mut j = base_json();
-    j["trainable_token_indices"] = serde_json::json!({
-        "embed_tokens": [256205, 10],
-        "lm_head": [10, 99]
-    });
-    let mut cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
-    // Order across dict values is object-iteration dependent; compare as a set.
-    cfg.trainable_token_indices.sort_unstable();
-    assert_eq!(cfg.trainable_token_indices, vec![10, 99, 256205]);
-}
-
-#[test]
-fn trainable_token_indices_negative_rejected() {
-    let mut j = base_json();
-    j["trainable_token_indices"] = serde_json::json!([-1]);
+    j["trainable_token_indices"] = serde_json::json!([7, 42, 42, 256205]);
     let err = parse_peft_adapter_config(&j.to_string())
         .unwrap_err()
         .to_string();
     assert!(err.contains("REJECT(trainable_token_indices)"), "{err}");
+    assert!(err.contains("duplicate id 42"), "{err}");
+}
+
+#[test]
+fn nonascending_trainable_token_indices_rejected() {
+    let mut j = base_json();
+    j["trainable_token_indices"] = serde_json::json!([42, 7, 256205]);
+    let err = parse_peft_adapter_config(&j.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REJECT(trainable_token_indices)"), "{err}");
+    assert!(err.contains("ids must be ascending"), "{err}");
+}
+
+#[test]
+fn trainable_token_indices_dict_form_accepts_shared_order() {
+    let mut j = base_json();
+    j["trainable_token_indices"] = serde_json::json!({
+        "embed_tokens": [10, 99, 256205],
+        "lm_head": [10, 99, 256205]
+    });
+    let cfg = parse_peft_adapter_config(&j.to_string()).unwrap();
+    assert_eq!(cfg.trainable_token_indices, vec![10, 99, 256205]);
+}
+
+#[test]
+fn differing_per_module_trainable_token_indices_rejected() {
+    let mut j = base_json();
+    j["trainable_token_indices"] = serde_json::json!({
+        "embed_tokens": [10, 99],
+        "lm_head": [10, 256205]
+    });
+    let err = parse_peft_adapter_config(&j.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REJECT(trainable_token_indices)"), "{err}");
+    assert!(err.contains("per-module token lists differ"), "{err}");
+}
+
+#[test]
+fn unknown_trainable_token_module_rejected() {
+    let mut j = base_json();
+    j["trainable_token_indices"] = serde_json::json!({"classifier": [10]});
+    let err = parse_peft_adapter_config(&j.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("REJECT(trainable_token_indices)"), "{err}");
+    assert!(err.contains("unsupported module 'classifier'"), "{err}");
+}
+
+#[test]
+fn invalid_trainable_token_entries_rejected_by_name() {
+    for (value, detail) in [
+        (
+            serde_json::json!(-1),
+            "entries must be non-negative integers",
+        ),
+        (
+            serde_json::json!(1.5),
+            "entries must be non-negative integers",
+        ),
+        (
+            serde_json::json!("7"),
+            "entries must be non-negative integers",
+        ),
+        (serde_json::json!(4_294_967_296_u64), "exceeds u32 range"),
+    ] {
+        let mut j = base_json();
+        j["trainable_token_indices"] = serde_json::json!([value]);
+        let err = parse_peft_adapter_config(&j.to_string())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("REJECT(trainable_token_indices)"), "{err}");
+        assert!(err.contains(detail), "{err}");
+    }
 }
 
 #[test]

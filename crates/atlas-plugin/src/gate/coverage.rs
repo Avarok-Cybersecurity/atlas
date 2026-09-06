@@ -558,10 +558,13 @@ pub const REQUIRED: [GateCoverage; 11] = [
     // gate MANDATORY, not accruing debt):
     //
     // * `decode-floor`: the promotion ruling demanded a >=10-run sigma
-    //   calibration so the bar comes from measured run-to-run noise. Done —
-    //   12 runs across 4 driver passes (2026-08-15, dgx1), every run
-    //   28.0–28.1 tok/s, mean 28.03, sigma ~0.05; the BENCH.toml floor
-    //   (27.0, noise 0.5) is set from that set, not from three points.
+    //   calibration so the bar comes from measured run-to-run noise. The
+    //   12-run 2026-08-15 set (28.0–28.1, mean 28.03, sigma ~0.05) satisfied
+    //   the RULE but was measured on a hand-built serve with the default lm
+    //   head, so it never described this gate; the floor beside it read 21.0
+    //   from n=3 for weeks. Settled 2026-09-06: ten consecutive runs on the
+    //   gate's own serve (dgx2, mean 22.78, sigma 0.063) put the BENCH.toml
+    //   floor at 22.7, noise 0.5.
     // * `concurrency-sweep`: it could not be REQUIRED while its entries were
     //   thresholds-less (check_record refuses a thresholds-less PASS). The
     //   dense Qwen3.8-27B entry now carries measured floors from an n=3

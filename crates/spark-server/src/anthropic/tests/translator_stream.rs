@@ -205,9 +205,15 @@ fn multi_tool_calls_close_and_reopen_blocks() {
 }
 
 #[test]
-fn finalize_without_finish_emits_end_turn() {
+fn finalize_without_finish_reports_truncation_not_end_turn() {
     // Upstream died before the Finish delta: finalize must still close
-    // the block and end the message coherently.
+    // the block and end the message coherently — but the message it ends
+    // is INCOMPLETE, and `end_turn` would tell the client the model
+    // finished saying what it wanted. Every client action keyed on that
+    // (accept, commit, end the agent run) is then wrong, and unlike a
+    // truncation reason it gives nothing to retry on. `max_tokens` is
+    // Anthropic's only "output was cut short" slot and is the reason
+    // `convert_stop_reason` already maps the server deadline to.
     let mut t = AnthropicTranslator::new("m".to_string());
     let mut out = Vec::new();
     t.on_delta(
@@ -229,5 +235,88 @@ fn finalize_without_finish_emits_end_turn() {
             "message_stop",
         ]
     );
-    assert_eq!(out[4].data["delta"]["stop_reason"], "end_turn");
+    assert_eq!(
+        out[4].data["delta"]["stop_reason"], "max_tokens",
+        "an abrupt end must not be reported as a completed turn: {:?}",
+        out[4].data
+    );
+}
+
+/// The wire-ready envelope the generation core puts on
+/// `StreamDelta::Error` (see `api::chat_stream::handle_error`) — kept
+/// byte-identical here so a change to that shape breaks this test rather
+/// than silently reverting to a passthrough of raw JSON.
+fn core_error_envelope(msg: &str) -> StreamDelta {
+    StreamDelta::Error {
+        message: serde_json::json!({
+            "error": {"message": msg, "type": "server_error", "code": 500}
+        })
+        .to_string(),
+    }
+}
+
+#[test]
+fn stream_error_terminates_the_turn_as_an_error_not_a_success() {
+    // A server-side inference failure mid-response. The client is already
+    // on a committed HTTP 200 with partial content, so the ONLY way it can
+    // tell failure from success is the terminal event. Swallowing the
+    // error and letting `finalize` append message_delta+message_stop made
+    // a truncated answer indistinguishable from a finished one.
+    let evs = drive(vec![
+        StreamDelta::Content {
+            text: "partial".into(),
+            token_ids: Vec::new(),
+        },
+        core_error_envelope("KV cache exhausted"),
+    ]);
+
+    // `drive` calls finalize after the deltas: the error must have closed
+    // the turn, so no success framing may follow it.
+    assert_eq!(
+        names(&evs),
+        vec![
+            "message_start",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "error",
+        ],
+        "terminal framing after a stream error"
+    );
+    let err = &evs[4].data;
+    assert_eq!(err["type"], "error");
+    assert_eq!(
+        err["error"]["message"], "KV cache exhausted",
+        "the core's message must reach the client, unwrapped from the \
+         OpenAI envelope: {err:?}"
+    );
+    assert!(
+        !names(&evs).contains(&"message_stop"),
+        "a failed turn must not be closed with the success terminator: {:?}",
+        names(&evs)
+    );
+    assert!(
+        !names(&evs).contains(&"message_delta"),
+        "a failed turn must not carry a stop_reason: {:?}",
+        names(&evs)
+    );
+}
+
+#[test]
+fn stream_error_before_any_content_still_reaches_the_client() {
+    // Failure before the first token: nothing has been emitted, so an
+    // empty-but-well-formed message is the most convincing lie of all.
+    let evs = drive(vec![core_error_envelope("model load failed")]);
+    assert_eq!(names(&evs), vec!["message_start", "error"]);
+    assert_eq!(evs[1].data["error"]["message"], "model load failed");
+}
+
+#[test]
+fn non_envelope_error_payload_is_passed_through() {
+    // A payload that is not the OpenAI envelope must still reach the
+    // client verbatim rather than being dropped for failing to parse.
+    let evs = drive(vec![StreamDelta::Error {
+        message: "raw failure text".into(),
+    }]);
+    assert_eq!(evs[1].data["error"]["message"], "raw failure text");
 }

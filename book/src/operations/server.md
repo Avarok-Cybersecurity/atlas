@@ -100,7 +100,6 @@ serves. The scheduler then resolves them by silent precedence (ngram → self-sp
 | `--scheduling-policy` | `fifo` | `fifo` or `slai` (SLO-aware) |
 | `--tbt-deadline-ms` | `100` | SLAI decode deadline |
 | `--auto-compact` | off | Active context compression threshold (e.g. 0.75 = 75% of max-seq-len) |
-| `--warmup-prompt` | — | File path; pre-filled at startup, its KV enters the prefix cache |
 
 Agent workloads (Claude Code, OpenCode): always enable `--enable-prefix-caching` and `--scheduling-policy slai`. The prefix cache dominates wall-clock for system prompts + tool schemas; SLAI keeps streaming smooth under concurrent load.
 

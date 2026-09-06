@@ -169,12 +169,28 @@ impl AtlasCudaBackend {
         if status != 0 {
             bail!("cuMemGetInfo_v2 failed: status {status}");
         }
-        // On unified memory (GB10), cuMemGetInfo reports Linux "free" memory
-        // which excludes reclaimable buff/cache. Use MemAvailable instead.
-        if let Some(mem_available) = super::system_available_memory_bytes() {
-            free = free.max(mem_available);
-        }
-        Ok(free)
+        // RULE: host `MemAvailable` substitutes for the driver's device-free
+        // figure ONLY on an integrated GPU.
+        //
+        // On integrated memory (GB10 / DGX Spark, unified LPDDR5X) device and
+        // host share one physical pool and `cuMemGetInfo` reports Linux
+        // MemFree, which excludes reclaimable buff/cache — MemAvailable is the
+        // truer number, so taking the max is right there.
+        //
+        // On a DISCRETE GPU host RAM is a different pool entirely and the max
+        // is nonsense: on a 3x RTX PRO 6000 Blackwell box (95 GiB per card,
+        // 1 TB host RAM) MemAvailable read 1,038,438,936 kB, so this returned
+        // ~990 GB free for a 95 GB card, `used_so_far` came out 0, and the KV
+        // pool was sized as if nothing had been allocated — the load then died
+        // in `cuMemAlloc_v2` with 4280.2 MB actually free.
+        //
+        // `super::device_is_integrated` documents the discriminator and the
+        // attribute that looks like it would work but does not.
+        Ok(super::effective_free_bytes(
+            free,
+            super::system_available_memory_bytes(),
+            super::device_is_integrated()?,
+        ))
     }
 
     pub(super) fn create_stream_cu(&self) -> Result<u64> {
