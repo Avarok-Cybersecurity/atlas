@@ -16,15 +16,15 @@
 //! re-measured on one box.
 //!
 //! The blanket rule is right for half the suite and wrong for the other half,
-//! and [`Sensitivity`] already draws exactly that line:
+//! and `Sensitivity` already draws exactly that line:
 //!
-//! * [`Sensitivity::Speed`] — "thermally corruptible". Boxes genuinely differ by
+//! * `Sensitivity::Speed` — "thermally corruptible". Boxes genuinely differ by
 //!   far more than their own run-to-run noise. Measured 2026-09-06 on one gate
 //!   at one commit: dgx2 mean 22.78 tok/s (sigma 0.063, n=10), dgx3 mean 23.44
 //!   (sigma 0.070, n=10). A 0.66 tok/s gap, ten times either box's sigma. A
 //!   floor drawn on one box does not describe another, so these records must
 //!   come from ONE box.
-//! * [`Sensitivity::Correctness`] — "accuracy, fidelity, state integrity". The
+//! * `Sensitivity::Correctness` — "accuracy, fidelity, state integrity". The
 //!   same BFCL gate measured independently on dgx1 and dgx2 at sha 82552fe34d
 //!   returned byte-identical scores: overall 86.55, normalized 86.95, n=1004.
 //!   Nothing about the box enters the number, so spanning boxes is sound — and

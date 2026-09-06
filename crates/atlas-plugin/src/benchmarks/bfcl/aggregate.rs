@@ -36,7 +36,7 @@
 //! partial view.
 //!
 //! The arithmetic below mirrors `score.py` deliberately rather than being
-//! imported from it, and [`super::aggregate_tests`] pins the two together on the
+//! imported from it, and `aggregate_tests` pins the two together on the
 //! reference fixture — if they ever disagree, that test says so.
 
 use std::collections::BTreeMap;
@@ -106,7 +106,7 @@ fn mean(v: &[f64]) -> f64 {
 ///
 /// Takes the UNION of every shard's tallies. Feeding it one shard's tallies
 /// gives that shard's own score, which is what makes the conformance test in
-/// [`super::aggregate_tests`] possible on an unsharded run.
+/// `aggregate_tests` possible on an unsharded run.
 pub fn aggregate(tallies: &BTreeMap<String, Tally>) -> Aggregate {
     let subset_mean: BTreeMap<&str, f64> = tallies
         .iter()
