@@ -22,6 +22,7 @@
     fprintf(stderr, "CUDA error %s at %s:%d\n", cudaGetErrorString(_ck), __FILE__, __LINE__); exit(1);} } while(0)
 
 static int g_sms = 0;
+static bool g_grid_mode = false;
 static size_t g_l2 = 0;
 
 // ---------------------------------------------------------------- helpers
@@ -344,6 +345,21 @@ static void bench_moe(int hidden, int inter, int kb, int num_experts, int top_k,
            T, S, kb, shape_gu, ps_gu, c_gu, shape_d, ps_d, c_d, u_gate, u_up, u_silu, u_down, u_chain,
            bytes_tok / (u_chain * 1e-6) / 1e9, layers, u_chain * layers / 1000.0);
 
+    if (g_grid_mode) {
+        // Fixed candidate plans (per_slot, concurrency): Atlas stable-grid actual vs one-wave alternatives.
+        struct Plan { int ps, conc; const char* tag; } plans[] = {
+            {8, 6, "atlas (8,6) waves"}, {4, 12, "(4,12)"}, {4, 10, "(4,10)"}, {3, 16, "(3,16)"},
+            {2, 24, "(2,24)"}, {6, 8, "(6,8)"}, {12, 4, "(12,4)"}, {16, 3, "(16,3)"}, {1, 48, "(1,48)"} };
+        for (auto& pl : plans) {
+            int conc = std::min(pl.conc, S);
+            if (pl.ps * conc > g_sms) continue;
+            float ug = time_us([&](int i) { launch_mgemm(0, shape_gu, pl.ps, conc, i, A, Cg, false); }, 3, 30);
+            float ud = time_us([&](int i) { launch_mgemm(2, shape_d, pl.ps, conc, i, Inter, Cd, true); }, 3, 30);
+            float ud3 = time_us([&](int i) { launch_mgemm(2, 3, pl.ps, conc, i, Inter, Cd, true); }, 3, 30);
+            printf("      S=%2d plan %-20s gate/up sh%d %6.1f us | down sh%d %6.1f us | down sh3 %6.1f us | chain est (2g+d) %6.1f us\n",
+                   S, pl.tag, shape_gu, ug, shape_d, ud, ud3, 2 * ug + std::min(ud, ud3));
+        }
+    }
     if (sweep) {
         // grid sweep at fixed shape: per_slot in {1,2,4,6,8,12,16,24,48}, conc = min(sms/per_slot, S)
         for (int p = 0; p < 3; p += 2) {
@@ -368,7 +384,9 @@ static void bench_moe(int hidden, int inter, int kb, int num_experts, int top_k,
 
 int main(int argc, char** argv) {
     bool sweep = argc > 1 && (std::string(argv[1]) == "sweep" || std::string(argv[1]) == "moe");
-    bool moe_only = argc > 1 && std::string(argv[1]) == "moe";
+    bool moe_only = argc > 1 && (std::string(argv[1]) == "moe" || std::string(argv[1]) == "grid");
+    g_grid_mode = argc > 1 && std::string(argv[1]) == "grid";
+    if (g_grid_mode) sweep = false;
     cudaDeviceProp prop; CK(cudaGetDeviceProperties(&prop, 0));
     g_sms = prop.multiProcessorCount; g_l2 = prop.l2CacheSize;
     int clk = 0; cudaDeviceGetAttribute(&clk, cudaDevAttrClockRate, 0);

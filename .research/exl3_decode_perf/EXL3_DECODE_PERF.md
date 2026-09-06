@@ -137,10 +137,101 @@ this is not a bit-exact change, and the agentic/quality gates (`agentic-webserve
 off in every arm; the MTP verify width (3 rows) takes the same per-row GEMV path (rows ≤ 8) and
 is unmeasured here.
 
+### Agentic check on the fixed binary (one iteration)
+
+User-directed profile (2026-09-05 20:13 local): fixed binary `spark-sharedgemv`, **prefix caching
+ON** (`--enable-prefix-caching --ssm-cache-slots 64`, the user's standing rule — realistic agentic
+configs depend on it and warm-restore bugs must be caught, not dodged), `--speculative
+--num-drafts 2`, one sequence, 32K ctx, util 0.72, `reasoning_effort:low`; benchmark client
+`agentic-webserver` with **greedy** sampling (no `ATLAS_AGENTIC_SAMPLING`) and
+`ATLAS_AGENTIC_PRESERVE_THINKING=1`, `iterations=1`, `wall_budget_s=1000`, port 8888.
+
+| result | value |
+|---|---|
+| verdict | **Pass** — `webserver_ok` 1/1, `followed_directions` 1/1, all six steps |
+| turns / tool calls | 7 / 7 |
+| Σ wall | 112 s (15.8 s/turn) |
+| completion tokens | 1944 |
+| harness decode_tps (incl. TTFT) | 17.5 |
+| mangling markers in trajectory | 0 (greedy sampling is known to hide this defect, so this is not warm-restore evidence) |
+| run record | `agentic/run-1788653752697008545.json`, trajectory beside it |
+
+Reference from the PR's own agentic passes (old binary, model-card sampling, no prefix cache):
+1 draft 11 turns / 390 s, 2 drafts 16 turns / 672 s. Different sampling and cache config, so an
+observation, not an A/B — but the fixed arm completes the task in a fraction of the wall.
+
+An earlier iteration in this session (fix on, model-card sampling, NO prefix cache) was cancelled
+by the user at turn 8 while the agent's own `cargo test` was running; through those 8 turns the
+server logged 20.5-25.0 tok/s per completion with two drafts.
+
+## Routed-expert mgemm grid (second lever, this commit)
+
+`mgemm_grid.rs` gains a `onewave` policy (default; `ATLAS_EXL3_MGEMM_GRID=legacy` restores the
+ported heuristic): `per_slot = clamp(sms / top_k, 1, tiles)`, concurrency `min(sms / per_slot,
+slots)`. On GB10 that is 4 blocks x 10 slots for one token instead of the legacy 8 x 6 (two waves,
+the second 2/3 empty), and 4 x 12 in waves for the 30-slot MTP verify batch instead of 8 x 6 in
+five waves. Per-slot split-K is identical between serial and verify under both policies (the
+stable-grid contract; asserted by the tests for every replay width).
+
+Clean microbench on the idle GPU (`microbench_moe_grid_plans.txt`), routed gate+up+down chain per
+layer: S=10 legacy 163 us → onewave 144 us (1.13x); S=30 legacy-stable 416 us → 405 us (1.03x);
+(3,16) at S=30 is 374 us but would change the serial split. Expected e2e: ~0.9 ms of a ~43 ms
+token (~2%), i.e. at the edge of run-to-run spread. The first `grid` microbench pass ran while the
+agentic server was decoding and read 268 us for the legacy chain — contaminated, discarded.
+
+A/B (binary `spark-grid` = shared-expert fix + grid policy, built from this worktree; same
+`measure_decode.py` fingerprint as above, fresh server per arm, port 8888, dgx-00 2026-09-05
+20:20-20:33 local, box idle; `ATLAS_EXL3_MGEMM_GRID=legacy` the only variable within each profile):
+
+| profile | legacy plan | one-wave plan | delta |
+|---|---:|---:|---:|
+| serial, prefix cache off (`serve_exl3.sh`) | 43.17 ms · 23.10 tok/s | **42.00 ms · 23.78 tok/s** | -1.17 ms (+2.9%) |
+| MTP 2 drafts, prefix cache on (`serve_exl3_fix_agentic.sh`), server-attested tokens / wall | 25.95 tok/s | **26.58 tok/s** | +2.4% |
+
+Per-run spread inside each arm was ≤0.05 ms on the serial gap, so the 1.2 ms delta is
+resolvable and matches the microbench's 0.9 ms prediction. Greedy samples: the serial one-wave arm
+differs from the legacy arm (the 4-block split changes the fp32 reduction order in every routed
+projection — expected, same class as the shared-expert change); the two MTP arms produced
+byte-identical 200-token samples. Under MTP the streaming gap median is meaningless (drafted tokens
+arrive in bursts), hence the tokens/wall column.
+
+Cumulative under the serial fingerprint: 12.25 → 23.78 tok/s (1.94x). Under the user's operating
+profile (2 drafts + prefix cache): 26.6 tok/s on a 300-token greedy code prompt, versus 12.9-13.7
+tok/s logged by the pre-fix TUI server earlier the same day at a 17-20K context (different
+context length — an observation, not an A/B).
+
+## The MTP step, profiled (where the next 2x is)
+
+nsys on the user's operating profile (`spark-grid`, 2 drafts, prefix cache on, 300-token greedy
+code prompt after one warm-up request; `nsys_mtp2_fixed_*.csv`): 25.8 tok/s at `tok_step 2.49`
+→ ~120 steps → **~97 ms per 3-row verify step** (83 ms GPU busy, ~4,800 launches and 9 D2H syncs
+per step), versus 42 ms per serial token. Speculation buys 2.49 tokens for 2.3x the cost, which is
+why 2 drafts (26.6) barely beats serial (23.8). Per step:
+
+| kernel | ms/step | inst/step | what it says |
+|---|---:|---:|---|
+| `exl3_mgemm` sh2 + sh4 (routed gate/up/down) | 19.7 | 144 + 72 | S=30 chain, 2.3x the serial 8.7 ms — bytes: 30 expert slots vs 10 |
+| `exl3_gemm_k6` sh3 + sh2 (GDN/attn dense) | 15.7 | 108 + 144 | ~1.3x serial: the m=3 GEMM costs the same as m=1, but extra launches appear (draft module rows) |
+| cuBLASLt cutlass wmma x2 (mHC collapse) | 14.1 | 295 | **3x serial** — the verify body runs the hyper-connection GEMMs once per row |
+| `exl3_gemm_k6_cb2_sh4` (lm_head) | 6.1 | 3.0 | **three lm_head passes per step** (verify + two drafts), 2 ms each |
+| `gated_delta_rule_decode_f32` (GDN recurrence) | 5.4 | 107 | one launch per row per layer — inherent to a recurrent verify |
+| `w4a16_gemv_sw` (router + shared expert GEMV) | 3.8 | 577 | 48 x 3 rows router + 3 x 48 x 3 rows shared — the fix IS on this path |
+| hc glue (`hc_pre_mix`, `hc_pre_stage`, `hc_post`, silu) | 4.9 | ~610 | per row |
+| `exl3_moe_k4_n128_cb2` (prefill tier) | 1.8 | 0.8 | prefill of the prompt, amortised |
+| everything else (attention, conv, blend, top-k, converters, argmax) | ~5 | | |
+
+Levers this exposes, in order of size: (a) run the mHC collapse and glue once at M=3 instead of
+per row (~9 ms/step, cuBLASLt at M=3 costs what M=1 does); (b) one lm_head pass per step or a
+narrower draft head (~4 ms/step); (c) the routed mgemm at S=30 is 1.03x from its one-wave best
+on this kernel — the remaining gain there is bytes, not scheduling; (d) launch count: ~4,800
+launches/step at ~12 us host each is ~57 ms of host time hiding under 83 ms of GPU time — a graph
+of the routed block would also take the 9 syncs/step off the critical path.
+
 ## What is left after the fix, ranked (hypotheses from the trace, not yet measured e2e)
 
-Post-fix token budget is roughly: EXL3 trellis kernels ~21 ms + cuBLASLt mHC ~7.5 ms + mHC glue
-~3 ms + GDN/attention/router/blend/converters ~5 ms + launch gaps ~7 ms.
+Post-fix serial token budget is roughly: EXL3 trellis kernels ~21 ms + cuBLASLt mHC ~7.5 ms +
+mHC glue ~3 ms + GDN/attention/router/blend/converters ~5 ms + launch gaps ~7 ms. (The routed
+grid item below has since been implemented and measured: +2.9% serial / +2.4% MTP, see above.)
 
 1. **Native EXL3 shared expert as an 11th mgemm slot** (~0.5 ms/token, plus fidelity/memory).
    The checkpoint ships the shared expert packed at K=4 with exactly the routed-expert geometry
