@@ -1,0 +1,105 @@
+name: Upsert a Discussion comment
+description: >-
+  Keep exactly ONE bot-authored comment on a Discussion, rewriting it in place
+  instead of appending a new one on every run. The comment is found by a marker
+  embedded in the body itself, so there is no comment id to store anywhere and
+  a manually deleted comment simply results in a fresh one.
+
+# ── Why a Discussion and not an issue ───────────────────────────────────────
+#
+# These reports are standing documents, not work items. An issue that is never
+# closed reads as a task nobody finished; a Discussion reads as a page, which is
+# what a continuously-rewritten view actually is.
+#
+# ── Why this is an action and not copied into each workflow ─────────────────
+#
+# Discussion comments are GraphQL-ONLY. There is no REST `issues/comments`
+# equivalent, so the familiar `gh api -X PATCH .../issues/comments/$id` cannot
+# be reused and every caller would otherwise carry its own hand-written
+# mutation. Two callers already exist (pr-telemetry, intent-eigenvector), which
+# is one more than a copied implementation survives.
+
+inputs:
+  discussion-number:
+    description: >-
+      The Discussion to post into. MAY BE EMPTY: unset means "not configured
+      yet", and the action says so and succeeds rather than guessing a number
+      and commenting on something arbitrary. Callers render to the step summary
+      regardless, so an unconfigured repo still gets the report.
+    required: false
+    default: ""
+  marker:
+    description: >-
+      The sentinel that identifies OUR comment. Must appear verbatim in
+      `body-file` — the action does not insert it, because the renderer that
+      owns the body is also what should own the marker constant.
+    required: true
+  body-file:
+    description: Path to the rendered Markdown body.
+    required: true
+  token:
+    description: >-
+      A token with `discussions: write`. The caller's job should hold that scope
+      and nothing else.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Upsert
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        DISCUSSION: ${{ inputs.discussion-number }}
+        MARKER: ${{ inputs.marker }}
+        BODY_FILE: ${{ inputs.body-file }}
+        OWNER: ${{ github.repository_owner }}
+        REPO: ${{ github.event.repository.name }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${DISCUSSION:-}" ]; then
+          echo "no discussion configured — rendered the body but posted nothing."
+          echo "Set the repository variable to the Discussion number to enable it."
+          exit 0
+        fi
+        case "$DISCUSSION" in
+          ''|*[!0-9]*) echo "::error::discussion-number must be digits, got '$DISCUSSION'"; exit 1 ;;
+        esac
+        [ -s "$BODY_FILE" ] || { echo "::error::$BODY_FILE is missing or empty"; exit 1; }
+        grep -qF -- "$MARKER" "$BODY_FILE" \
+          || { echo "::error::$BODY_FILE does not contain the marker '$MARKER' — a comment posted without it could never be found again, so this is refused rather than posted"; exit 1; }
+
+        discussion_id=$(gh api graphql -F owner="$OWNER" -F name="$REPO" -F number="$DISCUSSION" -f query='
+          query($owner:String!,$name:String!,$number:Int!){
+            repository(owner:$owner,name:$name){ discussion(number:$number){ id } } }' \
+          --jq '.data.repository.discussion.id')
+        [ -n "$discussion_id" ] || { echo "::error::discussion #$DISCUSSION not found in $OWNER/$REPO"; exit 1; }
+
+        # ★ PAGINATED on purpose. Humans reply in these threads, and once the
+        # replies push our comment past the first page an unpaginated lookup
+        # stops finding it and starts posting a NEW one every run — the exact
+        # duplication the marker exists to prevent.
+        existing=$(gh api graphql --paginate \
+          -F owner="$OWNER" -F name="$REPO" -F number="$DISCUSSION" -f query='
+          query($owner:String!,$name:String!,$number:Int!,$endCursor:String){
+            repository(owner:$owner,name:$name){
+              discussion(number:$number){
+                comments(first:100, after:$endCursor){
+                  pageInfo{ hasNextPage endCursor }
+                  nodes{ id body }
+                } } } }' \
+          --jq ".data.repository.discussion.comments.nodes[] | select(.body | contains(\"$MARKER\")) | .id" \
+          | head -n 1)
+
+        if [ -n "$existing" ]; then
+          gh api graphql -F id="$existing" -F body=@"$BODY_FILE" -f query='
+            mutation($id:ID!,$body:String!){
+              updateDiscussionComment(input:{commentId:$id,body:$body}){ comment{ id } } }' > /dev/null
+          echo "updated comment $existing on discussion #$DISCUSSION"
+        else
+          gh api graphql -F id="$discussion_id" -F body=@"$BODY_FILE" -f query='
+            mutation($id:ID!,$body:String!){
+              addDiscussionComment(input:{discussionId:$id,body:$body}){ comment{ id } } }' > /dev/null
+          echo "created a new comment on discussion #$DISCUSSION"
+        fi
