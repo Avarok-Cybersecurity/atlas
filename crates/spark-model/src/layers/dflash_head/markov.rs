@@ -101,7 +101,7 @@ impl BlockDiffusionDraftHead {
         let conf_on = self.confidence_active();
         let bf16u = 2usize;
 
-        for i in 0..self.gamma {
+        for i in 0..self.block_g() {
             let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16);
             let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
             let biased = i > 0 || anchor_bias;
