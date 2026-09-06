@@ -22,8 +22,9 @@
 //! mixed path has never been A/B'd. Any throughput claim for it must be gated
 //! spec-OFF or on reversed-order pairs (a single spec-ON pair drifts +/-2%).
 
+use crate::weight_map::DenseWeight;
 use anyhow::Result;
-use spark_runtime::gpu::{DevicePtr, GpuBackend};
+use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 use super::super::types::TransformerModel;
 use crate::layers::ops;
@@ -37,6 +38,44 @@ use crate::layers::ops;
 pub(super) fn lm_head_batch_gemv_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("ATLAS_NO_LM_HEAD_BATCH_GEMV").as_deref() != Ok("1"))
+}
+
+/// Legacy BF16-head switch: only the exact value "0" disables it.
+fn bf16_batch_gemv_from_value(value: Option<&str>) -> bool {
+    value != Some("0")
+}
+
+fn lmhead_batch_gemv_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        bf16_batch_gemv_from_value(std::env::var("ATLAS_LMHEAD_BATCH_GEMV").ok().as_deref())
+    })
+}
+
+/// Shared BF16-head dispatch for ordinary and mixed multi-sequence decode.
+#[allow(clippy::too_many_arguments)]
+fn project_bf16_lm_head(
+    gpu: &dyn GpuBackend,
+    fallback: KernelHandle,
+    batch_gemv: KernelHandle,
+    input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    [m, n, k]: [u32; 3],
+    batch_enabled: bool,
+    stream: u64,
+) -> Result<()> {
+    // The existing kernel shares one BF16 weight read across up to eight rows.
+    // Its uint4 loads require each input/weight row to remain 16-byte aligned.
+    if batch_enabled
+        && batch_gemv.0 != 0
+        && (1..=ops::DENSE_GEMV_BATCHM_MAX_M).contains(&m)
+        && k.is_multiple_of(8)
+    {
+        ops::dense_gemv_batchm(gpu, batch_gemv, input, weight, output, m, n, k, n, stream)
+    } else {
+        ops::dense_gemm(gpu, fallback, input, weight, output, m, n, k, stream)
+    }
 }
 
 impl TransformerModel {
@@ -154,18 +193,22 @@ impl TransformerModel {
                 }
             }
         } else {
-            ops::dense_gemm(
+            project_bf16_lm_head(
                 self.gpu.as_ref(),
                 self.dense_gemm_kernel,
+                self.dense_gemv_batchm_kernel,
                 normed,
                 &self.lm_head_weight,
                 logits,
-                padded_n as u32,
-                v as u32,
-                h as u32,
+                [padded_n as u32, v as u32, h as u32],
+                lmhead_batch_gemv_enabled(),
                 stream,
             )?;
         }
         Ok(logits)
     }
 }
+
+#[cfg(test)]
+#[path = "lm_head_bf16_tests.rs"]
+mod bf16_tests;
