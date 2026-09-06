@@ -9,7 +9,7 @@ description = "Atlas CUDA kernel PTX — compiled from kernels/{hw}/{model}/{qua
 atlas-core = { workspace = true }
 
 [build-dependencies]
-toml = "0.8"
+toml = "1.1"
 # The closure hash the gate uses to scope a kernel change. Computed HERE, in
 # the build that produces the binary, so a benchmark record can attest to what
 # the binary was actually compiled from rather than to whatever the tree
@@ -21,7 +21,7 @@ serde_json.workspace = true
 # `tests/kernel_shadow_detector.rs` reads the `[modules]` and `[shadow_exempt]`
 # tables out of the real KERNEL.toml files rather than restating them.
 [dev-dependencies]
-toml = "0.8"
+toml = "1.1"
 
 [lints]
 workspace = true
