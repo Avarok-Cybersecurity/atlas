@@ -398,3 +398,52 @@ fn an_absent_shard_loads_the_whole_draw() {
         b.iter().map(|s| &s.sample_id).collect::<Vec<_>>()
     );
 }
+
+// ── Round-tripping tallies through a record ──────────────────────────────────
+
+use super::aggregate::tallies_from_metrics;
+
+/// What `report.rs` writes must be exactly what the aggregator reads back.
+#[test]
+fn tallies_round_trip_through_the_metrics_map() {
+    let original = reference();
+    let mut metrics: BTreeMap<String, f64> = BTreeMap::new();
+    for (subset, t) in &original {
+        metrics.insert(format!("subset.{subset}.hits"), t.hits as f64);
+        metrics.insert(format!("subset.{subset}.n"), t.n as f64);
+    }
+    metrics.insert("overall_accuracy".into(), 66.67);
+    metrics.insert("samples".into(), 12.0);
+    assert_eq!(tallies_from_metrics(&metrics), Some(original));
+}
+
+/// A record with no tallies is NOT an empty contribution. Treating it as one
+/// would shrink the union and score the group over fewer samples than the draw
+/// — a plausible-looking number measured on the wrong set.
+#[test]
+fn a_record_without_tallies_is_none_not_empty() {
+    let mut m: BTreeMap<String, f64> = BTreeMap::new();
+    m.insert("overall_accuracy".into(), 86.55);
+    m.insert("samples".into(), 1004.0);
+    assert_eq!(tallies_from_metrics(&m), None);
+}
+
+/// Hits without a denominator is a malformed record, not a 0/0 subset.
+#[test]
+fn hits_without_n_is_refused() {
+    let mut m: BTreeMap<String, f64> = BTreeMap::new();
+    m.insert("subset.simple_python.hits".into(), 5.0);
+    assert_eq!(tallies_from_metrics(&m), None);
+}
+
+/// Unrelated metrics must not be mistaken for tallies.
+#[test]
+fn other_metrics_are_ignored() {
+    let mut m: BTreeMap<String, f64> = BTreeMap::new();
+    m.insert("subset.simple_python.hits".into(), 2.0);
+    m.insert("subset.simple_python.n".into(), 2.0);
+    m.insert("subsets_considered".into(), 13.0);
+    m.insert("subset_scores".into(), 1.0);
+    let got = tallies_from_metrics(&m).expect("tallies");
+    assert_eq!(got.len(), 1, "{got:?}");
+}
