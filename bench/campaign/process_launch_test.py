@@ -12,11 +12,31 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import process_launch
 import process_launch_proc
 
 MANAGER = Path(__file__).with_name("process_launch.py")
+
+
+class ProcessEnvironmentTests(unittest.TestCase):
+    def environment(self, values):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "env.json"
+            path.write_text(json.dumps(values))
+            return process_launch.launch_environment(SimpleNamespace(env_json=str(path), env=[]))
+
+    def test_multisequence_profile_is_explicit_and_preserved(self):
+        for value in ("0", "1"):
+            with self.subTest(value=value):
+                self.assertEqual(self.environment({"ATLAS_MS_PROFILE": value})["ATLAS_MS_PROFILE"],
+                                 value)
+
+    def test_unknown_diagnostic_still_refuses(self):
+        with self.assertRaisesRegex(ValueError, "environment key is not allowed: UNLISTED_DIAGNOSTIC"):
+            self.environment({"UNLISTED_DIAGNOSTIC": "1", "ATLAS_MS_PROFILE": "1"})
 
 
 @unittest.skipUnless(sys.platform == "linux", "requires Linux /proc and pidfds")
@@ -97,7 +117,7 @@ class ProcessLaunchTests(unittest.TestCase):
         self.assertEqual(self.call("capture").returncode, 0)
 
     def test_recorded_diagnostics_are_explicit_and_preserved_in_actual_process_evidence(self):
-        for key in ("ATLAS_DECODE_TIMING", "ATLAS_DENSE_FP8"):
+        for key in ("ATLAS_DECODE_TIMING", "ATLAS_DENSE_FP8", "ATLAS_MS_PROFILE"):
             env_file = self.root / "env.json"
             self.argv_file.write_text(json.dumps([sys.executable, "-c", "import time; time.sleep(300)"]))
             env_file.write_text(json.dumps({key: "1", "UNLISTED_DIAGNOSTIC": "1"}))
