@@ -31,7 +31,26 @@ pub struct Sample {
 /// Streaming per line rather than reading the file into one `Vec` first: the
 /// full table is ~3.6k samples with whole tool schemas attached, and a 62 %
 /// draw has no reason to hold the other 38 % in memory.
+/// One shard of a draw: `index` of `count`, both 0-based on `index`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shard {
+    /// Which shard, 0..count.
+    pub index: usize,
+    /// How many shards the draw is split into.
+    pub count: usize,
+}
+
 pub fn load(path: &Path, spec: &DrawSpec) -> Result<Vec<Sample>> {
+    load_shard(path, spec, None)
+}
+
+/// Load one shard of the draw, or all of it when `shard` is `None`.
+///
+/// Selection happens INSIDE the draw: the plan decides how many rows of each
+/// subset the draw takes, and the shard then keeps every `count`-th of those.
+/// Filtering before the plan would change which rows the draw contains, not
+/// merely who runs them.
+pub fn load_shard(path: &Path, spec: &DrawSpec, shard: Option<Shard>) -> Result<Vec<Sample>> {
     let text = std::fs::read_to_string(path).with_context(|| {
         format!(
             "reading {} — delete ~/.atlas/artifacts/bfcl to re-provision",
@@ -56,11 +75,29 @@ pub fn load(path: &Path, spec: &DrawSpec) -> Result<Vec<Sample>> {
         if *count >= *limit {
             continue;
         }
+        // `*count` is this row's 0-based position WITHIN the drawn rows of its
+        // subset, which is exactly what `shard_owns` strides over. Advance it
+        // whether or not this shard keeps the row, so every shard agrees on
+        // which position each row has.
+        let position = *count;
         *count += 1;
+        if let Some(sh) = shard
+            && !draw::shard_owns(position, sh.index, sh.count)
+        {
+            continue;
+        }
         out.push(sample);
     }
     if out.is_empty() {
-        bail!("the draw selected no samples — check the categories and percentages");
+        match shard {
+            None => bail!("the draw selected no samples — check the categories and percentages"),
+            Some(sh) => bail!(
+                "shard {} of {} selected no samples — the draw is smaller than the \
+                 shard count, or the plan is empty",
+                sh.index,
+                sh.count
+            ),
+        }
     }
     // Sorted by subset then original order, matching the reference's
     // groupby-concat. Scoring is order-independent, but the progress readout
