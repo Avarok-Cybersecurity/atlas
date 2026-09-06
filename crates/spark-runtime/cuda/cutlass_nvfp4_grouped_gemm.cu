@@ -13,6 +13,7 @@
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 #include <cuda_runtime_api.h>
+#include <cstdlib>
 #include <vector>
 
 #include "cute/tensor.hpp"
@@ -353,15 +354,48 @@ struct GroupedAPrep {
 };
 
 // Gather+pack A once (per active group), upload the A-side argument arrays.
+//
+// `b_valid_ptrs` (nullable) is the per-expert B weight-pointer table. Under
+// EXPERT PARALLELISM the router and the sort stay GLOBAL-width, so a rank
+// receives routed rows (m_e > 0) for experts it does not own — and those
+// experts' weights are null placeholders (`ExpertWeight::null()`). Grouping
+// them would bind a null B and fault the grouped GEMM with an illegal address,
+// which is exactly what made the CUTLASS MoE path unusable under EP while the
+// hand-written ptrtable kernels survived (they open with `if (B_expert == 0)
+// return;`). Skipping the group here reproduces that semantic: the rank
+// contributes nothing for a remote expert, its C rows stay as pre-zeroed by
+// the EP memset in forward_prefill_routed, and the owning rank's contribution
+// arrives via the all-reduce.
+//
+// Pass nullptr to disable filtering. Single-GPU tables are never null, so this
+// is a strict no-op off EP.
 static GroupedAPrep prep_grouped_a(
     const __nv_bfloat16* A_global,
     const int* sorted_token_ids,
     const int* expert_offsets_host,
+    const unsigned long long* b_valid_ptrs,
     int num_experts,
     int n,
     int k,
     unsigned char* ws,
     cudaStream_t stream) {
+  // A/B arm: ATLAS_CUTLASS_EP_NULL_GUARD=0 restores the pre-fix behaviour
+  // (group every expert with rows, null B included). Off EP the two arms are
+  // identical; under EP the disabled arm faults, which is what makes this a
+  // usable experiment rather than just a switch.
+  static const bool null_guard = [] {
+    const char* v = getenv("ATLAS_CUTLASS_EP_NULL_GUARD");
+    return !(v != nullptr && v[0] == '0');
+  }();
+  // Both passes below must apply the SAME predicate or the per-group staging
+  // offsets (a_grp_off/sfa_grp_off, indexed by `gi`) desynchronize from the
+  // groups actually built.
+  auto group_active = [&](int e) -> bool {
+    if (expert_offsets_host[e + 1] - expert_offsets_host[e] <= 0) {
+      return false;
+    }
+    return !null_guard || b_valid_ptrs == nullptr || b_valid_ptrs[e] != 0;
+  };
   GroupedAPrep p;
   std::vector<const ElementA::DataType*> hA;
   std::vector<const ElementSF*> hSFA;
@@ -374,7 +408,7 @@ static GroupedAPrep prep_grouped_a(
   size_t sfa_acc = 0;
   for (int e = 0; e < num_experts; ++e) {
     int m_e = expert_offsets_host[e + 1] - expert_offsets_host[e];
-    if (m_e <= 0) {
+    if (!group_active(e)) {
       continue;
     }
     auto lsa =
@@ -397,7 +431,7 @@ static GroupedAPrep prep_grouped_a(
   for (int e = 0; e < num_experts; ++e) {
     int ms = expert_offsets_host[e];
     int m_e = expert_offsets_host[e + 1] - ms;
-    if (m_e <= 0) {
+    if (!group_active(e)) {
       continue;
     }
     auto lsa =
@@ -511,6 +545,13 @@ static int launch_projection(
     int e = a.eidx[g];
     int m_e = a.me[g];
     size_t ms = (size_t)a.ms[g];
+    // A null B/SFB here means a group survived the prep filter that should not
+    // have (see `b_valid_ptrs` on prep_grouped_a — EP remote experts). Report it
+    // as a status instead of letting the grouped GEMM fault on a null
+    // dereference, which surfaces as an opaque CUDA 700 far from the cause.
+    if (packed_ptrs[e] == 0 || sfb_ptrs[e] == 0) {
+      return -140;
+    }
     hB[g] = reinterpret_cast<const ElementB::DataType*>(packed_ptrs[e]);
     hSFB[g] = reinterpret_cast<const ElementSF*>(sfb_ptrs[e]);
     hC[g] = reinterpret_cast<const ElementC*>(C_bf16 + ms * n);
@@ -617,8 +658,11 @@ extern "C" int atlas_cutlass_nvfp4_grouped_gate_up_fused(
   }
   unsigned char* ws = static_cast<unsigned char*>(workspace);
   // Pack A ONCE (gate + up share the same activation).
+  // gate/up/down are null for the SAME (remote) experts, so gate's table is a
+  // sufficient validity mask for the shared A-prep.
   GroupedAPrep a = prep_grouped_a(static_cast<const __nv_bfloat16*>(A_bf16),
-                                  sorted_token_ids, expert_offsets_host, num_experts,
+                                  sorted_token_ids, expert_offsets_host,
+                                  gate_packed_ptrs, num_experts,
                                   n, k, ws, stream);
   if (a.G == 0) {
     return 0;
@@ -680,7 +724,8 @@ extern "C" int atlas_cutlass_nvfp4_grouped_down(
   }
   unsigned char* ws = static_cast<unsigned char*>(workspace);
   GroupedAPrep a = prep_grouped_a(static_cast<const __nv_bfloat16*>(A_bf16), nullptr,
-                                  expert_offsets_host, num_experts, n, k, ws, stream);
+                                  expert_offsets_host, packed_ptrs, num_experts, n, k,
+                                  ws, stream);
   if (a.G == 0) {
     return 0;
   }
