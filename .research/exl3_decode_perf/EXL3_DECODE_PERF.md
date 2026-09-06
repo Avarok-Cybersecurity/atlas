@@ -816,6 +816,53 @@ threshold, forcing a full recompute of the GDN state while the KV blocks are rep
 PLE row-cache re-stage, which is per-request host work the restore path cannot skip. Records:
 `warm_restore_probe_20260906T022156/` (fingerprint, per-request rows, both arms).
 
+## Cross-sequence batched mHC verify — NEGATIVE (2026-09-06, opt-in, not shipped)
+
+The concurrency wall the operator's TUI sweep showed (aggregate flat ~30 tok/s from C=1 to C=4 while
+TPOT grows with C) was attributed to the mHC K-row verify running once per sequence. Branch
+`perf/batched-hc-verify` implements the obvious fix: `decode_verify_hc_multi` verifies n sequences x
+k_i rows in ONE R=Σk_i-row forward, sharing only the row-invariant sweeps (GDN in/out projections in
+≤8-row chunks, BA gates, gated RMS norm, hc_expand/hc_post, embeds, final norm, lm_head in ≤8-row
+chunks, one argmax + one D2H) and keeping every acceptance-sensitive op per row (hc_pre at M=k_i, the
+per-row MoE FFN, per-row PLE, R one-row attention decode bodies, per-sequence conv+GDN).
+
+**Two defects had to be fixed before the arm could even be measured** — both of the class "a lever that
+never engages reads as no gain":
+
+1. `verify_hidden_stash` is allocated in `TransformerModel::new` only when the generic `proposer`
+   field is filled. qwen4_exp installs its MTP head post-construction
+   (`set_qwen4_exp_mtp_head(install_as_proposer=true)`), so the buffer stayed NULL and the batched path
+   declined every tick with `reason=no MTP proposer (verify_hidden_stash null)` while its boot line
+   said ARMED. First run (`ab_batched-hc-verify_20260906T042014`): `live=INERT, multi_lines=0`. Fixed
+   by allocating the stash where the head is installed (the batched step's Phase 2 genuinely needs it:
+   every accepted row's hidden must be stashed before any sequence's propose overwrites the shared
+   buffer).
+2. The first-tick gate line printed `arm=KILLED(ATLAS_NO_MTP_HC_BATCH_VERIFY)` whenever the path was
+   off, including when nothing set that variable. It now distinguishes OFF(default) from KILLED.
+
+**Measured** (`ab_batched-hc-verify_20260906T044450/`, binary `f938cdf84151fb9b74c4` at
+`perf/batched-hc-verify`, counterbalanced serial / hcbatch / hcbatch / serial, fresh server per arm,
+named preset, 2K salted prompts, 300 tokens, temp 0, effort low, C=1/2/4 x3 reps, kill switch the only
+variable; every hcbatch boot proven live with `multi_lines>=1, declined=0, verify_errors=0`):
+
+| aggregate decode tok/s | C=1 | C=2 | C=4 |
+|---|---:|---:|---:|
+| serial (per-sequence verify, today's default) | 26.7-27.6 | **23.7-24.3** | **21.8-22.4** |
+| hcbatch (cross-sequence batched verify) | 26.7-27.5 | 16.3-18.9 (−25%) | 14.6-15.1 (−33%) |
+
+C=1 is identical to three decimal places across all four boots (a single sequence never batches), so
+the entire loss is inside the multi-sequence pass. **The hypothesis is refuted for this model**: the
+flat C=1→C=4 aggregate is NOT the verify's weight sweeps. Sharing them cannot pay for what the mHC
+path must still do per row — R one-row attention decode bodies, per-row router and PLE, per-sequence
+conv+GDN and per-sequence metadata staging with a stream sync each — and batching adds staging on top.
+A 2-stream probe reads 33 tok/s aggregate with the arm off vs 28 with it on, the same direction.
+
+Shipped as OPT-IN (`ATLAS_MTP_HC_BATCH_VERIFY` presence arms it; `ATLAS_NO_MTP_HC_BATCH_VERIFY` still
+wins) so the arm survives as a measurement tool. Where the concurrency wall actually lives is now an
+open question: the per-row work inside the verify, not the sweeps. The next probe should price the R
+one-row attention bodies and the per-sequence GDN/metadata staging directly (nsys of one C=4 step),
+before anyone writes another batching lever.
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17
