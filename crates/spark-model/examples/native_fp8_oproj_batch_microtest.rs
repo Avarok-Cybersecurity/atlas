@@ -5,7 +5,8 @@ use anyhow::{Result, ensure};
 use half::bf16;
 use spark_model::layers::ops;
 use spark_runtime::cuda_backend::AtlasCudaBackend;
-use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelLaunch};
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
+use spark_runtime::kernel_args::KernelLaunch;
 
 const N: usize = 5120;
 const K: usize = 6144;
