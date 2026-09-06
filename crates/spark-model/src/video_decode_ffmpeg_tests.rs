@@ -247,13 +247,95 @@ fn a_hanging_decoder_is_killed_at_timeout() {
         timeout_secs: 1,
         ..Default::default()
     };
-    let started = std::time::Instant::now();
+    // ★ ETXTBSY HERE IS THE HARNESS, NOT THE CODE, AND RETRY IS THE ONLY CURE.
+    //
+    // This test writes an executable and immediately execs it. `fs::write`
+    // closes its own descriptor, but a SIBLING test calling `Command::spawn`
+    // forks, and a fork duplicates every descriptor open in the process --
+    // including ours, if it lands between our open and our close. That child
+    // then holds a write descriptor on the file we are trying to exec, and
+    // Linux answers ETXTBSY. Nothing inside this test can prevent it; only
+    // the absence of concurrent spawns could, and `cargo test` promises no
+    // such thing. Seen on the #880 merge-queue run, 2026-09-06, where it
+    // surfaced as "is ffmpeg installed and on PATH?" -- the exact
+    // misdiagnosis this PR exists to remove.
+    //
+    // The descriptor closes when that child execs or exits, so the window is
+    // milliseconds. Retries are BOUNDED and running out is a FAILURE: a test
+    // that skips itself on a known flake hides the next real regression
+    // behind it. The elapsed-time assertion restarts with each attempt,
+    // because it measures the kill, not the retries.
+    let mut attempts = 0;
+    let err = loop {
+        attempts += 1;
+        let started = std::time::Instant::now();
+        let err = decode_frames(b"input", 2.0, &policy)
+            .unwrap_err()
+            .to_string();
+        if err.contains("ETXTBSY") && attempts < 5 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            continue;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "the timeout kill took {:?}",
+            started.elapsed()
+        );
+        break err;
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        err.contains("decoding exceeded 1s"),
+        "after {attempts} attempt(s): {err}"
+    );
+}
+
+/// The ETXTBSY branch of `spawn_failure`, CONSTRUCTED rather than waited for.
+///
+/// Holding a write handle open on the target is exactly the condition Linux
+/// refuses to exec, so this reproduces it with no race and no sleep. It earns
+/// its place by proving the string the retry above keys on is the string
+/// production actually emits: without it, `err.contains("ETXTBSY")` could
+/// match a message nothing ever produces, the retry would never fire, and the
+/// flake would come back wearing a green test.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_binary_still_open_for_writing_is_reported_as_etxtbsy() {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("atlas-busy-ffmpeg-{}-{seq}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let binary = dir.join("busy-ffmpeg");
+
+    // The handle stays alive across the spawn attempt below -- that IS the
+    // condition under test, so it must not be dropped early.
+    let mut held = std::fs::File::create(&binary).unwrap();
+    held.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+    held.flush().unwrap();
+    let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&binary, permissions).unwrap();
+
+    let policy = FfmpegPolicy {
+        enabled: true,
+        binary: binary.display().to_string(),
+        timeout_secs: 1,
+        ..Default::default()
+    };
     let err = decode_frames(b"input", 2.0, &policy)
         .unwrap_err()
         .to_string();
+    drop(held);
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(err.contains("decoding exceeded 1s"), "{err}");
-    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+
+    assert!(err.contains("ETXTBSY"), "{err}");
+    assert!(
+        !err.contains("is ffmpeg installed"),
+        "a busy binary must not be reported as a missing one: {err}"
+    );
 }
 
 /// H.265 in the same container — the case a linked H.264-only decoder could
