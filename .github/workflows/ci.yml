@@ -297,7 +297,28 @@ jobs:
 
   typos:
     name: typos
-    runs-on: ubuntu-latest
+    # ── First job on the cheap self-hosted pool. ────────────────────────────
+    # Read the expression right to left: anything that is NOT a same-repo pull
+    # request goes to `ubuntu-latest`, and so does everything if
+    # `vars.PR_CHEAP_RUNNER` is unset. Enabling the pool is a repository-variable
+    # flip, and `cmd-runner-health.yml` can undo it without a code change --
+    # the escape hatch CMD_RUNNER_LABEL already proved on the command runner.
+    #
+    # The same-repo comparison is what keeps a fork's code off our hardware, and
+    # `.github/scripts/assert-cmd-runner-safe.py` fails CI if any job names this
+    # pool under a `pull_request` trigger without it.
+    #
+    # Why this job first: `typos` is seconds long, needs no toolchain, and is a
+    # required context — so if the pool were to swallow it, we find out on one
+    # cheap check rather than on ten. A label nothing answers leaves a required
+    # check queued forever (release-build.yml:236 records `macos-13` doing
+    # exactly that), which is why the rest of the fleet moves only after this
+    # one is observed being picked up.
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: crate-ci/typos@5e38bf262baaf477ca9f241b3a7cd3d277fd7df8 # master

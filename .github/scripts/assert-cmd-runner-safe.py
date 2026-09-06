@@ -11,6 +11,15 @@ That is a property of the current file, not a guarantee. This test makes it a
 guarantee: any workflow that reaches the command runner must never check out
 untrusted code, and must never be reachable from a `pull_request` trigger.
 
+There is a SECOND self-hosted pool with a different bargain. `atlas-pr-cheap`
+exists precisely to run the cheap PR checks that were starving in the hosted
+queue, so it DOES execute PR code — but only from branches in this repository.
+A fork's PR must still go to a GitHub-hosted runner, and the only thing standing
+between those two outcomes is one expression in `runs-on`. So this test pins that
+expression: a job may name the cheap pool under a `pull_request` trigger only if
+its `runs-on` also carries the same-repo comparison. Forget the guard and CI goes
+red here, not on the day a fork sends a pull request.
+
 Run with no arguments from the repo root.
 """
 import pathlib
@@ -20,6 +29,17 @@ import sys
 import yaml
 
 LABEL = "atlas-cmd"
+# The cheap PR pool. Routed through a repository variable so
+# cmd-runner-health.yml can flip the whole fleet back to hosted without a code
+# change -- the same escape hatch CMD_RUNNER_LABEL already provides.
+PR_LABEL = "atlas-pr-cheap"
+PR_VAR = "PR_CHEAP_RUNNER"
+# The exact comparison that keeps a fork off our hardware. Matched as a
+# substring with whitespace collapsed, so reflowing the YAML cannot break it
+# while changing its meaning could not survive it.
+SAME_REPO_GUARD = (
+    "github.event.pull_request.head.repo.full_name == github.repository"
+)
 # Triggers whose payload a fork controls. `pull_request_target` and
 # `issue_comment` run from the DEFAULT branch, so they are safe on their own --
 # what makes them unsafe is checking out the head ref, which is checked below.
@@ -39,6 +59,17 @@ def uses_cmd_runner(job):
     return LABEL in blob or "CMD_RUNNER_LABEL" in blob
 
 
+def uses_pr_pool(job):
+    blob = str(job.get("runs-on"))
+    return PR_LABEL in blob or PR_VAR in blob
+
+
+def guards_against_forks(job):
+    """Does this job's `runs-on` restrict the cheap pool to this repository?"""
+    blob = " ".join(str(job.get("runs-on")).split())
+    return SAME_REPO_GUARD in blob
+
+
 def main():
     problems = []
     for path in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
@@ -51,7 +82,29 @@ def main():
             continue
         triggers = set((wf.get(True) or wf.get("on") or {}).keys())
         for name, job in (wf.get("jobs") or {}).items():
-            if not isinstance(job, dict) or not uses_cmd_runner(job):
+            if not isinstance(job, dict):
+                continue
+            if uses_pr_pool(job):
+                if triggers & FORK_CONTROLLED and not guards_against_forks(job):
+                    problems.append(
+                        f"{path.name}:{name} runs on {PR_LABEL} under a "
+                        f"pull_request trigger without the same-repo guard "
+                        f"({SAME_REPO_GUARD}) in runs-on — a fork's PR would "
+                        f"execute on our hardware."
+                    )
+                for step in job.get("steps") or []:
+                    if not isinstance(step, dict):
+                        continue
+                    if "checkout" not in str(step.get("uses", "")):
+                        continue
+                    ref = str((step.get("with") or {}).get("ref", ""))
+                    if any(u in ref for u in UNSAFE_REFS):
+                        problems.append(
+                            f"{path.name}:{name} checks out '{ref}' on "
+                            f"{PR_LABEL} — an explicit fork ref defeats the "
+                            f"same-repo guard."
+                        )
+            if not uses_cmd_runner(job):
                 continue
             bad = triggers & FORK_CONTROLLED
             if bad:
@@ -80,7 +133,10 @@ def main():
         for p in problems:
             print(f"  - {p}")
         return 1
-    print(f"no workflow on '{LABEL}' checks out untrusted code.")
+    print(
+        f"no workflow on '{LABEL}' checks out untrusted code, and every "
+        f"'{PR_LABEL}' job under a pull_request trigger carries the same-repo guard."
+    )
     return 0
 
 

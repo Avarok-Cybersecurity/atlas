@@ -124,6 +124,42 @@ Y
 want_rc 1 "control: checkout with no explicit ref on the command runner" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
 
+# The cheap PR pool runs PR code on purpose, so its whole safety property is the
+# same-repo comparison in `runs-on`. These three controls are that property.
+cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
+on: { pull_request: { types: [opened] } }
+jobs: { j: { runs-on: atlas-pr-cheap, steps: [{ uses: actions/checkout@v4 }] } }
+Y
+want_rc 1 "control: cheap pool on pull_request with no same-repo guard" \
+  sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
+cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
+on: { pull_request: { types: [opened] } }
+jobs: { j: { runs-on: "${{ vars.PR_CHEAP_RUNNER || 'ubuntu-latest' }}", steps: [{ uses: actions/checkout@v4 }] } }
+Y
+want_rc 1 "control: cheap pool via the variable, still unguarded" \
+  sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
+# Guarded, but then hands the runner a fork ref explicitly -- the guard chooses
+# the RUNNER, it does not choose what gets checked out.
+cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
+on: { pull_request: { types: [opened] } }
+jobs:
+  j:
+    runs-on: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'atlas-pr-cheap' || 'ubuntu-latest' }}"
+    steps: [{ uses: actions/checkout@v4, with: { ref: "${{ github.event.pull_request.head.sha }}" } }]
+Y
+want_rc 1 "control: cheap pool guarded but checking out a fork ref" \
+  sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
+# And the shape we actually ship must PASS, or the rule is unusable.
+cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
+on: { pull_request: { types: [opened] } }
+jobs:
+  j:
+    runs-on: "${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest') || 'ubuntu-latest' }}"
+    steps: [{ uses: actions/checkout@v4 }]
+Y
+want_rc 0 "the shipped cheap-pool routing shape is accepted" \
+  sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
+
 echo "== certificate rendering =="
 T=docs/diagrams/states/certificate-merged.svg
 render() { python3 .github/scripts/render-certificate.py --template "$T" --out "$1" \
