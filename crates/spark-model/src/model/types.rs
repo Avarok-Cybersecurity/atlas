@@ -328,6 +328,12 @@ pub struct TransformerModel {
     /// single-launch table-form `gdn_decode_wy4` in the batched GDN arm.
     /// NULL without an MTP proposer (path self-gates).
     pub(super) verify_wy_tables: DevicePtr,
+    /// Write-on-accept: device `u32[VERIFY_WY_TABLE_SEQS]` of accepted row
+    /// counts for the post-verdict fold, and the ssm slots whose h state the
+    /// fold already committed this step (`commit_accepted_prefix` skips the
+    /// h restore for them). NULL/empty when no batched verify exists.
+    pub(super) gdn_woa_na_tab: DevicePtr,
+    pub(super) gdn_woa_folded_slots: Mutex<Vec<usize>>,
     /// Encoded key of the bytes CURRENTLY staged in `verify_wy_tables`, or
     /// `None` when nothing has been staged (the buffer is memset to zero at
     /// allocation, which no key describes).

@@ -210,11 +210,23 @@ impl TransformerModel {
                 t_in_prefill += t.elapsed();
             }
             let t_df = host_timing.then(std::time::Instant::now);
-            // DFlash chunked-prefill capture.
+            // DFlash chunked-prefill capture. The destination base is the
+            // chunk's PROCESSING start — the absolute position of buffer row
+            // 0 — NOT `layer_kv_write_start`. The two coincide on a cold
+            // prompt, which is how the KV write floor ended up here, but on a
+            // prefix-cache hit the forward recomputes from position 0 while
+            // KV writes start at the matched boundary: passing the floor
+            // shifted EVERY captured row up by the cached-prefix length, left
+            // ctx rows [0, matched) holding the pool slot's previous
+            // occupant, and advanced ctx_len past the prompt. At C=1 the
+            // stale rows were the identical previous request's (accidentally
+            // correct); under concurrency they were another sequence's, the
+            // drafts went to garbage, and acceptance pinned at ~0 — the
+            // cache-hit half of the 2026-08-21 derailment matrix.
             self.try_dflash_prefill_capture_layer(
                 seq,
                 i,
-                layer_kv_write_start,
+                effective_seq_len_start,
                 proc_count,
                 stream,
             )?;
