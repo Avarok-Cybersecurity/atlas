@@ -192,7 +192,7 @@ pub fn prefill_request(
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
             pending_draft_conf: Vec::new(),
-            inside_thinking: req_enable_thinking && think_end_token.is_some(),
+            inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
             repetition_detection: req_repetition_detection,
@@ -279,6 +279,11 @@ pub fn prefill_request(
             min_p,
             eos_tokens,
             grammar_state.as_mut(),
+            FirstTokenPolicy::for_birth(
+                req_enable_thinking,
+                think_end_token,
+                tool_call_start_token,
+            ),
             &sched.levers.sampling(),
         )
     })();
@@ -387,7 +392,7 @@ pub fn prefill_request(
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
             pending_draft_conf: Vec::new(),
-            inside_thinking: req_enable_thinking && think_end_token.is_some(),
+            inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
             repetition_detection: req_repetition_detection,
@@ -473,7 +478,8 @@ pub fn prefill_request(
         logit_bias,
         pending_drafts: Vec::new(),
         pending_draft_conf: Vec::new(),
-        inside_thinking: spontaneous_think || (req_enable_thinking && think_end_token.is_some()),
+        inside_thinking: spontaneous_think
+            || born_inside_thinking(req_enable_thinking, think_end_token),
         enable_thinking: req_enable_thinking,
         thinking_budget: if spontaneous_think {
             Some(spontaneous_think_budget)
