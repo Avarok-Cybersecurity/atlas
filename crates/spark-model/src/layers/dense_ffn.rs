@@ -238,6 +238,8 @@ pub struct DenseFfnLayer {
     fp8_weights: Option<DenseFfnWeightsFp8>,
     w8a16_gemv_k: KernelHandle,
     w8a16_gemm_k: KernelHandle,
+    w8a16_gemv_batch4_k: KernelHandle,
+    w8a16_gemm_pipelined_k: KernelHandle,
     // Fused FP8 decode GEMVs (gate+up in one launch / silu+down in one launch),
     // mirroring the NVFP4 w4a16_gemv_dual / w4a16_gemv_silu_input. KernelHandle(0)
     // on miss → fall back to the 3-launch w8a16_gemv path. Module = .cu file stem.
@@ -407,6 +409,12 @@ impl DenseFfnLayer {
             fp8_weights: None,
             w8a16_gemv_k: super::try_kernel(gpu, "w8a16_gemv", "w8a16_gemv"),
             w8a16_gemm_k: super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
+            w8a16_gemv_batch4_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch4"),
+            w8a16_gemm_pipelined_k: super::try_kernel(
+                gpu,
+                "w8a16_gemm_pipelined",
+                "w8a16_gemm_pipelined",
+            ),
             w8a16_gemv_dual_k: super::try_kernel(gpu, "w8a16_gemv_fused", "w8a16_gemv_dual"),
             w8a16_gemv_silu_input_k: super::try_kernel(
                 gpu,
@@ -1921,19 +1929,28 @@ impl DenseFfnLayer {
             return Ok(());
         }
 
-        // FP8 prefill dispatch: per-projection block-scaled E4M3 weight × BF16
-        // act. Prefer the fast transposed `w8a16_gemm_t_m128` (128x128 / 8-warp /
-        // two-level FP32 fold) when a transposed FP8 weight copy is available;
-        // fall back to the non-transposed `w8a16_gemm`. `DenseFfnWeightsFp8`
-        // currently stores only non-transposed weights, so the fallback is taken
-        // here today — the m128 preference engages once a `*_proj_t` FP8 copy is
-        // installed (the kernel + handle are wired and ship via common/).
+        // Native FP8: small batches stream each weight once via the existing
+        // M<=4 GEMV, avoiding padded MMA tiles. Larger prefills prefer a
+        // transposed copy when available, then the same-format pipelined GEMM.
+        // Every fallback retains the original E4M3 bytes and FP32 block scales.
         if let Some(ref fp8w) = self.fp8_weights {
-            // helper: transposed m128 when a B_t copy + handle are present, else
-            // non-transposed w8a16_gemm.
             macro_rules! w8_gemm {
                 ($w:expr, $wt:expr, $in:expr, $out:expr, $n:expr, $k:expr) => {
                     match $wt {
+                        _ if (1..=4).contains(&m) && self.w8a16_gemv_batch4_k.0 != 0 => {
+                            ops::w8a16_gemv_batch4(
+                                ctx.gpu,
+                                self.w8a16_gemv_batch4_k,
+                                $in,
+                                $w.weight,
+                                $w.row_scale,
+                                $out,
+                                m,
+                                $n,
+                                $k,
+                                stream,
+                            )?
+                        }
                         Some(wt) if self.w8a16_gemm_t_m128_k.0 != 0 => {
                             let wt: Fp8WeightTransposed = wt;
                             ops::w8a16_gemm_n128_m128(
@@ -1949,6 +1966,18 @@ impl DenseFfnLayer {
                                 stream,
                             )?
                         }
+                        _ if self.w8a16_gemm_pipelined_k.0 != 0 => ops::w8a16_gemm_pipelined(
+                            ctx.gpu,
+                            self.w8a16_gemm_pipelined_k,
+                            $in,
+                            $w.weight,
+                            $w.row_scale,
+                            $out,
+                            m,
+                            $n,
+                            $k,
+                            stream,
+                        )?,
                         _ => ops::w8a16_gemm(
                             ctx.gpu,
                             self.w8a16_gemm_k,
@@ -2674,6 +2703,10 @@ fn native_small_batch_uses_prefill(has_bf16: bool, has_fp8: bool) -> bool {
 #[cfg(test)]
 #[path = "dense_ffn_native_batch_tests.rs"]
 mod native_batch_tests;
+
+#[cfg(test)]
+#[path = "dense_ffn_kernel_tests.rs"]
+mod kernel_tests;
 
 #[cfg(test)]
 mod tests {

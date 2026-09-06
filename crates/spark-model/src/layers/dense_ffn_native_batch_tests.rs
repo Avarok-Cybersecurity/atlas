@@ -41,6 +41,9 @@ fn run_batch(native_fp8: bool, rows: u32) {
     // Mock kernel lookup deliberately returns one placeholder for every name;
     // separate these handles so the oracle identifies actual dispatch routes.
     layer.w8a16_gemm_k = KernelHandle(0xF08);
+    // Also prove the original native fallback when optional fast kernels are absent.
+    layer.w8a16_gemv_batch4_k = KernelHandle(0);
+    layer.w8a16_gemm_pipelined_k = KernelHandle(0);
     layer.act_mul = KernelHandle(0xAC7);
     let fp8 = Fp8Weight {
         weight: gpu.alloc(128 * 128).unwrap(),
