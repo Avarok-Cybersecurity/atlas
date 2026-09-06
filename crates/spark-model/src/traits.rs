@@ -359,4 +359,4 @@ impl SequenceState {
 mod logprobs;
 mod model;
 pub use logprobs::*;
-pub use model::{BeamReq, Model, padded_batch_n};
+pub use model::{BeamReq, Model, VerifyBatchedOpts, padded_batch_n};

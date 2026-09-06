@@ -163,6 +163,11 @@ pub struct DflashScratch {
     /// Phase 2 scratch: i32 slot mapping for the per-layer
     /// `reshape_and_cache` calls. Sized `[ctx_window]`.
     pub slot_mapping_dev: DevicePtr,
+    /// Batched ctx precompute staging: the uncommitted ctx rows of EVERY
+    /// sequence in a batched propose, gathered contiguously so the fc + fused
+    /// KV GEMMs stream their 370 MB of weights ONCE per step instead of once
+    /// per sequence. `[PRECOMPUTE_BATCH_ROWS, L_t * h_t]` BF16.
+    pub precompute_in: DevicePtr,
     /// Phase 5 (CUDA graph) scratch: 8 bytes (`[u32 kv_len, u32 q_offset]`)
     /// holding the per-call dynamic values that the indirect paged-attention
     /// kernel reads at entry. Host writes via `copy_h2d` BEFORE entering the
@@ -584,6 +589,20 @@ mod dflash2;
 /// that one character-class: propose 19.8 -> 618.7 ms and 49.9 -> 5.5 tok/s,
 /// because the legacy path launches one `dense_gemv` per accumulated ctx row
 /// over a 262 MB `fc` weight. Nothing logged a change.
+/// Rows the batched ctx precompute staging holds per step (C=16 at gamma 4
+/// commits ~2-4 rows per sequence per step; 256 covers 16 x 16).
+pub(super) const PRECOMPUTE_BATCH_ROWS: usize = 256;
+
+/// Batched ctx precompute (one fc + fused-KV pass over every sequence's
+/// uncommitted ctx rows) is the default on the batched propose path.
+/// `ATLAS_DFLASH_NO_BATCHED_PRECOMPUTE=1` restores the per-sequence loop.
+pub(super) fn batched_precompute_enabled() -> bool {
+    std::env::var("ATLAS_DFLASH_NO_BATCHED_PRECOMPUTE")
+        .ok()
+        .as_deref()
+        != Some("1")
+}
+
 pub(super) fn option_b_enabled() -> bool {
     option_b_from(std::env::var("ATLAS_DFLASH_OPTION_B").ok().as_deref())
 }
@@ -627,6 +646,7 @@ mod forward_block_layer_paged;
 mod from_weights;
 mod markov;
 mod precompute_ctx_kv;
+mod precompute_ctx_kv_batched;
 mod propose;
 
 impl DraftProposer for BlockDiffusionDraftHead {
@@ -762,6 +782,16 @@ impl DraftProposer for BlockDiffusionDraftHead {
                     return Ok(None);
                 }
             }
+        }
+
+        // Phase 1b — ONE ctx precompute over every sequence's uncommitted
+        // rows (the prep above deferred it). On failure nothing was
+        // committed, so the per-sequence path recomputes safely.
+        if batched_precompute_enabled()
+            && let Err(e) = self.precompute_ctx_kv_batched(states, ctx, stream)
+        {
+            tracing::warn!("DFlash batched ctx precompute: {e:#} — per-seq path");
+            return Ok(None);
         }
 
         // Phase 2 — ONE forward over every band.

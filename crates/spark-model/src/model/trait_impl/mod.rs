@@ -28,6 +28,7 @@ mod decode_checkpoint;
 mod decode_graph_key;
 mod drafter_prefill;
 mod ep_misc;
+mod gdn_woa;
 mod graph_borrow;
 mod lm_head_batched;
 mod meta;
@@ -413,9 +414,10 @@ impl Model for TransformerModel {
         ks: &[usize],
         seqs: &mut [&mut SequenceState],
         _stream: u64,
+        opts: crate::traits::VerifyBatchedOpts,
     ) -> Result<Vec<u32>> {
         self.ssm_pool.require_verify_rollback_supported()?;
-        self.decode_verify_batched_dispatch(tokens, ks, seqs, _stream)
+        self.decode_verify_batched_dispatch(tokens, ks, seqs, _stream, opts)
     }
     fn stash_verify_hidden_rows(&self, rows: &[usize], _stream: u64) -> Result<()> {
         self.stash_verify_hidden_rows_dispatch(rows, _stream)
@@ -846,6 +848,15 @@ impl Model for TransformerModel {
     fn sync_secondary(&self) -> Result<()> {
         self.sync_secondary_dispatch()
     }
+    fn gdn_fold_accepted(
+        &self,
+        slots: &[usize],
+        accepted_rows: &[u32],
+        k_rows: usize,
+    ) -> Result<bool> {
+        self.gdn_fold_accepted_dispatch(slots, accepted_rows, k_rows)
+    }
+
     fn commit_accepted_prefix(
         &self,
         seq: &mut SequenceState,

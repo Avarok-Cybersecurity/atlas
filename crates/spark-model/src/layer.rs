@@ -332,6 +332,14 @@ pub struct ForwardContext<'a> {
     /// into SHARED prefix-cache blocks — non-exact recompute poisons them
     /// and the drift ratchets across turns (2026-06-10 warm-hit stutter).
     pub gdn_exact_replay: bool,
+    /// The caller asked the batched GDN verify for WRITE-ON-ACCEPT: the K=4
+    /// twin writes no state and the caller commits the accepted rows itself
+    /// through `Model::gdn_fold_accepted` right after the verdict. An
+    /// explicit per-call request, never a layer-local default, because the
+    /// MTP batched K-row verify shares the same layer code and commits
+    /// through a path that never folds (review of PR #844). Only the DFlash
+    /// batched step sets it; every other forward leaves it `false`.
+    pub gdn_write_on_accept: bool,
     /// Device `[num_tokens]` u32 token IDs for the tokens being processed this
     /// pass, in the SAME order the per-token MoE loop visits them. Required by
     /// DeepSeek-V4 hash-MoE layers (static `tid2eid[token_id]` routing); `None`

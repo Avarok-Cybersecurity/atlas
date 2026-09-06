@@ -39,6 +39,17 @@ use super::{MixedBatchResult, MixedForwardResult, PrefillSlice, SequenceState};
 /// One beam-search request for a translation model (NLLB). Carries the resolved
 /// per-request parameters the scheduler stamps onto the sequence; the model runs
 /// the whole beam search to completion and returns the winning hypothesis.
+/// Per-call options for [`Model::decode_verify_batched`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VerifyBatchedOpts {
+    /// Ask the GDN layers for the write-on-accept K=4 verify. The caller
+    /// commits to running [`Model::gdn_fold_accepted`] with every verdict
+    /// before its `commit_accepted_prefix` calls. Off by default so a
+    /// caller that commits through another path (the MTP batched K-row
+    /// verify) never reaches a state the layer wrote nothing for.
+    pub write_on_accept: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct BeamReq {
     /// Raw source subword ids (the model adds `[src_lang] … </s>` itself).
@@ -659,14 +670,20 @@ pub trait Model: Send + Sync {
     /// same as the per-seq path). On Err NO sequence state has been advanced.
     ///
     /// Callers must gate on [`Self::can_batch_verify`].
+    ///
+    /// `opts.write_on_accept` asks the GDN layers for the write-on-accept
+    /// K=4 verify: the caller then MUST run [`Self::gdn_fold_accepted`] with
+    /// every sequence's verdict before any `commit_accepted_prefix`. A caller
+    /// that commits through another path passes `VerifyBatchedOpts::default()`.
     fn decode_verify_batched(
         &self,
         tokens: &[u32],
         ks: &[usize],
         seqs: &mut [&mut SequenceState],
         stream: u64,
+        opts: VerifyBatchedOpts,
     ) -> Result<Vec<u32>> {
-        let _ = (tokens, ks, seqs, stream);
+        let _ = (tokens, ks, seqs, stream, opts);
         bail!("decode_verify_batched: unsupported by this model")
     }
 
@@ -1101,6 +1118,24 @@ pub trait Model: Send + Sync {
         _k: usize,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// Write-on-accept fold after a batched K=4 verify that was requested
+    /// with `VerifyBatchedOpts { write_on_accept: true }`: `slots[i]` /
+    /// `accepted_rows[i]` (verify-width rows incl. the anchor, 1..=k) in the
+    /// verify's batch order. Returns `Ok(true)` when the GDN h states were
+    /// committed here, in which case `commit_accepted_prefix` for those
+    /// slots restores conv state only. `Ok(false)` when the last batched
+    /// verify did not request write-on-accept, or ran without its WY
+    /// pointer tables (per-sequence loop): the host restore then runs as
+    /// before. Default: nothing to fold.
+    fn gdn_fold_accepted(
+        &self,
+        _slots: &[usize],
+        _accepted_rows: &[u32],
+        _k_rows: usize,
+    ) -> Result<bool> {
+        Ok(false)
     }
 
     /// Save KV blocks + SSM state to writer. Does NOT free resources.

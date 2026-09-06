@@ -387,6 +387,7 @@ impl TransformerModel {
             // Marconi warm hit: GDN layers replay from a restored SSM state
             // and must use the bit-faithful WY4 recurrence (see layer.rs).
             gdn_exact_replay: marconi_skip,
+            gdn_write_on_accept: false,
             // Hash-MoE: token IDs for the `proc_count` tokens processed this
             // pass, in MoE-loop order (uploaded above to the stable buffer).
             token_ids: Some(self.buffers.token_ids()),

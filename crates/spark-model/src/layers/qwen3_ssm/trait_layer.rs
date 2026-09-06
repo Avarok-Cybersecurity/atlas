@@ -12,6 +12,26 @@ use super::Qwen3SsmLayer;
 use crate::layer::{ForwardContext, GdnPrefillBuffers, LayerState, TransformerLayer};
 
 impl TransformerLayer for Qwen3SsmLayer {
+    fn gdn_woa_stash_seq_floats(&self) -> Option<usize> {
+        self.woa_stash_seq_floats_impl()
+    }
+
+    fn gdn_woa_bind(&self, flag: DevicePtr, stash: DevicePtr, seqs: usize) {
+        self.woa_bind_impl(flag, stash, seqs)
+    }
+
+    fn gdn_fold_accepted(
+        &self,
+        gpu: &dyn GpuBackend,
+        h_table: DevicePtr,
+        na_tab: DevicePtr,
+        k_rows: usize,
+        n: usize,
+        stream: u64,
+    ) -> Result<bool> {
+        self.fold_accepted_impl(gpu, h_table, na_tab, k_rows, n, stream)
+    }
+
     /// Downcast hook so the LoRA install walk can reach this layer's MoE FFN
     /// (Feature-1: routed-expert/router deltas exist on GDN layers too).
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

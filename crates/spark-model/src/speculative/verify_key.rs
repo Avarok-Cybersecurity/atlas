@@ -241,7 +241,8 @@ pub fn verify_batch_order(
 }
 
 /// The batched-verify CUDA-graph cache key for one batch: the `(ssm slot,
-/// row count)` pairs in DISPATCH order, then a wy-tables-present sentinel.
+/// row count)` pairs in DISPATCH order, then one sentinel word carrying the
+/// wy-tables-present bit and the write-on-accept bit.
 ///
 /// Every SSM pointer a capture bakes (h/conv state, rollback intermediates,
 /// WY table contents) is a pure function of the pair at that batch position,
@@ -254,13 +255,21 @@ pub fn verify_batch_order(
 /// Pairs arrive in the order [`verify_batch_order`] produced, so with
 /// canonicalization on the key is a pure function of (slot set, depth
 /// multiset, sentinel) — the whole point of this module.
-pub fn verify_graph_key(pairs: &[(u32, u32)], wy_tables_null: bool) -> Vec<u32> {
+///
+/// `write_on_accept` is part of the key because the captured GDN launch
+/// differs with it (the K=4 write-on-accept twin against the parent wy4):
+/// a graph captured for one request must never replay for the other.
+pub fn verify_graph_key(
+    pairs: &[(u32, u32)],
+    wy_tables_null: bool,
+    write_on_accept: bool,
+) -> Vec<u32> {
     let mut key: Vec<u32> = Vec::with_capacity(2 * pairs.len() + 1);
     for &(slot, k) in pairs {
         key.push(slot);
         key.push(k);
     }
-    key.push(u32::MAX - u32::from(wy_tables_null));
+    key.push(u32::MAX - u32::from(wy_tables_null) - 2 * u32::from(write_on_accept));
     key
 }
 

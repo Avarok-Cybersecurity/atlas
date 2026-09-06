@@ -33,8 +33,14 @@ mod default_loops;
 /// is a pure host-side layout change). 48 GDN layers x 4 tables x 32
 /// entries x 8 B = 48 KB.
 pub const VERIFY_WY_TABLE_SEQS: usize = 32;
-/// Tables per GDN layer: h_state + Hi0..Hi2 (K=4 verify → 3 intermediates).
-pub const VERIFY_WY_TABLES_PER_LAYER: usize = 4;
+/// Tables per GDN layer: h_state + Hi0..Hi14 (K=16 verify → 15
+/// intermediates). 4 → 16 (2026-09-01): the wyN pointer-table twins
+/// extend the cross-sequence batched verify to K=5..16, so the staging
+/// gate `(2..=THIS)` must admit gamma-width verifies; at 4 every K>4
+/// batch silently declined to the per-sequence loop (measured 09-01:
+/// 187,392 wy10 launches = 27.7% of GPU time in a C=16 prose window).
+/// Cost: 48 layers x 16 x 32 x 8 B = 192 KB of host+device tables.
+pub const VERIFY_WY_TABLES_PER_LAYER: usize = 16;
 /// Bytes between consecutive tables within a layer slice.
 pub const VERIFY_WY_TABLE_STRIDE_BYTES: usize = VERIFY_WY_TABLE_SEQS * 8;
 /// Bytes between consecutive GDN layers' table slices.
@@ -54,6 +60,39 @@ pub trait TransformerLayer: Send + Sync {
     /// the LoRA install walk). Default `None`; overlay-capable layers override.
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
+    }
+
+    /// Write-on-accept capability (GDN layers only): the per-sequence stash
+    /// size in f32 elements when this layer can run the K=4 write-on-accept
+    /// twin (kernels linked, write-on-accept not disabled), `None` otherwise.
+    /// The model sizes the stash from it and binds with [`Self::gdn_woa_bind`].
+    fn gdn_woa_stash_seq_floats(&self) -> Option<usize> {
+        None
+    }
+
+    /// Bind this layer's write-on-accept engaged word and stash slab (`seqs`
+    /// sequences of [`Self::gdn_woa_stash_seq_floats`] f32 each). Called once
+    /// by the model, pre-capture, on the first write-on-accept request; the
+    /// addresses are baked into verify graphs afterwards and never move.
+    fn gdn_woa_bind(&self, _flag: DevicePtr, _stash: DevicePtr, _seqs: usize) {}
+
+    /// Write-on-accept fold (GDN layers only): apply the accepted rows of the
+    /// last batched K=4 verify to this layer's h states. `h_table` is the
+    /// layer's slab-0 pointer table from the verify, `na_tab` a device
+    /// `u32[n]` of accepted row counts in batch order. `Ok(false)` when the
+    /// layer has nothing bound (not a GDN layer, or write-on-accept is off).
+    /// When the parent kernel ran for the last verify (engaged word 0) the
+    /// fold performs the parent's partial-accept restore instead.
+    fn gdn_fold_accepted(
+        &self,
+        _gpu: &dyn GpuBackend,
+        _h_table: DevicePtr,
+        _na_tab: DevicePtr,
+        _k_rows: usize,
+        _n: usize,
+        _stream: u64,
+    ) -> Result<bool> {
+        Ok(false)
     }
 
     /// Whether this layer's ONLINE FP8-KV calibration has frozen its scale.
@@ -643,4 +682,45 @@ pub trait TransformerLayer: Send + Sync {
     /// - `EmptyLayerState` for pure attention layers
     /// - `SsmLayerState` for SSM/recurrent layers
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>>;
+}
+
+#[cfg(test)]
+mod verify_wy_table_tests {
+    use super::{
+        VERIFY_WY_LAYER_STRIDE_BYTES, VERIFY_WY_TABLE_SEQS, VERIFY_WY_TABLE_STRIDE_BYTES,
+        VERIFY_WY_TABLES_PER_LAYER,
+    };
+
+    /// The batched verify's widest arm is K=16, which stages h + Hi0..Hi14
+    /// = 16 slabs. The staging gate in verify_e2.rs admits
+    /// `(2..=VERIFY_WY_TABLES_PER_LAYER)`, so this const IS the k ceiling:
+    /// if it shrinks below 16, every gamma>3 batch silently declines to the
+    /// per-sequence loop again (the 187,392-launch storm of 2026-09-01).
+    #[test]
+    fn tables_per_layer_fund_the_widest_verify_arm() {
+        assert!(
+            (2..=VERIFY_WY_TABLES_PER_LAYER).contains(&16usize),
+            "VERIFY_WY_TABLES_PER_LAYER ({VERIFY_WY_TABLES_PER_LAYER}) must admit k=16"
+        );
+    }
+
+    /// The table-form wyN kernels REINTERPRET the stride argument as
+    /// "pointer entries between Hi slabs" and the dispatcher passes
+    /// `VERIFY_WY_TABLE_SEQS`. That only reaches slab t iff slabs are laid
+    /// out back-to-back at exactly SEQS entries (8 bytes each). Pin the
+    /// layout the kernels assume.
+    #[test]
+    fn slab_stride_matches_the_kernel_contract() {
+        assert_eq!(VERIFY_WY_TABLE_STRIDE_BYTES, VERIFY_WY_TABLE_SEQS * 8);
+        assert_eq!(
+            VERIFY_WY_LAYER_STRIDE_BYTES,
+            VERIFY_WY_TABLES_PER_LAYER * VERIFY_WY_TABLE_STRIDE_BYTES
+        );
+    }
+
+    /// C=16 batches (plus ghost entries) must fit the per-slab entry count.
+    #[test]
+    fn seqs_capacity_covers_c16() {
+        const { assert!(VERIFY_WY_TABLE_SEQS >= 16) };
+    }
 }
