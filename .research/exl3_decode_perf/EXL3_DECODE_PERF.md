@@ -331,6 +331,41 @@ Confirmation (`spark-defaults`, MTP profile with NO `ATLAS_VERIFY_EXL3_*` env at
 tok/s**, accepted/step 1.47, sample identical. Cumulative on the operating profile today:
 12.9-13.7 (pre-fix TUI log) → 25.95 → 26.58 → 29.89 → 30.34 tok/s.
 
+## Hyper-connection collapse through the batched dense GEMV (sixth lever)
+
+The mHC `hc_pre` low-rank collapse is three projections per site (down `[320 x 10240]`, up
+`[10240 x 320]`, inject `[4 x 10240]`, all BF16), two sites per layer, 96 sites per token. They
+went through cuBLASLt (`bf16_gemm_act_weight_t`): a heuristic per call, a split-K kernel + a
+reduce launch per projection, ~48% of DRAM peak on the two 6.5 MB matrices — 7.5 ms per serial
+token and 11.2 ms per 3-row step (378 cutlass + 225 splitK launches), and under the row-exact
+contract one call per row because cuBLASLt picks a different kernel per M.
+
+Tried: route `m <= 8` to `dense_gemv_bf16_batchm`, Atlas's own batched BF16 GEMV (one pass over
+the weight for all rows, bit-identical per row to its M=1 form by construction: fixed K order,
+`--fmad=false`), so serial, verify and the MTP draft module reduce each row identically with one
+launch and no reduce kernel.
+
+**Negative result** (`spark-hcgemv`, fresh server per arm, `ATLAS_NO_HC_DENSE_GEMV` the only
+variable per profile):
+
+| profile | cuBLASLt (default) | dense GEMV | accepted/step |
+|---|---:|---:|---|
+| MTP 2 drafts, prefix on | **30.36** | 29.05 | 1.47 → **1.37** |
+| serial, prefix off | 23.48 | 23.70 | — (noise) |
+
+The kernels were faster, but draft acceptance fell 7%, which outweighs it. All three consumers
+took the same row-invariant kernel, so this is not a serial/verify mismatch — the dense GEMV's
+numerics themselves cost draft agreement (the model's next-token distribution got noisier).
+Shipped as OPT-IN (`ATLAS_HC_DENSE_GEMV=1`), cuBLASLt stays the default. Lesson, third time
+today: on this model the drafter's agreement is sensitive to any numerics change in the hc / router
+path; every such change must be judged on tokens/s WITH acceptance, not on kernel time. Records:
+`ab_hc_*`.
+
+Prefill note: the vllm-exl3 review (`vllm_exl3_prefill_review.md`) ranks the EXL3 prefill
+levers: nsys an 8K EXL3 prefill first; raise the fused MoE tier's 128-row-per-expert cap (theirs
+is 2048; ours overflows at every 4K chunk); a dense reconstruct-to-BF16 GEMM tier above a row
+threshold using the byte-identical `exl3_reconstruct.cu` Atlas already has.
+
 ## PLE verify snapshots on device (fourth lever, this commit)
 
 `push_verify_row` snapshotted the PLE carry to a host blob with `copy_d2h_on_stream` after
