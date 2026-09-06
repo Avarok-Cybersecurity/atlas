@@ -275,6 +275,15 @@ Cumulative on the operating profile (2 drafts, prefix cache on): 25.95 → 29.89
 grid and row-exact changes; on top of the shared-expert fix, the pre-fix TUI server logged
 12.9-13.7 tok/s under this profile earlier the same day (longer context, observation not A/B).
 
+### Model-card agentic gate on the final binary
+
+The two passes above used greedy sampling, which hides the warm-restore string-mangling. Rerun on
+`spark-plesnap` (all four changes) with `ATLAS_AGENTIC_SAMPLING=model-card`,
+`ATLAS_AGENTIC_PRESERVE_THINKING=1`, `reasoning_effort:low`, prefix cache on, 2 drafts, one
+iteration: **Pass** — webserver_ok 1/1, followed_directions 1/1, 6 turns / 97 s, 1834 completion
+tokens, harness decode_tps 19.1, **0 mangling markers** in the 8.6 KB trajectory
+(`agentic/run-1788657364366230696.json`). One sampled trajectory, not a rate.
+
 ## PLE verify snapshots on device (fourth lever, this commit)
 
 `push_verify_row` snapshotted the PLE carry to a host blob with `copy_d2h_on_stream` after

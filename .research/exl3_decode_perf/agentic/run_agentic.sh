@@ -13,7 +13,7 @@ for i in $(seq 1 900); do
   sleep 1
 done
 rm -f "$SB"/*.trajectory.txt 2>/dev/null
-export ATLAS_AGENTIC_PRESERVE_THINKING=1 ATLAS_NO_HW_PRECHECK=1  # greedy: no ATLAS_AGENTIC_SAMPLING (harness pins temp 0)
+export ATLAS_AGENTIC_PRESERVE_THINKING=1 ATLAS_NO_HW_PRECHECK=1; [ "${SAMPLING:-greedy}" = model-card ] && export ATLAS_AGENTIC_SAMPLING=model-card
 export LD_LIBRARY_PATH=/home/ms/nccl/build/lib:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
 START=$(date +%s)
 $D/spark-sharedgemv benchmark run agentic-webserver --yes --url http://127.0.0.1:8888 --model qwen3.8-flash-next \
