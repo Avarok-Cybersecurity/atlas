@@ -32,8 +32,16 @@ LABEL = "atlas-cmd"
 # The cheap PR pool. Routed through a repository variable so
 # cmd-runner-health.yml can flip the whole fleet back to hosted without a code
 # change -- the same escape hatch CMD_RUNNER_LABEL already provides.
-PR_LABEL = "atlas-pr-cheap"
-PR_VAR = "PR_CHEAP_RUNNER"
+# Two pools, same bargain, different capability: `atlas-pr-cheap` is every
+# runner, `atlas-pr-rust` is the subset carrying a Rust toolchain (a bounded
+# subset ON PURPOSE -- eight concurrent `cargo test --workspace` target
+# directories would fill the disk).
+PR_POOLS = (
+    ("atlas-pr-cheap", "PR_CHEAP_RUNNER"),
+    ("atlas-pr-rust", "PR_RUST_RUNNER"),
+)
+PR_LABEL = PR_POOLS[0][0]
+PR_VAR = PR_POOLS[0][1]
 # The exact comparison that keeps a fork off our hardware. Matched as a
 # substring with whitespace collapsed, so reflowing the YAML cannot break it
 # while changing its meaning could not survive it.
@@ -59,9 +67,13 @@ def uses_cmd_runner(job):
     return LABEL in blob or "CMD_RUNNER_LABEL" in blob
 
 
-def uses_pr_pool(job):
+def pr_pool_of(job):
+    """Which self-hosted PR pool this job routes to, or None."""
     blob = str(job.get("runs-on"))
-    return PR_LABEL in blob or PR_VAR in blob
+    for label, var in PR_POOLS:
+        if label in blob or var in blob:
+            return label
+    return None
 
 
 def guards_against_forks(job):
@@ -90,11 +102,12 @@ def main():
         for name, job in (wf.get("jobs") or {}).items():
             if not isinstance(job, dict):
                 continue
-            if uses_pr_pool(job):
-                routed.append((routing_blob(job), f"{path.name}:{name}"))
+            pool = pr_pool_of(job)
+            if pool is not None:
+                routed.append((pool, routing_blob(job), f"{path.name}:{name}"))
                 if triggers & FORK_CONTROLLED and not guards_against_forks(job):
                     problems.append(
-                        f"{path.name}:{name} runs on {PR_LABEL} under a "
+                        f"{path.name}:{name} runs on {pool} under a "
                         f"pull_request trigger without the same-repo guard "
                         f"({SAME_REPO_GUARD}) in runs-on — a fork's PR would "
                         f"execute on our hardware."
@@ -108,7 +121,7 @@ def main():
                     if any(u in ref for u in UNSAFE_REFS):
                         problems.append(
                             f"{path.name}:{name} checks out '{ref}' on "
-                            f"{PR_LABEL} — an explicit fork ref defeats the "
+                            f"{pool} — an explicit fork ref defeats the "
                             f"same-repo guard."
                         )
             if not uses_cmd_runner(job):
@@ -141,17 +154,19 @@ def main():
     # exactly the hole this file exists to close, and it would not be visible in
     # review of a 19-job diff. So the shapes are compared, not just each one's
     # guard.
-    shapes = {}
-    for blob, where in routed:
-        shapes.setdefault(blob, []).append(where)
-    if len(shapes) > 1:
-        listing = "; ".join(
-            f"{len(v)} job(s) use {k!r}" for k, v in sorted(shapes.items(), key=lambda kv: -len(kv[1]))
-        )
-        problems.append(
-            "the cheap pool is routed with more than one expression — "
-            f"{listing}. Every routed job must use the same one."
-        )
+    by_pool = {}
+    for pool, blob, where in routed:
+        by_pool.setdefault(pool, {}).setdefault(blob, []).append(where)
+    for pool, shapes in sorted(by_pool.items()):
+        if len(shapes) > 1:
+            listing = "; ".join(
+                f"{len(v)} job(s) use {k!r}"
+                for k, v in sorted(shapes.items(), key=lambda kv: -len(kv[1]))
+            )
+            problems.append(
+                f"the {pool} pool is routed with more than one expression — "
+                f"{listing}. Every job on one pool must use the same one."
+            )
 
     if problems:
         print("the self-hosted command runner is reachable from untrusted code:")
@@ -160,7 +175,8 @@ def main():
         return 1
     print(
         f"no workflow on '{LABEL}' checks out untrusted code, and every "
-        f"'{PR_LABEL}' job under a pull_request trigger carries the same-repo guard."
+        f"job on {[p[0] for p in PR_POOLS]} under a pull_request trigger carries "
+        f"the same-repo guard, one expression per pool."
     )
     return 0
 

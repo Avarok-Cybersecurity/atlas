@@ -39,7 +39,11 @@ concurrency:
 jobs:
   cargo-deny:
     name: cargo deny
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_RUST_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The self-hosted command runner executes on our own hardware. It is
