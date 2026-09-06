@@ -37,6 +37,17 @@ concurrency:
 
 jobs:
   state:
+    # contents: write is what makes the certificate IMAGE exist. The render
+    # writes a PNG to the `bot-cards` branch and the comment links it; without
+    # the grant the PUT fails and the comment has no picture.
+    #
+    # Safe under pull_request_target because this job never touches PR code:
+    # the checkout below pins `github.event.repository.default_branch` with
+    # persist-credentials: false, and every PR-derived string (title, logins)
+    # reaches the SVG through render-certificate.py's `html.escape`. Nothing
+    # authored by the PR is executed, and nothing is written outside bot-cards.
+    permissions:
+      contents: write
     name: Certification state
     # Same self-hosted runner as the command handler, for the same reason: this
     # posts the pipeline STATUS, and a status that lands an hour after the event
@@ -137,6 +148,8 @@ jobs:
         if: steps.which.outputs.pr != ''
         env:
           GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
+          # The App may lack contents:write; the job's own grant always has it.
+          WORKFLOW_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.which.outputs.pr }}
           STATE: ${{ steps.state.outputs.state }}
@@ -251,7 +264,30 @@ jobs:
               title=$(gh api "repos/$REPO/pulls/$PR" --jq '.title' 2>/dev/null)
               authors=$(printf '%s' "${who:-}" | tr -d '@' | tr -s ' ' ',' | sed 's/,$//')
 
-              cert="https://raw.githubusercontent.com/$REPO/$DEFAULT_BRANCH/docs/diagrams/states/certificate-merged.png"
+              # Every lookup above is `2>/dev/null`, so "the API did not answer"
+              # arrives as an empty string and is indistinguishable from a real
+              # value. The renderer now REFUSES an empty title or commit rather
+              # than drawing the template's specimen data in their place, and it
+              # refuses by exiting non-zero -- which under `set -e` would kill
+              # this step before the comment POST below and leave a merged PR
+              # with no certificate at all. Same reasoning as the rsvg-convert
+              # and segno guards above: ask first, and let a missing input cost
+              # the picture, never the certificate.
+              if [ -z "$title" ] || [ -z "${merge_sha:-}" ]; then
+                echo "::warning title=Certificate not rendered::the PR title or the merge commit came back empty from the API. Drawing the certificate without them would publish the template's specimen title and commit as this PR's, so the certificate is posted without an image."
+                render_ok=0
+              fi
+
+              # NO generic fallback image. The committed template carries the
+              # PLACEHOLDER certifier names it was designed with, so linking it
+              # states that fictional people stamped and sealed this PR, over an
+              # author line that is not the opener's. This block's own comment
+              # above already says embedding the template is "worse than no
+              # image" -- the fallback did it anyway, on every certificate ever
+              # posted (bot-cards held zero pr-*.png as of 2026-09-05, so the
+              # fallback fired 100% of the time). Empty means: post the words,
+              # skip the picture.
+              cert=""
               if [ "$render_ok" = 1 ]; then
                 python3 .github/scripts/render-certificate.py \
                   --template docs/diagrams/states/certificate-merged.svg \
@@ -272,13 +308,28 @@ jobs:
                 hash=$(sha256sum /tmp/cert.png | cut -c1-8)
                 path="pr-$PR-$hash.png"
                 b64=$(base64 -w0 /tmp/cert.png)
-                gh api -X PUT "repos/$REPO/contents/$path" \
-                  -f message="certificate for #$PR" -f content="$b64" -f branch=bot-cards \
-                  >/dev/null 2>&1 \
-                  || gh api -X PUT "repos/$REPO/contents/$path" \
-                       -f message="certificate for #$PR" -f content="$b64" \
-                       -f branch=bot-cards -f sha="$(gh api "repos/$REPO/contents/$path?ref=bot-cards" --jq .sha 2>/dev/null)" \
-                       >/dev/null 2>&1 || true
+                # Upload under the App identity when it has the grant, else under
+                # GITHUB_TOKEN, which the job's own `contents: write` guarantees.
+                # The App was missing contents:write in practice (certification
+                # preflight's permission probe fails on it), so relying on the
+                # App alone left bot-cards empty and every certificate imageless.
+                # Each PUT keeps its `||` in the SAME statement: that is what
+                # assert-preflight-covers-writes.py reads to know this write
+                # swallows its own failure and therefore needs a probe_write.
+                # An `&& return 0` form hides it from that guard.
+                put_cert() {
+                  local tok="$1" sha
+                  GH_TOKEN="$tok" gh api -X PUT "repos/$REPO/contents/$path" \
+                    -f message="certificate for #$PR" -f content="$b64" -f branch=bot-cards \
+                    >/dev/null 2>&1 || {
+                      sha=$(GH_TOKEN="$tok" gh api "repos/$REPO/contents/$path?ref=bot-cards" --jq .sha 2>/dev/null)
+                      [ -n "$sha" ] || return 1
+                      GH_TOKEN="$tok" gh api -X PUT "repos/$REPO/contents/$path" \
+                        -f message="certificate for #$PR" -f content="$b64" \
+                        -f branch=bot-cards -f sha="$sha" >/dev/null 2>&1 || return 1
+                    }
+                }
+                put_cert "${GH_TOKEN:-}" || put_cert "${WORKFLOW_TOKEN:-}" || true
                 # Only point at the generated image if it is ACTUALLY THERE. The
                 # upload needs `contents: write` on bot-cards, and the PUT above is
                 # deliberately non-fatal so a missing grant cannot swallow the
@@ -288,14 +339,20 @@ jobs:
                 if gh api "repos/$REPO/contents/$path?ref=bot-cards" >/dev/null 2>&1; then
                   cert="https://raw.githubusercontent.com/$REPO/bot-cards/$path"
                 else
-                  echo "::warning title=Certificate image was not uploaded::falling back to the generic certificate. The App likely lacks contents:write on bot-cards -- certification-preflight.yml probes for exactly this."
+                  echo "::warning title=Certificate image was not uploaded::posting the certificate WITHOUT an image. The App likely lacks contents:write on bot-cards -- certification-preflight.yml probes for exactly this. The generic template is deliberately NOT linked: it carries placeholder certifier names."
                 fi
+              fi
+              # An image only when one was actually produced FOR THIS PR.
+              if [ -n "$cert" ]; then
+                pic="<img src=\"$cert\" alt=\"Atlas certification for PR #$PR\" width=\"900\">"
+              else
+                pic="_(The certificate image could not be rendered for this PR. The gate records themselves are public -- see the checks on the merge commit.)_"
               fi
               gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="<!-- atlas-certificate -->
           ${who:-@}— merged. Every required benchmark gate was certified against a
           frozen commit before this landed, and the record is public.
 
-          <img src=\"$cert\" alt=\"Atlas certification for PR #$PR\" width=\"900\">
+          $pic
 
           Merge commit \`${merge_sha:0:10}\`. Yours to share." >/dev/null
               echo "posted the certificate -> ${who:-nobody}"
