@@ -15,7 +15,8 @@ fn parse(extra: &[&str]) -> ServeArgs {
         super::super::Command::Serve(a) => a,
         super::super::Command::Benchmark(_)
         | super::super::Command::DumpServeOptions
-        | super::super::Command::SyncRecipes => {
+        | super::super::Command::SyncRecipes
+        | super::super::Command::Doctor => {
             unreachable!("this test parses a serve command")
         }
     }

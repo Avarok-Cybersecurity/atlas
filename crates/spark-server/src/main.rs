@@ -103,6 +103,14 @@ async fn main() -> Result<()> {
         return cli::sync_recipes::run();
     }
 
+    // Same treatment again: `doctor` reads paths and prints lines. It must run
+    // BEFORE any subscriber or dashboard, because the whole point is to work on
+    // a box too broken to serve.
+    if matches!(cli.command, Command::Doctor) {
+        let code = cli::doctor::dispatch()?;
+        std::process::exit(code);
+    }
+
     let no_tui = match &cli.command {
         // `--check-kernels` is a script's entry point too: it prints a report
         // and a JSON line on stdout and exits, so a dashboard would take the
@@ -112,7 +120,7 @@ async fn main() -> Result<()> {
         // nothing here reaches `tui::start` or takes the terminal.
         Command::Benchmark(_) => true,
         // Handled above; it never reaches here.
-        Command::DumpServeOptions | Command::SyncRecipes => true,
+        Command::DumpServeOptions | Command::SyncRecipes | Command::Doctor => true,
     };
 
     let tui_channels = if tui::plain_mode(no_tui) {
@@ -142,7 +150,7 @@ async fn main() -> Result<()> {
         // Returned above, before anything initialised. Kept as an explicit arm
         // rather than a wildcard so a future subcommand cannot land here by
         // accident and silently do nothing.
-        Command::DumpServeOptions | Command::SyncRecipes => {
+        Command::DumpServeOptions | Command::SyncRecipes | Command::Doctor => {
             unreachable!("handled before initialisation")
         }
         Command::Benchmark(args) => {
