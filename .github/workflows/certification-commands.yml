@@ -303,7 +303,49 @@ jobs:
           > \`\`\`
           > </details>"
             elif [ -n "${run_id:-}" ] && [ "$run_id" != "null" ] && [ "$run_status" != "completed" ]; then
-              echo "::notice title=CI is still running::run $run_id is '$run_status'. Its gate jobs read the $name when they execute, so nothing is re-run. If they already ran, re-run CI once this one finishes."
+              # ★ "IN FLIGHT" IS TWO CASES, AND ONLY ONE OF THEM IS BENIGN.
+              #
+              # The benign one: the run has not reached its gate jobs, so they
+              # will read the mark when they execute and there is nothing to
+              # re-run. The other one: those jobs ALREADY RAN, before the mark
+              # existed, and their verdict is final for this run — the PR sits
+              # red on `seal status` / `stamp status` with no further run coming.
+              #
+              # Treating both as benign happened to #934, #935 and #908 on
+              # 2026-09-06, all three at once:
+              #     #934  seal status done 13:37:51   Seal minted 13:40:22
+              #     #935  seal status done 13:41:46   Seal minted 13:42:44
+              #     #908  seal status done 13:41:50   Seal minted 13:42:57
+              # Each ended with a green `Seal` check run and a red `seal status`,
+              # and this step said nothing. Its own message already named the
+              # case — "if they already ran, re-run CI once this one finishes" —
+              # and then left a human to notice. Nobody was watching.
+              #
+              # A job inside an in-progress run CANNOT be re-run (`gh run rerun
+              # --job` answers "job N cannot be rerun"), so this cannot
+              # self-heal. Say so loudly instead of implying all is well.
+              stale_jobs=""
+              if jobs_json=$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" 2>&1); then
+                stale_jobs=$(printf '%s' "$jobs_json" \
+                  | jq -r '[.jobs[] | select(.status == "completed")
+                            | select(.name == "seal status" or .name == "stamp status"
+                                     or .name == "PR Benchmark Certifications"
+                                     or .name == "PR benchmark gate")
+                            | .name] | unique | join(", ")' 2>/dev/null) || stale_jobs=""
+              fi
+              if [ -n "$stale_jobs" ]; then
+                echo "::error title=$name recorded, but the jobs that read it have already run::run $run_id is '$run_status', and these of its jobs finished BEFORE the mark existed: $stale_jobs"
+                rerun_note="
+
+          > [!WARNING]
+          > **The $name is recorded, but the checks that read it have already run.** CI run [\`$run_id\`](https://github.com/$REPO/actions/runs/$run_id) is still \`$run_status\`, but these jobs finished before the mark was minted and their verdict is final for this run: \`$stale_jobs\`.
+          >
+          > A job inside an in-progress run cannot be re-run, so this cannot fix itself. **Re-run the CI workflow once the current run finishes**, or push any commit to this PR.
+          >
+          > (A \`/seal\` is voided by the next commit, so prefer the re-run.)"
+              else
+                echo "::notice title=CI is still running::run $run_id is '$run_status' and none of the jobs that read the $name have finished yet, so they will see it when they execute. Nothing to re-run."
+              fi
             elif [ -n "${run_id:-}" ] && [ "$run_id" != "null" ]; then
               # Capture stderr rather than discarding it. The first time this
               # failed in production the reason went to /dev/null, the Stamp

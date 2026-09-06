@@ -1608,6 +1608,18 @@ case "$all" in
     printf '{"workflow_runs":[{"id":%s,"name":"CI","created_at":"2026-01-01T00:00:00Z","status":"%s"}]}\n' \
       "${_rm%% *}" "${_rm##* }"
     exit 0 ;;
+  *"/jobs?per_page"*)
+    # Which of the in-flight run's jobs have ALREADY finished. RUNJOBS is a
+    # comma list of completed job names; empty = the run has not reached them.
+    printf '{"jobs":['
+    _first=1; _saved_ifs=$IFS; IFS=','
+    for _j in ${RUNJOBS:-}; do
+      [ -z "$_j" ] && continue
+      [ "$_first" -eq 1 ] || printf ','
+      printf '{"name":"%s","status":"completed"}' "$_j"; _first=0
+    done
+    IFS=$_saved_ifs; printf ']}\n'
+    exit 0 ;;
   *"issues/"*"/comments"*)    printf '%s\n' "$all" >> "$SCALLS"; exit 0 ;;
   *)                          exit 0 ;;
 esac
@@ -1729,6 +1741,71 @@ esac' >/dev/null
     bad "control: it warned about a benign in-flight run"
   else
     ok "control: and no false warning is posted"
+  fi
+
+  # CONTROL: "in flight" is TWO cases and only one is benign. When the jobs that
+  # READ the mark already finished -- before the mark existed -- their verdict
+  # is final for this run, and a job inside an in-progress run cannot be
+  # re-run. Silence there is how #934/#935/#908 each ended 2026-09-06 with a
+  # green `Seal` check run and a red `seal status`.
+  #
+  # This control installs its OWN stub: whichever stub ran last may not answer
+  # the /jobs call, and then this would measure the benign branch and pass for
+  # the wrong reason.
+  cat > "$TMP/sbin/gh" <<'STUB2'
+#!/usr/bin/env bash
+all="$*"
+case "$all" in
+  *"actions/runs/"*"/rerun"*) printf 'RERUN %s\n' "$all" >> "$SCALLS"; exit 0 ;;
+  # ★ JSON, NOT A BARE STRING. The merged lookup pipes this through jq
+  # ITSELF so that an unanswered API is distinguishable from "no run"; a
+  # plain "<id> <status>" makes jq fail, the step takes the could-not-list
+  # branch, and the two controls below then measure the WRONG branch and
+  # report the stale-jobs warning as missing. That is what they did the
+  # first time #908 and #937 met.
+  *"actions/runs?head_sha"*)
+    _rm="${RUNMETA:-12345 completed}"
+    printf '{"workflow_runs":[{"id":%s,"name":"CI","created_at":"2026-01-01T00:00:00Z","status":"%s"}]}\n' \
+      "${_rm%% *}" "${_rm##* }"
+    exit 0 ;;
+  *"/jobs?per_page"*)
+    printf '{"jobs":['
+    _first=1; _saved_ifs=$IFS; IFS=','
+    for _j in ${RUNJOBS:-}; do
+      [ -z "$_j" ] && continue
+      [ "$_first" -eq 1 ] || printf ','
+      printf '{"name":"%s","status":"completed"}' "$_j"; _first=0
+    done
+    IFS=$_saved_ifs; printf ']}\n'; exit 0 ;;
+  *"issues/"*"/comments"*)    printf '%s\n' "$all" >> "$SCALLS"; exit 0 ;;
+  *)                          exit 0 ;;
+esac
+STUB2
+  chmod +x "$TMP/sbin/gh"
+  : > "$TMP/scalls"
+  ( PATH="$TMP/sbin:$PATH" SCALLS="$TMP/scalls" RUNMETA="777 in_progress" \
+    RUNJOBS="seal status,stamp status" REPO=o/r PR=1 VERB=/seal \
+    ACTOR=me AUTHOR=me PERM=write HEAD_SHA=abc1234567 SHORT=abc1234 \
+    bash "$TMP/stamp.sh" >/dev/null 2>&1 )
+  if grep -q "the checks that read it have already run" "$TMP/scalls"; then
+    ok "control: a mark minted after its gate jobs already ran is reported"
+  else
+    bad "control: gate jobs that already ran were treated as not-yet-run"
+  fi
+  if grep -q 'seal status' "$TMP/scalls"; then
+    ok "control: and the warning NAMES the jobs whose verdict is already final"
+  else
+    bad "control: the warning did not say which jobs had already run"
+  fi
+  # And the benign case must stay silent: nothing finished yet.
+  : > "$TMP/scalls"
+  ( PATH="$TMP/sbin:$PATH" SCALLS="$TMP/scalls" RUNMETA="777 in_progress" RUNJOBS="" \
+    REPO=o/r PR=1 VERB=/seal ACTOR=me AUTHOR=me PERM=write HEAD_SHA=abc1234567 SHORT=abc1234 \
+    bash "$TMP/stamp.sh" >/dev/null 2>&1 )
+  if grep -q "already run" "$TMP/scalls"; then
+    bad "control: warned although no gate job had finished"
+  else
+    ok "control: an in-flight run that has not reached its gate jobs still warns nothing"
   fi
 else
   bad "could not extract the /stamp step"
