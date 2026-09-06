@@ -1,0 +1,1 @@
+../../../gb10/qwen3.6-27b/nvfp4/gated_delta_rule_wy17.cu

@@ -310,3 +310,48 @@ fn repo_root() -> std::path::PathBuf {
     }
     d
 }
+
+/// ★ Oracle: the committed corpus itself — every record in `.benchmarks/` was
+/// written before `Hardware::gpu_count` existed.
+///
+/// `gpu_count` was added additively (schema stays 1, `#[serde(default)]`,
+/// omitted when absent), following `dataset_fingerprint`. The claim that
+/// buys — that no migration is needed — is only worth anything if a real old
+/// record is read back and still resolves. A hand-written fixture would prove
+/// serde's defaulting, not the corpus's compatibility.
+///
+/// UNMEASURED, not one: the assertion is `None`, because reading these as
+/// single-GPU would be inventing a topology reading that was never taken.
+#[test]
+fn every_committed_record_still_loads_without_a_gpu_count() {
+    let benchmarks = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.benchmarks");
+    let mut read = 0;
+    for gate in std::fs::read_dir(&benchmarks)
+        .expect(".benchmarks/ is in the tree")
+        .flatten()
+    {
+        for record in std::fs::read_dir(gate.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let path = record.path();
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let loaded = read_record(&path).unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
+            assert_eq!(
+                loaded.hardware.gpu_count,
+                None,
+                "{} carries a width nothing measured",
+                path.display()
+            );
+            assert_eq!(loaded.schema, 1, "{}", path.display());
+            read += 1;
+        }
+    }
+    assert!(
+        read > 100,
+        "read only {read} records — the walk is broken, not the format"
+    );
+}

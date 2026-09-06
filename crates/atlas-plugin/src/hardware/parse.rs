@@ -64,6 +64,33 @@ pub fn gpu_query(text: &str) -> GpuQuery {
     }
 }
 
+/// `nvidia-smi -L` — one line per visible device.
+///
+/// ```text
+/// GPU 0: NVIDIA H100 80GB HBM3 (UUID: GPU-2f1c…)
+/// GPU 1: NVIDIA H100 80GB HBM3 (UUID: GPU-9a44…)
+/// ```
+///
+/// Only lines that BEGIN with `GPU ` are counted. A MIG-partitioned box
+/// interleaves indented `  MIG 1g.10gb  Device 0: …` lines under each GPU, and
+/// counting those would report a two-card box as eight.
+///
+/// `None` when no such line is present at all — an unreadable answer is not a
+/// box with zero GPUs, and the difference is exactly what the field is for. A
+/// record that says `gpu_count: 1` because the tool was missing would claim a
+/// single-GPU topology for an 8-way run.
+///
+/// Preferred over `--query-gpu=count`, which prints the SAME total once per
+/// GPU: eight lines each reading `8`, which a line-count reader turns into 64
+/// and a first-line reader gets right only by accident.
+pub fn gpu_count(text: &str) -> Option<u32> {
+    let n = text
+        .lines()
+        .filter(|l| l.starts_with("GPU ") && l.contains(':'))
+        .count();
+    (n > 0).then_some(n as u32)
+}
+
 /// `--query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits`.
 ///
 /// A row whose pid does not parse is DROPPED rather than guessed at — the

@@ -1,0 +1,1 @@
+../../gb10/common/argmax_bf16.cu

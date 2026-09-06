@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use super::*;
 use atlas_plugin::gate::{Bound, GateBaseline, HardwareBaseline, ModelBaseline};
 
-fn baseline(entries: &[(&str, &str, Option<&str>)]) -> GateBaseline {
+pub(super) fn baseline(entries: &[(&str, &str, Option<&str>)]) -> GateBaseline {
     let mut hardware = BTreeMap::new();
     for (hw, model, recipe) in entries {
         let e = hardware
@@ -67,13 +67,23 @@ fn an_explicit_box_class_picks_its_entry() {
     assert_eq!(r.recipe_id, "recipe-b");
 }
 
+/// Oracle: `bench_resolve::resolve`'s own contract — "every refusal names both
+/// what was asked for and what exists". `h800` is a real NVIDIA part that Atlas
+/// has never registered as a box class, so it exercises the branch a typo
+/// reaches. (It used to be spelled `h100`; that id is a registered Hopper slot
+/// now, so it tests the OTHER refusal below.)
 #[test]
 fn an_unknown_box_class_names_what_exists() {
     let b = baseline(&[("gb10", "m", Some("r"))]);
-    let err = resolve(&b, "bfcl-subset", Some("h100"), None).expect_err("refused");
+    let err = resolve(&b, "bfcl-subset", Some("h800"), None).expect_err("refused");
     let msg = format!("{err:#}");
-    assert!(msg.contains("h100"), "{msg}");
+    assert!(msg.contains("h800"), "{msg}");
     assert!(msg.contains("gb10"), "lists what it has: {msg}");
+    assert!(
+        msg.contains("not a box class Atlas knows"),
+        "says WHY it is unresolvable, so a typo is distinguishable from an \
+         unmeasured box: {msg}"
+    );
 }
 
 #[test]

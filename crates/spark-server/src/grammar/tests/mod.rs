@@ -9,12 +9,14 @@ mod engine_state;
 mod gemma4_required;
 mod minimax;
 mod misc;
+mod native_prewarm;
 mod parallel_calls;
 mod param_key_constraint;
 mod poolside;
 mod qwen3_coder_required;
 mod sanitize;
 mod tools_basic;
+mod value_entry;
 
 /// Build a minimal vocabulary for testing.
 /// Contains basic ASCII + JSON structural tokens.

@@ -80,9 +80,8 @@ pub struct GrammarCompiler {
 impl GrammarCompiler {
     /// Construct a compiler bound to `tokenizer_info`.
     ///
-    /// * `max_threads` — retained for API parity. Mask computation is
-    ///   now lazy (XGrammar-2 JIT), so there is no eager parallel loop
-    ///   to bound; the value is recorded but unused. Must be >= 1.
+    /// * `max_threads` — bounds explicit top-k mask prewarming. Lazy
+    ///   matcher lookups still compute only the requested mask. Must be >= 1.
     /// * `cache_enabled` — whether to cache compiled grammars.
     /// * `cache_limit_bytes` — memory budget, ENFORCED by LRU eviction on
     ///   both tiers. `-1` means unlimited, which is now an explicit opt-in

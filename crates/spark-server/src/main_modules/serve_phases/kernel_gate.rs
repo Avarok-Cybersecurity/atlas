@@ -26,6 +26,63 @@ use crate::cli;
 /// number in `$?` is never silently wrong.
 const MAX_EXIT_CODE: usize = 255;
 
+/// Retain the preflight error while reporting an early `--check-kernels` refusal.
+/// No kernel-audit count is available before the backend has been constructed.
+#[cfg(feature = "cuda")]
+pub(crate) fn gate_arch_preflight(
+    checking: bool,
+    ptx_set: &atlas_kernels::TargetPtxSet,
+    result: Result<()>,
+) -> Result<()> {
+    if let Err(error) = &result
+        && let Some(line) = arch_refusal_json(
+            checking,
+            ptx_set.target.model,
+            ptx_set.target.quant,
+            ptx_set.modules.len(),
+            error,
+        )
+    {
+        use std::io::Write as _;
+        println!("{line}");
+        let _ = std::io::stdout().flush();
+    }
+    result
+}
+
+#[cfg(any(feature = "cuda", test))]
+fn arch_refusal_json(
+    checking: bool,
+    model: &str,
+    quant: &str,
+    modules_embedded: usize,
+    error: &anyhow::Error,
+) -> Option<String> {
+    let mismatch = error.downcast_ref::<atlas_core::arch::ArchMismatch>()?;
+    checking.then(|| {
+        serde_json::json!({
+            "atlas_kernel_check": {
+                "model": model,
+                "arch": mismatch.compiled_arch,
+                "compiled_arch": mismatch.compiled_arch,
+                "device_cc": mismatch.device_cc,
+                "quant": quant,
+                "kernel_set_hash": atlas_kernels::KERNEL_SET_HASH,
+                "modules_embedded": modules_embedded,
+                "lookups": null,
+                "unresolved": null,
+                "expected_absent": null,
+                "unresolved_kernels": null,
+                "ok": false,
+                "exit_code": 1,
+                "failing_stage": "arch_preflight",
+                "error": error.to_string(),
+            }
+        })
+        .to_string()
+    })
+}
+
 /// Print the audit, gate on it, and seal the audit for the rest of the run.
 ///
 /// Under `--check-kernels` this function does NOT return: it exits the process
@@ -141,7 +198,72 @@ fn exit_code_for(n: usize) -> usize {
     n.min(MAX_EXIT_CODE)
 }
 
+/// Everything the one-line `--check-kernels` result reports.
+///
+/// A struct rather than ten positional arguments, so the JSON shape can be
+/// asserted without booting a GPU or building a `TargetPtxSet`.
+struct CheckSummary<'a> {
+    model: &'a str,
+    /// The arch this binary's kernels were COMPILED for — verbatim
+    /// `kernels/<hw>/HARDWARE.toml` `[hardware].arch`.
+    compiled_arch: &'a str,
+    quant: &'a str,
+    modules_embedded: usize,
+    lookups: usize,
+    expected_absent: usize,
+    exit_code: usize,
+    unresolved: Vec<serde_json::Value>,
+    /// `(major, minor)` of the GPU in the box, when there is one to ask.
+    /// `None` on a host with no CUDA device — the check still reports the rest.
+    device_cc: Option<(u32, u32)>,
+}
+
 /// One compact JSON object summarising the check. `ok` is the exit-code twin.
+///
+/// `arch` and `compiled_arch` carry the SAME value: `arch` is the name the
+/// field shipped under and is kept for existing fleet sweeps, `compiled_arch`
+/// is the unambiguous one now that a second architecture — the DEVICE's — sits
+/// beside it in the same object.
+fn check_json_from(summary: &CheckSummary) -> String {
+    serde_json::json!({
+        "atlas_kernel_check": {
+            "model": summary.model,
+            "arch": summary.compiled_arch,
+            "compiled_arch": summary.compiled_arch,
+            "device_cc": summary.device_cc,
+            "quant": summary.quant,
+            "kernel_set_hash": atlas_kernels::KERNEL_SET_HASH,
+            "modules_embedded": summary.modules_embedded,
+            "lookups": summary.lookups,
+            "unresolved": summary.unresolved.len(),
+            "expected_absent": summary.expected_absent,
+            "ok": summary.unresolved.is_empty(),
+            // The status this process is about to exit with. Differs from
+            // `unresolved` only when the 8-bit ceiling clamped it.
+            "exit_code": summary.exit_code,
+            "unresolved_kernels": summary.unresolved,
+        }
+    })
+    .to_string()
+}
+
+/// The GPU's compute capability, or `None` when nothing can be asked.
+///
+/// `--check-kernels` runs after the backend is up, so on a served target this
+/// is the real device. It stays `None` for a metal build and for any CUDA host
+/// whose driver refuses the query, because a check that reported a guessed
+/// compute capability would be worse than one that reported none.
+fn current_device_cc() -> Option<(u32, u32)> {
+    #[cfg(feature = "cuda")]
+    {
+        spark_runtime::cuda_backend::arch_preflight::device_compute_capability().ok()
+    }
+    #[cfg(not(feature = "cuda"))]
+    {
+        None
+    }
+}
+
 fn check_json(
     rows: &[spark_runtime::kernel_audit::AuditRow],
     split: &spark_runtime::kernel_audit::FailureSplit,
@@ -158,29 +280,129 @@ fn check_json(
             })
         })
         .collect();
-    serde_json::json!({
-        "atlas_kernel_check": {
-            "model": ptx_set.target.model,
-            "arch": ptx_set.target.arch,
-            "quant": ptx_set.target.quant,
-            "kernel_set_hash": atlas_kernels::KERNEL_SET_HASH,
-            "modules_embedded": ptx_set.modules.len(),
-            "lookups": rows.len(),
-            "unresolved": split.required.len(),
-            "expected_absent": split.expected.len(),
-            "ok": split.required.is_empty(),
-            // The status this process is about to exit with. Differs from
-            // `unresolved` only when the 8-bit ceiling clamped it.
-            "exit_code": exit_code,
-            "unresolved_kernels": unresolved,
-        }
+    check_json_from(&CheckSummary {
+        model: ptx_set.target.model,
+        // `ptx_arch`, not `target.arch`: this field's contract (above) is the
+        // VERBATIM `[hardware].arch`, and `target.arch` is that string with
+        // its feature suffix stripped. Reporting `sm_90` for a build nvcc
+        // compiled as `sm_90a` describes PTX that travels forward, which this
+        // PTX does not.
+        compiled_arch: ptx_set.ptx_arch,
+        quant: ptx_set.target.quant,
+        modules_embedded: ptx_set.modules.len(),
+        lookups: rows.len(),
+        expected_absent: split.expected.len(),
+        exit_code,
+        unresolved,
+        device_cc: current_device_cc(),
     })
-    .to_string()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_EXIT_CODE, exit_code_for};
+    use super::{CheckSummary, MAX_EXIT_CODE, arch_refusal_json, check_json_from, exit_code_for};
+
+    fn a_clean_gb10_check() -> CheckSummary<'static> {
+        CheckSummary {
+            model: "qwen3.6-27b",
+            compiled_arch: "sm_121f",
+            quant: "nvfp4",
+            modules_embedded: 42,
+            lookups: 300,
+            expected_absent: 2,
+            exit_code: 0,
+            unresolved: Vec::new(),
+            device_cc: Some((12, 1)),
+        }
+    }
+
+    /// A sweep must be able to tell which kernels these are and which GPU
+    /// answered, from the one machine-readable line and nothing else.
+    ///
+    /// Oracle: `kernels/gb10/HARDWARE.toml` — `arch = "sm_121f"`,
+    /// `compute_capability = "12.1"`.
+    #[test]
+    fn the_check_line_reports_the_compiled_arch_and_the_device() {
+        let v: serde_json::Value =
+            serde_json::from_str(&check_json_from(&a_clean_gb10_check())).expect("valid JSON");
+        let c = &v["atlas_kernel_check"];
+        assert_eq!(c["compiled_arch"], "sm_121f");
+        assert_eq!(c["device_cc"], serde_json::json!([12, 1]));
+        // The pre-existing name for the same value, kept for existing sweeps.
+        assert_eq!(c["arch"], "sm_121f");
+    }
+
+    /// A GPU-free `--check-kernels` still reports; it says "no device" rather
+    /// than inventing one. A guessed compute capability in this line would be
+    /// worse than an absent one.
+    #[test]
+    fn a_host_with_no_device_reports_a_null_device_cc() {
+        let summary = CheckSummary {
+            device_cc: None,
+            ..a_clean_gb10_check()
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&check_json_from(&summary)).expect("valid JSON");
+        assert!(v["atlas_kernel_check"]["device_cc"].is_null());
+        assert_eq!(v["atlas_kernel_check"]["compiled_arch"], "sm_121f");
+    }
+
+    /// The fields that were already there must survive the shape change —
+    /// `ok` is the exit-code twin the whole gate contract rests on.
+    #[test]
+    fn the_pre_existing_fields_are_unchanged() {
+        let summary = CheckSummary {
+            exit_code: 3,
+            unresolved: vec![serde_json::json!({"kernel": "m::k", "site": "a.rs:1"})],
+            ..a_clean_gb10_check()
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&check_json_from(&summary)).expect("valid JSON");
+        let c = &v["atlas_kernel_check"];
+        assert_eq!(c["model"], "qwen3.6-27b");
+        assert_eq!(c["quant"], "nvfp4");
+        assert_eq!(c["modules_embedded"], 42);
+        assert_eq!(c["lookups"], 300);
+        assert_eq!(c["unresolved"], 1);
+        assert_eq!(c["expected_absent"], 2);
+        assert_eq!(c["ok"], false);
+        assert_eq!(c["exit_code"], 3);
+        assert_eq!(c["unresolved_kernels"][0]["kernel"], "m::k");
+        assert_eq!(c["device_cc"], serde_json::json!([12, 1]));
+        assert_eq!(c["compiled_arch"], "sm_121f");
+    }
+
+    /// Oracle: the actual runtime compatibility decision, before any GPU or
+    /// kernel lookup. A mismatch must survive as structured failure evidence.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn early_arch_refusals_report_the_same_numeric_device_contract() {
+        for arch in ["sm_90a", "sm_100a"] {
+            let error = spark_runtime::cuda_backend::arch_preflight::check_arch(arch, (12, 1))
+                .expect_err("architecture-specific PTX must refuse GB10");
+            let line = arch_refusal_json(true, "nano", "nvfp4", 42, &error)
+                .expect("--check-kernels must retain preflight mismatch JSON");
+            let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let check = &value["atlas_kernel_check"];
+            assert_eq!(check["compiled_arch"], arch);
+            assert_eq!(check["arch"], arch);
+            assert_eq!(check["device_cc"], serde_json::json!([12, 1]));
+            assert_eq!(check["ok"], false);
+            assert_eq!(check["exit_code"], 1);
+            assert_eq!(check["failing_stage"], "arch_preflight");
+            assert!(check["lookups"].is_null());
+            assert!(check["unresolved"].is_null());
+            assert!(check["error"].as_str().unwrap().contains("12.1"));
+            assert!(check["error"].as_str().unwrap().contains(arch));
+            assert!(arch_refusal_json(false, "nano", "nvfp4", 42, &error).is_none());
+        }
+    }
+
+    #[test]
+    fn an_unrelated_error_does_not_invent_device_facts() {
+        let error = anyhow::anyhow!("CUDA initialization failed before the device query");
+        assert!(arch_refusal_json(true, "nano", "nvfp4", 42, &error).is_none());
+    }
 
     #[test]
     fn the_exit_code_is_the_unresolved_count() {

@@ -3,6 +3,7 @@
 #![deny(warnings)]
 #![deny(clippy::all)]
 
+pub mod arch;
 pub mod capabilities;
 pub mod compute;
 pub mod config;

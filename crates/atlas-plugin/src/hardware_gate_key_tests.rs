@@ -59,3 +59,22 @@ fn parts_that_differ_must_not_collapse_onto_one_key() {
         assert_ne!(a, "unknown", "a named part must not read as unknown");
     }
 }
+
+/// Oracle: `ids::hardware_id_from_gpu_name`, reached through the key that
+/// actually decides which baseline a record is scored against.
+///
+/// A Hopper record's fingerprint is the free-text SKU nvidia-smi answers, and
+/// normalisation alone made it `h10080gbhbm3` — so the run would be refused
+/// against the `h100` slot the resolver now accepts at `--hardware`. The
+/// registry and the record have to agree or the campaign can start a gate it
+/// can never record.
+#[test]
+fn a_hopper_sku_keys_onto_the_slot_the_resolver_accepts() {
+    assert_eq!(gpu("NVIDIA H100 80GB HBM3").gate_key(), "h100");
+    assert_eq!(gpu("NVIDIA H100 PCIe").gate_key(), "h100");
+    assert_eq!(gpu("NVIDIA H200 NVL").gate_key(), "h200");
+    assert_eq!(gpu("NVIDIA GH200 480GB").gate_key(), "gh200");
+    // Unchanged: every committed record is a GB10, and normalisation already
+    // answered `gb10` for it. The SKU table must not move it.
+    assert_eq!(gpu("NVIDIA GB10").gate_key(), "gb10");
+}

@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use atlas_core::registry::AtlasRegistry;
 
+pub mod arch_preflight;
 mod fault_probe;
 mod gpu_copy;
 mod gpu_impl;
@@ -48,6 +49,11 @@ unsafe extern "C" {
     /// Device of the calling context, then any `CUdevice_attribute` on it.
     /// Used for `sm_count` (attribute 16 = MULTIPROCESSOR_COUNT).
     pub(super) fn cuCtxGetDevice(device: *mut i32) -> i32;
+    /// The `CUdevice` for a device ORDINAL. Unlike `cuCtxGetDevice` this reads
+    /// no thread-current state — it needs `cuInit` and nothing else — so it is
+    /// the only one of the pair usable before a context is bound to the
+    /// calling thread. See `arch_preflight`.
+    pub(super) fn cuDeviceGet(device: *mut i32, ordinal: i32) -> i32;
     pub(super) fn cuDeviceGetAttribute(pi: *mut i32, attrib: u32, dev: i32) -> i32;
     pub(super) fn cuMemsetD8Async(dst: u64, value: u8, n: usize, stream: u64) -> i32;
     // CUDA graph capture/replay
@@ -285,15 +291,21 @@ impl Drop for AtlasCudaBackend {
 // Background task that polls GPU free memory every `interval` and calls
 // `std::process::exit(1)` if it drops below `threshold_bytes`.
 // On GB10 unified memory, GPU OOM = system OOM = kernel freeze, so
-// killing the process early prevents unrecoverable system hangs.
+// killing the process early prevents unrecoverable system hangs. On a
+// discrete card the process would merely OOM rather than take the machine
+// with it, but the watchdog still has to read a device-free figure that is
+// actually the device's — see `cuda_free_memory_bytes`.
 
 /// Query GPU free memory without requiring a GpuBackend reference.
 /// Safe to call from any thread that shares the CUDA context.
 ///
-/// On unified memory systems (GB10), `cuMemGetInfo` reports Linux's "free" memory
-/// which excludes reclaimable buff/cache. This under-reports available memory by
-/// 30-50%. We take the max of CUDA's report and `/proc/meminfo` MemAvailable
-/// to get the true available memory.
+/// Applies the same rule as `AtlasCudaBackend`'s `free_memory`: host
+/// `MemAvailable` stands in for the driver's figure ONLY on an INTEGRATED
+/// GPU (GB10 and friends), where `cuMemGetInfo` reports Linux MemFree and so
+/// omits reclaimable buff/cache. On a discrete card host RAM is a different
+/// pool and the substitution reports many times the card's capacity — which
+/// pinned the watchdog's reading near total host RAM, so it could never cross
+/// its threshold, and put the same fiction on the TUI's memory gauge.
 pub fn cuda_free_memory_bytes() -> Option<usize> {
     let mut free: usize = 0;
     let mut total: usize = 0;
@@ -301,13 +313,86 @@ pub fn cuda_free_memory_bytes() -> Option<usize> {
     if status != 0 {
         return None;
     }
+    Some(polled_free_bytes(
+        free,
+        system_available_memory_bytes(),
+        current_device_is_integrated(),
+    ))
+}
 
-    // On unified memory, also check MemAvailable from /proc/meminfo.
-    // This includes reclaimable buff/cache that CUDA doesn't account for.
-    if let Some(mem_available) = system_available_memory_bytes() {
-        free = free.max(mem_available);
+/// `CU_DEVICE_ATTRIBUTE_INTEGRATED` on the current context's device: true
+/// when the GPU shares the host's physical memory (GB10), false on a discrete
+/// card. Cheap enough to query per call — it is a driver-side table lookup,
+/// and free-memory queries are not on any hot path.
+///
+/// The caller must already have a current context, which every caller does:
+/// `cuMemGetInfo_v2` needs one too.
+///
+/// Fails loudly rather than guessing, like `sm_count_cu`: a wrong answer here
+/// mis-sizes the KV pool by hundreds of gigabytes in either direction. Only
+/// the poll path, which has no way to report an error, degrades to a guess —
+/// see `current_device_is_integrated`.
+///
+/// Measured 2026-09-04: attribute 18 reads 1 on NVIDIA GB10 and 0 on RTX PRO
+/// 6000 Blackwell (and 0 on every discrete datacenter part).
+/// `CU_DEVICE_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS` (99) reads 1 on BOTH, so it
+/// does NOT discriminate and must not be used here.
+pub(crate) fn device_is_integrated() -> Result<bool> {
+    const CU_DEVICE_ATTRIBUTE_INTEGRATED: u32 = 18;
+    let mut dev: i32 = 0;
+    let status = unsafe { cuCtxGetDevice(&mut dev) };
+    if status != 0 {
+        bail!("cuCtxGetDevice failed: status {status}");
     }
-    Some(free)
+    let mut integrated: i32 = 0;
+    let status =
+        unsafe { cuDeviceGetAttribute(&mut integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, dev) };
+    if status != 0 {
+        bail!("cuDeviceGetAttribute(INTEGRATED) failed: status {status}");
+    }
+    Ok(integrated != 0)
+}
+
+/// [`device_is_integrated`] in the `Option` style `cuda_free_memory_bytes`
+/// uses: `None` when the driver would not answer. This path cannot `bail!`
+/// like `free_memory` does — its whole contract is `Option<usize>`, and the
+/// watchdog polls it in a loop where a hard error has nowhere to go.
+fn current_device_is_integrated() -> Option<bool> {
+    device_is_integrated().ok()
+}
+
+/// Free device memory to report from a poll, where the integrated/discrete
+/// answer may be missing.
+///
+/// `None` is treated as NOT integrated: substituting host RAM on a discrete
+/// card inflates the reading by orders of magnitude and disarms the watchdog,
+/// while declining to substitute on an integrated one merely under-reports by
+/// the reclaimable buff/cache — an early exit is recoverable, a watchdog that
+/// never fires is not. Never inflate device free memory on a guess.
+pub(crate) fn polled_free_bytes(
+    cu_free: usize,
+    mem_available: Option<usize>,
+    integrated: Option<bool>,
+) -> usize {
+    effective_free_bytes(cu_free, mem_available, integrated.unwrap_or(false))
+}
+
+/// Free device memory to report, given the driver's figure, host
+/// `MemAvailable`, and whether the device is integrated.
+///
+/// Host memory may stand in for device memory on an INTEGRATED GPU ONLY,
+/// where the two are one physical pool. On a discrete GPU they are unrelated,
+/// and substituting host RAM reports a free figure many times the card's
+/// capacity. Pure so the rule is testable without a GPU.
+pub(crate) fn effective_free_bytes(
+    cu_free: usize,
+    mem_available: Option<usize>,
+    integrated: bool,
+) -> usize {
+    match mem_available {
+        Some(avail) if integrated => cu_free.max(avail),
+        _ => cu_free,
+    }
 }
 
 /// Read MemAvailable from /proc/meminfo (Linux only).

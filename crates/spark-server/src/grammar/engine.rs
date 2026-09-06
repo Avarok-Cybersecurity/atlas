@@ -139,7 +139,10 @@ impl GrammarEngine {
 
     fn from_tokenizer_info(tokenizer_info: TokenizerInfo) -> Result<Self, GrammarError> {
         let vocab_size = tokenizer_info.vocab_size();
-        // Single compilation thread, cache enabled, no memory limit.
+        // Restore the historical serial default: four-worker native-tool
+        // preparation has not improved cold latency in the measured workload.
+        // The compiler still supports bounded parallel preparation for callers.
+        // Cache enabled with an explicit memory budget.
         // ★ NOT -1 (unlimited). `CacheKey::Schema` is keyed by the full tool
         // schema, so agentic traffic mints a distinct compiled grammar per
         // request; unbounded, that grew host RSS ~100 MB/min under BFCL and is

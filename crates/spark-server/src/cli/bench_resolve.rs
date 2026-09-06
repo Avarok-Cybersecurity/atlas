@@ -14,6 +14,77 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, bail, ensure};
 use atlas_plugin::gate;
 
+/// Why a `--hardware` value did not land on a baseline slot.
+///
+/// Two refusals, because they are two different jobs for the operator, and a
+/// single message sends one of them to the wrong one:
+///
+/// * [`Self::Unknown`] — the id names no box class Atlas recognises. No run
+///   will ever fix it; the spelling is wrong (or the class needs registering
+///   in `atlas_plugin::hardware::ids::KNOWN_HARDWARE_IDS` first).
+/// * [`Self::NoRecordYet`] — the id is registered and nothing has been
+///   measured on it. The spelling is right; the fix is to run the gate on that
+///   box and commit the thresholds.
+///
+/// Before this split the second case read as the first. That is exactly the
+/// state a hardware port is in for its whole duration — the id is real, the
+/// records are not — so the campaign would spend that whole span being told,
+/// wrongly, that it had typed the box class in wrong.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum HardwareRefusal {
+    #[error(
+        "{hardware:?} is not a box class Atlas knows, so nothing can be scored against it. \
+         Registered classes are [{registered}]; {benchmark_id} has baselines for [{measured}]."
+    )]
+    Unknown {
+        benchmark_id: String,
+        hardware: String,
+        registered: String,
+        measured: String,
+    },
+    #[error(
+        "{benchmark_id} has no record yet for {hardware:?}. It is a registered box class with \
+         nothing measured on it — run the gate on that box and commit one \
+         (`spark benchmark run {benchmark_id} --hardware {hardware} --pull-request-gate`), \
+         which needs a `[[benchmark]]` entry in kernels/{hardware}/<model>/BENCH.toml. \
+         Today it has baselines for [{measured}]."
+    )]
+    NoRecordYet {
+        benchmark_id: String,
+        hardware: String,
+        measured: String,
+    },
+}
+
+impl HardwareRefusal {
+    /// Classify a `hardware` key the baseline does not carry.
+    ///
+    /// The caller has already established the key is absent; this only decides
+    /// WHICH absence it is, against the registry rather than the baseline.
+    fn of(benchmark_id: &str, hardware: &str, baseline: &gate::GateBaseline) -> Self {
+        let measured = baseline
+            .hardware
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if atlas_plugin::hardware::ids::is_known_hardware_id(hardware) {
+            Self::NoRecordYet {
+                benchmark_id: benchmark_id.to_string(),
+                hardware: hardware.to_string(),
+                measured,
+            }
+        } else {
+            Self::Unknown {
+                benchmark_id: benchmark_id.to_string(),
+                hardware: hardware.to_string(),
+                registered: atlas_plugin::hardware::ids::KNOWN_HARDWARE_IDS.join(", "),
+                measured,
+            }
+        }
+    }
+}
+
 /// What a baseline says to serve.
 #[derive(Debug)]
 pub(super) struct Resolved {
@@ -29,6 +100,11 @@ pub(super) struct Resolved {
 /// model variant, and whether a recipe is bound at all — is testable without a
 /// GPU. Every refusal names both what was asked for and what exists; an
 /// unresolvable baseline must never read as "nothing to serve".
+///
+/// A `hardware` the baseline does not carry is classified against the box-class
+/// registry before it is refused — see [`HardwareRefusal`]: a registered class
+/// with no records ("run it and commit one") is a different instruction than an
+/// id Atlas does not know ("fix the spelling").
 ///
 /// `checkpoint` selects the model variant. `None` takes the one the baseline
 /// marks `default = true` — a committed declaration, not a guess (assembly
@@ -65,6 +141,11 @@ pub(super) fn resolve(
         }
     };
 
+    // Classified BEFORE the baseline lookup, because the baseline can only
+    // report what has been measured. See [`HardwareRefusal`].
+    if !baseline.hardware.contains_key(&hw_key) {
+        return Err(HardwareRefusal::of(benchmark_id, &hw_key, baseline).into());
+    }
     let (model, entry) = baseline.resolve(&hw_key, checkpoint)?;
     let recipe_id = entry.recipe.clone().ok_or_else(|| {
         anyhow::anyhow!(
@@ -258,6 +339,10 @@ pub(super) fn parse_serve_overrides(pairs: &[String]) -> Result<BTreeMap<String,
 #[cfg(test)]
 #[path = "bench_resolve_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bench_resolve_hardware_tests.rs"]
+mod hardware_tests;
 
 #[cfg(test)]
 #[path = "bench_resolve_params_tests.rs"]

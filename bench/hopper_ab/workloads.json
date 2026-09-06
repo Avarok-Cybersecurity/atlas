@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "campaign": "hopper-atlas-vs-vllm-2026-09",
+  "note": "Frozen shapes for the Hopper A/B. Both legs read THIS file; a leg whose parameters do not match it is not in the campaign. Changing a value here invalidates every result measured under the old one -- add a new key rather than editing a measured one.",
+
+  "workloads": {
+    "lat": {
+      "isl": 1024,
+      "osl": 256,
+      "note": "Interactive latency shape. Short enough that TTFT dominates the user-visible cost."
+    },
+    "agent": {
+      "isl": 4096,
+      "osl": 512,
+      "note": "Agentic multi-turn shape: a long accumulated context per turn, a moderate reply. This is where a prefill-bound engine and a decode-bound one separate."
+    }
+  },
+
+  "concurrencies": [1, 16],
+  "concurrency_note": "C=1 is the single-user latency number, C=16 the served-load number. Both are reported per workload; a win at one and a loss at the other is a real result, not a tie.",
+
+  "ladder": [1, 2, 4, 8, 16, 32, 64, 128],
+  "ladder_note": "Optional. The full sweep costs ~8x a two-point run and is what makes a crossover visible -- vLLM's C=128 falling below its own C=64 on GB10 was only readable from the whole ladder (bench/ladder38/RESULTS.md).",
+
+  "reps": 3,
+  "warmup": 1,
+  "warmup_note": "One warmup batch, discarded. Its numbers are cold-graph numbers and averaging them in is how a capture cost becomes a decode result.",
+
+  "sampling": {
+    "temperature": 0.0,
+    "seed": 42,
+    "presence_penalty": 0.0,
+    "frequency_penalty": 0.0,
+    "chat_template_kwargs": { "enable_thinking": false },
+    "note": "Pinned EXPLICITLY on both engines, never left to defaults. Atlas's MODEL.toml non_thinking preset injects presence_penalty=1.5 when a request omits it while vLLM defaults to 0 -- that is not a like-for-like comparison, and it measurably moved the GB10 ladder (+7.8% to Atlas at C=8 once pinned). enable_thinking=false is the ONLY key that disables thinking on vLLM; {\"thinking\": false} is silently ignored."
+  },
+
+  "speculation": {
+    "policy": "both-or-neither",
+    "note": "MTP / speculative decoding is either ON for both engines or OFF for both, never mixed. The GB10 campaign's first vLLM reference ran spec OFF against an Atlas leg that ran it ON, and every comparison drawn from it had to be retracted -- vLLM+MTP turned out to be 1.8-1.9x its own no-spec numbers at low C."
+  },
+
+  "prompt": {
+    "harness": "bench/ladder38/harness_w55_conc_ladder.py",
+    "filler": "varied",
+    "nonce": "per-request",
+    "note": "Varied filler, not uniform repetition: uniform filler drives the model degenerate, which trips Atlas's SimHash loop watchdog and ends the stream while vLLM (having no such watchdog) runs to the token cap. The two engines then emit different token counts and the rung is uninterpretable. The per-request nonce forces a prefix-cache miss so every request does real prefill on both engines."
+  },
+
+  "gates": {
+    "boot_s_max": 1800,
+    "determinism": "two runs of one prompt at temp 0 must be byte-identical",
+    "toolcall": "finish_reason == tool_calls and json.loads(arguments) succeeds",
+    "think_leak": "no <think> or </think> in content when thinking is off",
+    "note": "Gate, not metric: a leg that fails any of these has no comparable numbers, however fast it was."
+  }
+}
