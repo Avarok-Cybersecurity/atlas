@@ -823,3 +823,72 @@ next session does not re-attempt the merge.
 
 **CITED:** R-control-or-it-did-not-happen (the controls vetoed the change —
 they were the only thing that noticed).
+
+---
+
+## Run 30 — 2026-09-06T09:10Z — twelve runners, and two red required checks that were real
+
+```text
+08:47Z  spawn    avarok-pr9..12 installed. 32 CPUs, load 19.8, 181 GB free, so four
+                 more CHEAP-only runners; the rust pool stays at 3, disk-bounded.
+                 Fresh 2.337.0 tarball per runner (copying a runner dir carries
+                 .runner_migrated and yields "already configured"), own
+                 CARGO_HOME/RUSTUP_HOME per R-32, PIP_BREAK_SYSTEM_PACKAGES=1.
+08:59Z  return   PROVED from journald, not from the API's busy flag:
+                   avarok-pr9  classify diff -> Succeeded; harvest triage -> Succeeded
+                   avarok-pr12 PR benchmark gate; kernel shadow structure -> Succeeded
+08:46Z  return   #912 cargo test --workspace RED on avarok-pr2. Not infrastructure.
+08:47Z  return   #871 cargo test --workspace RED on avarok-pr3. Not infrastructure either.
+```
+
+**#912 — adding a code owner is a code change here, by design.**
+`codeowners_tests::real_paths_resolve_to_real_owners` and three telemetry views
+assert the RESOLVED owner list for real repository paths against a literal, so a
+maintainer silently dropped from a path fails a test instead of producing a PR
+nobody was asked to review. Two orderings both matter: `owners_of` returns
+CODEOWNERS file order, the telemetry view sorts. CONTROL: stripping `@TheTom`
+back out reddens exactly those four (44 passed / 4 failed), so the fixtures read
+the committed file and not a copy of themselves.
+
+**#871 — the error message blamed a cause it had never checked.**
+`a_hanging_decoder_is_killed_at_timeout` writes a two-line `#!/bin/sh` script,
+chmods it 0755, and execs it. On avarok-pr3 the spawn failed and the log said
+**"is ffmpeg installed and on PATH?"** about a file the test had just created.
+One unconditional `with_context` covered every errno, and the panic rendered
+only anyhow's outermost message, so the actual errno never reached CI at all. I
+ruled out the obvious environmental story first -- `/tmp` on avarok is on `/`
+and exec works -- which left no evidence about the real cause, because the
+message had thrown it away.
+
+`spawn_failure` now keeps the install hint for `NotFound` and otherwise reports
+what the OS said, naming `PermissionDenied` (mode, or a noexec mount) and
+`ExecutableFileBusy` (ETXTBSY: something still holds a write handle, a race on
+a busy multi-job box, not a misconfiguration). CONTROL: restoring the
+unconditional hint reddens exactly the two new tests and leaves the NotFound one
+green.
+
+**It does not claim to fix the flake, and that is the point.**
+
+> **R-39. Do not fix a flake whose error message destroyed the evidence — fix
+> the message first.** A single unconditional `with_context` over a syscall
+> turns every errno into one sentence, and the sentence was a guess. EVIDENCE:
+> 2026-09-06, ffmpeg spawn failure reported as a missing install for a script
+> the test had written and chmod'd 0755; ETXTBSY, EACCES and ENOENT were
+> indistinguishable in the log. CHECK: branch on `err.kind()` and let the OS
+> text through, THEN wait for the next occurrence to name the cause. A fix
+> chosen from three plausible causes is a coin flip with a commit message.
+
+**A THIRD PIPE-STATUS SLIP.** `cargo fmt --all --check | head -5; echo rc=$?`
+reported 0 while fmt was failing, and I committed an over-long line. Amended
+and force-pushed. The rule is already written down and I broke it three times in
+one night, so it is now mechanical: `out=$(cmd 2>&1); rc=$?` and never a pipe.
+
+**AND A MANGLED FILE.** The first insertion of `spawn_failure` used a computed
+`rindex` splice to place it before the enclosing function, and duplicated
+`decode_frames`' signature into the middle of the file. Reverted; redone with
+two literal anchors, both asserted before any write. R-assert-all-anchors exists
+precisely for this and a "clever" placement expression is outside its reach.
+
+**CITED:** R-32 (per-runner CARGO_HOME on the four new runners); R-34 (the
+preflight is still holding the campaign's pin); R-38 (verified the new runners
+by what they RAN, not by a status flag).
