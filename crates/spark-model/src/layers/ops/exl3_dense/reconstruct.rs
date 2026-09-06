@@ -48,17 +48,22 @@
 //!
 //! # Knobs (house convention: env PRESENCE arms; `=0` is not "off")
 //!
-//! * `ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=<rows>` — ARMS the tier for calls
-//!   with `m >= rows` (values below [`EXL3_DENSE_RECONSTRUCT_MIN_ROWS`],
-//!   including 0 or garbage, clamp to it: presence means on). UNSET = tier
-//!   off. Default OFF because nothing is measured yet: the win is a
-//!   hypothesis (trellis-decode ALU x rows/16 vs one reconstruct + a
-//!   tensor-core GEMM), it costs `2 x max_in x max_out x 2 B` of scratch
-//!   inside the util pledge (302 MB at the qwen4_exp maxima 6144 x 12288)
-//!   and it changes the greedy sample. The threshold is armed only by the
-//!   operator, from the A/B in `.research/exl3_decode_perf/`.
+//! * `ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=<rows>` — sets the threshold: the
+//!   tier takes calls with `m >= rows` (values below
+//!   [`EXL3_DENSE_RECONSTRUCT_MIN_ROWS`], including 0 or garbage, clamp to
+//!   it: the value never means "off"). UNSET = the default threshold
+//!   [`EXL3_DENSE_RECONSTRUCT_DEFAULT_ROWS`] (512), armed by the 2026-09-06
+//!   A/B in `.research/exl3_decode_perf/` (`ab_dense_reconstruct/`,
+//!   `merged_gate_20260906T004709/`): +7-8% prefill tok/s at 8K/11K on
+//!   qwen3.8-flash-next 4.05bpw, decode (m <= 8) untouched, 512 and 1024
+//!   byte-identical to each other, model-card agentic gate PASS. The cost is
+//!   `2 x max_in x max_out x 2 B` of scratch inside the util pledge (302 MB
+//!   at the qwen4_exp maxima 6144 x 12288) and a one-time numerics change
+//!   (the weight is rounded to BF16 once; the greedy text of long prompts
+//!   differs from the trellis tier's, coherent).
 //! * `ATLAS_NO_EXL3_DENSE_RECONSTRUCT` — kill switch (presence): the tier
-//!   stays off whatever the threshold says.
+//!   stays off whatever the threshold says (the trellis GEMM serves every
+//!   m > 8 call, the pre-2026-09-06 behaviour).
 
 use anyhow::{Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
@@ -78,19 +83,29 @@ pub const EXL3_DENSE_RECONSTRUCT_KILL_ENV: &str = "ATLAS_NO_EXL3_DENSE_RECONSTRU
 /// Smallest row count the tier may take: strictly above the decode arm's
 /// GEMV/GEMM tier, which this lever must never touch.
 pub const EXL3_DENSE_RECONSTRUCT_MIN_ROWS: usize = EXL3_GEMV_MAX_M + 1;
+/// Threshold when the env is unset (measured: see the module doc).
+pub const EXL3_DENSE_RECONSTRUCT_DEFAULT_ROWS: usize = 512;
+const _: () = assert!(
+    EXL3_DENSE_RECONSTRUCT_DEFAULT_ROWS >= EXL3_DENSE_RECONSTRUCT_MIN_ROWS,
+    "the default threshold must stay above the decode arm's tier"
+);
 
 /// Pure form of the env decision: `rows` is the threshold env's value (if
-/// present), `kill` the kill switch's presence. `None` = tier off.
+/// present), `kill` the kill switch's presence. `None` = tier off (kill
+/// switch only); unset = [`EXL3_DENSE_RECONSTRUCT_DEFAULT_ROWS`].
 pub fn parse_reconstruct_rows(rows: Option<&str>, kill: bool) -> Option<usize> {
     if kill {
         return None;
     }
-    let raw = rows?;
+    let Some(raw) = rows else {
+        return Some(EXL3_DENSE_RECONSTRUCT_DEFAULT_ROWS);
+    };
     let parsed = raw.trim().parse::<usize>().ok();
     if parsed.is_none() {
         tracing::warn!(
-            "{EXL3_DENSE_RECONSTRUCT_ROWS_ENV}={raw:?} is not a row count — presence arms \
-             the tier, so it is armed at the minimum of {EXL3_DENSE_RECONSTRUCT_MIN_ROWS} rows"
+            "{EXL3_DENSE_RECONSTRUCT_ROWS_ENV}={raw:?} is not a row count — the value never \
+             means off, so the tier is armed at the minimum of \
+             {EXL3_DENSE_RECONSTRUCT_MIN_ROWS} rows ({EXL3_DENSE_RECONSTRUCT_KILL_ENV} disarms)"
         );
     }
     Some(parsed.unwrap_or(0).max(EXL3_DENSE_RECONSTRUCT_MIN_ROWS))

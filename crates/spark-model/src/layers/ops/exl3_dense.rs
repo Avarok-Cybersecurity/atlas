@@ -27,7 +27,7 @@
 //!                              exl3_f16_to_bf16 IN PLACE (lm_head precedent)
 //!              strided dst:    exl3_gemm fp16 C into stage.c_f16, then
 //!                              exl3_f16_to_bf16_2d into the arena rows
-//!   m >= ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS (opt-in, default off):
+//!   m >= ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS (default 512; ATLAS_NO_EXL3_DENSE_RECONSTRUCT kills):
 //!            reconstruct the weight to BF16 once, dense_gemm_bf16_pipelined
 //!            straight into dst (or staged + one 2-D copy when strided) —
 //!            `exl3_dense/reconstruct.rs`; numerics differ from the tiers above
@@ -60,9 +60,10 @@ pub use stage::{EXL3_DENSE_STAGE_ROWS_DEFAULT, Exl3DenseStage};
 #[path = "exl3_dense/reconstruct.rs"]
 mod reconstruct;
 pub use reconstruct::{
-    EXL3_DENSE_RECONSTRUCT_KILL_ENV, EXL3_DENSE_RECONSTRUCT_MIN_ROWS,
-    EXL3_DENSE_RECONSTRUCT_ROWS_ENV, Exl3ReconScratch, parse_reconstruct_rows,
-    reconstruct_rows_from_env, reconstruct_scratch_bytes, reconstruct_tier_takes,
+    EXL3_DENSE_RECONSTRUCT_DEFAULT_ROWS, EXL3_DENSE_RECONSTRUCT_KILL_ENV,
+    EXL3_DENSE_RECONSTRUCT_MIN_ROWS, EXL3_DENSE_RECONSTRUCT_ROWS_ENV, Exl3ReconScratch,
+    parse_reconstruct_rows, reconstruct_rows_from_env, reconstruct_scratch_bytes,
+    reconstruct_tier_takes,
 };
 
 use super::exl3_matmul::{

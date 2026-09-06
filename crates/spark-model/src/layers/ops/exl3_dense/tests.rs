@@ -43,9 +43,11 @@ fn launch_plan_gemv_tier_and_row_batched_gemm_tier() {
     // stage capacity (numerics are the GPU parity example's job).
     let gpu = MockGpuBackend::new();
     let launch = std::sync::Arc::new(Exl3LaunchState::new(&gpu).unwrap());
-    // 256-row stage (the env override would break the batching
-    // assertion — the test never sets it).
-    let stage = Exl3DenseStage::new(&gpu, launch, 256, 6144, 12288).unwrap();
+    // 256-row stage with the reconstruct tier pinned OFF (its default
+    // threshold of 512 would take the 700-row call below; this test is the
+    // trellis tier's batching plan — the env is never read here).
+    let stage =
+        Exl3DenseStage::new_with_reconstruct(&gpu, launch, 256, 6144, 12288, 12288, None).unwrap();
     let w = weight(&gpu, 2560, 10240);
     let a = gpu.alloc(700 * 2560 * 2).unwrap();
     let dst = gpu.alloc(700 * 10240 * 2).unwrap();
@@ -296,9 +298,13 @@ fn from_exl3_maps_codebook_and_rejects_envelope_breaches() {
 // ── reconstruct-to-BF16 prefill tier (`exl3_dense/reconstruct.rs`) ────────
 
 #[test]
-fn reconstruct_rows_env_parsing_is_presence_armed() {
-    // Unset = off (the default, nothing measured yet).
-    assert_eq!(parse_reconstruct_rows(None, false), None);
+fn reconstruct_rows_env_parsing_defaults_to_512_and_the_kill_switch_wins() {
+    // Unset = the measured default threshold (2026-09-06 A/B + agentic gate).
+    assert_eq!(
+        parse_reconstruct_rows(None, false),
+        Some(EXL3_DENSE_RECONSTRUCT_DEFAULT_ROWS)
+    );
+    assert_eq!(EXL3_DENSE_RECONSTRUCT_DEFAULT_ROWS, 512);
     // A row count arms at that count.
     assert_eq!(parse_reconstruct_rows(Some("512"), false), Some(512));
     assert_eq!(parse_reconstruct_rows(Some(" 1024 "), false), Some(1024));
@@ -312,7 +318,7 @@ fn reconstruct_rows_env_parsing_is_presence_armed() {
         );
     }
     assert_eq!(EXL3_DENSE_RECONSTRUCT_MIN_ROWS, EXL3_GEMV_MAX_M + 1);
-    // The kill switch wins over any threshold.
+    // The kill switch wins over any threshold, including the default.
     assert_eq!(parse_reconstruct_rows(Some("512"), true), None);
     assert_eq!(parse_reconstruct_rows(None, true), None);
 }
@@ -384,13 +390,16 @@ fn launch_plan_reconstruct_tier_above_threshold_only() {
     let a = gpu.alloc(700 * 2560 * 2).unwrap();
     let dst = gpu.alloc(700 * 10240 * 2).unwrap();
 
-    // m <= 8: the decode arm, byte-for-byte the plan it had before.
+    // m <= 8: the decode arm, byte-for-byte the plan it had before — one
+    // fused-ingress/fused-egress GEMM launch (the eighth lever).
     let before = gpu.kernel_lookups_snapshot().len();
     exl3_dense_linear(&gpu, &w, a, contiguous(dst), 8, &stage, 0).unwrap();
     let names = kernel_names(&gpu)[before..].to_vec();
-    assert_eq!(names.len(), 2, "{names:?}");
-    assert!(names[0].starts_with("exl3_gemm_k6_cb2_sh") && names[0].ends_with("_f32_abf16"));
-    assert_eq!(names[1], "exl3_f32_to_bf16");
+    assert_eq!(names.len(), 1, "{names:?}");
+    assert!(
+        names[0].starts_with("exl3_gemm_k6_cb2_sh") && names[0].ends_with("_f32_abf16_obf16"),
+        "{names:?}"
+    );
 
     // 8 < m < threshold: the trellis GEMM tier, unchanged.
     let before = gpu.kernel_lookups_snapshot().len();

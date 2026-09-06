@@ -135,7 +135,12 @@ fn run_leg(
     Ok(f16_ok && bf16_ok)
 }
 
-fn gen_inputs(rng: &mut Lcg, in_dim: usize, out_dim: usize, k: u32) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+fn gen_inputs(
+    rng: &mut Lcg,
+    in_dim: usize,
+    out_dim: usize,
+    k: u32,
+) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let trellis: Vec<u16> = (0..(in_dim / 16) * (out_dim / 16) * 16 * k as usize)
         .map(|_| rng.u16())
         .collect();
@@ -290,7 +295,9 @@ fn main() -> Result<()> {
     let g: &dyn GpuBackend = &backend;
 
     // Probe one kernel; absent = this target set doesn't carry the module.
-    if g.kernel("exl3_reconstruct", "exl3_reconstruct_had_k4_cb2").is_err() {
+    if g.kernel("exl3_reconstruct", "exl3_reconstruct_had_k4_cb2")
+        .is_err()
+    {
         println!("exl3_reconstruct kernels absent from this target set — SKIP");
         std::process::exit(2);
     }
@@ -319,11 +326,25 @@ fn main() -> Result<()> {
 
         // Negative control: flip ONE trellis bit, outputs must differ.
         let (mut trellis, suh, svh) = gen_inputs(&mut rng, in_dim, out_dim, 4);
-        let base =
-            cpu_ref::reconstruct_had_f16(&trellis, &suh, &svh, in_dim, out_dim, 4, Exl3Codebook::Mul1);
+        let base = cpu_ref::reconstruct_had_f16(
+            &trellis,
+            &suh,
+            &svh,
+            in_dim,
+            out_dim,
+            4,
+            Exl3Codebook::Mul1,
+        );
         trellis[7] ^= 1 << 3;
-        let pert =
-            cpu_ref::reconstruct_had_f16(&trellis, &suh, &svh, in_dim, out_dim, 4, Exl3Codebook::Mul1);
+        let pert = cpu_ref::reconstruct_had_f16(
+            &trellis,
+            &suh,
+            &svh,
+            in_dim,
+            out_dim,
+            4,
+            Exl3Codebook::Mul1,
+        );
         let differs = base != pert;
         control_ok &= differs;
         println!("{label}  CONTROL 1-bit trellis flip detected={differs}");
@@ -345,7 +366,9 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
     if clean {
-        println!("PASS — GPU exl3_reconstruct is byte-identical to the independent CPU reference at every leg.");
+        println!(
+            "PASS — GPU exl3_reconstruct is byte-identical to the independent CPU reference at every leg."
+        );
         Ok(())
     } else {
         println!("FAIL — GPU and CPU EXL3 reconstructions differ.");

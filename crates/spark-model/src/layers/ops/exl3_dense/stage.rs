@@ -158,8 +158,9 @@ impl Exl3DenseStage {
             },
             None => {
                 tracing::info!(
-                    "EXL3 dense reconstruct tier off (default): every m > 8 call runs the \
-                     cooperative trellis GEMM; ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=<rows> arms it"
+                    "EXL3 dense reconstruct tier off (ATLAS_NO_EXL3_DENSE_RECONSTRUCT): every \
+                     m > 8 call runs the cooperative trellis GEMM; unset the kill switch for the \
+                     default 512-row threshold, ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=<rows> to move it"
                 );
                 None
             }
