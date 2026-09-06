@@ -12,7 +12,7 @@ for i in $(seq 1 900); do
   if ! pgrep -f "serv[e] --model-from-path.*8888" >/dev/null; then echo "SERVER EXITED"; tail -20 "$LOG" | cut -c1-200; exit 1; fi
   sleep 1
 done
-python3 -u $D/measure_decode.py --port 8888 --repeats 3 --max-tokens 300 > $D/measure_${ARM}.txt 2>&1
+[ "${SKIP_DECODE:-0}" = 1 ] || python3 -u $D/measure_decode.py --port 8888 --repeats 3 --max-tokens 300 > $D/measure_${ARM}.txt 2>&1
 cat $D/measure_${ARM}.txt
 # greedy sample for output-equality check across arms (non-streaming, 200 tokens)
 curl -s -m 600 http://127.0.0.1:8888/v1/chat/completions -H 'Content-Type: application/json' -d '{
@@ -22,4 +22,5 @@ curl -s -m 600 http://127.0.0.1:8888/v1/chat/completions -H 'Content-Type: appli
   | python3 -c 'import json,sys; d=json.load(sys.stdin); m=d["choices"][0]["message"]; print(m.get("reasoning_content") or m.get("reasoning") or ""); print("=====CONTENT====="); print(m.get("content"))' > $D/sample_${ARM}.txt 2>&1
 wc -c $D/sample_${ARM}.txt; sha256sum $D/sample_${ARM}.txt | cut -c1-16
 grep -aE "shared|GEMV|gemv" "$LOG" | grep -ai exl3 | head -3 | cut -c1-200
+python3 -u $D/measure_prefill.py --port 8888 --tokens 8000 11000 --repeats 2 > $D/prefill_${ARM}.txt 2>&1; cat $D/prefill_${ARM}.txt
 pkill -f "serv[e] --model-from-path.*8888"; sleep 6; pgrep -af "spark serv[e]" | cut -c1-40; echo "arm $ARM done"

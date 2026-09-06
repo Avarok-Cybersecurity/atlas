@@ -17,8 +17,8 @@ WORDS = ("kernel stream tensor cache block schedule verify draft router expert l
 
 def make_prompt(n_tokens, salt):
     rng = random.Random(salt)
-    # ~1.3 tokens/word for this vocabulary; the server's usage.prompt_tokens is what we report
-    words = [rng.choice(WORDS) for _ in range(int(n_tokens / 1.3))]
+    # ~1.04 tokens/word for this vocabulary (measured); the server's usage.prompt_tokens is what we report
+    words = [rng.choice(WORDS) for _ in range(int(n_tokens / 1.037))]  # measured 1.037 tok/word on this vocab
     body = " ".join(words)
     return f"Session salt {salt}. Summarize the following log in one sentence.\n\n{body}\n\nOne sentence:"
 

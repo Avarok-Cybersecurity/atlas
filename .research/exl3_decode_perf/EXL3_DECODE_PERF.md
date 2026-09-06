@@ -329,12 +329,23 @@ grid item below has since been implemented and measured: +2.9% serial / +2.4% MT
 Not levers on GB10: int8-activation GEMV (dense already at DRAM peak here), GEMV tier for K=6
 (upstream has none; dense GEMM is at peak anyway), the two plain ingress kernels (already fused).
 
-## Prefill (context, not investigated here)
+## Prefill baseline (measured 2026-09-05, not yet investigated)
 
-User-supplied reference points: other engines ~1.1K tok/s prefill at 8K on this model, NVFP4 up to
-2.6K tok/s; Atlas has not exceeded ~500 tok/s. The EXL3 prefill tier (`exl3_moe_k4_n128_cb2`,
-3.2 ms per launch in the baseline trace) and the 2026-08-27 prefill profile (QSA 34%, grouped MoE
-31%) are the starting points for that separate investigation.
+`measure_prefill.py`: unique salted prompt per request (no prefix-cache hit possible),
+`max_tokens=1`, prefill tok/s = server `prompt_tokens` / wall. Binary `spark-plesnap` (all four
+changes above), MTP profile (2 drafts, prefix cache on, `--ssm-cache-slots 64`, util 0.72, 32K
+ctx, default `--max-prefill-tokens` 8192 so the 11K prompt is two chunks), port 8888, dgx-00, idle.
+
+| prompt tokens | wall | cold prefill tok/s (2 repeats) |
+|---:|---:|---:|
+| 8006 / 7977 | 20.9 / 20.4 s | 383 / 391 → **387** |
+| 10986 / 10978 | 28.3 / 27.9 s | 389 / 393 → **391** |
+| (6379 / 8777, first sizing pass) | 17.2 / 22.8 s | 377 / 389 |
+
+Flat at ~390 tok/s from 6K to 11K. User-supplied reference points: other engines ~1.1K tok/s at
+8K on this model, NVFP4 ~2.6K; Atlas historically ≤~500. The EXL3 prefill tier
+(`exl3_moe_k4_n128_cb2`, 3.2 ms per launch in the baseline trace) and the 2026-08-27 prefill
+profile (QSA 34%, grouped MoE 31%) are the starting points for that separate investigation.
 
 ## Files
 
