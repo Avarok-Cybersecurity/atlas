@@ -14,8 +14,19 @@
 // same weight bytes, no tensor cores, no M padding.
 //
 // Per-row accumulation order is IDENTICAL to `w8a16_gemv`, so the output is
-// bit-identical to running `w8a16_gemv` M times (verify with a cos>=0.9999
-// microtest). A:[M,K] BF16, B:[N,K] FP8 E4M3, block_scale:[N/128,K/128] FP32,
+// BYTE-identical to running `w8a16_gemv` M times. Verify with a byte compare,
+// NOT a cosine: until 2026-08-12 this file claimed bit-identity while the
+// inner loop used `acc += x + y` against the M=1 kernel's `acc += x; acc +=
+// y;`, and a cos>=0.9999 microtest at a small shape passed anyway. At the
+// production Lightning-30B projection shapes that association difference
+// showed up as 1-9 differing BF16 elements per launch, up to 4.0 apart. The
+// gate is now `examples/w8a16_batch_bitparity_microtest.rs`, which byte-
+// compares both tiers at [10304 x 2688] and [2688 x 4096] over three seeds.
+// Every batched-decode ladder that prefers this kernel over M x w8a16_gemv
+// does so purely to save weight DRAM traffic and assumes the numbers do not
+// move; keep it that way.
+//
+// A:[M,K] BF16, B:[N,K] FP8 E4M3, block_scale:[N/128,K/128] FP32,
 // C:[M,N] BF16. Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1).
 
 #include <cuda_bf16.h>
@@ -161,8 +172,19 @@ __device__ __forceinline__ void w8a16_gemv_batchm_impl(
                 __nv_bfloat16 lo, hi;
                 *(unsigned short*)&lo = (unsigned short)(ar[j] & 0xFFFF);
                 *(unsigned short*)&hi = (unsigned short)(ar[j] >> 16);
-                acc[t] += __bfloat162float(lo) * wf[j * 2]
-                        + __bfloat162float(hi) * wf[j * 2 + 1];
+                // TWO separate accumulations, not `acc += x + y`. The fused
+                // form associates as `acc + (x + y)` where `w8a16_gemv`
+                // computes `(acc + x) + y`, and in FP32 those differ — which
+                // is exactly what a byte-compare at the Lightning projection
+                // shapes showed (1-9 differing BF16 elements per launch, up
+                // to 4.0 apart). Bit-parity with the M=1 kernel is this
+                // kernel's whole contract: the batched decode ladders pick it
+                // over `w8a16_gemv` purely to save weight DRAM traffic, and a
+                // reordering there moves temp-0 divergence onset down the
+                // concurrency curve. Proven by
+                // `examples/w8a16_batch_bitparity_microtest.rs`.
+                acc[t] += __bfloat162float(lo) * wf[j * 2];
+                acc[t] += __bfloat162float(hi) * wf[j * 2 + 1];
             }
         }
     }
