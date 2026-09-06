@@ -842,10 +842,15 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 2.0)]
     pub fp8_kv_headroom: f32,
 
-    /// Path to a warmup prompt file (JSON messages or plain text).
-    /// At startup, the server tokenizes and prefills this prompt, inserting the
-    /// resulting KV cache + SSM snapshot into the prefix cache. This eliminates
-    /// the cold-start TTFT penalty (~196ms) on the first real request.
+    /// NOT IMPLEMENTED — rejected at startup. Nothing reads this: no prompt is
+    /// tokenized and no prefill runs, so the cold-start TTFT it was meant to
+    /// remove is still paid. Send one throwaway request after startup instead.
+    ///
+    /// Kept on the CLI (rather than deleted) so an operator who copied it out
+    /// of an older QUICKSTART gets `validate_serve_args`' explanation instead
+    /// of clap's bare "unexpected argument". Remove the flag once the docs it
+    /// appeared in have aged out — or implement it and delete the rule in
+    /// `cli::validate`.
     #[arg(long)]
     pub warmup_prompt: Option<std::path::PathBuf>,
 

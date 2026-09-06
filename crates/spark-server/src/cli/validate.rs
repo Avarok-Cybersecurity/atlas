@@ -23,7 +23,8 @@ use super::ServeArgs;
 // enforced cannot drift apart. Their sync with the parse sites in `serve.rs`
 // is pinned by `flag_values_tests`.
 use super::flag_values::{
-    LM_HEAD_DTYPES, MTP_GATES, MTP_QUANTS, SCHEDULING_POLICIES, SSM_H_DTYPES, TOOL_CALL_PARSERS,
+    KvHighPrecisionLayers, LM_HEAD_DTYPES, MTP_GATES, MTP_QUANTS, SCHEDULING_POLICIES,
+    SSM_H_DTYPES, TOOL_CALL_PARSERS,
 };
 
 /// One validation failure: what is wrong, why it is wrong, and how to fix it.
@@ -353,6 +354,55 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
             ),
             "the value is the fraction of total GPU memory Atlas may claim.",
             "use a fraction in (0.0, 1.0], e.g. 0.90.",
+        ));
+    }
+
+    // ── --kv-high-precision-layers is a free-form string, so a typo used to
+    //    reach the resolve site and be swallowed there. ──
+    // The resolve site (`serve_phases::kv_cache`) ran `s.parse().unwrap_or(0)`
+    // behind a `warn!` — AFTER the weight load, and `0` is not the default but
+    // the value that defers to `auto_high_precision_layers`. So `atuo` bought
+    // the operator a third configuration, minutes in, in a log line. The parse
+    // is now shared with that site (one definition of the accepted forms) and
+    // a bad value is refused here, in milliseconds, instead.
+    if let Err(why) = args
+        .kv_high_precision_layers
+        .parse::<KvHighPrecisionLayers>()
+    {
+        v.push(Violation::new(
+            format!(
+                "--kv-high-precision-layers '{}' is not a valid value.",
+                args.kv_high_precision_layers
+            ),
+            why,
+            "use a layer count (0 = let the KV dtype decide), auto (2, recommended), \
+             or max/all (every attention layer).",
+        ));
+    }
+
+    // ── --warmup-prompt promises a startup prefill that does not exist. ──
+    // The flag parses, and NOTHING reads `args.warmup_prompt` — not one site in
+    // the workspace. Its own `--help` text states that the server "tokenizes and
+    // prefills this prompt" and "eliminates the cold-start TTFT penalty
+    // (~196ms)", and QUICKSTART.md, book/src/operations/server.md and
+    // docs/GB10_DEPLOYMENT_GUIDE.md each tell the reader to pass it. So an
+    // operator following the quickstart passes a path, measures the same cold
+    // TTFT, and has no way to tell that the flag is inert rather than
+    // ineffective — the diagnosis lands on Atlas being slow.
+    //
+    // Refused rather than warned, for this module's usual reason: a warning
+    // scrolls off, and command lines get copied and published. Refused rather
+    // than deleted from the CLI, so the operator gets a sentence explaining
+    // what happened instead of clap's bare "unexpected argument".
+    if args.warmup_prompt.is_some() {
+        v.push(Violation::new(
+            "--warmup-prompt is not implemented.",
+            "nothing reads it: no prompt is tokenized, no prefill runs and nothing enters \
+             the prefix cache, so the cold-start TTFT its help text promises to remove is \
+             still paid on the first real request.",
+            "drop --warmup-prompt, and warm the server yourself by sending one throwaway \
+             request after startup — that populates the prefix cache through the same path \
+             a real request does.",
         ));
     }
 

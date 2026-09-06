@@ -30,6 +30,7 @@ mod citation_structured;
 mod cli;
 mod conversation_store;
 mod disk_guard;
+mod env_config;
 mod error_hints;
 pub mod grammar;
 mod halluc_probe;

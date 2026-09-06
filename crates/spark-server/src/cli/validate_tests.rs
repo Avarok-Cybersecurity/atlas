@@ -26,6 +26,70 @@ fn defaults_are_valid() {
     assert!(validate_serve_args(&parse(&[])).is_ok());
 }
 
+/// `--warmup-prompt` parses, is documented in QUICKSTART.md,
+/// book/src/operations/server.md and docs/GB10_DEPLOYMENT_GUIDE.md, and its own
+/// `--help` promises it "eliminates the cold-start TTFT penalty (~196ms)" — and
+/// NOTHING in the workspace reads `args.warmup_prompt`. An operator following
+/// the quickstart passed a path, measured an unchanged cold TTFT and had no
+/// signal at all that the flag was inert.
+#[test]
+fn warmup_prompt_is_refused_because_nothing_implements_it() {
+    let err = validate_serve_args(&parse(&["--warmup-prompt", "/tmp/warm.txt"]))
+        .expect_err("an inert flag must not be accepted in silence");
+    assert!(err.contains("--warmup-prompt"), "{err}");
+    assert!(
+        err.contains("not implemented"),
+        "the operator must be told the flag does nothing, not merely that it is \
+         disallowed: {err}"
+    );
+    assert!(
+        err.contains("fix:"),
+        "a diagnostic without a fix is half of one: {err}"
+    );
+    // The remedy has to be something they can actually do instead.
+    assert!(
+        err.contains("throwaway request"),
+        "must name the way to warm the server: {err}"
+    );
+}
+
+/// The guard above must not fire on a serve that never asked for it.
+#[test]
+fn omitting_warmup_prompt_is_fine() {
+    assert!(parse(&[]).warmup_prompt.is_none());
+    assert!(validate_serve_args(&parse(&[])).is_ok());
+}
+
+/// `--kv-high-precision-layers` is free-form, so a typo used to reach the
+/// resolve site — AFTER the multi-minute weight load — and be swallowed by
+/// `.parse().unwrap_or(0)` behind a single `warn!`. And `0` is not the
+/// default: it is the value that defers to `auto_high_precision_layers`, so a
+/// typo bought a third configuration rather than the documented one.
+#[test]
+fn kv_high_precision_layers_typo_is_refused_before_the_weight_load() {
+    let err = validate_serve_args(&parse(&["--kv-high-precision-layers", "atuo"]))
+        .expect_err("a typo must be refused, not silently resolved to 0");
+    assert!(err.contains("--kv-high-precision-layers"), "{err}");
+    assert!(err.contains("atuo"), "must quote the rejected value: {err}");
+    assert!(err.contains("fix:"), "{err}");
+    assert!(
+        err.contains("auto") && err.contains("max"),
+        "must name the accepted keywords: {err}"
+    );
+}
+
+/// Every documented form still has to be accepted — a validator that rejects
+/// valid input is worse than the silent default it replaced.
+#[test]
+fn every_documented_kv_high_precision_layers_form_is_accepted() {
+    for form in ["0", "2", "64", "auto", "max", "all", "AUTO", "Max"] {
+        assert!(
+            validate_serve_args(&parse(&["--kv-high-precision-layers", form])).is_ok(),
+            "{form} is documented as valid but was refused"
+        );
+    }
+}
+
 #[test]
 fn fp8_calibration_requires_fp8_kv() {
     let err = validate_serve_args(&parse(&[

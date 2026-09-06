@@ -39,17 +39,72 @@ pub struct RateLimitConfig {
 }
 
 impl RateLimitConfig {
-    pub fn from_env() -> Self {
-        let rpm = read_env_u64("ATLAS_RATE_LIMIT_RPM", 0);
-        let tpm = read_env_u64("ATLAS_RATE_LIMIT_TPM", 0);
-        let burst_rpm = read_env_u64("ATLAS_RATE_LIMIT_BURST_RPM", rpm);
-        let burst_tpm = read_env_u64("ATLAS_RATE_LIMIT_BURST_TPM", tpm);
-        Self {
+    /// # Errors
+    /// When any `ATLAS_RATE_LIMIT_*` variable is set to something that is not
+    /// a whole number. That used to fall through to the default, and the
+    /// default here is 0 — *the limit is off*. An operator who typed
+    /// `ATLAS_RATE_LIMIT_RPM=1oo` got an unlimited server that started
+    /// cleanly and said nothing.
+    pub fn from_env() -> Result<Self, String> {
+        Self::from_raw(
+            std::env::var("ATLAS_RATE_LIMIT_RPM").ok().as_deref(),
+            std::env::var("ATLAS_RATE_LIMIT_TPM").ok().as_deref(),
+            std::env::var("ATLAS_RATE_LIMIT_BURST_RPM").ok().as_deref(),
+            std::env::var("ATLAS_RATE_LIMIT_BURST_TPM").ok().as_deref(),
+        )
+    }
+
+    /// The decision, without the environment.
+    ///
+    /// Split out so the refusals are testable: `set_var` is process-global and
+    /// would race every other test in this binary, so the environment is read
+    /// by [`Self::from_env`] and judged here.
+    ///
+    /// # Errors
+    /// As [`Self::from_env`].
+    pub fn from_raw(
+        rpm: Option<&str>,
+        tpm: Option<&str>,
+        burst_rpm: Option<&str>,
+        burst_tpm: Option<&str>,
+    ) -> Result<Self, String> {
+        use crate::env_config::parse_min;
+        let rpm = parse_min(
+            "ATLAS_RATE_LIMIT_RPM",
+            rpm,
+            0,
+            "requests per minute per client; 0 disables the request-rate limit",
+        )?
+        .unwrap_or(0);
+        let tpm = parse_min(
+            "ATLAS_RATE_LIMIT_TPM",
+            tpm,
+            0,
+            "tokens per minute per client; 0 disables the token-rate limit",
+        )?
+        .unwrap_or(0);
+        // Burst defaults to the sustained rate, so an unset burst is not the
+        // same as `0` and must stay `None` until here.
+        let burst_rpm = parse_min(
+            "ATLAS_RATE_LIMIT_BURST_RPM",
+            burst_rpm,
+            0,
+            "request-bucket depth; defaults to ATLAS_RATE_LIMIT_RPM",
+        )?
+        .unwrap_or(rpm);
+        let burst_tpm = parse_min(
+            "ATLAS_RATE_LIMIT_BURST_TPM",
+            burst_tpm,
+            0,
+            "token-bucket depth; defaults to ATLAS_RATE_LIMIT_TPM",
+        )?
+        .unwrap_or(tpm);
+        Ok(Self {
             rpm,
             tpm,
             burst_rpm: burst_rpm.max(1),
             burst_tpm: burst_tpm.max(1),
-        }
+        })
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -91,13 +146,6 @@ impl RateLimitConfig {
     fn advertised_remaining_rpm(&self, avail: u64) -> u64 {
         if self.rpm > 0 { avail } else { 999_999 }
     }
-}
-
-fn read_env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(default)
 }
 
 /// Snapshot of a bucket's remaining budget — used to populate the
@@ -219,12 +267,14 @@ const IDLE_EVICT: Duration = Duration::from_secs(600);
 const MAX_KEYS: usize = 100_000;
 
 impl RateLimiter {
-    pub fn from_env() -> Arc<Self> {
-        Arc::new(Self {
-            cfg: RateLimitConfig::from_env(),
+    /// # Errors
+    /// As [`RateLimitConfig::from_env`].
+    pub fn from_env() -> Result<Arc<Self>, String> {
+        Ok(Arc::new(Self {
+            cfg: RateLimitConfig::from_env()?,
             inner: Mutex::new(HashMap::new()),
             last_scrub: Mutex::new(Instant::now()),
-        })
+        }))
     }
 
     #[cfg(test)]

@@ -75,7 +75,9 @@ pub(crate) async fn serve(
     // is up, including while no model is loaded.
     host.set_auth(build_auth_config(&args)?);
     // Likewise process-scoped, and in force before the first model exists.
-    host.set_process(super::serve_load::Carried::from_env());
+    // `map_err` rather than `?` on a `String`: the message is already a
+    // formatted what/why/fix block and `anyhow!` keeps it verbatim.
+    host.set_process(super::serve_load::Carried::from_env().map_err(|e| anyhow::anyhow!("{e}"))?);
     let startup_host = host.clone();
     match tokio::task::spawn_blocking(move || startup(args, tui_progress, startup_host)).await?? {
         Startup::Serve(prepared) => {
