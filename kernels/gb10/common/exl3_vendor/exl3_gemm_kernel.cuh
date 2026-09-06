@@ -25,6 +25,7 @@
 #pragma once
 
 #include <cooperative_groups.h>
+#include <cuda_bf16.h>
 namespace cg = cooperative_groups;
 
 #include "exl3_kernel_map.cuh"
@@ -33,7 +34,68 @@ namespace cg = cooperative_groups;
 #include "exl3_gemm_inner.cuh"
 #include "exl3_devctx.cuh"
 
-template<EXL3_GEMM_T_ARGS>
+// Atlas adaptation: the input-Hadamard prologue with a BF16 activation
+// source. Byte-for-byte the `had_hf_r_128_inner<true, false>` body except the
+// load, which converts each BF16 element with `__float2half_rn(__bfloat162float(x))`
+// — the exact arithmetic of the standalone `exl3_bf16_to_f16` converter kernel
+// it replaces (one launch per dense projection group on the decode path), so
+// the fused path is bit-identical to convert-then-Hadamard.
+__device__ __forceinline__
+void had_bf16_hf_r_128_inner
+(
+    const __nv_bfloat16* __restrict__ input_ptr,
+    half* __restrict__ output_ptr,
+    const half* __restrict__ scale,
+    const float r_scale
+)
+{
+    int t = threadIdx.x & 31;
+
+    // Load 4 x BF16 (8 bytes) and convert RN to half, element-wise
+    uint2 raw = ((const uint2*) input_ptr)[t];
+    __nv_bfloat162 b01 = *reinterpret_cast<__nv_bfloat162*>(&raw.x);
+    __nv_bfloat162 b23 = *reinterpret_cast<__nv_bfloat162*>(&raw.y);
+    half4 v;
+    v.x = __halves2half2(__float2half_rn(__bfloat162float(b01.x)),
+                         __float2half_rn(__bfloat162float(b01.y)));
+    v.y = __halves2half2(__float2half_rn(__bfloat162float(b23.x)),
+                         __float2half_rn(__bfloat162float(b23.y)));
+
+    // Pre scale (suh)
+    {
+        int i = blockIdx.y * 32 + t;
+        half4 scales = ((half4*) scale)[i];
+        v.x = __hmul2(v.x, scales.x);
+        v.y = __hmul2(v.y, scales.y);
+    }
+
+    // 4 element had
+    float v0 = __half2float(__low2half(v.x));
+    float v1 = __half2float(__high2half(v.x));
+    float v2 = __half2float(__low2half(v.y));
+    float v3 = __half2float(__high2half(v.y));
+    float s0 = v0 + v1;
+    float d0 = v0 - v1;
+    float s1 = v2 + v3;
+    float d1 = v2 - v3;
+    float h0 = s0 + s1;
+    float h1 = d0 + d1;
+    float h2 = s0 - s1;
+    float h3 = d0 - d1;
+
+    // 32 element had, warp shuffle
+    shuffle_had_f4x32(h0, h1, h2, h3, t);
+    v.x = __floats2half2_rn(h0 * r_scale, h1 * r_scale);
+    v.y = __floats2half2_rn(h2 * r_scale, h3 * r_scale);
+
+    // Store
+    ((half4*) output_ptr)[t] = v;
+}
+
+// `A_BF16` (Atlas adaptation, default false = upstream): `A` is a BF16
+// activation reinterpreted through the half* parameter; the prologue converts
+// while rotating and every later stage reads `A_had` as before.
+template<EXL3_GEMM_T_ARGS, bool A_BF16 = false>
 inline __device__
 void exl3_gemm_kernel_body(EXL3_GEMM_ARGS)
 {
@@ -46,13 +108,24 @@ void exl3_gemm_kernel_body(EXL3_GEMM_ARGS)
         int this_warp = threadIdx.x / 32 + blockDim.x / 32 * blockIdx.x;
 
         for(; this_warp < total_warps; this_warp += warps_grid)
-            had_hf_r_128_inner<true, false>
-            (
-                A + this_warp * 128,
-                A_had + this_warp * 128,
-                suh + (this_warp * 128) % size_k,
-                0.088388347648f  // 1/sqrt(128)
-            );
+        {
+            if constexpr (A_BF16)
+                had_bf16_hf_r_128_inner
+                (
+                    reinterpret_cast<const __nv_bfloat16*>(A) + this_warp * 128,
+                    A_had + this_warp * 128,
+                    suh + (this_warp * 128) % size_k,
+                    0.088388347648f  // 1/sqrt(128)
+                );
+            else
+                had_hf_r_128_inner<true, false>
+                (
+                    A + this_warp * 128,
+                    A_had + this_warp * 128,
+                    suh + (this_warp * 128) % size_k,
+                    0.088388347648f  // 1/sqrt(128)
+                );
+        }
 
         grid.sync();
         A = A_had;

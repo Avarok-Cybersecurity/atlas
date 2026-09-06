@@ -52,6 +52,8 @@ pub fn exl3_dense_kernel_names(k: usize, n: usize, k_bits: u32, cb: u32) -> Resu
         for suf in ["f16", "f32"] {
             names.push(format!("exl3_gemm_k{k_bits}_cb{cb}_sh{shape}_{suf}"));
         }
+        // BF16-ingress twin (f32 C), the dense decode arm's GEMM at m <= 8.
+        names.push(format!("exl3_gemm_k{k_bits}_cb{cb}_sh{shape}_f32_abf16"));
     }
     if exl3_gemv_serves_k(k_bits) {
         for mmode in [0, 1] {
@@ -101,33 +103,45 @@ mod tests {
             vec![
                 "exl3_gemm_k6_cb2_sh4_f16",
                 "exl3_gemm_k6_cb2_sh4_f32",
+                "exl3_gemm_k6_cb2_sh4_f32_abf16",
                 "exl3_gemm_k6_cb2_sh2_f16",
                 "exl3_gemm_k6_cb2_sh2_f32",
+                "exl3_gemm_k6_cb2_sh2_f32_abf16",
             ]
         );
-        // GDN qkv at K=3: shape 3 + shape 2 + the eight gemv instances.
+        // GDN qkv at K=3: shape 3 + shape 2 (three names each, incl. the
+        // BF16-ingress f32 twin) + the eight gemv instances.
         let names = exl3_dense_kernel_names(2560, 10240, 3, 2).unwrap();
-        assert_eq!(names.len(), 4 + 8);
+        assert_eq!(names.len(), 6 + 8);
         assert_eq!(names[0], "exl3_gemm_k3_cb2_sh3_f16");
-        assert_eq!(names[2], "exl3_gemm_k3_cb2_sh2_f16");
+        assert_eq!(names[2], "exl3_gemm_k3_cb2_sh3_f32_abf16");
+        assert_eq!(names[3], "exl3_gemm_k3_cb2_sh2_f16");
         assert!(
-            names[4..]
+            names[6..]
                 .iter()
                 .all(|n| n.starts_with("exl3_gemv_k3_cb2_m"))
         );
-        // attention k/v at K=6: heuristic itself lands on shape 2 -> two
+        // attention k/v at K=6: heuristic itself lands on shape 2 -> three
         // names, no duplicates, no gemv.
         let names = exl3_dense_kernel_names(2560, 512, 6, 1).unwrap();
         assert_eq!(
             names,
-            vec!["exl3_gemm_k6_cb1_sh2_f16", "exl3_gemm_k6_cb1_sh2_f32"]
+            vec![
+                "exl3_gemm_k6_cb1_sh2_f16",
+                "exl3_gemm_k6_cb1_sh2_f32",
+                "exl3_gemm_k6_cb1_sh2_f32_abf16"
+            ]
         );
         // K=8 (6.05bpw dense): gemm-only; the K>=7 heuristic branch lands on
         // shape 2 for the GDN qkv width (n=10240 > 8192 and <= 32768).
         let names = exl3_dense_kernel_names(2560, 10240, 8, 2).unwrap();
         assert_eq!(
             names,
-            vec!["exl3_gemm_k8_cb2_sh2_f16", "exl3_gemm_k8_cb2_sh2_f32"]
+            vec![
+                "exl3_gemm_k8_cb2_sh2_f16",
+                "exl3_gemm_k8_cb2_sh2_f32",
+                "exl3_gemm_k8_cb2_sh2_f32_abf16"
+            ]
         );
         // K=7 has no instances; n % 128 != 0 has no shape.
         assert!(exl3_dense_kernel_names(2560, 10240, 7, 2).is_err());

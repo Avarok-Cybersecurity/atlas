@@ -108,9 +108,11 @@ fn launch_plan_gemv_tier_and_row_batched_gemm_tier() {
 
 #[test]
 fn launch_plan_k6_skips_the_gemv_tier_at_small_m() {
-    // K in {5,6,8} has no GEMV instances: the m<=8 tier must go straight
-    // to the f32-C GEMM (never ask the module for a k6 gemv name), then
-    // egress from the same f32 slab. m>8 is the ordinary GEMM tier.
+    // K in {5,6,8} has no GEMV instances: the m<=8 tier goes straight to the
+    // f32-C GEMM's BF16-ingress twin (`_f32_abf16` — the bf16->f16 convert is
+    // fused into its input-Hadamard prologue, so NO separate ingress launch
+    // and never a k6 gemv name), then egress from the same f32 slab. m>8 is
+    // the ordinary GEMM tier.
     let gpu = MockGpuBackend::new();
     let launch = std::sync::Arc::new(Exl3LaunchState::new(&gpu).unwrap());
     let stage = Exl3DenseStage::new(&gpu, launch, 256, 6144, 12288).unwrap();
@@ -122,15 +124,18 @@ fn launch_plan_k6_skips_the_gemv_tier_at_small_m() {
             let before = gpu.kernel_lookups_snapshot().len();
             exl3_dense_linear(&gpu, &w, a, contiguous(dst), m, &stage, 0).unwrap();
             let names = kernel_names(&gpu)[before..].to_vec();
-            assert_eq!(names.len(), 3, "K={k_bits} m={m}: {names:?}");
-            assert_eq!(names[0], "exl3_bf16_to_f16");
+            assert_eq!(names.len(), 2, "K={k_bits} m={m}: {names:?}");
             assert!(
-                names[1].starts_with(&format!("exl3_gemm_k{k_bits}_cb2_sh"))
-                    && names[1].ends_with("_f32"),
+                names[0].starts_with(&format!("exl3_gemm_k{k_bits}_cb2_sh"))
+                    && names[0].ends_with("_f32_abf16"),
                 "K={k_bits} m={m}: {names:?}"
             );
-            assert_eq!(names[2], "exl3_f32_to_bf16");
-            assert!(!names.iter().any(|n| n.contains("gemv")));
+            assert_eq!(names[1], "exl3_f32_to_bf16");
+            assert!(
+                !names
+                    .iter()
+                    .any(|n| n.contains("gemv") || n == "exl3_bf16_to_f16")
+            );
         }
         let before = gpu.kernel_lookups_snapshot().len();
         exl3_dense_linear(&gpu, &w, a, contiguous(dst), 64, &stage, 0).unwrap();

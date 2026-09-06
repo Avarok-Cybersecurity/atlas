@@ -228,6 +228,42 @@ EXL3_GEMV_SET(3, 2)
 EXL3_GEMV_SET(4, 1)
 EXL3_GEMV_SET(4, 2)
 
+// BF16-activation GEMM twins (`_abf16`): the input-Hadamard prologue converts
+// BF16 -> f16 while rotating (Atlas adaptation `A_BF16`, bit-identical to the
+// standalone `exl3_bf16_to_f16` launch it replaces). f32 C only — the dense
+// decode arm (m <= 8, K outside the GEMV tier) is the consumer; every other
+// gemm/mgemm site keeps the f16 ingress.
+#define EXL3_GEMM_WRAP_ABF16(K, CB, S, BLKDIM)                                \
+    extern "C" __global__ void __launch_bounds__(BLKDIM)                      \
+    exl3_gemm_k##K##_cb##CB##_sh##S##_f32_abf16(EXL3_GEMM_ARGS)               \
+    {                                                                         \
+        exl3_gemm_kernel_body<K, true, CB, EXL3_GEMM_SHAPE_##S, true>         \
+            (A, B, C, size_m, size_k, size_n, locks, suh, A_had, svh);        \
+    }
+
+#define EXL3_GEMM_SET_ABF16(K, CB)                                            \
+    EXL3_GEMM_WRAP_ABF16(K, CB, 2, 512)                                       \
+    EXL3_GEMM_WRAP_ABF16(K, CB, 3, 512)                                       \
+    EXL3_GEMM_WRAP_ABF16(K, CB, 4, 256)
+
+EXL3_GEMM_SET_ABF16(2, 1)
+EXL3_GEMM_SET_ABF16(2, 2)
+EXL3_GEMM_SET_ABF16(3, 1)
+EXL3_GEMM_SET_ABF16(3, 2)
+EXL3_GEMM_SET_ABF16(4, 1)
+EXL3_GEMM_SET_ABF16(4, 2)
+EXL3_GEMM_SET_ABF16(5, 1)
+EXL3_GEMM_SET_ABF16(5, 2)
+EXL3_GEMM_SET_ABF16(6, 1)
+EXL3_GEMM_SET_ABF16(6, 2)
+EXL3_GEMM_SET_ABF16(8, 1)
+EXL3_GEMM_SET_ABF16(8, 2)
+// Shape 1 exists only for K in {2,4} (gemm) — mirror it for the BF16 twin.
+EXL3_GEMM_WRAP_ABF16(2, 1, 1, 256)
+EXL3_GEMM_WRAP_ABF16(2, 2, 1, 256)
+EXL3_GEMM_WRAP_ABF16(4, 1, 1, 256)
+EXL3_GEMM_WRAP_ABF16(4, 2, 1, 256)
+
 // ── dtype boundary converters ──────────────────────────────────────────────
 
 extern "C" __global__ void __launch_bounds__(256) exl3_bf16_to_f16(

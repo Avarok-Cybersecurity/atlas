@@ -366,6 +366,30 @@ levers: nsys an 8K EXL3 prefill first; raise the fused MoE tier's 128-row-per-ex
 is 2048; ours overflows at every 4K chunk); a dense reconstruct-to-BF16 GEMM tier above a row
 threshold using the byte-identical `exl3_reconstruct.cu` Atlas already has.
 
+## BF16 ingress fused into the dense GEMM prologue (seventh lever, bit-exact)
+
+The dense decode arm ran `exl3_bf16_to_f16` before every projection group (183 launches per
+MTP step, ~61 per serial token), then the cooperative GEMM, then the f32→bf16 egress. The GEMM's
+input-Hadamard prologue already loads every activation element once; the `_abf16` kernel twins
+(`exl3_gemm_k{K}_cb{cb}_sh{S}_f32_abf16`, all K/cb/shapes) load BF16 there and convert with the
+converter's exact `__float2half_rn(__bfloat162float(x))` before the identical rotate. So the
+fused path is bit-identical to convert-then-GEMM by construction — no acceptance risk, unlike the
+numerics-changing levers above. `exl3_dense_linear_shared_a` skips the ingress launch whenever
+the group has no GEMV-tier weight (K ∉ 2..=4), i.e. every dense projection on the 4.05bpw
+checkpoint; the GEMV tier keeps the f16 ingress. Egress (`f32_to_bf16`, 252 launches per step)
+is the remaining half and needs an epilogue store variant inside the inner kernel (not done).
+
+A/B (`spark-abf16` vs the previous binary's control arms, fresh server per arm):
+
+| profile | before | fused ingress | sample |
+|---|---:|---:|---|
+| MTP 2 drafts, prefix on | 30.36 tok/s (1.47 acc/step) | **30.71** (1.47) | byte-identical |
+| serial, prefix off | 23.48 | **23.89** | byte-identical |
+
++1.2% / +1.7%, exactly the launch-gap arithmetic (≈61 launches x ~2.6 us gaps + ~1.3 us kernels
+per token), with both greedy samples unchanged — the first lever today with zero numerics
+exposure. Records: `ab_abf16_*`.
+
 ## PLE verify snapshots on device (fourth lever, this commit)
 
 `push_verify_row` snapshotted the PLE carry to a host blob with `copy_d2h_on_stream` after

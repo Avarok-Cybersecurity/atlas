@@ -234,13 +234,125 @@ pub fn exl3_gemm(
     sm_count: u32,
     stream: u64,
 ) -> Result<()> {
+    exl3_gemm_impl(
+        gpu,
+        a,
+        b_trellis,
+        c,
+        m,
+        k,
+        n,
+        k_bits,
+        cb,
+        c_fp32,
+        false,
+        locks,
+        suh,
+        a_had,
+        svh,
+        force_shape,
+        sm_count,
+        stream,
+    )
+}
+
+/// [`exl3_gemm`] over a RAW BF16 activation: the `_abf16` kernel twins convert
+/// BF16 -> f16 inside the input-Hadamard prologue (bit-identical to
+/// `exl3_bf16_to_f16` + `exl3_gemm`), saving the separate ingress launch. f32 C
+/// only (the dense decode arm's contract); `a_had` must NOT alias `a` here.
+#[allow(clippy::too_many_arguments)]
+pub fn exl3_gemm_abf16(
+    gpu: &dyn GpuBackend,
+    a_bf16: DevicePtr,
+    b_trellis: DevicePtr,
+    c: DevicePtr,
+    m: usize,
+    k: usize,
+    n: usize,
+    k_bits: u32,
+    cb: u32,
+    locks: DevicePtr,
+    suh: DevicePtr,
+    a_had: DevicePtr,
+    svh: DevicePtr,
+    force_shape: Option<usize>,
+    sm_count: u32,
+    stream: u64,
+) -> Result<()> {
+    ensure!(
+        a_bf16.0 != a_had.0,
+        "exl3_gemm_abf16: A_had must not alias the BF16 activation"
+    );
+    exl3_gemm_impl(
+        gpu,
+        a_bf16,
+        b_trellis,
+        c,
+        m,
+        k,
+        n,
+        k_bits,
+        cb,
+        true,
+        true,
+        locks,
+        suh,
+        a_had,
+        svh,
+        force_shape,
+        sm_count,
+        stream,
+    )
+}
+
+/// Kernel instance name for a dense GEMM launch; `a_bf16` selects the
+/// BF16-ingress twin (f32 C only).
+pub fn exl3_gemm_kernel_name(
+    k_bits: u32,
+    cb: u32,
+    shape: usize,
+    c_fp32: bool,
+    a_bf16: bool,
+) -> String {
+    let suffix = if a_bf16 { "_abf16" } else { "" };
+    format!(
+        "exl3_gemm_k{k_bits}_cb{cb}_sh{shape}_{}{suffix}",
+        c_suffix(c_fp32)
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exl3_gemm_impl(
+    gpu: &dyn GpuBackend,
+    a: DevicePtr,
+    b_trellis: DevicePtr,
+    c: DevicePtr,
+    m: usize,
+    k: usize,
+    n: usize,
+    k_bits: u32,
+    cb: u32,
+    c_fp32: bool,
+    a_bf16: bool,
+    locks: DevicePtr,
+    suh: DevicePtr,
+    a_had: DevicePtr,
+    svh: DevicePtr,
+    force_shape: Option<usize>,
+    sm_count: u32,
+    stream: u64,
+) -> Result<()> {
     ensure_k_cb(k_bits, cb)?;
     ensure!(m >= 1, "exl3_gemm: m == 0");
+    ensure!(
+        !a_bf16 || c_fp32,
+        "exl3_gemm: the BF16-ingress twins exist for f32 C only"
+    );
     let shape = resolve_gemm_shape(k, n, k_bits, false, 1, 1, force_shape)?;
     let num_sms = ((k / TILESIZE_K[shape]) * (n / TILESIZE_N[shape]))
         .min(sm_count as usize)
         .max(1) as u32;
-    let name = format!("exl3_gemm_k{k_bits}_cb{cb}_sh{shape}_{}", c_suffix(c_fp32));
+    let name = exl3_gemm_kernel_name(k_bits, cb, shape, c_fp32, a_bf16);
     let h = gpu.kernel("exl3_matmul", &name)?;
     raise_smem_once(gpu, h)?;
     KernelLaunch::new(gpu, h)

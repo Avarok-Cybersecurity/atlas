@@ -47,8 +47,8 @@ pub use stage::{EXL3_DENSE_STAGE_ROWS_DEFAULT, Exl3DenseStage};
 
 use super::exl3_matmul::{
     EXL3_GEMM_K_BITS, EXL3_GEMV_MAX_M, exl3_bf16_to_f16, exl3_f16_to_bf16, exl3_f16_to_bf16_2d,
-    exl3_f32_to_bf16, exl3_f32_to_bf16_2d, exl3_gemm, exl3_gemm_serves_k, exl3_gemv,
-    exl3_gemv_serves_k,
+    exl3_f32_to_bf16, exl3_f32_to_bf16_2d, exl3_gemm, exl3_gemm_abf16, exl3_gemm_serves_k,
+    exl3_gemv, exl3_gemv_serves_k,
 };
 
 /// One packed dense linear as the kernels address it: device pointers +
@@ -246,13 +246,48 @@ pub fn exl3_dense_linear_shared_a(
     let launch = &*stage.launch;
 
     if m <= EXL3_GEMV_MAX_M {
-        exl3_bf16_to_f16(gpu, a_bf16, stage.a_f16, m * k, stream)?;
+        // The f16 ingress launch is needed only when some weight in the group
+        // takes the GEMV tier (K in 2..=4). K in {5,6,8} goes to the f32-C
+        // GEMM's `_abf16` twin, which converts BF16 -> f16 inside its
+        // input-Hadamard prologue (bit-identical to convert-then-GEMM) — one
+        // launch fewer per projection group on the decode path.
+        let group_needs_f16 = ws.iter().any(|(w, _)| exl3_gemv_serves_k(w.k_bits));
+        if group_needs_f16 {
+            exl3_bf16_to_f16(gpu, a_bf16, stage.a_f16, m * k, stream)?;
+        }
         for (w, out) in ws {
             let n = w.out_dim;
-            // The GEMV tier exists for K in 2..=4 only; K in {5,6,8} goes
-            // straight to the f32-C GEMM (same C slab, same egress). Not an
-            // error: every cooperative launch runs under this call's section,
-            // so the split-K GEMM at small m is as safe as the GEMV here.
+            if !exl3_gemv_serves_k(w.k_bits) {
+                exl3_gemm_abf16(
+                    gpu,
+                    a_bf16,
+                    w.trellis,
+                    stage.c_f32,
+                    m,
+                    k,
+                    n,
+                    w.k_bits,
+                    w.cb,
+                    launch.locks,
+                    w.suh,
+                    stage.a_had_f16,
+                    w.svh,
+                    None,
+                    launch.sm_count,
+                    stream,
+                )?;
+                match out.ld {
+                    Some(ld) if ld != n => {
+                        exl3_f32_to_bf16_2d(gpu, stage.c_f32, out.ptr, m, n, n, ld, stream)?
+                    }
+                    _ => exl3_f32_to_bf16(gpu, stage.c_f32, out.ptr, m * n, stream)?,
+                }
+                continue;
+            }
+            // The GEMV tier exists for K in 2..=4 only. Not an error when the
+            // heuristic declines: every cooperative launch runs under this
+            // call's section, so the split-K GEMM at small m is as safe as
+            // the GEMV here.
             let launched = exl3_gemv_serves_k(w.k_bits)
                 && exl3_gemv(
                     gpu,
