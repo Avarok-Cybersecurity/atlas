@@ -374,24 +374,12 @@ jobs:
     # suppresses the implicit success() on `needs` — so this job RUNS. Written
     # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
     if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
-    # TEMPORARY: routed back to hosted macOS. #901 moved this to the
-    # self-hosted `apple-48gb-metal`, and that runner's job-started hook path
-    # is unquoted -- it contains a space:
-    #
-    #   /bin/bash: /Users/nologik/Library/Application: No such file or directory
-    #   ##[error]Process completed with exit code 1
-    #
-    # The hook is `/Users/nologik/Library/Application Support/MacCIBurst/bin/
-    # pre-job-disk-guard.sh`, so bash splits it at "Application Support" and
-    # the job dies ~2s in, BEFORE checkout -- every job, every PR. This is a
-    # REQUIRED context, so it made the merge queue impassable for any diff that
-    # is not web-only (observed on #905 and #906, 2026-09-05).
-    #
-    # Restore `[self-hosted, macOS, ARM64]` as soon as the runner's
-    # ACTIONS_RUNNER_HOOK_JOB_STARTED value is quoted (or the directory moved
-    # somewhere without a space). The routing itself is fine; only the host's
-    # hook configuration is broken, and that cannot be fixed from this repo.
-    runs-on: macos-14
+    # Self-hosted Apple Silicon. #901 moved this here; #909 briefly routed it
+    # back to hosted macOS because the runner's job-started hook path was
+    # unquoted and every job died ~2s in, before checkout. That hook is now
+    # fixed at the host (the script lives at a space-free path and the runner
+    # service was restarted), and jobs reach the test step again.
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
@@ -417,6 +405,19 @@ jobs:
       # run on a developer machine; default `cargo test` skips them.
       - name: cargo test -p spark-runtime --features metal
         env:
+          # The workflow-wide ATLAS_SKIP_BUILD=1 exists so clippy/check can run
+          # on hosts without nvcc. Inherited here it made this job a no-op: the
+          # skip path emits `metallib_modules() -> Vec::new()`, so the parity
+          # tests looked up kernels in an EMPTY registry. On hosted macOS there
+          # is no Metal device, `maybe_backend()` returned None, all 35 tests
+          # returned early and reported ok in 0.07s — green while testing
+          # nothing, for as long as this job has existed. On the self-hosted
+          # box a device DOES exist, so the same tests reached the lookup and
+          # failed with `Metal: unknown module 'noop_smoke'`. That failure is
+          # the runner working correctly: it is the first environment that
+          # could ever have caught this. Overriding to 0 makes ATLAS_TARGET_HW
+          # below drive the real xcrun -> AIR -> metallib pipeline.
+          ATLAS_SKIP_BUILD: "0"
           ATLAS_TARGET_HW: metal
           ATLAS_TARGET_MODEL: qwen3-5-4b-vlm-mlx-int8
           ATLAS_TARGET_QUANT: mlx_int8
