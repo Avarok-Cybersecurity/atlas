@@ -279,6 +279,10 @@ pub mod group;
 mod group_tests;
 
 #[cfg(test)]
+#[path = "group_verdict_tests.rs"]
+mod group_verdict_tests;
+
+#[cfg(test)]
 #[path = "agreement_tests.rs"]
 mod agreement_tests;
 

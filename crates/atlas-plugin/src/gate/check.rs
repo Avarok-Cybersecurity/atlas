@@ -307,7 +307,33 @@ fn record_is_required_subject(
     false
 }
 
-fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
+pub(super) fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
+    // A GROUP may be satisfied EITHER by a whole-draw record under its own id —
+    // the way every gate worked before the shard split, and the way every
+    // record committed on main today was produced — OR by all of its members.
+    //
+    // Falling back rather than replacing is not politeness, it is the
+    // difference between a transition and an outage. `bfcl-subset` is a
+    // REQUIRED context: if becoming a group invalidated the whole-draw records
+    // already on main, every open PR would go red the moment this landed and
+    // stay red until someone ran a sharded campaign. Six tests in this file
+    // caught exactly that by writing a whole-draw record and expecting a
+    // verdict.
+    // The group path is taken only once sharding has actually STARTED — i.e.
+    // some member has a record on disk. Otherwise this falls through to the
+    // ordinary gate, which knows how to say "no covering record" and, crucially,
+    // WHICH perf-path files invalidated the last one. Reporting "your four
+    // shards are missing" to someone whose whole-draw record was invalidated by
+    // a kernel change would replace a 20-second fix with a bisect.
+    if let Some(group) = super::group::find(benchmark_id)
+        && !has_covering_record(root, benchmark_id, sha)
+        && group
+            .members
+            .iter()
+            .any(|m| !records_newest_first(root, m).is_empty())
+    {
+        return check_group(root, group, sha);
+    }
     let Some(gate) = super::coverage::find(benchmark_id) else {
         // Unreachable through `check_gates`, which iterates the coverage table
         // itself, and a test pins that every required id resolves. Refusing
@@ -491,3 +517,123 @@ pub fn exit_code(statuses: &BTreeMap<String, GateStatus>) -> i32 {
 #[cfg(test)]
 #[path = "check_tests.rs"]
 mod check_tests;
+
+/// A benchmark group: every member must have a covering record at this commit,
+/// and their combined tallies must clear the GROUP's thresholds.
+///
+/// Reuses `records_newest_first`, `record_still_stands` and `check_record`
+/// unchanged — a group changes where the metrics come FROM, not how a gate is
+/// judged. What it adds is the all-or-nothing rule: three members of four is
+/// not 75% measured, it is an aggregate over a sample set the group's
+/// thresholds were never drawn against.
+fn check_group(root: &Path, group: &'static super::group::BenchmarkGroup, sha: &str) -> GateStatus {
+    use crate::benchmarks::bfcl::aggregate;
+
+    let baseline = match read_baseline(root, group.id) {
+        Ok(b) => b,
+        Err(e) => return GateStatus::Missing(format!("baseline unreadable: {e:#}")),
+    };
+
+    let mut shards: Vec<BTreeMap<String, aggregate::Tally>> = Vec::new();
+    let mut members: Vec<super::group::MemberRecord> = Vec::new();
+    let mut newest: Option<GateRecord> = None;
+    let mut missing: Vec<&str> = Vec::new();
+
+    for member in group.members {
+        // Same selection rule as a plain gate: the newest record that is FOR
+        // this benchmark, is the required subject, and still stands at `sha`.
+        let Some(member_gate) =
+            super::coverage::find(member).or_else(|| super::coverage::find(group.id))
+        else {
+            return GateStatus::Missing(format!("{member} has no coverage entry"));
+        };
+        let mut found: Option<GateRecord> = None;
+        for path in &records_newest_first(root, member) {
+            if let Ok(r) = read_record(path)
+                && record_is_for(&r, member, path)
+                && record_still_stands(root, sha, &r, member_gate)
+            {
+                found = Some(r);
+                break;
+            }
+        }
+        let Some(record) = found else {
+            missing.push(member);
+            continue;
+        };
+        // A member that ran but carries no per-subset tallies cannot be folded
+        // in. Counting it as an empty contribution would shrink the union and
+        // score the group over fewer samples than the draw.
+        let Some(t) = aggregate::tallies_from_metrics(&record.metrics) else {
+            return GateStatus::Missing(format!(
+                "{member} has a covering record but no per-subset tallies — it was \
+                 measured by a binary older than the shard split, so the group \
+                 cannot be aggregated. Re-run {member} at this commit."
+            ));
+        };
+        members.push(super::group::MemberRecord {
+            id: (*member).to_string(),
+            git_sha: record.git_sha.clone(),
+        });
+        shards.push(t);
+        newest = Some(record);
+    }
+
+    if !missing.is_empty() {
+        return GateStatus::Missing(
+            super::group::GroupFault::Missing {
+                group: group.id,
+                missing,
+            }
+            .to_string(),
+        );
+    }
+    if let Err(fault) = super::group::composition_ok(group, &members) {
+        return GateStatus::Fail(vec![fault.to_string()]);
+    }
+
+    let agg = aggregate::aggregate(&aggregate::union(&shards));
+    let Some(mut record) = newest else {
+        return GateStatus::Missing(format!("{} has no members", group.id));
+    };
+    // Judge the AGGREGATE, carrying one member's provenance (checkpoint, serve
+    // overrides, hardware) — composition_ok has already established they agree
+    // on the commit, and `check_record` needs a record shape, not a new one.
+    record.benchmark_id = group.id.to_string();
+    record
+        .metrics
+        .insert("overall_accuracy".into(), agg.overall_accuracy);
+    record.metrics.insert(
+        "normalized_single_turn_score".into(),
+        agg.normalized_single_turn_score,
+    );
+    record
+        .metrics
+        .insert("samples".into(), agg.total_samples as f64);
+
+    match super::scoring::check_record(&record, &baseline) {
+        None => GateStatus::Pass,
+        Some(breaches) => GateStatus::Fail(breaches),
+    }
+}
+
+/// Is there a covering record under this id itself? Used to decide whether a
+/// group still has a whole-draw measurement, before falling back to its shards.
+///
+/// Deliberately the same three predicates `check_one` uses, so "covering" means
+/// one thing in this file.
+fn has_covering_record(root: &Path, benchmark_id: &str, sha: &str) -> bool {
+    let Some(gate) = super::coverage::find(benchmark_id) else {
+        return false;
+    };
+    let Ok(baseline) = read_baseline(root, benchmark_id) else {
+        return false;
+    };
+    records_newest_first(root, benchmark_id).iter().any(|path| {
+        read_record(path).is_ok_and(|r| {
+            record_is_for(&r, benchmark_id, path)
+                && record_is_required_subject(&baseline, &r, benchmark_id, path)
+                && record_still_stands(root, sha, &r, gate)
+        })
+    })
+}
