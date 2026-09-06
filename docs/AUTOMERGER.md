@@ -756,3 +756,70 @@ the 87-commit list settled it in one pass; the tell was that "missing" PRs like
 
 **CITED:** R-34 (the new 7-gate preflight ran and passed before either box
 touched the GPU — first campaign it has guarded); R-33 not needed this run.
+
+---
+
+## Run 29 — 2026-09-06T09:00Z — a hardening that would have un-hardened the guard
+
+Two guards for one rule, written the same night by the same session under two
+names: `assert-required-checks-not-comment-cancellable.py` (mine, landed in
+#933) and `assert-required-checks-not-cancellable.py` (#868, still open). That
+is an SSOT violation on the merge system's own safety net, so I set out to
+unify them. Neither subsumes the other:
+
+| | reads job-level `concurrency` | knows non-comment blind events | analyses the group KEY | needs a mirror of branch protection |
+|---|---|---|---|---|
+| #933 (in main) | yes | no | no | yes |
+| #868 (open) | **no** | yes | yes | no |
+
+The union went through three states and none of them shipped:
+
+```text
+naive union        -> flagged ci.yml:pr-categorize. FALSE. A workflow_dispatch
+                      leaves pull_request.number empty, so its group is
+                      `pr-categorize-` while the PR's is `pr-categorize-42`.
+per-event fields   -> flagged 34 jobs on `${{ github.workflow }}-${{ github.ref }}`.
+                      FALSE, and it is the SAME class #868's own docstring
+                      records having fixed: github.ref discriminates by event.
+alias + constant   -> green on the tree, and it FLIPPED TWO EXISTING CONTROLS
+                      GREEN. Reverted.
+```
+
+**The third one is the finding.** My precondition was "the workflow triggers on
+both an event that writes a PR check and one that does not". The controls in
+`certification-selftest.sh` pin the #907 shape with a fixture triggered by
+`issue_comment` ALONE. Under the new rule that fixture has no PR-check trigger,
+so it is not examined, so `want_rc 1` becomes `rc 0` — the guard stops catching
+the incident it was written for, and reports success while doing it. I would
+have shipped that as a hardening.
+
+**AND A RETRACTION.** Reasoning about why #907 stuck, I concluded the cancelling
+run's job must be conditionally skipped. It is not: `cla.yml`'s `if:` admits
+`issue_comment` whenever `github.event.issue.pull_request` is set, which a
+`/stamp` comment satisfies, so the second run does re-emit `CLAAssistant`. I do
+not know the mechanism. What is established is that it recurred twice and that
+`cancel-in-progress: false` fixed it. Main's docstring says "nothing
+re-reports"; that may be incomplete, and I am not rewriting a proven guard's
+rationale on a theory I cannot verify.
+
+> **R-37. When two guards cover one rule, delete one — do not synthesise a
+> third.** The union's preconditions are the intersection of two authors'
+> assumptions, and an assumption that was implicit in one becomes a filter that
+> silences the other's controls. EVIDENCE: 2026-09-06, unifying the two
+> cancellability guards produced a version that turned two `want_rc 1` controls
+> into `rc 0`. CHECK: run the FULL selftest against the replacement before
+> believing it, and treat any control that changes verdict as a veto, not as a
+> fixture to update.
+
+> **R-38. A guard's green is only as good as the fixtures it still examines.**
+> A narrowed precondition does not fail loudly; it silently stops looking. When
+> a guard is edited, diff the SET OF INPUTS it inspects, not only its verdict.
+> EVIDENCE: the same rewrite reported "ok: no job among 24 workflows" while
+> having excluded the whole class the guard exists for.
+
+**Stack B's action is one line, not a rewrite:** when #868 lands, drop
+`assert-required-checks-not-cancellable.py` and keep main's. Recorded so the
+next session does not re-attempt the merge.
+
+**CITED:** R-control-or-it-did-not-happen (the controls vetoed the change —
+they were the only thing that noticed).
