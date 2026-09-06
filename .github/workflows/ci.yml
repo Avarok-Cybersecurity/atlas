@@ -635,6 +635,8 @@ jobs:
           # from a sibling repo's tree listing, which is not this repo's data.
           d="__ATLAS_EOF_$RANDOM$RANDOM"
           { printf 'names<<%s\n' "$d"; cat recipes.txt; printf '\n%s\n' "$d"; } >> "$GITHUB_OUTPUT"
+      - name: Test PR body sanitization
+        run: python3 scripts/ci_pr_body_test.py
       - name: Sanitize the PR body
         id: body
         # The body is the author's own statement of intent — evidence the
@@ -654,10 +656,10 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
+          # Bound output after consuming the input; head can cause SIGPIPE.
           printf '%s' "${PR_BODY:-}" \
             | tr -d '\000-\010\013-\037\177' \
-            | perl -0777 -pe 's/<!--.*?-->//gs' \
-            | head -c 2000 > body.txt
+            | perl -0777 -pe 's/<!--.*?-->//gs; $_ = substr($_, 0, 2000)' > body.txt
           d="__ATLAS_EOF_$RANDOM$RANDOM"
           {
             printf 'text<<%s\n' "$d"
