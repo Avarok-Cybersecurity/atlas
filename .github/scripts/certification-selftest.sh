@@ -160,6 +160,60 @@ Y
 want_rc 0 "the shipped cheap-pool routing shape is accepted" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
 
+echo "== a reusable workflow is called with the inputs it declares =="
+G=.github/scripts/assert-reusable-workflow-inputs.py
+want_rc 0 "the workflows as they stand match their callees" python3 "$G"
+mkdir -p "$TMP/ri/.github/workflows"
+mk_callee() { cat > "$TMP/ri/.github/workflows/callee.yml" <<Y
+on:
+  workflow_call:
+    inputs:
+      web_only: { required: false, type: boolean, default: false }
+      $1
+jobs: { j: { runs-on: ubuntu-latest, steps: [{ run: "true" }] } }
+Y
+}
+mk_caller() { cat > "$TMP/ri/.github/workflows/caller.yml" <<Y
+on: { pull_request: { types: [opened] } }
+jobs:
+  call:
+    uses: ./.github/workflows/callee.yml
+    with:
+$1
+Y
+}
+# The shape that must PASS: every key passed is declared.
+mk_callee 'flag: { required: false, type: boolean, default: false }'
+mk_caller '      web_only: true
+      flag: true'
+want_rc 0 "a call site passing only declared inputs is accepted" python3 "$G" "$TMP/ri"
+# CONTROL: the 2026-09-06 near-miss -- `with:` carries a key whose DECLARATION
+# was left behind in an unported commit. GitHub rejects the whole calling
+# workflow at dispatch, so every context it would report is never created and
+# branch protection waits forever on a check nobody will write.
+mk_callee 'flag: { required: false, type: boolean, default: false }'
+mk_caller '      web_only: true
+      stack_layer: true'
+want_rc 1 "control: an input passed but never declared is refused" python3 "$G" "$TMP/ri"
+# CONTROL: the same dispatch failure from the other side.
+mk_callee 'must_have: { required: true, type: string }'
+mk_caller '      web_only: true'
+want_rc 1 "control: a required input the caller omits is refused" python3 "$G" "$TMP/ri"
+# NOT flagged: `workflow_call:` with nothing under it is a valid callee taking
+# no inputs. The first draft tested the VALUE rather than the KEY and reported
+# ci.yml as "not a workflow_call workflow" -- a false alarm about release.yml.
+cat > "$TMP/ri/.github/workflows/callee.yml" <<'Y'
+on:
+  workflow_call:
+jobs: { j: { runs-on: ubuntu-latest, steps: [{ run: "true" }] } }
+Y
+cat > "$TMP/ri/.github/workflows/caller.yml" <<'Y'
+on: { pull_request: { types: [opened] } }
+jobs: { call: { uses: ./.github/workflows/callee.yml } }
+Y
+want_rc 0 "an input-less workflow_call callee is not mistaken for a non-callee" \
+  python3 "$G" "$TMP/ri"
+
 echo "== a required check cannot be cancelled by comment timing =="
 want_rc 0 "the workflows as they stand are safe" \
   python3 .github/scripts/assert-required-checks-not-comment-cancellable.py
