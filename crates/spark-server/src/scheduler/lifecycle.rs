@@ -284,7 +284,25 @@ pub fn swap_out_sequence(
 
     // Compact the swapped-in sequence (same logic as retire path).
     if victim_idx < active.len() && active[victim_idx].seq.slot_idx != victim_idx {
-        model.compact_sequence(&mut active[victim_idx].seq, victim_idx)?;
+        // NOT `?`. `a` is already OUT of `active` — this function holds the
+        // only handle to it — so an early return here is the one owner
+        // dropping the request, and the drop is silent twice over: the sink
+        // goes with it, so the client reads a SERVER-side compaction failure
+        // as `500 "Inference cancelled"`, the wording reserved for a client
+        // abort (see `send_error_to_sink`); and `free_sequence` never runs,
+        // so the victim's KV blocks and SSM slot leak for the life of the
+        // serve. The `Err` arm ten lines down already surfaces the victim on
+        // the identical failure one step later; nothing distinguishes the two
+        // except which call happened to fail first.
+        //
+        // Note the comment below reasons only about the LATER `?`s inside
+        // `spill_out_sequence` — this call sits above `detach_slot_for_reuse`,
+        // so the RAII guard is still armed and `a`'s own slot is released on
+        // drop. What is lost is the client and the KV blocks, not the slot.
+        if let Err(e) = model.compact_sequence(&mut active[victim_idx].seq, victim_idx) {
+            send_error(model, &mut a, &format!("swap-out failed: {e:#}"));
+            return Err(e);
+        }
         // Disown the victim's migrated slot BEFORE the fallible save below: sets
         // the reuse sentinel AND neutralizes the RAII guard so a `?`-early-
         // return (create_file/save_sequence_state error) that drops `a` cannot

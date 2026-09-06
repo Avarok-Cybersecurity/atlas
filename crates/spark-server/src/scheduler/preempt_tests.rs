@@ -27,12 +27,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// first `fail_decodes` calls, then succeeds. Records every free/cache/
 /// prefill so the tests can assert the preemption side effects.
 #[derive(Default)]
-struct PreemptStubModel {
+pub(super) struct PreemptStubModel {
     fail_decodes: AtomicUsize,
     /// When set, `decode_batch` always fails with this message instead.
     hard_error: Option<&'static str>,
+    /// When set, `compact_sequence` always fails with this message.
+    fail_compact: Option<&'static str>,
+    pub(super) compact_calls: AtomicUsize,
     decode_calls: AtomicUsize,
-    freed_slots: Mutex<Vec<usize>>,
+    pub(super) freed_slots: Mutex<Vec<usize>>,
     cached_seqs: AtomicUsize,
     prefilled: Mutex<Vec<Vec<u32>>>,
     vision_pad: Option<u32>,
@@ -45,6 +48,16 @@ impl PreemptStubModel {
     fn failing(n: usize) -> Self {
         Self {
             fail_decodes: AtomicUsize::new(n),
+            ..Default::default()
+        }
+    }
+
+    /// A stub whose `compact_sequence` always fails — the swap-out tests'
+    /// entry point (`swap_out_tests.rs`). Lives here so the stub's fields
+    /// stay private to their own module.
+    pub(super) fn failing_compact(msg: &'static str) -> Self {
+        Self {
+            fail_compact: Some(msg),
             ..Default::default()
         }
     }
@@ -197,6 +210,22 @@ impl Model for PreemptStubModel {
         Ok(())
     }
     fn compact_sequence(&self, _s: &mut SequenceState, _slot: usize) -> Result<()> {
+        self.compact_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(msg) = self.fail_compact {
+            anyhow::bail!("{msg}");
+        }
+        Ok(())
+    }
+    /// The trait default bails ("swap not supported"); the swap-out tests
+    /// need the SUCCESS path to reach `spill_out_sequence`, so record a
+    /// byte and return Ok. Preempt tests all pass `spill: None` and never
+    /// reach this.
+    fn save_sequence_state(
+        &self,
+        _seq: &SequenceState,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<()> {
+        writer.write_all(&[0u8])?;
         Ok(())
     }
     fn detach_slot_for_reuse(&self, _s: &mut SequenceState) {}
@@ -224,7 +253,7 @@ impl Model for PreemptStubModel {
 
 /// An unfinished decode-active sequence at `slot` with `n_out` generated
 /// tokens and a known prompt in `seq.tokens`.
-fn active_seq(slot: usize, n_out: usize) -> (ActiveSeq, super::test_support::RespRx) {
+pub(super) fn active_seq(slot: usize, n_out: usize) -> (ActiveSeq, super::test_support::RespRx) {
     let out: Vec<u32> = (100..100 + n_out as u32).collect();
     let (mut a, rx) = test_seq(out, 50, None, 4 + n_out);
     a.finished = false;
@@ -238,7 +267,7 @@ fn active_seq(slot: usize, n_out: usize) -> (ActiveSeq, super::test_support::Res
     (a, rx)
 }
 
-fn streaming_seq(
+pub(super) fn streaming_seq(
     slot: usize,
     n_out: usize,
 ) -> (
