@@ -282,15 +282,11 @@ pub(crate) fn load_dflash_drafter(
 /// returns `false`, which keeps the pre-flight estimate conservative.
 fn target_ships_native_fp8_lm_head(args: &cli::ServeArgs) -> bool {
     fn inner(args: &cli::ServeArgs) -> Option<bool> {
-        let dir = if let Some(p) = &args.model_from_path {
-            p.clone()
-        } else {
-            crate::model_resolver::resolve_model_dir(
-                args.model.as_deref()?,
-                args.cache_dir.as_deref(),
-            )
-            .ok()?
-        };
+        // The serve-phase resolver, not `model_resolver` directly: it knows
+        // that a positional MODEL may be a serve preset (HF id at a pinned
+        // revision), which the raw resolver would fail to find in the cache —
+        // and a failed lookup here silently reads as "no native FP8 lm_head".
+        let dir = super::resolve_model_dir(args).ok()?;
         const KEYS: [&str; 3] = [
             "lm_head.weight",
             "language_model.lm_head.weight",

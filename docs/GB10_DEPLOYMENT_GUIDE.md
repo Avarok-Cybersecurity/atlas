@@ -77,6 +77,7 @@ at conc=1; it trades against batch size and KV dtype (see §4).
 | **Mistral-Small-4-119B** | `mistralai/Mistral-Small-4-119B-2603-NVFP4` | 119B / 6.5B | NVFP4 | MLA + MoE | ~33 | 8K | **`--kv-cache-dtype bf16` required** (FP8/NVFP4 KV breaks the MLA latent); tool parser is a known gap; registry-only |
 | **Gemma-4-31B** | `nvidia/Gemma-4-31B-IT-NVFP4` | 31B dense | NVFP4 | dense, sliding+full attn | ~9 | 16K | Vision; `gemma4` tool parser; registry-only (no per-model image) |
 | **Gemma-4-26B-A4B** | `bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16` | 26B / 4B | **NVFP4A16** | MoE GeGLU | ~67 | 16K | 4-bit weights / 16-bit activations; registry-only |
+| **Qwen3.8-Flash-Next** (EXL3) | `turboderp/Qwen3.8-Flash-Next-exl3` @ branch `4.05bpw_h6_ng6` | 180B / 10B | **EXL3 4.05 bpw** | hybrid GDN + QSA sparse attn + mHC + PLE n-gram + 512-expert MoE, MTP | — | 32K | **Named preset**: `spark serve qwen3.8-flash-next-exl3` bakes in the gate-passing flags and `ATLAS_*` gates (native EXL3 kernels, **bf16 KV required**, 2 MTP drafts, single sequence, util 0.72). Kernel target `qwen3.8-flash-next`; the NVFP4 checkpoints of this model still serve by HF id. Measurements: `.research/exl3_decode_perf/` on `wip/exl3-research` |
 
 ### Large models (single-node tight, or scale out to EP=2 / EP=4)
 
@@ -89,6 +90,25 @@ at conc=1; it trades against batch size and KV dtype (see §4).
 **"registry-only"** = the kernels are in the multi-model image and it serves fine,
 but there's no turnkey per-model `docker/gb10/<m>/` Dockerfile — run it against
 `avarok/atlas-gb10:latest` with the recipe flags.
+
+**Named presets.** A kernel target's `MODEL.toml` may declare `[[serve_presets]]`:
+one checkpoint (HF id + branch) together with the `spark serve` flags and the
+`ATLAS_*` gates it was validated under. `spark serve <preset-name>` expands the
+preset at startup — the flag defaults are appended and re-parsed by clap, the
+environment defaults are set only where unset — and logs every value it decided.
+Anything you pass explicitly (a flag, or a variable already in your environment)
+wins, and the log says so. The first preset is `qwen3.8-flash-next-exl3`:
+
+```bash
+hf download turboderp/Qwen3.8-Flash-Next-exl3 --revision 4.05bpw_h6_ng6
+spark serve qwen3.8-flash-next-exl3
+# or, with a local copy of that checkpoint:
+spark serve qwen3.8-flash-next-exl3 --model-from-path /path/to/qwen38-flash-next-4.05bpw
+```
+
+Preset names are distinct from kernel-target names (`--kernel-target` still takes
+the directory name) and from HF ids, so nothing about `spark serve <hf-id>` or
+`--model-from-path` changes.
 
 **⚠️ SSOT drifts to be aware of** (registry `MODEL.toml` vs the deployable recipe
 id; tracked for reconciliation — the recipe id is what to pull):

@@ -85,6 +85,24 @@ pub(crate) fn resolve_model_dir(args: &cli::ServeArgs) -> Result<std::path::Path
             .model
             .as_deref()
             .context("Either MODEL or --model-from-path is required")?;
+        // A serve preset names its checkpoint: HF id at a pinned revision.
+        // `--model-from-path` (above) still wins, so a local copy of the same
+        // checkpoint serves under the preset's flags and gates.
+        if let Some(m) = crate::main_modules::serve_presets::lookup(model_spec) {
+            let revision = (!m.preset.hf_revision.is_empty()).then_some(m.preset.hf_revision);
+            tracing::info!(
+                "Preset {}: checkpoint {}{} (kernel target {})",
+                m.preset.name,
+                m.preset.hf_id,
+                revision.map(|r| format!(" @ {r}")).unwrap_or_default(),
+                m.target,
+            );
+            return model_resolver::resolve_model_dir_at(
+                m.preset.hf_id,
+                revision,
+                args.cache_dir.as_deref(),
+            );
+        }
         model_resolver::resolve_model_dir(model_spec, args.cache_dir.as_deref())
     }
 }

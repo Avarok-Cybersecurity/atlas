@@ -212,6 +212,36 @@ fn ptx_for_config_breaks_the_dense_27b_tie_in_the_compiled_registry() {
     assert_eq!(names36, names38, "kernel_source must mirror the module set");
 }
 
+/// Every `[[serve_presets]]` entry build.rs carried into the binary resolves
+/// by name — case-insensitively — to the target that declares it, and to no
+/// other. Vacuous on the skip-build stub (empty registry); on a real build it
+/// proves the codegen emitted the presets intact. `build.rs` refuses duplicate
+/// preset names and target-shaped names at compile time, so uniqueness is
+/// asserted here only as the runtime consequence.
+#[test]
+fn compiled_serve_presets_resolve_to_their_declaring_target() {
+    for t in all_ptx_sets() {
+        for p in t.serve_presets {
+            assert!(
+                !p.name.is_empty() && !p.hf_id.is_empty(),
+                "{}: {p:?}",
+                t.target.model
+            );
+            let (owner, found) = preset_named(p.name).expect("declared preset resolves");
+            assert_eq!(owner, t.target.model, "{}", p.name);
+            assert_eq!(found, p);
+            let upper = p.name.to_ascii_uppercase();
+            assert_eq!(preset_named(&upper).map(|(o, _)| o), Some(t.target.model));
+            assert_ne!(
+                ptx_for_model(p.name).map(|s| s.target.model),
+                Some(p.name),
+                "a preset name must not also be a kernel-target name"
+            );
+        }
+    }
+    assert!(preset_named("no-such-preset").is_none());
+}
+
 #[test]
 fn behavior_default_prose_budget_matches_shared_constant() {
     // #328: `ModelBehavior::default()` sat at 384 for a month after P2-1
