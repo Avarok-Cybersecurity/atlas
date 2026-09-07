@@ -990,27 +990,30 @@ impl TransformerModel {
         self.final_norm_apply(hidden, normed, k as u32, h as u32, eps, stream)?;
         self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;
 
-        let mut out = Vec::with_capacity(k);
         for t in 0..k {
-            let logits_t = self.buffers.logits().offset(t * vocab * bf16);
             // ATLAS_LOGIT_PROBE=1: the verify side of the row-by-row A/B
             // against a serial decode of the same prefix. `lm_head_batched`
             // always writes BF16 here (the FP32-logits buffer is the
             // single-token decode path only).
-            self.logit_probe("verify_hc", t, logits_t, false, stream);
-            let out_ptr = self.buffers.scratch().offset(t * 4);
-            ops::argmax_bf16(
-                self.gpu.as_ref(),
-                self.argmax_kernel,
-                logits_t,
-                out_ptr,
-                vocab as u32,
-                stream,
-            )?;
-            let mut b = [0u8; 4];
-            self.gpu.copy_d2h(out_ptr, &mut b)?;
-            out.push(u32::from_le_bytes(b));
+            self.logit_probe("verify_hc", t, self.buffers.logits().offset(t * vocab * bf16), false, stream);
         }
+        // ONE batched argmax + ONE readback, replacing K single-CTA scans each
+        // followed by its own blocking 4-byte `copy_d2h`. Each of those drained
+        // the stream inside the copy, so at K=3 this tail paid three full
+        // drains — and the first of them absorbs the whole 48-layer verify
+        // backlog, which is why it reads as the expensive call in a profile.
+        //
+        // `argmax_batch_dispatch` runs the identical per-row body (its own doc:
+        // ties resolve the same way, byte-identical) and falls back to the loop
+        // when the kernel set lacks the batched entry, so this is a transport
+        // change only — the emitted tokens cannot move.
+        //
+        // NOT deleted outright even though the MTP path discards the result
+        // (`verify_k3_step.rs` returns into `verify_mtp_wide::finish` before
+        // reading it): `decode_verify_graphed_k3` is ALSO the DFlash path under
+        // EP, where the values are read. The caller owns that choice; this end
+        // just stops paying K drains for it.
+        let out = self.argmax_batch_dispatch(self.buffers.logits(), k, stream)?;
 
         seq.tokens.extend_from_slice(tokens);
         seq.seq_len += k;
