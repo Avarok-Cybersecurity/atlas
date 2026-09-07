@@ -304,10 +304,8 @@ impl TransformerModel {
         // constructed cache (`is_active`) rather than the CLI flag also
         // covers the compressed-DeepSeek-V4 downgrade, where the flag is set
         // but `NoPrefixCaching` is what actually gets installed.
-        let marconi = crate::ssm_reserve::marconi_snapshot_slots(
-            ssm_cache_slots,
-            prefix_cache.is_active(),
-        );
+        let marconi =
+            crate::ssm_reserve::marconi_snapshot_slots(ssm_cache_slots, prefix_cache.is_active());
         if let Some(reason) = marconi.skip_reason {
             tracing::info!(
                 "SSM snapshot pool: Marconi region SKIPPED ({}) — {} slot(s) x {} layer(s) \

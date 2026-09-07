@@ -67,7 +67,9 @@ pub(crate) fn assert_ranks_agree(
         .iter()
         .zip(&root)
         .filter(|((_, mine), theirs)| mine != *theirs)
-        .map(|((name, mine), theirs)| format!("{name}: rank {rank} has {mine}, rank 0 has {theirs}"))
+        .map(|((name, mine), theirs)| {
+            format!("{name}: rank {rank} has {mine}, rank 0 has {theirs}")
+        })
         .collect();
     if !bad.is_empty() {
         bail!(
@@ -115,7 +117,10 @@ mod tests {
     fn a_single_disagreement_names_the_lever_and_both_values() {
         let items = [("ATLAS_GLM_PREFILL_ROWS", 4u64), ("ep_protocol_v2", 0)];
         let bad = mismatches(&items, &[8, 0], 1);
-        assert_eq!(bad, vec!["ATLAS_GLM_PREFILL_ROWS: rank 1 has 4, rank 0 has 8"]);
+        assert_eq!(
+            bad,
+            vec!["ATLAS_GLM_PREFILL_ROWS: rank 1 has 4, rank 0 has 8"]
+        );
     }
 
     #[test]

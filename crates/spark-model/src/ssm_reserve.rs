@@ -560,7 +560,10 @@ pub struct MarconiSlotDecision {
 /// * `ATLAS_SSM_MARCONI_FULL` (PRESENCE, house convention — `=0` is NOT
 ///   "off"): restore the old unconditional reservation. Accounting-safe
 ///   over-reserve; the kill switch for this diet.
-pub fn marconi_snapshot_slots(requested: usize, prefix_caching_active: bool) -> MarconiSlotDecision {
+pub fn marconi_snapshot_slots(
+    requested: usize,
+    prefix_caching_active: bool,
+) -> MarconiSlotDecision {
     marconi_snapshot_slots_with(requested, prefix_caching_active, marconi_reserve_full())
 }
 

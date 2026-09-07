@@ -458,7 +458,10 @@ mod marconi_gate {
     fn full_reserve_kill_switch_restores_the_old_behaviour() {
         let d = marconi_snapshot_slots_with(16, false, true);
         assert_eq!(d.slots, 16, "ATLAS_SSM_MARCONI_FULL must over-reserve");
-        assert!(d.skip_reason.is_none(), "an explicit override is not a skip");
+        assert!(
+            d.skip_reason.is_none(),
+            "an explicit override is not a skip"
+        );
     }
 
     #[test]

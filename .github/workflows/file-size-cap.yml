@@ -564,6 +564,10 @@ jobs:
             # the pure `device_free_memory_cu` driver leg, which A68 needs side
             # by side to compare.
             "crates/spark-runtime/src/cuda_backend.rs"
+            # 608 LoC (was 496) — SSM/linear-attention reserve accounting; grew
+            # with the GLM per-sequence reserve (C3) and the `--ssm-cache-slots`
+            # correction that unblocked K=3 at 131K context.
+            "crates/spark-model/src/ssm_reserve.rs"
             # 592 LoC (was 472) — vocab-parallel LM head and the decode
             # dispatch band. The band's upper edge decides which kernel a decode
             # width lands on, i.e. which bits it produces; this is the file that
