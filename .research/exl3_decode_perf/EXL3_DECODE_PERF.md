@@ -1091,6 +1091,55 @@ not need the lock, and the refactor is contained. But at 1-4 ms of held lock it 
 noise. The prerequisite is a workload that reproduces the miss-heavy gather (~127K ids implies ~30K
 tokens of genuinely diverse text, not synthetic filler).
 
+## Queueing: SLAI, the admission window, and a cold-start artifact I nearly shipped (2026-09-06)
+
+The hypothesis was that concurrent queueing needs the SLAI policy plus a ~100 ms admission delay.
+Measured with `ab_queueing_policy.sh` + `probe_queueing.py` on a deliberately heterogeneous burst —
+one ~8000-token prompt submitted FIRST, then three ~600s, all timings CLIENT-SIDE from submission
+(the server's `time_to_first_token_ms` starts at processing and hides queue wait entirely).
+
+**First pass, 2 repeats per arm, arms in order fifo → slai → slai_cd → slai_win → fifo_win:**
+
+| arm | short med TTFT | long TTFT | burst wall |
+|---|---:|---:|---:|
+| fifo | 12102 | 20508 | 32.35 s |
+| slai | 12172 | 24066 | 32.81 s |
+| slai + co-dispatch | 19488 | 29049 | 31.75 s |
+| fifo + 100 ms window | 2670 | 22321 | 31.92 s |
+| slai + 100 ms window | 2901 | 30791 | 33.69 s |
+
+That reads as a 4.5x for the admission window. **It is an artifact.** Re-measured properly — same
+binary, `ATLAS_PREFILL_ADMISSION_WINDOW_MS` the only variable, FIVE repeats per arm
+(`window_reps_20260906T225903/`, `window_reps_20260906T230244/`):
+
+| arm | short med TTFT | per-rep | long | burst wall |
+|---|---:|---|---:|---:|
+| window 100 ms | **2607** | 2679/2594/2613/2579/2607 | 22145 | 31.77 s |
+| window off (`=0`) | **2670** | 2835/2631/2678/2664/2670 | 22097 | 31.39 s |
+
+Identical. The 12102 came from the FIRST burst against a freshly booted server (cold PLE row cache,
+cold page cache) dragging a 2-repeat median — the no-window arm's own rep1 was already 2675 ms, and
+the window arms simply ran later when the box was warm. Two repeats plus arm-ordering, exactly what
+the n>=3 and counterbalancing rules exist to prevent. **No preset change was justified and none was
+made.**
+
+What DOES survive, both from warm-vs-warm arms:
+
+* **Co-dispatch batching is worse for mixed traffic.** `slai_cd` made every request uniform at
+  19.4-19.6 s instead of 1.3 / 2.7 / 4.0 / 20.5 — nobody gets a token until the whole cohort's prefill
+  completes. Fairness, not latency.
+* **SLAI does not help and hurts the tail.** Warm arms: `fifo_win` short 2670 / long 22321 vs
+  `slai_win` short 2901 / long 30791. Shortest-pending-first has nothing to gain when prefill is
+  saturated, and it defers the long request substantially.
+* **Burst wall is invariant across every arm** (31.4-33.7 s). Scheduling redistributes; it cannot
+  create throughput. Consistent with the fused-prefill result above.
+
+The one shipped change is a code decoupling, not a default:
+`ATLAS_PREFILL_ADMISSION_WINDOW_MS=<ms>` now opens the admission window WITHOUT arming the batched
+co-dispatch. Previously both lived behind `ATLAS_PREFILL_CODISPATCH`, so a scheduling policy could
+never see an ordered queue — either no window (nothing pending to choose between) or a window whose
+cohort was immediately fused (ordering moot). The knob now exists; on this workload it measures flat.
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17

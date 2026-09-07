@@ -1,0 +1,9 @@
+=== arm shipped env=[<preset default>]
+READY ~48s
+2026-09-07T02:59:03.629018Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_PREFILL_ADMISSION_WINDOW_MS=100
+  rep0 short_med_ttft=2679 ms  long_ttft=22193 ms  burst_wall=31.81 s
+  rep1 short_med_ttft=2594 ms  long_ttft=22210 ms  burst_wall=31.20 s
+  rep2 short_med_ttft=2613 ms  long_ttft=21993 ms  burst_wall=31.77 s
+  rep3 short_med_ttft=2579 ms  long_ttft=22000 ms  burst_wall=31.59 s
+  rep4 short_med_ttft=2607 ms  long_ttft=22145 ms  burst_wall=32.32 s
+SUMMARY shipped short_med_ttft_ms=2607 long_ttft_ms=22145 all_med_ttft_ms=3245 all_max_ttft_ms=22145 burst_wall_s=31.77

@@ -1,0 +1,15 @@
+=== arm fifo env=[<none>] args=[--scheduling-policy fifo] 22:50:25
+READY ~48s
+2026-09-07T02:51:12.330571Z  INFO spark::main_modules::serve_load: Scheduling policy: FIFO
+2026-09-07T02:51:12.331506Z  INFO spark::scheduler: Scheduler started (batched mode, max_batch=4, mtp=true, ngram=false, num_drafts=2, policy=fifo, chunked_prefill=true, max_prefill_tokens=8
+  rep0 long    ttft=   24260 ms  wall= 33.54 s  tok=64
+  rep0 short0  ttft=   18409 ms  wall= 31.87 s  tok=64
+  rep0 short1  ttft=   20055 ms  wall= 32.82 s  tok=63
+  rep0 short2  ttft=   21953 ms  wall= 32.87 s  tok=63
+  rep0 short_med_ttft=20055 ms  long_ttft=24260 ms  burst_wall=33.54 s
+  rep1 long    ttft=   23585 ms  wall= 33.29 s  tok=63
+  rep1 short0  ttft=    1346 ms  wall= 31.39 s  tok=64
+  rep1 short1  ttft=    2668 ms  wall= 32.10 s  tok=63
+  rep1 short2  ttft=    4174 ms  wall= 32.98 s  tok=64
+  rep1 short_med_ttft=2668 ms  long_ttft=23585 ms  burst_wall=33.29 s
+SUMMARY fifo short_med_ttft_ms=11361 long_ttft_ms=23923 all_med_ttft_ms=12212 all_max_ttft_ms=23923 burst_wall_s=33.42
