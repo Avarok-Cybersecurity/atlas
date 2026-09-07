@@ -183,7 +183,15 @@ impl TransformerModel {
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !hss_engaged
             && !force_eager
-            && !lora_eager;
+            && !lora_eager
+            // [behavior].no_decode_graphs (Nemotron-H: graph replay crashes
+            // CUDA 700/716 and, worse here, a replayed VERIFY graph serves
+            // baked positions/metadata — measured on Lightning DFlash as
+            // context-blind degenerate output while eager verify is
+            // correct). #544 gated the decode graphs and #475 the multiseq
+            // graphs on this flag; the K=γ verify capture was the last
+            // ungated graph path.
+            && !self.config.no_decode_graphs;
 
         let ctx = ForwardContext {
             buffers: &self.buffers,

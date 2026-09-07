@@ -6,6 +6,11 @@
 
 use super::*;
 
+// Was split out for the same budget but never declared — the file was dead
+// code until 2026-08-11 (its tests, including a test_parse_nemotron_h_config
+// twin, silently didn't run).
+mod tests_b;
+
 #[test]
 fn qwen3_next_factory_preserves_attention_ssm_and_routing_shape() {
     let cfg = ModelConfig::qwen3_next_80b_nvfp4();
@@ -353,7 +358,9 @@ fn nemotron_h_fixture_maps_mamba_moe_and_weight_layout() {
     assert_eq!(cfg.layer_type(1), LayerType::Moe); // E
     assert_eq!(cfg.layer_type(5), LayerType::FullAttention); // *
     assert_eq!(cfg.gqa_ratio(), 16); // 32/2
-    assert_eq!(cfg.rotary_dim(), 128); // partial_rotary_factor=1.0
+    // NoPE: the reference NemotronHAttention applies no rotary embedding
+    // (position is carried by the mamba layers) — rope launches must skip.
+    assert_eq!(cfg.rotary_dim(), 0);
     assert_eq!(cfg.routed_scaling_factor, 2.5);
     assert!(cfg.norm_topk_prob);
     assert_eq!(cfg.weight_prefix, "backbone");

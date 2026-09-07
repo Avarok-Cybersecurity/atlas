@@ -49,10 +49,13 @@ pub fn rope_strided(
     k_row_stride: u32,
     stream: u64,
 ) -> Result<()> {
-    assert!(
-        rotary_dim > 0,
-        "rope_strided: rotary_dim=0, nq={num_q_heads} nkv={num_kv_heads} hd={head_dim}"
-    );
+    // rotary_dim == 0 = NoPE: the model applies no positional rotation in
+    // attention (Nemotron-H — position is carried by the mamba layers, see
+    // the reference NemotronHAttention which projects q/k/v straight into
+    // attention). The kernel divides by rotary_dim, so skip the launch.
+    if rotary_dim == 0 {
+        return Ok(());
+    }
     let half_rot = (rotary_dim / 2).max(1);
     let pos_per_block = (128 / half_rot).max(1);
     let seq_blocks = div_ceil(num_tokens, pos_per_block);
@@ -87,10 +90,10 @@ pub fn rope(
     theta: f32,
     stream: u64,
 ) -> Result<()> {
-    assert!(
-        rotary_dim > 0,
-        "rope: rotary_dim=0, nq={num_q_heads} nkv={num_kv_heads} hd={head_dim}"
-    );
+    // rotary_dim == 0 = NoPE (see rope_strided above): skip the launch.
+    if rotary_dim == 0 {
+        return Ok(());
+    }
     let half_rot = (rotary_dim / 2).max(1);
     let pos_per_block = (128 / half_rot).max(1);
     let seq_blocks = div_ceil(seq_len, pos_per_block);
@@ -251,10 +254,10 @@ pub fn rope_yarn(
     theta: f32,
     stream: u64,
 ) -> Result<()> {
-    assert!(
-        rotary_dim > 0,
-        "rope: rotary_dim=0, nq={num_q_heads} nkv={num_kv_heads} hd={head_dim}"
-    );
+    // rotary_dim == 0 = NoPE (see rope_strided above): skip the launch.
+    if rotary_dim == 0 {
+        return Ok(());
+    }
     let half_rot = (rotary_dim / 2).max(1);
     let pos_per_block = (128 / half_rot).max(1);
     let seq_blocks = div_ceil(seq_len, pos_per_block);

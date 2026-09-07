@@ -1,0 +1,187 @@
+[model]
+name = "nemotron-3.5-lightning-30b-a3b"
+hf_id = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
+model_type = "nemotron_h"
+architecture = "hybrid_mamba2_moe_attention"
+parameters = "30B"
+active_parameters = "3.5B"
+
+# ── Why this target exists ───────────────────────────────────────────────
+# Split from `nemotron-3-nano-30b-a3b` on 2026-08-13. The two checkpoints are
+# dimensionally identical — nemotron_h, hidden 2688, 52-layer M/E/A hybrid,
+# 128-expert MoE — and this directory is a byte-for-byte clone of Nano's
+# kernel set (same KERNEL.toml, same two symlinked overrides). NOTHING about
+# the KERNELS motivated the split.
+#
+# The POLICY did. Nano documents `thinking_default = false` because thinking
+# leaks training-corpus text into its answers. Lightning wants the opposite
+# default for general chat quality, but must NOT think on tool turns: with
+# thinking on it writes its `<tool_call>` inside `<think>`, and a `</think>`
+# force-close then cuts the call mid-arguments. That combination —
+# `thinking_default = true` + `thinking_in_tools = false` — is unreachable
+# while the two models share one target, and the workaround was worse than
+# the gap: `--default-chat-template-kwargs '{"enable_thinking":true}'` is an
+# EXPLICIT directive, and an explicit directive OVERRIDES `thinking_in_tools`
+# (api/chat/thinking.rs), so tool turns thought anyway.
+# The discriminator. Lightning and Nano are dimensionally identical
+# (nemotron_h, hidden 2688), so the exact-(nemotron_h, 2688) tie has to be
+# broken by the checkpoint reference — HF id, --model-name, or the resolved
+# model dir. See atlas-kernels/src/resolve.rs: an unbroken tie is a hard
+# startup error, never a build-order pick, and build.rs refuses to compile a
+# colliding pair where either side omits its needles.
+#
+# `lightning` alone is enough and is what every reference for this checkpoint
+# carries (nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4, and the
+# models--nvidia--...-Lightning-... cache directory). Nano declares `nano`
+# for the same tie; neither needle appears in the other's references.
+#
+# The ORIGINAL split (2026-08-13) discriminated on
+# `num_nextn_predict_layers` — Lightning ships a DeepSeek-style 1-step MTP
+# draft head and declares 1, Nano omits the key. That mechanism was
+# superseded by `match_names` before this target landed, and a numeric
+# discriminator could not have been kept alongside it: main's resolver never
+# reads config fields beyond (model_type, hidden_size).
+match_names = ["lightning"]
+
+[[model_types]]
+model_type = "nemotron_h"
+hidden_size = 2688
+
+# ── Sampling ─────────────────────────────────────────────────────────────
+# Inherited verbatim from the Nano target this model served under from
+# 2026-08-11 to 2026-08-13, and validated there. NVIDIA publishes no
+# per-variant serving recipe for Lightning; its generation_config.json
+# carries the HF evaluation defaults (temperature 1.0, top_p 0.95) exactly
+# like Nano's, which is why `use_sampling_presets_for_core` below is on.
+[sampling.thinking_text]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[behavior]
+# Decode graphs crash the Nemotron-H family (CUDA 700 on Puzzle at exactly
+# 64 prompt tokens, CUDA 716 on Nano/Lightning) and are a measured no-op on
+# GB10 — serve eager.
+no_decode_graphs = true
+
+# ── Thinking policy: the whole reason this target is separate ────────────
+# Lightning is a thinking-first model and its own chat template defaults
+# `enable_thinking` to True. Thinking ON is the quality path for plain chat.
+thinking_default = true
+# …and thinking OFF is the correctness path for tool turns. With thinking on
+# and tools armed the model emits its `<tool_call>` INSIDE `<think>`, so the
+# turn depends on a `</think>` force-close landing after the arguments rather
+# than between the name and the arguments (measured: "Santiago" cut early and
+# returned a name-only call, "Kyoto" cut late and returned a good one — same
+# build, same prompt shape, temperature 0). The server-side guards for that
+# cut are real (the loop watchdog no longer arms mid-call, and the forced
+# `</think>` injector defers past an open `<tool_call>`), but not thinking at
+# all on tool turns is both correct and ~4x cheaper: 23 completion tokens vs
+# 89-97. A client that genuinely wants an in-`<think>` tool turn can still ask
+# for one with an explicit `chat_template_kwargs.enable_thinking` — an
+# explicit directive outranks this default (api/chat/thinking.rs).
+thinking_in_tools = false
+max_thinking_budget = 2048
+# `max_thinking_budget` is the SOLE thinking cap — drop Atlas's second,
+# 90%-of-max_tokens clamp, which vLLM has no equivalent of and which
+# force-closes `</think>` mid-reasoning. Same as the Nano/Puzzle siblings.
+cap_thinking_at_max_tokens = false
+
+# This checkpoint's generation_config.json carries temperature=1.0 /
+# top_p=0.95 — the HF evaluation defaults, not a serving recipe. WITHOUT this
+# opt-in, core sampling falls through to those values and every preset above
+# is SILENTLY IGNORED for any client that does not send its own sampling
+# params (opencode does not). Explicit per-request values still win.
+use_sampling_presets_for_core = true
+
+# MTP speculative decoding: Lightning ships a DeepSeek-style 1-step draft
+# head under `mtp.layers.*`. K = drafts + 1; the head is 1-step, so 1 draft
+# is the trained depth. Engagement still requires `--speculative`; this is
+# the per-model default the CLI `--num-drafts` overrides.
+#
+# Serve-validated 2026-08-11 (C=1, 400-tok story, temp 0): drafts are GOOD
+# (K2 accept p1 = 0.49-0.65) but the verify step is NET NEGATIVE — 55.0 tok/s
+# forced-MTP vs 70.1 tok/s serial — because this target has no K-token
+# batched verify kernels: the 23 Mamba-2 layers run K sequential recurrent
+# decodes and the 23 MoE layers K per-token expert GEMV sweeps (the grouped
+# relu2 GEMMs are expected-absent below), so a K=2 verify costs ~2x a decode
+# in weight reads for only 1+p1 ~ 1.55 tokens. The auto MTP gate measures
+# exactly this and parks speculation (serving stays at the serial rate —
+# `--speculative` never regresses). The lever that flips the sign is kernel
+# work: a batched K-row Mamba-2 verify step and/or an M-generic relu2 MoE
+# verify arm.
+default_num_drafts = 1
+
+# This checkpoint's chat template renders an EMPTY system turn when the
+# request carries no system message (`system_message` defaults to "" and is
+# always emitted: `<|im_start|>system\n<|im_end|>`), the same shape measured
+# to degrade the Nano sibling on 2026-07-28 — identical user text, only the
+# system block differing, correct with any system text and wrong with an
+# empty one. Supply a default so the empty turn never renders.
+default_system_prompt = "You are a helpful assistant."
+
+# ── Kernel lookups this model may legitimately fail to resolve ──
+# Harvested 2026-08-13 from `spark serve --check-kernels` on THIS target.
+# Identical to the Nano sibling's set, as expected: the two targets compile
+# the same kernel files, and the dispatch differences between the two
+# checkpoints (Lightning's MTP head) add no new kernel lookups. All are
+# try_kernel() probes; every fallback path dispatch reaches resolves here.
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = """
+3-deep weight-pipeline twin shipped ONLY in qwen3.6-27b's shadow.
+layers::tgemm_kernel probes it, falls back to w4a16_gemm_t (resolves
+on this target's shadow). UNMEASURED for this target — candidate, not
+loss."""
+w4a16_gemm_t_k64_p3 = "Same family; layers::k64_kernel falls back to the required w4a16_gemm_t_k64 (resolves here)."
+w4a16_gemm_t_k64_n64_p3 = "Narrow-N twin; layers::k64_n64_kernel returns 0-handle, dispatch gates on handle != 0."
+w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin; prefill_weights gates on handle != 0, falls back through the resolved w4a16 path."
+fp8_gemm_t_m128_mfast = """
+M128-mfast FP8 GEMM; nemotron_mamba2/prefill gates the probe
+(handle != 0 && n >= 512) and falls back to the bf16-A FP8 path that
+resolves from common w4a16."""
+fp8_fp8_gemm_t_m128_mfast = "Same family — the pre-cast-A fp8 path falls back to the bf16-A arm that resolves."
+
+[expected_absent.w4a4]
+w4a4_gemm_mfast = """
+Shipped only in nemotron-labs-3-puzzle-75b-a9b. nemotron_mamba2 probes
+it and falls back to w4a4_gemm (resolves from common). UNMEASURED."""
+
+[expected_absent.moe_w4a16]
+moe_w4a16_grouped_gemm_ptrtable_relu2 = """
+ReLU^2-gated grouped GEMM; shipped only in nemotron-labs-3-puzzle-75b's
+shadow. prefill_sorted gates on handle != 0 ('let fused = ...') and
+falls back to the base ptrtable grouped GEMM (resolves)."""
+
+[expected_absent.moe_w4a4]
+moe_w4a4_grouped_gemm_relu2 = """
+ReLU^2-gated W4A4 grouped GEMM; shipped only in nemotron-labs-3-puzzle's
+moe_w4a4_grouped.cu shadow. prefill_sorted gates on handle != 0 before
+firing; the base MoE path served by moe_w4a16 remains available."""

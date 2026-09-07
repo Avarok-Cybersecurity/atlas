@@ -122,6 +122,7 @@ impl ModelConfig {
             llama_4_scaling_original_max_position_embeddings: 0,
             fp8_kv_calibration_tokens: 0,
             fp8_kv_headroom: 2.0,
+            no_decode_graphs: false,
             final_logit_softcapping: 0.0,
             embed_scale: 0.0,
             // MiniMax M2 fields — all default to "unused" (empty/0) so the

@@ -6,6 +6,16 @@ architecture = "hybrid_mamba2_moe_attention"
 parameters = "30B"
 active_parameters = "3.5B"
 
+# Nano's half of the (nemotron_h, 2688) tie with
+# nemotron-3.5-lightning-30b-a3b. The two checkpoints are dimensionally
+# identical, so resolution has to break the tie on the checkpoint reference
+# (HF id / --model-name / model dir) — see atlas-kernels/src/resolve.rs.
+# `nano` appears in every reference this checkpoint carries and in none of
+# Lightning's. Declaring it is not optional: build.rs fails the build when a
+# colliding pair leaves either side without needles, precisely so the tie can
+# never be resolved by build order.
+match_names = ["nano"]
+
 [[model_types]]
 model_type = "nemotron_h"
 # 2026-06-06: pin hidden_size so this stays an EXACT match. Without it this is a "nemotron_h"
