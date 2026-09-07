@@ -1,78 +1,89 @@
 {
   "schema": 1,
-  "benchmark_id": "decode-floor",
-  "benchmark_name": "Decode Floor Gate",
-  "git_sha": "823d87f8a7",
-  "recorded_at": 1788729362,
-  "target_model": "unsloth/Qwen3.8-27B-NVFP4",
+  "benchmark_id": "ssm-state-poisoning-gate",
+  "benchmark_name": "SSM State Poisoning Gate",
+  "git_sha": "38e402dc0c",
+  "recorded_at": 1788746484,
+  "target_model": "Qwen/Qwen3.6-35B-A3B-FP8",
   "params": {
-    "min_tok_s": "22.2",
-    "request_timeout_s": "300"
+    "max_tokens": "1024",
+    "request_timeout_s": "300",
+    "rounds": "12"
   },
   "command": [
     "spark",
     "benchmark",
     "run",
-    "decode-floor",
+    "ssm-state-poisoning-gate",
     "--param",
-    "min_tok_s=22.2",
+    "max_tokens=1024",
     "--param",
     "request_timeout_s=300",
+    "--param",
+    "rounds=12",
+    "--serve-override",
+    "disable_thinking=true",
+    "--serve-override",
+    "ssm_cache_slots=256",
     "--pull-request-gate"
   ],
-  "served_by": "qwen3.8/qwen3.8-27b-nvfp4-unsloth",
+  "served_by": "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head",
+  "serve_overrides": {
+    "disable_thinking": "true",
+    "ssm_cache_slots": "256"
+  },
   "atlas_version": "1.0.0-beta-preview",
   "hardware": {
     "gpu": "NVIDIA GB10",
     "driver": "580.159.03",
-    "sm_clock_mhz": 2470.0,
+    "sm_clock_mhz": 2457.0,
     "source": "nvidia-smi"
   },
   "hardware_state": {
-    "sensitivity": "speed",
+    "sensitivity": "correctness",
     "before": {
-      "captured_at": 1788729245,
+      "captured_at": 1788746402,
       "machine": {
         "hostname": "spark-28c2",
         "machine_id": "7af66f30966a49b6886e00e2fce4b42f",
         "gpu": "NVIDIA GB10",
         "driver": "580.159.03"
       },
-      "gpu_temp_c": 47.0,
+      "gpu_temp_c": 50.0,
       "chassis_temps_c": [
         {
           "name": "acpitz",
-          "temp_c": 55.5
+          "temp_c": 60.1
         },
         {
           "name": "acpitz",
-          "temp_c": 46.9
+          "temp_c": 50.0
         },
         {
           "name": "acpitz",
-          "temp_c": 48.6
+          "temp_c": 50.8
         },
         {
           "name": "acpitz",
-          "temp_c": 47.8
+          "temp_c": 50.8
         },
         {
           "name": "acpitz",
-          "temp_c": 55.5
+          "temp_c": 60.1
         },
         {
           "name": "acpitz",
-          "temp_c": 48.9
+          "temp_c": 52.1
         },
         {
           "name": "acpitz",
-          "temp_c": 49.0
+          "temp_c": 51.9
         }
       ],
       "sm_clock_mhz": 2405.0,
       "sm_clock_max_mhz": 3003.0,
       "throttle_counters": {
-        "sw_power_cap_us": 407732813821,
+        "sw_power_cap_us": 410327314236,
         "sw_thermal_us": 0,
         "hw_thermal_us": 0,
         "hw_power_brake_us": 0,
@@ -84,14 +95,14 @@
         "hw_thermal": false,
         "hw_power_brake": false
       },
-      "mem_available_kb": 14035748,
+      "mem_available_kb": 8325776,
       "mem_total_kb": 127600748,
-      "page_cache_kb": 11238504,
+      "page_cache_kb": 6846248,
       "gpu_compute_apps": [
         {
-          "pid": 506496,
+          "pid": 536225,
           "name": "./target/release/spark",
-          "used_mib": 103234
+          "used_mib": 108713
         }
       ],
       "cpu_governor": "performance",
@@ -103,48 +114,48 @@
       ]
     },
     "after": {
-      "captured_at": 1788729361,
+      "captured_at": 1788746484,
       "machine": {
         "hostname": "spark-28c2",
         "machine_id": "7af66f30966a49b6886e00e2fce4b42f",
         "gpu": "NVIDIA GB10",
         "driver": "580.159.03"
       },
-      "gpu_temp_c": 75.0,
+      "gpu_temp_c": 64.0,
       "chassis_temps_c": [
         {
           "name": "acpitz",
-          "temp_c": 82.2
+          "temp_c": 71.2
         },
         {
           "name": "acpitz",
-          "temp_c": 66.7
+          "temp_c": 60.6
         },
         {
           "name": "acpitz",
-          "temp_c": 75.8
+          "temp_c": 70.4
         },
         {
           "name": "acpitz",
-          "temp_c": 65.8
+          "temp_c": 59.8
         },
         {
           "name": "acpitz",
-          "temp_c": 67.1
+          "temp_c": 60.8
         },
         {
           "name": "acpitz",
-          "temp_c": 82.2
+          "temp_c": 71.2
         },
         {
           "name": "acpitz",
-          "temp_c": 69.5
+          "temp_c": 63.5
         }
       ],
-      "sm_clock_mhz": 2470.0,
+      "sm_clock_mhz": 2476.0,
       "sm_clock_max_mhz": 3003.0,
       "throttle_counters": {
-        "sw_power_cap_us": 407732813821,
+        "sw_power_cap_us": 410327314236,
         "sw_thermal_us": 0,
         "hw_thermal_us": 0,
         "hw_power_brake_us": 0,
@@ -156,14 +167,14 @@
         "hw_thermal": false,
         "hw_power_brake": false
       },
-      "mem_available_kb": 15230188,
+      "mem_available_kb": 8470352,
       "mem_total_kb": 127600748,
-      "page_cache_kb": 11238532,
+      "page_cache_kb": 6848672,
       "gpu_compute_apps": [
         {
-          "pid": 506496,
+          "pid": 536225,
           "name": "./target/release/spark",
-          "used_mib": 103239
+          "used_mib": 108739
         }
       ],
       "cpu_governor": "performance",
@@ -175,35 +186,38 @@
       ]
     },
     "delta": {
-      "elapsed_s": 116,
+      "elapsed_s": 82,
       "sw_power_cap_us": 0,
       "sw_thermal_us": 0,
       "hw_thermal_us": 0,
       "hw_power_brake_us": 0,
-      "gpu_temp_delta_c": 28.0,
-      "hottest_chassis_delta_c": 26.700000000000003
+      "gpu_temp_delta_c": 14.0,
+      "hottest_chassis_delta_c": 11.100000000000001
     },
     "precheck": {
       "decision": "proceed"
     },
     "postcheck": {
-      "validity": "valid",
+      "validity": "not-applicable",
       "concerns": [
-        "hottest chassis zone moved +27 °C"
+        "hottest chassis zone moved +11 °C"
       ]
     },
     "perf_class": "gb10@spark-28c2"
   },
   "metrics": {
-    "accept_len_mean": 2.682571857571858,
-    "output_tokens": 795.0,
-    "runs": 3.0,
-    "server_decode_tok_s": 23.04075827282177
+    "collapsed": 0.0,
+    "invariant": 12.0,
+    "jittered": 0.0,
+    "min_cached_prompt_tokens": 1026.0,
+    "rounds": 12.0,
+    "sum_wall_s": 81.458765268,
+    "unmeasured": 0.0
   },
   "frame_status": "Completed",
   "verdict": "PASS",
-  "verdict_reason": "median decode 23.0 tok/s over 3 pinned runs (accept_len_mean 2.68) — clears the 22.2 tok/s floor",
-  "summary": "unsloth/Qwen3.8-27B-NVFP4 · accept_len_mean=2.68, output_tokens=795.00, runs=3.00, server_decode_tok_s=23.04 · Pass: median decode 23.0 tok/s over 3 pinned runs (accept_len_mean 2.68) — clears the 22.2 tok/s floor",
+  "verdict_reason": "12 of 12 replays byte-identical to the reference",
+  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · collapsed=0.00, invariant=12.00, jittered=0.00, min_cached_prompt_tokens=1026.00, rounds=12.00, sum_wall_s=81.46, unmeasured=0.00 · Pass: 12 of 12 replays byte-identical to the reference",
   "perf_env": {
     "ATLAS_PREFILL_CODISPATCH": "0",
     "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",

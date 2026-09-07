@@ -1,131 +1,90 @@
 {
   "schema": 1,
-  "benchmark_id": "concurrency-sweep",
-  "benchmark_name": "Concurrency Sweep",
-  "git_sha": "823d87f8a7",
-  "recorded_at": 1788732133,
-  "target_model": "unsloth/Qwen3.8-27B-NVFP4",
+  "benchmark_id": "ttft-warm-gate",
+  "benchmark_name": "Warm TTFT Regression Gate",
+  "git_sha": "38e402dc0c",
+  "recorded_at": 1788745454,
+  "target_model": "Qwen/Qwen3.6-35B-A3B-FP8",
   "params": {
-    "concurrencies": "1, 2, 4, 8, 16, 32, 64, 128",
-    "isls": "512",
-    "min_c1": "17.2",
-    "min_c128": "107.6",
-    "min_c16": "82.55",
-    "min_c2": "24.05",
-    "min_c32": "96.8",
-    "min_c4": "35.7",
-    "min_c64": "107.6",
-    "min_c8": "45.7",
-    "min_peak": "107.6",
-    "osl": "320",
-    "prompt_mode": "natural",
-    "request_timeout_s": "600",
-    "warmup": "1"
+    "median_limit_pct": "3",
+    "p90_limit_pct": "5",
+    "prompt_lengths": "256, 1024, 4096",
+    "repeats": "12",
+    "request_timeout_s": "300",
+    "update_baseline": "true"
   },
   "command": [
     "spark",
     "benchmark",
     "run",
-    "concurrency-sweep",
+    "ttft-warm-gate",
     "--param",
-    "concurrencies=1, 2, 4, 8, 16, 32, 64, 128",
+    "median_limit_pct=3",
     "--param",
-    "isls=512",
+    "p90_limit_pct=5",
     "--param",
-    "min_c1=17.2",
+    "prompt_lengths=256, 1024, 4096",
     "--param",
-    "min_c128=107.6",
+    "repeats=12",
     "--param",
-    "min_c16=82.55",
+    "request_timeout_s=300",
     "--param",
-    "min_c2=24.05",
-    "--param",
-    "min_c32=96.8",
-    "--param",
-    "min_c4=35.7",
-    "--param",
-    "min_c64=107.6",
-    "--param",
-    "min_c8=45.7",
-    "--param",
-    "min_peak=107.6",
-    "--param",
-    "osl=320",
-    "--param",
-    "prompt_mode=natural",
-    "--param",
-    "request_timeout_s=600",
-    "--param",
-    "warmup=1",
-    "--serve-override",
-    "kv_cache_dtype=fp8",
-    "--serve-override",
-    "max_batch_size=128",
-    "--serve-override",
-    "max_model_len=4096",
-    "--serve-override",
-    "ssm_cache_slots=8",
+    "update_baseline=true",
     "--pull-request-gate"
   ],
-  "served_by": "qwen3.8/qwen3.8-27b-nvfp4-unsloth",
-  "serve_overrides": {
-    "kv_cache_dtype": "fp8",
-    "max_batch_size": "128",
-    "max_model_len": "4096",
-    "ssm_cache_slots": "8"
-  },
+  "served_by": "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head",
   "atlas_version": "1.0.0-beta-preview",
   "hardware": {
     "gpu": "NVIDIA GB10",
     "driver": "580.159.03",
-    "sm_clock_mhz": 2476.0,
+    "sm_clock_mhz": 2489.0,
     "source": "nvidia-smi"
   },
   "hardware_state": {
     "sensitivity": "speed",
     "before": {
-      "captured_at": 1788730653,
+      "captured_at": 1788745362,
       "machine": {
         "hostname": "spark-28c2",
         "machine_id": "7af66f30966a49b6886e00e2fce4b42f",
         "gpu": "NVIDIA GB10",
         "driver": "580.159.03"
       },
-      "gpu_temp_c": 54.0,
+      "gpu_temp_c": 52.0,
       "chassis_temps_c": [
         {
           "name": "acpitz",
-          "temp_c": 63.2
+          "temp_c": 60.2
         },
         {
           "name": "acpitz",
-          "temp_c": 54.7
+          "temp_c": 52.8
         },
         {
           "name": "acpitz",
-          "temp_c": 55.6
+          "temp_c": 60.2
         },
         {
           "name": "acpitz",
-          "temp_c": 55.0
+          "temp_c": 53.0
         },
         {
           "name": "acpitz",
-          "temp_c": 63.2
+          "temp_c": 54.3
         },
         {
           "name": "acpitz",
-          "temp_c": 57.0
+          "temp_c": 54.8
         },
         {
           "name": "acpitz",
-          "temp_c": 55.7
+          "temp_c": 53.8
         }
       ],
-      "sm_clock_mhz": 2411.0,
+      "sm_clock_mhz": 2405.0,
       "sm_clock_max_mhz": 3003.0,
       "throttle_counters": {
-        "sw_power_cap_us": 407732813821,
+        "sw_power_cap_us": 410327314236,
         "sw_thermal_us": 0,
         "hw_thermal_us": 0,
         "hw_power_brake_us": 0,
@@ -137,14 +96,14 @@
         "hw_thermal": false,
         "hw_power_brake": false
       },
-      "mem_available_kb": 15490796,
+      "mem_available_kb": 8524992,
       "mem_total_kb": 127600748,
-      "page_cache_kb": 5981900,
+      "page_cache_kb": 6839568,
       "gpu_compute_apps": [
         {
-          "pid": 514746,
+          "pid": 528920,
           "name": "./target/release/spark",
-          "used_mib": 103005
+          "used_mib": 108713
         }
       ],
       "cpu_governor": "performance",
@@ -156,48 +115,48 @@
       ]
     },
     "after": {
-      "captured_at": 1788732133,
+      "captured_at": 1788745453,
       "machine": {
         "hostname": "spark-28c2",
         "machine_id": "7af66f30966a49b6886e00e2fce4b42f",
         "gpu": "NVIDIA GB10",
         "driver": "580.159.03"
       },
-      "gpu_temp_c": 67.0,
+      "gpu_temp_c": 74.0,
       "chassis_temps_c": [
         {
           "name": "acpitz",
-          "temp_c": 75.5
+          "temp_c": 78.5
         },
         {
           "name": "acpitz",
-          "temp_c": 66.1
+          "temp_c": 63.1
         },
         {
           "name": "acpitz",
-          "temp_c": 73.7
+          "temp_c": 63.8
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 63.7
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 76.0
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 78.5
         },
         {
           "name": "acpitz",
           "temp_c": 65.9
-        },
-        {
-          "name": "acpitz",
-          "temp_c": 66.8
-        },
-        {
-          "name": "acpitz",
-          "temp_c": 75.5
-        },
-        {
-          "name": "acpitz",
-          "temp_c": 69.9
         }
       ],
-      "sm_clock_mhz": 2476.0,
+      "sm_clock_mhz": 2470.0,
       "sm_clock_max_mhz": 3003.0,
       "throttle_counters": {
-        "sw_power_cap_us": 407732813821,
+        "sw_power_cap_us": 410327314236,
         "sw_thermal_us": 0,
         "hw_thermal_us": 0,
         "hw_power_brake_us": 0,
@@ -209,14 +168,14 @@
         "hw_thermal": false,
         "hw_power_brake": false
       },
-      "mem_available_kb": 13451452,
+      "mem_available_kb": 8543084,
       "mem_total_kb": 127600748,
-      "page_cache_kb": 6006564,
+      "page_cache_kb": 6842172,
       "gpu_compute_apps": [
         {
-          "pid": 514746,
+          "pid": 528920,
           "name": "./target/release/spark",
-          "used_mib": 103528
+          "used_mib": 108737
         }
       ],
       "cpu_governor": "performance",
@@ -228,13 +187,13 @@
       ]
     },
     "delta": {
-      "elapsed_s": 1480,
+      "elapsed_s": 91,
       "sw_power_cap_us": 0,
       "sw_thermal_us": 0,
       "hw_thermal_us": 0,
       "hw_power_brake_us": 0,
-      "gpu_temp_delta_c": 13.0,
-      "hottest_chassis_delta_c": 12.299999999999997
+      "gpu_temp_delta_c": 22.0,
+      "hottest_chassis_delta_c": 18.299999999999997
     },
     "precheck": {
       "decision": "proceed"
@@ -242,39 +201,20 @@
     "postcheck": {
       "validity": "valid",
       "concerns": [
-        "hottest chassis zone moved +12 °C"
+        "hottest chassis zone moved +18 °C"
       ]
     },
     "perf_class": "gb10@spark-28c2"
   },
   "metrics": {
-    "c128_aggregate_tok_s": 115.878142261497,
-    "c128_ttft_p50_ms": 58162.508588000004,
-    "c16_aggregate_tok_s": 90.10189690270042,
-    "c16_ttft_p50_ms": 8320.294125,
-    "c1_aggregate_tok_s": 18.568049478207172,
-    "c1_ttft_p50_ms": 159.061868,
-    "c2_aggregate_tok_s": 29.74316459031455,
-    "c2_ttft_p50_ms": 1805.4353370000001,
-    "c32_aggregate_tok_s": 104.91376230224894,
-    "c32_ttft_p50_ms": 15631.359892999999,
-    "c4_aggregate_tok_s": 48.305812100869815,
-    "c4_ttft_p50_ms": 2696.2118090000004,
-    "c64_aggregate_tok_s": 116.31418300032776,
-    "c64_ttft_p50_ms": 29559.263626,
-    "c8_aggregate_tok_s": 63.49301162445059,
-    "c8_ttft_p50_ms": 4841.288886,
-    "cache_uncontrolled_cells": 0.0,
-    "min_cached_prompt_pct": 99.54476479514416,
-    "min_cached_prompt_tokens": 656.0,
-    "min_completion_tokens": 272.0,
-    "peak_aggregate_tok_s": 116.31418300032776,
-    "vacuous_cells": 0.0
+    "median_ms": 826.6261784999999,
+    "p90_ms": 2018.509623,
+    "samples": 36.0
   },
   "frame_status": "Completed",
   "verdict": "PASS",
-  "verdict_reason": "8 cells, zero errors, zero vacuous — every populated floor met (C1 18.6/17.2 · C2 29.7/24.1 · C4 48.3/35.7 · C8 63.5/45.7 · C16 90.1/82.5 · C32 104.9/96.8 · C64 116.3/107.6 · C128 115.9/107.6 · peak 116.3/107.6)",
-  "summary": "unsloth/Qwen3.8-27B-NVFP4 · c128_aggregate_tok_s=115.88, c128_ttft_p50_ms=58162.51, c16_aggregate_tok_s=90.10, c16_ttft_p50_ms=8320.29, c1_aggregate_tok_s=18.57, c1_ttft_p50_ms=159.06, c2_aggregate_tok_s=29.74, c2_ttft_p50_ms=1805.44, c32_aggregate_tok_s=104.91, c32_ttft_p50_ms=15631.36, c4_aggregate_tok_s=48.31, c4_ttft_p50_ms=2696.21, c64_aggregate_tok_s=116.31, c64_ttft_p50_ms=29559.26, c8_aggregate_tok_s=63.49, c8_ttft_p50_ms=4841.29, cache_uncontrolled_cells=0.00, min_cached_prompt_pct=99.54, min_cached_prompt_tokens=656.00, min_completion_tokens=272.00, peak_aggregate_tok_s=116.31, vacuous_cells=0.00 · Pass: 8 cells, zero errors, zero vacuous — every populated floor met (C1 18.6/17.2 · C2 29.7/24.1 · C4 48.3/35.7 · C8 63.5/45.7 · C16 90.1/82.5 · C32 104.9/96.8 · C64 116.3/107.6 · C128 115.9/107.6 · peak 116.3/107.6)",
+  "verdict_reason": "median -0.2% (limit +3.0%) · p90 -0.5% (limit +5.0%)",
+  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · median_ms=826.63, p90_ms=2018.51, samples=36.00 · Pass: median -0.2% (limit +3.0%) · p90 -0.5% (limit +5.0%)",
   "perf_env": {
     "ATLAS_PREFILL_CODISPATCH": "0",
     "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
