@@ -331,12 +331,17 @@ impl BufferArena {
     ///
     /// `logits`, `scratch` and `splitk_workspace` are NOT token-major (metadata arenas /
     /// vocab-sized), so they keep the full wipe. They are 30 MB of the 1590.
-    pub fn zero_all_rows(&self, gpu: &dyn GpuBackend, stream: u64, tokens: usize) -> anyhow::Result<()> {
+    pub fn zero_all_rows(
+        &self,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+        tokens: usize,
+    ) -> anyhow::Result<()> {
         let m = self.max_batch_tokens.max(1);
         // A row-scaled length, falling back to the full wipe if the arena is not an exact
         // multiple of `max_batch_tokens` (i.e. not token-major after all).
         let head = |n: usize| {
-            if tokens >= m || m == 0 || n % m != 0 {
+            if tokens >= m || m == 0 || !n.is_multiple_of(m) {
                 n
             } else {
                 n / m * tokens
@@ -362,7 +367,12 @@ impl BufferArena {
             gpu.memset_async(ptr, 0, head(n), stream)?;
         }
         // Not token-major — full wipe, 30 MB of the 1590.
-        gpu.memset_async(self.splitk_workspace, 0, self.sizes.splitk_workspace, stream)?;
+        gpu.memset_async(
+            self.splitk_workspace,
+            0,
+            self.sizes.splitk_workspace,
+            stream,
+        )?;
         gpu.memset_async(self.logits, 0, self.sizes.logits, stream)?;
         gpu.memset_async(self.scratch, 0, self.sizes.scratch, stream)?;
         Ok(())

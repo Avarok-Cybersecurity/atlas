@@ -72,6 +72,9 @@ fn run_batch(native_fp8: bool, rows: u32) {
         profile: false,
         comm: None,
         graph_capture: false,
+        // Prefill shape: `attn_metadata` is None and the FFN under test never
+        // reads the decode scalars this flag guards.
+        decode_step: false,
         gdn_exact_replay: false,
         token_ids: None,
         host_token_ids: None,

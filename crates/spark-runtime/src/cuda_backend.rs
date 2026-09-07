@@ -267,7 +267,6 @@ impl AtlasCudaBackend {
         })
     }
 
-
     /// Register one allocation's guard band. Returns its creation index.
     pub(crate) fn record_redzone(
         &self,
@@ -298,7 +297,11 @@ impl AtlasCudaBackend {
     pub fn poison_redzones(&self, lo: usize, hi: usize) -> anyhow::Result<()> {
         let zones: Vec<RedZone> = self.redzones.lock().clone();
         for z in &zones {
-            let v = if z.idx >= lo && z.idx < hi { 0xEEu8 } else { 0x00u8 };
+            let v = if z.idx >= lo && z.idx < hi {
+                0xEEu8
+            } else {
+                0x00u8
+            };
             let st = unsafe { cuMemsetD8_v2(z.user_ptr + z.user_bytes as u64, v, z.pad_bytes) };
             if st != 0 {
                 anyhow::bail!("poison_redzones: cuMemsetD8_v2 failed: status {st}");
@@ -351,9 +354,7 @@ impl AtlasCudaBackend {
                 host[first],
             );
             bad += 1;
-            let st = unsafe {
-                cuMemsetD8_v2(z.user_ptr + z.user_bytes as u64, fill, z.pad_bytes)
-            };
+            let st = unsafe { cuMemsetD8_v2(z.user_ptr + z.user_bytes as u64, fill, z.pad_bytes) };
             if st != 0 {
                 anyhow::bail!("redzone scan: refill cuMemsetD8_v2 failed: status {st}");
             }

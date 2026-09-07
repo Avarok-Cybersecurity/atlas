@@ -488,6 +488,31 @@ jobs:
             # `scheduler/lifecycle_tests.rs` were split in this same commit,
             # which is where splitting is mechanical and risks nothing.
             #
+            # 1417 LoC — the DSA block (NoPE MLA over indexer-selected tokens).
+            # The largest single file in the port and the one that is least
+            # safe to touch: it holds the prefill selector, the batched-row
+            # selector promoted at d8c6743a, the decode attend path and the
+            # CUDA-graph capture geometry, all of which are read against each
+            # other because the graph bakes per-sequence pointers (A56). A55
+            # (an indexer read 5120 B past `q_resid`) and A58 (the drafter
+            # handing DSA a whole block-table pool) were both found by reading
+            # this file top to bottom.
+            "crates/spark-model/src/layers/glm5next_dsa/layer.rs"
+            # 1334 LoC — the composite decoder layer: the one place the KDA,
+            # DSA, mHC and MoE surfaces are wired into `TransformerLayer`. It
+            # is long because it is the binding site for four subsystems, and
+            # the ordering between them (KDA state carry across a verify sweep,
+            # mHC row offsets, the multi-seq decline) is the content. Splitting
+            # it fragments the read order that makes the wiring auditable.
+            "crates/spark-model/src/layers/glm5next_layer/mod.rs"
+            # 998 LoC — the MLP decode forward, dense FFN + routed MoE. Launch
+            # geometry is lifted verbatim from the two gated microtests, and the
+            # routed-expert union batching (rows <= 8, the 8x8==64 single-block
+            # limit) is the measured perf result behind the 3.43x TTFT
+            # improvement. The comment blocks carrying those measurements are a
+            # large share of the length and must stay next to the launch they
+            # explain.
+            "crates/spark-model/src/layers/glm5next_mlp/forward.rs"
             # 968 LoC — the `glm5_next` config parser. A parser for a hybrid
             # architecture (NoPE MLA + KDA linear attention + DSA indexer + mHC
             # + 288-expert MoE) is long by construction: one arm per declared
@@ -501,6 +526,11 @@ jobs:
             # prefill halves share the workspace layout, which is the thing a
             # reader has to hold in one place.
             "crates/spark-model/src/layers/glm5next_kda/mod.rs"
+            # 662 LoC — the 45-layer weight loader. Linear assembly: one
+            # section per weight family, each naming the checkpoint tensors and
+            # the load-time transform. #341 and #347 were both on-disk dtype
+            # bugs found by reading this file as one sequence.
+            "crates/spark-model/src/weight_loader/glm5_next_load.rs"
             # 501 LoC — the DSA + kpool indexer CPU reference. A design
             # artifact that never runs on GPU and binds no checkpoint tensor;
             # it exists to be diffed against the kernels as one document. One
@@ -513,11 +543,36 @@ jobs:
             # split would be re-cutting an upstream file to hold one model's
             # arm — and each is on the GPU-qualified path described above.
             #
+            # 661 LoC (was 468) — CUDA backend: the integrated-memory
+            # composition (`effective_free_bytes` + `device_is_integrated`) and
+            # the pure `device_free_memory_cu` driver leg, which A68 needs side
+            # by side to compare.
+            "crates/spark-runtime/src/cuda_backend.rs"
+            # 592 LoC (was 472) — vocab-parallel LM head and the decode
+            # dispatch band. The band's upper edge decides which kernel a decode
+            # width lands on, i.e. which bits it produces; this is the file that
+            # has to be read against `ops/gemm_quant.rs`.
+            "crates/spark-model/src/model/impl_a3.rs"
+            # 566 LoC (was 489) — CUDA backend GPU impl; grew with the red-zone
+            # device allocator that found A55.
+            "crates/spark-runtime/src/cuda_backend/gpu_impl.rs"
+            # 547 LoC (was 490) — the `GpuBackend` trait. Atomic interface,
+            # same rationale as `traits/model.rs` above; grew by the red-zone
+            # scan hooks.
+            "crates/spark-runtime/src/gpu.rs"
             # 541 LoC (was 484) — model-dependent serve runtime phase; grew by
             # the multi-EOS stop-token set and the GLM capability gates.
             "crates/spark-server/src/main_modules/serve_phases/runtime.rs"
+            # 532 LoC (was 458) — single-sequence decode step; grew by the
+            # red-zone scan cadence and the GLM decode arm.
+            "crates/spark-model/src/model/trait_impl/decode_a.rs"
+            # 522 LoC (was 491) — software GEMV ops; grew by the routed-MoE
+            # union batching arm.
+            "crates/spark-model/src/layers/ops/gemv_sw.rs"
             # 503 LoC (was 497) — +6 lines.
             "crates/spark-model/src/weight_loader/nemotron.rs"
+            # 503 LoC (was 500) — +3 lines. Model metadata surface.
+            "crates/spark-model/src/model/trait_impl/meta.rs"
           )
 
           # ★ The scanned tree must EXIST and must contain Rust. `find crates`

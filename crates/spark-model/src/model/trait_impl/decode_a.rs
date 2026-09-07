@@ -504,7 +504,7 @@ impl TransformerModel {
         // decode step, with the device drained, so a violation names the step that produced
         // it. `ATLAS_REDZONE_EVERY` (default 1) trades resolution for wall time — the scan
         // does one blocking D2H per live allocation.
-        if redzone_every() > 0 && seq.seq_len % redzone_every() == 0 {
+        if redzone_every() > 0 && seq.seq_len.is_multiple_of(redzone_every()) {
             self.gpu.synchronize(stream)?;
             match self.gpu.scan_redzones() {
                 Ok(0) => {}

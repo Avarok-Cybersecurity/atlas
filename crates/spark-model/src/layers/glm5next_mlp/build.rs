@@ -131,8 +131,8 @@ fn build_expert_ptr_table(
             continue; // remote — null stays, and the kernel skips the slot
         };
         let p = proj(&experts[local]);
-        packed[id * 8..id * 8 + 8].copy_from_slice(&(p.packed.0 as u64).to_le_bytes());
-        scale[id * 8..id * 8 + 8].copy_from_slice(&(p.scale.0 as u64).to_le_bytes());
+        packed[id * 8..id * 8 + 8].copy_from_slice(&p.packed.0.to_le_bytes());
+        scale[id * 8..id * 8 + 8].copy_from_slice(&p.scale.0.to_le_bytes());
         scale2[id * 4..id * 4 + 4].copy_from_slice(&p.scale_2.to_le_bytes());
     }
     let packed_ptrs = gpu.alloc(packed.len())?;

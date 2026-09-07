@@ -1043,9 +1043,21 @@ fn sparse_attention_layers_are_counted_as_attention() {
     let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
     cfg.num_hidden_layers = 45;
     cfg.layer_types = (0..45)
-        .map(|i| if i % 4 == 3 { SparseAttention } else { LinearAttention })
+        .map(|i| {
+            if i % 4 == 3 {
+                SparseAttention
+            } else {
+                LinearAttention
+            }
+        })
         .collect();
-    assert_eq!(cfg.layer_types.iter().filter(|t| **t == SparseAttention).count(), 11);
+    assert_eq!(
+        cfg.layer_types
+            .iter()
+            .filter(|t| **t == SparseAttention)
+            .count(),
+        11
+    );
     assert_eq!(cfg.num_attention_layers(), 11);
     assert_eq!(cfg.num_ssm_layers(), 34);
 }

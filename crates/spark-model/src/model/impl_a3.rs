@@ -321,7 +321,7 @@ impl TransformerModel {
         }
         let comm = self.comm_ref()?;
         let ws = comm.world_size();
-        if ws < 2 || v as usize % ws != 0 {
+        if ws < 2 || !(v as usize).is_multiple_of(ws) {
             return None;
         }
         let len = v as usize / ws;

@@ -277,12 +277,7 @@ impl WeightStore {
         gpu: &dyn GpuBackend,
         pred: impl Fn(&str) -> bool,
     ) -> Result<(usize, usize)> {
-        let doomed: Vec<String> = self
-            .weights
-            .keys()
-            .filter(|n| pred(n))
-            .cloned()
-            .collect();
+        let doomed: Vec<String> = self.weights.keys().filter(|n| pred(n)).cloned().collect();
         let (mut count, mut bytes) = (0usize, 0usize);
         for name in doomed {
             // `remove` before `free`: the map must never hold a pointer to
