@@ -860,7 +860,7 @@ min = 1.0
 # arithmetic over the patch grid or an exact color sequence, so there is no
 # run-to-run variance for a tolerance to absorb.
 #
-#   legs_passed   = 13  every leg. The ones that carry the weight:
+#   legs_passed   = 14  every leg. The ones that carry the weight:
 #                         order fwd + REVERSED -- the same clip both ways,
 #                           requiring the answer to reverse with it. The only
 #                           assertion separating "the frames arrived in order"
@@ -926,8 +926,16 @@ prior gets that right twice, which is what makes the other legs evidence rather 
 plausible prose. || Requires ffmpeg; without it the MP4 legs SKIP and only the GIF \
 subset runs (measured: PASS 5/5, 4 skipped)."""
 
+# ★ RATCHETED 13 -> 14 on 2026-09-07, when #891 landed a fourteenth leg.
+# This is a COUNT, not a measurement: every committed record before #891 reads
+# exactly 13/13 and the first one after reads exactly 14/14. There is no
+# variance for a tolerance to absorb, so the floor tracks the count exactly and
+# a stale one guards nothing -- at min = 13 a later change that silently drops
+# the new leg passes BOTH the scorer (13 asserted == 13 passed) and the floor
+# (13 >= 13), and nobody hears about it. Count metrics are the easy half of
+# threshold ratcheting and should never be left behind the instrument.
 [benchmarks.metrics.legs_passed]
-min = 13.0
+min = 14.0
 
 [benchmarks.metrics.legs_skipped]
 max = 0.0
