@@ -156,6 +156,31 @@ review. Make the stack out of the BASE CHAIN and then register it.
    `{"pull_requests":[...]}` — the first new PR's base must match the current
    TOP PR's head ref. **Remove** with `POST /repos/$REPO/stacks/<n>/unstack`.
 
+5. **Merging a stacked PR needs its own endpoint, and one specific shape.**
+   `gh pr merge` refuses (*"Auto-merge is not supported for stacked pull
+   requests"*), and so does the synchronous merge (*"must be merged using the
+   asynchronous merge REST API"*). There is **no stack-level merge endpoint** —
+   `/stacks/<n>/merge` is a 404. The working call is per-PR, bottom layer first:
+
+   ```bash
+   gh api -X PUT repos/$REPO/pulls/<bottom>/merge-async -f merge_action=merge_queue
+   ```
+
+   ★ **`merge_action=default` FAILS SILENTLY when `main` has a merge queue.**
+   It returns `{"status":"pending","uuid":…}`, writes no timeline event, never
+   enters the queue, and `GET` on the endpoint 404s — so there is nothing to
+   observe and nothing to retry against. Four enqueues on 2026-09-07 produced
+   four uuids and zero merges before the cause was found. Name `merge_queue`
+   explicitly, and **omit `merge_method`**: the queue owns the strategy and
+   passing one is rejected with *"Custom merge params are not supported with the
+   merge_queue merge action."*
+
+   ★ **How that was found, and the habit worth keeping:** send a deliberately
+   invalid value and let the API enumerate the legal ones —
+   `-f merge_action=direct` answers *"Must be one of: default, direct_merge,
+   merge_queue."* An operation that reports success while doing nothing gives
+   you no error to read; an invalid one gives you the whole vocabulary.
+
 Reference: `https://docs.github.com/en/rest/pulls/stacks`.
 
 ★ **ORDER IS THE ONE DECISION YOU CANNOT TAKE BACK.** Everything else in
