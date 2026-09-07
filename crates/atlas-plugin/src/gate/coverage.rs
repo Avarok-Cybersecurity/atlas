@@ -90,7 +90,7 @@ pub const PERF_PATHS: [&str; 8] = [
 /// The four files here are the ones that decide a verdict. `GATE_MACHINERY`
 /// still covers the rest of the directory — record IO, telemetry rendering,
 /// the CODEOWNERS parser — where the exclusion's argument does hold.
-pub const BOUNDARY_FILES: [&str; 10] = [
+pub const BOUNDARY_FILES: [&str; 11] = [
     "crates/atlas-plugin/src/gate/coverage.rs",
     // `required_for` / `union` / `intent_only`: decides what the INTENT half
     // adds on top of the path-derived floor. Once intent can escalate a gate,
@@ -140,6 +140,18 @@ pub const BOUNDARY_FILES: [&str; 10] = [
     // moved one room over again — the same way `scoring.rs` was missed after a
     // split and `agreement.rs` after an addition. An escape hatch is a verdict.
     "crates/atlas-plugin/src/gate/amnesty.rs",
+    // ★ `group.rs` decides whether a set of SHARD records satisfies a gate —
+    // membership, completeness, and what a partial group means. That is the
+    // same criterion as `agreement.rs` one entry up: it rules on record SETS,
+    // not on one record's numbers.
+    //
+    // Unclassified it would be the sharpest instance of this list's whole
+    // reason for existing. A group is only as trustworthy as its "ALL of its
+    // members" rule, so a PR that loosened that rule — accepting three shards
+    // of four, or a member measured at another commit — would be certified by
+    // a gate running its own loosened rule, and the missing quarter of the
+    // draw would never be scored.
+    "crates/atlas-plugin/src/gate/group.rs",
 ];
 
 /// Gate sources deliberately reviewed and found NOT to decide a verdict.
