@@ -297,10 +297,51 @@ pub struct ServeArgs {
 
     /// Sequential-decode-exact GDN/SSM verify chain — OPT-IN (default: off).
     ///
+    /// ★ THIS FLAG IS NOT A CORRECTNESS SWITCH. A 2026-08-21 measurement on
+    /// this doc's earlier revision showed the default chain degenerating
+    /// ("count from 1 to 10" → `1, 2, 100, 100, ...`; video-fidelity 0/2 and
+    /// 0/4 at C=2/C=4) and this flag fixing all of it. That attribution was
+    /// WRONG. The degeneration was a scheduler bug — the K=4 verdict rewound
+    /// a sequence by its pending-draft count instead of the forward's row
+    /// count, erasing committed tokens (fixed in #699) — and this flag only
+    /// changed the gate's dispatch pattern so the bug stopped firing. With
+    /// #699 in place every one of those repros passes with the flag OFF.
+    ///
+    /// What the default chain actually does is what #435/#459 measured: ~5e-5
+    /// of lanes differ by 1 ULP against sequential decode, which can flip an
+    /// occasional argmax at temperature 0. No case of that flip causing gross
+    /// degeneration has survived root-causing; every "the default chain broke
+    /// my output" report so far has traced to a different bug that this flag
+    /// happened to perturb. If this flag ever appears to fix a correctness
+    /// problem, treat that as a dispatch-sensitivity SYMPTOM and go find the
+    /// real bug before pinning the flag.
+    ///
+    /// ★ THE COST IS REAL, and measuring it needs a validated serve profile.
+    /// Measured on the LEAN profile (32K ctx, 8 seqs, NO prefix caching — the
+    /// profile this project's recorded baselines were taken on), code prompt,
+    /// aggregate tok/s at C=1/2/4/8:
+    ///
+    ///     default   56 /  88 / 113 / 123    accept 85 / 86 / 80 / 74 %
+    ///     exact     52 /  72 /  78 /  98    accept 81 / 76 / 58 / 64 %
+    ///
+    /// i.e. -7% to -31%. An earlier measurement of this same flag reported it
+    /// as a THROUGHPUT WIN; that was taken on a serve with prefix caching on
+    /// at 128K, where the default arm was degenerating under the #699 bug,
+    /// and it is withdrawn. Benchmark a numerics flag only on a profile you
+    /// have separately validated for throughput — and for correctness.
+    ///
+    /// It does not buy reproducibility either. On the pinned `decode-floor`
+    /// benchmark this flag returned 943/553/943 tokens across three IDENTICAL
+    /// runs — the row-count residual below, showing up directly.
+    ///
     /// SCOPE, and it is narrower than this flag once claimed: it makes the
     /// GDN/SSM verify chain exact. It does NOT make speculative output
     /// bitwise-equal to non-speculative output end to end, and setting it
-    /// will not give you a reproducible spec-on serve.
+    /// will not give you a reproducible spec-on serve. Measured with the flag
+    /// ON, the residual is still visible: an occasional single wrong token,
+    /// and the same request at temperature 0 answering with 45 tokens once and
+    /// 50 the next time — because the accepted-row COUNT varies with runtime
+    /// scheduling, so the row-count-selected projection kernel varies with it.
     ///
     /// Why not (measured on GB10, issue #459): every FFN and attention
     /// projection is computed by a kernel selected on ROW COUNT. A token

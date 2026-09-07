@@ -257,3 +257,48 @@ fn rom_head_absent_by_default() {
             .is_none()
     );
 }
+
+/// #842: the watchdog path rewound the grammar matcher by a count of SEQUENCE
+/// tokens, while the matcher only records a step for tokens that actually
+/// advanced it. `accept_token` returns true for stop/EOS and in the terminated
+/// state without advancing, so a `json_schema` matcher that has closed its
+/// object records nothing for the tokens that follow.
+///
+/// The reported panic was `cannot roll back 96 tokens: only 1 steps recorded`,
+/// raised by an `assert!` inside the matcher — on the scheduler thread. The
+/// server then accepted requests forever and generated nothing, looking healthy
+/// from `/v1/models`, until it was killed.
+#[test]
+fn the_reported_mismatch_refuses_to_rewind_instead_of_panicking() {
+    // Both reported occurrences, with their real numbers.
+    assert_eq!(super::grammar_rewind(96, 1), None);
+    assert_eq!(super::grammar_rewind(88, 1), None);
+}
+
+/// The ordinary case must still rewind, or the fix trades a crash for grammar
+/// state that silently stops tracking the token stream.
+#[test]
+fn an_accountable_span_still_rewinds_exactly() {
+    assert_eq!(super::grammar_rewind(4, 4), Some(4));
+    assert_eq!(super::grammar_rewind(4, 9), Some(4));
+    assert_eq!(super::grammar_rewind(0, 0), Some(0));
+}
+
+/// One step short is still short. The boundary is where an off-by-one would
+/// reintroduce the panic, since the matcher asserts `n <= history`.
+#[test]
+fn the_boundary_is_inclusive_on_the_safe_side() {
+    assert_eq!(super::grammar_rewind(5, 5), Some(5));
+    assert_eq!(super::grammar_rewind(6, 5), None);
+}
+
+/// A partial rewind was considered and rejected. With a terminated matcher the
+/// recorded steps belong to tokens that are being KEPT, so `min(dropped, steps)`
+/// would rewind past the truncation point and corrupt state that the panic at
+/// least left visible. This pins the decision so a later "helpful" clamp has to
+/// argue with it.
+#[test]
+fn it_does_not_silently_clamp_to_the_available_history() {
+    assert_ne!(super::grammar_rewind(96, 1), Some(1));
+    assert_eq!(super::grammar_rewind(96, 1), None);
+}
