@@ -95,9 +95,16 @@ pub(crate) fn hc_pre_rows(
         "hc_pre_rows: shape outside the decode-rows contract (T={num_tokens} H={hidden_size} hc={hc_mult} rank={rank})"
     );
     let hc_dim = hc_mult * hidden_size;
-    // Same scratch layout as the split arm: normed [64, hc_dim] F32, then low [64, rank] F32.
+    // Scratch: normed F32 [T, hc_dim] at offset 0, then low F32 [T, rank]
+    // IMMEDIATELY after the T rows actually staged. NOT the split arm's fixed
+    // `64 * hc_dim * 4` offset: `sizes.rs` sizes this region with
+    // `t = m.min(64)`, so an arena whose token capacity `m` is below 64 (the
+    // MTP draft module's private arena is sized for a few draft rows) is
+    // SMALLER than that offset, and a fixed offset writes `low` past the end
+    // of the region into the next live buffer. T <= 8 rows at T*hc_dim*4
+    // bytes stay inside the region for every arena with capacity >= T.
     let normed = scratch;
-    let low = scratch.offset(64 * hc_dim as usize * 4);
+    let low = scratch.offset(num_tokens as usize * hc_dim as usize * 4);
 
     let k_stage = gpu.kernel("hyper_connection", "hc_pre_stage")?;
     let k_down = gpu.kernel("hyper_connection", "hc_dec_down")?;
