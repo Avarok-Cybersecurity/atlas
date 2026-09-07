@@ -1,6 +1,6 @@
 ---
 name: automerger
-description: "Find, group and land open PRs as certified STACKS — one certification campaign per stack instead of one per PR. Invoke when a PR backlog needs triage, when related PRs should be stacked on one base chain, or when asking 'which of these are already merged?'. Wraps /iterate for the wave loop and adds merge economics, a supervised agent ladder, and an O.R.A.C.L.E order gate that must clear a stack's SEQUENCE before it is registered (order cannot be changed afterwards), and a rulebook of 36 traps mined from real incidents (each with the check that proves compliance). Born from a 98-PR backlog where 12 of the first 19 PRs triaged were ALREADY on main — closed only because nobody deleted them after batching."
+description: "Find, group and land open PRs as certified STACKS — one certification campaign per stack instead of one per PR. Invoke when a PR backlog needs triage, when related PRs should be stacked on one base chain, or when asking 'which of these are already merged?'. Wraps /iterate for the wave loop and adds merge economics, a supervised agent ladder, and an O.R.A.C.L.E order gate that must clear a stack's SEQUENCE before it is registered (order cannot be changed afterwards), and a rulebook of 37 traps mined from real incidents (each with the check that proves compliance). Born from a 98-PR backlog where 12 of the first 19 PRs triaged were ALREADY on main — closed only because nobody deleted them after batching."
 argument-hint: "<repo or scope> [every <N>m]"
 ---
 
@@ -591,12 +591,12 @@ recording it. Treat that as a defect and say so.
 
 # RULEBOOK
 
-36 rules, distilled by three adversarial passes from 59 lessons mined from real
+37 rules, distilled by three adversarial passes from 59 lessons mined from real
 incidents. Every rule carries **EVIDENCE** (what it cost) and **CHECK** (the
 command or comparison that proves compliance). A rule you cannot check is
 decoration; a rule without evidence is an opinion.
 
-AUTOMERGER RULEBOOK — 36 rules (30 distilled from 59 candidates × 3 adversarial reviews, + 3 on stack order, + 1 on marks, + 1 on serialised landings, + 1 on stack certifiability)
+AUTOMERGER RULEBOOK — 37 rules (30 distilled from 59 candidates × 3 adversarial reviews, + 3 on stack order, + 1 on marks, + 1 on serialised landings, + 1 on stack certifiability, + 1 on noisy instruments)
 
 ═══ DO NOT (highest cost first) ═══
 
@@ -749,6 +749,10 @@ AUTOMERGER RULEBOOK — 36 rules (30 distilled from 59 candidates × 3 adversari
 36. DO check, BEFORE building a stack, whether any layer below the top touches PERF_PATHS — the gate judges every layer against `main`, so each inherits the PERF_PATHS changes beneath it and one record set cannot satisfy them all. If one does, choose deliberately: native stack plus `/expedite` on the lower layers with the reasoning posted, or one campaign per such layer. "One campaign per stack" is a property of the SHAPE, not of stacking.
     EVIDENCE: stack #951, 2026-09-07 — #948's own diff was two .github files and its certification still failed naming crates/spark-model/src/video_decode_ffmpeg.rs, a file two layers below. The top carried the records and went green; the three layers under it could not, and the stack merges bottom-up.
     CHECK: for each layer, `gh pr diff --name-only <n>` against MAIN (not its base) filtered to PERF_PATHS — only the top may be non-empty for one campaign to suffice.
+
+37. DO NOT convict a PR on ONE red benchmark gate — reproduce it on the same box at the same pin, and measure the gate's own failure rate on `main` before attributing anything. A gate whose instrument is noisy convicts whatever is in front of it, and a three-probe bisect against an intermittent fault assigns blame to whichever probe landed in a bad run.
+    EVIDENCE: 2026-09-07, `concurrency-sweep` measured 4 passes and 4 failures in 8 reps on CLEAN main across three boxes — C=2 spanning 22.8..30.2 against a 24.05 effective floor, plus completions truncating at C=8/32/128. On that instrument #891 was suspected for a 24.0 (a repeat at its own pin gave 29.0 and clean main gave 27.6, slower than the PR), and #879 was labelled BROKEN by a three-probe bisect of a signature main reproduces on its own. Issue #954.
+    CHECK: before any attribution, a same-box repeat at the SAME pin, plus N>=3 reps on `main`; quote the pass rate, not the single verdict.
 
 ═══ MARKS ═══
 
