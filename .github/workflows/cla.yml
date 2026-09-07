@@ -13,9 +13,26 @@ name: "CLA Assistant"
 # re-dispatched by hand. A required check must not be cancellable by the timing
 # of unrelated comments; the runner-seconds this used to save are worth far less
 # than a PR that cannot merge. Serialised, not cancelled.
-concurrency:
-  group: cla-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
-  cancel-in-progress: false
+# ★ NO CONCURRENCY GROUP AT ALL, AND THAT IS THE FIX.
+#
+# This file used to carry `group: cla-<pr>` with `cancel-in-progress: false`,
+# added after #907 sat red on a cancelled `CLAAssistant`. It was not enough, and
+# on 2026-09-06 the SAME context went missing on #934, #935 and #908
+# simultaneously — not failed, NEVER CREATED. Each PR's run for its current head
+# read `completed/cancelled` with ZERO jobs: created 13:41:26, cancelled
+# 13:42:01, never started one.
+#
+# `cancel-in-progress: false` protects a run that is IN PROGRESS. It does
+# nothing for a run that is PENDING. From GitHub's own docs: when a run is
+# queued while another in the same concurrency group is in progress, it goes
+# pending, and "any previously pending job or workflow in the concurrency group
+# will be cancelled." Three events on one PR in quick succession — an
+# update-branch and two comments — and the middle run is discarded silently.
+#
+# A required context that is never created cannot be told from one still
+# running: branch protection waits forever. Runner-seconds are worth far less,
+# so this workflow now serialises nothing and queues nothing. Every event gets
+# its own run and every run reports.
 
 on:
   issue_comment:
