@@ -1140,6 +1140,54 @@ co-dispatch. Previously both lived behind `ATLAS_PREFILL_CODISPATCH`, so a sched
 never see an ordered queue — either no window (nothing pending to choose between) or a window whose
 cohort was immediately fused (ordering moot). The knob now exists; on this workload it measures flat.
 
+## Attacking the reuse cliff: interior SSM anchors — BLOCKED on two independent gates (2026-09-07)
+
+The plan was to give a chunk interior anchors so a divergence anywhere can re-anchor near it, using the
+existing `midchunk_capture.rs` mechanism (capture GDN recurrent + conv state mid-chunk by splitting the
+two cheap per-token kernels, no extra pass) generalized from its two tail-hugging points to N.
+Branch `perf/ssm-interior-anchors` (`16dd1b6ae`), knob `ATLAS_SSM_PREFILL_ANCHOR_TOKENS=<n>`, default
+OFF. Records: `ab_ssm_interior_anchors/20260907T001432/`.
+
+**Discovery that reframes the cliff: the mid-chunk mechanism was DEAD on GB10.**
+`prepare_midchunk_capture` opened with `if !cfg!(atlas_scale) { return None; }` — the h_state capture
+existed only in the gfx1151 split4 arm, while the NVIDIA FLA/WY ladder allocated destination pointers
+and never wrote them. So the tail and sibling anchors this file previously described as "default-on"
+have never existed on this hardware, and chunk-end checkpoints were genuinely the ONLY prefill anchors.
+That is why the cliff is exactly at the chunk boundary.
+
+**Arms were live.** `off` verified inert (no ACTIVE line, 0 anchors). `anchor1024` registered 44
+interior anchors, `anchor512` registered 55, both logging `ssm interior anchors ACTIVE`.
+
+**Gate 1 — correctness: FAILED, blocking.** The A/B's P4 asserts a cold pass is unchanged by the
+capture splits (the segmentation is supposed to be byte-identical — same algebra as the >4096
+sub-chunk loop):
+
+```
+anchor1024 COLD != control COLD  <- the SPLIT changed a cold pass. BLOCK.
+anchor512  COLD != control COLD  <- BLOCK.
+```
+
+Splitting the recurrence at a capture point regroups the FLA `CHUNK = 64` ladder and drifts the bf16
+W/U/uc/S_c intermediates, so the NVIDIA arm's capture is NOT free of numerics. (`cold vs
+warm-restore: DIFFER` appears in every arm INCLUDING the control — that is the pre-existing
+warm-restore class, not this change.)
+
+**Gate 2 — the anchors are unusable on this model anyway.** TTFT did not move at any divergence
+fraction: the 25-90% cells stayed at ~18.2 s (L=8000) and ~4.15 s (L=2048), identical to the control,
+despite 44-55 anchors being registered per arm. Cause: interior anchors carry no aux blob
+(`collect_aux_states` reads live state at the PASS END), and `requires_aux_state()` is
+`layers.iter().any(|l| l.has_aux_state())` where the attention layer returns `self.qsa.is_some()` —
+TRUE on qwen3.8-flash-next. So the restore path declines every interior anchor. They were written and
+never read. `anchor512` also regressed the EXACT-repeat cell badly (L=8000 exact 1018 ms vs the
+control's 218; L=2048 exact 2114 vs 232), i.e. the extra slots evict the anchors that do work.
+
+**Verdict: not shippable, left unmerged, default OFF so nothing changed.** To actually close the cliff
+on THIS model both must be solved: (1) a capture that is byte-exact on the FLA ladder — most likely
+capture only on the `CHUNK = 64` grid AND prove it, or capture from a boundary the ladder already
+lands on rather than forcing one; and (2) snapshotting the QSA/PLE aux state at an interior boundary,
+not just the SSM state, since this model refuses aux-less anchors at restore. Item 2 is the larger
+piece and it is a prerequisite — without it, item 1 buys nothing here.
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17

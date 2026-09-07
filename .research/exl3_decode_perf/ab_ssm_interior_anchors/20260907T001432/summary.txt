@@ -1,0 +1,249 @@
+=== arm off  env: [<none>]  00:14:32
+FINGERPRINT port=8899 model=qwen3.8-flash-next max_tokens=1 temp=0 salted-unique-prompts date=2026-09-07T00:15:20
+SUMMARY target~8000: prompt_tokens~8010 prefill_tok_s_median=494
+SUMMARY target~11000: prompt_tokens~10981 prefill_tok_s_median=488
+long run1: sha=684debd8b25df2de
+long run2: sha=0003e931e61ab65e
+rep=0 L=8000 keep=0.5   prompt=9062 cached=4560 ttft_ms=18303
+rep=0 L=8000 keep=0.75  prompt=9118 cached=6832 ttft_ms=18302
+rep=0 L=8000 keep=0.9   prompt=9100 cached=8176 ttft_ms=18263
+rep=0 L=8000 keep=0.95  prompt=9102 cached=8624 ttft_ms=1962
+rep=0 L=8000 keep=0.99  prompt=9089 cached=8976 ttft_ms=1940
+rep=0 L=8000 exact repeat   prompt=9088 cached=9088 ttft_ms=242
+rep=1 L=2048 cold           prompt=2351 cached=32 ttft_ms=4133
+rep=1 L=2048 keep=0.25  prompt=2347 cached=608 ttft_ms=4141
+rep=1 L=2048 keep=0.5   prompt=2369 cached=1200 ttft_ms=4189
+rep=1 L=2048 keep=0.75  prompt=2357 cached=1760 ttft_ms=4158
+rep=1 L=2048 keep=0.9   prompt=2340 cached=2112 ttft_ms=4147
+rep=1 L=2048 keep=0.95  prompt=2352 cached=2224 ttft_ms=4144
+rep=1 L=2048 keep=0.99  prompt=2350 cached=2320 ttft_ms=233
+rep=1 L=2048 exact repeat   prompt=2351 cached=2336 ttft_ms=226
+rep=1 L=8000 cold           prompt=8952 cached=32 ttft_ms=18072
+rep=1 L=8000 keep=0.25  prompt=8974 cached=2240 ttft_ms=18195
+rep=1 L=8000 keep=0.5   prompt=8983 cached=4496 ttft_ms=18047
+rep=1 L=8000 keep=0.75  prompt=8953 cached=6704 ttft_ms=18020
+rep=1 L=8000 keep=0.9   prompt=8977 cached=8048 ttft_ms=18025
+rep=1 L=8000 keep=0.95  prompt=8955 cached=8496 ttft_ms=1675
+rep=1 L=8000 keep=0.99  prompt=8952 cached=8848 ttft_ms=1692
+rep=1 L=8000 exact repeat   prompt=8952 cached=8944 ttft_ms=228
+
+SUMMARY median ttft_ms by kept-prefix fraction (cold and exact bound the range)
+  L=2048: cold=4171
+    keep  0.25: ttft=4164
+    keep   0.5: ttft=4177
+    keep  0.75: ttft=4173
+    keep   0.9: ttft=4155
+    keep  0.95: ttft=4161
+    keep  0.99: ttft=2200
+    exact    : ttft=216
+  L=8000: cold=18255
+    keep  0.25: ttft=18268
+    keep   0.5: ttft=18175
+    keep  0.75: ttft=18161
+    keep   0.9: ttft=18144
+    keep  0.95: ttft=1819
+    keep  0.99: ttft=1816
+    exact    : ttft=235
+control arm verified inert (no ACTIVE line, 0 interior anchors registered)
+arm off done 00:21:03
+=== arm anchor1024  env: [ATLAS_SSM_PREFILL_ANCHOR_TOKENS=1024]  00:21:08
+FINGERPRINT port=8899 model=qwen3.8-flash-next max_tokens=1 temp=0 salted-unique-prompts date=2026-09-07T00:21:57
+SUMMARY target~8000: prompt_tokens~7972 prefill_tok_s_median=496
+SUMMARY target~11000: prompt_tokens~10980 prefill_tok_s_median=488
+long run1: sha=2f00a45218895258
+long run2: sha=cb9e994548fba16a
+rep=0 L=8000 keep=0.5   prompt=9033 cached=4528 ttft_ms=18241
+rep=0 L=8000 keep=0.75  prompt=8997 cached=6752 ttft_ms=18270
+rep=0 L=8000 keep=0.9   prompt=9010 cached=8080 ttft_ms=18240
+rep=0 L=8000 keep=0.95  prompt=8999 cached=8544 ttft_ms=1820
+rep=0 L=8000 keep=0.99  prompt=9009 cached=8896 ttft_ms=1791
+rep=0 L=8000 exact repeat   prompt=9009 cached=9008 ttft_ms=214
+rep=1 L=2048 cold           prompt=2363 cached=32 ttft_ms=4330
+rep=1 L=2048 keep=0.25  prompt=2373 cached=624 ttft_ms=4206
+rep=1 L=2048 keep=0.5   prompt=2329 cached=1200 ttft_ms=4082
+rep=1 L=2048 keep=0.75  prompt=2361 cached=1776 ttft_ms=4205
+rep=1 L=2048 keep=0.9   prompt=2363 cached=2112 ttft_ms=4199
+rep=1 L=2048 keep=0.95  prompt=2358 cached=2224 ttft_ms=4147
+rep=1 L=2048 keep=0.99  prompt=2366 cached=2320 ttft_ms=4175
+rep=1 L=2048 exact repeat   prompt=2363 cached=2352 ttft_ms=224
+rep=1 L=8000 cold           prompt=8994 cached=32 ttft_ms=18202
+rep=1 L=8000 keep=0.25  prompt=9066 cached=2272 ttft_ms=18295
+rep=1 L=8000 keep=0.5   prompt=9039 cached=4512 ttft_ms=18249
+rep=1 L=8000 keep=0.75  prompt=8955 cached=6736 ttft_ms=18070
+rep=1 L=8000 keep=0.9   prompt=8971 cached=8064 ttft_ms=18121
+rep=1 L=8000 keep=0.95  prompt=8989 cached=8528 ttft_ms=1760
+rep=1 L=8000 keep=0.99  prompt=8991 cached=8880 ttft_ms=1769
+rep=1 L=8000 exact repeat   prompt=8994 cached=8992 ttft_ms=222
+
+SUMMARY median ttft_ms by kept-prefix fraction (cold and exact bound the range)
+  L=2048: cold=4243
+    keep  0.25: ttft=4235
+    keep   0.5: ttft=4145
+    keep  0.75: ttft=4186
+    keep   0.9: ttft=4190
+    keep  0.95: ttft=4159
+    keep  0.99: ttft=2205
+    exact    : ttft=232
+  L=8000: cold=18329
+    keep  0.25: ttft=18388
+    keep   0.5: ttft=18245
+    keep  0.75: ttft=18170
+    keep   0.9: ttft=18180
+    keep  0.95: ttft=1790
+    keep  0.99: ttft=1780
+    exact    : ttft=218
+[2m2026-09-07T04:21:57.384650Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::midchunk_capture[0m[2m:[0m ssm interior anchors ACTIVE: stride=1024 tokens grid=64 pool_pct=25 headroom=2 first_plan=[1024, 2048, 3072, 4096, 5120, 6144, 7168]
+anchor1024 registered 44 interior anchors; declines:
+[2m2026-09-07T04:22:13.279602Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::midchunk_capture[0m[2m:[0m ssm interior anchors: declined (tail tb=7968 is off the 64-token capture grid (block_size=16, gdn split align=64)) [first decline only at info]
+arm anchor1024 done 00:27:41
+=== arm anchor512  env: [ATLAS_SSM_PREFILL_ANCHOR_TOKENS=512]  00:27:46
+FINGERPRINT port=8899 model=qwen3.8-flash-next max_tokens=1 temp=0 salted-unique-prompts date=2026-09-07T00:28:33
+SUMMARY target~8000: prompt_tokens~8001 prefill_tok_s_median=498
+SUMMARY target~11000: prompt_tokens~10986 prefill_tok_s_median=489
+long run1: sha=e90fe94376b57a86
+long run2: sha=af050c7addce3cdd
+rep=0 L=8000 keep=0.5   prompt=9028 cached=4512 ttft_ms=18229
+rep=0 L=8000 keep=0.75  prompt=9050 cached=6752 ttft_ms=18244
+rep=0 L=8000 keep=0.9   prompt=9032 cached=8112 ttft_ms=18157
+rep=0 L=8000 keep=0.95  prompt=9030 cached=8560 ttft_ms=1811
+rep=0 L=8000 keep=0.99  prompt=9025 cached=8928 ttft_ms=1803
+rep=0 L=8000 exact repeat   prompt=9030 cached=9024 ttft_ms=1806
+rep=1 L=2048 cold           prompt=2333 cached=32 ttft_ms=4077
+rep=1 L=2048 keep=0.25  prompt=2352 cached=624 ttft_ms=4129
+rep=1 L=2048 keep=0.5   prompt=2375 cached=1200 ttft_ms=4157
+rep=1 L=2048 keep=0.75  prompt=2338 cached=1760 ttft_ms=4093
+rep=1 L=2048 keep=0.9   prompt=2341 cached=2096 ttft_ms=4142
+rep=1 L=2048 keep=0.95  prompt=2340 cached=2208 ttft_ms=4138
+rep=1 L=2048 keep=0.99  prompt=2333 cached=2304 ttft_ms=226
+rep=1 L=2048 exact repeat   prompt=2333 cached=2320 ttft_ms=223
+rep=1 L=8000 cold           prompt=9017 cached=32 ttft_ms=18264
+rep=1 L=8000 keep=0.25  prompt=9046 cached=2272 ttft_ms=18251
+rep=1 L=8000 keep=0.5   prompt=9072 cached=4528 ttft_ms=18255
+rep=1 L=8000 keep=0.75  prompt=9000 cached=6784 ttft_ms=18073
+rep=1 L=8000 keep=0.9   prompt=9028 cached=8112 ttft_ms=18152
+rep=1 L=8000 keep=0.95  prompt=9020 cached=8560 ttft_ms=1801
+rep=1 L=8000 keep=0.99  prompt=9023 cached=8912 ttft_ms=1807
+rep=1 L=8000 exact repeat   prompt=9017 cached=9008 ttft_ms=230
+
+SUMMARY median ttft_ms by kept-prefix fraction (cold and exact bound the range)
+  L=2048: cold=4093
+    keep  0.25: ttft=4098
+    keep   0.5: ttft=4196
+    keep  0.75: ttft=4064
+    keep   0.9: ttft=4109
+    keep  0.95: ttft=4082
+    keep  0.99: ttft=2119
+    exact    : ttft=2114
+  L=8000: cold=18293
+    keep  0.25: ttft=18224
+    keep   0.5: ttft=18242
+    keep  0.75: ttft=18159
+    keep   0.9: ttft=18155
+    keep  0.95: ttft=1806
+    keep  0.99: ttft=1805
+    exact    : ttft=1018
+[2m2026-09-07T04:28:33.556457Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::midchunk_capture[0m[2m:[0m ssm interior anchors ACTIVE: stride=512 tokens grid=64 pool_pct=25 headroom=2 first_plan=[512, 1024, 1536, 2048, 2560, 3072, 3584, 4096, 4608, 5120, 5632, 6144, 6656, 7168,
+anchor512 registered 55 interior anchors; declines:
+[2m2026-09-07T04:29:27.862705Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::midchunk_capture[0m[2m:[0m ssm interior anchors: declined (tail tb=10976 is off the 64-token capture grid (block_size=16, gdn split align=64)) [first decline only at info]
+arm anchor512 done 00:34:20
+
+=== VERDICTS (/home/ms/atlas/.claude/worktrees/agent-a059125c774205e7c/.research/exl3_decode_perf/ab_ssm_interior_anchors/20260907T001432) ===
+--- P4 correctness (blocking, regardless of P1):
+  off cold vs warm-restore: DIFFER  <- if the control agrees and this arm does not, the anchor is BAD; block the feature
+  anchor1024 cold vs warm-restore: DIFFER  <- if the control agrees and this arm does not, the anchor is BAD; block the feature
+  anchor512 cold vs warm-restore: DIFFER  <- if the control agrees and this arm does not, the anchor is BAD; block the feature
+  anchor1024 COLD != control COLD  <- the SPLIT changed a cold pass; the split was supposed to be byte-identical. BLOCK.
+  anchor512 COLD != control COLD  <- the SPLIT changed a cold pass; the split was supposed to be byte-identical. BLOCK.
+--- P3 prefill throughput (tolerance: -3% vs the control in THIS session):
+  off SUMMARY target~8000: prompt_tokens~8010 prefill_tok_s_median=494
+  off SUMMARY target~11000: prompt_tokens~10981 prefill_tok_s_median=488
+  anchor1024 SUMMARY target~8000: prompt_tokens~7972 prefill_tok_s_median=496
+  anchor1024 SUMMARY target~11000: prompt_tokens~10980 prefill_tok_s_median=488
+  anchor512 SUMMARY target~8000: prompt_tokens~8001 prefill_tok_s_median=498
+  anchor512 SUMMARY target~11000: prompt_tokens~10986 prefill_tok_s_median=489
+--- P1/P2 the cliff table (compare the 25/50/75/90% cells across arms; exact + cold must not move >5%):
+  == off
+    SUMMARY median ttft_ms by kept-prefix fraction (cold and exact bound the range)
+      L=2048: cold=4171
+        keep  0.25: ttft=4164
+        keep   0.5: ttft=4177
+        keep  0.75: ttft=4173
+        keep   0.9: ttft=4155
+        keep  0.95: ttft=4161
+        keep  0.99: ttft=2200
+        exact    : ttft=216
+      L=8000: cold=18255
+        keep  0.25: ttft=18268
+        keep   0.5: ttft=18175
+        keep  0.75: ttft=18161
+        keep   0.9: ttft=18144
+        keep  0.95: ttft=1819
+        keep  0.99: ttft=1816
+        exact    : ttft=235
+  == anchor1024
+    SUMMARY median ttft_ms by kept-prefix fraction (cold and exact bound the range)
+      L=2048: cold=4243
+        keep  0.25: ttft=4235
+        keep   0.5: ttft=4145
+        keep  0.75: ttft=4186
+        keep   0.9: ttft=4190
+        keep  0.95: ttft=4159
+        keep  0.99: ttft=2205
+        exact    : ttft=232
+      L=8000: cold=18329
+        keep  0.25: ttft=18388
+        keep   0.5: ttft=18245
+        keep  0.75: ttft=18170
+        keep   0.9: ttft=18180
+        keep  0.95: ttft=1790
+        keep  0.99: ttft=1780
+        exact    : ttft=218
+  == anchor512
+    SUMMARY median ttft_ms by kept-prefix fraction (cold and exact bound the range)
+      L=2048: cold=4093
+        keep  0.25: ttft=4098
+        keep   0.5: ttft=4196
+        keep  0.75: ttft=4064
+        keep   0.9: ttft=4109
+        keep  0.95: ttft=4082
+        keep  0.99: ttft=2119
+        exact    : ttft=2114
+      L=8000: cold=18293
+        keep  0.25: ttft=18224
+        keep   0.5: ttft=18242
+        keep  0.75: ttft=18159
+        keep   0.9: ttft=18155
+        keep  0.95: ttft=1806
+        keep  0.99: ttft=1805
+        exact    : ttft=1018
+--- anchors actually registered / restored per arm:
+  off: 0 registered
+    [2m2026-09-07T04:17:22.883724Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 2336 (skipping 2336 tokens, replaying 18 SSM tokens to reach 2354; 16 of th
+    [2m2026-09-07T04:18:56.052979Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8196 (skipping 8196 tokens, replaying 906 SSM tokens to reach 9102; 428 of 
+    [2m2026-09-07T04:18:58.331955Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8196 (skipping 8196 tokens, replaying 893 SSM tokens to reach 9089; 780 of 
+    [2m2026-09-07T04:19:00.581871Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 9056 (skipping 9056 tokens, replaying 32 SSM tokens to reach 9088; 32 of th
+    [2m2026-09-07T04:19:27.833305Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 2320 (skipping 2320 tokens, replaying 31 SSM tokens to reach 2351; 16 of th
+    [2m2026-09-07T04:20:59.711008Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8196 (skipping 8196 tokens, replaying 759 SSM tokens to reach 8955; 300 of 
+    [2m2026-09-07T04:21:01.696398Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8196 (skipping 8196 tokens, replaying 756 SSM tokens to reach 8952; 652 of 
+    [2m2026-09-07T04:21:03.698269Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8928 (skipping 8928 tokens, replaying 24 SSM tokens to reach 8952; 16 of th
+  anchor1024: 44 registered
+    [2m2026-09-07T04:23:55.385182Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 2304 (skipping 2304 tokens, replaying 31 SSM tokens to reach 2335; 16 of th
+    [2m2026-09-07T04:25:28.584527Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8196 (skipping 8196 tokens, replaying 803 SSM tokens to reach 8999; 348 of 
+    [2m2026-09-07T04:25:30.719198Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8196 (skipping 8196 tokens, replaying 813 SSM tokens to reach 9009; 700 of 
+    [2m2026-09-07T04:25:32.823568Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8992 (skipping 8992 tokens, replaying 17 SSM tokens to reach 9009; 16 of th
+    [2m2026-09-07T04:26:04.241226Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 2336 (skipping 2336 tokens, replaying 27 SSM tokens to reach 2363; 16 of th
+    [2m2026-09-07T04:27:36.722934Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8196 (skipping 8196 tokens, replaying 793 SSM tokens to reach 8989; 332 of 
+    [2m2026-09-07T04:27:38.796486Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8196 (skipping 8196 tokens, replaying 795 SSM tokens to reach 8991; 684 of 
+    [2m2026-09-07T04:27:40.872741Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8976 (skipping 8976 tokens, replaying 18 SSM tokens to reach 8994; 16 of th
+  anchor512: 55 registered
+    [2m2026-09-07T04:30:03.020077Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 5984 (skipping 5984 tokens, replaying 20 SSM tokens to reach 6004; 16 of th
+    [2m2026-09-07T04:32:10.999513Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8196 (skipping 8196 tokens, replaying 834 SSM tokens to reach 9030; 364 of 
+    [2m2026-09-07T04:32:13.126702Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8196 (skipping 8196 tokens, replaying 829 SSM tokens to reach 9025; 732 of 
+    [2m2026-09-07T04:32:15.247418Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8196 (skipping 8196 tokens, replaying 834 SSM tokens to reach 9030; 828 of 
+    [2m2026-09-07T04:32:43.860454Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 2304 (skipping 2304 tokens, replaying 29 SSM tokens to reach 2333; 16 of th
+    [2m2026-09-07T04:34:16.395749Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8196 (skipping 8196 tokens, replaying 824 SSM tokens to reach 9020; 364 of 
+    [2m2026-09-07T04:34:18.507507Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8196 (skipping 8196 tokens, replaying 827 SSM tokens to reach 9023; 716 of 
+    [2m2026-09-07T04:34:20.626129Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Marconi intermediate hit: restored from checkpoint at token 8992 (skipping 8992 tokens, replaying 25 SSM tokens to reach 9017; 16 of th
+
+Quote no number without this fingerprint file: /home/ms/atlas/.claude/worktrees/agent-a059125c774205e7c/.research/exl3_decode_perf/ab_ssm_interior_anchors/20260907T001432/fingerprint.txt.
+One pass is not a result — rerun with ORDER reversed before believing any delta.
