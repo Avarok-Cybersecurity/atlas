@@ -58,16 +58,15 @@ pub(crate) fn hc_decode_rows_enabled() -> bool {
 pub(crate) const HC_DEC_MAX_T: u32 = 8;
 
 /// The decode-rows arm's shape contract (mirrors the kernel-file comment):
-/// `hc*H % 256 == 0` (256 elements per warp step), `H % 64 == 0` (64 outputs
-/// per block), `rank % 8 == 0` and `rank * 2 % 16 == 0` (16-byte row loads),
+/// `hc*H % 256 == 0` (256 elements per warp step), `H % 16 == 0` (16 outputs
+/// per block), `rank % 32 == 0` (four 16-byte-aligned quarter rows),
 /// `hc <= 8` (block = hc * 64 <= 512 threads), `1 <= T <= 8`.
 pub(crate) fn hc_decode_rows_shape_ok(num_tokens: u32, hidden_size: u32, hc_mult: u32, rank: u32) -> bool {
     let hc_dim = hc_mult * hidden_size;
     (1..=HC_DEC_MAX_T).contains(&num_tokens)
         && hc_dim % 256 == 0
-        && hidden_size % 64 == 0
-        && rank % 8 == 0
-        && (rank * 2) % 16 == 0
+        && hidden_size % 16 == 0
+        && rank % 32 == 0
         && (1..=8).contains(&hc_mult)
 }
 
@@ -138,10 +137,11 @@ pub(crate) fn hc_pre_rows(
         .arg_u32(rank)
         .launch(stream)?;
 
-    // Thread per (stream, d); 64 outputs per block; mean over streams in smem.
-    let smem = (HC_DEC_MAX_T * rank + hc_mult * 64 * HC_DEC_MAX_T) * 4;
+    // Four threads per (stream, d) row, 16 outputs per block (block = hc*64);
+    // quarter-row partials reduce by shuffle, the stream mean in smem.
+    let smem = (HC_DEC_MAX_T * rank + hc_mult * 16 * HC_DEC_MAX_T) * 4;
     KernelLaunch::new(gpu, k_up)
-        .grid([hidden_size / 64, 1, 1])
+        .grid([hidden_size / 16, 1, 1])
         .block([hc_mult * 64, 1, 1])
         .shared_mem(smem)
         .arg_ptr(normed)

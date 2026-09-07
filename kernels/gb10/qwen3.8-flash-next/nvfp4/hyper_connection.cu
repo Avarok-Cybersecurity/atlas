@@ -639,8 +639,9 @@ extern "C" __global__ void qhc_mtp_combine_streams(
 //   hc_dec_down    grid=[ceil(rows/8)] x 256   warp per weight row (rank rows + inject rows):
 //                                              low[t, r]  = silu(down[r] . normed[t] / hc)
 //                                              inj[t, s]  = 2 sigmoid(inject[s] . normed[t] / hc)
-//   hc_dec_up      grid=[H/64] x (hc*64)       thread per (stream, d): sigmoid(up[s*H+d] . low[t]) * normed[t, s*H+d],
-//                                              mean over streams in shared memory -> y[t, d] BF16
+//   hc_dec_up      grid=[H/16] x (hc*64)       4 threads per (stream, d) row (quarter rows, xor-shuffle reduce):
+//                                              sigmoid(up[s*H+d] . low[t]) * normed[t, s*H+d], mean over streams
+//                                              in shared memory -> y[t, d] BF16
 //
 // Shape contract (checked by the Rust dispatcher, which falls back to the
 // existing arms otherwise): hc*H % 256 == 0, H % 64 == 0, rank % 8 == 0,
@@ -730,18 +731,25 @@ extern "C" __global__ void hc_dec_up(
     const unsigned int hc,
     const unsigned int rank
 ) {
-    // blockDim.x == hc * 64: thread (s = tid / 64, dl = tid % 64) owns output
-    // element d = blockIdx.x * 64 + dl on stream s, i.e. up_w row s*H + d.
+    // blockDim.x == hc * 64. Thread (s = tid / 64, dl = (tid % 64) / 4,
+    // q = tid % 4) owns a QUARTER of up_w row s*H + d, d = blockIdx.x*16 + dl:
+    // rank/4 consecutive elements, so the four lanes of a row read adjacent
+    // 16-byte chunks (coalesced within the row) and the block keeps 4x the
+    // loads in flight of a thread-per-row layout. The four partials reduce
+    // with two xor-shuffles (lanes q = 0..3 are adjacent), the stream mean
+    // reduces in shared memory. Grid = H / 16.
     extern __shared__ float qhc_dec_smem[];
-    float* smem_low = qhc_dec_smem;                              // [T, rank]
-    float* smem_part = qhc_dec_smem + (size_t)QHC_DEC_MAX_T * rank; // [hc*64, QHC_DEC_MAX_T]
+    float* smem_low = qhc_dec_smem;                                  // [T, rank]
+    float* smem_part = qhc_dec_smem + (size_t)QHC_DEC_MAX_T * rank;  // [hc*16, QHC_DEC_MAX_T]
     const unsigned int tid = threadIdx.x;
     const unsigned int s = tid >> 6;
-    const unsigned int dl = tid & 63u;
+    const unsigned int dl = (tid & 63u) >> 2;
+    const unsigned int q = tid & 3u;
     const unsigned int H = hidden_size;
     const unsigned int hc_dim = hc * H;
-    const unsigned int d = blockIdx.x * 64u + dl;
+    const unsigned int d = blockIdx.x * 16u + dl;
     const unsigned int i = s * H + d;
+    const unsigned int slice = rank >> 2;   // rank % 32 == 0 => slice % 8 == 0
 
     for (unsigned int k = tid; k < num_tokens * rank; k += blockDim.x) {
         smem_low[k] = low[k];
@@ -752,38 +760,51 @@ extern "C" __global__ void hc_dec_up(
     #pragma unroll
     for (int t = 0; t < QHC_DEC_MAX_T; ++t) acc[t] = 0.0f;
 
-    const __nv_bfloat16* urow = up_w + (size_t)i * rank;
-    for (unsigned int r = 0; r < rank; r += 8u) {
+    const __nv_bfloat16* urow = up_w + (size_t)i * rank + (size_t)q * slice;
+    const unsigned int r0 = q * slice;
+    #pragma unroll 2
+    for (unsigned int r = 0; r < slice; r += 8u) {
         float w[8];
         qhc_unpack8(*reinterpret_cast<const uint4*>(urow + r), w);
         #pragma unroll
         for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
             if (t < (int)num_tokens) {
-                const float* lo = smem_low + (size_t)t * rank + r;
+                const float* lo = smem_low + (size_t)t * rank + r0 + r;
                 acc[t] += w[0] * lo[0] + w[1] * lo[1] + w[2] * lo[2] + w[3] * lo[3]
                         + w[4] * lo[4] + w[5] * lo[5] + w[6] * lo[6] + w[7] * lo[7];
             }
         }
     }
+    // Reduce the four quarter-row partials (adjacent lanes q = 0..3).
     #pragma unroll
     for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
         if (t < (int)num_tokens) {
-            smem_part[(size_t)tid * QHC_DEC_MAX_T + t] =
-                qhc_sigmoid(acc[t]) * normed[(size_t)t * hc_dim + i];
+            float v = acc[t];
+            v += __shfl_xor_sync(0xFFFFFFFFu, v, 1);
+            v += __shfl_xor_sync(0xFFFFFFFFu, v, 2);
+            acc[t] = v;
+        }
+    }
+    if (q == 0) {
+        #pragma unroll
+        for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
+            if (t < (int)num_tokens) {
+                smem_part[((size_t)s * 16u + dl) * QHC_DEC_MAX_T + t] =
+                    qhc_sigmoid(acc[t]) * normed[(size_t)t * hc_dim + i];
+            }
         }
     }
     __syncthreads();
-    if (s == 0) {
+    if (s == 0 && q == 0) {
         const float inv_hc = 1.0f / (float)hc;
-        __nv_bfloat16* y = y_out;
         #pragma unroll
         for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
             if (t < (int)num_tokens) {
                 float mixed = 0.0f;
                 for (unsigned int s2 = 0; s2 < hc; ++s2) {
-                    mixed += smem_part[((size_t)s2 * 64u + dl) * QHC_DEC_MAX_T + t];
+                    mixed += smem_part[((size_t)s2 * 16u + dl) * QHC_DEC_MAX_T + t];
                 }
-                y[(size_t)t * H + d] = __float2bfloat16(mixed * inv_hc);
+                y_out[(size_t)t * H + d] = __float2bfloat16(mixed * inv_hc);
             }
         }
     }
