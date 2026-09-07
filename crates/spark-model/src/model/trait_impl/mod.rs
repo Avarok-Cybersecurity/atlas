@@ -39,6 +39,7 @@ mod sequence;
 mod speculative;
 pub(in crate::model) mod ssm_fault_in;
 mod verify_a;
+mod verify_a_ssm;
 mod verify_b;
 mod verify_c;
 mod verify_c2;
