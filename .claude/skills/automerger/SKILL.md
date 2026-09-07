@@ -1,6 +1,6 @@
 ---
 name: automerger
-description: "Find, group and land open PRs as certified STACKS — one certification campaign per stack instead of one per PR. Invoke when a PR backlog needs triage, when related PRs should be stacked on one base chain, or when asking 'which of these are already merged?'. Wraps /iterate for the wave loop and adds merge economics, a supervised agent ladder, and an O.R.A.C.L.E order gate that must clear a stack's SEQUENCE before it is registered (order cannot be changed afterwards), and a rulebook of 37 traps mined from real incidents (each with the check that proves compliance). Born from a 98-PR backlog where 12 of the first 19 PRs triaged were ALREADY on main — closed only because nobody deleted them after batching."
+description: "Find, group and land open PRs as certified STACKS — one certification campaign per stack instead of one per PR. Invoke when a PR backlog needs triage, when related PRs should be stacked on one base chain, or when asking 'which of these are already merged?'. Wraps /iterate for the wave loop and adds merge economics, a supervised agent ladder, and an O.R.A.C.L.E order gate that must clear a stack's SEQUENCE before it is registered (order cannot be changed afterwards), and a rulebook of 38 traps mined from real incidents (each with the check that proves compliance). Born from a 98-PR backlog where 12 of the first 19 PRs triaged were ALREADY on main — closed only because nobody deleted them after batching."
 argument-hint: "<repo or scope> [every <N>m]"
 ---
 
@@ -615,12 +615,12 @@ recording it. Treat that as a defect and say so.
 
 # RULEBOOK
 
-37 rules, distilled by three adversarial passes from 59 lessons mined from real
+38 rules, distilled by three adversarial passes from 59 lessons mined from real
 incidents. Every rule carries **EVIDENCE** (what it cost) and **CHECK** (the
 command or comparison that proves compliance). A rule you cannot check is
 decoration; a rule without evidence is an opinion.
 
-AUTOMERGER RULEBOOK — 37 rules (30 distilled from 59 candidates × 3 adversarial reviews, + 3 on stack order, + 1 on marks, + 1 on serialised landings, + 1 on stack certifiability, + 1 on noisy instruments)
+AUTOMERGER RULEBOOK — 38 rules (30 distilled from 59 candidates × 3 adversarial reviews, + 3 on stack order, + 1 on marks, + 1 on serialised landings, + 1 on stack certifiability, + 1 on noisy instruments, + 1 on guard thresholds)
 
 ═══ DO NOT (highest cost first) ═══
 
@@ -777,6 +777,10 @@ AUTOMERGER RULEBOOK — 37 rules (30 distilled from 59 candidates × 3 adversari
 37. DO NOT convict a PR on ONE red benchmark gate — reproduce it on the same box at the same pin, and measure the gate's own failure rate on `main` before attributing anything. A gate whose instrument is noisy convicts whatever is in front of it, and a three-probe bisect against an intermittent fault assigns blame to whichever probe landed in a bad run.
     EVIDENCE: 2026-09-07, `concurrency-sweep` measured 4 passes and 4 failures in 8 reps on CLEAN main across three boxes — C=2 spanning 22.8..30.2 against a 24.05 effective floor, plus completions truncating at C=8/32/128. On that instrument #891 was suspected for a 24.0 (a repeat at its own pin gave 29.0 and clean main gave 27.6, slower than the PR), and #879 was labelled BROKEN by a three-probe bisect of a signature main reproduces on its own. Issue #954.
     CHECK: before any attribution, a same-box repeat at the SAME pin, plus N>=3 reps on `main`; quote the pass rate, not the single verdict.
+
+38. DO derive a guard's threshold from the OBSERVED distribution of the thing it guards, and write that observation into the guard — a number chosen from imagination fails in the direction you did not picture, and a guard that discards good work is as expensive as one that misses bad.
+    EVIDENCE: 2026-09-07, a `[ "$dur" -lt 60 ]` sanity floor — meant to catch a benchmark that returns INSTANTLY (rc=127, a missing .so, a refused serve) — aborted a `video-fidelity` leg that had just PASSED 14/14 in 35s. Every video-fidelity run that night took 34-36s and those durations were already in the logs; the threshold was picked without looking. Cost ~15 min of a GPU box mid-campaign. The guards that worked that night (rc=127, dirty-tree, head-equals-base) were each written from a real incident.
+    CHECK: the guard's comment names the measured range it was cut from; the threshold sits outside that range, not inside it.
 
 ═══ MARKS ═══
 
