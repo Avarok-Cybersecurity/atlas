@@ -1,6 +1,6 @@
 ---
 name: automerger
-description: "Find, group and land open PRs as certified STACKS — one certification campaign per stack instead of one per PR. Invoke when a PR backlog needs triage, when related PRs should be stacked on one base chain, or when asking 'which of these are already merged?'. Wraps /iterate for the wave loop and adds merge economics, a supervised agent ladder, and an O.R.A.C.L.E order gate that must clear a stack's SEQUENCE before it is registered (order cannot be changed afterwards), and a rulebook of 34 traps mined from real incidents (each with the check that proves compliance). Born from a 98-PR backlog where 12 of the first 19 PRs triaged were ALREADY on main — closed only because nobody deleted them after batching."
+description: "Find, group and land open PRs as certified STACKS — one certification campaign per stack instead of one per PR. Invoke when a PR backlog needs triage, when related PRs should be stacked on one base chain, or when asking 'which of these are already merged?'. Wraps /iterate for the wave loop and adds merge economics, a supervised agent ladder, and an O.R.A.C.L.E order gate that must clear a stack's SEQUENCE before it is registered (order cannot be changed afterwards), and a rulebook of 35 traps mined from real incidents (each with the check that proves compliance). Born from a 98-PR backlog where 12 of the first 19 PRs triaged were ALREADY on main — closed only because nobody deleted them after batching."
 argument-hint: "<repo or scope> [every <N>m]"
 ---
 
@@ -303,6 +303,41 @@ and not a mood. **STOP AND ASK when any of these is true:**
 Absent all of those: post the evidence comment, then the bare `/seal`, then
 merge. Say in the wave report that you sealed and on what authority.
 
+## Certified stacks land IN SERIES, and only the first survives
+
+★ **A RECORD IS A STATEMENT ABOUT A TREE, AND MERGING MOVES THE TREE.**
+
+`record_covers` diffs `PERF_PATHS` between the record's commit and the head
+being judged. So the moment ONE stack whose diff touches `PERF_PATHS` merges,
+every OTHER certified stack still in flight is stale — not because anything
+regressed, but because the tree it was certified against no longer exists.
+
+Measured 2026-09-07. #891 merged at 01:29Z carrying changes under
+`crates/atlas-core`, `crates/atlas-plugin/benchmarks/video`,
+`crates/spark-model/layers/{qwen3_ssm,vision_encoder}`, `crates/spark-runtime/cuda`
+and `crates/spark-server/{cli,scheduler}`. Rebasing the next stack onto that
+main produced a non-empty `PERF_PATHS` diff against its own records, and its
+eleven green gates — five GPU-hours — had to be re-run.
+
+**No amount of ordering discipline avoids this.** It is a property of what a
+record means. What follows from it:
+
+- **Schedule certified stacks one at a time.** Certify, land, THEN certify the
+  next against the resulting main. Certifying two in parallel guarantees that
+  one of them pays twice.
+- **Choose the first lander deliberately.** Prefer the stack that makes
+  everything after it cheaper — the one fixing CI flakes, mark handling or
+  runner spend — over the one that is merely ready first.
+- **A `.github`-only stack is free of this.** Check before assuming:
+  `git diff --name-only <old-main> <new-main> | grep -E '^(crates|kernels|Cargo)'`
+  — empty means every in-flight record still covers.
+- **Publish a keep-ref before rewriting a certified branch.** A rebase orphans
+  the commit the records name, and the gate then reports
+  *"git cannot diff that commit against this one"* — which reads like a
+  corrupted record and is really an unreachable one. `git push origin
+  <records-commit>:refs/heads/certified/<stack>-<pin>` costs nothing and keeps
+  the measurement auditable.
+
 ## One certification per stack
 
 This is the change that makes stacking pay. Native GitHub stacked PRs
@@ -517,12 +552,12 @@ recording it. Treat that as a defect and say so.
 
 # RULEBOOK
 
-34 rules, distilled by three adversarial passes from 59 lessons mined from real
+35 rules, distilled by three adversarial passes from 59 lessons mined from real
 incidents. Every rule carries **EVIDENCE** (what it cost) and **CHECK** (the
 command or comparison that proves compliance). A rule you cannot check is
 decoration; a rule without evidence is an opinion.
 
-AUTOMERGER RULEBOOK — 34 rules (30 distilled from 59 candidates × 3 adversarial reviews, + 3 on stack order, + 1 on marks)
+AUTOMERGER RULEBOOK — 35 rules (30 distilled from 59 candidates × 3 adversarial reviews, + 3 on stack order, + 1 on marks, + 1 on serialised landings)
 
 ═══ DO NOT (highest cost first) ═══
 
@@ -667,6 +702,10 @@ AUTOMERGER RULEBOOK — 34 rules (30 distilled from 59 candidates × 3 adversari
 33. DO print the stack's ordering justification in every wave report while the stack is open — one line per layer, plus ORACLE's verdict and timestamp.
     EVIDENCE: on 2026-09-06 a wrong order sat visible in the base chain for six hours and nobody, the author included, articulated it until the same flake failed the same test twice.
     CHECK: the wave report contains an ordering table for every open stack; a stack with no justification is treated as unchecked, not as fine.
+
+35. DO land certified stacks ONE AT A TIME, and pick the first lander for what it makes cheaper — a record is a statement about a tree, so merging any stack whose diff touches PERF_PATHS makes every other in-flight certification stale. Before rewriting a certified branch, publish `refs/heads/certified/<stack>-<pin>` at the records commit: a rebase orphans the sha the records name, and the gate then says "git cannot diff that commit against this one", which reads like corruption and is really unreachability.
+    EVIDENCE: 2026-09-07 #891 merged carrying crates/ changes; the next stack's eleven gates (5 GPU-hours) had to be re-run, and a third stack's records were orphaned by an earlier rebase until a keep-ref restored them.
+    CHECK: `git diff --name-only <old-main> <new-main> | grep -E '^(crates|kernels|Cargo)'` is empty before trusting an in-flight certification; `git merge-base --is-ancestor <record-sha> <any-ref>` succeeds for every record commit.
 
 ═══ MARKS ═══
 
