@@ -89,9 +89,11 @@ const SHAPES: [(&str, usize, usize); 10] = [
     ("27B mtp ffn_down [ 5120 x 17408]", 5120, 17408),
 ];
 
-/// Compile-time `MAX_M` of `dense_gemv_bf16_batchm`. The kernel CLAMPS above
-/// it rather than erroring, so the batchm leg must not be run past it — mirror
-/// of `ops::DENSE_GEMV_BATCHM_MAX_M`.
+/// Widest batch this microtest exercises. The kernel's compile-time `MAX_M`
+/// is 16 and it CLAMPS above that rather than erroring, so the batchm leg must
+/// never be run past it — but 8 is deliberate here: it is the decode band
+/// `ops::DENSE_GEMV_BATCHM_DECODE_MAX_M` freezes, and bit-parity at those
+/// widths is the property the sealed decode reference depends on.
 const BATCHM_MAX_M: usize = 8;
 
 struct Lcg(u64);

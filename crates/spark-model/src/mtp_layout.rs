@@ -17,8 +17,8 @@
 //! predicate the check should have been asking, kept separate from any one
 //! loader so a new architecture only has to be named here once.
 
-use spark_runtime::weights::WeightStore;
 use atlas_core::config::ModelConfig;
+use spark_runtime::weights::WeightStore;
 
 /// The MTP weight layout a checkpoint ships, if any.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,10 +60,10 @@ pub fn detect<'a>(
     for n in names {
         if n.starts_with("mtp.") {
             has_prefix = true;
-        } else if let Some(idx) = layer_index(n) {
-            if idx >= num_hidden_layers {
-                extras.push(idx);
-            }
+        } else if let Some(idx) = layer_index(n)
+            && idx >= num_hidden_layers
+        {
+            extras.push(idx);
         }
     }
     if has_prefix {
@@ -116,13 +116,19 @@ mod tests {
     #[test]
     fn qwen_mtp_prefix_still_detected() {
         let names = ["model.layers.0.self_attn.q_proj.weight", "mtp.fc.weight"];
-        assert_eq!(detect(names.iter().copied(), 48), Some(MtpLayout::MtpPrefix));
+        assert_eq!(
+            detect(names.iter().copied(), 48),
+            Some(MtpLayout::MtpPrefix)
+        );
     }
 
     #[test]
     fn deepseek_multi_module_prefix_still_detected() {
         let names = ["mtp.0.self_attn.q_proj.weight", "mtp.1.eh_proj.weight"];
-        assert_eq!(detect(names.iter().copied(), 61), Some(MtpLayout::MtpPrefix));
+        assert_eq!(
+            detect(names.iter().copied(), 61),
+            Some(MtpLayout::MtpPrefix)
+        );
     }
 
     #[test]
@@ -181,7 +187,10 @@ mod tests {
     #[test]
     fn unprefixed_mistral_layer_names_parse() {
         assert_eq!(layer_index("layers.3.attention.wq.weight"), Some(3));
-        assert_eq!(layer_index("model.language_model.layers.45.eh_proj.weight"), Some(45));
+        assert_eq!(
+            layer_index("model.language_model.layers.45.eh_proj.weight"),
+            Some(45)
+        );
         assert_eq!(layer_index("lm_head.weight"), None);
         assert_eq!(layer_index("model.visual.blocks.2.attn.proj.weight"), None);
     }

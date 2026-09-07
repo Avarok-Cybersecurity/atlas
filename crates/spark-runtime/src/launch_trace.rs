@@ -109,7 +109,10 @@ pub fn end_and_diff(max_report: usize) -> Option<String> {
         }
         for (a, (pv, cv)) in p.args.iter().zip(c.args.iter()).enumerate() {
             if pv != cv {
-                what.push(format!("arg{a} {pv:#x} -> {cv:#x} (Δ {})", *cv as i64 - *pv as i64));
+                what.push(format!(
+                    "arg{a} {pv:#x} -> {cv:#x} (Δ {})",
+                    *cv as i64 - *pv as i64
+                ));
             }
         }
         if p.args.len() != c.args.len() {
@@ -122,5 +125,8 @@ pub fn end_and_diff(max_report: usize) -> Option<String> {
             what.join("; ")
         ));
     }
-    Some(format!("{n} differing op(s) of {}\n{out}", cur.len().min(prev.len())))
+    Some(format!(
+        "{n} differing op(s) of {}\n{out}",
+        cur.len().min(prev.len())
+    ))
 }

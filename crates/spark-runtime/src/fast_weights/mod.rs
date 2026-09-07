@@ -142,7 +142,6 @@ impl FastSafetensorsLoader {
             skip_vision: false,
         }
     }
-
 }
 
 impl WeightLoader for FastSafetensorsLoader {
@@ -516,7 +515,9 @@ mod skip_vision_tests {
     #[test]
     fn vision_names_are_recognised() {
         assert!(is_vision_tensor("model.visual.blocks.0.attn.proj.weight"));
-        assert!(is_vision_tensor("model.vision_tower.encoder.layer.0.weight"));
+        assert!(is_vision_tensor(
+            "model.vision_tower.encoder.layer.0.weight"
+        ));
         assert!(is_vision_tensor("visual.merger.proj.weight"));
         assert!(!is_vision_tensor(
             "model.language_model.layers.45.eh_proj.weight"
@@ -553,7 +554,11 @@ mod skip_vision_tests {
     #[test]
     fn ep_expert_filtering_is_unchanged_by_the_vision_rule() {
         let l = loader(true, 2); // ep_rank 0 of 2, 288 experts -> keeps 0..143
-        assert!(!l.should_skip_tensor("model.language_model.layers.4.mlp.experts.7.up_proj.weight"));
-        assert!(l.should_skip_tensor("model.language_model.layers.4.mlp.experts.200.up_proj.weight"));
+        assert!(
+            !l.should_skip_tensor("model.language_model.layers.4.mlp.experts.7.up_proj.weight")
+        );
+        assert!(
+            l.should_skip_tensor("model.language_model.layers.4.mlp.experts.200.up_proj.weight")
+        );
     }
 }

@@ -435,10 +435,7 @@ impl TransformerModel {
         // this rank enters the drafter forward, or the worker is still blocked in
         // `ep_recv_seq_and_cmd` when rank 0 hits its first all-reduce. That is `t58`.
         if self.multi_rank_protocol_active()
-            && self
-                .proposer
-                .as_ref()
-                .is_some_and(|p| p.needs_comm())
+            && self.proposer.as_ref().is_some_and(|p| p.needs_comm())
         {
             self.ep_broadcast_cmd_for_seq(
                 seq.slot_idx as u32,
@@ -465,7 +462,8 @@ impl TransformerModel {
             // batched multi-seq verify) do not latch this index — they are multi-seq mode,
             // which this single-sequence propose protocol does not serve.
             self.ep_broadcast_u32(
-                self.last_mtp_hidden_idx.load(std::sync::atomic::Ordering::Relaxed) as u32,
+                self.last_mtp_hidden_idx
+                    .load(std::sync::atomic::Ordering::Relaxed) as u32,
             )?;
         }
         self.run_mtp_propose_inner(token, position, num_drafts, seq, grammar_bitmask)

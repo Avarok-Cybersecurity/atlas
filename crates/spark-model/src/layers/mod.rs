@@ -17,10 +17,10 @@ pub mod glm5next_kda_ref;
 pub mod glm5next_layer;
 /// GLM-5.3-Flash MLP production surface -- dense FFN + routed NVFP4 MoE (TP + EP sharded).
 pub mod glm5next_mlp;
+pub mod glm5next_mtp_head;
 /// GLM-5.3-Flash 45-layer text-model skeleton (Slice 9 -- topology, wiring, structural binding).
 pub mod glm5next_skeleton;
 pub mod moe;
-pub mod glm5next_mtp_head;
 pub mod mtp_head;
 pub(crate) mod mtp_meta;
 pub mod mtp_multi;
@@ -75,8 +75,8 @@ pub use dense_ffn::{DenseFfnLayer, DenseFfnWeights, FfnActivation};
 pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization, dflash_ctx_cap,
 };
-pub use moe::MoeLayer;
 pub use glm5next_mtp_head::Glm5NextMtpHead;
+pub use moe::MoeLayer;
 pub use mtp_head::{MtpHead, MtpQuantization, mtp_drafter_prefill_enabled};
 pub use nemotron_mamba2::NemotronMamba2Layer;
 pub use nemotron_moe::NemotronMoeLayer;

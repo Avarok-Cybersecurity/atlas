@@ -526,11 +526,27 @@ jobs:
             # prefill halves share the workspace layout, which is the thing a
             # reader has to hold in one place.
             "crates/spark-model/src/layers/glm5next_kda/mod.rs"
+            # 833 LoC — GLM's MTP block as a `DraftProposer`. Carries the K=2
+            # and K=3 verify paths, the vocab-sharded drafter lm_head, the FP8
+            # draft head and the EP propose default — the sealed 25.59 tok/s
+            # configuration. K=4 was measured and rejected here; the rejection
+            # evidence lives beside the code it rejects.
+            "crates/spark-model/src/layers/glm5next_mtp_head.rs"
             # 662 LoC — the 45-layer weight loader. Linear assembly: one
             # section per weight family, each naming the checkpoint tensors and
             # the load-time transform. #341 and #347 were both on-disk dtype
             # bugs found by reading this file as one sequence.
             "crates/spark-model/src/weight_loader/glm5_next_load.rs"
+            # 509 LoC — the DSA selection launcher. Scoped to one checkpoint
+            # revision and pinned by `glm53_dsa_kernel_resolution`; the
+            # selector's exactness argument (per-row causality, pool validity,
+            # total order over score/pool index) is stated against the launches
+            # it governs.
+            "crates/spark-model/src/layers/glm5next_dsa/select.rs"
+            # 508 LoC — the 45-layer text skeleton: topology, residual/norm/mHC
+            # wiring, the structural weight contract and the state contract.
+            # Structural declaration, read as one table.
+            "crates/spark-model/src/layers/glm5next_skeleton.rs"
             # 501 LoC — the DSA + kpool indexer CPU reference. A design
             # artifact that never runs on GPU and binds no checkpoint tensor;
             # it exists to be diffed against the kernels as one document. One
@@ -556,6 +572,9 @@ jobs:
             # 566 LoC (was 489) — CUDA backend GPU impl; grew with the red-zone
             # device allocator that found A55.
             "crates/spark-runtime/src/cuda_backend/gpu_impl.rs"
+            # 564 LoC (was 482) — fast-weights surface; grew with the GLM
+            # weight families.
+            "crates/spark-runtime/src/fast_weights/mod.rs"
             # 547 LoC (was 490) — the `GpuBackend` trait. Atomic interface,
             # same rationale as `traits/model.rs` above; grew by the red-zone
             # scan hooks.
@@ -566,9 +585,17 @@ jobs:
             # 532 LoC (was 458) — single-sequence decode step; grew by the
             # red-zone scan cadence and the GLM decode arm.
             "crates/spark-model/src/model/trait_impl/decode_a.rs"
+            # 527 LoC (was 444) — sequence lifecycle; holds the SINGLE
+            # `release_state` call site, the one-owner invariant Unit2
+            # established. Splitting it is the last thing that should move.
+            "crates/spark-model/src/model/trait_impl/sequence.rs"
             # 522 LoC (was 491) — software GEMV ops; grew by the routed-MoE
             # union batching arm.
             "crates/spark-model/src/layers/ops/gemv_sw.rs"
+            # 509 LoC (was 498) — +11 lines.
+            "crates/spark-model/src/model/impl_b3.rs"
+            # 504 LoC (was 453) — weight store; grew by the GLM load path.
+            "crates/spark-runtime/src/weights.rs"
             # 503 LoC (was 497) — +6 lines.
             "crates/spark-model/src/weight_loader/nemotron.rs"
             # 503 LoC (was 500) — +3 lines. Model metadata surface.

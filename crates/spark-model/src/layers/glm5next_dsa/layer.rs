@@ -351,7 +351,11 @@ impl Glm5NextDsaWorkspace {
             // 🔴 ANOMALIES A65: `[rows]`, NOT one. `attend_rows` runs ONE launch for all
             // k rows and `glm5next_dsa_mla_decode` reads `seq_lens[blockIdx.y]`, so a
             // single i32 here left every row past the first reading past the allocation.
-            sl: if persist { gpu.alloc(rows * 4)? } else { DevicePtr(0) },
+            sl: if persist {
+                gpu.alloc(rows * 4)?
+            } else {
+                DevicePtr(0)
+            },
             bt_cap,
             max_rows: rows,
             stage_k: gpu.alloc(cfg.index_head_dim * 2)?,
@@ -613,6 +617,7 @@ impl Glm5NextDsaLayer {
     ///   3. Non-candidates score `-FLT_MAX` and `dsa_topk_pools` selects under a total
     ///      order over (score, pool index), so a longer `P` walk reaches the identical
     ///      top-`select_k` set AND order.
+    ///
     /// Widening `P` to the group's pool count therefore cannot change any row's selection.
     ///
     /// The `q_idx` projections stay per-row: there is no FP32-out `batchm` twin, and they
@@ -920,7 +925,7 @@ impl Glm5NextDsaLayer {
         // one-token chunk is the only case where the two could be confused, and `decode_step`
         // still separates them there.
         let rowwise_meta = (k > 1)
-            .then(|| ctx.attn_metadata.as_ref())
+            .then_some(ctx.attn_metadata.as_ref())
             .flatten()
             .filter(|m| m.num_seqs as usize == k);
         let gpu = ctx.gpu;
@@ -1074,7 +1079,13 @@ impl Glm5NextDsaLayer {
             } else {
                 None
             };
-            self.indexer_forward(gpu, hidden.offset(row * self.cfg.hidden * 2), st, pos_dev, stream)?;
+            self.indexer_forward(
+                gpu,
+                hidden.offset(row * self.cfg.hidden * 2),
+                st,
+                pos_dev,
+                stream,
+            )?;
             profile::end(profile::DSA_INDEXER, t, gpu, stream);
 
             let (q_pos_dev, bt_dev_meta, sl_dev_meta) = match meta {

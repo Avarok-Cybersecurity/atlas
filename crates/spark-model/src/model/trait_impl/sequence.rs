@@ -225,7 +225,11 @@ impl TransformerModel {
             // graph selecting over request 1's freed indexer cache. It reproduces as: the
             // FIRST request after a start is byte-exact and later ones are not — which is
             // why it looked data-dependent for a day.
-            for m in [&self.verify2_graph, &self.verify3_graph, &self.verify4_graph] {
+            for m in [
+                &self.verify2_graph,
+                &self.verify3_graph,
+                &self.verify4_graph,
+            ] {
                 stale.extend(m.lock().remove(&seq.slot_idx));
             }
             {

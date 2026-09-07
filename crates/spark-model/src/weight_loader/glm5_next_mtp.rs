@@ -107,9 +107,8 @@ pub fn load_glm5next_mtp_module(
         &expert,
     )?));
 
-    let up = |n: &str| -> Result<DevicePtr> {
-        super::glm5_next_load::upload_bf16(gpu, &src.f32(n)?)
-    };
+    let up =
+        |n: &str| -> Result<DevicePtr> { super::glm5_next_load::upload_bf16(gpu, &src.f32(n)?) };
     Ok(Some(Glm5NextMtpModule {
         layer: Glm5NextLayer {
             layer_idx: idx,

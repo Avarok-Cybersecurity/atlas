@@ -226,8 +226,12 @@ impl TransformerModel {
                 // thing the layer stack does is an all-reduce. The byte-identity gate is what
                 // actually checks that assumption.
                 Some((begin, len)) => {
-                    self.gpu
-                        .memset_async(logits, 0, num_tokens as usize * v as usize * 2, stream)?;
+                    self.gpu.memset_async(
+                        logits,
+                        0,
+                        num_tokens as usize * v as usize * 2,
+                        stream,
+                    )?;
                     (
                         crate::weight_map::DenseWeight {
                             weight: self.lm_head_weight.weight.offset(begin * h as usize * 2),
@@ -257,7 +261,9 @@ impl TransformerModel {
                 v,
                 stream,
             )?;
-            if n != v && let Some(comm) = self.comm_ref() {
+            if n != v
+                && let Some(comm) = self.comm_ref()
+            {
                 comm.all_reduce_async(logits.0, num_tokens as usize * v as usize * 2, stream)?;
             }
         } else if num_tokens == 2 {

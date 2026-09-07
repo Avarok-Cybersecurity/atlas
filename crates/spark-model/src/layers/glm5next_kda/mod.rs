@@ -685,10 +685,7 @@ impl Glm5NextKdaLayer {
             );
         }
         let c = &self.cfg;
-        let (h_bytes, conv_bytes) = (
-            c.recurrent_state_elems() * 4,
-            c.conv_state_elems() * 4,
-        );
+        let (h_bytes, conv_bytes) = (c.recurrent_state_elems() * 4, c.conv_state_elems() * 4);
         self.front_end(gpu, hidden, k, ws, stream)?;
         for row in 0..k {
             self.stateful_row(gpu, row, state, ws, stream)?;

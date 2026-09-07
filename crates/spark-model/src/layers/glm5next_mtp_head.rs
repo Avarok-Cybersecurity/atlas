@@ -175,7 +175,7 @@ impl Glm5NextMtpHead {
         // gemv kernel does not take — it assumes rows are packed at K.
         let head_world = config.tp_world_size.max(1);
         let head_rank = config.tp_rank;
-        let head_n = if head_world > 1 && config.vocab_size % head_world == 0 {
+        let head_n = if head_world > 1 && config.vocab_size.is_multiple_of(head_world) {
             config.vocab_size / head_world
         } else {
             config.vocab_size
@@ -305,19 +305,19 @@ impl Glm5NextMtpHead {
         if skip_block() {
             st.seq_len += 1;
         } else {
-        let mut kv = self.kv_cache.lock();
-        let dsa_state: &mut dyn LayerState = &mut st.dsa;
-        self.module.layer.decode_one_for_drafter(
-            st.x,
-            dsa_state,
-            &mut kv,
-            st.seq_len,
-            &mut st.block_table,
-            ctx,
-            stream,
-        )?;
-        drop(kv);
-        st.seq_len += 1;
+            let mut kv = self.kv_cache.lock();
+            let dsa_state: &mut dyn LayerState = &mut st.dsa;
+            self.module.layer.decode_one_for_drafter(
+                st.x,
+                dsa_state,
+                &mut kv,
+                st.seq_len,
+                &mut st.block_table,
+                ctx,
+                stream,
+            )?;
+            drop(kv);
+            st.seq_len += 1;
         }
 
         // TIMING ARM `ATLAS_GLM_MTP_SKIP=head`: everything from `shared_head.norm` on is
@@ -358,9 +358,16 @@ impl Glm5NextMtpHead {
                 h as u32,
                 stream,
             )?,
-            None => {
-                ops::dense_gemv(gpu, self.gemv_k, st.x, &w, st.logits, n as u32, h as u32, stream)?
-            }
+            None => ops::dense_gemv(
+                gpu,
+                self.gemv_k,
+                st.x,
+                &w,
+                st.logits,
+                n as u32,
+                h as u32,
+                stream,
+            )?,
         }
         ops::argmax_bf16(gpu, self.argmax_k, st.logits, st.arg, n as u32, stream)?;
         let mut out = [0u8; 4];
@@ -397,12 +404,16 @@ impl Glm5NextMtpHead {
         gpu.synchronize(stream)?;
         gpu.copy_d2h(st.head_xchg, &mut pack)?;
         let lane = |i: usize| {
-            f32::from_bits((u16::from_le_bytes(pack[i * 2..][..2].try_into().unwrap()) as u32) << 16)
+            f32::from_bits(
+                (u16::from_le_bytes(pack[i * 2..][..2].try_into().unwrap()) as u32) << 16,
+            )
         };
         // `>=` makes the LOWER rank win a tie, identically on both ranks — the two drafter KV
         // streams must not diverge on a coin flip.
         let win = if lane(0) >= lane(1) { 0 } else { 1 };
-        let idx = (0..3).fold(0usize, |a, d| a + ((lane(2 + win * 3 + d) as usize) << (8 * d)));
+        let idx = (0..3).fold(0usize, |a, d| {
+            a + ((lane(2 + win * 3 + d) as usize) << (8 * d))
+        });
         Ok(idx as u32)
     }
 
@@ -430,7 +441,10 @@ impl Glm5NextMtpHead {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<usize> {
-        let st = match state.as_any_mut().downcast_mut::<Glm5NextMtpProposerState>() {
+        let st = match state
+            .as_any_mut()
+            .downcast_mut::<Glm5NextMtpProposerState>()
+        {
             Some(s) => s,
             None => return Ok(0),
         };
@@ -457,7 +471,10 @@ impl Glm5NextMtpHead {
             ..
         } = st;
         for r in 0..rows {
-            let embed_row = self.embed_tokens.weight.offset(tokens[r + 1] as usize * h * 2);
+            let embed_row = self
+                .embed_tokens
+                .weight
+                .offset(tokens[r + 1] as usize * h * 2);
             self.norm(gpu, embed_row, self.module.enorm, *concat, h, stream)?;
             self.norm(
                 gpu,
@@ -504,11 +521,7 @@ impl Glm5NextMtpHead {
                 )?;
             }
             if dbg {
-                let fp = crate::speculative::hidden_fingerprint(
-                    gpu,
-                    hiddens.offset(r * h * 2),
-                    h,
-                );
+                let fp = crate::speculative::hidden_fingerprint(gpu, hiddens.offset(r * h * 2), h);
                 tracing::info!(
                     "GLM_MTP_DBG ctx row slot={} key={} tok={} fp_hidden={fp:016x}",
                     *seq_len,
@@ -767,6 +780,10 @@ mod a59_sizing_tests {
         assert_eq!(drafter_context_rows(524_288, &c), 65_536);
         assert_eq!(drafter_context_rows(32_768, &c), 32_768);
         c.max_context = 65_538;
-        assert_eq!(drafter_context_rows(524_288, &c), 65_536, "whole pools only");
+        assert_eq!(
+            drafter_context_rows(524_288, &c),
+            65_536,
+            "whole pools only"
+        );
     }
 }

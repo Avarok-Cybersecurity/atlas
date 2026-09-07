@@ -42,10 +42,7 @@ use crate::layers::glm5next_kda::Glm5NextKdaConfig;
 /// 🪤 **FP32 is not negotiable.** HF casts the recurrent state to float32 and vLLM hardcodes
 /// `kda_state_dtype`, so a BF16/FP16 state is a deviation from the reference, not a memory
 /// setting. `h_is_f16: false` here, and `Glm5NextLayer::kda_state` refuses a narrowed slot.
-pub fn alloc_kda_ssm_state(
-    gpu: &dyn GpuBackend,
-    cfg: &Glm5NextKdaConfig,
-) -> Result<SsmLayerState> {
+pub fn alloc_kda_ssm_state(gpu: &dyn GpuBackend, cfg: &Glm5NextKdaConfig) -> Result<SsmLayerState> {
     let h_bytes = cfg.recurrent_state_elems() * 4;
     let conv_bytes = cfg.conv_state_elems() * 4;
     let h_state = gpu.alloc(h_bytes)?;

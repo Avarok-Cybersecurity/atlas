@@ -246,7 +246,10 @@ pub fn build_model(
     let glm_mtp_module = if config.model_type == "glm5_next" && use_speculative {
         match crate::weight_loader::load_glm5next_mtp_module(&store, &config, gpu.as_ref()) {
             Ok(Some(m)) => {
-                tracing::info!("GLM-5.3 MTP draft module loaded (layers.{})", config.num_hidden_layers);
+                tracing::info!(
+                    "GLM-5.3 MTP draft module loaded (layers.{})",
+                    config.num_hidden_layers
+                );
                 Some(m)
             }
             Ok(None) => {
@@ -1055,7 +1058,6 @@ pub fn build_model(
     }
     Ok(Box::new(model))
 }
-
 
 /// Per-step GPU residency ledger for model construction.
 ///

@@ -774,7 +774,16 @@ impl Glm5NextLayer {
 
         let t_mhc = profile::start();
         if self.is_first {
-            glm_hc_expand(gpu, mhc.kernels.hc_expand, hidden, streams, kt, ht, hct, stream)?;
+            glm_hc_expand(
+                gpu,
+                mhc.kernels.hc_expand,
+                hidden,
+                streams,
+                kt,
+                ht,
+                hct,
+                stream,
+            )?;
         }
 
         // ── attention site ──
@@ -886,7 +895,16 @@ impl Glm5NextLayer {
             stream,
         )?;
         if self.is_last {
-            hc_head_mean(gpu, mhc.kernels.hc_head, streams, hidden, kt, ht, hct, stream)?;
+            hc_head_mean(
+                gpu,
+                mhc.kernels.hc_head,
+                streams,
+                hidden,
+                kt,
+                ht,
+                hct,
+                stream,
+            )?;
         }
         profile::end(profile::MHC_POST, t_mhc_post, gpu, stream);
         if self.is_last {

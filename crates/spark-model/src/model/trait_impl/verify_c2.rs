@@ -385,17 +385,14 @@ impl TransformerModel {
                     // BISECT HATCH (ATLAS_GLM_VERIFY_GRAPH_NOCACHE=1) — see verify_c.rs.
                     if let Some(ref mut cache) = graph_cache
                         && !graph_trace
-                        && !std::env::var("ATLAS_GLM_VERIFY_GRAPH_NOCACHE")
-                            .is_ok_and(|v| v == "1")
+                        && !std::env::var("ATLAS_GLM_VERIFY_GRAPH_NOCACHE").is_ok_and(|v| v == "1")
                     {
                         cache.insert(seq.slot_idx, graph);
                     }
                     self.gpu.launch_graph(graph, stream)?;
                 }
             }
-            if graph_trace
-                && let Some(report) = spark_runtime::launch_trace::end_and_diff(40)
-            {
+            if graph_trace && let Some(report) = spark_runtime::launch_trace::end_and_diff(40) {
                 tracing::info!("A56 trace K=4 (this step vs previous): {}", report);
             }
         }

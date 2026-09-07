@@ -105,7 +105,10 @@ fn full_and_kept_pool_counts_differ_exactly_on_a_partial_tail() {
 fn plan_holds_shared_memory_constant_at_any_context() {
     let c = cfg();
     let tile = topk_tile();
-    assert_eq!(tile, 2_048, "two tiles of [f32,i32] against a 49,152 B ceiling");
+    assert_eq!(
+        tile, 2_048,
+        "two tiles of [f32,i32] against a 49,152 B ceiling"
+    );
     assert_eq!(topk_smem_for_tile(tile), 32_768);
 
     // The size that used to be the last one that fit, the first that did not, and
@@ -119,7 +122,10 @@ fn plan_holds_shared_memory_constant_at_any_context() {
         let g = DsaSelectGeometry::plan(&c, seq, 1)
             .unwrap_or_else(|e| panic!("plan refused {seq} tokens: {e}"));
         assert_eq!(g.n_pools, pools);
-        assert_eq!(g.topk_np2, tile, "the sort axis is the tile, not the context");
+        assert_eq!(
+            g.topk_np2, tile,
+            "the sort axis is the tile, not the context"
+        );
         assert_eq!(g.topk_smem, 32_768);
         assert!(g.topk_smem <= TOPK_SMEM_CEILING);
     }
@@ -234,7 +240,15 @@ mod tiled_select_model {
             .enumerate()
             .map(|(i, &s)| (s, i as i32))
             .collect();
-        all.sort_by(|a, b| if gt(*a, *b) { std::cmp::Ordering::Less } else if a == b { std::cmp::Ordering::Equal } else { std::cmp::Ordering::Greater });
+        all.sort_by(|a, b| {
+            if gt(*a, *b) {
+                std::cmp::Ordering::Less
+            } else if a == b {
+                std::cmp::Ordering::Equal
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        });
         all.into_iter().take(select_k).map(|e| e.1).collect()
     }
 }
@@ -245,14 +259,15 @@ fn the_tiled_walk_returns_exactly_what_a_whole_axis_sort_would() {
     // point of the tiebreak contract, so the score alphabet is deliberately small.
     let mut state: u64 = 0x5EED_5EED;
     let mut next = || {
-        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         (state >> 33) as u32
     };
     for &tile in &[4usize, 8, 64] {
         for &n_pools in &[1usize, 3, 7, 8, 9, 33, 64, 65, 200, 511, 512] {
             for &alphabet in &[3u32, 1_000_000] {
-                let scores: Vec<f32> =
-                    (0..n_pools).map(|_| (next() % alphabet) as f32).collect();
+                let scores: Vec<f32> = (0..n_pools).map(|_| (next() % alphabet) as f32).collect();
                 for &select_k in &[1usize, 2, 5, tile.min(n_pools)] {
                     let select_k = select_k.min(n_pools).min(tile).max(1);
                     let got = tiled_select_model::tiled_topk(&scores, tile, select_k);

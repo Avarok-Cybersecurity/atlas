@@ -44,7 +44,9 @@ const MAX_UNION_IDS: usize = 64;
 /// Deterministic byte soup — a real NVFP4 packing is irrelevant to a bit-equality gate, but
 /// the values must be varied enough that a dropped term cannot cancel.
 fn lcg(seed: &mut u64) -> u8 {
-    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *seed = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     (*seed >> 33) as u8
 }
 
@@ -154,15 +156,35 @@ fn main() -> Result<()> {
         }
         let w: Vec<u8> = (0..N * K / 2).map(|_| lcg(&mut seed)).collect();
         // FP8-E4M3 group scales, kept away from 0/inf so a dropped term cannot hide.
-        let s: Vec<u8> = (0..N * (K / 16)).map(|_| 0x38 | (lcg(&mut seed) & 0x07)).collect();
+        let s: Vec<u8> = (0..N * (K / 16))
+            .map(|_| 0x38 | (lcg(&mut seed) & 0x07))
+            .collect();
         packed_ptrs.push(up(&gpu, &w)?.0);
         scale_ptrs.push(up(&gpu, &s)?.0);
         scale2.push(1.0 + (e as f32) * 0.01);
     }
     let t = Table {
-        packed: up(&gpu, &packed_ptrs.iter().flat_map(|p| p.to_le_bytes()).collect::<Vec<_>>())?,
-        scale: up(&gpu, &scale_ptrs.iter().flat_map(|p| p.to_le_bytes()).collect::<Vec<_>>())?,
-        scale2: up(&gpu, &scale2.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())?,
+        packed: up(
+            &gpu,
+            &packed_ptrs
+                .iter()
+                .flat_map(|p| p.to_le_bytes())
+                .collect::<Vec<_>>(),
+        )?,
+        scale: up(
+            &gpu,
+            &scale_ptrs
+                .iter()
+                .flat_map(|p| p.to_le_bytes())
+                .collect::<Vec<_>>(),
+        )?,
+        scale2: up(
+            &gpu,
+            &scale2
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+        )?,
     };
 
     // Routing cases, generated per (rows, top_k) rather than hand-listed: the sweep now runs
@@ -230,7 +252,13 @@ fn main() -> Result<()> {
     for (tag, ids, top_k) in &all {
         let (rows, top_k) = (ids.len(), *top_k);
         let flat: Vec<i32> = ids.iter().flatten().copied().collect();
-        let d_ids = up(&gpu, &flat.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())?;
+        let d_ids = up(
+            &gpu,
+            &flat
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+        )?;
         let d_ueid = gpu.alloc(rows * top_k * 4)?;
         let d_uslot = gpu.alloc(rows * top_k * rows * 4)?;
 
@@ -247,17 +275,31 @@ fn main() -> Result<()> {
 
         // ── the union table itself: every (row, slot) must be reachable exactly once ──
         let ueid: Vec<i32> = dn(&gpu, d_ueid, rows * top_k * 4)?
-            .chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect();
+            .chunks(4)
+            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
         let uslot: Vec<i32> = dn(&gpu, d_uslot, rows * top_k * rows * 4)?
-            .chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect();
+            .chunks(4)
+            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
         let mut seen = vec![vec![false; top_k]; rows];
         for (u, &e) in ueid.iter().enumerate() {
-            if e < 0 { continue; }
+            if e < 0 {
+                continue;
+            }
             for r in 0..rows {
                 let s = uslot[u * rows + r];
-                if s < 0 { continue; }
-                assert_eq!(ids[r][s as usize], e, "{tag}: union entry {u} claims row {r} slot {s}");
-                assert!(!seen[r][s as usize], "{tag}: row {r} slot {s} claimed twice");
+                if s < 0 {
+                    continue;
+                }
+                assert_eq!(
+                    ids[r][s as usize], e,
+                    "{tag}: union entry {u} claims row {r} slot {s}"
+                );
+                assert!(
+                    !seen[r][s as usize],
+                    "{tag}: row {r} slot {s} claimed twice"
+                );
                 seen[r][s as usize] = true;
             }
         }
@@ -269,17 +311,19 @@ fn main() -> Result<()> {
         let n_union = ueid.iter().filter(|e| **e >= 0).count();
         let distinct = {
             let mut v: Vec<i32> = flat.clone();
-            v.sort_unstable(); v.dedup(); v.len()
+            v.sort_unstable();
+            v.dedup();
+            v.len()
         };
         assert_eq!(n_union, distinct, "{tag}: union size");
 
         // ── shared-input layout (gate/up): a_slot_stride = 0 ──
         // ── slot-major layout (down): a_slot_stride = one expert's width ──
-        for (layout, kk, nn, a_slot_stride) in
-            [("gate/up", K, N, 0usize), ("down", N, K, N)]
-        {
+        for (layout, kk, nn, a_slot_stride) in [("gate/up", K, N, 0usize), ("down", N, K, N)] {
             let a_row_stride = if a_slot_stride == 0 { kk } else { top_k * kk };
-            let a: Vec<u8> = (0..rows * a_row_stride * 2).map(|_| lcg(&mut seed)).collect();
+            let a: Vec<u8> = (0..rows * a_row_stride * 2)
+                .map(|_| lcg(&mut seed))
+                .collect();
             let d_a = up(&gpu, &a)?;
 
             let bytes = rows * top_k * nn * 2;
@@ -290,24 +334,43 @@ fn main() -> Result<()> {
 
             for r in 0..rows {
                 per_row(
-                    &gpu, k_row,
+                    &gpu,
+                    k_row,
                     d_a.offset(r * a_row_stride * 2),
                     &t,
                     d_ref.offset(r * top_k * nn * 2),
                     d_ids.offset(r * top_k * 4),
-                    nn, kk, top_k, a_slot_stride,
+                    nn,
+                    kk,
+                    top_k,
+                    a_slot_stride,
                 )?;
             }
             batched(
-                &gpu, k_b[rows - 2], d_a, &t, d_new, d_ueid, d_uslot,
-                nn, kk, rows, top_k, a_row_stride, a_slot_stride, top_k * nn,
+                &gpu,
+                k_b[rows - 2],
+                d_a,
+                &t,
+                d_new,
+                d_ueid,
+                d_uslot,
+                nn,
+                kk,
+                rows,
+                top_k,
+                a_row_stride,
+                a_slot_stride,
+                top_k * nn,
             )?;
             gpu.synchronize(0)?;
 
             let r_ref = dn(&gpu, d_ref, bytes)?;
             let r_new = dn(&gpu, d_new, bytes)?;
             if r_ref == r_new {
-                println!("  PASS  {tag:28} [{layout:7}] rows={rows} union={n_union}/{}", rows * top_k);
+                println!(
+                    "  PASS  {tag:28} [{layout:7}] rows={rows} union={n_union}/{}",
+                    rows * top_k
+                );
             } else {
                 let diff = r_ref.iter().zip(&r_new).filter(|(a, b)| a != b).count();
                 println!("  FAIL  {tag:28} [{layout:7}] {diff}/{bytes} bytes differ");

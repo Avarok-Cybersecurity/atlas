@@ -79,7 +79,10 @@ fn advancing_past_the_cap_is_refused_not_clamped() {
     s.advance(1).unwrap();
     assert_eq!(s.len(), cap, "exactly full is legal");
     let e = s.advance(1).unwrap_err().to_string();
-    assert!(e.contains("--max-seq-len"), "name the knob that moves it: {e}");
+    assert!(
+        e.contains("--max-seq-len"),
+        "name the knob that moves it: {e}"
+    );
     assert_eq!(s.len(), cap, "a refused advance must not move the cursor");
 }
 
@@ -131,8 +134,18 @@ fn ensure_room_refuses_before_the_write_and_moves_nothing() {
         index_head_dim: c.index_head_dim,
     };
     s.advance(cap).unwrap();
-    assert!(s.ensure_room(0).is_ok(), "exactly full still has room for zero rows");
+    assert!(
+        s.ensure_room(0).is_ok(),
+        "exactly full still has room for zero rows"
+    );
     let e = s.ensure_room(1).unwrap_err().to_string();
-    assert!(e.contains("--max-seq-len"), "name the knob that moves it: {e}");
-    assert_eq!(s.len(), cap, "a refused ensure_room must not move the cursor");
+    assert!(
+        e.contains("--max-seq-len"),
+        "name the knob that moves it: {e}"
+    );
+    assert_eq!(
+        s.len(),
+        cap,
+        "a refused ensure_room must not move the cursor"
+    );
 }

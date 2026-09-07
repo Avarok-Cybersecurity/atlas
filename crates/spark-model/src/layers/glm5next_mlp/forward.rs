@@ -258,7 +258,17 @@ pub fn forward_dense(
         stream,
     )?;
     gemm(
-        gpu, k.gemm, k.gemv, k.gemv_batchm, x, w.up_proj, ws.a_up, m, inter, cfg.hidden, stream,
+        gpu,
+        k.gemm,
+        k.gemv,
+        k.gemv_batchm,
+        x,
+        w.up_proj,
+        ws.a_up,
+        m,
+        inter,
+        cfg.hidden,
+        stream,
     )?;
     swiglu(
         gpu,
@@ -399,7 +409,9 @@ pub(crate) fn row_batch_max() -> usize {
             .unwrap_or(MOE_ROW_BATCH_MAX_ROWS)
             .clamp(1, MOE_ROW_BATCH_MAX_ROWS);
         if m != MOE_ROW_BATCH_MAX_ROWS {
-            tracing::warn!("GLM MoE row-batch width capped at {m} (default {MOE_ROW_BATCH_MAX_ROWS})");
+            tracing::warn!(
+                "GLM MoE row-batch width capped at {m} (default {MOE_ROW_BATCH_MAX_ROWS})"
+            );
         }
         m
     })
@@ -466,7 +478,6 @@ fn announce_dispatch(grouped: bool) {
 /// microtest does. The upgrade path is the pointer-table grouped GEMM
 /// (`layers::moe::ptr_table_build`), which keeps the routing on device — not a change to
 /// this math.
-#[allow(clippy::too_many_arguments)]
 /// Routed MoE over `rows` rows.
 ///
 /// 🔴 The routed experts amortize PARTIALLY over a verify's rows. Measured on the live routing
@@ -663,7 +674,12 @@ pub fn forward_moe(
                 gpu.copy_d2h(ids_r, &mut ids)?;
                 let decoded: Vec<i32> = (0..cfg.top_k)
                     .map(|k| {
-                        i32::from_le_bytes([ids[k * 4], ids[k * 4 + 1], ids[k * 4 + 2], ids[k * 4 + 3]])
+                        i32::from_le_bytes([
+                            ids[k * 4],
+                            ids[k * 4 + 1],
+                            ids[k * 4 + 2],
+                            ids[k * 4 + 3],
+                        ])
                     })
                     .collect();
                 profile::stash_route(&decoded);
@@ -682,7 +698,12 @@ pub fn forward_moe(
             if profile::trace_on() {
                 let decoded: Vec<i32> = (0..cfg.top_k)
                     .map(|k| {
-                        i32::from_le_bytes([ids[k * 4], ids[k * 4 + 1], ids[k * 4 + 2], ids[k * 4 + 3]])
+                        i32::from_le_bytes([
+                            ids[k * 4],
+                            ids[k * 4 + 1],
+                            ids[k * 4 + 2],
+                            ids[k * 4 + 3],
+                        ])
                     })
                     .collect();
                 profile::stash_route(&decoded);
@@ -761,7 +782,6 @@ pub fn forward_moe(
 
             profile::end(profile::MOE_EXPERTS, t, gpu, stream);
         }
-
     }
 
     if batched {
@@ -781,14 +801,40 @@ pub fn forward_moe(
         let kb = k.w4a16_gemv_sw_moe_batchm[rows - 2];
         // gate and up: a row's slots all read the SAME x, so the slot stride is 0.
         w4a16_gemv_moe_batchm(
-            gpu, kb, x, &w.ptrs.gate, ws.a_gate, ws.u_eid, ws.u_slot,
-            mi, cfg.hidden, rows, cfg.top_k, cfg.num_experts,
-            cfg.hidden, 0, cfg.top_k * mi, stream,
+            gpu,
+            kb,
+            x,
+            &w.ptrs.gate,
+            ws.a_gate,
+            ws.u_eid,
+            ws.u_slot,
+            mi,
+            cfg.hidden,
+            rows,
+            cfg.top_k,
+            cfg.num_experts,
+            cfg.hidden,
+            0,
+            cfg.top_k * mi,
+            stream,
         )?;
         w4a16_gemv_moe_batchm(
-            gpu, kb, x, &w.ptrs.up, ws.a_up, ws.u_eid, ws.u_slot,
-            mi, cfg.hidden, rows, cfg.top_k, cfg.num_experts,
-            cfg.hidden, 0, cfg.top_k * mi, stream,
+            gpu,
+            kb,
+            x,
+            &w.ptrs.up,
+            ws.a_up,
+            ws.u_eid,
+            ws.u_slot,
+            mi,
+            cfg.hidden,
+            rows,
+            cfg.top_k,
+            cfg.num_experts,
+            cfg.hidden,
+            0,
+            cfg.top_k * mi,
+            stream,
         )?;
         // Elementwise over every (row, slot) at once. Slots this rank does not own activate
         // uninitialised rows; the down projection skips them, so those rows are never read.
@@ -804,9 +850,22 @@ pub fn forward_moe(
         )?;
         // down: slot-major activations, so the slot stride is one expert's width.
         w4a16_gemv_moe_batchm(
-            gpu, kb, ws.a_act, &w.ptrs.down, ws.expert_out, ws.u_eid, ws.u_slot,
-            cfg.hidden, mi, rows, cfg.top_k, cfg.num_experts,
-            cfg.top_k * mi, mi, cfg.top_k * cfg.hidden, stream,
+            gpu,
+            kb,
+            ws.a_act,
+            &w.ptrs.down,
+            ws.expert_out,
+            ws.u_eid,
+            ws.u_slot,
+            cfg.hidden,
+            mi,
+            rows,
+            cfg.top_k,
+            cfg.num_experts,
+            cfg.top_k * mi,
+            mi,
+            cfg.top_k * cfg.hidden,
+            stream,
         )?;
         profile::end(profile::MOE_EXPERTS, t, gpu, stream);
     }
