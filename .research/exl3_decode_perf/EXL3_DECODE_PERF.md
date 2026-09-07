@@ -1337,6 +1337,71 @@ Harnesses: `measure_prefill.py` / `measure_concurrency.py` gained `--host` so th
 head from another node; `~/run_exl3_ep2_mtp.sh <rank>` on both hosts carries the fabric + preset-parity
 env.
 
+## Host D2H drains are ~free on GB10: the batched aux collect measures +1.2% (2026-09-07)
+
+A four-dimension read-only review (locks, host-sync, serialization, memory) converged on one
+mechanism: `copy_d2h` and `copy_d2h_on_stream` both `cuStreamSynchronize` INSIDE the call
+(`cuda_backend/gpu_copy.rs`), and **no D2H destination anywhere in the engine is pinned** — the
+tree's page-locked memory (`PinnedMetaStaging`, `alloc_host_pinned`) is H2D-only. The largest
+instance was the Marconi aux collect (`trait_impl/mod.rs` `collect_aux_states`), which ran one
+draining, fresh-`Vec` D2H per aux-carrying layer, with the QSA half O(context)
+(`ingested * head_dim * 2`), on every chunk-boundary snapshot save and every
+`ATLAS_DECODE_CKPT_BLOCKS` (4) blocks = 64 decode tokens.
+
+**Measured: +1.1–1.2%, which is 10x smaller than the arithmetic predicted.**
+
+Counterbalanced B A A B, one binary, one variable (`ATLAS_AUX_COLLECT_BATCHED`), 3 reps/arm,
+pinned harness salt so both arms see byte-identical prompts. Arm liveness proved per arm from the
+server's own log line (`13 batched layer(s), 0 legacy, 24944844 B` vs `0 batched, 48 legacy`).
+
+| metric | batched (b1, b2) | legacy (a1, a2) | delta |
+|---|---:|---:|---:|
+| prefill 8K tok/s | 494, 496 | 492, 487 | +1.2% |
+| prefill 11K tok/s | 480, 488 | 479, 478 | +1.1% |
+| decode rep0 tok/s | 25.41, 26.11 | 25.50, 25.30 | +1.4% |
+| decode rep1 tok/s | 26.35, 26.58 | 26.18, 26.00 | +1.5% |
+| decode rep2 tok/s | 28.03, 28.40 | 28.15, 27.72 | +1.0% |
+
+Same sign in all five paired comparisons, so the direction is probably real, but the size is small
+against the within-arm rep spread (25.3 -> 28.4 tok/s) and this is a single fingerprint. Claim
+language: *observed +1.2% under this fingerprint*, not a validated headline.
+
+### Why the projection was wrong — GB10 is unified memory
+
+The projection (~15%) came from the `GpuBackend::copy_d2h_async` doc's measured shape: the SSM
+spill moved 66.8 MB as 60 blocking `copy_d2h` in ~400 ms (~165 MB/s) versus ~28 ms for the async
+form plus one `synchronize`. **That 165 MB/s is not transfer bandwidth — it is mostly the host
+waiting for already-queued GPU work, attributed to the copy call.** On GB10 host and device are the
+same LPDDR5X, so a D2H is not a bus transfer at all, and "pageable vs pinned" does not mean what it
+means on a discrete GPU. When the queue is shallow a drain costs almost nothing.
+
+`ssm_spill_staging.rs` (now `pinned_host_staging.rs`) already said as much and was not taken
+seriously enough: *"whether pinning helps at all on a UMA box (GB10: host and device are the same
+LPDDR5X) is exactly the question a GPU run has to answer, not one to assume."* It has now been
+answered: **~1% per 13 eliminated drains plus 25 MB of eliminated pageable allocation churn.**
+
+### What this rules out, and what it does not
+
+Ruled out as levers on this box, by direct implication (each is FEWER drains than the 13 measured
+here, on the same hardware):
+
+- the per-draft argmax D2H in the qwen4_exp draft chain (`qwen4_exp_mtp.rs:476`) — one drain per
+  step at `--num-drafts 2`, on the speculative draft path;
+- the MoE prefill `expert_offsets` drain (`exl3_matmul/moe_prefill.rs:416`) — prefill measured flat
+  across both arms here.
+
+NOT ruled out, because the defect is allocation and residency rather than drain count:
+
+- KV spill save/restore (`sequence/state_io.rs:40`) collects the ENTIRE KV image into host `Vec`s
+  before writing a byte — ~3.1 GB at 32K, larger than the whole 3 GB `--swap-space-gb` budget — via
+  ~196,608 fresh pageable allocations at 32K. A bounded pinned window fixes the residency; the drain
+  count is now known to be the lesser half.
+- The Marconi aux blobs are host RAM the preflight does not budget (`preflight.rs:187` reserves only
+  the device half): 3072 B per token of context per snapshot slot, ~25.8 GB at 128K x 64 slots.
+
+Records: `aux_ab/` (per-arm serve logs, prefill and decode logs, liveness lines) from
+`ab_aux_collect.sh` + `run_exl3_single.sh` (the shipped preset spelled out so one variable can move).
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17

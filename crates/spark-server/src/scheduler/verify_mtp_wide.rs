@@ -52,16 +52,26 @@ pub(super) fn finish(
 ) {
     let k = drafts.len() + 1;
     let vocab = model.vocab_size();
-    let mut bytes = vec![0; k * vocab * 2];
+    // Borrow the run's staging buffer instead of allocating. `vec![0; ...]`
+    // here was a fresh 1.49 MB (K=3, vocab 151936) allocation AND zero-fill on
+    // EVERY verify step, immediately overwritten by the copy — the same waste
+    // `decode_logits_step` already avoids with this exact borrow/restore. Only
+    // grows, and every byte read below is written by `copy_logits_to_host`.
+    let mut bytes = sched.scratch.host_bytes.borrow_mut().split_off(0);
+    bytes.resize(k * vocab * 2, 0);
     if let Err(e) = model.copy_logits_to_host(model.logits_buffer_ptr(), &mut bytes) {
         tracing::error!("copy K{k} MTP verify logits: {e:#}");
         if let Err(e) = model.ep_broadcast_cmd(0) {
             tracing::error!("EP broadcast failed MTP verify result: {e:#}");
         }
+        *sched.scratch.host_bytes.borrow_mut() = bytes;
         seq.finished = true;
         return;
     }
     let picks = sample_and_emit(&bytes, vocab, drafts, seq, sched, ctx);
+    // Give the buffer back before any later early return; nothing below reads
+    // `bytes`, and a path that skipped this would silently drop the reuse.
+    *sched.scratch.host_bytes.borrow_mut() = bytes;
     // The final sample is the correction/bonus. If emission stops on an
     // accepted draft, it becomes the final token and needs no next forward.
     let na = picks.len() - 1;

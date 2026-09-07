@@ -53,6 +53,51 @@ impl TransformerLayer for Qwen3SsmLayer {
         self.ffn.exl3_native_moe() || self.exl3_gdn.is_some()
     }
 
+    fn snapshot_aux_plan(&self, state: &dyn LayerState) -> crate::layer::AuxSnapshotPlan {
+        use crate::layer::AuxSnapshotPlan as P;
+        let Some(ple) = self.ple.as_ref() else {
+            return P::Batched { bytes: 0 };
+        };
+        match state
+            .as_any()
+            .downcast_ref::<crate::layer::SsmLayerState>()
+            .and_then(|s| s.ple.as_ref())
+        {
+            Some(st) => P::Batched {
+                bytes: ple.aux_blob_len(st),
+            },
+            None if state.as_any().is::<crate::layer::SsmLayerState>() => P::Batched { bytes: 0 },
+            // Unexpected state type — let the legacy path raise the downcast
+            // error instead of contributing nothing.
+            None => P::Unbatched,
+        }
+    }
+
+    fn snapshot_aux_into(
+        &self,
+        state: &dyn LayerState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+        dst: &mut [u8],
+    ) -> Result<()> {
+        if dst.is_empty() {
+            return Ok(());
+        }
+        let ple = self
+            .ple
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("snapshot_aux_into: no PLE layer"))?;
+        let ssm = state
+            .as_any()
+            .downcast_ref::<crate::layer::SsmLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("PLE host layer state is not SsmLayerState"))?;
+        let st = ssm
+            .ple
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("snapshot_aux_into: no PLE sequence state"))?;
+        ple.snapshot_aux_into(st, gpu, stream, dst)
+    }
+
     fn snapshot_aux(
         &self,
         state: &dyn LayerState,

@@ -51,7 +51,7 @@ pub(crate) mod ssm_snapshot_faultin;
 pub(crate) mod ssm_snapshot_spill;
 mod ssm_snapshot_teardown;
 pub(crate) mod ssm_spill_gate;
-pub(crate) mod ssm_spill_staging;
+pub(crate) mod pinned_host_staging;
 pub(crate) mod ssm_tier;
 pub(crate) mod token_overlay;
 pub(crate) mod trait_impl;

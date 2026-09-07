@@ -997,20 +997,157 @@ impl TransformerModel {
     /// Collect chunk-boundary aux layer state (PLE, QSA) for a Marconi
     /// snapshot. Returns the blobs to attach; empty when no layer carries
     /// aux state.
+    /// Collect every layer's Marconi aux blob in ONE batched gather.
+    ///
+    /// # Why this is not a loop over `snapshot_aux`
+    ///
+    /// It used to be, and that cost one full stream drain per aux-carrying
+    /// layer: `copy_d2h_on_stream` calls `cuStreamSynchronize` INSIDE the copy
+    /// (`cuda_backend/gpu_copy.rs`). On qwen3.8-Flash-Next that is 12 QSA
+    /// layers plus 36 PLE layers, each into a freshly allocated PAGEABLE `Vec`,
+    /// and the QSA half is O(context): `ingested * head_dim * 2` bytes per
+    /// layer, ~5 MB each at 20K context. The whole thing ran every
+    /// `ATLAS_DECODE_CKPT_BLOCKS` (default 4) blocks = every 64 decode tokens,
+    /// plus once per sequence at retire, on the always-on prefix-cache path.
+    ///
+    /// The shape now is the one `ssm_snapshot_spill::gather_async` already
+    /// uses, and it has to be all three changes at once to work at all:
+    ///
+    /// 1. lay out every layer's slice from HOST-computable lengths;
+    /// 2. enqueue each copy into ONE page-locked blob with `copy_d2h_async`;
+    /// 3. `synchronize` exactly once, then split.
+    ///
+    /// Pinning is not a separate optimisation: `cuMemcpyDtoHAsync` into
+    /// pageable memory is bounced through the driver's own staging and
+    /// serialises anyway, so batching without pinning keeps every stall and
+    /// merely stops calling them syncs.
+    ///
+    /// Layers answering [`AuxSnapshotPlan::Unbatched`] keep the legacy
+    /// per-layer path (correct, just not batched), which is what makes the
+    /// default safe for any layer that has not opted in.
     pub(in crate::model) fn collect_aux_states(
         &self,
         seq: &SequenceState,
         stream: u64,
     ) -> Result<Vec<(u32, Vec<u8>)>> {
-        let mut out = Vec::new();
+        self.collect_aux_states_filtered(seq, stream, false)
+    }
+
+    /// The batched gather both collects share.
+    ///
+    /// `skip_rewindable` selects which set: `false` is the Marconi snapshot
+    /// (everything), `true` is the speculative-verify subset that drops layers
+    /// `align_aux` can rewind by moving a mark. The two differ ONLY in that
+    /// predicate, so they share the layout/enqueue/one-sync body rather than
+    /// keeping two copies that can drift.
+    fn collect_aux_states_filtered(
+        &self,
+        seq: &SequenceState,
+        stream: u64,
+        skip_rewindable: bool,
+    ) -> Result<Vec<(u32, Vec<u8>)>> {
+        use crate::layer::AuxSnapshotPlan as P;
+
+        // One-variable A/B switch, and the production rollback. `=0` forces
+        // every layer down the legacy per-layer draining path, so the batched
+        // gather can be measured against the code it replaces in ONE binary
+        // rather than two builds. Read once: this is a per-checkpoint path and
+        // an un-memoised `env::var` here would be its own small regression.
+        static BATCHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let batched_enabled = *BATCHED.get_or_init(|| {
+            std::env::var("ATLAS_AUX_COLLECT_BATCHED").as_deref() != Ok("0")
+        });
+
+        // Pass 1 — plan. `bytes == 0` means "this layer has no blob for this
+        // sequence" and contributes nothing, matching the old `Ok(None)`.
+        let mut batched: Vec<(usize, usize, usize)> = Vec::new(); // (layer, offset, len)
+        let mut unbatched: Vec<usize> = Vec::new();
+        let mut total = 0usize;
         for (i, l) in self.layers.iter().enumerate() {
-            if let Some(blob) =
-                l.snapshot_aux(seq.layer_states[i].as_ref(), self.gpu.as_ref(), stream)?
-            {
-                out.push((i as u32, blob));
+            if skip_rewindable && l.aux_rewind_is_exact() {
+                continue;
+            }
+            if !batched_enabled {
+                unbatched.push(i);
+                continue;
+            }
+            match l.snapshot_aux_plan(seq.layer_states[i].as_ref()) {
+                P::Batched { bytes: 0 } => {}
+                P::Batched { bytes } => {
+                    batched.push((i, total, bytes));
+                    total += bytes;
+                }
+                P::Unbatched => unbatched.push(i),
             }
         }
-        Ok(out)
+
+        // Arm-liveness proof (rule 6: verify engagement, never assume it). One
+        // INFO line per process, naming which path ran and how much it moves —
+        // an A/B whose arms both silently took the same path measures nothing.
+        // Two statics, because the two collects run on different paths
+        // (checkpoint vs live verify) and a single latch would prove only
+        // whichever fired first.
+        static ANNOUNCED_SNAPSHOT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        static ANNOUNCED_VERIFY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        let latch = if skip_rewindable {
+            &ANNOUNCED_VERIFY
+        } else {
+            &ANNOUNCED_SNAPSHOT
+        };
+        latch.get_or_init(|| {
+            tracing::info!(
+                "aux collect ({}): {} — {} batched layer(s), {} legacy, {} B first call",
+                if skip_rewindable { "verify" } else { "snapshot" },
+                if batched_enabled {
+                    "BATCHED (1 sync)"
+                } else {
+                    "LEGACY (1 sync/layer)"
+                },
+                batched.len(),
+                unbatched.len(),
+                total
+            );
+        });
+
+        // Pass 2 — enqueue the batched half into one page-locked blob, then
+        // take the SINGLE sync that replaces one drain per layer.
+        let mut blobs: Vec<(u32, Vec<u8>)> = Vec::with_capacity(batched.len() + unbatched.len());
+        if total > 0 {
+            let mut guard = self.aux_staging.acquire_at_least(self.gpu.as_ref(), total)?;
+            {
+                let buf = guard.as_mut_slice();
+                for &(i, off, len) in &batched {
+                    self.layers[i].snapshot_aux_into(
+                        seq.layer_states[i].as_ref(),
+                        self.gpu.as_ref(),
+                        stream,
+                        &mut buf[off..off + len],
+                    )?;
+                }
+            }
+            // THE one sync. Must happen before the blob is read OR released:
+            // the enqueued copies still reference these bytes.
+            self.gpu.synchronize(stream)?;
+            let buf = guard.as_mut_slice();
+            for &(i, off, len) in &batched {
+                blobs.push((i as u32, buf[off..off + len].to_vec()));
+            }
+        }
+
+        // Pass 3 — legacy path for anything that did not opt in.
+        for &i in &unbatched {
+            if let Some(blob) =
+                self.layers[i].snapshot_aux(seq.layer_states[i].as_ref(), self.gpu.as_ref(), stream)?
+            {
+                blobs.push((i as u32, blob));
+            }
+        }
+
+        // Callers and `apply_aux_states` index by the stored layer id, but keep
+        // the old ascending-layer order so anything that relied on it is
+        // unchanged.
+        blobs.sort_by_key(|(i, _)| *i);
+        Ok(blobs)
     }
 
     /// The speculative-verify subset of [`Self::collect_aux_states`]: only the
@@ -1023,23 +1160,18 @@ impl TransformerModel {
     /// round-tripped — see `Layer::aux_rewind_is_exact`. Concretely this drops
     /// QSA's per-layer raw-key D2H (megabytes per step at context) and keeps
     /// PLE's small conv+history blob.
+    ///
+    /// This runs on the LIVE speculative decode path — once per published
+    /// verify row, so ~2x per step at K=3 — over the 36 PLE layers this model
+    /// keeps. As a per-layer loop that was ~72 full stream drains per decode
+    /// step, which is why it takes the same batched gather as the Marconi
+    /// collect rather than only sharing its doc comment.
     pub(in crate::model) fn collect_verify_aux_states(
         &self,
         seq: &SequenceState,
         stream: u64,
     ) -> Result<Vec<(u32, Vec<u8>)>> {
-        let mut out = Vec::new();
-        for (i, l) in self.layers.iter().enumerate() {
-            if l.aux_rewind_is_exact() {
-                continue;
-            }
-            if let Some(blob) =
-                l.snapshot_aux(seq.layer_states[i].as_ref(), self.gpu.as_ref(), stream)?
-            {
-                out.push((i as u32, blob));
-            }
-        }
-        Ok(out)
+        self.collect_aux_states_filtered(seq, stream, true)
     }
 
     /// Move every mark-rewindable aux carry to an ABSOLUTE sequence position.

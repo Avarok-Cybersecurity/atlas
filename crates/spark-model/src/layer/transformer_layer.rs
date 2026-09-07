@@ -41,6 +41,20 @@ pub const VERIFY_WY_TABLE_STRIDE_BYTES: usize = VERIFY_WY_TABLE_SEQS * 8;
 pub const VERIFY_WY_LAYER_STRIDE_BYTES: usize =
     VERIFY_WY_TABLES_PER_LAYER * VERIFY_WY_TABLE_STRIDE_BYTES;
 
+/// What [`TransformerLayer::snapshot_aux_plan`] promises the batched Marconi
+/// aux collect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuxSnapshotPlan {
+    /// No batched fill: the collect must fall back to the draining
+    /// [`TransformerLayer::snapshot_aux`]. Correct, just not batched — and the
+    /// default, so opting in is explicit and forgetting to is never silent.
+    Unbatched,
+    /// This layer's blob is exactly `bytes` long and
+    /// [`TransformerLayer::snapshot_aux_into`] will fill it without syncing.
+    /// `bytes == 0` is a legitimate answer meaning "no blob for this sequence".
+    Batched { bytes: usize },
+}
+
 pub trait TransformerLayer: Send + Sync {
     /// True when this layer's PREFILL attends only over the tokens it is
     /// handed, so a prefix-cache skip would hide the cached prefix from
@@ -121,6 +135,41 @@ pub trait TransformerLayer: Send + Sync {
         _stream: u64,
     ) -> Result<Option<Vec<u8>>> {
         Ok(None)
+    }
+
+    /// Can this layer's aux blob be gathered by the BATCHED collect?
+    ///
+    /// The batched path replaces one draining `copy_d2h_on_stream` per layer
+    /// with N enqueues into a shared page-locked blob and ONE `synchronize`.
+    /// It needs two things a layer must opt into: a byte length computable on
+    /// the host (no device read), and a fill that does not synchronise.
+    ///
+    /// The default is [`AuxSnapshotPlan::Unbatched`] and that is load-bearing:
+    /// a layer that overrides `snapshot_aux` but not this pair keeps working
+    /// through the legacy path. Defaulting the other way would silently DROP
+    /// such a layer's blob from every Marconi snapshot, which restores as
+    /// another request's lexical state rather than as an error.
+    fn snapshot_aux_plan(&self, _state: &dyn LayerState) -> AuxSnapshotPlan {
+        AuxSnapshotPlan::Unbatched
+    }
+
+    /// Write this layer's aux blob into `dst` (exactly the length reported by
+    /// [`Self::snapshot_aux_plan`]) WITHOUT synchronising: host header bytes
+    /// written directly, device bytes ENQUEUED with `copy_d2h_async`.
+    ///
+    /// The caller owns the single trailing `synchronize` and must not read
+    /// `dst` before it. Only reachable for layers answering
+    /// [`AuxSnapshotPlan::Batched`].
+    fn snapshot_aux_into(
+        &self,
+        _state: &dyn LayerState,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+        _dst: &mut [u8],
+    ) -> Result<()> {
+        anyhow::bail!(
+            "snapshot_aux_into called on a layer that reported AuxSnapshotPlan::Unbatched"
+        )
     }
 
     /// True when this layer WOULD produce aux state — restore sites use it

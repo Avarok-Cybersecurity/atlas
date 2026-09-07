@@ -14,21 +14,48 @@ impl PleLayer {
     /// Marconi aux blob: `[hist_len u32][history u32s][conv f32 bytes]`.
     /// The whole per-sequence carry — a prefix hit restoring KV+SSM without
     /// this would run the n-gram hash on the PREVIOUS request's history.
+    /// Byte length of this sequence's blob, computed on the HOST.
+    pub fn aux_blob_len(&self, st: &PleSeqState) -> usize {
+        4 + st.history.len() * 4 + self.conv_bytes()
+    }
+
+    fn conv_bytes(&self) -> usize {
+        self.state_len * self.hc_mult * self.hidden * 4
+    }
+
+    /// Fill `dst` WITHOUT synchronising — header and history host-side, conv
+    /// state ENQUEUED. Single writer of the format; see the QSA twin.
+    pub fn snapshot_aux_into(
+        &self,
+        st: &PleSeqState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+        dst: &mut [u8],
+    ) -> Result<()> {
+        let want = self.aux_blob_len(st);
+        anyhow::ensure!(
+            dst.len() == want,
+            "PLE aux blob: dst is {} B, plan said {want} B",
+            dst.len()
+        );
+        dst[..4].copy_from_slice(&(st.history.len() as u32).to_le_bytes());
+        for (i, t) in st.history.iter().enumerate() {
+            dst[4 + i * 4..8 + i * 4].copy_from_slice(&t.to_le_bytes());
+        }
+        let off = 4 + st.history.len() * 4;
+        gpu.copy_d2h_async(st.conv, &mut dst[off..], stream)?;
+        Ok(())
+    }
+
     pub fn snapshot_aux(
         &self,
         st: &PleSeqState,
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<Vec<u8>> {
-        let conv_bytes = self.state_len * self.hc_mult * self.hidden * 4;
-        let mut blob = Vec::with_capacity(4 + st.history.len() * 4 + conv_bytes);
-        blob.extend_from_slice(&(st.history.len() as u32).to_le_bytes());
-        for t in &st.history {
-            blob.extend_from_slice(&t.to_le_bytes());
-        }
-        let off = blob.len();
-        blob.resize(off + conv_bytes, 0);
-        gpu.copy_d2h_on_stream(st.conv, &mut blob[off..], stream)?;
+        let mut blob = vec![0u8; self.aux_blob_len(st)];
+        self.snapshot_aux_into(st, gpu, stream, &mut blob)?;
+        gpu.synchronize(stream)?;
         Ok(blob)
     }
 
@@ -42,7 +69,7 @@ impl PleLayer {
     ) -> Result<()> {
         anyhow::ensure!(blob.len() >= 4, "PLE aux blob truncated");
         let n = u32::from_le_bytes(blob[..4].try_into().unwrap()) as usize;
-        let conv_bytes = self.state_len * self.hc_mult * self.hidden * 4;
+        let conv_bytes = self.conv_bytes();
         anyhow::ensure!(
             blob.len() == 4 + n * 4 + conv_bytes,
             "PLE aux blob size mismatch"

@@ -289,6 +289,10 @@ pub struct TransformerModel {
     /// indexer keeps its old cursor — the desync that 500s the next decode.
     /// See `model/decode_aux_ring.rs`.
     pub(super) decode_aux_ring: super::decode_aux_ring::DecodeAuxRing,
+    /// Page-locked host blob the BATCHED Marconi aux collect gathers into.
+    /// Grow-only and allocated on first checkpoint, so a model with no aux
+    /// layers never pays for it. See `collect_aux_states`.
+    pub(super) aux_staging: super::pinned_host_staging::PinnedHostStaging,
     pub(super) verify_hidden_stash: DevicePtr,
     /// ATLAS_MTP_CATCHUP: circular per-position final-hidden ring captured
     /// during serial-decode stretches (BF16 rows, slot = position % ring
