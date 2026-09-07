@@ -348,8 +348,17 @@ pub fn build_model(
     // `qwen4_exp::load_qwen4_exp_mtp_module`. Loaded under `--speculative` OR
     // ATLAS_QWEN4EXP_MTP=1 — the latter loads and audits the block without
     // arming anything, which is the only way to measure its cost today.
-    // Rank 0 only: the MTP MoE has no `force_all_experts` path and the upload
-    // never shards `mtp.*`.
+    // EVERY rank, since 43f82882d: the draft MoE is loaded with
+    // `force_all_experts = true` and so is REPLICATED per rank rather than
+    // sharded, which is exactly what "the upload never shards `mtp.*`" needs.
+    // This gate used to read `config.ep_rank == 0` with the comment "the MTP
+    // MoE has no force_all_experts path" — that path now exists, and leaving
+    // the gate up made rank 1 skip the whole `mtp.*` namespace, so it warned
+    // "`--speculative` was requested but no MTP weights were loaded", set
+    // has_mtp = false, allocated num_intermediates = 0, and then died in the
+    // first mHC verify with "SSM MTP intermediate buffers not allocated
+    // (need K-1 h + K conv; h_state_intermediates.len()=0)" (2-node EP=2 run,
+    // 2026-09-07).
     // ⚠ The UPLOAD gate (`want_mtp` in spark-server: --speculative or the env
     // flag) and this LOAD gate are DIFFERENT predicates — `use_speculative`
     // also covers --dflash. When they disagree the `mtp.*` tensors were
@@ -361,7 +370,6 @@ pub fn build_model(
     let mtp_tensors_present = store.contains("mtp.fc_embedding.weight");
     let qwen4_exp_mtp_module = if config.model_type == "qwen4_exp"
         && (use_speculative || std::env::var("ATLAS_QWEN4EXP_MTP").as_deref() == Ok("1"))
-        && config.ep_rank == 0
         && mtp_tensors_present
     {
         match crate::weight_loader::qwen4_exp::load_qwen4_exp_mtp_module(
