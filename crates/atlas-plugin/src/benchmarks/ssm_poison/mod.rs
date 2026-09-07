@@ -11,5 +11,6 @@ pub mod driver;
 pub mod probe;
 pub mod report;
 pub mod score;
+pub mod toolcall;
 
 pub use driver::{DESCRIPTOR, METADATA};
