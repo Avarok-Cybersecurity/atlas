@@ -6,6 +6,7 @@ import json, sys, time, urllib.request, random, argparse, statistics
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--port", type=int, default=8888)
+ap.add_argument("--host", default="127.0.0.1", help="server host (multi-node: the EP head)")
 ap.add_argument("--model", default="qwen3.8-flash-next")
 ap.add_argument("--tokens", type=int, nargs="+", default=[8000, 11000])
 ap.add_argument("--repeats", type=int, default=2)
@@ -25,7 +26,7 @@ def make_prompt(n_tokens, salt):
 def one(n_tokens, salt):
     prompt = make_prompt(n_tokens, salt)
     req = urllib.request.Request(
-        f"http://127.0.0.1:{args.port}/v1/chat/completions",
+        f"http://{args.host}:{args.port}/v1/chat/completions",
         data=json.dumps({"model": args.model, "messages": [{"role": "user", "content": prompt}],
                          "max_tokens": 1, "temperature": 0.0,
                          "chat_template_kwargs": {"reasoning_effort": "low"}}).encode(),

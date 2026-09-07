@@ -1309,9 +1309,33 @@ wall, reasoning_effort low + preserve_thinking. Per-turn MTP telemetry stayed he
 475 tok  25.2 tok/s  mtp=1.00  p1=0.742  mean_na=1.225  tok_step=2.225
 ```
 
-**Status:** `ATLAS_EP_MTP` remains the opt-in — one agentic iteration is a pass, not a certification —
-but EP=2 with MTP and prefix caching now completes a multi-turn agentic run. Set `ATLAS_EP_MTP=1` to
-use it. EP=2 without MTP also passes (137 s wall, 15.1 s/turn) and needs no flag.
+**PREFILL AND CONCURRENCY under EP=2** (2026-09-07, 4 sequence slots, 32K ctx, MTP on, prefix caching
+on, `EP v2 active: honoring max_batch_size=4`, 2 reps per cell):
+
+| metric | EP=2 (2 GB10s) | single node | delta |
+|---|---:|---:|---:|
+| prefill 8K | **542 tok/s** | 478 | **+13%** |
+| prefill 11K | **561 tok/s** | 486 | **+15%** |
+| decode aggregate C=1 | 26.4-27.2 | 26.7-27.6 | parity |
+| decode aggregate C=2 | 22.2-23.7 | 23.7-24.3 | parity |
+| decode aggregate C=4 | 22.3-22.8 | 21.8-22.4 | parity |
+
+**Prefill is the win, and the mechanism is the obvious one:** prefill on this model is dominated by
+MoE weight traffic, and EP=2 halves the experts each rank must read (256 instead of 512). Decode is
+unchanged because it is bound by the per-sequence mHC verify, not by weight bandwidth — the same
+reason batching the verify across sequences was a NEGATIVE result above.
+
+Speculation stays healthy under concurrency: at C=4 every stream logged `mtp=1.00` with `mean_na`
+0.88-1.51 (acceptance falls at width, as single-node does).
+
+**Status:** `ATLAS_EP_MTP` remains the opt-in — one agentic iteration and 2-rep sweeps are a pass, not
+a certification — but EP=2 with MTP and prefix caching now completes a multi-turn agentic run AND is
+faster at prefill than a single node. Set `ATLAS_EP_MTP=1` to use it. EP=2 without MTP also passes
+(137 s wall, 15.1 s/turn) and needs no flag.
+
+Harnesses: `measure_prefill.py` / `measure_concurrency.py` gained `--host` so they can target the EP
+head from another node; `~/run_exl3_ep2_mtp.sh <rank>` on both hosts carries the fabric + preset-parity
+env.
 
 ## Files
 

@@ -21,6 +21,7 @@ import argparse, json, os, random, signal, statistics, subprocess, sys, threadin
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--port", type=int, default=8899)
+ap.add_argument("--host", default="127.0.0.1", help="server host (multi-node: the EP head)")
 ap.add_argument("--model", default="auto", help="'auto' = first id from /v1/models")
 ap.add_argument("--concurrency", type=int, nargs="+", default=[1, 2, 4])
 ap.add_argument("--prompt-tokens", type=int, default=2000)
@@ -74,7 +75,7 @@ def gpu_sample():
 def resolve_model():
     if args.model != "auto":
         return args.model
-    with urllib.request.urlopen(f"http://127.0.0.1:{args.port}/v1/models", timeout=10) as r:
+    with urllib.request.urlopen(f"http://{args.host}:{args.port}/v1/models", timeout=10) as r:
         return json.load(r)["data"][0]["id"]
 
 
@@ -118,7 +119,7 @@ def stream_one(model, prompt, out):
     body = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": args.max_tokens,
             "temperature": 0.0, "stream": True, "stream_options": {"include_usage": True},
             "chat_template_kwargs": {"reasoning_effort": args.effort}}
-    req = urllib.request.Request(f"http://127.0.0.1:{args.port}/v1/chat/completions", data=json.dumps(body).encode(),
+    req = urllib.request.Request(f"http://{args.host}:{args.port}/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     t0 = time.perf_counter(); times = []; usage = None; finish = None
     try:
