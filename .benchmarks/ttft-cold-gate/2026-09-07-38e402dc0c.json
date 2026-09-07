@@ -2,8 +2,8 @@
   "schema": 1,
   "benchmark_id": "ttft-cold-gate",
   "benchmark_name": "Cold TTFT Regression Gate",
-  "git_sha": "823d87f8a7",
-  "recorded_at": 1788729566,
+  "git_sha": "38e402dc0c",
+  "recorded_at": 1788745535,
   "target_model": "Qwen/Qwen3.6-35B-A3B-FP8",
   "params": {
     "median_limit_pct": "3",
@@ -37,54 +37,54 @@
   "hardware": {
     "gpu": "NVIDIA GB10",
     "driver": "580.159.03",
-    "sm_clock_mhz": 2431.0,
+    "sm_clock_mhz": 2489.0,
     "source": "nvidia-smi"
   },
   "hardware_state": {
     "sensitivity": "speed",
     "before": {
-      "captured_at": 1788729519,
+      "captured_at": 1788745487,
       "machine": {
         "hostname": "spark-28c2",
         "machine_id": "7af66f30966a49b6886e00e2fce4b42f",
         "gpu": "NVIDIA GB10",
         "driver": "580.159.03"
       },
-      "gpu_temp_c": 54.0,
+      "gpu_temp_c": 52.0,
       "chassis_temps_c": [
         {
           "name": "acpitz",
-          "temp_c": 59.9
+          "temp_c": 61.6
         },
         {
           "name": "acpitz",
-          "temp_c": 54.2
+          "temp_c": 52.7
         },
         {
           "name": "acpitz",
-          "temp_c": 59.9
+          "temp_c": 53.6
         },
         {
           "name": "acpitz",
-          "temp_c": 54.2
+          "temp_c": 53.1
         },
         {
           "name": "acpitz",
-          "temp_c": 55.2
+          "temp_c": 61.6
         },
         {
           "name": "acpitz",
-          "temp_c": 56.4
+          "temp_c": 54.8
         },
         {
           "name": "acpitz",
-          "temp_c": 55.0
+          "temp_c": 53.8
         }
       ],
-      "sm_clock_mhz": 2411.0,
+      "sm_clock_mhz": 2405.0,
       "sm_clock_max_mhz": 3003.0,
       "throttle_counters": {
-        "sw_power_cap_us": 407732813821,
+        "sw_power_cap_us": 410327314236,
         "sw_thermal_us": 0,
         "hw_thermal_us": 0,
         "hw_power_brake_us": 0,
@@ -96,12 +96,12 @@
         "hw_thermal": false,
         "hw_power_brake": false
       },
-      "mem_available_kb": 9066500,
+      "mem_available_kb": 8510524,
       "mem_total_kb": 127600748,
-      "page_cache_kb": 7382000,
+      "page_cache_kb": 6840000,
       "gpu_compute_apps": [
         {
-          "pid": 506698,
+          "pid": 529228,
           "name": "./target/release/spark",
           "used_mib": 108713
         }
@@ -115,48 +115,48 @@
       ]
     },
     "after": {
-      "captured_at": 1788729566,
+      "captured_at": 1788745535,
       "machine": {
         "hostname": "spark-28c2",
         "machine_id": "7af66f30966a49b6886e00e2fce4b42f",
         "gpu": "NVIDIA GB10",
         "driver": "580.159.03"
       },
-      "gpu_temp_c": 69.0,
+      "gpu_temp_c": 68.0,
       "chassis_temps_c": [
         {
           "name": "acpitz",
-          "temp_c": 78.6
+          "temp_c": 76.9
         },
         {
           "name": "acpitz",
-          "temp_c": 63.0
+          "temp_c": 61.5
         },
         {
           "name": "acpitz",
-          "temp_c": 63.8
+          "temp_c": 72.0
         },
         {
           "name": "acpitz",
-          "temp_c": 63.8
+          "temp_c": 60.9
         },
         {
           "name": "acpitz",
-          "temp_c": 75.7
+          "temp_c": 61.7
         },
         {
           "name": "acpitz",
-          "temp_c": 78.6
+          "temp_c": 76.9
         },
         {
           "name": "acpitz",
-          "temp_c": 65.5
+          "temp_c": 64.0
         }
       ],
-      "sm_clock_mhz": 2470.0,
+      "sm_clock_mhz": 2489.0,
       "sm_clock_max_mhz": 3003.0,
       "throttle_counters": {
-        "sw_power_cap_us": 407732813821,
+        "sw_power_cap_us": 410327314236,
         "sw_thermal_us": 0,
         "hw_thermal_us": 0,
         "hw_power_brake_us": 0,
@@ -168,12 +168,12 @@
         "hw_thermal": false,
         "hw_power_brake": false
       },
-      "mem_available_kb": 9117020,
+      "mem_available_kb": 8509368,
       "mem_total_kb": 127600748,
-      "page_cache_kb": 7384452,
+      "page_cache_kb": 6842448,
       "gpu_compute_apps": [
         {
-          "pid": 506698,
+          "pid": 529228,
           "name": "./target/release/spark",
           "used_mib": 108737
         }
@@ -187,13 +187,13 @@
       ]
     },
     "delta": {
-      "elapsed_s": 47,
+      "elapsed_s": 48,
       "sw_power_cap_us": 0,
       "sw_thermal_us": 0,
       "hw_thermal_us": 0,
       "hw_power_brake_us": 0,
-      "gpu_temp_delta_c": 15.0,
-      "hottest_chassis_delta_c": 18.699999999999996
+      "gpu_temp_delta_c": 16.0,
+      "hottest_chassis_delta_c": 15.300000000000004
     },
     "precheck": {
       "decision": "proceed"
@@ -201,20 +201,20 @@
     "postcheck": {
       "validity": "valid",
       "concerns": [
-        "hottest chassis zone moved +19 °C"
+        "hottest chassis zone moved +15 °C"
       ]
     },
     "perf_class": "gb10@spark-28c2"
   },
   "metrics": {
-    "median_ms": 896.4307180000001,
-    "p90_ms": 2008.8642860000002,
+    "median_ms": 898.1387225,
+    "p90_ms": 2019.939091,
     "samples": 36.0
   },
   "frame_status": "Completed",
   "verdict": "PASS",
-  "verdict_reason": "median -0.0% (limit +3.0%) · p90 -0.0% (limit +5.0%)",
-  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · median_ms=896.43, p90_ms=2008.86, samples=36.00 · Pass: median -0.0% (limit +3.0%) · p90 -0.0% (limit +5.0%)",
+  "verdict_reason": "median +0.2% (limit +3.0%) · p90 +0.6% (limit +5.0%)",
+  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · median_ms=898.14, p90_ms=2019.94, samples=36.00 · Pass: median +0.2% (limit +3.0%) · p90 +0.6% (limit +5.0%)",
   "perf_env": {
     "ATLAS_PREFILL_CODISPATCH": "0",
     "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
