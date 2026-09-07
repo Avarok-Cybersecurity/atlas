@@ -66,6 +66,19 @@ jobs:
       web_only: ${{ steps.classify.outputs.web_only }}
       web_touched: ${{ steps.classify.outputs.web_touched }}
       blog_touched: ${{ steps.classify.outputs.blog_touched }}
+      # ★ A STEP OUTPUT IS NOT A JOB OUTPUT, AND THE DIFFERENCE IS SILENT.
+      # These two were computed, logged, and then never exported, so every
+      # `needs.changes.outputs.<name>` consumer read the EMPTY STRING.
+      # `builds_binaries != 'false'` survived that (empty is not 'false', so it
+      # built — fail-safe by luck). `is_stack_layer == 'true'` did not: every
+      # lower layer of a stack was told it was not one and paid the full
+      # nine-leg release matrix, which is the entire economics of stacking.
+      # Measured 2026-09-07 on #946: the classify job printed
+      # `is_stack_layer=true` and release-build.yml received `stack_layer:
+      # false` in the same run. `assert-job-outputs-exported.py` now fails CI
+      # on any consumer without a matching export.
+      is_stack_layer: ${{ steps.stack.outputs.is_stack_layer }}
+      builds_binaries: ${{ steps.classify.outputs.builds_binaries }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

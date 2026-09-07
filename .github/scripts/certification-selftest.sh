@@ -2315,6 +2315,22 @@ want_rc_msg 1 "same commit" "control: head == base is refused" \
 want_rc 2 "control: called with no arguments it refuses, it does not pass" \
   bash .github/scripts/assert-stack-layer-differs.sh
 
+echo "== job outputs are exported =="
+# The guard that would have caught `is_stack_layer` being computed, logged and
+# never exported -- which told every lower stack layer it was not one and made
+# it pay the full nine-leg release matrix. Run against the real tree, then
+# against a fixture that MUST be rejected.
+want_rc 0 "every needs.<job>.outputs.<name> in this tree is exported" \
+  python3 .github/scripts/assert-job-outputs-exported.py
+mkdir -p "$TMP/jo/.github/workflows"
+printf 'jobs:\n  a:\n    outputs:\n      x: y\n  b:\n    steps:\n      - run: echo ${{ needs.a.outputs.zzz }}\n' \
+  > "$TMP/jo/.github/workflows/w.yml"
+want_rc_msg 1 "does not export 'zzz'" "control: an unexported consumer is caught" \
+  sh -c "cd '$TMP/jo' && python3 '$PWD/.github/scripts/assert-job-outputs-exported.py'"
+rm -rf "$TMP/jo/.github/workflows"; mkdir -p "$TMP/jo/.github/workflows"
+want_rc_msg 1 "no workflow files found" "control: a guard that finds nothing must fail" \
+  sh -c "cd '$TMP/jo' && python3 '$PWD/.github/scripts/assert-job-outputs-exported.py'"
+
 echo
 echo "  $PASS passed, $FAIL failed"
 REACHED_SUMMARY=1
