@@ -37,7 +37,7 @@ which and return `ORDER-WRONG`.
 You may run read-only commands to check any of it yourself. Prefer to. A claim
 you verified outranks a claim you were handed.
 
-## The six questions
+## The seven questions
 
 Answer every one in writing, each with the evidence that settles it. "Looks
 fine" is not an answer; name the file, the symbol, the check, or the commit.
@@ -69,6 +69,28 @@ fine" is not an answer; name the file, the symbol, the check, or the commit.
 6. **Irreversibility.** State the cost of being wrong about THIS stack
    specifically — which PR would be auto-merged or stranded — and whether the
    evidence in front of you is enough to spend it.
+
+7. **Certifiability as ONE campaign.** Does any layer **below the top** touch
+   `PERF_PATHS`? Compute it per layer, and against `main` — not against the
+   layer's own base, because that is what the gate does. This is the question
+   that decides whether the group's whole premise holds.
+
+   The gate judges every layer against `main`, so each one inherits the
+   `PERF_PATHS` changes of every layer beneath it. A single record set cannot
+   satisfy them all: records are pinned to a tree, each layer's tree differs,
+   and a record measured at the top does not cover a lower layer whenever the
+   top adds `PERF_PATHS` files. The stack then merges bottom-up into layers
+   that cannot go green.
+
+   Measured 2026-09-07 on stack #951: #948's own diff is two `.github` files,
+   and its certification still failed naming `crates/spark-model/src/
+   video_decode_ffmpeg.rs` — a file belonging to #946, two layers below.
+
+   If the answer is yes, say so in the verdict. The group is still worth
+   stacking for review, but it is NOT certifiable by one campaign, and the
+   caller must choose deliberately between a waiver for the lower layers and
+   one campaign per `PERF_PATHS` layer. An ORDER-OK that hides this is an
+   answer to the wrong question.
 
 ## Verdict
 

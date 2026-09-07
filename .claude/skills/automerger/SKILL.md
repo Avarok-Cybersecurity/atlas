@@ -1,6 +1,6 @@
 ---
 name: automerger
-description: "Find, group and land open PRs as certified STACKS — one certification campaign per stack instead of one per PR. Invoke when a PR backlog needs triage, when related PRs should be stacked on one base chain, or when asking 'which of these are already merged?'. Wraps /iterate for the wave loop and adds merge economics, a supervised agent ladder, and an O.R.A.C.L.E order gate that must clear a stack's SEQUENCE before it is registered (order cannot be changed afterwards), and a rulebook of 35 traps mined from real incidents (each with the check that proves compliance). Born from a 98-PR backlog where 12 of the first 19 PRs triaged were ALREADY on main — closed only because nobody deleted them after batching."
+description: "Find, group and land open PRs as certified STACKS — one certification campaign per stack instead of one per PR. Invoke when a PR backlog needs triage, when related PRs should be stacked on one base chain, or when asking 'which of these are already merged?'. Wraps /iterate for the wave loop and adds merge economics, a supervised agent ladder, and an O.R.A.C.L.E order gate that must clear a stack's SEQUENCE before it is registered (order cannot be changed afterwards), and a rulebook of 36 traps mined from real incidents (each with the check that proves compliance). Born from a 98-PR backlog where 12 of the first 19 PRs triaged were ALREADY on main — closed only because nobody deleted them after batching."
 argument-hint: "<repo or scope> [every <N>m]"
 ---
 
@@ -303,6 +303,45 @@ and not a mood. **STOP AND ASK when any of these is true:**
 Absent all of those: post the evidence comment, then the bare `/seal`, then
 merge. Say in the wave report that you sealed and on what authority.
 
+## ONE CAMPAIGN PER STACK HOLDS ONLY IF ONE LAYER TOUCHES `PERF_PATHS`
+
+★ **The gate judges every layer against `main`, not against its own base.**
+
+So each layer inherits the `PERF_PATHS` changes of every layer beneath it, and
+one record set cannot satisfy them all: records are pinned to a tree, each
+layer's tree differs, and a record measured at the TOP does not cover a lower
+layer whenever the top adds `PERF_PATHS` files. The stack then merges
+bottom-up into layers that cannot go green.
+
+Measured 2026-09-07 on stack #951. #948's own diff is two `.github` files. Its
+certification failed anyway:
+
+```
+NONE  decode-floor — latest record is for da016237db — invalidated by
+      crates/spark-model/src/video_decode_ffmpeg.rs
+```
+
+— a file belonging to **#946, two layers below**. The top (#950) carried the
+records and went green; the three layers under it could not.
+
+**This is the price of native stacking, and it is worth naming.** A composed
+aggregation PR is ONE tree, so one campaign certifies it — that is why the
+22-PR #934 worked. A native stack is N PRs with N trees: better for review,
+authorship and dropping a constituent, worse for certification arithmetic.
+Both cannot be maximised.
+
+**Decide before building the stack, not after certifying it:**
+
+| shape | do this |
+|---|---|
+| exactly one layer touches `PERF_PATHS`, and it is the TOP | native stack, one campaign. The intended case |
+| a layer BELOW the top touches `PERF_PATHS` | native stack for review + `/expedite` the lower layers, certifying at the top — the waiver's own words are *"merge without RECORDS, not skip the build"*. Post the reasoning on each expedited PR |
+| several layers change inference behaviour | one campaign per such layer, or do not stack them |
+| no layer touches `PERF_PATHS` | native stack, no campaign at all |
+
+O.R.A.C.L.E's question 7 asks exactly this, and an `ORDER-OK` that does not
+answer it is an answer to the wrong question.
+
 ## Certified stacks land IN SERIES, and only the first survives
 
 ★ **A RECORD IS A STATEMENT ABOUT A TREE, AND MERGING MOVES THE TREE.**
@@ -552,12 +591,12 @@ recording it. Treat that as a defect and say so.
 
 # RULEBOOK
 
-35 rules, distilled by three adversarial passes from 59 lessons mined from real
+36 rules, distilled by three adversarial passes from 59 lessons mined from real
 incidents. Every rule carries **EVIDENCE** (what it cost) and **CHECK** (the
 command or comparison that proves compliance). A rule you cannot check is
 decoration; a rule without evidence is an opinion.
 
-AUTOMERGER RULEBOOK — 35 rules (30 distilled from 59 candidates × 3 adversarial reviews, + 3 on stack order, + 1 on marks, + 1 on serialised landings)
+AUTOMERGER RULEBOOK — 36 rules (30 distilled from 59 candidates × 3 adversarial reviews, + 3 on stack order, + 1 on marks, + 1 on serialised landings, + 1 on stack certifiability)
 
 ═══ DO NOT (highest cost first) ═══
 
@@ -706,6 +745,10 @@ AUTOMERGER RULEBOOK — 35 rules (30 distilled from 59 candidates × 3 adversari
 35. DO land certified stacks ONE AT A TIME, and pick the first lander for what it makes cheaper — a record is a statement about a tree, so merging any stack whose diff touches PERF_PATHS makes every other in-flight certification stale. Before rewriting a certified branch, publish `refs/heads/certified/<stack>-<pin>` at the records commit: a rebase orphans the sha the records name, and the gate then says "git cannot diff that commit against this one", which reads like corruption and is really unreachability.
     EVIDENCE: 2026-09-07 #891 merged carrying crates/ changes; the next stack's eleven gates (5 GPU-hours) had to be re-run, and a third stack's records were orphaned by an earlier rebase until a keep-ref restored them.
     CHECK: `git diff --name-only <old-main> <new-main> | grep -E '^(crates|kernels|Cargo)'` is empty before trusting an in-flight certification; `git merge-base --is-ancestor <record-sha> <any-ref>` succeeds for every record commit.
+
+36. DO check, BEFORE building a stack, whether any layer below the top touches PERF_PATHS — the gate judges every layer against `main`, so each inherits the PERF_PATHS changes beneath it and one record set cannot satisfy them all. If one does, choose deliberately: native stack plus `/expedite` on the lower layers with the reasoning posted, or one campaign per such layer. "One campaign per stack" is a property of the SHAPE, not of stacking.
+    EVIDENCE: stack #951, 2026-09-07 — #948's own diff was two .github files and its certification still failed naming crates/spark-model/src/video_decode_ffmpeg.rs, a file two layers below. The top carried the records and went green; the three layers under it could not, and the stack merges bottom-up.
+    CHECK: for each layer, `gh pr diff --name-only <n>` against MAIN (not its base) filtered to PERF_PATHS — only the top may be non-empty for one campaign to suffice.
 
 ═══ MARKS ═══
 
