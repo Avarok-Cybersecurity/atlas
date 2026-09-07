@@ -330,14 +330,38 @@ aggregation PR is ONE tree, so one campaign certifies it — that is why the
 authorship and dropping a constituent, worse for certification arithmetic.
 Both cannot be maximised.
 
+★ **THE COST IS ONE CAMPAIGN PER DISTINCT `PERF_PATHS` TREE — not per layer.**
+
+Layers that differ only outside `PERF_PATHS` share a tree, so ONE record set
+covers all of them. Count the trees before you count the campaigns:
+
+```bash
+prev=""; for b in <bottom> ... <top>; do
+  [ -n "$prev" ] && echo "$prev -> $b: $(git diff --name-only origin/$prev origin/$b \
+     | grep -cE '^(crates|kernels|Cargo)') PERF_PATHS files differ"
+  prev=$b
+done       # every adjacent pair with 0 shares its neighbour's tree
+```
+
+Measured 2026-09-07: stack #951 has four layers but only **two** trees (#948 and
+#949 are `.github`-only, so #946's records cover them) — two campaigns, no
+waiver. Stack #945 has five layers and **five** trees (1, 11, 6, 3 files
+differing between adjacent pairs) — five campaigns, ~25 GPU-hours, which is
+where native stacking costs 5x what composing would.
+
 **Decide before building the stack, not after certifying it:**
 
 | shape | do this |
 |---|---|
-| exactly one layer touches `PERF_PATHS`, and it is the TOP | native stack, one campaign. The intended case |
-| a layer BELOW the top touches `PERF_PATHS` | native stack for review + `/expedite` the lower layers, certifying at the top — the waiver's own words are *"merge without RECORDS, not skip the build"*. Post the reasoning on each expedited PR |
-| several layers change inference behaviour | one campaign per such layer, or do not stack them |
+| one distinct `PERF_PATHS` tree, at the TOP | native stack, one campaign. The intended case |
+| a few trees, the lower ones inert | one campaign per tree — still far cheaper than per layer |
+| every layer its own tree | do not stack them, or compose: N campaigns defeats the point |
 | no layer touches `PERF_PATHS` | native stack, no campaign at all |
+
+`/expedite` remains available for a layer that provably cannot change an
+inference number — its own words are *"merge without RECORDS, not skip the
+build"* — but reach for it only after counting the trees, because the count is
+usually smaller than the layer list suggests.
 
 O.R.A.C.L.E's question 7 asks exactly this, and an `ORDER-OK` that does not
 answer it is an answer to the wrong question.
@@ -746,9 +770,9 @@ AUTOMERGER RULEBOOK — 37 rules (30 distilled from 59 candidates × 3 adversari
     EVIDENCE: 2026-09-07 #891 merged carrying crates/ changes; the next stack's eleven gates (5 GPU-hours) had to be re-run, and a third stack's records were orphaned by an earlier rebase until a keep-ref restored them.
     CHECK: `git diff --name-only <old-main> <new-main> | grep -E '^(crates|kernels|Cargo)'` is empty before trusting an in-flight certification; `git merge-base --is-ancestor <record-sha> <any-ref>` succeeds for every record commit.
 
-36. DO check, BEFORE building a stack, whether any layer below the top touches PERF_PATHS — the gate judges every layer against `main`, so each inherits the PERF_PATHS changes beneath it and one record set cannot satisfy them all. If one does, choose deliberately: native stack plus `/expedite` on the lower layers with the reasoning posted, or one campaign per such layer. "One campaign per stack" is a property of the SHAPE, not of stacking.
-    EVIDENCE: stack #951, 2026-09-07 — #948's own diff was two .github files and its certification still failed naming crates/spark-model/src/video_decode_ffmpeg.rs, a file two layers below. The top carried the records and went green; the three layers under it could not, and the stack merges bottom-up.
-    CHECK: for each layer, `gh pr diff --name-only <n>` against MAIN (not its base) filtered to PERF_PATHS — only the top may be non-empty for one campaign to suffice.
+36. DO count a stack's DISTINCT PERF_PATHS TREES before building it — the gate judges every layer against `main`, so each inherits the PERF_PATHS changes beneath it, but layers differing only outside PERF_PATHS SHARE a tree and one record set covers all of them. The cost is one campaign per distinct tree, not per layer, and it is usually far smaller than the layer count.
+    EVIDENCE: stack #951, 2026-09-07 — #948's own diff was two .github files and its certification still failed naming crates/spark-model/src/video_decode_ffmpeg.rs, a file two layers below. But the PERF_PATHS diff BETWEEN #946, #948 and #949 is empty, so one campaign at #946's tree covered all three: four layers, two trees, two campaigns, no waiver. Stack #945 by contrast has five layers and five trees (1/11/6/3 files differing between adjacent pairs) = ~25 GPU-hours, where composing would cost one.
+    CHECK: `git diff --name-only origin/<layer> origin/<next> | grep -cE '^(crates|kernels|Cargo)'` for every adjacent pair — the number of distinct trees is the number of campaigns owed.
 
 37. DO NOT convict a PR on ONE red benchmark gate — reproduce it on the same box at the same pin, and measure the gate's own failure rate on `main` before attributing anything. A gate whose instrument is noisy convicts whatever is in front of it, and a three-probe bisect against an intermittent fault assigns blame to whichever probe landed in a bad run.
     EVIDENCE: 2026-09-07, `concurrency-sweep` measured 4 passes and 4 failures in 8 reps on CLEAN main across three boxes — C=2 spanning 22.8..30.2 against a 24.05 effective floor, plus completions truncating at C=8/32/128. On that instrument #891 was suspected for a 24.0 (a repeat at its own pin gave 29.0 and clean main gave 27.6, slower than the PR), and #879 was labelled BROKEN by a three-probe bisect of a signature main reproduces on its own. Issue #954.
