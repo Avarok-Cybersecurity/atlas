@@ -126,8 +126,8 @@ impl Rungs {
     /// The measured defaults for a head whose widest verify width is `cap`.
     pub fn defaults(cap: usize) -> Self {
         Self {
-            multi: MULTI_K.clamp(2, cap),
-            narrow: NARROW_K.clamp(2, cap),
+            multi: MULTI_K.clamp(2, cap.max(2)),
+            narrow: NARROW_K.clamp(2, cap.max(2)),
             wide: cap.max(2),
             enter: ENTER,
             leave: LEAVE,
