@@ -74,35 +74,54 @@ fn rust_kv_lora_mirror_matches_the_glm_kernel_define() {
     );
 }
 
-/// No second copy of the V4 MLA paged-decode kernels. `common/` merges into every target, so
-/// a copy there is shadowed by any model directory that also has one — two files, one name,
+/// No `common/` copy of the V4 MLA paged-decode kernels while a model directory
+/// also carries one. `common/` merges into EVERY target, so a copy there is
+/// shadowed by any model directory that also has one — two files, one name,
 /// nothing keeping them in step.
+///
+/// 🪤 The rule is about the `common/`-vs-model shadow, NOT about a global count.
+/// This test asserted `found.len() == 1` while `deepseek-v4-flash` was the only
+/// model directory holding the file; upstream then added `longcat-flash-lite`
+/// with its own copy and the assertion fired on two SEPARATE targets, which
+/// shadow nothing — each target resolves its own directory. The count was an
+/// accident of there being one such model at the time; the shadow is the
+/// invariant, so the shadow is what is pinned.
 #[test]
-fn no_duplicate_mla_paged_decode_kernel() {
+fn no_common_copy_shadows_a_model_mla_paged_decode_kernel() {
     let root = kernels_root();
     for stem in ["mla_paged_decode.cu", "mla_paged_decode_fp8.cu"] {
-        let mut found: Vec<String> = Vec::new();
+        let mut in_common: Vec<String> = Vec::new();
+        let mut in_model: Vec<String> = Vec::new();
         let mut stack = vec![root.clone()];
         while let Some(dir) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
+            };
             for e in rd.flatten() {
                 let p = e.path();
                 if p.is_dir() {
                     stack.push(p);
                 } else if p.file_name().and_then(|s| s.to_str()) == Some(stem) {
-                    found.push(
-                        p.strip_prefix(&root).unwrap_or(&p).display().to_string(),
-                    );
+                    let rel = p.strip_prefix(&root).unwrap_or(&p).display().to_string();
+                    if rel.split('/').any(|seg| seg == "common") {
+                        in_common.push(rel);
+                    } else {
+                        in_model.push(rel);
+                    }
                 }
             }
         }
-        found.sort();
-        assert_eq!(
-            found.len(),
-            1,
-            "{stem} must exist in exactly one place; found {found:?}. A `common/` copy plus a \
-             model-directory copy is a shadow: the model's copy wins and the two silently \
-             diverge. Promote or delete — do not fork."
+        in_common.sort();
+        in_model.sort();
+        assert!(
+            in_common.is_empty() || in_model.is_empty(),
+            "{stem} exists BOTH in common ({in_common:?}) and in a model directory \
+             ({in_model:?}). `common/` merges into every target, so the model's copy \
+             wins and the two silently diverge. Promote or delete — do not fork."
+        );
+        assert!(
+            in_common.len() <= 1,
+            "{stem} appears more than once under common/: {in_common:?}"
         );
     }
 }

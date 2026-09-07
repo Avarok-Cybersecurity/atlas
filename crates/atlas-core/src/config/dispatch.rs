@@ -12,7 +12,8 @@ use super::{
     LayerType, ModelConfig, default_conv_kernel, default_partial_rotary, default_rms_eps,
     default_rope_theta, finalize_config, parse_deepseek_v4, parse_gemma4_params, parse_glm5_next,
     parse_laguna, parse_longcat_ngram, parse_minimax_m2, parse_mistral_params,
-    parse_quantization_config, parse_qwen4_exp, parse_step3p7, parse_vision_config, validate_config,
+    parse_quantization_config, parse_qwen4_exp, parse_step3p7, parse_vision_config,
+    validate_config,
 };
 
 fn required_u64(raw: &serde_json::Value, key: &str, model_type: &str) -> Result<u64> {

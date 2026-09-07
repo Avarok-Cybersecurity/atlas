@@ -437,10 +437,7 @@ mod tests {
         assert_eq!(classify_attn_block(&kda), AttnBlockKind::Kda);
 
         // A KDA block missing one tensor is UNKNOWN, never silently Kda.
-        assert_eq!(
-            classify_attn_block(&kda[1..].to_vec()),
-            AttnBlockKind::Unknown
-        );
+        assert_eq!(classify_attn_block(&kda[1..]), AttnBlockKind::Unknown);
     }
 
     #[test]

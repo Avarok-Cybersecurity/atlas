@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! GLM-5.3-Flash **KDA (Kimi Delta Attention) CPU reference** — Slice 2B.
 //!
 //! Design artifact, **not** a production path. Nothing here runs on GPU, nothing here is wired

@@ -40,17 +40,27 @@ use spark_runtime::cuda_backend::AtlasCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
-const FIXTURE_GOLDEN: &str = include_str!("../src/layers/glm5next_kda_ref/kda_golden.json");
-#[path = "common/golden.rs"]
-mod golden;
+#[path = "common/kda_gate_checks.rs"]
+pub(crate) mod kda_gate_checks;
+use kda_gate_checks::*;
 
-static PROD_GOLDEN: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| golden::load("crates/spark-model/src/layers/glm5next_kda_ref/kda_gate_prod_golden.json", "gen_kda_gate_prod_golden.py"));
+pub(crate) const FIXTURE_GOLDEN: &str =
+    include_str!("../src/layers/glm5next_kda_ref/kda_golden.json");
+#[path = "common/golden.rs"]
+pub(crate) mod golden;
+
+pub(crate) static PROD_GOLDEN: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    golden::load(
+        "crates/spark-model/src/layers/glm5next_kda_ref/kda_gate_prod_golden.json",
+        "gen_kda_gate_prod_golden.py",
+    )
+});
 
 /// Production GLM geometry.
-const PROD_H: usize = 64;
-const PROD_D: usize = 128;
+pub(crate) const PROD_H: usize = 64;
+pub(crate) const PROD_D: usize = 128;
 
-const BLOCK: u32 = 128;
+pub(crate) const BLOCK: u32 = 128;
 
 /// Acceptance bound, in units in the last place.
 ///
@@ -64,38 +74,38 @@ const BLOCK: u32 = 128;
 /// 2 ulp on a gate value near the `-5.0` bound is ~9.5e-7 absolute — far below anything the
 /// downstream recurrence can resolve, and far below this campaign's own equivalence floor
 /// (temp-0 decode is not bit-reproducible; within-control exact-token agreement is 38.1%).
-const MAX_ULP: i64 = 2;
+pub(crate) const MAX_ULP: i64 = 2;
 
 /// Absolute bound. 2 ulp of a value in [4, 8) is 9.54e-7; `lower_bound = -12.5` in the boundary
 /// sweep lands in [8, 16) where 2 ulp is 1.91e-6.
-const MAX_ABS: f64 = 2.0e-6;
+pub(crate) const MAX_ABS: f64 = 2.0e-6;
 
 /// Relative bound, over elements above the magnitude guard in `compare`.
-const MAX_REL: f64 = 1.0e-5;
+pub(crate) const MAX_REL: f64 = 1.0e-5;
 
 /// The kernel must not be materially worse than the CPU reference is against the same golden.
 /// This is the claim that actually matters: the residual is libm spread, not kernel error.
-const MAX_FLOOR_RATIO: f64 = 2.0;
+pub(crate) const MAX_FLOOR_RATIO: f64 = 2.0;
 
 /// Acceptance is on absolute and relative error. `max_ulp` is REPORTED but deliberately not
 /// gated: the gate's relative error is ~2e-6 everywhere, and at small magnitudes that is tens of
 /// representable floats while being numerically nothing. ULP is a useful diagnostic here and a
 /// misleading acceptance criterion. `MAX_ULP` documents the bound that does hold where ULP is
 /// meaningful — near the `lower_bound` saturation, values in [4, 8).
-fn within(e: &Err2) -> bool {
+pub(crate) fn within(e: &Err2) -> bool {
     e.max_abs <= MAX_ABS && e.max_rel <= MAX_REL
 }
 
 // ───────────────────────────────────────────────────────────────── helpers
 
-fn up_f32(g: &dyn GpuBackend, d: &[f32]) -> Result<DevicePtr> {
+pub(crate) fn up_f32(g: &dyn GpuBackend, d: &[f32]) -> Result<DevicePtr> {
     let b: Vec<u8> = d.iter().flat_map(|x| x.to_le_bytes()).collect();
     let p = g.alloc(b.len().max(1))?;
     g.copy_h2d(&b, p)?;
     Ok(p)
 }
 
-fn up_bf16(g: &dyn GpuBackend, d: &[f32]) -> Result<DevicePtr> {
+pub(crate) fn up_bf16(g: &dyn GpuBackend, d: &[f32]) -> Result<DevicePtr> {
     let b: Vec<u8> = d
         .iter()
         .flat_map(|x| bf16::from_f32(*x).to_bits().to_le_bytes())
@@ -105,7 +115,7 @@ fn up_bf16(g: &dyn GpuBackend, d: &[f32]) -> Result<DevicePtr> {
     Ok(p)
 }
 
-fn down_f32(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Result<Vec<f32>> {
+pub(crate) fn down_f32(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Result<Vec<f32>> {
     let mut b = vec![0u8; n * 4];
     g.copy_d2h(p, &mut b)?;
     Ok(b.chunks_exact(4)
@@ -113,7 +123,7 @@ fn down_f32(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Result<Vec<f32>> {
         .collect())
 }
 
-fn json_arr(v: &Value, section: &str, name: &str) -> Vec<f32> {
+pub(crate) fn json_arr(v: &Value, section: &str, name: &str) -> Vec<f32> {
     v[section][name]["data"]
         .as_array()
         .unwrap_or_else(|| panic!("missing {section}.{name}"))
@@ -123,18 +133,18 @@ fn json_arr(v: &Value, section: &str, name: &str) -> Vec<f32> {
 }
 
 #[derive(Default)]
-struct Err2 {
-    max_abs: f64,
-    max_rel: f64,
-    max_ulp: i64,
-    exact: usize,
-    total: usize,
+pub(crate) struct Err2 {
+    pub(crate) max_abs: f64,
+    pub(crate) max_rel: f64,
+    pub(crate) max_ulp: i64,
+    pub(crate) exact: usize,
+    pub(crate) total: usize,
 }
 
 /// Monotonic ordering of f32 bit patterns, so `|ord(a) - ord(b)|` is the number of
 /// representable floats between them. `+0.0` and `-0.0` both map to 0, which matters here:
 /// the saturated tail of the gate is legitimately `-0.0` on one side and `0.0` on the other.
-fn ord(x: f32) -> i64 {
+pub(crate) fn ord(x: f32) -> i64 {
     let b = x.to_bits();
     if b & 0x8000_0000 != 0 {
         -((b & 0x7fff_ffff) as i64)
@@ -145,7 +155,7 @@ fn ord(x: f32) -> i64 {
 
 /// Max absolute error, plus max relative error over elements large enough for a relative
 /// figure to mean anything (the gate legitimately produces exact `-0.0`).
-fn compare(got: &[f32], want: &[f32]) -> Err2 {
+pub(crate) fn compare(got: &[f32], want: &[f32]) -> Err2 {
     assert_eq!(got.len(), want.len());
     let mut e = Err2 {
         total: got.len(),
@@ -169,7 +179,7 @@ fn compare(got: &[f32], want: &[f32]) -> Err2 {
     e
 }
 
-fn report(label: &str, e: &Err2, dtype: &str) {
+pub(crate) fn report(label: &str, e: &Err2, dtype: &str) {
     println!(
         "  {label:<44} dtype={dtype:<5} max_abs={:.3e} max_rel={:.3e} max_ulp={:<2} exact={}/{}",
         e.max_abs, e.max_rel, e.max_ulp, e.exact, e.total
@@ -179,7 +189,7 @@ fn report(label: &str, e: &Err2, dtype: &str) {
 // ───────────────────────────────────────────────────────────────── launch
 
 #[allow(clippy::too_many_arguments)]
-fn launch_gate(
+pub(crate) fn launch_gate(
     g: &dyn GpuBackend,
     k: KernelHandle,
     g_raw: DevicePtr,
@@ -207,7 +217,7 @@ fn launch_gate(
 
 /// Run the fp32 entry point and bring the result back.
 #[allow(clippy::too_many_arguments)]
-fn run_f32(
+pub(crate) fn run_f32(
     g: &dyn GpuBackend,
     k: KernelHandle,
     g_raw: &[f32],
@@ -230,7 +240,7 @@ fn run_f32(
 
 /// Cross-language-exact deterministic filler: integer LCG mapped to binary32 by an exact
 /// division by 2^24. Mirrors the Python generator; no transcendental, no platform libm.
-struct Lcg(u64);
+pub(crate) struct Lcg(u64);
 impl Lcg {
     fn unit(&mut self) -> f32 {
         self.0 = self
@@ -247,7 +257,7 @@ impl Lcg {
 // ───────────────────────────────────────────────────────────────── checks
 
 /// A. + B. — fp32 kernel vs the HF toy fixture (H=2, D=4, T=6).
-fn check_fixture(g: &dyn GpuBackend, k: KernelHandle) -> Result<bool> {
+pub(crate) fn check_fixture(g: &dyn GpuBackend, k: KernelHandle) -> Result<bool> {
     let v: Value = serde_json::from_str(FIXTURE_GOLDEN)?;
     let f = &v["fixture"];
     let (h, d, t) = (
@@ -273,105 +283,9 @@ fn check_fixture(g: &dyn GpuBackend, k: KernelHandle) -> Result<bool> {
     Ok(within(&e))
 }
 
-/// A. + B. — fp32 and bf16 kernels vs the HF production-geometry golden (H=64, D=128, T=2).
-fn check_production(g: &dyn GpuBackend, kf: KernelHandle, kb: KernelHandle) -> Result<bool> {
-    let v: Value = serde_json::from_str(PROD_GOLDEN)?;
-    let f = &v["fixture"];
-    let (h, d, t) = (
-        f["heads"].as_u64().unwrap() as usize,
-        f["head_dim"].as_u64().unwrap() as usize,
-        f["tokens"].as_u64().unwrap() as usize,
-    );
-    assert_eq!(
-        (h, d),
-        (PROD_H, PROD_D),
-        "golden is not production geometry"
-    );
-    let lb = f["lower_bound"].as_f64().unwrap() as f32;
-
-    let g_raw = json_arr(&v, "inputs", "g_raw");
-    let dt_bias = json_arr(&v, "inputs", "dt_bias");
-    let a_log = json_arr(&v, "inputs", "A_log");
-    let want = json_arr(&v, "outputs", "gate");
-    assert_eq!(dt_bias.len(), h * d, "dt_bias must be per-channel");
-    assert_eq!(a_log.len(), h, "A_log must be per-head");
-
-    // Oracle floor, GPU not involved: how far apart are the Rust CPU reference and HF on this
-    // same tensor? This is the irreducible libm spread the GPU result is measured against.
-    let cpu_ref = bounded_gate(
-        &g_raw,
-        &dt_bias,
-        &a_log,
-        KdaDims {
-            hidden: 0,
-            heads: h,
-            head_dim: d,
-            tokens: t,
-        },
-        lb,
-    );
-    let floor = compare(&cpu_ref, &want);
-    report("oracle floor: CPU reference vs HF (no GPU)", &floor, "f32");
-
-    let got = run_f32(g, kf, &g_raw, &dt_bias, &a_log, t, h, d, lb)?;
-    let e = compare(&got, &want);
-    report(&format!("production H={h} D={d} T={t} vs HF"), &e, "f32");
-
-    // bf16 entry point. Its error floor is the bf16 rounding of `g_raw`, so it is scored
-    // against the golden recomputed from bf16-rounded input, not against the fp32 golden.
-    let n = t * h * d;
-    let (dg, db, da) = (
-        up_bf16(g, &g_raw)?,
-        up_f32(g, &dt_bias)?,
-        up_f32(g, &a_log)?,
-    );
-    let out = g.alloc(n * 4)?;
-    launch_gate(g, kb, dg, db, da, out, t, h, d, lb)?;
-    g.synchronize(0)?;
-    let got_bf16 = down_f32(g, out, n)?;
-
-    let g_rounded: Vec<f32> = g_raw.iter().map(|x| bf16::from_f32(*x).to_f32()).collect();
-    let want_bf16 = bounded_gate(
-        &g_rounded,
-        &dt_bias,
-        &a_log,
-        KdaDims {
-            hidden: 0,
-            heads: h,
-            head_dim: d,
-            tokens: t,
-        },
-        lb,
-    );
-    let eb = compare(&got_bf16, &want_bf16);
-    report("production bf16 vs bf16-rounded ref", &eb, "bf16");
-    let eb_vs_hf = compare(&got_bf16, &want);
-    report(
-        "production bf16 vs fp32 HF (input-rounding floor)",
-        &eb_vs_hf,
-        "bf16",
-    );
-
-    // The kernel's error against HF must sit in the same band as the CPU reference's own.
-    let ratio = if floor.max_abs > 0.0 {
-        e.max_abs / floor.max_abs
-    } else {
-        1.0
-    };
-    let rel_ratio = if floor.max_rel > 0.0 {
-        e.max_rel / floor.max_rel
-    } else {
-        1.0
-    };
-    println!(
-        "  GPU-vs-HF / CPU-ref-vs-HF ratio             max_abs={ratio:.3} max_rel={rel_ratio:.3} (bound {MAX_FLOOR_RATIO})"
-    );
-    Ok(within(&e) && within(&eb) && ratio <= MAX_FLOOR_RATIO && rel_ratio <= MAX_FLOOR_RATIO)
-}
-
 /// A. — ragged and production `T`, decode-sized through prefill-sized, against the CPU
 /// reference. `T` only changes the grid extent, so this is a launch-geometry check.
-fn check_ragged_t(g: &dyn GpuBackend, k: KernelHandle) -> Result<bool> {
+pub(crate) fn check_ragged_t(g: &dyn GpuBackend, k: KernelHandle) -> Result<bool> {
     let mut rng = Lcg(0xA11CE_u64);
     let dt_bias = rng.vec(PROD_H * PROD_D);
     let a_log: Vec<f32> = (0..PROD_H)
@@ -391,115 +305,6 @@ fn check_ragged_t(g: &dyn GpuBackend, k: KernelHandle) -> Result<bool> {
         let e = compare(&got, &want);
         report(&format!("ragged T={t:<5} vs CPU reference"), &e, "f32");
         ok &= within(&e);
-    }
-    Ok(ok)
-}
-
-/// C. — boundary behaviour.
-fn check_boundaries(g: &dyn GpuBackend, k: KernelHandle) -> Result<bool> {
-    let mut rng = Lcg(0xB0173);
-    let mut ok = true;
-    let dims = KdaDims {
-        hidden: 0,
-        heads: PROD_H,
-        head_dim: PROD_D,
-        tokens: 4,
-    };
-    let n = 4 * PROD_H * PROD_D;
-
-    // C1 — `lower_bound` is read from the argument, not compiled in as -5.
-    // The gate is exactly linear in `lower_bound`, so a hardcoded -5 is detectable as a
-    // proportionality violation as well as a mismatch against the reference.
-    let g_raw = rng.vec(n);
-    let dt_bias = rng.vec(PROD_H * PROD_D);
-    let a_log: Vec<f32> = (0..PROD_H).map(|h| 0.4 - 0.9 * h as f32 / 63.0).collect();
-    let base = run_f32(g, k, &g_raw, &dt_bias, &a_log, 4, PROD_H, PROD_D, -5.0)?;
-    for &lb in &[-3.25f32, -1.0, -12.5, -0.25] {
-        let got = run_f32(g, k, &g_raw, &dt_bias, &a_log, 4, PROD_H, PROD_D, lb)?;
-        let want = bounded_gate(&g_raw, &dt_bias, &a_log, dims, lb);
-        let e = compare(&got, &want);
-        report(&format!("lower_bound={lb:<6} vs CPU reference"), &e, "f32");
-        ok &= within(&e);
-
-        let scale = lb / -5.0;
-        let prop = base
-            .iter()
-            .zip(&got)
-            .map(|(b, x)| ((*b as f64) * scale as f64 - *x as f64).abs())
-            .fold(0.0f64, f64::max);
-        if prop > 1e-6 {
-            println!("    ! lower_bound={lb} not proportional to the -5.0 run: {prop:.3e}");
-            ok = false;
-        }
-        if got.iter().any(|v| *v < lb - 1e-6 || *v > 1e-30) {
-            println!("    ! lower_bound={lb} produced a value outside [{lb}, 0]");
-            ok = false;
-        }
-    }
-
-    // C2 — per-channel `dt_bias`. A kernel that broadcast one bias per head would produce
-    // identical output for a constant-per-head bias and a varying-per-channel one.
-    let flat: Vec<f32> = (0..PROD_H)
-        .flat_map(|h| std::iter::repeat_n(dt_bias[h * PROD_D], PROD_D))
-        .collect();
-    let varying = run_f32(g, k, &g_raw, &dt_bias, &a_log, 4, PROD_H, PROD_D, -5.0)?;
-    let constant = run_f32(g, k, &g_raw, &flat, &a_log, 4, PROD_H, PROD_D, -5.0)?;
-    let spread = compare(&varying, &constant).max_abs;
-    println!(
-        "  per-channel vs per-head-broadcast dt_bias   divergence={spread:.3e} (must be large)"
-    );
-    if spread < 0.1 {
-        println!("    ! dt_bias channel axis appears collapsed");
-        ok = false;
-    }
-
-    // C3 — distinct `A_log` per head. Same argument on the head axis.
-    let same_a = vec![a_log[0]; PROD_H];
-    let distinct = run_f32(g, k, &g_raw, &dt_bias, &a_log, 4, PROD_H, PROD_D, -5.0)?;
-    let uniform = run_f32(g, k, &g_raw, &dt_bias, &same_a, 4, PROD_H, PROD_D, -5.0)?;
-    let spread_a = compare(&distinct, &uniform).max_abs;
-    println!(
-        "  distinct vs uniform A_log                   divergence={spread_a:.3e} (must be large)"
-    );
-    if spread_a < 0.1 {
-        println!("    ! A_log head axis appears collapsed");
-        ok = false;
-    }
-
-    // C4 — sigmoid saturation, both tails, plus values that overflow `exp`.
-    let extremes: [f32; 8] = [-1.0e4, -800.0, -80.0, -1.0, 1.0, 80.0, 800.0, 1.0e4];
-    let sat_n = PROD_H * PROD_D;
-    let g_sat: Vec<f32> = (0..sat_n).map(|i| extremes[i % 8]).collect();
-    let zero_bias = vec![0.0f32; PROD_H * PROD_D];
-    let ones_a = vec![0.0f32; PROD_H]; // decay = exp(0) = 1
-    let got = run_f32(g, k, &g_sat, &zero_bias, &ones_a, 1, PROD_H, PROD_D, -5.0)?;
-    let want = bounded_gate(
-        &g_sat,
-        &zero_bias,
-        &ones_a,
-        KdaDims {
-            hidden: 0,
-            heads: PROD_H,
-            head_dim: PROD_D,
-            tokens: 1,
-        },
-        -5.0,
-    );
-    let e = compare(&got, &want);
-    report("saturation sweep vs CPU reference", &e, "f32");
-    ok &= within(&e);
-    if got.iter().any(|v| !v.is_finite()) {
-        println!("    ! saturation produced a non-finite value");
-        ok = false;
-    }
-    let hit_lb = got.iter().filter(|v| **v <= -5.0 + 1e-6).count();
-    let hit_zero = got.iter().filter(|v| v.abs() <= 1e-30).count();
-    println!(
-        "  saturation coverage                         at lower_bound={hit_lb}/{sat_n} at zero={hit_zero}/{sat_n}"
-    );
-    if hit_lb == 0 || hit_zero == 0 {
-        println!("    ! saturation sweep did not reach both tails");
-        ok = false;
     }
     Ok(ok)
 }

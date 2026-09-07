@@ -65,8 +65,8 @@ fn absorb_q_refuses_mismatched_tensors() {
     let ok_kv = vec![0f32; 2 * (3 + 5) * 4];
     assert!(absorb_q(&c, &ok_q, &ok_kv, 2).is_ok());
     // q_b sized with kv_b's per-head width — still a well-formed 2-D tensor.
-    assert!(absorb_q(&c, &vec![0f32; 2 * 8 * 6], &ok_kv, 2).is_err());
-    assert!(absorb_q(&c, &ok_q, &vec![0f32; 2 * 3 * 4], 2).is_err());
+    assert!(absorb_q(&c, &[0f32; 2 * 8 * 6], &ok_kv, 2).is_err());
+    assert!(absorb_q(&c, &ok_q, &[0f32; 2 * 3 * 4], 2).is_err());
 }
 
 /// Absorption is NoPE-only: a rope section would need its rows carried separately, and
@@ -98,13 +98,7 @@ fn absorbing_before_sharding_keeps_heads_paired() {
     // Independently absorb head 1 alone and compare.
     let mut c1 = c;
     c1.local_heads = 1;
-    let solo = absorb_q(
-        &c1,
-        &q_b[nope * ql..].to_vec(),
-        &kv_b[(nope + vd) * kvl..].to_vec(),
-        1,
-    )
-    .unwrap();
+    let solo = absorb_q(&c1, &q_b[nope * ql..], &kv_b[(nope + vd) * kvl..], 1).unwrap();
     assert_eq!(rank1, solo, "head pairing must survive the shard");
 }
 

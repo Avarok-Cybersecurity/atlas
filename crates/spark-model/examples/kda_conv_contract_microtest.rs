@@ -35,7 +35,12 @@ use spark_runtime::kernel_args::KernelLaunch;
 #[path = "common/golden.rs"]
 mod golden;
 
-static GOLDEN: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| golden::load("crates/spark-model/src/layers/glm5next_kda_ref/kda_conv_golden.json", "gen_kda_conv_golden.py"));
+static GOLDEN: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    golden::load(
+        "crates/spark-model/src/layers/glm5next_kda_ref/kda_conv_golden.json",
+        "gen_kda_conv_golden.py",
+    )
+});
 
 /// bf16 has ~8 mantissa bits; the conv runs in bf16 in production, so the achievable floor is
 /// set by input rounding, not by the kernel. Every figure is reported next to a CPU reference
@@ -146,7 +151,7 @@ fn l2_rows(x: &mut [f32], d: usize, upto: usize) {
 fn main() -> Result<()> {
     let g = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &g;
-    let v: Value = serde_json::from_str(GOLDEN)?;
+    let v: Value = serde_json::from_str(&GOLDEN)?;
     let f = &v["fixture"];
     let dim = f["conv_dim"].as_u64().unwrap() as usize;
     let qk = f["qk_channels"].as_u64().unwrap() as usize;
