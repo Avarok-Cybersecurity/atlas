@@ -42,6 +42,112 @@ pub(crate) fn hc_decode_split_forced() -> bool {
     *V.get_or_init(|| std::env::var("ATLAS_HC_DECODE_SPLIT").as_deref() == Ok("1"))
 }
 
+// provenance-id: 526f6e616c6420522e205374657369616b
+/// `ATLAS_HC_DECODE_ROWS=1`: decode-shaped (T <= 8) collapse that reads every
+/// low-rank weight row ONCE per site with 16-byte lane loads and applies it to
+/// all T tokens (`hc_dec_down` / `hc_dec_up`, see the kernel file). Opt-in
+/// while it is A/B'd against the cuBLASLt arm; the shape contract below falls
+/// back to the existing arms for anything it does not cover.
+pub(crate) fn hc_decode_rows_enabled() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_HC_DECODE_ROWS").as_deref() == Ok("1"))
+}
+
+/// Maximum row count the decode-rows arm handles in one launch pair
+/// (`QHC_DEC_MAX_T` in the kernel file).
+pub(crate) const HC_DEC_MAX_T: u32 = 8;
+
+/// The decode-rows arm's shape contract (mirrors the kernel-file comment):
+/// `hc*H % 256 == 0` (256 elements per warp step), `H % 64 == 0` (64 outputs
+/// per block), `rank % 8 == 0` and `rank * 2 % 16 == 0` (16-byte row loads),
+/// `hc <= 8` (block = hc * 64 <= 512 threads), `1 <= T <= 8`.
+pub(crate) fn hc_decode_rows_shape_ok(num_tokens: u32, hidden_size: u32, hc_mult: u32, rank: u32) -> bool {
+    let hc_dim = hc_mult * hidden_size;
+    (1..=HC_DEC_MAX_T).contains(&num_tokens)
+        && hc_dim % 256 == 0
+        && hidden_size % 64 == 0
+        && rank % 8 == 0
+        && (rank * 2) % 16 == 0
+        && (1..=8).contains(&hc_mult)
+}
+
+/// The decode-rows collapse: `hc_pre_stage` (existing) + `hc_dec_down` +
+/// `hc_dec_up`. Same math and the same FP32 `normed` as the split arm; the
+/// parity probe holds it to the split arm's tight bound.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn hc_pre_rows(
+    gpu: &dyn GpuBackend,
+    streams: DevicePtr,
+    w: &HcLowRank,
+    y_out: DevicePtr,
+    inj_out: DevicePtr,
+    scratch: DevicePtr,
+    num_tokens: u32,
+    hidden_size: u32,
+    hc_mult: u32,
+    norm_eps: f32,
+    inject: bool,
+    stream: u64,
+) -> Result<()> {
+    let rank = w.rank as u32;
+    anyhow::ensure!(
+        hc_decode_rows_shape_ok(num_tokens, hidden_size, hc_mult, rank),
+        "hc_pre_rows: shape outside the decode-rows contract (T={num_tokens} H={hidden_size} hc={hc_mult} rank={rank})"
+    );
+    let hc_dim = hc_mult * hidden_size;
+    // Same scratch layout as the split arm: normed [64, hc_dim] F32, then low [64, rank] F32.
+    let normed = scratch;
+    let low = scratch.offset(64 * hc_dim as usize * 4);
+
+    let k_stage = gpu.kernel("hyper_connection", "hc_pre_stage")?;
+    let k_down = gpu.kernel("hyper_connection", "hc_dec_down")?;
+    let k_up = gpu.kernel("hyper_connection", "hc_dec_up")?;
+
+    KernelLaunch::new(gpu, k_stage)
+        .grid([num_tokens, 1, 1])
+        .block([1024, 1, 1])
+        .arg_ptr(streams)
+        .arg_ptr(w.norm_w)
+        .arg_ptr(normed)
+        .arg_u32(hidden_size)
+        .arg_u32(hc_mult)
+        .arg_f32(norm_eps)
+        .launch(stream)?;
+
+    // One warp per weight row: rank rows plus (when injecting) hc inject rows.
+    let rows = rank + if inject { hc_mult } else { 0 };
+    let warps_per_block = 8u32;
+    KernelLaunch::new(gpu, k_down)
+        .grid([rows.div_ceil(warps_per_block), 1, 1])
+        .block([warps_per_block * 32, 1, 1])
+        .arg_ptr(normed)
+        .arg_ptr(w.down_w)
+        .arg_ptr(if inject { w.inject_w } else { DevicePtr::NULL })
+        .arg_ptr(low)
+        .arg_ptr(inj_out)
+        .arg_u32(num_tokens)
+        .arg_u32(hc_dim)
+        .arg_u32(hc_mult)
+        .arg_u32(rank)
+        .launch(stream)?;
+
+    // Thread per (stream, d); 64 outputs per block; mean over streams in smem.
+    let smem = (HC_DEC_MAX_T * rank + hc_mult * 64 * HC_DEC_MAX_T) * 4;
+    KernelLaunch::new(gpu, k_up)
+        .grid([hidden_size / 64, 1, 1])
+        .block([hc_mult * 64, 1, 1])
+        .shared_mem(smem)
+        .arg_ptr(normed)
+        .arg_ptr(low)
+        .arg_ptr(w.up_w)
+        .arg_ptr(y_out)
+        .arg_u32(num_tokens)
+        .arg_u32(hidden_size)
+        .arg_u32(hc_mult)
+        .arg_u32(rank)
+        .launch(stream)
+}
+
 /// Collapse the `hc_mult` streams to one, and emit the per-stream injection
 /// weights the matching [`hc_post_lowrank`] needs.
 ///
@@ -71,6 +177,15 @@ pub fn hc_pre_lowrank(
     // ~13 MB of weights per call (measured 2.0 ms; the whole token was
     // 96 x that). The fused kernel stays for prefill, where grid=[T]
     // already fills the machine and skips the global round trip.
+    if !scratch.is_null()
+        && hc_decode_rows_enabled()
+        && hc_decode_rows_shape_ok(num_tokens, hidden_size, hc_mult, w.rank as u32)
+    {
+        return hc_pre_rows(
+            gpu, streams, w, y_out, inj_out, scratch, num_tokens, hidden_size, hc_mult, norm_eps,
+            /* inject */ true, stream,
+        );
+    }
     if num_tokens <= 64 && !scratch.is_null() {
         // Decode-shaped T: the GEMM decomposition with cuBLASLt for the
         // three projections. The split path's hand-rolled k_down/k_fin each
@@ -174,6 +289,15 @@ pub fn hc_head_lowrank(
     norm_eps: f32,
     stream: u64,
 ) -> Result<()> {
+    if !scratch.is_null()
+        && hc_decode_rows_enabled()
+        && hc_decode_rows_shape_ok(num_tokens, hidden_size, hc_mult, w.rank as u32)
+    {
+        return hc_pre_rows(
+            gpu, streams, w, y_out, DevicePtr::NULL, scratch, num_tokens, hidden_size, hc_mult,
+            norm_eps, /* inject */ false, stream,
+        );
+    }
     if num_tokens <= 64 && !scratch.is_null() {
         if !hc_decode_split_forced() {
             return hc_pre_gemm(

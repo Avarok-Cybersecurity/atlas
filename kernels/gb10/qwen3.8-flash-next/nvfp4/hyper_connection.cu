@@ -622,3 +622,169 @@ extern "C" __global__ void qhc_mtp_combine_streams(
     }
 }
 
+
+// ───────────────────── Decode-shaped collapse, T <= QHC_DEC_MAX_T ────────────
+// provenance-id: 526f6e616c6420522e205374657369616b
+//
+// PERFORMANCE SHAPE. At decode (T = 1..8 rows) the split arm reads the 13 MB
+// of low-rank weights once PER TOKEN (grid.x = T) with one 2-byte load per
+// lane, and the cuBLASLt arm pays six library launches per site at M <= 8.
+// Both sit at ~100-150 us per site against a ~56 us bandwidth floor
+// (2026-09-07 trace: ~10 ms of a 59 ms MTP step across 96 sites). These two
+// kernels read every weight row EXACTLY ONCE per site with 16-byte lane loads
+// and apply it to all T tokens at the same time, keeping `normed` in FP32 (the
+// split arm's numerics, not the cuBLASLt arm's BF16-rounded ones):
+//
+//   hc_pre_stage   grid=[T]                    normed = x * rms * (1 + w)  [T, hc*H] F32 (existing)
+//   hc_dec_down    grid=[ceil(rows/8)] x 256   warp per weight row (rank rows + inject rows):
+//                                              low[t, r]  = silu(down[r] . normed[t] / hc)
+//                                              inj[t, s]  = 2 sigmoid(inject[s] . normed[t] / hc)
+//   hc_dec_up      grid=[H/64] x (hc*64)       thread per (stream, d): sigmoid(up[s*H+d] . low[t]) * normed[t, s*H+d],
+//                                              mean over streams in shared memory -> y[t, d] BF16
+//
+// Shape contract (checked by the Rust dispatcher, which falls back to the
+// existing arms otherwise): hc*H % 256 == 0, H % 64 == 0, rank % 8 == 0,
+// hc <= QHC_MAX_MULT, T <= QHC_DEC_MAX_T, 16-byte aligned rows (rank*2 % 16 == 0).
+
+#define QHC_DEC_MAX_T 8
+
+__device__ __forceinline__ void qhc_unpack8(const uint4 raw, float* w) {
+    const __nv_bfloat162* p = reinterpret_cast<const __nv_bfloat162*>(&raw);
+    #pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        const float2 f = __bfloat1622float2(p[k]);
+        w[2 * k] = f.x;
+        w[2 * k + 1] = f.y;
+    }
+}
+
+extern "C" __global__ void hc_dec_down(
+    const float* __restrict__ normed,          // [T, hc*H] F32
+    const __nv_bfloat16* __restrict__ down_w,  // [rank, hc*H]
+    const __nv_bfloat16* __restrict__ inject_w,// [hc, hc*H] or null
+    float* __restrict__ low_out,               // [T, rank]
+    float* __restrict__ inj_out,               // [T, hc] (unused if inject_w null)
+    const unsigned int num_tokens,
+    const unsigned int hc_dim,
+    const unsigned int hc,
+    const unsigned int rank
+) {
+    const unsigned int lane = threadIdx.x & 31u;
+    const unsigned int warp = threadIdx.x >> 5;
+    const unsigned int warps = blockDim.x >> 5;
+    const unsigned int row = blockIdx.x * warps + warp;
+    const unsigned int total = rank + (inject_w != nullptr ? hc : 0u);
+    if (row >= total) return;
+    const bool is_inj = row >= rank;
+    const __nv_bfloat16* wrow = is_inj
+        ? inject_w + (size_t)(row - rank) * hc_dim
+        : down_w + (size_t)row * hc_dim;
+
+    float acc[QHC_DEC_MAX_T];
+    #pragma unroll
+    for (int t = 0; t < QHC_DEC_MAX_T; ++t) acc[t] = 0.0f;
+
+    // Each lane owns 8 consecutive elements per iteration: one 16-byte weight
+    // load and two float4 loads per token. 32 lanes x 8 = 256 elements/step.
+    for (unsigned int i = lane * 8u; i < hc_dim; i += 256u) {
+        float w[8];
+        qhc_unpack8(*reinterpret_cast<const uint4*>(wrow + i), w);
+        #pragma unroll
+        for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
+            if (t < (int)num_tokens) {
+                const float* nx = normed + (size_t)t * hc_dim + i;
+                const float4 a = *reinterpret_cast<const float4*>(nx);
+                const float4 b = *reinterpret_cast<const float4*>(nx + 4);
+                acc[t] += w[0] * a.x + w[1] * a.y + w[2] * a.z + w[3] * a.w
+                        + w[4] * b.x + w[5] * b.y + w[6] * b.z + w[7] * b.w;
+            }
+        }
+    }
+    const float inv_hc = 1.0f / (float)hc;
+    #pragma unroll
+    for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
+        if (t < (int)num_tokens) {
+            float v = acc[t];
+            #pragma unroll
+            for (int off = 16; off > 0; off >>= 1) {
+                v += __shfl_down_sync(0xFFFFFFFFu, v, off);
+            }
+            if (lane == 0) {
+                if (is_inj) {
+                    inj_out[(size_t)t * hc + (row - rank)] = 2.0f * qhc_sigmoid(v * inv_hc);
+                } else {
+                    low_out[(size_t)t * rank + row] = qhc_silu(v * inv_hc);
+                }
+            }
+        }
+    }
+}
+
+extern "C" __global__ void hc_dec_up(
+    const float* __restrict__ normed,          // [T, hc*H] F32
+    const float* __restrict__ low,             // [T, rank] F32
+    const __nv_bfloat16* __restrict__ up_w,    // [hc*H, rank]
+    __nv_bfloat16* __restrict__ y_out,         // [T, H]
+    const unsigned int num_tokens,
+    const unsigned int hidden_size,
+    const unsigned int hc,
+    const unsigned int rank
+) {
+    // blockDim.x == hc * 64: thread (s = tid / 64, dl = tid % 64) owns output
+    // element d = blockIdx.x * 64 + dl on stream s, i.e. up_w row s*H + d.
+    extern __shared__ float qhc_dec_smem[];
+    float* smem_low = qhc_dec_smem;                              // [T, rank]
+    float* smem_part = qhc_dec_smem + (size_t)QHC_DEC_MAX_T * rank; // [hc*64, QHC_DEC_MAX_T]
+    const unsigned int tid = threadIdx.x;
+    const unsigned int s = tid >> 6;
+    const unsigned int dl = tid & 63u;
+    const unsigned int H = hidden_size;
+    const unsigned int hc_dim = hc * H;
+    const unsigned int d = blockIdx.x * 64u + dl;
+    const unsigned int i = s * H + d;
+
+    for (unsigned int k = tid; k < num_tokens * rank; k += blockDim.x) {
+        smem_low[k] = low[k];
+    }
+    __syncthreads();
+
+    float acc[QHC_DEC_MAX_T];
+    #pragma unroll
+    for (int t = 0; t < QHC_DEC_MAX_T; ++t) acc[t] = 0.0f;
+
+    const __nv_bfloat16* urow = up_w + (size_t)i * rank;
+    for (unsigned int r = 0; r < rank; r += 8u) {
+        float w[8];
+        qhc_unpack8(*reinterpret_cast<const uint4*>(urow + r), w);
+        #pragma unroll
+        for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
+            if (t < (int)num_tokens) {
+                const float* lo = smem_low + (size_t)t * rank + r;
+                acc[t] += w[0] * lo[0] + w[1] * lo[1] + w[2] * lo[2] + w[3] * lo[3]
+                        + w[4] * lo[4] + w[5] * lo[5] + w[6] * lo[6] + w[7] * lo[7];
+            }
+        }
+    }
+    #pragma unroll
+    for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
+        if (t < (int)num_tokens) {
+            smem_part[(size_t)tid * QHC_DEC_MAX_T + t] =
+                qhc_sigmoid(acc[t]) * normed[(size_t)t * hc_dim + i];
+        }
+    }
+    __syncthreads();
+    if (s == 0) {
+        const float inv_hc = 1.0f / (float)hc;
+        __nv_bfloat16* y = y_out;
+        #pragma unroll
+        for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
+            if (t < (int)num_tokens) {
+                float mixed = 0.0f;
+                for (unsigned int s2 = 0; s2 < hc; ++s2) {
+                    mixed += smem_part[((size_t)s2 * 64u + dl) * QHC_DEC_MAX_T + t];
+                }
+                y[(size_t)t * H + d] = __float2bfloat16(mixed * inv_hc);
+            }
+        }
+    }
+}

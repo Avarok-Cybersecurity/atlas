@@ -331,6 +331,67 @@ fn hc_lowrank_matches_reference() {
     );
 }
 
+// provenance-id: 526f6e616c6420522e205374657369616b
+/// The decode-rows arm (`ATLAS_HC_DECODE_ROWS=1`, T <= 8): `hc_pre_stage` +
+/// `hc_dec_down` + `hc_dec_up`, held to the split arm's TIGHT bound at the
+/// fixture's T=8 and again at T=3 (the MTP two-draft verify width), where the
+/// first three tokens of the fixture are an exact prefix golden because the
+/// collapse is per-token independent.
+#[test]
+#[ignore]
+fn hc_rows_matches_reference() {
+    let f = Fixture::load();
+    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
+        "qwen3.8-flash-next/nvfp4 is not in this build — \
+         build with ATLAS_TARGET_MODEL='*' or =qwen3.8-flash-next",
+    );
+    let gpu =
+        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+    let g: &dyn GpuBackend = &gpu;
+    let stream = g.default_stream();
+    let (t, h, hc) = (f.tokens, f.h, f.hc);
+    for name in ["hc_pre_stage", "hc_dec_down", "hc_dec_up"] {
+        let k = g.kernel("hyper_connection", name).unwrap();
+        assert!(k.0 != 0, "{name} resolved to handle 0");
+    }
+    assert!(
+        super::hyper_connection_lowrank::hc_decode_rows_shape_ok(t as u32, h as u32, hc as u32, f.rank as u32),
+        "fixture shape is outside the decode-rows contract"
+    );
+    let streams = upload(g, &f.bytes("streams"));
+    let y_out = g.alloc(t * h * 2).unwrap();
+    let inj_out = g.alloc(t * hc * 4).unwrap();
+    let scratch = g.alloc(64 * (hc * h + f.rank) * 4).unwrap();
+
+    for rows in [t, 3usize.min(t)] {
+        println!("decode-rows arm at T={rows}:");
+        for site in ["attn", "mlp"] {
+            let w = site_weights(g, &f, site, true);
+            let want_mixed: Vec<f32> = f.f32s(&format!("{site}_mixed"))[..rows * h].to_vec();
+            let want_inj: Vec<f32> = f.f32s(&format!("{site}_inj"))[..rows * hc].to_vec();
+            super::hyper_connection_lowrank::hc_pre_rows(
+                g, streams, &w, y_out, inj_out, scratch, rows as u32, h as u32, hc as u32, f.eps,
+                true, stream,
+            )
+            .unwrap();
+            g.synchronize(stream).unwrap();
+            println!("{site}_hyper_connection (rows arm, T={rows}):");
+            compare("mixed_input", &download_bf16(g, y_out, rows * h), &want_mixed, tol_for(&want_mixed));
+            compare("injection_weights", &download_f32(g, inj_out, rows * hc), &want_inj, tol_for(&want_inj));
+        }
+        let w_head = site_weights(g, &f, "head", false);
+        let want_head: Vec<f32> = f.f32s("head_mixed")[..rows * h].to_vec();
+        super::hyper_connection_lowrank::hc_pre_rows(
+            g, streams, &w_head, y_out, DevicePtr::NULL, scratch, rows as u32, h as u32, hc as u32,
+            f.eps, false, stream,
+        )
+        .unwrap();
+        g.synchronize(stream).unwrap();
+        println!("hyper_connection_mixer (rows arm, T={rows}):");
+        compare("mixed_input", &download_bf16(g, y_out, rows * h), &want_head, tol_for(&want_head));
+    }
+}
+
 /// The GEMM-path collapse (T > 64) against the SAME reference goldens: hc_pre
 /// is per-token independent (per-stream RMS, rank projection, gates — no
 /// cross-token term), so tiling the T=8 fixture 12x to T=96 is an EXACT
