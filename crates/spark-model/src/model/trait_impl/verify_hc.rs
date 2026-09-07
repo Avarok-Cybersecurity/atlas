@@ -224,7 +224,6 @@ use crate::layer::{AttnMetadataDev, ForwardContext};
 use crate::layers::ops;
 use crate::traits::SequenceState;
 
-
 impl TransformerModel {
     /// True when K-row verify must take the mHC path.
     pub(super) fn verify_needs_hc_path(&self) -> bool {
@@ -597,7 +596,6 @@ impl TransformerModel {
         Ok(())
     }
 
-
     /// One K-row mini-prefill. Advances sequence state by K rows.
     fn verify_hc_rows(
         &self,
@@ -822,8 +820,8 @@ impl TransformerModel {
         //
         // Both bodies are K-row and both sit at `hc_row_offset = 0`, so the
         // `[T, hc, H]` highway layout is uniform either way.
-        let batched_gdn = crate::layers::qwen3_ssm::trait_decode_batched_hc::
-            hc_batched_verify_enabled();
+        let batched_gdn =
+            crate::layers::qwen3_ssm::trait_decode_batched_hc::hc_batched_verify_enabled();
         // LIVENESS, once per process. The switch is an env read; this line is
         // the proof the batched body actually ran, which a flag is not.
         if batched_gdn {

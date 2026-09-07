@@ -283,6 +283,12 @@ pub struct TransformerModel {
     /// rows; the batched verdict path copies each sequence's accepted-row
     /// hidden here FIRST (`stash_verify_hidden_rows`), then feeds the drafter
     /// from the stash (`save_hidden_for_mtp_from_stash`). NULL without MTP.
+    /// Host-side aux blobs (QSA cursor, PLE n-gram history) companioning the
+    /// SSM decode-rollback ring, keyed by `(seq.slot_idx, ring_slot)`. Without
+    /// it a watchdog rollback rewinds the SSM state and `seq_len` while the QSA
+    /// indexer keeps its old cursor — the desync that 500s the next decode.
+    /// See `model/decode_aux_ring.rs`.
+    pub(super) decode_aux_ring: super::decode_aux_ring::DecodeAuxRing,
     pub(super) verify_hidden_stash: DevicePtr,
     /// ATLAS_MTP_CATCHUP: circular per-position final-hidden ring captured
     /// during serial-decode stretches (BF16 rows, slot = position % ring

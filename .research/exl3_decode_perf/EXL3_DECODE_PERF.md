@@ -1188,6 +1188,51 @@ lands on rather than forcing one; and (2) snapshotting the QSA/PLE aux state at 
 not just the SSM state, since this model refuses aux-less anchors at restore. Item 2 is the larger
 piece and it is a prerequisite — without it, item 1 buys nothing here.
 
+## Rollback: rewind QSA/PLE aux state with the SSM state, or decline (2026-09-07)
+
+A latent 500 on this model class, found by comparison with a downstream fork. The content-loop
+watchdog's rollback (`scheduler/rollback.rs`) restored the SSM recurrent state from the decode ring
+and lowered `seq_len`, but nothing rewound the auxiliary per-sequence state that hybrid models also
+carry — the QSA indexer cursor and the PLE n-gram history. The very next decode then failed
+
+```
+QSA: decode at pos 2864 but 2932 tokens ingested — the indexer cache lost sync
+```
+
+and the request died with a 500. The only aux rewind in the tree was the speculative-verify commit
+hook; the watchdog path never touched aux state at all. Confirmed present here before the fix:
+`RollbackFallback` had `NoSsmSnapshot` but no aux variant, and neither `rollback.rs` nor
+`ssm_decode_ring.rs` mentioned aux — while `requires_aux_state()` is
+`layers.iter().any(|l| l.has_aux_state())` and the attention layer returns `self.qsa.is_some()`,
+which is TRUE on qwen3.8-flash-next.
+
+**Fix — mirror the SSM treatment with the AUDITED SNAPSHOT PATH, not a new arithmetic rewind.**
+`model/decode_aux_ring.rs` holds host-side blobs from the same `collect_aux_states` /
+`apply_aux_states` (`snapshot_aux` / `restore_aux`) hooks Marconi prefix caching already uses, so a
+restore is byte-exact by construction and cannot get cursor arithmetic subtly wrong. Entries are keyed
+by the SAME `(seq.slot_idx, ring_slot)` pair as the SSM ring, so the halves cannot drift:
+
+* `snapshot_boundary_if_ssm` saves BOTH or drops the ring entry — a boundary with only its SSM half
+  would let the rollback select a slot it must then decline on, turning a recoverable loop into a hard
+  stop.
+* `rollback_to_boundary` restores the aux companion right after the SSM state and BEFORE any buffer
+  truncation (same reason: a failure leaves the sequence untouched for the caller's hard stop), and
+  declines with the new `RollbackFallback::NoAuxSnapshot` when it is missing or fails.
+
+Declining is the honest outcome, not a regression: truncation is stream-safe and is what the
+pre-existing `NoSsmSnapshot` arm already does.
+
+Inert by construction for models with no aux-carrying layer (`requires_aux_state()` false → every aux
+path returns `Ok(())` and no ring entry is made), so pure-attention and plain-SSM models are byte-
+identical to before.
+
+Gates: `cargo test -p spark-model --lib` 800 passed, `-p spark-server --bin spark rollback` 21 passed,
+new `decode_aux_ring` unit test (keying, precise forget, non-consuming get so a declined rollback may
+retry), clippy `-D warnings` clean on both crates, rustfmt clean, release build. **UNMEASURED on the
+GPU:** the fix's own trigger needs the watchdog to fire on a degenerate generation, which this session
+did not reproduce — what is verified is that the code compiles, is inert for non-aux models, and that
+the decline path is taken when the companion is absent.
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17

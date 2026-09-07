@@ -492,7 +492,14 @@ impl TransformerModel {
     /// the two paths part: equal hidden + different logits blames the head
     /// (`lm_head` vs `lm_head_batched`), different hidden blames the layer
     /// bodies (`decode()` vs `prefill()`).
-    pub(crate) fn hidden_probe_layer(&self, tag: &str, layer: usize, row: usize, hidden_row: DevicePtr, stream: u64) {
+    pub(crate) fn hidden_probe_layer(
+        &self,
+        tag: &str,
+        layer: usize,
+        row: usize,
+        hidden_row: DevicePtr,
+        stream: u64,
+    ) {
         // Formatting the per-layer tag allocates, and this sits inside the
         // decode layer loop, so the gate comes FIRST.
         if !logit_probe_enabled() {
@@ -507,7 +514,8 @@ impl TransformerModel {
         }
         let h = self.config.hidden_size;
         let mut host = vec![0u8; h * 2];
-        if self.gpu.synchronize(stream).is_err() || self.gpu.copy_d2h(hidden_row, &mut host).is_err()
+        if self.gpu.synchronize(stream).is_err()
+            || self.gpu.copy_d2h(hidden_row, &mut host).is_err()
         {
             tracing::warn!("HIDDEN_PROBE[{tag}] row {row}: readback failed");
             return;

@@ -350,6 +350,18 @@ impl Model for TransformerModel {
     fn restore_decode_ssm_snapshot(&self, seq: &SequenceState, ring_slot: usize) -> Result<()> {
         self.restore_decode_ssm_snapshot_dispatch(seq, ring_slot)
     }
+    fn requires_aux_state(&self) -> bool {
+        TransformerModel::requires_aux_state(self)
+    }
+    fn save_decode_aux_snapshot(&self, seq: &SequenceState, ring_slot: usize) -> Result<()> {
+        self.save_decode_aux_snapshot_dispatch(seq, ring_slot)
+    }
+    fn restore_decode_aux_snapshot(&self, seq: &mut SequenceState, ring_slot: usize) -> Result<()> {
+        self.restore_decode_aux_snapshot_dispatch(seq, ring_slot)
+    }
+    fn forget_decode_aux_snapshot(&self, seq: &SequenceState, ring_slot: usize) {
+        self.forget_decode_aux_snapshot_dispatch(seq, ring_slot)
+    }
     fn generate_speculative(
         &self,
         prompt_tokens: &[u32],

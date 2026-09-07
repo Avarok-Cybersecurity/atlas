@@ -826,6 +826,7 @@ impl TransformerModel {
             pending_verify_span: std::sync::Mutex::new(None),
             qwen4_exp_mtp_state: None,
             mtp_hidden_save,
+            decode_aux_ring: Default::default(),
             verify_hidden_stash,
             mtp_catchup_ring,
             mtp_catchup_meta: parking_lot::Mutex::new((0, 0)),
