@@ -1,6 +1,6 @@
 ---
 name: automerger
-description: "Find, group and land open PRs as certified STACKS — one certification campaign per stack instead of one per PR. Invoke when a PR backlog needs triage, when related PRs should be stacked on one base chain, or when asking 'which of these are already merged?'. Wraps /iterate for the wave loop and adds merge economics, a supervised agent ladder, and an O.R.A.C.L.E order gate that must clear a stack's SEQUENCE before it is registered (order cannot be changed afterwards), and a rulebook of 33 traps mined from real incidents (each with the check that proves compliance). Born from a 98-PR backlog where 12 of the first 19 PRs triaged were ALREADY on main — closed only because nobody deleted them after batching."
+description: "Find, group and land open PRs as certified STACKS — one certification campaign per stack instead of one per PR. Invoke when a PR backlog needs triage, when related PRs should be stacked on one base chain, or when asking 'which of these are already merged?'. Wraps /iterate for the wave loop and adds merge economics, a supervised agent ladder, and an O.R.A.C.L.E order gate that must clear a stack's SEQUENCE before it is registered (order cannot be changed afterwards), and a rulebook of 34 traps mined from real incidents (each with the check that proves compliance). Born from a 98-PR backlog where 12 of the first 19 PRs triaged were ALREADY on main — closed only because nobody deleted them after batching."
 argument-hint: "<repo or scope> [every <N>m]"
 ---
 
