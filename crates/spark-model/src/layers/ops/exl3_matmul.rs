@@ -106,17 +106,43 @@ pub fn exl3_locks_alloc(gpu: &dyn GpuBackend) -> Result<DevicePtr> {
     Ok(p)
 }
 
-/// One-time 90KB max-dynamic-smem raise per kernel handle (process-lifetime
-/// memo — the attribute is sticky on the CUfunction, mirroring upstream's
-/// `kernel_attr_set`).
+/// Memo of kernel handles whose 90KB max-dynamic-smem raise has been applied.
+///
+/// `KernelHandle` is a raw `CUfunction`. Addresses are RECYCLED: unload one
+/// model's module and load another, and the new module's functions can land on
+/// the old addresses — at which point a process-lifetime memo reports "already
+/// raised" for a kernel that never was, the raise is skipped, and the first
+/// EXL3 GEMM on the new model fails. This is the same hazard
+/// `layers/ops/derived_weights.rs` was restructured to remove ("Free a model's
+/// weights, load another, and the allocator can hand back the same
+/// addresses"). [`forget_smem_raises`] is what keeps it from applying here.
+static RAISED: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+
+fn raised_set() -> &'static Mutex<HashSet<u64>> {
+    RAISED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// One-time 90KB max-dynamic-smem raise per kernel handle (the attribute is
+/// sticky on the CUfunction, mirroring upstream's `kernel_attr_set`).
 fn raise_smem_once(gpu: &dyn GpuBackend, h: KernelHandle) -> Result<()> {
-    static RAISED: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
-    let set = RAISED.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut set = set.lock().expect("exl3 smem-raise set poisoned");
+    let mut set = raised_set().lock().expect("exl3 smem-raise set poisoned");
     if set.insert(h.0) {
         gpu.set_kernel_max_dynamic_smem(h, EXL3_SMEM_MAX as usize)?;
     }
     Ok(())
+}
+
+/// Drop the memo, so handles from an unloaded module cannot alias a newly
+/// loaded one's. Called from `TransformerModel::drop`.
+///
+/// Safe to call while another model is live: `set_kernel_max_dynamic_smem` is
+/// idempotent, so the worst case for a survivor is re-applying an attribute it
+/// already has. Losing a raise is a hard failure; repeating one is not.
+pub fn forget_smem_raises() {
+    raised_set()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
 }
 
 fn c_suffix(c_fp32: bool) -> &'static str {

@@ -37,5 +37,10 @@ impl Drop for TransformerModel {
         self.ssm_snapshots.free_staging(self.gpu.as_ref());
         // Same shape again for the aux collect's gather blob.
         self.aux_staging.free(self.gpu.as_ref());
+        // Drop the EXL3 smem-raise memo with the model whose module handles it
+        // caches: CUfunction addresses are recycled across a load/unload, and a
+        // stale "already raised" entry makes the next model's first EXL3 GEMM
+        // fail for want of its 90KB.
+        crate::layers::ops::forget_smem_raises();
     }
 }
