@@ -56,6 +56,7 @@ use crate::result::{BenchmarkResult, LogLine, RunStatus, Verdict};
 use super::compare::{self, RoundVerdict};
 use super::probe;
 use super::score::RoundRecord;
+use super::toolcall::{self, Path, PathResult};
 
 const SUMMARY: &str = "Replayed conversations must come back byte-identical";
 pub const METADATA: PluginMetadata = PluginMetadata::atlas(SUMMARY);
@@ -105,6 +106,8 @@ enum Phase {
     #[default]
     Baseline,
     Replay,
+    /// Path-independence of tool calls: one target, three predecessor paths.
+    ToolPath,
     Score,
     Done,
 }
@@ -114,6 +117,10 @@ pub struct SsmPoison {
     handle: Option<PluginHandle>,
     phase: Phase,
     rounds: usize,
+    /// Divergences found by the tool-call path-independence probe.
+    tool_divergences: Vec<toolcall::Divergence>,
+    /// Did the reference path hallucinate a call on the irrelevance target?
+    tool_reference_called: bool,
     max_tokens: usize,
     timeout: Duration,
     started: Option<Instant>,
@@ -136,14 +143,16 @@ impl SsmPoison {
 
     /// probe + baseline + N replays + score.
     fn total_steps(&self) -> u64 {
-        self.rounds as u64 + 3
+        // probe + reference + replays + tool paths + score
+        self.rounds as u64 + 4
     }
 
     fn steps_done(&self) -> u64 {
         match self.phase {
             Phase::Baseline => 1,
             Phase::Replay => 2 + self.replays.len() as u64,
-            Phase::Score => 2 + self.rounds as u64,
+            Phase::ToolPath => 2 + self.rounds as u64,
+            Phase::Score => 3 + self.rounds as u64,
             Phase::Done => self.total_steps(),
         }
     }
@@ -193,6 +202,52 @@ impl SsmPoison {
             transcripts.push(t);
         }
         Ok(transcripts)
+    }
+
+    /// Issue the same target turn along each predecessor path.
+    ///
+    /// Every path shares the long prefix and the ack turn, so all three land as
+    /// prefix restores; they differ ONLY in whether a tool-calling turn ran in
+    /// between. That difference is precisely the variable a sharded KAT run
+    /// changes, and the target's calls must not notice it.
+    async fn run_tool_paths(&self) -> Result<Vec<PathResult>> {
+        let handle = self.handle()?.clone();
+        let mut out = Vec::with_capacity(Path::ALL.len());
+        for path in Path::ALL {
+            handle.check_cancelled()?;
+            handle.status(format!("tool path · {}", path.label()));
+            let mut messages: Vec<Value> =
+                vec![json!({"role": "user", "content": probe::first_turn()})];
+            let ack = self.tool_turn(&messages).await?;
+            messages.push(json!({"role": "assistant", "content": ack.text}));
+            if let Some(interposed) = path.interposed() {
+                messages.push(json!({"role": "user", "content": interposed}));
+                let t = self.tool_turn(&messages).await?;
+                // The interposed turn's own calls are not compared — it exists
+                // only to put a call into this path's history. Its reply is fed
+                // back so the target sees a completed exchange either way.
+                messages.push(json!({"role": "assistant", "content": t.text}));
+            }
+            messages.push(json!({"role": "user", "content": toolcall::TARGET}));
+            let target_reply = self.tool_turn(&messages).await?;
+            out.push(PathResult {
+                path,
+                target: target_reply,
+            });
+        }
+        Ok(out)
+    }
+
+    /// One turn of the tool-path probe: same transport as the replay probe,
+    /// but the body offers tools and leaves the choice to the model.
+    async fn tool_turn(&self, messages: &[Value]) -> Result<Transcript> {
+        let handle = self.handle()?;
+        let target = handle.target();
+        let body = toolcall::request_body(&target.model, messages, self.max_tokens);
+        let outcome = http::chat_stream(target, &body, self.timeout)
+            .await
+            .context("tool-path chat request failed")?;
+        Ok(Transcript::from(&outcome))
     }
 
     /// The final decision, pure over collected state — the reduction and the
@@ -371,12 +426,51 @@ impl Benchmark for SsmPoison {
                     turn1_cached,
                 });
                 if self.replays.len() >= self.rounds {
-                    self.phase = Phase::Score;
+                    self.phase = Phase::ToolPath;
                 }
                 Ok(self.frame(&format!("replay {n}"), line))
             }
+            Phase::ToolPath => {
+                self.phase = Phase::Score;
+                let results = self.run_tool_paths().await?;
+                self.tool_divergences = toolcall::divergences(&results);
+                self.tool_reference_called = toolcall::reference_called(&results);
+                let line = if let Some(d) = self.tool_divergences.first() {
+                    LogLine::error(one_line(format!(
+                        "TOOL CALL DEPENDS ON HISTORY — {} ({} of {} perturbed paths)",
+                        d.describe(),
+                        self.tool_divergences.len(),
+                        Path::ALL.len() - 1
+                    )))
+                } else if self.tool_reference_called {
+                    LogLine::error(
+                        "the direct path itself called a tool on the irrelevance target — the                          reference every other path is compared against is already wrong"
+                            .to_string(),
+                    )
+                } else {
+                    LogLine::info(format!(
+                        "tool calls identical across all {} predecessor paths",
+                        Path::ALL.len()
+                    ))
+                };
+                Ok(self.frame("tool paths", Some(line)))
+            }
             Phase::Score => {
                 let (s, v) = self.scored();
+                // ★ A DETECTOR THAT ONLY REPORTS IS NOT A GATE. The replay
+                // verdict and the tool-path verdict are independent findings,
+                // and either alone must fail the run: a stack could be
+                // byte-invariant on twelve replays of one script and still
+                // answer a tool prompt differently depending on what preceded
+                // it, which is exactly what shipped.
+                let v = if let Some(d) = self.tool_divergences.first() {
+                    Verdict::fail(format!(
+                        "TOOL CALLS DEPEND ON HISTORY: {} — the same request answered                          differently depending only on what preceded it, so a known-answer                          score is not reproducible under reordering",
+                        d.describe()
+                    ))
+                } else {
+                    v
+                };
                 self.phase = Phase::Done;
                 let line = LogLine::info(one_line(format!(
                     "{} replays: {} invariant · {} jittered · {} collapsed · {} unmeasured",
@@ -387,6 +481,11 @@ impl Benchmark for SsmPoison {
                 // bounds it as a blowup detector, same as the agentic gate.
                 let mut metrics = super::report::metrics(&s);
                 metrics.insert("sum_wall_s".to_string(), self.elapsed().as_secs_f64());
+                metrics.insert(
+                    "tool_path_divergences".to_string(),
+                    self.tool_divergences.len() as f64,
+                );
+                metrics.insert("tool_paths".to_string(), toolcall::Path::ALL.len() as f64);
                 Ok(BenchmarkResult {
                     status: RunStatus::Completed,
                     ..BenchmarkResult::running("done", self.elapsed())
