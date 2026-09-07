@@ -532,3 +532,154 @@ extern "C" __global__ void qsa_prefill_attn(
         }
     }
 }
+// ── QSA prefill top-k: radix select on device ──────────────────────────────
+//
+// Replaces the host top-k in `prefill_select`, which D2H'd every block score
+// and sorted per query row on the CPU. At 36K context that is ~18 MB copied
+// and 8192 sorts of 562 elements PER attention layer PER chunk — measured as
+// the dominant prefill cost once the dense attention was skipped.
+//
+// Shape here is top-512 of up to ~25000 blocks (100K ctx / ratio 4), so the
+// moe_topk iterative-argmax approach (K passes over N) is hopeless: 512
+// passes. Radix select finds the exact K-th value in 4 fixed passes over the
+// row, then emits in one more.
+//
+// Scores are relu(q.k) sums, hence NON-NEGATIVE, so the IEEE-754 bit pattern
+// reinterpreted as uint32 is monotonically ordered — no sign-flip mapping
+// needed. NaN cannot appear (relu of a finite dot product); an inf would sort
+// to the top, which is the correct behaviour anyway.
+//
+// Tie-break matches the host it replaces: larger score first, LOWER INDEX on
+// ties. Ties are common because relu floors at 0.0, so the tie pass walks in
+// index order rather than racing on an atomic.
+//
+// Output order within the list is irrelevant to the consumer
+// (`qsa_prefill_attn` softmaxes over the selected set, which is
+// order-independent), but the SET must match or the attention differs.
+
+#define QSA_TOPK_THREADS 256
+
+extern "C" __global__ void qsa_topk_rows(
+    const float* __restrict__ scores,  // [rows, stride] f32
+    int* __restrict__ lists,           // [rows, topk]   i32 block ids
+    unsigned int rows,
+    unsigned int stride,
+    unsigned int topk,
+    unsigned int first_pos,            // GLOBAL position of row 0
+    unsigned int ratio)                // tokens per block
+{
+    const unsigned int r = blockIdx.x;
+    if (r >= rows) return;
+
+    const unsigned int tid = threadIdx.x;
+    const float* __restrict__ row = scores + (size_t)r * stride;
+    int* __restrict__ out = lists + (size_t)r * topk;
+
+    // Blocks fully covered by this query's visible prefix. Each row sees a
+    // different prefix, which is why this is computed per row rather than
+    // passed in.
+    const unsigned int complete = (first_pos + r + 1u) / ratio;
+
+    // Degenerate guard. Callers only invoke past the inert bound, where
+    // complete > topk, but emitting a valid id beats writing uninitialised
+    // memory that the attention would then gather from.
+    if (complete <= topk) {
+        for (unsigned int i = tid; i < topk; i += QSA_TOPK_THREADS) {
+            out[i] = (int)(i < complete ? i : (complete ? complete - 1u : 0u));
+        }
+        return;
+    }
+
+    __shared__ unsigned int s_hist[256];
+    __shared__ unsigned int s_prefix;   // bit pattern fixed so far
+    __shared__ unsigned int s_need;     // still to take from the current bucket
+    __shared__ unsigned int s_above;    // count strictly greater than threshold
+    __shared__ unsigned int s_emitted;
+
+    if (tid == 0) {
+        s_prefix = 0u;
+        s_need = topk;
+        s_above = 0u;
+    }
+    __syncthreads();
+
+    // ── 4 radix passes, 8 bits at a time, most-significant first ──
+    for (int pass = 0; pass < 4; ++pass) {
+        const unsigned int shift = 24u - 8u * (unsigned int)pass;
+        // Bits already pinned by previous passes. Pass 0 pins nothing; the
+        // shift would be 32 (UB), hence the explicit zero.
+        const unsigned int mask_hi =
+            (pass == 0) ? 0u : (0xFFFFFFFFu << (shift + 8u));
+
+        for (unsigned int i = tid; i < 256u; i += QSA_TOPK_THREADS) s_hist[i] = 0u;
+        __syncthreads();
+
+        for (unsigned int i = tid; i < complete; i += QSA_TOPK_THREADS) {
+            const unsigned int b = __float_as_uint(row[i]);
+            if ((b & mask_hi) == s_prefix) {
+                atomicAdd(&s_hist[(b >> shift) & 0xFFu], 1u);
+            }
+        }
+        __syncthreads();
+
+        // Walk buckets high->low until the K-th element's bucket is reached.
+        if (tid == 0) {
+            unsigned int acc = 0u;
+            unsigned int chosen = 0u;
+            for (int d = 255; d >= 0; --d) {
+                const unsigned int c = s_hist[d];
+                if (acc + c >= s_need) { chosen = (unsigned int)d; break; }
+                acc += c;
+            }
+            s_above += acc;                 // strictly above the chosen bucket
+            s_need -= acc;                  // remaining, all inside it
+            s_prefix |= chosen << shift;
+        }
+        __syncthreads();
+    }
+
+    // s_prefix is now the exact bit pattern of the K-th largest score.
+    const unsigned int thresh = s_prefix;
+
+    // ── emit everything strictly greater ──
+    if (tid == 0) s_emitted = 0u;
+    __syncthreads();
+    for (unsigned int i = tid; i < complete; i += QSA_TOPK_THREADS) {
+        if (__float_as_uint(row[i]) > thresh) {
+            const unsigned int slot = atomicAdd(&s_emitted, 1u);
+            if (slot < topk) out[slot] = (int)i;
+        }
+    }
+    __syncthreads();
+
+    // ── fill the remainder from ties, LOWEST INDEX FIRST ──
+    // One warp walks in index order so the choice is deterministic and matches
+    // the host tie-break. Ties are the common case at the 0.0 floor, so this
+    // must not be an atomic race.
+    if (tid < 32u) {
+        unsigned int emitted = s_emitted;
+        for (unsigned int base = 0u; base < complete && emitted < topk; base += 32u) {
+            const unsigned int i = base + tid;
+            const bool tie = (i < complete) && (__float_as_uint(row[i]) == thresh);
+            const unsigned int ballot = __ballot_sync(0xFFFFFFFFu, tie);
+            if (ballot) {
+                // Rank within this 32-wide window, so lower index wins.
+                const unsigned int rank =
+                    __popc(ballot & ((1u << tid) - 1u));
+                if (tie && emitted + rank < topk) {
+                    out[emitted + rank] = (int)i;
+                }
+                emitted += __popc(ballot);
+            }
+        }
+        if (tid == 0) s_emitted = emitted < topk ? emitted : topk;
+    }
+    __syncthreads();
+
+    // Defensive: if the row somehow produced fewer than topk (impossible when
+    // complete > topk, but a silent short list would make the attention read
+    // stale ids), pad with block 0.
+    for (unsigned int i = s_emitted + tid; i < topk; i += QSA_TOPK_THREADS) {
+        out[i] = 0;
+    }
+}

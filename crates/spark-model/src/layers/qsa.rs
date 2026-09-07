@@ -87,6 +87,7 @@ pub struct QsaIndexer {
     /// Tensor-core split-q scorer. `try_kernel` — absent on any target
     /// whose shadow predates it, which falls back to the scalar path.
     k_score_rows_tc_k: KernelHandle,
+    k_topk_rows_k: KernelHandle,
     k_prefill_attn_k: KernelHandle,
 
     qk_scratch: DevicePtr, // [INGEST_SLAB, (n_heads+1)*hd] BF16
@@ -158,6 +159,7 @@ impl QsaIndexer {
             k_qprep_rows_k: gpu.kernel("qsa_indexer", "qsa_qprep_rows")?,
             k_score_rows_k: gpu.kernel("qsa_indexer", "qsa_score_rows")?,
             k_score_rows_tc_k: crate::layers::try_kernel(gpu, "qsa_indexer", "qsa_score_rows_tc"),
+            k_topk_rows_k: crate::layers::try_kernel(gpu, "qsa_indexer", "qsa_topk_rows"),
             k_prefill_attn_k: gpu.kernel("qsa_indexer", "qsa_prefill_attn")?,
             qk_scratch: gpu.alloc(INGEST_SLAB * qk_width * 2)?,
             q_post: gpu.alloc(n_heads * hd * 4)?,
@@ -184,6 +186,17 @@ impl QsaIndexer {
             raw_keys: gpu.alloc(self.max_tokens * hd * 2)?,
             block_keys: gpu.alloc(self.max_tokens / ratio * hd * 2)?,
         })
+    }
+
+    /// Is stage-2 prefill selection actually going to run?
+    ///
+    /// Mirrors the `ATLAS_QSA_NO_PREFILL_SELECT` kill switch inside
+    /// `prefill_select`. A caller that skips the dense pass because stage 2
+    /// will overwrite it MUST consult this — with the switch set, stage 2
+    /// returns early and skipped rows would be left uninitialised.
+    pub fn prefill_select_active(&self) -> bool {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        !*OFF.get_or_init(|| std::env::var("ATLAS_QSA_NO_PREFILL_SELECT").as_deref() == Ok("1"))
     }
 
     pub fn inert_bound(&self) -> usize {
