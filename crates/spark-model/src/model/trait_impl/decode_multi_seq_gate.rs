@@ -65,7 +65,9 @@ mod tests {
 
     /// Slice `src` from `from` to the next line that starts `needle_end`.
     fn block<'a>(s: &'a str, from: &str, to: &str) -> &'a str {
-        let start = s.find(from).unwrap_or_else(|| panic!("missing anchor {from:?}"));
+        let start = s
+            .find(from)
+            .unwrap_or_else(|| panic!("missing anchor {from:?}"));
         let rest = &s[start..];
         let end = rest.find(to).unwrap_or(rest.len());
         &rest[..end]

@@ -76,10 +76,7 @@ impl TransformerModel {
         // It also keeps a declining layer away from the fused `prefill_ctx`
         // below, which is the one `ForwardContext` built with a NON-ZERO
         // `hc_row_offset` (`padded_n`).
-        let ms_layer_veto = self
-            .layers
-            .iter()
-            .any(|l| l.decode_multi_seq_unsupported());
+        let ms_layer_veto = self.layers.iter().any(|l| l.decode_multi_seq_unsupported());
         let hc_qsa_perseq = ms_layer_veto
             || (self.config.hc_mult > 0 && self.config.index_topk > 0 && {
                 let bound = self.config.index_topk + self.config.index_compress_ratio - 1;

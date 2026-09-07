@@ -380,7 +380,10 @@ fn every_configured_eos_token_stops_generation_independently() {
 #[test]
 fn a_failed_sequence_is_sent_as_an_error_not_a_normal_finish() {
     let (mut a, mut rx) = test_seq(vec![5, 6, 42], 500, None, 10);
-    fail_sequence(&mut a, "decode_verify_graphed_k3: DSA indexer cache: 16385".into());
+    fail_sequence(
+        &mut a,
+        "decode_verify_graphed_k3: DSA indexer cache: 16385".into(),
+    );
     assert!(a.finished, "fail_sequence must still retire the sequence");
     finish_sequence(&StubModel, &mut a, MAX_SEQ_LEN);
     let got = rx
@@ -425,3 +428,6 @@ fn no_reachable_verify_error_arm_silently_finishes() {
         }
     }
 }
+
+#[path = "lifecycle_derive_tests.rs"]
+mod lifecycle_derive_tests;

@@ -423,7 +423,7 @@ pub fn resume_swapped_seq(
         min_tokens: s.min_tokens,
         eos_tokens: s.eos_tokens,
         finished: false,
-            error: None,
+        error: None,
         guard_stop: None,
         param_close_pending: 0,
         sink: s.sink,

@@ -420,7 +420,6 @@ impl TransformerModel {
         cmd: u32,
         slots: &mut [Option<SequenceState>],
     ) -> Result<bool> {
-
         // Shutdown applies to the whole worker — seq_id is ignored.
         if cmd == 0xFFFFFFFF {
             return Ok(false);

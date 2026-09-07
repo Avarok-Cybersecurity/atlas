@@ -97,10 +97,7 @@ impl TransformerModel {
         // `qsa_active` is false for every sequence shorter than
         // `index_topk + index_compress_ratio - 1`, so a declining model would
         // be correct on long contexts and silently wrong on short ones.
-        let ms_layer_veto = self
-            .layers
-            .iter()
-            .any(|l| l.decode_multi_seq_unsupported());
+        let ms_layer_veto = self.layers.iter().any(|l| l.decode_multi_seq_unsupported());
         let hc_perseq = ms_layer_veto
             || (self.config.hc_mult > 0
                 && (qsa_active || std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1")));

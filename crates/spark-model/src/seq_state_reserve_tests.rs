@@ -19,7 +19,7 @@ const MSL: usize = 131_072;
 /// `block_bytes_kv_all_layers()` for GLM-5.3's absorbed-MLA FP8 cache:
 /// `2 (k + v, symmetric for fp8) * block_size 16 * num_kv_heads 1 * head_dim (kv_lora_rank) 512`
 /// = 16,384 B per layer per block, over 11 DSA layers.
-const KV_BLOCK_BYTES: usize = 2 * 16 * 1 * 512 * DSA_LAYERS;
+const KV_BLOCK_BYTES: usize = (2 * 16) * 512 * DSA_LAYERS;
 
 #[test]
 fn the_kv_block_is_180_224_bytes_exactly() {
@@ -70,7 +70,10 @@ fn proposer_charge_at_131072_is_exact_and_is_a_separate_owner() {
     // of DSA against a layer sum that only owns 739.6 MB of it.
     assert_eq!(proposer - per_layer, 334_356);
     assert_eq!(12 * per_layer, 806_879_232);
-    assert_ne!(proposer, 12 * per_layer - DSA_LAYERS * per_layer + 334_356 + 1);
+    assert_ne!(
+        proposer,
+        12 * per_layer - DSA_LAYERS * per_layer + 334_356 + 1
+    );
 }
 
 #[test]
@@ -83,7 +86,11 @@ fn total_per_sequence_and_the_batch_3_charge_are_exact() {
     assert_eq!(s.for_batch(3), 2_421_640_764);
     // `for_batch` multiplies once; a caller that also multiplies would land here.
     assert_eq!(s.for_batch(1), s.total());
-    assert_eq!(s.for_batch(0), s.total(), "batch 0 is clamped to 1, never zero-charged");
+    assert_eq!(
+        s.for_batch(0),
+        s.total(),
+        "batch 0 is clamped to 1, never zero-charged"
+    );
 }
 
 /// PART 4: the reserve-to-KV-block conversion, pinned exactly. This is the number BOOT-C3's

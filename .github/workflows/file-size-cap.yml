@@ -593,6 +593,10 @@ jobs:
             # `release_state` call site, the one-owner invariant Unit2
             # established. Splitting it is the last thing that should move.
             "crates/spark-model/src/model/trait_impl/sequence.rs"
+            # 525 LoC (was 474) — preflight/OOM admission; grew by the GLM
+            # k-pool DSA refusal carve-out and the reserve sizing after TP
+            # sharding.
+            "crates/spark-model/src/preflight.rs"
             # 522 LoC (was 491) — software GEMV ops; grew by the routed-MoE
             # union batching arm.
             "crates/spark-model/src/layers/ops/gemv_sw.rs"

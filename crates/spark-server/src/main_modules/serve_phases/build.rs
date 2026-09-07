@@ -296,7 +296,10 @@ pub(crate) fn maybe_run_ep_worker(
                 // the head stayed up, and the head's next collective spun forever against a
                 // peer that no longer existed — a serve that answers 200 on every health
                 // endpoint and never completes another request. ANOMALIES A60/A62.
-                Err(e) if e.downcast_ref::<spark_model::traits::EpCommandFailed>().is_some() => {
+                Err(e)
+                    if e.downcast_ref::<spark_model::traits::EpCommandFailed>()
+                        .is_some() =>
+                {
                     tracing::error!(
                         "EP worker command failed (rank {rank}); worker STAYS UP: {e:#}"
                     );

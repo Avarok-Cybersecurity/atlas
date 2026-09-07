@@ -169,7 +169,11 @@ fn free_returns_every_indexer_buffer_and_is_idempotent() {
         "k_normed + gate + valid are three live device allocations"
     );
     s.free(&gpu).unwrap();
-    assert_eq!(gpu.alloc_count(), base, "free returns to the baseline exactly");
+    assert_eq!(
+        gpu.alloc_count(),
+        base,
+        "free returns to the baseline exactly"
+    );
     assert_eq!(s.k_normed.0, 0, "a released state must not look live");
 
     // Two owners can reach a DSA state (the drafter's `free_state` and, since A76, the

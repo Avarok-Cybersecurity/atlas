@@ -363,7 +363,6 @@ impl TransformerModel {
             proposer.free_state(self.gpu.as_ref(), pstate.as_mut())?;
         }
 
-
         self.free_chunked_prefill_meta(seq)?;
 
         // ATLAS_SEQ_MEMTRACE: the closing half of this sequence's memory bracket.
