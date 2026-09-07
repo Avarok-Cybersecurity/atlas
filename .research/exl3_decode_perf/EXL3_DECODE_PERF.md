@@ -1233,6 +1233,65 @@ GPU:** the fix's own trigger needs the watchdog to fire on a degenerate generati
 did not reproduce — what is verified is that the code compiles, is inert for non-aux models, and that
 the decline path is taken when the companion is absent.
 
+## EP=2 on two GB10s: works, and MTP works EXCEPT across a warm restore (2026-09-07)
+
+Two-node EP=2 (gx10-9959 head :8890 + dgx-00 worker, RDMA over enp1s0f1np1), EXL3 4.05bpw, preset-parity
+env, prefix caching ON, `--ep-size 2`. Binary sha256 identical on both nodes (a mismatch here desyncs
+ranks in ways that read as a model bug). Scripts: `~/run_exl3_ep2_mtp.sh` on both hosts.
+
+**Three rank-asymmetries had to be fixed to get MTP to load at all**, each hidden behind the last:
+
+1. The draft MoE was sharded by `is_local_expert` while the upload never sharded `mtp.*` → replicate
+   with `force_all_experts` (43f82882d).
+2. The native-EXL3 expert loader shards independently via `local_expert_range()` — same flag needed
+   there, which the error message alone would not have revealed.
+3. `factory/build.rs` gated the WHOLE MTP module load on `config.ep_rank == 0`, citing the
+   precondition (1) had just removed. Left up, rank 1 warned "no MTP weights were loaded", set
+   `has_mtp=false`, allocated `num_intermediates=0`, and died three layers away in the first mHC
+   verify with "SSM MTP intermediate buffers not allocated (h_state_intermediates.len()=0)"
+   (b0b918064).
+
+**Single-turn generation: WORKS, at single-node parity.** 200-token generation, correct Python output:
+
+| | EP=2 (2 nodes) | single node |
+|---|---:|---:|
+| decode | **30.3 tok/s** | 30.6-30.8 |
+| acceptance `mean_na` | **1.653** | 1.47-1.49 |
+| tok/step | 2.653 | ~2.5 |
+| boot | ~62 s | ~50 s |
+| experts/GPU | **256** | 512 |
+
+`mtp=1.00 serial=0.00 p1=0.893` — every step took the speculative path. Acceptance at or ABOVE the
+single-rank baseline is the evidence that drafts are not diverging across ranks: divergence collapses
+acceptance, it does not raise it.
+
+**Agentic, one iteration, reasoning_effort low + preserve_thinking — BISECTED:**
+
+| arm | result |
+|---|---|
+| EP=2, MTP **off** | **PASS** — 1/1 webserver_ok, 1/1 followed_directions, 137 s wall, 15.1 s/turn |
+| EP=2, MTP **on** | worker dies on the first WARM turn |
+
+```
+EP worker error: QSA: decode at pos 3739 but 3741 tokens ingested
+  — the indexer cache lost sync (prefix-cache skip or a rewound sequence)
+```
+
+The gap is exactly 2 tokens = the draft width. It is NOT a rank asymmetry in the drafter: head and
+worker agree exactly on `MTP drafter coverage` at every turn (25/25, 3512/3512, and `captured=0` on
+the third — the first turn served from the prefix cache). So EP=2 itself is sound for agentic work,
+and the defect is specifically **EP + speculation + a prefix-cache warm restore**, where the worker's
+QSA ingest count runs ahead of the committed decode position by the draft width.
+
+This is the same defect CLASS as the rollback fix in `fix(rollback): rewind QSA/PLE aux state with the
+SSM state` (dba869c04) — QSA aux state not rewound to the committed position — but on the EP verify
+path rather than the watchdog path, so that fix does not cover it.
+
+**Status:** `ATLAS_EP_MTP` stays default-OFF, now for a MEASURED reason rather than caution. EP=2
+without MTP is usable today (agentic PASS); EP=2 with MTP is usable for single-turn generation and
+must not be used with prefix caching across turns until the worker's QSA ingest is rewound to
+`num_accepted`.
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17
