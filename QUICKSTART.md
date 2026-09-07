@@ -75,10 +75,10 @@ while:
 3. The radix prefix cache and SSM snapshot index initialize.
 
 This is normal. Subsequent requests are 3-5× faster. If you see a stall on
-the first request, *don't* Ctrl-C — wait the full minute. To eliminate
-the cold-start entirely, pass `--warmup-prompt /path/to/prompt.txt`; the
-server prefills it at startup and inserts the resulting KV/SSM state into
-the prefix cache, so the first real request hits a warm graph.
+the first request, *don't* Ctrl-C — wait the full minute. To pay that cost
+somewhere harmless, send one throwaway request after startup: it warms the
+CUDA graphs and populates the prefix cache through exactly the path a real
+request uses, so the first request you care about hits a warm graph.
 
 ---
 

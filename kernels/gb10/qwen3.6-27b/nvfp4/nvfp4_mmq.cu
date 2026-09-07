@@ -19,6 +19,11 @@
 #include "q4k_vendor/mmq.cuh"
 #include "q4k_vendor/quantize_impl.cuh"
 
+// A symbol must not resolve to the vendor's NO_DEVICE_CODE trap. Use its
+// capability predicate (SM 12.x, not datacentre Blackwell SM 10.x). Absent
+// handles keep DenseFfn's W4A16 fallback and its transposed weights intact.
+#if defined(BLACKWELL_MMA_AVAILABLE) // Atlas optional module
+
 // Conventional-tiling setup mirroring mul_mat_q's pre-VOLTA path, specialized: no ids,
 // nchannels_y=nsamples_y=1 (blockIdx.z==0). Calls the existing __device__ process_tile.
 template <int mmq_x, bool need_check>
@@ -310,3 +315,5 @@ extern "C" __global__ void atlas_nvfp4_silu_mul_quant(
     NO_DEVICE_CODE;
 #endif
 }
+
+#endif // Atlas optional module

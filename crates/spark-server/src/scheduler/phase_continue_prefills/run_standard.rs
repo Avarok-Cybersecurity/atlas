@@ -103,19 +103,22 @@ pub(super) fn run_standard_chunk_loop(
         .unwrap_or(false);
     // The spec gate here used to be the process-GLOBAL flags (`!use_mtp && ...`),
     // which meant a `--speculative` serve could NEVER fuse prefill with decode —
-    // at any concurrency. But speculative execution is per-STEP: the scheduler
-    // only runs a spec step when `active.len() == 1` (mod.rs:511/516/520);
-    // at C>=2 every sequence is on plain batched decode anyway, so fusing is
-    // exactly as safe as it is for a non-speculative serve. The correct
-    // predicate is "a spec step would run this tick", i.e. the same
-    // `single_active_with_spec` shape phase_continue_prefills.rs computes.
+    // at any concurrency. Speculative execution is per-STEP, so the predicate
+    // became "a spec step would run this tick".
     //
-    // Without this, one 8K prefill chunk froze every active decoder for the
+    // Without that, one 8K prefill chunk froze every active decoder for the
     // whole chunk (mixed_forward never fired in any --speculative production
     // config) — the single largest scheduler-level concurrency gap found by
     // the 2026-07-25 architecture map.
+    //
+    // ★ The rule now has ONE home, `super::spec_mixing`, because the
+    // justification it used to carry here ("the scheduler only runs a spec
+    // step when active.len() == 1") is STALE: the MTP dispatch cap is 32.
+    // Read that module's doc — it names the width range where this predicate
+    // and the real dispatch gate disagree, and what the disagreement costs —
+    // before changing this line.
     let any_spec = use_mtp || use_self_speculative || use_ngram_speculative;
-    let spec_step_this_tick = active.len() == 1 && any_spec;
+    let spec_step_this_tick = super::spec_mixing::mixing_blocked_by_spec(active.len(), any_spec);
     let can_mix = !no_mix_bisect && !active.is_empty() && !model.is_ep() && !spec_step_this_tick;
 
     if can_mix {

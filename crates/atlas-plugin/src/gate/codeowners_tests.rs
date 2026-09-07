@@ -48,7 +48,7 @@ fn real_paths_resolve_to_real_owners() {
     ] {
         assert_eq!(
             owners_of(&rules, path),
-            ["@tbraun96", "@rsafier", "@SeedSource"],
+            ["@tbraun96", "@rsafier", "@SeedSource", "@TheTom"],
             "{path} must retain the committed owner set"
         );
     }

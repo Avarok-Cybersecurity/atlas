@@ -37,7 +37,19 @@ emit() {
   printf '%s\t%s\n' "$1" "$2"
 }
 
-pr_json=$(gh api "repos/$REPO/pulls/$PR" 2>/dev/null || echo '{}')
+# An unreadable API is not a set of "no" answers. `|| echo '{}'` made every
+# signal read absent, and with a stage-2/3/queued marker on the comment the
+# ladder below then rendered "A new commit landed. The seal is void and the
+# records no longer cover this tree -- a perf path moved" -- an event that did
+# not happen, posted as the PR's one status comment, over a diagram, and
+# written into the state marker so the next run could not even tell it had
+# demoted. Refuse instead: the bot's post step is skipped when this one fails,
+# so the last true comment stands and the job goes red where it can be seen.
+pr_json=$(gh api "repos/$REPO/pulls/$PR" 2>&1) || {
+  printf 'certification-state.sh: could not read PR #%s -- refusing to classify.\n%s\n' \
+    "$PR" "$pr_json" >&2
+  exit 3
+}
 merged=$(printf '%s' "$pr_json" | jq -r '.merged // false')
 head_sha=$(printf '%s' "$pr_json" | jq -r '.head.sha // empty')
 mergeable_state=$(printf '%s' "$pr_json" | jq -r '.mergeable_state // "unknown"')
@@ -69,14 +81,28 @@ fi
 # A check that has not reported is not a pass. `// empty` then the -z test keeps
 # "absent" and "failed" distinct in the code even though both mean "not yet".
 conclusion_of() {
-  gh api "repos/$REPO/commits/$head_sha/check-runs?per_page=100" \
-    --jq ".check_runs[] | select(.name == \"$1\") | .conclusion" 2>/dev/null |
-    head -1
+  local out
+  # Same rule as the PR lookup above, and the same reason: a check-runs API that
+  # did not answer is not three checks that have not reported.
+  out=$(gh api "repos/$REPO/commits/$head_sha/check-runs?per_page=100" \
+          --jq ".check_runs[] | select(.name == \"$1\") | .conclusion" 2>&1) || {
+    printf 'certification-state.sh: could not read the check runs for %s -- refusing to classify.\n%s\n' \
+      "$head_sha" "$out" >&2
+    return 3
+  }
+  printf '%s' "$out" | head -1
 }
 
-stamp=$(conclusion_of "Stamp")
-seal=$(conclusion_of "Seal")
-records=$(conclusion_of "PR Benchmark Certifications")
+# Without a head sha there is nothing to read the check runs from, and asking
+# anyway returns the same empty answers that fabricate a demotion.
+if [ -z "$head_sha" ]; then
+  echo "certification-state.sh: PR #$PR reported no head sha -- refusing to classify." >&2
+  exit 3
+fi
+
+stamp=$(conclusion_of "Stamp") || exit 3
+seal=$(conclusion_of "Seal") || exit 3
+records=$(conclusion_of "PR Benchmark Certifications") || exit 3
 
 has_stamp=false; [ "$stamp" = "success" ] && has_stamp=true
 has_seal=false;  [ "$seal" = "success" ] && has_seal=true

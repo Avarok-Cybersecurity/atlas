@@ -32,14 +32,16 @@ Design (see .claude/skills/atlas-release/references/verify-matrix.md §Gate):
     A missing manifest is a hard FAIL unless coverage is explicitly waived.
   * SSOT — the roster lives in run_all_models.py (the manifest); this gate
     derives from it and never re-lists models.
-A model "verifies" iff it is in the manifest AND its results file exists (it
-booted past the /v1/models health check — single_gpu_suite exits before writing
-if the server is unreachable) AND it clears every bar below.
+A model "verifies" iff its artifact matches the manifest's model and supplies
+every required probe group with valid evidence clearing the bars below.
+This checks artifact content, not freshness or the server's actual checkpoint:
+use a fresh results directory for each image run and retain its provenance.
 """
 
 import argparse
 import glob
 import json
+import math
 import os
 import sys
 
@@ -67,21 +69,53 @@ TPS_TOLERANCE = 0.10     # tps regression bar. A committed tests/baselines/<labe
 # is a regression.
 
 
+def _status_is(s, status):
+    # The suite appends parenthesized details (e.g. PASS (plain-text)).
+    # Words in a failure reason must not change the row's classification.
+    return isinstance(s, str) and (s == status or s.startswith(status + " ("))
+
+
 def _status_pass(s):
-    return "PASS" in (s or "")
+    return _status_is(s, "PASS")
 
 
 def _status_na(s):
-    return "N/A" in (s or "")
+    return _status_is(s, "N/A")
+
+
+def _finite_number(value):
+    try:
+        return type(value) in (int, float) and math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _valid_baseline(baseline):
+    return (isinstance(baseline, dict) and _finite_number(baseline.get("tps"))
+            and baseline["tps"] > 0)
 
 
 def _avg_tps(model_result):
-    """Mean measured tokens/sec across the tps probes, or None if none numeric."""
-    vals = [r.get("tps") for r in (model_result.get("tps", []) or [])
-            if isinstance(r.get("tps"), (int, float))]
-    if not vals:
+    """Mean across every TPS probe, or None for missing/invalid evidence."""
+    rows = model_result.get("tps")
+    if not isinstance(rows, list) or not rows:
         return None
-    return sum(vals) / len(vals)
+    vals = [r.get("tps") if isinstance(r, dict) else None for r in rows]
+    if not all(_finite_number(v) for v in vals):
+        return None
+    avg = sum(vals) / len(vals)
+    return avg if math.isfinite(avg) else None
+
+
+def _probe_rows(model_result, key, fails):
+    rows = model_result.get(key)
+    if rows is None or rows == []:
+        fails.append(f"{key}(no-evidence)")
+        return []
+    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+        fails.append(f"{key}(invalid)")
+        return []
+    return rows
 
 
 def verdict(model_result, baseline=None, require_baseline=False):
@@ -94,28 +128,33 @@ def verdict(model_result, baseline=None, require_baseline=False):
     """
     fails = []
 
-    coh = model_result.get("coherence", []) or []
+    coh = _probe_rows(model_result, "coherence", fails)
     coh_pass = sum(1 for r in coh if _status_pass(r.get("status")))
     if coh and coh_pass < COHERENCE_MIN_PASS:
         fails.append(f"coherence({coh_pass}/{len(coh)})")
 
-    fib = model_result.get("fibonacci", []) or []
+    fib = _probe_rows(model_result, "fibonacci", fails)
     fib_pass = sum(1 for r in fib if _status_pass(r.get("status")))
     if fib and fib_pass < FIB_MIN_PASS:
         fails.append("fibonacci")
 
-    tc = model_result.get("tool_calls", []) or []
+    tc = _probe_rows(model_result, "tool_calls", fails)
     if tc:
         any_pass = any(_status_pass(r.get("status")) for r in tc)
         all_na = all(_status_na(r.get("status")) for r in tc)
         if not any_pass and not all_na:
             fails.append("tool_calls")
 
-    avg = _avg_tps(model_result)
-    if avg is not None:
-        if avg <= 0:
+    tps = _probe_rows(model_result, "tps", fails)
+    if tps:
+        avg = _avg_tps(model_result)
+        if avg is None:
+            fails.append("tps(invalid)")
+        elif avg <= 0:
             fails.append("tps(0)")
-        elif baseline and isinstance(baseline.get("tps"), (int, float)) and baseline["tps"] > 0:
+        elif baseline is not None and not _valid_baseline(baseline):
+            fails.append("tps(invalid-baseline)")
+        elif baseline is not None:
             floor = baseline["tps"] * (1 - TPS_TOLERANCE)
             if avg < floor:
                 fails.append(f"tps({avg:.1f}<{floor:.1f})")
@@ -151,15 +190,18 @@ def load_result_file(path):
 
 
 def load_baseline(label, baseline_dir):
-    """Return the {"tps": ...} baseline for a label, or None if not committed."""
+    """Return a baseline, None if absent, or an invalid dict for unreadable data."""
     path = os.path.join(baseline_dir, f"{label}.json")
     if not os.path.isfile(path):
         return None
     try:
         with open(path) as f:
-            return json.load(f)
+            baseline = json.load(f)
+        return baseline if isinstance(baseline, dict) else {}
     except (json.JSONDecodeError, OSError):
-        return None
+        # A present but unreadable baseline must not become the deliberately
+        # allowed "no baseline" liveness-only mode.
+        return {}
 
 
 def write_baseline(label, data, baseline_dir):
@@ -183,7 +225,7 @@ def _score_one(label, name, result, baseline_dir, require_baseline):
     bars = verdict(result, baseline=baseline, require_baseline=require_baseline)
     note = ""
     avg = _avg_tps(result)
-    if avg and avg > 0 and not (baseline and isinstance(baseline.get("tps"), (int, float))) \
+    if avg and avg > 0 and baseline is None \
             and not require_baseline:
         note = "  (no tps baseline — liveness only; run --update-baselines)"
     return bars, note
@@ -230,6 +272,10 @@ def gate_manifest(results_dir, roster, baseline_dir=BASELINE_DIR, require_baseli
             print(f"  [FAIL] {name}  <- unreadable: {err}")
             failures.append((name, [f"unreadable: {err}"]))
             continue
+        if result.get("model") != model:
+            print(f"  [FAIL] {name}  <- result model is {result.get('model')!r}")
+            failures.append((name, ["model-mismatch"]))
+            continue
         bars, note = _score_one(label, name, result, baseline_dir, require_baseline)
         mark = "PASS" if not bars else "FAIL"
         print(f"  [{mark}] {name}" + ("" if not bars else f"  <- {', '.join(bars)}") + note)
@@ -271,7 +317,8 @@ def update_baselines(results_dir, roster, baseline_dir):
     """Write tests/baselines/<label>.json = {"tps": <avg>} from present results.
 
     Roster (label, model) list if a manifest exists, else every present result
-    file. Only positive tps is recorded. Returns [(label, avg)] written.
+    file. Only results clearing the correctness/liveness bars and matching
+    the planned model are eligible. Returns [(label, avg)] written.
     """
     if roster is None:
         items = [(os.path.splitext(os.path.basename(p))[0], None)
@@ -280,12 +327,14 @@ def update_baselines(results_dir, roster, baseline_dir):
     else:
         items = roster
     written = []
-    for label, _ in items:
+    for label, model in items:
         path = os.path.join(results_dir, f"{label}.json")
         if not os.path.isfile(path):
             continue
         result, _err = load_result_file(path)
         if result is None:
+            continue
+        if (model is not None and result.get("model") != model) or verdict(result):
             continue
         avg = _avg_tps(result)
         if avg is None or avg <= 0:

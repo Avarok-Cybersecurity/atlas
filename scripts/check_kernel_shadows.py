@@ -114,11 +114,28 @@ def main() -> int:
         print(f"error: kernels root not found: {kernels_root}", file=sys.stderr)
         return 1
 
+    # ★ Every hardware tree in the map must EXIST. The loop below skips a
+    # missing one, so a rename or a move of `kernels/gb10` left this required
+    # check scanning nothing and printing "kernel shadow structure: OK" --
+    # verified by running it against an empty `kernels/`: rc=0. A gate that
+    # cannot see its inputs must refuse, not congratulate. HW_SOURCE_EXT is the
+    # SSOT for which trees are covered; adding or removing hardware means
+    # editing it in the same commit, which is exactly the moment to notice.
+    missing = [hw for hw in sorted(HW_SOURCE_EXT) if not (kernels_root / hw).is_dir()]
+    if missing:
+        print(
+            f"error: {kernels_root}/ is missing hardware tree(s): {', '.join(missing)}.\n"
+            f"       They are listed in HW_SOURCE_EXT, so this check believes it covers\n"
+            f"       them -- and it silently scanned nothing instead. If a tree moved or\n"
+            f"       was retired, update HW_SOURCE_EXT in the same commit.",
+            file=sys.stderr,
+        )
+        return 1
+
     violations = []
     for hw_name, ext in sorted(HW_SOURCE_EXT.items()):
         hw_dir = kernels_root / hw_name
-        if hw_dir.is_dir():
-            violations.extend(check_hw(hw_name, hw_dir, ext))
+        violations.extend(check_hw(hw_name, hw_dir, ext))
 
     if violations:
         print(f"kernel shadow structure: {len(violations)} violation(s)")
@@ -126,7 +143,10 @@ def main() -> int:
             print(f"  {v}")
         return 1
 
-    print("kernel shadow structure: OK")
+    print(
+        "kernel shadow structure: OK "
+        f"({len(HW_SOURCE_EXT)} hardware trees scanned: {', '.join(sorted(HW_SOURCE_EXT))})"
+    )
     return 0
 
 

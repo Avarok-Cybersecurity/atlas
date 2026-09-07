@@ -81,6 +81,21 @@ pub struct AnthropicTranslator {
     finished: bool,
 }
 
+/// Pull the human-readable text out of the wire-ready error envelope the
+/// generation core puts on `StreamDelta::Error`.
+///
+/// That payload is an OpenAI envelope (`{"error":{"message":..}}`) because the
+/// OpenAI surface forwards it verbatim as SSE data; Anthropic's error event
+/// carries its own envelope, so the message has to be lifted out rather than
+/// nested. Anything that is not that shape is passed through unchanged, so a
+/// future non-JSON payload still reaches the client instead of vanishing.
+fn error_detail(payload: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+        .unwrap_or_else(|| payload.to_string())
+}
+
 impl AnthropicTranslator {
     pub(super) fn new(model: String) -> Self {
         Self {
@@ -338,16 +353,63 @@ impl AnthropicTranslator {
                 self.finished = true;
             }
             // Refusals have no Anthropic streaming representation (the
-            // old translator ignored `delta.refusal` too); errors abort
-            // upstream and carry no renderable event here.
-            StreamDelta::Refusal { .. } | StreamDelta::Error { .. } => {}
+            // old translator ignored `delta.refusal` too).
+            StreamDelta::Refusal { .. } => {}
+            // A stream-level failure. The premise of the arm this replaced
+            // — "errors abort upstream and carry no renderable event here"
+            // — was false on both halves. Anthropic's streaming spec DOES
+            // define a terminal `error` event, and the error does NOT abort
+            // the stream: `handle_error` turns it into a `StreamDelta::Error`
+            // that arrives here like any other delta, after which
+            // `anthropic_sse_from_deltas` runs `finalize`. Swallowing it
+            // therefore did not merely lose the message — it converted a
+            // server-side failure into a well-formed SUCCESS: the client saw
+            // `message_delta{stop_reason}` + `message_stop` over the HTTP 200
+            // that was committed with the first token, and banked the partial
+            // answer as the model's finished turn.
+            //
+            // `finished` is set so `finalize` cannot append that fake
+            // terminal pair after the error — the error event IS the end of
+            // the message, which is what the SDKs raise on.
+            StreamDelta::Error { message } => {
+                self.ensure_message_start(out);
+                if let Some(stop) = self.close_open_block() {
+                    out.push(stop);
+                }
+                out.push(Self::make_event(
+                    "error",
+                    serde_json::json!({
+                        "type": "error",
+                        "error": {"type": "api_error", "message": error_detail(message)},
+                    }),
+                ));
+                self.finished = true;
+            }
             // Empty text/reasoning fragments.
             StreamDelta::Content { .. } | StreamDelta::Reasoning { .. } => {}
         }
     }
 
-    /// Stream ended without an explicit `finish_reason`. Best-effort
-    /// flush so the client sees a coherent end of message.
+    /// Stream ended without an explicit `finish_reason` — the generation
+    /// core stopped mid-turn (shutdown drain, a dropped sink, a scheduler
+    /// error that never reached a terminal frame). Close the message so the
+    /// framing stays legal, but do NOT claim the turn completed.
+    ///
+    /// `stop_reason` here is the whole point. `"end_turn"` asserts "the model
+    /// said what it wanted"; for a server-side truncation that is false, and
+    /// every client behaviour keyed on it is then the wrong action — accept,
+    /// commit, end the agent run — with nothing anywhere to retry on.
+    /// `"max_tokens"` asserts only "the output is cut short", which is true in
+    /// every part clients act on. That is not a new judgement call: it is the
+    /// rule `convert_stop_reason` (`helpers.rs`) already applies to the
+    /// deadline cut, in a comment naming this exact failure — "mapping a
+    /// deadline cut to the default `end_turn` would tell the client the turn
+    /// is COMPLETE, which is the exact silent-truncation bug this reason
+    /// exists to prevent". An abrupt stream end is the same event with less
+    /// information, so it takes the same slot.
+    ///
+    /// A `StreamDelta::Error` sets `finished`, so this is unreachable after a
+    /// reported failure — the arms do not overlap.
     pub(super) fn finalize(&mut self, out: &mut Vec<SseEvent>) {
         if self.finished {
             return;
@@ -361,7 +423,7 @@ impl AnthropicTranslator {
             serde_json::json!({
                 "type": "message_delta",
                 "delta": {
-                    "stop_reason": "end_turn",
+                    "stop_reason": "max_tokens",
                     "stop_sequence": serde_json::Value::Null,
                 },
                 "usage": self.final_usage(),

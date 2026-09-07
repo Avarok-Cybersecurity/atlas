@@ -24,7 +24,13 @@ fn main() -> anyhow::Result<()> {
 
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
-    let prs: Vec<PrFacts> = serde_json::from_str(input.trim()).unwrap_or_default();
+    // ★ Never `unwrap_or_default()` here. A malformed or truncated feed would
+    // become an empty Vec, `render` would emit "_No open pull requests._", and
+    // the workflow would post that to the tracking issue as the state of the
+    // repository — a parse failure published as a measurement of zero. Failing
+    // the step leaves the previous comment standing, which is stale but true.
+    let prs: Vec<PrFacts> = serde_json::from_str(input.trim())
+        .map_err(|e| anyhow::anyhow!("the PR feed on stdin is not a JSON array of PrFacts: {e}"))?;
 
     print!("{}", render(&root, &prs));
     Ok(())

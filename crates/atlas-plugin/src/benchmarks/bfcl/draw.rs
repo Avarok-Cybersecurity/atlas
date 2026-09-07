@@ -170,6 +170,69 @@ pub fn total(plan: &[(String, usize)]) -> usize {
     plan.iter().map(|(_, n)| n).sum()
 }
 
+/// The real BFCL v4 single-turn row counts, per subset.
+///
+/// Promoted out of `draw_tests` so the shard tests and the draw tests judge the
+/// same table. Two copies of this would let a shard test pass against a draw
+/// nobody runs. `provision.py` reports the counts it actually wrote into
+/// `dataset_summary.json`; this is what they must be.
+pub fn reference_subset_totals() -> BTreeMap<String, usize> {
+    [
+        ("irrelevance", 240),
+        ("live_irrelevance", 884),
+        ("live_multiple", 1053),
+        ("live_parallel", 16),
+        ("live_parallel_multiple", 24),
+        ("live_relevance", 16),
+        ("live_simple", 258),
+        ("multiple", 200),
+        ("parallel", 200),
+        ("parallel_multiple", 200),
+        ("simple_java", 100),
+        ("simple_javascript", 50),
+        ("simple_python", 400),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect()
+}
+
+/// Which rows of a subset belong to shard `index` of `count`.
+///
+/// STRIDE within the subset — row `i` goes to shard `i % count` — not
+/// contiguous quarters. Two reasons, both practical:
+///
+/// * Every shard gets a proportional slice of every subset, so the four run for
+///   about the same wall-clock. Contiguous quarters would hand one shard all of
+///   `simple_python`'s hardest tail if the file happens to be ordered.
+/// * A subset smaller than `count` still lands somewhere rather than vanishing:
+///   `live_parallel` is 16 rows in the golden draw and 16 in echolp, so with
+///   four shards each gets four. Nothing disappears, and the union is exactly
+///   the draw.
+///
+/// Deterministic and RNG-free, like the rest of this module: shard membership
+/// is a function of position alone, so the same draw always splits the same way.
+pub fn shard_take(take: usize, index: usize, count: usize) -> usize {
+    if count == 0 || index >= count {
+        return 0;
+    }
+    // Rows index..take striding by `count` from `index`: ceil((take - index) / count).
+    take.saturating_sub(index).div_ceil(count)
+}
+
+/// Is row `row` of a subset (0-based, within the drawn rows) in shard `index`?
+pub fn shard_owns(row: usize, index: usize, count: usize) -> bool {
+    count > 0 && index < count && row % count == index
+}
+
+/// The per-subset counts one shard will actually run.
+pub fn shard_plan(plan: &[(String, usize)], index: usize, count: usize) -> Vec<(String, usize)> {
+    plan.iter()
+        .map(|(s, take)| (s.clone(), shard_take(*take, index, count)))
+        .filter(|(_, n)| *n > 0)
+        .collect()
+}
+
 #[cfg(test)]
 #[path = "draw_tests.rs"]
 mod tests;

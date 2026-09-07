@@ -59,7 +59,11 @@ jobs:
     # where the answer is trivially yes (a queue commit descends from the base
     # by construction). Reporting a foregone conclusion is the price of the
     # verdict being enforceable at all on the events where it is not foregone.
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -114,7 +118,11 @@ jobs:
 
   self-test:
     name: Merge-ancestry guard self-test
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Builds scratch repos from nothing (descendant / orphan / behind /

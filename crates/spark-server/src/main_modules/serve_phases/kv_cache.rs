@@ -279,14 +279,24 @@ pub(crate) fn resolve_kv_cache_config(
         }
     }
     let num_attn_layers = config.num_attention_layers();
-    let kv_hp_layers: usize = match args.kv_high_precision_layers.to_lowercase().as_str() {
-        "max" | "all" => num_attn_layers,
-        "auto" => 2,
-        s => s.parse().unwrap_or_else(|_| {
-            tracing::warn!("Invalid --kv-high-precision-layers '{}', using 0", s);
-            0
-        }),
-    };
+    // Parsed through `cli::flag_values`, the same definition `validate_serve_args`
+    // refuses a typo with — so this cannot accept a form the validator rejects,
+    // or reject one it accepts. `?` rather than the previous
+    // `unwrap_or_else(|_| { warn!(); 0 })`: `0` defers to
+    // `auto_high_precision_layers`, so swallowing a typo did not serve the
+    // default, it served a third thing and said so in one warning line.
+    // Unreachable in practice — validation runs before the weight load — which
+    // is exactly why it must not be a silent fallback.
+    let kv_hp_layers: usize = args
+        .kv_high_precision_layers
+        .parse::<crate::cli::flag_values::KvHighPrecisionLayers>()
+        .map_err(|why| {
+            anyhow::anyhow!(
+                "--kv-high-precision-layers '{}': {why}",
+                args.kv_high_precision_layers
+            )
+        })?
+        .resolve(num_attn_layers);
     let kv_hp_layers = match (
         kv_hp_layers,
         crate::main_modules::auto_high_precision_layers(kv_dtype, num_attn_layers),

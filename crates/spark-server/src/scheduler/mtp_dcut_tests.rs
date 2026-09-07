@@ -76,23 +76,30 @@ fn chunk_ranges_reproduce_the_uniform_caps() {
 #[test]
 fn chunk_ranges_seq_cap_derives_from_the_row_budget() {
     // Depth above n=8 (env-ladder / ragged-D-Cut shapes) is no longer
-    // serialized into 8-wide chunks: the row budget is the only bound. The
-    // split points are derived from VERIFY_ROW_BUDGET (160) so this test
-    // states the boundary arithmetic, not a frozen budget value.
-    // rows=3: 160/3 = 53 seqs — everything up to 53 is ONE chunk.
+    // serialized into 8-wide chunks. Two bounds apply, and the chunk is the
+    // MIN of them: the row budget (VERIFY_ROW_BUDGET = 160, giving 53 seqs
+    // at rows=3, 40 at rows=4, 80 at rows=2) and the verify stash width
+    // (VERIFY_WY_TABLE_SEQS = 32). Both are read from their SSOT below, so
+    // this test states the boundary arithmetic and not frozen values.
+    const W: usize = spark_model::layer::VERIFY_WY_TABLE_SEQS; // 32
+    // rows=3: the row budget would allow 53, the stash allows 32.
     assert_eq!(chunk_ranges(&[3; 21]), vec![(0, 21)]);
-    assert_eq!(chunk_ranges(&[3; 33]), vec![(0, 33)]);
-    assert_eq!(chunk_ranges(&[3; 53]), vec![(0, 53)]);
-    assert_eq!(chunk_ranges(&[3; 54]), vec![(0, 53), (53, 54)]);
-    // rows=4: 160/4 = 40 seqs.
+    assert_eq!(chunk_ranges(&[3; W]), vec![(0, W)]);
+    // Past the stash the chunker SPLITS rather than emitting a chunk the
+    // model refuses (it previously returned a single (0,33) / (0,53)).
+    assert_eq!(chunk_ranges(&[3; 33]), vec![(0, W), (W, 33)]);
+    assert_eq!(chunk_ranges(&[3; 53]), vec![(0, W), (W, 53)]);
+    // rows=4: row budget 40, stash 32.
     assert_eq!(chunk_ranges(&[4; 9]), vec![(0, 9)]);
-    assert_eq!(chunk_ranges(&[4; 40]), vec![(0, 40)]);
-    assert_eq!(chunk_ranges(&[4; 41]), vec![(0, 40), (40, 41)]);
-    // rows=2: 160/2 = 80 seqs.
-    assert_eq!(chunk_ranges(&[2; 80]), vec![(0, 80)]);
-    assert_eq!(chunk_ranges(&[2; 81]), vec![(0, 80), (80, 81)]);
+    assert_eq!(chunk_ranges(&[4; 40]), vec![(0, W), (W, 40)]);
+    // rows=2: row budget 80, stash 32.
+    assert_eq!(chunk_ranges(&[2; 80]), vec![(0, W), (W, 64), (64, 80)]);
     // rows=3 with 10 seqs (the old (0,8),(8,10) split): one chunk now.
     assert_eq!(chunk_ranges(&[3; 10]), vec![(0, 10)]);
+    // The row budget still binds where it is TIGHTER than the stash: at
+    // rows=8 (the DFlash uniform K=γ+1 shape) 160/8 = 20 < 32, so 20 wins.
+    assert_eq!(chunk_ranges(&[8; 20]), vec![(0, 20)]);
+    assert_eq!(chunk_ranges(&[8; 21]), vec![(0, 20), (20, 21)]);
 }
 
 #[test]
@@ -250,4 +257,66 @@ fn below_the_gate_the_pairing_is_legacy_but_the_pruning_is_kept() {
     assert_eq!(c_paired, vec![(0, 4), (5, 3)]);
     assert_ne!(c_paired, paired);
     assert_eq!(c_depths.iter().sum::<usize>(), 7);
+}
+
+// ── Width bound: the chunker's OTHER cap ───────────────────────────────────
+//
+// `chunk_ranges` derives its per-chunk sequence cap from the ROW budget
+// alone (`VERIFY_ROW_BUDGET / ks[lo]`), which at the shallow rungs is 40
+// (rows=4), 53 (rows=3) and 80 (rows=2) sequences. But `can_batch_verify`
+// enforces a SECOND, independent bound the chunker never consulted:
+// `(2..=VERIFY_WY_TABLE_SEQS).contains(&n)`, i.e. n <= 32, because the
+// batched verify's hidden stash has exactly 32 slots.
+//
+// A chunk wider than 32 is therefore refused WHOLESALE by the
+// `chunk.len() >= 2 && model.can_batch_verify(chunk_ks)` gate in
+// `mtp_step`, and every sequence in it falls back to the per-seq verify
+// loop — one weight sweep PER SEQUENCE instead of one per chunk. That is
+// the exact "stale cap silently serializes the batch" artifact class the
+// module doc says was closed when the cap stopped being a hardcoded 8; it
+// was closed for ROWS and left open for WIDTH.
+#[test]
+fn chunk_ranges_never_exceed_the_verify_width_bound() {
+    // The hard bound `can_batch_verify` enforces, read from the model crate
+    // rather than restated, so this test tracks the stash if it is resized.
+    const WIDTH_CAP: usize = spark_model::layer::VERIFY_WY_TABLE_SEQS;
+    // Every rung depth, at widths that span the row-derived caps (40/53/80).
+    for rows in 2..=4usize {
+        for n in 2..=96usize {
+            let ks = vec![rows; n];
+            for (lo, hi) in chunk_ranges(&ks) {
+                assert!(
+                    hi - lo <= WIDTH_CAP,
+                    "rows={rows} n={n}: chunk ({lo},{hi}) is {} sequences wide, \
+                     above the {WIDTH_CAP}-slot verify stash — can_batch_verify \
+                     refuses it and the whole chunk serializes",
+                    hi - lo
+                );
+            }
+        }
+    }
+}
+
+// Ragged (D-Cut) shapes must obey the width bound too: the cap is taken
+// from `ks[lo]`, the chunk's DEEPEST row count, so a chunk that starts deep
+// and continues shallow gets the deep cap while admitting shallow rows.
+#[test]
+fn ragged_chunks_also_respect_the_width_bound() {
+    // Deepest-first, as the caller guarantees: 4 deep rows then a long
+    // shallow tail. seq_cap is 160/4 = 40, so the shallow tail is admitted
+    // well past the 32-slot stash.
+    let mut ks = vec![4usize; 4];
+    ks.extend(std::iter::repeat_n(2usize, 60));
+    for (lo, hi) in chunk_ranges(&ks) {
+        assert!(
+            hi - lo <= spark_model::layer::VERIFY_WY_TABLE_SEQS,
+            "ragged chunk ({lo},{hi}) is {} wide",
+            hi - lo
+        );
+        // The row budget must still hold — the width clamp adds a bound, it
+        // does not relax the existing one.
+        let r: usize = ks[lo..hi].iter().sum();
+        assert!(r <= VERIFY_ROW_BUDGET, "rows={r}");
+        assert!(hi > lo, "empty range");
+    }
 }

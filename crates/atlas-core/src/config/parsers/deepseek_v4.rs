@@ -366,49 +366,62 @@ mod mscale_contract_tests {
       "compress_ratios": [0,0,4,128,4,128,4,0,0,0]
     }"#;
 
-    // Mirrors compute.rs `const MAIN_ROPE_THETA: f32 = 10000.0` — the sliding
-    // (compressor-absent) rope theta. This diff does not touch compute.rs, so the
-    // value is unchanged; asserted here as the sliding-theta contract.
-    const SLIDING_ROPE_THETA_CONTRACT: f32 = 10000.0;
-
-    // Test 1 + Test 4: the DS4F config makes yarn_rope_mscale == 1.0 for EVERY
-    // runtime call site. All nine sites call `yarn_rope_mscale(ctx.config)` with
-    // this parsed config; the helper (spark-model) is unit-tested separately to
-    // return exactly 1.0 when the two mscale terms are equal. Here we prove the
-    // parser produces terms that force that: yarn_mscale == yarn_mscale_all_dim.
+    // The parser owns the DS4F field override. The spark-model helper tests own
+    // the resulting runtime ratio.
     #[test]
-    fn ds4f_forces_mscale_terms_equal_so_ratio_is_one() {
+    fn ds4f_parser_forces_both_mscale_terms_to_zero() {
         let c = parse_deepseek_v4(DS4F_CONFIG).expect("parse DS4F");
         assert_eq!(c.yarn_mscale, 0.0, "yarn_mscale must be forced to 0.0");
         assert_eq!(
             c.yarn_mscale_all_dim, 0.0,
             "yarn_mscale_all_dim must be forced to 0.0"
         );
-        assert_eq!(
-            c.yarn_mscale, c.yarn_mscale_all_dim,
-            "equal terms => yarn_rope_mscale ratio == 1.0 (no 1.2772589 amplitude)"
-        );
     }
 
-    // Test 2: compress-path theta stays 160000.
+    // The compress path uses the checkpoint field, not the top-level theta or
+    // a memorized value from the published DS4F config.
     #[test]
-    fn ds4f_compress_theta_is_160000() {
+    fn ds4f_reads_checkpoint_compress_theta() {
         let c = parse_deepseek_v4(DS4F_CONFIG).expect("parse DS4F");
         assert_eq!(c.rope_theta, 160000.0, "compress rope_theta must be 160000");
+
+        let alternate = DS4F_CONFIG.replace(
+            "\"compress_rope_theta\": 160000",
+            "\"compress_rope_theta\": 234567",
+        );
+        let c = parse_deepseek_v4(&alternate).expect("parse alternate compress theta");
+        assert_eq!(c.rope_theta, 234567.0);
     }
 
-    // Test 3: sliding-path theta contract is 10000 (compute.rs MAIN_ROPE_THETA,
-    // untouched by this diff).
+    // These fields come from the checkpoint. The second partition keeps them
+    // distinct from the runtime fallback values.
     #[test]
-    fn sliding_theta_contract_is_10000() {
-        assert_eq!(SLIDING_ROPE_THETA_CONTRACT, 10000.0);
-    }
-
-    // Test 6: no unrelated YaRN defaults changed — factor/beta/original_max_pos
-    // still parse from the checkpoint exactly as before.
-    #[test]
-    fn ds4f_other_yarn_params_unchanged() {
+    fn ds4f_reads_checkpoint_yarn_scaling_parameters() {
         let c = parse_deepseek_v4(DS4F_CONFIG).expect("parse DS4F");
+        assert_eq!(c.yarn_factor, 16.0);
+        assert_eq!(c.yarn_beta_fast, 32.0);
+        assert_eq!(c.yarn_beta_slow, 1.0);
+        assert_eq!(c.yarn_original_max_position_embeddings, 65536);
+
+        let alternate = DS4F_CONFIG
+            .replace("\"factor\": 16", "\"factor\": 12.5")
+            .replace("\"beta_fast\": 32", "\"beta_fast\": 40")
+            .replace("\"beta_slow\": 1", "\"beta_slow\": 2")
+            .replace(
+                "\"original_max_position_embeddings\": 65536",
+                "\"original_max_position_embeddings\": 32768",
+            );
+        let c = parse_deepseek_v4(&alternate).expect("parse alternate YaRN parameters");
+        assert_eq!(c.yarn_factor, 12.5);
+        assert_eq!(c.yarn_beta_fast, 40.0);
+        assert_eq!(c.yarn_beta_slow, 2.0);
+        assert_eq!(c.yarn_original_max_position_embeddings, 32768);
+    }
+
+    #[test]
+    fn pre_release_rope_parameters_alias_is_supported() {
+        let pre_release = DS4F_CONFIG.replacen("\"rope_scaling\"", "\"rope_parameters\"", 1);
+        let c = parse_deepseek_v4(&pre_release).expect("parse pre-release YaRN parameters");
         assert_eq!(c.yarn_factor, 16.0);
         assert_eq!(c.yarn_beta_fast, 32.0);
         assert_eq!(c.yarn_beta_slow, 1.0);
@@ -421,48 +434,44 @@ mod mscale_contract_tests {
     fn ds4f_explicit_checkpoint_mscale_is_overridden() {
         let with_mscale = DS4F_CONFIG.replace(
             "\"type\": \"yarn\"",
-            "\"type\": \"yarn\", \"mscale\": 1.0, \"mscale_all_dim\": 0.0",
+            "\"type\": \"yarn\", \"mscale\": 1.0, \"mscale_all_dim\": 0.5",
         );
         let c = parse_deepseek_v4(&with_mscale).expect("parse DS4F w/ explicit mscale");
         assert_eq!(c.yarn_mscale, 0.0);
         assert_eq!(c.yarn_mscale_all_dim, 0.0);
     }
 
-    // Test 5 (config side): the force lives ONLY in this DS4F parser. A non-DS4F
-    // factory config keeps the shared factory default (yarn_mscale = 1.0),
-    // proving Qwen/other models are untouched by the DS4F override.
     #[test]
-    fn non_ds4f_factory_default_mscale_untouched() {
-        let qwen = ModelConfig::qwen3_next_80b_nvfp4();
-        assert_eq!(
-            qwen.yarn_mscale, 1.0,
-            "shared factory default must remain 1.0 for non-DS4F models"
+    fn each_dspark_field_is_required_when_contract_is_present() {
+        let mut complete: serde_json::Value =
+            serde_json::from_str(DS4F_CONFIG).expect("parse DS4F fixture");
+        let object = complete.as_object_mut().expect("DS4F fixture is an object");
+        object.insert("dspark_block_size".into(), serde_json::json!(5));
+        object.insert("dspark_noise_token_id".into(), serde_json::json!(128799));
+        object.insert(
+            "dspark_target_layer_ids".into(),
+            serde_json::json!([40, 41, 42]),
         );
-    }
+        object.insert("dspark_markov_rank".into(), serde_json::json!(256));
 
-    #[test]
-    fn incomplete_dspark_contract_is_rejected() {
-        let incomplete = DS4F_CONFIG.replace(
-            "\"compress_rope_theta\": 160000,",
-            "\"compress_rope_theta\": 160000, \"dspark_block_size\": 5,",
-        );
-        let err = parse_deepseek_v4(&incomplete).expect_err("incomplete DSpark config");
-        assert!(
-            err.to_string().contains("dspark_noise_token_id"),
-            "unexpected error: {err:#}"
-        );
-    }
-
-    #[test]
-    fn dspark_fields_without_block_size_are_rejected() {
-        let incomplete = DS4F_CONFIG.replace(
-            "\"compress_rope_theta\": 160000,",
-            "\"compress_rope_theta\": 160000, \"dspark_markov_rank\": 256,",
-        );
-        let err = parse_deepseek_v4(&incomplete).expect_err("incomplete DSpark config");
-        assert!(
-            err.to_string().contains("dspark_block_size"),
-            "unexpected error: {err:#}"
-        );
+        for missing in [
+            "dspark_block_size",
+            "dspark_noise_token_id",
+            "dspark_target_layer_ids",
+            "dspark_markov_rank",
+        ] {
+            let mut incomplete = complete.clone();
+            incomplete
+                .as_object_mut()
+                .expect("DS4F fixture is an object")
+                .remove(missing);
+            let err =
+                parse_deepseek_v4(&incomplete.to_string()).expect_err("incomplete DSpark config");
+            let expected = format!("DSpark config is missing `{missing}`");
+            assert!(
+                err.to_string().contains(&expected),
+                "missing {missing} produced unexpected error: {err:#}"
+            );
+        }
     }
 }

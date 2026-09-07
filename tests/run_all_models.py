@@ -416,13 +416,31 @@ def settle() -> None:
     time.sleep(INTER_ROUND_SETTLE_SECONDS)
 
 
+def result_path(label: str) -> str:
+    """Keep generated result cleanup inside this run's results directory."""
+    if (not isinstance(label, str) or not label or "/" in label or "\\" in label
+            or label in (".", "..", "_manifest", "_partial", "all_results")):
+        raise ValueError(f"invalid result label: {label!r}")
+    return os.path.join(RESULTS_DIR, f"{label}.json")
+
+
+def remove_result(path: str) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
 def run_suite(host: str, spec: TestSpec, port: int) -> dict:
     """Run single_gpu_suite.py against the given server, return parsed JSON."""
     if host == "head":
         base_url = f"http://localhost:{port}/v1"
     else:
         base_url = f"http://{WORKER_IP}:{port}/v1"
-    out_json = os.path.join(RESULTS_DIR, f"{spec.label}.json")
+    out_json = result_path(spec.label)
+    # A failed or output-less subprocess must not inherit a prior result,
+    # including when run_suite is invoked independently of main's manifest.
+    remove_result(out_json)
     log_path = os.path.join(RESULTS_DIR, f"{spec.label}.log")
     cmd = [
         "python3", SUITE,
@@ -441,7 +459,13 @@ def run_suite(host: str, spec: TestSpec, port: int) -> dict:
 
 def wait_and_read(job: dict) -> Optional[dict]:
     proc = job["proc"]
-    proc.wait()
+    code = proc.wait()
+    if code != 0:
+        # The release gate reads these files independently of this return
+        # value. Discard even valid JSON written by a failed suite process.
+        remove_result(job["out_json"])
+        print(f"    [warn] suite exited {code}; rejected {job['out_json']}")
+        return None
     try:
         with open(job["out_json"]) as f:
             return json.load(f)
@@ -813,6 +837,13 @@ def load_roster(path):
 
 def write_manifest(**flags):
     planned = planned_specs(**flags)
+    # Invalidate previous evidence before any container starts, including
+    # models that will fail at boot and never reach run_suite. Validate the
+    # whole roster before deleting anything. This directory has one writer;
+    # concurrent campaigns must use separate checkouts/results directories.
+    paths = [result_path(label) for label, _model in planned]
+    for path in paths:
+        remove_result(path)
     manifest = {
         "generated_by": "tests/run_all_models.py",
         "labels": [{"label": label, "model": model} for label, model in planned],

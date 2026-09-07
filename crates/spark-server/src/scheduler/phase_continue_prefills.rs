@@ -29,6 +29,7 @@ mod run_batched_mixed;
 mod run_batched_prefill;
 #[path = "phase_continue_prefills/run_standard.rs"]
 mod run_standard;
+mod spec_mixing;
 
 use std::time::Instant;
 
@@ -42,6 +43,7 @@ use crate::scheduling_policy::{ActiveSeqTiming, SchedulingPolicy};
 use run_batched_mixed::run_batched_mixed_step;
 use run_batched_prefill::run_batched_prefill_step;
 use run_standard::run_standard_chunk_loop;
+use spec_mixing::mixing_blocked_by_spec;
 
 /// Shared per-chunk InnerQ poll used by every prefill path (standard /
 /// batched-prefill / batched-mixed). `maybe_finalize` is idempotent post
@@ -90,12 +92,16 @@ pub(super) fn continue_in_progress_prefills(
         })
         .collect();
 
-    // single_active_with_spec: active.len()==1 AND a speculative path is
-    // active (those step_* paths require active.len()==1 and mixing would
-    // double-decode). Computed early because the always-mixed gate below
-    // needs it too. (Also reused by the Q12 mixed-batch gate further down.)
-    let single_active_with_spec =
-        active.len() == 1 && (use_mtp || use_self_speculative || use_ngram_speculative);
+    // Does an in-flight speculative step forbid fusing a prefill chunk into
+    // decode this tick? ONE home for the rule (`spec_mixing`), which also
+    // records the range over which it disagrees with the scheduler's real
+    // MTP dispatch gate — read that module before touching this.
+    // Computed early because the always-mixed gate below needs it too, and
+    // it is reused by the Q12 mixed-batch gate further down.
+    let single_active_with_spec = mixing_blocked_by_spec(
+        active.len(),
+        use_mtp || use_self_speculative || use_ngram_speculative,
+    );
 
     // ── Step 2 (spec): always-on fused mixed step ──
     //
@@ -184,11 +190,11 @@ pub(super) fn continue_in_progress_prefills(
     // loops); Q12 Phase 2/3 replace with kernel-level batched dispatch.
     //
     // Gates: N≥2 prefilling, no EP (worker opcode pending, Phase 6),
-    // and for mixed-batch only: skip if active.len()==1 AND a speculative
-    // path is active (those step_* paths require active.len()==1 and
-    // mixing would double-decode). Spec is off by construction when
-    // active.len() ≥ 2, so the mixed branch is safe there.
-    // (`single_active_with_spec` computed near the top — reused here.)
+    // and for mixed-batch only: `single_active_with_spec` (computed near the
+    // top from `spec_mixing::mixing_blocked_by_spec`). NOTE: spec is NOT off
+    // by construction at active.len() >= 2 — the MTP dispatch cap is 32, not
+    // 1 — so this branch does run under a live speculative regime; see the
+    // `spec_mixing` module doc for what that costs and why it stands.
     // BISECT: ATLAS_BISECT_Q12_DISABLE=1 forces the per-stream FIFO path
     // (pre-Q12 behavior) so we can isolate whether the chunked-prefill +
     // concurrent-decode crash originates in the Q12 batched-prefill

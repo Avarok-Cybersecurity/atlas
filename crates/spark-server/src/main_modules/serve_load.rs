@@ -68,13 +68,22 @@ impl Carried {
     /// loaded — and so there is exactly one of each: handlers refund through
     /// the same limiter the middleware debits, and read the same stores a swap
     /// carries forward.
-    pub fn from_env() -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// When any of the `ATLAS_RATE_LIMIT_*`, `ATLAS_STORE_*` or
+    /// `ATLAS_CONVERSATION_*` variables holds a value that does not parse.
+    /// Refused rather than defaulted: these are the process's SECURITY and
+    /// RETENTION settings, and the default for a rate limit is "no limit", so
+    /// a swallowed typo used to open the server up without a word. This runs
+    /// before the listener binds and before the weight load, so a bad value
+    /// costs milliseconds.
+    pub fn from_env() -> Result<Self, String> {
+        Ok(Self {
             // `from_env` already hands back an Arc.
-            response_store: response_store::ResponseStore::from_env(),
-            rate_limiter: rate_limiter::RateLimiter::from_env(),
-            conversation_store: conversation_store::ConversationStore::from_env(),
-        }
+            response_store: response_store::ResponseStore::from_env()?,
+            rate_limiter: rate_limiter::RateLimiter::from_env()?,
+            conversation_store: conversation_store::ConversationStore::from_env()?,
+        })
     }
 
     /// A swap: take them from the model being replaced.

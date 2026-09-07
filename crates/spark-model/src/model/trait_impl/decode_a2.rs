@@ -20,14 +20,6 @@ use crate::layer::{ForwardContext, LayerState, SsmLayerState};
 use crate::layers::ops;
 use crate::traits::{Model, SequenceState};
 
-/// Route the BF16 lm_head decode through the batched GEMV (dense_gemv_bf16_batchm)
-/// instead of the scalar dense_gemm_bf16. Default ON. Mirrors PR #332's
-/// ATLAS_LMHEAD_BATCH_GEMV for the NVFP4 head; this is the BF16 sibling.
-fn lmhead_batch_gemv_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_LMHEAD_BATCH_GEMV").ok().as_deref() != Some("0"))
-}
-
 /// Multi-seq decode CUDA graphs: **ON by default**, disabled by
 /// `ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1`.
 ///

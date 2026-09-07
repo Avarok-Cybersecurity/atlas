@@ -384,3 +384,48 @@ fn the_registry_classifies_every_benchmark_the_incident_named() {
         let _: Sensitivity = d.sensitivity;
     }
 }
+
+/// ★ The record must not quote an understated throttle as a figure.
+///
+/// `hardware_state.postcheck.concerns` is persisted with the gate record and is
+/// the text a human reads when deciding whether a speed number is comparable.
+/// With one counter unreadable the percentage is a floor, and the counter list
+/// used to print `sw 0 µs` for a counter that was never read — a measured zero
+/// invented out of an absent reading, in the one paragraph whose job is to say
+/// how bad the throttle was.
+#[test]
+fn an_unreadable_counter_is_never_printed_as_a_measured_zero() {
+    let p = postcheck(
+        Sensitivity::Speed,
+        &delta(None, Some(12_000_000)),
+        options(),
+    );
+    assert_eq!(p.validity, Validity::Invalid);
+    let joined = p.concerns.join("\n");
+    assert!(
+        joined.contains("sw unreadable"),
+        "an unread counter must say so: {joined}"
+    );
+    assert!(
+        !joined.contains("sw 0 µs"),
+        "a never-read counter was recorded as a measured zero: {joined}"
+    );
+    assert!(
+        joined.contains("AT LEAST 1.73%"),
+        "a partial sum is a floor, not a figure: {joined}"
+    );
+    // The complete case keeps the plain wording, so the hedge is information
+    // rather than boilerplate on every record.
+    let full = postcheck(
+        Sensitivity::Speed,
+        &delta(Some(0), Some(12_000_000)),
+        options(),
+    );
+    let full = full.concerns.join("\n");
+    assert!(full.contains("throttled for 1.73% of the run"), "{full}");
+    assert!(!full.contains("AT LEAST"), "{full}");
+    assert!(
+        full.contains("sw 0 µs"),
+        "a real zero still reads as zero: {full}"
+    );
+}

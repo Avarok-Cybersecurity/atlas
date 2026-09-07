@@ -179,7 +179,11 @@ fn empty_output_edges() {
 /// Minimal `Model`: only the paths `finish_sequence` exercises
 /// (`cache_sequence`, `free_sequence`, `ep_broadcast_cmd_for_seq`
 /// default) are live; everything else is unreachable in these tests.
-struct StubModel;
+/// `pub(super)` because `shutdown_drain_tests` drives the same stub. Sibling
+/// test modules under `scheduler`, nothing wider. `Default` because that is
+/// all that module needs — #911's richer StubModel carried a `freed` field for
+/// `swap_resume_tests`, and that commit is superseded here by 963e22f684.
+pub(super) struct StubModel;
 
 impl Model for StubModel {
     fn prefill(&self, _t: &[u32], _s: &mut SequenceState, _st: u64) -> Result<DevicePtr> {

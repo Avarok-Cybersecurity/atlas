@@ -357,12 +357,42 @@ impl HardwareStateDelta {
             .then_some(false)
     }
 
+    /// True when every counter [`Self::thermal_throttle_fraction`] sums was
+    /// readable on BOTH captures.
+    ///
+    /// When false the fraction is a lower bound, and the caller must say so:
+    /// an unreadable counter contributes nothing to the sum, which moves the
+    /// answer in the reassuring direction.
+    pub fn thermal_counters_complete(&self) -> bool {
+        self.sw_thermal_us.is_some()
+            && self.hw_thermal_us.is_some()
+            && self.hw_power_brake_us.is_some()
+    }
+
     /// The throttled fraction of the run, for the record's summary line.
+    ///
+    /// `None` when the run has no measured duration, or when NOT ONE thermal
+    /// counter was readable across both captures. A LOWER BOUND when only some
+    /// were — see [`Self::thermal_counters_complete`].
+    ///
+    /// ★ This used to be `unwrap_or(0)` over all three counters, which is the
+    /// same mistake [`Self::thermal_throttle_advanced`] exists to avoid one
+    /// method up: an unreadable counter became a measured zero. With nothing
+    /// readable it returned `Some(0.0)` — "this run did not throttle" — from a
+    /// box that reported nothing at all, and that sentence is persisted in the
+    /// record's `hardware_state.postcheck.concerns` and quoted later as
+    /// evidence that a speed number is comparable.
     pub fn thermal_throttle_fraction(&self) -> Option<f64> {
         let secs = self.elapsed_s.filter(|s| *s > 0)? as f64;
-        let us = self.sw_thermal_us.unwrap_or(0)
-            + self.hw_thermal_us.unwrap_or(0)
-            + self.hw_power_brake_us.unwrap_or(0);
+        let counters = [
+            self.sw_thermal_us,
+            self.hw_thermal_us,
+            self.hw_power_brake_us,
+        ];
+        if counters.iter().all(Option::is_none) {
+            return None;
+        }
+        let us: u64 = counters.into_iter().flatten().sum();
         Some(us as f64 / 1e6 / secs)
     }
 }

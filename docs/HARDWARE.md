@@ -104,7 +104,8 @@ variant, etc.), you'll also need to:
 ## Adding a new hardware target
 
 Atlas currently targets only **GB10 (Blackwell, sm_121)**. Adding another
-target (say sm_120 for Spark Lite, or sm_100 for Hopper) requires:
+target (say sm_120a for an RTX PRO 6000 workstation card, sm_90a for Hopper,
+or sm_100a for B200) requires:
 
 1. **`kernels/<new-hw>/HARDWARE.toml`**:
    ```toml
@@ -148,6 +149,35 @@ To add a new scheme (e.g., MX4, INT4):
    `kernels/gb10/<model>/<new-quant>/`. The build script auto-picks them.
 4. **Dispatch**: `crates/spark-model/src/layers/<layer>/` per-quant
    branches in the forward path.
+
+## PTX arch suffix and the static shared-memory ceiling
+
+The arch string in `HARDWARE.toml` decides more than which GPU the PTX runs
+on. `ptxas` enforces a per-target ceiling on **static** `__shared__`
+allocations, and on Blackwell that ceiling depends on the suffix, not the
+chip. Measured with CUDA 13.0.88 (`nvcc --ptx` then `ptxas`) by bisecting a
+single `__shared__ char buf[N]` at 48 KiB, 100 KiB and 228 KiB:
+
+| arch string | static `__shared__` ceiling |
+|---|---|
+| `sm_120a`, `sm_121a` (arch-specific) | `0x18c00` = 99 KiB |
+| `sm_120`, `sm_121`, `sm_121f` (plain or family) | `0xc000` = 48 KiB |
+| `sm_90a` | `0x38c00` = 227 KiB |
+
+`nvcc --ptx` accepts an oversized static array on every target; only `ptxas`
+(or the driver JIT at `cuModuleLoadData`) rejects it, with `Entry function
+'...' uses too much shared data`. A green `cargo build` therefore does not
+prove a kernel assembles: the build runs `nvcc --ptx` only. The dynamic
+opt-in (`MAX_DYNAMIC_SHARED_SIZE_BYTES`) does not rescue a fixed-size array;
+only `extern __shared__` allocations use it.
+
+Consequence for gb10: its `sm_121f` target keeps one build portable across
+future 12.x parts, and pays for it with the 48 KiB ceiling. The BR=64
+prefill variants (`inferspark_prefill*`, `prefill_paged_compute*.cuh`) declare
+70 to 90 KiB of static shared memory and are rejected for `sm_121f` while the
+same source assembles for `sm_121a` and `sm_120a`. Moving gb10 to `sm_121a`
+is a portability trade, not a bug fix, so it is a deliberate decision rather
+than something to change while adding a target.
 
 ## Testing a new target
 

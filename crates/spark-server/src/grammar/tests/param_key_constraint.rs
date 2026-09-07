@@ -93,12 +93,13 @@ fn p1_opts_empty_value_and_force_close_shapes() {
     use super::super::compile_tools::xml_param_value_body_ebnf_opts;
     // Defaults (both off) == the shipped shape.
     let d = xml_param_value_body_ebnf_opts("</parameter>", None, false, false);
-    assert!(d.contains("value ::= leading_ws first_content rest"));
+    assert!(d.contains("value ::= leading_ws nonempty_value"));
+    assert!(d.contains("nonempty_value ::= first_content rest"));
     assert!(d.contains(r#""</parameter" [^>]"#));
     // P1-1: empty value representable.
     let ev = xml_param_value_body_ebnf_opts("</parameter>", None, true, false);
     assert!(
-        ev.contains("value ::= leading_ws (first_content rest)?"),
+        ev.contains("value ::= leading_ws nonempty_value?"),
         "empty-value opt-in must make content optional:\n{ev}"
     );
     // P1-2: deepest ladder arm gone → after `</parameter` only `>` is legal.

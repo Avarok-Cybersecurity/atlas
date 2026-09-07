@@ -115,7 +115,44 @@ fn capture_provenance_at(root: &std::path::Path) -> Result<(String, Vec<String>)
              reject it. Commit (or stash) and rebuild first."
         );
     }
+    warn_if_signer_is_not_committed(root);
     Ok((sha, dirty))
+}
+
+/// Say, BEFORE the GPU-hours are spent, which identity this box will sign with
+/// and whether that identity is committed.
+///
+/// `signing::register` writes `<fp>.pub` into `.github/record-signers/` on
+/// first use and `bench_record` prints a one-time notice — but both happen
+/// AFTER the run, into whatever log the operator redirected it to. On
+/// 2026-09-05 a campaign was split across three boxes to save wall-clock;
+/// each box minted its own identity (the key is per-ATLAS_HOME, not per
+/// machine — one box here holds two), and the notice scrolled past in three
+/// separate log files. The mistake only surfaced at CI, where
+/// `.github/workflows/ci.yml`'s "One PR, one commit, one signer" step rejects
+/// a record set spanning fingerprints outright. Seven gates had to be
+/// re-measured.
+///
+/// So this warns at the point the operator can still act on it. It never
+/// fails the run: a first record from a genuinely new box is legitimate, and
+/// refusing it would make bringing up a box impossible.
+fn warn_if_signer_is_not_committed(root: &std::path::Path) {
+    let Ok(store) = ArtifactStore::discover() else {
+        return;
+    };
+    let Ok(identity) = gate::signing::load_or_create(store.root()) else {
+        return;
+    };
+    let fp = identity.fingerprint();
+    match gate::signing::committed_signers(root) {
+        Ok(committed) => {
+            if let Some(msg) = gate::signing::signer_notice(&committed, fp) {
+                eprintln!("{msg}");
+            }
+        }
+        // Cannot answer: say so rather than imply the signer is fine.
+        Err(e) => eprintln!("gate: NOTE — could not read .github/record-signers/: {e:#}"),
+    }
 }
 
 #[cfg(test)]

@@ -278,10 +278,18 @@ pub fn postcheck(
 ) -> Postcheck {
     let mut concerns = Vec::new();
     if let Some(f) = delta.thermal_throttle_fraction().filter(|f| *f > 0.0) {
-        concerns.push(format!(
-            "thermally throttled for {:.2}% of the run",
-            f * 100.0
-        ));
+        // A partial sum is a floor, never a figure. Printing it bare would put
+        // an understated percentage into the record, where it is quoted as the
+        // reason a speed number was accepted.
+        concerns.push(if delta.thermal_counters_complete() {
+            format!("thermally throttled for {:.2}% of the run", f * 100.0)
+        } else {
+            format!(
+                "thermally throttled for AT LEAST {:.2}% of the run — one or more throttle \
+                 counters were unreadable, so the true figure can only be higher",
+                f * 100.0
+            )
+        });
     }
     if let Some(d) = delta.hottest_chassis_delta_c {
         concerns.push(format!("hottest chassis zone moved {d:+.0} °C"));
@@ -295,12 +303,19 @@ pub fn postcheck(
     }
     let validity = match delta.thermal_throttle_advanced() {
         Some(true) => {
+            // ★ `unwrap_or(0)` here wrote "sw 0 µs" for a counter that was
+            // never read. This line lands in the record and is the text a
+            // human quotes when deciding how bad a throttle was; a counter
+            // nobody could read must not appear in it as a measured zero.
+            fn counter(v: Option<u64>) -> String {
+                v.map_or_else(|| "unreadable".to_string(), |us| format!("{us} µs"))
+            }
             concerns.push(format!(
-                "a thermal throttle counter advanced during the run (sw {} µs, hw {} µs, \
-                 brake {} µs) — this speed number is not comparable",
-                delta.sw_thermal_us.unwrap_or(0),
-                delta.hw_thermal_us.unwrap_or(0),
-                delta.hw_power_brake_us.unwrap_or(0),
+                "a thermal throttle counter advanced during the run (sw {}, hw {}, \
+                 brake {}) — this speed number is not comparable",
+                counter(delta.sw_thermal_us),
+                counter(delta.hw_thermal_us),
+                counter(delta.hw_power_brake_us),
             ));
             Validity::Invalid
         }

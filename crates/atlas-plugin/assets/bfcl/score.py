@@ -182,6 +182,18 @@ def main() -> int:
                 "subset_scores": {k: round(v * 100, 2) for k, v in subset_results.items()},
                 "total_samples": len(all_scores),
                 "unmatched_responses": missing,
+                # ADDITIVE, and the only reason this file changed. Every number
+                # above is a MEAN, and means cannot be recombined across a
+                # four-way shard split: `non_live` collapses the three simple_*
+                # subsets into one term, `hallucination` weights its two subsets
+                # equally regardless of size, and a subset absent from a shard
+                # silently changes its category's divisor. Raw (hits, n) counts
+                # recombine exactly -- `_score_ast` returns only 0.0 or 1.0, so
+                # nothing is lost -- and the Rust aggregator applies the
+                # weighting once, to the union. Nothing above is affected.
+                "subset_totals": {
+                    name: [int(sum(s)), len(s)] for name, s in scores_by_subset.items()
+                },
             }
         )
     )

@@ -98,7 +98,8 @@ fn the_rate_limiter_survives_having_no_model() {
     assert!(host.current().is_none(), "no model, by construction");
     assert!(host.rate_limiter().is_none(), "and none installed yet");
 
-    let carried = crate::main_modules::serve_load::Carried::from_env();
+    let carried = crate::main_modules::serve_load::Carried::from_env()
+        .expect("no ATLAS_* config is set in the test environment");
     let rl = carried.rate_limiter.clone();
     host.set_process(carried);
     let got = host.rate_limiter().expect("in force with no model loaded");

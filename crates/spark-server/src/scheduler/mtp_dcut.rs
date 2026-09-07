@@ -56,6 +56,12 @@ const BUCKETS: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
 // lock-step. 96 -> 160 with the DFlash n=20 × k=8 widening.
 pub(super) const VERIFY_ROW_BUDGET: usize = 160;
 
+/// Widest verify batch in SEQUENCES that the model can accept — the batched
+/// verify's hidden stash slot count, which `can_batch_verify` enforces as
+/// `(2..=VERIFY_WY_TABLE_SEQS).contains(&n)`. Read from the model crate, not
+/// restated, so the chunker tracks the stash if it is ever resized.
+pub(super) const WIDTH_CAP: usize = spark_model::layer::VERIFY_WY_TABLE_SEQS;
+
 /// Widest verify batch (SEQUENCES, not rows) D-Cut may prune —
 /// the D-Cut-at-depth policy. Value-parsed from `ATLAS_MTP_DCUT_MAX_SEQS`
 /// once per process (0 disables pruning entirely; `ATLAS_NO_MTP_DCUT` also
@@ -288,12 +294,27 @@ pub(super) fn plan(
 
 /// Split a batch into verify chunks: `[lo, hi)` index ranges over `ks`.
 ///
-/// ONE cap: the row-buffer bound (`VERIFY_ROW_BUDGET` = 160) — the audited
-/// verify envelope (meta gaps / logits rows / bt staging, sizes.rs). The
-/// sequence-count cap is DERIVED from it per chunk (`budget / widest rows`:
-/// rows=4 → 24 seqs, rows=3 → 32 = the 32:2 shape in one chunk, rows=2 → 48;
-/// `can_batch_verify` separately bounds n at 32 = `VERIFY_WY_TABLE_SEQS`), no
-/// longer a hardcoded 8 for the deep widths. The old 8 was stale from the
+/// TWO caps, because `can_batch_verify` enforces two:
+/// * the row-buffer bound (`VERIFY_ROW_BUDGET` = 160) — the audited verify
+///   envelope (meta gaps / logits rows / bt staging, sizes.rs), from which a
+///   per-chunk sequence cap is DERIVED (`budget / widest rows`: rows=4 → 40
+///   seqs, rows=3 → 53, rows=2 → 80), no longer a hardcoded 8 for the deep
+///   widths;
+/// * the WIDTH bound `VERIFY_WY_TABLE_SEQS` = 32 — the batched verify's
+///   hidden stash has exactly 32 slots, so `can_batch_verify` admits only
+///   `(2..=32).contains(&n)`.
+///
+/// ★ The width bound used to be omitted here, on the reasoning that "n is
+/// separately bounded at 32" by the dispatch cap. It is — by
+/// `speculative::mtp_max_seqs()`, whose DEFAULT is 32 but which is an
+/// operator value (`ATLAS_MTP_MAX_SEQS`), and by nothing else. Raise it and
+/// the row-derived cap lets a chunk reach 40/53/80 sequences; every such
+/// chunk is refused WHOLESALE by the `can_batch_verify` gate in `mtp_step`
+/// and falls to the per-seq verify loop — one weight sweep PER SEQUENCE.
+/// That is the same "stale cap silently serializes the batch" artifact this
+/// function was written to close (the hardcoded 8), closed for ROWS and left
+/// open for WIDTH. Deriving BOTH caps here means a chunk this function emits
+/// is always one the model will actually batch. The old 8 was stale from the
 /// 32-row budget era and SILENTLY SERIALIZED any depth shape above n=8 into
 /// 8-wide verify chunks (double weight reads per step): a 2026-07-30 fixer-r2
 /// leg with `ATLAS_MTP_K_LADDER=..,16:2,..` measured 127-135 tok/s at C=16 vs
@@ -312,8 +333,9 @@ pub(super) fn chunk_ranges(ks: &[usize]) -> Vec<(usize, usize)> {
     let mut lo = 0usize;
     while lo < ks.len() {
         // Derived, not hardcoded: rows <= 4 is ensured by the ladder clamp,
-        // so the division is well-defined and >= 24.
-        let seq_cap = VERIFY_ROW_BUDGET / ks[lo].max(1);
+        // so the division is well-defined and >= 40. Clamped by the verify
+        // stash width so the chunk is one `can_batch_verify` will accept.
+        let seq_cap = (VERIFY_ROW_BUDGET / ks[lo].max(1)).min(WIDTH_CAP);
         let mut hi = lo;
         let mut r = 0usize;
         while hi < ks.len() && hi - lo < seq_cap && r + ks[hi] <= VERIFY_ROW_BUDGET {

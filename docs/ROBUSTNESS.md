@@ -1147,3 +1147,317 @@ The `unit` job now refuses if a `*.test.*` file exists outside `src/lib` in
 either tree. It belongs in that job precisely because that is the job which
 would otherwise silently lose the test. Planting one is caught; removing it is
 clean again.
+
+---
+
+## Wave 26 — seven digs, nothing found
+
+No defect this wave. The record of where the ground was broken and found solid
+is the deliverable, because the alternative is re-digging it later.
+
+| dig | scale | result |
+|---|---|---|
+| install URL: canary vs what the website tells users | 2 URLs | agree |
+| install endpoints live | `install.sh`, `install.ps1` | both 200, correct content-types |
+| installer is POSIX, as its `#!/bin/sh` claims | 606 lines | `dash -n` clean — no bashisms |
+| **served installer vs its source of truth** | 2 files | **byte-identical** |
+| committed secrets | 4500 tracked files, 6 patterns | none |
+| security reporting actually reachable | `security@avarok.net` | valid Protonmail MX; private reporting, secret scanning and push protection all enabled |
+| orphaned assets over 500 KB | whole tree | none; the 14 MB demo GIF and 6 MB MP4 are both referenced by the README |
+
+**One scare, resolved by looking.** Neither `install.sh` nor `install.ps1` is in
+this repository, which for a script every user pipes into `sh` looked like an
+unversioned, unreviewed artefact. It is not: both live in
+`Avarok-Cybersecurity/atlas-recipes` under `scripts/`, with a 24 KB test suite
+beside them, and the served copies are byte-identical to source. Worth recording
+because "the installer is not in this repo" is true, alarming, and wrong as a
+conclusion.
+
+**One real gap, deliberately not closed.** 415 of 600 first-party `unsafe` sites
+(69%, excluding vendored `cudarc`) carry no SAFETY note within six lines. The
+Rust API guidelines want one on each. Retrofitting 415 comments across a CUDA
+FFI codebase is a large mechanical diff that would not make a single one of them
+more correct — it is the busywork this record exists to displace, and doing it
+would bury the waves that found something. Written down as a known gap for
+whoever decides it is worth a dedicated pass, with the honest note that the
+value is in reviewing the unsafe, not in annotating it.
+
+**Not defects, checked:** the three tracked `.log` files under
+`docs/campaigns/**/raw/` are deliberate benchmark evidence, not stray artefacts.
+
+---
+
+## Wave 27 — three of the five commands existed only in a workflow file
+
+**Two digs clean, recorded so they are not repeated:**
+
+| dig | scale | result |
+|---|---|---|
+| every action SHA-pinned | 101 `uses:` across 24 workflows | 0 unpinned |
+| composite actions' **internal** `uses:` pinned | 5 composites fetched and parsed | 0 unpinned |
+| mdBook pages on disk vs linked from `SUMMARY.md` | 38 pages | 38 linked, 0 orphaned, 0 missing |
+
+The composite check is the one worth keeping: `sha_pinning_required` is a
+ruleset on *this* repo's workflow files and says nothing about what a composite
+action does internally. This repo has already been bitten there — the SPDX job
+carries a comment explaining that `apache/skywalking-eyes/header` was dropped
+because it internally used an unpinned `actions/setup-go@v5`. All five current
+composites are clean.
+
+**Then the dig that landed, in the place I was most likely to have caused
+damage.** Nine commits of this record changed who may stamp, added `/expedite`,
+and changed what `/seal` does. So: does the documentation still describe the
+code?
+
+| command | accepted by the bot | in the README |
+|---|---|---|
+| `/help` | yes | **no** |
+| `/stamp` | yes | yes, but **wrong** — said "anyone with write access", omitting the PR author |
+| `/seal` | yes | yes |
+| `/review` | yes | **no** |
+| `/expedite` | yes | **no** |
+
+**`/expedite` is the one that matters.** It skips certification and lets a PR
+merge on the pipeline's own checks — an administrative override discoverable
+only by reading a workflow file. Every one of these gaps was introduced by this
+record's own waves, one commit at a time, and no single change looked like it
+was leaving something out. That is how documentation drift actually happens: not
+by neglect, but by a sequence of individually reasonable edits.
+
+Fixed: the `/stamp` line now states the author rule and why it exists, and all
+five commands are documented in a table with who may use each and what survives
+a new commit.
+
+**The guard reads the handler's own `case` arm rather than restating the verb
+list.** A second hand-maintained list would drift from the first exactly the way
+the README drifted from the handler. Run against the README as it stood, it
+names `/help`, `/review` and `/expedite` and refuses.
+
+**Three controls, and the third is the one that earns its place.** A complete
+README passes; a missing verb is caught; and if the `case` arm is renamed or
+restructured so the guard cannot find its input, it **refuses** rather than
+finding nothing and reporting success. A guard that silently passes when it
+cannot locate what it checks is the precise failure this suite exists to catch,
+and it would be an embarrassing one to ship in the guard that checks for it.
+
+---
+
+## Wave 28 — five digs, nothing found, and a pattern in my own tooling
+
+No defect this wave.
+
+| dig | scale | result |
+|---|---|---|
+| every CODEOWNERS principal exists | 4 users | all exist; 3 write, 1 admin |
+| ...and holds write access | 4 users | yes — a codeowner without write could never seal |
+| commented CODEOWNERS rules are ignored | both parsers | `seal-coverage.py` refuses, `codeowners.rs` splits on `#` |
+| issue forms are valid | 3 templates | 0 problems; blank issues disabled |
+| the security contact link resolves | 1 link | HTTP 200 |
+
+**The CODEOWNERS comment test is the one that was worth running.** A first sweep
+reported `@someone-else` as a code owner — a placeholder-shaped name that turns
+out to be a **real GitHub user** with read access. It is inside a comment, as an
+illustrative example, so GitHub ignores it. But the question it raised was real:
+if my sweep was fooled by a comment, is the code that decides seal coverage? A
+commented-out rule honoured as live would grant a seal nobody granted. Both
+parsers were checked directly against a fixture whose only grant is commented
+out; both refuse. No defect, and now demonstrated rather than assumed.
+
+**A pattern across this record worth naming.** Three separate throwaway checkers
+written during these waves have been wrong, and each time the error was found by
+questioning a suspicious finding rather than by reading the code:
+
+| wave | my checker's bug | how it surfaced |
+|---|---|---|
+| 24 | `lstrip("./")` stripped the dot from `.github` | 14 "missing" scripts that obviously existed |
+| 24 | resolved `/images/...` against the filesystem, not the site root | blog images "missing" from a working blog |
+| 28 | treated a commented CODEOWNERS line as a rule | a placeholder-looking owner nobody had added |
+
+Across waves 24 and 28 the first-pass sweeps produced 19 and 1 findings of which
+2 and 0 were real. **The finding rate of an unverified sweep is not its defect
+rate**, and the gap is large enough that acting on a raw sweep would have meant
+mostly fixing things that were not broken. Every guard that survived into CI did
+so only after being run against the defect it claims to catch.
+
+---
+
+## Wave 29 — the fix from wave 20 found the next defect, in production, within the hour
+
+**First, a dig that came back clean, and stronger than clean.** The 599
+committed benchmark records were checked against the gate's own cutover rule
+(`SIGNATURE_REQUIRED_AFTER = 1_788_268_400`): 11 records fall after it and **all
+11 carry a sidecar**; 588 fall before it and none does; no record has an
+unusable timestamp; one signer fingerprint is registered.
+
+Then the part worth having done: all 11 signatures were verified **with an
+independent implementation** — Python's `cryptography`, reconstructing the
+signed message from `signing.rs` (`record_bytes || git_sha`) rather than
+trusting the Rust that produced them. **11 verify, 0 do not.** Cross-
+implementation agreement is a materially stronger statement than the gate
+re-checking its own arithmetic, and it is the kind of check worth doing once
+rather than gating on.
+
+**Then the wave's real finding, and its provenance is the point.** Wave 20 fixed
+`/stamp` discarding the API's error. #856 was the first PR stamped with that fix
+live. The warning it produced said:
+
+```
+403 "This workflow is already running"
+```
+
+**Not** the missing `actions: write` that wave 20 had inferred. The CI run was
+`queued` — stamping while CI is in flight *always* 403s, and that is not a
+failure at all: a run still in flight reads the mark when its gate jobs execute,
+so there is nothing to re-run. The handler was raising a red job and a scary
+warning for the ordinary case of stamping a PR shortly after opening it.
+
+Two things follow, and both are worth stating plainly:
+
+1. **Wave 20's stated cause was at best incomplete.** The reasoning there —
+   "my PAT can re-run this, the App cannot, therefore `actions: write`" — was
+   inference from a discarded error. On the run in question (already *completed*)
+   it may well be right. As a general diagnosis of "the re-run failed" it was
+   not, and the record should not read as though it were.
+2. **The fix paid for itself immediately.** The only reason this is known is
+   that wave 20 made the handler print what the API actually said. A guard that
+   surfaces evidence keeps finding things after the wave that built it has
+   ended; one that only reports a verdict does not.
+
+Fixed: the handler now reads the run's `status` alongside its id, and a run that
+is not `completed` produces a calm `::notice` explaining that its gate jobs will
+read the mark, instead of a re-run attempt that cannot succeed. Three controls,
+all three red when the check is reverted: stamping mid-run must not fail the
+job, must not attempt a re-run, and must not post the warning.
+
+---
+
+## Wave 30 — out of CI and into the product: an OOB write guarded only by `debug_assert!`
+
+> The code for waves 30 and 31 landed separately in #866: both fixes touch
+> `crates/`, which re-opens all 11 gates, and holding this record behind a GPU
+> campaign would have been the tail wagging the dog. These entries are the
+> record; #866 is the diff.
+
+**The defect (#799), and it is the most serious thing in this record.** A single
+video request wrote **4.7× past** the ViT output allocation, raised
+`CUDA_ERROR_ILLEGAL_ADDRESS` and poisoned the CUDA context. The process survived
+and answered `503` to every subsequent request, **for every tenant**, until
+someone restarted it.
+
+The bound existed. It was a `debug_assert!` — compiled out of the `--release`
+binaries we serve. So in production there was no bound at all, only a comment
+saying there was one:
+
+> The scheduler caps Σp ≤ p_max so this is normally unreachable — a correctness
+> guard only.
+
+Video defeats that cap. All temporal groups of one clip arrive as a **single**
+media item and encode as one batch, so the per-item cap never sees the sum: 19
+groups of 30×34 patches merge to 4845 rows against a 1024-row buffer.
+
+**Fixed** by promoting the bound to a pure free function returning `Result`,
+mirroring `check_pixel_len` in the sibling file — whose own doc comment already
+observed that `forward_oversized_fallback` "bounds Σ*merged* p and not per-image
+`p`", and closes with the line this wave earned: *prose is not a bound; this
+is.* Two further hazards closed on the way: the old expression reached
+`mp_i.last().unwrap()` whenever `mp_off` was non-empty, so a length mismatch was
+a panic rather than an error; and the sum now uses `checked_add`, so an
+overflowing offset cannot wrap into a passing comparison.
+
+**The control is the bug's own shape, and it only means anything in release.**
+Four tests, run under `--release`. Restoring `debug_assert!` makes two of them
+**fail in release and pass in debug** — which is precisely the blindness that
+caused the outage, and precisely what a debug-only test can never catch. The
+issue asked for exactly this and named why.
+
+**Scope, stated plainly.** This is the issue's fix (1): the outage. Fix (2) —
+chunking the encode so long videos *work* rather than being refused — is not
+done here. Video is now a clean per-request error instead of a multi-tenant
+outage, which is strictly better and still not "video works".
+
+**A second, separate defect found while verifying the first.**
+`video_decode_ffmpeg::tests::a_hanging_decoder_is_killed_at_timeout` fails
+intermittently in the full `--release` suite: three consecutive failures under
+post-build load, then three consecutive passes on an idle machine, **with and
+without this wave's change** (639+1 failing before it, 643+1 after — the four
+extra are this wave's). It is therefore pre-existing and not caused here.
+
+The panic is on the *message* assertion (`err.contains("decoding exceeded 1s")`),
+not the elapsed-time one, so under load the decode fails for some other reason
+before the timeout fires. **I did not capture the actual message**, so the cause
+is unexplained rather than diagnosed, and it is filed as such. `cargo test
+--workspace` is a required context, which makes this a latent source of red
+builds that has nothing to do with the change under review.
+
+---
+
+## Wave 31 — a second bound asserted in prose, and a flake I could not reproduce
+
+**Defect (#842): a json_schema request killed the scheduler thread three times
+in one day.** The API kept accepting requests and logging sessions, generated
+nothing ever again, and `/v1/models` still answered — so the server looked
+healthy while being dead. Only a restart recovered it.
+
+```
+cannot roll back 96 tokens: only 1 steps recorded
+```
+
+**The diagnosis came from the codebase disagreeing with itself.** Four
+production callers rewind the grammar matcher. Three of them —
+`spec_step.rs:462→470` and `verify_pipeline_helper.rs:343→391` and `503→548` —
+capture `num_history_steps()` before the span and pass the *delta*. One, the
+watchdog path, passed a raw count of **sequence** tokens. The crate already
+documents why that is wrong, on `num_history_steps` itself, calling it BUG#3:
+`accept_token` returns `true` for stop/EOS and in the **terminated** state
+without advancing the matcher. A `json_schema` matcher terminates the moment its
+object closes, so every token after that records nothing — 96 dropped against 1
+recorded step.
+
+The comment above the call stated the precondition that had stopped holding:
+
+> every dropped token ... was therefore fed to `grammar_state.accept_token`, so
+> `rollback(dropped)` is exact.
+
+That is wave 30's defect again, one crate over: **a bound asserted in prose**.
+Two waves, two outages, both from a comment standing where a check belonged.
+
+**`min(dropped, steps)` was considered and rejected**, and the reasoning is
+pinned in a test so a later "helpful" clamp has to argue with it: with a
+terminated matcher the recorded steps belong to tokens that are being **kept**,
+so a partial rewind corrupts state that the panic at least left visible.
+Refusing is the honest answer and is the correct one in the reported case —
+those 96 tokens advanced the matcher zero times.
+
+**The control is the tempting wrong fix.** Changing refuse to clamp turns three
+of the four tests red — and leaves `an_accountable_span_still_rewinds_exactly`
+green, because clamping and refusing genuinely agree when `dropped ≤ steps`.
+A control that reddened all four would have been measuring less, not more.
+
+**Two process failures of my own this wave, both recorded because they nearly
+cost something.**
+
+1. `cargo test -p spark-server --lib scheduler::rollback` printed
+   **`ok. 0 passed; 104 filtered out`**. `mod scheduler` belongs to the *binary*
+   target, not the lib, so `--lib` could never contain those tests — and cargo
+   reports that as success. That is the "a passing test may not have run" trap,
+   and it was caught only by noticing the count was zero.
+2. The sabotage run was killed mid-build (exit 137, OOM under parallel `rustc`)
+   **after** writing the sabotage and **before** restoring it. The clamp sat in
+   the working tree until the next command checked. Re-run under a `trap ...
+   EXIT INT TERM` and `-j 6`, which is how a destructive edit should have been
+   written the first time.
+
+**#858 — the flake — could not be reproduced.** 24 concurrent copies of the test
+binary: 0 failures. Full suite under 40 CPU-burn processes on 20 cores, ×4: 0
+failures. Full suite immediately after a forced rebuild and relink, ×2: 0
+failures. Env-var races are ruled out (`FfmpegPolicy` reads no env; the crate
+has no `set_var` in tests, deliberately) and temp-path collision is ruled out
+(keyed on pid+seq). The remaining untested hypothesis is memory/IO pressure from
+a **cold** full release build, which is what the three original failures ran
+under. The message was never captured, so the cause stays unexplained and the
+issue says so.
+
+I also had to correct myself publicly on that issue: a first "reproduced 3/3
+under load" was `grep -q a_hanging_decoder`, which matches the **passing**
+`test ... ok` line. Fourth checker bug of this record, same shape as the other
+three.

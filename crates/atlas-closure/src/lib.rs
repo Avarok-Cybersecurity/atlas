@@ -157,6 +157,11 @@ pub fn hash(root: &Path, inputs: &ClosureInputs) -> Result<String> {
 /// *newly* unresolvable include is worth a build warning even though it is not
 /// worth a build failure.
 pub fn hash_with_report(root: &Path, inputs: &ClosureInputs) -> Result<Closure> {
+    // `expand` canonicalizes every source. Canonicalize the comparison root as
+    // well, otherwise platform aliases such as macOS `/var` -> `/private/var`
+    // make `strip_prefix` fail and leak checkout-specific absolute paths into
+    // both the report and digest.
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut closure: BTreeSet<PathBuf> = BTreeSet::new();
     let mut raw: BTreeSet<(PathBuf, String)> = BTreeSet::new();
     for src in &inputs.sources {
@@ -168,12 +173,12 @@ pub fn hash_with_report(root: &Path, inputs: &ClosureInputs) -> Result<Closure> 
     let unresolved: BTreeSet<String> = raw
         .into_iter()
         .map(|(from, include)| {
-            let rel = from.strip_prefix(root).unwrap_or(&from);
+            let rel = from.strip_prefix(&canonical_root).unwrap_or(&from);
             format!("{} -> {include}", rel.display())
         })
         .collect();
     for cfg in &inputs.configs {
-        closure.insert(cfg.clone());
+        closure.insert(cfg.canonicalize().unwrap_or_else(|_| cfg.clone()));
     }
 
     let mut digest = Sha256::new();
@@ -194,7 +199,7 @@ pub fn hash_with_report(root: &Path, inputs: &ClosureInputs) -> Result<Closure> 
 
     digest.update(b"\x00files\x00");
     for path in &closure {
-        let rel = path.strip_prefix(root).unwrap_or(path);
+        let rel = path.strip_prefix(&canonical_root).unwrap_or(path);
         // The NAME is hashed as well as the bytes: moving identical content to
         // a different stem changes which kernel it shadows, so it is a
         // different compile even though the bytes match.
