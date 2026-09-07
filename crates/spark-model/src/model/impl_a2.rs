@@ -507,6 +507,19 @@ impl TransformerModel {
                     self.trim_proposer_state(seq, 0, 0)?;
                     self.start_rollback_and_checkpoint_async(seq, 1)?;
                 }
+                // Land the PLE/QSA carries at the committed row count. The head
+                // does this inside `commit_accepted_prefix`; the worker rewinds
+                // its own SSM state and token buffers and never called it, so
+                // QSA's `ingested` mark stayed `k - committed` rows ahead of
+                // `seq_len` and the NEXT decode died on
+                //   QSA: decode at pos N but N+2 tokens ingested
+                // (2-node EP=2 agentic run, 2026-09-07 — the gap was exactly
+                // the draft width). AFTER the rewind, not before:
+                // `commit_verify_aux_rows` asserts `seq_len == base +
+                // num_accepted`, so calling it first fails with
+                //   batched mHC commit: 1/3 rows from 3513, but seq_len=3516
+                // No-op unless the K-row batched mHC verify recorded a span.
+                self.commit_verify_aux_rows(seq, accepted as usize + 1, stream)?;
             }
             0xFFFFFFF3 => {
                 // Verify K=3: receive 3 tokens, run verify, receive num_accepted (0/1/2)
@@ -533,6 +546,8 @@ impl TransformerModel {
                         self.start_rollback_and_checkpoint_async(seq, 1)?;
                     }
                 }
+                // Aux carries AFTER the rewind — see the K=2 arm.
+                self.commit_verify_aux_rows(seq, num_accepted as usize + 1, stream)?;
             }
             0xFFFFFFF4 => {
                 // Verify K=4: receive 4 tokens, run verify, receive num_accepted (0/1/2/3)
@@ -567,6 +582,8 @@ impl TransformerModel {
                         self.start_rollback_and_checkpoint_async(seq, 1)?;
                     }
                 }
+                // Aux carries AFTER the rewind — see the K=2 arm.
+                self.commit_verify_aux_rows(seq, num_accepted as usize + 1, stream)?;
             }
             token => {
                 // Regular decode

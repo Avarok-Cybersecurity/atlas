@@ -1287,10 +1287,31 @@ This is the same defect CLASS as the rollback fix in `fix(rollback): rewind QSA/
 SSM state` (dba869c04) — QSA aux state not rewound to the committed position — but on the EP verify
 path rather than the watchdog path, so that fix does not cover it.
 
-**Status:** `ATLAS_EP_MTP` stays default-OFF, now for a MEASURED reason rather than caution. EP=2
-without MTP is usable today (agentic PASS); EP=2 with MTP is usable for single-turn generation and
-must not be used with prefix caching across turns until the worker's QSA ingest is rewound to
-`num_accepted`.
+**FIXED (2026-09-07, same session).** The worker's verify arms in `impl_a2.rs`
+(`0xFFFFFFF2/3/4`) received `num_accepted`, trimmed the proposer state, rewound `seq_len`/`tokens` and
+rolled back the SSM — but never landed the aux carries. The head does that inside
+`commit_accepted_prefix`, whose own comment names the class: *"the OTHER TWO per-row carries — PLE's
+rolling conv/history window and QSA's ingested/pooled marks — are still `k - num_accepted` rows
+ahead"*. So `commit_verify_aux_rows` (visibility widened to `pub(in crate::model)`) is now called from
+each worker arm.
+
+ORDERING MATTERS and cost one run: `commit_verify_aux_rows` asserts
+`seq_len == base + num_accepted`, so it must be called AFTER the arm rewinds `seq_len`, not before.
+Calling it first fails with `batched mHC commit: 1/3 rows from 3513, but seq_len=3516`.
+
+**Agentic under EP=2 with MTP: PASS.** 1/1 webserver_ok, 1/1 followed_directions, 15.9 s/turn, 112 s
+wall, reasoning_effort low + preserve_thinking. Per-turn MTP telemetry stayed healthy across the run:
+
+```
+127 tok  24.7 tok/s  mtp=1.00  p1=0.638  mean_na=1.172  tok_step=2.172
+161 tok  30.6 tok/s  mtp=1.00  p1=0.917  mean_na=1.667  tok_step=2.667
+147 tok  26.2 tok/s  mtp=0.78  p1=0.768  mean_na=1.321  tok_step=2.321
+475 tok  25.2 tok/s  mtp=1.00  p1=0.742  mean_na=1.225  tok_step=2.225
+```
+
+**Status:** `ATLAS_EP_MTP` remains the opt-in — one agentic iteration is a pass, not a certification —
+but EP=2 with MTP and prefix caching now completes a multi-turn agentic run. Set `ATLAS_EP_MTP=1` to
+use it. EP=2 without MTP also passes (137 s wall, 15.1 s/turn) and needs no flag.
 
 ## Files
 

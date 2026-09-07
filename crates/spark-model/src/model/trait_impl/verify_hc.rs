@@ -563,7 +563,7 @@ impl TransformerModel {
     /// No-op unless the BATCHED arm ran: the per-row reference path advances
     /// its carries one row per pass and snapshots between rows 0 and 1
     /// instead.
-    pub(super) fn commit_verify_aux_rows(
+    pub(in crate::model) fn commit_verify_aux_rows(
         &self,
         seq: &mut SequenceState,
         num_accepted: usize,
