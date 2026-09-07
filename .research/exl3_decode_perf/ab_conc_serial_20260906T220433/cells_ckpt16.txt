@@ -1,0 +1,14 @@
+/home/ms/atlas/.claude/worktrees/exl3-research/.research/exl3_decode_perf/probe_conc_serialization.py:72: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  f"date={datetime.datetime.utcnow().isoformat()}Z", flush=True)
+FINGERPRINT probe_conc_serialization label=ckpt16 port=8899 date=2026-09-07T02:14:16.867074Z
+CELL ckpt16 cold1.r0 C=1 prompt_tok=3569 ttft_ms=[6696] ttft_max=6696 decode_tok_s=[23.85] agg_decode=23.85 cached=[0]
+CELL ckpt16 cold4.r0 C=4 prompt_tok=3504 ttft_ms=[6660, 6470, 6616, 6624] ttft_max=6660 decode_tok_s=[0.69, 0.68, 0.67, 0.68] agg_decode=2.71 cached=[32, 32, 32, 32]
+CELL ckpt16 warm4.r0 C=4 prompt_tok=3508 ttft_ms=[408, 238, 222, 241] ttft_max=408 decode_tok_s=[5.19, 4.96, 5.44, 4.69] agg_decode=20.29 cached=[3488, 3456, 3504, 3520]
+CELL ckpt16 dec1.r0 C=1 prompt_tok=733 ttft_ms=[1300] ttft_max=1300 decode_tok_s=[27.72] agg_decode=27.72 cached=[32]
+CELL ckpt16 dec4.r0 C=4 prompt_tok=745 ttft_ms=[1331, 1302, 1312, 1307] ttft_max=1331 decode_tok_s=[8.57, 8.29, 8.28, 5.07] agg_decode=30.22 cached=[32, 32, 32, 32]
+CELL ckpt16 cold1.r1 C=1 prompt_tok=3466 ttft_ms=[6519] ttft_max=6519 decode_tok_s=[22.8] agg_decode=22.80 cached=[32]
+CELL ckpt16 cold4.r1 C=4 prompt_tok=3485 ttft_ms=[6473, 6535, 6559, 6601] ttft_max=6601 decode_tok_s=[0.69, 0.68, 0.68, 0.68] agg_decode=2.72 cached=[32, 32, 32, 32]
+CELL ckpt16 warm4.r1 C=4 prompt_tok=3489 ttft_ms=[395, 404, 237, 394] ttft_max=404 decode_tok_s=[4.71, 5.19, 4.3, 4.66] agg_decode=18.86 cached=[3472, 3488, 3504, 3520]
+CELL ckpt16 dec1.r1 C=1 prompt_tok=730 ttft_ms=[1261] ttft_max=1261 decode_tok_s=[32.92] agg_decode=32.92 cached=[32]
+CELL ckpt16 dec4.r1 C=4 prompt_tok=720 ttft_ms=[1242, 1259, 1267, 1261] ttft_max=1267 decode_tok_s=[8.08, 7.93, 6.77, 6.54] agg_decode=29.33 cached=[32, 32, 32, 32]
+SUMMARY ckpt16 cold1_ttft=6607 cold4_ttft=6630 cold_ratio=1.00 warm4_ttft=406 dec1_agg=30.32 dec4_agg=29.78 dec_scale=0.98x

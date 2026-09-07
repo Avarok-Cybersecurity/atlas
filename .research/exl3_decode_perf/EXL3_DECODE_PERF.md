@@ -1054,6 +1054,43 @@ streams=4`), but it is not a win — it removes a refusal in front of a path tha
 unmerged. The remaining prefill lever is making each token cheaper (the kernel mix: MoE tiers, QSA
 attention, dense trellis), not grouping more tokens per forward.
 
+## Cross-stream serialization levers: checkpoint cadence REFUTED, PLE lock UNPROVEN (2026-09-06)
+
+`ab_concurrency_serialization.sh` + `probe_conc_serialization.py`, records in
+`ab_conc_serial_20260906T220433/`. Named preset, prefix caching ON in every arm (house rule), one
+variable per arm, 2 repeats.
+
+| arm | decode agg C=1 | decode agg C=4 | scale | `decode-ckpt SAVE` lines | warm4 TTFT |
+|---|---:|---:|---:|---:|---:|
+| base (64 fault workers, ckpt every 4 blocks) | 31.5 | 28.5 | 0.90x | 13 | 387 ms |
+| `ATLAS_PLE_FAULT_WORKERS=16` | 31.9 | 32.6 | 1.02x | 10 | 326 ms |
+| `ATLAS_DECODE_CKPT_BLOCKS=16` | 30.3 | 29.8 | 0.98x | 3 | 406 ms |
+
+**Checkpoint cadence: REFUTED.** Raising the interval did exactly what it claims — decode checkpoint
+saves fell 13 → 3 — and bought nothing in decode aggregate, while warm TTFT drifted slightly worse.
+The decode-time snapshot stalls measured earlier (~20-25% of decode at C=1 on the 4-slot preset) are
+evidently not dominated by save FREQUENCY. Do not ship a cadence change on this evidence.
+
+**PLE fault workers: UNPROVEN, and this workload cannot decide it.** The gathers here missed 8-192
+rows and resolved in 1-4 ms; the operator's production line was `127488 ids, 95743 hits / 31745
+misses, resolve 288342us`. Synthetic random-word prompts reuse the same n-gram rows, so the cache runs
+at ~98% hit rate and the worker count is irrelevant (the 16-worker arm even reads nominally *better*,
+which is noise at this scale). The bench-measured 2.3x (`ple_fault_bench.c`) therefore stands
+un-contradicted but also un-confirmed in-engine.
+
+**Harness defect, recorded so the number is not reused:** `cold_ratio` came out exactly 1.00 in all
+three arms because the server's `time_to_first_token_ms` is measured from the start of a request's
+PROCESSING, not from its arrival. With co-dispatch off, four queued streams each report their own
+~6.6 s prefill and the queue wait lands in wall time instead. The cold cells therefore measure
+per-request service time, not end-to-end concurrency; a concurrency metric must use wall-clock from
+submission (the probe records `wall_s` but did not report it per cell).
+
+**Consequence for the PLE-lock refactor** (`resolve` holds the table mutex across both its phases —
+bookkeeping, then `fault_all`): phase 1 already pins every slot it assigns, so the I/O provably does
+not need the lock, and the refactor is contained. But at 1-4 ms of held lock it would be optimizing
+noise. The prerequisite is a workload that reproduces the miss-heavy gather (~127K ids implies ~30K
+tokens of genuinely diverse text, not synthetic filler).
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17

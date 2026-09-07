@@ -1,0 +1,14 @@
+/home/ms/atlas/.claude/worktrees/exl3-research/.research/exl3_decode_perf/probe_conc_serialization.py:72: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  f"date={datetime.datetime.utcnow().isoformat()}Z", flush=True)
+FINGERPRINT probe_conc_serialization label=base port=8899 date=2026-09-07T02:05:20.732069Z
+CELL base cold1.r0 C=1 prompt_tok=3591 ttft_ms=[6716] ttft_max=6716 decode_tok_s=[24.12] agg_decode=24.12 cached=[0]
+CELL base cold4.r0 C=4 prompt_tok=3576 ttft_ms=[6714, 6553, 6617, 6646] ttft_max=6714 decode_tok_s=[0.67, 0.66, 0.68, 0.67] agg_decode=2.68 cached=[32, 32, 32, 32]
+CELL base warm4.r0 C=4 prompt_tok=3580 ttft_ms=[237, 241, 396, 227] ttft_max=396 decode_tok_s=[4.62, 5.4, 5.09, 4.88] agg_decode=19.99 cached=[3568, 3504, 3488, 3520]
+CELL base dec1.r0 C=1 prompt_tok=752 ttft_ms=[1314] ttft_max=1314 decode_tok_s=[30.13] agg_decode=30.13 cached=[32]
+CELL base dec4.r0 C=4 prompt_tok=728 ttft_ms=[1288, 1333, 1308, 1302] ttft_max=1333 decode_tok_s=[7.78, 7.85, 6.86, 7.84] agg_decode=30.33 cached=[32, 32, 32, 32]
+CELL base cold1.r1 C=1 prompt_tok=3490 ttft_ms=[6592] ttft_max=6592 decode_tok_s=[22.76] agg_decode=22.76 cached=[32]
+CELL base cold4.r1 C=4 prompt_tok=3489 ttft_ms=[6555, 6600, 6524, 6445] ttft_max=6600 decode_tok_s=[0.68, 0.68, 0.67, 0.68] agg_decode=2.71 cached=[32, 32, 32, 32]
+CELL base warm4.r1 C=4 prompt_tok=3493 ttft_ms=[215, 228, 359, 379] ttft_max=379 decode_tok_s=[4.85, 5.36, 5.25, 5.65] agg_decode=21.10 cached=[3472, 3520, 3504, 3472]
+CELL base dec1.r1 C=1 prompt_tok=725 ttft_ms=[1236] ttft_max=1236 decode_tok_s=[32.84] agg_decode=32.84 cached=[32]
+CELL base dec4.r1 C=4 prompt_tok=756 ttft_ms=[1264, 1259, 1256, 1261] ttft_max=1264 decode_tok_s=[6.03, 6.1, 6.44, 8.02] agg_decode=26.59 cached=[32, 32, 32, 32]
+SUMMARY base cold1_ttft=6654 cold4_ttft=6657 cold_ratio=1.00 warm4_ttft=387 dec1_agg=31.48 dec4_agg=28.46 dec_scale=0.90x
