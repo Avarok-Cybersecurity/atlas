@@ -117,6 +117,10 @@ impl MoeLayer {
             ctx,
             stream,
         )?;
+        // BEL: mask experts this category never loaded. After the LoRA fold
+        // for the same reason as the prefill paths, and dtype-aware because
+        // this helper can hand back FP32 logits.
+        self.apply_bel_mask(ctx, gate_logits, n as usize, fp32_gate, stream)?;
 
         Ok((gate_logits, fp32_gate, gate_elem))
     }

@@ -236,6 +236,8 @@ impl From<MessagesRequest> for ir::ChatRequest {
             min_tokens: 0,
             stop: req.stop_sequences,
             stream: req.stream,
+            // The Anthropic surface exposes no expert-telemetry parameter.
+            report_expert_metadata: false,
             n: 1,
             response_format: None,
             thinking,

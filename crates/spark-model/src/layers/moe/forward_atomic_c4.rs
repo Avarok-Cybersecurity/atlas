@@ -18,6 +18,11 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // BEL is not wired on this routing path: it computes its own gate
+        // logits without the mask, so the top-k could name an expert whose
+        // weights were never loaded. Refuse by name — the alternative is a
+        // null dereference inside a GEMM.
+        self.bel_guard("forward_atomic_c4_decode")?;
         // LongCat zero-experts are wired only on the single-token decode
         // + prefill paths (v1); this variant would silently mis-route the
         // 384-wide router. Named refusal, not silent wrongness.

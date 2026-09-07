@@ -39,7 +39,7 @@ use spark_runtime::weights::WeightStore;
 
 use super::ModelWeightLoader;
 use crate::layer::TransformerLayer;
-use crate::layers::{FfnComponent, MoeLayer, Qwen3AttentionLayer};
+use crate::layers::{FfnComponent, MoeLayer, MoeSite, Qwen3AttentionLayer};
 use crate::tp_shard::{
     TpShardKind, load_qk_norms_tp, load_qkvo_tp, shard_dense_1d_bf16, shard_dense_bf16,
 };
@@ -125,6 +125,7 @@ impl ModelWeightLoader for MinimaxM2WeightLoader {
                 stream,
             )?;
             let mut moe_layer = MoeLayer::new(
+                MoeSite::Layer(i),
                 moe_weights,
                 config.num_experts,
                 Some(gate_nvfp4),

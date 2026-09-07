@@ -55,6 +55,55 @@ pub struct Usage {
     /// Decode throughput in tokens per second.
     #[serde(rename = "response_token/s")]
     pub response_tokens_per_second: f64,
+    /// Which MoE experts this request's prompt routed to. Present only when
+    /// the request set `report_expert_metadata` and the serve was started
+    /// with `--expert-telemetry`; absent (not empty) otherwise, so a
+    /// consumer can tell "not instrumented" from "no experts used".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expert_activation: Option<ExpertActivation>,
+}
+
+/// Per-request MoE expert routing (Atlas extension on `usage`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpertActivation {
+    /// Which part of the request these numbers cover — `"prefill"` today.
+    /// Named on the wire so prompt routing is never read as whole-request
+    /// routing.
+    pub scope: String,
+    pub top_k: u32,
+    pub num_experts: u32,
+    /// Token positions folded in. `Σcounts == tokens_routed * top_k` when
+    /// every routed slot carried weight.
+    pub tokens_routed: u64,
+    /// Token positions that ran but are not in the counts. Non-zero means
+    /// this report covers a prefix of the request.
+    pub unattributed_rows: u64,
+    /// Of `tokens_routed`, how many came from decode rather than the prompt.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub decode_tokens_routed: u64,
+    /// Decode positions that ran without being attributed (MTP verify rows).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub decode_unattributed_rows: u64,
+    pub layers: Vec<ExpertLayerActivation>,
+}
+
+/// Omit a zero counter rather than emit it: a field that is always present
+/// and always 0 trains readers to ignore it.
+fn is_zero(v: &u64) -> bool {
+    *v == 0
+}
+
+/// One MoE layer's routing, as parallel ascending-by-expert-id arrays.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpertLayerActivation {
+    /// Absolute model layer index — the numbering MODEL.toml
+    /// `[expert_categories] layers."<L>"` uses.
+    pub layer: usize,
+    pub experts: Vec<u32>,
+    /// Routed token-slots that chose each expert.
+    pub counts: Vec<u32>,
+    /// Summed post-renormalization routing weight per expert.
+    pub mass: Vec<f32>,
 }
 
 /// Prompt-token breakdown (OpenAI-compatible `prompt_tokens_details`).

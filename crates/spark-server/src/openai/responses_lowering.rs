@@ -148,6 +148,8 @@ pub fn lower_responses_to_chat(
         }
     };
     Ok(ChatCompletionRequest {
+        // The Responses API surface exposes no expert-telemetry parameter.
+        report_expert_metadata: false,
         model: r.model,
         adapter: None,
         src_lang: None,

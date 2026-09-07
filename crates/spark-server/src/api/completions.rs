@@ -343,6 +343,7 @@ pub(super) async fn completions_stream(
         seed: req.seed,
         top_logprobs: logprobs_k,
         prompt_logprobs: if echo { logprobs_k } else { None },
+        report_expert_metadata: false,
         echo,
         // Was hard-coded `None`: streaming /v1/completions was the one
         // surface with NO deadline while every other surface had 300 s.
@@ -424,6 +425,9 @@ pub(super) async fn completions_stream(
                 reasoning_tokens,
                 cached_prompt_tokens,
                 accepted_prediction_tokens,
+                // Legacy /v1/completions carries no `usage` extension for
+                // expert routing; chat completions is the surface for it.
+                expert_activation: _,
                 guard_stop: _,
             } => {
                 let tps = if decode_time_ms > 0.0 {
@@ -447,6 +451,7 @@ pub(super) async fn completions_stream(
                     }),
                     time_to_first_token_ms,
                     response_tokens_per_second: tps,
+                    expert_activation: None,
                 };
                 if include_usage {
                     // Chat parity: finish chunk without usage, then a

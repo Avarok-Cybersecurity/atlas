@@ -8,6 +8,7 @@ mod chat_request;
 mod chat_response;
 mod completions;
 mod encode;
+pub(crate) use encode::encode_expert_activation;
 mod encode_stream;
 mod responses;
 mod responses_lowering;

@@ -9,7 +9,7 @@ use spark_runtime::weights::{WeightDtype, WeightStore};
 use crate::layer::TransformerLayer;
 use crate::layers::dense_ffn::DenseFfnWeights;
 use crate::layers::qwen3_attention::HeadGateActivation;
-use crate::layers::{DenseFfnLayer, FfnComponent, MoeLayer, Qwen3AttentionLayer};
+use crate::layers::{DenseFfnLayer, FfnComponent, MoeLayer, MoeSite, Qwen3AttentionLayer};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense, dense_auto,
     quantize_to_nvfp4, quantized_v2,
@@ -61,6 +61,7 @@ pub(super) fn load_layers(
                 config,
                 gpu,
                 &lp,
+                i,
                 absmax_k,
                 quantize_k,
                 stream,
@@ -112,6 +113,7 @@ fn load_moe_ffn(
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
     lp: &str,
+    layer_idx: usize,
     absmax_k: spark_runtime::gpu::KernelHandle,
     quantize_k: spark_runtime::gpu::KernelHandle,
     stream: u64,
@@ -155,7 +157,14 @@ fn load_moe_ffn(
         router_pre_norm: None,
         correction_bias: Some(correction_bias),
     };
-    let mut layer = MoeLayer::new(weights, config.num_experts, None, gpu, config)?;
+    let mut layer = MoeLayer::new(
+        MoeSite::Layer(layer_idx),
+        weights,
+        config.num_experts,
+        None,
+        gpu,
+        config,
+    )?;
     // The checkpoint explicitly excludes the shared expert from NVFP4
     // compression. Keep its BF16 weights authoritative for both prefill and
     // decode; the quantized copies above are placeholders for fused routed

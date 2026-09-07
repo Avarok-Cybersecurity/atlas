@@ -1186,7 +1186,7 @@ impl Qwen3SsmLayer {
         )?;
         if num_tokens == 3 {
             // Fused K=3 MoE: 5 kernel launches instead of 15
-            self.ffn.forward_k3(normed2_base, ctx, stream)?;
+            self.ffn.forward_k3(normed2_base, 0, ctx, stream)?;
             let moe_out = ctx.buffers.moe_output();
             ops::residual_add(
                 ctx.gpu,
@@ -1198,7 +1198,7 @@ impl Qwen3SsmLayer {
             )?;
         } else if num_tokens == 2 {
             // Fused K=2 MoE: 5 kernel launches instead of 10
-            self.ffn.forward_k2(normed2_base, ctx, stream)?;
+            self.ffn.forward_k2(normed2_base, 0, ctx, stream)?;
             // Batched residual add for 2 tokens (flat element-wise, 2*h elements)
             let moe_out = ctx.buffers.moe_output();
             ops::residual_add(
@@ -1263,7 +1263,7 @@ impl Qwen3SsmLayer {
             let residual_elem = 2usize;
             for t in 0..(num_tokens as u32) {
                 let normed2 = normed2_base.offset(t as usize * h * bf16);
-                let moe_out = self.ffn.forward(normed2, ctx, stream)?;
+                let moe_out = self.ffn.forward(normed2, t as usize, ctx, stream)?;
                 let hidden_t = hidden.offset(t as usize * h * residual_elem);
                 ops::residual_add(
                     ctx.gpu,

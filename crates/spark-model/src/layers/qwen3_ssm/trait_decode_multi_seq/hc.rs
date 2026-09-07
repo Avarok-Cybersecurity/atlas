@@ -194,18 +194,20 @@ impl Qwen3SsmLayer {
         )?;
         let moe_rows = match n {
             2 => {
-                self.ffn.forward_k2(normed, ctx, stream)?;
+                self.ffn.forward_k2(normed, 0, ctx, stream)?;
                 moe_out
             }
             3 => {
-                self.ffn.forward_k3(normed, ctx, stream)?;
+                self.ffn.forward_k3(normed, 0, ctx, stream)?;
                 moe_out
             }
             _ => {
                 // Per-row loop; stage into `hidden` rows (the mixed GDN
                 // inputs there are dead once the recurrence loop above ran).
                 for i in 0..n {
-                    let out = self.ffn.forward(normed.offset(i * h * bf16), ctx, stream)?;
+                    let out = self
+                        .ffn
+                        .forward(normed.offset(i * h * bf16), i, ctx, stream)?;
                     ctx.gpu
                         .copy_d2d_async(out, hidden.offset(i * h * bf16), h * bf16, stream)?;
                 }

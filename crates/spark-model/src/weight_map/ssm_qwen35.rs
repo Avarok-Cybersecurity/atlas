@@ -265,7 +265,7 @@ pub(crate) fn load_moe_qwen35(
 
     let mut experts = Vec::with_capacity(num_experts);
     for e in 0..num_experts {
-        if skip_routed_experts || !config.is_local_expert(e) {
+        if skip_routed_experts || !crate::weight_map::expert_resident(config, &p, e) {
             experts.push(ExpertWeight::null());
         } else if is_fused {
             experts.push(load_expert_fused(e)?);
@@ -315,7 +315,7 @@ pub(crate) fn load_moe_qwen35_fp8_experts(
     let mut fp8_experts = Vec::with_capacity(num_experts);
 
     for e in 0..num_experts {
-        if config.is_local_expert(e) {
+        if crate::weight_map::expert_resident(config, &p, e) {
             let ep = format!("{p}.experts.{e}");
             fp8_experts.push(Fp8ExpertWeight {
                 gate_proj: load_fp8_block_scaled_as_fp8weight(
@@ -331,7 +331,10 @@ pub(crate) fn load_moe_qwen35_fp8_experts(
                 )?,
             });
         } else {
-            // Remote-expert placeholder: NULL pointers never dereferenced.
+            // Placeholder for an expert this process does not hold — remote
+            // under EP, or outside the category under --expert-category.
+            // NULL pointers, never dereferenced: the router is masked
+            // against exactly these slots (see moe::bel).
             // `Fp8BlockScaled` chosen as the format tag because that's the
             // dominant disk format for Qwen FP8 checkpoints — keeps the
             // tag consistent with what the routed expert would carry if

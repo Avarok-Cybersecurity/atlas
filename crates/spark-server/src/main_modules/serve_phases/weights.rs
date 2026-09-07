@@ -69,6 +69,10 @@ pub(crate) fn load_weight_store(
                 spark_runtime::fast_weights::FastSafetensorsLoader::new()
             };
             loader.peak_memory_multiplier = mult;
+            // `--expert-category`: skip the experts this category never
+            // routes to. Same plan the MoE layers mask the router from, so a
+            // skipped expert is one top-k cannot select.
+            loader.bel = config.bel.clone();
             loader.skip_activation_scales = skip_activation_scales(config);
             loader.skip_mtp = skip_mtp(config);
             loader.prefetch_shards = args.fast_load_prefetch_shards
@@ -93,6 +97,11 @@ pub(crate) fn load_weight_store(
             spark_runtime::weights::SafetensorsLoader::new()
         };
         loader.peak_memory_multiplier = mult;
+        // Same plan as the fast loader above — the mmap fallback must skip
+        // exactly the same experts, or a serve that fell back to it would
+        // hold weights the router is masked against, or worse, lack weights
+        // it is not.
+        loader.bel = config.bel.clone();
         loader.skip_activation_scales = skip_activation_scales(config);
         loader.skip_mtp = skip_mtp(config);
         loader

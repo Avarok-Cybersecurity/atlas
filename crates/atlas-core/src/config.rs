@@ -461,6 +461,16 @@ pub struct ModelConfig {
     #[serde(skip)]
     pub profile: bool,
 
+    /// Boot-time expert loading plan (`--expert-category`), resolved from
+    /// the model's MODEL.toml at serve time. `None` = load every expert.
+    ///
+    /// Runtime state like `ep_rank` below, not checkpoint config: it comes
+    /// from the command line and the compiled-in category table, and it is
+    /// the SSOT both the weight loaders and the router mask read — they must
+    /// not be able to disagree about which experts are resident.
+    #[serde(skip)]
+    pub bel: Option<std::sync::Arc<bel::BelPlan>>,
+
     // ── Expert Parallelism (set at runtime, not from config.json) ──
     #[serde(skip)]
     pub ep_rank: usize,
@@ -678,6 +688,7 @@ pub(crate) fn default_conv_kernel() -> usize {
     4
 }
 
+pub mod bel;
 mod dispatch;
 mod factory;
 mod gguf;

@@ -348,7 +348,7 @@ impl ModelWeightLoader for LongcatWeightLoader {
                 if s == 0 {
                     // Sublayer 0 owns the block's shortcut MoE; its output is
                     // stashed and added at the end of sublayer 1.
-                    let moe = build_shortcut_moe(store, &lp, config, gpu)?;
+                    let moe = build_shortcut_moe(store, &lp, l, config, gpu)?;
                     layer.set_shortcut_moe(moe, carry, CARRY_TOKENS);
                 } else {
                     layer.set_shortcut_carry_in(carry, CARRY_TOKENS);

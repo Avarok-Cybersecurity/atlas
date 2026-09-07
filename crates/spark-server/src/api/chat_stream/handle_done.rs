@@ -28,6 +28,7 @@ pub(super) fn handle_done(
     reasoning_tokens: u32,
     cached_prompt_tokens: u32,
     accepted_prediction_tokens: usize,
+    expert_activation: Option<Box<crate::ir::expert_activation::ExpertActivationReport>>,
 ) -> DeltaVec {
     let mut deltas: DeltaVec = Vec::new();
 
@@ -186,6 +187,7 @@ pub(super) fn handle_done(
         accepted_prediction_tokens,
         time_to_first_token_ms,
         response_tokens_per_second: tps,
+        expert_activation,
     };
 
     let fr = resolve_wire_finish_reason(
@@ -213,6 +215,29 @@ pub(super) fn handle_done(
     // token ids — tokens whose decoded text was buffered/suppressed
     // and never rode a content delta — ride the Finish delta so
     // Σ token_ids == completion_tokens exactly.
+    // Snapshotted BEFORE `usage` moves into the delta below. `ir::Usage` is
+    // no longer `Copy` (it carries the optional expert-activation report), and
+    // the dump needs the same numbers the encoder derives.
+    let usage_for_dump =
+        (ctx.dump_seq.is_some() && ctx.state.dump_writer.is_some()).then(|| crate::openai::Usage {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.prompt_tokens + usage.completion_tokens,
+            prompt_tokens_details: Some(crate::openai::PromptTokensDetails {
+                cached_tokens: usage.cached_prompt_tokens,
+                audio_tokens: 0,
+            }),
+            completion_tokens_details: Some(crate::openai::CompletionTokensDetails {
+                reasoning_tokens: usage.reasoning_tokens,
+                audio_tokens: 0,
+                accepted_prediction_tokens: usage.accepted_prediction_tokens,
+                rejected_prediction_tokens: 0,
+            }),
+            time_to_first_token_ms: usage.time_to_first_token_ms,
+            response_tokens_per_second: usage.response_tokens_per_second,
+            expert_activation: None,
+        });
+
     deltas.push(StreamDelta::Finish {
         reason: crate::ir::FinishReason::from(fr),
         usage,
@@ -240,25 +265,10 @@ pub(super) fn handle_done(
     // --dump synthesized response entry. Diagnostics, not the stream:
     // the dump keeps the OpenAI wire-usage shape (same numbers the
     // encoder derives for the terminal chunk).
-    if let (Some(seq), Some(dump)) = (ctx.dump_seq, ctx.state.dump_writer.as_ref()) {
+    if let (Some(seq), Some(dump), Some(usage_for_dump)) =
+        (ctx.dump_seq, ctx.state.dump_writer.as_ref(), usage_for_dump)
+    {
         let has_tool_calls = state.detector.as_ref().is_some_and(|d| d.has_tool_calls());
-        let usage_for_dump = crate::openai::Usage {
-            prompt_tokens: usage.prompt_tokens,
-            completion_tokens: usage.completion_tokens,
-            total_tokens: usage.prompt_tokens + usage.completion_tokens,
-            prompt_tokens_details: Some(crate::openai::PromptTokensDetails {
-                cached_tokens: usage.cached_prompt_tokens,
-                audio_tokens: 0,
-            }),
-            completion_tokens_details: Some(crate::openai::CompletionTokensDetails {
-                reasoning_tokens: usage.reasoning_tokens,
-                audio_tokens: 0,
-                accepted_prediction_tokens: usage.accepted_prediction_tokens,
-                rejected_prediction_tokens: 0,
-            }),
-            time_to_first_token_ms: usage.time_to_first_token_ms,
-            response_tokens_per_second: usage.response_tokens_per_second,
-        };
         let body = serde_json::json!({
             "id": ctx.id,
             "model": ctx.model,

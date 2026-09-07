@@ -13,6 +13,8 @@ pub mod bfcl;
 pub mod concurrency;
 pub mod contamination;
 pub mod decode_floor;
+pub mod expert_categories;
+pub mod expert_fidelity;
 pub mod media_integrity;
 pub mod mlperf_agentic;
 pub mod quick_speed;

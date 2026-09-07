@@ -63,7 +63,7 @@ pub struct TokenLogprob {
 /// Token accounting, including the detail counters the wire formats
 /// surface (prefix-cache hits, reasoning tokens) and Atlas's
 /// performance extensions.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Usage {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
@@ -82,6 +82,15 @@ pub struct Usage {
     /// Atlas perf extensions; encoders may ignore.
     pub time_to_first_token_ms: f64,
     pub response_tokens_per_second: f64,
+    /// Which MoE experts this request routed to, when it asked
+    /// (`report_expert_metadata`) and the serve can answer
+    /// (`--expert-telemetry`). Boxed because it is the only large field
+    /// here and every other request pays only a null pointer for it.
+    ///
+    /// OpenAI-surface only for now: the Anthropic surface's `usage` is
+    /// strictly typed by its clients, and this is an Atlas extension with no
+    /// Anthropic counterpart.
+    pub expert_activation: Option<Box<super::expert_activation::ExpertActivationReport>>,
 }
 
 /// Wire string for a response cut short by the server-side request

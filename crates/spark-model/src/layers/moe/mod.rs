@@ -13,12 +13,56 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::{DenseWeight, Fp8ExpertWeight, MoeWeights, QuantizedWeight};
 
+/// Rows the resident-mass rescale scratch is sized for.
+///
+/// A fixed cap rather than the arena's width because `MoeLayer::new` never
+/// sees the arena. 8192 rows is 32 KB per restricted layer and comfortably
+/// above the widest prefill chunk any serve issues; a pass beyond it skips
+/// the rescale and says so, rather than writing past the buffer.
+pub(crate) const BEL_RHO_MAX_ROWS: usize = 8192;
+
+/// Where an [`MoeLayer`] sits in the model.
+///
+/// Carried explicitly rather than as a bare index because not every MoE is a
+/// target-model layer, and the two consumers — per-request expert telemetry
+/// and boot-time expert loading — must treat those cases differently rather
+/// than fall back on a sentinel index that reads as layer 0:
+///
+///  - [`MoeSite::Layer`] routing is the model's own, so it is what an
+///    `[expert_categories]` table describes and what telemetry attributes.
+///  - [`MoeSite::MtpHead`] routing belongs to the speculative drafter, not
+///    the target model. Mixing it into a category's expert set would record
+///    experts the target never used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoeSite {
+    /// A target-model transformer layer, at this absolute layer index (the
+    /// same numbering `[expert_categories] layers."<L>"` uses).
+    Layer(usize),
+    /// The MTP speculative-decoding head's internal MoE.
+    MtpHead,
+}
+
+impl MoeSite {
+    /// The target-model layer index, or `None` for an MoE that is not one of
+    /// the model's own layers.
+    pub fn layer_idx(self) -> Option<usize> {
+        match self {
+            MoeSite::Layer(i) => Some(i),
+            MoeSite::MtpHead => None,
+        }
+    }
+}
+
 /// MoE feed-forward network component.
 ///
 /// Not a `TransformerLayer` — used as a component inside layers
 /// for the FFN/MoE block after post-attention norm.
 #[allow(dead_code)]
 pub struct MoeLayer {
+    /// Where this MoE sits in the model. Set at construction; read by expert
+    /// telemetry (to attribute routing to a layer) and by boot-time expert
+    /// loading (to pick this layer's row of the category table).
+    pub site: MoeSite,
     pub weights: MoeWeights,
     /// Quant format of the ROUTED experts as landed in GPU memory. `Nvfp4`
     /// (default) = packed E2M1 + FP8-E4M3 per-16 block scales + f32 per-tensor
@@ -361,6 +405,30 @@ pub struct MoeLayer {
     // path. Used to test whether the kernel choice is the dominant cause
     // of low DFlash drafter acceptance on FP4/FP8 targets.
     pub is_dflash_capture_layer: bool,
+    /// Boot-time expert loading (`--expert-category`): `[num_experts]` f32,
+    /// 0.0 for a resident expert and -inf for one whose weights were never
+    /// loaded. Added to the router logits before top-k so the selection
+    /// cannot name an absent expert. `None` when the serve loads this
+    /// layer's experts in full, which is every serve without the flag.
+    pub(crate) bel_mask_dev: Option<DevicePtr>,
+    /// Expert count the mask is indexed by — the id space top-k selects
+    /// from. Held beside the mask so the two cannot disagree.
+    pub(crate) bel_num_experts: usize,
+    /// `moe_bel_mask_bf16` / `_f32`. `KernelHandle(0)` on a build without
+    /// them, which `apply_bel_mask` turns into a refusal rather than an
+    /// unmasked route.
+    pub(crate) moe_bel_mask_bf16_k: KernelHandle,
+    pub(crate) moe_bel_mask_f32_k: KernelHandle,
+    /// Resident-mass rescale: recovers each selected expert's TRUE softmax
+    /// weight instead of the renormalized-over-survivors one, so the mass
+    /// that belonged to absent experts is not handed to substitutes.
+    /// `KernelHandle(0)` on a build without the kernels — dispatch then
+    /// leaves the weights alone and says so once.
+    pub(crate) moe_bel_resident_mass_k: KernelHandle,
+    pub(crate) moe_bel_scale_weights_k: KernelHandle,
+    /// `[max_batch_tokens]` f32 scratch for the per-row resident-mass share.
+    /// Allocated once, fixed address, so the computation is capture-legal.
+    pub(crate) bel_rho_dev: Option<DevicePtr>,
     /// Feature-1 (MoE expert + router LoRA): this layer's installed router +
     /// routed-expert deltas + apply scratch. `None` = no adapter / feature off
     /// → the base MoE path is byte-identical. Set by
@@ -403,6 +471,9 @@ mod tables;
 pub(crate) use tables::{Bf16SharedExpert, ExpertPtrTable, Fp8ExpertPtrTable};
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
+mod activation_acc;
+mod bel;
+pub use activation_acc::ExpertActivationAcc;
 mod dump;
 mod forward;
 mod lora;
@@ -430,5 +501,7 @@ mod init;
 #[cfg(test)]
 mod mod_tests;
 mod ptr_table_build;
+mod telemetry;
+pub use telemetry::ExpertTelemetryStaging;
 mod union_stats;
 pub(crate) use ptr_table_build::*;

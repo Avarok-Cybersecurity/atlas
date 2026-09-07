@@ -8,7 +8,7 @@ use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
 use crate::layers::dense_ffn::DenseFfnWeights;
-use crate::layers::{DenseFfnLayer, FfnComponent, MoeLayer, Qwen3AttentionLayer};
+use crate::layers::{DenseFfnLayer, FfnComponent, MoeLayer, MoeSite, Qwen3AttentionLayer};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight, dense, dense_auto,
     detect_nvfp4_variant, load_kv_scales, quantize_to_nvfp4,
@@ -71,6 +71,7 @@ pub(super) fn load_layers(
                 config,
                 gpu,
                 &lp,
+                i,
                 &moe_gate_key,
                 h,
                 inter,
@@ -129,6 +130,7 @@ fn load_moe_ffn(
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
     lp: &str,
+    layer_idx: usize,
     moe_gate_key: &str,
     h: usize,
     inter: usize,
@@ -264,6 +266,7 @@ fn load_moe_ffn(
     };
 
     let mut moe_layer = MoeLayer::new(
+        MoeSite::Layer(layer_idx),
         moe_weights,
         config.num_experts,
         Some(gate_nvfp4),

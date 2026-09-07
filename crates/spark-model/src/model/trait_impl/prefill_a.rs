@@ -380,6 +380,7 @@ impl TransformerModel {
             derived: &self.derived,
             levers: &self.levers,
             stats: &self.stats,
+            expert_telemetry: self.expert_telemetry.as_ref(),
             attn_metadata: Some(attn_metadata),
             profile: self.profile,
             comm: self.comm_ref(),

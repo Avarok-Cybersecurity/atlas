@@ -28,6 +28,7 @@ mod decode_checkpoint;
 mod decode_graph_key;
 mod drafter_prefill;
 mod ep_misc;
+mod expert_drain;
 mod graph_borrow;
 mod lm_head_batched;
 mod meta;
@@ -89,6 +90,7 @@ impl Model for TransformerModel {
     fn prefill(&self, tokens: &[u32], seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
         self.stamp_overlay_route(seq.adapter_slot);
         let logits = self.prefill_dispatch(tokens, seq, stream)?;
+        self.drain_expert_telemetry(seq, tokens.len(), stream);
         self.try_eager_drafter_prefill(seq, true, stream);
         Ok(logits)
     }
@@ -110,6 +112,7 @@ impl Model for TransformerModel {
             is_last_chunk,
             stream,
         )?;
+        self.drain_expert_telemetry(seq, chunk_len, stream);
         self.try_eager_drafter_prefill(seq, is_last_chunk, stream);
         Ok(logits)
     }
@@ -122,13 +125,22 @@ impl Model for TransformerModel {
     ) -> Result<DevicePtr> {
         self.stamp_overlay_route(seq.adapter_slot);
         let logits = self.prefill_twophase_dispatch(tokens, seq, chunk_size, stream)?;
+        // Two-phase runs its chunks internally, so only the LAST chunk's
+        // rows are still staged; the rest are unattributed by construction.
+        self.drain_expert_telemetry(seq, chunk_size.min(tokens.len()), stream);
+        if let Some(acc) = seq.expert_activation.as_mut() {
+            acc.note_unattributed_rows(tokens.len().saturating_sub(chunk_size) as u64);
+        }
         self.try_eager_drafter_prefill(seq, true, stream);
         Ok(logits)
     }
     fn decode(&self, token: u32, seq: &mut SequenceState, _stream: u64) -> Result<DevicePtr> {
         self.stamp_overlay_route(seq.adapter_slot);
         self.stamp_decode_moe_single(seq.adapter_slot);
-        self.decode_dispatch(token, seq, _stream)
+        let logits = self.decode_dispatch(token, seq, _stream)?;
+        // One sequence, one row.
+        self.drain_decode_expert_telemetry(&mut [seq], _stream);
+        Ok(logits)
     }
     fn decode_batch(
         &self,
@@ -139,6 +151,17 @@ impl Model for TransformerModel {
         self.stamp_overlay_route_batch(seqs);
         self.stamp_decode_moe_batch(seqs);
         let r = self.decode_batch_dispatch(tokens, seqs, stream);
+        if r.is_ok() && seqs.len() > 1 {
+            // Row i is seqs[i] by construction: the dispatcher places
+            // sequence i's token at row i, and the layer staged under the row
+            // its caller passed.
+            //
+            // `seqs.len() > 1` because the single-sequence case is delegated
+            // to `Self::decode`, which drains it. Draining here too would fold
+            // one forward pass twice and report a request that routed to
+            // twice as many positions as it ran — measured, not theorised.
+            self.drain_decode_expert_telemetry(seqs, stream);
+        }
         if r.is_err() {
             // A mid-capture refuse (MoE LoRA router/mixed/non-active) in the
             // batched-decode compute leaves the capture stream recording; release
@@ -214,6 +237,17 @@ impl Model for TransformerModel {
     fn set_active_lora(&mut self, name: &str) -> Result<()> {
         self.rotate_lora_to(name)
     }
+    fn new_expert_activation(&self) -> Option<Box<crate::layers::ExpertActivationAcc>> {
+        // Sized from the SAME staging the layers write into, so a fold can
+        // never land outside what was captured.
+        let staging = self.expert_telemetry.as_ref()?;
+        Some(Box::new(crate::layers::ExpertActivationAcc::new(
+            self.layers.len(),
+            self.config.num_experts,
+            staging.top_k() as u32,
+        )))
+    }
+
     fn adapter_id_for(&self, slot: i32) -> u64 {
         self.adapter_id_for_slot(slot)
     }

@@ -60,6 +60,8 @@ impl MoeLayer {
     pub fn forward(
         &self,
         input: DevicePtr,
+        // First batch row this call owns; expert telemetry stages here.
+        row_base: usize,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<DevicePtr> {
@@ -185,6 +187,9 @@ impl MoeLayer {
             if single_seq_decode {
                 self.apply_router_lora_prefill(router_in, gate_logits, 1, ctx, stream)?;
             }
+            // BEL: unselectable experts, applied after the LoRA fold so a
+            // delta cannot lift a masked expert back over the threshold.
+            self.apply_bel_mask(ctx, gate_logits, 1, false, stream)?;
 
             prof!("topk", {
                 if let Some(tid2eid) = self.tid2eid_dev {
@@ -286,6 +291,24 @@ impl MoeLayer {
                 }
             })?;
         }
+
+        // Per-request expert telemetry. One row, staged at this call's batch
+        // row so a per-sequence decode loop attributes each sequence's routing
+        // to the sequence that produced it. A device-to-device copy, so it
+        // records into the decode graph and re-executes on every replay.
+        self.stage_expert_telemetry(
+            ctx,
+            indices_dev,
+            weights_dev,
+            row_base,
+            1,
+            top_k as usize,
+            stream,
+        )?;
+        // Undo the renormalization that handed absent experts' mass to
+        // whichever residents were selected (see moe::bel). No-op unless
+        // --expert-category restricts this layer.
+        self.apply_bel_rescale(ctx, weights_dev, row_base, 1, top_k as usize, stream)?;
 
         if tracing::enabled!(tracing::Level::DEBUG) && !ctx.graph_capture {
             ctx.gpu.synchronize(stream)?;

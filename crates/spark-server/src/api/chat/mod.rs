@@ -180,6 +180,38 @@ pub async fn chat_completions(
         );
     };
 
+    // A request that asks for expert routing on a serve that cannot produce
+    // it is refused by name. Answering it with the field silently absent
+    // would be indistinguishable from "this prompt used no experts", and the
+    // two have completely different fixes.
+    if req.report_expert_metadata {
+        use crate::main_modules::app_state::ExpertTelemetryCapability as Cap;
+        match state.expert_telemetry {
+            Cap::Available => {}
+            Cap::NotEnabled => {
+                return openai_error_response(
+                    StatusCode::BAD_REQUEST,
+                    "report_expert_metadata requires the server to be started with \
+                     --expert-telemetry: the per-layer routing capture has to be in \
+                     place before the model is built, so it cannot be turned on per \
+                     request. Restart the serve with --expert-telemetry."
+                        .to_string(),
+                );
+            }
+            Cap::DenseModel => {
+                return openai_error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "report_expert_metadata is not valid for model '{}': it is a \
+                         dense checkpoint with no mixture-of-experts router, so there \
+                         are no experts to report. Send this request to an MoE model.",
+                        state.model_name
+                    ),
+                );
+            }
+        }
+    }
+
     // --dump: record the incoming request body verbatim.
     let dump_seq = state.dump_writer.as_ref().and_then(|d| {
         match serde_json::from_slice::<serde_json::Value>(&body) {

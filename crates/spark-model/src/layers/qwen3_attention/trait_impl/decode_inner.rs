@@ -179,7 +179,7 @@ impl Qwen3AttentionLayer {
                 eps,
                 stream,
             )?;
-            let moe_out = self.ffn.forward(normed2, ctx, stream)?;
+            let moe_out = self.ffn.forward(normed2, 0, ctx, stream)?;
 
             // Gemma-4: post-FFN norm
             if let Some(ref post_norm) = self.post_ffn_out_norm {
@@ -262,7 +262,7 @@ impl Qwen3AttentionLayer {
         ) {
             // 1. Run MoE on raw residual (before dense FFN output is touched).
             //    MoE writes result to moe_output buffer.
-            let moe_out = moe_ffn.forward(hidden, ctx, stream)?;
+            let moe_out = moe_ffn.forward(hidden, 0, ctx, stream)?;
             // post-MoE norm (in-place on moe_output)
             ops::rms_norm(
                 ctx.gpu,
@@ -281,7 +281,7 @@ impl Qwen3AttentionLayer {
             ctx.gpu.copy_d2d_async(moe_out, moe_saved, h * 2, stream)?;
 
             // 2. Dense FFN (writes to moe_output, overwriting MoE result)
-            let dense_out = self.ffn.forward(normed2, ctx, stream)?;
+            let dense_out = self.ffn.forward(normed2, 0, ctx, stream)?;
             // post-dense norm (layernorm_1)
             ops::rms_norm(
                 ctx.gpu,
@@ -346,13 +346,13 @@ impl Qwen3AttentionLayer {
             // moe_output. Added by the NEXT sublayer.
             if let (Some(moe_ffn), Some((carry, cap))) = (&self.moe_ffn, self.shortcut_carry_out) {
                 anyhow::ensure!(1 <= cap, "shortcut carry capacity");
-                let moe_out = moe_ffn.forward(normed2, ctx, stream)?;
+                let moe_out = moe_ffn.forward(normed2, 0, ctx, stream)?;
                 if let crate::layers::FfnComponent::Moe(m) = moe_ffn {
                     m.apply_zero_expert(moe_out, normed2, 1, ctx, stream)?;
                 }
                 ctx.gpu.copy_d2d_async(moe_out, carry, h * 2, stream)?;
             }
-            let dense_out = self.ffn.forward(normed2, ctx, stream)?;
+            let dense_out = self.ffn.forward(normed2, 0, ctx, stream)?;
             if gemma4_diag {
                 diag_norm(
                     ctx.gpu,
@@ -708,7 +708,7 @@ impl Qwen3AttentionLayer {
             ctx.gpu.copy_d2d_async(hidden, normed2, h * 2, stream)?;
         }
 
-        let ffn_out = self.ffn.forward(normed2, ctx, stream)?;
+        let ffn_out = self.ffn.forward(normed2, 0, ctx, stream)?;
 
         if let Some(ref post_norm) = self.post_ffn_out_norm {
             ops::rms_norm(

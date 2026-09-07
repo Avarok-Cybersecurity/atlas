@@ -136,6 +136,10 @@ fn wire_usage(u: &crate::ir::Usage) -> Usage {
         }),
         time_to_first_token_ms: u.time_to_first_token_ms,
         response_tokens_per_second: u.response_tokens_per_second,
+        expert_activation: u
+            .expert_activation
+            .as_deref()
+            .map(super::encode_expert_activation),
     }
 }
 
@@ -287,6 +291,7 @@ mod tests {
             accepted_prediction_tokens: 4,
             time_to_first_token_ms: 12.5,
             response_tokens_per_second: 40.0,
+            expert_activation: None,
         };
         let d = StreamDelta::Finish {
             reason: FinishReason::Stop,

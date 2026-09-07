@@ -422,7 +422,7 @@ impl MtpHead {
                     .moe_nvfp4
                     .as_ref()
                     .unwrap()
-                    .forward(normed2, ctx, stream)?,
+                    .forward(normed2, 0, ctx, stream)?,
                 MtpQuantization::Fp8 | MtpQuantization::Bf16 => {
                     self.moe_forward_generic(normed2, ctx, stream)?
                 }

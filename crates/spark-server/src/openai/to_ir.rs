@@ -124,6 +124,7 @@ impl From<ChatCompletionRequest> for ir::ChatRequest {
             min_tokens: req.min_tokens,
             stop: req.stop,
             stream: req.stream,
+            report_expert_metadata: req.report_expert_metadata,
             n: req.n,
             response_format,
             thinking,

@@ -146,6 +146,23 @@ impl ModelConfig {
         expert_id >= start && expert_id < end
     }
 
+    /// Whether this serve holds `expert_id` of `layer` in memory.
+    ///
+    /// Both restrictions at once: EP shards experts across ranks, and
+    /// `--expert-category` keeps only what a category routes to. Every
+    /// loader and the router mask ask THIS, so a tensor is skipped exactly
+    /// when the router is masked against it — the pairing that keeps a
+    /// selected expert from dereferencing a null pointer.
+    pub fn is_loaded_expert(&self, layer: usize, expert_id: usize) -> bool {
+        if !self.is_local_expert(expert_id) {
+            return false;
+        }
+        match self.bel.as_ref() {
+            Some(plan) => plan.is_loaded(layer, expert_id),
+            None => true,
+        }
+    }
+
     /// Range `[start, end)` of a `total`-sized dimension owned by this TP rank.
     /// `total` must be divisible by `tp_world_size`. Returns `(0, total)` when
     /// TP is disabled.

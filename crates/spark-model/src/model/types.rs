@@ -56,6 +56,12 @@ pub struct TransformerModel {
     /// Diagnostic counters and one-shot dump latches for this model. Sibling
     /// to `levers`: what the kernels did, rather than what they do.
     pub(super) stats: crate::layers::ops::ModelStats,
+    /// Device staging for per-request MoE expert telemetry. `Some` only when
+    /// the serve enabled it, because the buffer is sized for the widest pass
+    /// (layers x max rows x top-k) and a serve that never reports experts
+    /// should not carry it. Sized once at construction: the MoE layers copy
+    /// into it during CUDA-graph capture, so its address cannot move.
+    pub(super) expert_telemetry: Option<crate::layers::ExpertTelemetryStaging>,
     pub(super) embed_tokens: DenseWeight,
     /// Fused n-gram input embedding (LongCat family), when the architecture
     /// has one. `Mutex` because the forward path is `&self` while the row

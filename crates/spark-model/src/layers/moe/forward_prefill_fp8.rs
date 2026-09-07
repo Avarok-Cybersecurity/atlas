@@ -340,6 +340,10 @@ impl MoeLayer {
         // logits BEFORE top-k (device-clean, no capture guard). No-op unless a
         // router delta is installed.
         self.apply_router_lora_prefill(router_in, gate_logits, n, ctx, stream)?;
+        // BEL: make experts this category never loaded unselectable.
+        // LAST touch before top-k — a LoRA delta folded after the mask could
+        // lift a masked expert back over the selection threshold.
+        self.apply_bel_mask(ctx, gate_logits, n as usize, false, stream)?;
 
         // 2. Batched topK dispatch (sigmoid+bias for MiniMax/DeepSeek-V3,
         //    softmax for everyone else — selection by `correction_bias_dev`).
@@ -399,6 +403,21 @@ impl MoeLayer {
         }
 
         super::dump::dump_expert_ids(ctx.gpu, stream, indices_dev, weights_dev, n, top_k)?;
+        // Per-request expert telemetry: one D2D copy into this layer's
+        // staging slot. No-op unless --expert-telemetry is on.
+        self.stage_expert_telemetry(
+            ctx,
+            indices_dev,
+            weights_dev,
+            0,
+            n as usize,
+            top_k as usize,
+            stream,
+        )?;
+        // Undo the renormalization that handed absent experts' mass to
+        // whichever residents were selected (see moe::bel). No-op unless
+        // --expert-category restricts this layer.
+        self.apply_bel_rescale(ctx, weights_dev, 0, n as usize, top_k as usize, stream)?;
 
         // 3. Sort tokens by expert
         let te = total_expanded as usize;

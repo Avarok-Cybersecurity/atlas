@@ -35,6 +35,10 @@ use header::{parse_header, resolve_shards};
 /// Pure-Rust InstantTensor-style loader. Same public shape as
 /// [`crate::weights::SafetensorsLoader`].
 pub struct FastSafetensorsLoader {
+    /// Boot-time expert loading plan (`--expert-category`). `None` = load
+    /// every expert. The router is masked from the SAME plan, so a skipped
+    /// expert is one the top-k cannot select.
+    pub bel: Option<std::sync::Arc<atlas_core::config::bel::BelPlan>>,
     pub ep_rank: usize,
     pub ep_world_size: usize,
     pub num_experts: usize,
@@ -96,6 +100,7 @@ mod skip;
 impl FastSafetensorsLoader {
     pub fn new() -> Self {
         Self {
+            bel: None,
             ep_rank: 0,
             ep_world_size: 1,
             num_experts: 0,
@@ -110,6 +115,10 @@ impl FastSafetensorsLoader {
 
     pub fn with_ep(ep_rank: usize, ep_world_size: usize, num_experts: usize) -> Self {
         Self {
+            // The BEL plan is installed by the caller (`with_bel`) when
+            // `--expert-category` is set; EP and BEL are independent
+            // restrictions and compose through `should_skip_tensor`.
+            bel: None,
             ep_rank,
             ep_world_size,
             num_experts,

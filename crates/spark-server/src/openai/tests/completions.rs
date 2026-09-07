@@ -73,6 +73,7 @@ fn completion_response_carries_system_fingerprint_and_optional_logprobs() {
         completion_tokens_details: None,
         time_to_first_token_ms: 0.0,
         response_tokens_per_second: 0.0,
+        expert_activation: None,
     };
     let resp = CompletionResponse::new("m", "hi".into(), usage, "stop");
     let v = serde_json::to_value(&resp).expect("serialize");

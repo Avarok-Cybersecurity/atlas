@@ -112,6 +112,32 @@ mod ngram_defer_tests {
 }
 
 /// Parse expert index from tensor name (e.g. "model.layers.3.mlp.experts.42.gate_proj.weight" → 42).
+/// `(layer, expert)` from a routed-expert tensor name, e.g.
+/// `model.layers.3.mlp.experts.42.gate_proj.weight` -> `(3, 42)`.
+///
+/// Both halves, because boot-time expert loading is PER LAYER: a category
+/// keeps expert 42 in one layer and not in another, so the expert index
+/// alone cannot decide whether a tensor is needed. `None` when either part
+/// is absent, which is every non-routed-expert tensor — including `mtp.*`,
+/// whose experts belong to the drafter and are always loaded.
+pub fn parse_layer_expert(name: &str) -> Option<(usize, usize)> {
+    if name.starts_with("mtp.") {
+        return None;
+    }
+    let parts: Vec<&str> = name.split('.').collect();
+    let mut layer = None;
+    let mut expert = None;
+    for (i, part) in parts.iter().enumerate() {
+        if *part == "layers" && i + 1 < parts.len() {
+            layer = parts[i + 1].parse::<usize>().ok();
+        }
+        if *part == "experts" && i + 1 < parts.len() {
+            expert = parts[i + 1].parse::<usize>().ok();
+        }
+    }
+    Some((layer?, expert?))
+}
+
 pub fn parse_expert_index(name: &str) -> Option<usize> {
     let parts: Vec<&str> = name.split('.').collect();
     for (i, part) in parts.iter().enumerate() {

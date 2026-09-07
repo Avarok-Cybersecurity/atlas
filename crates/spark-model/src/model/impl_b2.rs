@@ -205,6 +205,7 @@ impl TransformerModel {
                 derived: &self.derived,
                 levers: &self.levers,
                 stats: &self.stats,
+                expert_telemetry: self.expert_telemetry.as_ref(),
                 attn_metadata: None,
                 profile: false,
                 // MTP runs on rank 0 only — no EP all_reduce (BUG #26).

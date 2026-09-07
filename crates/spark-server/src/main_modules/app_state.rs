@@ -115,6 +115,12 @@ pub struct AppState {
     /// Model-specific behavior overrides from MODEL.toml `[behavior]`.
     /// Embedded at build time via atlas-kernels.
     pub behavior: atlas_kernels::ModelBehavior,
+    /// Whether this serve can answer `report_expert_metadata`: started with
+    /// `--expert-telemetry` AND serving an MoE checkpoint. Both conditions
+    /// are boot facts, so they are resolved once here rather than re-derived
+    /// per request — and kept as one field because a request only needs to
+    /// know whether it can be answered.
+    pub expert_telemetry: ExpertTelemetryCapability,
     /// Global kill switch for thinking / reasoning output. When true,
     /// thinking is forced OFF regardless of the request body or the
     /// model's MODEL.toml default. Wired from `--disable-thinking`.
@@ -391,6 +397,21 @@ impl AppState {
 
 /// Re-export for convenience in api.rs / anthropic.rs.
 pub type ModelBehavior = atlas_kernels::ModelBehavior;
+
+/// Why (or whether) this serve can report per-request expert routing.
+///
+/// Three states rather than a bool: a request that asks and cannot be
+/// answered gets told WHICH condition it failed, because the fix differs —
+/// restart with a flag, or use a different checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpertTelemetryCapability {
+    /// `--expert-telemetry` set and the model has experts.
+    Available,
+    /// The serve was started without `--expert-telemetry`.
+    NotEnabled,
+    /// The checkpoint is dense — there is no router to observe.
+    DenseModel,
+}
 
 #[cfg(test)]
 mod tests {

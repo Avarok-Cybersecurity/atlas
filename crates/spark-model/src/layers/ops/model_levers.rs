@@ -57,6 +57,31 @@ pub struct ModelLevers {
     pub holo_moe_gateup_fp4: bool,
     /// Collect per-layer MoE expert-union statistics. Diagnostic.
     pub moe_union_stats: bool,
+    /// `ATLAS_BEL_RESCALE=1` — undo the renormalization that hands absent
+    /// experts' routing mass to substitutes, so every selected expert carries
+    /// its TRUE softmax weight and the routed branch contributes only the
+    /// share this serve can actually supply.
+    ///
+    /// OFF by default because it is a MEASURED REGRESSION on its own:
+    /// Qwen3.6-35B-A3B-FP8, code-python at 37% of experts, 60 prompts —
+    /// delta-CE went from +0.7888 to +1.0943 nats/token and top-1 agreement
+    /// from 73.3% to 65.4%, worse in all twenty categories. Recovering the
+    /// true weights shrinks the routed branch to rho of its usual total and
+    /// nothing replaces the rest, so it trades a substitution error for a
+    /// magnitude deficit — and the model turns out to mind the second one
+    /// more. The lever stays because rho is the input a compensation term
+    /// needs; the correction is only half a fix without one.
+    pub bel_rescale: bool,
+    /// Per-request MoE expert-activation telemetry (`--expert-telemetry`).
+    /// Not from the environment: `TransformerModel::new` writes it from the
+    /// serve arg, like `max_decode_seqs`.
+    ///
+    /// A boot decision rather than a per-request one because the staging
+    /// buffer and the device-to-device copies that fill it must exist before
+    /// decode-graph capture; a request cannot add a memcpy node to a graph
+    /// that was already recorded. Which requests REPORT experts is then a
+    /// per-request choice (`report_expert_metadata`).
+    pub expert_telemetry: bool,
 
     // ── Attention ──
     /// Contiguous-attention path for the DFlash head.
@@ -123,6 +148,10 @@ fn from_values(
 
     ModelLevers {
         max_decode_seqs: 1,
+        // Written by `TransformerModel::new` from the serve arg, not read
+        // from the environment (see the field docs).
+        expert_telemetry: false,
+        bel_rescale: opt_in(value("ATLAS_BEL_RESCALE").as_deref()),
         shadow_topk,
         kv_poison: opt_in(value("ATLAS_KV_POISON").as_deref()),
         drafter,

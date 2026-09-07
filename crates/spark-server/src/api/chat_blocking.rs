@@ -117,6 +117,11 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
     let mut total_reasoning_tokens = 0u32;
     let mut total_cached_prompt_tokens = 0u32;
     let mut total_accepted_prediction_tokens = 0usize;
+    // Summed across choices/turns rather than overwritten: a tool-calling
+    // request prefills once per turn, and the experts it NEEDED is the union
+    // of those prefills, not whichever one finished last.
+    let mut expert_activation: Option<Box<crate::ir::expert_activation::ExpertActivationReport>> =
+        None;
 
     // Arc-wrap the prompt tokens ONCE. Per-choice scheduler requests
     // and the Tier 5c retry path all share the same Arc — no Vec<u32>
@@ -166,6 +171,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
             seed: req.seed.map(|s| s.wrapping_add(choice_idx as u64)),
             top_logprobs,
             prompt_logprobs: None,
+            report_expert_metadata: req.report_expert_metadata,
             echo: false,
             timeout_at,
             response_tx: tx,
@@ -203,6 +209,12 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
         total_completion_tokens += num_completion;
         total_reasoning_tokens += response.reasoning_tokens;
         total_accepted_prediction_tokens += response.accepted_prediction_tokens;
+        if let Some(report) = response.expert_activation.as_ref() {
+            match expert_activation.as_mut() {
+                Some(acc) => acc.merge(report),
+                None => expert_activation = Some(report.clone()),
+            }
+        }
         // cached_prompt_tokens is a per-request prefix-cache hit count; for
         // n>1 we only charge once (same prompt reused).
         total_cached_prompt_tokens = total_cached_prompt_tokens.max(response.cached_prompt_tokens);
@@ -241,6 +253,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
         total_cached_prompt_tokens,
         total_accepted_prediction_tokens,
         prompt_len,
+        expert_activation,
     )
 }
 
@@ -388,6 +401,7 @@ fn finalize_response(
     total_cached_prompt_tokens: u32,
     total_accepted_prediction_tokens: usize,
     prompt_len: usize,
+    expert_activation: Option<Box<crate::ir::expert_activation::ExpertActivationReport>>,
 ) -> super::chat::ChatOutcome {
     let tokens_per_second = if last_decode_time_ms > 0.0 && total_completion_tokens > 0 {
         (total_completion_tokens.saturating_sub(1)) as f64 / (last_decode_time_ms / 1000.0)
@@ -402,6 +416,7 @@ fn finalize_response(
         accepted_prediction_tokens: total_accepted_prediction_tokens,
         time_to_first_token_ms: first_ttft,
         response_tokens_per_second: tokens_per_second,
+        expert_activation,
     };
 
     // REQUESTS_ACTIVE released by the caller's ActiveRequestGuard on return.

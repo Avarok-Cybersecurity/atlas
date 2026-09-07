@@ -8,7 +8,7 @@ use spark_runtime::weights::WeightStore;
 
 use super::{ModelWeightLoader, QuantFormat};
 use crate::layer::TransformerLayer;
-use crate::layers::{FfnComponent, MoeLayer, Qwen3AttentionLayer, Qwen3SsmLayer};
+use crate::layers::{FfnComponent, MoeLayer, MoeSite, Qwen3AttentionLayer, Qwen3SsmLayer};
 use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_dense_bf16, shard_fp8_block_scaled};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, MtpWeights, Nvfp4Variant, QuantizeCtx, QuantizedWeight, dense,
@@ -112,8 +112,14 @@ impl ModelWeightLoader for Qwen3WeightLoader {
                     stream,
                 )?)
             };
-            let mut moe_layer =
-                MoeLayer::new(moe_weights, config.num_experts, gate_nvfp4, gpu, config)?;
+            let mut moe_layer = MoeLayer::new(
+                MoeSite::Layer(i),
+                moe_weights,
+                config.num_experts,
+                gate_nvfp4,
+                gpu,
+                config,
+            )?;
             if !native_fp8 && !skip_moe_transpose {
                 moe_layer.transpose_for_prefill(gpu, config)?;
             }

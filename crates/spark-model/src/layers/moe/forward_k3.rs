@@ -11,10 +11,17 @@ impl MoeLayer {
     /// Expert buffers sized for 3*top_k slots. Output at moe_output() [3, H].
     pub fn forward_k3(
         &self,
-        input: DevicePtr, // [3, H] BF16 — normed MoE input for 3 tokens
+        input: DevicePtr,
+        // First batch row this call owns; expert telemetry stages here.
+        row_base: usize, // [3, H] BF16 — normed MoE input for 3 tokens
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // BEL is not wired on this routing path: it computes its own gate
+        // logits without the mask, so the top-k could name an expert whose
+        // weights were never loaded. Refuse by name — the alternative is a
+        // null dereference inside a GEMM.
+        self.bel_guard("forward_k3")?;
         // LongCat zero-experts are wired only on the single-token decode
         // + prefill paths (v1); this variant would silently mis-route the
         // 384-wide router. Named refusal, not silent wrongness.
@@ -136,6 +143,16 @@ impl MoeLayer {
         }
 
         super::union_stats::maybe_sample_expert_union(ctx, indices_dev, 3, top_k as usize, stream);
+        // Staged, not folded — see forward_k2.
+        self.stage_expert_telemetry(
+            ctx,
+            indices_dev,
+            weights_dev,
+            row_base,
+            3,
+            top_k as usize,
+            stream,
+        )?;
 
         // 3-5. Fused expert dispatch for 3 tokens
         let expert_gate_out = ctx.buffers.expert_gate_out();

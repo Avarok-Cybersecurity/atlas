@@ -349,6 +349,19 @@ pub trait Model: Send + Sync {
         bail!("this model does not support LoRA adapter rotation")
     }
 
+    /// A fresh per-request MoE expert-activation accumulator, sized for THIS
+    /// model's layer count, expert count and top-k.
+    ///
+    /// `None` when the model cannot produce routing (dense, or the serve did
+    /// not enable `--expert-telemetry`). The scheduler installs the result on
+    /// the sequence; an installed accumulator is what makes the model fold
+    /// its staged routing, so `None` here means the request simply gets no
+    /// report — the API layer has already refused the cases where that would
+    /// be a surprise.
+    fn new_expert_activation(&self) -> Option<Box<crate::layers::ExpertActivationAcc>> {
+        None
+    }
+
     /// Task #24: stable adapter_id (KV/prefix-cache identity) for a per-request
     /// pool-slot selector. `slot` follows `SequenceState.adapter_slot`: `>= 0`
     /// picks that resident slot, `-1` defers to the installed active adapter.
