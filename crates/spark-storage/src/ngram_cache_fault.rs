@@ -26,9 +26,56 @@ use super::ngram_cache::{AlignedBlock, BLOCK};
 /// rivals the reads themselves (decode gathers are 16 ids, 0-2 misses).
 const PARALLEL_MIN: usize = 4;
 
-/// Cap on fault workers. NVMe queue depth benefits flatten out well below
-/// this; the reads are 4-8 KiB each.
-const MAX_WORKERS: usize = 16;
+/// Cap on fault workers.
+///
+/// MEASURED 2026-09-06 on this box's NVMe against the real 36.4 GiB n-gram file
+/// (`.research/exl3_decode_perf/ple_fault_bench.c` — 32768 random 4 KiB
+/// O_DIRECT preads, the shape `run_one` issues; 3 repeats, wall ms):
+///
+/// ```text
+///   workers    16     32     64     96    128
+///   wall ms   332    222    147    138    138
+///             334    222    147    138    139
+///             335    224    148    137    137
+/// ```
+///
+/// The knee is 64 and the curve is flat past 96 — the previous cap of 16 left
+/// 2.3x on the table, and the comment it carried ("benefits flatten out well
+/// below this") was an assumption this drive does not support. A real gather of
+/// 31745 misses resolved in 288 ms at 16 workers.
+const MAX_WORKERS: usize = 64;
+
+/// Jobs a worker should have to justify its own spawn (~20 us) — below this,
+/// threads would outnumber the reads they issue. 31745 misses -> 64 workers,
+/// 100 -> 13, 32 -> 4.
+const JOBS_PER_WORKER: usize = 8;
+
+/// `ATLAS_PLE_FAULT_WORKERS=<n>` overrides the cap (clamped to 1..=256) so the
+/// curve above can be re-measured in situ without a rebuild. Unparsable values
+/// fall back to [`MAX_WORKERS`] with one warning.
+fn max_workers() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| match std::env::var("ATLAS_PLE_FAULT_WORKERS") {
+        Err(_) => MAX_WORKERS,
+        Ok(v) => match v.trim().parse::<usize>() {
+            Ok(n) if n >= 1 => n.min(256),
+            _ => {
+                tracing::warn!(
+                    "ATLAS_PLE_FAULT_WORKERS={v:?} is not a worker count — using {MAX_WORKERS}"
+                );
+                MAX_WORKERS
+            }
+        },
+    })
+}
+
+/// Workers for `jobs` misses: one per [`JOBS_PER_WORKER`], capped, never more
+/// than there are jobs. Pure so the policy is testable without a drive.
+pub(super) fn worker_count(jobs: usize, cap: usize) -> usize {
+    jobs.div_ceil(JOBS_PER_WORKER)
+        .clamp(1, cap)
+        .min(jobs.max(1))
+}
 
 /// One miss, fully resolved to byte offsets — no `&self` reaches the
 /// workers.
@@ -129,7 +176,7 @@ pub(super) fn fault_all(
     }
     let next = AtomicUsize::new(0);
     let first_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
-    let workers = jobs.len().min(MAX_WORKERS);
+    let workers = worker_count(jobs.len(), max_workers());
     std::thread::scope(|s| {
         for _ in 0..workers {
             s.spawn(|| {
@@ -164,4 +211,39 @@ pub(super) fn fault_all(
 /// Sanity used by the job builder: a row never needs more than two blocks.
 pub(super) fn nblocks_for(within: usize, row_stride: usize) -> usize {
     if within + row_stride > BLOCK { 2 } else { 1 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{JOBS_PER_WORKER, MAX_WORKERS, worker_count};
+
+    #[test]
+    fn worker_count_scales_with_jobs_and_respects_the_cap() {
+        // Never more workers than jobs — a worker with nothing to steal is
+        // pure spawn cost.
+        for jobs in 0..=JOBS_PER_WORKER {
+            assert!(
+                worker_count(jobs, MAX_WORKERS) <= jobs.max(1),
+                "jobs={jobs}"
+            );
+        }
+        // One worker per JOBS_PER_WORKER, rounded up.
+        assert_eq!(worker_count(1, MAX_WORKERS), 1);
+        assert_eq!(worker_count(JOBS_PER_WORKER, MAX_WORKERS), 1);
+        assert_eq!(worker_count(JOBS_PER_WORKER + 1, MAX_WORKERS), 2);
+        assert_eq!(
+            worker_count(100, MAX_WORKERS),
+            100_usize.div_ceil(JOBS_PER_WORKER)
+        );
+        // A real 8K-prefill gather saturates the cap (measured: 31745 misses).
+        assert_eq!(worker_count(31745, MAX_WORKERS), MAX_WORKERS);
+        // The cap is the measured knee, not the old assumption.
+        assert_eq!(MAX_WORKERS, 64);
+        // An operator override is honoured in both directions.
+        assert_eq!(worker_count(31745, 16), 16);
+        assert_eq!(worker_count(31745, 128), 128);
+        // Zero jobs never reaches the pool (fault_all returns early), but the
+        // policy must still be total.
+        assert_eq!(worker_count(0, MAX_WORKERS), 1);
+    }
 }

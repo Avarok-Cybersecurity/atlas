@@ -936,6 +936,39 @@ competing for the `--ssm-cache-slots` pool, which is the pressure the operator h
 dropping checkpoints; the benefit, from the 8960-token row, is turning an 18.3 s recompute into a
 replay bounded by the interval. UNMEASURED until that A/B runs.
 
+## PLE n-gram fault-in: the worker cap was 4x below the drive's knee (measured 2026-09-06)
+
+A live prefill logged `PLE gather: 127488 ids, 95743 hits / 31745 misses, resolve 288342us`. The
+misses are O_DIRECT 4 KiB positional reads of the n-gram table, already fanned out to scoped threads
+by `spark-storage/src/ngram_cache_fault.rs` — capped at `MAX_WORKERS = 16` with the comment "NVMe queue
+depth benefits flatten out well below this". That comment was an assumption, and it is wrong on this
+drive.
+
+`ple_fault_bench.c` replicates `run_one` exactly (O_DIRECT, 4096-byte blocks, random offsets, one
+thread per worker, its own aligned bounce buffer) against the real 36.4 GiB pinned n-gram file,
+32768 reads per sweep — the miss count of a real 8K prefill. Three repeats, wall ms:
+
+| workers | 16 | 24 | 32 | 48 | **64** | 96 | 128 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| run 1 | 332 | 268 | 220 | 171 | **146** | 139 | 138 |
+| run 2 | 334 | 262 | 222 | 170 | **147** | 138 | 139 |
+| run 3 | 335 | 269 | 224 | 172 | **148** | 137 | 137 |
+| IOPS | 98K | 122K | 148K | 191K | **223K** | 237K | 237K |
+
+The knee is **64** (2.3x over the shipped 16) and the curve is flat past 96 — the drive saturates
+around 237K IOPS. Per-read latency rises from 77 µs at one worker to 286 µs at 64, which is the
+queue filling, not the drive degrading.
+
+Change: `MAX_WORKERS` 16 → 64, plus a `JOBS_PER_WORKER = 8` floor so a small gather does not spawn a
+thread per read (31745 misses → 64 workers, 100 → 13, 32 → 4; thread spawn is ~20 µs, comparable to a
+read). `ATLAS_PLE_FAULT_WORKERS=<n>` overrides the cap for in-situ re-measurement, and
+`ATLAS_PLE_SERIAL_FAULT=1` still restores the pre-parallel arm.
+
+**Expected but UNMEASURED end to end**: the 288 ms resolve above should fall to ~130 ms, i.e. ~160 ms
+off a cold prefill's TTFT. That is a bench-derived hypothesis — the in-engine A/B (same prompt, the
+env knob the only variable) has not been run. Note also that `resolve` holds the PLE table mutex, so
+this time is serialized across concurrent streams and the saving compounds at concurrency.
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17
