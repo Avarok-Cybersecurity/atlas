@@ -33,6 +33,11 @@ pub(super) fn build_moe(
     gpu: &dyn GpuBackend,
     variant: Nvfp4Variant,
     exl3: &mut super::exl3_dense::NativeExl3,
+    // The DRAFT module replicates its experts on every EP rank instead of
+    // sharding them (`mtp.*` is not sharded by the upload and the draft
+    // forward has no all-reduce). False for the 48 main layers, which shard
+    // normally. See `load_moe_qwen35`'s `force_all_experts`.
+    force_all_experts: bool,
 ) -> Result<FfnComponent> {
     let h = config.hidden_size;
     let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
@@ -68,6 +73,7 @@ pub(super) fn build_moe(
         // (the FP8-native precedent) — the packed trellis serves them. The
         // shared expert and router still load/materialize exactly as before.
         exl3_native_moe,
+        force_all_experts,
     )
     .with_context(|| format!("qwen4_exp: MoE block at {lp}"))?;
 
@@ -93,8 +99,15 @@ pub(super) fn build_moe(
              ATLAS_HOLO_MOE_GROUPED_CUTLASS=1 (no NVFP4 expert tables exist \
              to build SFB atoms from); unset one of the two"
         );
-        let experts = load_moe_qwen4exp_exl3(store, lp, config.num_experts, gpu, config)
-            .with_context(|| format!("qwen4_exp: native EXL3 experts at {lp}"))?;
+        let experts = load_moe_qwen4exp_exl3(
+            store,
+            lp,
+            config.num_experts,
+            gpu,
+            config,
+            force_all_experts,
+        )
+        .with_context(|| format!("qwen4_exp: native EXL3 experts at {lp}"))?;
         let gate_t = build_exl3_ptr_table(&experts.gate, gpu)?;
         let up_t = build_exl3_ptr_table(&experts.up, gpu)?;
         let down_t = build_exl3_ptr_table(&experts.down, gpu)?;

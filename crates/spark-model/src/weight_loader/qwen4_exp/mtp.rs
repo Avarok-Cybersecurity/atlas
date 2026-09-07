@@ -181,7 +181,13 @@ pub fn load_qwen4_exp_mtp_module(
             crate::weight_map::Exl3DenseFamily::Attn
         ),
     );
-    let ffn = super::ffn::build_moe(store, lp, config, gpu, variant, &mut exl3)
+    // force_all_experts = TRUE: the draft's MoE is REPLICATED on every EP rank.
+    // `mtp.*` is not sharded by the weight upload and the draft forward has no
+    // all-reduce, so a rank>0 draft would route into NULL experts — the exact
+    // mismatch that made `ep_world_size > 1` a hard refusal in probe_mtp.rs.
+    // Replicating costs ~1.3 GB/rank against the ~20 GB/rank EP=2 saves, and
+    // keeps the latency-critical draft path free of a collective.
+    let ffn = super::ffn::build_moe(store, lp, config, gpu, variant, &mut exl3, true)
         .context("qwen4_exp MTP: MoE block")?;
     let f1 = free_now(gpu);
 

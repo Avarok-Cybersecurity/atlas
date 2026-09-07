@@ -216,7 +216,7 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
             let lp = config.layer_prefix(i);
             exl3.observe(store, &lp);
             let f0 = free_now(gpu);
-            let ffn = ffn::build_moe(store, &lp, config, gpu, variant, &mut exl3)?;
+            let ffn = ffn::build_moe(store, &lp, config, gpu, variant, &mut exl3, false)?;
             let f1 = free_now(gpu);
             moe_bytes += f0.saturating_sub(f1);
 

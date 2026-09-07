@@ -289,13 +289,27 @@ impl MtpNamespaceReport {
             // Nothing declared, nothing to load — an empty report is correct.
             return Ok(());
         }
+        // EP: the draft's MoE is now REPLICATED on every rank
+        // (`build_moe(force_all_experts = true)` in `mtp.rs`), so a rank>0
+        // draft routes into real experts rather than NULLs and needs no
+        // all-reduce of its own. Both halves of the old refusal — "no
+        // force_all_experts path" and "the upload never shards mtp.*" — are
+        // answered by replication.
+        //
+        // Still gated, because it is UNVERIFIED rather than known-good: every
+        // rank computes its own draft from its own copy of the replicated
+        // draft MoE, so the drafts agree only if the main model's all-reduce
+        // leaves every rank with bit-identical hidden states. A drifting draft
+        // does not corrupt output (the target verifies it) — it silently
+        // collapses acceptance, which reads as "MTP does nothing under EP"
+        // rather than as a defect. Flip the opt-in once a 2-rank run has shown
+        // matching drafts and acceptance.
         ensure!(
-            config.ep_world_size <= 1,
-            "qwen4_exp MTP: ep_world_size={} but the MTP MoE has no \
-             force_all_experts path — `load_moe_qwen35` honours \
-             `is_local_expert`, while the weight upload never shards `mtp.*`, \
-             so a rank>0 draft would route into NULL experts. Serve without EP \
-             or leave MTP off.",
+            config.ep_world_size <= 1 || ep_mtp_enabled(),
+            "qwen4_exp MTP under ep_world_size={}: the draft MoE is replicated \
+             per rank, but cross-rank draft identity is UNVERIFIED — set \
+             ATLAS_EP_MTP=1 to opt in once a 2-rank run has shown matching \
+             drafts and acceptance, or leave MTP off.",
             config.ep_world_size,
         );
         ensure!(
@@ -346,3 +360,11 @@ impl MtpNamespaceReport {
 #[cfg(test)]
 #[path = "probe_mtp_tests.rs"]
 mod probe_mtp_tests;
+
+/// `ATLAS_EP_MTP=1` — opt in to speculative decode under `ep_world_size > 1`.
+///
+/// Default OFF because the path is UNVERIFIED, not because it is known broken:
+/// see the gate in `Chk::mtp` for what a 2-rank run has to show first.
+fn ep_mtp_enabled() -> bool {
+    std::env::var("ATLAS_EP_MTP").as_deref() == Ok("1")
+}

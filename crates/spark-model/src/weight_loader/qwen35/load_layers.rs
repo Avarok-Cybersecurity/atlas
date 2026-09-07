@@ -277,6 +277,8 @@ pub(super) fn load_layers(
             quantize_k,
             stream,
             skip_nvfp4_experts,
+            // Main layers shard normally under EP; only the draft replicates.
+            false,
         )?;
         // 2026-05-25 (final): gate stays in BF16 for `native_fp8` —
         // routes through `dense_gemm` BF16 fallback path.

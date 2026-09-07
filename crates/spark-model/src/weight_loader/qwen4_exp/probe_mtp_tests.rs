@@ -306,16 +306,38 @@ fn an_empty_store_is_reported_and_is_ok_when_no_module_is_declared() {
     assert!(err.contains("no `mtp.*` tensors"), "{err}");
 }
 
-/// `load_moe_qwen35` honours `is_local_expert` and has no `force_all_experts`
-/// parameter, while the weight upload never shards `mtp.*` — so under EP the
-/// draft would route into NULL experts on every rank.
+/// EP > 1 is refused UNLESS the operator opts in with `ATLAS_EP_MTP=1`.
+///
+/// The original blocker — `load_moe_qwen35` honouring `is_local_expert` while
+/// the upload never sharded `mtp.*`, so a rank>0 draft routed into NULL experts
+/// — is answered by replicating the draft MoE
+/// (`build_moe(force_all_experts = true)`). What is NOT yet answered is whether
+/// every rank produces an IDENTICAL draft, which holds only if the main model's
+/// all-reduce leaves ranks bit-identical; a drifting draft silently collapses
+/// acceptance rather than corrupting output, so it must be measured on two
+/// ranks before the gate is flipped. Hence: still refused by default, and the
+/// message says what to do about it.
 #[test]
-fn ep_world_size_above_one_is_refused() {
+fn ep_world_size_above_one_is_refused_until_opted_in() {
+    // SAFETY: single-threaded test; the var is read once per call below.
+    unsafe { std::env::remove_var("ATLAS_EP_MTP") };
     let mut c = cfg();
     c.ep_world_size = 2;
     let r = audit_mtp_namespace(&fused_store(), &c);
     let err = r.ensure_loadable(&c).unwrap_err().to_string();
     assert!(err.contains("ep_world_size=2"), "{err}");
+    // The message must name the opt-in, or an operator cannot act on it.
+    assert!(err.contains("ATLAS_EP_MTP=1"), "{err}");
+    // And it must say WHY it is gated, so nobody flips it blind.
+    assert!(err.contains("UNVERIFIED"), "{err}");
+    // Single-rank is unaffected either way.
+    let mut c1 = cfg();
+    c1.ep_world_size = 1;
+    assert!(
+        audit_mtp_namespace(&fused_store(), &c1)
+            .ensure_loadable(&c1)
+            .is_ok()
+    );
 }
 
 // ── The offline checkpoint arm ────────────────────────────────────────────

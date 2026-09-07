@@ -111,6 +111,16 @@ pub(crate) fn load_ssm_qwen35_parts(
 ///
 /// Under EP (ep_world_size > 1), only local experts are loaded from the store.
 /// Remote experts get NULL pointers — kernels detect NULL and write zero output.
+/// `force_all_experts`: when true, EVERY routed expert is loaded regardless of
+/// `is_local_expert` — the draft (MTP) module's own MoE, which is REPLICATED on
+/// every EP rank rather than sharded. Its `mtp.*` tensors are not sharded by the
+/// upload, and the draft forward has no all-reduce, so a rank>0 draft would
+/// otherwise route into NULL experts; that mismatch is why MTP was refused under
+/// `ep_world_size > 1`. Replication costs ~1.3 GB/rank (the draft MoE) against
+/// the ~20 GB/rank EP=2 saves, and keeps the latency-critical draft path free of
+/// a collective. Ignored when `skip_routed_experts` is set (the native-EXL3 arm
+/// serves those from packed trellis instead — see `load_moe_qwen4exp_exl3`).
+///
 /// `skip_routed_experts`: when true, routed experts get NULL weights (saves memory
 /// when native FP8 MoE dispatch handles them). Shared expert is always loaded.
 pub(crate) fn load_moe_qwen35(
@@ -124,6 +134,7 @@ pub(crate) fn load_moe_qwen35(
     quantize_k: spark_runtime::gpu::KernelHandle,
     stream: u64,
     skip_routed_experts: bool,
+    force_all_experts: bool,
 ) -> Result<MoeWeights> {
     let p = format!("{layer_prefix}.mlp");
 
@@ -292,7 +303,7 @@ pub(crate) fn load_moe_qwen35(
 
     let mut experts = Vec::with_capacity(num_experts);
     for e in 0..num_experts {
-        if skip_routed_experts || !config.is_local_expert(e) {
+        if skip_routed_experts || !(force_all_experts || config.is_local_expert(e)) {
             experts.push(ExpertWeight::null());
         } else if is_fused {
             experts.push(load_expert_fused(e)?);

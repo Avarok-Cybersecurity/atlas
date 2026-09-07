@@ -48,9 +48,17 @@ pub(crate) fn load_moe_qwen4exp_exl3(
     num_experts: usize,
     gpu: &dyn GpuBackend,
     config: &atlas_core::config::ModelConfig,
+    // Replicate every expert on this rank instead of loading only
+    // `local_expert_range()` — the draft (MTP) module under EP. See
+    // `load_moe_qwen35`'s `force_all_experts`.
+    force_all_experts: bool,
 ) -> Result<Exl3MoeExperts> {
     let p = format!("{layer_prefix}.mlp");
-    let (local_start, local_end) = config.local_expert_range();
+    let (local_start, local_end) = if force_all_experts {
+        (0, num_experts)
+    } else {
+        config.local_expert_range()
+    };
     ensure!(
         local_end > local_start && local_end <= num_experts,
         "EXL3 native MoE {layer_prefix}: empty/invalid local expert range \
