@@ -1008,12 +1008,51 @@ sufficient: it removes `ensure!(batched_meta.is_none())` so QSA stops refusing t
 the path it is admitted to still loops per stream. Batching four streams costs 14.3 s against 17 s of
 serial prefill — a 1.18x from sharing scheduler overhead, not from sharing weight sweeps.
 
-The real lever is kernel-level batched prefill: concatenate the streams' rows into ONE forward so the
-MoE and dense GEMMs see 4x the rows. That matters here specifically because this engine is weakest at
-small M (grouped GEMM costs the same at 1 row as 28; the fused MoE tier wants 1024 rows/expert; the
-dense reconstruct tier only engages above 512 rows), so four 2K-token streams concatenated to 8.6K
-rows would land in the tiers already tuned. That is Q12 phase 2/3 and it is a substantial piece of
-work — the QSA branch is a prerequisite for it, not a win on its own.
+### Kernel-level fused prefill EXISTS, engages, and measures 0.4% — prefill is saturated
+
+The obvious next step was "concatenate the streams' rows into ONE forward so the MoE and dense GEMMs
+see 4x the rows", on the theory that this engine is weakest at small M. **It is already built**
+(`prefill_b/batch_kernel.rs`, `prefill_batch_chunk_kernel_batched`, the varlen wave planner), and two
+preconditions had merely never been met at once. `check_kernel_batched_eligible` refuses when chunk
+lengths differ across streams unless `ATLAS_PREFILL_VARLEN=1`, and when Σ effective tokens exceeds the
+token arena — a 4 x ~2150-token burst is 8600 > 8192 and unequal, so it tripped both.
+
+With `ATLAS_PREFILL_CODISPATCH=1 ATLAS_PREFILL_VARLEN=1` and 4 x ~1700-token prompts (Σ 6825 < 8192),
+on `perf/qsa-concurrent-prefill`, the whole chain engages:
+
+```
+Varlen prefill waves: 4 streams -> 1 wave(s), M per wave [6825] (cap 8192)
+QSA batched prefill select: ARM=batched streams=4 selective=0 inert_bound=2051
+Q12 kernel-batched prefill dispatched (fused large-M) n=4 total_tokens=6825
+```
+
+One-variable A/B, `ATLAS_Q12_BATCHED` the only difference (prefix caching OFF in BOTH arms, because
+the fused path cannot be reached with it on — see below):
+
+| arm | tokens | worst TTFT | prefill tok/s |
+|---|---:|---:|---:|
+| fused large-M | 6825 | 10647 ms | **641** |
+| per-stream (`ATLAS_Q12_BATCHED=0`) | 6820 | 10691 ms | **638** |
+| solo reference, 1 stream | 1714 | 2731 ms | 628 |
+
+**0.4%.** And the solo rate is the same 628 tok/s, so four streams fused into a 6825-row forward run at
+the same rate as one 1714-row forward. Prefill is throughput-SATURATED at ~630 tok/s: the TTFT
+staircase under concurrency is queueing at a fixed service rate, not waste that batching can recover.
+The small-M argument does not apply — it is about DECODE at 1 row and MoE experts receiving few rows;
+at 1700 rows the dense GEMMs, the 1024-row MoE tier and the 512-row reconstruct tier are all already
+in their efficient regime, so there was nothing left to amortize.
+
+Two constraints on the claim. The prompts sit below the 2051-token QSA inert bound (`selective=0`), so
+the fused dispatch was exercised but QSA's selective path was not. And prefix caching had to be OFF in
+both arms: `batched_reserve_hybrid_ssm_ok` admits a hybrid-SSM batch only when EVERY reservation is
+cold (`matched_tokens == 0`), and the shared chat-template preamble matches ~32 tokens, so under the
+house rule (prefix caching always on) the fused path is unreachable in production. Making it
+warm-match-capable is therefore work that would unlock the 0.4% above.
+
+**Consequence:** `perf/qsa-concurrent-prefill` is correct and now proven to engage (`ARM=batched
+streams=4`), but it is not a win — it removes a refusal in front of a path that does not pay. Left
+unmerged. The remaining prefill lever is making each token cheaper (the kernel mix: MoE tiers, QSA
+attention, dense trellis), not grouping more tokens per forward.
 
 ## Files
 
