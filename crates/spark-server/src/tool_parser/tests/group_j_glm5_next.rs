@@ -96,7 +96,10 @@ fn leading_prose_is_preserved_as_content() {
     let text = format!("Let me check that for you.{GLM_TWO_ARG}");
     let (content, calls) = parse_tool_calls_promoting_bare_names(&text);
     assert_eq!(calls.len(), 1);
-    assert_eq!(content.as_deref().unwrap().trim(), "Let me check that for you.");
+    assert_eq!(
+        content.as_deref().unwrap().trim(),
+        "Let me check that for you."
+    );
 }
 
 /// GLM emits reasoning in `<think>` tags; a call deliberated inside thinking is
@@ -147,9 +150,17 @@ fn untyped_wire_values_are_coerced_to_the_schema() {
     );
     coerce_all(&mut calls, &[weather_tool()]);
     let args = args_of(&calls[0]);
-    assert_eq!(args["location"], serde_json::json!("Paris"), "stays a string");
+    assert_eq!(
+        args["location"],
+        serde_json::json!("Paris"),
+        "stays a string"
+    );
     assert_eq!(args["days"], serde_json::json!(3), "integer, not \"3\"");
-    assert_eq!(args["verbose"], serde_json::json!(true), "bool, not \"true\"");
+    assert_eq!(
+        args["verbose"],
+        serde_json::json!(true),
+        "bool, not \"true\""
+    );
 }
 
 /// Replay parity: what Atlas writes back into assistant history must be what
