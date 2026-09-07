@@ -969,6 +969,52 @@ off a cold prefill's TTFT. That is a bench-derived hypothesis — the in-engine 
 env knob the only variable) has not been run. Note also that `resolve` holds the PLE table mutex, so
 this time is serialized across concurrent streams and the saving compounds at concurrency.
 
+## Concurrent prefill: the gate opens, the forward is still per-stream (2026-09-06 late)
+
+Chasing "concurrent prefills serialize" produced three wrong suspects before the right one. Recorded
+so nobody re-walks it.
+
+**Not the admission window.** One already exists: `mod_helpers.rs::drain_pending_requests` waits up to
+`ATLAS_PREFILL_CODISPATCH_WINDOW_MS` (default 100) on the idle condvar, growth-aware — it keeps
+collecting while the queue grows and stops after one quiet `settle`, precisely so a C=4 burst is not
+split. **Not admission accounting** either: `seq_commitment_blocks` reserves `prompt + min(max_tokens,
+watermark)`, so four 8K prompts with 300-token budgets reserve ~2K blocks of an ~11K-block pool.
+
+**Not the co-dispatch gate.** A one-shot attribution line was added to `phase_start_prefills.rs`
+(same pattern as the DFlash batched-verify gate), and on a fresh idle server with four concurrent
+~2150-token prompts it reads:
+
+```
+prefill co-dispatch gate (first tick with requests) new_reqs=4 active=0 prefilling=0
+    chunked=true is_ep=false vision=false want_codispatch=true
+```
+
+followed by `Batched prefill[0/4] … [3/4]`. All four streams then return TTFT within 17 ms of each
+other — synchronized, no staircase. So co-dispatch works.
+
+**It is the forward.** `phase_continue_prefills.rs` says it outright: *"Both call the default trait
+impl today (per-stream loops); Q12 Phase 2/3 replace with kernel-level batched dispatch."* The four
+streams share a scheduler step, then are forwarded one at a time.
+
+Measured, fresh idle server, 4 x ~2150-token prompts, `ATLAS_PREFILL_CODISPATCH=1`:
+
+| binary | per-stream TTFT | vs one stream alone (4249 ms, cliff probe) |
+|---|---:|---:|
+| `wip/exl3-research` (d09ab8477) | 14364 / 14369 / 14358 / 14375 ms | 3.4x |
+| `perf/qsa-concurrent-prefill` (503dad960) | 14304 / 14310 / 14315 / 14320 ms | 3.4x |
+
+**The QSA batching branch measures as no change** (0.4%, inside noise). It is necessary but not
+sufficient: it removes `ensure!(batched_meta.is_none())` so QSA stops refusing the batched path, but
+the path it is admitted to still loops per stream. Batching four streams costs 14.3 s against 17 s of
+serial prefill — a 1.18x from sharing scheduler overhead, not from sharing weight sweeps.
+
+The real lever is kernel-level batched prefill: concatenate the streams' rows into ONE forward so the
+MoE and dense GEMMs see 4x the rows. That matters here specifically because this engine is weakest at
+small M (grouped GEMM costs the same at 1 row as 28; the fused MoE tier wants 1024 rows/expert; the
+dense reconstruct tier only engages above 512 rows), so four 2K-token streams concatenated to 8.6K
+rows would land in the tiers already tuned. That is Q12 phase 2/3 and it is a substantial piece of
+work — the QSA branch is a prerequisite for it, not a win on its own.
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17
