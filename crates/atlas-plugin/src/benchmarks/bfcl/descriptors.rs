@@ -49,7 +49,7 @@ pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              every other checkpoint is judged by its own BENCH.toml thresholds, with the \
              floor kept as table styling for reference. \
              Downloads bfcl-eval into ~/.atlas/artifacts on first run.",
-    duration_hint: "~3.5 h",
+    duration_hint: "~1.7 h (measured)",
     updated: "2026-08-15",
     needs_confirmation: false,
     // Gates B and D. B runs on whichever model the PR targets; D on a dense 27B.
@@ -121,7 +121,7 @@ pub const SUBSET_ECHOLP_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              overall_accuracy in the same place — so its scores are NOT comparable to the golden \
              draw's, and it carries its own baseline. It exists because the 35B's only recorded \
              BFCL history is on this draw.",
-    duration_hint: "~3.5 h",
+    duration_hint: "~2.1 h",
     updated: "2026-08-15",
     needs_confirmation: false,
     intended_for: Some(crate::benchmark::ModelExpectation {
@@ -152,18 +152,22 @@ pub const SUBSET_ECHOLP_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
 // bars of its own. Its verdict is informational; the group's aggregate is what
 // `check_record` judges.
 //
-// `duration_hint` is the whole draw's ~3.5 h divided four ways. That is the
-// entire point: the two BFCL legs are the floor on every campaign's wall-clock,
-// and on 2026-09-06 they were 3.5 h each even after being split across two
-// boxes.
+// `duration_hint` is MEASURED, per family, not derived from the group's hint.
+// It used to read "~55 min (one quarter of the draw)" for both families, taken
+// as the old "~3.5 h" divided by four — and that hint was wrong in the
+// direction that matters: it said a shard misses the 30-minute target when
+// eight timed legs on GB10 (2026-09-08) put a `bfcl-subset` shard at 1496-1539 s,
+// i.e. ~25 min, comfortably inside it. A scheduling hint that overstates by 2x
+// is worse than none, because the whole reason the split exists is to get a leg
+// under half an hour.
 macro_rules! shard_descriptor {
-    ($konst:ident, $id:literal, $name:literal, $variant:expr, $index:literal, $base:ident) => {
+    ($konst:ident, $id:literal, $name:literal, $variant:expr, $index:literal, $base:ident, $hint:literal) => {
         pub const $konst: BenchmarkDescriptor = BenchmarkDescriptor {
             id: $id,
             name: $name,
             summary: $base.summary,
             detail: $base.detail,
-            duration_hint: "~55 min (one quarter of the draw)",
+            duration_hint: $hint,
             updated: $base.updated,
             needs_confirmation: false,
             intended_for: $base.intended_for,
@@ -181,7 +185,8 @@ shard_descriptor!(
     "BFCL (subset) shard A",
     Variant::Subset,
     0,
-    SUBSET_DESCRIPTOR
+    SUBSET_DESCRIPTOR,
+    "~25 min (measured, one quarter of the draw)"
 );
 shard_descriptor!(
     SUBSET_B,
@@ -189,7 +194,8 @@ shard_descriptor!(
     "BFCL (subset) shard B",
     Variant::Subset,
     1,
-    SUBSET_DESCRIPTOR
+    SUBSET_DESCRIPTOR,
+    "~25 min (measured, one quarter of the draw)"
 );
 shard_descriptor!(
     SUBSET_C,
@@ -197,7 +203,8 @@ shard_descriptor!(
     "BFCL (subset) shard C",
     Variant::Subset,
     2,
-    SUBSET_DESCRIPTOR
+    SUBSET_DESCRIPTOR,
+    "~25 min (measured, one quarter of the draw)"
 );
 shard_descriptor!(
     SUBSET_D,
@@ -205,7 +212,8 @@ shard_descriptor!(
     "BFCL (subset) shard D",
     Variant::Subset,
     3,
-    SUBSET_DESCRIPTOR
+    SUBSET_DESCRIPTOR,
+    "~25 min (measured, one quarter of the draw)"
 );
 shard_descriptor!(
     ECHOLP_A,
@@ -213,7 +221,8 @@ shard_descriptor!(
     "BFCL (echolp) shard A",
     Variant::SubsetEcholp,
     0,
-    SUBSET_ECHOLP_DESCRIPTOR
+    SUBSET_ECHOLP_DESCRIPTOR,
+    "~31 min (one quarter of the draw)"
 );
 shard_descriptor!(
     ECHOLP_B,
@@ -221,7 +230,8 @@ shard_descriptor!(
     "BFCL (echolp) shard B",
     Variant::SubsetEcholp,
     1,
-    SUBSET_ECHOLP_DESCRIPTOR
+    SUBSET_ECHOLP_DESCRIPTOR,
+    "~31 min (one quarter of the draw)"
 );
 shard_descriptor!(
     ECHOLP_C,
@@ -229,7 +239,8 @@ shard_descriptor!(
     "BFCL (echolp) shard C",
     Variant::SubsetEcholp,
     2,
-    SUBSET_ECHOLP_DESCRIPTOR
+    SUBSET_ECHOLP_DESCRIPTOR,
+    "~31 min (one quarter of the draw)"
 );
 shard_descriptor!(
     ECHOLP_D,
@@ -237,5 +248,6 @@ shard_descriptor!(
     "BFCL (echolp) shard D",
     Variant::SubsetEcholp,
     3,
-    SUBSET_ECHOLP_DESCRIPTOR
+    SUBSET_ECHOLP_DESCRIPTOR,
+    "~31 min (one quarter of the draw)"
 );
