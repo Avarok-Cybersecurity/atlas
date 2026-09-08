@@ -20,7 +20,7 @@
 //! # 🟢 The context ceiling this module used to impose is GONE
 //!
 //! `dsa_topk_pools` no longer sorts the whole pool axis in shared memory. It walks the
-//! pools in fixed [`TOPK_TILE`]-wide tiles, keeping a running best-`TOPK_TILE` list, so
+//! pools in fixed `TOPK_TILE`-wide tiles, keeping a running best-`TOPK_TILE` list, so
 //! shared memory is a constant `16 × TOPK_TILE` bytes whatever the context. The result is
 //! bit-identical to the old whole-axis sort — the comparator (score DESC, pool index ASC)
 //! is a total order over unique indices, so the top-`select_k` prefix is unique and

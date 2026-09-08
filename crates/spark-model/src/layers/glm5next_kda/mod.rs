@@ -654,8 +654,8 @@ impl Glm5NextKdaLayer {
 
     /// K tokens of ONE sequence: the projections batched, the recurrence NOT.
     ///
-    /// This is the speculative-verify body. The weight-heavy halves — [`Self::front_end`]'s
-    /// q/k/v, both low-rank gate pairs and `b_proj`, and [`Self::back_end`]'s `o_proj` — run
+    /// This is the speculative-verify body. The weight-heavy halves — `Self::front_end`'s
+    /// q/k/v, both low-rank gate pairs and `b_proj`, and `Self::back_end`'s `o_proj` — run
     /// once over all K rows, so a K-token verify reads KDA's 4.7 GB/rank/token ONCE instead of
     /// K times. That is the entire reason speculation can pay on this model.
     ///
@@ -664,7 +664,7 @@ impl Glm5NextKdaLayer {
     /// speculation is silently lossy. It holds because `dense_gemv_bf16_batchm` reproduces each
     /// row's exact K-iteration order and reduction tree (`ops::dense_mm_bf16`), the pack / gate
     /// / sigmoid / `o_norm` kernels are grid-parallel over the token axis, and
-    /// [`Self::stateful_row`] walks the state one token at a time exactly as `decode` does.
+    /// `Self::stateful_row` walks the state one token at a time exactly as `decode` does.
     ///
     /// `snapshots[t]` — `(h_dst, conv_dst)` — receives the state AFTER row `t`, which is what a
     /// partial accept rewinds to. Pass `k - 1` of them (a full accept never rewinds) or none.

@@ -1184,7 +1184,7 @@ impl TransformerLayer for Glm5NextLayer {
     /// `decode` pins highway slot 0. K tokens would then overwrite each other's mHC streams and
     /// every layer past the first would read the last token's highway for all K rows.
     ///
-    /// ✅ **Batched.** This delegates to [`Self::forward_k`], which sweeps the weights ONCE for
+    /// ✅ **Batched.** This delegates to `Self::forward_k`, which sweeps the weights ONCE for
     /// all K rows. (An earlier revision of this comment said "still one `forward_one` per row";
     /// that was stale — `forward_k` has been the body since the batched-verify work, and the
     /// measured K=3 step of ~101 ms against a ~63 ms single-row step is only explicable by it.)
