@@ -412,8 +412,10 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
 
         for sl in &skeleton.layers {
             let idx = sl.index;
+            let t_layer = std::time::Instant::now();
             let src = LayerSource::collect(gpu, store, idx)
                 .with_context(|| format!("glm5_next: collecting layer {idx}"))?;
+            let t_collect = t_layer.elapsed();
 
             let mixer = match sl.mixer {
                 Mixer::Kda => {
@@ -459,6 +461,8 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                 }
             };
 
+            let t_mixer = t_layer.elapsed();
+
             let load = |n: &str| src.f32(n);
             let mlp = match sl.mlp {
                 Mlp::Dense => Glm5NextMlpSite::Dense(mlp_build::build_dense_mlp(
@@ -503,6 +507,22 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                     )?))
                 }
             };
+
+            let t_mlp = t_layer.elapsed();
+            // Splits the unattributed post-load window by ARM. A dense layer has
+            // neither a DSA mixer nor a MoE arm; a KDA+MoE layer has one; a
+            // DSA+MoE layer has both — three shapes, so the byte-proportional
+            // host round trip and the non-proportional per-arm work (absorb_q,
+            // the expert sync storm) stop being collinear and can be separated.
+            tracing::info!(
+                "glm5_next layer {idx} built: collect {:.2}s mixer {:.2}s mlp {:.2}s \
+                 (mixer={:?} mlp={:?})",
+                t_collect.as_secs_f64(),
+                (t_mixer - t_collect).as_secs_f64(),
+                (t_mlp - t_mixer).as_secs_f64(),
+                sl.mixer,
+                sl.mlp,
+            );
 
             let mhc = if sl.hyper_connection {
                 Some(Glm5NextMhc {

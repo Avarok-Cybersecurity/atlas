@@ -233,3 +233,108 @@ fn absorb_o_width_matches_the_decode_contraction() {
     .unwrap();
     assert_eq!(o.len(), c.hidden * heads * kvl);
 }
+
+/// The pre-rework nest, verbatim. Oracle for [`absorb_q_bit_exact`].
+///
+/// Kept as its own copy on purpose: comparing the new code against a
+/// paraphrase of itself proves nothing.
+fn absorb_q_reference(
+    kv_b: &[f32],
+    q_b: &[f32],
+    full_heads: usize,
+    kvl: usize,
+    ql: usize,
+    nope: usize,
+    vd: usize,
+) -> Vec<f32> {
+    let mut out = vec![0f32; full_heads * kvl * ql];
+    for h in 0..full_heads {
+        let kv_base = h * (nope + vd);
+        let qb_base = h * nope;
+        for c in 0..kvl {
+            for k in 0..ql {
+                let mut acc = 0f32;
+                for r in 0..nope {
+                    acc += kv_b[(kv_base + r) * kvl + c] * q_b[(qb_base + r) * ql + k];
+                }
+                out[(h * kvl + c) * ql + k] = acc;
+            }
+        }
+    }
+    out
+}
+
+/// Threading + contiguity hoisting must not move a single bit.
+///
+/// 🔴 `assert_eq!` on f32 BITS, not an epsilon. The rework preserves the
+/// accumulation order over `r` for every output element, so the result is
+/// bit-identical; an epsilon assertion would also pass if someone later
+/// reassociated the sum for speed, which is the regression this guards.
+#[test]
+fn absorb_q_bit_exact() {
+    // Shapes chosen so `rows = full_heads * kvl` exceeds a plausible worker
+    // count, forcing a real multi-thread split with a ragged final chunk.
+    let (full_heads, kvl, ql, nope, vd) = (5usize, 7usize, 11usize, 6usize, 3usize);
+    // Deterministic, sign-varied, non-round values: a lattice of exact binary
+    // fractions would hide an ordering change because the adds stay exact.
+    let mk = |n: usize, seed: u32| -> Vec<f32> {
+        (0..n)
+            .map(|i| {
+                let x = (i as u32).wrapping_mul(2_654_435_761).wrapping_add(seed);
+                ((x % 20_011) as f32 / 20_011.0 - 0.5) * 3.7
+            })
+            .collect()
+    };
+    let kv_b = mk(full_heads * (nope + vd) * kvl, 12345);
+    let q_b = mk(full_heads * nope * ql, 67890);
+
+    let want = absorb_q_reference(&kv_b, &q_b, full_heads, kvl, ql, nope, vd);
+
+    let rows = full_heads * kvl;
+    let mut got = vec![0f32; rows * ql];
+    // Exercise the threaded split directly rather than through the env lever,
+    // so the test cannot be perturbed by another test's environment.
+    let threads = 4usize;
+    let rows_per = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        for (chunk_idx, chunk) in got.chunks_mut(rows_per * ql).enumerate() {
+            let row0 = chunk_idx * rows_per;
+            let kv_b = &kv_b;
+            let q_b = &q_b;
+            scope.spawn(move || {
+                super::absorb_q_rows(chunk, row0, kv_b, q_b, kvl, ql, nope, vd);
+            });
+        }
+    });
+
+    assert_eq!(got.len(), want.len());
+    for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+        assert_eq!(
+            g.to_bits(),
+            w.to_bits(),
+            "element {i}: threaded {g:?} != reference {w:?}"
+        );
+    }
+}
+
+/// A single worker must also match, and must cover a ragged span.
+#[test]
+fn absorb_q_single_thread_matches_reference() {
+    let (full_heads, kvl, ql, nope, vd) = (3usize, 5usize, 9usize, 4usize, 2usize);
+    let mk = |n: usize, seed: u32| -> Vec<f32> {
+        (0..n)
+            .map(|i| {
+                let x = (i as u32).wrapping_mul(40_503).wrapping_add(seed);
+                ((x % 7_919) as f32 / 7_919.0 - 0.5) * 2.3
+            })
+            .collect()
+    };
+    let kv_b = mk(full_heads * (nope + vd) * kvl, 11);
+    let q_b = mk(full_heads * nope * ql, 22);
+    let want = absorb_q_reference(&kv_b, &q_b, full_heads, kvl, ql, nope, vd);
+    let mut got = vec![0f32; full_heads * kvl * ql];
+    super::absorb_q_rows(&mut got, 0, &kv_b, &q_b, kvl, ql, nope, vd);
+    for (g, w) in got.iter().zip(want.iter()) {
+        assert_eq!(g.to_bits(), w.to_bits());
+    }
+}

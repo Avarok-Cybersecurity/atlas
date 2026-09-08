@@ -107,11 +107,29 @@ pub fn bind_experts_exl3(
          of {num_experts}"
     );
 
+    // Resolve the codebook ONCE for the whole layer.
+    //
+    // 🔴 `from_store` reads the `.mcg`/`.mul1` flag with a BLOCKING 4-byte
+    // `copy_d2h` (spark-runtime weights/exl3.rs:168 -> gpu_copy.rs:82). Per
+    // projection that is 144 local experts x 3 = 432 synchronous stream syncs
+    // PER MoE LAYER, ~18,000 over a full EP=2 load, every one of them fetching
+    // the SAME constant. Measured cost is inside the unattributed boot window;
+    // `weight_map/moe_exl3.rs:90` already avoided it this way.
+    //
+    // Safe because the codebook is uniform per layer by construction, and the
+    // (K, cb) check below still enforces exactly that: the fused MoE kernel is
+    // instantiated for ONE (K, codebook) pair per launch, so a mixed layer is
+    // refused there rather than silently decoded with the probed value.
+    let cb_probe = qualify(&expert_leaf(local_start, "gate_proj"));
+    let layer_cb = Exl3Weight::from_store(gpu, store, &cb_probe)
+        .with_context(|| format!("GLM EXL3 codebook probe {cb_probe}"))?
+        .cb;
+
     let load_proj = |proj: &str| -> Result<Vec<Option<Exl3Weight>>> {
         let mut out: Vec<Option<Exl3Weight>> = (0..num_experts).map(|_| None).collect();
         for id in local_start..local_end {
             let prefix = qualify(&expert_leaf(id, proj));
-            let w = Exl3Weight::from_store(gpu, store, &prefix)
+            let w = Exl3Weight::from_store_with_cb(gpu, store, &prefix, layer_cb)
                 .with_context(|| format!("GLM EXL3 routed expert {prefix}"))?;
             out[id] = Some(w);
         }
