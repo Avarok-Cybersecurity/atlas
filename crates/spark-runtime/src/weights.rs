@@ -35,9 +35,17 @@ pub(crate) fn evict_page_cache(_file: &std::fs::File) {
 pub enum WeightDtype {
     BF16,
     FP32,
+    /// IEEE fp16. Shipped by EXL3 checkpoints (Hadamard sign vectors `suh`/
+    /// `svh` and the unquantized dense tensors); consumers convert to BF16
+    /// at load where a path expects it.
+    F16,
     FP8E4M3,
     FP8E8M0,
     UInt8,
+    /// Opaque 2-byte container: EXL3 `.trellis` packed code words arrive as
+    /// safetensors I16 but are raw bits, not integers — nothing may do
+    /// arithmetic on them except the EXL3 decode kernels.
+    UInt16,
     Int64,
     /// Keep-packed PrismML ternary Q2_0 (ggml id 42): raw on-disk blocks stay
     /// 2-bit in VRAM (fp16 scale + 2-bit codes per group of `group` elements),
@@ -59,9 +67,11 @@ impl WeightDtype {
         match self {
             Self::BF16 => 2,
             Self::FP32 => 4,
+            Self::F16 => 2,
             Self::FP8E4M3 => 1,
             Self::FP8E8M0 => 1,
             Self::UInt8 => 1,
+            Self::UInt16 => 2,
             Self::Int64 => 8,
             Self::PackedQ2_0 { .. } => 0,
         }
@@ -176,6 +186,10 @@ pub struct WeightStore {
     /// quantize-on-load or straight off NVMe by `NgramRowCache`, both of
     /// which need only this (path, offset) locator.
     deferred: HashMap<String, DeferredTensor>,
+    /// Pooled weight arenas. A tensor whose pointer falls inside one of these
+    /// is a VIEW, not an owned allocation, so it must never be handed to a raw
+    /// `gpu.free` — see `weights/arena.rs`.
+    arenas: std::collections::BTreeMap<u64, arena::WeightArena>,
 }
 
 /// Where a skipped tensor lives, so a consumer can read it in place.
@@ -196,6 +210,7 @@ impl WeightStore {
         Self {
             weights: HashMap::new(),
             deferred: HashMap::new(),
+            arenas: std::collections::BTreeMap::new(),
         }
     }
 
@@ -226,7 +241,26 @@ impl WeightStore {
         Self {
             weights,
             deferred: HashMap::new(),
+            arenas: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// Insert (or replace) a tensor. Used by load-time materialization passes
+    /// that rewrite a checkpoint's tensors into the layout the model loaders
+    /// consume (the EXL3 pass: trellis triplets -> `.weight` [+ NVFP4 scales]).
+    /// Returns the displaced tensor, if any — the CALLER owns freeing its
+    /// device memory, through [`Self::release_tensor`] (a no-op for arena
+    /// members; the store itself never frees here).
+    pub fn insert(&mut self, name: String, t: WeightTensor) -> Option<WeightTensor> {
+        self.weights.insert(name, t)
+    }
+
+    /// Remove a tensor by name, returning it. As with [`Self::insert`], the
+    /// caller owns freeing the returned tensor's device memory — via
+    /// [`Self::release_tensor`], never a raw `gpu.free`, because the tensor may
+    /// be a view into a pooled arena.
+    pub fn remove(&mut self, name: &str) -> Option<WeightTensor> {
+        self.weights.remove(name)
     }
 
     /// Get a weight tensor by name. Fails fast if not found.
@@ -446,12 +480,14 @@ impl SafetensorsLoader {
 /// that segment as a number) so names sort NUMERICALLY on the index.
 /// `embedders.2` must precede `embedders.10`; a plain lexicographic sort puts
 /// `10` first and silently mis-maps every table after the ninth.
+pub mod exl3;
 pub mod adapter;
 mod gguf;
 mod loader;
 pub mod mlx_int8;
 pub use gguf::{GgufLoader, config_from_gguf_dir, find_gguf};
 pub(crate) use loader::estimate_load_bytes;
+pub use loader::load_safetensors_file;
 // Platform-independent: consumed by the unix-only fast-weights (O_DIRECT) path
 // AND by the GGUF loader, which builds everywhere. Gating this on `unix` broke
 // the Windows CUDA build the moment `gguf.rs` started using it.
@@ -477,28 +513,16 @@ pub use prefix_detect::auto_detect_weight_prefix;
 /// a shared block into this map. (Fused per-expert views DO exist — see
 /// `weight_loader/step3p7.rs:93` — but they live in the layer structs that own
 /// the fused allocation, not here, so this cannot double-free them.)
-impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
-    fn label(&self) -> &'static str {
-        "weight store"
-    }
+// NOTE: `ModelResource for WeightStore` lives in `weights/arena.rs`.
+// That version is the arena-aware one: it SKIPS tensors whose pointer
+// falls inside a pooled arena (freeing such a view individually would be
+// an invalid free, and its base is freed separately) and releases the
+// arena bases last. The pre-arena copy that used to live here freed every
+// tensor unconditionally, which is wrong once arenas exist.
 
-    fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
-        let mut first_error = None;
-        // `drain` rather than iterate: the map must not be left holding
-        // pointers to memory that is gone, and it makes this idempotent.
-        for (name, tensor) in self.weights.drain() {
-            if let Err(e) = gpu.free(tensor.ptr)
-                && first_error.is_none()
-            {
-                first_error = Some(e.context(format!("freeing weight {name}")));
-            }
-        }
-        match first_error {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
-    }
-}
 
 #[cfg(test)]
 mod teardown_tests;
+
+mod arena;
+pub use arena::WeightArena;

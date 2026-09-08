@@ -847,6 +847,9 @@ impl TransformerModel {
             lm_head_nvfp4,
             lm_head_nvfp4_t,
             lm_head_fp8,
+            // Installed post-construction by `set_lm_head_exl3` when the
+            // EXL3 materialization pass kept `lm_head` packed.
+            lm_head_exl3: None,
             layers,
             buffers,
             lora: None,

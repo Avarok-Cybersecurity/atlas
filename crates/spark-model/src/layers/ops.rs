@@ -52,6 +52,10 @@ mod gemm_dense_int8;
 mod gemm_fp4;
 #[path = "ops/model_stats.rs"]
 pub mod model_stats;
+#[path = "ops/exl3_dense.rs"]
+mod exl3_dense;
+#[path = "ops/exl3_matmul.rs"]
+mod exl3_matmul;
 pub use model_stats::ModelStats;
 
 #[path = "ops/gemm_fp8_prefill.rs"]
@@ -222,3 +226,5 @@ pub use ssm_mamba::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;
 pub use wide_prefill::*;
+pub use exl3_dense::*;
+pub use exl3_matmul::*;
