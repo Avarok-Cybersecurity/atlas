@@ -146,7 +146,34 @@ fn from_values(
 }
 
 impl ModelLevers {
-    /// Resolve from the environment. Called once, when the model is built.
+    /// The process-wide levers, resolved from the environment EXACTLY ONCE.
+    ///
+    /// ★ USE THIS, NOT [`Self::from_env`]. Every field here is a pure function
+    /// of `ATLAS_*` environment variables, which cannot change after start —
+    /// the runtime `set_var` that could have changed them was deliberately
+    /// removed. So this is a process constant and must be computed once.
+    ///
+    /// It was not. `from_env` reads ~30 environment variables, each allocating
+    /// a `String`, and three call sites invoked it from hot paths.
+    /// MEASURED: 32,513 resolutions in a single `concurrency-sweep` — which
+    /// matches 48 layers x ~680 prefills, i.e. once per layer per prefill from
+    /// `qwen3_attention::prefill_weights`. Each of those also re-ran
+    /// `drafter_context::resolve_from_env` and its logging.
+    ///
+    /// Returns a reference so callers cannot accidentally keep re-resolving;
+    /// `ModelLevers` is `Copy`, so `*ModelLevers::get()` is free when an owned
+    /// value is wanted.
+    pub fn get() -> &'static Self {
+        static LEVERS: std::sync::OnceLock<ModelLevers> = std::sync::OnceLock::new();
+        LEVERS.get_or_init(Self::from_env)
+    }
+
+    /// Resolve from the environment, unconditionally.
+    ///
+    /// Prefer [`Self::get`]. This exists for the one caller that needs an OWNED,
+    /// MUTABLE copy — the model build overwrites `max_decode_seqs` with the
+    /// batch size — and for tests that want a fresh read. Calling it in a hot
+    /// path re-reads every `ATLAS_*` variable.
     pub fn from_env() -> Self {
         from_values(
             |var| std::env::var(var).ok(),

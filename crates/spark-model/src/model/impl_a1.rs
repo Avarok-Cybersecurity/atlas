@@ -148,7 +148,7 @@ impl TransformerModel {
         // a sequence's attention reduction is invariant to how many other
         // sequences are co-batched (concurrent-decode determinism — see
         // tasks/determinism_investigation.md).
-        let mut levers = ops::ModelLevers::from_env();
+        let mut levers = *ops::ModelLevers::get();
         levers.max_decode_seqs = (max_batch_size as u32).max(1);
 
         tracing::info!(
