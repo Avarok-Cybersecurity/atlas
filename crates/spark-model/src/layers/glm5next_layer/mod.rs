@@ -177,6 +177,64 @@ pub struct Glm5NextLayer {
 /// there), so R = 8 takes the whole available win. ANOMALIES A65.
 pub(crate) const PREFILL_ROWS: usize = 16;
 
+/// Route GLM prefill's KDA mixer through the chunked scan instead of the per-token
+/// recurrent walk. `ATLAS_GLM_KDA_CHUNK_PREFILL=1` to enable.
+///
+/// Default OFF while it is measured: the chunked scan is NOT bit-identical to the
+/// recurrent walk, so this is a numerics change as well as a speed one, and the default
+/// does not move without evidence on both.
+fn kda_chunk_prefill() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| {
+        let on = std::env::var("ATLAS_GLM_KDA_CHUNK_PREFILL").as_deref() == Ok("1");
+        if on {
+            tracing::warn!(
+                "ATLAS_GLM_KDA_CHUNK_PREFILL=1 - GLM prefill KDA uses the CHUNKED scan \
+                 (kda_chunk_prepare + kda_chunk_scan). Not bit-identical to the per-token \
+                 recurrent walk."
+            );
+        }
+        on
+    })
+}
+
+/// Route GLM projections WIDER than the bit-exact tier through cuBLASLt BF16 instead of
+/// the scalar tile GEMM. Shared by the KDA and DSA blocks.
+///
+/// 🔴 DEFAULT ON. `ATLAS_GLM_CUBLAS_PROJ=0` is the kill-switch.
+///
+/// `dense_gemm_bf16` is, by its own doc, a "scalar strict-order BF16 GEMM, no
+/// reassociation" — correctness-first, one thread per output element, not a tensor-core
+/// kernel. With `kda_mixer` split three ways it was the largest leaf in prefill by a wide
+/// margin: `kda_front` 24.4% + `kda_back` 7.7% + `dsa_proj` 14.9% = 47% of prefill in
+/// projections alone, against the per-token KDA recurrence — the assumed culprit — at
+/// 4.6%. At 256 rows `kda_front` cost 19.8 ms per layer-call to move ~268 MB of weights,
+/// ~20x off a 273 GB/s part.
+///
+/// 🪤 The M threshold is a NUMERICS boundary, not a tuning knob. `dense_mm_bf16` sends
+/// M=1 to the GEMV and M=2..=16 to the batched single-sweep kernel; both accumulate per
+/// row in FP32 in a fixed K order and are BIT-IDENTICAL. Only above
+/// `DENSE_GEMV_BATCHM_MAX_M` does it fall to the tile GEMM, which already reassociates.
+/// So this replaces one non-bit-exact path with another and leaves every bit-exact tier
+/// alone: decode is M=1 and a speculative verify is M<=16, so neither can reach here, and
+/// a verify still matches what decode produced.
+pub(crate) fn cublas_wide_proj() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| {
+        let on = std::env::var("ATLAS_GLM_CUBLAS_PROJ").as_deref() != Ok("0");
+        tracing::warn!(
+            "ATLAS_GLM_CUBLAS_PROJ: wide GLM projections (M > {}) use {}",
+            crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M,
+            if on {
+                "cuBLASLt BF16"
+            } else {
+                "the scalar tile GEMM"
+            }
+        );
+        on
+    })
+}
+
 /// `PREFILL_ROWS`, overridable at launch with `ATLAS_GLM_PREFILL_ROWS`.
 ///
 /// 🔬 Kept as the A/B lever it was built as. It found A65's real defect (the DSA attend read
@@ -832,7 +890,46 @@ impl Glm5NextLayer {
         let t = profile::start();
         let attn_out = match (&self.mixer, &kda_ctx) {
             (Glm5NextMixer::Kda { layer, ws, .. }, Some((kda, snaps))) => {
-                layer.decode_k(gpu, normed, k, kda, ws, snaps, stream)?;
+                // 🔴 The CHUNKED scan, on prefill only. `decode_k` walks `stateful_row` once
+                // per token in a host loop: at `ATLAS_GLM_PREFILL_ROWS=256` x 34 KDA layers
+                // that is 8,704 conv + 8,704 recurrent launches per sub-chunk, each a
+                // 1-warp-per-block kernel that re-reads and rewrites the WHOLE recurrent
+                // state (~4 MB/layer at 64 heads), fully serialised by the state dependency.
+                // A corrected profile puts `kda_mixer` at 53.5% of prefill — the largest
+                // single bucket by 5x. `kda_chunk_prepare` + `kda_chunk_scan` compute the
+                // same recurrence chunk-wise, touching the state once per `cfg.chunk` (32)
+                // tokens instead of once per token.
+                //
+                // The path was already written, numerically gated against the CPU reference,
+                // and its workspace buffers (`chunk_gc/u/w`, sized `t_pad`) are ALLOCATED in
+                // production — it simply had no caller outside a microtest harness. The
+                // loader's stale note ("prefill still runs token-by-token ... the mHC highway
+                // forces per-token anyway") predates `forward_k`, which already does K rows
+                // of mHC in one call.
+                //
+                // 🪤 NOT bit-identical to `decode_k`: the chunked scan reassociates the
+                // recurrence, so it is refused for a speculative VERIFY, whose accepted
+                // tokens must match what decode would have produced. Three conditions keep
+                // it to prefill, and all three are stated rather than inferred:
+                //   * `is_prefill` — the caller's own flag, not `!decode_step` (a verify
+                //     also clears that) and not `k > 1` (a verify is K rows too).
+                //   * `snaps.is_empty()` — belt and braces. Prefill takes no per-row
+                //     snapshots (see `take_snapshots` above), and the chunked path CANNOT
+                //     produce them: it never materialises the state at interior rows. If a
+                //     caller ever asks for them here, fall back rather than silently drop
+                //     the rewind points.
+                //   * `k > 1` — a 1-row chunk has nothing to batch.
+                //
+                // 🪤 Prefix caching: a Marconi replay of `[snap_tok, matched)` must not be
+                // recomputed by a DIFFERENT association than the pass that produced the
+                // cached blocks, or the state drifts and ratchets across turns. That holds
+                // here because the choice keys on `is_prefill` alone, so the original pass
+                // and its replay both take this arm.
+                if is_prefill && k > 1 && snaps.is_empty() && kda_chunk_prefill() {
+                    layer.prefill(gpu, normed, k, kda, ws, stream)?;
+                } else {
+                    layer.decode_k(gpu, normed, k, kda, ws, snaps, stream)?;
+                }
                 ws.final_out
             }
             (Glm5NextMixer::Dsa(layer), _) => {

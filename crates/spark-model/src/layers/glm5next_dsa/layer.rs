@@ -55,6 +55,17 @@ fn gemm(
     kk: usize,
     stream: u64,
 ) -> Result<()> {
+    // 🔴 Wide (prefill) shapes go to cuBLASLt — `dsa_proj` was 14.9% of prefill on the
+    // scalar tile GEMM. Same numerics boundary as the KDA block; see
+    // `glm5next_layer::cublas_wide_proj` for why M > DENSE_GEMV_BATCHM_MAX_M is the safe
+    // cut and why decode and the speculative verify cannot reach it.
+    if m > crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize
+        && crate::layers::glm5next_layer::cublas_wide_proj()
+    {
+        return crate::layers::ops::cublas_bf16_proj_dense(
+            a, b, c, m as u32, n as u32, kk as u32, stream,
+        );
+    }
     // M=1 decode -> GEMV; M=2..8 (a K-token verify sweep) -> ONE weight read for all rows;
     // wider -> the tile GEMM. `ops::dense_mm_bf16` owns the policy and the grid coupling.
     crate::layers::ops::dense_mm_bf16(

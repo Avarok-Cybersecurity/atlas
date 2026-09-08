@@ -369,6 +369,35 @@ impl Glm5NextKdaLayer {
         k: usize,
         stream: u64,
     ) -> Result<()> {
+        // 🔴 PREFILL WIDTHS GO TO cuBLASLt. `dense_gemm_bf16` is, by its own doc, a
+        // "scalar strict-order BF16 GEMM, no reassociation" — correctness-first, not a
+        // tensor-core kernel. With the KDA bucket split three ways it is the single
+        // largest leaf in prefill: `kda_front` 642.4 ms/tok = 24.4% (and `kda_back`
+        // another 7.7%), against `kda_recur` — the per-token recurrence everyone assumes
+        // is the problem — at just 4.6%. At 256 rows that is 19.8 ms per layer-call to
+        // move ~268 MB of weights, ~20x off a 273 GB/s part.
+        //
+        // 🪤 The threshold is not a tuning knob, it is the numerics boundary.
+        // `dense_mm_bf16` routes M=1 to the GEMV and M=2..=16 to the batched single-sweep
+        // kernel, both of which accumulate per row in FP32 in a fixed K order and are
+        // BIT-IDENTICAL. Only above `DENSE_GEMV_BATCHM_MAX_M` does it fall to the tile
+        // GEMM, which already reassociates. So this swaps one non-bit-exact path for
+        // another and leaves every bit-exact tier — decode and the speculative verify —
+        // untouched. A verify must still match what decode produced; it is M<=16 and
+        // never reaches here.
+        if m > ops::DENSE_GEMV_BATCHM_MAX_M as usize
+            && crate::layers::glm5next_layer::cublas_wide_proj()
+        {
+            return ops::cublas_bf16_proj_dense(
+                input,
+                weight.weight,
+                out,
+                m as u32,
+                n as u32,
+                k as u32,
+                stream,
+            );
+        }
         // M=1 decode -> GEMV, M=2..8 verify/short-chunk -> ONE weight sweep, wider -> tile GEMM.
         ops::dense_mm_bf16(
             gpu,
@@ -684,9 +713,16 @@ impl Glm5NextKdaLayer {
                 ws.max_tokens
             );
         }
+        use crate::layers::glm5next_layer::profile;
         let c = &self.cfg;
         let (h_bytes, conv_bytes) = (c.recurrent_state_elems() * 4, c.conv_state_elems() * 4);
+        // Three spans, not one: see the KDA_FRONT doc comment. Each is closed where it
+        // ends — a bucket ended inside a loop against a start taken outside it is exactly
+        // the double-count that made dsa_proj read 94.6%.
+        let t_front = profile::start();
         self.front_end(gpu, hidden, k, ws, stream)?;
+        profile::end(profile::KDA_FRONT, t_front, gpu, stream);
+        let t_recur = profile::start();
         for row in 0..k {
             self.stateful_row(gpu, row, state, ws, stream)?;
             if let Some((h_dst, conv_dst)) = snapshots.get(row) {
@@ -694,7 +730,11 @@ impl Glm5NextKdaLayer {
                 gpu.copy_d2d_async(state.conv, *conv_dst, conv_bytes, stream)?;
             }
         }
-        self.back_end(gpu, k, ws, stream)
+        profile::end(profile::KDA_RECUR, t_recur, gpu, stream);
+        let t_back = profile::start();
+        let r = self.back_end(gpu, k, ws, stream);
+        profile::end(profile::KDA_BACK, t_back, gpu, stream);
+        r
     }
 
     /// Chunked prefill over `t` tokens from the carried state.
@@ -737,7 +777,17 @@ impl Glm5NextKdaLayer {
         }
         let nchunks = t.div_ceil(c.chunk);
         let tp = nchunks * c.chunk;
+        // Same three buckets as `decode_k`, so the recurrent and chunked arms can be
+        // compared part by part rather than only on a total.
+        let t_front = crate::layers::glm5next_layer::profile::start();
         self.front_end(gpu, hidden, t, ws, stream)?;
+        crate::layers::glm5next_layer::profile::end(
+            crate::layers::glm5next_layer::profile::KDA_FRONT,
+            t_front,
+            gpu,
+            stream,
+        );
+        let t_recur = crate::layers::glm5next_layer::profile::start();
 
         // Prefill conv is conv + SiLU ONLY — L2 is a separate launch over q|k.
         KernelLaunch::new(gpu, self.kernels.conv_prefill)
@@ -834,7 +884,21 @@ impl Glm5NextKdaLayer {
             .arg_u32(t as u32)
             .arg_f32(1.0 / (hd as f32).sqrt())
             .launch(stream)?;
+        crate::layers::glm5next_layer::profile::end(
+            crate::layers::glm5next_layer::profile::KDA_RECUR,
+            t_recur,
+            gpu,
+            stream,
+        );
 
-        self.back_end(gpu, t, ws, stream)
+        let t_back = crate::layers::glm5next_layer::profile::start();
+        let r = self.back_end(gpu, t, ws, stream);
+        crate::layers::glm5next_layer::profile::end(
+            crate::layers::glm5next_layer::profile::KDA_BACK,
+            t_back,
+            gpu,
+            stream,
+        );
+        r
     }
 }
