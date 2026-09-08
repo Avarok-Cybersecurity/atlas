@@ -44,10 +44,17 @@
 //!     the OTHER convention — label `n` holds `hidden_{n-1}`. Do not mix them;
 //!     that off-by-one was live until `d9984089`.)
 //!
-//! Correctness note: drafter KV can never corrupt output. The target verifies
-//! every draft, so a wrong or missing drafter row costs acceptance, not
-//! correctness. Validity below is therefore about not wasting the lever, and
-//! about not reading another sequence's hiddens.
+//! Correctness note, and its LIMIT. For the token emitted by one step, drafter
+//! KV cannot corrupt output: the target verifies every draft, so a wrong or
+//! missing row costs acceptance, not correctness. That argument covers one
+//! step and does not extend to the RECURRENT state, because the accepted-draft
+//! count selects between numerically distinct state paths (full accept keeps
+//! the verify kernel's own state; a reject restores from the batched
+//! intermediate; neither is bit-equal to an M=1 decode). A drafter fed by a
+//! DIFFERENT request therefore moves acceptance, and acceptance moves the SSM
+//! state every later token is decoded from. Validity below is consequently
+//! about three things, not two: not wasting the lever, not reading another
+//! sequence's hiddens, and not adopting another SESSION's rows at all.
 
 use spark_runtime::gpu::DevicePtr;
 
@@ -95,11 +102,35 @@ pub fn marconi_min_tokens() -> usize {
     })
 }
 
-pub fn mtp_carry_drafter_enabled(levers: &crate::layers::ops::ModelLevers) -> bool {
+/// Is the carry ARMED, given how it is configured and whether MTP is
+/// dispatching multiple sequences?
+///
+/// Pure, so the rule can be tested; `mtp_max_seqs()` caches its env read in a
+/// `OnceLock` and a unit test cannot flip it. The env is read by the callers
+/// below, at the boundary.
+///
+/// ★ CONFIGURED IS NOT ARMED, and conflating the two cost a night of GPU on
+/// 2026-09-07. `ATLAS_MTP_MAX_SEQS` defaults to 32, so `multi_seq` is true on
+/// an unconfigured serve and the carry is INERT no matter what
+/// `DrafterContext` says. Anything that reports the carry's state to a human
+/// must report THIS, not `cfg.carry`.
+pub fn carry_armed_with(
+    cfg: crate::model::drafter_context::DrafterContext,
+    multi_seq: bool,
+) -> bool {
     // Force-off in multi-seq MTP mode: the carry slot is single-sequence by
     // design (one slot, `active.len() == 1` assumption). See
     // `speculative::mtp_multi_seq_mode` for the contract.
-    levers.drafter.carry && !crate::speculative::mtp_multi_seq_mode()
+    cfg.carry && !multi_seq
+}
+
+/// [`carry_armed_with`] against the live dispatch cap.
+pub fn carry_armed(cfg: crate::model::drafter_context::DrafterContext) -> bool {
+    carry_armed_with(cfg, crate::speculative::mtp_multi_seq_mode())
+}
+
+pub fn mtp_carry_drafter_enabled(levers: &crate::layers::ops::ModelLevers) -> bool {
+    carry_armed(levers.drafter)
 }
 
 /// `ATLAS_MTP_CARRY_DEBUG=1` — one line per adopt/carry decision. Cheap (no
@@ -120,11 +151,23 @@ pub struct CarriedDrafter {
     pub rows: usize,
     /// Sequence-space pair key of the newest resident row.
     pub last_pair_key: Option<usize>,
-    /// The token sequence that produced these rows. A later turn may adopt
-    /// them only if its prompt starts with exactly these tokens — `hidden_i`
-    /// is a pure function of `tokens[0..=i]`, so prefix equality is the whole
-    /// validity condition.
+    /// The token sequence that produced these rows. `hidden_i` is a pure
+    /// function of `tokens[0..=i]`, so the COMMON PREFIX with a later prompt
+    /// bounds which rows that prompt may adopt — see [`Self::usable_by`],
+    /// which truncates to that bound rather than demanding full equality.
+    ///
+    /// Prefix agreement is a bound, NOT an identity. Two unrelated requests
+    /// rendered through one chat template agree on hundreds of tokens, so this
+    /// field cannot answer "are these rows mine"; [`Self::session_hash`] does.
     pub tokens: Vec<u32>,
+    /// The session that produced these rows, copied from
+    /// `SequenceState::session_hash` at deposit.
+    ///
+    /// Without it the slot is a cross-request channel: it is MODEL-level (one
+    /// slot for the whole engine, `types.rs`), it is filled by whichever
+    /// sequence finished last, and prefix truncation alone admits any prompt
+    /// sharing two leading tokens — which every templated request does.
+    pub session_hash: u64,
 }
 
 impl CarriedDrafter {
@@ -137,7 +180,25 @@ impl CarriedDrafter {
             .count()
     }
 
+    /// Do these rows belong to `session_hash`?
+    ///
+    /// The admission gate. Prefix agreement bounds WHICH rows are numerically
+    /// reusable; this decides whether the entry may be reused AT ALL.
+    ///
+    /// ★ `0` REFUSES. A zero hash means the scheduler stamped no session, so
+    /// there is nothing to verify ownership against. This deliberately differs
+    /// from `SsmSnapshot::session_matches`, which treats 0 as "legacy tracking
+    /// off, allow"; the closer precedent is the sibling single-slot in this
+    /// same subsystem, whose `owns_capture` stamp requires a non-zero
+    /// generation for the identical reason — blind beats poisoned.
+    pub fn session_matches(&self, session_hash: u64) -> bool {
+        session_hash != 0 && self.session_hash == session_hash
+    }
+
     /// How much of this entry `prompt` may adopt.
+    ///
+    /// Refuses outright unless [`Self::session_matches`]; the prefix rules
+    /// below only ever NARROW an entry this session already owns.
     ///
     /// Pair key `k` consumed `tokens[0..=k + 1]`, so a key is usable exactly
     /// when the prompt agrees with those tokens. Requiring the WHOLE entry to
@@ -158,7 +219,10 @@ impl CarriedDrafter {
     ///
     /// Returns `(rows, last_pair_key)` to adopt, or `None` when nothing is
     /// usable.
-    pub fn usable_by(&self, prompt: &[u32]) -> Option<(usize, usize)> {
+    pub fn usable_by(&self, prompt: &[u32], session_hash: u64) -> Option<(usize, usize)> {
+        if !self.session_matches(session_hash) {
+            return None;
+        }
         let k = self.last_pair_key?;
         if self.rows == 0 {
             return None;
@@ -245,6 +309,15 @@ pub enum CarryOutcome {
         common: usize,
         entry_rows: usize,
     },
+    /// The slot held another session's rows (or this request carries no
+    /// session stamp). Distinct from `PrefixMismatch` on purpose: a prefix
+    /// mismatch is a re-tokenized turn boundary and is expected, while this is
+    /// the cross-request channel being refused, and reading one as the other
+    /// is how it stayed open.
+    ForeignSession {
+        entry_session: u64,
+        prompt_session: u64,
+    },
     NoHiddens,
 }
 
@@ -266,6 +339,13 @@ impl std::fmt::Display for CarryOutcome {
                     "prefix mismatch (common={common} entry_rows={entry_rows})"
                 )
             }
+            CarryOutcome::ForeignSession {
+                entry_session,
+                prompt_session,
+            } => write!(
+                f,
+                "foreign session (entry={entry_session:#x} prompt={prompt_session:#x})"
+            ),
             CarryOutcome::NoHiddens => write!(f, "hidden store does not cover the append span"),
         }
     }
@@ -275,20 +355,144 @@ impl std::fmt::Display for CarryOutcome {
 mod tests {
     use super::*;
 
+    /// The session every fixture below belongs to.
+    const SESSION: u64 = 0x5E55_1014;
+    /// A different live session, used as the intruder.
+    const OTHER: u64 = 0x0DD0_0DD0;
+
     fn carried(tokens: &[u32], rows: usize, last_pair_key: Option<usize>) -> CarriedDrafter {
         CarriedDrafter {
             block_table: vec![1, 2, 3],
             rows,
             last_pair_key,
             tokens: tokens.to_vec(),
+            session_hash: SESSION,
         }
+    }
+
+    /// ★ THE CROSS-REQUEST CHANNEL. A different session may not adopt the
+    /// slot, no matter how much of the prompt agrees — here the entry's tokens
+    /// are a FULL prefix of the intruder's prompt, which is the most
+    /// permissive case the old prefix-only rule had.
+    ///
+    /// Before the session gate this returned `Some((4, 3))`.
+    #[test]
+    fn a_foreign_session_cannot_adopt_the_slot() {
+        let c = carried(&[1, 2, 3, 4, 5], 4, Some(3));
+        assert_eq!(c.usable_by(&[1, 2, 3, 4, 5, 6, 7], SESSION), Some((4, 3)));
+        assert_eq!(c.usable_by(&[1, 2, 3, 4, 5, 6, 7], OTHER), None);
+    }
+
+    /// A request the scheduler stamped with no session cannot adopt either.
+    /// Zero is "unknown", not "wildcard": there is nothing to verify ownership
+    /// against, and blind beats poisoned.
+    #[test]
+    fn an_unstamped_request_cannot_adopt_the_slot() {
+        let c = carried(&[1, 2, 3, 4, 5], 4, Some(3));
+        assert_eq!(c.usable_by(&[1, 2, 3, 4, 5, 6, 7], 0), None);
+        // And an entry deposited without a stamp is not adoptable by anyone,
+        // including another unstamped request.
+        let mut unstamped = carried(&[1, 2, 3, 4, 5], 4, Some(3));
+        unstamped.session_hash = 0;
+        assert_eq!(unstamped.usable_by(&[1, 2, 3, 4, 5, 6, 7], 0), None);
+        assert_eq!(unstamped.usable_by(&[1, 2, 3, 4, 5, 6, 7], SESSION), None);
+    }
+
+    /// ★ THE REPORTED SHAPE, in the terms it was reported in: two unrelated
+    /// requests rendered through ONE chat template share a long leading run of
+    /// tokens, so the old `common >= 2` admission test passed on every pair.
+    /// Prefix agreement is a bound on WHICH rows are reusable; it was never an
+    /// identity, and this pins that it is no longer read as one.
+    #[test]
+    fn the_shared_template_prefix_is_not_an_identity() {
+        // 64 tokens of identical system/tool preamble, then the two requests
+        // diverge into their own user turns.
+        let template: Vec<u32> = (0..64).collect();
+        let mut mine = template.clone();
+        mine.extend_from_slice(&[900, 901, 902]);
+        let mut theirs = template.clone();
+        theirs.extend_from_slice(&[700, 701, 702]);
+
+        let c = CarriedDrafter {
+            block_table: vec![1, 2, 3],
+            rows: 60,
+            last_pair_key: Some(59),
+            tokens: mine.clone(),
+            session_hash: SESSION,
+        };
+        // The prefix rule alone would have admitted the stranger: 64 tokens in
+        // common is far more than the two it required.
+        assert_eq!(c.common_prefix_len(&theirs), 64);
+        assert_eq!(c.usable_by(&theirs, OTHER), None);
+        // The same session's own next turn still adopts, and still gets the
+        // full entry — the gate narrows nothing it should not.
+        assert_eq!(c.usable_by(&mine, SESSION), Some((60, 59)));
+    }
+
+    /// ★ The arming rule, and the trap it exists to name: a serve can report
+    /// `carry=ON` from its `DrafterContext` and still never carry, because the
+    /// MTP dispatch cap defaults to 32 and force-disables it. Both callers of
+    /// this rule — the runtime gate and the startup report — must agree, which
+    /// is why there is exactly one function.
+    #[test]
+    fn configured_carry_is_not_armed_carry_under_a_multi_seq_cap() {
+        use crate::model::drafter_context::DrafterContext;
+        let both = DrafterContext {
+            prefill: true,
+            carry: true,
+        };
+        let prefill_only = DrafterContext {
+            prefill: true,
+            carry: false,
+        };
+        // Single-sequence dispatch: configured ON is armed.
+        assert!(carry_armed_with(both, false));
+        // The SHIPPED default (cap 32 => multi_seq): configured ON, inert.
+        assert!(
+            !carry_armed_with(both, true),
+            "a >1 dispatch cap must force the carry off"
+        );
+        // Configured off is off either way.
+        assert!(!carry_armed_with(prefill_only, false));
+        assert!(!carry_armed_with(prefill_only, true));
+    }
+
+    /// The gate's truth table, stated once, since two call sites read it.
+    #[test]
+    fn session_matches_is_equality_and_refuses_zero() {
+        let c = carried(&[1, 2, 3], 2, Some(1));
+        assert!(c.session_matches(SESSION));
+        assert!(!c.session_matches(OTHER));
+        assert!(!c.session_matches(0), "zero is unknown, not wildcard");
+    }
+
+    /// A foreign-session refusal must not be reported as a prefix mismatch.
+    /// Reading one as the other is precisely how the channel stayed invisible:
+    /// `PrefixMismatch` is the expected, benign outcome of a re-tokenized turn
+    /// boundary, so it draws no attention in a log.
+    #[test]
+    fn the_two_refusals_do_not_read_alike() {
+        let foreign = CarryOutcome::ForeignSession {
+            entry_session: SESSION,
+            prompt_session: OTHER,
+        }
+        .to_string();
+        let mismatch = CarryOutcome::PrefixMismatch {
+            common: 4,
+            entry_rows: 9,
+        }
+        .to_string();
+        assert!(foreign.contains("foreign session"), "{foreign}");
+        assert!(!foreign.contains("prefix mismatch"), "{foreign}");
+        assert!(mismatch.contains("prefix mismatch"), "{mismatch}");
+        assert_ne!(foreign, mismatch);
     }
 
     #[test]
     fn usable_by_keeps_everything_when_the_whole_entry_matches() {
         let c = carried(&[1, 2, 3, 4, 5], 4, Some(3));
         // pair key 3 consumed tokens[0..=4]; all 5 match.
-        assert_eq!(c.usable_by(&[1, 2, 3, 4, 5, 6, 7]), Some((4, 3)));
+        assert_eq!(c.usable_by(&[1, 2, 3, 4, 5, 6, 7], SESSION), Some((4, 3)));
     }
 
     #[test]
@@ -297,23 +501,23 @@ mod tests {
         // one row is dropped. This is the chat-template re-tokenization case
         // that made full-match adoption refuse every warm turn.
         let c = carried(&[1, 2, 3, 4, 5], 4, Some(3));
-        assert_eq!(c.usable_by(&[1, 2, 3, 4, 9, 6, 7]), Some((3, 2)));
+        assert_eq!(c.usable_by(&[1, 2, 3, 4, 9, 6, 7], SESSION), Some((3, 2)));
         // Divergence at index 2 => common = 2 => only key 0 survives.
-        assert_eq!(c.usable_by(&[1, 2, 9, 9]), Some((1, 0)));
+        assert_eq!(c.usable_by(&[1, 2, 9, 9], SESSION), Some((1, 0)));
     }
 
     #[test]
     fn usable_by_declines_when_nothing_survives() {
         let c = carried(&[1, 2, 3, 4, 5], 4, Some(3));
         // Fewer than 2 tokens in common: not even pair key 0 is usable.
-        assert_eq!(c.usable_by(&[1, 9, 9]), None);
-        assert_eq!(c.usable_by(&[]), None);
+        assert_eq!(c.usable_by(&[1, 9, 9], SESSION), None);
+        assert_eq!(c.usable_by(&[], SESSION), None);
         // No rows, or no tracked key.
         assert_eq!(
-            carried(&[1, 2, 3], 0, Some(1)).usable_by(&[1, 2, 3, 4]),
+            carried(&[1, 2, 3], 0, Some(1)).usable_by(&[1, 2, 3, 4], SESSION),
             None
         );
-        assert_eq!(carried(&[1, 2, 3], 2, None).usable_by(&[1, 2, 3, 4]), None);
+        assert_eq!(carried(&[1, 2, 3], 2, None).usable_by(&[1, 2, 3, 4], SESSION), None);
     }
 
     #[test]
@@ -321,7 +525,7 @@ mod tests {
         // A compacted entry: 2 rows but a far-ahead key. Truncating to a low
         // common prefix must decline rather than underflow.
         let c = carried(&[1, 2, 3, 4, 5, 6], 2, Some(4));
-        assert_eq!(c.usable_by(&[1, 2, 9]), None);
+        assert_eq!(c.usable_by(&[1, 2, 9], SESSION), None);
     }
 
     #[test]

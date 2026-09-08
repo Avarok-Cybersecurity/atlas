@@ -162,10 +162,17 @@ pub fn resolve_from_env() -> DrafterContext {
                 );
             }
         }
+        // Report what the runtime will DO, not what the two env vars said.
+        // `carry_armed` is the same predicate the runtime gates on; the
+        // dispatch cap can force the carry off underneath this config, and a
+        // line that printed `carry=ON` in that state is exactly why a
+        // cross-request carry defect was hunted for a night on a lever that
+        // was never running (2026-09-07).
+        let carry_armed = crate::model::mtp_carry::carry_armed(cfg);
         tracing::info!(
             "MTP drafter context: prefill={} carry={} ({}). Disable both with {}=1.",
             on_off(cfg.prefill),
-            on_off(cfg.carry),
+            on_off(carry_armed),
             if cfg == DrafterContext::BOTH {
                 "default"
             } else {
@@ -173,6 +180,15 @@ pub fn resolve_from_env() -> DrafterContext {
             },
             DISABLE_ENV,
         );
+        if cfg.carry && !carry_armed {
+            tracing::warn!(
+                "MTP cross-turn carry is CONFIGURED ON but INERT: the MTP \
+                 dispatch cap is {} (>1), and the carry slot is single-sequence \
+                 by design, so it is force-disabled. Set ATLAS_MTP_MAX_SEQS=1 \
+                 to arm it; leave it unset to keep multi-sequence MTP.",
+                crate::speculative::mtp_max_seqs(),
+            );
+        }
         if cfg.prefill && !cfg.carry {
             tracing::warn!(
                 "{PREFILL_ONLY_ENV}=1: drafter prefill is ON with cross-turn carry \
