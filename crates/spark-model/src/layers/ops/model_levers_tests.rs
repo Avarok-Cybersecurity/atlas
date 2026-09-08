@@ -1,86 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Lever resolution tests: polarity of every switch, and the guard that
-//! keeps `from_env` off hot paths.
+//! Lever resolution tests: the polarity of every switch.
 //!
 //! Split out of `model_levers.rs` to keep it under the repository's
-//! 500-LoC cap, the same pattern `mtp_carry_tests.rs` uses.
+//! 500-LoC cap, the same pattern `mtp_carry_tests.rs` uses. The source-level
+//! guards that keep these reads off hot paths live in
+//! `hot_path_env_guards.rs`, because they guard other modules too.
 
 use super::*;
 use std::collections::HashMap;
 
-/// ★ THE ENVIRONMENT IS READ ONCE. This test is the enforcement; the
-/// module doc is only the explanation.
+/// Resolve against a fixed map instead of the process environment.
 ///
-/// `from_env()` reads ~30 variables, each allocating a `String` and each
-/// taking the process-wide environment lock — 0.57 us per resolve
-/// single-threaded, 4.00 us at 8 threads, because the lock serialises. It
-/// was called 32,513 times in one `concurrency-sweep` from a
-/// per-layer-per-prefill site while its doc claimed "called once".
-///
-/// Only two callers are legitimate: `ModelLevers::get`, which caches it in
-/// a `OnceLock`, and the model build, which needs an owned mutable copy to
-/// overwrite `max_decode_seqs`. Everything else must use `get()` or take
-/// `levers` from the context it already has.
-///
-/// A source-level check because the property is "who may call this", which
-/// no runtime assertion can observe.
-#[test]
-fn from_env_is_called_only_where_it_is_allowed() {
-    const ALLOWED: [&str; 3] = [
-        // caches the result in a OnceLock — this IS the once.
-        "crates/spark-model/src/layers/ops/model_levers.rs",
-        // needs an owned mutable copy; takes it from `*get()`.
-        "crates/spark-model/src/model/impl_a1.rs",
-        // This file. The guard names what it forbids, so it matches itself —
-        // it flagged its own new home the instant these tests were split out
-        // of `model_levers.rs`, which is the guard working, not a false
-        // positive.
-        "crates/spark-model/src/layers/ops/model_levers_tests.rs",
-    ];
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root");
-    let mut offenders = Vec::new();
-    let mut stack = vec![root.join("crates")];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if path.file_name().is_some_and(|n| n == "target") {
-                    continue;
-                }
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                let Ok(text) = std::fs::read_to_string(&path) else {
-                    continue;
-                };
-                if !text.contains("ModelLevers::from_env()") {
-                    continue;
-                }
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                if !ALLOWED.contains(&rel.as_str()) {
-                    offenders.push(rel);
-                }
-            }
-        }
-    }
-    offenders.sort();
-    assert!(
-        offenders.is_empty(),
-        "ModelLevers::from_env() re-reads ~30 env vars under a global lock. \
-         These call it instead of the once-resolved ModelLevers::get(): {offenders:?}"
-    );
-}
-
+/// `set_var` is unsafe and process-global, so a test that mutated the
+/// environment would race every other test in this binary. Driving
+/// `from_values` directly exercises the PRODUCTION resolution rather than a
+/// copy of it.
 fn resolve(values: &[(&str, &str)]) -> ModelLevers {
     let values: HashMap<_, _> = values.iter().copied().collect();
     from_values(
@@ -112,6 +47,14 @@ fn the_opt_out_lever_is_on_by_default_and_every_opt_in_is_off() {
             // lever forces an author to state its polarity HERE, in the
             // test, instead of inheriting whatever `Default` gives.
             ssm_gemv_batch4: true,
+            // The dense-FFN opt-outs. Each ships ON and is disabled by the
+            // PRESENCE of its variable — spelled out here so that adding a
+            // lever forces an author to state its polarity in the test
+            // rather than inherit whatever `Default` gives.
+            decode_split_silu: true,
+            ffn_nvfp4_mmq: true,
+            ffn_nvfp4_mmq_down: true,
+            prefill_v2: true,
             max_decode_seqs: 1,
             drafter: crate::model::drafter_context::DrafterContext::BOTH,
             ..ModelLevers::default()
@@ -217,6 +160,126 @@ fn truthy_opt_ins_map_independently_and_presence_is_distinct() {
     // `=0` on an opt-in is NOT enabling — the trap `ATLAS_BF16_TC_PROJ`
     // falls into by being presence-gated.
     assert!(!resolve(&[("ATLAS_GDN_FUSED_CONV", "0")]).gdn_fused_conv);
+}
+
+/// ★ THE DENSE-FFN ELEVEN ARE ALL PRESENCE-GATED, AND SIX OF THEM ARE `NO_`
+/// OR `DISABLE_` VARIABLES WHOSE FIELD STORES THE OPPOSITE OF THEIR NAME.
+///
+/// Presence, not value: `=0` neither enables an opt-in nor re-enables an
+/// opt-out. That is the shipped behaviour of every one of these (they were
+/// `std::env::var_os(..).is_some()` / `.is_none()`), and it is the trap
+/// `ATLAS_BF16_TC_PROJ` already falls into two tests above. Getting one
+/// backwards silently changes which GEMM every dense FFN layer launches.
+#[test]
+fn the_dense_ffn_levers_are_presence_gated_and_their_polarities_hold() {
+    let d = resolve(&[]);
+    assert!(d.decode_split_silu, "split SiLU+down ships ON");
+    assert!(d.ffn_nvfp4_mmq, "gate/up NVFP4 MMQ ships ON");
+    assert!(d.ffn_nvfp4_mmq_down, "down NVFP4 MMQ ships ON");
+    assert!(d.prefill_v2, "the v2 BF16 prefill kernel ships ON");
+    assert!(!d.bf16_tc_prefill);
+    assert!(!d.fp8_m64_prefill);
+    assert!(!d.int8_prefill);
+    assert!(!d.int8_faith5);
+    assert!(!d.ffn_mmq);
+    assert!(
+        !d.ffn_mmq_down_q4k,
+        "down stays on the NVFP4 hybrid by default"
+    );
+    assert!(!d.fp4_prefill);
+
+    // Every opt-in arms on presence alone, including `=0`.
+    let armed: [(&str, fn(&ModelLevers) -> bool); 7] = [
+        ("ATLAS_BF16_TC_PREFILL", |l| l.bf16_tc_prefill),
+        ("ATLAS_FP8_M64_PREFILL", |l| l.fp8_m64_prefill),
+        ("ATLAS_INT8_PREFILL", |l| l.int8_prefill),
+        ("ATLAS_INT8_FAITH5", |l| l.int8_faith5),
+        ("ATLAS_FFN_MMQ", |l| l.ffn_mmq),
+        ("ATLAS_FFN_MMQ_DOWN_Q4K", |l| l.ffn_mmq_down_q4k),
+        ("ATLAS_FP4_PREFILL", |l| l.fp4_prefill),
+    ];
+    for (name, read) in armed {
+        assert!(read(&resolve(&[(name, "1")])), "{name} did not arm");
+        assert!(
+            read(&resolve(&[(name, "0")])),
+            "{name} is presence-gated: `=0` still arms it"
+        );
+    }
+
+    // Every kill switch disables on presence alone, including `=0`.
+    let killed: [(&str, fn(&ModelLevers) -> bool); 4] = [
+        ("ATLAS_NO_DECODE_SPLIT_SILU", |l| l.decode_split_silu),
+        ("ATLAS_NO_FFN_NVFP4_MMQ", |l| l.ffn_nvfp4_mmq),
+        ("ATLAS_NO_FFN_NVFP4_MMQ_DOWN", |l| l.ffn_nvfp4_mmq_down),
+        ("ATLAS_DISABLE_PREFILL_V2", |l| l.prefill_v2),
+    ];
+    for (name, read) in killed {
+        assert!(!read(&resolve(&[(name, "1")])), "{name} did not kill");
+        assert!(
+            !read(&resolve(&[(name, "0")])),
+            "{name} is presence-gated: `=0` does NOT re-enable"
+        );
+    }
+
+    // The two down-projection gates are independent of their gate/up
+    // siblings — down is the heavy-tailed projection and has its own arm.
+    assert!(resolve(&[("ATLAS_NO_FFN_NVFP4_MMQ_DOWN", "1")]).ffn_nvfp4_mmq);
+    assert!(resolve(&[("ATLAS_NO_FFN_NVFP4_MMQ", "1")]).ffn_nvfp4_mmq_down);
+}
+
+/// The MoE routed-prefill levers. Four opt-ins, one tri-state, one numeric —
+/// and the tri-state is the interesting one: its DEFAULT is model-dependent
+/// (NVFP4 checkpoints only), so `None` must stay distinguishable from
+/// `Some(false)` or the call site cannot apply that default.
+#[test]
+fn the_moe_prefill_levers_keep_the_tri_state_distinguishable() {
+    let d = resolve(&[]);
+    assert!(!d.moe_grouped_cutlass);
+    assert!(!d.moe_grouped_down);
+    assert!(!d.moe_prefill_zero);
+    assert!(!d.moe_prefill_fp8_down);
+    assert_eq!(
+        d.moe_prefill_exact_tiles, None,
+        "unset must defer to the checkpoint, not decide"
+    );
+    assert_eq!(d.moe_prefill_max_load_factor, None);
+
+    assert!(resolve(&[("ATLAS_HOLO_MOE_GROUPED_CUTLASS", "1")]).moe_grouped_cutlass);
+    assert!(resolve(&[("ATLAS_HOLO_MOE_GROUPED_DOWN", "1")]).moe_grouped_down);
+    assert!(resolve(&[("ATLAS_MOE_PREFILL_ZERO", "1")]).moe_prefill_zero);
+    assert!(resolve(&[("ATLAS_MOE_PREFILL_FP8_DOWN", "1")]).moe_prefill_fp8_down);
+    // These four are value-gated, not presence-gated.
+    assert!(!resolve(&[("ATLAS_MOE_PREFILL_ZERO", "0")]).moe_prefill_zero);
+
+    assert_eq!(
+        resolve(&[("ATLAS_MOE_PREFILL_EXACT_TILES", "1")]).moe_prefill_exact_tiles,
+        Some(true)
+    );
+    assert_eq!(
+        resolve(&[("ATLAS_MOE_PREFILL_EXACT_TILES", "0")]).moe_prefill_exact_tiles,
+        Some(false),
+        "`0` is an explicit OFF, not an absent lever — the p90 measured -5.0% \
+         there and +4.9% at ON, so both directions must stay reachable"
+    );
+    assert_eq!(
+        resolve(&[("ATLAS_MOE_PREFILL_EXACT_TILES", "yes")]).moe_prefill_exact_tiles,
+        None
+    );
+
+    assert_eq!(
+        resolve(&[("ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR", "4")]).moe_prefill_max_load_factor,
+        Some(4)
+    );
+    // `0` means "no cap", which is `None` — not a cap of zero, which would
+    // size every expert's tile bound to one tile and drop rows.
+    assert_eq!(
+        resolve(&[("ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR", "0")]).moe_prefill_max_load_factor,
+        None
+    );
+    assert_eq!(
+        resolve(&[("ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR", "x")]).moe_prefill_max_load_factor,
+        None
+    );
 }
 
 #[test]

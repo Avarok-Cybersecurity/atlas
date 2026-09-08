@@ -85,6 +85,107 @@ pub struct ModelLevers {
     /// Collect per-layer MoE expert-union statistics. Diagnostic.
     pub moe_union_stats: bool,
 
+    // ── Dense FFN: which GEMM each prefill/decode arm takes ──
+    //
+    // These twelve were read with `std::env::var_os` from inside
+    // `DenseFfnLayer::forward` and `forward_prefill_inner`, i.e. once per
+    // LAYER per decode token and once per layer per prefill chunk — and one
+    // of them from inside a per-GEMM macro, so three times per layer. No
+    // allocation (that is `var_os`'s advantage over `var`) but the same
+    // process-wide environment lock, which serialises concurrent decode
+    // threads. The load-time readers in `finalize_q4k_load` and
+    // `finalize_nvfp4_mmq_load` are deliberately left where they are: they
+    // run once per weight, at load.
+    /// Split SiLU+down on the decode path: `silu_mul` into `gate_out`, then a
+    /// separate `w4a16_decode_gemv` for down. Ships ON;
+    /// `ATLAS_NO_DECODE_SPLIT_SILU` (presence) restores the fused kernel.
+    /// A LoRA adapter pins this path on regardless — the fused alternative
+    /// never materialises `silu(gate)*up`, which the down delta must
+    /// contract over — so the call site is `levers.decode_split_silu ||
+    /// self.lora.is_some()`.
+    pub decode_split_silu: bool,
+    /// `ATLAS_BF16_TC_PREFILL` (presence) — BF16 tensor-core prefill GEMM.
+    /// Read here only; the usable gate is derived at the call site AFTER
+    /// v1/v2 selection, from the handle actually launched. Gating on v1's
+    /// handle while dispatching v2 admitted launches of a kernel the target
+    /// may not carry.
+    pub bf16_tc_prefill: bool,
+    /// `ATLAS_FP8_M64_PREFILL` (presence) — m16n8k32 e4m3 M64 prefill GEMM,
+    /// ~1.47x vs v2 BF16. Lossy (cosine 0.9997), so opt-in only.
+    pub fp8_m64_prefill: bool,
+    /// `ATLAS_INT8_PREFILL` (presence) — requant→`int8_gemm_faith2` prefill
+    /// (cosine 0.999978 vs the host full-precision dequant GEMM).
+    pub int8_prefill: bool,
+    /// `ATLAS_INT8_FAITH5` (presence) — int32 per-sub-block accumulation,
+    /// which breaks the MMA→scale dependency chain. Same kernel signature
+    /// and launch geometry as faith2, so it is a handle swap.
+    pub int8_faith5: bool,
+    /// Vendored llama NVFP4 W4A4 MMQ for the gate/up prefill GEMMs
+    /// (~80 TFLOP/s vs t_m128's ~51). Ships ON;
+    /// `ATLAS_NO_FFN_NVFP4_MMQ` (presence) is the kill switch.
+    pub ffn_nvfp4_mmq: bool,
+    /// The same MMQ arm for the down projection — t_m128 runs the narrow-N
+    /// down at only ~34 TFLOP/s. Ships ON; `ATLAS_NO_FFN_NVFP4_MMQ_DOWN`
+    /// (presence) is the kill switch. Separate from
+    /// [`Self::ffn_nvfp4_mmq`] because down is the heavy-tailed projection
+    /// (W4A4 cosine 0.9961) and gets its own gate.
+    pub ffn_nvfp4_mmq_down: bool,
+    /// `ATLAS_FFN_MMQ` (presence) — Q4_K MMQ prefill arm.
+    pub ffn_mmq: bool,
+    /// `ATLAS_FFN_MMQ_DOWN_Q4K` (presence) — keep the down projection ON
+    /// Q4_K instead of the near-lossless faith2 NVFP4 hybrid.
+    ///
+    /// Stores the POSITIVE of a variable whose call site reads the negative
+    /// (`!levers.ffn_mmq_down_q4k`), the same shape as
+    /// [`Self::moe_legacy_pertoken_decode`]. down = SiLU(gate)*up is
+    /// heavy-tailed and Q4_K superblock scaling clips it — BFCL `multiple`
+    /// −4.0%, which is why llama promotes only down→Q6_K.
+    pub ffn_mmq_down_q4k: bool,
+    /// `ATLAS_FP4_PREFILL` (presence) — native W4A4 FP4 tensor cores
+    /// (sm_121a), NVFP4 weights used directly with no requant. Lossy
+    /// (cos ~0.99 vs fp32).
+    pub fp4_prefill: bool,
+    /// The v2 BF16 t_m128 prefill kernel — faster and bit-identical to v1.
+    /// Ships ON; `ATLAS_DISABLE_PREFILL_V2` (presence) forces v1 so the two
+    /// can be compared for TTFT in one binary.
+    pub prefill_v2: bool,
+
+    // ── MoE routed prefill ──
+    //
+    // Read once per LAYER per prefill chunk from `forward_prefill_routed`,
+    // and the CUTLASS gate is asked TWICE per call through a free function.
+    /// `ATLAS_HOLO_MOE_GROUPED_CUTLASS=1` — single-launch CUTLASS grouped
+    /// NVFP4 gate_up. Off by default; unset falls back to the hand-rolled
+    /// fused FP4/FP8 grouped kernels.
+    pub moe_grouped_cutlass: bool,
+    /// `ATLAS_HOLO_MOE_GROUPED_DOWN=1` — take the down projection through
+    /// the same CUTLASS grouped path. Requires
+    /// [`Self::moe_grouped_cutlass`]; a separate gate because down consumes
+    /// the already-expert-contiguous post-SiLU output and needs no gather.
+    pub moe_grouped_down: bool,
+    /// `ATLAS_MOE_PREFILL_EXACT_TILES=1|0` overrides the tile bound;
+    /// `None` (unset) defers to the checkpoint — the win was measured on
+    /// NVFP4, so the default is scoped to where it was measured.
+    ///
+    /// Tri-state on purpose. Measured: exact_tiles ON gave p90 +4.9% against
+    /// a +5.0% limit (0.1% from failing the gate) and OFF gave p90 −5.0%,
+    /// while the median barely moved either way (+0.1% vs −0.9%). Only the
+    /// tail shows it, so both directions must stay reachable. Graph capture
+    /// forces it off regardless — the bound is read back from device memory.
+    pub moe_prefill_exact_tiles: Option<bool>,
+    /// `ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR=<n>` — cap the per-expert tile
+    /// bound at n times the average when exact tiles are off. `None` (unset
+    /// or `0`) means the worst case.
+    pub moe_prefill_max_load_factor: Option<usize>,
+    /// `ATLAS_MOE_PREFILL_ZERO=1` — memset the grouped scratch before
+    /// dispatch. Implied by EP (`ctx.comm.is_some()`). In non-EP the sort
+    /// produces a dense permutation over exactly the rows the grouped
+    /// kernels write, so skipping the clear removes ~138 MB/layer on Holo.
+    pub moe_prefill_zero: bool,
+    /// `ATLAS_MOE_PREFILL_FP8_DOWN=1` — FP8 grouped GEMM for the routed
+    /// down projection.
+    pub moe_prefill_fp8_down: bool,
+
     // ── Attention ──
     /// Contiguous-attention path for the DFlash head.
     pub dflash_contig_attn: bool,
@@ -201,6 +302,30 @@ fn from_values(
         holo_moe_down_fp4: opt_in_truthy(value("ATLAS_HOLO_MOE_DOWN_FP4").as_deref()),
         holo_moe_gateup_fp4: opt_in_truthy(value("ATLAS_HOLO_MOE_GATEUP_FP4").as_deref()),
         moe_union_stats: opt_in(value("ATLAS_MOE_UNION_STATS").as_deref()),
+        decode_split_silu: !present("ATLAS_NO_DECODE_SPLIT_SILU"),
+        bf16_tc_prefill: present("ATLAS_BF16_TC_PREFILL"),
+        fp8_m64_prefill: present("ATLAS_FP8_M64_PREFILL"),
+        int8_prefill: present("ATLAS_INT8_PREFILL"),
+        int8_faith5: present("ATLAS_INT8_FAITH5"),
+        ffn_nvfp4_mmq: !present("ATLAS_NO_FFN_NVFP4_MMQ"),
+        ffn_nvfp4_mmq_down: !present("ATLAS_NO_FFN_NVFP4_MMQ_DOWN"),
+        ffn_mmq: present("ATLAS_FFN_MMQ"),
+        ffn_mmq_down_q4k: present("ATLAS_FFN_MMQ_DOWN_Q4K"),
+        fp4_prefill: present("ATLAS_FP4_PREFILL"),
+        prefill_v2: !present("ATLAS_DISABLE_PREFILL_V2"),
+        moe_grouped_cutlass: opt_in(value("ATLAS_HOLO_MOE_GROUPED_CUTLASS").as_deref()),
+        moe_grouped_down: opt_in(value("ATLAS_HOLO_MOE_GROUPED_DOWN").as_deref()),
+        moe_prefill_exact_tiles: match value("ATLAS_MOE_PREFILL_EXACT_TILES").as_deref() {
+            Some("0") => Some(false),
+            Some("1") => Some(true),
+            _ => None,
+        },
+        moe_prefill_max_load_factor: value("ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR")
+            .as_deref()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&factor| factor > 0),
+        moe_prefill_zero: opt_in(value("ATLAS_MOE_PREFILL_ZERO").as_deref()),
+        moe_prefill_fp8_down: opt_in(value("ATLAS_MOE_PREFILL_FP8_DOWN").as_deref()),
         dflash_contig_attn: opt_in(value("ATLAS_DFLASH_CONTIG_ATTN").as_deref()),
         lora_eager: opt_in_truthy(value("ATLAS_LORA_EAGER").as_deref()),
         lora_rotate: opt_in_truthy(value("ATLAS_LORA_ROTATE").as_deref()),
@@ -273,6 +398,14 @@ impl ModelLevers {
             // `the_opt_out_lever_is_on_by_default_and_every_opt_in_is_off`
             // fails — which is exactly how this line came to be written.
             ssm_gemv_batch4: true,
+            // The dense-FFN opt-outs. Each ships ON and is disabled by the
+            // PRESENCE of its variable, at any value — `=0` does not
+            // re-enable them, which is why they are listed here explicitly
+            // rather than left to `Default`.
+            decode_split_silu: true,
+            ffn_nvfp4_mmq: true,
+            ffn_nvfp4_mmq_down: true,
+            prefill_v2: true,
             ..Self::default()
         }
     }
@@ -281,3 +414,9 @@ impl ModelLevers {
 #[cfg(test)]
 #[path = "model_levers_tests.rs"]
 mod tests;
+
+/// ★ Where the environment may be read at all. Kept next to the levers it
+/// exists to protect, not inside `tests` — it guards other modules too.
+#[cfg(test)]
+#[path = "hot_path_env_guards.rs"]
+mod hot_path_env_guards;
