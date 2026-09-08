@@ -8,6 +8,9 @@
 //! `hot_path_env_guards.rs`, because they guard other modules too.
 
 use super::*;
+// The production resolver, driven directly rather than copied. `resolve` is
+// private to `model_levers`; this module is its child, so it can reach in.
+use super::resolve::from_values;
 use std::collections::HashMap;
 
 /// Resolve against a fixed map instead of the process environment.
@@ -278,6 +281,46 @@ fn the_decode_step_levers_keep_their_two_different_spellings() {
     // The contrast, in the same test so the difference is visible: the
     // sibling truthy levers ARE case-insensitive and must stay that way.
     assert!(resolve(&[("ATLAS_LORA_EAGER", "TRUE")]).lora_eager);
+}
+
+/// The MoE-forward and MTP-drafter levers. All five are strict `=1` opt-ins
+/// read on a per-layer-per-decode-token or per-drafted-token path.
+///
+/// `fp32_routing` is the one to watch: it is the LAST term of a five-way
+/// conjunction in `MoeFfnLayer::fp32_routing_active`, whose other four terms
+/// are weight/kernel preconditions. Defaulting it ON would change which norm
+/// kernel every MoE decode launches on any model that happens to satisfy
+/// those four.
+#[test]
+fn the_moe_forward_and_mtp_levers_are_strict_opt_ins() {
+    let d = resolve(&[]);
+    assert!(!d.fp32_routing);
+    assert!(!d.fp32_gate);
+    assert!(!d.frankenstein_decode_via_prefill);
+    assert!(!d.k2_diag);
+    assert!(!d.mtp_debug_norms);
+
+    let cases: [(&str, fn(&ModelLevers) -> bool); 5] = [
+        ("ATLAS_FP32_ROUTING", |l| l.fp32_routing),
+        ("ATLAS_FP32_GATE", |l| l.fp32_gate),
+        ("ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL", |l| {
+            l.frankenstein_decode_via_prefill
+        }),
+        ("ATLAS_K2_DIAG", |l| l.k2_diag),
+        ("ATLAS_MTP_DEBUG_NORMS", |l| l.mtp_debug_norms),
+    ];
+    for (name, read) in cases {
+        assert!(read(&resolve(&[(name, "1")])), "{name} did not arm at =1");
+        assert!(!read(&resolve(&[(name, "0")])), "{name} armed at =0");
+        assert!(
+            !read(&resolve(&[(name, "true")])),
+            "{name} is strict `1`, not truthy — that is how it was spelled"
+        );
+    }
+    // The two FP32 levers are independent: the gate one is the batched-path
+    // sibling, not an alias.
+    assert!(!resolve(&[("ATLAS_FP32_ROUTING", "1")]).fp32_gate);
+    assert!(!resolve(&[("ATLAS_FP32_GATE", "1")]).fp32_routing);
 }
 
 #[test]

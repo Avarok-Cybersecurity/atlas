@@ -23,7 +23,7 @@
 ///
 /// An empty allow list means the file must not read the environment at all.
 /// Paths are relative to `crates/spark-model/src`.
-const GUARDED: [(&str, &[&str]); 10] = [
+const GUARDED: [(&str, &[&str]); 15] = [
     // ── Dense FFN ──
     (
         "layers/dense_ffn.rs",
@@ -42,6 +42,19 @@ const GUARDED: [(&str, &[&str]); 10] = [
     // ── The decode step itself. `ATLAS_SSM_SAVE_DUMP` was asked THREE times
     //    per token here, each read only to decide whether to do nothing. ──
     ("model/trait_impl/decode_a.rs", &[]),
+    // ── MoE forward: once per layer per DECODE TOKEN. `fp32_routing_active`
+    //    alone was read from six call sites on that path. ──
+    ("layers/moe/forward.rs", &[]),
+    ("layers/moe/forward_batched_gate.rs", &[]),
+    ("layers/moe/forward_k2.rs", &[]),
+    // ── MTP drafter: once per DRAFTED TOKEN, and `forward_one` asked for the
+    //    same variable four separate times inside one call. ──
+    ("layers/mtp_head/forward.rs", &[]),
+    // ── The `ModelLevers` resolution itself. Listed with its own function
+    //    allowed so that the guard covers the file rather than skipping it:
+    //    if a read appears anywhere ELSE in here, it is a second resolution
+    //    path, which is the thing this whole module exists to prevent. ──
+    ("layers/ops/model_levers_resolve.rs", &["from_env"]),
     // ── DFlash drafter: once per DECODE STEP, and the layer helpers run
     //    `num_layers` times inside that. `dflash_head/from_weights.rs` is
     //    deliberately absent — it builds the head, so it is where the reads
