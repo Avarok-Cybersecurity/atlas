@@ -27,6 +27,17 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
+/// Sequence retirement: run `cache_sequence` (finish-leaf SSM snapshot + radix
+/// insert) on the worker too.
+///
+/// Without it only the head took finish-leaf snapshots, so the ranks' snapshot
+/// pools held different entries, evicted differently, and eventually proposed
+/// different Marconi anchors — different SSM replay lengths, mismatched
+/// collectives, NCCL spin. This branch's command space uses 0xF0..0xF4 plus
+/// 0xE0; 0xFFFF_FFF6 is free here and matches the code on `research/glm-exl3`,
+/// so the two trees stay wire-compatible.
+pub(crate) const EP_CMD_CACHE_SEQ: u32 = 0xFFFF_FFF6;
+
 impl TransformerModel {
     pub(super) fn comm_ref(&self) -> Option<&dyn spark_comm::CommBackend> {
         self.comm.as_deref()
@@ -584,6 +595,13 @@ impl TransformerModel {
                 }
                 // Aux carries AFTER the rewind — see the K=2 arm.
                 self.commit_verify_aux_rows(seq, num_accepted as usize + 1, stream)?;
+            }
+            EP_CMD_CACHE_SEQ => {
+                // Sequence retirement. Run the SAME bookkeeping the head runs
+                // so both ranks' snapshot pools hold the same entries — that
+                // symmetry is what keeps the Marconi anchor decision equal on
+                // both ranks. No collective inside, so no ordering guard.
+                self.cache_sequence_dispatch(seq);
             }
             token => {
                 // Regular decode
