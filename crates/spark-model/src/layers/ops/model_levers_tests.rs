@@ -26,8 +26,14 @@ fn resolve(values: &[(&str, &str)]) -> ModelLevers {
         |name| values.contains_key(name),
         0,
         crate::model::drafter_context::DrafterContext::BOTH,
+        0.0,
     )
 }
+
+/// The levers this branch lifted off hot paths. A child module so it shares
+/// `resolve` above instead of copying it.
+#[path = "model_levers_hot_path_tests.rs"]
+mod hot_path_levers;
 
 #[test]
 fn the_opt_out_lever_is_on_by_default_and_every_opt_in_is_off() {
@@ -165,284 +171,6 @@ fn truthy_opt_ins_map_independently_and_presence_is_distinct() {
     assert!(!resolve(&[("ATLAS_GDN_FUSED_CONV", "0")]).gdn_fused_conv);
 }
 
-/// ★ THE DENSE-FFN ELEVEN ARE ALL PRESENCE-GATED, AND SIX OF THEM ARE `NO_`
-/// OR `DISABLE_` VARIABLES WHOSE FIELD STORES THE OPPOSITE OF THEIR NAME.
-///
-/// Presence, not value: `=0` neither enables an opt-in nor re-enables an
-/// opt-out. That is the shipped behaviour of every one of these (they were
-/// `std::env::var_os(..).is_some()` / `.is_none()`), and it is the trap
-/// `ATLAS_BF16_TC_PROJ` already falls into two tests above. Getting one
-/// backwards silently changes which GEMM every dense FFN layer launches.
-#[test]
-fn the_dense_ffn_levers_are_presence_gated_and_their_polarities_hold() {
-    let d = resolve(&[]);
-    assert!(d.decode_split_silu, "split SiLU+down ships ON");
-    assert!(d.ffn_nvfp4_mmq, "gate/up NVFP4 MMQ ships ON");
-    assert!(d.ffn_nvfp4_mmq_down, "down NVFP4 MMQ ships ON");
-    assert!(d.prefill_v2, "the v2 BF16 prefill kernel ships ON");
-    assert!(!d.bf16_tc_prefill);
-    assert!(!d.fp8_m64_prefill);
-    assert!(!d.int8_prefill);
-    assert!(!d.int8_faith5);
-    assert!(!d.ffn_mmq);
-    assert!(
-        !d.ffn_mmq_down_q4k,
-        "down stays on the NVFP4 hybrid by default"
-    );
-    assert!(!d.fp4_prefill);
-
-    // Every opt-in arms on presence alone, including `=0`.
-    let armed: [(&str, fn(&ModelLevers) -> bool); 7] = [
-        ("ATLAS_BF16_TC_PREFILL", |l| l.bf16_tc_prefill),
-        ("ATLAS_FP8_M64_PREFILL", |l| l.fp8_m64_prefill),
-        ("ATLAS_INT8_PREFILL", |l| l.int8_prefill),
-        ("ATLAS_INT8_FAITH5", |l| l.int8_faith5),
-        ("ATLAS_FFN_MMQ", |l| l.ffn_mmq),
-        ("ATLAS_FFN_MMQ_DOWN_Q4K", |l| l.ffn_mmq_down_q4k),
-        ("ATLAS_FP4_PREFILL", |l| l.fp4_prefill),
-    ];
-    for (name, read) in armed {
-        assert!(read(&resolve(&[(name, "1")])), "{name} did not arm");
-        assert!(
-            read(&resolve(&[(name, "0")])),
-            "{name} is presence-gated: `=0` still arms it"
-        );
-    }
-
-    // Every kill switch disables on presence alone, including `=0`.
-    let killed: [(&str, fn(&ModelLevers) -> bool); 4] = [
-        ("ATLAS_NO_DECODE_SPLIT_SILU", |l| l.decode_split_silu),
-        ("ATLAS_NO_FFN_NVFP4_MMQ", |l| l.ffn_nvfp4_mmq),
-        ("ATLAS_NO_FFN_NVFP4_MMQ_DOWN", |l| l.ffn_nvfp4_mmq_down),
-        ("ATLAS_DISABLE_PREFILL_V2", |l| l.prefill_v2),
-    ];
-    for (name, read) in killed {
-        assert!(!read(&resolve(&[(name, "1")])), "{name} did not kill");
-        assert!(
-            !read(&resolve(&[(name, "0")])),
-            "{name} is presence-gated: `=0` does NOT re-enable"
-        );
-    }
-
-    // The two down-projection gates are independent of their gate/up
-    // siblings — down is the heavy-tailed projection and has its own arm.
-    assert!(resolve(&[("ATLAS_NO_FFN_NVFP4_MMQ_DOWN", "1")]).ffn_nvfp4_mmq);
-    assert!(resolve(&[("ATLAS_NO_FFN_NVFP4_MMQ", "1")]).ffn_nvfp4_mmq_down);
-}
-
-/// The MoE routed-prefill levers. Four opt-ins, one tri-state, one numeric —
-/// and the tri-state is the interesting one: its DEFAULT is model-dependent
-/// (NVFP4 checkpoints only), so `None` must stay distinguishable from
-/// `Some(false)` or the call site cannot apply that default.
-/// The decode-step levers. `ssm_save_dump` is PRESENCE-gated (it was
-/// `std::env::var(..).is_ok()`) while the two graph levers are TRUTHY-gated
-/// (`is_ok_and(|v| v == "1" || v == "true")`) — three variables read on the
-/// same line of the same function with two different spellings, which is
-/// exactly the kind of thing a consolidation quietly unifies by accident.
-#[test]
-fn the_decode_step_levers_keep_their_two_different_spellings() {
-    let d = resolve(&[]);
-    assert!(!d.ssm_save_dump);
-    assert!(!d.ep_graphs);
-    assert!(!d.gdn_decode_graph);
-
-    // Presence: any value arms it, `0` included.
-    assert!(resolve(&[("ATLAS_SSM_SAVE_DUMP", "1")]).ssm_save_dump);
-    assert!(resolve(&[("ATLAS_SSM_SAVE_DUMP", "0")]).ssm_save_dump);
-    assert!(resolve(&[("ATLAS_SSM_SAVE_DUMP", "")]).ssm_save_dump);
-
-    // Truthy: `1` or `true`, nothing else.
-    for (name, read) in [
-        (
-            "ATLAS_EP_GRAPHS",
-            (|l: &ModelLevers| l.ep_graphs) as fn(&ModelLevers) -> bool,
-        ),
-        ("ATLAS_GDN_DECODE_GRAPH", |l: &ModelLevers| {
-            l.gdn_decode_graph
-        }),
-    ] {
-        assert!(read(&resolve(&[(name, "1")])), "{name} at =1");
-        assert!(read(&resolve(&[(name, "true")])), "{name} at =true");
-        assert!(!read(&resolve(&[(name, "0")])), "{name} armed at =0");
-        assert!(
-            !read(&resolve(&[(name, "")])),
-            "{name} is truthy-gated, not presence-gated"
-        );
-        // ★ CASE-SENSITIVE, unlike every other truthy lever in this struct.
-        // The originals spelled it `v == "1" || v == "true"`. Accepting
-        // `TRUE` would arm an experimental CUDA-graph capture on a spelling
-        // that previously did nothing — the direction that turns capture ON
-        // unexpectedly, which is the one that must not widen by accident.
-        assert!(
-            !read(&resolve(&[(name, "TRUE")])),
-            "{name} must stay case-SENSITIVE: `TRUE` did not arm it before"
-        );
-    }
-    // The contrast, in the same test so the difference is visible: the
-    // sibling truthy levers ARE case-insensitive and must stay that way.
-    assert!(resolve(&[("ATLAS_LORA_EAGER", "TRUE")]).lora_eager);
-}
-
-/// The MoE-forward and MTP-drafter levers. All five are strict `=1` opt-ins
-/// read on a per-layer-per-decode-token or per-drafted-token path.
-///
-/// `fp32_routing` is the one to watch: it is the LAST term of a five-way
-/// conjunction in `MoeFfnLayer::fp32_routing_active`, whose other four terms
-/// are weight/kernel preconditions. Defaulting it ON would change which norm
-/// kernel every MoE decode launches on any model that happens to satisfy
-/// those four.
-#[test]
-fn the_moe_forward_and_mtp_levers_are_strict_opt_ins() {
-    let d = resolve(&[]);
-    assert!(!d.fp32_routing);
-    assert!(!d.fp32_gate);
-    assert!(!d.frankenstein_decode_via_prefill);
-    assert!(!d.k2_diag);
-    assert!(!d.mtp_debug_norms);
-
-    let cases: [(&str, fn(&ModelLevers) -> bool); 5] = [
-        ("ATLAS_FP32_ROUTING", |l| l.fp32_routing),
-        ("ATLAS_FP32_GATE", |l| l.fp32_gate),
-        ("ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL", |l| {
-            l.frankenstein_decode_via_prefill
-        }),
-        ("ATLAS_K2_DIAG", |l| l.k2_diag),
-        ("ATLAS_MTP_DEBUG_NORMS", |l| l.mtp_debug_norms),
-    ];
-    for (name, read) in cases {
-        assert!(read(&resolve(&[(name, "1")])), "{name} did not arm at =1");
-        assert!(!read(&resolve(&[(name, "0")])), "{name} armed at =0");
-        assert!(
-            !read(&resolve(&[(name, "true")])),
-            "{name} is strict `1`, not truthy — that is how it was spelled"
-        );
-    }
-    // The two FP32 levers are independent: the gate one is the batched-path
-    // sibling, not an alias.
-    assert!(!resolve(&[("ATLAS_FP32_ROUTING", "1")]).fp32_gate);
-    assert!(!resolve(&[("ATLAS_FP32_GATE", "1")]).fp32_routing);
-}
-
-/// `draft_conf_tau` is resolved through `speculative::draft_conf_tau`, not
-/// re-spelled here — so this pins that the CLAMP survives the indirection.
-///
-/// `from_values` cannot inject it (the resolver reads the environment
-/// directly), so this drives the shared resolver and asserts the property
-/// that matters: the bound is `[0.0, 0.99]`, and unset means OFF.
-#[test]
-fn the_draft_confidence_clamp_survives_the_indirection() {
-    // SAFETY: single-threaded test process; no other thread reads the env.
-    unsafe { std::env::remove_var("ATLAS_MTP_DRAFT_CONF") };
-    assert_eq!(
-        crate::speculative::draft_conf_tau(),
-        0.0,
-        "unset must mean OFF — three call sites gate on `> 0.0`"
-    );
-    assert_eq!(ModelLevers::from_env().draft_conf_tau, 0.0);
-
-    // SAFETY: as above.
-    unsafe { std::env::set_var("ATLAS_MTP_DRAFT_CONF", "5.0") };
-    assert_eq!(
-        ModelLevers::from_env().draft_conf_tau,
-        0.99,
-        "the upper clamp must survive: an unclamped 5.0 would discard EVERY \
-         draft, silently turning speculation off"
-    );
-    // SAFETY: as above.
-    unsafe { std::env::set_var("ATLAS_MTP_DRAFT_CONF", "-1") };
-    assert_eq!(ModelLevers::from_env().draft_conf_tau, 0.0);
-    // SAFETY: as above.
-    unsafe { std::env::set_var("ATLAS_MTP_DRAFT_CONF", "0.7") };
-    assert_eq!(ModelLevers::from_env().draft_conf_tau, 0.7);
-    // SAFETY: as above.
-    unsafe { std::env::remove_var("ATLAS_MTP_DRAFT_CONF") };
-}
-
-/// One flag, two structs — and they must not drift.
-///
-/// `ATLAS_DFLASH_DEBUG_DUMP_FULL` arms both halves of the DFlash reference
-/// dump: the token sequence from `TransformerModel` and the tensors from the
-/// drafter head. `TransformerModel` cannot reach the head's `DFlashLevers`
-/// (`proposer` is a `dyn DraftProposer`), so each carries its own resolved
-/// copy. This is the check that makes that safe. Without it the pair is the
-/// same shape as `ATLAS_DSPARK_ANCHOR_BIAS`, which had two independent
-/// implementations that nothing compared.
-#[test]
-fn the_two_halves_of_the_dflash_dump_agree() {
-    use crate::layers::dflash_head::levers::DFlashLevers;
-    // SAFETY: single-threaded test process; no other thread reads the env.
-    unsafe { std::env::remove_var("ATLAS_DFLASH_DEBUG_DUMP_FULL") };
-    assert_eq!(
-        ModelLevers::from_env().dflash_debug_dump_full,
-        DFlashLevers::from_env().debug_dump_full,
-        "both halves must read the flag as OFF"
-    );
-    // SAFETY: as above.
-    unsafe { std::env::set_var("ATLAS_DFLASH_DEBUG_DUMP_FULL", "1") };
-    let (model, head) = (
-        ModelLevers::from_env().dflash_debug_dump_full,
-        DFlashLevers::from_env().debug_dump_full,
-    );
-    // SAFETY: as above — restored before asserting so a failure cannot leak
-    // the variable into every test that runs after this one.
-    unsafe { std::env::remove_var("ATLAS_DFLASH_DEBUG_DUMP_FULL") };
-    assert!(
-        model && head,
-        "both halves must arm together (model={model}, head={head})"
-    );
-}
-
-#[test]
-fn the_moe_prefill_levers_keep_the_tri_state_distinguishable() {
-    let d = resolve(&[]);
-    assert!(!d.moe_grouped_cutlass);
-    assert!(!d.moe_grouped_down);
-    assert!(!d.moe_prefill_zero);
-    assert!(!d.moe_prefill_fp8_down);
-    assert_eq!(
-        d.moe_prefill_exact_tiles, None,
-        "unset must defer to the checkpoint, not decide"
-    );
-    assert_eq!(d.moe_prefill_max_load_factor, None);
-
-    assert!(resolve(&[("ATLAS_HOLO_MOE_GROUPED_CUTLASS", "1")]).moe_grouped_cutlass);
-    assert!(resolve(&[("ATLAS_HOLO_MOE_GROUPED_DOWN", "1")]).moe_grouped_down);
-    assert!(resolve(&[("ATLAS_MOE_PREFILL_ZERO", "1")]).moe_prefill_zero);
-    assert!(resolve(&[("ATLAS_MOE_PREFILL_FP8_DOWN", "1")]).moe_prefill_fp8_down);
-    // These four are value-gated, not presence-gated.
-    assert!(!resolve(&[("ATLAS_MOE_PREFILL_ZERO", "0")]).moe_prefill_zero);
-
-    assert_eq!(
-        resolve(&[("ATLAS_MOE_PREFILL_EXACT_TILES", "1")]).moe_prefill_exact_tiles,
-        Some(true)
-    );
-    assert_eq!(
-        resolve(&[("ATLAS_MOE_PREFILL_EXACT_TILES", "0")]).moe_prefill_exact_tiles,
-        Some(false),
-        "`0` is an explicit OFF, not an absent lever — the p90 measured -5.0% \
-         there and +4.9% at ON, so both directions must stay reachable"
-    );
-    assert_eq!(
-        resolve(&[("ATLAS_MOE_PREFILL_EXACT_TILES", "yes")]).moe_prefill_exact_tiles,
-        None
-    );
-
-    assert_eq!(
-        resolve(&[("ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR", "4")]).moe_prefill_max_load_factor,
-        Some(4)
-    );
-    // `0` means "no cap", which is `None` — not a cap of zero, which would
-    // size every expert's tile bound to one tile and drop rows.
-    assert_eq!(
-        resolve(&[("ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR", "0")]).moe_prefill_max_load_factor,
-        None
-    );
-    assert_eq!(
-        resolve(&[("ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR", "x")]).moe_prefill_max_load_factor,
-        None
-    );
-}
-
 #[test]
 fn kill_switches_and_zero_opt_outs_keep_their_distinct_polarities() {
     let d = resolve(&[
@@ -468,8 +196,15 @@ fn externally_resolved_shadow_and_drafter_values_are_carried() {
         |_| false,
         7,
         crate::model::drafter_context::DrafterContext::OFF,
+        0.42,
     );
     assert_eq!(d.shadow_topk, 7);
+    assert_eq!(
+        d.draft_conf_tau, 0.42,
+        "the confidence clamp is resolved OUTSIDE `from_values` and carried \
+         in, like shadow_topk and drafter — reading it inside broke the \
+         function's purity and made a sibling test fail under parallelism"
+    );
     assert_eq!(
         d.drafter,
         crate::model::drafter_context::DrafterContext::OFF

@@ -179,17 +179,13 @@ pub(super) fn hotter(&self) {
 /// function name and the answer is the same everywhere.
 #[test]
 fn from_env_is_called_only_where_it_is_allowed() {
-    const ALLOWED: [&str; 4] = [
+    const ALLOWED: [&str; 3] = [
         // caches the result in a OnceLock — this IS the once.
         "crates/spark-model/src/layers/ops/model_levers.rs",
         // needs an owned mutable copy; takes it from `*get()`.
         "crates/spark-model/src/model/impl_a1.rs",
         // This file. The guard names what it forbids, so it matches itself.
         "crates/spark-model/src/layers/ops/hot_path_env_guards.rs",
-        // Tests: `the_draft_confidence_clamp_survives_the_indirection` needs a
-        // FRESH read after mutating the environment, which is exactly what
-        // `get()`'s `OnceLock` cannot give it.
-        "crates/spark-model/src/layers/ops/model_levers_tests.rs",
     ];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

@@ -19,6 +19,14 @@ pub(super) fn from_values(
     mut present: impl FnMut(&str) -> bool,
     shadow_topk: usize,
     drafter: crate::model::drafter_context::DrafterContext,
+    // ★ Passed IN, like `shadow_topk` and `drafter`, NOT read here. Calling
+    // `speculative::draft_conf_tau()` from inside this function broke its
+    // purity: it reads the real environment whatever the closures say, so a
+    // sibling test that set the variable made `resolve(&[])` return 0.99 and
+    // `the_opt_out_lever_is_on_by_default_and_every_opt_in_is_off` failed
+    // under parallel test execution. `from_values` is pure over its inputs;
+    // that is the property the whole test suite rests on.
+    draft_conf_tau: f32,
 ) -> ModelLevers {
     fn opt_in(value: Option<&str>) -> bool {
         value == Some("1")
@@ -63,9 +71,7 @@ pub(super) fn from_values(
         k2_diag: opt_in(value("ATLAS_K2_DIAG").as_deref()),
         dflash_debug_dump_full: opt_in(value("ATLAS_DFLASH_DEBUG_DUMP_FULL").as_deref()),
         mtp_debug_norms: opt_in(value("ATLAS_MTP_DEBUG_NORMS").as_deref()),
-        // Reuses the tested resolver in `speculative` rather than re-deriving
-        // the clamp: re-spelling `[0.0, 0.99]` here is how a bound drifts.
-        draft_conf_tau: crate::speculative::draft_conf_tau(),
+        draft_conf_tau,
         decode_split_silu: !present("ATLAS_NO_DECODE_SPLIT_SILU"),
         bf16_tc_prefill: present("ATLAS_BF16_TC_PREFILL"),
         fp8_m64_prefill: present("ATLAS_FP8_M64_PREFILL"),
@@ -143,6 +149,7 @@ impl ModelLevers {
             |var| std::env::var_os(var).is_some(),
             crate::speculative::shadow_topk(),
             crate::model::drafter_context::resolve_from_env(),
+            crate::speculative::draft_conf_tau(),
         )
     }
 

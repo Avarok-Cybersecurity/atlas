@@ -44,8 +44,19 @@ pub trait ProposerState: Send + Sync {
 /// p(accept) ≳ 0.66 — the threshold to calibrate around. Staged OFF until
 /// its measured A/B (same discipline as ATLAS_SNAP_EVICT_ALPHA).
 pub fn draft_conf_tau() -> f32 {
-    std::env::var("ATLAS_MTP_DRAFT_CONF")
-        .ok()
+    parse_draft_conf_tau(std::env::var("ATLAS_MTP_DRAFT_CONF").ok().as_deref())
+}
+
+/// The rule itself, pure over the raw value.
+///
+/// Split from the reader so a test can exercise the CLAMP without mutating
+/// the process environment — `set_var` is global and `cargo test` runs this
+/// binary's tests in parallel, so an env-mutating test races every other one.
+/// The clamp is the load-bearing part: an unclamped `5.0` would put the floor
+/// above any achievable confidence and discard EVERY draft, turning
+/// speculation off with nothing logged.
+pub fn parse_draft_conf_tau(value: Option<&str>) -> f32 {
+    value
         .and_then(|v| v.parse::<f32>().ok())
         .map(|t| t.clamp(0.0, 0.99))
         .unwrap_or(0.0)
