@@ -865,6 +865,21 @@ impl Glm5NextDsaLayer {
         // it from `use_graphs`, which is false under `ATLAS_GLM_VERIFY_GRAPHS=0`, under
         // high-speed swap, and under `ATLAS_LORA_EAGER`. See `select_rows_batched`.
         is_prefill: bool,
+        // ABSOLUTE position below which this call must NOT write the MLA latent. Rows at
+        // `pos < kv_write_floor` still run the indexer, the select and the gather-attend
+        // (they read the latents already in the KV blocks), but skip `latent_write`.
+        //
+        // 🔴 This is the Marconi replay window. On an intermediate prefix-cache hit the
+        // resumed prefill re-runs `[snap_tok, matched)` to bring the KDA state up to the
+        // match point, and those positions' latents already live in RADIX blocks that other
+        // live sequences may be reading. The generic prefill floor
+        // (`prefill_a.rs`/`forward_layers.rs` `layer_kv_write_start`) exists for exactly
+        // this, and the composite ignored it. A rewrite is a non-bit-exact recompute
+        // (kda_chunk_scan vs kda_recurrent rounding upstream of `kv_a`), so it would
+        // drift the shared blocks and ratchet across turns. Callers that never replay —
+        // the speculative verify, single-token decode, the drafter — pass 0, which also
+        // keeps this host-side branch inert under graph capture.
+        kv_write_floor: usize,
     ) -> Result<()> {
         use crate::layers::glm5next_layer::profile;
         // Captured before the KV borrows below, for the block-table trim at the
@@ -1035,34 +1050,39 @@ impl Glm5NextDsaLayer {
             };
             // Row strides into the K-row arrays. At k == 1 every one of these is 0.
             let bt_stride = meta.map_or(0, |m| m.max_blocks_per_seq as usize) * 4;
-            let slot_dev = match meta {
-                Some(m) => m.slot.offset(row * 8),
-                None => {
-                    let logical = pos / block_size;
-                    let physical = *block_table.get(logical).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "DSA layer {}: block table has {} entries, needs logical block \
-                             {logical} for position {pos}",
-                            self.layer_idx,
-                            block_table.len()
-                        )
-                    })? as usize;
-                    let slot = (physical * block_size + pos % block_size) as i64;
-                    gpu.copy_h2d(&slot.to_le_bytes(), w.slot)?;
-                    w.slot
-                }
-            };
-            KernelLaunch::new(gpu, self.kernels.latent_write)
-                .grid([1, 1, 1])
-                .block([self.cfg.kv_lora_rank as u32, 1, 1])
-                .arg_ptr(w.kv_a.offset(row * self.cfg.kv_lora_rank * 2))
-                .arg_ptr(self.weights.kv_a_layernorm)
-                .arg_ptr(kv_cache.k_pool_ptr(self.attn_layer_idx))
-                .arg_ptr(slot_dev)
-                .arg_u32(self.cfg.kv_lora_rank as u32)
-                .arg_f32(self.rms_eps)
-                .arg_f32(1.0 / self.kv_scale)
-                .launch(stream)?;
+            // Floored rows keep their latent: it is already in a shared radix block (see
+            // the `kv_write_floor` argument). The slot upload is only for `latent_write`,
+            // so it is skipped with it; nothing below reads `slot_dev`.
+            if pos >= kv_write_floor {
+                let slot_dev = match meta {
+                    Some(m) => m.slot.offset(row * 8),
+                    None => {
+                        let logical = pos / block_size;
+                        let physical = *block_table.get(logical).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "DSA layer {}: block table has {} entries, needs logical block \
+                                 {logical} for position {pos}",
+                                self.layer_idx,
+                                block_table.len()
+                            )
+                        })? as usize;
+                        let slot = (physical * block_size + pos % block_size) as i64;
+                        gpu.copy_h2d(&slot.to_le_bytes(), w.slot)?;
+                        w.slot
+                    }
+                };
+                KernelLaunch::new(gpu, self.kernels.latent_write)
+                    .grid([1, 1, 1])
+                    .block([self.cfg.kv_lora_rank as u32, 1, 1])
+                    .arg_ptr(w.kv_a.offset(row * self.cfg.kv_lora_rank * 2))
+                    .arg_ptr(self.weights.kv_a_layernorm)
+                    .arg_ptr(kv_cache.k_pool_ptr(self.attn_layer_idx))
+                    .arg_ptr(slot_dev)
+                    .arg_u32(self.cfg.kv_lora_rank as u32)
+                    .arg_f32(self.rms_eps)
+                    .arg_f32(1.0 / self.kv_scale)
+                    .launch(stream)?;
+            }
 
             // ── indexer stream, then select + gather-attend ──
             use crate::layers::glm5next_layer::profile;
@@ -1345,6 +1365,8 @@ impl TransformerLayer for Glm5NextDsaLayer {
             stream,
             // A single-token decode, never a prefill sub-chunk. Moot at k == 1, stated anyway.
             false,
+            // A decode step never replays a cached position: no write floor.
+            0,
         )
     }
 }

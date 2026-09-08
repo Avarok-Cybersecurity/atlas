@@ -81,3 +81,38 @@ fn every_dispatch_arm_is_reachable() {
     // it, and refusing to construct it would be a guess about a future checkpoint.
     assert!(!combos.contains(&(false, true)), "no DSA + dense today");
 }
+
+/// The Marconi aux hooks live on the COMPOSITE and nowhere else.
+///
+/// 🔴 The model's layer vec holds `Glm5NextLayer`; an impl on the inner `Glm5NextDsaLayer` is
+/// never dispatched. `sync_replayed_step` was exactly this bug once — the inner impl existed,
+/// looked like coverage, and the counter stayed frozen through every graph replay. An aux hook
+/// added to the inner layer would fail the same way, silently: `has_aux_state()` false at the
+/// composite means the restore gate never asks for a DSA blob, and a warm hit resumes with the
+/// indexer at zero rows. So the inner layer must NOT grow these, and the composite must have
+/// all three.
+#[test]
+fn aux_hooks_are_on_the_composite_and_absent_from_the_inner_dsa_layer() {
+    let inner = include_str!("../glm5next_dsa/layer.rs");
+    for hook in ["fn has_aux_state", "fn snapshot_aux", "fn restore_aux"] {
+        assert!(
+            !inner.contains(hook),
+            "{hook} on Glm5NextDsaLayer is unreachable from the model's layer vec; put it on \
+             Glm5NextLayer"
+        );
+    }
+    let composite = include_str!("mod.rs");
+    for hook in ["fn has_aux_state", "fn snapshot_aux", "fn restore_aux"] {
+        assert_eq!(
+            composite.matches(hook).count(),
+            1,
+            "{hook} must be implemented exactly once on the composite"
+        );
+    }
+    // And the DSA arm is the one that carries: a KDA arm answering true would demand a blob
+    // the pool-backed state can never produce and decline every snapshot.
+    assert!(composite.contains(
+        "fn has_aux_state(&self) -> bool {
+        matches!(self.mixer, Glm5NextMixer::Dsa(_))"
+    ));
+}

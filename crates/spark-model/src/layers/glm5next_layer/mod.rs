@@ -53,6 +53,7 @@ use spark_runtime::kernel_args::KernelLaunch;
 use spark_runtime::kv_cache::PagedKvCache;
 
 use crate::layer::{ForwardContext, LayerState, SsmLayerState, TransformerLayer};
+use crate::layers::glm5next_dsa;
 use crate::layers::glm5next_dsa::layer::Glm5NextDsaLayer;
 use crate::layers::glm5next_dsa::state::Glm5NextDsaState;
 use crate::layers::glm5next_kda::{
@@ -729,6 +730,12 @@ impl Glm5NextLayer {
         // an eager verify. The DSA layer's batched selector is qualified on prefill only, so
         // the distinction is carried explicitly rather than re-derived downstream.
         is_prefill: bool,
+        // ABSOLUTE position below which DSA must not rewrite the MLA latent — the Marconi
+        // replay window `[snap_tok, matched)` of an intermediate prefix-cache hit, whose
+        // latents already sit in shared radix blocks. `prefill` derives it from the trait's
+        // `kv_write_start`; the verify passes 0. KDA ignores it (no KV). See
+        // `Glm5NextDsaLayer::decode_k`.
+        kv_write_floor: usize,
     ) -> Result<()> {
         let gpu = ctx.gpu;
         let h = self.hidden;
@@ -840,6 +847,7 @@ impl Glm5NextLayer {
                     ctx,
                     stream,
                     is_prefill,
+                    kv_write_floor,
                 )?;
                 normed
             }
@@ -1133,6 +1141,77 @@ impl TransformerLayer for Glm5NextLayer {
         }
     }
 
+    /// The DSA indexer cache is the one piece of GLM per-sequence state that neither the KV
+    /// blocks nor the Marconi SSM slot carries, so it is what the aux blob exists for.
+    ///
+    /// 🔴 KDA answers FALSE, and that is not an omission. Its state IS the pool's
+    /// `SsmLayerState` (`uses_ssm_pool()` below; `state.rs` for why the shapes line up), and
+    /// `SsmSnapshotPool::save`/`restore` already D2D-copies every pool slot — all 34 KDA
+    /// layers — into and out of the Marconi region. Answering true here would make the
+    /// restore gate demand a blob KDA can never produce and decline every snapshot.
+    ///
+    /// The model's layer vec holds the COMPOSITE, so this is the impl that runs — the inner
+    /// `Glm5NextDsaLayer` deliberately has NO aux overrides (pinned in `tests.rs`), because an
+    /// inner impl is unreachable from here and would only look like coverage.
+    fn has_aux_state(&self) -> bool {
+        matches!(self.mixer, Glm5NextMixer::Dsa(_))
+    }
+
+    /// Image this DSA layer's indexer rows for a Marconi snapshot; `Ok(None)` above the
+    /// `ATLAS_GLM_DSA_AUX_MAX_TOKENS` cap (all 11 layers decline together — see
+    /// `glm5next_dsa::aux`) and always `Ok(None)` for KDA, whose state rides the pool slot.
+    fn snapshot_aux(
+        &self,
+        state: &dyn LayerState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        match &self.mixer {
+            Glm5NextMixer::Dsa(_) => {
+                let st = state
+                    .as_any()
+                    .downcast_ref::<Glm5NextDsaState>()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "GLM layer {}: a DSA mixer was handed state that is not a \
+                             Glm5NextDsaState",
+                            self.layer_idx
+                        )
+                    })?;
+                glm5next_dsa::aux::snapshot(st, self.layer_idx as u32, gpu, stream)
+            }
+            Glm5NextMixer::Kda { .. } => Ok(None),
+        }
+    }
+
+    /// Put a `snapshot_aux` blob back on a prefix-cache hit, before the resumed prefill. The
+    /// codec validates the blob against THIS layer (index, row width, reservation, exact
+    /// length) before the first upload, so a wrong blob is a request error, never a
+    /// half-written cache. A KDA layer can only reach here through a corrupted blob set —
+    /// `apply_aux_states` routes by the layer index the blob was saved under — so it bails.
+    fn restore_aux(
+        &self,
+        state: &mut dyn LayerState,
+        blob: &[u8],
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        match &self.mixer {
+            Glm5NextMixer::Dsa(_) => glm5next_dsa::aux::restore(
+                self.dsa_state(state)?,
+                self.layer_idx as u32,
+                blob,
+                gpu,
+                stream,
+            ),
+            Glm5NextMixer::Kda { .. } => bail!(
+                "GLM layer {}: restore_aux on a KDA layer — KDA state rides the Marconi SSM \
+                 slot and never produces an aux blob, so this blob set is mis-indexed",
+                self.layer_idx
+            ),
+        }
+    }
+
     /// GLM's KDA blocks are `linear_attention` in `layer_types` AND carry the pool's
     /// `SsmLayerState`, so they take pool slots like any other recurrent layer. That is what
     /// buys the speculative-verify checkpoints and per-token intermediates for free —
@@ -1193,7 +1272,13 @@ impl TransformerLayer for Glm5NextLayer {
         block_table: &mut Vec<u32>,
         disk_block_ids: &mut Vec<u32>,
         disk_last_offloaded_per_layer: &mut Vec<u32>,
-        _kv_write_start: usize,
+        // Chunk-relative floor below which attention must not rewrite K/V — the Marconi
+        // replay window on an intermediate prefix-cache hit (`prefill_a.rs` /
+        // `forward_layers.rs` `layer_kv_write_start`). Was `_kv_write_start` (ignored) until
+        // the GLM prefix cache opened; with it ignored, a warm hit's replay rewrote radix
+        // blocks other live sequences read. Honoured by the DSA `latent_write` only — KDA
+        // has no KV, and the indexer rows are per-sequence, never shared.
+        kv_write_start: usize,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -1246,6 +1331,8 @@ impl TransformerLayer for Glm5NextLayer {
                     t,
                     // This IS the prefill sub-chunk caller.
                     true,
+                    // The trait's floor is chunk-relative; DSA positions are absolute.
+                    seq_len_start + kv_write_start,
                 )?;
                 t += k;
             }
@@ -1340,6 +1427,9 @@ impl TransformerLayer for Glm5NextLayer {
             // A speculative verify, NOT a prefill sub-chunk — true here would hand an eager
             // verify the prefill-only batched DSA selector.
             false,
+            // A verify writes fresh positions only; no replay window, no floor. Also what
+            // keeps the floor branch inert under the graphed verify's capture.
+            0,
         )
     }
 

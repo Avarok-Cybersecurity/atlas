@@ -79,6 +79,14 @@ impl TransformerModel {
     ///
     /// A faulted slot is byte-identical to the snapshot it spilled from, so the
     /// restore/skip logic at each call site is unchanged.
+    ///
+    /// 🪤 Byte-identical for the SSM slot only. The tier carries no aux
+    /// record (`aux_blobs` is host-side, per resident slot, and `free` drops
+    /// it), so a faulted-in anchor arrives aux-less and every aux-carrying
+    /// model — PLE/QSA on qwen4exp, DSA on GLM-5.3 — declines it at the
+    /// restore gate (`snapshot_aux_is_restorable`) and recomputes the prefix.
+    /// On those models a spill-tier fault-in is a paid-for no-op until the
+    /// tier learns to carry aux; on GLM that is up to ~176 MiB per anchor.
     pub(in crate::model) fn eff_ssm_snapshot(
         &self,
         prefix_match: &PrefixMatch,

@@ -193,6 +193,17 @@ pub(crate) fn preflight_reserve(
     // unreachable — 2380 MiB on GLM-5.3 (16 slots x 34 KDA layers x FP32
     // h+conv) that nothing can ever restore from. Kill switch:
     // ATLAS_SSM_MARCONI_FULL.
+    //
+    // GLM-5.3 now answers `kv_only_prefix_cache_is_safe() == true` (KDA rides
+    // the slot, DSA rides `snapshot_aux`), so with --enable-prefix-caching
+    // this region FIRES for it and the 2380 MiB is charged for real. That
+    // figure was measured at TP=2 (2x GB10, EP=2); `topology.rs` halves the
+    // linear-attention heads per rank, so ~1190 MiB/rank is what the
+    // arithmetic predicts there and 2380 MiB is the TP=1 expectation — the
+    // two have not been reconciled by measurement. Re-budget under
+    // gpu-util <= 0.85 before the first single-node GLM prefix-cache serve.
+    // The DSA aux blobs are HOST memory on top (up to ~176 MiB per slot at
+    // the default ATLAS_GLM_DSA_AUX_MAX_TOKENS=32768; see glm5next_dsa::aux).
     let marconi = spark_model::ssm_reserve::marconi_snapshot_slots(
         args.ssm_cache_slots,
         spark_model::ssm_reserve::prefix_caching_active(

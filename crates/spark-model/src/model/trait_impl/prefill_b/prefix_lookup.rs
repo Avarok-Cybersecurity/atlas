@@ -205,10 +205,11 @@ impl TransformerModel {
                         || self
                             .ssm_snapshots
                             .session_matches(snap_id, seq.session_hash))
-                    // Aux-carrying models (PLE/QSA) decline aux-less slots —
-                    // e.g. mid-chunk tail captures — rather than restore a
-                    // stale lexical state. See prefill_a.
-                    && (!self.requires_aux_state() || self.ssm_snapshots.aux(snap_id).is_some())
+                    // Aux-carrying models (PLE/QSA/GLM-DSA) decline aux-less
+                    // or incomplete slots — e.g. mid-chunk tail captures, or a
+                    // GLM save over the DSA aux cap — rather than restore a
+                    // stale mix. See prefill_a / `aux_set_is_complete`.
+                    && self.snapshot_aux_is_restorable(snap_id)
                 {
                     // Cross-stream ordering: the snapshot we are about to read
                     // was SAVED on the default stream (decode_marconi_checkpoint

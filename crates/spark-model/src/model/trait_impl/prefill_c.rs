@@ -193,9 +193,13 @@ impl TransformerModel {
                 && self
                     .ssm_snapshots
                     .session_matches(snap_id, seq.session_hash)
-                // See prefill_a: aux-carrying models decline aux-less slots.
-                && (!self.requires_aux_state() || self.ssm_snapshots.aux(snap_id).is_some())
+                // See prefill_a: aux-carrying models decline aux-less or
+                // incomplete slots.
+                && self.snapshot_aux_is_restorable(snap_id)
             {
+                // See prefix_lookup: order after any in-flight default-stream
+                // snapshot save before reading the slot on the prefill stream.
+                self.wait_snapshot_saves_dispatch(stream)?;
                 self.ssm_snapshots.restore(
                     snap_id,
                     seq.slot_idx,

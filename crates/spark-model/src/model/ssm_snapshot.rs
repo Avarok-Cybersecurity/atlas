@@ -465,8 +465,21 @@ impl SsmSnapshotPool {
     }
 
     /// The aux blobs for a slot, if that save carried them.
+    ///
+    /// 🪤 This CLONES the whole set. At GLM's default DSA cap that is ~176 MiB
+    /// (11 layers × 32K rows × 513 B), so ask [`Self::aux_layers`] for a
+    /// gate decision and call this once, only when the restore is going ahead.
     pub(super) fn aux(&self, snap_slot: usize) -> Option<Vec<(u32, Vec<u8>)>> {
         self.aux_blobs.lock().get(&snap_slot).cloned()
+    }
+
+    /// The layer indices a slot's aux set covers, in save order — the
+    /// restore gate's completeness input, without the blob bytes.
+    pub(super) fn aux_layers(&self, snap_slot: usize) -> Option<Vec<u32>> {
+        self.aux_blobs
+            .lock()
+            .get(&snap_slot)
+            .map(|blobs| blobs.iter().map(|(i, _)| *i).collect())
     }
 
     /// Whether any LIVE snapshot slot is tagged with `session_hash` — i.e.

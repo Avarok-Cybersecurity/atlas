@@ -555,6 +555,16 @@ pub struct MarconiSlotDecision {
 /// that prefix-cache hits would recompute SSM state — and with the cache
 /// inactive there are no hits.
 ///
+/// 🔴 The GLM measurement above was taken while GLM's prefix cache was
+/// force-disabled (`kv_only_prefix_cache_is_safe()` was `false`), i.e. it
+/// measured the region this diet REMOVES. Since GLM's non-KV state rides the
+/// Marconi snapshot (KDA in the slot, DSA via `snapshot_aux`), the predicate
+/// is `true` for it and a `--enable-prefix-caching` GLM serve reserves AND
+/// uses this region. The 2380 MiB figure is per rank at TP=2, where
+/// `topology.rs` halves the KDA heads; the TP=1 figure has not been measured
+/// and the FP32 arithmetic says it is the same 2380 MiB only if the per-rank
+/// head split does not apply — reconcile before trusting either at TP=1.
+///
 /// Env contract (read HERE and nowhere else):
 ///
 /// * `ATLAS_SSM_MARCONI_FULL` (PRESENCE, house convention — `=0` is NOT
