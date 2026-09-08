@@ -114,6 +114,8 @@ impl TransformerModel {
         // Read before the destructure below borrows `seq` field-wise. This is
         // the identity the carry slot is gated on; see `CarriedDrafter`.
         let session_hash = seq.session_hash;
+        // And the ticket for the shared hidden rows; see `StoreRange`.
+        let store_gen = seq.mtp_store_gen;
         let SequenceState {
             tokens: seq_tokens,
             prompt_len,
@@ -178,6 +180,7 @@ impl TransformerModel {
                     seq_tokens,
                     p,
                     session_hash,
+                    store_gen,
                     prop_state.as_mut(),
                     ctx,
                     stream,
@@ -216,6 +219,7 @@ impl TransformerModel {
         seq_tokens: &[u32],
         prompt_len: usize,
         session_hash: u64,
+        store_gen: u64,
         prop_state: &mut dyn crate::speculative::ProposerState,
         ctx: &ForwardContext,
         stream: u64,
@@ -253,9 +257,25 @@ impl TransformerModel {
             proposer.free_drafter_kv(&block_ids);
             return CarryOutcome::NoCarry;
         }
-        let (lo, hi) = *self.mtp_store_range.lock();
+        // Only rows THIS sequence wrote are visible; another owner's interval
+        // reads as empty, which `plan_append` then refuses.
+        //
+        // Deliberately placed AFTER `install_drafter_kv`: the carried rows are
+        // already proven valid for this session, and refusing to APPEND is no
+        // reason to throw them away. It also means the blocks must NOT be freed
+        // here — `install_drafter_kv` has taken ownership, and the proposer
+        // state releases or re-deposits them.
+        let stored = *self.mtp_store_range.lock();
+        let (lo, hi) = stored.visible_to(store_gen);
         let Some(plan) = plan_append(last_key, prompt.len(), lo, hi) else {
-            return CarryOutcome::NoHiddens;
+            return if stored.owner != store_gen && stored.owner != 0 {
+                CarryOutcome::ForeignHiddens {
+                    owner: stored.owner,
+                    expected: store_gen,
+                }
+            } else {
+                CarryOutcome::NoHiddens
+            };
         };
         // `drafter_rows_impl` reads `tokens[r + 1]` and `hiddens` row `r` for
         // row r, and RoPE `pos_base + r`. Row r must be pair key

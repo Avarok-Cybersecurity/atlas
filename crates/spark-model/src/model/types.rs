@@ -257,13 +257,19 @@ pub struct TransformerModel {
     /// makes block ownership unambiguous (blocks are owned here XOR by a live
     /// sequence). `None` when the feature is off or nothing has been carried.
     pub(super) mtp_carry: parking_lot::Mutex<Option<super::mtp_carry::CarriedDrafter>>,
-    /// Absolute position interval `[lo, hi)` of `mtp_prefill_hidden` rows
-    /// written by the CURRENT sequence's prefill chunks. Reset per
-    /// `alloc_sequence`, so a warm-turn append can only ever read hiddens this
-    /// turn computed — which is why the carry path cannot inherit another
-    /// sequence's hiddens the way the legacy `mtp_prefill_capture_len` path
-    /// can. Only maintained when ATLAS_MTP_CARRY_DRAFTER is on.
-    pub(super) mtp_store_range: parking_lot::Mutex<(usize, usize)>,
+    /// Absolute position interval of `mtp_prefill_hidden` rows, WITH the
+    /// sequence generation that wrote them. Only maintained when
+    /// ATLAS_MTP_CARRY_DRAFTER is on.
+    ///
+    /// ★ THE STAMP IS THE GUARD; the `alloc_sequence` reset is not. This doc
+    /// used to claim the interval was "per-sequence by construction" because
+    /// `alloc_sequence` resets it — and that was false, in two orderings. The
+    /// reset happens when a sequence is ADMITTED, but the writer
+    /// (`drafter_prefill`) had no ownership check at all, so a sequence whose
+    /// last chunk landed after another had been admitted merged its write into
+    /// the newcomer's interval and then read the newcomer's rows. Reset still
+    /// happens, as defence in depth; `gen` is what makes the claim true.
+    pub(super) mtp_store_range: parking_lot::Mutex<super::mtp_carry::StoreRange>,
     /// DFlash 5-layer hidden-state stack. Allocated only when a
     /// `BlockDiffusionDraftHead` proposer is built. Layout:
     /// `[5 × hidden_size × bf16]` shallow-to-deep at the layer indices
