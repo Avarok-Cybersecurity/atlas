@@ -28,6 +28,48 @@
 //! `Sensitivity::Correctness` gates, which is measured, not assumed — see
 //! [`super::agreement`].
 
+/// Do the members' recorded shard identities form the partition the group
+/// claims to be?
+///
+/// `declared` is one `(index, count)` per member, taken from the MEMBER
+/// RECORDS — what each run says it was — not from the registry, so a
+/// mislabelled or hand-copied record is caught too.
+///
+/// ★ WHY THIS IS NOT REDUNDANT WITH THE `samples` PIN. `samples` is pinned
+/// exactly (min == max == 995) and does catch a missing or duplicated SAMPLE.
+/// It does not catch a duplicated SHARD: if two members both ran index 2, the
+/// union still holds ~995 rows — shard C twice and shard D never — and every
+/// per-subset tally still looks plausible, because the subsets are strided.
+/// The total is right and the sample set is wrong, which is precisely the
+/// silently-wrong green a gate exists to prevent.
+///
+/// Requires: every member declares the same `count`, that count equals the
+/// number of members, and the indices are exactly `0..count` once each.
+pub fn partition_ok(
+    group: &'static str,
+    declared: &[(usize, usize)],
+) -> Result<(), GroupFault> {
+    let n = declared.len();
+    if let Some(&(_, bad)) = declared.iter().find(|(_, c)| *c != n) {
+        return Err(GroupFault::NotAPartition {
+            group,
+            detail: format!(
+                "a member reports {bad} shards but the group has {n} members"
+            ),
+        });
+    }
+    let mut seen: Vec<usize> = declared.iter().map(|(i, _)| *i).collect();
+    seen.sort_unstable();
+    let expected: Vec<usize> = (0..n).collect();
+    if seen != expected {
+        return Err(GroupFault::NotAPartition {
+            group,
+            detail: format!("shard indices {seen:?}, expected {expected:?} once each"),
+        });
+    }
+    Ok(())
+}
+
 /// A gate whose measurement is produced by several member runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BenchmarkGroup {
@@ -109,6 +151,13 @@ pub enum GroupFault {
         /// The unexpected member id.
         id: String,
     },
+    /// The members' recorded shard identities are not a partition.
+    NotAPartition {
+        /// The group.
+        group: &'static str,
+        /// What was wrong, already phrased for a human.
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for GroupFault {
@@ -123,6 +172,14 @@ impl std::fmt::Display for GroupFault {
                  measurement, not a partial one.",
                 missing.len(),
                 missing.join(", ")
+            ),
+            Self::NotAPartition { group, detail } => write!(
+                f,
+                "{group}'s members did not run a partition of the draw: {detail}. \
+                 Every sample must be measured EXACTLY once. Note the `samples` \
+                 pin cannot catch this on its own — two members running the same \
+                 shard still produce the right row COUNT while one shard is \
+                 measured twice and another not at all."
             ),
             Self::SpansCommits { group, commits } => write!(
                 f,

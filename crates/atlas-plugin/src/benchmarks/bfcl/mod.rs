@@ -169,6 +169,9 @@ pub struct Bfcl {
     request_timeout: Duration,
     started: Option<Instant>,
     tool_call_samples: usize,
+    /// Samples whose request failed at the transport, scored as "no call".
+    /// Published as a metric so a group can refuse a degraded member.
+    transport_errors: usize,
     /// The served model, captured at `load()` from the target endpoint.
     /// Decides whether the MLPerf floor VERDICT applies (`report.rs`) — the
     /// floor rides on the Qwen3.6-27B submission checkpoints and does not
@@ -229,6 +232,7 @@ impl Bfcl {
             request_timeout: Duration::from_secs(600),
             started: None,
             tool_call_samples: 0,
+            transport_errors: 0,
             target_model: None,
             baseline_mins: report::BaselineMins::default(),
         }
@@ -269,6 +273,16 @@ impl Bfcl {
                 // honest reading: the endpoint produced nothing. It is also
                 // logged, so a run degraded by errors is visible rather than
                 // showing up only as a mysteriously low score.
+                //
+                // ★ AND COUNTED, because a log line does not survive into a
+                // record. Serially a degraded run shows up as warnings a human
+                // reads; across four shards on three boxes the degraded shard
+                // merges into the aggregate invisibly, scoring its failures as
+                // "made no call" — which is the CORRECT answer for most of the
+                // irrelevance subsets. A shard can therefore fail its way to a
+                // better number. `metrics()` publishes this so the group can
+                // refuse it.
+                self.transport_errors += 1;
                 handle.warn(one_line(format!("sample {}: {e:#}", sample.sample_id)));
                 (Vec::new(), false)
             }
