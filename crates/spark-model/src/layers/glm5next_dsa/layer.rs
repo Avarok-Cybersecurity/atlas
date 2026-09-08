@@ -663,21 +663,55 @@ impl Glm5NextDsaLayer {
         // to its own horizon via `q_pos[r]`.
         let geom = state.geometry(&self.cfg, k)?;
         let idx_row = self.cfg.index_heads * self.cfg.index_head_dim;
-        for row in 0..k {
-            gemm(
-                gpu,
-                self.kernels.gemm_f32,
-                self.kernels.gemv_f32,
-                // Same as `select_row`: no FP32-out batchm twin exists.
-                KernelHandle(0),
-                w.q_resid.offset(row * self.cfg.q_lora_rank * 2),
+        // 🔴 ONE GEMM for all k rows, not k GEMVs. This loop used to run an M=1 GEMV per
+        // row — at 256 prefill rows x 11 DSA layers, 2,816 launches per chunk, each one
+        // sweeping the ENTIRE `wq_b` weight to produce a single row. 256 full weight reads
+        // where one suffices.
+        //
+        // It was written that way for a concrete reason, recorded in the comment this
+        // replaces: "no FP32-out batchm twin exists". `q_idx_rows` is FP32, and Atlas's
+        // batched-M kernel only has a BF16-out form, so `batchm` was passed as
+        // `KernelHandle(0)` and `dense_mm_bf16` had no batched tier to route to. The twin
+        // now exists — `cublas_bf16_proj_dense_f32_out` — so the reason is gone.
+        //
+        // Shapes line up with no repacking: `q_resid` is a contiguous `[k, q_lora_rank]`
+        // BF16 block (the loop indexed it by `row * q_lora_rank`) and `q_idx_rows` a
+        // contiguous `[k, idx_row]` FP32 one, which is exactly `out[M,N] = act[M,K] @ Wt`.
+        //
+        // 🪤 PREFILL ONLY, and not by inference: `select_rows_batched` is reached solely
+        // through `batch_select`, which requires `is_prefill && !graph_capture && k > 1`.
+        // Decode and the speculative verify go through `select_row`, whose M=1 GEMV is
+        // untouched — so the bit-exact tiers still produce what they always did. This does
+        // reassociate, and the DSA indexer feeds a top-k over KV positions, so a tie near
+        // the selection boundary could pick a different token: that is why the arm is
+        // measured on long-context needle recall, not just on throughput.
+        if crate::layers::glm5next_layer::dsa_batch_qidx() {
+            crate::layers::ops::cublas_bf16_proj_dense_f32_out(
+                w.q_resid,
                 self.weights.wq_b,
-                w.q_idx_rows.offset(row * idx_row * 4),
-                1,
-                idx_row,
-                self.cfg.q_lora_rank,
+                w.q_idx_rows,
+                k as u32,
+                idx_row as u32,
+                self.cfg.q_lora_rank as u32,
                 stream,
             )?;
+        } else {
+            for row in 0..k {
+                gemm(
+                    gpu,
+                    self.kernels.gemm_f32,
+                    self.kernels.gemv_f32,
+                    // Same as `select_row`: no FP32-out batchm twin exists.
+                    KernelHandle(0),
+                    w.q_resid.offset(row * self.cfg.q_lora_rank * 2),
+                    self.weights.wq_b,
+                    w.q_idx_rows.offset(row * idx_row * 4),
+                    1,
+                    idx_row,
+                    self.cfg.q_lora_rank,
+                    stream,
+                )?;
+            }
         }
         let q_pos_bytes: Vec<u8> = q_pos_host.iter().flat_map(|p| p.to_le_bytes()).collect();
         gpu.copy_h2d(&q_pos_bytes, w.q_pos_rows)?;

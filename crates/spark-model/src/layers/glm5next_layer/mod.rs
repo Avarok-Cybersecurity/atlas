@@ -235,6 +235,27 @@ pub(crate) fn cublas_wide_proj() -> bool {
     })
 }
 
+/// Batch the DSA indexer `wq_b` projection across all prefill rows in one cuBLASLt GEMM
+/// instead of one M=1 GEMV per row. `ATLAS_GLM_DSA_BATCH_QIDX=0` is the kill-switch.
+///
+/// 🔴 DEFAULT ON. Prefill-only (see the call site in `glm5next_dsa::layer`), so decode and
+/// the speculative verify keep their bit-exact M=1 GEMV.
+pub(crate) fn dsa_batch_qidx() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| {
+        let on = std::env::var("ATLAS_GLM_DSA_BATCH_QIDX").as_deref() != Ok("0");
+        tracing::warn!(
+            "ATLAS_GLM_DSA_BATCH_QIDX: prefill DSA indexer q uses {}",
+            if on {
+                "ONE batched cuBLASLt GEMM"
+            } else {
+                "one M=1 GEMV per row"
+            }
+        );
+        on
+    })
+}
+
 /// `PREFILL_ROWS`, overridable at launch with `ATLAS_GLM_PREFILL_ROWS`.
 ///
 /// 🔬 Kept as the A/B lever it was built as. It found A65's real defect (the DSA attend read

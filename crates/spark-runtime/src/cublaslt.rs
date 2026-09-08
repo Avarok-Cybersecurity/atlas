@@ -211,6 +211,43 @@ pub fn bf16_gemm_act_weight_t(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    gemm_act_weight_t_out(act, weight, out, m, n, k, CUDA_R_16BF, stream)
+}
+
+/// [`bf16_gemm_act_weight_t`] with BF16 inputs and an **FP32** output buffer.
+///
+/// Exists for consumers whose downstream kernel reads FP32 and which therefore could not
+/// use the batched BF16-out path at all. GLM's DSA indexer is the motivating case: its
+/// `wq_b` projection writes FP32, so `select_rows_batched` fell back to one M=1 GEMV PER
+/// ROW — 256 full sweeps of the same weight per DSA layer per prefill chunk — under a
+/// comment reading "no FP32-out batchm twin exists". This is that twin.
+///
+/// Identical to the BF16 form except the D layout: cuBLASLt accumulates in FP32 either
+/// way (`CUBLAS_COMPUTE_32F`), so this actually stores MORE of the accumulator than the
+/// BF16 output does, rather than less.
+pub fn bf16_gemm_act_weight_t_f32_out(
+    act: u64,
+    weight: u64,
+    out: u64,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    gemm_act_weight_t_out(act, weight, out, m, n, k, CUDA_R_32F, stream)
+}
+
+/// Shared body of the two wrappers above; `out_dtype` selects the D layout.
+fn gemm_act_weight_t_out(
+    act: u64,
+    weight: u64,
+    out: u64,
+    m: u32,
+    n: u32,
+    k: u32,
+    out_dtype: i32,
+    stream: u64,
+) -> Result<()> {
     let ctx = ctx()?;
     unsafe {
         let mut desc: cublasLtMatmulDesc_t = std::ptr::null_mut();
@@ -253,7 +290,7 @@ pub fn bf16_gemm_act_weight_t(
             "LayoutB",
         )?;
         chk(
-            cublasLtMatrixLayoutCreate(&mut ld_, CUDA_R_16BF, n as u64, m as u64, n as i64),
+            cublasLtMatrixLayoutCreate(&mut ld_, out_dtype, n as u64, m as u64, n as i64),
             "LayoutD",
         )?;
         let mut pref: cublasLtMatmulPreference_t = std::ptr::null_mut();

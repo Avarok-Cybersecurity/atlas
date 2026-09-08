@@ -32,11 +32,30 @@ fn gemm(
     kk: usize,
     stream: u64,
 ) -> Result<()> {
+    // 🔴 Wide (prefill) shapes go to cuBLASLt. `dense_gemm_bf16` says of itself "Phase 1:
+    // Correct scalar implementation ... Phase 2: Will add mma.sync" — one output element
+    // per thread, no tensor cores. It measured 1.45 TFLOP/s on `mlp_dense` and 1.38 on
+    // `moe_shared`; the two agreeing at different shapes is what proves it is the KERNEL
+    // and not the shape. Together they were ~275 ms/step, ~20% of prefill.
+    //
+    // 🪤 This file kept the scalar path after the DSA and KDA blocks moved off it, so the
+    // same defect survived a commit that was supposed to have killed it. The dense MLP and
+    // the shared expert are BF16 and unquantized in the EXL3 K2 checkpoint (its scope is
+    // `glm53_routed_experts_only` — only the routed experts are trellis), so they were
+    // always eligible; nothing about the quantization stopped this.
+    //
+    // Same numerics boundary as everywhere else — see `glm5next_layer::cublas_wide_proj`.
+    // M=1 decode and M<=16 verify keep their bit-identical tiers, so the router's M=1 call
+    // below cannot reach this arm even though it shares this helper.
+    if m > crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize
+        && crate::layers::glm5next_layer::cublas_wide_proj()
+    {
+        return crate::layers::ops::cublas_bf16_proj_dense(
+            a, b, c, m as u32, n as u32, kk as u32, stream,
+        );
+    }
     // M=1 decode -> GEMV; M=2..8 (a K-token verify sweep) -> ONE weight read for all rows;
     // wider -> the tile GEMM. `ops::dense_mm_bf16` owns the policy and the grid coupling.
-    //
-    // 🔴 The router is the worst tile-GEMM case in the whole stack: N = 288 tiles to **18
-    // blocks**, measured 6.8 GB/s. It has no FP32-out batchm twin, so it stays on gemv/tile.
     crate::layers::ops::dense_mm_bf16(
         gpu,
         &crate::layers::ops::DenseMmKernels {
@@ -642,21 +661,48 @@ pub fn forward_moe(
 
     // ── router: FULL expert set, FP32 logits, replicated on every rank ──
     let t = profile::start();
-    for r in 0..rows {
-        gemm(
-            gpu,
-            k.gemm_f32,
-            k.gemv_f32,
-            // No FP32-out batchm twin exists; the router stays on gemv/tile.
-            KernelHandle(0),
-            x.offset(r * cfg.hidden * 2),
+    // 🔴 ONE GEMM for every row. This was `rows` M=1 GEMVs — at 256 prefill rows x 42
+    // sparse layers, ~10,700 launches per chunk, each re-reading the ENTIRE router weight
+    // to produce one row of logits. The comment this replaces named the blocker exactly:
+    // "No FP32-out batchm twin exists". It exists now.
+    //
+    // The tile GEMM was no escape either: the router is the worst tile case in the stack,
+    // N = 288 tiling to 18 blocks at a measured 6.8 GB/s.
+    //
+    // 🪤 Router logits pick the experts, so reassociation can flip a top-k tie and route a
+    // token to a different expert. That is a real behaviour change, not just a numeric one,
+    // which is why it is gated and measured on answer quality rather than on tok/s alone.
+    // Bounded to prefill widths by the same M > 16 cut used everywhere: decode and the
+    // speculative verify stay on the bit-identical GEMV and route exactly as before.
+    if rows > crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize
+        && crate::layers::glm5next_layer::cublas_wide_proj()
+    {
+        crate::layers::ops::cublas_bf16_proj_dense_f32_out(
+            x,
             w.router,
-            ws.logits.offset(r * cfg.num_experts * 4),
-            1,
-            cfg.num_experts,
-            cfg.hidden,
+            ws.logits,
+            rows as u32,
+            cfg.num_experts as u32,
+            cfg.hidden as u32,
             stream,
         )?;
+    } else {
+        for r in 0..rows {
+            gemm(
+                gpu,
+                k.gemm_f32,
+                k.gemv_f32,
+                // No FP32-out batchm twin at these widths; stays on gemv/tile.
+                KernelHandle(0),
+                x.offset(r * cfg.hidden * 2),
+                w.router,
+                ws.logits.offset(r * cfg.num_experts * 4),
+                1,
+                cfg.num_experts,
+                cfg.hidden,
+                stream,
+            )?;
+        }
     }
     // ONE top-k for every row. `glm5next_router_topk` already takes the row on `blockIdx.x`
     // and strides `logits`/`ids`/`wts` by it, so this is the identical per-row work in one
