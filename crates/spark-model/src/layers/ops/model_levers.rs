@@ -55,7 +55,10 @@
 /// Plain `Copy` data resolved from the environment at model construction. Group
 /// membership follows the subsystem the lever steers, so a reader can see at a
 /// glance which part of the forward pass a flag reaches.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+// `Eq` is deliberately absent since `draft_conf_tau` joined: it is an f32
+// threshold. Comparing two resolutions is a test-only need and `PartialEq`
+// covers it.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct ModelLevers {
     // ── SSM / GDN recurrence ──
     /// Keep GDN recurrent state in registers across the prefill chunk loop.
@@ -222,10 +225,40 @@ pub struct ModelLevers {
     /// Per-layer hidden-state norm dumps on the Gemma-4 decode path. Heavy —
     /// one device-to-host copy per layer.
     pub gemma4_diag: bool,
+    /// `ATLAS_DFLASH_DEBUG_DUMP_FULL=1` — the model-side half of the DFlash
+    /// full dump: emit the whole token sequence ONCE so a Python reference
+    /// can run the same tokens through HF transformers.
+    ///
+    /// ★ The SAME variable that [`crate::layers::dflash_head::levers::DFlashLevers::debug_dump_full`]
+    /// carries. Two structs, one flag — deliberately, because the two halves
+    /// of the dump are armed together by design and the head is not reachable
+    /// from `TransformerModel` (`proposer` is a `dyn DraftProposer`, so there
+    /// is nothing to read the head's levers through without a downcast).
+    /// `the_two_halves_of_the_dflash_dump_agree` pins that the two
+    /// resolutions cannot drift, which is what makes the duplication safe —
+    /// an unchecked second spelling of one lever is how
+    /// `ATLAS_DSPARK_ANCHOR_BIAS` came to have two implementations.
+    pub dflash_debug_dump_full: bool,
     /// `ATLAS_MTP_DEBUG_NORMS=1` — per-stage norm dumps inside the MTP
     /// drafter's `forward_one`, which asked for it FOUR times per drafted
     /// token, each read only to decide whether to do nothing.
     pub mtp_debug_norms: bool,
+    /// `ATLAS_MTP_DRAFT_CONF=<t>` — confidence floor for submitting drafts
+    /// to verification, clamped to `[0.0, 0.99]`. `0.0` (unset) disables.
+    ///
+    /// When the drafter's chain confidence (the min top-1 softmax prob
+    /// across one propose's drafts) is below this, the drafts are discarded
+    /// and the next step decodes serially, skipping a verify that would most
+    /// likely reject. Economics at K=1 on the 35B MoE: verify ~35 ms for
+    /// 1+accepted tokens against decode+propose ~21 ms for 1, so a draft is
+    /// only worth verifying at p(accept) >~ 0.66. STAGED OFF pending its
+    /// measured A/B.
+    ///
+    /// Three of its four readers asked per propose whether the feature was
+    /// on, i.e. paid the environment lock to learn it was off. The fourth,
+    /// `MtpHead::last_confidence`, is reached only when it is already ON, so
+    /// it keeps its own read and its own contract — see the note there.
+    pub draft_conf_tau: f32,
     /// `ATLAS_SSM_SAVE_DUMP` (presence) — the CBD scratch/SSM-state
     /// fingerprint probe. Asked THREE times per decode step by the decode
     /// path alone, each read only to decide whether to do nothing.

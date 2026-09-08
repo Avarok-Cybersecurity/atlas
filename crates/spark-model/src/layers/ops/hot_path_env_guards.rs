@@ -23,7 +23,7 @@
 ///
 /// An empty allow list means the file must not read the environment at all.
 /// Paths are relative to `crates/spark-model/src`.
-const GUARDED: [(&str, &[&str]); 15] = [
+const GUARDED: [(&str, &[&str]); 17] = [
     // ── Dense FFN ──
     (
         "layers/dense_ffn.rs",
@@ -50,6 +50,18 @@ const GUARDED: [(&str, &[&str]); 15] = [
     // ── MTP drafter: once per DRAFTED TOKEN, and `forward_one` asked for the
     //    same variable four separate times inside one call. ──
     ("layers/mtp_head/forward.rs", &[]),
+    (
+        "layers/mtp_head/draft_proposer.rs",
+        &[
+            // The one `draft_conf_tau` reader that keeps its read, because
+            // `run_mtp_propose_inner` gates on `tau > 0.0` BEFORE calling it:
+            // this executes only when the clamp is armed, which no shipped
+            // config does. See the note on the method.
+            "last_confidence",
+        ],
+    ),
+    // ── Once per propose. ──
+    ("model/impl_b3.rs", &[]),
     // ── The `ModelLevers` resolution itself. Listed with its own function
     //    allowed so that the guard covers the file rather than skipping it:
     //    if a read appears anywhere ELSE in here, it is a second resolution
@@ -167,13 +179,17 @@ pub(super) fn hotter(&self) {
 /// function name and the answer is the same everywhere.
 #[test]
 fn from_env_is_called_only_where_it_is_allowed() {
-    const ALLOWED: [&str; 3] = [
+    const ALLOWED: [&str; 4] = [
         // caches the result in a OnceLock — this IS the once.
         "crates/spark-model/src/layers/ops/model_levers.rs",
         // needs an owned mutable copy; takes it from `*get()`.
         "crates/spark-model/src/model/impl_a1.rs",
         // This file. The guard names what it forbids, so it matches itself.
         "crates/spark-model/src/layers/ops/hot_path_env_guards.rs",
+        // Tests: `the_draft_confidence_clamp_survives_the_indirection` needs a
+        // FRESH read after mutating the environment, which is exactly what
+        // `get()`'s `OnceLock` cannot give it.
+        "crates/spark-model/src/layers/ops/model_levers_tests.rs",
     ];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

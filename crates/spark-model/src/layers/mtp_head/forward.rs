@@ -504,7 +504,7 @@ impl MtpHead {
         // and fold this draft's top-1 softmax prob into the propose-scoped
         // running MIN (`last_conf_bits`, reset by `propose`). The clamp that
         // acts on it lives in `run_mtp_propose_inner`.
-        if crate::speculative::draft_conf_tau() > 0.0 {
+        if ctx.levers.draft_conf_tau > 0.0 {
             let vocab = v as usize;
             let mut bf16_buf = vec![0u8; vocab * 2];
             if ctx.gpu.copy_d2h(logits, &mut bf16_buf).is_ok() {

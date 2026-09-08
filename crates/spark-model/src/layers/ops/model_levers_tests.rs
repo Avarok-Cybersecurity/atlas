@@ -323,6 +323,75 @@ fn the_moe_forward_and_mtp_levers_are_strict_opt_ins() {
     assert!(!resolve(&[("ATLAS_FP32_GATE", "1")]).fp32_routing);
 }
 
+/// `draft_conf_tau` is resolved through `speculative::draft_conf_tau`, not
+/// re-spelled here — so this pins that the CLAMP survives the indirection.
+///
+/// `from_values` cannot inject it (the resolver reads the environment
+/// directly), so this drives the shared resolver and asserts the property
+/// that matters: the bound is `[0.0, 0.99]`, and unset means OFF.
+#[test]
+fn the_draft_confidence_clamp_survives_the_indirection() {
+    // SAFETY: single-threaded test process; no other thread reads the env.
+    unsafe { std::env::remove_var("ATLAS_MTP_DRAFT_CONF") };
+    assert_eq!(
+        crate::speculative::draft_conf_tau(),
+        0.0,
+        "unset must mean OFF — three call sites gate on `> 0.0`"
+    );
+    assert_eq!(ModelLevers::from_env().draft_conf_tau, 0.0);
+
+    // SAFETY: as above.
+    unsafe { std::env::set_var("ATLAS_MTP_DRAFT_CONF", "5.0") };
+    assert_eq!(
+        ModelLevers::from_env().draft_conf_tau,
+        0.99,
+        "the upper clamp must survive: an unclamped 5.0 would discard EVERY \
+         draft, silently turning speculation off"
+    );
+    // SAFETY: as above.
+    unsafe { std::env::set_var("ATLAS_MTP_DRAFT_CONF", "-1") };
+    assert_eq!(ModelLevers::from_env().draft_conf_tau, 0.0);
+    // SAFETY: as above.
+    unsafe { std::env::set_var("ATLAS_MTP_DRAFT_CONF", "0.7") };
+    assert_eq!(ModelLevers::from_env().draft_conf_tau, 0.7);
+    // SAFETY: as above.
+    unsafe { std::env::remove_var("ATLAS_MTP_DRAFT_CONF") };
+}
+
+/// One flag, two structs — and they must not drift.
+///
+/// `ATLAS_DFLASH_DEBUG_DUMP_FULL` arms both halves of the DFlash reference
+/// dump: the token sequence from `TransformerModel` and the tensors from the
+/// drafter head. `TransformerModel` cannot reach the head's `DFlashLevers`
+/// (`proposer` is a `dyn DraftProposer`), so each carries its own resolved
+/// copy. This is the check that makes that safe. Without it the pair is the
+/// same shape as `ATLAS_DSPARK_ANCHOR_BIAS`, which had two independent
+/// implementations that nothing compared.
+#[test]
+fn the_two_halves_of_the_dflash_dump_agree() {
+    use crate::layers::dflash_head::levers::DFlashLevers;
+    // SAFETY: single-threaded test process; no other thread reads the env.
+    unsafe { std::env::remove_var("ATLAS_DFLASH_DEBUG_DUMP_FULL") };
+    assert_eq!(
+        ModelLevers::from_env().dflash_debug_dump_full,
+        DFlashLevers::from_env().debug_dump_full,
+        "both halves must read the flag as OFF"
+    );
+    // SAFETY: as above.
+    unsafe { std::env::set_var("ATLAS_DFLASH_DEBUG_DUMP_FULL", "1") };
+    let (model, head) = (
+        ModelLevers::from_env().dflash_debug_dump_full,
+        DFlashLevers::from_env().debug_dump_full,
+    );
+    // SAFETY: as above — restored before asserting so a failure cannot leak
+    // the variable into every test that runs after this one.
+    unsafe { std::env::remove_var("ATLAS_DFLASH_DEBUG_DUMP_FULL") };
+    assert!(
+        model && head,
+        "both halves must arm together (model={model}, head={head})"
+    );
+}
+
 #[test]
 fn the_moe_prefill_levers_keep_the_tri_state_distinguishable() {
     let d = resolve(&[]);

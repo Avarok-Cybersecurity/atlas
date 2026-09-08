@@ -61,7 +61,11 @@ pub(super) fn from_values(
             value("ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL").as_deref(),
         ),
         k2_diag: opt_in(value("ATLAS_K2_DIAG").as_deref()),
+        dflash_debug_dump_full: opt_in(value("ATLAS_DFLASH_DEBUG_DUMP_FULL").as_deref()),
         mtp_debug_norms: opt_in(value("ATLAS_MTP_DEBUG_NORMS").as_deref()),
+        // Reuses the tested resolver in `speculative` rather than re-deriving
+        // the clamp: re-spelling `[0.0, 0.99]` here is how a bound drifts.
+        draft_conf_tau: crate::speculative::draft_conf_tau(),
         decode_split_silu: !present("ATLAS_NO_DECODE_SPLIT_SILU"),
         bf16_tc_prefill: present("ATLAS_BF16_TC_PREFILL"),
         fp8_m64_prefill: present("ATLAS_FP8_M64_PREFILL"),

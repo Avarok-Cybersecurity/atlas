@@ -445,7 +445,7 @@ impl TransformerModel {
         };
         // The confidence clamp is a per-seq propose feature; keep semantics
         // by falling back whenever it is armed.
-        if crate::speculative::draft_conf_tau() > 0.0 {
+        if self.levers.draft_conf_tau > 0.0 {
             return Ok(None);
         }
         if self.verify_hidden_stash.is_null() {
