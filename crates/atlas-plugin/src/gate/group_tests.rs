@@ -262,3 +262,67 @@ fn no_members_is_not_a_partition_of_anything() {
         );
     }
 }
+
+/// ★ SHARDING IS ONLY SOUND FOR A KNOWN-ANSWER TEST. Splitting a draw across
+/// boxes and recombining the counts preserves an ACCURACY measurement — every
+/// sample is scored once, wherever it ran. It destroys a SPEED measurement,
+/// because for those the timing IS the number: four quarter-length runs on
+/// three boxes have a different wall, a different TTFT distribution and a
+/// different concurrency profile from one serial run, and no arithmetic
+/// recovers the original.
+///
+/// So every member of every group must be `Sensitivity::Correctness`. This is
+/// checked against the REGISTRY rather than a new descriptor flag, because the
+/// registry already carries the fact — a second marker could disagree with it.
+#[test]
+fn every_group_member_is_a_correctness_benchmark() {
+    use crate::hardware::Sensitivity;
+    for g in super::group::GROUPS {
+        for m in g.members {
+            let d = crate::registry::find(m)
+                .unwrap_or_else(|| panic!("{} names member {m}, which is not registered", g.id));
+            assert_eq!(
+                d.sensitivity,
+                Sensitivity::Correctness,
+                "{m} is a member of group {} but is {:?}. Sharding recombines \
+                 COUNTS, which preserves accuracy and destroys timing — a Speed \
+                 benchmark cannot be split.",
+                g.id,
+                d.sensitivity
+            );
+        }
+    }
+}
+
+/// The group id must itself be a registered benchmark, and a Correctness one:
+/// `check_record` judges the aggregate under the GROUP's thresholds, so a group
+/// whose id resolved to nothing (or to a Speed gate) would be judging the
+/// merged counts against bars that were never drawn for them.
+#[test]
+fn every_group_id_resolves_to_a_correctness_benchmark() {
+    use crate::hardware::Sensitivity;
+    for g in super::group::GROUPS {
+        let d = crate::registry::find(g.id)
+            .unwrap_or_else(|| panic!("group {} is not a registered benchmark", g.id));
+        assert_eq!(d.sensitivity, Sensitivity::Correctness, "group {}", g.id);
+    }
+}
+
+/// Membership must not recurse: a member that were itself a group would make
+/// "the aggregate" ambiguous — `check_group` would have to aggregate an
+/// aggregate, over a sample set neither level's thresholds describe.
+///
+/// (Belonging to two groups is already covered by
+/// `no_benchmark_is_a_member_of_two_groups`; this is only the recursion.)
+#[test]
+fn a_member_is_never_itself_a_group() {
+    for g in super::group::GROUPS {
+        for m in g.members {
+            assert!(
+                !super::group::GROUPS.iter().any(|other| other.id == *m),
+                "{m} is both a group and a member of {}",
+                g.id
+            );
+        }
+    }
+}
