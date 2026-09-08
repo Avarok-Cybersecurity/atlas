@@ -111,6 +111,9 @@ impl TransformerModel {
         // token slice is read. Destructuring is what makes that legal, and it
         // avoids cloning a 12k-token vector on every propose.
         let capture_gen = seq.mtp_capture_gen;
+        // Read before the destructure below borrows `seq` field-wise. This is
+        // the identity the carry slot is gated on; see `CarriedDrafter`.
+        let session_hash = seq.session_hash;
         let SequenceState {
             tokens: seq_tokens,
             prompt_len,
@@ -174,6 +177,7 @@ impl TransformerModel {
                     proposer,
                     seq_tokens,
                     p,
+                    session_hash,
                     prop_state.as_mut(),
                     ctx,
                     stream,
@@ -211,6 +215,7 @@ impl TransformerModel {
         proposer: &dyn DraftProposer,
         seq_tokens: &[u32],
         prompt_len: usize,
+        session_hash: u64,
         prop_state: &mut dyn crate::speculative::ProposerState,
         ctx: &ForwardContext,
         stream: u64,
@@ -220,13 +225,24 @@ impl TransformerModel {
         let Some(entry) = self.mtp_carry.lock().take() else {
             return CarryOutcome::NoCarry;
         };
-        let Some((rows, last_key)) = entry.usable_by(prompt) else {
-            let common = entry.common_prefix_len(prompt);
-            proposer.free_drafter_kv(&entry.block_table);
-            return CarryOutcome::PrefixMismatch {
-                common,
-                entry_rows: entry.rows,
+        let Some((rows, last_key)) = entry.usable_by(prompt, session_hash) else {
+            // `usable_by` is the single authority on admission; this only
+            // LABELS its refusal, by asking the same predicate which of the
+            // two rules said no. A foreign-session refusal reported as a
+            // prefix mismatch is how the channel stayed invisible.
+            let outcome = if entry.session_matches(session_hash) {
+                CarryOutcome::PrefixMismatch {
+                    common: entry.common_prefix_len(prompt),
+                    entry_rows: entry.rows,
+                }
+            } else {
+                CarryOutcome::ForeignSession {
+                    entry_session: entry.session_hash,
+                    prompt_session: session_hash,
+                }
             };
+            proposer.free_drafter_kv(&entry.block_table);
+            return outcome;
         };
         // `install_drafter_kv` takes ownership on success only; keep a copy of
         // the ids so a refused install frees them instead of leaking.
