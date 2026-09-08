@@ -19,6 +19,8 @@ pub struct MockGpuBackend {
     next_ptr: Mutex<u64>,
     max_allocation_bytes: AtomicUsize,
     launches: Mutex<Vec<MockLaunch>>,
+    /// `(kernel handle, bytes)` per `set_kernel_max_dynamic_smem` call.
+    max_dynamic_smem: Mutex<Vec<(u64, usize)>>,
     kernel_lookups: Mutex<Vec<(String, String)>>,
     /// Copy/sync shape counters. These exist so tests can assert the SHAPE of a
     /// bulk transfer, not just its bytes: the SSM snapshot spill regressed to
@@ -55,6 +57,11 @@ pub struct MockLaunch {
     pub shared_mem: u32,
     pub stream: u64,
     pub args: Vec<MockArg>,
+    /// Whether this launch went through the cooperative path
+    /// (`launch_cooperative[_typed]`). A `grid.sync()` kernel dispatched down
+    /// the ordinary path would deadlock or race on real hardware, so the EXL3
+    /// tests assert on this rather than on the kernel name.
+    pub cooperative: bool,
 }
 
 /// Owned copy of a typed kernel argument at mock dispatch time.
@@ -78,6 +85,7 @@ impl MockGpuBackend {
             next_ptr: Mutex::new(0x1000_0000),
             max_allocation_bytes: AtomicUsize::new(usize::MAX),
             launches: Mutex::new(Vec::new()),
+            max_dynamic_smem: Mutex::new(Vec::new()),
             kernel_lookups: Mutex::new(Vec::new()),
             syncs: AtomicUsize::new(0),
             d2h_blocking: AtomicUsize::new(0),
@@ -199,6 +207,22 @@ impl MockGpuBackend {
     /// the only per-launch identity available.
     pub fn launches_snapshot(&self) -> Vec<MockLaunch> {
         self.launches.lock().clone()
+    }
+
+    /// How many launches went through the cooperative path. The EXL3 trellis
+    /// kernels rely on an in-kernel `grid.sync()`, which is only legal when
+    /// every block is co-resident — so "did this dispatch cooperatively" is a
+    /// correctness assertion, not a performance one.
+    pub fn cooperative_launch_count(&self) -> usize {
+        self.launches.lock().iter().filter(|l| l.cooperative).count()
+    }
+
+    /// `(kernel handle, bytes)` per `set_kernel_max_dynamic_smem` call, in
+    /// order. EXL3 GEMM asks for 90 KB against a 48 KB default, and the
+    /// cooperative path does NOT auto-raise, so a missing raise is a launch
+    /// failure on hardware and this is how a test catches it on CPU.
+    pub fn max_dynamic_smem_calls(&self) -> Vec<(u64, usize)> {
+        self.max_dynamic_smem.lock().clone()
     }
 
     /// Module/function pairs requested through `kernel`, in lookup order.
@@ -368,8 +392,62 @@ impl GpuBackend for MockGpuBackend {
             block,
             shared_mem,
             stream,
+            cooperative: false,
             args: Vec::new(),
         });
+        Ok(())
+    }
+
+    fn launch_cooperative(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        _params: &mut [*mut std::ffi::c_void],
+    ) -> Result<()> {
+        self.launches.lock().push(MockLaunch {
+            func: func.0,
+            grid,
+            block,
+            shared_mem,
+            stream,
+            args: Vec::new(),
+            cooperative: true,
+        });
+        Ok(())
+    }
+
+    fn launch_cooperative_typed(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        args: &[KernelArg<'_>],
+    ) -> Result<()> {
+        self.launches.lock().push(MockLaunch {
+            func: func.0,
+            grid,
+            block,
+            shared_mem,
+            stream,
+            args: args
+                .iter()
+                .map(|arg| match arg {
+                    KernelArg::Buffer(ptr) => MockArg::Buffer(*ptr),
+                    KernelArg::Bytes(bytes) => MockArg::Bytes(bytes.to_vec()),
+                })
+                .collect(),
+            cooperative: true,
+        });
+        Ok(())
+    }
+
+    fn set_kernel_max_dynamic_smem(&self, kernel: KernelHandle, bytes: usize) -> Result<()> {
+        self.max_dynamic_smem.lock().push((kernel.0, bytes));
         Ok(())
     }
 
@@ -395,6 +473,7 @@ impl GpuBackend for MockGpuBackend {
             block,
             shared_mem,
             stream,
+            cooperative: false,
             args,
         });
         Ok(())

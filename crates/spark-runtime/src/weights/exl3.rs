@@ -148,17 +148,30 @@ impl Exl3Weight {
         );
 
         // Codebook flag: a 4-byte scalar holding the codebook's multiplier.
+        //
+        // The flag's TENSOR NAME is the codebook's own name, so a pack ships
+        // `.mul1` OR `.mcg`, never both — turboderp's Qwen3.8-Flash-Next-exl3
+        // ships `.mul1` (0x83DCD12D), vcruz305's GLM-5.3-Flash-EXL3-K2 ships
+        // `.mcg` I32 [1] (0xCBAC1FED). Both are read here rather than inferred
+        // from the name: the SCALAR is the authority, so a pack that named the
+        // tensor one thing and stored the other constant fails loudly in
+        // `from_flag_scalar` instead of decoding with the wrong codebook.
         let cb = match known_cb {
             Some(cb) => cb,
-            None => match store.get(&format!("{prefix}.mul1")) {
-                Ok(flag) => {
-                    let mut bytes = [0u8; 4];
-                    gpu.copy_d2h(flag.ptr, &mut bytes)?;
-                    Exl3Codebook::from_flag_scalar(u32::from_le_bytes(bytes))?
+            None => {
+                let flag = ["mul1", "mcg"]
+                    .iter()
+                    .find_map(|sfx| store.get(&format!("{prefix}.{sfx}")).ok());
+                match flag {
+                    Some(flag) => {
+                        let mut bytes = [0u8; 4];
+                        gpu.copy_d2h(flag.ptr, &mut bytes)?;
+                        Exl3Codebook::from_flag_scalar(u32::from_le_bytes(bytes))?
+                    }
+                    // Absent flag = upstream's unflagged default.
+                    None => Exl3Codebook::Inst3,
                 }
-                // Absent flag = upstream's unflagged default.
-                Err(_) => Exl3Codebook::Inst3,
-            },
+            }
         };
 
         Ok(Self {
@@ -289,6 +302,59 @@ mod store_tests {
             tensor(gpu, vec![2560], WeightDtype::BF16),
         );
         WeightStore::from_map(m)
+    }
+
+    /// The codebook flag tensor is NAMED for its codebook, so a pack ships
+    /// `.mul1` or `.mcg`, never both: turboderp's Qwen3.8-Flash-Next-exl3
+    /// ships `.mul1` (0x83DCD12D), vcruz305's GLM-5.3-Flash-EXL3-K2 ships
+    /// `.mcg` I32 [1] (0xCBAC1FED, verified by reading the pack).
+    ///
+    /// Getting this wrong does not fail — it decodes every routed expert with
+    /// the wrong codebook and produces plausible garbage, so the lookup is
+    /// pinned here rather than left to a serving run to discover.
+    #[test]
+    fn codebook_flag_is_read_from_mcg_as_well_as_mul1() {
+        let gpu = MockGpuBackend::new();
+        let mut m = HashMap::new();
+        m.insert(
+            "l.gate_proj.trellis".to_string(),
+            tensor(&gpu, vec![160, 40, 32], WeightDtype::UInt16),
+        );
+        m.insert(
+            "l.gate_proj.suh".to_string(),
+            tensor(&gpu, vec![2560], WeightDtype::F16),
+        );
+        m.insert(
+            "l.gate_proj.svh".to_string(),
+            tensor(&gpu, vec![640], WeightDtype::F16),
+        );
+        // Only `.mcg` — no `.mul1` anywhere, as in the GLM pack.
+        let flag = tensor(&gpu, vec![1], WeightDtype::Int32);
+        gpu.copy_h2d(&0xCBAC_1FEDu32.to_le_bytes(), flag.ptr).unwrap();
+        m.insert("l.gate_proj.mcg".to_string(), flag);
+        let store = WeightStore::from_map(m);
+
+        let w = Exl3Weight::from_store(&gpu, &store, "l.gate_proj").unwrap();
+        assert_eq!(w.cb, Exl3Codebook::Mcg, "`.mcg` must resolve to the mcg codebook");
+        // K comes from the trellis inner dim (16*K); this fixture is the GLM
+        // pack's K=2, which the fused MoE ladder serves.
+        assert_eq!(w.k_bits, 2);
+    }
+
+    /// The SCALAR is the authority, not the tensor name: a pack that named the
+    /// flag `.mcg` but stored the mul1 constant must fail loudly rather than
+    /// decode with the wrong codebook.
+    #[test]
+    fn codebook_scalar_outranks_the_flag_tensor_name() {
+        assert_eq!(
+            Exl3Codebook::from_flag_scalar(0x83DC_D12D).unwrap(),
+            Exl3Codebook::Mul1
+        );
+        assert_eq!(
+            Exl3Codebook::from_flag_scalar(0xCBAC_1FED).unwrap(),
+            Exl3Codebook::Mcg
+        );
+        assert!(Exl3Codebook::from_flag_scalar(0xDEAD_BEEF).is_err());
     }
 
     #[test]

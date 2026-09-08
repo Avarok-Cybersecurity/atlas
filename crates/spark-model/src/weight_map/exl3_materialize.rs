@@ -350,7 +350,10 @@ pub(crate) fn materialize_exl3_impl(
         // is released here; a view into a loader arena (the fast loader
         // pooled a prefix it predicted would be kept) is a no-op — its bytes
         // stay in the arena until the store is released, counted below.
-        for suffix in ["trellis", "suh", "svh", "mul1"] {
+        // `.mcg` alongside `.mul1`: the codebook flag tensor is named for the
+        // codebook, so a pack ships one or the other (GLM-5.3-Flash-EXL3-K2
+        // ships `.mcg`). Missing it here would strand the scalar in the store.
+        for suffix in ["trellis", "suh", "svh", "mul1", "mcg"] {
             if let Some(t) = store.remove(&format!("{p}.{suffix}")) {
                 let bytes = t.byte_size();
                 if !store.release_tensor(gpu, t)? {

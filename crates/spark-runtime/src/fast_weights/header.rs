@@ -126,6 +126,10 @@ pub(super) fn parse_header(file: &mut File) -> Result<Vec<TensorMeta>> {
             // F16 is not store-legal (WeightDtype is closed to store dtypes):
             // stage as BF16 and mark for byte conversion in the copy loop.
             // centml modelopt W4A4 exports ship all unquantized tensors as F16.
+            // EXL3 ships the Hadamard sign vectors `.suh`/`.svh` as F16 and their
+            // EXACT f16 bits are decode inputs — rounding them to BF16 silently
+            // changes every reconstructed weight. Those stay F16 in the store.
+            "F16" if crate::weights::exl3::is_exl3_f16_aux(name) => (WeightDtype::F16, false),
             "F16" => (WeightDtype::BF16, true),
             "U8" => (WeightDtype::UInt8, false),
             // I8 is a 1-byte raw container; DeepSeek-V4-Flash-NVFP4 ships its MTP
@@ -134,6 +138,12 @@ pub(super) fn parse_header(file: &mut File) -> Result<Vec<TensorMeta>> {
             // nibbles by bit ops — so treat I8 as raw bytes (UInt8), matching the
             // NVFP4 expert path.
             "I8" => (WeightDtype::UInt8, false),
+            // I16 is a 2-byte raw container: EXL3 packed trellis codes. Nothing
+            // may do arithmetic on these except the EXL3 decode kernels.
+            "I16" => (WeightDtype::UInt16, false),
+            // I32 raw scalar: the EXL3 codebook flag (`.mul1` / `.mcg` holds the
+            // codebook's multiplier constant).
+            "I32" => (WeightDtype::Int32, false),
             "F8_E4M3" => (WeightDtype::FP8E4M3, false),
             "F8_E8M0" => (WeightDtype::FP8E8M0, false),
             "I64" => (WeightDtype::Int64, false),

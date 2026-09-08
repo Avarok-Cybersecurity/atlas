@@ -46,6 +46,9 @@ pub enum WeightDtype {
     /// safetensors I16 but are raw bits, not integers — nothing may do
     /// arithmetic on them except the EXL3 decode kernels.
     UInt16,
+    /// Raw 4-byte scalar: the EXL3 codebook flag (`.mul1` / `.mcg` holds the
+    /// codebook's multiplier constant, read back as a u32).
+    Int32,
     Int64,
     /// Keep-packed PrismML ternary Q2_0 (ggml id 42): raw on-disk blocks stay
     /// 2-bit in VRAM (fp16 scale + 2-bit codes per group of `group` elements),
@@ -72,6 +75,7 @@ impl WeightDtype {
             Self::FP8E8M0 => 1,
             Self::UInt8 => 1,
             Self::UInt16 => 2,
+            Self::Int32 => 4,
             Self::Int64 => 8,
             Self::PackedQ2_0 { .. } => 0,
         }
