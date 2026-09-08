@@ -121,7 +121,7 @@ pub const SUBSET_ECHOLP_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              overall_accuracy in the same place — so its scores are NOT comparable to the golden \
              draw's, and it carries its own baseline. It exists because the 35B's only recorded \
              BFCL history is on this draw.",
-    duration_hint: "~2.1 h",
+    duration_hint: "~2.1 h (measured)",
     updated: "2026-08-15",
     needs_confirmation: false,
     intended_for: Some(crate::benchmark::ModelExpectation {
