@@ -222,25 +222,35 @@ impl TransformerModel {
             // 🪤 UNCONDITIONAL on the multi-rank path, including when this rank
             // decides 0. Gating the call on "I have a snapshot" is precisely the
             // shape that deadlocked F83 before it was made unconditional.
+            // Per-gate results are kept so a disagreement can name the gate
+            // that rejected an anchor this rank actually held.
+            let mut dbg_min_ok = true;
+            let mut dbg_ewh = false;
+            let mut dbg_bypass = false;
+            let mut dbg_session_ok = true;
+            let mut dbg_aux_ok = true;
             let local_decision: u32 = match eff_snapshot {
                 Some(snap_id) => {
                     let snap_tok = eff_snapshot_tokens;
-                    let ewh = snap_tok == matched
+                    dbg_ewh = snap_tok == matched
                         && matched == total
                         && !self.ssm_snapshots.has_hidden(snap_id);
-                    let bypass = snap_tok == matched
+                    dbg_bypass = snap_tok == matched
                         && matched == total
                         && std::env::var("ATLAS_MARCONI_EXACT").as_deref() != Ok("1");
-                    let eligible = snap_tok >= crate::model::mtp_carry::marconi_min_tokens()
-                        && snap_tok > 0
+                    dbg_min_ok =
+                        snap_tok >= crate::model::mtp_carry::marconi_min_tokens() && snap_tok > 0;
+                    dbg_session_ok = !prefix_match.ssm_snapshot_is_tail
+                        || self
+                            .ssm_snapshots
+                            .session_matches(snap_id, seq.session_hash);
+                    dbg_aux_ok = self.snapshot_aux_is_restorable(snap_id);
+                    let eligible = dbg_min_ok
                         && matched <= total
-                        && !ewh
-                        && !bypass
-                        && (!prefix_match.ssm_snapshot_is_tail
-                            || self
-                                .ssm_snapshots
-                                .session_matches(snap_id, seq.session_hash))
-                        && self.snapshot_aux_is_restorable(snap_id);
+                        && !dbg_ewh
+                        && !dbg_bypass
+                        && dbg_session_ok
+                        && dbg_aux_ok;
                     if eligible { snap_tok as u32 } else { 0 }
                 }
                 None => 0,
@@ -249,10 +259,20 @@ impl TransformerModel {
                 eff_snapshot
             } else {
                 tracing::info!(
-                    "Marconi anchor DISAGREES across ranks (this rank decided {}); \
-                     declining on every rank and recomputing — correct and slow \
-                     beats a mismatched collective",
+                    "Marconi anchor DISAGREES across ranks: decided={} cand_tok={} \
+                     cand_id={:?} matched={} total={} is_tail={} | min_ok={} ewh={} \
+                     bypass={} session_ok={} aux_ok={} — declining on every rank",
                     local_decision,
+                    eff_snapshot_tokens,
+                    eff_snapshot,
+                    matched,
+                    total,
+                    prefix_match.ssm_snapshot_is_tail,
+                    dbg_min_ok,
+                    dbg_ewh,
+                    dbg_bypass,
+                    dbg_session_ok,
+                    dbg_aux_ok,
                 );
                 None
             };
