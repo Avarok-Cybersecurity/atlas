@@ -102,13 +102,13 @@ int cuMemsetD8Async(unsigned long long a, unsigned char b, unsigned long c, void
     (void)a; (void)b; (void)c; (void)d; return 100;
 }
 int cuMemsetD32Async(unsigned long long a, unsigned int b, unsigned long c, void *d) {
+    (void)a; (void)b; (void)c; (void)d; return 100;
+}
 /* spark-runtime red-zone allocator (cuda_backend.rs) reaches these two
  * driver entry points by raw FFI; without them the no-GPU test link fails
  * with "undefined symbol: cuMemsetD8_v2 / cuMemcpyDtoH_v2". */
 int cuMemsetD8_v2(unsigned long long d, unsigned char v, unsigned long n) { (void)d; (void)v; (void)n; return 100; }
 int cuMemcpyDtoH_v2(void *d, unsigned long long s, unsigned long n) { (void)d; (void)s; (void)n; return 100; }
-    (void)a; (void)b; (void)c; (void)d; return 100;
-}
 /* Graphs */
 int cuGraphInstantiateWithFlags(void **a, void *b, unsigned long long c) {
     (void)a; (void)b; (void)c; return 100;
