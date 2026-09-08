@@ -809,7 +809,7 @@ impl TransformerModel {
             mtp_prefill_capture_len: std::sync::atomic::AtomicUsize::new(0),
             mtp_prefill_capture_gen: std::sync::atomic::AtomicU64::new(0),
             mtp_carry: parking_lot::Mutex::new(None),
-            mtp_store_range: parking_lot::Mutex::new((0, 0)),
+            mtp_store_range: parking_lot::Mutex::new(super::mtp_carry::StoreRange::EMPTY),
             dflash_hidden_save,
             dflash_hidden_save_rows,
             dflash_kgamma,

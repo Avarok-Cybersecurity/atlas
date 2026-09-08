@@ -254,12 +254,23 @@ impl TransformerModel {
         // PREVIOUS sequence's captured hiddens in the drafter prefill.
         self.mtp_prefill_capture_len
             .store(0, std::sync::atomic::Ordering::Relaxed);
-        // ATLAS_MTP_CARRY_DRAFTER: the position-indexed hidden interval is
-        // per-sequence by construction. Resetting it here is what makes the
-        // carry path immune to the latent cross-sequence stale-hidden bug that
-        // the legacy `captured >= prompt_len` guard still has: a warm-turn
-        // append can only ever read rows THIS sequence's prefill wrote.
-        *self.mtp_store_range.lock() = (0, 0);
+        // ATLAS_MTP_CARRY_DRAFTER: draw this sequence's ownership ticket for
+        // the shared hidden-row interval, and clear the interval.
+        //
+        // The TICKET is the guard. Clearing alone is not: it happens when a
+        // sequence is admitted, but a sequence admitted EARLIER can still write
+        // afterwards, merging into this interval and then reading rows it did
+        // not compute. The clear stays as defence in depth so the invariant
+        // "gen 0 => nothing claimed" holds from birth.
+        //
+        // Same atomic as the capture generation (SSOT for sequence tickets),
+        // but a separate field: `mtp_capture_gen` is only ever assigned under
+        // `chunk_start == 0`, which a warm turn never hits.
+        let store_gen = self
+            .mtp_prefill_capture_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        *self.mtp_store_range.lock() = super::super::mtp_carry::StoreRange::EMPTY;
 
         // Build layer states: SSM layers point into the pool (fixed addresses),
         // attention layers use their own alloc_state (EmptyLayerState).
@@ -364,6 +375,7 @@ impl TransformerModel {
             marconi_exact_snap: None,
             session_hash: 0,
             mtp_capture_gen: 0,
+            mtp_store_gen: store_gen,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
             cached_prefix_blocks: 0,

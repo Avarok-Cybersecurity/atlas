@@ -282,6 +282,82 @@ pub fn hidden_row_offset(base: DevicePtr, pos: usize, hidden_size: usize) -> Dev
     base.offset(pos * hidden_size * 2)
 }
 
+/// The hidden-row interval, and WHOSE rows they are.
+///
+/// `mtp_prefill_hidden` is one model-level buffer indexed by ABSOLUTE sequence
+/// position, with no per-sequence dimension, so an interval alone cannot say
+/// who wrote the rows it covers. `gen` is that missing half.
+///
+/// ★ `gen == 0` NEVER MATCHES. It is the state of a range nothing has claimed,
+/// and of every `SequenceState` built outside `alloc_sequence` (the mock and
+/// test fakes, which draw no ticket). Treating it as a wildcard would reopen
+/// the hole for exactly those constructors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StoreRange {
+    /// The sequence generation that wrote these rows. 0 = unclaimed.
+    /// Named `owner` because `gen` is a reserved keyword in edition 2024.
+    pub owner: u64,
+    /// First absolute position written.
+    pub lo: usize,
+    /// One past the last absolute position written.
+    pub hi: usize,
+}
+
+impl StoreRange {
+    /// Nothing claimed.
+    pub const EMPTY: Self = Self {
+        owner: 0,
+        lo: 0,
+        hi: 0,
+    };
+
+    /// The interval `reader_gen` may read, or `(0, 0)` when these rows belong
+    /// to someone else.
+    ///
+    /// `(0, 0)` rather than an error because `plan_append` already refuses an
+    /// interval that does not cover the span it needs — an empty interval
+    /// covers nothing, so a foreign range degrades to the existing
+    /// `CarryOutcome::NoHiddens` with no new control flow.
+    pub fn visible_to(self, reader_gen: u64) -> (usize, usize) {
+        if reader_gen != 0 && self.owner == reader_gen {
+            (self.lo, self.hi)
+        } else {
+            (0, 0)
+        }
+    }
+}
+
+/// Merge a write into the interval, or take it over.
+///
+/// Same owner: [`merge_interval`], unchanged. Different owner (or an unclaimed
+/// range): the writer REPLACES the interval with its own write and stamps it.
+///
+/// ★ REPLACE IS THE WHOLE POINT. Without it, `merge_interval` extends across
+/// owners whenever the new chunk starts below the other sequence's high-water
+/// mark, producing one interval whose low half is another request's rows —
+/// which the `alloc_sequence` reset cannot catch, because the reset happened
+/// before that other sequence wrote.
+///
+/// Coupled to `merge_interval`'s replace-on-a-gap behaviour for the SAME-owner
+/// case: if that is ever relaxed to span a gap, this inherits the defect. It is
+/// pinned by `merge_interval_replaces_on_a_gap`.
+pub fn stamped_merge(cur: StoreRange, writer_gen: u64, start: usize, count: usize) -> StoreRange {
+    if cur.owner != 0 && cur.owner == writer_gen {
+        let (lo, hi) = merge_interval((cur.lo, cur.hi), start, count);
+        StoreRange {
+            owner: writer_gen,
+            lo,
+            hi,
+        }
+    } else {
+        StoreRange {
+            owner: writer_gen,
+            lo: start,
+            hi: start + count,
+        }
+    }
+}
+
 /// Merge a write of `[start, start + count)` into a single contiguous validity
 /// interval `[lo, hi)`. Overlapping or abutting writes extend it; a disjoint
 /// write REPLACES it, because one interval cannot describe two islands and
@@ -308,6 +384,15 @@ pub enum CarryOutcome {
     PrefixMismatch {
         common: usize,
         entry_rows: usize,
+    },
+    /// The hidden rows in the store belong to another sequence. Reported for
+    /// the debug log only — control flow degrades to `NoHiddens`, since an
+    /// invisible interval covers nothing.
+    ForeignHiddens {
+        /// The generation that owns the rows.
+        owner: u64,
+        /// The generation that wanted to read them.
+        expected: u64,
     },
     /// The slot held another session's rows (or this request carries no
     /// session stamp). Distinct from `PrefixMismatch` on purpose: a prefix
@@ -345,6 +430,10 @@ impl std::fmt::Display for CarryOutcome {
             } => write!(
                 f,
                 "foreign session (entry={entry_session:#x} prompt={prompt_session:#x})"
+            ),
+            CarryOutcome::ForeignHiddens { owner, expected } => write!(
+                f,
+                "hidden rows belong to sequence gen {owner}, not {expected}"
             ),
             CarryOutcome::NoHiddens => write!(f, "hidden store does not cover the append span"),
         }
@@ -455,6 +544,115 @@ mod tests {
         // Configured off is off either way.
         assert!(!carry_armed_with(prefill_only, false));
         assert!(!carry_armed_with(prefill_only, true));
+    }
+
+    /// ★ THE MERGE-ACROSS-OWNERS ORDERING. A's last prefill chunk lands AFTER
+    /// B has been admitted and written its own rows. The `alloc_sequence` reset
+    /// cannot catch this — the reset ran before B wrote — so this is the case
+    /// the old "per-sequence by construction" claim was flatly wrong about.
+    ///
+    /// Written as the scheduler orders it, because either function alone is
+    /// trivially green; it is the COMPOSITION that used to be broken.
+    #[test]
+    fn a_late_chunk_takes_the_interval_over_instead_of_claiming_foreign_rows() {
+        // What the unstamped code did, kept as the explicit negative control:
+        // A's late chunk merged into B's interval and swallowed rows 0..600.
+        let unstamped = merge_interval(merge_interval((0, 0), 0, 600), 500, 500);
+        assert_eq!(
+            unstamped,
+            (0, 1000),
+            "control: without a stamp the merge claims B's rows 0..600"
+        );
+
+        // Stamped, in order. A = gen 1, B = gen 2.
+        let a0 = stamped_merge(StoreRange::EMPTY, 1, 0, 500);
+        assert_eq!(a0, StoreRange { owner: 1, lo: 0, hi: 500 });
+        let b0 = stamped_merge(StoreRange::EMPTY, 2, 0, 600); // B admitted, resets, writes
+        assert_eq!(b0, StoreRange { owner: 2, lo: 0, hi: 600 });
+        let a1 = stamped_merge(b0, 1, 500, 500); // A's LAST chunk
+        assert_eq!(
+            a1,
+            StoreRange { owner: 1, lo: 500, hi: 1000 },
+            "a foreign interval must be taken over, never extended"
+        );
+        // And A reads only what A wrote.
+        assert_eq!(a1.visible_to(1), (500, 1000));
+    }
+
+    /// ★ THE DEFERRED-CONSUME ORDERING, carried all the way to `plan_append` —
+    /// the function that actually decides whether foreign hiddens get used.
+    ///
+    /// Warm seq A wrote [12000, 12100). B is then admitted and cold-prefills
+    /// 13000 tokens, leaving B's hiddens at rows 0..13000. A proposes.
+    #[test]
+    fn a_foreign_interval_cannot_satisfy_an_append_plan() {
+        let a = stamped_merge(StoreRange::EMPTY, 1, 12000, 100);
+        let b = stamped_merge(a, 2, 0, 13000); // B admitted and cold-prefills
+        assert_eq!(b, StoreRange { owner: 2, lo: 0, hi: 13000 });
+
+        // Control: this is exactly what the unstamped read produced, and it
+        // yielded 99 rows of A's tokens paired with B's hiddens.
+        assert_eq!(
+            plan_append(11999, 12100, 0, 13000),
+            Some(AppendPlan { first_key: 12000, rows: 99 }),
+            "control: the unstamped read satisfies the plan with B's rows"
+        );
+
+        // Stamped: A sees nothing of B's, and the plan is refused.
+        assert_eq!(b.visible_to(1), (0, 0));
+        let (lo, hi) = b.visible_to(1);
+        assert_eq!(
+            plan_append(11999, 12100, lo, hi),
+            None,
+            "a foreign interval must not satisfy an append"
+        );
+    }
+
+    /// The guard must not refuse everything — a guard that refuses the honest
+    /// case too is indistinguishable from deleting the feature. Same numbers as
+    /// the control above, and it must still be `Some`.
+    #[test]
+    fn a_sequence_still_appends_from_its_own_rows() {
+        let a = stamped_merge(StoreRange::EMPTY, 1, 12000, 100);
+        let (lo, hi) = a.visible_to(1);
+        assert_eq!((lo, hi), (12000, 12100));
+        assert_eq!(
+            plan_append(11999, 12100, lo, hi),
+            Some(AppendPlan { first_key: 12000, rows: 99 }),
+            "the owner's own append must be unaffected"
+        );
+    }
+
+    /// A cold prefill's own chunks still merge into one interval.
+    #[test]
+    fn consecutive_chunks_of_one_sequence_still_merge() {
+        let r = stamped_merge(stamped_merge(StoreRange::EMPTY, 1, 0, 500), 1, 500, 500);
+        assert_eq!(r, StoreRange { owner: 1, lo: 0, hi: 1000 });
+    }
+
+    /// ★ THE SENTINEL. `SequenceState`s built outside `alloc_sequence` (the
+    /// mock, and the test fakes) draw no ticket and carry 0. Zero must never
+    /// match — treating it as a wildcard would reopen the hole for exactly
+    /// those constructors, which is where an unstamped read would land.
+    #[test]
+    fn generation_zero_never_matches_anything() {
+        let claimed = StoreRange { owner: 7, lo: 0, hi: 9999 };
+        assert_eq!(claimed.visible_to(0), (0, 0), "a ticketless reader sees nothing");
+        let unclaimed = StoreRange { owner: 0, lo: 0, hi: 9999 };
+        assert_eq!(unclaimed.visible_to(0), (0, 0), "0 does not match 0");
+        assert_eq!(unclaimed.visible_to(7), (0, 0), "and nobody owns an unclaimed range");
+        // A writer with no ticket still stamps 0, so its rows stay invisible
+        // rather than becoming readable by everyone.
+        assert_eq!(stamped_merge(StoreRange::EMPTY, 0, 0, 10).owner, 0);
+    }
+
+    /// The two refusals must not read alike in the debug log, for the same
+    /// reason the session refusal must not read like a prefix mismatch.
+    #[test]
+    fn foreign_hiddens_does_not_read_like_a_coverage_miss() {
+        let foreign = CarryOutcome::ForeignHiddens { owner: 2, expected: 1 }.to_string();
+        assert!(foreign.contains("belong to sequence gen 2"), "{foreign}");
+        assert_ne!(foreign, CarryOutcome::NoHiddens.to_string());
     }
 
     /// The gate's truth table, stated once, since two call sites read it.
