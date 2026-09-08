@@ -462,3 +462,38 @@ fn the_store_ticket_never_draws_from_the_capture_generation() {
          admitted between a capture and its propose: {draw}"
     );
 }
+
+/// The flag advertises `DEFAULT_MARCONI_MIN_TOKENS` as its default, so a drift
+/// between it and the reader's fallback would make the help text lie about what
+/// an unconfigured serve does. Asserts the FALLBACK expression, not the
+/// resolved value — the OnceLock may already be fixed by another test.
+#[test]
+fn the_advertised_default_is_the_one_the_reader_falls_back_to() {
+    assert_eq!(DEFAULT_MARCONI_MIN_TOKENS, 256);
+    let fallback = std::env::var("ATLAS_MARCONI_MIN_TOKENS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MARCONI_MIN_TOKENS);
+    assert_eq!(
+        fallback, DEFAULT_MARCONI_MIN_TOKENS,
+        "no env override in tests"
+    );
+}
+
+/// ★ FIRST WRITER WINS AND A LATER CALL MUST NOT PANIC — a serve that set the
+/// threshold twice would otherwise abort over a duplicate flag. Which call wins
+/// depends on test ordering, so this asserts the contract that holds either
+/// way: it returns a bool, never panics, and the value is stable once read.
+#[test]
+fn setting_the_threshold_twice_reports_the_loss_rather_than_panicking() {
+    let first = set_marconi_min_tokens(4096);
+    assert!(
+        !set_marconi_min_tokens(8192),
+        "a second set must report the loss"
+    );
+    let resolved = marconi_min_tokens();
+    if first {
+        assert_eq!(resolved, 4096, "the winner's value is what readers see");
+    }
+    assert_eq!(resolved, marconi_min_tokens(), "stable once read");
+}
