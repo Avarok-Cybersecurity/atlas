@@ -107,6 +107,20 @@ pub struct ModelLevers {
     /// BF16 MMA instead of the default path, which crushes activations to FP8
     /// E4M3. Removes the FP8 prefill perturbation on those projections.
     pub bf16_tc_proj: bool,
+    /// The checkpoint's attention weights are ALREADY Hadamard-rotated at load
+    /// (`TQ_PLUS_WEIGHT_ROTATION`), so the runtime must not rotate again.
+    ///
+    /// A property of the loaded checkpoint, and the SSOT for it. It previously
+    /// had FIVE implementations of the same `=1`-or-`true` test — four raw
+    /// `std::env::var` calls on attention paths (one per attention layer per
+    /// DECODE TOKEN in `decode/attention_forward.rs`, one per layer per
+    /// batched decode step in `multi_seq/attn.rs`, two per layer per prefill
+    /// chunk) plus a fifth in the weight loader, whose `#[allow(dead_code)]`
+    /// was stale — `attention_arms.rs` calls it. Reading this per token cost
+    /// an allocation and the process-wide environment lock on the hottest path
+    /// in the model, and five copies of one predicate is how a flag ends up
+    /// decoded two different ways in one binary.
+    pub weight_pre_rotated: bool,
     /// Configured max decode batch (`--max-batch-size`), the reference count
     /// the split-K attention split count is pinned to. Not from the
     /// environment: `TransformerModel::new` writes it from the serve arg.
@@ -169,6 +183,7 @@ fn from_values(
         k4_diag: opt_in(value("ATLAS_K4_DIAG").as_deref()),
         gemma4_diag: opt_in_truthy(value("ATLAS_DIAG_GEMMA4").as_deref()),
         bf16_tc_proj: present("ATLAS_BF16_TC_PROJ"),
+        weight_pre_rotated: opt_in_truthy(value("TQ_PLUS_WEIGHT_ROTATION").as_deref()),
     }
 }
 
@@ -404,6 +419,13 @@ mod tests {
             );
         }
         assert!(resolve(&[("ATLAS_BF16_TC_PROJ", "0")]).bf16_tc_proj);
+        // `TQ_PLUS_WEIGHT_ROTATION` is VALUE-gated, not presence-gated — the
+        // opposite of the line above. All five former implementations agreed
+        // on `=1`-or-`true`, and this pins that the consolidation kept it.
+        assert!(!resolve(&[]).weight_pre_rotated);
+        assert!(resolve(&[("TQ_PLUS_WEIGHT_ROTATION", "1")]).weight_pre_rotated);
+        assert!(resolve(&[("TQ_PLUS_WEIGHT_ROTATION", "TRUE")]).weight_pre_rotated);
+        assert!(!resolve(&[("TQ_PLUS_WEIGHT_ROTATION", "0")]).weight_pre_rotated);
     }
 
     #[test]

@@ -552,9 +552,7 @@ impl Qwen3AttentionLayer {
         let v_is_turbo = v_dtype.is_wht_rotated();
         // InnerQ pre-WHT scale_inv on Q (no-op when d_innerq_active=0 on device).
         // Bypass runtime WHT(Q) when weights are pre-rotated at load (TQ_PLUS_WEIGHT_ROTATION=1).
-        let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
         if k_is_turbo && self.innerq_apply_q_k.0 != 0 && hd == 128 {
             use spark_runtime::kernel_args::KernelLaunch;
             KernelLaunch::new(ctx.gpu, self.innerq_apply_q_k)
