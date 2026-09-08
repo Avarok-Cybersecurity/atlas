@@ -747,28 +747,115 @@ impl GrammarEngine {
             };
 
             let param_names = schema_param_names(&schema);
-            let paramname_rule = match param_names.as_ref() {
-                Some(names) if !names.is_empty() => {
-                    let alternatives = names
-                        .iter()
-                        .map(|param| serde_json::to_string(param).unwrap_or_else(|_| "\"\"".into()))
-                        .collect::<Vec<_>>()
-                        .join(" | ");
-                    format!("paramname ::= {alternatives}")
-                }
-                _ => "paramname ::= [a-zA-Z_] [a-zA-Z_0-9]*".to_string(),
+            // A85 (2026-09-08): required STRING parameters must not be able to
+            // close with an empty value. `value ::= value_part*` let the model
+            // emit `<arg_value></arg_value>`, which is how tool-eval-bench TC-43
+            // produced `web_search {"query":""}` — the run's only
+            // `--fail-on-safety` trip. The four sibling compilers guard this;
+            // poolside did not.
+            //
+            // NOTE: `enforce_min_length_on_required_strings` is NOT the mechanism
+            // here. That helper stamps `minLength: 1` into the schema, which only
+            // reaches xgrammar on the `json_schema` content paths
+            // (hermes/bare_json/gemma4). Poolside emits raw EBNF and reads only
+            // the property NAMES out of the schema (`schema_param_names`), so a
+            // `minLength` key would be silently discarded. qwen3_coder is the real
+            // precedent: it enforces non-empty in its value EBNF too
+            // (`qwen3_coder_grammar_rejects_empty_parameter_body`).
+            //
+            // Scope is deliberately minLength>=1 — at least one character. It does
+            // NOT reject whitespace-only (qwen3_coder is stricter), does NOT
+            // require the `required` set to be PRESENT, and does not touch
+            // optional strings or non-string parameters. Over-constraining value
+            // bytes has bitten this grammar before (the `<`-ban that made Svelte
+            // and HTML writes unrepresentable).
+            let required_strings: std::collections::BTreeSet<&str> = {
+                let props = schema
+                    .get("properties")
+                    .and_then(serde_json::Value::as_object);
+                schema
+                    .get("required")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|req| {
+                        req.iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .filter(|key| {
+                                props
+                                    .and_then(|p| p.get(*key))
+                                    .and_then(|prop| prop.get("type"))
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some("string")
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let quote =
+                |param: &str| serde_json::to_string(param).unwrap_or_else(|_| "\"\"".into());
+            let alternation = |names: &[String]| {
+                names
+                    .iter()
+                    .map(|n| quote(n))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
             };
             let value_ladder = ebnf_until_close_ladder(value_close);
             let content = if has_no_parameters {
                 serde_json::json!({"type": "const_string", "value": ""})
             } else {
-                let body_ebnf = format!(
-                    "root ::= pair pair*\n\
-                     pair ::= \"<arg_key>\" paramname \"</arg_key><arg_value>\" value \"{value_close}\"\n\
-                     {paramname_rule}\n\
-                     value ::= value_part*\n\
-                     value_part ::= {value_ladder}"
-                );
+                let body_ebnf = match param_names.as_ref() {
+                    // Known property set AND at least one required string: split the
+                    // pair rule so only those parameters demand a non-empty value.
+                    Some(names) if !names.is_empty() && !required_strings.is_empty() => {
+                        let (req, opt): (Vec<String>, Vec<String>) = names
+                            .iter()
+                            .cloned()
+                            .partition(|n| required_strings.contains(n.as_str()));
+                        let mut rules = vec![
+                            "root ::= pair pair*".to_string(),
+                            format!(
+                                "reqpair ::= \"<arg_key>\" reqname \"</arg_key><arg_value>\" \
+                                 req_value \"{value_close}\""
+                            ),
+                            format!("reqname ::= {}", alternation(&req)),
+                        ];
+                        if opt.is_empty() {
+                            rules.insert(1, "pair ::= reqpair".to_string());
+                        } else {
+                            rules.insert(1, "pair ::= reqpair | optpair".to_string());
+                            rules.push(format!(
+                                "optpair ::= \"<arg_key>\" optname \"</arg_key><arg_value>\" \
+                                 value \"{value_close}\""
+                            ));
+                            rules.push(format!("optname ::= {}", alternation(&opt)));
+                            rules.push("value ::= value_part*".to_string());
+                        }
+                        // `req_value`, not `nonempty_value`: the qwen3_coder XML
+                        // helper above defines its own `nonempty_value ::= first_content
+                        // rest` in a SEPARATE grammar blob. Distinct names keep the two
+                        // readable side by side in one file.
+                        rules.push("req_value ::= value_part value_part*".to_string());
+                        rules.push(format!("value_part ::= {value_ladder}"));
+                        rules.join("\n")
+                    }
+                    // No required strings, or an open/unknown property set: emit the
+                    // pre-A85 grammar byte for byte. Nothing to guard, nothing changes.
+                    other => {
+                        let paramname_rule = match other {
+                            Some(names) if !names.is_empty() => {
+                                format!("paramname ::= {}", alternation(names))
+                            }
+                            _ => "paramname ::= [a-zA-Z_] [a-zA-Z_0-9]*".to_string(),
+                        };
+                        format!(
+                            "root ::= pair pair*\n\
+                             pair ::= \"<arg_key>\" paramname \"</arg_key><arg_value>\" value \"{value_close}\"\n\
+                             {paramname_rule}\n\
+                             value ::= value_part*\n\
+                             value_part ::= {value_ladder}"
+                        )
+                    }
+                };
                 serde_json::json!({"type": "grammar", "grammar": body_ebnf})
             };
             tag_entries.push(serde_json::json!({
