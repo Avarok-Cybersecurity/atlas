@@ -1560,3 +1560,63 @@ ladder raised the cap to 32; and `prefill_b.rs` carried two blocks disagreeing
 about whether the tail split is conditional. A false safety comment is worse
 than none — the concurrency-1 claim is what made the missing ownership check
 look deliberate.
+
+## Wave 33 — the fix from wave 32 regressed a gate, and the cell that did not move is what found it
+
+Wave 32's ownership stamp shipped with a **24% decode regression at C=2**,
+caught by its own certification campaign within the hour.
+
+The stamp drew its per-sequence ticket from `mtp_prefill_capture_gen` — the
+counter `owns_capture` compares against. Every `alloc_sequence` advanced it, and
+`owns_capture` requires a sequence's captured generation to still EQUAL the
+model's current one, so **any sequence admitted between another's capture and
+its first propose silently turned that sequence's drafter prefill off**. Fewer
+drafter rows, lower acceptance, slower decode.
+
+| C | parent `main` | with the bug | again | after the fix |
+|---|---|---|---|---|
+| 1 | 18.5 | 18.5 | 18.5 | 18.4 |
+| **2** | **30.8** | **23.7** | **23.4** | **27.8** |
+| 4 | 45.4 | 51.1 | — | 51.8 |
+| 8–128 | 63.0 / 90.1 / 105.3 / 116.0 / 115.9 | within ~1% | — | 65.5 … |
+
+`concurrency-sweep` failed its 24.1 floor twice, on two boxes, against a
+same-morning control on the parent commit. C=2 TPOT went 62 → 79 → 66 ms.
+
+**★ I read the diagnostic backwards, and said so publicly before the evidence
+corrected me.** Seven cells matched and C=1 was *identical*, and I argued that
+an unchanged C=1 proved there was no regression — a real decode regression would
+surely show on the pure single-sequence path. It is the opposite: nothing is
+admitted between a lone sequence's capture and its propose, so the shared
+counter cannot move under it. C=1 could not have changed. **An invariant cell
+narrows where a defect lives; it is not an alibi.** Cells that differ by
+concurrency differ in scheduler discretion, so a C≥2-only regression points at
+cross-sequence state rather than per-token math — which is exactly what this
+was.
+
+**The advice was there and I followed its letter.** The audit that proposed the
+stamp warned that overloading `mtp_prefill_capture_gen` regresses the cold path,
+and recommended a separate FIELD. I added the separate field and then drew it
+from the shared counter, reinstating the hazard the advice existed to prevent.
+**If two things need generations, they need two dispensers.**
+
+**What actually caught it** was the control run on the parent commit, same box,
+same hour. Without it the failure reads as box noise — this gate is
+`Sensitivity::Speed` and its C=2 cell is known to sit close to its floor — and I
+would have shipped a real regression while arguing it was variance. The
+re-run that I queued *to confirm the variance hypothesis* is what refuted it.
+
+Guarded by a source-level test asserting the ticket draw never names the capture
+counter, observed red against the reintroduced defect. Source-level because the
+coupling lives at a call site in `alloc_sequence_dispatch` that needs a whole
+model to exercise, and a defect costing 24% of C=2 decode deserves a check that
+runs in milliseconds rather than one that needs a GPU.
+
+Cost on the record: the fix touches `crates/`, so the **ten gates that had
+already passed at the previous pin are void** and the campaign is running again
+from scratch. Sequencing the sweep first in the re-run was deliberate — had it
+still failed, the two BFCL legs behind it were 3.5 h of waste.
+
+Still open, and recorded as open rather than declared: 27.8 clears the 24.1
+floor but sits below the parent's 30.8. One fixed run against one parent run
+cannot separate residual regression from ordinary C=2 spread.
