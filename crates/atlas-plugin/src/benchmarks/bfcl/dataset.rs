@@ -40,6 +40,44 @@ pub struct Shard {
     pub count: usize,
 }
 
+impl Shard {
+    /// Parse `"i/n"` — the `--param shard=2/7` surface.
+    ///
+    /// Returns the message the operator sees, so every rejection names the
+    /// value AND what was wrong with it. `i` is 0-based, matching
+    /// `shard_owns`; a 1-based reading would silently drop the first shard and
+    /// double-count nothing, which is the kind of off-by-one that survives a
+    /// whole campaign.
+    ///
+    /// `1/1` is the whole draw and is accepted: it is the identity, and
+    /// refusing it would make "run it unsharded" a different command line
+    /// rather than a value.
+    pub fn parse(s: &str) -> std::result::Result<Self, String> {
+        let (i, n) = s
+            .split_once('/')
+            .ok_or_else(|| format!("shard {s:?} is not `index/count`, e.g. `2/4`"))?;
+        let index: usize = i
+            .trim()
+            .parse()
+            .map_err(|_| format!("shard index {i:?} is not a number"))?;
+        let count: usize = n
+            .trim()
+            .parse()
+            .map_err(|_| format!("shard count {n:?} is not a number"))?;
+        if count == 0 {
+            return Err("shard count must be at least 1".to_string());
+        }
+        if index >= count {
+            return Err(format!(
+                "shard index {index} is out of range for {count} shards — \
+                 indices are 0-based, so the last is {}",
+                count - 1
+            ));
+        }
+        Ok(Self { index, count })
+    }
+}
+
 pub fn load(path: &Path, spec: &DrawSpec) -> Result<Vec<Sample>> {
     load_shard(path, spec, None)
 }
