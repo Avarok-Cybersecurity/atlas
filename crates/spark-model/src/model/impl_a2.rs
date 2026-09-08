@@ -52,15 +52,34 @@ impl TransformerModel {
     /// `(<|image_pad|>, <|video_pad|>)`, each falling back to the family
     /// default when the checkpoint declares none.
     pub(super) fn vision_pad_ids(&self) -> (u32, u32) {
-        let v = self.config.vision.as_ref();
-        let image = v
-            .map(|v| v.image_pad_token_id)
-            .filter(|id| *id != 0)
-            .unwrap_or(crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID);
-        let video = v
-            .map(|v| v.video_pad_token_id)
-            .filter(|id| *id != 0)
-            .unwrap_or(crate::layers::vision_encoder::VIDEO_PAD_TOKEN_ID);
+        // 🪤 A text-only config MUST NOT fall back to Qwen's 151655/151656.
+        // Those are real, ordinary byte-BPE pieces in other vocabularies —
+        // GLM-5.3 spells two emoji with them — so the old `unwrap_or` made any
+        // GLM prompt that happened to contain one look like a vision prompt.
+        // `tokens_have_vision_pad` gates prefix-cache LOOKUP, prefix-cache
+        // INSERT and the Marconi snapshot across 21 call sites, so that prompt
+        // silently lost warm restore entirely, on a family that depends on the
+        // Marconi snapshot to have a prefix cache at all.
+        //
+        // `u32::MAX` is unreachable in every vocabulary Atlas serves (~155K),
+        // so it reads as "matches nothing" at all 21 sites without widening
+        // the return to an Option. The one behaviour change for Qwen is a
+        // checkpoint whose parser produced `vision: None` but whose prompts
+        // contain 151655 — already broken (there is no encoder to splice
+        // from), now degraded to ordinary text serving.
+        let Some(v) = self.config.vision.as_ref() else {
+            return (u32::MAX, u32::MAX);
+        };
+        let image = if v.image_pad_token_id != 0 {
+            v.image_pad_token_id
+        } else {
+            crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID
+        };
+        let video = if v.video_pad_token_id != 0 {
+            v.video_pad_token_id
+        } else {
+            crate::layers::vision_encoder::VIDEO_PAD_TOKEN_ID
+        };
         (image, video)
     }
 

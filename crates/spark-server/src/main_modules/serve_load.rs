@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 
 use super::serve::{
     Prepared, canonicalize_model_quant, describe_quant_source, parse_default_chat_template_kwargs,
-    quant_pair_compatible, resolve_vision_max_pixels,
+    quant_pair_compatible, read_preprocessor_image_stats, resolve_vision_max_pixels,
 };
 use crate::api::InferenceRequest;
 use crate::main_modules::AppState;
@@ -166,8 +166,18 @@ pub(crate) fn load_model(
     // maximum image — the preprocessor clamped to 1280px, the encoder
     // allocated for 6400 patches, and nothing connected them.
     let vision_max_pixels = resolve_vision_max_pixels(&args, &model_dir)?;
+    // The same ordering argument covers all four: the preprocessor's canvas
+    // arm reads the token bounds and the normalisation stats, and the encoder
+    // sizes every device buffer from the area bound. Both must be final before
+    // `build_model` below constructs either.
+    let (image_mean, image_std, min_image_tokens, max_image_tokens) =
+        read_preprocessor_image_stats(&model_dir);
     if let Some(v) = config.vision.as_mut() {
         v.max_pixels = vision_max_pixels;
+        v.image_mean = image_mean;
+        v.image_std = image_std;
+        v.min_image_tokens = min_image_tokens;
+        v.max_image_tokens = max_image_tokens;
     }
     match vision_max_pixels {
         Some(px) => tracing::info!(
@@ -819,6 +829,11 @@ pub(crate) fn load_model(
         &config.model_type,
         Some(std::path::Path::new(".")), // repo root for override templates
         args.disable_template_overrides,
+        // Pad-token ids come from the CONFIG, not from encoding a literal
+        // spelling. Ordering is already correct: `config.vision` is finalised
+        // above and possibly nulled by the text-only kernel-target check, both
+        // before this point.
+        config.vision.as_ref(),
     )?;
 
     // (AM1 attractor-mask registration removed 2026-06-03 — see

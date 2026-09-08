@@ -455,6 +455,6 @@ fn skip_mtp(config: &ModelConfig) -> bool {
 /// Unresolvable model types answer `true`: never skip weights on a guess.
 fn binds_vision(config: &atlas_core::config::ModelConfig) -> bool {
     spark_model::factory::loader_for_config(config)
-        .map(|l| l.binds_vision_encoder())
+        .map(|l| l.binds_vision_encoder(config))
         .unwrap_or(true)
 }

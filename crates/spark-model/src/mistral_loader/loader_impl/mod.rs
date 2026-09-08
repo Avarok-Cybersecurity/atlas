@@ -21,7 +21,7 @@ use spark_runtime::weights::WeightStore;
 
 use super::MistralWeightLoader;
 use crate::layer::TransformerLayer;
-use crate::layers::vision_encoder::VisionEncoder;
+use crate::layers::VisionTower;
 use crate::weight_loader::ModelWeightLoader;
 use crate::weight_map::{DenseWeight, MtpWeights, dense};
 
@@ -116,7 +116,7 @@ impl ModelWeightLoader for MistralWeightLoader {
         _store: &WeightStore,
         _config: &ModelConfig,
         _gpu: &dyn GpuBackend,
-    ) -> Result<Option<VisionEncoder>> {
+    ) -> Result<Option<VisionTower>> {
         Ok(None)
     }
 }

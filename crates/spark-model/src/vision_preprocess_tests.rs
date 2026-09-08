@@ -77,6 +77,9 @@ fn ok_cfg() -> VisionConfig {
         // with an explicit bound, so the config-carried one is not the
         // subject here.
         max_pixels: None,
+        // Spread the rest: every field a future family adds defaults to the
+        // historical Qwen behaviour, so this fixture stops breaking on each.
+        ..VisionConfig::default()
     }
 }
 

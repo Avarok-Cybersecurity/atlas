@@ -30,7 +30,7 @@ use super::super::VisionEncoder;
 /// for the same reason `check_pixel_len` next door is one: the refusal is the
 /// behaviour worth testing, and a bound that can only be exercised with a GPU
 /// attached is a bound nothing will exercise. Prose is not a bound; this is.
-fn check_packed_rows(mp_i: &[usize], mp_off: &[usize], p_max: usize) -> Result<()> {
+pub(crate) fn check_packed_rows(mp_i: &[usize], mp_off: &[usize], p_max: usize) -> Result<()> {
     anyhow::ensure!(
         mp_i.len() == mp_off.len(),
         "vision: {} merged row counts but {} offsets; the packed layout is inconsistent",

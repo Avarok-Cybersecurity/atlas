@@ -87,6 +87,9 @@ impl Model for TransformerModel {
     fn tokens_contain_vision_pad(&self, tokens: &[u32]) -> bool {
         self.tokens_have_vision_pad(tokens)
     }
+    fn vision_p_max(&self) -> usize {
+        self.vision_encoder.as_ref().map_or(0, |ve| ve.p_max())
+    }
     fn prefill(&self, tokens: &[u32], seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
         self.stamp_overlay_route(seq.adapter_slot);
         let logits = self.prefill_dispatch(tokens, seq, stream)?;

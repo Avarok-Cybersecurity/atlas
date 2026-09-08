@@ -294,14 +294,27 @@ fn dense(store: &WeightStore, name: &str) -> Result<DenseWeight> {
 }
 
 impl ModelWeightLoader for Glm5NextWeightLoader {
-    /// Text-only port. `weight_loader/glm5_next.rs` classifies `model.visual.*`
-    /// as `TensorRole::Vision` and excludes it from `is_required()`; nothing in
-    /// this loader binds it. Saying so here keeps the tower off the GPU in the
-    /// first place — on the LibertAIDAI NVFP4 checkpoint that is 1.05 GiB per
-    /// rank, sitting between `--speculative --num-drafts 2` and a serve that
-    /// fits (measured 2026-08-29: K=3 at 32 K needs 13.58 GiB against 12.07 free).
-    fn binds_vision_encoder(&self) -> bool {
-        false
+    /// The tower is bound iff a vision config survived to this point.
+    ///
+    /// This USED to be an unconditional `false` (a text-only port), which left
+    /// 1.05 GiB per rank of `model.visual.*` resident and unreachable. It is now
+    /// keyed off `config.vision` and NOT off `model_type`, because
+    /// `serve_load.rs:364-378` nulls `config.vision` when the kernel target
+    /// ships no `vision_encoder` PTX module — a text-only GLM build still gets
+    /// the old behaviour, for the old reason, without a second switch to keep in
+    /// sync. `load_vision_encoder` below tests the SAME thing; see the mutation
+    /// gate at the bottom of this file for what happens when they disagree.
+    fn binds_vision_encoder(&self, config: &ModelConfig) -> bool {
+        config.vision.is_some()
+    }
+
+    fn load_vision_encoder(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<Option<crate::layers::VisionTower>> {
+        super::glm5_next_vision_load::load_glm5_next_vision(store, config, gpu)
     }
 
     /// All three halves shard: DSA by head, KDA by head/channel, the MLP by width (TP) and by
@@ -669,15 +682,29 @@ pub(super) fn upload_bf16(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> 
 mod vision_capability_tests {
     use super::Glm5NextWeightLoader;
     use crate::weight_loader::ModelWeightLoader;
+    use atlas_core::config::ModelConfig;
 
+    /// The gate INVERTED when the tower landed: it no longer asserts
+    /// "text-only", it asserts the PAIRING between the two halves of the
+    /// decision.
+    ///
+    /// `serve_phases/weights.rs` skips READING the tower when
+    /// `binds_vision_encoder` is false; `factory/build.rs` FREES it when
+    /// `load_vision_encoder` returned `None`. Both must answer from
+    /// `config.vision.is_some()`. If they split you get bound-then-freed
+    /// (dangling device pointers) or skipped-then-bound (null ones) — CUDA-700
+    /// at the first image, not a clean error at load.
     #[test]
-    fn glm5_next_declares_itself_text_only() {
-        // Mutation gate: flipping this to `true` re-loads 1.05 GiB/rank of
-        // vision tower that nothing binds, and K=3 stops fitting at 32 K.
+    fn the_bind_decision_follows_the_vision_config() {
+        // Any concrete config works — the predicate reads exactly one field.
+        let without = ModelConfig::qwen3_next_80b_nvfp4();
+        let mut with_vision = ModelConfig::qwen3_next_80b_nvfp4();
+        with_vision.vision = Some(Default::default());
+        assert!(Glm5NextWeightLoader.binds_vision_encoder(&with_vision));
         assert!(
-            !Glm5NextWeightLoader.binds_vision_encoder(),
-            "GLM-5.3's port binds no vision encoder; saying otherwise makes the \
-             weight loader read the tower into unified memory for nothing"
+            !Glm5NextWeightLoader.binds_vision_encoder(&without),
+            "a build whose kernel target ships no vision_encoder module has \
+             config.vision nulled, and must still keep the 1.05 GiB/rank tower off the GPU"
         );
     }
 
@@ -685,6 +712,9 @@ mod vision_capability_tests {
     fn a_multimodal_loader_still_declares_true_by_default() {
         // The trait default must stay "load everything" — a loader that never
         // overrides this must never lose weights.
-        assert!(crate::weight_loader::qwen35::Qwen35WeightLoader.binds_vision_encoder());
+        assert!(
+            crate::weight_loader::qwen35::Qwen35WeightLoader
+                .binds_vision_encoder(&ModelConfig::qwen3_next_80b_nvfp4())
+        );
     }
 }

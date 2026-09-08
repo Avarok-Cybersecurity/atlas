@@ -57,6 +57,18 @@ routed_scaling_factor = 2.5
 hc_mult = 4
 hc_sinkhorn_iters = 20
 
+# ── Vision ──
+# 🪤 DOCUMENTATION ONLY. Nothing in Rust reads this key today (`grep -rn vision
+# crates/atlas-kernels/` returns nothing); it is here for parity with
+# qwen3.8-flash-next/MODEL.toml, the other multimodal target. It arms NOTHING.
+#
+# The real arming signal is the PTX module list: `serve_load.rs:364-378` nulls
+# `config.vision` and logs ONE WARN if `vision_encoder` is missing from the
+# compiled target, after which the serve is silently text-only with images
+# ignored. The fastest check that a GLM vision build is armed is the ABSENCE of
+# that WARN, not the presence of this line.
+vision = true
+
 # 🔴 THE MATCHER. `build.rs` parses ONLY `[[model_types]]` / `[sampling.*]` /
 # `[behavior]` — every dimension key above is documentation mirroring config.json.
 # Without this section the target compiles fine and then `ptx_for_config` refuses at

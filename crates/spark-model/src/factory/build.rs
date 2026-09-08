@@ -330,18 +330,18 @@ pub fn build_model(
     let vision_encoder = loader.load_vision_encoder(&store, &config, gpu.as_ref())?;
     mem.mark("load_vision_encoder");
 
-    // A multimodal checkpoint's vision tower is read by the weight loader like
-    // everything else, but only a loader that implements `load_vision_encoder`
-    // ever binds it. GLM-5.3's port is text-only by design
-    // (`weight_loader/glm5_next.rs`: "Vision tower — present in the checkpoint,
-    // out of scope for the text port"), so its 1.05 GiB of `model.visual.*`
-    // sat resident on BOTH ranks for the life of the process, bound to nothing,
-    // subtracted from the KV budget computed below.
+    // A text-only port of a MULTIMODAL checkpoint leaves its tower resident and
+    // unreachable: read by the weight loader like everything else, bound by
+    // nothing, and subtracted from the KV budget computed below. That cost
+    // 1.05 GiB per rank on GLM-5.3 before its encoder landed.
     //
-    // Freeing is keyed off the bind result, not off a model list: if the encoder
-    // was built, `vision_encoder` is `Some` and nothing is touched — including
-    // the loaders that bind zero-copy from these very pointers. The day a GLM
-    // vision encoder lands, this stops firing on its own.
+    // Freeing is keyed off the bind RESULT, not off a model list: if a tower was
+    // built, `vision_encoder` is `Some` and nothing is touched — which matters
+    // because every loader binds ZERO-COPY from these very `store` pointers
+    // (GLM-5.3's 347 vision tensors are BF16 in both the EXL3-K2 and the NVFP4
+    // checkpoint, all in shard 120/120), so a regressed gate here is a
+    // use-after-free, not a leak. This is self-disarming: a model that gains an
+    // encoder stops reaching the free on its own.
     if vision_encoder.is_none() {
         let (n, bytes) = store.free_matching(gpu.as_ref(), |name| {
             name.starts_with("model.visual.")

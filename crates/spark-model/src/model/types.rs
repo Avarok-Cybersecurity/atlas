@@ -380,8 +380,8 @@ pub struct TransformerModel {
     pub(super) self_speculative: bool,
     /// Last token index passed to save_hidden_for_mtp (for EP broadcast to rank 1).
     pub(super) last_mtp_hidden_idx: std::sync::atomic::AtomicUsize,
-    /// Optional vision encoder for VL models (Qwen3-VL).
-    pub(super) vision_encoder: Option<crate::layers::VisionEncoder>,
+    /// Optional vision tower (Qwen3-VL-shaped or GLM-5.3-shaped).
+    pub(super) vision_encoder: Option<crate::layers::VisionTower>,
     /// Number of patches encoded by the last prepare_vision_embed() call.
     /// 0 means no vision embeddings pending.
     pub(super) vision_embed_patches: Mutex<usize>,

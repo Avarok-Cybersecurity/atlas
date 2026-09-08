@@ -21,6 +21,7 @@ pub mod glm5next_mlp;
 pub mod glm5next_mtp_head;
 /// GLM-5.3-Flash 45-layer text-model skeleton (Slice 9 -- topology, wiring, structural binding).
 pub mod glm5next_skeleton;
+pub mod glm5next_vision;
 pub mod moe;
 pub mod mtp_head;
 pub(crate) mod mtp_meta;
@@ -34,6 +35,7 @@ pub mod qsa;
 pub mod qwen3_attention;
 pub mod qwen3_ssm;
 pub mod vision_encoder;
+pub mod vision_tower;
 pub mod w4a16_gemv_tiers;
 
 /// Minimum K at which the deep-K `w4a16_gemm_t_k64` (K_STEP_T=64) beats the
@@ -77,6 +79,7 @@ pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization, dflash_ctx_cap,
 };
 pub use glm5next_mtp_head::Glm5NextMtpHead;
+pub use glm5next_vision::{Glm5NextVisionEncoder, GlmMergerWeights, GlmViTBlock};
 pub use moe::MoeLayer;
 pub use mtp_head::{MtpHead, MtpQuantization, mtp_drafter_prefill_enabled};
 pub use nemotron_mamba2::NemotronMamba2Layer;
@@ -84,6 +87,7 @@ pub use nemotron_moe::NemotronMoeLayer;
 pub use qwen3_attention::Qwen3AttentionLayer;
 pub use qwen3_ssm::Qwen3SsmLayer;
 pub use vision_encoder::{MergerLayer, ViTBlock, VisionEncoder};
+pub use vision_tower::VisionTower;
 
 use crate::layer::ForwardContext;
 use anyhow::Result;

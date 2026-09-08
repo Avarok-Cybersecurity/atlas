@@ -1142,6 +1142,17 @@ pub trait Model: Send + Sync {
         false
     }
 
+    /// Pre-merge patch rows this model's vision tower can hold in ONE batched
+    /// encode (Σp across every image in the batch), or 0 when it has no tower.
+    ///
+    /// The scheduler's vision co-dispatch pre-pass books against this; it used
+    /// to carry its own hard-coded copy of the Qwen default, which stopped
+    /// being true the moment the capacity started deriving from
+    /// `--vision-max-pixels`.
+    fn vision_p_max(&self) -> usize {
+        0
+    }
+
     /// Number of free KV cache blocks available for allocation.
     fn num_free_blocks(&self) -> usize {
         0

@@ -10,6 +10,14 @@ use anyhow::{Context, Result, bail};
 use atlas_core::config::VisionConfig;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 
+mod glm5_canvas;
+
+/// `vision_config.model_type` of the GLM-5.3 tower. The canvas arm dispatches
+/// on this and NOTHING else may: the two families round, pad and align
+/// differently at every step, so a family test that is really a capability test
+/// drifts the moment a third family lands.
+const GLM5_NEXT_VISION: &str = "glm5_next_vision";
+
 /// SigLIP normalization — matches HF's Qwen2VLImageProcessor
 /// (`image_mean = image_std = (0.5, 0.5, 0.5)` → pixels mapped to [-1, 1]).
 /// `pub(crate)` because the video path normalizes with the identical stats —
@@ -17,6 +25,27 @@ use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 /// numbers is two places for them to drift apart.
 pub(crate) const MEAN: [f32; 3] = [0.5, 0.5, 0.5];
 pub(crate) const STD: [f32; 3] = [0.5, 0.5, 0.5];
+
+/// Per-channel normalisation for this checkpoint.
+///
+/// 🔴 THE most dangerous two lines in the vision path. GLM-5.3 uses CLIP stats
+/// (mean `[0.48145466, 0.4578275, 0.40821073]`), Qwen uses SigLIP `[0.5; 3]`;
+/// normalising with the wrong ones produces confident, fluent, WRONG image
+/// descriptions and logs nothing at all. `serve.rs` reads the real values out
+/// of the checkpoint's processor config into `vcfg.image_mean/image_std`.
+///
+/// `None` falls back to the historical hard-coded SigLIP numbers rather than to
+/// a per-family guess: a parser regression must degrade to today's Qwen
+/// behaviour, never to silently-wrong numbers for a family it mis-detected.
+///
+/// Called ONCE per image, before the patch loop; the video path calls the same
+/// function so the two files cannot drift.
+pub(crate) fn norm_stats(vcfg: &VisionConfig) -> ([f32; 3], [f32; 3]) {
+    (
+        vcfg.image_mean.unwrap_or(MEAN),
+        vcfg.image_std.unwrap_or(STD),
+    )
+}
 
 /// Long-side cap used ONLY when nothing else bounds the image — i.e. the
 /// caller passed no `max_pixels` because the checkpoint shipped no
@@ -273,15 +302,57 @@ pub fn preprocess_image_with_max_pixels(
     // Before anything divides by them.
     validate_geometry(vcfg)?;
     let img = decode_image(data_uri)?;
+    // ⚠ TWO deliberate divergences from the reference preprocessor, both
+    // pre-existing and both Qwen-affecting, so neither is "fixed" here:
+    // `decode_image` applies EXIF orientation (upstream does not), and
+    // `to_rgb8()` composites transparency over BLACK while upstream's
+    // `common.py:4-16` composites over WHITE — a real difference on RGBA
+    // screenshots and charts.
     let img = img.to_rgb8();
     let (orig_w, orig_h) = (img.width(), img.height());
 
-    let grid_unit = (vcfg.patch_size * vcfg.spatial_merge_size) as u32;
-    let (th, tw) = target_size_with_max_pixels(orig_h, orig_w, grid_unit, max_pixels);
-
-    // Resize with CatmullRom — closest BICUBIC match in the `image` crate,
-    // matching HF's `Qwen2VLImageProcessor` which uses PIL resample=3 (BICUBIC).
-    let img = image::imageops::resize(&img, tw, th, image::imageops::FilterType::CatmullRom);
+    let (img, th, tw) = if vcfg.model_type == GLM5_NEXT_VISION {
+        let c = glm5_canvas::glm5_canvas_for(orig_h, orig_w, vcfg, max_pixels);
+        // 1. Resize the CONTENT only. Skipping the no-op case is not an
+        //    optimisation: a resample at the same size still perturbs pixels,
+        //    and the reference skips it (`glm5_next.py:430`). This is the
+        //    common ceil-align-and-pad path.
+        let content = if (c.content_w, c.content_h) != (orig_w, orig_h) {
+            image::imageops::resize(
+                &img,
+                c.content_w,
+                c.content_h,
+                image::imageops::FilterType::CatmullRom,
+            )
+        } else {
+            img
+        };
+        // 2. Blit at (0,0) into a ZEROED canvas — padding on the right and
+        //    bottom only, matching `Image.new("RGB", size, (0,0,0))`.
+        let canvas = if (c.content_w, c.content_h) != (c.target_w, c.target_h) {
+            let mut canvas = image::RgbImage::new(c.target_w, c.target_h);
+            image::imageops::replace(&mut canvas, &content, 0, 0);
+            canvas
+        } else {
+            content
+        };
+        // 3/4. The grid covers the FULL canvas, and normalisation happens
+        //      AFTER padding in the shared patch loop below — so a pad pixel
+        //      enters feature space as (0 - mean)/std, not as 0. That ordering
+        //      is the whole reason the pad is applied here rather than to the
+        //      normalised tensor.
+        (canvas, c.target_h, c.target_w)
+    } else {
+        let grid_unit = (vcfg.patch_size * vcfg.spatial_merge_size) as u32;
+        let (th, tw) = target_size_with_max_pixels(orig_h, orig_w, grid_unit, max_pixels);
+        // Resize with CatmullRom — closest BICUBIC match in the `image` crate,
+        // matching HF's `Qwen2VLImageProcessor` which uses PIL resample=3 (BICUBIC).
+        (
+            image::imageops::resize(&img, tw, th, image::imageops::FilterType::CatmullRom),
+            th,
+            tw,
+        )
+    };
 
     let ps = vcfg.patch_size;
     let tp = vcfg.temporal_patch_size;
@@ -291,6 +362,7 @@ pub fn preprocess_image_with_max_pixels(
     // Flattened patch dim: C × temporal_patch_size × patch_size × patch_size
     let patch_dim = 3 * tp * ps * ps;
     let mut pixels = vec![0.0f32; num_patches * patch_dim];
+    let (mean, std) = norm_stats(vcfg);
 
     // Build patches. The temporal dimension is handled by duplicating the image `tp` times.
     // Layout: [P, C, T, Hp, Wp] → stored as [P, C*T*Hp*Wp] in row-major order.
@@ -305,7 +377,7 @@ pub fn preprocess_image_with_max_pixels(
                             let pixel_x = pw * ps + px;
                             let raw =
                                 img.get_pixel(pixel_x as u32, pixel_y as u32)[c] as f32 / 255.0;
-                            let norm = (raw - MEAN[c]) / STD[c];
+                            let norm = (raw - mean[c]) / std[c];
                             // Offset into patch_dim: c*(T*Hp*Wp) + t*(Hp*Wp) + py*Wp + px
                             let off = c * (tp * ps * ps) + t * (ps * ps) + py * ps + px;
                             pixels[patch_idx * patch_dim + off] = norm;

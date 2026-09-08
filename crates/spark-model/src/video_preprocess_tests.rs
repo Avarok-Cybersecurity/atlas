@@ -29,6 +29,7 @@ fn cfg() -> VisionConfig {
         image_pad_token_id: 248_056,
         video_pad_token_id: 248_057,
         max_pixels: None,
+        ..VisionConfig::default()
     }
 }
 

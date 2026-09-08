@@ -37,8 +37,8 @@ use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
 use crate::layers::Qwen3AttentionLayer;
+use crate::layers::VisionTower;
 use crate::layers::qwen3_attention::MlaWeights;
-use crate::layers::vision_encoder::VisionEncoder;
 use crate::mistral_loader::loader_impl::{
     ctx as mctx, phase_block_diag, phase_per_head, phase_qk_absorbed,
 };
@@ -428,7 +428,7 @@ impl ModelWeightLoader for LongcatWeightLoader {
         _store: &WeightStore,
         _config: &ModelConfig,
         _gpu: &dyn GpuBackend,
-    ) -> Result<Option<VisionEncoder>> {
+    ) -> Result<Option<VisionTower>> {
         Ok(None)
     }
 }

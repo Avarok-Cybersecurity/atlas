@@ -157,15 +157,39 @@ impl TransformerModel {
                 // in the shared packed buf_out (0 for the legacy single encode).
                 let row_base = *self.vision_row_base.lock();
                 let mut img_idx = 0usize; // pad-token count within the chunk
+                // ⚠ PRE-EXISTING BUG, newly reachable on GLM-5.3.
+                //
+                // `img_idx` restarts at 0 for EVERY chunk while `vision_row_base`
+                // is per-REQUEST and never advances mid-request (verified: it
+                // has four references and none of them step it). An image whose
+                // pad run straddles a prefill-chunk boundary therefore re-splices
+                // from encoder row 0 — wrong rows, correct token counts, nothing
+                // logged. GLM makes this materially more reachable: at the
+                // recommended operating point ONE image is 4096 merged tokens
+                // against a default --max-prefill-tokens 8192, so any two-image
+                // turn, or any image after ~4K of text, straddles.
+                //
+                // The arithmetic is deliberately NOT changed here — the fix is a
+                // separate, testable change. This only makes the failure audible.
+                let pads_before: usize = tokens[..chunk_start]
+                    .iter()
+                    .filter(|&&t| t == image_pad || t == video_pad)
+                    .count();
+                if pads_before > 0
+                    && chunk_tokens
+                        .iter()
+                        .any(|&t| t == image_pad || t == video_pad)
+                {
+                    tracing::error!(
+                        "vision splice: this chunk's pad run starts at request pad index                          {pads_before}, not 0, so it will re-read encoder rows from                          {row_base} — the image straddles a prefill-chunk boundary and the                          spliced embeddings for this chunk are WRONG. Serve with a larger                          --max-prefill-tokens so each image fits one chunk."
+                    );
+                }
                 for (i, &tok) in chunk_tokens.iter().enumerate() {
                     if tok == image_pad || tok == video_pad {
-                        let src = ve
-                            .scratch()
-                            .buf_out
-                            .offset((row_base + img_idx) * ve.out_hidden_size * 2);
+                        let src = ve.out_row(row_base + img_idx);
                         let dst = hidden_dst.offset(i * h * elem_bytes);
                         self.gpu
-                            .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
+                            .copy_d2d_async(src, dst, ve.out_hidden_size() * 2, stream)?;
                         img_idx += 1;
                     }
                 }

@@ -32,14 +32,25 @@ use super::super::{PATCH_DIM, VisionEncoder};
 ///    cap `Σp ≤ p_max`, but the single-image path's only caller is inside
 ///    `forward_oversized_fallback`, which bounds Σ*merged* p and not per-image
 ///    `p`. Prose is not a bound; this is.
-fn check_pixel_len(pixels: &[f32], patches: usize, end_row: usize, p_max: usize) -> Result<()> {
+///
+/// `patch_dim` is a PARAMETER rather than the `PATCH_DIM` constant because the
+/// GLM-5.3 tower reuses this bound at its own geometry (1176 floats per patch
+/// against Qwen's 1536). Passing the wrong one is exactly the under-run the
+/// second test below models, so it is spelled at every call site.
+pub(crate) fn check_pixel_len(
+    pixels: &[f32],
+    patches: usize,
+    end_row: usize,
+    p_max: usize,
+    patch_dim: usize,
+) -> Result<()> {
     let want = patches
-        .checked_mul(PATCH_DIM)
+        .checked_mul(patch_dim)
         .ok_or_else(|| anyhow::anyhow!("vision: patch count {patches} overflows"))?;
     anyhow::ensure!(
         pixels.len() == want,
         "vision: pixel buffer is {} floats for {patches} patches, but this encoder is built \
-         for {PATCH_DIM} floats per patch ({want}). The checkpoint's vision_config \
+         for {patch_dim} floats per patch ({want}). The checkpoint's vision_config \
          patch_size/temporal_patch_size do not match the compiled ViT.",
         pixels.len()
     );
@@ -62,7 +73,7 @@ impl VisionEncoder {
         stream: u64,
     ) -> Result<()> {
         // Single image at row 0, so the last row touched is `p`.
-        check_pixel_len(pixels, p, p, self.p_max)?;
+        check_pixel_len(pixels, p, p, self.p_max, PATCH_DIM)?;
         let n_f32 = pixels.len();
         // SAFETY: `pixels` is a live `&[f32]`; the byte length is taken from
         // that same slice (`len() * 4`), so the view never leaves the
@@ -129,7 +140,7 @@ impl VisionEncoder {
             let end_row = p_off[i]
                 .checked_add(p_i)
                 .ok_or_else(|| anyhow::anyhow!("vision: patch row offset overflows"))?;
-            check_pixel_len(pixels, p_i, end_row, self.p_max)?;
+            check_pixel_len(pixels, p_i, end_row, self.p_max, PATCH_DIM)?;
             // SAFETY: `pixels` is a live `&[f32]` and the byte length is
             // derived from that same slice, so the view stays inside its
             // allocation. `f32` has no invalid bit patterns and `u8` has
@@ -186,10 +197,10 @@ mod tests {
     fn accepts_the_geometry_the_encoder_was_built_for() {
         assert_eq!(PATCH_DIM, 3 * 2 * 16 * 16);
         let pixels = vec![0.0f32; 64 * PATCH_DIM];
-        assert!(check_pixel_len(&pixels, 64, 64, 6400).is_ok());
+        assert!(check_pixel_len(&pixels, 64, 64, 6400, PATCH_DIM).is_ok());
         // Zero patches (an image that scaled to nothing) is consistent, not a
         // slice-length hazard.
-        assert!(check_pixel_len(&[], 0, 0, 6400).is_ok());
+        assert!(check_pixel_len(&[], 0, 0, 6400, PATCH_DIM).is_ok());
     }
 
     /// A checkpoint declaring `patch_size: 14` (the Qwen2-VL geometry) makes
@@ -201,7 +212,7 @@ mod tests {
         let narrow = 3 * 2 * 14 * 14;
         assert!(narrow < PATCH_DIM, "this test must model an UNDER-run");
         let pixels = vec![0.0f32; 64 * narrow];
-        let err = check_pixel_len(&pixels, 64, 64, 6400)
+        let err = check_pixel_len(&pixels, 64, 64, 6400, PATCH_DIM)
             .unwrap_err()
             .to_string();
         assert!(err.contains("patch_size"), "{err}");
@@ -215,14 +226,14 @@ mod tests {
         let wide = 3 * 2 * 32 * 32;
         assert!(wide > PATCH_DIM);
         let pixels = vec![0.0f32; 4 * wide];
-        assert!(check_pixel_len(&pixels, 4, 4, 6400).is_err());
+        assert!(check_pixel_len(&pixels, 4, 4, 6400, PATCH_DIM).is_err());
     }
 
     /// A patch count large enough to wrap the multiply must be an error, not a
     /// wrapped-around "expected length" that some buffer accidentally matches.
     #[test]
     fn rejects_patch_count_that_overflows() {
-        let err = check_pixel_len(&[], usize::MAX / 2, usize::MAX / 2, 6400)
+        let err = check_pixel_len(&[], usize::MAX / 2, usize::MAX / 2, 6400, PATCH_DIM)
             .unwrap_err()
             .to_string();
         assert!(err.contains("overflow"), "{err}");
@@ -242,12 +253,27 @@ mod tests {
         );
         let p_max = 6400;
         // Exactly p_max rows is the last admissible image.
-        assert!(check_pixel_len(&vec![0.0f32; p_max * PATCH_DIM], p_max, p_max, p_max).is_ok());
+        assert!(
+            check_pixel_len(
+                &vec![0.0f32; p_max * PATCH_DIM],
+                p_max,
+                p_max,
+                p_max,
+                PATCH_DIM
+            )
+            .is_ok()
+        );
         // One row more is refused rather than DMA'd past buf_f32.
         let over = p_max + 1;
-        let err = check_pixel_len(&vec![0.0f32; over * PATCH_DIM], over, over, p_max)
-            .unwrap_err()
-            .to_string();
+        let err = check_pixel_len(
+            &vec![0.0f32; over * PATCH_DIM],
+            over,
+            over,
+            p_max,
+            PATCH_DIM,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("6400 rows"), "{err}");
     }
 
@@ -259,11 +285,11 @@ mod tests {
         let p_max = 6400;
         let pixels = vec![0.0f32; 8 * PATCH_DIM];
         // 8 patches is tiny, but landing at row 6399 ends at 6407.
-        let err = check_pixel_len(&pixels, 8, 6399 + 8, p_max)
+        let err = check_pixel_len(&pixels, 8, 6399 + 8, p_max, PATCH_DIM)
             .unwrap_err()
             .to_string();
         assert!(err.contains("6407"), "{err}");
         // The same image at a row that leaves space is fine.
-        assert!(check_pixel_len(&pixels, 8, 100 + 8, p_max).is_ok());
+        assert!(check_pixel_len(&pixels, 8, 100 + 8, p_max, PATCH_DIM).is_ok());
     }
 }

@@ -16,6 +16,17 @@
 # `Glm5NextDsaConfig::validate` asserts it so a future GLM revision with a
 # different latent fails loudly at config time instead of reading garbage.
 
+# 🔴 `vision_encoder.cu` is REQUIRED, not optional. Without it `serve_load.rs`
+# nulls `config.vision`, logs one WARN, and serves GLM text-only with images
+# silently ignored. It needs no `[modules]` entry: unlisted `.cu` files take
+# their file stem as the module name, and `vision_encoder` is exactly the name
+# `gpu.kernel("vision_encoder", ...)` asks for.
+#
+# It is a wholesale copy of qwen3.8-flash-next's plus four GLM kernels
+# (vision_rms_norm, vision_rms_norm_heads, vision_swiglu_clamp,
+# vision_gelu_exact). The copy is total because the shared encoder init table
+# hard-requires symbols GLM never calls; see the file's own header.
+
 [build]
 # Matches DeepSeek-V4-Flash: MLA kernels override HDIM inline, so no global
 # -DHDIM (the common paged-decode kernels only support 128/256/320).

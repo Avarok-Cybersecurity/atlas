@@ -771,8 +771,13 @@ pub struct QuantizationConfig {
     pub ignore_modules: Vec<String>,
 }
 
-/// Vision encoder configuration for Qwen3-VL models.
-#[derive(Debug, Clone)]
+/// Vision encoder configuration for a multimodal checkpoint's ViT tower.
+///
+/// Not `Deserialize`: `ModelConfig.vision` is `#[serde(skip)]` and this struct
+/// is built field-by-field in `config/parsers/vision.rs`. `Default` is derived
+/// so the struct-literal fixtures can spread `..VisionConfig::default()` and
+/// stop breaking every time a family adds a field.
+#[derive(Debug, Clone, Default)]
 pub struct VisionConfig {
     /// Number of ViT transformer blocks (depth=27).
     pub depth: usize,
@@ -820,6 +825,40 @@ pub struct VisionConfig {
     /// the encoder is constructed. `None` keeps the historical behaviour on
     /// both sides.
     pub max_pixels: Option<usize>,
+
+    // ── Family discriminant + GLM-5.3 (`glm5_next_vision`) additions ──
+    /// `vision_config.model_type` verbatim (`"glm5_next_vision"`,
+    /// `"qwen3_vl"`, …). The CPU preprocessor's canvas arm dispatches on this
+    /// and nothing else may: the two towers round, pad and align differently
+    /// at every step, so a family test that is really a capability test drifts.
+    pub model_type: String,
+    /// Merger hidden width (`projection_intermediate_size`, 10240 on GLM-5.3).
+    /// `None` means the historical Qwen two-layer merger.
+    pub projection_intermediate_size: Option<usize>,
+    /// SwiGLU clamp bound (10.0 on GLM-5.3). This is NUMERICS, not a hint:
+    /// running the clamped MLP unclamped silently changes the activation range.
+    pub swiglu_limit: Option<f32>,
+    /// Whether the ViT's QKV/proj/MLP carry biases. Exists so a checkpoint
+    /// declaring `false` can be REFUSED rather than branched on — every tower
+    /// Atlas binds today is biased. Default `true`.
+    pub attention_bias: bool,
+    /// `processor_config.json[image_processor]` token budget. GLM-5.3 declares
+    /// a token budget instead of a pixel area, so the presence of
+    /// `max_image_tokens` is what selects the token→area arm in `serve.rs`.
+    pub min_image_tokens: Option<usize>,
+    pub max_image_tokens: Option<usize>,
+    /// 🔴 Per-channel normalisation statistics from the checkpoint's processor
+    /// config. GLM-5.3 uses CLIP stats
+    /// (mean `[0.48145466, 0.4578275, 0.40821073]`), Qwen uses SigLIP
+    /// `[0.5; 3]`. `None` keeps the historical hard-coded SigLIP numbers in
+    /// `vision_preprocess.rs`.
+    ///
+    /// WRONG VALUES HERE PRODUCE CONFIDENT, FLUENT, WRONG IMAGE DESCRIPTIONS
+    /// WITH NOTHING LOGGED. That is why these are `Option` and never a
+    /// per-family default: a parser regression must degrade to today's Qwen
+    /// numbers, never to silently-wrong ones.
+    pub image_mean: Option<[f32; 3]>,
+    pub image_std: Option<[f32; 3]>,
 }
 
 impl VisionConfig {
