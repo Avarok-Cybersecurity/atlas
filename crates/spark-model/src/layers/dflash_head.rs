@@ -519,6 +519,10 @@ pub struct BlockDiffusionDraftHead {
     /// `TransformerModel::suppress_graphs` so external code can disable
     /// graphs at runtime (e.g. while calibrating FP8 KV).
     pub suppress_graphs: std::sync::atomic::AtomicBool,
+    /// Diagnostic and A/B levers, resolved from the environment ONCE when
+    /// this head was built. `forward_block` and its per-layer helpers read
+    /// these instead of the environment — see [`levers::DFlashLevers`].
+    pub levers: levers::DFlashLevers,
     /// How many eager warm-up calls we've executed against the graph path.
     /// Default warmup target is 2 (override via `ATLAS_DFLASH_PROPOSE_WARMUP_N`).
     /// Two eager passes warm the PTX→SASS cache, ramp GB10 clocks to steady
@@ -625,6 +629,7 @@ mod forward_block;
 mod forward_block_layer;
 mod forward_block_layer_paged;
 mod from_weights;
+pub mod levers;
 mod markov;
 mod precompute_ctx_kv;
 mod propose;

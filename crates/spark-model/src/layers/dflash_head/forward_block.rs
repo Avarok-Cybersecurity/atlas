@@ -72,10 +72,16 @@ impl BlockDiffusionDraftHead {
         // context, distant history adds noise to attention.
         // ATLAS_DFLASH_DEBUG_CTX_OFF=1 disables ctx entirely (eff_ctx=0)
         // for A/B testing whether the drafter actually responds to ctx.
-        let force_no_ctx = std::env::var("ATLAS_DFLASH_DEBUG_CTX_OFF").ok().as_deref() == Some("1");
-        let force_ctx_used: Option<usize> = std::env::var("ATLAS_DFLASH_DEBUG_CTX_USED")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok());
+        // ★ The head resolved every ATLAS_* variable below ONCE, when it was
+        // built. This function runs per decode step and its layer helpers run
+        // `num_layers` times inside it, so a `std::env::var` here is an
+        // allocation plus the process-wide environment lock on the drafter's
+        // hottest path — and that lock cost grows with concurrency, which is
+        // why no single-stream benchmark ever showed the 31 reads this
+        // replaced. See `levers::DFlashLevers`.
+        let levers = self.levers;
+        let force_no_ctx = levers.force_no_ctx;
+        let force_ctx_used = levers.force_ctx_used;
         let (ctx_base_ptr, ctx_total, eff_ctx) = match ctx_buffer {
             Some(_) if force_no_ctx => (None, 0, 0),
             Some((p, n)) => {
@@ -113,7 +119,7 @@ impl BlockDiffusionDraftHead {
         // Debug dump gated by env var: prints first 10 BF16 floats of key
         // intermediates so a Python reference run on the same checkpoint
         // can be compared element-wise. Use ATLAS_DFLASH_DEBUG_DUMP=1.
-        let debug_dump = std::env::var("ATLAS_DFLASH_DEBUG_DUMP").ok().as_deref() == Some("1");
+        let debug_dump = levers.debug_dump;
         let dump_bf16 = |label: &str, ptr: spark_runtime::gpu::DevicePtr, n: usize| -> Result<()> {
             if !debug_dump {
                 return Ok(());
@@ -143,7 +149,7 @@ impl BlockDiffusionDraftHead {
         // Requires ATLAS_DFLASH_PRECOMPUTE_DUMP=1 to actually emit
         // dump files; otherwise the kernel chain runs and discards
         // intermediates (useful for perf-only A/B).
-        if std::env::var("ATLAS_DFLASH_PRECOMPUTE").ok().as_deref() == Some("1")
+        if levers.precompute
             && let Some(base) = ctx_base_ptr
             && eff_ctx > 0
         {
@@ -158,10 +164,7 @@ impl BlockDiffusionDraftHead {
             // write to the paged cache (block_table may not be
             // allocated here — only the Option B propose.rs path
             // guarantees a valid block_table before calling).
-            let dump_commit = std::env::var("ATLAS_DFLASH_PRECOMPUTE_COMMIT")
-                .ok()
-                .as_deref()
-                == Some("1");
+            let dump_commit = levers.precompute_commit;
             self.precompute_ctx_kv(
                 base,
                 start_slot,
@@ -188,11 +191,7 @@ impl BlockDiffusionDraftHead {
             // comparable intermediates. Pattern: row i, col j contains
             // `0.01 * (i+1) * (j+1) / target_hidden` BF16. Mirrors
             // `dflash_pytorch_reference.py:make_input_target_hidden_stack`.
-            let force_pattern = std::env::var("ATLAS_DFLASH_DEBUG_FORCE_PATTERN")
-                .ok()
-                .as_deref()
-                == Some("1");
-            if force_pattern && eff_ctx > 0 {
+            if levers.force_pattern && eff_ctx > 0 {
                 let n_rows = self.target_layer_ids.len();
                 let n_cols = self.target_hidden_size;
                 let mut bytes = Vec::with_capacity(n_rows * n_cols * 2);
@@ -223,10 +222,7 @@ impl BlockDiffusionDraftHead {
             // bisect script. ONE-SHOT: writes only the first propose() call.
             if eff_ctx > 0
                 && ctx.stats.dumped.keyed("dflash_target_hidden")
-                && std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
-                    .ok()
-                    .as_deref()
-                    == Some("1")
+                && levers.debug_dump_full
             {
                 // Dump ALL eff_ctx slots — needed to reproduce the
                 // multi-token ctx in PyTorch reference. Layout:
@@ -398,11 +394,7 @@ impl BlockDiffusionDraftHead {
         // [eff_ctx..n_attn) with a deterministic pattern matching the
         // PyTorch reference. Lets us compare layer-0 q/k/v post-projection
         // when both Atlas and PyTorch see identical input.
-        let force_noise_pattern = std::env::var("ATLAS_DFLASH_DEBUG_FORCE_NOISE_PATTERN")
-            .ok()
-            .as_deref()
-            == Some("1");
-        if force_noise_pattern {
+        if levers.force_noise_pattern {
             let mut bytes = Vec::with_capacity(self.gamma * self.hidden_size * 2);
             for t in 0..self.gamma {
                 for j in 0..self.hidden_size {
@@ -504,22 +496,13 @@ impl BlockDiffusionDraftHead {
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !debug_dump
-            && std::env::var("ATLAS_DFLASH_PROPOSE_NO_GRAPH").is_err()
-            && std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL").is_err()
-            && std::env::var("ATLAS_DFLASH_OPTION_B_DIAG").is_err()
-            && std::env::var("ATLAS_DFLASH_PRECOMPUTE_DUMP").is_err()
-            && std::env::var("ATLAS_DFLASH_VERIFY_TRACE").is_err()
-            && std::env::var("ATLAS_DFLASH_LOG_DRAFTS").is_err()
-            && std::env::var("ATLAS_DFLASH_DEBUG_FORCE_PATTERN").is_err()
-            && std::env::var("ATLAS_DFLASH_DEBUG_FORCE_NOISE_PATTERN").is_err()
-            && std::env::var("ATLAS_DFLASH_DEBUG_CTX_OFF").is_err()
-            && std::env::var("ATLAS_DFLASH_DEBUG_CTX_USED").is_err()
-            && std::env::var("ATLAS_DFLASH_BLOCK_DUMP").is_err();
+            // Eleven separate presence tests asked this one question. Note
+            // PRESENCE, not truth: `ATLAS_DFLASH_BLOCK_DUMP=0` suppresses
+            // capture while enabling no dump. That is the shipped behaviour
+            // and it is pinned by a test, not inherited by accident.
+            && !levers.any_diagnostic_armed;
 
-        let warmup_target: usize = std::env::var("ATLAS_DFLASH_PROPOSE_WARMUP_N")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(2);
+        let warmup_target = levers.propose_warmup_n;
 
         // Helper closures: run each piecewise subgraph eagerly. Phase F.2
         // splits the old monolithic captured region into per-layer halves
@@ -546,13 +529,8 @@ impl BlockDiffusionDraftHead {
         // Without this the per-layer files were overwritten every propose and
         // ended up from a LATER position than the locked logits reference —
         // the diff then compared mismatched proposes (cos≈0 at a plain RMSNorm).
-        let block_dump_arm_pos: usize = std::env::var("ATLAS_DFLASH_BLOCK_DUMP_AT_POS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
         let block_dump_armed = {
-            let want = std::env::var("ATLAS_DFLASH_BLOCK_DUMP").ok().as_deref() == Some("1")
-                && position >= block_dump_arm_pos;
+            let want = levers.block_dump_armed_at(position);
             // The latch is consumed only when `want` (short-circuit) → env-off
             // never burns the shot; the first qualifying propose takes it.
             // Keyed on the model's `ModelStats`, not a static: an operator who
@@ -791,12 +769,7 @@ impl BlockDiffusionDraftHead {
                 // indices — the regime that exercises the id249 ctx-K RoPE
                 // position mismatch. Unset/0 = dump at the first propose
                 // (positions ≈ slot indices, position bug NOT exercised).
-                let block_dump_min_pos: usize = std::env::var("ATLAS_DFLASH_BLOCK_DUMP_AT_POS")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0);
-                if std::env::var("ATLAS_DFLASH_BLOCK_DUMP").ok().as_deref() == Some("1")
-                    && position >= block_dump_min_pos
+                if levers.block_dump_armed_at(position)
                     // Per-model latch (see `ModelStats::dumped`) rather than a
                     // static, so a swap re-arms the dump the operator asked for.
                     // Consumed at the check: if the dump errors partway the shot
@@ -866,12 +839,7 @@ impl BlockDiffusionDraftHead {
             // wrong (position grid / mask embed / fc). Gated ATLAS_DFLASH_BLOCK_DUMP=1
             // (same one-shot gate as the logits dump above, fires same call).
             {
-                let block_dump_min_pos: usize = std::env::var("ATLAS_DFLASH_BLOCK_DUMP_AT_POS")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0);
-                if std::env::var("ATLAS_DFLASH_BLOCK_DUMP").ok().as_deref() == Some("1")
-                    && position >= block_dump_min_pos
+                if levers.block_dump_armed_at(position)
                     && ctx.stats.dumped.keyed("dflash_block_inputs")
                 {
                     gpu.synchronize(stream)?;
@@ -1157,11 +1125,7 @@ impl BlockDiffusionDraftHead {
         // SpecForge shifted-row convention: auto-detected from the drafter
         // config (projector_type == "dspark"); env overrides both ways for
         // A/B (`ATLAS_DSPARK_SHIFT=1` forces on, `=0` forces off).
-        let shift = match std::env::var("ATLAS_DSPARK_SHIFT").ok().as_deref() {
-            Some("1") => true,
-            Some("0") => false,
-            _ => self.shifted_rows,
-        };
+        let shift = levers.dspark_shift.unwrap_or(self.shifted_rows);
         if shift {
             drafts.rotate_right(1);
         }
@@ -1174,14 +1138,11 @@ impl BlockDiffusionDraftHead {
         // tail; the event sync above covers them, so this small D2H is
         // already-ordered and cheap. Requires anchor bias ON (rows without
         // the Markov chain never write their confidence slot).
-        if self.markov_active()
-            && self.confidence_active()
-            && std::env::var("ATLAS_DSPARK_ANCHOR_BIAS").ok().as_deref() != Some("0")
-        {
+        if self.markov_active() && self.confidence_active() && levers.dspark_anchor_bias {
             let tau = Self::conf_tau();
             let mut cbuf = vec![0u8; self.gamma * 2];
             gpu.copy_d2h(self.scratch.conf_out, &mut cbuf)?;
-            if std::env::var("ATLAS_DSPARK_CONF_TRACE").ok().as_deref() == Some("1") {
+            if levers.dspark_conf_trace {
                 let logits: Vec<f32> = (0..self.gamma)
                     .map(|j| {
                         let bits = u16::from_le_bytes([cbuf[j * 2], cbuf[j * 2 + 1]]);
@@ -1213,12 +1174,7 @@ impl BlockDiffusionDraftHead {
         // ATLAS_DFLASH_DEBUG_DUMP_FULL=1 (one-shot): log all γ drafts so
         // we can compare against the PyTorch reference run on the same
         // captured target_hidden. Static guard mirrors the input dump.
-        if ctx.stats.dumped.keyed("dflash_drafts")
-            && (std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
-                .ok()
-                .as_deref()
-                == Some("1")
-                || std::env::var("ATLAS_DFLASH_LOG_DRAFTS").ok().as_deref() == Some("1"))
+        if ctx.stats.dumped.keyed("dflash_drafts") && (levers.debug_dump_full || levers.log_drafts)
         {
             tracing::info!(
                 "DFLASH DUMP_FULL drafts (γ={}, last_token={}, position={}, eff_ctx={}): {:?}",
