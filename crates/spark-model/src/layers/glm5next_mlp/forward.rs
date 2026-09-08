@@ -554,6 +554,38 @@ fn announce_dispatch(grouped: bool) {
 /// The SHARED expert is a different animal again: it is the same weights for every row, so it
 /// runs once over all of them regardless.
 #[allow(clippy::too_many_arguments)]
+/// Row count at or above which the routed sweep takes the FUSED PREFILL kernel
+/// rather than the decode kernel's per-row-group union sweep.
+///
+/// 🔴 GLM ran EVERY routed call through `exl3_moe_decode_routed`, prefill
+/// included, because the MoE site had no prefill arm at all. A 21k-token prompt
+/// was therefore ground through the decode kernel in `row-batched expert union
+/// (12 rows, one sweep each)` steps: measured ~51 tok/s cold prefill, about
+/// 0.7% of BF16 roofline on two GB10s, while the 151 MB of prefill slabs the
+/// state allocator had already reserved went untouched. The `moe_experts`
+/// profiler span never fired and `ATLAS_EXL3_MOE_TIER_STATS` printed nothing —
+/// both because the fused path was unreachable.
+///
+/// 64 is deliberately conservative: the union sweep is genuinely better for a
+/// verify's handful of rows (the routed union is 8.00/13.74/18.76/23.35 experts
+/// at K=1..4, so K rows sweep far fewer than 8K experts), and the fused path
+/// pays a counting sort plus a staged slab pass before it wins. The crossover
+/// has NOT been measured — 64 is a starting point chosen to be safely past the
+/// decode regime, and the threshold is the first thing to sweep once the arm is
+/// known correct.
+///
+/// `ATLAS_GLM_MOE_PREFILL_MIN=0` disables the arm and restores the previous
+/// decode-only behaviour, which is the one-variable A/B for this change.
+fn moe_prefill_min_rows() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("ATLAS_GLM_MOE_PREFILL_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(64)
+    })
+}
+
 pub fn forward_moe(
     gpu: &dyn GpuBackend,
     k: &Glm5NextMlpKernels,
@@ -690,30 +722,111 @@ pub fn forward_moe(
             s_cap: st.s_cap,
         };
         let (local_start, num_local) = (ex.tables[0].local_start, ex.tables[0].num_local);
-        crate::layers::ops::exl3_moe_decode_routed(
-            gpu,
-            x,
-            ws.ids,
-            ws.wts,
-            ws.expert_out,
-            &[
+
+        // ── PREFILL arm: one fused pass per token batch ──────────────────────
+        //
+        // Before this existed, EVERY routed call took the decode kernel below,
+        // prefill included — a 21k-token prompt swept as `row-batched expert
+        // union (12 rows, one sweep each)`, measured ~51 tok/s cold prefill,
+        // ~0.7% of BF16 roofline on two GB10s, while the 151 MB of prefill slabs
+        // the state allocator reserves sat unused. Same kernels, same state,
+        // same blend; only the sweep shape changes.
+        let use_prefill = k.moe_sort_by_expert.0 != 0
+            && moe_prefill_min_rows() > 0
+            && rows >= moe_prefill_min_rows();
+        if use_prefill {
+            let pf = st.prefill_scratch();
+            let ov = crate::layers::ops::Exl3MoeOverflowCtx {
+                gate_host: &ex.tables[0].host_ptrs,
+                up_host: &ex.tables[1].host_ptrs,
+                down_host: &ex.tables[2].host_ptrs,
+            };
+            let tables = [
                 proj(&ex.tables[0]),
                 proj(&ex.tables[1]),
                 proj(&ex.tables[2]),
-            ],
-            &scratch,
-            st.locks,
-            rows,
-            cfg.top_k,
-            cfg.hidden,
-            cfg.moe_intermediate,
-            local_start,
-            num_local,
-            cfg.swiglu_limit,
-            false,
-            st.sm_count,
-            stream,
-        )?;
+            ];
+            let prof_experts = profile::start();
+            let mut t0 = 0usize;
+            while t0 < rows {
+                let tb = pf.t_cap.min(rows - t0);
+                let te_b = tb * cfg.top_k;
+                // Sort scratch aliases the router logits: the router consumed
+                // them into `ids`/`wts` above, so the buffer is dead from here.
+                let sorted_token_ids = ws.logits;
+                let sorted_expert_ids = ws.logits.offset(te_b * 4);
+                let expert_offsets = ws.logits.offset(te_b * 8);
+                let token_to_perm = ws.logits.offset(te_b * 8 + (cfg.num_experts + 1) * 4);
+                crate::layers::ops::moe_sort_by_expert(
+                    gpu,
+                    k.moe_sort_by_expert,
+                    ws.ids.offset(t0 * cfg.top_k * 4),
+                    sorted_token_ids,
+                    sorted_expert_ids,
+                    expert_offsets,
+                    token_to_perm,
+                    te_b as u32,
+                    cfg.num_experts as u32,
+                    cfg.top_k as u32,
+                    stream,
+                )?;
+                let stats = crate::layers::ops::exl3_moe_prefill_routed(
+                    gpu,
+                    x.offset(t0 * cfg.hidden * 2),
+                    ws.wts.offset(t0 * cfg.top_k * 4),
+                    expert_offsets,
+                    token_to_perm,
+                    ws.expert_out.offset(t0 * cfg.hidden * 2),
+                    &tables,
+                    &ov,
+                    &pf,
+                    st.locks,
+                    tb,
+                    cfg.top_k,
+                    cfg.hidden,
+                    cfg.moe_intermediate,
+                    local_start,
+                    num_local,
+                    cfg.swiglu_limit,
+                    st.sm_count,
+                    stream,
+                )?;
+                tracing::trace!(
+                    "GLM MoE prefill [{t0}, {}): fused num_active={} overflow_experts={}",
+                    t0 + tb,
+                    stats.num_active,
+                    stats.overflow_experts,
+                );
+                t0 += tb;
+            }
+            profile::end(profile::MOE_EXPERTS, prof_experts, gpu, stream);
+        }
+        if !use_prefill {
+            crate::layers::ops::exl3_moe_decode_routed(
+                gpu,
+                x,
+                ws.ids,
+                ws.wts,
+                ws.expert_out,
+                &[
+                    proj(&ex.tables[0]),
+                    proj(&ex.tables[1]),
+                    proj(&ex.tables[2]),
+                ],
+                &scratch,
+                st.locks,
+                rows,
+                cfg.top_k,
+                cfg.hidden,
+                cfg.moe_intermediate,
+                local_start,
+                num_local,
+                cfg.swiglu_limit,
+                false,
+                st.sm_count,
+                stream,
+            )?;
+        }
     }
 
     for r in 0..rows {

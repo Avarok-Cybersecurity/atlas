@@ -33,6 +33,8 @@
 
 use super::*;
 
+use crate::layers::glm5next_layer::profile;
+
 impl MoeLayer {
     /// Full prefill through the native arm: router + batched topk + per-batch
     /// sort/fused/overflow routed phase + shared expert + blend + EP
@@ -92,6 +94,9 @@ impl MoeLayer {
 
         // ── Router: the PREFILL selection (fp8 / nvfp4 / pinned scalar
         // dense — see forward_prefill.rs for the 2026-08-12 numerics pin) ──
+        // Router + batched top-k. Cheap in theory; timed because "cheap in
+        // theory" is what 0.7%-of-roofline looks like from the outside.
+        let prof_router = profile::start();
         let router_in = self.router_input(input, n, h as u32, ctx, stream)?;
         let gate_logits = ctx.buffers.gate_logits();
         if let Some(fp8) = self.gate_fp8 {
@@ -172,8 +177,13 @@ impl MoeLayer {
             )?;
         }
 
+        profile::end(profile::MOE_ROUTER, prof_router, ctx.gpu, stream);
+
         // ── Routed phase, per token batch: sort (GLOBAL ids) → staged fused
         // kernel + overflow → weighted BF16 rows at moe_output ──
+        // This is the suspect: their profile puts the equivalent at 63% of the
+        // step, and it is where the fused/overflow tier split lives.
+        let prof_experts = profile::start();
         let output = ctx.buffers.moe_output();
         let proj = |t: &Exl3ExpertPtrTable| ops::Exl3MoeProj {
             trellis_ptrs: t.trellis_ptrs,
@@ -244,9 +254,12 @@ impl MoeLayer {
             t0 += tb;
         }
 
+        profile::end(profile::MOE_EXPERTS, prof_experts, ctx.gpu, stream);
+
         // ── Shared expert (kept NVFP4/FP8/BF16) + blend, EP-aware — the
         // decode arm's tail: all-reduce the routed partials FIRST, then
         // blend the shared expert exactly once. ──
+        let prof_shared = profile::start();
         let has_shared = shared_inter > 0;
         if has_shared {
             self.run_shared_expert_prefill(
@@ -260,12 +273,17 @@ impl MoeLayer {
                 ctx,
             )?;
         }
+        profile::end(profile::MOE_SHARED, prof_shared, ctx.gpu, stream);
+        // The EP all-reduce is timed separately: "the fabric is slow" and "we
+        // call it once per layer per chunk" look identical in a total.
+        let prof_reduce = profile::start();
         if let Some(comm) = ctx.comm
             && ctx.config.ep_world_size > 1
         {
             // Stream-ordered variant only: graph capture is refused above.
             comm.all_reduce_async(output.0, num_tokens * h * 2, stream)?;
         }
+        profile::end(profile::REDUCE_MLP, prof_reduce, ctx.gpu, stream);
         if has_shared {
             let shared_out = ctx.buffers.attn_output();
             ops::moe_batched_blend(
