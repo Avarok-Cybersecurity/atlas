@@ -64,6 +64,14 @@ fn the_opt_out_lever_is_on_by_default_and_every_opt_in_is_off() {
             ffn_nvfp4_mmq: true,
             ffn_nvfp4_mmq_down: true,
             prefill_v2: true,
+            // The five Nemotron prefill opt-outs. This literal is
+            // deliberately hand-written: it is what forced this line to be
+            // added, and what would have caught them shipping OFF.
+            ssm_w4a4: true,
+            ssd: true,
+            ssm_persistent: true,
+            moe_zero_intermediates: true,
+            shared_w4a4: true,
             max_decode_seqs: 1,
             drafter: crate::model::drafter_context::DrafterContext::BOTH,
             ..ModelLevers::default()

@@ -209,6 +209,51 @@ pub struct ModelLevers {
     /// down projection.
     pub moe_prefill_fp8_down: bool,
 
+    // ── Nemotron prefill (Mamba2 SSM + MoE) ──
+    //
+    // Nine reads across three functions, each once per LAYER per PREFILL
+    // CHUNK. All are PRESENCE-gated — the sites spelled them
+    // `std::env::var(..).is_err()` / `.is_ok()`, so `=0` neither arms an
+    // opt-in nor re-enables an opt-out. Resolution uses `var_os`, which
+    // differs from `var` only for a non-UTF-8 value: `var` reports that as
+    // absent, `var_os` as present. The difference lands on the safe side of
+    // every one of these.
+    /// W4A4 native-FP4 SSM projections at N >= 512. Ships ON;
+    /// `ATLAS_NO_SSM_W4A4` (presence) is the kill switch.
+    pub ssm_w4a4: bool,
+    /// The chunked SSD scan. Ships ON; `ATLAS_NO_SSD` (presence) falls back
+    /// to the sequential scan. Gated additionally on `ssd_scan_fits`, since
+    /// Nano-30B's state_size=128 overflows the shared-memory budget that
+    /// Puzzle-75B's 96 fits — which is why that never surfaced until it did.
+    pub ssd: bool,
+    /// The persistent SSM prefill kernel, which keeps H in shared memory and
+    /// is only reachable when SSD is unavailable. Ships ON;
+    /// `ATLAS_NO_SSM_PERSISTENT` (presence) disables, for a same-binary A/B
+    /// against the sequential scan.
+    pub ssm_persistent: bool,
+    /// Zero the grouped-MoE intermediate arena buffers before dispatch.
+    /// Ships ON; `ATLAS_MOE_NO_ZERO_INTERMEDIATES` (presence) skips.
+    ///
+    /// Defence in depth: these buffers are reused across requests and nothing
+    /// else clears them, so a row a future change fails to write would leak
+    /// the PREVIOUS request's activations rather than merely being wrong.
+    /// Asked twice in one call before this — once for up, once for down.
+    pub moe_zero_intermediates: bool,
+    /// `ATLAS_MOE_MAX_M_TILES_ESTIMATE` (presence) — restore the old
+    /// average-based tile bound. A/B only; the comment at the site says it
+    /// is NOT safe to serve on, because the estimate can under-bound the
+    /// worst case of one expert taking every routed token.
+    pub moe_max_m_tiles_estimate: bool,
+    /// `ATLAS_MOE_W4A4` (presence) — W4A4 grouped up-projection at N >= 512.
+    pub moe_w4a4: bool,
+    /// W4A4 for the shared-expert UP projection at N >= 512. Ships ON;
+    /// `ATLAS_NO_SHARED_W4A4` (presence) is the kill switch.
+    pub shared_w4a4: bool,
+    /// `ATLAS_SHARED_W4A4_DOWN` (presence) — the DOWN half of the same, and
+    /// a SEPARATE opt-in: down is the heavy-tailed projection, so it does not
+    /// inherit [`Self::shared_w4a4`].
+    pub shared_w4a4_down: bool,
+
     // ── Attention ──
     /// Contiguous-attention path for the DFlash head.
     pub dflash_contig_attn: bool,

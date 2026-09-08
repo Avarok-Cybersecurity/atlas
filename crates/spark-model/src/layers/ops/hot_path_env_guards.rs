@@ -23,7 +23,7 @@
 ///
 /// An empty allow list means the file must not read the environment at all.
 /// Paths are relative to `crates/spark-model/src`.
-const GUARDED: [(&str, &[&str]); 17] = [
+const GUARDED: [(&str, &[&str]); 20] = [
     // ── Dense FFN ──
     (
         "layers/dense_ffn.rs",
@@ -62,6 +62,11 @@ const GUARDED: [(&str, &[&str]); 17] = [
     ),
     // ── Once per propose. ──
     ("model/impl_b3.rs", &[]),
+    // ── Nemotron prefill: once per layer per prefill chunk. Nine reads
+    //    across these three, one of them asked twice in the same call. ──
+    ("layers/nemotron_mamba2/prefill.rs", &[]),
+    ("layers/nemotron_moe/prefill_sorted.rs", &[]),
+    ("layers/nemotron_moe/prefill_shared_up.rs", &[]),
     // ── The `ModelLevers` resolution itself. Listed with its own function
     //    allowed so that the guard covers the file rather than skipping it:
     //    if a read appears anywhere ELSE in here, it is a second resolution

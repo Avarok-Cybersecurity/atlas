@@ -309,3 +309,72 @@ fn the_moe_prefill_levers_keep_the_tri_state_distinguishable() {
         None
     );
 }
+
+/// ★ THE NEMOTRON PREFILL EIGHT ARE PRESENCE-GATED, AND FIVE OF THEM ARE
+/// `NO_` VARIABLES WHOSE FIELD STORES THE OPPOSITE OF THEIR NAME.
+///
+/// The sites spelled these `std::env::var(..).is_err()` and `.is_ok()`, so
+/// `=0` neither arms an opt-in nor re-enables an opt-out. Two are worth
+/// naming: `moe_zero_intermediates` clears arena buffers that are reused
+/// ACROSS REQUESTS and that nothing else clears, so defaulting it off would
+/// leak a previous request's activations into any row a future change fails
+/// to write; and `moe_max_m_tiles_estimate` is explicitly not safe to serve
+/// on, because its average-based bound can under-count the worst case of one
+/// expert taking every routed token.
+#[test]
+fn the_nemotron_prefill_levers_are_presence_gated() {
+    let d = resolve(&[]);
+    // Five ship ON.
+    assert!(d.ssm_w4a4);
+    assert!(d.ssd);
+    assert!(d.ssm_persistent);
+    assert!(
+        d.moe_zero_intermediates,
+        "arena buffers are cleared by default"
+    );
+    assert!(d.shared_w4a4);
+    // Three ship OFF.
+    assert!(
+        !d.moe_max_m_tiles_estimate,
+        "the unsafe-to-serve bound is opt-in"
+    );
+    assert!(!d.moe_w4a4);
+    assert!(!d.shared_w4a4_down);
+
+    let killed: [(&str, fn(&ModelLevers) -> bool); 5] = [
+        ("ATLAS_NO_SSM_W4A4", |l| l.ssm_w4a4),
+        ("ATLAS_NO_SSD", |l| l.ssd),
+        ("ATLAS_NO_SSM_PERSISTENT", |l| l.ssm_persistent),
+        ("ATLAS_MOE_NO_ZERO_INTERMEDIATES", |l| {
+            l.moe_zero_intermediates
+        }),
+        ("ATLAS_NO_SHARED_W4A4", |l| l.shared_w4a4),
+    ];
+    for (name, read) in killed {
+        assert!(!read(&resolve(&[(name, "1")])), "{name} did not kill");
+        assert!(
+            !read(&resolve(&[(name, "0")])),
+            "{name} is presence-gated: `=0` does NOT re-enable"
+        );
+    }
+
+    let armed: [(&str, fn(&ModelLevers) -> bool); 3] = [
+        ("ATLAS_MOE_MAX_M_TILES_ESTIMATE", |l| {
+            l.moe_max_m_tiles_estimate
+        }),
+        ("ATLAS_MOE_W4A4", |l| l.moe_w4a4),
+        ("ATLAS_SHARED_W4A4_DOWN", |l| l.shared_w4a4_down),
+    ];
+    for (name, read) in armed {
+        assert!(read(&resolve(&[(name, "1")])), "{name} did not arm");
+        assert!(
+            read(&resolve(&[(name, "0")])),
+            "{name} is presence-gated: `=0` still arms it"
+        );
+    }
+
+    // The shared-expert UP and DOWN halves are independent: down is the
+    // heavy-tailed projection and does not inherit up's default.
+    assert!(!resolve(&[("ATLAS_NO_SHARED_W4A4", "1")]).shared_w4a4_down);
+    assert!(resolve(&[("ATLAS_SHARED_W4A4_DOWN", "1")]).shared_w4a4);
+}

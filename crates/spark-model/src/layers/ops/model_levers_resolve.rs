@@ -96,6 +96,14 @@ pub(super) fn from_values(
             .filter(|&factor| factor > 0),
         moe_prefill_zero: opt_in(value("ATLAS_MOE_PREFILL_ZERO").as_deref()),
         moe_prefill_fp8_down: opt_in(value("ATLAS_MOE_PREFILL_FP8_DOWN").as_deref()),
+        ssm_w4a4: !present("ATLAS_NO_SSM_W4A4"),
+        ssd: !present("ATLAS_NO_SSD"),
+        ssm_persistent: !present("ATLAS_NO_SSM_PERSISTENT"),
+        moe_zero_intermediates: !present("ATLAS_MOE_NO_ZERO_INTERMEDIATES"),
+        moe_max_m_tiles_estimate: present("ATLAS_MOE_MAX_M_TILES_ESTIMATE"),
+        moe_w4a4: present("ATLAS_MOE_W4A4"),
+        shared_w4a4: !present("ATLAS_NO_SHARED_W4A4"),
+        shared_w4a4_down: present("ATLAS_SHARED_W4A4_DOWN"),
         dflash_contig_attn: opt_in(value("ATLAS_DFLASH_CONTIG_ATTN").as_deref()),
         lora_eager: opt_in_truthy(value("ATLAS_LORA_EAGER").as_deref()),
         lora_rotate: opt_in_truthy(value("ATLAS_LORA_ROTATE").as_deref()),
@@ -180,6 +188,13 @@ impl ModelLevers {
             ffn_nvfp4_mmq: true,
             ffn_nvfp4_mmq_down: true,
             prefill_v2: true,
+            // The Nemotron prefill opt-outs, presence-gated like the four
+            // above: `=0` does NOT re-enable them.
+            ssm_w4a4: true,
+            ssd: true,
+            ssm_persistent: true,
+            moe_zero_intermediates: true,
+            shared_w4a4: true,
             ..Self::default()
         }
     }
