@@ -458,6 +458,7 @@ impl TransformerModel {
                 profile: false,
                 comm: ctx.comm,
                 graph_capture: ctx.graph_capture,
+                decode_step: false,
                 gdn_exact_replay: false,
                 token_ids: None,
                 host_token_ids: None,
@@ -660,6 +661,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false, // Eager mode — no CUDA graph
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
             host_token_ids: None,

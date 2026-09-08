@@ -88,8 +88,19 @@ impl TransformerModel {
             let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
             seqs.iter().any(|s| s.seq_len >= bound)
         };
-        let hc_perseq = self.config.hc_mult > 0
-            && (qsa_active || std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1"));
+        // A layer may DECLINE the batched multi-seq step outright (Stage 0).
+        // 🪤 Hoisted OUT of the `hc_mult > 0` conjunction on purpose: a layer
+        // that cannot be indexed by row must be routed per-sequence whether or
+        // not it is an mHC-highway model, and whether or not QSA selection has
+        // activated. Keying this on `hc_mult`, `index_topk` or `model_type`
+        // instead would reintroduce exactly the length-dependent cliff below —
+        // `qsa_active` is false for every sequence shorter than
+        // `index_topk + index_compress_ratio - 1`, so a declining model would
+        // be correct on long contexts and silently wrong on short ones.
+        let ms_layer_veto = self.layers.iter().any(|l| l.decode_multi_seq_unsupported());
+        let hc_perseq = ms_layer_veto
+            || (self.config.hc_mult > 0
+                && (qsa_active || std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1")));
         // ★ The per-seq routing decision is resolved ABOVE the EP branch on
         // purpose. It used to sit below, so under EP a QSA-active batch
         // returned at `decode_batch_compute_main` before ever reaching the
@@ -382,6 +393,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            decode_step: true,
             gdn_exact_replay: false,
             token_ids: None,
             // The batch's token ids: the hc multi-seq PLE rows read their

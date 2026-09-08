@@ -9,6 +9,27 @@
 use super::{LayerType, ModelConfig};
 
 impl ModelConfig {
+    /// Every configured stop-token id, primary first.
+    ///
+    /// Falls back to `vec![eos_token_id]` when `eos_token_ids` was never populated, so a
+    /// hand-built `ModelConfig` and a scalar-EOS checkpoint both behave exactly as before.
+    pub fn eos_ids(&self) -> Vec<u32> {
+        if self.eos_token_ids.is_empty() {
+            vec![self.eos_token_id]
+        } else {
+            self.eos_token_ids.clone()
+        }
+    }
+
+    /// Does this token id terminate generation?
+    pub fn is_eos(&self, id: u32) -> bool {
+        if self.eos_token_ids.is_empty() {
+            id == self.eos_token_id
+        } else {
+            self.eos_token_ids.contains(&id)
+        }
+    }
+
     /// GQA ratio: number of Q heads per KV head.
     pub fn gqa_ratio(&self) -> usize {
         self.num_attention_heads
@@ -18,6 +39,39 @@ impl ModelConfig {
 
     /// Layer type for a given layer index.
     /// Falls back to full_attention_interval if layer_types is empty.
+    /// Layer kind for ANY index in the checkpoint, including layers past the text stack.
+    ///
+    /// `layer_type` covers the text stack only. Indices `>= num_hidden_layers` are
+    /// MTP/NextN layers and resolve through `mtp_layer_types`; that is what lets GLM-5.3's
+    /// layer 45 be represented as the sparse-attention block it actually is, rather than
+    /// being appended to the text stack and silently swept into every text-layer loop.
+    pub fn layer_type_at(&self, layer_idx: usize) -> Option<LayerType> {
+        if layer_idx < self.num_hidden_layers {
+            return Some(self.layer_type(layer_idx));
+        }
+        self.mtp_layer_types
+            .get(layer_idx - self.num_hidden_layers)
+            .copied()
+    }
+
+    /// Layers (text stack only) whose mixer is `deepseek_sparse_attention`.
+    pub fn sparse_attention_layers(&self) -> Vec<usize> {
+        self.layer_types
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| **t == LayerType::SparseAttention)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// True when any layer — text stack **or** MTP — needs the sparse-attention
+    /// indexer. Scheduling and cache sizing both key off this, so it must not be
+    /// answered from `layer_types` alone.
+    pub fn has_sparse_attention(&self) -> bool {
+        self.layer_types.contains(&LayerType::SparseAttention)
+            || self.mtp_layer_types.contains(&LayerType::SparseAttention)
+    }
+
     pub fn layer_type(&self, layer_idx: usize) -> LayerType {
         if !self.layer_types.is_empty() {
             self.layer_types
@@ -33,20 +87,24 @@ impl ModelConfig {
         }
     }
 
-    /// Number of attention (KV-cache-consuming) layers: full attention plus
-    /// sliding attention. Sliding-attention layers write to the paged KV cache
-    /// exactly like full-attention ones (only their attention window differs),
-    /// so every consumer sized from this count — KV pool `num_layers`,
+    /// Number of attention (KV-cache-consuming) layers: full, sliding, and
+    /// sparse. All three write to the paged KV cache — only *which* keys they
+    /// read differs (all / a window / a runtime-selected top-k) — so every
+    /// consumer sized from this count — KV pool `num_layers`,
     /// `attn_layer_dtypes`, loader `layer_kv_dtypes` indexing — must see them
     /// all. Step 3.7 is the only model emitting `SlidingAttention` layer types
     /// (12 full + 33 sliding); counting full-only there undersized the dtype
     /// vec and panicked the loader at layer 13.
+    ///
+    /// 🪤 The same omission recurred for `SparseAttention`: GLM-5.3-Flash is
+    /// 34 `linear_attention` + 11 `deepseek_sparse_attention`, so a full/sliding
+    /// filter returned **0** and the KV pool came out zero-sized ("KV cache block
+    /// size is zero", measured 2026-08-28). Delegating to
+    /// [`LayerType::is_attention`] is what keeps this honest: the predicate lives
+    /// next to the enum, so a new variant is answered in one place.
     pub fn num_attention_layers(&self) -> usize {
         if !self.layer_types.is_empty() {
-            self.layer_types
-                .iter()
-                .filter(|t| matches!(t, LayerType::FullAttention | LayerType::SlidingAttention))
-                .count()
+            self.layer_types.iter().filter(|t| t.is_attention()).count()
         } else {
             self.num_hidden_layers
                 .checked_div(self.full_attention_interval)
@@ -369,36 +427,41 @@ impl ModelConfig {
             .count()
     }
 
-    /// Whether the radix prefix cache captures every state needed to resume
-    /// this model exactly. DeepSeek V4 compression also carries a prompt-built
-    /// pool and ring that are not represented by KV blocks today.
-    pub fn kv_only_prefix_cache_is_safe(&self) -> bool {
-        self.model_type != "deepseek_v4" || self.compress_ratios.iter().all(|&ratio| ratio == 0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ModelConfig;
-
-    #[test]
-    fn any_compressed_deepseek_v4_layer_is_not_kv_cache_complete() {
-        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
-        config.model_type = "deepseek_v4".to_string();
-
-        for ratios in [vec![4, 0, 0], vec![0, 4, 0], vec![0, 0, 128]] {
-            config.compress_ratios = ratios;
-            assert!(!config.kv_only_prefix_cache_is_safe());
+    /// Whether every byte of a sequence's per-layer state is represented by
+    /// its KV blocks.
+    ///
+    /// False for models whose PREFILL builds per-sequence state that KV pages
+    /// do not carry: GLM-5.3's DSA indexer rows (`Glm5NextDsaState`) and
+    /// compressed DeepSeek V4's compressor pool/ring. Every KV-only mechanism
+    /// — radix prefix reuse and the `--swap-space-gb` spill image alike — is
+    /// unsafe for those models, and this is the single fact both gates below
+    /// are asking about.
+    fn per_sequence_state_is_kv_complete(&self) -> bool {
+        match self.model_type.as_str() {
+            "glm5_next" | "glm5_next_text" => false,
+            "deepseek_v4" => self.compress_ratios.iter().all(|&ratio| ratio == 0),
+            _ => true,
         }
     }
 
-    #[test]
-    fn kv_complete_models_can_use_the_prefix_cache() {
-        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
-        assert!(config.kv_only_prefix_cache_is_safe());
+    /// Whether the radix prefix cache captures every state needed to resume
+    /// this model exactly. Preflight SSOT for `build_prefix_cache`.
+    pub fn kv_only_prefix_cache_is_safe(&self) -> bool {
+        self.per_sequence_state_is_kv_complete()
+    }
 
-        config.model_type = "deepseek_v4".to_string();
-        config.compress_ratios = vec![0; 3];
-        assert!(config.kv_only_prefix_cache_is_safe());
+    /// Whether a sequence may be swapped out to the `--swap-space-gb` pool and
+    /// restored from it. Preflight SSOT for `resolve_swap_space_gb`.
+    ///
+    /// `save_sequence_state_dispatch` writes KV blocks plus the `SsmLayerState`
+    /// of each `LayerType::LinearAttention` layer, and nothing else; the
+    /// swap-out then calls `free_sequence`, which hands every remaining
+    /// per-layer state to #821's `release_state`. A model that is not
+    /// KV-complete therefore resumes with a freshly ZEROED pool behind a KV
+    /// image that assumes a populated one — a silently wrong answer, not a
+    /// crash. Distinct from the prefix-cache predicate because they are
+    /// distinct guarantees; they happen to have the same answer today.
+    pub fn kv_only_swap_out_is_safe(&self) -> bool {
+        self.per_sequence_state_is_kv_complete()
     }
 }

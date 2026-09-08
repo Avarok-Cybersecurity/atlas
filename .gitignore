@@ -155,3 +155,4 @@ bench/qwen4_exp/qsa_golden.npz
 bench/ngram_ref/ngram_golden.npz
 *.swp
 bench/qwen4_exp/qwen4exp_forward_golden.npz
+.ncclstub

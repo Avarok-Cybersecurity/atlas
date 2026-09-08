@@ -8,6 +8,87 @@ fn nullable_u32<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<u
     Option::<u32>::deserialize(d).map(|v| v.unwrap_or(0))
 }
 
+/// `eos_token_id`, which HF allows to be `null`, a scalar, **or an array**.
+///
+/// GLM-5.3-Flash declares three stop tokens as an array, and before Slice 9 that made its
+/// `config.json` fail to parse outright ("invalid type: sequence, expected u32") — every family
+/// arm deserializes `eos_token_id` as a bare `u32`. This yields **element 0** as the primary;
+/// the COMPLETE set is recovered separately into [`ModelConfig::eos_token_ids`] by
+/// `parse_config`, so nothing is discarded.
+///
+/// Backward compatible by construction: an array was previously a hard error, so no config that
+/// parses today can change meaning. A parser that wants a different primary (`step3p7` takes the
+/// LAST element) still rewrites the field before deserializing, and that choice is preserved.
+fn eos_token_id_field<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<u32, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(u32),
+        Many(Vec<u32>),
+    }
+    Ok(match Option::<OneOrMany>::deserialize(d)? {
+        None => 0,
+        Some(OneOrMany::One(v)) => v,
+        Some(OneOrMany::Many(v)) => v.first().copied().unwrap_or(0),
+    })
+}
+
+/// Which dtype ladder GLM-5.3's MoE router runs in.
+///
+/// 🔴 **This is a SEMANTIC switch, not a precision preference.** Slice 10 measured the two
+/// ladders selecting a different top-8 expert set on ~89–95 % of tokens (layers 3/23/44,
+/// T=2048), moving 20–26 % of routed weight mass onto experts the other ladder did not pick.
+/// Treating it as a harmless rounding choice is how a "faster router" silently becomes a
+/// different model.
+///
+/// Deliberately its OWN field, not derived from the quantization config or from
+/// `PrecisionSchedule::router_dtype` (which is a weight-STORAGE schedule with no compute
+/// meaning, and no consumers). Inferring a semantic from an unrelated knob is the defect this
+/// avoids.
+///
+/// GLM-scoped on purpose: no other Atlas model has a contested router ladder, and widening this
+/// into a cross-model routing refactor would be scope Atlas has not asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Glm5NextRouterMode {
+    /// **CANONICAL / REFERENCE.** HF `transformers` 5.16.1 semantics:
+    /// `F.linear(hidden.type(float32), weight.type(float32))`, and sigmoid / correction bias /
+    /// top-k / renormalisation all in fp32. This is the production default and must not change
+    /// without review.
+    #[default]
+    HfFp32,
+    /// **COMPATIBILITY / ORACLE REPRODUCTION.** Reproduces what vLLM currently does for
+    /// `glm5_next_text`: `GateLinear.out_dtype` resolves to `None` (the fp32 special case in
+    /// `_get_moe_router_dtype` fires only for `glm_moe_dsa` or an explicit `moe_router_dtype`),
+    /// so the gate GEMM runs in the model dtype and `grouped_topk` does no upcast.
+    ///
+    /// Exists so Atlas can reproduce the frozen vLLM oracle's routing for A/B work. **Never a
+    /// production default.**
+    VllmBf16,
+}
+
+impl Glm5NextRouterMode {
+    /// Parse the `moe_router_dtype` config field — the same name vLLM reads.
+    ///
+    /// Absent ⇒ [`Self::HfFp32`]. That is the opposite of vLLM's fallthrough, and deliberately
+    /// so: absent means "the checkpoint did not say", and the reference implementation's answer
+    /// for that case is fp32.
+    pub fn from_config_str(s: &str) -> Option<Self> {
+        match s {
+            "float32" | "fp32" => Some(Self::HfFp32),
+            "bfloat16" | "bf16" => Some(Self::VllmBf16),
+            _ => None,
+        }
+    }
+
+    /// True when router math must be carried in fp32.
+    pub fn is_fp32(self) -> bool {
+        matches!(self, Self::HfFp32)
+    }
+}
+
 /// Layer type in a hybrid transformer model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -17,6 +98,39 @@ pub enum LayerType {
     LinearAttention,
     /// Standalone MoE FFN layer (Nemotron-H: no mixer, just expert routing + FFN).
     Moe,
+    /// Sparse attention over a per-query selected subset of the KV cache
+    /// (`deepseek_sparse_attention`): a full-rank mixer whose visible key set is
+    /// chosen at runtime by an indexer, not fixed by a window.
+    ///
+    /// Distinct from [`Self::FullAttention`] on purpose. Both attend over the whole
+    /// cache in principle, but a sparse layer additionally needs indexer state, an
+    /// indexer weight family, and a per-query top-k selection step — so scheduling,
+    /// cache sizing and weight binding all have to be able to tell them apart. GLM-5.3
+    /// was previously flattened onto `FullAttention` at parse time, which round-tripped
+    /// `deepseek_sparse_attention` into a lie.
+    SparseAttention,
+}
+
+impl LayerType {
+    /// Does this layer attend over a KV cache (as opposed to carrying recurrent state
+    /// or being FFN-only)?
+    pub fn is_attention(self) -> bool {
+        matches!(
+            self,
+            Self::FullAttention | Self::SlidingAttention | Self::SparseAttention
+        )
+    }
+
+    /// The string this layer type round-trips to in a HuggingFace `layer_types` array.
+    pub fn hf_name(self) -> &'static str {
+        match self {
+            Self::FullAttention => "full_attention",
+            Self::SlidingAttention => "sliding_attention",
+            Self::LinearAttention => "linear_attention",
+            Self::Moe => "moe",
+            Self::SparseAttention => "deepseek_sparse_attention",
+        }
+    }
 }
 
 /// Model configuration parsed from HuggingFace config.json.
@@ -100,6 +214,17 @@ pub struct ModelConfig {
     /// HF config. When empty, falls back to `full_attention_interval`.
     #[serde(default)]
     pub layer_types: Vec<LayerType>,
+    /// Per-layer kind for the **extra** layers that sit past `num_hidden_layers`:
+    /// multi-token-prediction / NextN blocks. Empty for models that have none.
+    ///
+    /// Kept separate from `layer_types` on purpose. GLM-5.3-Flash's layer 45 is a real
+    /// decoder layer with its own attention block, but `num_hidden_layers` is 45 and
+    /// `config.layer_types` has 45 entries covering 0..=44 — so layer 45 has no honest
+    /// slot there. Appending it would make every length check and every "iterate the text
+    /// stack" loop silently include a speculative-decoding layer. Look it up through
+    /// [`ModelConfig::layer_type_at`], which routes indices past the text stack here.
+    #[serde(default)]
+    pub mtp_layer_types: Vec<LayerType>,
     /// Stride for full-attention layers in hybrid models when
     /// `layer_types` is empty: every Nth layer is FullAttention, the
     /// rest LinearAttention. 1 = every layer is full attention.
@@ -127,8 +252,26 @@ pub struct ModelConfig {
     /// BOS token ID (null → 0 for models without explicit BOS).
     #[serde(default, deserialize_with = "nullable_u32")]
     pub bos_token_id: u32,
-    #[serde(default, deserialize_with = "nullable_u32")]
+    /// Which dtype ladder GLM-5.3's MoE router runs in. See [`Glm5NextRouterMode`] — this is a
+    /// semantic switch, and `HfFp32` is the production default.
+    #[serde(default)]
+    pub glm5next_router_mode: Glm5NextRouterMode,
+    /// The PRIMARY stop token. See [`ModelConfig::eos_ids`] for the complete set — a config may
+    /// declare several, and this holds only the first.
+    #[serde(default, deserialize_with = "eos_token_id_field")]
     pub eos_token_id: u32,
+    /// The COMPLETE stop-token set. HF configs are allowed to declare `eos_token_id` as an
+    /// array, and several real checkpoints do — GLM-5.3-Flash declares three:
+    /// `154820 <|endoftext|>`, `154827 <|user|>`, `154829 <|observation|>`. `eos_token_id`
+    /// above holds only the PRIMARY one (element 0), which is what every scalar consumer and
+    /// every chat template wants; collapsing to it and discarding the rest is what made an
+    /// agent model unable to stop on its own turn terminators.
+    ///
+    /// Populated by `parse_config` for every model family from the raw JSON, scalar or array.
+    /// Empty means "not populated" (a hand-built `ModelConfig`), NOT "no stop tokens" — read it
+    /// through [`ModelConfig::eos_ids`], never directly.
+    #[serde(default)]
+    pub eos_token_ids: Vec<u32>,
     #[serde(default)]
     pub tie_word_embeddings: bool,
     /// CLI override (`--lm-head-dtype`) for LM-head quantization, set at serve time
@@ -195,6 +338,19 @@ pub struct ModelConfig {
     /// Nemotron-H routed scaling factor for expert outputs.
     #[serde(default = "default_one_f64")]
     pub routed_scaling_factor: f64,
+    /// KDA forget-gate lower bound (`linear_attn_config.gate_lower_bound`). GLM-5.3 declares
+    /// -5.0; it bounds the log-decay `kda_gate` produces, so a defaulted 0.0 would clamp the
+    /// decay to a completely different range. Read by the `glm5_next` parser, never guessed.
+    #[serde(default)]
+    pub linear_gate_lower_bound: f32,
+    /// SwiGLU clamp bound (`swiglu_limit`). 0.0 = the model does not clamp.
+    ///
+    /// 🔴 GLM-5.3-Flash declares `swiglu_limit = 10.0`, and the clamp is **asymmetric**:
+    /// `gate` is upper-bounded only, `up` is bounded both ways. Read, never defaulted for a
+    /// model that declares it — a missing clamp is invisible on well-scaled activations and
+    /// silently wrong on the tails (see `kernels/gb10/common/glm5next_ffn.cu`).
+    #[serde(default)]
+    pub swiglu_limit: f32,
     /// Decoder-layer indices that use a dense MLP instead of routed experts.
     #[serde(default)]
     pub mlp_only_layers: Vec<usize>,
@@ -366,6 +522,15 @@ pub struct ModelConfig {
     /// 0 = no indexer.
     #[serde(default)]
     pub index_compress_ratio: usize,
+    /// GLM-5.3 DSA: tokens per k-pool (`index_kpool`). The pool budget is
+    /// `index_topk / index_kpool`, so this is not cosmetic — it sets how many
+    /// candidates the top-k actually ranks. 0 = model has no k-pooling.
+    #[serde(default)]
+    pub index_kpool: usize,
+    /// GLM-5.3 DSA: always append the trailing partial pool's tokens to the
+    /// selection, widening the emitted index row by `index_kpool - 1`.
+    #[serde(default)]
+    pub index_kpool_always_select_tail: bool,
     /// Number of hash-based attention layers (DeepSeek-V4 HCA). 0 = none.
     #[serde(default)]
     pub num_hash_layers: usize,
@@ -475,6 +640,14 @@ pub struct ModelConfig {
     /// attention/MLP weights are TP-sharded; MoE expert weights are EP-sharded.
     #[serde(skip)]
     pub tp_world_size: usize,
+
+    // ── Served context (set at runtime from `--max-seq-len`) ──
+    /// The serve's `--max-seq-len`. 0 when nobody set it (a unit test, an offline tool),
+    /// which every reader must treat as "unknown" and fall back from — never as zero
+    /// context. Distinct from `max_position_embeddings`, which is the checkpoint's claim
+    /// (1,048,576 on GLM-5.3) rather than what this process reserved memory for.
+    #[serde(skip)]
+    pub serve_max_seq_len: usize,
 
     // ── FP8 KV cache calibration (set at runtime from CLI) ──
     /// Number of warmup tokens for online FP8 KV scale calibration.
@@ -681,6 +854,8 @@ pub(crate) fn default_conv_kernel() -> usize {
 mod dispatch;
 mod factory;
 mod gguf;
+#[cfg(test)]
+mod kv_completeness_tests;
 mod methods;
 mod parsers;
 #[cfg(test)]
@@ -689,12 +864,13 @@ mod tests;
 pub use dispatch::parse_config;
 pub use gguf::{GgufConfigInputs, GgufMeta, config_from_gguf};
 pub use parsers::{
-    PEFT_SUPPORTED_TARGET_MODULES, PeftAdapterConfig, allow_partial_targets, parse_mistral_params,
-    parse_peft_adapter_config, parse_quantization_config,
+    PEFT_SUPPORTED_TARGET_MODULES, PeftAdapterConfig, allow_partial_targets,
+    glm5_next_mtp_layer_index, parse_mistral_params, parse_peft_adapter_config,
+    parse_quantization_config,
 };
 pub(crate) use parsers::{
-    parse_deepseek_v4, parse_gemma4_params, parse_laguna, parse_longcat_ngram, parse_minimax_m2,
-    parse_qwen4_exp, parse_step3p7, parse_vision_config,
+    parse_deepseek_v4, parse_gemma4_params, parse_glm5_next, parse_laguna, parse_longcat_ngram,
+    parse_minimax_m2, parse_qwen4_exp, parse_step3p7, parse_vision_config,
 };
 
 pub(crate) fn finalize_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {

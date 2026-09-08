@@ -17,6 +17,8 @@
 pub(crate) mod deepseek_v4;
 pub mod dflash_loader;
 mod gemma4;
+/// GLM-5.3-Flash tensor accounting (Slice 1: classification only).
+pub mod glm5_next;
 mod laguna;
 mod longcat;
 mod minimax;
@@ -35,7 +37,11 @@ pub use dflash_loader::{
     DflashConfig, DflashLayerWeights, DflashSubConfig, DflashWeights, load_dflash_weights,
     store_has_dflash_weights,
 };
+pub mod glm5_next_load;
+mod glm5_next_mtp;
 pub use gemma4::Gemma4WeightLoader;
+pub use glm5_next_load::Glm5NextWeightLoader;
+pub(crate) use glm5_next_mtp::{Glm5NextMtpModule, load_glm5next_mtp_module};
 pub use laguna::LagunaWeightLoader;
 pub use longcat::LongcatWeightLoader;
 pub use minimax::MinimaxM2WeightLoader;
@@ -214,6 +220,26 @@ pub trait ModelWeightLoader {
         layer_kv_dtypes: &[KvCacheDtype],
     ) -> Result<Vec<Box<dyn TransformerLayer>>>;
 
+    /// Drop store tensors this loader has finished with, after every
+    /// `load_*` reader has run and before the buffer arena / KV cache are sized.
+    ///
+    /// Default: keep everything. That is correct for the loaders that bind
+    /// **zero-copy** from the store's device pointers — the store IS the model's
+    /// weights, and `TransformerModel` releases it at teardown.
+    ///
+    /// Override only when the loader uploads its own copies (a TP shard, a host
+    /// round-trip, a dtype conversion), because then the store's originals are
+    /// dead the moment the binder returns. On unified-memory GB10 that duplicate
+    /// comes straight out of the KV budget.
+    fn prune_after_load(
+        &self,
+        _store: &mut WeightStore,
+        _config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Per-(layer, role) weight precision schedule (C.3, 2026-04-25).
     /// Default impl returns the empty schedule (every lookup yields
     /// `Dtype::Inherit`), preserving the existing per-checkpoint
@@ -346,6 +372,19 @@ pub trait ModelWeightLoader {
     ) -> Result<Option<crate::lora::LoraWeights>> {
         crate::lora::load_lora_adapters_multi(adapters, config, gpu, max_loras, max_lora_rank)
             .map(Some)
+    }
+
+    /// Will this loader ever bind a vision encoder for a multimodal checkpoint?
+    ///
+    /// Default `true` — "load everything" is the safe answer, so a loader that
+    /// forgets to override this can never lose weights it needs. A loader whose
+    /// port is deliberately text-only overrides it to `false`, and the weight
+    /// loader then skips the tower's tensors instead of reading a gigabyte of
+    /// unified memory that nothing will bind. `build_model` still frees an
+    /// unbound tower afterwards (keyed off the bind result, not off this), so
+    /// this is a peak-memory optimisation, not the correctness gate.
+    fn binds_vision_encoder(&self) -> bool {
+        true
     }
 
     /// Load vision encoder weights (returns None for text-only models).
