@@ -257,7 +257,7 @@ impl TransformerModel {
             .store(0, std::sync::atomic::Ordering::Relaxed);
         // ATLAS_MTP_CARRY_DRAFTER: this sequence's ownership ticket for the
         // shared hidden-row interval. See `mtp_carry::StoreRange`.
-        let store_gen = self.mtp_prefill_capture_gen.fetch_add(1, Relaxed) + 1;
+        let store_gen = self.mtp_store_gen_seq.fetch_add(1, Relaxed) + 1;
         *self.mtp_store_range.lock() = super::super::mtp_carry::StoreRange::EMPTY;
 
         // Build layer states: SSM layers point into the pool (fixed addresses),
