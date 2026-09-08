@@ -1005,7 +1005,6 @@ impl TransformerLayer for Glm5NextLayer {
         }
     }
 
-
     /// 🔴 GLM-5.3 CANNOT serve a batched multi-sequence decode step. Two
     /// independent row-0 aliases, both structural, either one sufficient:
     ///

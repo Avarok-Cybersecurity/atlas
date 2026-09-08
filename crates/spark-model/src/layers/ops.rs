@@ -26,6 +26,10 @@ mod dispatch_proj;
 mod dispatch_proj_rowwise;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
+#[path = "ops/exl3_dense.rs"]
+mod exl3_dense;
+#[path = "ops/exl3_matmul.rs"]
+mod exl3_matmul;
 #[path = "ops/fp8_gemv_batch.rs"]
 mod fp8_gemv_batch;
 #[path = "ops/fp8_moe.rs"]
@@ -52,10 +56,6 @@ mod gemm_dense_int8;
 mod gemm_fp4;
 #[path = "ops/model_stats.rs"]
 pub mod model_stats;
-#[path = "ops/exl3_dense.rs"]
-mod exl3_dense;
-#[path = "ops/exl3_matmul.rs"]
-mod exl3_matmul;
 pub use model_stats::ModelStats;
 
 #[path = "ops/gemm_fp8_prefill.rs"]
@@ -170,6 +170,8 @@ pub use dispatch_helpers::*;
 pub use dispatch_proj::*;
 pub use dispatch_proj_rowwise::*;
 pub use embeddings::*;
+pub use exl3_dense::*;
+pub use exl3_matmul::*;
 pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;
 pub use fp8_moe_batch_a::*;
@@ -226,5 +228,3 @@ pub use ssm_mamba::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;
 pub use wide_prefill::*;
-pub use exl3_dense::*;
-pub use exl3_matmul::*;

@@ -4,6 +4,7 @@ pub mod deepseek_v4_mtp;
 pub mod dense_ffn;
 pub mod dflash_head;
 pub mod ep_dispatch;
+pub mod exl3_dense;
 pub mod fp8_calibration;
 mod gemv_tier;
 /// GLM-5.3-Flash KDA integrated layer (Slice 6 -- one layer, no scheduler/cache wiring).
@@ -20,7 +21,6 @@ pub mod glm5next_mlp;
 pub mod glm5next_mtp_head;
 /// GLM-5.3-Flash 45-layer text-model skeleton (Slice 9 -- topology, wiring, structural binding).
 pub mod glm5next_skeleton;
-pub mod exl3_dense;
 pub mod moe;
 pub mod mtp_head;
 pub(crate) mod mtp_meta;

@@ -214,7 +214,11 @@ impl MockGpuBackend {
     /// every block is co-resident — so "did this dispatch cooperatively" is a
     /// correctness assertion, not a performance one.
     pub fn cooperative_launch_count(&self) -> usize {
-        self.launches.lock().iter().filter(|l| l.cooperative).count()
+        self.launches
+            .lock()
+            .iter()
+            .filter(|l| l.cooperative)
+            .count()
     }
 
     /// `(kernel handle, bytes)` per `set_kernel_max_dynamic_smem` call, in

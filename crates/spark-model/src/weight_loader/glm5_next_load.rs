@@ -467,11 +467,7 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                             &q,
                             mlp_cfg.num_experts,
                             (local.start, local.end),
-                            (
-                                mlp_cfg.hidden,
-                                mlp_cfg.moe_intermediate,
-                                mlp_cfg.top_k,
-                            ),
+                            (mlp_cfg.hidden, mlp_cfg.moe_intermediate, mlp_cfg.top_k),
                         )?)
                     } else {
                         None

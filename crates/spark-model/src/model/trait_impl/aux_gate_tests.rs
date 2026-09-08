@@ -31,7 +31,10 @@ fn the_full_dsa_set_is_complete_in_any_order() {
 fn a_model_with_no_carriers_is_complete_only_when_empty() {
     let none = vec![false; 8];
     assert!(aux_set_covers(&none, &[]));
-    assert!(!aux_set_covers(&none, &[0]), "a blob for a non-carrier is a corrupted set");
+    assert!(
+        !aux_set_covers(&none, &[0]),
+        "a blob for a non-carrier is a corrupted set"
+    );
 }
 
 /// The case the gate exists for: one DSA layer's blob missing. Restoring the
@@ -43,7 +46,10 @@ fn one_missing_carrier_is_incomplete() {
     let partial: Vec<u32> = glm_dsa_layers().into_iter().filter(|&i| i != 7).collect();
     assert_eq!(partial.len(), 10);
     assert!(!aux_set_covers(&c, &partial));
-    assert!(!aux_set_covers(&c, &[]), "an empty set on an aux-carrying model declines");
+    assert!(
+        !aux_set_covers(&c, &[]),
+        "an empty set on an aux-carrying model declines"
+    );
 }
 
 #[test]

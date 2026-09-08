@@ -21,17 +21,29 @@ fn tensor(gpu: &MockGpuBackend, shape: Vec<usize>, dtype: WeightDtype) -> Weight
 
 /// One expert's trellis triplet at the GLM pack's real geometry:
 /// in 2048, out 4096, K=2, mcg.
-fn put_expert(gpu: &MockGpuBackend, m: &mut HashMap<String, WeightTensor>, layer: usize, id: usize) {
+fn put_expert(
+    gpu: &MockGpuBackend,
+    m: &mut HashMap<String, WeightTensor>,
+    layer: usize,
+    id: usize,
+) {
     for proj in ["gate_proj", "up_proj", "down_proj"] {
         let p = format!("model.language_model.layers.{layer}.mlp.experts.{id}.{proj}");
         m.insert(
             format!("{p}.trellis"),
             tensor(gpu, vec![128, 256, 32], WeightDtype::UInt16),
         );
-        m.insert(format!("{p}.suh"), tensor(gpu, vec![2048], WeightDtype::F16));
-        m.insert(format!("{p}.svh"), tensor(gpu, vec![4096], WeightDtype::F16));
+        m.insert(
+            format!("{p}.suh"),
+            tensor(gpu, vec![2048], WeightDtype::F16),
+        );
+        m.insert(
+            format!("{p}.svh"),
+            tensor(gpu, vec![4096], WeightDtype::F16),
+        );
         let flag = tensor(gpu, vec![1], WeightDtype::Int32);
-        gpu.copy_h2d(&0xCBAC_1FEDu32.to_le_bytes(), flag.ptr).unwrap();
+        gpu.copy_h2d(&0xCBAC_1FEDu32.to_le_bytes(), flag.ptr)
+            .unwrap();
         m.insert(format!("{p}.mcg"), flag);
     }
 }
@@ -109,7 +121,8 @@ fn a_missing_local_expert_is_an_error_not_a_hole() {
     // id 1 claimed as local but never stored.
     let store = WeightStore::from_map(m);
 
-    let err = bind_experts_exl3(&gpu, &store, &qualifier(0), 2, (0, 2), (4096, 2048, 8)).unwrap_err();
+    let err =
+        bind_experts_exl3(&gpu, &store, &qualifier(0), 2, (0, 2), (4096, 2048, 8)).unwrap_err();
     let msg = format!("{err:#}");
     assert!(
         msg.contains("experts.1"),

@@ -413,11 +413,9 @@ impl MoeLayer {
 mod tables;
 // Re-exported so every `moe::ExpertPtrTable`-style path in the sub-files keeps
 // resolving; the split is invisible to them.
+pub(crate) use tables::{Bf16SharedExpert, ExpertPtrTable, Fp8ExpertPtrTable};
 #[allow(unused_imports)] // Exl3 items are consumed by the loader + dispatch arms
 pub use tables::{Exl3ExpertPtrTable, Exl3MoeState};
-pub(crate) use tables::{
-    Bf16SharedExpert, ExpertPtrTable, Fp8ExpertPtrTable,
-};
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod dump;

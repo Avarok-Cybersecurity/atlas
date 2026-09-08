@@ -480,12 +480,12 @@ impl SafetensorsLoader {
     }
 }
 
+pub mod adapter;
 /// Split a tensor name into (everything but its last numeric path segment,
 /// that segment as a number) so names sort NUMERICALLY on the index.
 /// `embedders.2` must precede `embedders.10`; a plain lexicographic sort puts
 /// `10` first and silently mis-maps every table after the ninth.
 pub mod exl3;
-pub mod adapter;
 mod gguf;
 mod loader;
 pub mod mlx_int8;
@@ -509,21 +509,27 @@ mod packed_q2_tests;
 mod prefix_detect;
 pub use prefix_detect::auto_detect_weight_prefix;
 
-/// Release every weight tensor.
-///
-/// Safe to free per-entry because the loaders allocate per-tensor: the fast
-/// path calls `gpu.alloc(meta.len)` once per tensor before inserting it
-/// (`fast_weights/mod.rs:360-388`), and no loader inserts an `.offset()` view of
-/// a shared block into this map. (Fused per-expert views DO exist — see
-/// `weight_loader/step3p7.rs:93` — but they live in the layer structs that own
-/// the fused allocation, not here, so this cannot double-free them.)
+// Where the weight-release impl went, and why it is not here.
+//
+// Plain `//`, not `///`: this documents no item. It described the pre-arena
+// `impl ModelResource for WeightStore` that used to sit at this spot; as a doc
+// comment it now binds to `mod teardown_tests` below, which it says nothing
+// about (clippy::empty_line_after_doc_comments).
+//
+// Releasing every weight tensor is safe per-entry because the loaders allocate
+// per-tensor: the fast path calls `gpu.alloc(meta.len)` once per tensor before
+// inserting it (`fast_weights/mod.rs:360-388`), and no loader inserts an
+// `.offset()` view of a shared block into this map. (Fused per-expert views DO
+// exist — see `weight_loader/step3p7.rs:93` — but they live in the layer
+// structs that own the fused allocation, not here, so this cannot double-free
+// them.)
+//
 // NOTE: `ModelResource for WeightStore` lives in `weights/arena.rs`.
 // That version is the arena-aware one: it SKIPS tensors whose pointer
 // falls inside a pooled arena (freeing such a view individually would be
 // an invalid free, and its base is freed separately) and releases the
 // arena bases last. The pre-arena copy that used to live here freed every
 // tensor unconditionally, which is wrong once arenas exist.
-
 
 #[cfg(test)]
 mod teardown_tests;

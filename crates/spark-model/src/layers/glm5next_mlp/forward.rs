@@ -696,7 +696,11 @@ pub fn forward_moe(
             ws.ids,
             ws.wts,
             ws.expert_out,
-            &[proj(&ex.tables[0]), proj(&ex.tables[1]), proj(&ex.tables[2])],
+            &[
+                proj(&ex.tables[0]),
+                proj(&ex.tables[1]),
+                proj(&ex.tables[2]),
+            ],
             &scratch,
             st.locks,
             rows,

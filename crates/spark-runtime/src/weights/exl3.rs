@@ -330,12 +330,17 @@ mod store_tests {
         );
         // Only `.mcg` — no `.mul1` anywhere, as in the GLM pack.
         let flag = tensor(&gpu, vec![1], WeightDtype::Int32);
-        gpu.copy_h2d(&0xCBAC_1FEDu32.to_le_bytes(), flag.ptr).unwrap();
+        gpu.copy_h2d(&0xCBAC_1FEDu32.to_le_bytes(), flag.ptr)
+            .unwrap();
         m.insert("l.gate_proj.mcg".to_string(), flag);
         let store = WeightStore::from_map(m);
 
         let w = Exl3Weight::from_store(&gpu, &store, "l.gate_proj").unwrap();
-        assert_eq!(w.cb, Exl3Codebook::Mcg, "`.mcg` must resolve to the mcg codebook");
+        assert_eq!(
+            w.cb,
+            Exl3Codebook::Mcg,
+            "`.mcg` must resolve to the mcg codebook"
+        );
         // K comes from the trellis inner dim (16*K); this fixture is the GLM
         // pack's K=2, which the fused MoE ladder serves.
         assert_eq!(w.k_bits, 2);

@@ -142,7 +142,9 @@ impl AuxHeader {
         }
         let version = u32_at(4);
         if version != AUX_VERSION {
-            bail!("DSA aux blob version {version} is not {AUX_VERSION}; refusing to guess the layout");
+            bail!(
+                "DSA aux blob version {version} is not {AUX_VERSION}; refusing to guess the layout"
+            );
         }
         let len = u64::from_le_bytes(blob[8..16].try_into().unwrap());
         let len = usize::try_from(len)

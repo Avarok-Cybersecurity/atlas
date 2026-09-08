@@ -33,12 +33,7 @@ fn cfg(max_context: usize) -> Glm5NextDsaConfig {
 
 /// A state whose first `len` rows hold a recognisable per-row pattern, so a misaligned or
 /// permuted restore shows up as a byte difference rather than passing on zeros.
-fn filled_state(
-    gpu: &MockGpuBackend,
-    capacity: usize,
-    len: usize,
-    seed: u8,
-) -> Glm5NextDsaState {
+fn filled_state(gpu: &MockGpuBackend, capacity: usize, len: usize, seed: u8) -> Glm5NextDsaState {
     let mut st = Glm5NextDsaState::alloc(gpu, &cfg(capacity)).unwrap();
     let rows: Vec<u8> = (0..len * D * 2)
         .map(|i| (i as u8).wrapping_add(seed))
