@@ -35,9 +35,13 @@ export RUST_LOG="${RUST_LOG:-info}"
 # ATLAS_AUX_COLLECT_BATCHED is deliberately NOT set here — it is the variable
 # under test and the caller owns it. Unset/1 = batched gather, 0 = the legacy
 # per-layer draining collect.
-echo "host=$(hostname) ctx=$CTX seqs=$SEQS aux_batched=${ATLAS_AUX_COLLECT_BATCHED:-unset} bin=$(sha256sum "$BIN" | cut -c1-16)"
+echo "host=$(hostname) ctx=$CTX seqs=$SEQS aux_batched=${ATLAS_AUX_COLLECT_BATCHED:-unset} extra=[${EXTRA_ARGS:-}] simhash=${ATLAS_SIMHASH_LOOP:-default} no_suppress=${ATLAS_LOOP_NO_SUPPRESS:-default} bin=$(sha256sum "$BIN" | cut -c1-16)"
 
-exec "$BIN" serve \
+# EXTRA_ARGS: appended verbatim to the serve command line. Empty by default, so
+# the preset is unchanged unless an A/B explicitly asks for a flag (e.g.
+# `--content-loop-watchdog false`). Deliberately unquoted at the call site so a
+# multi-flag string splits into separate argv entries.
+exec "$BIN" serve ${EXTRA_ARGS:-} \
   --model-from-path "$SNAP" \
   --model-name qwen3.8-flash-next \
   --kernel-target qwen3.8-flash-next \

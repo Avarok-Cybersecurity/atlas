@@ -1402,6 +1402,86 @@ NOT ruled out, because the defect is allocation and residency rather than drain 
 Records: `aux_ab/` (per-arm serve logs, prefill and decode logs, liveness lines) from
 `ab_aux_collect.sh` + `run_exl3_single.sh` (the shipped preset spelled out so one variable can move).
 
+## Agentic gate at 6c4285e1a: five arms, all PASS (2026-09-07)
+
+Post-change validation of the four commits in this session (batched aux collect,
+batched verify-tail argmax, EXL3 smem-memo teardown, KV-spill windowing) on the
+shipped preset, 32K x 4 seqs, prefix caching on, preserve-thinking on both sides
+(`ATLAS_AGENTIC_PRESERVE_THINKING=1` client, `preserve_thinking:true` +
+`reasoning_effort:low` in the serve default chat kwargs).
+
+| arm | sampling | loop guards | verdict | per-iter wall s | turns | Swall | s/turn | decode tok/s |
+|---|---|---|---|---|---|---|---|---|
+| A | greedy | on | Pass 3/3 | 112/82/195 | 7/7/13 | 389 s | 14.03 | 21.9 |
+| B | greedy | on | Pass 3/3 | 117/168/456 | 9/12/18 | 740 s | 18.91 | 16.3 |
+| C | model-card | on | Pass 3/3 | 124/118/146 | 9/9/11 | 387 s | 13.26 | 21.9 |
+| D | model-card | PARTIAL off | Pass 3/3 | 189/265/96 | 14/18/8 | 550 s | 13.67 | 21.5 |
+| E | model-card | ALL off | Pass 3/3 | 113/84/98 | 10/6/7 | 294 s | 12.68 | 21.8 |
+
+Every arm: 3/3 `webserver_ok`, 3/3 `followed_directions`, 6/6 steps, zero
+desyncs / CUDA errors / panics / `NoAuxSnapshot` declines, all requests finishing
+`(stop)`.
+
+### Greedy is the DEFAULT, and it reproduces — the harness does not
+
+`agent.rs:87` pins `TEMPERATURE = 0.0` and `SEED = 0` into every request unless
+`ATLAS_AGENTIC_SAMPLING=model-card` removes them. Arms A and B are therefore the
+same greedy configuration run twice, and they differ 1.9x in wall (389 s vs
+740 s). That is NOT engine nondeterminism:
+
+- `run-00` is byte-identical through turn 3 — same reasoning, same tool calls —
+  and the first difference is INSIDE a tool result: cargo printed
+  `Adding matchit v0.8.4 (available: v0.8.6)` in B and not in A.
+- `run-01`/`run-02` differ only in the tool-call ID counter (`call_...0007` vs
+  `call_...0009`), which is monotonic across iterations, so B's longer first
+  iteration shifts it.
+
+**Consequence: agentic wall-clock is not a usable perf metric.** One line of
+cargo output moved it 1.9x on identical config. Turn count is the dominant term
+and it is trajectory noise. Use `measure_prefill.py` / `measure_concurrency.py`
+for throughput; use this gate for correctness. Note decode tok/s is FLAT at
+21.5-21.9 across C/D/E — the axis that would move if any of this were expensive.
+
+### Arm liveness, proved from the server not the env
+
+- greedy: `temp=Some(0.0)` on all 34 requests; model-card: `temp=None` on 29/32
+  (the 3 pinned ones are the harness's own grading calls).
+- E: boot WARN `ALL auto-watchdogs DISABLED via ATLAS_DISABLE_WATCHDOGS=1
+  (content-loop, inter-tool prose, F2 confidence early-stop, mid-word </think>
+  defer, thinking-loop)`.
+
+### Loop-guard knobs are THREE independent mechanisms, and one flag is a trap
+
+- `ATLAS_SIMHASH_LOOP=0` — F4 SimHash semantic-loop guard (`handle_token.rs`).
+  Fired once in C (`paraphrased sentence repeat`, request completed normally).
+- `ATLAS_LOOP_NO_SUPPRESS=1` — soft `<tool_call>` bias decay (`loop_detect.rs`).
+  One HINT in C.
+- `ATLAS_DISABLE_WATCHDOGS=1` — ALL auto-watchdogs at once. **This is the knob to
+  use**; it does NOT cover the two above, so a complete arm sets all three.
+- **`--content-loop-watchdog false` is INERT on this model**: `[behavior]` never
+  sets `enable_loop_watchdog`, so it is already off and the flag changes nothing.
+  Arm D was built on that flag and is therefore NOT a middle setting — it differs
+  from C only in SimHash + suppression, and left inter-tool prose, F2 confidence,
+  mid-word `</think>` and thinking-loop armed. E is the only true guards-off arm.
+- `watchdog rollback+re-steer ENABLED` prints in every arm: it is the RESPONSE
+  policy for a firing, a separate `[behavior]` key, not a detector.
+
+### Speculation runs INSIDE `<think>` on this preset
+
+`MODEL.toml:362` sets `ATLAS_DFLASH_SPEC_THINK = "1"`. The gate it lifts
+(`mtp_gate.rs:147`) carries an explicit warning: batch-K verify is not
+byte-lossless at T=0 and the 2026-08-16 bisect measured **deterministic 8-9/10
+agentic trajectory failures** with it on. That bisect was the DFlash raw-argmax
+lane; this is the qwen4_exp MTP lane with the row-exact router chain
+(`VERIFY_EXL3_ROW_ROUTER` + `STABLE_GRID` + `NO_VERIFY_ROW_FFN`). 15 iterations
+across five arms passed with it on, and the greedy determinism check above
+localised all trajectory divergence to tool output rather than flipped tokens —
+so it is not biting here. Unmeasured: the thinking-phase throughput it buys.
+
+Records: `agentic_arms/` (per-arm result JSON + iteration tables). Harnesses:
+`run_exl3_single.sh` (now with an `EXTRA_ARGS` pass-through and a boot line that
+echoes the guard env, so an arm proves itself).
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17
