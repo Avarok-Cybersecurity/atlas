@@ -253,9 +253,12 @@ pub struct TransformerModel {
     /// ATLAS_MTP_CARRY_DRAFTER: the previous turn's drafter KV, held so the
     /// next turn of the same session can adopt it instead of rebuilding
     /// (1136 ms at 12k rows) or — as today — silently going without. Single
-    /// slot: MTP is gated `active.len() == 1` on every spec path, and one slot
-    /// makes block ownership unambiguous (blocks are owned here XOR by a live
-    /// sequence). `None` when the feature is off or nothing has been carried.
+    /// slot: the carry is force-disabled outside single-sequence dispatch
+    /// (`mtp_carry::carry_armed_with`), and one slot makes block ownership
+    /// unambiguous (blocks are owned here XOR by a live sequence). This used to
+    /// say "MTP is gated `active.len() == 1` on every spec path" — that is
+    /// false, the dispatch cap defaults to 32. `None` when the feature is off
+    /// or nothing has been carried.
     pub(super) mtp_carry: parking_lot::Mutex<Option<super::mtp_carry::CarriedDrafter>>,
     /// Absolute position interval of `mtp_prefill_hidden` rows, WITH the
     /// sequence generation that wrote them. Only maintained when
