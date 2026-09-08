@@ -121,6 +121,30 @@ pub struct ModelLevers {
     /// in the model, and five copies of one predicate is how a flag ends up
     /// decoded two different ways in one binary.
     pub weight_pre_rotated: bool,
+
+    // ── SSM / GDN decode ──
+    // These five ran on the batched-decode path — per SSM layer per decode
+    // step, ~6-7M environment reads per sweep on a 36-SSM-layer hybrid, the
+    // largest raw count in this crate. Three are diagnostics that are off in
+    // every shipped configuration, and were paying a `String` allocation and
+    // the process-wide environment lock to say so on every layer of every
+    // token. Their neighbour `ssm_tc_proj_min_n()` in the same file was
+    // already `OnceLock`'d with the note "Read ONCE — this site runs under
+    // graph capture", so these were an inconsistency, not a design.
+    /// Per-step multi-sequence SSM profiling dump.
+    pub ssm_ms_profile: bool,
+    /// Finer per-sub-step SSM profiling inside the batched recurrence.
+    pub ssm_detail_profile: bool,
+    /// Ships ON: use the batch-4 GEMV tier for the SSM projections when the
+    /// kernel is resolved and n <= 16. `ATLAS_SSM_GEMV_BATCH4=0` opts out.
+    pub ssm_gemv_batch4: bool,
+    /// Fuse the GDN conv with the F32 norm when the head geometry allows.
+    pub gdn_fused_conv: bool,
+    /// Take the pre-token-major MoE decode kernel. The field stores the
+    /// POSITIVE of the variable's name, so the call site reads
+    /// `!levers.moe_legacy_pertoken_decode` for the default token-major path —
+    /// the inversion lives here, once, rather than at the branch.
+    pub moe_legacy_pertoken_decode: bool,
     /// Configured max decode batch (`--max-batch-size`), the reference count
     /// the split-K attention split count is pinned to. Not from the
     /// environment: `TransformerModel::new` writes it from the serve arg.
@@ -184,6 +208,11 @@ fn from_values(
         gemma4_diag: opt_in_truthy(value("ATLAS_DIAG_GEMMA4").as_deref()),
         bf16_tc_proj: present("ATLAS_BF16_TC_PROJ"),
         weight_pre_rotated: opt_in_truthy(value("TQ_PLUS_WEIGHT_ROTATION").as_deref()),
+        ssm_ms_profile: opt_in(value("ATLAS_SSM_MS_PROFILE").as_deref()),
+        ssm_detail_profile: opt_in(value("ATLAS_SSM_DETAIL_PROFILE").as_deref()),
+        ssm_gemv_batch4: opt_out(value("ATLAS_SSM_GEMV_BATCH4").as_deref()),
+        gdn_fused_conv: opt_in(value("ATLAS_GDN_FUSED_CONV").as_deref()),
+        moe_legacy_pertoken_decode: opt_in(value("ATLAS_MOE_LEGACY_PERTOKEN_DECODE").as_deref()),
     }
 }
 
@@ -239,6 +268,11 @@ impl ModelLevers {
             gdn_wyn: true,
             ffn_small_m: true,
             gemv_sw: true,
+            // Opt-out: ships ON, `ATLAS_SSM_GEMV_BATCH4=0` disables. Every
+            // opt-out lever must appear here or
+            // `the_opt_out_lever_is_on_by_default_and_every_opt_in_is_off`
+            // fails — which is exactly how this line came to be written.
+            ssm_gemv_batch4: true,
             ..Self::default()
         }
     }
@@ -342,6 +376,11 @@ mod tests {
                 gdn_wyn: true,
                 gemv_sw: true,
                 ffn_small_m: true,
+                // The SSM batch-4 GEMV tier is the sixth opt-out lever. This
+                // literal is spelled out rather than derived so that adding a
+                // lever forces an author to state its polarity HERE, in the
+                // test, instead of inheriting whatever `Default` gives.
+                ssm_gemv_batch4: true,
                 max_decode_seqs: 1,
                 drafter: crate::model::drafter_context::DrafterContext::BOTH,
                 ..ModelLevers::default()
@@ -426,6 +465,27 @@ mod tests {
         assert!(resolve(&[("TQ_PLUS_WEIGHT_ROTATION", "1")]).weight_pre_rotated);
         assert!(resolve(&[("TQ_PLUS_WEIGHT_ROTATION", "TRUE")]).weight_pre_rotated);
         assert!(!resolve(&[("TQ_PLUS_WEIGHT_ROTATION", "0")]).weight_pre_rotated);
+
+        // ★ THE SSM DECODE FIVE, AND THEIR POLARITIES DIFFER. Three are opt-in
+        // diagnostics, one ships ON and opts out with `=0`, and the fifth
+        // stores the POSITIVE of a variable whose call site reads the negative.
+        // Getting any of these backwards silently changes which kernel runs on
+        // the decode path, so the defaults are pinned explicitly.
+        let d = resolve(&[]);
+        assert!(!d.ssm_ms_profile, "profiling is off unless asked for");
+        assert!(!d.ssm_detail_profile);
+        assert!(!d.gdn_fused_conv);
+        assert!(!d.moe_legacy_pertoken_decode, "default is token-major MoE");
+        assert!(d.ssm_gemv_batch4, "batch-4 GEMV ships ON");
+
+        assert!(resolve(&[("ATLAS_SSM_MS_PROFILE", "1")]).ssm_ms_profile);
+        assert!(resolve(&[("ATLAS_SSM_DETAIL_PROFILE", "1")]).ssm_detail_profile);
+        assert!(resolve(&[("ATLAS_GDN_FUSED_CONV", "1")]).gdn_fused_conv);
+        assert!(resolve(&[("ATLAS_MOE_LEGACY_PERTOKEN_DECODE", "1")]).moe_legacy_pertoken_decode);
+        assert!(!resolve(&[("ATLAS_SSM_GEMV_BATCH4", "0")]).ssm_gemv_batch4);
+        // `=0` on an opt-in is NOT enabling — the trap `ATLAS_BF16_TC_PROJ`
+        // falls into by being presence-gated.
+        assert!(!resolve(&[("ATLAS_GDN_FUSED_CONV", "0")]).gdn_fused_conv);
     }
 
     #[test]
