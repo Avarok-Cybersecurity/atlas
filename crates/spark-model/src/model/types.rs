@@ -250,6 +250,18 @@ pub struct TransformerModel {
     /// SSOT). 0 = no capture ever started (matches the fresh-seq stamp 0,
     /// which is harmless: `captured >= prompt_len >= 2` fails at len 0).
     pub(super) mtp_prefill_capture_gen: std::sync::atomic::AtomicU64,
+    /// Ticket dispenser for `mtp_store_range` ownership (`SequenceState::
+    /// mtp_store_gen`), drawn once per `alloc_sequence`.
+    ///
+    /// ★ SEPARATE FROM `mtp_prefill_capture_gen`, and it must stay separate.
+    /// Drawing the store ticket from the capture counter advances it on every
+    /// admission, and `owns_capture` (`trait_impl/speculative.rs`) requires the
+    /// sequence's captured generation to still EQUAL the current one — so any
+    /// sequence admitted between a capture and its propose silently disabled
+    /// the other sequence's drafter prefill. Measured: C=1 unaffected (no
+    /// interleaved admission), C=2 TPOT 62 -> 79 ms and 30.8 -> 23.5 tok/s,
+    /// reproduced twice. One counter, two meanings, was the whole bug.
+    pub(super) mtp_store_gen_seq: std::sync::atomic::AtomicU64,
     /// ATLAS_MTP_CARRY_DRAFTER: the previous turn's drafter KV, held so the
     /// next turn of the same session can adopt it instead of rebuilding
     /// (1136 ms at 12k rows) or — as today — silently going without. Single

@@ -424,3 +424,41 @@ fn common_prefix_len_is_the_validity_primitive() {
     assert_eq!(c.common_prefix_len(&[1, 2, 9, 4, 5]), 2);
     assert_eq!(c.common_prefix_len(&[]), 0);
 }
+
+/// ★ THE TWO TICKET DISPENSERS MUST STAY SEPARATE.
+///
+/// `SequenceState::mtp_store_gen` (this module's `StoreRange` owner) and
+/// `SequenceState::mtp_capture_gen` (the whole-prompt hidden capture) are
+/// different identities with different lifetimes, and they must not share a
+/// counter. Drawing the store ticket from `mtp_prefill_capture_gen` advances
+/// that counter on every `alloc_sequence`, and `owns_capture` requires a
+/// sequence's captured generation to still EQUAL the model's current one — so
+/// any sequence admitted between another's capture and its first propose
+/// silently disabled that sequence's drafter prefill.
+///
+/// MEASURED when this was wrong: C=1 unaffected (nothing is admitted between a
+/// lone sequence's capture and its propose), C=2 TPOT 62 -> 79 ms and
+/// 30.8 -> 23.5 aggregate tok/s, reproduced on two runs and two boxes, against
+/// a same-morning control on the parent commit that scored 30.8.
+///
+/// This is asserted against the SOURCE because the coupling lives at a call
+/// site in `alloc_sequence_dispatch`, which needs a whole model to exercise —
+/// and a bug that costs 24% of decode throughput at C=2 deserves a guard that
+/// runs in milliseconds rather than one that needs a GPU.
+#[test]
+fn the_store_ticket_never_draws_from_the_capture_generation() {
+    let meta = include_str!("trait_impl/meta.rs");
+    let draw = meta
+        .lines()
+        .find(|l| l.contains("let store_gen ="))
+        .expect("alloc_sequence must draw a store ticket");
+    assert!(
+        draw.contains("mtp_store_gen_seq"),
+        "the store ticket must come from its own dispenser, got: {draw}"
+    );
+    assert!(
+        !draw.contains("mtp_prefill_capture_gen"),
+        "sharing the capture counter disables drafter prefill for any sequence \
+         admitted between a capture and its propose: {draw}"
+    );
+}
