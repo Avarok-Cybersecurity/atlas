@@ -27,7 +27,9 @@ export ATLAS_QWEN4EXP_MTP_HC_BATCHED=1
 export ATLAS_VERIFY_EXL3_ROW_ROUTER=1 ATLAS_VERIFY_EXL3_STABLE_GRID=1
 export ATLAS_NO_VERIFY_ROW_FFN=1 ATLAS_NO_THINKENDED_GPU_ARGMAX=1
 export ATLAS_MTP_MAX_SEQS=4
-export ATLAS_EXL3_MOE_ROWS_PER_EXPERT=1024
+# Caller-overridable so the row-cap A/B can move exactly this one knob; the
+# default is the preset's committed value.
+export ATLAS_EXL3_MOE_ROWS_PER_EXPERT="${MOE_ROWS:-1024}"
 export ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=512
 export ATLAS_MARCONI_MIN_TOKENS=64
 export RUST_LOG="${RUST_LOG:-info}"

@@ -1482,6 +1482,92 @@ Records: `agentic_arms/` (per-arm result JSON + iteration tables). Harnesses:
 `run_exl3_single.sh` (now with an `EXTRA_ARGS` pass-through and a boot line that
 echoes the guard env, so an arm proves itself).
 
+## MoE row cap: +29% prefill, and the cap was sized for HALF the real chunk (2026-09-07)
+
+The overflow tier was assumed near-dead at the shipped cap of 1024
+(`moe_prefill_cap.rs`: "1024 is 12.8x the 80-row mean — beyond it the tail is
+routing pathology"). Telemetry says otherwise, and the cause is a units error in
+that rationale.
+
+### Measurement 1 — the tier fires on EVERY prefill MoE call
+
+`ATLAS_EXL3_MOE_TIER_STATS=1` (counter-only, default-off) on the host side of the
+tier select, which already reads `expert_offsets`, so it observes the real
+routing distribution with no added device work:
+
+```
+cap=1024  sync_calls=832  nosync_calls=528
+calls_with_overflow=832 (100.00%)  overflow_experts_total=8868
+max_rows_any_expert=4096
+```
+
+100% of sync-path calls, ~10.6 overflow experts each. Every one of those costs
+~6 host-issued launches (three cooperative grids that serialize) behind the
+fused launch.
+
+### Why: the rationale was computed at a 4096-token chunk; the server uses 8192
+
+`--max-prefill-tokens` defaults to **8192** (`serve_args.rs:694`) and neither the
+preset nor the serve script overrides it. The doc's mean is 80 rows/expert,
+which is 4096 x top_k 10 / 512 experts. At the real 8192 chunk the mean is
+**160**, so cap 1024 is **6.4x** the mean, not 12.8x — small enough that overflow
+is structural rather than a tail event. Nothing in the code couples the cap to
+`max_prefill_tokens`, so the cap silently became half-sized when the chunk
+default moved.
+
+### Measurement 2 — counterbalanced cap sweep
+
+1024 -> 2048 -> 4096 -> 4096 -> 2048 -> 1024, one variable
+(`ATLAS_EXL3_MOE_ROWS_PER_EXPERT` via the harness's new `MOE_ROWS`), 3 reps per
+length, tier telemetry on in every arm so each arm reports its own cap and
+overflow rate.
+
+| cap | prefill 4K | 8K | 11K | overflow experts | calls w/ overflow |
+|---|---:|---:|---:|---:|---:|
+| 1024 (shipped) | 522, 523 | 502, 504 | 493, 493 | 8868, 8867 | 100% |
+| 2048 | 566, 567 | 543, 546 | 524, 534 | 4075, 4082 | 98% |
+| 4096 | 680, 677 | 652, 649 | 627, 626 | 0, 0 | 0% |
+
+**+29% at 8K (503 -> 650), +30% at 4K, +27% at 11K.** The baseline returned to
+523/504/493 against its opening 522/502/493, so there is no drift. Each arm
+reproduced twice across independent boots within ~2%. The dose-response is
+monotonic and the telemetry supplies the mechanism independently of the
+throughput number: overflow experts 8868 -> 4075 -> 0 tracks prefill
+503 -> 545 -> 650.
+
+### Validation at cap 4096
+
+- **128K x 4 envelope**: boots OK at util 0.72 (the 315 MB of temp slabs fit).
+- **Agentic gate x3** (greedy, guards on): PASS 3/3 webserver_ok + followed
+  directions, 6/6 steps, 12.73 s/turn, zero errors / desyncs / CUDA faults.
+- **Decode**: C=1 27.4/28.2, C=2 23.9/23.7 aggregate — parity with the recorded
+  26.7-27.6 and 23.7-24.3. Prefill-tier change, decode untouched, as expected.
+
+### A second benefit: short batches stop syncing at all
+
+The agentic leg reported `nosync_calls=1728` vs `sync_calls=576` — three quarters
+of MoE calls take the `s <= cap` shortcut and never do the host readback. Raising
+the cap widens that shortcut, which is the TTFT hypothesis
+`exl3_moe_needs_host_sync`'s doc flagged as unmeasured. It also largely
+neutralises the "remove the expert_offsets host drain" item: the sync it targets
+stops firing for short batches on its own.
+
+### Not yet established
+
+- **Byte-parity.** Three agentic iterations passing is not parity. Experts move
+  from the chunked overflow path into the fused kernel — a different reduction —
+  and the 128 -> 1024 change carried an `exl3_native_parity` leg. Run echoprobe
+  at cap 1024 vs 4096 before treating outputs as identical.
+- **Skew headroom.** Zero overflow at 4096 is boundary-dependent:
+  `max_rows_any_expert` was exactly 4096 against an 8192 chunk, and 1988 on the
+  agentic leg. A more concentrated routing distribution would overflow again, so
+  record the result as the PAIR (chunk 8192, cap 4096) — quoting a cap without
+  its chunk is how the original rationale drifted.
+
+Records: `cap_sweep/` (per-arm prefill logs + tier-stats lines), `cap_validate/`
+(128K boot, agentic JSON, decode). Harness: `cap_sweep.sh`, `tier_probe.sh`,
+`run_exl3_single.sh` gained `MOE_ROWS`.
+
 ## Files
 
 - `exl3_decode_bench.cu` — standalone microbench (nvcc `-arch=sm_121a -O3 -std=c++17

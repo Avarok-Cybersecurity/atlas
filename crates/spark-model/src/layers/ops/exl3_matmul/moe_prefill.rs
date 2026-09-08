@@ -57,6 +57,8 @@
 //!    decodes at the same fp16 precision as the fused tier. The ONE host sync
 //!    per batch is the expert_offsets D2H of the host-sync tier (S > cap).
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use anyhow::{Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
@@ -197,6 +199,81 @@ pub struct Exl3MoePrefillStats {
 /// cooperative entries: no graph capture, one in-flight launch per locks
 /// buffer.
 #[allow(clippy::too_many_arguments)]
+// ── Overflow-tier telemetry (ATLAS_EXL3_MOE_TIER_STATS=1) ────────────────
+//
+// The question this answers: at the shipped cap (1024) does the overflow tier
+// ever fire? The cap is 12.8x the 80-row mean at a 4096-token chunk, and the
+// module docs call everything beyond it "routing pathology" — but that is
+// arithmetic, not measurement, and the tier costs ~6 host-issued launches per
+// overflow expert (three of them cooperative grids that serialize). If this
+// reports zero at serving shapes, the tier is dead code at runtime and the
+// host sync that exists to find it can go; if it reports non-trivial traffic,
+// it is a measured prefill lever.
+//
+// Default-off and counter-only (no allocation, no formatting) on the hot path;
+// the summary prints every SUMMARY_EVERY calls.
+static TIER_STATS_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn tier_stats_on() -> bool {
+    *TIER_STATS_ON
+        .get_or_init(|| std::env::var("ATLAS_EXL3_MOE_TIER_STATS").as_deref() == Ok("1"))
+}
+
+static TS_CALLS: AtomicU64 = AtomicU64::new(0);
+static TS_NOSYNC: AtomicU64 = AtomicU64::new(0);
+static TS_WITH_OVERFLOW: AtomicU64 = AtomicU64::new(0);
+static TS_OVERFLOW_EXPERTS: AtomicU64 = AtomicU64::new(0);
+static TS_MAX_ROWS: AtomicU64 = AtomicU64::new(0);
+// 64, not 512: one 8K prefill is only a few hundred MoE calls, so a coarse
+// threshold would report nothing for a short measurement run.
+const TS_SUMMARY_EVERY: u64 = 64;
+
+/// One sync-path call: `off` is the local expert-offset slice already read.
+fn tier_stats_record(num_local: usize, cap: usize, off: &[i32], n_overflow: usize) {
+    if !tier_stats_on() {
+        return;
+    }
+    let mut max_rows = 0i32;
+    for e in 0..num_local {
+        max_rows = max_rows.max(off[e + 1] - off[e]);
+    }
+    TS_MAX_ROWS.fetch_max(max_rows.max(0) as u64, Ordering::Relaxed);
+    if n_overflow > 0 {
+        TS_WITH_OVERFLOW.fetch_add(1, Ordering::Relaxed);
+        TS_OVERFLOW_EXPERTS.fetch_add(n_overflow as u64, Ordering::Relaxed);
+    }
+    let n = TS_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+    if n.is_multiple_of(TS_SUMMARY_EVERY) {
+        tier_stats_emit(cap);
+    }
+}
+
+/// One shortcut call (`s <= cap`): no readback, and no expert CAN overflow.
+fn tier_stats_record_nosync() {
+    if !tier_stats_on() {
+        return;
+    }
+    TS_NOSYNC.fetch_add(1, Ordering::Relaxed);
+}
+
+fn tier_stats_emit(cap: usize) {
+    let calls = TS_CALLS.load(Ordering::Relaxed);
+    let nosync = TS_NOSYNC.load(Ordering::Relaxed);
+    let with_ov = TS_WITH_OVERFLOW.load(Ordering::Relaxed);
+    let ov_experts = TS_OVERFLOW_EXPERTS.load(Ordering::Relaxed);
+    let max_rows = TS_MAX_ROWS.load(Ordering::Relaxed);
+    let pct = if calls > 0 {
+        with_ov as f64 * 100.0 / calls as f64
+    } else {
+        0.0
+    };
+    tracing::info!(
+        "EXL3 MoE tier stats: cap={cap} sync_calls={calls} nosync_calls={nosync} \
+         calls_with_overflow={with_ov} ({pct:.2}%) overflow_experts_total={ov_experts} \
+         max_rows_any_expert={max_rows}"
+    );
+}
+
 pub fn exl3_moe_fused(
     gpu: &dyn GpuBackend,
     tables: &[Exl3MoeProj; 3],
@@ -431,6 +508,9 @@ pub fn exl3_moe_prefill_routed(
             }
         }
         num_active = active;
+        tier_stats_record(num_local, cap, &off, overflow.len());
+    } else {
+        tier_stats_record_nosync();
     }
 
     // 4) Fused launch (skipped only when the host-sync tier saw no fusable
