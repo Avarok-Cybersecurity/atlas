@@ -753,6 +753,9 @@ impl TransformerModel {
             lm_head_nvfp4,
             lm_head_nvfp4_t,
             lm_head_fp8,
+            // ★ Before `layers` is moved: the veto is a fold over the layers
+            // and must be computed while they are still nameable here.
+            decode_graph_veto: layers.iter().any(|l| l.decode_graph_unsupported()),
             layers,
             buffers,
             lora: None,

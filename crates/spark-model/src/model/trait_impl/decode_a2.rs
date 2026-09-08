@@ -265,7 +265,7 @@ impl TransformerModel {
         // consults it (decode_a `layer_veto`); the batched path must too, or
         // capture hits 'PLE: un-prestaged forward inside CUDA graph capture'
         // on the first joint hc step.
-        let layer_veto = self.layers.iter().any(|l| l.decode_graph_unsupported());
+        let layer_veto = self.decode_graph_veto;
         let graph_key = if !ms_profile && !lora_eager && !layer_veto && multiseq_graphs_enabled() {
             self.batch_decode_graph_key(&*seqs, padded_n)
         } else {

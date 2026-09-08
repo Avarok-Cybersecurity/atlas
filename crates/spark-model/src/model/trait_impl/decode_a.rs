@@ -245,7 +245,7 @@ impl TransformerModel {
         // A layer that can never be captured (QSA's host top-k) vetoes
         // graphs for the whole model — a graph captured on the dense path
         // would silently replay WRONG attention once selection activates.
-        let layer_veto = self.layers.iter().any(|l| l.decode_graph_unsupported());
+        let layer_veto = self.decode_graph_veto;
         let use_graphs = (self.comm.is_none() || ep_graphs || gdn_graphs)
             && !self.profile
             && !self
