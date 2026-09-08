@@ -92,6 +92,15 @@ impl WeightDtype {
             safetensors::Dtype::F8_E4M3 => Ok(Self::FP8E4M3),
             safetensors::Dtype::F8_E8M0 => Ok(Self::FP8E8M0),
             safetensors::Dtype::I64 => Ok(Self::Int64),
+            // EXL3 sidecars. Added to `fast_weights::header` in 116fcb6d8 but
+            // NOT here, so anything reaching the non-fast loader with a trellis
+            // pack died on `Unsupported safetensors dtype: I16` — which is what
+            // the exl3_materialize sidecar tests hit. `.trellis` is I16, `.mcg`
+            // is I32, `.suh`/`.svh` are F16; the two paths must agree on the
+            // whole set or the loader that runs decides whether a pack loads.
+            safetensors::Dtype::F16 => Ok(Self::F16),
+            safetensors::Dtype::I16 => Ok(Self::UInt16),
+            safetensors::Dtype::I32 => Ok(Self::Int32),
             other => bail!("Unsupported safetensors dtype: {other:?}"),
         }
     }
