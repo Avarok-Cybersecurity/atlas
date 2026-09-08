@@ -54,6 +54,12 @@ pub struct Glm5NextWeightLoader;
 ///
 /// 🪤 GLM-5.3 nests the text stack under `model.language_model.`, not `model.`. And it does NOT
 /// use `mtp.0.*` — the MTP block is `layers.45`.
+/// `qualify` for callers outside this module (the MTP block builds layer
+/// `num_hidden_layers` and needs the same name shape).
+pub(super) fn qualify_at(layer: usize, leaf: &str) -> String {
+    qualify(layer, leaf)
+}
+
 fn qualify(layer: usize, leaf: &str) -> String {
     format!("model.language_model.layers.{layer}.{leaf}")
 }
