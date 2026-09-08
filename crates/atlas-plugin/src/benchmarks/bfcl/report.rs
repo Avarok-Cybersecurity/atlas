@@ -198,10 +198,7 @@ impl Bfcl {
         }
         // Transport failures, always emitted (0 is a measurement, not an
         // absence — an absent key cannot be told from a clean run).
-        m.insert(
-            "transport_errors".to_string(),
-            self.transport_errors as f64,
-        );
+        m.insert("transport_errors".to_string(), self.transport_errors as f64);
         // WHICH shard this record is, from the run itself rather than from the
         // registry. The registry binds an index to an id in a macro; a record
         // states what actually ran, which also catches a mislabelled or

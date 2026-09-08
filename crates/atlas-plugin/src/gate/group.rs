@@ -27,6 +27,41 @@
 //! Members may be signed by different boxes only because these are
 //! `Sensitivity::Correctness` gates, which is measured, not assumed — see
 //! [`super::agreement`].
+//!
+//! # ★ THE SPLIT IS NOT TRANSPARENT ON THE SHIPPED CONFIGURATION (#936)
+//!
+//! Everything below makes the ARITHMETIC of a group exact: the shards are a
+//! partition, the tallies sum as integers, the hierarchy is applied once. None
+//! of that makes the MEASUREMENT order-independent, and on the shipped serve it
+//! is not. Measured 2026-09-08 at one commit, one model, temp 0, seed 42:
+//!
+//! | configuration | whole (995) vs its own 4 shards |
+//! |---|---|
+//! | shipped | **12 samples disagree** |
+//! | `ATLAS_NO_TAIL_SPLIT=1` (snapshot producer off) | 4 |
+//! | `ATLAS_MARCONI_MIN_TOKENS=1e8` (consumer off) | 2 |
+//!
+//! The cause is cross-request **SSM snapshot reuse**. A snapshot saved by one
+//! request enters a shared, globally evicted pool (128 slots / 19392 MB on
+//! GB10); a later request restores from whichever eligible anchor happens to
+//! be there; restoring at a different depth gives numerically different SSM
+//! state; at a near-tied argmax the emitted token flips. Sharding changes
+//! eviction pressure because it changes run length, so it changes which anchor
+//! a sample gets.
+//!
+//! The engine is bit-reproducible for a fixed request ORDER — two runs of the
+//! same shard at the same commit were byte-identical — so this is entirely an
+//! ordering effect, not run-to-run noise.
+//!
+//! **What this means for anyone extending this module.** A group's aggregate is
+//! exact with respect to its members, and its members are not guaranteed to
+//! reproduce the serial run they stand in for. Do not read a passing group as
+//! evidence that sharding is transparent; that is a separate claim needing its
+//! own measurement, and #936 records it failing by 12 of 995 while the score
+//! cleared its floor by 0.04 and ran 0.76 low. Closing it means removing the
+//! cross-request state for KAT runs — `ssm_cache_slots = "0"` as a serve
+//! override is the first-class knob — and re-cutting the floors, which were cut
+//! with the cache on.
 
 /// Do the members' recorded shard identities form the partition the group
 /// claims to be?
@@ -45,17 +80,12 @@
 ///
 /// Requires: every member declares the same `count`, that count equals the
 /// number of members, and the indices are exactly `0..count` once each.
-pub fn partition_ok(
-    group: &'static str,
-    declared: &[(usize, usize)],
-) -> Result<(), GroupFault> {
+pub fn partition_ok(group: &'static str, declared: &[(usize, usize)]) -> Result<(), GroupFault> {
     let n = declared.len();
     if let Some(&(_, bad)) = declared.iter().find(|(_, c)| *c != n) {
         return Err(GroupFault::NotAPartition {
             group,
-            detail: format!(
-                "a member reports {bad} shards but the group has {n} members"
-            ),
+            detail: format!("a member reports {bad} shards but the group has {n} members"),
         });
     }
     let mut seen: Vec<usize> = declared.iter().map(|(i, _)| *i).collect();

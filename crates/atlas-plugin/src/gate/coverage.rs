@@ -90,7 +90,7 @@ pub const PERF_PATHS: [&str; 8] = [
 /// The four files here are the ones that decide a verdict. `GATE_MACHINERY`
 /// still covers the rest of the directory — record IO, telemetry rendering,
 /// the CODEOWNERS parser — where the exclusion's argument does hold.
-pub const BOUNDARY_FILES: [&str; 11] = [
+pub const BOUNDARY_FILES: [&str; 13] = [
     "crates/atlas-plugin/src/gate/coverage.rs",
     // `required_for` / `union` / `intent_only`: decides what the INTENT half
     // adds on top of the path-derived floor. Once intent can escalate a gate,
@@ -113,6 +113,18 @@ pub const BOUNDARY_FILES: [&str; 11] = [
     // `record_covers` / `invalidating_paths`: decides whether a record
     // stands against the changed paths.
     "crates/atlas-plugin/src/gate/check.rs",
+    // `invalidating_paths` itself, split out of `check.rs` when that file
+    // crossed the 500-LoC cap. It decides whether a record still stands, which
+    // is the same criterion as `check.rs` above — moving it did not make it
+    // less load-bearing. `every_verdict_symbol_is_defined_inside_the_boundary`
+    // caught this the moment the split landed, which is exactly the PR #420
+    // hole that test exists to prevent.
+    "crates/atlas-plugin/src/gate/check_paths.rs",
+    // `check_group`: turns a group's member records into ONE verdict, and
+    // enforces all-members-present, one-commit, a real shard partition and no
+    // transport-degraded member. Split out of `check.rs` for the same cap.
+    // Same criterion as `group.rs` below: it rules on record SETS.
+    "crates/atlas-plugin/src/gate/check_group.rs",
     // `check_record` / `compare`: decides whether a record's numbers pass.
     // Split out of check.rs at the 500-line boundary — the verdict logic
     // moved, so the boundary moves with it (a `hardening_tests` test walks
