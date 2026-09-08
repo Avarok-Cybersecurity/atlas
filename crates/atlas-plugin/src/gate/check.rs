@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use super::check_paths::invalidating_paths;
 use super::record::{GateBaseline, GateRecord, read_baseline, read_record};
 use super::{REQUIRED_GATES, gate_dir};
 
@@ -98,7 +99,7 @@ pub fn record_covers(
 /// route around is worse than a slower one. It never widens coverage: a path
 /// outside `kernels/`, an unattested target, or an uncomputable hash all leave
 /// the record invalidated exactly as before.
-fn record_still_stands(
+pub(super) fn record_still_stands(
     root: &Path,
     sha: &str,
     record: &GateRecord,
@@ -110,121 +111,6 @@ fn record_still_stands(
         Some(paths) if paths.is_empty() => true,
         Some(paths) => super::closure::excuses(root, &paths, &record.closure),
     }
-}
-
-/// The changed paths that invalidate `gate` between two commits.
-///
-/// `None` means the question could not be answered — git failed, or one of the
-/// two commits is not in this clone. Every such case is treated as "not
-/// covered" by the caller, keeping the fail-closed doctrine: a gate check that
-/// cannot see the trees must never read as a pass.
-///
-/// # This deliberately does NOT require ancestry
-///
-/// It used to. `merge-base --is-ancestor record_sha head` gated the diff, and
-/// that was wrong in a way that took main down: **Atlas squash-merges.** A
-/// record is written on a PR branch, against a commit on that branch; the
-/// squash lands a brand-new commit on main with a different sha and no parent
-/// link to the branch. Every record the PR paid GPU hours for stops being an
-/// ancestor of anything the instant it merges.
-///
-/// It did exactly that. `.benchmarks/*/2026-08-09-b0be4ba0e6.json` are five
-/// real passing records for #389 — `b0be4ba0e` being the branch's merge of
-/// #417 — and after #389 squash-landed as `dd2ac46d5` the gate reported
-/// "not an ancestor of this commit" for all five. Main went red, and every PR
-/// opened afterwards inherited it and demanded 5 fresh GPU legs to fix a
-/// typo.
-///
-/// Ancestry was never what the check needed. `git diff A B` compares TREES; it
-/// is defined for any two commits and needs no history relationship. The
-/// question a gate record answers is "was the perf-relevant code the same when
-/// this was measured?", and the diff answers exactly that. Ancestry only added
-/// an assumption about the shape of history — one this repo's merge strategy
-/// violates by design.
-///
-/// The obvious worry — "then a record from an unrelated branch could cover
-/// main" — is answered by the diff itself. An unrelated branch differs on the
-/// perf paths and is rejected. If it does NOT differ on them, it measured the
-/// same code, and the record is valid; that is the whole content-not-ancestry
-/// doctrine, and it is why an identical squash lands covered.
-///
-/// The one thing ancestry incidentally caught was a missing commit (a shallow
-/// clone). `git diff` fails outright there, so that case still returns `None`.
-/// The gate job checks out with `fetch-depth: 0`.
-///
-/// The diff is taken with NO pathspec and filtered in Rust. Two reasons, both
-/// practical: the filter is then unit-testable without a git fixture, and
-/// git's exclude-pathspec precedence rules are subtle enough that expressing
-/// per-gate exclusions in them would move the policy somewhere nobody reviews.
-pub fn invalidating_paths(
-    root: &Path,
-    head: &str,
-    record_sha: &str,
-    gate: &super::coverage::GateCoverage,
-) -> Option<Vec<String>> {
-    invalidating_paths_with(root, head, record_sha, gate, |path| {
-        super::amnesty::excused(root, head, path)
-    })
-}
-
-fn invalidating_paths_with(
-    root: &Path,
-    head: &str,
-    record_sha: &str,
-    gate: &super::coverage::GateCoverage,
-    mut is_excused: impl FnMut(&str) -> bool,
-) -> Option<Vec<String>> {
-    if head == record_sha {
-        return Some(Vec::new());
-    }
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["diff", "--name-only", record_sha, head])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .filter(|p| super::coverage::invalidates(gate, p))
-            // ★ A one-time content-pinned amnesty: a surviving path whose blob
-            // at `head` is exactly the grant's pinned content is excused,
-            // loudly. Content-pinned, so any later edit to the file changes
-            // the OID and invalidates as before. See `amnesty.rs` for the
-            // grant, the fail-closed rule, and the removal condition.
-            .filter(|p| {
-                if is_excused(p) {
-                    tracing::warn!(
-                        "amnesty: {p} would re-open {} but its content at {head} is the \
-                         pinned one-time grant; excused (see gate/amnesty.rs)",
-                        gate.id
-                    );
-                    return false;
-                }
-                true
-            })
-            .map(str::to_string)
-            .collect(),
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn invalidating_paths_with_amnesty(
-    root: &Path,
-    head: &str,
-    record_sha: &str,
-    gate: &super::coverage::GateCoverage,
-    table: &[super::amnesty::AmnestyEntry],
-) -> Option<Vec<String>> {
-    invalidating_paths_with(root, head, record_sha, gate, |path| {
-        super::amnesty::excused_by(root, head, path, table)
-    })
 }
 
 /// The full gate verdict for `sha`: every required bench, in order.
@@ -257,7 +143,7 @@ pub fn check_gates(root: &Path, sha: &str) -> BTreeMap<String, GateStatus> {
 /// Mismatches are SKIPPED, not failed: a stray file in a directory should leave
 /// the gate reading "no covering record" (which is true and actionable), not
 /// manufacture a hard failure from someone else's passing run.
-fn record_is_for(record: &GateRecord, benchmark_id: &str, path: &Path) -> bool {
+pub(super) fn record_is_for(record: &GateRecord, benchmark_id: &str, path: &Path) -> bool {
     if record.benchmark_id == benchmark_id {
         return true;
     }
@@ -332,7 +218,7 @@ pub(super) fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatu
             .iter()
             .any(|m| !records_newest_first(root, m).is_empty())
     {
-        return check_group(root, group, sha);
+        return super::check_group::check_group(root, group, sha);
     }
     let Some(gate) = super::coverage::find(benchmark_id) else {
         // Unreachable through `check_gates`, which iterates the coverage table
@@ -517,141 +403,6 @@ pub fn exit_code(statuses: &BTreeMap<String, GateStatus>) -> i32 {
 #[cfg(test)]
 #[path = "check_tests.rs"]
 mod check_tests;
-
-/// A benchmark group: every member must have a covering record at this commit,
-/// and their combined tallies must clear the GROUP's thresholds.
-///
-/// Reuses `records_newest_first`, `record_still_stands` and `check_record`
-/// unchanged — a group changes where the metrics come FROM, not how a gate is
-/// judged. What it adds is the all-or-nothing rule: three members of four is
-/// not 75% measured, it is an aggregate over a sample set the group's
-/// thresholds were never drawn against.
-fn check_group(root: &Path, group: &'static super::group::BenchmarkGroup, sha: &str) -> GateStatus {
-    use crate::benchmarks::bfcl::aggregate;
-
-    let baseline = match read_baseline(root, group.id) {
-        Ok(b) => b,
-        Err(e) => return GateStatus::Missing(format!("baseline unreadable: {e:#}")),
-    };
-
-    let mut shards: Vec<BTreeMap<String, aggregate::Tally>> = Vec::new();
-    let mut members: Vec<super::group::MemberRecord> = Vec::new();
-    let mut newest: Option<GateRecord> = None;
-    let mut missing: Vec<&str> = Vec::new();
-    let mut declared: Vec<(usize, usize)> = Vec::new();
-
-    for member in group.members {
-        // Same selection rule as a plain gate: the newest record that is FOR
-        // this benchmark, is the required subject, and still stands at `sha`.
-        let Some(member_gate) =
-            super::coverage::find(member).or_else(|| super::coverage::find(group.id))
-        else {
-            return GateStatus::Missing(format!("{member} has no coverage entry"));
-        };
-        let mut found: Option<GateRecord> = None;
-        for path in &records_newest_first(root, member) {
-            if let Ok(r) = read_record(path)
-                && record_is_for(&r, member, path)
-                && record_still_stands(root, sha, &r, member_gate)
-            {
-                found = Some(r);
-                break;
-            }
-        }
-        let Some(record) = found else {
-            missing.push(member);
-            continue;
-        };
-        // A member that ran but carries no per-subset tallies cannot be folded
-        // in. Counting it as an empty contribution would shrink the union and
-        // score the group over fewer samples than the draw.
-        let Some(t) = aggregate::tallies_from_metrics(&record.metrics) else {
-            return GateStatus::Missing(format!(
-                "{member} has a covering record but no per-subset tallies — it was \
-                 measured by a binary older than the shard split, so the group \
-                 cannot be aggregated. Re-run {member} at this commit."
-            ));
-        };
-        // A member that lost samples to transport failures scored them as
-        // "no call" — the correct answer for most irrelevance rows — so a
-        // degraded shard can score BETTER while measuring less. Refuse it
-        // rather than fold it in.
-        let errs = record
-            .metrics
-            .get("transport_errors")
-            .copied()
-            .unwrap_or(0.0);
-        if errs > 0.0 {
-            return GateStatus::Fail(vec![format!(
-                "{member} recorded {errs:.0} transport failures. Each was scored as \
-                 \"made no call\", which is the CORRECT answer on the irrelevance \
-                 subsets, so a degraded shard can raise the aggregate while \
-                 measuring less of the draw. Re-run {member}."
-            )]);
-        }
-        // What this record says it ran. Absent on a pre-shard binary, which
-        // cannot be folded in for the same reason a missing tally cannot.
-        let (Some(idx), Some(cnt)) = (
-            record.metrics.get("shard.index").copied(),
-            record.metrics.get("shard.count").copied(),
-        ) else {
-            return GateStatus::Missing(format!(
-                "{member} has a covering record that does not say which shard it \
-                 ran — it was measured by a binary older than the shard identity \
-                 metric. Re-run {member} at this commit."
-            ));
-        };
-        declared.push((idx as usize, cnt as usize));
-        members.push(super::group::MemberRecord {
-            id: (*member).to_string(),
-            git_sha: record.git_sha.clone(),
-        });
-        shards.push(t);
-        newest = Some(record);
-    }
-
-    if !missing.is_empty() {
-        return GateStatus::Missing(
-            super::group::GroupFault::Missing {
-                group: group.id,
-                missing,
-            }
-            .to_string(),
-        );
-    }
-    if let Err(fault) = super::group::composition_ok(group, &members) {
-        return GateStatus::Fail(vec![fault.to_string()]);
-    }
-    // The members exist and agree on the commit; do they actually cover the
-    // draw exactly once between them?
-    if let Err(fault) = super::group::partition_ok(group.id, &declared) {
-        return GateStatus::Fail(vec![fault.to_string()]);
-    }
-
-    let agg = aggregate::aggregate(&aggregate::union(&shards));
-    let Some(mut record) = newest else {
-        return GateStatus::Missing(format!("{} has no members", group.id));
-    };
-    // Judge the AGGREGATE, carrying one member's provenance (checkpoint, serve
-    // overrides, hardware) — composition_ok has already established they agree
-    // on the commit, and `check_record` needs a record shape, not a new one.
-    record.benchmark_id = group.id.to_string();
-    record
-        .metrics
-        .insert("overall_accuracy".into(), agg.overall_accuracy);
-    record.metrics.insert(
-        "normalized_single_turn_score".into(),
-        agg.normalized_single_turn_score,
-    );
-    record
-        .metrics
-        .insert("samples".into(), agg.total_samples as f64);
-
-    match super::scoring::check_record(&record, &baseline) {
-        None => GateStatus::Pass,
-        Some(breaches) => GateStatus::Fail(breaches),
-    }
-}
 
 /// Is there a covering record under this id itself? Used to decide whether a
 /// group still has a whole-draw measurement, before falling back to its shards.

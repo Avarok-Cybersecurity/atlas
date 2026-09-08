@@ -26,6 +26,8 @@ pub mod bench;
 pub mod card;
 pub mod check;
 mod check_fmt;
+mod check_group;
+pub mod check_paths;
 pub mod closure;
 pub mod codeowners;
 pub mod coverage;

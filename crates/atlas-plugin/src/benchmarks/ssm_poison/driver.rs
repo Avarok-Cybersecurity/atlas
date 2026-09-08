@@ -19,24 +19,19 @@
 //! restore bug. Runs 0–7 of the agentic gate accumulated checkpoints for
 //! their shared prompt prefix; runs 8–9 then RESTORED a poisoned recurrent
 //! state and degenerated to early-EOS (3–5 turns, empty sandbox). This probe
-//! replays a 4-turn script 12 times against one server with the flagship
-//! recipe's `enable_prefix_caching: true` — the exact path that was poisoned
-//! — and fails on the first replay that returns different bytes. The recipe
-//! serves with prefix caching ON deliberately: turning it off would make the
-//! gate blind to the class of bug it exists to police.
+//! replays a 4-turn script 12 times with the flagship recipe's
+//! `enable_prefix_caching: true` — the exact path that was poisoned — and
+//! fails on the first replay returning different bytes. Caching is ON
+//! deliberately: off, the gate is blind to the bug class it polices.
 //!
 //! # Round structure (one `next()` per round)
-//!
 //! 0. probe — reachability.
-//! 1. baseline — round 0 replays the script once; its transcripts are the
-//!    reference every later round is compared to.
-//! 2. replays — rounds 1..=N each replay the script from scratch and compare
-//!    turn-by-turn against the reference.
+//! 1. baseline — round 0 replays once; its transcripts are the reference.
+//! 2. replays — rounds 1..=N replay from scratch and compare turn-by-turn.
 //! 3. score — verdict from the round verdicts.
 //!
 //! Transport failures become [`super::compare::RoundVerdict::Unmeasured`]
-//! rather than aborting the run: a dropped connection costs one round, not
-//! the eleven that already measured.
+//! rather than aborting: a dropped connection costs one round, not eleven.
 
 use crate::hardware::Sensitivity;
 use std::future::Future;
@@ -204,12 +199,9 @@ impl SsmPoison {
         Ok(transcripts)
     }
 
-    /// Issue the same target turn along each predecessor path.
-    ///
-    /// Every path shares the long prefix and the ack turn, so all three land as
-    /// prefix restores; they differ ONLY in whether a tool-calling turn ran in
-    /// between. That difference is precisely the variable a sharded KAT run
-    /// changes, and the target's calls must not notice it.
+    /// Issue the same target turn along each predecessor path. The paths differ
+    /// ONLY in whether a tool-calling turn ran in between — the variable a
+    /// sharded KAT run changes. See `toolcall.rs` for the full rationale.
     async fn run_tool_paths(&self) -> Result<Vec<PathResult>> {
         let handle = self.handle()?.clone();
         let mut out = Vec::with_capacity(Path::ALL.len());
@@ -457,15 +449,16 @@ impl Benchmark for SsmPoison {
             }
             Phase::Score => {
                 let (s, v) = self.scored();
-                // ★ A DETECTOR THAT ONLY REPORTS IS NOT A GATE. The replay
-                // verdict and the tool-path verdict are independent findings,
-                // and either alone must fail the run: a stack could be
-                // byte-invariant on twelve replays of one script and still
-                // answer a tool prompt differently depending on what preceded
-                // it, which is exactly what shipped.
+                // ★ A DETECTOR THAT ONLY REPORTS IS NOT A GATE. Replay and
+                // tool-path are independent findings; either alone must fail.
                 let v = if let Some(d) = self.tool_divergences.first() {
                     Verdict::fail(format!(
-                        "TOOL CALLS DEPEND ON HISTORY: {} — the same request answered                          differently depending only on what preceded it, so a known-answer                          score is not reproducible under reordering",
+                        concat!(
+                            "TOOL CALLS DEPEND ON HISTORY: {} — the same request ",
+                            "answered differently depending only on what preceded ",
+                            "it, so a known-answer score is not reproducible under ",
+                            "reordering"
+                        ),
                         d.describe()
                     ))
                 } else {
