@@ -2,6 +2,33 @@
 
 //! Model-side kernel-path levers, resolved once and then carried.
 //!
+//! # ★ THE ENVIRONMENT IS READ EXACTLY ONCE PER PROCESS. KEEP IT THAT WAY.
+//!
+//! Every `ATLAS_*` variable below is a process constant: nothing mutates the
+//! environment after start (the runtime `set_var` that once could was
+//! deliberately removed — see `main_modules/serve_load.rs` and `config.rs`).
+//! So resolving them more than once is pure waste, and on a hot path it is
+//! worse than waste:
+//!
+//! * `std::env::var` allocates a `String` per read, and
+//! * it takes the PROCESS-WIDE environment lock, so concurrent readers
+//!   SERIALISE against each other.
+//!
+//! MEASURED on GB10: one resolve of the ~30 variables here costs 0.57 us
+//! single-threaded but **4.00 us at 8 threads and 5.76 us at 16** — the cost
+//! grows with concurrency, which makes it invisible to any single-stream
+//! benchmark. `from_env()` was called **32,513 times in one
+//! `concurrency-sweep`** (48 layers x ~680 prefills) while its own doc claimed
+//! it was "called once, when the model is built".
+//!
+//! **The rule for this module and anything like it:** read the environment in
+//! ONE place, at ONE time, and pass the resolved value down. Use
+//! [`ModelLevers::get`] for the process-wide copy; take `levers` from the
+//! `ForwardContext` or the model when you already have one. If you find
+//! yourself calling anything named `*_from_env`, `resolve_*` or `*_env()`
+//! inside a function that runs per token, per layer, per forward pass or per
+//! request, that is the bug this note exists to prevent.
+//!
 //! The second of the two lever categories on [`crate::layer::ForwardContext`]:
 //!
 //! * [`super::GemmDispatch`] — which GEMM implementation each projection takes.
@@ -206,6 +233,73 @@ impl ModelLevers {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// ★ THE ENVIRONMENT IS READ ONCE. This test is the enforcement; the
+    /// module doc is only the explanation.
+    ///
+    /// `from_env()` reads ~30 variables, each allocating a `String` and each
+    /// taking the process-wide environment lock — 0.57 us per resolve
+    /// single-threaded, 4.00 us at 8 threads, because the lock serialises. It
+    /// was called 32,513 times in one `concurrency-sweep` from a
+    /// per-layer-per-prefill site while its doc claimed "called once".
+    ///
+    /// Only two callers are legitimate: `ModelLevers::get`, which caches it in
+    /// a `OnceLock`, and the model build, which needs an owned mutable copy to
+    /// overwrite `max_decode_seqs`. Everything else must use `get()` or take
+    /// `levers` from the context it already has.
+    ///
+    /// A source-level check because the property is "who may call this", which
+    /// no runtime assertion can observe.
+    #[test]
+    fn from_env_is_called_only_where_it_is_allowed() {
+        const ALLOWED: [&str; 2] = [
+            // caches the result in a OnceLock — this IS the once.
+            "crates/spark-model/src/layers/ops/model_levers.rs",
+            // needs an owned mutable copy; takes it from `*get()`.
+            "crates/spark-model/src/model/impl_a1.rs",
+        ];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("workspace root");
+        let mut offenders = Vec::new();
+        let mut stack = vec![root.join("crates")];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|n| n == "target") {
+                        continue;
+                    }
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let Ok(text) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    if !text.contains("ModelLevers::from_env()") {
+                        continue;
+                    }
+                    let rel = path
+                        .strip_prefix(root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    if !ALLOWED.contains(&rel.as_str()) {
+                        offenders.push(rel);
+                    }
+                }
+            }
+        }
+        offenders.sort();
+        assert!(
+            offenders.is_empty(),
+            "ModelLevers::from_env() re-reads ~30 env vars under a global lock. \
+             These call it instead of the once-resolved ModelLevers::get(): {offenders:?}"
+        );
+    }
 
     fn resolve(values: &[(&str, &str)]) -> ModelLevers {
         let values: HashMap<_, _> = values.iter().copied().collect();
