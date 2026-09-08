@@ -889,9 +889,43 @@ impl Qwen3AttentionLayer {
                 .copy_d2d_async(hidden, normed2, num_tokens * h * 2, stream)?;
         }
 
-        self.ffn
-            .forward_prefill(normed2, num_tokens, ctx, stream)
-            .map_err(|e| anyhow::anyhow!("ffn.forward_prefill (HC) failed: {e}"))?;
+        // Small-M FFN (see the twin in qwen3_ssm/trait_prefill_hc.rs): at K=2/3
+        // rows this body is a speculative verify. The grouped-GEMM MoE streams
+        // every expert regardless of row count; the fused K=2/K=3 kernels do the
+        // same rows at decode cost into the same moe_output().
+        let small_m = {
+            static SMALL_M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *SMALL_M.get_or_init(|| {
+                std::env::var("ATLAS_QWEN4EXP_HC_SMALL_M_FFN").as_deref() != Ok("0")
+            })
+        };
+        // The K=1 arm carries the weight: `decode_verify_hc` splits verify into
+        // row-0-then-drafts, so at gamma=1 both calls arrive as a single row.
+        match num_tokens {
+            1 if small_m => {
+                let out = self
+                    .ffn
+                    .forward(normed2, ctx, stream)
+                    .map_err(|e| anyhow::anyhow!("ffn.forward (HC, K=1) failed: {e}"))?;
+                anyhow::ensure!(
+                    out == ctx.buffers.moe_output(),
+                    "small-M FFN: single-token MoE returned a buffer other than \
+                     moe_output(), which the hc post-site reads unconditionally"
+                );
+            }
+            2 if small_m => self
+                .ffn
+                .forward_k2(normed2, ctx, stream)
+                .map_err(|e| anyhow::anyhow!("ffn.forward_k2 (HC) failed: {e}"))?,
+            3 if small_m => self
+                .ffn
+                .forward_k3(normed2, ctx, stream)
+                .map_err(|e| anyhow::anyhow!("ffn.forward_k3 (HC) failed: {e}"))?,
+            _ => self
+                .ffn
+                .forward_prefill(normed2, num_tokens, ctx, stream)
+                .map_err(|e| anyhow::anyhow!("ffn.forward_prefill (HC) failed: {e}"))?,
+        }
 
         let dense_out = ctx.buffers.moe_output();
 

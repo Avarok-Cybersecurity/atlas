@@ -106,10 +106,10 @@ pub(crate) struct SsmSnapshotPool {
     /// — a plain byte copy would overrun it. Zero when the module is absent.
     pub(super) h_f32_to_f16_k: KernelHandle,
     /// Reusable page-locked staging blob shared by the tier spill/fault-in
-    /// paths. See [`super::ssm_spill_staging::SpillStaging`] — a fresh
+    /// paths. See [`super::pinned_host_staging::PinnedHostStaging`] — a fresh
     /// `vec![0u8; 66_846_720]` per event was part of the measured ~400 ms
     /// spill. Freed from `TransformerModel::drop` via `free_staging`.
-    pub(super) spill_staging: super::ssm_spill_staging::SpillStaging,
+    pub(super) spill_staging: super::pinned_host_staging::PinnedHostStaging,
 }
 
 impl SsmSnapshotPool {

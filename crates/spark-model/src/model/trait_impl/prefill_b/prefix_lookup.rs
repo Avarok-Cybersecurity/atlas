@@ -153,16 +153,27 @@ impl TransformerModel {
             // original values (a non-bit-equal rewrite would poison them).
             // Phase 1b spill-tier fault-in: fold a resident hit with a
             // faulted-back spilled anchor; see `ssm_fault_in::eff_ssm_snapshot`.
-            let (eff_snapshot, eff_snapshot_tokens) =
-                self.eff_ssm_snapshot(&prefix_match, seq.session_hash, stream);
+            // Full-prompt hit on the exact leaf: that anchor is DECLINED below
+            // (`bypass_exact` / `exact_without_hidden`), so the resolver first
+            // re-anchors on the deepest snapshot strictly below the prompt and
+            // this becomes an ordinary intermediate hit (`snap_tok < matched ==
+            // total`) instead of a full recompute. See `prefix_reanchor.rs`.
+            let (eff_snapshot, eff_snapshot_tokens) = self.prefill_b_resolve_ssm_anchor(
+                tokens,
+                &mut prefix_match,
+                total,
+                seq.session_hash,
+                seq.adapter_id,
+                stream,
+            )?;
 
             let mut skip = if let Some(snap_id) = eff_snapshot {
                 let snap_tok = eff_snapshot_tokens;
                 // Exact full-prompt hit on a hiddenless snapshot (finish
                 // leaves never stash a hidden): the exact-snap fixup cannot
-                // produce the first token's logits, so fall through to the
-                // no-snapshot full-recompute path. Only affects identical
-                // retried prompts; multi-turn warm hits have matched < total.
+                // produce the first token's logits. Reached only when the
+                // resolver above found no lower anchor to re-anchor on; then
+                // fall through to the no-snapshot full-recompute path.
                 let exact_without_hidden = snap_tok == matched
                     && matched == total
                     && !self.ssm_snapshots.has_hidden(snap_id);

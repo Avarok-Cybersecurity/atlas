@@ -43,13 +43,30 @@ impl AtlasCudaBackend {
             .insert(ptr.0, AllocRecord { bytes, site });
     }
 
-    pub(crate) fn forget_alloc(&self, ptr: crate::gpu::DevicePtr) {
-        self.live_allocs.lock().remove(&ptr.0);
+    /// Drop `ptr` from the ledger, returning the size it was recorded with.
+    ///
+    /// `None` means the pointer was not on the ledger — a double free, or an
+    /// allocation that bypassed this allocator (CUTLASS and FlashInfer call
+    /// `cuMemAlloc_v2` directly). Callers use the size only for tracing, so
+    /// `None` is not an error.
+    pub(crate) fn forget_alloc(&self, ptr: crate::gpu::DevicePtr) -> Option<usize> {
+        self.live_allocs.lock().remove(&ptr.0).map(|r| r.bytes)
     }
 
     /// Total live device bytes this backend has allocated and not freed.
     pub fn live_bytes(&self) -> usize {
         self.live_allocs.lock().values().map(|r| r.bytes).sum()
+    }
+
+    /// Live allocation count and total bytes, for the alloc/free trail: the
+    /// per-event size alone cannot distinguish churn from a leak (a 96 MB
+    /// buffer allocated and freed every step looks identical to one that is
+    /// never released) — the running total climbing across steps is the
+    /// leak signal. RSS does not show CUDA allocations on unified memory and
+    /// `nvidia-smi` reports N/A there, so this is the only view.
+    pub fn live_count_bytes(&self) -> (usize, usize) {
+        let g = self.live_allocs.lock();
+        (g.len(), g.values().map(|r| r.bytes).sum())
     }
 
     /// Human-readable attribution of live device memory, biggest site first.

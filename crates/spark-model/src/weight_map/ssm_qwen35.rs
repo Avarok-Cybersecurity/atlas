@@ -41,9 +41,26 @@ pub(crate) fn load_ssm_qwen35(
     store: &WeightStore,
     layer_prefix: &str,
     gpu: &dyn GpuBackend,
+    variant: Nvfp4Variant,
+) -> Result<SsmWeightsQwen35> {
+    load_ssm_qwen35_parts(store, layer_prefix, gpu, variant, true, true)
+}
+
+/// [`load_ssm_qwen35`] with the linear projections optional: `load_in_proj`
+/// covers `in_proj_qkv` / `in_proj_z`, `load_out_proj` covers `out_proj`.
+/// `false` leaves the projection as a NULL [`DenseWeight`] — the native-EXL3
+/// GDN arm (`ATLAS_EXL3_NATIVE_DENSE=1`) serves it from the packed trellis
+/// and must not read a `.weight` that was never materialized; the BA/conv/
+/// gate tensors still load exactly as before.
+pub(crate) fn load_ssm_qwen35_parts(
+    store: &WeightStore,
+    layer_prefix: &str,
+    gpu: &dyn GpuBackend,
     // Kept for loader-dispatch signature parity; `dense_auto` routes by the
     // projection's actual on-disk dtype rather than the model-wide variant.
     _variant: Nvfp4Variant,
+    load_in_proj: bool,
+    load_out_proj: bool,
 ) -> Result<SsmWeightsQwen35> {
     let p = format!("{layer_prefix}.linear_attn");
 
@@ -63,10 +80,20 @@ pub(crate) fn load_ssm_qwen35(
             dense_auto(store, &format!("{prefix}.weight"), gpu)
         }
     };
+    // The natively-served linears (skipped): NULL, the FP8-native precedent.
+    let linear = |prefix: &str, load: bool| -> Result<DenseWeight> {
+        if load {
+            load_proj(prefix)
+        } else {
+            Ok(DenseWeight {
+                weight: DevicePtr::NULL,
+            })
+        }
+    };
 
     Ok(SsmWeightsQwen35 {
-        in_proj_qkv: load_proj(&format!("{p}.in_proj_qkv"))?,
-        in_proj_z: load_proj(&format!("{p}.in_proj_z"))?,
+        in_proj_qkv: linear(&format!("{p}.in_proj_qkv"), load_in_proj)?,
+        in_proj_z: linear(&format!("{p}.in_proj_z"), load_in_proj)?,
         in_proj_a: load_proj(&format!("{p}.in_proj_a"))?,
         in_proj_b: load_proj(&format!("{p}.in_proj_b"))?,
         conv1d: dense_auto(store, &format!("{p}.conv1d.weight"), gpu)?,
@@ -76,7 +103,7 @@ pub(crate) fn load_ssm_qwen35(
         dt_bias: dense_keep_f32(store, &format!("{p}.dt_bias"), gpu)?,
         // norm.weight is safe as BF16 (no recurrent amplification)
         norm: dense_f32_safe(store, &format!("{p}.norm.weight"), gpu)?,
-        out_proj: load_proj(&format!("{p}.out_proj"))?,
+        out_proj: linear(&format!("{p}.out_proj"), load_out_proj)?,
     })
 }
 
@@ -84,6 +111,16 @@ pub(crate) fn load_ssm_qwen35(
 ///
 /// Under EP (ep_world_size > 1), only local experts are loaded from the store.
 /// Remote experts get NULL pointers — kernels detect NULL and write zero output.
+/// `force_all_experts`: when true, EVERY routed expert is loaded regardless of
+/// `is_local_expert` — the draft (MTP) module's own MoE, which is REPLICATED on
+/// every EP rank rather than sharded. Its `mtp.*` tensors are not sharded by the
+/// upload, and the draft forward has no all-reduce, so a rank>0 draft would
+/// otherwise route into NULL experts; that mismatch is why MTP was refused under
+/// `ep_world_size > 1`. Replication costs ~1.3 GB/rank (the draft MoE) against
+/// the ~20 GB/rank EP=2 saves, and keeps the latency-critical draft path free of
+/// a collective. Ignored when `skip_routed_experts` is set (the native-EXL3 arm
+/// serves those from packed trellis instead — see `load_moe_qwen4exp_exl3`).
+///
 /// `skip_routed_experts`: when true, routed experts get NULL weights (saves memory
 /// when native FP8 MoE dispatch handles them). Shared expert is always loaded.
 pub(crate) fn load_moe_qwen35(
@@ -97,6 +134,7 @@ pub(crate) fn load_moe_qwen35(
     quantize_k: spark_runtime::gpu::KernelHandle,
     stream: u64,
     skip_routed_experts: bool,
+    force_all_experts: bool,
 ) -> Result<MoeWeights> {
     let p = format!("{layer_prefix}.mlp");
 
@@ -265,7 +303,7 @@ pub(crate) fn load_moe_qwen35(
 
     let mut experts = Vec::with_capacity(num_experts);
     for e in 0..num_experts {
-        if skip_routed_experts || !config.is_local_expert(e) {
+        if skip_routed_experts || !(force_all_experts || config.is_local_expert(e)) {
             experts.push(ExpertWeight::null());
         } else if is_fused {
             experts.push(load_expert_fused(e)?);
@@ -283,10 +321,10 @@ pub(crate) fn load_moe_qwen35(
     // copies remain resident.
     if is_fused {
         if let Ok(w) = store.get(&fused_gate_up_key) {
-            let _ = gpu.free(w.ptr);
+            let _ = store.release_ptr(gpu, w.ptr);
         }
         if let Ok(w) = store.get(&fused_down_key) {
-            let _ = gpu.free(w.ptr);
+            let _ = store.release_ptr(gpu, w.ptr);
         }
     }
 

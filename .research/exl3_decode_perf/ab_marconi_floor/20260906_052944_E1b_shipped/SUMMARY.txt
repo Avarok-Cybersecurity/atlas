@@ -1,0 +1,83 @@
+== SUMMARY E1b/shipped  RUN_DIR=/home/ms/atlas/.claude/worktrees/wf_a8fa8242-651-8/.research/exl3_decode_perf/runs/20260906_052944_E1b_shipped
+date=2026-09-06T05:29:44-04:00 host=dgx-00 script=ab_concurrent-prefill-ttft.sh arm=shipped port=8899
+repo=/home/ms/atlas/.claude/worktrees/wf_a8fa8242-651-8
+git_head=58acbb52c2408d4b1a1a380e591bde40ee33c886 branch=perf/concurrent-prefill-ttft
+git_dirty_files=12
+binary=/home/ms/atlas/.claude/worktrees/wf_a8fa8242-651-8/target/release/spark sha256=b4ea6fb127f07f48 mtime=2026-09-06T04:17:35-04:00
+checkpoint=/tank/exl3-ckpt/qwen38-flash-next-4.05bpw
+preset=qwen3.8-flash-next-exl3 (flags/env from kernels/gb10/qwen3.8-flash-next/MODEL.toml; operator overrides below)
+extra_serve_args=
+caller_env:
+  ATLAS_MARCONI_MIN_TOKENS=64
+  ATLAS_MTP_ACCEPT_DEBUG=1
+  ATLAS_NO_TUI=1
+-- arm proof
+== arm proof for E1b/shipped
+2026-09-06T09:29:44.341464Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_DFLASH_SPEC_THINK=1
+2026-09-06T09:29:44.341526Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=512
+2026-09-06T09:29:44.341527Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_MOE_ROWS_PER_EXPERT=1024
+2026-09-06T09:29:44.341528Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_NATIVE=1
+2026-09-06T09:29:44.341529Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_NATIVE_DENSE=1
+2026-09-06T09:29:44.341530Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_NATIVE_MOE=1
+2026-09-06T09:29:44.341531Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_INTHINK_TOOL_LEAK_OPENERS=0
+2026-09-06T09:29:44.341532Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_MTP_MAX_SEQS=4
+2026-09-06T09:29:44.341533Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_NO_THINKENDED_GPU_ARGMAX=1
+2026-09-06T09:29:44.341534Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_NO_VERIFY_ROW_FFN=1
+2026-09-06T09:29:44.341534Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_PLE_CACHE_SLOTS=4194304
+2026-09-06T09:29:44.341535Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_PLE_MAX_TOKENS=9216
+2026-09-06T09:29:44.341536Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_QSA_MAX_TOKENS=131072
+2026-09-06T09:29:44.341537Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_QWEN4EXP_MTP=1
+2026-09-06T09:29:44.341538Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_QWEN4EXP_MTP_HC_BATCHED=1
+2026-09-06T09:29:44.341539Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_QWEN4EXP_MTP_VERIFY=1
+2026-09-06T09:29:44.341541Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_VERIFY_EXL3_ROW_ROUTER=1
+2026-09-06T09:29:44.341542Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_VERIFY_EXL3_STABLE_GRID=1
+2026-09-06T09:30:34.523113Z  INFO spark::scheduler::phase_continue_prefills::contention: Concurrent prefill: shortest-remaining-first head-only for hc models [armed] (this model: hc, applies), contention chunk cap [off] (ATLAS_PREFILL_CONTENTION_CHUNK=<n> arms), SRF aging 5000 ms (aged streams oldes
+2026-09-06T09:30:34.533004Z  INFO spark_model::model::trait_impl::prefill_b::forward_layers: Prefill token ids for PLE: host slice (ATLAS_NO_PREFILL_HOST_TOKEN_IDS restores the per-pass D2H)
+2026-09-06T09:30:34.533034Z  INFO spark_model::model::gdn_replay: Marconi min-tokens floor: 64 tokens [env] (ATLAS_MARCONI_MIN_TOKENS overrides; anchors below are declined)
+2026-09-06T09:30:34.533037Z  INFO spark_model::model::gdn_replay: GDN prefill: token-sequential recurrence forced for ALL prefill passes (prefix caching active on a hybrid-SSM model), so a warm Marconi replay recomputes exactly what the cold pass cached. ATLAS_GDN_FLA_UNDER_PREFIX_CACHE=1 restores t
+2026-09-06T09:30:34.533848Z  INFO spark_model::layers::qwen3_ssm::trait_prefill_recur: GDN prefill: REGISTER-RESIDENT warm-replay path ACTIVE (default; H in regs, no smem-H)
+-- C=1 greedy sample sha256: b6e9fa3cb5590a1b (779 bytes)
+-- conc_128.txt
+CELL {"label": "E1b-shipped", "C": 1, "rep": 0, "streams_ok": 1, "errors": [], "prompt_tokens": [168], "completion_tokens": [128], "finish": ["length"], "per_stream_tok_s": [27.14], "median_per_stream_tok_s": 27.14, "aggregate_decode_tok_s": 27.35, "aggregate_wall_tok_s": 26.07, "ttft_s": [0.22], "max_gap_s": [0.084], "cell_wall_s": 4.9, "aborted": false, "primed": true, "min_avail_gb": 23.3, "max
+CELL {"label": "E1b-shipped", "C": 1, "rep": 1, "streams_ok": 1, "errors": [], "prompt_tokens": [167], "completion_tokens": [128], "finish": ["length"], "per_stream_tok_s": [26.69], "median_per_stream_tok_s": 26.69, "aggregate_decode_tok_s": 26.9, "aggregate_wall_tok_s": 25.67, "ttft_s": [0.22], "max_gap_s": [0.085], "cell_wall_s": 5.0, "aborted": false, "primed": true, "min_avail_gb": 23.2, "max_
+CELL {"label": "E1b-shipped", "C": 1, "rep": 2, "streams_ok": 1, "errors": [], "prompt_tokens": [167], "completion_tokens": [128], "finish": ["length"], "per_stream_tok_s": [29.0], "median_per_stream_tok_s": 29.0, "aggregate_decode_tok_s": 29.23, "aggregate_wall_tok_s": 27.78, "ttft_s": [0.22], "max_gap_s": [0.16], "cell_wall_s": 4.6, "aborted": false, "primed": true, "min_avail_gb": 23.3, "max_sw
+CELL {"label": "E1b-shipped", "C": 2, "rep": 0, "streams_ok": 2, "errors": [], "prompt_tokens": [166, 169], "completion_tokens": [128, 128], "finish": ["length", "length"], "per_stream_tok_s": [14.83, 14.76], "median_per_stream_tok_s": 14.8, "aggregate_decode_tok_s": 29.03, "aggregate_wall_tok_s": 28.07, "ttft_s": [0.21, 0.43], "max_gap_s": [0.26, 0.166], "cell_wall_s": 9.1, "aborted": false, "pri
+CELL {"label": "E1b-shipped", "C": 2, "rep": 1, "streams_ok": 2, "errors": [], "prompt_tokens": [169, 170], "completion_tokens": [128, 128], "finish": ["length", "length"], "per_stream_tok_s": [14.7, 14.33], "median_per_stream_tok_s": 14.51, "aggregate_decode_tok_s": 28.03, "aggregate_wall_tok_s": 27.34, "ttft_s": [0.22, 0.49], "max_gap_s": [0.355, 0.247], "cell_wall_s": 9.4, "aborted": false, "pr
+CELL {"label": "E1b-shipped", "C": 2, "rep": 2, "streams_ok": 2, "errors": [], "prompt_tokens": [168, 168], "completion_tokens": [128, 128], "finish": ["length", "length"], "per_stream_tok_s": [15.29, 14.88], "median_per_stream_tok_s": 15.08, "aggregate_decode_tok_s": 29.09, "aggregate_wall_tok_s": 28.35, "ttft_s": [0.22, 0.48], "max_gap_s": [0.352, 0.244], "cell_wall_s": 9.0, "aborted": false, "p
+CELL {"label": "E1b-shipped", "C": 4, "rep": 0, "streams_ok": 4, "errors": [], "prompt_tokens": [168, 170, 167, 167], "completion_tokens": [128, 128, 128, 128], "finish": ["length", "length", "length", "length"], "per_stream_tok_s": [7.96, 7.56, 7.55, 7.3], "median_per_stream_tok_s": 7.55, "aggregate_decode_tok_s": 28.32, "aggregate_wall_tok_s": 27.97, "ttft_s": [0.22, 0.49, 0.7, 0.91], "max_gap_s
+CELL {"label": "E1b-shipped", "C": 4, "rep": 1, "streams_ok": 4, "errors": [], "prompt_tokens": [168, 167, 167, 168], "completion_tokens": [128, 128, 128, 128], "finish": ["length", "length", "length", "length"], "per_stream_tok_s": [7.94, 7.72, 7.52, 7.34], "median_per_stream_tok_s": 7.62, "aggregate_decode_tok_s": 28.42, "aggregate_wall_tok_s": 28.07, "ttft_s": [0.7, 0.49, 0.22, 0.92], "max_gap_
+CELL {"label": "E1b-shipped", "C": 4, "rep": 2, "streams_ok": 4, "errors": [], "prompt_tokens": [166, 168, 168, 167], "completion_tokens": [128, 128, 128, 128], "finish": ["length", "length", "length", "length"], "per_stream_tok_s": [7.78, 7.88, 7.74, 7.37], "median_per_stream_tok_s": 7.76, "aggregate_decode_tok_s": 28.56, "aggregate_wall_tok_s": 28.21, "ttft_s": [0.21, 0.48, 0.69, 0.91], "max_gap
+| arm | C | rep | ok | per-stream decode tok/s | median | aggregate decode tok/s | aggregate incl. TTFT | TTFT s | max gap s | prompt tok | min avail GB | swap delta GB |
+| E1b-shipped primed | 1 | 0 | 1/1 | [27.14] | 27.14 | 27.35 | 26.07 | [0.22] | [0.084] | [168] | 23.3 | 0.0 |
+| E1b-shipped primed | 1 | 1 | 1/1 | [26.69] | 26.69 | 26.9 | 25.67 | [0.22] | [0.085] | [167] | 23.2 | 0.0 |
+| E1b-shipped primed | 1 | 2 | 1/1 | [29.0] | 29.0 | 29.23 | 27.78 | [0.22] | [0.16] | [167] | 23.3 | -0.0 |
+| E1b-shipped primed | 2 | 0 | 2/2 | [14.83, 14.76] | 14.8 | 29.03 | 28.07 | [0.21, 0.43] | [0.26, 0.166] | [166, 169] | 22.7 | -0.0 |
+| E1b-shipped primed | 2 | 1 | 2/2 | [14.7, 14.33] | 14.51 | 28.03 | 27.34 | [0.22, 0.49] | [0.355, 0.247] | [169, 170] | 22.7 | -0.0 |
+| E1b-shipped primed | 2 | 2 | 2/2 | [15.29, 14.88] | 15.08 | 29.09 | 28.35 | [0.22, 0.48] | [0.352, 0.244] | [168, 168] | 22.7 | -0.0 |
+| E1b-shipped primed | 4 | 0 | 4/4 | [7.96, 7.56, 7.55, 7.3] | 7.55 | 28.32 | 27.97 | [0.22, 0.49, 0.7, 0.91] | [0.88, 0.465, 0.377, 0.387] | [168, 170, 167, 167] | 21.0 | -0.0 |
+| E1b-shipped primed | 4 | 1 | 4/4 | [7.94, 7.72, 7.52, 7.34] | 7.62 | 28.42 | 28.07 | [0.7, 0.49, 0.22, 0.92] | [0.609, 0.477, 0.894, 0.606] | [168, 167, 167, 168] | 21.0 | -0.0 |
+| E1b-shipped primed | 4 | 2 | 4/4 | [7.78, 7.88, 7.74, 7.37] | 7.76 | 28.56 | 28.21 | [0.21, 0.48, 0.69, 0.91] | [0.883, 0.468, 0.408, 0.605] | [166, 168, 168, 167] | 21.0 | -0.0 |
+-- conc_512.txt
+CELL {"label": "E1b-shipped", "C": 1, "rep": 0, "streams_ok": 1, "errors": [], "prompt_tokens": [546], "completion_tokens": [128], "finish": ["length"], "per_stream_tok_s": [29.79], "median_per_stream_tok_s": 29.79, "aggregate_decode_tok_s": 30.02, "aggregate_wall_tok_s": 28.57, "ttft_s": [0.21], "max_gap_s": [0.09], "cell_wall_s": 4.5, "aborted": false, "primed": true, "min_avail_gb": 22.5, "max_
+CELL {"label": "E1b-shipped", "C": 1, "rep": 1, "streams_ok": 1, "errors": [], "prompt_tokens": [543], "completion_tokens": [128], "finish": ["length"], "per_stream_tok_s": [28.65], "median_per_stream_tok_s": 28.65, "aggregate_decode_tok_s": 28.88, "aggregate_wall_tok_s": 27.36, "ttft_s": [0.23], "max_gap_s": [0.093], "cell_wall_s": 4.7, "aborted": false, "primed": true, "min_avail_gb": 22.5, "max
+CELL {"label": "E1b-shipped", "C": 1, "rep": 2, "streams_ok": 1, "errors": [], "prompt_tokens": [556], "completion_tokens": [128], "finish": ["length"], "per_stream_tok_s": [26.76], "median_per_stream_tok_s": 26.76, "aggregate_decode_tok_s": 26.97, "aggregate_wall_tok_s": 25.67, "ttft_s": [0.23], "max_gap_s": [0.088], "cell_wall_s": 5.0, "aborted": false, "primed": true, "min_avail_gb": 22.5, "max
+CELL {"label": "E1b-shipped", "C": 2, "rep": 0, "streams_ok": 2, "errors": [], "prompt_tokens": [553, 558], "completion_tokens": [128, 128], "finish": ["length", "length"], "per_stream_tok_s": [14.24, 14.27], "median_per_stream_tok_s": 14.26, "aggregate_decode_tok_s": 27.91, "aggregate_wall_tok_s": 27.22, "ttft_s": [0.22, 0.5], "max_gap_s": [0.364, 0.247], "cell_wall_s": 9.4, "aborted": false, "pr
+CELL {"label": "E1b-shipped", "C": 2, "rep": 1, "streams_ok": 2, "errors": [], "prompt_tokens": [547, 545], "completion_tokens": [128, 128], "finish": ["length", "length"], "per_stream_tok_s": [14.83, 14.28], "median_per_stream_tok_s": 14.55, "aggregate_decode_tok_s": 27.99, "aggregate_wall_tok_s": 27.34, "ttft_s": [0.21, 0.46], "max_gap_s": [0.333, 0.244], "cell_wall_s": 9.4, "aborted": false, "p
+CELL {"label": "E1b-shipped", "C": 2, "rep": 2, "streams_ok": 2, "errors": [], "prompt_tokens": [549, 548], "completion_tokens": [128, 128], "finish": ["length", "length"], "per_stream_tok_s": [14.84, 14.27], "median_per_stream_tok_s": 14.55, "aggregate_decode_tok_s": 28.76, "aggregate_wall_tok_s": 28.07, "ttft_s": [0.46, 0.21], "max_gap_s": [0.248, 0.344], "cell_wall_s": 9.1, "aborted": false, "p
+CELL {"label": "E1b-shipped", "C": 4, "rep": 0, "streams_ok": 4, "errors": [], "prompt_tokens": [547, 548, 545, 554], "completion_tokens": [128, 128, 128, 128], "finish": ["length", "length", "length", "length"], "per_stream_tok_s": [8.17, 8.33, 7.61, 7.47], "median_per_stream_tok_s": 7.89, "aggregate_decode_tok_s": 28.96, "aggregate_wall_tok_s": 28.61, "ttft_s": [0.21, 0.66, 0.46, 0.88], "max_gap
+CELL {"label": "E1b-shipped", "C": 4, "rep": 1, "streams_ok": 4, "errors": [], "prompt_tokens": [550, 555, 552, 544], "completion_tokens": [128, 128, 128, 128], "finish": ["length", "length", "length", "length"], "per_stream_tok_s": [7.92, 7.55, 7.08, 7.1], "median_per_stream_tok_s": 7.32, "aggregate_decode_tok_s": 27.52, "aggregate_wall_tok_s": 27.19, "ttft_s": [0.48, 0.7, 0.22, 0.93], "max_gap_s
+CELL {"label": "E1b-shipped", "C": 4, "rep": 2, "streams_ok": 4, "errors": [], "prompt_tokens": [542, 555, 552, 551], "completion_tokens": [128, 128, 128, 128], "finish": ["length", "length", "length", "length"], "per_stream_tok_s": [7.48, 7.62, 7.34, 7.15], "median_per_stream_tok_s": 7.41, "aggregate_decode_tok_s": 27.53, "aggregate_wall_tok_s": 27.18, "ttft_s": [0.23, 0.68, 0.46, 1.06], "max_gap
+| arm | C | rep | ok | per-stream decode tok/s | median | aggregate decode tok/s | aggregate incl. TTFT | TTFT s | max gap s | prompt tok | min avail GB | swap delta GB |
+| E1b-shipped primed | 1 | 0 | 1/1 | [29.79] | 29.79 | 30.02 | 28.57 | [0.21] | [0.09] | [546] | 22.5 | 0.0 |
+| E1b-shipped primed | 1 | 1 | 1/1 | [28.65] | 28.65 | 28.88 | 27.36 | [0.23] | [0.093] | [543] | 22.5 | 0.0 |
+| E1b-shipped primed | 1 | 2 | 1/1 | [26.76] | 26.76 | 26.97 | 25.67 | [0.23] | [0.088] | [556] | 22.5 | 0.0 |
+| E1b-shipped primed | 2 | 0 | 2/2 | [14.24, 14.27] | 14.26 | 27.91 | 27.22 | [0.22, 0.5] | [0.364, 0.247] | [553, 558] | 21.9 | -0.0 |
+| E1b-shipped primed | 2 | 1 | 2/2 | [14.83, 14.28] | 14.55 | 27.99 | 27.34 | [0.21, 0.46] | [0.333, 0.244] | [547, 545] | 21.9 | -0.0 |
+| E1b-shipped primed | 2 | 2 | 2/2 | [14.84, 14.27] | 14.55 | 28.76 | 28.07 | [0.46, 0.21] | [0.248, 0.344] | [549, 548] | 21.9 | -0.0 |
+| E1b-shipped primed | 4 | 0 | 4/4 | [8.17, 8.33, 7.61, 7.47] | 7.89 | 28.96 | 28.61 | [0.21, 0.66, 0.46, 0.88] | [0.864, 0.401, 0.467, 0.398] | [547, 548, 545, 554] | 20.8 | -0.0 |
+| E1b-shipped primed | 4 | 1 | 4/4 | [7.92, 7.55, 7.08, 7.1] | 7.32 | 27.52 | 27.19 | [0.48, 0.7, 0.22, 0.93] | [0.621, 0.399, 0.904, 0.418] | [550, 555, 552, 544] | 20.8 | -0.0 |
+| E1b-shipped primed | 4 | 2 | 4/4 | [7.48, 7.62, 7.34, 7.15] | 7.41 | 27.53 | 27.18 | [0.23, 0.68, 0.46, 1.06] | [0.499, 0.592, 0.562, 0.618] | [542, 555, 552, 551] | 20.8 | -0.0 |
+-- MTP accept lines: 31  mean_na (all): 1.355 over 31
+-- DECLINED lines: 43  intermediate hits: 42  no-anchor recomputes: 0
+-- errors/warnings: 0
+-- pass rules (E1b): see EXL3_DECODE_PERF.md 'Marconi floor and concurrent prefill' — every bound is a hypothesis-scaled acceptance bound.

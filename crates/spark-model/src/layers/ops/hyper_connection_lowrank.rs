@@ -37,7 +37,7 @@ fn hc_gemm_disabled() -> bool {
 /// `ATLAS_HC_DECODE_SPLIT=1`: keep the pre-cuBLASLt split path for
 /// decode-shaped T (A/B escape hatch, same convention as the GEMM kill
 /// switch above).
-fn hc_decode_split_forced() -> bool {
+pub(crate) fn hc_decode_split_forced() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("ATLAS_HC_DECODE_SPLIT").as_deref() == Ok("1"))
 }
@@ -92,6 +92,7 @@ pub fn hc_pre_lowrank(
                 norm_eps,
                 /* inject */ true,
                 /* use_cublas */ true,
+                /* row_exact */ false,
                 stream,
             );
         }
@@ -127,6 +128,7 @@ pub fn hc_pre_lowrank(
             norm_eps,
             /* inject */ true,
             /* use_cublas */ false,
+            /* row_exact */ false,
             stream,
         );
     }
@@ -187,6 +189,7 @@ pub fn hc_head_lowrank(
                 norm_eps,
                 /* inject */ false,
                 /* use_cublas */ true,
+                /* row_exact */ false,
                 stream,
             );
         }
@@ -221,6 +224,7 @@ pub fn hc_head_lowrank(
             norm_eps,
             /* inject */ false,
             /* use_cublas */ false,
+            /* row_exact */ false,
             stream,
         );
     }

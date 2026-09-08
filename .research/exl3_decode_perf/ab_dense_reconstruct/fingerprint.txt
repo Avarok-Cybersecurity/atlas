@@ -1,0 +1,4 @@
+FINGERPRINT bin=/home/ms/atlas/.claude/worktrees/wf_7ddada6f-077-3/target/release/spark sha256=0ca060220467bfea git=5e8b5cb46 port=8899 date=2026-09-06T04:32:01Z host=dgx-00
+               total        used        free      shared  buff/cache   available
+Mem:             121           9         102           0          10         112
+Swap:             31           1          30

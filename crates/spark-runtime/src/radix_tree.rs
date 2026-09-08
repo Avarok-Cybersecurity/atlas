@@ -10,7 +10,7 @@
 
 use parking_lot::Mutex;
 
-use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch};
+use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch, SsmAnchor};
 
 mod inner;
 mod snapshot;
@@ -54,6 +54,10 @@ pub(crate) fn hash_token_prefix(tokens: &[u32], count: usize, adapter_id: u64) -
 pub struct RadixTree {
     inner: Mutex<RadixTreeInner>,
     snapshot_index: Mutex<SsmSnapshotIndex>,
+    /// Allow a lookup to match FEWER tokens than a cached block holds
+    /// (`inner::walk`'s two sub-block arms). Default OFF — see
+    /// [`subblock_matching_from_env`].
+    subblock_matching: bool,
 }
 
 impl Default for RadixTree {
@@ -62,11 +66,68 @@ impl Default for RadixTree {
     }
 }
 
+/// Is sub-block prefix matching enabled? OPT-IN (`ATLAS_PREFIX_SUBBLOCK=1`).
+///
+/// The two sub-block arms in [`inner::RadixTreeInner::walk`] return a
+/// `matched_tokens` that is NOT block-aligned, by reusing a block whose KV was
+/// computed for a LONGER key. Two things then go wrong, and both were measured
+/// on qwen3.8-flash-next with `--enable-prefix-caching`:
+///
+/// 1. The tail of that block is a DIFFERENT continuation — the previous turn's
+///    generated tokens — which the sequence's own new tokens are then written
+///    over, inside a block the radix tree still shares with its original key.
+/// 2. The model side takes `matched_tokens` as the KV write floor
+///    (`forward_layers.rs`), so the boundary lands mid-block.
+///
+/// Symptom: three identical temp-0 requests returned three different
+/// completions with it on, and six identical completions with it off (probe
+/// `warmrepro.py`, 2026-09-02). It was on by default; it is now opt-in, and
+/// `inner.rs`'s own comment has flagged the hazard since the arm was written.
+///
+/// Turning it off costs the warm-TTFT shortcut for the last partial block of a
+/// prompt — at most `block_size - 1` tokens of re-prefill per warm turn.
+pub fn subblock_matching_from_env() -> bool {
+    subblock_matching_from_value(std::env::var("ATLAS_PREFIX_SUBBLOCK").ok().as_deref())
+}
+
+/// The polarity of [`subblock_matching_from_env`], over a plain value so a
+/// test can pin it without mutating the process environment. Exact opt-in:
+/// only the string "1" turns the arm back on.
+pub fn subblock_matching_from_value(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
 impl RadixTree {
     pub fn new() -> Self {
+        let subblock_matching = subblock_matching_from_env();
+        if subblock_matching {
+            tracing::warn!(
+                "Prefix cache: SUB-BLOCK matching ENABLED (ATLAS_PREFIX_SUBBLOCK=1). \
+                 A lookup may reuse a block whose KV was computed for a longer key, \
+                 and the sequence writes its own tokens into that shared block. \
+                 Measured: warm temp-0 requests stop being reproducible. Diagnostic only."
+            );
+        } else {
+            tracing::info!(
+                "Prefix cache: sub-block matching off (default) — matches are \
+                 block-aligned. ATLAS_PREFIX_SUBBLOCK=1 restores the old behaviour."
+            );
+        }
         Self {
             inner: Mutex::new(RadixTreeInner::new()),
             snapshot_index: Mutex::new(SsmSnapshotIndex::new()),
+            subblock_matching,
+        }
+    }
+
+    /// Construct with sub-block matching forced on or off, without touching the
+    /// process environment — the constructor tests use to exercise both
+    /// behaviours in one (parallel) test binary.
+    pub fn with_subblock_matching(subblock_matching: bool) -> Self {
+        Self {
+            inner: Mutex::new(RadixTreeInner::new()),
+            snapshot_index: Mutex::new(SsmSnapshotIndex::new()),
+            subblock_matching,
         }
     }
 }
@@ -82,7 +143,8 @@ impl PrefixCache for RadixTree {
         // Phase 1: walk tree (lock inner, then release)
         let (matched_blocks, matched_disk_block_ids, matched_tokens) = {
             let mut inner = self.inner.lock();
-            let (blocks, disk, matched) = inner.walk(tokens, block_size, adapter_id);
+            let (blocks, disk, matched) =
+                inner.walk(tokens, block_size, adapter_id, self.subblock_matching);
             if matched > 0 {
                 inner.inc_refs(tokens, block_size, matched, adapter_id);
                 crate::prefix_cache::record_cache_hit(matched);
@@ -97,27 +159,11 @@ impl PrefixCache for RadixTree {
         // directly); a spilled hit populates `ssm_snapshot_tier_key` (caller
         // faults it in). When nothing is spilled (ATLAS_SSM_TIER off) this is
         // byte-identical to the old resident-only lookup.
-        let mut ssm_snapshot = None;
-        let mut ssm_snapshot_tokens = 0;
-        let mut ssm_snapshot_tier_key = None;
-        let mut ssm_snapshot_tier_tokens = 0;
-        let mut ssm_snapshot_is_tail = false;
-        if matched_tokens > 0 {
-            let mut idx = self.snapshot_index.lock();
-            if let Some(m) = idx.lookup_tiered(tokens, matched_tokens, session_hash, adapter_id) {
-                ssm_snapshot_is_tail = m.is_tail;
-                match m.loc {
-                    snapshot::SnapLoc::Hbm(slot) => {
-                        ssm_snapshot = Some(slot);
-                        ssm_snapshot_tokens = m.token_count;
-                    }
-                    snapshot::SnapLoc::Tier(key) => {
-                        ssm_snapshot_tier_key = Some(key);
-                        ssm_snapshot_tier_tokens = m.token_count;
-                    }
-                }
-            }
-        }
+        let anchor = if matched_tokens > 0 {
+            self.lookup_ssm_anchor(tokens, matched_tokens, session_hash, adapter_id)
+        } else {
+            SsmAnchor::NONE
+        };
         // Filter disk_block_ids to MAX-free entries when HSS isn't in use, so
         // the caller can check `!matched_disk_block_ids.is_empty()` as the
         // HSS-engaged signal. When HSS *is* in use every entry should be a
@@ -127,20 +173,51 @@ impl PrefixCache for RadixTree {
         } else {
             matched_disk_block_ids
         };
-        PrefixMatch {
+        let mut m = PrefixMatch {
             matched_blocks,
             matched_disk_block_ids,
             matched_tokens,
-            ssm_snapshot,
-            ssm_snapshot_tokens,
-            ssm_snapshot_tier_key,
-            ssm_snapshot_tier_tokens,
-            ssm_snapshot_is_tail,
+            ..PrefixMatch::empty()
+        };
+        m.set_ssm_anchor(anchor);
+        m
+    }
+
+    fn lookup_ssm_anchor(
+        &self,
+        tokens: &[u32],
+        max_tokens: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> SsmAnchor {
+        let mut idx = self.snapshot_index.lock();
+        match idx.lookup_tiered(tokens, max_tokens, session_hash, adapter_id) {
+            Some(m) => {
+                let mut anchor = SsmAnchor {
+                    is_tail: m.is_tail,
+                    ..SsmAnchor::NONE
+                };
+                match m.loc {
+                    snapshot::SnapLoc::Hbm(slot) => {
+                        anchor.snapshot = Some(slot);
+                        anchor.snapshot_tokens = m.token_count;
+                    }
+                    snapshot::SnapLoc::Tier(key) => {
+                        anchor.tier_key = Some(key);
+                        anchor.tier_tokens = m.token_count;
+                    }
+                }
+                anchor
+            }
+            None => SsmAnchor::NONE,
         }
     }
 
     fn peek_matched_tokens(&self, tokens: &[u32], block_size: usize, adapter_id: u64) -> usize {
-        self.inner.lock().walk(tokens, block_size, adapter_id).2
+        self.inner
+            .lock()
+            .walk(tokens, block_size, adapter_id, self.subblock_matching)
+            .2
     }
 
     fn insert(

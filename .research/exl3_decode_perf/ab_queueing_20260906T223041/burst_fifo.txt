@@ -1,0 +1,14 @@
+/home/ms/atlas/.claude/worktrees/exl3-research/.research/exl3_decode_perf/probe_queueing.py:71: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  f"date={datetime.datetime.utcnow().isoformat()}Z", flush=True)
+FINGERPRINT probe_queueing label=fifo port=8899 long=8000 short=600 x3 max_tokens=64 date=2026-09-07T02:31:28.828650Z
+  rep0 long    ttft=   18853 ms  wall= 31.78 s  tok=63
+  rep0 short0  ttft=   21529 ms  wall= 32.73 s  tok=64
+  rep0 short1  ttft=   20223 ms  wall= 31.47 s  tok=61
+  rep0 short2  ttft=   22796 ms  wall= 32.64 s  tok=63
+  rep0 short_med_ttft=21529 ms  long_ttft=18853 ms  burst_wall=32.73 s
+  rep1 long    ttft=   22164 ms  wall= 31.97 s  tok=64
+  rep1 short0  ttft=    1321 ms  wall= 31.65 s  tok=63
+  rep1 short1  ttft=    2675 ms  wall= 31.26 s  tok=63
+  rep1 short2  ttft=    3958 ms  wall= 31.29 s  tok=63
+  rep1 short_med_ttft=2675 ms  long_ttft=22164 ms  burst_wall=31.97 s
+SUMMARY fifo short_med_ttft_ms=12102 long_ttft_ms=20508 all_med_ttft_ms=12096 all_max_ttft_ms=22480 burst_wall_s=32.35

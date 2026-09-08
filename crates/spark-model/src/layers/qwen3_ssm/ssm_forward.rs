@@ -43,7 +43,14 @@ impl Qwen3SsmLayer {
         let deinterleaved = ctx.buffers.ssm_deinterleaved();
         let qkvz_size = ctx.config.ssm_qkvz_size() as u32;
         prof!("qkvz", {
-            if let Some(ref fp8) = self.qkvz_fp8w {
+            if let Some(ref g) = self.exl3_gdn {
+                // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): in_proj_qkv +
+                // in_proj_z as a shared-A pair straight into the sequential
+                // [Q|K|V|Z] row (the packed pair is the ONLY live QKVZ weight
+                // on this layer — enforced at install). At M=1 the row stride
+                // is moot: qkv lands at `deinterleaved`, z at +conv_dim.
+                self.exl3_in_proj(g, ctx, normed, deinterleaved, 1, stream)
+            } else if let Some(ref fp8) = self.qkvz_fp8w {
                 // FP8 native: w8a16_gemv + deinterleave (no fused QKVZ variant yet).
                 // `w8a16_gemv` consumes `[N/BS,K/BS] BF16` block scales
                 // (see `kernels/gb10/common/w8a16_gemv.cu` line 5).
@@ -411,7 +418,12 @@ impl Qwen3SsmLayer {
 
         // ── 8. Output projection: [value_dim → hidden_size] ──
         let out = ctx.buffers.moe_output();
-        if let Some(ref fp8) = self.out_proj_fp8w {
+        if let Some(ref g) = self.exl3_gdn {
+            // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): the packed trellis is
+            // the ONLY live out_proj weight on this layer (every other slot
+            // is null — enforced at install). C is the contiguous [1, h] row.
+            self.exl3_out_proj(g, ctx, normed_out, out, 1, stream)?;
+        } else if let Some(ref fp8) = self.out_proj_fp8w {
             // `w8a16_gemv` consumes `[N/BS,K/BS] BF16` block scales —
             // the canonical Qwen FP8 release format.
             fp8.scale_format.expect(

@@ -1,0 +1,1 @@
+FINGERPRINT bin=/home/ms/atlas/.claude/worktrees/wf_7ddada6f-077-5/target/release/spark sha256=66fe19e15e8f8dfa git=fdacc652c preset=qwen3.8-flash-next-exl3 port=8899 repeats=1 max_tokens=300 date=2026-09-06T04:30:33Z host=dgx-00

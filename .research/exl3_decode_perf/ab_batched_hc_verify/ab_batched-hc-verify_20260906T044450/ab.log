@@ -1,0 +1,9 @@
+[04:44:51] === arm serial_1 env=[ATLAS_NO_MTP_HC_BATCH_VERIFY=1] start
+[04:52:01] === arm serial_1 done rc=0 dir=/home/ms/atlas/.claude/worktrees/wf_a8fa8242-651-7/.research/exl3_decode_perf/ab_batched-hc-verify_20260906T044450/serial_1
+[04:52:06] === arm hcbatch_1 env=[<none>] start
+[05:01:41] === arm hcbatch_1 done rc=0 dir=/home/ms/atlas/.claude/worktrees/wf_a8fa8242-651-7/.research/exl3_decode_perf/ab_batched-hc-verify_20260906T044450/hcbatch_1
+[05:01:46] === arm hcbatch_2 env=[<none>] start
+[05:11:10] === arm hcbatch_2 done rc=0 dir=/home/ms/atlas/.claude/worktrees/wf_a8fa8242-651-7/.research/exl3_decode_perf/ab_batched-hc-verify_20260906T044450/hcbatch_2
+[05:11:15] === arm serial_2 env=[ATLAS_NO_MTP_HC_BATCH_VERIFY=1] start
+[05:18:25] === arm serial_2 done rc=0 dir=/home/ms/atlas/.claude/worktrees/wf_a8fa8242-651-7/.research/exl3_decode_perf/ab_batched-hc-verify_20260906T044450/serial_2
+[05:18:30] artefacts: /home/ms/atlas/.claude/worktrees/wf_a8fa8242-651-7/.research/exl3_decode_perf/ab_batched-hc-verify_20260906T044450 (SUMMARY.md, liveness.txt, <arm>_<n>/…, pregate/)

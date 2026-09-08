@@ -71,6 +71,14 @@ impl Qwen3SsmLayer {
         value_dim: usize,
         stream: u64,
     ) -> Result<()> {
+        // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): the packed trellis is the
+        // ONLY live out_proj weight on this layer (every FP8/NVFP4/BF16 slot
+        // below is None — enforced at install), so it sits first without
+        // shadowing any precision lever. Row-batched cooperative GEMM into
+        // the contiguous [k, h] block.
+        if let Some(ref g) = self.exl3_gdn {
+            return self.exl3_out_proj(g, ctx, normed_out_buf, out_proj_buf, k as usize, stream);
+        }
         let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
         // PER-ROW FP8 from the checkpoint (`ATLAS_FP8_ROWWISE=1`), dequantised
         // once to BF16 — see the matching arm in `trait_prefill_proj.rs` for

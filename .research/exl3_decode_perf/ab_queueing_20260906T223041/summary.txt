@@ -1,0 +1,45 @@
+=== arm fifo env=[<none>] args=[--scheduling-policy fifo] 22:30:41
+READY ~47s
+2026-09-07T02:31:28.656565Z  INFO spark::main_modules::serve_load: Scheduling policy: FIFO
+2026-09-07T02:31:28.657103Z  INFO spark::scheduler: Scheduler started (batched mode, max_batch=4, mtp=true, ngram=false, num_drafts=2, policy=fifo, chunked_prefill=true, max_prefill_tokens=8
+  rep0 long    ttft=   18853 ms  wall= 31.78 s  tok=63
+  rep0 short0  ttft=   21529 ms  wall= 32.73 s  tok=64
+  rep0 short1  ttft=   20223 ms  wall= 31.47 s  tok=61
+  rep0 short2  ttft=   22796 ms  wall= 32.64 s  tok=63
+  rep0 short_med_ttft=21529 ms  long_ttft=18853 ms  burst_wall=32.73 s
+  rep1 long    ttft=   22164 ms  wall= 31.97 s  tok=64
+  rep1 short0  ttft=    1321 ms  wall= 31.65 s  tok=63
+  rep1 short1  ttft=    2675 ms  wall= 31.26 s  tok=63
+  rep1 short2  ttft=    3958 ms  wall= 31.29 s  tok=63
+  rep1 short_med_ttft=2675 ms  long_ttft=22164 ms  burst_wall=31.97 s
+SUMMARY fifo short_med_ttft_ms=12102 long_ttft_ms=20508 all_med_ttft_ms=12096 all_max_ttft_ms=22480 burst_wall_s=32.35
+=== arm slai env=[<none>] args=[--scheduling-policy slai --tbt-deadline-ms 100] 22:32:37
+READY ~46s
+2026-09-07T02:33:23.586684Z  INFO spark::main_modules::serve_load: Scheduling policy: SLAI (TBT deadline=100ms)
+2026-09-07T02:33:23.586867Z  INFO spark::scheduler: Scheduler started (batched mode, max_batch=4, mtp=true, ngram=false, num_drafts=2, policy=slai, chunked_prefill=true, max_prefill_tokens=8
+  rep0 long    ttft=   19001 ms  wall= 32.30 s  tok=64
+  rep0 short0  ttft=   21664 ms  wall= 33.23 s  tok=63
+  rep0 short1  ttft=   22975 ms  wall= 33.27 s  tok=63
+  rep0 short2  ttft=   20359 ms  wall= 32.56 s  tok=63
+  rep0 short_med_ttft=21664 ms  long_ttft=19001 ms  burst_wall=33.27 s
+  rep1 long    ttft=   29132 ms  wall= 32.36 s  tok=62
+  rep1 short0  ttft=    1335 ms  wall= 26.80 s  tok=62
+  rep1 short1  ttft=    3993 ms  wall= 30.13 s  tok=63
+  rep1 short2  ttft=    2679 ms  wall= 26.62 s  tok=64
+  rep1 short_med_ttft=2679 ms  long_ttft=29132 ms  burst_wall=32.36 s
+SUMMARY slai short_med_ttft_ms=12172 long_ttft_ms=24066 all_med_ttft_ms=12174 all_max_ttft_ms=26053 burst_wall_s=32.81
+=== arm slai_cd env=[ATLAS_PREFILL_CODISPATCH=1] args=[--scheduling-policy slai --tbt-deadline-ms 100] 22:34:33
+READY ~46s
+2026-09-07T02:35:18.969139Z  INFO spark::main_modules::serve_load: Scheduling policy: SLAI (TBT deadline=100ms)
+2026-09-07T02:35:18.969403Z  INFO spark::scheduler: Scheduler started (batched mode, max_batch=4, mtp=true, ngram=false, num_drafts=2, policy=slai, chunked_prefill=true, max_prefill_tokens=8
+  rep0 long    ttft=   28840 ms  wall= 31.91 s  tok=64
+  rep0 short0  ttft=   19561 ms  wall= 26.20 s  tok=63
+  rep0 short1  ttft=   19561 ms  wall= 30.02 s  tok=63
+  rep0 short2  ttft=   19561 ms  wall= 26.38 s  tok=64
+  rep0 short_med_ttft=19561 ms  long_ttft=28840 ms  burst_wall=31.91 s
+  rep1 long    ttft=   29257 ms  wall= 31.58 s  tok=64
+  rep1 short0  ttft=   19416 ms  wall= 26.80 s  tok=64
+  rep1 short1  ttft=   19415 ms  wall= 25.75 s  tok=64
+  rep1 short2  ttft=   19416 ms  wall= 26.77 s  tok=64
+  rep1 short_med_ttft=19416 ms  long_ttft=29257 ms  burst_wall=31.58 s
+SUMMARY slai_cd short_med_ttft_ms=19488 long_ttft_ms=29049 all_med_ttft_ms=19488 all_max_ttft_ms=29049 burst_wall_s=31.75

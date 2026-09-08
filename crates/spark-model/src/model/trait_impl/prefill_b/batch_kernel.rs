@@ -540,7 +540,10 @@ impl TransformerModel {
             profile: self.profile,
             comm: self.comm_ref(),
             graph_capture: false,
-            gdn_exact_replay: false,
+            // Always COLD (warm hybrid-SSM matches fall back to the per-stream
+            // path), but a cold pass is the reference a later warm Marconi
+            // replay must reproduce — same kernel rule applies.
+            gdn_exact_replay: self.gdn_exact_replay_for_prefill(false),
             token_ids: None,
             host_token_ids: None,
             // #30: batched multi-seq prefill legitimately mixes adapters and keeps

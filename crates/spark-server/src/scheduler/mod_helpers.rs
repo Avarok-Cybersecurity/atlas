@@ -69,17 +69,55 @@ pub(super) fn install_high_speed_swap(
 /// step's worth of TTFT — negligible against the multi-second serialized
 /// alternative. Only in effect when codispatch is explicitly enabled.
 fn codispatch_window() -> Option<std::time::Duration> {
-    let on = std::env::var("ATLAS_PREFILL_CODISPATCH")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    if !on {
-        return None;
+    admission_window_from(
+        std::env::var("ATLAS_PREFILL_CODISPATCH").ok().as_deref(),
+        std::env::var("ATLAS_PREFILL_ADMISSION_WINDOW_MS").ok().as_deref(),
+        std::env::var("ATLAS_PREFILL_CODISPATCH_WINDOW_MS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Pure form, so the decoupling is testable without a scheduler.
+///
+/// The window and the BATCHING used to be one flag: `codispatch_window`
+/// returned `None` unless `ATLAS_PREFILL_CODISPATCH` was set, and that same
+/// variable also drives `want_codispatch` in `phase_start_prefills`. A
+/// scheduling policy therefore never saw a queue it could order — either the
+/// window was off and requests were admitted as they arrived (nothing to
+/// choose between), or it was on and the cohort was immediately fused into one
+/// batched wave (ordering moot). Measured 2026-09-06 on a mixed burst (one 8K
+/// prompt then three 600s): SLAI was indistinguishable from FIFO, and turning
+/// co-dispatch on made every request uniformly WORSE (short-prompt median TTFT
+/// 12.1 s -> 19.5 s) because nobody gets a token until the whole cohort's
+/// prefill finishes. Records: `ab_queueing_20260906T223041/`.
+///
+/// So `ATLAS_PREFILL_ADMISSION_WINDOW_MS=<ms>` now opens the window on its own,
+/// WITHOUT arming the batched dispatch — which is what lets SLAI's
+/// shortest-pending-first actually order a queue. `ATLAS_PREFILL_CODISPATCH=1`
+/// keeps its old meaning (window + batching, default 100 ms) so existing
+/// scripts are unchanged, and `ATLAS_PREFILL_CODISPATCH_WINDOW_MS` still tunes
+/// that arm. An explicit admission window wins over the co-dispatch default.
+pub(super) fn admission_window_from(
+    codispatch: Option<&str>,
+    admission_ms: Option<&str>,
+    codispatch_ms: Option<&str>,
+) -> Option<std::time::Duration> {
+    let on = codispatch.is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    let explicit = admission_ms.and_then(|v| v.trim().parse::<u64>().ok());
+    match (explicit, on) {
+        // An explicit window is honoured whether or not co-dispatch is armed;
+        // 0 means "no window", which is how it is turned back off.
+        (Some(0), _) => None,
+        (Some(ms), _) => Some(std::time::Duration::from_millis(ms)),
+        (None, false) => None,
+        (None, true) => {
+            let ms = codispatch_ms
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(100);
+            Some(std::time::Duration::from_millis(ms))
+        }
     }
-    let ms = std::env::var("ATLAS_PREFILL_CODISPATCH_WINDOW_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(100);
-    Some(std::time::Duration::from_millis(ms))
 }
 
 /// Quiet period that ends the co-dispatch window early for a lone request
@@ -390,3 +428,41 @@ pub(super) fn compact_survivors_into_range(model: &dyn Model, survivors: &mut [A
 
 mod send;
 pub use send::*;
+
+#[cfg(test)]
+mod admission_window_tests {
+    use super::admission_window_from;
+
+    fn ms(d: Option<std::time::Duration>) -> Option<u64> {
+        d.map(|d| d.as_millis() as u64)
+    }
+
+    #[test]
+    fn admission_window_is_independent_of_codispatch() {
+        // Neither flag: no window (today's default for the shipped preset).
+        assert_eq!(ms(admission_window_from(None, None, None)), None);
+        // Co-dispatch alone: window + batching, 100 ms default — unchanged.
+        assert_eq!(ms(admission_window_from(Some("1"), None, None)), Some(100));
+        assert_eq!(
+            ms(admission_window_from(Some("true"), None, Some("250"))),
+            Some(250)
+        );
+        // THE POINT: a window WITHOUT arming the batched dispatch, so a
+        // scheduling policy has a queue to order.
+        assert_eq!(ms(admission_window_from(None, Some("100"), None)), Some(100));
+        // An explicit window wins over the co-dispatch default, in both
+        // directions, so an operator can widen or narrow it per arm.
+        assert_eq!(
+            ms(admission_window_from(Some("1"), Some("25"), Some("250"))),
+            Some(25)
+        );
+        // 0 turns it off even when co-dispatch is armed.
+        assert_eq!(ms(admission_window_from(Some("1"), Some("0"), None)), None);
+        // Garbage falls back to the co-dispatch behaviour rather than
+        // silently disabling the window.
+        assert_eq!(ms(admission_window_from(Some("1"), Some("abc"), None)), Some(100));
+        assert_eq!(ms(admission_window_from(None, Some("abc"), None)), None);
+        // `=0` on the co-dispatch flag is not "on" (it is a value flag here).
+        assert_eq!(ms(admission_window_from(Some("0"), None, None)), None);
+    }
+}

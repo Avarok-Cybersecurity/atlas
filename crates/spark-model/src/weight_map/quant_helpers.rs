@@ -286,6 +286,24 @@ pub(crate) fn dense_auto(
     name: &str,
     gpu: &dyn GpuBackend,
 ) -> Result<DenseWeight> {
+    // Native-EXL3 probe FIRST (before the `.weight` get, which cannot exist
+    // for a kept-packed linear): a trellis prefix reaching this DENSE loader
+    // under ATLAS_EXL3_NATIVE=1 means the natively-served set
+    // (`exl3_native_serves`) includes a prefix whose consumer has not been
+    // routed to the exl3 dispatch — fail with the real cause instead of a
+    // bare "tensor not found".
+    if let Some(prefix) = name.strip_suffix(".weight")
+        && super::exl3_native_enabled()
+        && spark_runtime::weights::exl3::is_exl3_linear(store, prefix)
+    {
+        bail!(
+            "dense_auto: {prefix} is held as packed EXL3 trellis \
+             (ATLAS_EXL3_NATIVE=1) but this consumer expects BF16 dense — \
+             the prefix is in the native-serving set without a routed \
+             dispatch path. Remove it from `exl3_native_serves` or route \
+             the consumer through ops::exl3_gemv/exl3_gemm."
+        );
+    }
     let w = store.get(name)?;
     match w.dtype {
         WeightDtype::BF16 => Ok(DenseWeight { weight: w.ptr }),

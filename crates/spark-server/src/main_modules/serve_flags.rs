@@ -100,6 +100,20 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
             );
         }
     }
+    // `--deterministic-moe-prefill`: its own cell, DEFAULT ON, and absent
+    // publishes nothing so the default stands. There is deliberately no
+    // `ATLAS_*` fallback behind it — the off arm is upstream's
+    // nondeterministic fp32-atomicAdd MoE prefill epilogue, which no stray
+    // variable should be able to select.
+    if let Some(det) = args.deterministic_moe_prefill {
+        let in_force = spark_model::layers::ops::set_exl3_det_moe_prefill_from_cli(det);
+        if in_force != det {
+            tracing::warn!(
+                "deterministic-moe-prefill was already resolved ({in_force}); the command \
+                 line's ({det}) did NOT take effect"
+            );
+        }
+    }
     // `None` where the flag was not given, so the documented `ATLAS_*` fallback
     // still decides. Passing the clap default instead sealed both cells on
     // every boot and made those variables silent no-ops.
@@ -115,7 +129,7 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     tracing::info!(
         "kernel flags: ssm_h_dtype={} gdn_fused_norm={} ssm_batched_recurrent={} \
          exact_verify={} ssm_tail_midchunk={} mtp_gate={} ssm_rollback_mode={:?} \
-         prefill_varlen_batch={}",
+         prefill_varlen_batch={} deterministic_moe_prefill={}",
         if gdn.h_f16 { "f16" } else { "f32" },
         gdn.fused_norm,
         gdn.batched_recurrent,
@@ -131,6 +145,10 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
         spark_model::ssm_reserve::ssm_rollback_mode(),
         // RESOLVED, not the raw argument — may come from the environment.
         spark_model::layers::ops::prefill_varlen_enabled(),
+        // RESOLVED, and reading it here SEALS the default-ON cell — which is
+        // correct: nothing may change the MoE prefill epilogue after the
+        // command line has been processed.
+        spark_model::layers::ops::exl3_det_moe_prefill_enabled(),
     );
 }
 

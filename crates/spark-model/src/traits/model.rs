@@ -543,6 +543,59 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
+    /// Whether ANY layer of this model carries auxiliary per-sequence
+    /// state that a rollback must rewind alongside the SSM state — the
+    /// QSA indexer cursor and the PLE n-gram history on
+    /// Qwen3.8-Flash-Next.
+    ///
+    /// Default `false`: a model with no aux-carrying layer needs no aux
+    /// companion, so every aux path below is inert for it.
+    fn requires_aux_state(&self) -> bool {
+        false
+    }
+
+    /// Save `seq`'s auxiliary layer state (QSA / PLE) into the
+    /// decode-rollback ring slot `ring_slot`, as the byte-exact companion
+    /// to [`Self::save_decode_ssm_snapshot`].
+    ///
+    /// Keyed by the SAME `(seq.slot_idx, ring_slot)` pair as the SSM ring
+    /// so the two cannot drift: a boundary either has both halves or is
+    /// dropped. Blobs come from the audited `snapshot_aux` /
+    /// `restore_aux` layer hooks that Marconi prefix caching already
+    /// uses — this is a snapshot, NOT an arithmetic rewind of the
+    /// cursors, so it cannot get the arithmetic subtly wrong.
+    ///
+    /// Default: no-op `Ok(())`.
+    fn save_decode_aux_snapshot(&self, _seq: &SequenceState, _ring_slot: usize) -> Result<()> {
+        Ok(())
+    }
+
+    /// Restore the aux state saved by [`Self::save_decode_aux_snapshot`].
+    ///
+    /// `Err` when the companion is missing (the boundary predates the aux
+    /// ring, or its entry was evicted) — the caller MUST then decline the
+    /// rollback rather than proceed, because restoring the SSM state and
+    /// lowering `seq_len` while the QSA indexer keeps its old cursor is
+    /// exactly the desync that fails the next decode with
+    /// "QSA: decode at pos N but M tokens ingested — the indexer cache
+    /// lost sync" and 500s the request.
+    ///
+    /// Default: no-op `Ok(())`.
+    fn restore_decode_aux_snapshot(
+        &self,
+        _seq: &mut SequenceState,
+        _ring_slot: usize,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Drop any aux companion recorded for `seq`'s ring slots at or after
+    /// `ring_slot`, so a dropped/stale SSM entry cannot leave an orphan
+    /// aux blob that a later boundary would match against.
+    ///
+    /// Default: no-op.
+    fn forget_decode_aux_snapshot(&self, _seq: &SequenceState, _ring_slot: usize) {}
+
     /// Speculative decoding via the model's internal MTP proposer; falls
     /// back to regular decode when no proposer is wired up.
     fn generate_speculative(
@@ -776,6 +829,42 @@ pub trait Model: Send + Sync {
         stream: u64,
     ) -> Result<Vec<u32>> {
         self.decode_verify_graphed_kgamma(tokens, seq, stream)
+    }
+
+    /// Land the auxiliary carries on the `num_accepted` of `k` verify rows this
+    /// step committed, for models whose verify runs as a K-row mini-prefill
+    /// (currently: an mHC highway, where that is the only working multi-row
+    /// path).
+    ///
+    /// ## Call it exactly where `commit_accepted_prefix` is called, with the
+    /// ## same `(num_accepted, k)`
+    ///
+    /// The scheduler's generic rewind — `seq_len -= rejected` plus
+    /// `commit_accepted_prefix` — restores the SSM h_state/conv_state but NOT
+    /// the auxiliary state a mini-prefill also advances by one row per row:
+    ///
+    /// * QSA's `ingested`/`pooled` marks, guarded by a hard
+    ///   `pos == st.ingested` equality on the very next decode;
+    /// * PLE's rolling conv state and n-gram history window, which unlike the
+    ///   QSA marks CANNOT be rebuilt by truncation and must be snapshotted.
+    ///
+    /// Left un-landed, every rejected row desynchronises both carries and the
+    /// drift compounds until output degenerates — the failure tracks DRAFT
+    /// WIDTH, because a wider draft rejects more rows per step.
+    ///
+    /// `num_accepted == k` (full accept) is not a no-op call: it releases the
+    /// stash the verify left behind, so a later step cannot read it against
+    /// the wrong verify.
+    ///
+    /// Returns `false` when the model has no such path, in which case the
+    /// caller's generic rewind is already sufficient and nothing more is owed.
+    fn commit_verify_aux(
+        &self,
+        _seq: &mut SequenceState,
+        _num_accepted: usize,
+        _k: usize,
+    ) -> Result<bool> {
+        Ok(false)
     }
 
     /// Save the post-norm hidden state at `token_idx` (0 or 1) to a

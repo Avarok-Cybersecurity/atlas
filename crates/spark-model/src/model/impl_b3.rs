@@ -79,7 +79,16 @@ impl TransformerModel {
         // prevents MoeLayer::forward() from doubling the output via SUM.
         let ctx = ForwardContext {
             buffers: &self.buffers,
-            hc_row_offset: 0,
+            // Qwen's proposer reads the accepted target highway row. Other
+            // proposers consume the copied collapsed hidden as before.
+            hc_row_offset: if self.config.model_type == "qwen4_exp"
+                && crate::layers::qwen3_ssm::trait_decode_batched_hc::hc_batched_verify_enabled()
+            {
+                self.last_mtp_hidden_idx
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            } else {
+                0
+            },
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,

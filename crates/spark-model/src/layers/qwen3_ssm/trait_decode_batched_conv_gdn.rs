@@ -342,7 +342,19 @@ impl Qwen3SsmLayer {
         // state (~16 MB/layer/step vs ~120 KB of extra conv-row bytes). It
         // would NOT make spec-on bitwise-equal to spec-off; only
         // `--exact-verify` does that.
-        if super::verify_exact_enabled() {
+        //
+        // PASS-SCOPED (2026-09-03): the same exact chain also runs, WITHOUT
+        // the global flag, whenever the PASS declares
+        // `ForwardContext::gdn_exact_replay` — today only the mHC MTP verify
+        // (`model/trait_impl/verify_hc.rs`), whose row 0 re-processes an
+        // already-committed token and therefore MUST reproduce that token's
+        // serial `decode()` bit for bit. Measured on qwen3.8-flash-next
+        // (native EXL3, gamma=1): with the WY/BF16-conv arms the verify's
+        // row-0 logits matched serial decode 0/N; the exact chain is one of
+        // the three legs that takes it to N/N. Kill switch
+        // `ATLAS_NO_VERIFY_ROW_EXACT`. Phase 8 in `decode_batched_inner`
+        // reads the SAME predicate to skip its norm.
+        if super::verify_row_exact_leg(ctx.gdn_exact_replay, super::RowExactLeg::ConvGdn) {
             return self.decode_batched_conv_gdn_exact(ssm_state, ctx, args);
         }
 

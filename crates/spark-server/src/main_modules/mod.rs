@@ -14,6 +14,7 @@ pub(crate) mod serve;
 pub(crate) mod serve_flags;
 pub(crate) mod serve_load;
 pub(crate) mod serve_phases;
+pub(crate) mod serve_presets;
 mod serve_router;
 
 #[cfg(test)]

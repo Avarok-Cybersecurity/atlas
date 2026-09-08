@@ -135,6 +135,32 @@ impl TransformerModel {
                 tracing::error!("free_sequence: gpu.synchronize after zero_slot({slot}): {e:#}");
             }
             self.ssm_pool.release_slot(slot);
+            // Drop this sequence's decode-rollback aux blobs with the slot that
+            // keys them. Guarded by the same `slot_to_release` as the SSM half
+            // (NOT the compact-retire path, where the survivor now owns the slot
+            // and `compact_sequence` has already cleared it) so the two halves
+            // of the ring cannot drift.
+            self.decode_aux_ring.forget_slot(slot);
+        }
+
+        // Release per-sequence layer state that is NOT pooled: the QSA indexer
+        // carry (12 full-attention layers x ~61.6 MB at 200K ctx) and the PLE
+        // conv carry. Both are bare `DevicePtr`s inside the layer state, so
+        // dropping `seq.layer_states` reclaims the host structs and leaks the
+        // device buffers — ~739 MB per request, invisible to RSS on unified
+        // memory and reported as N/A by `nvidia-smi`, which is why it read as
+        // "the box is growing" with no process to blame.
+        //
+        // Errors are logged, not propagated: this runs on the teardown path,
+        // and a sequence that cannot free its state is still finished. Bailing
+        // here would strand the KV blocks and prefix refs released below —
+        // trading a leak for a worse one.
+        for (layer_idx, ls) in seq.layer_states.iter_mut().enumerate() {
+            if let Some(layer) = self.layers.get(layer_idx)
+                && let Err(e) = layer.release_state(ls.as_mut(), self.gpu.as_ref())
+            {
+                tracing::error!("free_sequence: release_state(layer {layer_idx}): {e:#}");
+            }
         }
 
         // Task #25: release this sequence's LoRA slot ref (the single terminal
@@ -402,6 +428,18 @@ impl TransformerModel {
         // for the ownership-TRANSFER caller (lifecycle swap-out), where the
         // target is owned by the retiring victim and not on the free list.
         self.ssm_pool.claim_specific(new_slot);
+        // The decode-rollback AUX ring is keyed by `(slot_idx, ring_slot)`, so a
+        // slot migration invalidates BOTH ends of this move and neither is a
+        // mere leak:
+        //   - `old_slot` holds this sequence's own entries, which nothing will
+        //     ever look up again (it now saves and restores under `new_slot`).
+        //   - `new_slot` holds the RETIRING sequence's entries. This sequence is
+        //     about to save under the same key, and until it does, a rollback to
+        //     a ring slot the retiree happened to occupy would restore ANOTHER
+        //     sequence's QSA/PLE carry — the aliasing class, not a leak.
+        // Both are stale by construction at exactly this point, so drop both.
+        self.decode_aux_ring.forget_slot(old_slot);
+        self.decode_aux_ring.forget_slot(new_slot);
         if let Some(g) = seq.ssm_slot.as_mut() {
             // Guard owned `old_slot`; drop that ownership before releasing.
             let owned = g.take();

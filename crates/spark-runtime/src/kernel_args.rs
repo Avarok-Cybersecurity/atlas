@@ -61,6 +61,9 @@ pub struct KernelLaunch<'a> {
     grid: [u32; 3],
     block: [u32; 3],
     shared_mem: u32,
+    /// Route through `GpuBackend::launch_cooperative_typed` instead of
+    /// `launch_typed`. Set by `cooperative()` for kernels that `grid.sync()`.
+    cooperative: bool,
     /// Backing storage: each parameter's bytes stored in a u64 slot
     /// (LE-packed for scalars; raw u64 GPU address for pointers).
     /// Pointers into this vec remain stable because we never
@@ -79,6 +82,7 @@ impl<'a> KernelLaunch<'a> {
             grid: [1, 1, 1],
             block: [1, 1, 1],
             shared_mem: 0,
+            cooperative: false,
             storage: Vec::with_capacity(16),
             kinds: Vec::with_capacity(16),
         }
@@ -96,6 +100,18 @@ impl<'a> KernelLaunch<'a> {
 
     pub fn shared_mem(mut self, bytes: u32) -> Self {
         self.shared_mem = bytes;
+        self
+    }
+
+    /// Launch cooperatively (`cuLaunchCooperativeKernel`): all blocks are
+    /// co-resident, making in-kernel `grid.sync()` legal — required by the
+    /// EXL3 trellis GEMM/GEMV kernels. The caller must size the grid from
+    /// `GpuBackend::sm_count` (a grid that cannot be fully resident FAILS the
+    /// launch), and a kernel wanting > 48 KB dynamic smem must have had
+    /// `GpuBackend::set_kernel_max_dynamic_smem` called on it once at kernel
+    /// resolution — the cooperative path does not auto-raise the cap.
+    pub fn cooperative(mut self) -> Self {
+        self.cooperative = true;
         self
     }
 
@@ -213,14 +229,25 @@ impl<'a> KernelLaunch<'a> {
                 args.push(KernelArg::Bytes(bytes));
             }
         }
-        let r = self.gpu.launch_typed(
-            self.kernel,
-            self.grid,
-            self.block,
-            self.shared_mem,
-            stream,
-            &args,
-        );
+        let r = if self.cooperative {
+            self.gpu.launch_cooperative_typed(
+                self.kernel,
+                self.grid,
+                self.block,
+                self.shared_mem,
+                stream,
+                &args,
+            )
+        } else {
+            self.gpu.launch_typed(
+                self.kernel,
+                self.grid,
+                self.block,
+                self.shared_mem,
+                stream,
+                &args,
+            )
+        };
         // ATLAS_DEBUG_SYNC_KERNELS (PCND, default-off): synchronize after
         // each launch so an async CUDA fault surfaces AT the culprit launch
         // (with grid/block) instead of at a later, unrelated sync point.
@@ -356,6 +383,67 @@ mod tests {
         assert_eq!(starts, vec![0, 1]);
         assert_eq!(storage.len(), 2);
         assert_eq!(storage[1], 9);
+    }
+
+    /// `.cooperative()` must change the ROUTE, not just set a bit: the launch
+    /// has to reach `launch_cooperative_typed` with grid/block/smem AND the
+    /// typed args intact. A grid.sync() kernel that silently went down the
+    /// eager path would deadlock on real hardware, which no arg assertion
+    /// alone can catch — hence asserting `cooperative` on the recorded launch.
+    #[test]
+    fn cooperative_routes_to_the_cooperative_path_with_args_intact() {
+        use crate::gpu::mock::MockArg;
+        let gpu = MockGpuBackend::new();
+        let kernel = gpu.kernel("exl3_gemm", "exl3_gemm_k4_s2").unwrap();
+
+        KernelLaunch::new(&gpu, kernel)
+            .grid([48, 1, 1])
+            .block([512, 1, 1])
+            .shared_mem(90 * 1024)
+            .cooperative()
+            .arg_ptr(DevicePtr(0x2000))
+            .arg_i32(2560)
+            .launch(7)
+            .unwrap();
+
+        assert_eq!(gpu.cooperative_launch_count(), 1);
+        let launches = gpu.launches_snapshot();
+        let l = &launches[0];
+        assert!(l.cooperative);
+        assert_eq!(l.grid, [48, 1, 1]);
+        assert_eq!(l.block, [512, 1, 1]);
+        assert_eq!(l.shared_mem, 90 * 1024, "dynamic smem must survive the route");
+        assert_eq!(l.stream, 7);
+        assert_eq!(l.args[0], MockArg::Buffer(DevicePtr(0x2000)));
+        assert_eq!(l.args[1], MockArg::Bytes(2560i32.to_le_bytes().to_vec()));
+    }
+
+    /// Without `.cooperative()` the builder must keep taking the eager path —
+    /// the flag defaults off, and an accidental cooperative launch of an
+    /// ordinary kernel is its own bug class (grid-size launch failures).
+    #[test]
+    fn launches_stay_eager_unless_cooperative_is_requested() {
+        let gpu = MockGpuBackend::new();
+        let kernel = gpu.kernel("test", "plain_kernel").unwrap();
+        KernelLaunch::new(&gpu, kernel)
+            .grid([4, 1, 1])
+            .block([256, 1, 1])
+            .arg_u32(1)
+            .launch(0)
+            .unwrap();
+        assert_eq!(gpu.cooperative_launch_count(), 0);
+        assert!(!gpu.launches_snapshot()[0].cooperative);
+    }
+
+    /// The one-time smem opt-in must reach the backend with the kernel handle
+    /// and byte count it was given (the real impl writes a sticky per-function
+    /// driver attribute; the mock records the call).
+    #[test]
+    fn max_dynamic_smem_opt_in_is_recorded_per_kernel() {
+        let gpu = MockGpuBackend::new();
+        let kernel = gpu.kernel("exl3_gemm", "exl3_gemm_k4_s2").unwrap();
+        gpu.set_kernel_max_dynamic_smem(kernel, 90 * 1024).unwrap();
+        assert_eq!(gpu.max_dynamic_smem_calls(), vec![(kernel.0, 90 * 1024)]);
     }
 
     #[test]

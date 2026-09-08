@@ -1,0 +1,40 @@
+date=2026-09-06T04:52:06-04:00 host=dgx-00 script=concurrency_sweep.sh arm=hcbatch_1 port=8899
+repo=/home/ms/atlas/.claude/worktrees/wf_a8fa8242-651-7
+git_head=33840b2efdc502cfdce549aa56f7109c53be0d26 branch=perf/batched-hc-verify
+git_dirty_files=14
+binary=/home/ms/atlas/.claude/worktrees/wf_a8fa8242-651-7/target/release/spark sha256=aefac27e8c49bb3b mtime=2026-09-06T04:43:21-04:00
+checkpoint=/tank/exl3-ckpt/qwen38-flash-next-4.05bpw
+preset=qwen3.8-flash-next-exl3 (flags/env from kernels/gb10/qwen3.8-flash-next/MODEL.toml; operator overrides below)
+extra_serve_args=
+caller_env:
+  ATLAS_MTP_ACCEPT_DEBUG=1
+  ATLAS_NO_TUI=1
+free_g:
+                 total        used        free      shared  buff/cache   available
+  Mem:             121           9          96           0          18         112
+  Swap:             31           1          30
+gpu(util%,W,MHz)=0,6.07,208
+nsys=NVIDIA Nsight Systems version 2025.3.2.474-253236389321v0
+python=Python 3.12.3
+harness=measure_concurrency.py arms=short conc=1 2 4 short_tokens=2000 long_tokens=30000 max_tokens=300 repeats_short=3 repeats_long=1 salt=4242
+serve_cmd=/home/ms/atlas/.claude/worktrees/wf_a8fa8242-651-7/target/release/spark serve qwen3.8-flash-next-exl3 --model-from-path /tank/exl3-ckpt/qwen38-flash-next-4.05bpw --bind 127.0.0.1 --port 8899 --no-tui 
+2026-09-06T08:52:06.492845Z  INFO spark::main_modules::serve_presets: Preset flag defaults applied: --default-chat-template-kwargs {"reasoning_effort":"low","preserve_thinking":true} --enable-prefix-caching --fast-load-prefetch-shards --gpu-memory-utilization 0.72 --max-batch-size 4 --max-num-seqs 4 --max-seq-len 131072 --num-drafts 2 --request-timeout 1800 --speculative --ssm-cache-slots 64 --ker
+2026-09-06T08:52:06.492848Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_DFLASH_SPEC_THINK=1
+2026-09-06T08:52:06.492850Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=512
+2026-09-06T08:52:06.492851Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_MOE_ROWS_PER_EXPERT=1024
+2026-09-06T08:52:06.492852Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_NATIVE=1
+2026-09-06T08:52:06.492852Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_NATIVE_DENSE=1
+2026-09-06T08:52:06.492853Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_NATIVE_MOE=1
+2026-09-06T08:52:06.492854Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_INTHINK_TOOL_LEAK_OPENERS=0
+2026-09-06T08:52:06.492855Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_MTP_MAX_SEQS=4
+2026-09-06T08:52:06.492857Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_NO_THINKENDED_GPU_ARGMAX=1
+2026-09-06T08:52:06.492858Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_NO_VERIFY_ROW_FFN=1
+2026-09-06T08:52:06.492859Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_PLE_CACHE_SLOTS=4194304
+2026-09-06T08:52:06.492860Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_PLE_MAX_TOKENS=9216
+2026-09-06T08:52:06.492861Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_QSA_MAX_TOKENS=131072
+2026-09-06T08:52:06.492861Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_QWEN4EXP_MTP=1
+2026-09-06T08:52:06.492862Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_QWEN4EXP_MTP_HC_BATCHED=1
+2026-09-06T08:52:06.492863Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_QWEN4EXP_MTP_VERIFY=1
+2026-09-06T08:52:06.492864Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_VERIFY_EXL3_ROW_ROUTER=1
+2026-09-06T08:52:06.492865Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_VERIFY_EXL3_STABLE_GRID=1
+2026-09-06T08:52:55.974584Z  INFO spark::main_modules::serve_router: Server live and ready at 127.0.0.1:8899 running qwen3.8-flash-next-exl3

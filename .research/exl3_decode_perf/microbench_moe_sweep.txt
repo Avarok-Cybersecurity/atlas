@@ -1,0 +1,9 @@
+DEVICE NVIDIA GB10 cc=12.1 SMs=48 L2=24 MB smem/SM=100 KB clock=2418 MHz memclk=8533 MHz bus=256 bit coop=1
+PEAK streaming read: 231.2 GB/s (4643.8 us per GiB)
+LAUNCH floor: plain<1,32> 2.09 us | plain<48,256> 2.04 us | coop<48,256> grid.sync 4.05 us | coop<48,512,90KB smem> 4.06 us  (per launch, back-to-back)
+MOE T=1 S=10 K=4  ATLAS gate/up sh2 grid=(8,6) down sh4 grid=(8,6): gate 57.1 up 57.0 silu 2.1 down 58.2 us | chain 171.4 us  143.4 GB/s(weights) x48 layers = 8.22 ms/token
+      gate BEST sh2 grid=(4,10): 47.6 us  (1.20x vs Atlas)
+      down BEST sh3 grid=(4,10): 49.9 us  (1.17x vs Atlas)
+MOE T=3 S=30 K=4  ATLAS gate/up sh2 grid=(2,24) down sh4 grid=(2,24): gate 159.9 up 160.5 silu 2.1 down 162.6 us | chain 518.2 us  142.3 GB/s(weights) x48 layers = 24.87 ms/token
+      gate BEST sh2 grid=(3,16): 121.1 us  (1.32x vs Atlas)
+      down BEST sh3 grid=(3,16): 129.0 us  (1.26x vs Atlas)

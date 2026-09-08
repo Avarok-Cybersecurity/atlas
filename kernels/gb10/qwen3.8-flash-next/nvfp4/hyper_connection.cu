@@ -589,3 +589,36 @@ extern "C" __global__ void hc_pre_mix(
             2.0f * qhc_sigmoid((float)inj_pre[(size_t)t * hc + tid] * inv_hc);
     }
 }
+
+// ─── MTP combiner tail ───────────────────────────────────────────────────────
+// Write the MTP draft's FP32 highway from a PER-STREAM BF16 projection plus one
+// BROADCAST BF16 row:
+//
+//   streams[i*H + d] = (float)per_stream[i*H + d] + (float)bcast[d]
+//
+// This exists because the highway is FP32 while the projections that build it
+// (`fc_hidden` per stream, `fc_embedding` once) are BF16 GEMVs. Without it the
+// combiner would write BF16 into an FP32 buffer — which is silent garbage, not
+// an error, and reads as "MTP just doesn't predict well on this model".
+//
+// `hc_expand` cannot serve: it BROADCASTS a single row to every stream, and the
+// MTP combiner's streams differ per stream. Single block, T=1 (a draft step is
+// one token); `hc` is bounded by QHC_MAX_MULT.
+extern "C" __global__ void qhc_mtp_combine_streams(
+    const __nv_bfloat16* __restrict__ per_stream, // [hc, H] BF16
+    const __nv_bfloat16* __restrict__ bcast,      // [H]     BF16
+    float* __restrict__ streams,                  // [hc, H] FP32 (out)
+    const unsigned int hidden_size,
+    const unsigned int hc
+) {
+    const unsigned int tid = threadIdx.x;
+    const unsigned int H = hidden_size;
+    for (unsigned int i = 0; i < hc; ++i) {
+        const __nv_bfloat16* ps = per_stream + (size_t)i * H;
+        float* s = streams + (size_t)i * H;
+        for (unsigned int d = tid; d < H; d += blockDim.x) {
+            s[d] = (float)ps[d] + (float)bcast[d];
+        }
+    }
+}
+

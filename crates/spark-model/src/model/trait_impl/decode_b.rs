@@ -67,13 +67,23 @@ impl TransformerModel {
         // validated for the absorbed-MLA path — so MLA stays on the
         // dedicated `decode_batch` route.
         // Use padded_n (not n_decode) because padding slots consume hidden buffer space.
-        // hc + QSA-active decode rows must not fuse: the batched ms decode
-        // inlined below has no per-seq QSA selection arm (decode_a2 routes
-        // those per-seq). Same inert-bound formula as decode_a2's gate.
-        let hc_qsa_perseq = self.config.hc_mult > 0 && self.config.index_topk > 0 && {
+        // hc + QSA: the batched ms decode inlined below now CONSUMES a
+        // per-row selection (multi_seq/qsa.rs), so a long sequence no longer
+        // forces the fused path apart. One decider for both routes —
+        // `decode_route::hc_perseq_fallback` — so this cannot drift from
+        // `decode_batch_dispatch`'s gate again (it did: this copy kept the
+        // retired `qsa_active` term and sent every mixed batch holding a
+        // >2051-token sequence down the per-seq path).
+        let qsa_active = self.config.index_topk > 0 && {
             let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
             decode_seqs.iter().any(|s| s.seq_len >= bound)
         };
+        let hc_qsa_perseq = super::decode_route::hc_perseq_fallback(
+            self.config.hc_mult,
+            qsa_active,
+            std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1"),
+            self.multi_rank_protocol_active(),
+        );
         if self.comm.is_some()
             || self.is_mla_dispatch()
             || hc_qsa_perseq

@@ -131,6 +131,12 @@ struct Target {
     /// block-diffusion speculative decoding. `None` when the model has no
     /// associated DFlash drafter checkpoint.
     dflash: Option<DflashRaw>,
+    /// `[[serve_presets]]` entries from MODEL.toml — named, validated serve
+    /// configurations (checkpoint + flag/env defaults) this target declares.
+    /// `validate_serve_presets` panics on a name reused across targets or
+    /// equal to a target directory name; targets that declare none leave this
+    /// empty.
+    serve_presets: Vec<ServePresetRaw>,
 }
 
 #[derive(Default, Clone)]
@@ -140,6 +146,19 @@ struct DflashRaw {
     window_size: usize,
     mask_token_id: u32,
     target_layer_ids: Vec<usize>,
+}
+
+/// One `[[serve_presets]]` entry as parsed; mirrors `src/serve_preset.rs`.
+#[derive(Default, Clone)]
+struct ServePresetRaw {
+    name: String,
+    hf_id: String,
+    hf_revision: String,
+    description: String,
+    /// `[serve_presets.flags]` as `(recipe key, value text)`, in file order.
+    flags: Vec<(String, String)>,
+    /// `[serve_presets.env]` as `(variable, value text)`, in file order.
+    env: Vec<(String, String)>,
 }
 
 fn main() {
@@ -1153,6 +1172,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             let match_names = parse_match_names(&model_dir);
             let dflash = parse_dflash(&model_dir);
             let expected_absent = parse_expected_absent(&model_dir);
+            let serve_presets = parse_serve_presets(&model_dir);
 
             targets.push(Target {
                 hw: hw.clone(),
@@ -1208,6 +1228,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 model_type_matches,
                 match_names,
                 dflash,
+                serve_presets,
             });
         }
     }
@@ -1215,7 +1236,46 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
     // Sort by (model, quant) for deterministic ordering
     targets.sort_by(|a, b| (&a.model, &a.quant).cmp(&(&b.model, &b.quant)));
     validate_collision_match_names(&targets);
+    validate_serve_presets(&targets);
     targets
+}
+
+/// Fail the BUILD when a `[[serve_presets]]` name is not unique across every
+/// compiled target, or collides with a kernel-target directory name.
+///
+/// `spark serve <name>` resolves a preset by name before it tries the HF
+/// cache, so two targets declaring the same preset name would serve whichever
+/// sorted first — the same silent build-order pick the match_names rule
+/// exists to forbid. A preset named like a target directory is refused for
+/// the same reason `--kernel-target` takes a directory name: one vocabulary,
+/// two meanings, and the error would surface as a wrong checkpoint rather
+/// than as a message.
+fn validate_serve_presets(targets: &[Target]) {
+    let mut seen: HashMap<String, &str> = HashMap::new();
+    for t in targets {
+        for p in &t.serve_presets {
+            let key = p.name.to_ascii_lowercase();
+            if let Some(owner) = seen.get(&key)
+                && *owner != t.model
+            {
+                panic!(
+                    "serve preset {:?} is declared by both kernel targets {:?} and {:?} — \
+                     preset names must be unique across kernels/<hw>/*/MODEL.toml",
+                    p.name, owner, t.model
+                );
+            }
+            seen.insert(key.clone(), &t.model);
+            assert!(
+                !targets
+                    .iter()
+                    .any(|o| o.model.eq_ignore_ascii_case(&p.name)),
+                "kernels/<hw>/{}/MODEL.toml: serve preset {:?} is named like a kernel target \
+                 directory — pick a name that is not a target (e.g. suffix the quant/variant)",
+                t.model,
+                p.name
+            );
+        }
+    }
 }
 
 /// Fail the BUILD when differently-named targets collide on a
@@ -1332,7 +1392,8 @@ mod build_parse;
 mod build_shadow;
 use build_parse::{
     parse_behavior, parse_dflash, parse_expected_absent, parse_kernel_source, parse_kernel_toml,
-    parse_match_names, parse_model_types, parse_sampling_presets, parse_shadow_exempt,
+    parse_match_names, parse_model_types, parse_sampling_presets, parse_serve_presets,
+    parse_shadow_exempt,
 };
 use build_shadow::shadowed_missing_symbols;
 

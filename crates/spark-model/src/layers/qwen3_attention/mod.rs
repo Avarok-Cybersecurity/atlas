@@ -21,6 +21,7 @@ mod decode;
 pub(crate) mod helpers;
 mod init;
 mod init_arch_gates;
+mod init_exl3;
 mod init_kernel_dispatch;
 mod kernel_requirements;
 mod op_dump;

@@ -23,6 +23,9 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use crate::layers::ops;
 use crate::layers::qwen3_attention::HcLowRank;
 
+#[path = "hyper_connection_verify_tests.rs"]
+mod verify;
+
 struct Fixture {
     dir: String,
     hc: usize,

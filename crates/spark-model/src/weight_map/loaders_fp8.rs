@@ -205,6 +205,10 @@ pub(crate) fn quantize_to_nvfp4(
     let t = std::time::Instant::now();
     let mut max_bytes = [0u8; 4];
     gpu.copy_d2h(max_buf, &mut max_bytes)?;
+    // The absmax scratch is consumed by the readback above (blocking, after
+    // the stream sync) — free it here rather than leak one 4-byte device
+    // allocation (a 512-B driver slot) per quantized tensor.
+    gpu.free(max_buf)?;
     T_D2H.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     let global_max = f32::from_le_bytes(max_bytes);
 

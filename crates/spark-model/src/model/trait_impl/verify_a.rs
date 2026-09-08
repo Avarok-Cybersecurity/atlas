@@ -45,6 +45,22 @@ impl TransformerModel {
             return Ok(vec![tok]);
         }
 
+        // Under an mHC highway the SSM branch below (`decode_batched`) REFUSES:
+        // the batched paths keep their own residual, which the highway
+        // replaces. Route K-row verify through the mini-prefill path instead —
+        // the only working multi-row mHC shape. Behind a flag until the QSA/PLE
+        // rewinds a rejected draft needs are implemented.
+        if self.verify_needs_hc_path() {
+            anyhow::ensure!(
+                std::env::var("ATLAS_QWEN4EXP_MTP_VERIFY").as_deref() == Ok("1"),
+                "K-row verify under an mHC highway needs the mini-prefill path \
+                 (ATLAS_QWEN4EXP_MTP_VERIFY=1). It is off by default because a \
+                 REJECTED draft still has no QSA/PLE rewind, so a partial accept \
+                 would leave those carries ahead of the sequence."
+            );
+            return self.decode_verify_hc(tokens, seq, stream);
+        }
+
         // GEMM-batched verification: process all K tokens per-layer,
         // using GEMM for weight-heavy projections to amortize bandwidth.
         let stream = self.gpu.default_stream();

@@ -7,77 +7,13 @@
 //! or cuMemAlloc directly.
 
 use anyhow::Result;
-use std::fmt;
-use std::sync::atomic::Ordering;
-// The free-memory baseline is a field of the single run mailbox,
-// `crate::run_metrics::RunMetrics`: it is read by the dashboard and by KV
-// sizing from threads with no carrier, and it is cleared at run start so a
-// second model measures against its own baseline rather than the first
-// model's pre-load free memory.
 
-/// Record the free-memory baseline at GPU-context init. Call once, early,
-/// before weight loading. Idempotent-last-write; intended to be set exactly once.
-pub fn set_baseline_free_bytes(bytes: usize) {
-    crate::run_metrics::metrics()
-        .baseline_free_bytes
-        .store(bytes, Ordering::Relaxed);
-}
-
-/// The free-memory baseline captured at context init, or `None` if never set.
-pub fn baseline_free_bytes() -> Option<usize> {
-    match crate::run_metrics::metrics()
-        .baseline_free_bytes
-        .load(Ordering::Relaxed)
-    {
-        0 => None,
-        v => Some(v),
-    }
-}
-
-/// Opaque device pointer wrapping a CUDA CUdeviceptr (u64).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DevicePtr(pub u64);
-
-impl DevicePtr {
-    pub const NULL: Self = Self(0);
-
-    pub fn is_null(self) -> bool {
-        self.0 == 0
-    }
-
-    /// Byte offset from this pointer.
-    pub fn offset(self, bytes: usize) -> Self {
-        Self(self.0 + bytes as u64)
-    }
-}
-
-/// Handle to a loaded CUDA kernel function.
-#[derive(Debug, Clone, Copy)]
-pub struct KernelHandle(pub u64);
-
-/// Handle to an instantiated CUDA graph (CUgraphExec).
-#[derive(Debug, Clone, Copy)]
-pub struct GraphHandle(pub u64);
-
-/// Typed kernel argument, used by `launch_typed`.
-///
-/// CUDA's `cuLaunchKernel` is type-blind — every arg is `void*` and the
-/// driver interprets bytes by kernel signature. Metal's
-/// `MTLComputeCommandEncoder` is not: buffer arguments require
-/// `setBuffer:offset:atIndex:` (the encoder tracks the resource) while
-/// scalar/struct args require `setBytes:length:atIndex:`. `KernelArg`
-/// preserves that distinction so both backends can dispatch correctly.
-#[derive(Debug, Clone, Copy)]
-pub enum KernelArg<'a> {
-    /// A device buffer at this base GPU address. The metal backend
-    /// resolves it to its owning `MTLBuffer` + offset via the alloc
-    /// registry; the cuda backend forwards the raw `u64` to the driver.
-    Buffer(DevicePtr),
-    /// Inline scalar/struct bytes, e.g. a `u32` count or an `f32` eps.
-    /// Length is forwarded to Metal's `setBytes:length:`; the cuda
-    /// backend zero-pads up to 8 bytes per slot.
-    Bytes(&'a [u8]),
-}
+// Handle types + the free-memory baseline accessors live in `gpu/types.rs`
+// (≤500 LoC split); re-exported so every `crate::gpu::X` path is unchanged.
+mod types;
+pub use types::{
+    DevicePtr, GraphHandle, KernelArg, KernelHandle, baseline_free_bytes, set_baseline_free_bytes,
+};
 
 pub use crate::gpu_args::pack_kernel_args;
 
@@ -194,6 +130,74 @@ pub trait GpuBackend: Send + Sync {
             .map(|&i| &storage[i] as *const u64 as *mut std::ffi::c_void)
             .collect();
         self.launch(func, grid, block, shared_mem, stream, &mut params)
+    }
+
+    /// Cooperative kernel launch (`cuLaunchCooperativeKernel`).
+    ///
+    /// Every block of the grid is resident on the device for the kernel's
+    /// whole lifetime, which is what makes an in-kernel `grid.sync()` legal —
+    /// the EXL3 trellis GEMM/GEMV kernels rely on it for their split-k
+    /// lock/barrier protocol. The GRID MUST FIT: callers size the grid from
+    /// [`GpuBackend::sm_count`] (occupancy-capped, per the upstream formula),
+    /// because a grid one block too large fails the launch outright rather
+    /// than serializing.
+    ///
+    /// Unlike `launch`, this path does NOT auto-raise the kernel's dynamic
+    /// shared memory cap: a kernel that wants more than the 48 KB default
+    /// (EXL3 GEMM asks for 90 KB) must be opted in ONCE at kernel resolution
+    /// via [`GpuBackend::set_kernel_max_dynamic_smem`].
+    ///
+    /// Default: unsupported. A backend without co-resident-grid semantics
+    /// must refuse rather than silently launch non-cooperatively — the
+    /// kernel's `grid.sync()` would deadlock or race.
+    fn launch_cooperative(
+        &self,
+        _func: KernelHandle,
+        _grid: [u32; 3],
+        _block: [u32; 3],
+        _shared_mem: u32,
+        _stream: u64,
+        _params: &mut [*mut std::ffi::c_void],
+    ) -> Result<()> {
+        anyhow::bail!("launch_cooperative: not supported by this backend")
+    }
+
+    /// Typed-args cooperative launch — `launch_typed`'s cooperative twin,
+    /// reached from `KernelLaunch::cooperative()`. The default packs args
+    /// into u64 slots exactly like `launch_typed` and forwards to
+    /// `launch_cooperative`; the mock overrides it to record the launch.
+    fn launch_cooperative_typed(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        args: &[KernelArg<'_>],
+    ) -> Result<()> {
+        let (storage, starts) = pack_kernel_args(args);
+        let mut params: Vec<*mut std::ffi::c_void> = starts
+            .iter()
+            .map(|&i| &storage[i] as *const u64 as *mut std::ffi::c_void)
+            .collect();
+        self.launch_cooperative(func, grid, block, shared_mem, stream, &mut params)
+    }
+
+    /// Raise `kernel`'s dynamic shared memory cap to `bytes`
+    /// (`CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES`).
+    ///
+    /// Kernels default to a 48 KB dynamic-smem ceiling; anything larger
+    /// (EXL3 GEMM: 90 KB) must opt in per FUNCTION before the first launch.
+    /// The attribute is sticky on the `CUfunction`, so call this ONCE where
+    /// the kernel handle is resolved — a layer constructor — never per
+    /// launch. The eager `launch` path auto-raises inside the registry;
+    /// `launch_cooperative` deliberately does not, and this method is how
+    /// its callers pay that cost up front.
+    ///
+    /// Default no-op: backends with no such attribute (mock, Metal) have
+    /// nothing to raise and must not fail the caller's init for it.
+    fn set_kernel_max_dynamic_smem(&self, _kernel: KernelHandle, _bytes: usize) -> Result<()> {
+        Ok(())
     }
 
     /// Whether `stream` is inside an active CUDA-graph capture. Telemetry
@@ -473,12 +477,6 @@ pub trait GpuBackend: Send + Sync {
             unsafe { std::alloc::dealloc(ptr, layout) };
         }
         Ok(())
-    }
-}
-
-impl fmt::Display for DevicePtr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DevicePtr(0x{:x})", self.0)
     }
 }
 

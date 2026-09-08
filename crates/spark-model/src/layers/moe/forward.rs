@@ -318,6 +318,23 @@ impl MoeLayer {
             tracing::info!("  MoE experts: {:?}, weights: {:.4?}", indices, weights);
         }
 
+        // ── Native EXL3 routed experts (ATLAS_EXL3_NATIVE_MOE=1) ──
+        // Ahead of every materialized arm: the NVFP4 tables hold nulls when
+        // the experts were kept packed. Routing above (GEMV router + top-k)
+        // is reused as-is; the arm reads `indices_dev`/`weights_dev` from
+        // scratch, folds the probs into the down mgemm, and handles the
+        // shared expert + EP tail itself.
+        if self.exl3_native_active() {
+            return self.forward_exl3_after_routing(
+                input,
+                1,
+                indices_dev,
+                weights_dev,
+                ctx,
+                stream,
+            );
+        }
+
         // Apply pre-expert norm AFTER routing, BEFORE expert dispatch (Gemma-4 26B).
         // Write to scratch buffer to preserve original `input` (= residual in caller).
         let expert_input = if let Some(ref norm_w) = self.pre_expert_norm {

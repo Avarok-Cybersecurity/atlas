@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Exact MTP-verify conv+GDN arm (issue #435 route (a)) — OPT-IN via
-//! `--exact-verify`.
+//! Exact MTP-verify conv+GDN arm (issue #435 route (a)) — reached from
+//! `--exact-verify`, and (2026-09-03) from any pass that declares
+//! `ForwardContext::gdn_exact_replay`.
 //!
-//! By default this arm does NOT run: the verify pass runs the WY/fused
-//! chunkwise arms, so spec-on output is NOT bitwise-equal to spec-off at
-//! temp 0 — #435's divergence remains with default settings, and
+//! For most verify bodies this arm does NOT run by default: they take the
+//! WY/fused chunkwise arms, so spec-on output is NOT bitwise-equal to spec-off
+//! at temp 0 — #435's divergence remains with default settings, and
 //! `--exact-verify` is the flag that removes it (measured decode-step cost
 //! ~+35% at n=8/K=4, ~+22% at n=16/K=2, ~+36% at n=32/K=2; every surveyed
 //! production engine ships exactness as the same kind of opt-in).
+//!
+//! The mHC MTP verify (`model/trait_impl/verify_hc.rs`) is the exception: its
+//! row 0 re-processes an already-committed token, so it declares
+//! `gdn_exact_replay` and gets this arm unconditionally. Measured on
+//! qwen3.8-flash-next (native EXL3, gamma=1, 40-token probe): with the WY arms
+//! the verify's row-0 logits matched serial decode 0/38; with this arm plus
+//! the other two row-exact legs, 38/38. Kill switch `ATLAS_NO_VERIFY_ROW_GDN`.
 //!
 //! The WY/fused verify arms diverge in two ways: the verify conv runs the
 //! BF16-output kernel where sequential decode runs the FP32 one (h-state
@@ -167,10 +175,12 @@ impl Qwen3SsmLayer {
         static LOGGED: std::sync::Once = std::sync::Once::new();
         LOGGED.call_once(|| {
             tracing::info!(
-                "EXACT MTP verify ENGAGED (#435 route (a), opt-in --exact-verify): \
+                "EXACT MTP verify ENGAGED (#435 route (a); --exact-verify, or a pass \
+                 that declares gdn_exact_replay — the mHC MTP verify does): \
                  per-token sequential-decode kernel chain (f32_conv={use_f32_conv}, \
                  fused_gdn_norm={fused_gdn_norm}, snap_twin={snap}, \
-                 fused_f32_conv={fused_conv}); omit the flag for the default WY arms"
+                 fused_f32_conv={fused_conv}); ATLAS_NO_VERIFY_ROW_GDN restores the \
+                 WY arms for the pass-scoped case"
             );
         });
 

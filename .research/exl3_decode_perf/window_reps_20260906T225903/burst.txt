@@ -1,0 +1,29 @@
+/home/ms/atlas/.claude/worktrees/exl3-research/.research/exl3_decode_perf/probe_queueing.py:71: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  f"date={datetime.datetime.utcnow().isoformat()}Z", flush=True)
+FINGERPRINT probe_queueing label=shipped port=8899 long=8000 short=600 x3 max_tokens=64 date=2026-09-07T02:59:51.721193Z
+  rep0 long    ttft=   22193 ms  wall= 31.81 s  tok=64
+  rep0 short0  ttft=    2679 ms  wall= 31.22 s  tok=63
+  rep0 short1  ttft=    1392 ms  wall= 30.86 s  tok=63
+  rep0 short2  ttft=    3931 ms  wall= 30.38 s  tok=63
+  rep0 short_med_ttft=2679 ms  long_ttft=22193 ms  burst_wall=31.81 s
+  rep1 long    ttft=   22210 ms  wall= 31.20 s  tok=64
+  rep1 short0  ttft=    1306 ms  wall= 30.38 s  tok=63
+  rep1 short1  ttft=    2594 ms  wall= 30.41 s  tok=63
+  rep1 short2  ttft=    3895 ms  wall= 30.79 s  tok=64
+  rep1 short_med_ttft=2594 ms  long_ttft=22210 ms  burst_wall=31.20 s
+  rep2 long    ttft=   21993 ms  wall= 31.77 s  tok=63
+  rep2 short0  ttft=    1320 ms  wall= 30.54 s  tok=63
+  rep2 short1  ttft=    2613 ms  wall= 31.22 s  tok=63
+  rep2 short2  ttft=    3904 ms  wall= 31.03 s  tok=61
+  rep2 short_med_ttft=2613 ms  long_ttft=21993 ms  burst_wall=31.77 s
+  rep3 long    ttft=   22000 ms  wall= 31.59 s  tok=63
+  rep3 short0  ttft=    1282 ms  wall= 31.25 s  tok=63
+  rep3 short1  ttft=    2579 ms  wall= 30.13 s  tok=63
+  rep3 short2  ttft=    3885 ms  wall= 30.39 s  tok=64
+  rep3 short_med_ttft=2579 ms  long_ttft=22000 ms  burst_wall=31.59 s
+  rep4 long    ttft=   22145 ms  wall= 32.22 s  tok=62
+  rep4 short0  ttft=    1322 ms  wall= 32.32 s  tok=64
+  rep4 short1  ttft=    2607 ms  wall= 30.33 s  tok=64
+  rep4 short2  ttft=    3883 ms  wall= 30.82 s  tok=64
+  rep4 short_med_ttft=2607 ms  long_ttft=22145 ms  burst_wall=32.32 s
+SUMMARY shipped short_med_ttft_ms=2607 long_ttft_ms=22145 all_med_ttft_ms=3245 all_max_ttft_ms=22145 burst_wall_s=31.77

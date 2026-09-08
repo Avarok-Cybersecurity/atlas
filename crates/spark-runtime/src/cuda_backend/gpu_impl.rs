@@ -126,10 +126,17 @@ impl GpuBackend for AtlasCudaBackend {
         // outside the util pledge is how the box ends up in swap). Debug
         // level so production INFO stays quiet; RUST_LOG=spark_runtime=debug
         // turns the trail on.
+        //
+        // The running live total rides along because the per-alloc size alone
+        // cannot distinguish churn from a leak: a 96 MB buffer allocated and
+        // freed every step looks identical in the trail to one that is never
+        // released. `live` climbing across steps is the leak signal.
         if bytes >= 32 * 1024 * 1024 {
+            let (n, live) = self.live_count_bytes();
             tracing::debug!(
-                "alloc {:.1} MB (device ptr {dptr:#x})",
-                bytes as f64 / (1024.0 * 1024.0)
+                "alloc {:.1} MB (device ptr {dptr:#x}) live={:.2} GB in {n} allocs",
+                bytes as f64 / (1024.0 * 1024.0),
+                live as f64 / (1024.0 * 1024.0 * 1024.0)
             );
         }
         Ok(DevicePtr(dptr))
@@ -157,7 +164,22 @@ impl GpuBackend for AtlasCudaBackend {
         }
         // Off the ledger BEFORE the free: an entry that survives a successful
         // free would be double-freed at teardown.
-        self.forget_alloc(ptr);
+        //
+        // The size comes back from the ledger so the free trail can be diffed
+        // against the alloc trail by pointer — the query that names what is
+        // accumulating. `None` is a pointer this allocator never handed out
+        // (CUTLASS and FlashInfer allocate directly), which is not an error.
+        if let Some(bytes) = self.forget_alloc(ptr)
+            && bytes >= 32 * 1024 * 1024
+        {
+            let (n, live) = self.live_count_bytes();
+            tracing::debug!(
+                "free {:.1} MB (device ptr {:#x}) live={:.2} GB in {n} allocs",
+                bytes as f64 / (1024.0 * 1024.0),
+                ptr.0,
+                live as f64 / (1024.0 * 1024.0 * 1024.0)
+            );
+        }
         let status = unsafe { cuMemFree_v2(ptr.0) };
         // A context that is already being destroyed reports every free as
         // failing, and at process exit that is the normal case, not an error:
@@ -246,23 +268,24 @@ impl GpuBackend for AtlasCudaBackend {
         })
     }
 
+    fn launch_cooperative(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        params: &mut [*mut c_void],
+    ) -> Result<()> {
+        self.launch_cooperative_cu(func, grid, block, shared_mem, stream, params)
+    }
+
+    fn set_kernel_max_dynamic_smem(&self, kernel: KernelHandle, bytes: usize) -> Result<()> {
+        self.set_kernel_max_dynamic_smem_cu(kernel, bytes)
+    }
+
     fn stream_is_capturing(&self, stream: u64) -> bool {
-        // SCALE's libcuda does not export cuStreamIsCapturing; report
-        // not-capturing there (gfx1151 telemetry taps then sample eagerly —
-        // acceptable for a default-off measurement knob).
-        #[cfg(atlas_scale)]
-        {
-            let _ = stream;
-            false
-        }
-        #[cfg(not(atlas_scale))]
-        {
-            let mut status: u32 = 0;
-            // CU_STREAM_CAPTURE_STATUS_NONE = 0; treat query failure as
-            // capturing (conservative: the tap skips its sample).
-            let rc = unsafe { super::cuStreamIsCapturing(stream, &mut status) };
-            rc != 0 || status != 0
-        }
+        self.stream_is_capturing_cu(stream)
     }
 
     fn synchronize(&self, stream: u64) -> Result<()> {
@@ -296,13 +319,20 @@ impl GpuBackend for AtlasCudaBackend {
         // `file:line` through, which is the only part of an unresolved-lookup
         // report an operator can act on.
         let site = std::panic::Location::caller();
-        // Ephemeral OnceLock — no cross-call caching, but kernel() is only
-        // called at model init time. Layers store the returned KernelHandle.
+        // Per-backend name cache (see the field doc): repeat lookups — the
+        // native EXL3 wrappers resolve by name per launch — return the handle
+        // without a driver call or an audit row. Misses are the init-time
+        // path: resolve, audit, insert.
+        let key = format!("{module}::{func_name}");
+        if let Some(&h) = self.kernel_cache.lock().get(&key) {
+            return Ok(KernelHandle(h));
+        }
         let cache: OnceLock<RawCudaFunc> = OnceLock::new();
         let registry = self.registry();
         match registry.raw_function_cached(&cache, module, func_name) {
             Ok(raw) => {
                 crate::kernel_audit::record(module, func_name, true, site);
+                self.kernel_cache.lock().insert(key, raw.0 as u64);
                 Ok(KernelHandle(raw.0 as u64))
             }
             Err(e) => {
@@ -377,38 +407,7 @@ impl GpuBackend for AtlasCudaBackend {
         height: usize,
         stream: u64,
     ) -> Result<()> {
-        // One pitched copy (cudaMemcpyDeviceToDevice = 3) on the caller's stream,
-        // replacing a per-row copy_d2d_async loop. cudart is linked (cutlass/
-        // flashinfer use the runtime API); a CUstream handle is a valid
-        // cudaStream_t.
-        unsafe extern "C" {
-            fn cudaMemcpy2DAsync(
-                dst: *mut c_void,
-                dpitch: usize,
-                src: *const c_void,
-                spitch: usize,
-                width: usize,
-                height: usize,
-                kind: i32,
-                stream: u64,
-            ) -> i32;
-        }
-        let status = unsafe {
-            cudaMemcpy2DAsync(
-                dst.0 as *mut c_void,
-                dst_pitch,
-                src.0 as *const c_void,
-                src_pitch,
-                width_bytes,
-                height,
-                3,
-                stream,
-            )
-        };
-        if status != 0 {
-            bail!("cudaMemcpy2DAsync failed: status {status}");
-        }
-        Ok(())
+        self.copy_d2d_2d_async_cu(src, src_pitch, dst, dst_pitch, width_bytes, height, stream)
     }
 
     fn begin_capture(&self, stream: u64) -> Result<()> {

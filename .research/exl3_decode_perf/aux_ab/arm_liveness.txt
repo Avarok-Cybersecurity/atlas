@@ -1,0 +1,5 @@
+Arm-liveness proof: the server's own line, one per arm (serve logs dropped for size).
+b1: 2026-09-07T22:58:54.129341Z  INFO spark_model::model::trait_impl: aux collect (snapshot): BATCHED (1 sync) — 13 batched layer(s), 0 legacy, 24944844 B first call
+a1: 2026-09-07T23:04:09.548178Z  INFO spark_model::model::trait_impl: aux collect (snapshot): LEGACY (1 sync/layer) — 0 batched layer(s), 48 legacy, 0 B first call
+a2: 2026-09-07T23:09:26.558376Z  INFO spark_model::model::trait_impl: aux collect (snapshot): LEGACY (1 sync/layer) — 0 batched layer(s), 48 legacy, 0 B first call
+b2: 2026-09-07T23:14:45.664876Z  INFO spark_model::model::trait_impl: aux collect (snapshot): BATCHED (1 sync) — 13 batched layer(s), 0 legacy, 24895692 B first call

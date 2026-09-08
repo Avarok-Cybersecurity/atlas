@@ -1,0 +1,20 @@
+distinct-prompt bench isl=4096 osl=256 concs=[1]
+  C    Tput  TPOT_p50  TPOT_max  TTFT_p50 sTTFT_p50 sTPS_p50  toks
+  1    7.8t     55.0m     55.0m    14585m    10001m     12.8   200
+   server-step n=1 steps=0 p50=NA
+   ATLAS_DECODE_BATCH lines in cell: 0
+distinct-prompt bench isl=4096 osl=256 concs=[2]
+  C    Tput  TPOT_p50  TPOT_max  TTFT_p50 sTTFT_p50 sTPS_p50  toks
+  2    8.2t    106.4m    106.4m    30997m    10006m      6.4   463
+   server-step n=2 steps=0 p50=NA
+   ATLAS_DECODE_BATCH lines in cell: 0
+distinct-prompt bench isl=4096 osl=256 concs=[4]
+  C    Tput  TPOT_p50  TPOT_max  TTFT_p50 sTTFT_p50 sTPS_p50  toks
+  4    8.3t    209.5m    214.8m    62097m     9989m      3.0   959
+   server-step n=4 steps=0 p50=NA
+   ATLAS_DECODE_BATCH lines in cell: 0
+distinct-prompt bench isl=4096 osl=256 concs=[8]
+  C    Tput  TPOT_p50  TPOT_max  TTFT_p50 sTTFT_p50 sTPS_p50  toks
+  8    8.3t    408.1m    449.0m   123710m     9967m      1.4  1885
+   server-step n=8 steps=0 p50=NA
+   ATLAS_DECODE_BATCH lines in cell: 0

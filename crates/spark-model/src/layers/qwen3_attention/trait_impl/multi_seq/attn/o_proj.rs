@@ -130,7 +130,13 @@ impl Qwen3AttentionLayer {
         }
 
         let o_out = fwd.buffers.moe_output();
-        if let Some(q2) = self.o_weight.as_ref().and_then(|w| w.as_packed_q2()) {
+        if let Some(x) = self.exl3_attn_arm(fwd, "decode_multi_seq o_proj")? {
+            // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): attn_out is contiguous
+            // [n, q_dim] and o_out contiguous [n, h] — ONE packed o_proj call
+            // for all n rows (GEMV tier n <= 8, GEMM above). The LoRA delta
+            // below still applies.
+            x.o_proj_linear(fwd.gpu, attn_out, o_out, n, stream)?;
+        } else if let Some(q2) = self.o_weight.as_ref().and_then(|w| w.as_packed_q2()) {
             // Keep-packed Q2_0 (Tier-1c): per-token 2-bit o_proj GEMV.
             for i in 0..n {
                 let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);

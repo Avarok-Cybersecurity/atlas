@@ -62,6 +62,15 @@ pub enum WeightQuantFormat {
     /// native `q2_0_gemv` decode GEMV. Consumed only by that kernel — feeding
     /// these bytes through any other GEMV/GEMM is silent garbage.
     PackedQ2_0,
+    /// Keep-packed EXL3 (QTIP trellis, `ATLAS_EXL3_NATIVE=1`): u16 trellis
+    /// codes `[in/16, out/16, 16*K]` + exact-f16 `suh`/`svh` Hadamard sign
+    /// vectors, decoded in-kernel by the fused `exl3_matmul` GEMV/GEMM
+    /// (cooperative launches; see `layers/ops/exl3_matmul.rs`). Consumed only
+    /// by those kernels — the trellis bytes are code STREAMS, not values, so
+    /// feeding them through any other GEMV/GEMM is silent garbage. This tag is
+    /// also the future `experts_scale_kind` value for a grouped-MoE trellis
+    /// arm (the `Mxfp4E8m0` precedent).
+    Exl3Trellis,
 }
 
 impl WeightQuantFormat {

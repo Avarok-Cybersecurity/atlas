@@ -134,3 +134,60 @@ pub fn hc_head(
         .arg_f32(hc_eps)
         .launch(stream)
 }
+
+/// Grouped RMSNorm of the FP32 mHC highway into BF16 (`hc_pre_stage_bf16`).
+///
+/// Each stream normalizes independently (`group_size = hidden`) and the scale is
+/// offset-from-1. Exposed on its own because the qwen4_exp MTP combiner needs
+/// exactly this FP32-in / BF16-out step: its `pre_fc_norm_hidden` is `[hc*H]`
+/// and the projections that consume it are BF16.
+#[allow(clippy::too_many_arguments)]
+pub fn hc_pre_stage_bf16_norm(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    streams_f32: DevicePtr,
+    norm_w: DevicePtr,
+    normed_bf16_out: DevicePtr,
+    num_tokens: u32,
+    hidden_size: u32,
+    hc_mult: u32,
+    eps: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_tokens, 1, 1])
+        .block([1024, 1, 1])
+        .arg_ptr(streams_f32)
+        .arg_ptr(norm_w)
+        .arg_ptr(normed_bf16_out)
+        .arg_u32(hidden_size)
+        .arg_u32(hc_mult)
+        .arg_f32(eps)
+        .launch(stream)
+}
+
+/// MTP combiner tail: `streams[i] = per_stream[i] + bcast`, BF16 in, FP32 out.
+///
+/// `hc_expand` cannot serve here — it broadcasts ONE row to every stream, and
+/// the MTP combiner's streams differ per stream.
+#[allow(clippy::too_many_arguments)]
+pub fn qhc_mtp_combine_streams(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    per_stream_bf16: DevicePtr,
+    bcast_bf16: DevicePtr,
+    streams_f32_out: DevicePtr,
+    hidden_size: u32,
+    hc_mult: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([1, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(per_stream_bf16)
+        .arg_ptr(bcast_bf16)
+        .arg_ptr(streams_f32_out)
+        .arg_u32(hidden_size)
+        .arg_u32(hc_mult)
+        .launch(stream)
+}

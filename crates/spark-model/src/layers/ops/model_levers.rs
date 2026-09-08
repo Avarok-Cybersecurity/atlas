@@ -42,6 +42,17 @@ pub struct ModelLevers {
     pub gdn_wy17: bool,
     /// WY-N GDN recurrence variant. Ships ON; `ATLAS_GDN_WYN=0` opts out.
     pub gdn_wyn: bool,
+    /// KILL SWITCH (`ATLAS_GDN_FLA_UNDER_PREFIX_CACHE=1`): let a COLD prefill
+    /// pass keep the FLA chunked recurrence even when the prefix cache is
+    /// active on a hybrid-SSM model. Default OFF, i.e. the fix is on.
+    ///
+    /// FLA's 64-token chunk grid is anchored at the start of the pass, so its
+    /// output depends on where the prompt was cut. A warm Marconi replay cuts
+    /// at the snapshot instead, and was already pinned to the token-sequential
+    /// ladder — so cold and warm ran DIFFERENT kernels either side of the
+    /// restore boundary (measured 3.045e-03 relative divergence at GDN layer 0
+    /// with bit-identical inputs). See `crate::model::gdn_replay`.
+    pub gdn_fla_under_prefix_cache: bool,
 
     // ── FFN / MoE ──
     /// Lossless single-warp decode GEMV (`w4a16_gemv_sw`, `w4a16_gemv_dual_sw`).
@@ -130,6 +141,7 @@ fn from_values(
         gdn_batched_fla: opt_in(value("ATLAS_GDN_BATCHED_FLA").as_deref()),
         gdn_wy17: opt_out(value("ATLAS_GDN_WY17").as_deref()),
         gdn_wyn: opt_out(value("ATLAS_GDN_WYN").as_deref()),
+        gdn_fla_under_prefix_cache: opt_in(value("ATLAS_GDN_FLA_UNDER_PREFIX_CACHE").as_deref()),
         ffn_small_m: opt_out(value("ATLAS_FFN_SMALLM").as_deref()),
         gemv_sw: super::gemv_sw::gemv_sw_from(value("ATLAS_NO_GEMV_SW").as_deref()),
         decode_ffn_via_gemm: opt_in(value("ATLAS_DECODE_FFN_VIA_GEMM").as_deref()),
@@ -251,6 +263,19 @@ mod tests {
             );
         }
         assert!(!resolve(&[("ATLAS_K4_DIAG", "true")]).k4_diag);
+    }
+
+    /// The warm/cold recurrence kill switch: default OFF (the fix is on), and
+    /// only the exact string "1" turns it on, like every other opt-in here.
+    #[test]
+    fn the_gdn_fla_prefix_cache_kill_switch_is_an_exact_opt_in() {
+        assert!(!ModelLevers::defaults().gdn_fla_under_prefix_cache);
+        assert!(!resolve(&[]).gdn_fla_under_prefix_cache);
+        assert!(
+            !resolve(&[("ATLAS_GDN_FLA_UNDER_PREFIX_CACHE", "true")]).gdn_fla_under_prefix_cache
+        );
+        assert!(!resolve(&[("ATLAS_GDN_FLA_UNDER_PREFIX_CACHE", "0")]).gdn_fla_under_prefix_cache);
+        assert!(resolve(&[("ATLAS_GDN_FLA_UNDER_PREFIX_CACHE", "1")]).gdn_fla_under_prefix_cache);
     }
 
     #[test]
