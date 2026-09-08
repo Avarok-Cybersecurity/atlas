@@ -60,13 +60,28 @@ fn expert_leaf(id: usize, proj: &str) -> String {
 
 /// Is this layer's routed-expert set stored as EXL3 trellis?
 ///
-/// Probes expert 0's `gate_proj` for the `.trellis`/`.suh`/`.svh` triplet.
-/// Expert 0 is a safe probe precisely because the pack's scope is
+/// Probes `probe_id`'s `gate_proj` for the `.trellis`/`.suh`/`.svh` triplet.
+/// Any single expert answers for the layer because the pack's scope is
 /// "routed experts only": either every routed expert of the layer is packed or
-/// none is, and a partially-packed layer would fail the per-expert resolve
-/// below by name rather than be silently half-loaded.
-pub fn layer_is_exl3(store: &WeightStore, qualify: &dyn Fn(&str) -> String) -> bool {
-    is_exl3_linear(store, &qualify(&expert_leaf(0, "gate_proj")))
+/// none is, and a partially-packed layer fails the per-expert resolve in
+/// [`bind_experts_exl3`] by name rather than being silently half-loaded.
+///
+/// # `probe_id` must be an expert THIS RANK OWNS
+///
+/// Under expert parallelism the weight store is sharded, so a rank holds only
+/// its own slice: with EP=2 and 288 experts, rank 1's store starts at 144 and
+/// expert 0's tensors are simply absent. Probing a fixed expert 0 therefore
+/// reported "not EXL3" on every rank but 0, which dropped the layer to the
+/// dense binder and surfaced -- confusingly far from the cause -- as
+/// `Weight 'model.language_model.layers.3.mlp.experts.144.gate_proj.weight'
+/// not found in store`, a BF16 name the EXL3 pack never contained. Pass
+/// `local_expert_range().start`.
+pub fn layer_is_exl3(
+    store: &WeightStore,
+    qualify: &dyn Fn(&str) -> String,
+    probe_id: usize,
+) -> bool {
+    is_exl3_linear(store, &qualify(&expert_leaf(probe_id, "gate_proj")))
 }
 
 /// Bind one layer's routed experts from their packed trellis tensors.

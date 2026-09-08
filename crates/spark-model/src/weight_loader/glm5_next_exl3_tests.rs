@@ -52,8 +52,35 @@ fn detects_an_exl3_routed_layer_and_ignores_a_bf16_one() {
     );
     let store = WeightStore::from_map(m);
 
-    assert!(layer_is_exl3(&store, &qualifier(3)));
-    assert!(!layer_is_exl3(&store, &qualifier(4)));
+    assert!(layer_is_exl3(&store, &qualifier(3), 0));
+    assert!(!layer_is_exl3(&store, &qualifier(4), 0));
+}
+
+/// The EP=2 rank-1 boot failure, in a unit test.
+///
+/// A non-zero rank's store holds only its own expert slice, so the fixed
+/// expert-0 probe this function used to do reported "not EXL3", dropped the
+/// layer to the dense binder, and failed far downstream on a BF16 tensor name
+/// the pack never contained. Probing the rank's OWN first expert is what makes
+/// the detection shard-agnostic.
+#[test]
+fn detection_survives_an_ep_sharded_store_that_lacks_expert_zero() {
+    let gpu = MockGpuBackend::new();
+    let mut m = HashMap::new();
+    // "rank 1" of an EP=2 split over 4 experts: it holds 2 and 3 only.
+    for id in 2..4 {
+        put_expert(&gpu, &mut m, 3, id);
+    }
+    let store = WeightStore::from_map(m);
+
+    assert!(
+        !layer_is_exl3(&store, &qualifier(3), 0),
+        "expert 0 is genuinely absent here — this is the miss that caused the bug"
+    );
+    assert!(
+        layer_is_exl3(&store, &qualifier(3), 2),
+        "probing the rank's own first expert must detect the EXL3 layer"
+    );
 }
 
 #[test]

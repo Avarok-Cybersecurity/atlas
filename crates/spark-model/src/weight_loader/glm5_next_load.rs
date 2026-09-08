@@ -457,16 +457,16 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                     // quantizes only some routed sites still loads: each layer
                     // takes whichever arm its own tensors describe.
                     let q = |leaf: &str| qualify(idx, leaf);
-                    let exl3 = if super::glm5_next_exl3::layer_is_exl3(store, &q) {
+                    // Probe an expert THIS rank owns: under EP the store is
+                    // sharded and expert 0 lives only on rank 0.
+                    let local = mlp_cfg.local_expert_range();
+                    let exl3 = if super::glm5_next_exl3::layer_is_exl3(store, &q, local.start) {
                         Some(super::glm5_next_exl3::bind_experts_exl3(
                             gpu,
                             store,
                             &q,
                             mlp_cfg.num_experts,
-                            (
-                                mlp_cfg.local_expert_range().start,
-                                mlp_cfg.local_expert_range().end,
-                            ),
+                            (local.start, local.end),
                             (
                                 mlp_cfg.hidden,
                                 mlp_cfg.moe_intermediate,
