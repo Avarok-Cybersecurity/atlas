@@ -179,8 +179,22 @@ fn two_runs_hold_independent_levers() {
 #[test]
 fn the_per_token_scheduler_path_does_not_read_the_environment() {
     // (file, functions still allowed to read)
-    const GUARDED: [(&str, &[&str]); 3] = [
+    const GUARDED: [(&str, &[&str]); 7] = [
         ("emit_step.rs", &[]),
+        // Per VERIFY STEP. `ATLAS_DFLASH_EAGLE_FIX` was read from both of
+        // these, each with its own `!= Some("0")` — one variable, two
+        // implementations, nothing comparing them.
+        ("verify_dflash_step.rs", &[]),
+        ("verify_k2_step.rs", &[]),
+        // Per prefill chunk.
+        ("prefill_a_step.rs", &[]),
+        (
+            // Per SEQUENCE per decode step. Only `LogitsContext` is in scope
+            // there, so the dump path takes a `OnceLock` rather than
+            // threading a `String` through several types.
+            "decode_logits_seq.rs",
+            &["process_seq_logits"],
+        ),
         (
             "decode_logits_step.rs",
             &[
@@ -241,5 +255,35 @@ fn the_per_token_scheduler_path_does_not_read_the_environment() {
          variable ONCE into `SchedLevers` and read `sched.levers` instead — \
          and reuse the parser in `helpers`, do not re-spell the rule: \
          {offenders:?}"
+    );
+}
+
+/// The verify-step levers, and the duplicate that motivated them.
+///
+/// `ATLAS_DFLASH_EAGLE_FIX` ships ON since the 54.5 record config and was
+/// read from `verify_dflash_step.rs` AND `verify_k2_step.rs`, each per verify
+/// step with its own `!= Some("0")`. That is the same shape as
+/// `ATLAS_DSPARK_ANCHOR_BIAS`, which had two implementations that nothing
+/// compared until one of them was changed.
+///
+/// Asserted against `from_env()` as well as `defaults()`, for the reason
+/// `spec_think_is_off_in_the_resolver_the_server_actually_uses` exists: the
+/// hand-written literal cannot catch a change to what the SERVER resolves,
+/// and this one ships ON, so a regression to opt-in would silently disable a
+/// fix that closes a measured accept collapse.
+#[test]
+fn the_verify_step_levers_hold_their_polarities() {
+    let d = SchedLevers::defaults();
+    assert!(d.dflash_eagle_fix, "the EAGLE append fix ships ON");
+    assert!(!d.dflash_step_timing);
+    assert!(!d.vision_timing);
+
+    // SAFETY: single-threaded test process; no other thread reads the env.
+    unsafe { std::env::remove_var("ATLAS_DFLASH_EAGLE_FIX") };
+    assert!(
+        SchedLevers::from_env().dflash_eagle_fix,
+        "ATLAS_DFLASH_EAGLE_FIX must stay DEFAULT-ON in the resolver the \
+         server actually uses — `defaults()` is a hand-written literal and \
+         cannot catch a change here"
     );
 }

@@ -59,6 +59,21 @@ pub struct SchedLevers {
     pub mtp_verify_sample: bool,
 
     // ── DFlash speculation ──
+    /// The EAGLE k-gamma append fix. Ships ON since the 54.5 record config
+    /// (2026-08-19); `ATLAS_DFLASH_EAGLE_FIX=0` is the kill switch.
+    ///
+    /// ★ Read from TWO files before this — `verify_dflash_step.rs` and
+    /// `verify_k2_step.rs`, each per verify step, each with its own
+    /// `!= Some("0")`. Same variable, same spelling, no shared source: the
+    /// exact shape `ATLAS_DSPARK_ANCHOR_BIAS` had. One field now.
+    pub dflash_eagle_fix: bool,
+    /// `ATLAS_DFLASH_STEP_TIMING=1` — split the step wall into verify (target
+    /// M=1+gamma forward) and propose (drafter forward). The ledger never had
+    /// this split and guessed "FFN + double sweep"; this measures it.
+    pub dflash_step_timing: bool,
+    /// `ATLAS_VISION_TIMING` (presence) — synchronize after each prefill
+    /// chunk and log the ViT chunk wall. Diagnostic, and it forces a sync.
+    pub vision_timing: bool,
     pub dflash_masked_verify: bool,
     pub dflash_seam_serial: bool,
     pub dflash_adaptive: bool,
@@ -205,6 +220,9 @@ impl SchedLevers {
             // shipped none of them, so out-of-the-box DFlash ran the slow
             // shape of its own engine. `=0` restores each legacy path for
             // A/B; `=1` remains a harmless no-op in every existing recipe.
+            dflash_eagle_fix: on_unless_zero("ATLAS_DFLASH_EAGLE_FIX"),
+            dflash_step_timing: opt_in("ATLAS_DFLASH_STEP_TIMING"),
+            vision_timing: present("ATLAS_VISION_TIMING"),
             dflash_masked_verify: on_unless_zero("ATLAS_DFLASH_MASKED_VERIFY"),
             dflash_seam_serial: on_unless_zero("ATLAS_DFLASH_SEAM_SERIAL"),
             // NOT graduated: the record env runs adaptive OFF (γ scheduling
@@ -281,6 +299,10 @@ impl SchedLevers {
             tool_eos_escape: true,
             mtp_minp: true,
             mtp_verify_sample: true,
+            // Opt-out: ships ON, `=0` disables.
+            dflash_eagle_fix: true,
+            dflash_step_timing: false,
+            vision_timing: false,
             dflash_masked_verify: false,
             dflash_seam_serial: false,
             dflash_adaptive: false,
