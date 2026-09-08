@@ -81,25 +81,52 @@ impl TransformerModel {
             if ep_active && !reserved {
                 let local = prefix_match.matched_tokens as u32;
                 let agreed = self.ep_min_u32(local)? as usize;
-                if agreed < prefix_match.matched_tokens {
-                    self.prefix_cache.release(tokens, bs, seq.adapter_id);
-                    if agreed > 0 {
-                        prefix_match = self.prefix_cache.lookup(
-                            &tokens[..agreed],
-                            bs,
-                            seq.session_hash,
-                            seq.adapter_id,
-                        );
-                    } else {
-                        prefix_match = spark_runtime::prefix_cache::PrefixMatch::empty();
-                    }
+                // 🔴 SYMMETRY IS LOAD-BEARING, and it is why this release +
+                // re-lookup is UNCONDITIONAL rather than gated on
+                // `agreed < local`.
+                //
+                // The snapshot index evicts by LRU over `last_access`, which is
+                // a LOGICAL counter bumped once per `lookup`
+                // (radix_tree/snapshot.rs:233) — there is no wall-clock in that
+                // file. Eviction is therefore a pure function of the OPERATION
+                // SEQUENCE, and two ranks issuing the same sequence hold the
+                // same pool.
+                //
+                // Gating this block on `agreed < local` ran the extra `lookup`
+                // on ONLY the rank that had matched more. That one extra bump
+                // drifts the ranks' `access_counter`s apart, LRU then picks
+                // different victims, the snapshot pools stop agreeing, and the
+                // ranks eventually propose different Marconi anchors — i.e.
+                // different SSM replay lengths, mismatched collectives, and
+                // both GPUs pinned in an NCCL spin at 96% util / 13 W.
+                // (Measured on a GLM EXL3-K2 agentic run: rank 0 restored at
+                // token 3128 replaying 167, rank 1 at 3120 replaying 175.)
+                //
+                // When `agreed == local` the re-lookup returns the match this
+                // rank already had, so this costs one host-side radix walk per
+                // chunk-0 prefill and changes no result — and it keeps the
+                // cache HIT that the cross-rank anchor guard would otherwise
+                // have to throw away.
+                self.prefix_cache.release(tokens, bs, seq.adapter_id);
+                prefix_match = if agreed > 0 {
+                    self.prefix_cache.lookup(
+                        &tokens[..agreed],
+                        bs,
+                        seq.session_hash,
+                        seq.adapter_id,
+                    )
+                } else {
+                    spark_runtime::prefix_cache::PrefixMatch::empty()
+                };
+                if agreed < local as usize {
                     tracing::info!(
                         "F83 EP-cache-sync: local_matched={local} agreed_matched={agreed} \
                          (cap to min across ranks)"
                     );
                 } else if local > 0 || agreed > 0 {
                     tracing::debug!(
-                        "F83 EP-cache-sync: local_matched={local} agreed_matched={agreed} (no cap)"
+                        "F83 EP-cache-sync: local_matched={local} agreed_matched={agreed} \
+                         (no cap; re-looked-up anyway to keep the ranks' LRU in step)"
                     );
                 }
             }
@@ -167,6 +194,68 @@ impl TransformerModel {
                 stream,
             )?;
 
+            // F83's sibling, and the same failure it fixed. F83 agrees on
+            // `matched`; the Marconi ANCHOR was left a rank-local choice, and
+            // it decides the SSM replay length (`total - snap_tok`) — which is
+            // the collective schedule just as surely as `matched` is.
+            //
+            // Measured on a GLM EXL3-K2 agentic run, both ranks driving the
+            // same request to token 3295:
+            //
+            //   rank 0: restored at token 3128, replaying 167 SSM tokens
+            //   rank 1: restored at token 3120, replaying 175 SSM tokens
+            //
+            // -> mismatched collectives -> both GPUs pinned at 96% util / 13 W
+            // in an NCCL spin, no `Done:` line, client socket ESTAB forever.
+            //
+            // 🔴 Agree on the FINAL DECISION, not the candidate. Every gate
+            // below can still decline an agreed candidate, and
+            // `snapshot_aux_is_restorable` reads RANK-LOCAL aux state — so
+            // agreeing on `eff_snapshot_tokens` alone still permits one rank to
+            // restore while the other recomputes. The value exchanged here is
+            // therefore "the token I will actually restore at, or 0".
+            //
+            // ALL-OR-NOTHING, not a min: `snap_tok` selects a RESOURCE. Capping
+            // to the min would have the low rank restore while a rank that
+            // proposed a higher anchor holds no snapshot at that token.
+            //
+            // 🪤 UNCONDITIONAL on the multi-rank path, including when this rank
+            // decides 0. Gating the call on "I have a snapshot" is precisely the
+            // shape that deadlocked F83 before it was made unconditional.
+            let local_decision: u32 = match eff_snapshot {
+                Some(snap_id) => {
+                    let snap_tok = eff_snapshot_tokens;
+                    let ewh = snap_tok == matched
+                        && matched == total
+                        && !self.ssm_snapshots.has_hidden(snap_id);
+                    let bypass = snap_tok == matched
+                        && matched == total
+                        && std::env::var("ATLAS_MARCONI_EXACT").as_deref() != Ok("1");
+                    let eligible = snap_tok >= crate::model::mtp_carry::marconi_min_tokens()
+                        && snap_tok > 0
+                        && matched <= total
+                        && !ewh
+                        && !bypass
+                        && (!prefix_match.ssm_snapshot_is_tail
+                            || self
+                                .ssm_snapshots
+                                .session_matches(snap_id, seq.session_hash))
+                        && self.snapshot_aux_is_restorable(snap_id);
+                    if eligible { snap_tok as u32 } else { 0 }
+                }
+                None => 0,
+            };
+            let eff_snapshot = if self.ep_all_agree_u32(local_decision)? {
+                eff_snapshot
+            } else {
+                tracing::info!(
+                    "Marconi anchor DISAGREES across ranks (this rank decided {}); \
+                     declining on every rank and recomputing — correct and slow \
+                     beats a mismatched collective",
+                    local_decision,
+                );
+                None
+            };
             let mut skip = if let Some(snap_id) = eff_snapshot {
                 let snap_tok = eff_snapshot_tokens;
                 // Exact full-prompt hit on a hiddenless snapshot (finish

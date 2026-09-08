@@ -259,6 +259,59 @@ impl TransformerModel {
         Ok(min_val)
     }
 
+    /// Both bounds of `val` across the ranks, in the SAME rooted-broadcast pass
+    /// [`Self::ep_min_u32`] already pays for — so agreement costs no extra
+    /// collective over the min it replaces.
+    ///
+    /// `min == max` is the only proof that every rank proposed the same value.
+    /// A min alone is not enough when the value SELECTS A RESOURCE: the rank
+    /// holding the minimum would use it while a rank that proposed something
+    /// larger has no such resource to fall back to, and the two then diverge
+    /// anyway. See [`Self::ep_all_agree_u32`].
+    pub(super) fn ep_minmax_u32(&self, val: u32) -> Result<(u32, u32)> {
+        let Some(comm) = self.comm.as_ref() else {
+            return Ok((val, val));
+        };
+        let stream = self.gpu.default_stream();
+        // Same `max()` reasoning as ep_min_u32: under pure TP `ep_world_size`
+        // is 1 while the comm spans `tp_world_size` ranks.
+        let world = self.config.ep_world_size.max(self.config.tp_world_size);
+        let (mut min_val, mut max_val) = (val, val);
+        for root in 0..world {
+            let v = if comm.rank() == root {
+                self.gpu.copy_h2d(&val.to_le_bytes(), self.ep_cmd_buf)?;
+                comm.broadcast(self.ep_cmd_buf.0, 4, root)?;
+                val
+            } else {
+                comm.broadcast(self.ep_cmd_buf.0, 4, root)?;
+                self.gpu.synchronize(stream)?;
+                let mut buf = [0u8; 4];
+                self.gpu.copy_d2h(self.ep_cmd_buf, &mut buf)?;
+                u32::from_le_bytes(buf)
+            };
+            min_val = min_val.min(v);
+            max_val = max_val.max(v);
+        }
+        Ok((min_val, max_val))
+    }
+
+    /// Do ALL ranks propose `val`?
+    ///
+    /// 🪤 A COLLECTIVE. Every rank must call it the same number of times, at
+    /// the same point — call it unconditionally on the multi-rank path, never
+    /// behind a rank-local `if`, exactly as F83 learned for
+    /// [`Self::ep_min_u32`] (gating that on `matched_tokens > 0` deadlocked
+    /// when one rank matched and the other did not).
+    ///
+    /// Returns `true` on a single-rank world, so callers need no guard.
+    pub(crate) fn ep_all_agree_u32(&self, val: u32) -> Result<bool> {
+        if !self.multi_rank_protocol_active() {
+            return Ok(true);
+        }
+        let (mn, mx) = self.ep_minmax_u32(val)?;
+        Ok(mn == mx)
+    }
+
     /// Broadcast a `(seq_id, cmd)` pair from rank 0 to all ranks.
     ///
     /// When `v2` is true, this fires a `seq_id` broadcast immediately before
