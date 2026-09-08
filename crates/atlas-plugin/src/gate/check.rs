@@ -538,6 +538,7 @@ fn check_group(root: &Path, group: &'static super::group::BenchmarkGroup, sha: &
     let mut members: Vec<super::group::MemberRecord> = Vec::new();
     let mut newest: Option<GateRecord> = None;
     let mut missing: Vec<&str> = Vec::new();
+    let mut declared: Vec<(usize, usize)> = Vec::new();
 
     for member in group.members {
         // Same selection rule as a plain gate: the newest record that is FOR
@@ -571,6 +572,36 @@ fn check_group(root: &Path, group: &'static super::group::BenchmarkGroup, sha: &
                  cannot be aggregated. Re-run {member} at this commit."
             ));
         };
+        // A member that lost samples to transport failures scored them as
+        // "no call" — the correct answer for most irrelevance rows — so a
+        // degraded shard can score BETTER while measuring less. Refuse it
+        // rather than fold it in.
+        let errs = record
+            .metrics
+            .get("transport_errors")
+            .copied()
+            .unwrap_or(0.0);
+        if errs > 0.0 {
+            return GateStatus::Fail(vec![format!(
+                "{member} recorded {errs:.0} transport failures. Each was scored as \
+                 \"made no call\", which is the CORRECT answer on the irrelevance \
+                 subsets, so a degraded shard can raise the aggregate while \
+                 measuring less of the draw. Re-run {member}."
+            )]);
+        }
+        // What this record says it ran. Absent on a pre-shard binary, which
+        // cannot be folded in for the same reason a missing tally cannot.
+        let (Some(idx), Some(cnt)) = (
+            record.metrics.get("shard.index").copied(),
+            record.metrics.get("shard.count").copied(),
+        ) else {
+            return GateStatus::Missing(format!(
+                "{member} has a covering record that does not say which shard it \
+                 ran — it was measured by a binary older than the shard identity \
+                 metric. Re-run {member} at this commit."
+            ));
+        };
+        declared.push((idx as usize, cnt as usize));
         members.push(super::group::MemberRecord {
             id: (*member).to_string(),
             git_sha: record.git_sha.clone(),
@@ -589,6 +620,11 @@ fn check_group(root: &Path, group: &'static super::group::BenchmarkGroup, sha: &
         );
     }
     if let Err(fault) = super::group::composition_ok(group, &members) {
+        return GateStatus::Fail(vec![fault.to_string()]);
+    }
+    // The members exist and agree on the commit; do they actually cover the
+    // draw exactly once between them?
+    if let Err(fault) = super::group::partition_ok(group.id, &declared) {
         return GateStatus::Fail(vec![fault.to_string()]);
     }
 

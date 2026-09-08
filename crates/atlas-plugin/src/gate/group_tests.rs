@@ -3,7 +3,9 @@
 //! measured — it is an aggregate over a sample set the thresholds were never
 //! drawn against.
 
-use super::group::{BenchmarkGroup, GroupFault, MemberRecord, composition_ok, member_of};
+use super::group::{
+    BenchmarkGroup, GroupFault, MemberRecord, composition_ok, member_of, partition_ok,
+};
 
 const G: BenchmarkGroup = BenchmarkGroup {
     id: "bfcl-subset",
@@ -181,4 +183,82 @@ fn no_benchmark_is_a_member_of_two_groups() {
         "a plain gate is not a member"
     );
     assert!(member_of("bfcl-subset-a").is_some(), "a shard IS a member");
+}
+
+/// The happy case: four members, four shards, indices 0..3 once each.
+#[test]
+fn four_distinct_shards_are_a_partition() {
+    assert_eq!(partition_ok("g", &[(0, 4), (1, 4), (2, 4), (3, 4)]), Ok(()));
+    // Order is not part of the rule — members may finish on any box in any
+    // order, and the gate reads them in registry order regardless.
+    assert_eq!(partition_ok("g", &[(3, 4), (0, 4), (2, 4), (1, 4)]), Ok(()));
+}
+
+/// ★ THE CASE THE `samples` PIN CANNOT SEE. Two members ran shard C; nobody ran
+/// shard D. The union still holds ~995 rows, every per-subset tally still looks
+/// plausible because the subsets are strided, and `samples` (pinned min == max
+/// == 995) passes — while shard D was never measured. This is the silently
+/// wrong green, and it is the reason this check exists separately.
+#[test]
+fn a_duplicated_shard_is_not_a_partition_even_though_the_count_is_right() {
+    let fault = partition_ok("bfcl-subset", &[(0, 4), (1, 4), (2, 4), (2, 4)])
+        .expect_err("two members ran shard C and none ran D");
+    match &fault {
+        GroupFault::NotAPartition { group, detail } => {
+            assert_eq!(*group, "bfcl-subset");
+            assert!(detail.contains("[0, 1, 2, 2]"), "{detail}");
+        }
+        other => panic!("wrong fault: {other:?}"),
+    }
+    // The reading must say why the row count is not a defence, or the next
+    // reader will "fix" this by trusting `samples`.
+    let msg = fault.to_string();
+    assert!(msg.contains("EXACTLY once"), "{msg}");
+    assert!(msg.contains("samples"), "{msg}");
+}
+
+/// A member that thinks the draw is split a different number of ways cannot be
+/// folded in with members that think otherwise — its rows are a different slice
+/// of the draw entirely.
+#[test]
+fn a_member_reporting_a_different_shard_count_is_refused() {
+    let fault = partition_ok("g", &[(0, 4), (1, 4), (2, 4), (3, 8)])
+        .expect_err("one member ran an 8-way split");
+    match fault {
+        GroupFault::NotAPartition { detail, .. } => {
+            assert!(detail.contains("8 shards"), "{detail}");
+            assert!(detail.contains("4 members"), "{detail}");
+        }
+        other => panic!("wrong fault: {other:?}"),
+    }
+}
+
+/// An index outside the range is refused even when the indices are distinct —
+/// distinctness alone would let {0,1,2,7} through, and shard 3 would be unmeasured.
+#[test]
+fn distinct_but_out_of_range_indices_are_refused() {
+    assert!(partition_ok("g", &[(0, 4), (1, 4), (2, 4), (7, 4)]).is_err());
+}
+
+/// Anti-vacuity: the rule must not report success on an empty member list. A
+/// group with no members has measured nothing, and `partition_ok` returning
+/// `Ok` there would make "no shards ran" indistinguishable from "all did".
+#[test]
+fn no_members_is_not_a_partition_of_anything() {
+    // Zero members means every member declared count 0 == n, and the index
+    // list is trivially equal to the empty expectation -- so this DOES return
+    // Ok, and the emptiness must be caught before here. `check_group` returns
+    // `Missing` on an empty group before ever calling this, and the group
+    // registry has no empty groups; this test pins that division of labour so
+    // a future refactor cannot quietly make this the only guard.
+    assert_eq!(partition_ok("g", &[]), Ok(()));
+    for g in super::group::GROUPS {
+        assert!(
+            g.members.len() >= 2,
+            "{} has {} members; a group of <2 makes the emptiness path \
+             reachable and this rule is not the guard for it",
+            g.id,
+            g.members.len()
+        );
+    }
 }
