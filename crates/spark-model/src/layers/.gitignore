@@ -1,0 +1,5 @@
+# Derived reference goldens: megabytes of dense float arrays, reproduced byte-for-byte by the
+# `gen_*.py` beside each one. Not tracked -- a reproducible multi-megabyte blob costs every
+# clone forever. `kda_golden.json` (36 KB) IS tracked: it is the deterministic CI gate.
+glm5next_*_ref/*_golden.json
+!glm5next_kda_ref/kda_golden.json

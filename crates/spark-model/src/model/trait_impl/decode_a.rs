@@ -27,6 +27,29 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
+/// `ATLAS_REDZONE_EVERY=<n>` — scan the A55 guard bands every `n`-th decode step. 0 disables
+/// the scan while leaving the pads in place (which is the configuration the READ experiment
+/// wants: pads present and poisoned, never inspected).
+/// `ATLAS_REDZONE_RANGE_FILE=<path>` — see the use site. `None` disables the bisection.
+fn redzone_range_file() -> Option<&'static str> {
+    static P: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    P.get_or_init(|| std::env::var("ATLAS_REDZONE_RANGE_FILE").ok())
+        .as_deref()
+}
+
+fn redzone_every() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        if std::env::var("ATLAS_REDZONE").is_err() {
+            return 0;
+        }
+        std::env::var("ATLAS_REDZONE_EVERY")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1)
+    })
+}
+
 impl TransformerModel {
     /// Whether the online FP8-KV calibration has frozen its scale, model-wide.
     ///
@@ -87,6 +110,20 @@ impl TransformerModel {
             );
         }
 
+        // A55 BISECTION (`ATLAS_REDZONE_RANGE_FILE=<path>` holding "LO HI"). Re-read and
+        // re-applied every decode step so the range can be swept WITHOUT restarting the
+        // server — a relaunch is ~5 minutes of weight load, a re-poison is ~40 us, and the
+        // bisection needs ~11 steps. Nothing is allocated or moved, so every setting shares
+        // one device heap layout and the only variable is what the guard bands contain.
+        if let Some(path) = redzone_range_file() {
+            let txt = std::fs::read_to_string(path).unwrap_or_default();
+            let mut it = txt.split_whitespace();
+            let lo: usize = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            let hi: usize = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            self.gpu.synchronize(stream)?;
+            self.gpu.poison_redzones(lo, hi)?;
+        }
+
         // ── Phase 1: Operations OUTSIDE graph (vary per token) ──
 
         // MLA models: zero buffers reused for Q_absorbed computation.
@@ -97,8 +134,14 @@ impl TransformerModel {
         // full-arena zero (~1.7GB memset/step, sized for max prefill tokens) is
         // unnecessary — skip it for V4 to reclaim that decode-step memset
         // bandwidth. (Other MLA models keep the zero.)
+        // 🔴 ROW-SCALED. `zero_all` wipes the arena at its PREFILL size — at
+        // max_batch_tokens=4096 that is 1.59 GB of memset, measured at 8.01 ms on every
+        // decode token of GLM-5.3 (nsys, 2026-08-28: 9.4 % of an 85 ms step, all of it
+        // GPU idle before the first kernel). A decode step carries ONE token and can only
+        // read row 0 of each token-major arena, so `zero_all_rows` clears exactly the rows
+        // this step can touch. Same buffers, same values, ~1/4096 of the bytes.
         if self.config.kv_lora_rank > 0 && self.config.o_lora_rank == 0 {
-            self.buffers.zero_all(self.gpu.as_ref(), stream)?;
+            self.buffers.zero_all_rows(self.gpu.as_ref(), stream, 1)?;
         }
 
         // 1. Embedding lookup. `seq.tokens` is the history WITHOUT `token`
@@ -271,6 +314,7 @@ impl TransformerModel {
             profile: self.profile,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            decode_step: true,
             gdn_exact_replay: false,
             // Hash-MoE: the single decode token ID (uploaded above every step
             // before graph replay). MoE reads it at offset 0.
@@ -306,7 +350,21 @@ impl TransformerModel {
             && let Some(graph) = cache.get(&seq.slot_idx)
             && graph.0 != 0
         {
+            // 🔴 BEFORE the replay, not after. The graph writes GLM-5.3's DSA indexer row
+            // from a device position with no host code in the loop, so past the DSA ceiling
+            // it writes one row off the end of the buffer and the `sync_replayed_step`
+            // reconcile below refuses one write too late — by then a sticky CUDA 700 has
+            // taken the whole serve down, not just this request. ANOMALIES A62.
+            for (i, layer) in self.layers.iter().enumerate() {
+                layer.check_replay_room(&*seq.layer_states[i], seq.seq_len, 1)?;
+            }
             self.gpu.launch_graph(*graph, stream)?;
+            // 🔴 A replay runs kernels and nothing else. Any layer that keeps per-sequence
+            // bookkeeping on the HOST (GLM-5.3's DSA indexer cache length) must be advanced
+            // here; its `decode` did not run. Default impl is a no-op for every other layer.
+            for (i, layer) in self.layers.iter().enumerate() {
+                layer.sync_replayed_step(seq.layer_states[i].as_mut(), seq.seq_len, 1)?;
+            }
             seq.tokens.push(token);
             seq.seq_len += 1;
             return Ok(self.decode_logits_ptr());
@@ -447,6 +505,22 @@ impl TransformerModel {
                         stream,
                     )?;
                 }
+            }
+        }
+
+        // A55 RED-ZONE SCAN (`ATLAS_REDZONE=<bytes>`; no-op when unset). Runs AFTER the whole
+        // decode step, with the device drained, so a violation names the step that produced
+        // it. `ATLAS_REDZONE_EVERY` (default 1) trades resolution for wall time — the scan
+        // does one blocking D2H per live allocation.
+        if redzone_every() > 0 && seq.seq_len.is_multiple_of(redzone_every()) {
+            self.gpu.synchronize(stream)?;
+            match self.gpu.scan_redzones() {
+                Ok(0) => {}
+                Ok(n) => tracing::error!(
+                    "🔴 {n} red-zone violation(s) after decode step at seq_len={}",
+                    seq.seq_len
+                ),
+                Err(e) => tracing::warn!("red-zone scan failed: {e:#}"),
             }
         }
 

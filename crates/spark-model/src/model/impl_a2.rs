@@ -402,8 +402,24 @@ impl TransformerModel {
     /// - 0xFFFFFFF2/3/4: verify K=2/3/4 → K tokens, then accept/num_accepted
     /// - 0xFFFFFFFF: shutdown (seq_id is ignored; applies to the whole worker)
     pub(super) fn ep_worker_step_impl(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
+        // 🔴 The RECEIVE is the only fatal half. If it fails the link to the head is gone
+        // and the worker must exit; everything after it is a per-request fault that the head
+        // raises identically and answers the client with, so it is tagged `EpCommandFailed`
+        // and the worker survives it. Breaking on both is what silently killed rank 1 and
+        // left rank 0 spinning in a collective against a dead peer — ANOMALIES A60/A62.
         let (seq_id, cmd) = self.ep_recv_seq_and_cmd(self.ep_protocol_v2)?;
+        self.ep_worker_execute(seq_id, cmd, slots)
+            .map_err(|e| anyhow::Error::new(crate::traits::EpCommandFailed(e)))
+    }
 
+    /// Execute one already-received worker command. Every error out of here is
+    /// request-scoped by construction — see the caller.
+    fn ep_worker_execute(
+        &self,
+        seq_id: u32,
+        cmd: u32,
+        slots: &mut [Option<SequenceState>],
+    ) -> Result<bool> {
         // Shutdown applies to the whole worker — seq_id is ignored.
         if cmd == 0xFFFFFFFF {
             return Ok(false);
@@ -506,6 +522,31 @@ impl TransformerModel {
                     seq.tokens.pop();
                     self.trim_proposer_state(seq, 0, 0)?;
                     self.start_rollback_and_checkpoint_async(seq, 1)?;
+                }
+            }
+            crate::speculative::EP_CMD_MTP_PROPOSE => {
+                // Run the SAME drafter forward rank 0 is running, so its collectives have a
+                // partner. The drafts themselves are discarded — rank 0 broadcasts the tokens
+                // it actually verifies — but the drafter KV this writes must stay in lockstep,
+                // which it does because both ranks consume identical `(last_token, position)`
+                // and identical target hiddens (the target forward is already collective-correct).
+                let last_token = self.ep_broadcast_u32(0)?;
+                let position = self.ep_broadcast_u32(0)? as usize;
+                let num_drafts = self.ep_broadcast_u32(0)? as usize;
+                let hidden_idx = self.ep_broadcast_u32(0)? as usize;
+                // Mirror the head's `save_hidden_for_mtp`: the drafter's input vector must be
+                // the SAME on both ranks or the all-reduce sums partials of different inputs.
+                // No worker command arm writes `mtp_hidden_save`, so it has to happen here.
+                if let Err(e) = self.save_hidden_for_mtp(hidden_idx, stream) {
+                    tracing::warn!("EP worker save_hidden_for_mtp({hidden_idx}) failed: {e:#}");
+                }
+                if let Err(e) =
+                    self.run_mtp_propose_inner(last_token, position, num_drafts, seq, None)
+                {
+                    // Never fail the worker on a drafter error: rank 0 decides what is
+                    // verified, so a degraded worker draft costs acceptance, not correctness.
+                    // Bailing here would desynchronise the command stream instead.
+                    tracing::warn!("EP worker MTP propose failed (continuing): {e:#}");
                 }
             }
             0xFFFFFFF3 => {

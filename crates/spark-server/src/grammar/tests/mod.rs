@@ -19,7 +19,7 @@ mod value_entry;
 
 /// Build a minimal vocabulary for testing.
 /// Contains basic ASCII + JSON structural tokens.
-pub(super) fn test_vocab() -> Vec<String> {
+pub(crate) fn test_vocab() -> Vec<String> {
     let mut vocab = Vec::new();
     // Token 0..127: single ASCII characters
     for i in 0u8..128 {
@@ -34,7 +34,7 @@ pub(super) fn test_vocab() -> Vec<String> {
     vocab
 }
 
-pub(super) fn test_tool_defs() -> Vec<ToolDefinition> {
+pub(crate) fn test_tool_defs() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         tool_type: "function".to_string(),
         function: crate::tool_parser::FunctionDefinition {

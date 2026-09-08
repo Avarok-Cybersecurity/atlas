@@ -162,6 +162,18 @@ impl AtlasCudaBackend {
         Ok(count as u32)
     }
 
+    /// The driver leg alone — `cuMemGetInfo` with no `max(.., MemAvailable)`.
+    /// A73: `free_memory_cu` is not a driver query; this one is.
+    pub(super) fn device_free_memory_cu(&self) -> Result<usize> {
+        let mut free: usize = 0;
+        let mut total: usize = 0;
+        let status = unsafe { cuMemGetInfo_v2(&mut free, &mut total) };
+        if status != 0 {
+            bail!("cuMemGetInfo_v2 failed: status {status}");
+        }
+        Ok(free)
+    }
+
     pub(super) fn free_memory_cu(&self) -> Result<usize> {
         let mut free: usize = 0;
         let mut total: usize = 0;
@@ -186,11 +198,40 @@ impl AtlasCudaBackend {
         //
         // `super::device_is_integrated` documents the discriminator and the
         // attribute that looks like it would work but does not.
-        Ok(super::effective_free_bytes(
-            free,
-            super::system_available_memory_bytes(),
-            super::device_is_integrated()?,
-        ))
+        //
+        // 🔴 The substitution is why `free_memory()` is NOT a driver query, and
+        // it has repeatedly been mistaken for one. On one boot the driver leg
+        // wins and host frees are invisible; on the next the MemAvailable leg
+        // wins and the reading tracks host state exactly. Both were observed
+        // and separately mis-attributed to "unified-memory semantics". Log the
+        // two legs and which one the integrated verdict let through, so the
+        // question cannot be re-opened from a single reading. (A68 is OPEN and
+        // this line is its evidence surface — `device_free_memory_cu` above is
+        // the pure driver leg to compare it against.)
+        //
+        // It is also why an explicit host floor is required rather than
+        // optional: MemAvailable counts RECLAIMABLE page cache as available, so
+        // this hands the KV sizer memory obtainable only by reclaiming — and a
+        // ~100 GiB weight load turns that into direct reclaim.
+        let mem_available = super::system_available_memory_bytes();
+        let integrated = super::device_is_integrated()?;
+        if let Some(avail) = mem_available {
+            let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
+            tracing::debug!(
+                "free_memory legs: cuMemGetInfo={:.3} GiB, MemAvailable={:.3} GiB, \
+                 integrated={}, winner={}, spread={:.3} GiB",
+                gib(free),
+                gib(avail),
+                integrated,
+                if integrated && avail > free {
+                    "MemAvailable"
+                } else {
+                    "cuMemGetInfo"
+                },
+                gib(avail.abs_diff(free)),
+            );
+        }
+        Ok(super::effective_free_bytes(free, mem_available, integrated))
     }
 
     pub(super) fn create_stream_cu(&self) -> Result<u64> {

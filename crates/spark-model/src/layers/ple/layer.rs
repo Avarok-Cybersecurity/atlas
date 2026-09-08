@@ -145,7 +145,7 @@ impl PleLayer {
         })
     }
 
-    // `reset` + `prestage` live in `aux_state.rs` (≤500 LoC split).
+    // `reset`, `prestage` and `release_seq_state` live in `aux_state.rs` (≤500 LoC split).
 
     // Marconi aux-state (snapshot_aux / restore_aux) moved to
     // `aux_state.rs` (≤500 LoC split).

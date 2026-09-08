@@ -279,6 +279,82 @@ extern "C" __global__ void w4a16_gemv_sw(
 }
 
 // ============================================================
+// W4A16 GEMV — GROUPED MoE variant. All top-k slots in ONE launch.
+//
+// BIT-IDENTICAL to `w4a16_gemv_sw` for every slot it computes: same
+// `w4a16_gemv_partial` per orig-lane, same shuffle tree, same two-term FP32
+// combine. The only additions are the pointer-table indirection and the slot
+// skip, both OUTSIDE the arithmetic.
+//
+// Why it exists: the host loop it replaces read `expert_ids` back to the host
+// with a full stream sync once per routed layer (42x/token on GLM-5.3) and then
+// issued one launch per local expert per projection. Both are gone — routing
+// stays on device, so the decode step is capturable.
+//
+// `packed_ptrs[id] == 0` means another EP rank owns that expert: this kernel
+// writes NOTHING for that slot, and the caller's pre-zeroed output row stands.
+//
+// Grid: (ceil(N / 8), top_k, 1)   Block: (256, 1, 1)
+// ============================================================
+
+extern "C" __global__ void w4a16_gemv_sw_moe(
+    const __nv_bfloat16* __restrict__ A,                 // [1, K] or [top_k, K]
+    const unsigned long long* __restrict__ packed_ptrs,  // [num_experts], 0 = remote
+    const unsigned long long* __restrict__ scale_ptrs,   // [num_experts]
+    const float* __restrict__ scale2_vals,               // [num_experts]
+    __nv_bfloat16* __restrict__ C,                       // [top_k, N]
+    const int* __restrict__ expert_ids,                  // [top_k], < 0 = unfilled
+    unsigned int N,
+    unsigned int K,
+    unsigned int num_experts,
+    unsigned int input_stride                            // 0 = shared A, K = per-slot A
+) {
+    const unsigned int slot = blockIdx.y;
+    const int eid = expert_ids[slot];
+    // Unfilled sentinel or an id the table does not cover: leave the row alone.
+    if (eid < 0 || (unsigned int)eid >= num_experts) return;
+    const unsigned char* B_packed = (const unsigned char*)packed_ptrs[eid];
+    if (B_packed == 0) return;   // remote expert — the caller's zero row stands
+    const unsigned char* B_scale = (const unsigned char*)scale_ptrs[eid];
+    const float scale2 = scale2_vals[eid];
+
+    const __nv_bfloat16* __restrict__ Ain =
+        A + (unsigned long long)slot * (unsigned long long)input_stride;
+    __nv_bfloat16* __restrict__ Cout = C + (unsigned long long)slot * (unsigned long long)N;
+
+    const unsigned int local_out = threadIdx.x / WARP_SIZE;       // 0..7
+    const unsigned int lane = threadIdx.x % WARP_SIZE;            // 0..31
+    const unsigned int n = blockIdx.x * N_PER_BLOCK_SW + local_out;
+    if (n >= N) return;
+
+    const unsigned int half_K = K / 2;
+    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int K16 = K / 16;
+
+    __shared__ float s_lut[N_PER_BLOCK_SW][16];
+    stage_e2m1_lut_warp(s_lut[local_out], lane);
+#if ATLAS_WARP_LUT_STAGED
+    const float* __restrict__ warp_lut = s_lut[local_out];
+#else
+    const float* __restrict__ warp_lut = E2M1_LUT;
+#endif
+
+    float acc_a = w4a16_gemv_partial(Ain, B_packed, B_scale, scale2, n, half_K, num_groups, K16, lane, warp_lut);
+    float acc_b = w4a16_gemv_partial(Ain, B_packed, B_scale, scale2, n, half_K, num_groups, K16, lane + 32u, warp_lut);
+
+    #pragma unroll
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+        acc_a += __shfl_down_sync(0xFFFFFFFF, acc_a, offset);
+        acc_b += __shfl_down_sync(0xFFFFFFFF, acc_b, offset);
+    }
+
+    if (lane == 0) {
+        float result = acc_a + acc_b;
+        Cout[n] = __float2bfloat16(result);
+    }
+}
+
+// ============================================================
 // W4A16 GEMV with FP32 output (for LM head logits).
 // Identical to w4a16_gemv but writes float instead of BF16.
 // FP32 logits are critical for sampling quality — BF16 collapses
@@ -2091,3 +2167,249 @@ extern "C" __global__ void w4a16_gemv_dual_batch3(
         C_out2[n] = __float2bfloat16(result2);
     }
 }
+
+// ============================================================
+// ROUTED-MoE ROW BATCHING — union of the selected experts over a verify's rows.
+//
+// WHY: `w4a16_gemv_sw_moe` is launched once per ROW, so an expert both rows
+// selected has its weights streamed TWICE. Measured on the live K=2 trace the
+// per-row launches read 16 experts per layer where the union is 13.74, and at
+// K=3 they read 24 where the union is 18.76 — 14% / 22% of the routed weight
+// traffic is a re-read of bytes already in flight. Routed MoE is 22.9 ms of the
+// 99.2 ms K=2 step (nsys, 302 steps, 2026-08-29), all of it at ~206 GB/s
+// against a measured 240 GB/s GB10 stream ceiling, so those bytes are the cost.
+//
+// The old note in `forward_moe` said deduplicating "needs a device-side sort".
+// It does not: top_k * rows <= 64 ids, so ONE 64-thread block resolves the
+// union by pairwise scan in a few hundred ops, entirely on device — the decode
+// step stays graph-capturable.
+//
+// BIT-IDENTICAL to the per-row path: every participating row runs the same
+// `w4a16_gemv_partial` arithmetic for its orig-lane — same k16 walk, same
+// `part` fmaf chain, same `fmaf(scale, part, acc)` regroup, same two-term FP32
+// combine, same shuffle tree. Only the weight LOAD is hoisted out of the row
+// loop; no operand and no association changes.
+// ============================================================
+
+// Build the union of `ids[rows, top_k]`.
+//
+//   u_eid [rows*top_k]        expert id of union entry u, -1 = entry unused
+//   u_slot[rows*top_k, rows]  the top_k slot row r gave that expert, -1 = row absent
+//
+// Union entries are ordered by first appearance in row-major id order, which is
+// deterministic for a given routing. Grid: (1,1,1)  Block: (64,1,1).
+extern "C" __global__ void glm5next_moe_row_union(
+    const int* __restrict__ ids,     // [rows, top_k]
+    int* __restrict__ u_eid,         // [rows*top_k]
+    int* __restrict__ u_slot,        // [rows*top_k, rows]
+    unsigned int rows,
+    unsigned int top_k
+) {
+    const unsigned int T = rows * top_k;
+    const unsigned int t = threadIdx.x;
+
+    // Clear first — a union entry the routing never fills must read as absent.
+    // 🪤 Every thread must reach the barrier, so the out-of-range guard is a
+    // predicate here and the early return comes AFTER it.
+    if (t < T) {
+        u_eid[t] = -1;
+        for (unsigned int r = 0; r < rows; r++) u_slot[t * rows + r] = -1;
+    }
+    __syncthreads();
+    if (t >= T) return;
+
+    const int eid = ids[t];
+    if (eid < 0) return;
+
+    // Owner = the FIRST occurrence of this id. Only the owner writes.
+    for (unsigned int tp = 0; tp < t; tp++) {
+        if (ids[tp] == eid) return;
+    }
+
+    // Union index = how many owners appear before t.
+    int uidx = 0;
+    for (unsigned int tp = 0; tp < t; tp++) {
+        const int e2 = ids[tp];
+        if (e2 < 0) continue;
+        bool owner2 = true;
+        for (unsigned int tq = 0; tq < tp; tq++) {
+            if (ids[tq] == e2) { owner2 = false; break; }
+        }
+        if (owner2) uidx++;
+    }
+
+    u_eid[uidx] = eid;
+    // One writer per union entry: claim every row that selected this expert.
+    for (unsigned int tp = t; tp < T; tp++) {
+        if (ids[tp] == eid) u_slot[uidx * rows + tp / top_k] = (int)(tp % top_k);
+    }
+}
+
+// R rows through ONE weight sweep, for one orig-lane. `Aptr[r] == nullptr` means
+// row r did not select this expert: it contributes nothing and is not read.
+// Per participating row this is `w4a16_gemv_partial` verbatim.
+template <int R>
+__device__ __forceinline__ void w4a16_gemv_partial_rows(
+    const __nv_bfloat16* const* __restrict__ Aptr,
+    const unsigned char* __restrict__ B_packed,
+    const unsigned char* __restrict__ B_scale,
+    const float scale2,
+    unsigned int n, unsigned int half_K, unsigned int num_groups,
+    unsigned int K16, unsigned int orig_lane,
+    const float* __restrict__ lut,
+    float* __restrict__ out)          // [R]
+{
+    float acc0[R], acc1[R];
+    #pragma unroll
+    for (int r = 0; r < R; r++) { acc0[r] = 0.0f; acc1[r] = 0.0f; }
+
+    const unsigned int stride2 = 128u;  // threads_per_out (64) * 2
+    for (unsigned int k16 = orig_lane * 2u; k16 < K16 + 1u; k16 += stride2) {
+        #pragma unroll
+        for (int c = 0; c < 2; c++) {
+            const unsigned int kk = k16 + (unsigned int)c;
+            if (kk >= K16) break;
+
+            // ONE weight load feeds every row — this is the whole point.
+            unsigned long long packed8 = *(const unsigned long long*)(
+                B_packed + (unsigned long long)n * half_K + kk * 8);
+            unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + kk];
+            __nv_fp8_e4m3 fp8;
+            *(unsigned char*)&fp8 = scale_byte;
+#if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
+            float scale = scl_fp8(scale_byte) * scale2;
+#else
+            float scale = (float)fp8 * scale2;
+#endif
+            #pragma unroll
+            for (int r = 0; r < R; r++) {
+                if (Aptr[r] == nullptr) continue;
+                uint4 a_lo = ((const uint4*)Aptr[r])[kk * 2];
+                uint4 a_hi = ((const uint4*)Aptr[r])[kk * 2 + 1];
+                const unsigned int a_raw[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
+                                               a_hi.x, a_hi.y, a_hi.z, a_hi.w};
+                float part = 0.0f;
+                #pragma unroll
+                for (int b = 0; b < 8; b++) {
+                    unsigned char byte_val = (unsigned char)(packed8 >> (b * 8));
+                    float2 af = __bfloat1622float2(*(const __nv_bfloat162*)&a_raw[b]);
+                    part = fmaf(af.x, lut[byte_val & 0xF], part);
+                    part = fmaf(af.y, lut[byte_val >> 4], part);
+                }
+                if (c == 0) acc0[r] = fmaf(scale, part, acc0[r]);
+                else        acc1[r] = fmaf(scale, part, acc1[r]);
+            }
+        }
+    }
+    #pragma unroll
+    for (int r = 0; r < R; r++) out[r] = acc0[r] + acc1[r];
+}
+
+// Grid: (ceil(N / 8), rows*top_k, 1)   Block: (256, 1, 1)
+// grid.y indexes the UNION entry, not the slot — inactive entries retire at once.
+template <int R>
+__device__ __forceinline__ void w4a16_gemv_sw_moe_batchm_body(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned long long* __restrict__ packed_ptrs,
+    const unsigned long long* __restrict__ scale_ptrs,
+    const float* __restrict__ scale2_vals,
+    __nv_bfloat16* __restrict__ C,
+    const int* __restrict__ u_eid,
+    const int* __restrict__ u_slot,
+    unsigned int N, unsigned int K, unsigned int num_experts,
+    unsigned int a_row_stride,    // elements between rows in A
+    unsigned int a_slot_stride,   // elements between slots in A (0 = rows share one input)
+    unsigned int c_row_stride)    // elements between rows in C (top_k * N)
+{
+    const unsigned int u = blockIdx.y;
+    const int eid = u_eid[u];
+    if (eid < 0 || (unsigned int)eid >= num_experts) return;
+    const unsigned char* B_packed = (const unsigned char*)packed_ptrs[eid];
+    if (B_packed == 0) return;   // remote expert — the caller's zero rows stand
+    const unsigned char* B_scale = (const unsigned char*)scale_ptrs[eid];
+    const float scale2 = scale2_vals[eid];
+
+    int slot[R];
+    const __nv_bfloat16* Aptr[R];
+    bool any = false;
+    #pragma unroll
+    for (int r = 0; r < R; r++) {
+        slot[r] = u_slot[u * R + r];
+        if (slot[r] < 0) { Aptr[r] = nullptr; continue; }
+        Aptr[r] = A + (unsigned long long)r * a_row_stride
+                    + (unsigned long long)slot[r] * a_slot_stride;
+        any = true;
+    }
+    if (!any) return;
+
+    const unsigned int local_out = threadIdx.x / WARP_SIZE;       // 0..7
+    const unsigned int lane = threadIdx.x % WARP_SIZE;            // 0..31
+    const unsigned int n = blockIdx.x * N_PER_BLOCK_SW + local_out;
+    if (n >= N) return;
+
+    const unsigned int half_K = K / 2;
+    const unsigned int num_groups = K / GROUP_SIZE;
+    const unsigned int K16 = K / 16;
+
+    __shared__ float s_lut[N_PER_BLOCK_SW][16];
+    stage_e2m1_lut_warp(s_lut[local_out], lane);
+#if ATLAS_WARP_LUT_STAGED
+    const float* __restrict__ warp_lut = s_lut[local_out];
+#else
+    const float* __restrict__ warp_lut = E2M1_LUT;
+#endif
+
+    float acc_a[R], acc_b[R];
+    w4a16_gemv_partial_rows<R>(Aptr, B_packed, B_scale, scale2, n, half_K,
+                               num_groups, K16, lane, warp_lut, acc_a);
+    w4a16_gemv_partial_rows<R>(Aptr, B_packed, B_scale, scale2, n, half_K,
+                               num_groups, K16, lane + 32u, warp_lut, acc_b);
+
+    #pragma unroll
+    for (int r = 0; r < R; r++) {
+        #pragma unroll
+        for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+            acc_a[r] += __shfl_down_sync(0xFFFFFFFF, acc_a[r], offset);
+            acc_b[r] += __shfl_down_sync(0xFFFFFFFF, acc_b[r], offset);
+        }
+    }
+
+    if (lane == 0) {
+        #pragma unroll
+        for (int r = 0; r < R; r++) {
+            if (slot[r] < 0) continue;
+            float result = acc_a[r] + acc_b[r];
+            C[(unsigned long long)r * c_row_stride
+              + (unsigned long long)slot[r] * N + n] = __float2bfloat16(result);
+        }
+    }
+}
+
+#define ATLAS_MOE_BATCHM_ENTRY(R)                                                  \
+extern "C" __global__ void w4a16_gemv_sw_moe_batchm_m##R(                          \
+    const __nv_bfloat16* __restrict__ A,                                           \
+    const unsigned long long* __restrict__ packed_ptrs,                            \
+    const unsigned long long* __restrict__ scale_ptrs,                             \
+    const float* __restrict__ scale2_vals,                                         \
+    __nv_bfloat16* __restrict__ C,                                                 \
+    const int* __restrict__ u_eid,                                                 \
+    const int* __restrict__ u_slot,                                                \
+    unsigned int N, unsigned int K, unsigned int num_experts,                      \
+    unsigned int a_row_stride, unsigned int a_slot_stride, unsigned int c_row_stride) \
+{                                                                                  \
+    w4a16_gemv_sw_moe_batchm_body<R>(A, packed_ptrs, scale_ptrs, scale2_vals, C,   \
+        u_eid, u_slot, N, K, num_experts, a_row_stride, a_slot_stride, c_row_stride); \
+}
+
+ATLAS_MOE_BATCHM_ENTRY(2)
+ATLAS_MOE_BATCHM_ENTRY(3)
+ATLAS_MOE_BATCHM_ENTRY(4)
+// 🔴 5..8 exist because the batched PREFILL sub-chunk is 8 rows wide (ANOMALIES A65), and the
+// stop at 4 was the compiled tier family, NOT a limit of the union: `glm5next_moe_row_union`
+// resolves `rows * top_k` ids in ONE 64-thread block, and GLM-5.3 is `8 * 8 == 64` exactly.
+// 🪤 The caller MUST refuse `rows * top_k > 64` — the union kernel would silently drop the
+// entries past the block.
+ATLAS_MOE_BATCHM_ENTRY(5)
+ATLAS_MOE_BATCHM_ENTRY(6)
+ATLAS_MOE_BATCHM_ENTRY(7)
+ATLAS_MOE_BATCHM_ENTRY(8)

@@ -567,6 +567,13 @@ pub fn sample_token_with_grammar(
 /// so the unfloored min_p let the FP8/NVFP4 degenerate logit tail be
 /// sampled exactly where the floor was designed to block it. Kill-switch:
 /// `ATLAS_NO_MTP_MINP=1` restores the 0.0 literals via [`effective_min_p`].
+///
+/// `policy` (2026-09-06): whether the grammar may act on token 0 at all.
+/// A sequence born inside `<think>` keeps its matcher paused until
+/// `</think>`, exactly as the decode loop does for tokens 1..N — see
+/// [`super::first_token_policy`] for the invariant and the defect it closes.
+/// The policy is derived by the caller from the SAME predicate that births
+/// `ActiveSeq::inside_thinking`; this function never re-derives it.
 pub fn sample_first_token(
     model: &dyn Model,
     logits: DevicePtr,
@@ -576,60 +583,48 @@ pub fn sample_first_token(
     min_p: f32,
     suppress_ids: &[u32],
     grammar_state: Option<&mut GrammarState>,
+    policy: FirstTokenPolicy,
     levers: &crate::scheduler::logit_processors::SamplingLevers,
 ) -> Result<u32> {
-    let Some(gs) = grammar_state else {
-        return sample_token(
+    first_token_with(policy, suppress_ids, grammar_state, |ids, gs| {
+        let Some(gs) = gs else {
+            return sample_token(model, logits, temperature, top_k, top_p, min_p, ids, levers);
+        };
+        let neutral = SamplingParams {
+            temperature,
+            top_k,
+            top_p,
+            top_n_sigma: 0.0,
+            // P1-4 (2026-07-09): resolved min_p, consumed via `penalties.min_p`
+            // inside `sample_token_with_grammar` (kill-switch applied there).
+            min_p,
+            logit_bias: Vec::new(),
+            repetition_penalty: 1.0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            repetition_penalty_window: 0,
+            lz_penalty: 0.0,
+            dry_multiplier: 0.0,
+            dry_base: DEFAULT_DRY_BASE,
+            dry_allowed_length: DEFAULT_DRY_ALLOWED_LENGTH,
+            dry_sequence_breakers: Vec::new(),
+            max_tokens: 0,
+            stop_token_ids: Vec::new(),
+            seed: None,
+        };
+        sample_token_with_grammar(
             model,
             logits,
             temperature,
             top_k,
             top_p,
-            min_p,
-            suppress_ids,
+            ids,
+            Some(gs),
+            &neutral,
+            &[],
             levers,
-        );
-    };
-    let neutral = SamplingParams {
-        temperature,
-        top_k,
-        top_p,
-        top_n_sigma: 0.0,
-        // P1-4 (2026-07-09): resolved min_p, consumed via `penalties.min_p`
-        // inside `sample_token_with_grammar` (kill-switch applied there).
-        min_p,
-        logit_bias: Vec::new(),
-        repetition_penalty: 1.0,
-        presence_penalty: 0.0,
-        frequency_penalty: 0.0,
-        repetition_penalty_window: 0,
-        lz_penalty: 0.0,
-        dry_multiplier: 0.0,
-        dry_base: DEFAULT_DRY_BASE,
-        dry_allowed_length: DEFAULT_DRY_ALLOWED_LENGTH,
-        dry_sequence_breakers: Vec::new(),
-        max_tokens: 0,
-        stop_token_ids: Vec::new(),
-        seed: None,
-    };
-    let tok = sample_token_with_grammar(
-        model,
-        logits,
-        temperature,
-        top_k,
-        top_p,
-        suppress_ids,
-        Some(gs),
-        &neutral,
-        &[],
-        levers,
-    )?;
-    // Advance the matcher past the first token (the emit_step accept_token
-    // only runs for tokens 2..N). A grammar-disallowed first token here would
-    // indicate the mask was not applied — keep going rather than abort; the
-    // emit_step disengage path handles any later desync gracefully.
-    gs.accept_token(tok);
-    Ok(tok)
+        )
+    })
 }
 
 #[cfg(test)]

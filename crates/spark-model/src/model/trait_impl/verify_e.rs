@@ -121,6 +121,15 @@ impl TransformerModel {
             // per-sequence loop, which reads as "concurrency does not
             // amortise" rather than as a disabled feature.
             && !self.verify_hidden_stash.is_null()
+            // A layer may DECLINE the batched verify sweep (Stage 0). Its
+            // absence was already fail-closed by `decode_verify_multi`'s
+            // `bail!`, but that is a mid-request abort; this makes the same
+            // answer a ROUTING decision, so the request falls back cleanly to
+            // the per-sequence verify loop — the sealed single-sequence path.
+            && !self
+                .layers
+                .iter()
+                .any(|l| l.decode_verify_multi_unsupported())
             // HSS: the paged-decode kernel reads HBM only, missing on-disk
             // history (see verify_c2's HSS fallback) — batched path unsupported.
             && self
@@ -492,6 +501,7 @@ impl TransformerModel {
                 profile: false,
                 comm: self.comm_ref(),
                 graph_capture: capture,
+                decode_step: false,
                 gdn_exact_replay: false,
                 token_ids: None,
                 host_token_ids: None,

@@ -97,6 +97,36 @@ pub trait TransformerLayer: Send + Sync {
         false
     }
 
+    /// True when this layer cannot serve a BATCHED multi-sequence decode step
+    /// — i.e. `decode_multi_seq`'s shared-`ForwardContext` loop would alias
+    /// per-sequence state across rows rather than merely run slowly.
+    ///
+    /// Mirrors [`Self::decode_graph_unsupported`] exactly: layer-level
+    /// statement, default `false`, ORed across layers by the caller and
+    /// consumed at the DISPATCH site. A `true` layer is NOT refused
+    /// concurrency — it is routed onto the per-sequence highway loop that
+    /// #753 item B already built for mHC models, so C>1 keeps serving.
+    ///
+    /// Wired at BOTH multi-seq callers (`decode_a2`'s `hc_perseq` and
+    /// `decode_b`'s `hc_qsa_perseq`), because `decode_b` is the single-GPU
+    /// fused decode+prefill path and a decision made only in `decode_a2`
+    /// leaves it exposed.
+    fn decode_multi_seq_unsupported(&self) -> bool {
+        false
+    }
+
+    /// True when this layer cannot serve a BATCHED multi-sequence VERIFY
+    /// sweep (`decode_verify_multi`). Consumed by
+    /// `can_batch_verify_dispatch`; a `true` layer falls back to the
+    /// per-sequence verify loop, which is the sealed single-sequence path.
+    ///
+    /// Separate from [`Self::decode_multi_seq_unsupported`] because the two
+    /// answers can differ: verify carries its rows on the `k` axis with its
+    /// own R-row metadata block, decode carries them on the sequence axis.
+    fn decode_verify_multi_unsupported(&self) -> bool {
+        false
+    }
+
     /// Marconi aux state: host-serialized per-layer SEQUENCE state that must
     /// travel with an SSM snapshot for a prefix-cache hit to be complete —
     /// PLE's n-gram history + conv state, QSA's ingested indexer keys.
@@ -188,6 +218,62 @@ pub trait TransformerLayer: Send + Sync {
     /// populated (prefix caching). Attention layers skip KV writes for
     /// positions `< kv_write_start`. SSM layers ignore this (recurrent).
     #[allow(clippy::too_many_arguments)]
+    /// Does a captured decode graph go STALE when a new sequence takes this slot?
+    ///
+    /// 🔴 `decode_graph` is keyed by `slot_idx` on the premise that the only per-sequence
+    /// addresses a capture bakes live in the SSM pool, which is slot-addressed and stable.
+    /// A layer that allocates its own per-sequence state (GLM-5.3 allocates a fresh indexer
+    /// cache and KDA state per sequence) breaks that premise: the next sequence gets new
+    /// buffers and the old graph still reads and writes the freed ones — the second request
+    /// continues the first one's text. Such a layer says so here and `free_sequence` drops
+    /// the slot's graph, costing one re-capture per request.
+    fn graph_stale_on_new_sequence(&self) -> bool {
+        false
+    }
+
+    /// Reconcile whatever HOST-side per-sequence bookkeeping a step would have done, when
+    /// that step was served by a replayed CUDA graph instead of being run. `seq_len` is the
+    /// sequence length BEFORE this step's `k` rows.
+    ///
+    /// 🔴 A graph replay executes kernels and nothing else: the layer's `decode` never runs,
+    /// so a layer that tracks its own cache length on the host silently stops advancing and
+    /// every replayed step overwrites the same row.
+    ///
+    /// 🔴 It is a RECONCILE, not an advance. A K-row verify writes K rows and the scheduler
+    /// then keeps only the accepted prefix, so the counter has to be rewound to `seq_len`
+    /// first — exactly what `decode_k`'s own lockstep check does on the eager path. Advancing
+    /// blindly leaves the counter (k - accepted) ahead of the sequence on every rejected
+    /// draft, and that drift is ANOMALIES A56: the DRAFTER writes its indexer rows at
+    /// `state.len()`, so a counter running ahead lands them on rows the target then selects
+    /// over. Default is a no-op — only a layer with host-side state (GLM-5.3's DSA indexer
+    /// cache) needs this.
+    fn sync_replayed_step(
+        &self,
+        _state: &mut dyn LayerState,
+        _seq_len: usize,
+        _k: usize,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Refuse a step whose writes would land past a host-tracked cache — BEFORE the graph
+    /// that performs them is replayed.
+    ///
+    /// 🔴 `sync_replayed_step` above is the RECONCILE and it deliberately runs AFTER
+    /// `launch_graph`, which is too late to prevent a write. A replayed `dsa_indexer_store`
+    /// places its row from a DEVICE position with no host code in the loop, so at the DSA
+    /// ceiling it writes one row past the buffer and the refusal arrives afterwards. The
+    /// resulting `CUDA_ERROR_ILLEGAL_ADDRESS (700)` is STICKY: it fails every later CUDA
+    /// call in the context, so one over-long sequence takes the serve down for every
+    /// subsequent request while the health endpoints keep answering 200. ANOMALIES A62.
+    ///
+    /// `seq_len` is the length BEFORE this step's `k` rows, so the step ends at
+    /// `seq_len + k` — the same post-condition `sync_replayed_step` reconciles to. Default
+    /// is a no-op: only a layer with host-side cache bookkeeping needs it.
+    fn check_replay_room(&self, _state: &dyn LayerState, _seq_len: usize, _k: usize) -> Result<()> {
+        Ok(())
+    }
+
     fn prefill(
         &self,
         hidden: DevicePtr,
@@ -643,4 +729,57 @@ pub trait TransformerLayer: Send + Sync {
     /// - `EmptyLayerState` for pure attention layers
     /// - `SsmLayerState` for SSM/recurrent layers
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>>;
+
+    /// Release the per-sequence state `alloc_state` produced, plus anything
+    /// the layer attached to it lazily afterwards.
+    ///
+    /// Called once per sequence from the teardown chokepoint
+    /// (`free_sequence_dispatch`). The default no-op is correct for layers
+    /// whose state owns no device memory (`EmptyLayerState`) and for state
+    /// that comes from a pool reclaimed by slot (`SsmLayerState`'s h/conv,
+    /// released via `ssm_pool.release_slot`).
+    ///
+    /// It exists because `LayerState` implementors hold BARE `DevicePtr`s:
+    /// dropping the box reclaims the host struct and leaks the device buffer.
+    /// The QSA indexer carry (~739 MB per request at 200K context across the
+    /// 12 full-attention layers) and the PLE conv carry both leaked this way.
+    /// On unified memory such a leak is invisible to RSS and reported as N/A
+    /// by `nvidia-smi`, so it surfaces only as the host exhausting RAM with no
+    /// process to blame.
+    ///
+    /// MUST be idempotent — teardown can run after a partial failure. Callers
+    /// log errors and continue rather than aborting: a sequence that cannot
+    /// free its state is still finished, and bailing would strand the rest.
+    /// Owns every device allocation reachable from this `LayerState` that the layer obtained
+    /// from `gpu.alloc`, whether in `alloc_state` or attached later. Idempotent; nulls what it
+    /// frees; never touches pool addresses.
+    ///
+    /// 🔴 Refuse by TYPE inside the impl, not by a filter at the call site. A call-site filter
+    /// is a second spelling of "is this pooled?" that can drift out of agreement with the
+    /// first; the type check lives where the knowledge is.
+    ///
+    /// 🔴 Invariant L2 (slot reuse), NOT a line order. It is tempting to write "the graph drop
+    /// must come before this call" — that over-states a call order as an invariant. The real
+    /// requirement is that when a slot is re-occupied, its graphs are destroyed AND its owned
+    /// pointers are freed and nulled. Nothing between the two blocks replays a graph, and
+    /// `destroy_graph` does not dereference baked pointers, so either order satisfies it.
+    /// ANOMALIES A56 is the history; slot reuse is the invariant.
+    fn release_state(&self, _state: &mut dyn LayerState, _gpu: &dyn GpuBackend) -> Result<()> {
+        Ok(())
+    }
+
+    /// Does this layer's recurrent state live in the shared SSM pool?
+    ///
+    /// `true` (the default) is the long-standing arrangement: sequence setup
+    /// sees `LayerType::LinearAttention` and hands the layer an `SsmLayerState`
+    /// pointing at pool-owned addresses, so `alloc_state` is never consulted.
+    ///
+    /// 🪤 A linear-attention mixer with its OWN state type must return `false`,
+    /// or it is handed an `SsmLayerState` and the downcast in its forward path
+    /// fails at layer 0 on the first request. GLM-5.3's KDA blocks are the case:
+    /// they are `linear_attention` in `layer_types` but carry
+    /// `Glm5NextLayerState::Kda`.
+    fn uses_ssm_pool(&self) -> bool {
+        true
+    }
 }

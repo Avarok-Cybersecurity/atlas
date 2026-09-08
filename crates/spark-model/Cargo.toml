@@ -89,6 +89,42 @@ workspace = true
 # NOTE: the ARM-2 Leg-2 native-MXFP4 (E8M0) numeric gate lives as a real
 # `#[ignore]`d integration test — see crates/spark-model/tests/arm2_leg2_*.rs.
 [[example]]
+name = "kda_gate_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kda_recurrent_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kda_chunk_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kda_conv_contract_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kda_layer_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "dsa_indexer_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "mhc_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "glm5next_ffn_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "glm5next_moe_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_cdh_vblock_microtest"
 required-features = ["cuda", "gpu-examples"]
 

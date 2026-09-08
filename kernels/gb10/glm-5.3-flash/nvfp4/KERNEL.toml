@@ -1,0 +1,22 @@
+# GLM-5.3-Flash NVFP4.
+#
+# Unlisted `.cu` files take their file stem as the module name, and the build
+# merges `common/` then this directory — so GLM compiles the shared set plus
+# every GLM kernel already living in `common/` (`glm5next_mhc`, `glm5next_ffn`,
+# `dsa_indexer`, `kda_*`) with no aliases required.
+#
+# 🔴 Why this target exists at all: GLM needs its own NoPE selected-index sparse MLA
+# decode (`glm5next_dsa_mla_decode`), which no other model has. It does NOT reuse
+# DeepSeek-V4's `mla_paged_decode{,_fp8}`: GLM's DSA layer resolves its own kernel and
+# never calls those, so no copy of them is made here. V4 keeps its originals, untouched.
+#
+# 🪤 `glm5next_dsa_mla_decode.cu` hardcodes `GLM_KV_LORA_DIM 512` for the latent width
+# while taking the cache stride (`kv_cache_dim`) as a runtime argument. GLM is correct
+# here only because its `kv_lora_rank` is ALSO 512 — a coincidence, not a design.
+# `Glm5NextDsaConfig::validate` asserts it so a future GLM revision with a
+# different latent fails loudly at config time instead of reading garbage.
+
+[build]
+# Matches DeepSeek-V4-Flash: MLA kernels override HDIM inline, so no global
+# -DHDIM (the common paged-decode kernels only support 128/256/320).
+extra_nvcc_flags = ["--fmad=false"]

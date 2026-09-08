@@ -37,6 +37,54 @@ impl TransformerModel {
         if self.proposer.is_some() {
             tracing::info!("DFlash: replacing existing MTP proposer with BlockDiffusionDraftHead");
         }
+        // 🔴 ANOMALIES A59. `new()` sized `mtp_prefill_hidden` at `max_seq_len` because the
+        // post-construction proposers (V4, GLM-5.3, DFlash) do not exist yet when it runs —
+        // they need the model's owned GPU backend and its shared embed/lm_head. Now that one
+        // is installed, ask it how many rows it can actually be handed and give back the rest.
+        //
+        // Keyed to the trait, not to a model name: a proposer that can follow the target to
+        // the end of the served context returns `max_seq_len` (the default) and nothing
+        // happens. GLM-5.3's drafter is a DSA block capped at `max_dsa_context`, so at
+        // `--max-seq-len 524288` this returns 4.0 GiB of unreachable capture buffer that was
+        // covered by no reserve at all (see `Glm5NextMtpHead::new`).
+        //
+        // Safe here and nowhere later: construction time, no sequence exists, so no capture is
+        // in flight and no `mtp_prefill_capture_len` is live. Shrink only — a proposer must
+        // never be able to GROW a buffer the capture epilogue already bounds-checks against.
+        // 🪤 FREE the old buffer BEFORE allocating the small one. The obvious alloc-then-free
+        // ordering holds both at once, and the peak it creates — 4.3 GB — is exactly the
+        // pressure this is here to remove, on a box that has ~3 GB free at this point.
+        let rows = proposer.prefill_hidden_rows(self.mtp_prefill_capacity);
+        if !self.mtp_prefill_hidden.is_null() && rows < self.mtp_prefill_capacity {
+            let was = self.mtp_prefill_capacity;
+            let bytes = rows * self.config.hidden_size * 2;
+            let old = std::mem::replace(
+                &mut self.mtp_prefill_hidden,
+                spark_runtime::gpu::DevicePtr::NULL,
+            );
+            self.mtp_prefill_capacity = 0;
+            match self.gpu.free(old).and_then(|_| self.gpu.alloc(bytes)) {
+                Ok(smaller) => {
+                    self.mtp_prefill_hidden = smaller;
+                    self.mtp_prefill_capacity = rows;
+                    tracing::info!(
+                        "MTP drafter context: capture buffer rightsized {was} -> {rows} rows \
+                         ({:.0} -> {:.0} MB) — the proposer cannot be handed a position past \
+                         {rows} (A59)",
+                        (was * self.config.hidden_size * 2) as f64 / 1e6,
+                        bytes as f64 / 1e6,
+                    );
+                }
+                // NULL + capacity 0 is the feature's own "off" state: the capture epilogue
+                // and the propose-site coverage check both gate on it, so drafter-prefill
+                // disables and the serve keeps running at plain acceptance. Losing a
+                // throughput feature beats failing a serve over an optimisation.
+                Err(e) => tracing::warn!(
+                    "MTP drafter context: rightsizing the capture buffer failed ({e:#}) — \
+                     drafter prefill and carry are DISABLED for this serve"
+                ),
+            }
+        }
         self.proposer = Some(proposer);
     }
 

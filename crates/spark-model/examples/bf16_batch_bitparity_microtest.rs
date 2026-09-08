@@ -48,6 +48,30 @@ const MAX_M: usize = 16;
 /// rows cover the hidden-4096 Super/Puzzle backbone at the natural doubling
 /// (d_inner 8192); they are shape COVERAGE for a larger N and a deeper K, not
 /// a claim about that checkpoint's exact `in_proj_size`.
+/// GLM-5.3-Flash (glm5_next) at TP=2 — every distinct (N, K) the BF16 dense
+/// path dispatches through `ops::dense_mm_bf16` during a K-row `forward_k`.
+/// Derived from the checkpoint's `text_config`: hidden 4096, KDA 64 heads x
+/// head_dim 128 (local qkv 4096), q_lora 1536, kv_lora 512, local_heads 32,
+/// dense intermediate 12288 (local 6144), moe_intermediate 2048 (local 1024).
+/// ANOMALIES A65: batched prefill diverges from per-token prefill at rows >= 2,
+/// and these are the shapes the batchm arm newly serves there. The narrow-N
+/// rows (32, 128) are the KDA b_proj and low-rank gate widths — the existing
+/// table's smallest N was 1024, so they were never covered.
+const GLM_SHAPES: [(&str, usize, usize); 12] = [
+    ("glm kda q/k/v/o  [ 4096 x  4096]", 4096, 4096),
+    ("glm kda f_a/g_a  [  128 x  4096]", 128, 4096),
+    ("glm kda f_b/g_b  [ 4096 x   128]", 4096, 128),
+    ("glm kda b_proj   [   32 x  4096]", 32, 4096),
+    ("glm dsa q_a      [ 1536 x  4096]", 1536, 4096),
+    ("glm dsa q_absorb [16384 x  1536]", 16384, 1536),
+    ("glm dsa kv_a     [  512 x  4096]", 512, 4096),
+    ("glm dsa o_absorb [ 4096 x 16384]", 4096, 16384),
+    ("glm mlp gate/up  [ 6144 x  4096]", 6144, 4096),
+    ("glm mlp down     [ 4096 x  6144]", 4096, 6144),
+    ("glm shared g/u   [ 1024 x  4096]", 1024, 4096),
+    ("glm shared down  [ 4096 x  1024]", 4096, 1024),
+];
+
 const SHAPES: [(&str, usize, usize); 10] = [
     ("nano  in_proj    [10304 x  2688]", 10304, 2688),
     ("nano  out_proj   [ 2688 x  4096]", 2688, 4096),
@@ -65,9 +89,11 @@ const SHAPES: [(&str, usize, usize); 10] = [
     ("27B mtp ffn_down [ 5120 x 17408]", 5120, 17408),
 ];
 
-/// Compile-time `MAX_M` of `dense_gemv_bf16_batchm`. The kernel CLAMPS above
-/// it rather than erroring, so the batchm leg must not be run past it — mirror
-/// of `ops::DENSE_GEMV_BATCHM_MAX_M`.
+/// Widest batch this microtest exercises. The kernel's compile-time `MAX_M`
+/// is 16 and it CLAMPS above that rather than erroring, so the batchm leg must
+/// never be run past it — but 8 is deliberate here: it is the decode band
+/// `ops::DENSE_GEMV_BATCHM_DECODE_MAX_M` freezes, and bit-parity at those
+/// widths is the property the sealed decode reference depends on.
 const BATCHM_MAX_M: usize = 8;
 
 struct Lcg(u64);
@@ -233,7 +259,7 @@ fn main() -> Result<()> {
     let mut gemm_clean = true;
     let mut control_ok = true;
     for seed in [1u64, 99, 12345] {
-        for (label, n, k) in SHAPES {
+        for (label, n, k) in SHAPES.iter().chain(GLM_SHAPES.iter()).copied() {
             let mut rng = Lcg(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xB4B4);
             let a_bytes: Vec<u8> = (0..MAX_M * k)
                 .flat_map(|_| bf16::from_f32(rng.r(-1.5, 1.5)).to_bits().to_le_bytes())

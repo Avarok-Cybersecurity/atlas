@@ -68,6 +68,37 @@ pub fn w4a16_gemv_sw(
         .launch(stream)
 }
 
+/// Same launch as [`w4a16_gemv_sw`] for callers that hold the NVFP4 operand triple as
+/// loose pointers rather than a [`QuantizedWeight`] (GLM-5.3's `Nvfp4Proj`).
+///
+/// Exists so the `ceil(N/8)` grid stays in this file — the one place that is SSOT with the
+/// kernel's `N_PER_BLOCK_SW`.
+#[allow(clippy::too_many_arguments)]
+pub fn w4a16_gemv_sw_raw(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    packed: DevicePtr,
+    scale: DevicePtr,
+    scale_2: f32,
+    output: DevicePtr,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([w4a16_gemv_sw_grid_x(n), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(packed)
+        .arg_ptr(scale)
+        .arg_f32(scale_2)
+        .arg_ptr(output)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
 /// Decode GEMV: software-pipelined single-warp when the lever and handle agree.
 #[allow(clippy::too_many_arguments)]
 pub fn w4a16_decode_gemv(

@@ -871,6 +871,12 @@ pub(super) fn load_layers(
                 unreachable!("unexpected SlidingAttention in this loader")
             }
             LayerType::Moe => unreachable!("Qwen3.5 has no standalone MoE layers"),
+            // GLM-5.3's `deepseek_sparse_attention`: a full-rank mixer whose visible key set
+            // is chosen at runtime by an indexer. Hard error, not a silent fallthrough into
+            // the dense-attention arm -- that would attend over the WHOLE cache and look right.
+            LayerType::SparseAttention => anyhow::bail!(
+                "layer {i}: SparseAttention needs a DSA indexer and per-query top-k; Qwen3.5 has neither"
+            ),
         }
 
         if (i + 1) % 10 == 0 || i < 5 {
