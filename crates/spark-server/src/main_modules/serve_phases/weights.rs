@@ -104,6 +104,36 @@ pub(crate) fn load_weight_store(
             if loader.prefetch_shards {
                 tracing::info!("Fast weight loader shard prefetch/readahead enabled");
             }
+            // O_DIRECT is chosen per shard by TENSOR COUNT alone
+            // (`direct_io_tensor_cap`, default 5000). That heuristic is blind to
+            // the size MIX, which is what actually decides the winner: a
+            // trellis-quantized checkpoint carries three tiny sidecars per
+            // packed projection, so GLM-5.3-Flash-EXL3-K2 is 150226 tensors of
+            // which 74.7% are under 64 KiB -- including 37152 `.mcg` scalars of
+            // FOUR BYTES each, every one of them a separate 4 KiB-aligned pread.
+            // Its shards hold at most 1280 tensors, so the cap never trips and
+            // every shard takes the direct path.
+            //
+            // These two knobs exist so that can be A/B'd without a rebuild;
+            // neither changes the default.
+            if let Some(v) = std::env::var("ATLAS_FAST_LOAD_DIRECT_IO").ok() {
+                if v == "0" || v.eq_ignore_ascii_case("false") {
+                    loader.try_direct_io = false;
+                    tracing::info!(
+                        "Fast weight loader: O_DIRECT DISABLED by \
+                         ATLAS_FAST_LOAD_DIRECT_IO=0 — buffered + readahead for every shard"
+                    );
+                }
+            }
+            if let Some(cap) = std::env::var("ATLAS_FAST_LOAD_DIRECT_IO_CAP")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+            {
+                loader.direct_io_tensor_cap = cap;
+                tracing::info!(
+                    "Fast weight loader: per-shard O_DIRECT tensor cap overridden to {cap}"
+                );
+            }
             loader
                 .load(model_dir, gpu, oom_reserve_bytes)
                 .context("Failed to load model weights (fast loader)")?
