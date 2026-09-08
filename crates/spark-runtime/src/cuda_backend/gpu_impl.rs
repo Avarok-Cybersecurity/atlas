@@ -55,11 +55,22 @@ static D2H_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 
 fn d2h_trace_tick() {
     use std::sync::atomic::Ordering;
-    let n = D2H_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    let Ok(target) = std::env::var("ATLAS_D2H_TRACE") else {
+    // ★ RESOLVED ONCE, AND CHECKED BEFORE THE COUNTER. This runs on EVERY D2H
+    // copy — the doc above counts 32,343 in one 1K prefill — and used to call
+    // `std::env::var` on each, which allocates and takes the process-wide env
+    // lock, serialising the copies against every other thread's getenv.
+    // `None` (the shipped state) makes this a single relaxed load; the counter
+    // sits below because nothing reads it when the trace is off. `unwrap_or(0)`
+    // keeps the original reading: SETTING the variable arms the 10,000th report.
+    static TARGET: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    let Some(target) = *TARGET.get_or_init(|| {
+        std::env::var("ATLAS_D2H_TRACE")
+            .ok()
+            .map(|v| v.parse().unwrap_or(0))
+    }) else {
         return;
     };
-    let target: u64 = target.parse().unwrap_or(0);
+    let n = D2H_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
     if target != 0 && n == target {
         tracing::warn!(
             "ATLAS_D2H_TRACE: call #{n} backtrace:\n{}",
