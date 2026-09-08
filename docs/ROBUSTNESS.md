@@ -1620,3 +1620,44 @@ still failed, the two BFCL legs behind it were 3.5 h of waste.
 Still open, and recorded as open rather than declared: 27.8 clears the 24.1
 floor but sits below the parent's 30.8. One fixed run against one parent run
 cannot separate residual regression from ordinary C=2 spread.
+
+## Wave 34 — the wave-33 entry above is wrong, and the metric is why
+
+**Withdrawn: the "24% decode regression at C=2" in wave 33.** There was no
+24% regression. The number came from comparing three parent samples that all
+happened to draw the fast mode against two candidate samples that both drew
+the slow one.
+
+**What the evidence actually shows.** `c2_aggregate_tok_s` on this recipe is
+**trimodal**, not noisy around a mean: TPOT clusters at 62–63 / 66–67 / 79 ms
+— about 30.6 / 27.5 / 23.5 tok/s — with nothing in between. Verified from the
+run store: clean `main` on 2026-09-07 scored **30.21 → 23.70 → 30.54 → 23.56**
+in four consecutive runs at one commit. And on 2026-09-08 an interleaved A/B
+on one box saw the *baseline arm alone* draw **28.7 then 25.2** at C=2 at the
+identical commit — a 12% swing against itself — while every other concurrency
+rung stayed inside ±2.9%.
+
+So two C=2 numbers differing by 20% are two draws from different modes, not a
+before-and-after. Any claim built on a handful of draws from that cell is
+unsupported, in either direction.
+
+**What survives.** The dispenser fix itself stands, on MECHANISM: the store
+ticket sharing the capture counter is a defect whether or not it costs
+measurable throughput, and the source-level test that goes red against the
+reintroduced coupling proves the fix is wired to the thing it fixes. Wave
+33's other claim — that an invariant cell narrows where a defect lives rather
+than exonerating it — also stands; it is what located the bug. Only the
+magnitude is withdrawn.
+
+**The lesson, stated so the next wave does not repeat it.** Before attributing
+a difference in a benchmark cell to a diff, establish the cell's
+DISTRIBUTION. A cell that is multi-modal cannot be read from n≈2 per arm, and
+the tell is cheap to look for: run the *same* commit several times and see
+whether it disagrees with itself. Wave 33 did not do that, and the invariant
+C=1 cell — correctly used to locate the defect — was also, wrongly, taken as
+evidence that the C=2 movement was real.
+
+**The commit subjects on this branch still carry the withdrawn number.**
+Correcting them means rewriting `d8440fb7e`, which is the commit PR #968's
+eleven gate records are measured at; that would void the certification and
+cost a full re-run. Recorded here rather than silently paid.
