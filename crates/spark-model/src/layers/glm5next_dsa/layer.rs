@@ -150,6 +150,17 @@ pub struct Glm5NextDsaWeights {
     pub ape: DevicePtr,
 }
 
+/// One `latent_write` launch for the whole prefill chunk instead of one per row.
+///
+/// Default ON. `ATLAS_GLM_DSA_BATCH_KV_WRITE=0` restores the per-row upload+launch,
+/// kept so the two arms live in ONE binary and the A/B is genuinely one-variable —
+/// and as a fallback, because the batched arm widens the `slot` allocation from 8
+/// bytes to `rows * 8` and ANOMALIES A55 records heap-layout changes in this
+/// workspace moving sampled output.
+fn batch_kv_write_enabled() -> bool {
+    std::env::var("ATLAS_GLM_DSA_BATCH_KV_WRITE").as_deref() != Ok("0")
+}
+
 /// The PREFILL selector runs once for the whole row group instead of once per token.
 /// ON by default; `ATLAS_DSA_SELECT_ROWS=0` is the kill-switch back to per-row selection.
 ///
@@ -334,7 +345,11 @@ impl Glm5NextDsaWorkspace {
                 gpu.synchronize(0)?;
                 p
             },
-            slot: gpu.alloc(8)?,
+            // `[rows]` i64 slot ids, NOT one. The prefill arm uploads every row's slot
+            // in ONE `copy_h2d` and runs ONE `grid([k,1,1])` `latent_write`; sized
+            // exactly like `kv_a` above (both are indexed by `row < k`) so the two
+            // cannot disagree on capacity.
+            slot: gpu.alloc(rows * 8)?,
             attn_out: gpu.alloc(rows * (cfg.local_heads * cfg.kv_lora_rank * 2))?,
             // One entry per cached token is the worst case (block_size == 1), so the
             // DSA context cap bounds it for every block size.
@@ -1025,6 +1040,99 @@ impl Glm5NextDsaLayer {
         let batch_select =
             batch_select_enabled(w.q_idx_rows.0 != 0, is_prefill, ctx.graph_capture, k);
         let mut batch_q_pos: Vec<i32> = Vec::with_capacity(if batch_select { k } else { 0 });
+
+        // `meta` does not depend on `row`, so the choice of KV-write arm is made once.
+        let step_meta = if ctx.decode_step {
+            ctx.attn_metadata.as_ref()
+        } else {
+            rowwise_meta
+        };
+        // ── Batched prefill KV write ──────────────────────────────────────────────
+        //
+        // 🔴 The per-row version of this cost 94.6% of prefill (ATLAS_GLM_PROFILE,
+        // DSA_PROJ, 256 rows). Per row it did a BLOCKING 8-byte `copy_h2d` of the slot
+        // id — every one a `cuStreamSynchronize` — and then launched `latent_write`
+        // with `grid([1,1,1])`, i.e. ONE of the GB10's 48 SMs. At 256 rows x 11 DSA
+        // layers that is 2,816 stream drains and 2,816 single-block launches per chunk,
+        // for a kernel that was ALREADY written to be batched: it indexes rows by
+        // `blockIdx.x`, takes `slot_mapping` as a `[num_tokens]` array, and already
+        // treats a negative slot as "skip this token". Only the caller was serial.
+        //
+        // 🪤 Hoisting is safe on ORDERING, not merely on causal masking: `attend_rows`
+        // runs ONCE after this loop (ANOMALIES A65), so no row's attend has read the KV
+        // pool at the point the old code interleaved these writes. Nothing between here
+        // and that call reads the pool either. The writes themselves are independent —
+        // row `r` reads `kv_a[r]` and writes slot `r` — so batching cannot reassociate
+        // anything; the arithmetic is bit-identical per row by construction.
+        //
+        // Floored rows keep their latent (it is already in a shared radix block — see
+        // the `kv_write_floor` argument) and are passed as `-1`, which is exactly the
+        // skip the kernel already implements. That keeps the launch geometry a plain
+        // `[k,1,1]` regardless of where the floor falls.
+        //
+        // Decode/verify (`step_meta.is_some()`) is untouched: it already has a K-row
+        // slot array uploaded at a stable address, its `k` is 1 or a narrow verify
+        // width, and it must stay capturable. It keeps the in-loop launch below.
+        let batch_kv_write = batch_kv_write_enabled();
+        if batch_kv_write && step_meta.is_none() && k > 0 {
+            let block_size = kv_cache.config().block_size;
+            let mut slots: Vec<i64> = Vec::with_capacity(k);
+            for row in 0..k {
+                let pos = seq_len + row;
+                if pos < kv_write_floor {
+                    slots.push(-1);
+                    continue;
+                }
+                let logical = pos / block_size;
+                let physical = *block_table.get(logical).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "DSA layer {}: block table has {} entries, needs logical block \
+                         {logical} for position {pos}",
+                        self.layer_idx,
+                        block_table.len()
+                    )
+                })? as usize;
+                slots.push((physical * block_size + pos % block_size) as i64);
+            }
+            if slots.iter().any(|&s| s >= 0) {
+                let bytes: Vec<u8> = slots.iter().flat_map(|s| s.to_le_bytes()).collect();
+                gpu.copy_h2d(&bytes, w.slot)?;
+                KernelLaunch::new(gpu, self.kernels.latent_write)
+                    .grid([k as u32, 1, 1])
+                    .block([self.cfg.kv_lora_rank as u32, 1, 1])
+                    .arg_ptr(w.kv_a)
+                    .arg_ptr(self.weights.kv_a_layernorm)
+                    .arg_ptr(kv_cache.k_pool_ptr(self.attn_layer_idx))
+                    .arg_ptr(w.slot)
+                    .arg_u32(self.cfg.kv_lora_rank as u32)
+                    .arg_f32(self.rms_eps)
+                    .arg_f32(1.0 / self.kv_scale)
+                    .launch(stream)?;
+            }
+        }
+
+        crate::layers::glm5next_layer::profile::end(
+            crate::layers::glm5next_layer::profile::DSA_PROJ,
+            t_proj,
+            gpu,
+            stream,
+        );
+        // 🔴 DSA_PROJ closes HERE, once, and NOT inside the row loop.
+        //
+        // It used to be ended at the top of every iteration against this same `t_proj`,
+        // which is bound once above and never reassigned. `profile::end_us` does
+        // `NANOS[b].fetch_add(t0.elapsed())` — an ABSOLUTE elapsed, not a delta — so k
+        // rows added "time since the projections started" k times over:
+        // `sum_i (G + i*r)` = `k*G + r*k*(k-1)/2` against a true cost of `G`. The bucket
+        // therefore grew QUADRATICALLY in k and, because the per-row indexer/select/
+        // attend work happens between iterations, it charged those buckets' time to itself.
+        //
+        // 🪤 Not academic: at `ATLAS_GLM_PREFILL_ROWS=256` it reported dsa_proj as 94.6% of
+        // prefill (vs kda_mixer 3.3%, moe_experts 0.4%) and sent a day of work after a
+        // phantom hotspot. Raising rows 16 -> 256 inflated it ~8x -> ~128x, which reads
+        // exactly like "this section got worse as the batch grew". Batching the per-row
+        // `latent_write` it pointed at then measured 0%, with the arm proven live (k=256,
+        // step_meta=false). A bucket ended inside a loop must be started inside it too.
         for row in 0..k {
             let pos = seq_len + row;
             let block_size = kv_cache.config().block_size;
@@ -1043,19 +1151,18 @@ impl Glm5NextDsaLayer {
             // 🪤 ONLY on a real decode step — `prefill_default` calls this same `decode` per
             // token with the prefill context, where these are arrays or NULL. See
             // `ForwardContext::decode_step`.
-            let meta = if ctx.decode_step {
-                ctx.attn_metadata.as_ref()
-            } else {
-                rowwise_meta
-            };
+            let meta = step_meta;
             // Row strides into the K-row arrays. At k == 1 every one of these is 0.
             let bt_stride = meta.map_or(0, |m| m.max_blocks_per_seq as usize) * 4;
             // Floored rows keep their latent: it is already in a shared radix block (see
             // the `kv_write_floor` argument). The slot upload is only for `latent_write`,
             // so it is skipped with it; nothing below reads `slot_dev`.
-            if pos >= kv_write_floor {
-                let slot_dev = match meta {
-                    Some(m) => m.slot.offset(row * 8),
+            // Prefill (`meta.is_none()`) wrote every row above, in one launch, unless
+            // the batched arm is disabled — then this falls back to the serial upload.
+            if pos >= kv_write_floor
+                && let Some(slot_dev) = match meta {
+                    Some(m) => Some(m.slot.offset(row * 8)),
+                    None if batch_kv_write => None,
                     None => {
                         let logical = pos / block_size;
                         let physical = *block_table.get(logical).ok_or_else(|| {
@@ -1068,9 +1175,10 @@ impl Glm5NextDsaLayer {
                         })? as usize;
                         let slot = (physical * block_size + pos % block_size) as i64;
                         gpu.copy_h2d(&slot.to_le_bytes(), w.slot)?;
-                        w.slot
+                        Some(w.slot)
                     }
-                };
+                }
+            {
                 KernelLaunch::new(gpu, self.kernels.latent_write)
                     .grid([1, 1, 1])
                     .block([self.cfg.kv_lora_rank as u32, 1, 1])
@@ -1086,7 +1194,6 @@ impl Glm5NextDsaLayer {
 
             // ── indexer stream, then select + gather-attend ──
             use crate::layers::glm5next_layer::profile;
-            profile::end(profile::DSA_PROJ, t_proj, gpu, stream);
             let t = profile::start();
             // Replay-safe placement only while a graph is RECORDING. An eager step keeps the
             // host-offset path, so the shipping numbers and byte-identity are untouched.
