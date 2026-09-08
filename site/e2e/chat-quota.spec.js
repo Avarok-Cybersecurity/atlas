@@ -43,7 +43,7 @@ test.describe('@quota daily allowance', () => {
     await context.route(OR_CHAT, dailyQuota429Handler({ log: attempts }));
 
     await withKey(page);
-    await page.goto('/');
+    await page.goto('/engine.html');
     await openChat(page);
     await waitReady(page);
     // Shrink the backoff: if the engine wrongly retried, this test would still
@@ -80,7 +80,7 @@ test.describe('@quota daily allowance', () => {
     );
 
     await withKey(page);
-    await page.goto('/');
+    await page.goto('/engine.html');
     await openChat(page);
     await waitReady(page);
     await page.evaluate(() => window.__atlasChatSetRetryBaseMs(1));

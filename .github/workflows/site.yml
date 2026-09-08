@@ -253,6 +253,7 @@ jobs:
             esac
           }
           check index.html     'Atlas, pure Rust inference'
+          check engine.html    'Atlas engine, pure Rust inference'
           check control.html   'Control plane'
           check diligence.html 'Verification steps'
           exit "$fail"

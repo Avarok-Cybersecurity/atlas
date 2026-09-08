@@ -1,0 +1,42 @@
+{
+  "color": {
+    "chevron": {
+      "one": "#BE9DF8",
+      "two": "#49C3DB",
+      "threeUpper": "#12B981",
+      "threeLower": "#EFB338"
+    },
+    "wordmark": {
+      "onLight": "#9397A0",
+      "onDark": "#C9CCD4"
+    },
+    "tagline": {
+      "onLight": "#BDC0C5",
+      "onDark": "#82868F"
+    },
+    "ground": {
+      "light": "#FFFFFF",
+      "dark": "#0F1216"
+    },
+    "ui": {
+      "grayText": "#73767D"
+    }
+  },
+  "geometry": {
+    "stroke": 76,
+    "armX": 320,
+    "armY": 280,
+    "gap": 280,
+    "angleDeg": 41.19,
+    "markBox": [
+      956,
+      636
+    ],
+    "clearSpaceUnit": 140
+  },
+  "minimumSize": {
+    "markPx": 16,
+    "horizontalLockupPx": 120,
+    "fullLockupPx": 220
+  }
+}

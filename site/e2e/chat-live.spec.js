@@ -13,7 +13,7 @@ const LIVE_KEY = process.env.OPENROUTER_API_KEY;
 test.describe('@live real corpus', () => {
   test('the published corpus downloads, indexes, and reaches ready', async ({ page }) => {
     test.setTimeout(300_000); // real download + wasm indexing on real hardware
-    await page.goto('/');
+    await page.goto('/engine.html');
     if (page.viewportSize().width <= 860) await page.locator('.nav-toggle').click();
     await page.locator('.nav-chat-btn:visible').first().click();
     await expect(page.locator('.cc[role="dialog"]:not(.cc-skeleton)')).toBeVisible();
@@ -29,7 +29,7 @@ test.describe('@live real corpus', () => {
     test.skip(!LIVE_KEY, 'OPENROUTER_API_KEY not set — skipping the real-key leg');
     test.setTimeout(300_000);
     await page.addInitScript((k) => localStorage.setItem('atlas-openrouter-key', k), LIVE_KEY);
-    await page.goto('/');
+    await page.goto('/engine.html');
     if (page.viewportSize().width <= 860) await page.locator('.nav-toggle').click();
     await page.locator('.nav-chat-btn:visible').first().click();
     await expect(page.locator('.cc[role="dialog"]:not(.cc-skeleton)')).toBeVisible();
