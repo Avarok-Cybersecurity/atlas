@@ -231,6 +231,55 @@ fn the_dense_ffn_levers_are_presence_gated_and_their_polarities_hold() {
 /// and the tri-state is the interesting one: its DEFAULT is model-dependent
 /// (NVFP4 checkpoints only), so `None` must stay distinguishable from
 /// `Some(false)` or the call site cannot apply that default.
+/// The decode-step levers. `ssm_save_dump` is PRESENCE-gated (it was
+/// `std::env::var(..).is_ok()`) while the two graph levers are TRUTHY-gated
+/// (`is_ok_and(|v| v == "1" || v == "true")`) — three variables read on the
+/// same line of the same function with two different spellings, which is
+/// exactly the kind of thing a consolidation quietly unifies by accident.
+#[test]
+fn the_decode_step_levers_keep_their_two_different_spellings() {
+    let d = resolve(&[]);
+    assert!(!d.ssm_save_dump);
+    assert!(!d.ep_graphs);
+    assert!(!d.gdn_decode_graph);
+
+    // Presence: any value arms it, `0` included.
+    assert!(resolve(&[("ATLAS_SSM_SAVE_DUMP", "1")]).ssm_save_dump);
+    assert!(resolve(&[("ATLAS_SSM_SAVE_DUMP", "0")]).ssm_save_dump);
+    assert!(resolve(&[("ATLAS_SSM_SAVE_DUMP", "")]).ssm_save_dump);
+
+    // Truthy: `1` or `true`, nothing else.
+    for (name, read) in [
+        (
+            "ATLAS_EP_GRAPHS",
+            (|l: &ModelLevers| l.ep_graphs) as fn(&ModelLevers) -> bool,
+        ),
+        ("ATLAS_GDN_DECODE_GRAPH", |l: &ModelLevers| {
+            l.gdn_decode_graph
+        }),
+    ] {
+        assert!(read(&resolve(&[(name, "1")])), "{name} at =1");
+        assert!(read(&resolve(&[(name, "true")])), "{name} at =true");
+        assert!(!read(&resolve(&[(name, "0")])), "{name} armed at =0");
+        assert!(
+            !read(&resolve(&[(name, "")])),
+            "{name} is truthy-gated, not presence-gated"
+        );
+        // ★ CASE-SENSITIVE, unlike every other truthy lever in this struct.
+        // The originals spelled it `v == "1" || v == "true"`. Accepting
+        // `TRUE` would arm an experimental CUDA-graph capture on a spelling
+        // that previously did nothing — the direction that turns capture ON
+        // unexpectedly, which is the one that must not widen by accident.
+        assert!(
+            !read(&resolve(&[(name, "TRUE")])),
+            "{name} must stay case-SENSITIVE: `TRUE` did not arm it before"
+        );
+    }
+    // The contrast, in the same test so the difference is visible: the
+    // sibling truthy levers ARE case-insensitive and must stay that way.
+    assert!(resolve(&[("ATLAS_LORA_EAGER", "TRUE")]).lora_eager);
+}
+
 #[test]
 fn the_moe_prefill_levers_keep_the_tri_state_distinguishable() {
     let d = resolve(&[]);

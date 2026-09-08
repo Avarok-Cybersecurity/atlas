@@ -23,7 +23,7 @@
 ///
 /// An empty allow list means the file must not read the environment at all.
 /// Paths are relative to `crates/spark-model/src`.
-const GUARDED: [(&str, &[&str]); 9] = [
+const GUARDED: [(&str, &[&str]); 10] = [
     // ── Dense FFN ──
     (
         "layers/dense_ffn.rs",
@@ -39,6 +39,9 @@ const GUARDED: [(&str, &[&str]); 9] = [
     ),
     // ── MoE routed prefill: once per layer per prefill chunk ──
     ("layers/moe/forward_prefill_routed.rs", &[]),
+    // ── The decode step itself. `ATLAS_SSM_SAVE_DUMP` was asked THREE times
+    //    per token here, each read only to decide whether to do nothing. ──
+    ("model/trait_impl/decode_a.rs", &[]),
     // ── DFlash drafter: once per DECODE STEP, and the layer helpers run
     //    `num_layers` times inside that. `dflash_head/from_weights.rs` is
     //    deliberately absent — it builds the head, so it is where the reads

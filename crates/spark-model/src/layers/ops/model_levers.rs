@@ -202,6 +202,22 @@ pub struct ModelLevers {
     /// Per-layer hidden-state norm dumps on the Gemma-4 decode path. Heavy —
     /// one device-to-host copy per layer.
     pub gemma4_diag: bool,
+    /// `ATLAS_SSM_SAVE_DUMP` (presence) — the CBD scratch/SSM-state
+    /// fingerprint probe. Asked THREE times per decode step by the decode
+    /// path alone, each read only to decide whether to do nothing.
+    pub ssm_save_dump: bool,
+
+    // ── Decode graph capture ──
+    /// `ATLAS_EP_GRAPHS=1|true` — allow CUDA-graph capture under expert
+    /// parallelism. The EP all-reduce queues ncclSend/Recv plus a local add
+    /// on the capture stream and NCCL >= 2.9 supports capture, so this MAY
+    /// capture cleanly; env-gated so a deploy can revert instantly if
+    /// capture crashes or replay hangs.
+    pub ep_graphs: bool,
+    /// `ATLAS_GDN_DECODE_GRAPH=1|true` — capture the whole single-token GDN
+    /// HeadParallel TP decode forward (~130 kernels plus the per-layer TP
+    /// all-reduces) into one replayable graph. Default OFF.
+    pub gdn_decode_graph: bool,
 
     // ── Attention (cont.) ──
     /// BF16 tensor-core attention projections: dequant FP4 to BF16 and use a
@@ -286,6 +302,16 @@ fn from_values(
     fn opt_in_truthy(value: Option<&str>) -> bool {
         value.is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
     }
+    /// `"1"` or `"true"` EXACTLY — case-SENSITIVE, unlike [`opt_in_truthy`].
+    ///
+    /// The two decode-graph levers spelled it `is_ok_and(|v| v == "1" || v ==
+    /// "true")`, and widening them to accept `TRUE` would arm an experimental
+    /// CUDA-graph capture on a spelling that previously did nothing — the
+    /// direction that turns capture ON unexpectedly. Preserved rather than
+    /// unified; the divergence between the two helpers is the point.
+    fn opt_in_truthy_exact(value: Option<&str>) -> bool {
+        matches!(value, Some("1") | Some("true"))
+    }
 
     ModelLevers {
         max_decode_seqs: 1,
@@ -331,6 +357,9 @@ fn from_values(
         lora_rotate: opt_in_truthy(value("ATLAS_LORA_ROTATE").as_deref()),
         k4_diag: opt_in(value("ATLAS_K4_DIAG").as_deref()),
         gemma4_diag: opt_in_truthy(value("ATLAS_DIAG_GEMMA4").as_deref()),
+        ssm_save_dump: present("ATLAS_SSM_SAVE_DUMP"),
+        ep_graphs: opt_in_truthy_exact(value("ATLAS_EP_GRAPHS").as_deref()),
+        gdn_decode_graph: opt_in_truthy_exact(value("ATLAS_GDN_DECODE_GRAPH").as_deref()),
         bf16_tc_proj: present("ATLAS_BF16_TC_PROJ"),
         weight_pre_rotated: opt_in_truthy(value("TQ_PLUS_WEIGHT_ROTATION").as_deref()),
         ssm_ms_profile: opt_in(value("ATLAS_SSM_MS_PROFILE").as_deref()),
