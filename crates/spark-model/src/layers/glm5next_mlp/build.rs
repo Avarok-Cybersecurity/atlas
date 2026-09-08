@@ -157,6 +157,9 @@ pub fn build_moe(
     full_shared_inter: usize,
     load: LoadFn<'_>,
     expert: ExpertFn<'_>,
+    // `Some` when the checkpoint ships routed experts as EXL3 trellis; see
+    // `Glm5NextMoeWeights::exl3`.
+    exl3: Option<crate::weight_loader::glm5_next_exl3::Glm5NextExl3Experts>,
 ) -> Result<Glm5NextMoeWeights> {
     // 🪤 REPLICATED, both of them. A sharded router gives each rank partial logits and a
     // different top-k, which makes masked-local EP select different experts per rank — no
@@ -191,9 +194,16 @@ pub fn build_moe(
 
     // Ascending GLOBAL id, so slot `i` is id `range.start + i` — the inverse of
     // `Glm5NextMlpConfig::local_slot`, and the only ordering the forward may assume.
+    // EXL3 REPLACES this walk. `expert(id)` resolves NVFP4 triplets
+    // (`.weight`/`.weight_scale`/`.weight_scale_2`) which a trellis pack does
+    // not ship, so calling it there fails by name. Leaving `experts` empty also
+    // makes `build_expert_ptr_table` emit an all-null table, which is the right
+    // thing: under EXL3 nothing may dereference the NVFP4 pointers.
     let mut experts = Vec::with_capacity(cfg.local_experts);
-    for id in cfg.local_expert_range() {
-        experts.push(expert(id)?);
+    if exl3.is_none() {
+        for id in cfg.local_expert_range() {
+            experts.push(expert(id)?);
+        }
     }
 
     let ptrs = Glm5NextMoePtrTables {
@@ -209,6 +219,7 @@ pub fn build_moe(
         shared,
         experts,
         ptrs,
+        exl3,
     })
 }
 

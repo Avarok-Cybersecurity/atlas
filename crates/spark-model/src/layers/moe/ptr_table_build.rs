@@ -228,6 +228,44 @@ pub(crate) fn build_exl3_ptr_table(
 }
 
 impl Exl3MoeState {
+    /// The ONE `Exl3MoeState` for this process, created on first use.
+    ///
+    /// Mirrors [`Exl3LaunchState::shared`] and for the same reason: the slabs
+    /// and the split-k locks buffer are per-DEVICE resources that every layer's
+    /// launches share (they are stream-ordered), so a per-layer copy would be
+    /// both wasteful and wrong. Held weakly so teardown still reclaims it.
+    ///
+    /// The geometry is asserted rather than re-read: a second caller arriving
+    /// with different dimensions would silently get slabs sized for the first,
+    /// which is the kind of mismatch that shows up as a wrong answer.
+    pub(crate) fn shared(
+        gpu: &dyn GpuBackend,
+        hidden: usize,
+        inter: usize,
+        top_k: usize,
+        num_experts: usize,
+    ) -> Result<std::sync::Arc<Self>> {
+        use std::sync::{Mutex, Weak};
+        static SHARED: Mutex<Weak<Exl3MoeState>> = Mutex::new(Weak::new());
+        let mut slot = SHARED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(s) = slot.upgrade() {
+            ensure!(
+                s.hidden == hidden && s.top_k == top_k,
+                "EXL3 MoE state already built for hidden={} top_k={}, but a site asked \
+                 for hidden={hidden} top_k={top_k}",
+                s.hidden,
+                s.top_k
+            );
+            return Ok(s);
+        }
+        let launch = crate::layers::ops::Exl3LaunchState::shared(gpu)?;
+        let s = std::sync::Arc::new(Self::new(gpu, launch, hidden, inter, top_k, num_experts)?);
+        *slot = std::sync::Arc::downgrade(&s);
+        Ok(s)
+    }
+
     /// Allocate the per-model mgemm slot-batched slabs over the shared
     /// `launch` state (locks + fence), all-or-nothing with rollback (the
     /// `Exl3LmHead::new` pattern). One named call site so the alloc ledger

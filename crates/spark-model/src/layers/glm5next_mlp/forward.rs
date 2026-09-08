@@ -174,6 +174,15 @@ pub struct Glm5NextMlpWorkspace {
     u_eid: DevicePtr,
     /// `[rows * top_k, rows]` I32 slot per union entry per row, `-1` = row absent.
     u_slot: DevicePtr,
+    /// `[rows]` F32 all-ones, uploaded ONCE.
+    ///
+    /// The EXL3 routed arm folds the router probabilities into its `down`
+    /// projection, so it emits the routed SUM rather than `top_k` weighted
+    /// slots. Reusing `glm5next_moe_combine` with `top_k = 1` and this vector
+    /// makes the combine compute `1 * routed_sum + shared`, which is exactly
+    /// right and avoids a second combine kernel that could drift from the
+    /// NVFP4 one.
+    ones_f32: DevicePtr,
     max_inter: usize,
     /// Widest verify this scratch can serve. `1` on the serial decode path.
     max_rows: usize,
@@ -209,6 +218,15 @@ impl Glm5NextMlpWorkspace {
             shared_out: gpu.alloc(rows * cfg.hidden * 2)?,
             u_eid: gpu.alloc(rows * cfg.top_k * 4)?,
             u_slot: gpu.alloc(rows * cfg.top_k * rows * 4)?,
+            ones_f32: {
+                let p = gpu.alloc(rows * 4)?;
+                let ones: Vec<u8> = std::iter::repeat(1.0f32)
+                    .take(rows)
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect();
+                gpu.copy_h2d(&ones, p)?;
+                p
+            },
             max_inter,
             max_rows: rows,
         })
@@ -633,8 +651,68 @@ pub fn forward_moe(
     // `[rows, top_k, hidden]` and contiguous, so one memset covers every row.
     gpu.memset_async(ws.expert_out, 0, rows * cfg.top_k * cfg.hidden * 2, stream)?;
 
+    // ── EXL3 routed arm ──────────────────────────────────────────────────────
+    //
+    // Replaces the NVFP4 gate/up/down dispatch entirely: `exl3_moe_decode_routed`
+    // runs all three trellis mGEMMs for every routed slot in one call and FOLDS
+    // the router probabilities into `down`, so what lands in `expert_out` is the
+    // routed SUM for each row, not `top_k` weighted slots.
+    //
+    // That is why the combine below switches to `top_k = 1` + an all-ones vector:
+    // `1 * routed_sum + shared` is the same arithmetic the NVFP4 path reaches by
+    // summing slots, through the SAME kernel, so the two arms cannot drift.
+    //
+    // The router, the shared expert and the all-reduce are untouched — the
+    // published packs quantize routed experts only.
+    let exl3_routed = w.exl3.is_some();
+    if let Some(ex) = w.exl3.as_ref() {
+        let st = ex.state.as_ref();
+        let _dispatch = st.dispatch_guard(gpu, stream)?;
+        let proj = |t: &crate::layers::moe::Exl3ExpertPtrTable| crate::layers::ops::Exl3MoeProj {
+            trellis_ptrs: t.trellis_ptrs,
+            suh_ptrs: t.suh_ptrs,
+            svh_ptrs: t.svh_ptrs,
+            k_bits: t.k_bits,
+            cb: t.cb,
+        };
+        let scratch = crate::layers::ops::Exl3MoeScratch {
+            a_f16: st.a_f16,
+            a_had_f16: st.a_had_f16,
+            a_had_capacity_elems: st.s_cap * st.hidden,
+            c_gate_f16: st.c_gate_f32,
+            c_up_f16: st.c_up_f32,
+            inter_f16: st.inter_f16,
+            c_down_f32: st.c_down_f32,
+            b_indices: st.b_indices,
+            b_weights: st.b_weights,
+            s_cap: st.s_cap,
+        };
+        let (local_start, num_local) = (ex.tables[0].local_start, ex.tables[0].num_local);
+        crate::layers::ops::exl3_moe_decode_routed(
+            gpu,
+            x,
+            ws.ids,
+            ws.wts,
+            ws.expert_out,
+            &[proj(&ex.tables[0]), proj(&ex.tables[1]), proj(&ex.tables[2])],
+            &scratch,
+            st.locks,
+            rows,
+            cfg.top_k,
+            cfg.hidden,
+            cfg.moe_intermediate,
+            local_start,
+            num_local,
+            cfg.swiglu_limit,
+            false,
+            st.sm_count,
+            stream,
+        )?;
+    }
+
     for r in 0..rows {
-        if batched {
+        if batched || exl3_routed {
+            // EXL3 already produced the routed sum for every row above.
             break; // the experts run once for ALL rows, after this loop
         }
         let xr = x.offset(r * cfg.hidden * 2);
@@ -826,7 +904,7 @@ pub fn forward_moe(
         }
     }
 
-    if batched {
+    if batched && !exl3_routed {
         let t = profile::start();
         let mi = cfg.moe_intermediate;
         // ONE sweep per sub-group. At `rows <= MOE_ROW_BATCH_MAX_ROWS` this is the single pass it
@@ -948,11 +1026,13 @@ pub fn forward_moe(
         .grid([rows as u32, 1, 1])
         .block([ACT_BLOCK, 1, 1])
         .arg_ptr(ws.expert_out)
-        .arg_ptr(ws.wts)
+        // EXL3 folded the probabilities into `down`, so its single slot is
+        // combined with weight 1.0; the NVFP4 arm still weights `top_k` slots.
+        .arg_ptr(if exl3_routed { ws.ones_f32 } else { ws.wts })
         .arg_ptr(ws.shared_out)
         .arg_ptr(out)
         .arg_u32(cfg.hidden as u32)
-        .arg_u32(cfg.top_k as u32)
+        .arg_u32(if exl3_routed { 1 } else { cfg.top_k } as u32)
         .launch(stream)?;
     profile::end(profile::MOE_COMBINE, t, gpu, stream);
     Ok(())

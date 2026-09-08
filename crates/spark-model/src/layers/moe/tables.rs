@@ -97,32 +97,32 @@ impl Bf16SharedExpert {
 /// (`ptr_table_build.rs::build_exl3_ptr_table`) enforces uniformity.
 #[allow(dead_code)] // consumed by the native MoE dispatch (forward arm)
 #[derive(Debug)]
-pub(crate) struct Exl3ExpertPtrTable {
+pub struct Exl3ExpertPtrTable {
     /// `[num_local]` u64 device pointers to each local expert's `.trellis`.
-    pub(crate) trellis_ptrs: DevicePtr,
+    pub trellis_ptrs: DevicePtr,
     /// `[num_local]` u64 device pointers to each local expert's `.suh`.
-    pub(crate) suh_ptrs: DevicePtr,
+    pub suh_ptrs: DevicePtr,
     /// `[num_local]` u64 device pointers to each local expert's `.svh`.
-    pub(crate) svh_ptrs: DevicePtr,
+    pub svh_ptrs: DevicePtr,
     /// `[num_local]` host copies of the same `[trellis, suh, svh]` raw
     /// device addresses the arrays above hold — the prefill OVERFLOW path
     /// (an expert routed more rows than the fused tier's per-expert cap in
     /// one batch) launches per-expert
     /// `exl3_gemm`s on that expert's trellis and needs its pointers without
     /// a D2H of the table.
-    pub(crate) host_ptrs: Vec<[u64; 3]>,
+    pub host_ptrs: Vec<[u64; 3]>,
     /// Local expert count (== the EP-local range width).
-    pub(crate) num_local: usize,
+    pub num_local: usize,
     /// Global id of local expert 0 (`config.local_expert_range().0`).
-    pub(crate) local_start: usize,
+    pub local_start: usize,
     /// Trellis bits/weight — every entry shares it (one mgemm template).
-    pub(crate) k_bits: u32,
+    pub k_bits: u32,
     /// Kernel codebook index: 1 = MCG, 2 = MUL1 (cb0 has no instances).
-    pub(crate) cb: u32,
+    pub cb: u32,
     /// Projection geometry (gate/up: `[hidden -> inter]`, down: the
     /// transpose). Every entry shares it.
-    pub(crate) in_dim: usize,
-    pub(crate) out_dim: usize,
+    pub in_dim: usize,
+    pub out_dim: usize,
 }
 
 impl Exl3ExpertPtrTable {
@@ -195,7 +195,7 @@ pub(crate) const EXL3_MOE_OVERFLOW_CHUNK_ROWS: usize = 1024;
 /// head projection can never race these launches on the locks).
 #[allow(dead_code)] // consumed by the native MoE dispatch (forward arm)
 #[derive(Debug)]
-pub(crate) struct Exl3MoeState {
+pub struct Exl3MoeState {
     /// Shared launch state (locks + fence + section mutex).
     pub(crate) launch: std::sync::Arc<Exl3LaunchState>,
     /// `launch.locks` — the per-model cooperative-launch locks

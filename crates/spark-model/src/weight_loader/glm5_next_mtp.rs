@@ -105,6 +105,10 @@ pub fn load_glm5next_mtp_module(
         config.shared_expert_intermediate_size,
         &load,
         &expert,
+        // The published packs' `scope` is the routed experts of the MAIN
+        // layers; the MTP/draft block stays NVFP4, so this arm is None until a
+        // pack says otherwise (at which point it fails by name, not silently).
+        None,
     )?));
 
     let up =

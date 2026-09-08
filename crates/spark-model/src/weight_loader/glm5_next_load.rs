@@ -451,6 +451,31 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                     &load,
                 )?),
                 Mlp::RoutedMoe => {
+                    // EXL3 packs (e.g. vcruz305/GLM-5.3-Flash-EXL3-K2) ship the
+                    // routed experts as trellis triplets instead of NVFP4. The
+                    // probe is per LAYER, not per checkpoint, so a pack that
+                    // quantizes only some routed sites still loads: each layer
+                    // takes whichever arm its own tensors describe.
+                    let q = |leaf: &str| qualify(idx, leaf);
+                    let exl3 = if super::glm5_next_exl3::layer_is_exl3(store, &q) {
+                        Some(super::glm5_next_exl3::bind_experts_exl3(
+                            gpu,
+                            store,
+                            &q,
+                            mlp_cfg.num_experts,
+                            (
+                                mlp_cfg.local_expert_range().start,
+                                mlp_cfg.local_expert_range().end,
+                            ),
+                            (
+                                mlp_cfg.hidden,
+                                mlp_cfg.moe_intermediate,
+                                mlp_cfg.top_k,
+                            ),
+                        )?)
+                    } else {
+                        None
+                    };
                     let expert = |id: usize| bind_expert(gpu, store, idx, id);
                     Glm5NextMlpSite::Moe(Box::new(mlp_build::build_moe(
                         gpu,
@@ -459,6 +484,7 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                         config.shared_expert_intermediate_size,
                         &load,
                         &expert,
+                        exl3,
                     )?))
                 }
             };
