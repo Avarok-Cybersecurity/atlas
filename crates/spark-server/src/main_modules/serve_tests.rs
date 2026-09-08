@@ -209,3 +209,15 @@ fn default_kwargs_fail_fast_on_typos() {
     // Invalid JSON.
     assert!(parse_default_chat_template_kwargs("not json").is_err());
 }
+
+/// The nvfp4-labeled bundle carries the EXL3 dispatch (exl3_matmul/exl3_moe/
+/// exl3_reconstruct compile into it). A `quant_method: "exl3"` pack must reach
+/// the loader rather than be refused at the gate — and the reverse pair must
+/// still be refused, since a bundle built WITHOUT the EXL3 kernels cannot
+/// decode a trellis.
+#[test]
+fn nvfp4_bundle_accepts_exl3_but_not_the_reverse() {
+    assert!(super::quant_pair_compatible("nvfp4", "exl3"));
+    assert!(!super::quant_pair_compatible("exl3", "nvfp4"));
+    assert!(!super::quant_pair_compatible("bf16", "exl3"));
+}

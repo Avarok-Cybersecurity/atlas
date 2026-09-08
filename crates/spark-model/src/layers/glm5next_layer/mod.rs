@@ -979,6 +979,25 @@ impl Glm5NextLayer {
 }
 
 impl TransformerLayer for Glm5NextLayer {
+    /// EXL3 routed experts VETO decode-graph capture.
+    ///
+    /// The trellis mGEMMs launch cooperatively (`cuLaunchCooperativeKernel`),
+    /// and a cooperative launch is not stream-capturable. The failure is not a
+    /// clean refusal at the launch either: the shared `Exl3LaunchState`'s
+    /// cross-stream fence trips first, and `cuStreamWaitEvent` returns 905
+    /// (`STREAM_CAPTURE_ISOLATION`) mid-request — which is exactly how this
+    /// surfaced, as an inference error rather than a capture error.
+    ///
+    /// Scoped to the EXL3 arm on purpose: an NVFP4 GLM layer captures as it
+    /// always did.
+    fn decode_graph_unsupported(&self) -> bool {
+        match &self.mlp {
+            Glm5NextMlpSite::Moe(w) => w.exl3.is_some(),
+            _ => false,
+        }
+    }
+
+
     /// 🔴 GLM-5.3 CANNOT serve a batched multi-sequence decode step. Two
     /// independent row-0 aliases, both structural, either one sufficient:
     ///

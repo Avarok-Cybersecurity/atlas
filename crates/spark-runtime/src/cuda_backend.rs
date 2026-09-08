@@ -17,6 +17,7 @@ mod fault_probe;
 mod gpu_copy;
 mod gpu_impl;
 mod gpu_impl_graph;
+mod gpu_impl_launch;
 pub mod tensormap;
 
 // ── Raw CUDA driver API for memory operations ──
@@ -55,6 +56,31 @@ unsafe extern "C" {
     pub(super) fn cuMemsetD8_v2(dst: u64, value: u8, n: usize) -> i32;
     pub(super) fn cuMemcpyDtoH_v2(dst: *mut c_void, src: u64, bytes: usize) -> i32;
     // CUDA graph capture/replay
+    /// Cooperative launch: every block of the grid is co-resident, which is
+    /// what makes an in-kernel `grid.sync()` legal — the EXL3 trellis
+    /// GEMM/GEMV kernels rely on it for their split-k lock/barrier protocol.
+    /// Not declared under SCALE: its libcuda export set is minimal and an
+    /// unresolved extern would break the link (same treatment as
+    /// `cuStreamIsCapturing`).
+    #[cfg(not(atlas_scale))]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn cuLaunchCooperativeKernel(
+        f: *mut c_void,
+        gridDimX: u32,
+        gridDimY: u32,
+        gridDimZ: u32,
+        blockDimX: u32,
+        blockDimY: u32,
+        blockDimZ: u32,
+        sharedMemBytes: u32,
+        hStream: u64,
+        kernelParams: *mut *mut c_void,
+    ) -> i32;
+    /// Per-function attribute write, used for
+    /// `CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES` (= 8) so a kernel may
+    /// be handed more than the 48 KB default dynamic shared memory (EXL3 GEMM
+    /// asks for 90 KB). Declared unconditionally — SCALE exports it too.
+    pub(super) fn cuFuncSetAttribute(hfunc: *mut c_void, attrib: i32, value: i32) -> i32;
     pub(super) fn cuStreamBeginCapture(hStream: u64, mode: u32) -> i32;
     // Capture-status query (telemetry taps must not sync/copy inside an
     // active capture). Not declared under SCALE — its libcuda export set is

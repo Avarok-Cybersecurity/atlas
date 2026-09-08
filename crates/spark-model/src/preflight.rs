@@ -154,7 +154,12 @@ fn check_quant_method(config: &ModelConfig) -> Result<()> {
     if qc.quant_method.is_empty() {
         return Ok(());
     }
-    const KNOWN_METHODS: &[&str] = &["compressed-tensors", "modelopt", "fp8"];
+    // "exl3": QTIP trellis. It does NOT go through `QuantFormat` — the trellis
+    // is either kept packed and decoded in-kernel by `exl3_matmul`/`exl3_moe`
+    // (the routed-expert arm) or rewritten by the `exl3_materialize` pass at
+    // load. Both live in spark-model, so recognising the method here is what
+    // lets those paths run instead of being refused before any weight loads.
+    const KNOWN_METHODS: &[&str] = &["compressed-tensors", "modelopt", "fp8", "exl3"];
     if !KNOWN_METHODS.contains(&qc.quant_method.as_str()) {
         bail!(
             "Pre-flight: checkpoint declares quant_method={:?} which Atlas doesn't \

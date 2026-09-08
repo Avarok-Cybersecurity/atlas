@@ -572,7 +572,10 @@ pub fn forward_moe(
             ws.max_rows
         );
     }
-    if w.experts.len() != cfg.local_experts {
+    // EXL3 binds its own tables and leaves `experts` empty on purpose, so this
+    // count only describes the NVFP4 arm. Checking it unconditionally refused
+    // every EXL3 layer at the first routed forward.
+    if w.exl3.is_none() && w.experts.len() != cfg.local_experts {
         bail!(
             "GLM MoE: {} bound experts but this rank owns {} of {}",
             w.experts.len(),

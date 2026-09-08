@@ -130,7 +130,13 @@ fn build_expert_ptr_table(
         let Some(local) = cfg.local_slot(id) else {
             continue; // remote — null stays, and the kernel skips the slot
         };
-        let p = proj(&experts[local]);
+        // EXL3 leaves `experts` EMPTY on purpose (the trellis has no NVFP4
+        // packed/scale pair to point at), so the whole table stays null and
+        // nothing may dereference it — the EXL3 forward arm never reads it.
+        let Some(w) = experts.get(local) else {
+            continue;
+        };
+        let p = proj(w);
         packed[id * 8..id * 8 + 8].copy_from_slice(&p.packed.0.to_le_bytes());
         scale[id * 8..id * 8 + 8].copy_from_slice(&p.scale.0.to_le_bytes());
         scale2[id * 4..id * 4 + 4].copy_from_slice(&p.scale_2.to_le_bytes());

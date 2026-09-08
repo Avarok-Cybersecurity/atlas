@@ -496,6 +496,16 @@ pub(super) fn quant_pair_compatible(kernel_quant: &str, model_quant: &str) -> bo
         // The NVFP4 bundle also handles unquantized BF16 inputs via
         // runtime dequant → quantize. Slow but correct.
         ("nvfp4", "bf16") |
+        // The NVFP4-labeled bundle carries the EXL3 (QTIP trellis) dispatch
+        // too — `exl3_matmul.cu`, `exl3_moe.cu`, `exl3_reconstruct.cu` compile
+        // into it, which is why the gb10 targets report 183 kernels rather than
+        // 180. Two ways a checkpoint reaches it, both real:
+        //   * kept PACKED and decoded in-kernel (`ATLAS_EXL3_NATIVE`, and the
+        //     routed-expert arm GLM-5.3 uses), or
+        //   * materialized to NVFP4/BF16 at load by `exl3_materialize`.
+        // Without this pair a `quant_method: "exl3"` pack is refused before any
+        // weight loads, even though every kernel it needs is present.
+        ("nvfp4", "exl3") |
         // BF16 reference bundle handles any quant by dequant on load.
         ("bf16", "fp8") |
         ("bf16", "nvfp4")
