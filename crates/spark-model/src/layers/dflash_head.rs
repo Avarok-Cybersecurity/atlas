@@ -588,10 +588,6 @@ mod dflash2;
 /// that one character-class: propose 19.8 -> 618.7 ms and 49.9 -> 5.5 tok/s,
 /// because the legacy path launches one `dense_gemv` per accumulated ctx row
 /// over a 262 MB `fc` weight. Nothing logged a change.
-pub(super) fn option_b_enabled() -> bool {
-    option_b_from(std::env::var("ATLAS_DFLASH_OPTION_B").ok().as_deref())
-}
-
 /// The predicate itself, pure over the raw value so a test can exercise the
 /// PRODUCTION code rather than a copy of it. `set_var` is unsafe and
 /// process-global, so a test that mutated the environment would race every
@@ -696,10 +692,7 @@ impl DraftProposer for BlockDiffusionDraftHead {
         // bisecting the WIDTH against acceptance is what localises a banding
         // bug — "correct at 2 bands, wrong at 4" is the observation that
         // found the lm_head tile bound, and an on/off flag cannot ask it.
-        let want: usize = std::env::var("ATLAS_DFLASH_BATCH_PROPOSE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(usize::MAX);
+        let want = self.levers.batch_propose_width;
         if want < 2 {
             return 1;
         }
@@ -802,10 +795,7 @@ impl DraftProposer for BlockDiffusionDraftHead {
 
         // Phase 3 — split bands. Row 0 of each band is the anchor echo the
         // single-sequence path drops too; the rest are that sequence's drafts.
-        let cap = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(self.gamma);
+        let cap = self.levers.draft_cap.unwrap_or(self.gamma);
         let mut out: Vec<Vec<u32>> = Vec::with_capacity(n);
         for (i, st) in states.iter_mut().enumerate() {
             let band = &all[i * self.gamma..(i + 1) * self.gamma];

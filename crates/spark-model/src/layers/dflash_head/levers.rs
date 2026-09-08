@@ -28,7 +28,9 @@
 /// Plain `Copy` data. Every field is a pure function of one `ATLAS_*`
 /// variable except [`Self::any_diagnostic_armed`], which is a function of
 /// eleven of them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+// `Eq` is deliberately absent: `conf_tau` is an f32 threshold. Comparing two
+// resolutions for equality is a test-only need and `PartialEq` covers it.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct DFlashLevers {
     /// Any of the eleven diagnostic variables is **SET**, at any value.
     ///
@@ -100,7 +102,67 @@ pub struct DFlashLevers {
     /// SASS variants the driver picked.
     pub propose_warmup_n: usize,
 
+    // ── Path selection ──
+    /// The Option-B paged drafter cache. Ships ON since the 54.5 record
+    /// config (#649); `ATLAS_DFLASH_OPTION_B=0` is the kill switch.
+    ///
+    /// The POLARITY has already been flipped by accident once: a merge on
+    /// 2026-08-30 turned `!= Some("0")` into `== Some("1")`, and propose went
+    /// 19.8 -> 618.7 ms (49.9 -> 5.5 tok/s) because the legacy path launches
+    /// one `dense_gemv` per accumulated ctx row over a 262 MB `fc` weight.
+    /// Nothing logged a change. Resolution goes through
+    /// [`super::option_b_from`] so the predicate keeps its own tests.
+    pub option_b: bool,
+    /// `ATLAS_DFLASH_OPTION_B_NO_CTX=1` — force `ctx_count = 0` in the layer
+    /// body so paged attention sees only the γ K/V written in-layer. If the
+    /// accept rate is bad even here, the bug is in the cache write/read path
+    /// rather than in precompute.
+    pub option_b_no_ctx: bool,
+    /// The DFlash2 conv+selector path. Ships ON when the checkpoint carries
+    /// the components; `ATLAS_DFLASH2=0` disables.
+    pub dflash2: bool,
+    /// `ATLAS_DFLASH_BATCH_PROPOSE=<width>` caps the cross-sequence batch.
+    /// `usize::MAX` (unset) means "as wide as the scratch bands allow";
+    /// `1` or `0` restores the per-sequence loop. Numeric rather than boolean
+    /// because bisecting the WIDTH against acceptance is what localises a
+    /// banding bug — "correct at 2 bands, wrong at 4" found the lm_head tile
+    /// bound, and an on/off flag cannot ask that question.
+    pub batch_propose_width: usize,
+    /// `ATLAS_DFLASH_DRAFT_CAP=<n>` — submit at most n drafts per propose.
+    /// `None` means the head's own γ.
+    pub draft_cap: Option<usize>,
+
+    // ── Propose-path diagnostics ──
+    /// `ATLAS_DFLASH_VERIFY_TRACE=1` — log all γ drafts BEFORE the cap, so
+    /// an echo at position 0 can be told from an echo on every noise row.
+    pub verify_trace: bool,
+    /// `ATLAS_DFLASH_PRECOMPUTE_DUMP=1` — one-shot dump of the fused ctx K/V
+    /// GEMM inputs and outputs.
+    pub precompute_dump: bool,
+    /// `ATLAS_DFLASH_CTX_PARITY_DUMP=1` — one-shot dump of the accumulated
+    /// ctx hidden rows for a PyTorch parity diff.
+    pub ctx_parity_dump: bool,
+    /// `ATLAS_DFLASH_DEBUG_NO_DECODE_APPEND=1` — skip the post-decode ctx
+    /// append entirely.
+    pub no_decode_append: bool,
+    /// `ATLAS_DFLASH_DEBUG_FULL_PRECOMPUTE=1` — recompute the whole ctx
+    /// prefix each step (`committed = 0`) instead of the incremental
+    /// watermark path, for accept-rate parity A/B. O(ctx_len^2).
+    pub full_precompute: bool,
+    /// `ATLAS_DFLASH_CTXLEN_PROBE=1` — assert `ctx_positions` is strictly
+    /// increasing, and log ctx_len against position every 16 steps. Both
+    /// probes are host-side scans, so they stay behind one flag.
+    pub ctxlen_probe: bool,
+
     // ── DSpark ──
+    /// The sequential Markov fixup. Ships ON when the drafter carries the
+    /// head; `ATLAS_DSPARK_MARKOV=0` degrades to the batched argmax path
+    /// bit-for-bit.
+    pub dspark_markov: bool,
+    /// `ATLAS_DSPARK_CONF_TAU=<t>` — sigmoid-space acceptance threshold for
+    /// the confidence head. `0.0` (unset) disables the head entirely,
+    /// matching the reference's `threshold <= 0.0 -> full block`.
+    pub conf_tau: f32,
     /// `ATLAS_DSPARK_SHIFT=1|0` forces the SpecForge shifted-row convention
     /// on or off; unset (`None`) defers to the drafter config.
     pub dspark_shift: Option<bool>,
@@ -161,6 +223,23 @@ fn from_values(
         precompute: opt_in(value("ATLAS_DFLASH_PRECOMPUTE").as_deref()),
         precompute_commit: opt_in(value("ATLAS_DFLASH_PRECOMPUTE_COMMIT").as_deref()),
 
+        option_b: super::option_b_from(value("ATLAS_DFLASH_OPTION_B").as_deref()),
+        option_b_no_ctx: opt_in(value("ATLAS_DFLASH_OPTION_B_NO_CTX").as_deref()),
+        dflash2: value("ATLAS_DFLASH2").as_deref() != Some("0"),
+        batch_propose_width: parsed(value("ATLAS_DFLASH_BATCH_PROPOSE").as_deref())
+            .unwrap_or(usize::MAX),
+        draft_cap: parsed(value("ATLAS_DFLASH_DRAFT_CAP").as_deref()),
+
+        verify_trace: opt_in(value("ATLAS_DFLASH_VERIFY_TRACE").as_deref()),
+        precompute_dump: opt_in(value("ATLAS_DFLASH_PRECOMPUTE_DUMP").as_deref()),
+        ctx_parity_dump: opt_in(value("ATLAS_DFLASH_CTX_PARITY_DUMP").as_deref()),
+        no_decode_append: opt_in(value("ATLAS_DFLASH_DEBUG_NO_DECODE_APPEND").as_deref()),
+        full_precompute: opt_in(value("ATLAS_DFLASH_DEBUG_FULL_PRECOMPUTE").as_deref()),
+        ctxlen_probe: opt_in(value("ATLAS_DFLASH_CTXLEN_PROBE").as_deref()),
+
+        dspark_markov: value("ATLAS_DSPARK_MARKOV").as_deref() != Some("0"),
+        conf_tau: parsed(value("ATLAS_DSPARK_CONF_TAU").as_deref()).unwrap_or(0.0),
+
         propose_warmup_n: parsed(value("ATLAS_DFLASH_PROPOSE_WARMUP_N").as_deref()).unwrap_or(2),
 
         dspark_shift: match value("ATLAS_DSPARK_SHIFT").as_deref() {
@@ -193,7 +272,13 @@ impl DFlashLevers {
     /// and which would race every other test in the binary.
     pub fn defaults() -> Self {
         Self {
-            // Opt-out: ships ON, `ATLAS_DSPARK_ANCHOR_BIAS=0` disables.
+            // Every OPT-OUT lever must be spelled here — `Self::default()`
+            // would ship each of them OFF, which for `option_b` alone is the
+            // measured 49.9 -> 5.5 tok/s collapse.
+            option_b: true,
+            dflash2: true,
+            dspark_markov: true,
+            batch_propose_width: usize::MAX,
             dspark_anchor_bias: true,
             // Not a boolean default — the warm-up count is load-bearing for
             // graph capture, so it is spelled out rather than derived from

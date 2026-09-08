@@ -1139,7 +1139,7 @@ impl BlockDiffusionDraftHead {
         // already-ordered and cheap. Requires anchor bias ON (rows without
         // the Markov chain never write their confidence slot).
         if self.markov_active() && self.confidence_active() && levers.dspark_anchor_bias {
-            let tau = Self::conf_tau();
+            let tau = levers.conf_tau;
             let mut cbuf = vec![0u8; self.gamma * 2];
             gpu.copy_d2h(self.scratch.conf_out, &mut cbuf)?;
             if levers.dspark_conf_trace {
