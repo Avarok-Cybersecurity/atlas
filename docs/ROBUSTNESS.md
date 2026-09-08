@@ -1461,3 +1461,102 @@ I also had to correct myself publicly on that issue: a first "reproduced 3/3
 under load" was `grep -q a_hanging_decoder`, which matches the **passing**
 `test ... ok` line. Fourth checker bug of this record, same shape as the other
 three.
+
+## Wave 32 — a benchmark that disagrees with itself, and three levers that proved nothing until one did
+
+**#936: the same BFCL draw, at one commit, scored 12 of 995 samples
+differently depending on whether it ran whole or in four shards.** Both paths
+are deterministic, so something was carrying state between requests. Six arms
+later the channel is named.
+
+**The result, all legs single-variable** — each arm ran BOTH the whole draw and
+its own four shards under the SAME setting, so the only thing differing inside
+an arm is sharding:
+
+| arm | setting | whole vs its own 4 shards |
+|---|---|---|
+| baseline | shipped | **12 disagree** |
+| tail split off (`ATLAS_NO_TAIL_SPLIT=1`) | snapshot *producer* | 4 |
+| Marconi restore off (`ATLAS_MARCONI_MIN_TOKENS=1e8`) | snapshot *consumer* | **2** |
+
+The cause is cross-request **SSM snapshot reuse**. A snapshot saved by one
+request enters a shared, globally evicted pool (128 slots / 19392 MB on GB10);
+a later request restores from whichever eligible anchor is still there;
+restoring at a different depth gives numerically different SSM state; at a
+near-tied argmax the token flips. Sharding changes eviction pressure because it
+changes run length. Closing the consumer is the more complete fix because
+disabling the split removes only *one* producer — the checkpoint interval still
+writes others, which is why 4 remain rather than 2.
+
+**Corroboration that this is one mechanism and not two.** Across three
+independent shards the two levers move overwhelmingly the same samples: 61
+moved by the split lever, 15 by the restore lever, **11 shared** against an
+independence prediction of 1.2 — a 9× enrichment, with 73% of the restore set
+contained in the split set. Containment in that direction is what
+producer/consumer predicts.
+
+**Determinism, established rather than assumed.** Two runs of the same shard at
+the same commit hours apart were **byte-identical** (md5 `4b3b58f0…`), and a
+second arm was byte-identical to baseline. Every disagreement here is therefore
+an ordering effect, not run-to-run noise.
+
+**Ruled out, with evidence rather than argument.** The prefill pass shape:
+`total = tokens.len()`, `cut` derives from `(total, block_size)`, and
+`chunk_start` walks a fixed stride from 0, so the split *condition* is
+deterministic on `(tokens, config)`. Sub-block prefix matching: with
+`ATLAS_PREFIX_SUBBLOCK=0` — lever verified armed in `/proc/PID/environ` — the
+output was byte-identical to baseline, 0 of 251 samples moved.
+
+**Neither lever is a fix.** `NO_TAIL_SPLIT` changes 8.2% of all answers (61 of
+748); restore-off changes 2% and discards the warm-turn saving Marconi exists
+for. The floors were cut with both features on. The shippable form is
+`ssm_cache_slots = "0"` as a serve override on KAT gates — a first-class flag,
+recorded in the gate record — with the floors re-cut; that is queued as its own
+arm rather than assumed.
+
+**Four process failures of my own this wave, all of which produced a wrong
+statement before they were caught.**
+
+1. **An A/B on a lever that was never armed.** `mtp_carry_drafter_enabled` is
+   `levers.drafter.carry && !mtp_multi_seq_mode()`, and `ATLAS_MTP_MAX_SEQS`
+   defaults to **32**, so the cross-turn carry is force-disabled on any serve
+   that does not set it to 1 — while the startup line printed `carry=ON
+   (default)`, because it reported the two env vars and never consulted the
+   cap. I ran a GPU arm turning that carry off and reported the null as
+   evidence. The output was **byte-identical** to baseline: nothing changed,
+   because nothing was on. A null arm that changes literally nothing is the
+   signature of an inert lever, not of a lever without effect. Fixed in #968;
+   both readers now share one predicate.
+2. **An arm that moved two variables.** The first Marconi arm ran the lever on
+   the *shards* and compared against the original lever-*on* whole run. Its
+   "negative" result could not be read at all, and I reported it as a finding
+   before withdrawing it. Every later arm runs both legs under the lever.
+3. **A negative control that could not fail.** The control for the `shard`
+   parameter's inherit-default changed `INHERIT_SHARD` itself — but `configure`
+   compares against that same constant, so the two moved together and the test
+   stayed green whatever it was set to. The real control changes only the
+   ParamSpec default. Written into the test's own doc, because the inert
+   version is the one a reader reaches for first.
+4. **Four hours of commits on a detached HEAD.** An arm script's
+   `git checkout --detach <pin>` left the worktree detached; nothing warns, and
+   `git log origin/main..HEAD` looks normal. The work survived only because
+   every push used `HEAD:refs/heads/<branch>`. Checking the branch out then
+   silently rewound six commits. Recovery was safe only because
+   `merge-base --is-ancestor` and an empty `log <remote>..<local>` confirmed a
+   fast-forward first.
+
+**Two defects found in passing, both fixed.** The cross-turn drafter carry had
+no request identity — admission was a *two-token* common prefix, and every
+templated request shares hundreds — and the shared hidden-row interval had no
+owner, so the warm path could pair one request's tokens with another's hidden
+states. Both are #968, with every new test observed red against the
+reintroduced defect. Neither is #936's mechanism: the carry was never armed.
+
+**Doc comments that asserted safety the code did not have**, all corrected:
+`mtp_store_range` claimed to be "per-sequence by construction … which is why
+the carry path cannot inherit another sequence's hiddens"; three comments
+justified a single carry slot with "MTP is concurrency-1", false since the
+ladder raised the cap to 32; and `prefill_b.rs` carried two blocks disagreeing
+about whether the tail split is conditional. A false safety comment is worse
+than none — the concurrency-1 claim is what made the missing ownership check
+look deliberate.
