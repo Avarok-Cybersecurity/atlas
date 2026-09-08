@@ -33,8 +33,22 @@
 //! — that is exactly why the prefix cache hits. So the drafter rows the
 //! previous turn already built ARE the rows this turn needs; only the tail is
 //! missing. This module keeps the previous turn's drafter KV alive in a
-//! single model-level slot (MTP is concurrency-1: every spec path is gated
-//! `active.len() == 1`) and appends only the new span.
+//! single model-level slot and appends only the new span.
+//!
+//! ★ WHY ONE SLOT IS SAFE, correctly stated. This used to read "MTP is
+//! concurrency-1: every spec path is gated `active.len() == 1`". That is FALSE
+//! and has been since the ladder campaign: the scheduler dispatches MTP
+//! whenever `active.len() <= mtp_max_seqs()`, and that cap defaults to 32
+//! (`speculative/ladder.rs`; `scheduler/phase_continue_prefills/spec_mixing.rs`
+//! documents the same staleness). Only the n-gram and self-speculative lanes
+//! still require `active.len() == 1`.
+//!
+//! What actually makes one slot safe is narrower and is enforced:
+//! [`carry_armed_with`] force-disables the carry whenever the dispatch cap is
+//! above 1, so the slot is only ever live in single-sequence mode. Even there,
+//! ADMISSION is not gated by that cap — several sequences can be admitted and
+//! prefill concurrently — which is why the shared hidden interval carries an
+//! ownership stamp ([`StoreRange`]) rather than relying on a concurrency claim.
 //!
 //! Conventions, which is where this code kills people:
 //!   * drafter row `r` holds pair key `k` = `(embed(t_{k+1}), hidden_k)`, RoPE
@@ -119,8 +133,9 @@ pub fn carry_armed_with(
     multi_seq: bool,
 ) -> bool {
     // Force-off in multi-seq MTP mode: the carry slot is single-sequence by
-    // design (one slot, `active.len() == 1` assumption). See
-    // `speculative::mtp_multi_seq_mode` for the contract.
+    // design. NOT because MTP is concurrency-1 — it is not, the cap defaults
+    // to 32 — but because THIS check is what keeps the slot out of multi-seq
+    // mode in the first place. See `speculative::mtp_multi_seq_mode`.
     cfg.carry && !multi_seq
 }
 
@@ -140,9 +155,11 @@ pub fn mtp_carry_debug() -> bool {
 }
 
 /// The drafter KV of a finished turn, held for the next turn of the same
-/// session. Single slot: MTP never runs at concurrency > 1, and one slot keeps
-/// block ownership trivially safe (the blocks are owned here, or by a live
-/// sequence, never both).
+/// session. Single slot: the carry is force-disabled outside single-sequence
+/// dispatch (see [`carry_armed_with`] — NOT because "MTP never runs at
+/// concurrency > 1", which is false; the cap defaults to 32), and one slot
+/// keeps block ownership trivially safe (the blocks are owned here, or by a
+/// live sequence, never both).
 pub struct CarriedDrafter {
     /// Drafter KV blocks, moved out of the finished sequence's proposer state
     /// so `free_state` does not release them.
