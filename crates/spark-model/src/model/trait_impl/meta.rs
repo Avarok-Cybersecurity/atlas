@@ -5,6 +5,7 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -254,22 +255,9 @@ impl TransformerModel {
         // PREVIOUS sequence's captured hiddens in the drafter prefill.
         self.mtp_prefill_capture_len
             .store(0, std::sync::atomic::Ordering::Relaxed);
-        // ATLAS_MTP_CARRY_DRAFTER: draw this sequence's ownership ticket for
-        // the shared hidden-row interval, and clear the interval.
-        //
-        // The TICKET is the guard. Clearing alone is not: it happens when a
-        // sequence is admitted, but a sequence admitted EARLIER can still write
-        // afterwards, merging into this interval and then reading rows it did
-        // not compute. The clear stays as defence in depth so the invariant
-        // "gen 0 => nothing claimed" holds from birth.
-        //
-        // Same atomic as the capture generation (SSOT for sequence tickets),
-        // but a separate field: `mtp_capture_gen` is only ever assigned under
-        // `chunk_start == 0`, which a warm turn never hits.
-        let store_gen = self
-            .mtp_prefill_capture_gen
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
+        // ATLAS_MTP_CARRY_DRAFTER: this sequence's ownership ticket for the
+        // shared hidden-row interval. See `mtp_carry::StoreRange`.
+        let store_gen = self.mtp_prefill_capture_gen.fetch_add(1, Relaxed) + 1;
         *self.mtp_store_range.lock() = super::super::mtp_carry::StoreRange::EMPTY;
 
         // Build layer states: SSM layers point into the pool (fixed addresses),
