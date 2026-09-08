@@ -30,7 +30,34 @@ use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 mod state_io;
 
 impl TransformerModel {
-    pub(super) fn cache_sequence_dispatch(&self, seq: &SequenceState) {
+    pub(in crate::model) fn cache_sequence_dispatch(&self, seq: &SequenceState) {
+        // Tell the workers to retire the same sequence. ONLY rank 0 broadcasts:
+        // the worker reaches this function through `EP_CMD_CACHE_SEQ` itself,
+        // and a re-broadcast there would desynchronise the command stream.
+        //
+        // Why this exists: finish-leaf snapshots used to be head-only, because
+        // no worker command mapped to sequence retirement. The head's pool then
+        // carried entries the worker's never had, the two evicted differently,
+        // and the ranks eventually proposed different Marconi anchors — which
+        // is a mismatched collective schedule and hangs both ranks in NCCL.
+        // The cross-rank anchor guard turns that hang into a declined anchor;
+        // THIS is what stops the divergence happening at all.
+        let is_ep_head =
+            self.multi_rank_protocol_active() && self.comm.as_ref().is_some_and(|c| c.rank() == 0);
+        // 🪤 Short-circuit, NOT a tuple match: `ep_broadcast_seq_and_cmd` must
+        // not be evaluated on a worker, or every rank would broadcast and the
+        // command stream would desynchronise.
+        if is_ep_head
+            && let Err(e) = self.ep_broadcast_seq_and_cmd(
+                seq.slot_idx as u32,
+                crate::model::impl_a2::EP_CMD_CACHE_SEQ,
+                self.ep_protocol_v2,
+            )
+        {
+            // Never fail retirement on a broadcast error: the worst case is the
+            // asymmetry we had before, which the anchor guard catches.
+            tracing::warn!("EP cache_sequence broadcast failed: {e:#}");
+        }
         let bs = self.kv_cache.lock().block_size();
         // Only cache if the sequence has block-aligned content worth caching.
         // Sequences shorter than one block have no reusable KV blocks.

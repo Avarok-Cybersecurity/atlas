@@ -27,6 +27,15 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
+/// Sequence retirement: run `cache_sequence` (finish-leaf SSM snapshot + radix
+/// insert) on the worker too.
+///
+/// Without it only the head took finish-leaf snapshots, so the ranks' snapshot
+/// pools held different entries, evicted differently, and eventually proposed
+/// different Marconi anchors — different SSM replay lengths, mismatched
+/// collectives, NCCL spin. Codes 0xF0..0xF5 are taken; this is the next free.
+pub(crate) const EP_CMD_CACHE_SEQ: u32 = 0xFFFF_FFF6;
+
 impl TransformerModel {
     pub(super) fn comm_ref(&self) -> Option<&dyn spark_comm::CommBackend> {
         self.comm.as_deref()
@@ -576,6 +585,13 @@ impl TransformerModel {
                     self.trim_proposer_state(seq, 0, 0)?;
                     self.start_rollback_and_checkpoint_async(seq, 1)?;
                 }
+            }
+            EP_CMD_CACHE_SEQ => {
+                // Sequence retirement. Run the SAME bookkeeping the head runs
+                // so both ranks' snapshot pools hold the same entries — that
+                // symmetry is what keeps the Marconi anchor decision equal on
+                // both ranks. No collective inside, so no ordering guard.
+                self.cache_sequence_dispatch(seq);
             }
             crate::speculative::EP_CMD_MTP_PROPOSE => {
                 // Run the SAME drafter forward rank 0 is running, so its collectives have a
