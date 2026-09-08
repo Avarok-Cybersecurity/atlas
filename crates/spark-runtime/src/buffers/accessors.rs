@@ -317,6 +317,67 @@ impl BufferArena {
         Ok(())
     }
 
+    /// `zero_all`, but only the first `tokens` rows of every token-major arena.
+    ///
+    /// 🔴 Every buffer `zero_all` wipes is `[max_batch_tokens, row]`-major — verified against
+    /// the allocated sizes: `size / max_batch_tokens` is exactly one token's row for each of
+    /// them (`qkv_output` 3x8192 BF16, `attn_output` 64x256, `expert_gate_out` topk*2048,
+    /// `expert_down_out` topk*4096, ...). A decode step carrying `tokens` tokens can therefore
+    /// only ever read rows `0..tokens`, and zeroing the rest is dead bandwidth.
+    ///
+    /// Measured on GLM-5.3-Flash, 2 x GB10, `max_batch_tokens = 4096` (nsys, 2026-08-28):
+    /// `zero_all` issues 18 memsets totalling **1.59 GB and 8.01 ms on every single decode
+    /// token** — 9.4 % of an 85 ms step, all of it GPU-idle time before the first kernel.
+    ///
+    /// `logits`, `scratch` and `splitk_workspace` are NOT token-major (metadata arenas /
+    /// vocab-sized), so they keep the full wipe. They are 30 MB of the 1590.
+    pub fn zero_all_rows(
+        &self,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+        tokens: usize,
+    ) -> anyhow::Result<()> {
+        let m = self.max_batch_tokens.max(1);
+        // A row-scaled length, falling back to the full wipe if the arena is not an exact
+        // multiple of `max_batch_tokens` (i.e. not token-major after all).
+        let head = |n: usize| {
+            if tokens >= m || m == 0 || !n.is_multiple_of(m) {
+                n
+            } else {
+                n / m * tokens
+            }
+        };
+        for (ptr, n) in [
+            (self.hidden_states, self.sizes.hidden_states),
+            (self.residual, self.sizes.residual),
+            (self.norm_output, self.sizes.norm_output),
+            (self.qkv_output, self.sizes.qkv_output),
+            (self.attn_output, self.sizes.attn_output),
+            (self.gate_logits, self.sizes.gate_logits),
+            (self.moe_output, self.sizes.moe_output),
+            (self.ssm_qkvz, self.sizes.ssm_qkvz),
+            (self.ssm_ba, self.sizes.ssm_ba),
+            (self.ssm_deinterleaved, self.sizes.ssm_deinterleaved),
+            (self.ssm_gates, self.sizes.ssm_gates),
+            (self.ssm_conv_out_f32, self.sizes.ssm_conv_out_f32),
+            (self.expert_gate_out, self.sizes.expert_gate_out),
+            (self.expert_up_out, self.sizes.expert_up_out),
+            (self.expert_down_out, self.sizes.expert_down_out),
+        ] {
+            gpu.memset_async(ptr, 0, head(n), stream)?;
+        }
+        // Not token-major — full wipe, 30 MB of the 1590.
+        gpu.memset_async(
+            self.splitk_workspace,
+            0,
+            self.sizes.splitk_workspace,
+            stream,
+        )?;
+        gpu.memset_async(self.logits, 0, self.sizes.logits, stream)?;
+        gpu.memset_async(self.scratch, 0, self.sizes.scratch, stream)?;
+        Ok(())
+    }
+
     /// Zero all reusable buffers to eliminate stale data between requests.
     /// Ensures deterministic computation regardless of request history.
     pub fn zero_all(&self, gpu: &dyn GpuBackend, stream: u64) -> anyhow::Result<()> {

@@ -199,8 +199,22 @@ impl TransformerModel {
         // main head (NVFP4 default) or the draft-only head built when the main
         // head is BF16. `draft_lm_head_nvfp4` resolves to whichever is present.
         let draft_lm_head_nvfp4 = mtp_lm_head_nvfp4.or(lm_head_nvfp4);
+        // 🔴 This flag SIZES THE RECURRENT ROLLBACK POOLS (checkpoints + per-token
+        // intermediates). It has to be true for every proposer that can reject a draft, not
+        // just the Qwen-shaped one.
+        //
+        // 🪤 GLM-5.3 populates NEITHER of the first two signals: its MTP block is
+        // `layers.{num_hidden_layers}`, not the Qwen `MtpWeights`, and its LM head is BF16 so
+        // there is no NVFP4 draft head. Its proposer is installed AFTER construction via
+        // `set_dflash_proposer`, so `new()` cannot see it either. `mtp_layer_types` is what the
+        // config parser records when the CHECKPOINT declares MTP layers — the one signal
+        // available this early. Without it the pools are never allocated and the first decode
+        // panics in `ssm_pool::h_checkpoint` ("len is 0 but the index is 0").
+        let checkpoint_declares_mtp = !config.mtp_layer_types.is_empty();
         let has_mtp = self_speculative
-            || (use_speculative && !mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
+            || (use_speculative
+                && ((!mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
+                    || checkpoint_declares_mtp))
             || dflash_kgamma > 0;
         let num_intermediates = if !has_mtp {
             0
@@ -289,6 +303,31 @@ impl TransformerModel {
             );
         }
         let decode_ring_slots = ring.slots;
+        // Marconi snapshot region (2380 MiB on GLM-5.3 at 16 slots). SSOT:
+        // `ssm_reserve::marconi_snapshot_slots` makes the SAME decision
+        // `preflight_reserve` made before the weights loaded. The region's
+        // only reader is a prefix-cache lookup, so an inactive cache makes
+        // every slot unreachable for the life of the process. Asking the
+        // constructed cache (`is_active`) rather than the CLI flag also
+        // covers the compressed-DeepSeek-V4 downgrade, where the flag is set
+        // but `NoPrefixCaching` is what actually gets installed.
+        let marconi =
+            crate::ssm_reserve::marconi_snapshot_slots(ssm_cache_slots, prefix_cache.is_active());
+        if let Some(reason) = marconi.skip_reason {
+            tracing::info!(
+                "SSM snapshot pool: Marconi region SKIPPED ({}) — {} slot(s) x {} layer(s) \
+                 = {:.0} MB freed for KV (restore with --enable-prefix-caching, or \
+                 ATLAS_SSM_MARCONI_FULL to allocate anyway)",
+                reason,
+                ssm_cache_slots,
+                ssm_pool.num_ssm_layers,
+                (ssm_cache_slots
+                    * ssm_pool.num_ssm_layers
+                    * (ssm_pool.h_bytes + ssm_pool.conv_bytes)) as f64
+                    / (1024.0 * 1024.0),
+            );
+        }
+        let ssm_cache_slots = marconi.slots;
         let ssm_snapshots = SsmSnapshotPool::new(
             ssm_cache_slots,
             ssm_pool.h_bytes,
@@ -441,7 +480,7 @@ impl TransformerModel {
             DevicePtr::NULL
         };
 
-        // Whole-prompt hidden capture buffer, [max_seq_len, hidden_size] BF16 —
+        // Whole-prompt hidden capture buffer, [rows, hidden_size] BF16 —
         // 335 MB at 32k/h=5120. Backs BOTH halves of the drafter-context
         // feature (see `crate::model::drafter_context`); NULL here disables
         // prefill AND carry, since the carry path reads this buffer.
@@ -450,6 +489,17 @@ impl TransformerModel {
         // not be killed, and the head must be a precision the batched prefill
         // can actually run at — an NVFP4/FP8 MTP head would allocate this and
         // never write it.
+        //
+        // `rows` is `max_seq_len` unless the proposer declares a smaller ceiling
+        // it can never be asked past (`DraftProposer::prefill_hidden_rows`, default
+        // `max_seq_len`). GLM-5.3's drafter is a DSA block capped at
+        // `max_dsa_context`, so at `--max-seq-len 524288` this buffer was 4.0 GiB
+        // of which all but 128 MiB was unreachable — and unreserved, because it is
+        // allocated after the KV pool is sized. ANOMALIES A59.
+        let mtp_prefill_rows = proposer
+            .as_ref()
+            .map_or(max_seq_len, |p| p.prefill_hidden_rows(max_seq_len))
+            .min(max_seq_len);
         let mtp_prefill_hidden = if has_mtp
             && mtp_quant.supports_drafter_prefill()
             && crate::layers::mtp_drafter_prefill_enabled(&levers)
@@ -480,10 +530,18 @@ impl TransformerModel {
             let bytes = capture_rows * config.hidden_size * 2;
             tracing::info!(
                 "MTP drafter context: allocating {:.0} MB prompt-hidden capture \
-                 ({} x {} BF16)",
+                 ({} x {} BF16){}",
                 bytes as f64 / 1e6,
                 capture_rows,
                 config.hidden_size,
+                if mtp_prefill_rows < max_seq_len {
+                    format!(
+                        " — capped from --max-seq-len {max_seq_len} to the proposer's \
+                         reachable context (A59)"
+                    )
+                } else {
+                    String::new()
+                },
             );
             gpu.alloc(bytes)?
         } else {
@@ -562,6 +620,39 @@ impl TransformerModel {
         //   - norm_output: attention o_proj decode output
         //     (`attention_forward_oproj` writes o_out = `buffers.norm_output()`),
         //     reduced per attention layer under TP.
+        // 🔴 D1. Levers that decide the COLLECTIVE SCHEDULE are read per-rank from the
+        // environment, so a rank skew is a hang or a wrong-extent reduce rather than a perf
+        // difference. Agree on them before the first token. See `crate::rank_agree`.
+        if let Some(ref comm) = comm {
+            crate::rank_agree::assert_ranks_agree(
+                &*gpu,
+                comm.as_ref(),
+                &[
+                    // Splits a prefill chunk into sub-chunks, and every sub-chunk issues its own
+                    // `reduce_partial` at the attention site and the MLP site.
+                    (
+                        "ATLAS_GLM_PREFILL_ROWS",
+                        crate::layers::glm5next_layer::prefill_rows() as u64,
+                    ),
+                    // Perf-only (the MLP reduces once per site whichever arm runs), but a skew
+                    // here is still a confusing asymmetry and the check is free.
+                    (
+                        "ATLAS_GLM_MOE_ROW_BATCH_MAX",
+                        crate::layers::glm5next_mlp::forward::row_batch_max() as u64,
+                    ),
+                    // Documented as "both ranks must agree" in `model/types.rs` since it was
+                    // introduced, and never checked.
+                    (
+                        "ATLAS_EP_PROTOCOL(v2)",
+                        u64::from(matches!(
+                            std::env::var("ATLAS_EP_PROTOCOL").as_deref(),
+                            Ok("v2")
+                        )),
+                    ),
+                ],
+            )?;
+        }
+
         if let Some(ref comm) = comm
             && comm.world_size() == 2
         {
@@ -576,6 +667,16 @@ impl TransformerModel {
             match comm.register_buffer(norm_ptr, norm_bytes) {
                 Ok(_) => tracing::info!("Registered norm_output ({norm_bytes} B) with NCCL"),
                 Err(e) => tracing::warn!("ncclCommRegister norm_output failed (non-fatal): {e}"),
+            }
+            //   - logits: the vocab-parallel BF16 LM head's all-reduce target
+            //     (`impl_a3::lm_head`). Unregistered it is the only per-step collective
+            //     whose SEND pointer NCCL has never seen, which costs an ibv_reg_mr on
+            //     the critical path of every token.
+            let logits_ptr = buffers.logits().0;
+            let logits_bytes = buffers.sizes().logits;
+            match comm.register_buffer(logits_ptr, logits_bytes) {
+                Ok(_) => tracing::info!("Registered logits ({logits_bytes} B) with NCCL"),
+                Err(e) => tracing::warn!("ncclCommRegister logits failed (non-fatal): {e}"),
             }
             match gpu.kernel("bf16_add", "bf16_add_inplace") {
                 Ok(k) => comm.set_add_kernel(k.0),
@@ -811,10 +912,13 @@ impl TransformerModel {
             mtp_catchup_ring,
             mtp_catchup_meta: parking_lot::Mutex::new((0, 0)),
             mtp_prefill_hidden,
+            // SSOT for the capture bounds check — must be the ROW COUNT actually
+            // allocated, not `max_seq_len` (A59): a capacity above the allocation
+            // would let the capture epilogue write past it.
             mtp_prefill_capacity: if mtp_prefill_hidden.is_null() {
                 0
             } else {
-                max_seq_len
+                mtp_prefill_rows
             },
             mtp_prefill_capture_len: std::sync::atomic::AtomicUsize::new(0),
             mtp_prefill_capture_gen: std::sync::atomic::AtomicU64::new(0),

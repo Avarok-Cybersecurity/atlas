@@ -163,6 +163,17 @@ pub(super) struct ActiveSeq {
     pub min_tokens: usize,
     pub eos_tokens: Vec<u32>,
     pub finished: bool,
+    /// Set when the sequence is being retired because an inference step FAILED,
+    /// not because the model finished. `finish_sequence` sends this to the client
+    /// as an error instead of synthesizing a normal completion.
+    ///
+    /// 🔴 Without it a failed verify step set only `finished = true`, and the
+    /// retirement funnel then derived an ordinary finish_reason and returned
+    /// **HTTP 200 with a truncated answer** — the caller could not tell "the model
+    /// stopped" from "the engine hit a hard architectural limit mid-generation".
+    /// Measured 2026-08-30: a K=3 verify refused at the 16,384-token DSA ceiling
+    /// and the client got 200 + `Done: 8 tokens (stop)`. ANOMALIES A62.
+    pub error: Option<String>,
     /// Which server-side guard force-finished this sequence (e.g.
     /// "fuzzy_repetition"), if any. Surfaced in the synthesized --dump body
     /// so a guard-cut turn is attributable without log archaeology (the

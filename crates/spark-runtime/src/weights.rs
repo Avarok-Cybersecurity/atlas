@@ -251,9 +251,52 @@ impl WeightStore {
         self.weights.is_empty()
     }
 
+    /// Device bytes the store still holds. Not the on-disk load estimate:
+    /// this shrinks as `free_matching` drops tensors the binders replaced.
+    pub fn resident_bytes(&self) -> usize {
+        self.weights.values().map(|t| t.byte_size()).sum()
+    }
+
     /// Iterator over all weight names.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.weights.keys().map(|s| s.as_str())
+    }
+
+    /// Free and forget every tensor whose name matches `pred`. Returns
+    /// `(tensors freed, bytes freed)`.
+    ///
+    /// For loaders that do NOT bind zero-copy from the store's device pointers:
+    /// they upload their own copy, so the original is dead weight the moment the
+    /// binder returns, and on a unified-memory GB10 that duplicate is the
+    /// difference between fitting a KV cache and not.
+    ///
+    /// 🪤 The caller owns the "is it dead?" question. A tensor bound zero-copy
+    /// (every routed expert, and the fused per-expert views in
+    /// `weight_loader/step3p7.rs`) is still live in a layer struct — freeing it
+    /// here is a use-after-free with no diagnostic. Match narrowly.
+    ///
+    /// Per-entry free is sound for the same reason `release` gives below: the
+    /// loaders allocate one `gpu.alloc` per tensor, and no loader inserts an
+    /// `.offset()` view of a shared block into this map.
+    pub fn free_matching(
+        &mut self,
+        gpu: &dyn GpuBackend,
+        pred: impl Fn(&str) -> bool,
+    ) -> Result<(usize, usize)> {
+        let doomed: Vec<String> = self.weights.keys().filter(|n| pred(n)).cloned().collect();
+        let (mut count, mut bytes) = (0usize, 0usize);
+        for name in doomed {
+            // `remove` before `free`: the map must never hold a pointer to
+            // memory that is gone, even if the free below fails.
+            let Some(t) = self.weights.remove(&name) else {
+                continue;
+            };
+            bytes += t.byte_size();
+            gpu.free(t.ptr)
+                .map_err(|e| e.context(format!("freeing weight {name}")))?;
+            count += 1;
+        }
+        Ok((count, bytes))
     }
 
     /// Total bytes across all weight tensors on the GPU.
@@ -357,7 +400,15 @@ impl SafetensorsLoader {
     /// Check if a tensor should be skipped under EP.
     /// Skips `*.experts.{E}.*` tensors where E is not in local range.
     /// MTP head experts are never skipped (small, fully replicated).
-    fn should_skip_tensor(&self, name: &str) -> bool {
+    ///
+    /// 🪤 The MTP exemption keys on a leading `mtp.` — a DeepSeek-style name.
+    /// GLM-5.3 puts its MTP head at `model.language_model.layers.45.*` with no
+    /// `mtp.` prefix, so that layer's routed experts ARE sharded on GLM. Fine
+    /// while the MTP head is out of scope; revisit before enabling it.
+    ///
+    /// `pub` so residency can be PROVEN against a real checkpoint index
+    /// without collectives (see `spark-model/tests/glm53_ep_residency.rs`).
+    pub fn should_skip_tensor(&self, name: &str) -> bool {
         // MTP head weights for a model whose loader does not build one.
         if self.skip_mtp && name.starts_with("mtp.") {
             return true;

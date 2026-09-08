@@ -41,7 +41,20 @@ const GUARDED: [(&str, &[&str]); 21] = [
     ("layers/moe/forward_prefill_routed.rs", &[]),
     // ── The decode step itself. `ATLAS_SSM_SAVE_DUMP` was asked THREE times
     //    per token here, each read only to decide whether to do nothing. ──
-    ("model/trait_impl/decode_a.rs", &[]),
+    (
+        "model/trait_impl/decode_a.rs",
+        &[
+            // Both arrived from `main` while this branch was in flight, and
+            // both are already `OnceLock`ed — the read is paid once per
+            // process, not once per decode step. Named individually rather
+            // than exempted as a class: this guard has NO cache heuristic on
+            // purpose, so that "it is behind a OnceLock" is a claim checked
+            // by a human once and recorded here, not inferred by a regex
+            // that a future refactor could fool.
+            "redzone_range_file",
+            "redzone_every",
+        ],
+    ),
     // ── MoE forward: once per layer per DECODE TOKEN. `fp32_routing_active`
     //    alone was read from six call sites on that path. ──
     ("layers/moe/forward.rs", &[]),

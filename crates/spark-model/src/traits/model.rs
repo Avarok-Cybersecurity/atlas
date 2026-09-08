@@ -940,6 +940,11 @@ pub trait Model: Send + Sync {
     /// EP worker step: receive a (seq_id, cmd) preamble from rank 0 and
     /// execute the command in the addressed slot.
     ///
+    /// 🔴 An `Err` carrying [`EpCommandFailed`] means the command EXECUTED and failed —
+    /// a per-request fault the head raises identically and answers the client with. The
+    /// worker must STAY UP. Any other `Err` came from receiving the command, i.e. the link
+    /// to the head is gone, and the worker must exit. See [`EpCommandFailed`].
+    ///
     /// Returns false when the worker should shut down.
     /// Only valid on rank > 0 with EP enabled.
     ///
@@ -1236,5 +1241,57 @@ mod padded_batch_n_tests {
         }
         // Above the ladder: fall-through unchanged.
         assert_eq!(padded_batch_n(129), 129);
+    }
+}
+
+/// A worker command that was received and then FAILED TO EXECUTE.
+///
+/// 🔴 Why this distinction is load-bearing. The EP worker loop used to `break` on any
+/// error, so a per-request fault — a prefill chunk the model legitimately refuses — killed
+/// the worker, which then exited with status **0** while the head stayed up. The head's very
+/// next request issued a collective against a peer that no longer existed and spun in NCCL
+/// forever at 100 % CPU, with `/v1/models`, `/health` and `/health/live` all still answering
+/// 200. Measured 2026-08-30: rank 1 logged this exact refusal and stopped 4 s later; rank 0
+/// accepted a 13-token request 10 minutes on and never produced a single further log line.
+/// ANOMALIES A60 (the wedge) and A62 (the refusal that triggered it).
+///
+/// The head raises the SAME error for the SAME command and turns it into an HTTP 500, so the
+/// two ranks disagreeing about whether it is fatal is the defect. A receive failure stays
+/// fatal: the link is gone, and the next iteration's receive would fail again anyway.
+#[derive(Debug)]
+pub struct EpCommandFailed(pub anyhow::Error);
+
+impl std::fmt::Display for EpCommandFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.0)
+    }
+}
+
+impl std::error::Error for EpCommandFailed {}
+
+#[cfg(test)]
+mod ep_command_failed_tests {
+    use super::EpCommandFailed;
+
+    /// The worker loop classifies by downcast, so the tag must survive being boxed into an
+    /// `anyhow::Error` — and the original message must survive with it, or the operator
+    /// loses the only line that says WHY the command failed.
+    #[test]
+    fn the_tag_and_its_message_survive_anyhow() {
+        let inner = anyhow::anyhow!("Prefill chunk layer 3 failed: DSA indexer cache: 16385");
+        let tagged = anyhow::Error::new(EpCommandFailed(inner));
+        assert!(
+            tagged.downcast_ref::<EpCommandFailed>().is_some(),
+            "the worker loop cannot tell a command failure from a dead link without this"
+        );
+        assert!(format!("{tagged:#}").contains("DSA indexer cache: 16385"));
+    }
+
+    /// A receive failure must NOT be mistaken for a command failure: the link is gone and
+    /// the worker has to exit rather than spin re-reading a dead socket.
+    #[test]
+    fn an_untagged_error_stays_fatal() {
+        let recv = anyhow::anyhow!("ep_recv_seq_and_cmd: peer closed");
+        assert!(recv.downcast_ref::<EpCommandFailed>().is_none());
     }
 }

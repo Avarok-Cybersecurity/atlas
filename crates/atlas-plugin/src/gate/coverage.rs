@@ -233,6 +233,24 @@ pub struct TestOnlyRustModule {
 
 pub const TEST_ONLY_RUST_MODULES: &[TestOnlyRustModule] = &[
     TestOnlyRustModule {
+        path: "crates/spark-model/src/seq_state_reserve_tests.rs",
+        parent: "crates/spark-model/src/seq_state_reserve.rs",
+        name: "tests",
+        declared_path: Some("seq_state_reserve_tests.rs"),
+    },
+    TestOnlyRustModule {
+        path: "crates/spark-model/src/layer/release_contract_tests.rs",
+        parent: "crates/spark-model/src/layer.rs",
+        name: "release_contract_tests",
+        declared_path: Some("layer/release_contract_tests.rs"),
+    },
+    TestOnlyRustModule {
+        path: "crates/spark-server/src/main_modules/serve_phases/preflight/per_sequence_state_tests.rs",
+        parent: "crates/spark-server/src/main_modules/serve_phases/preflight/per_sequence_state.rs",
+        name: "tests",
+        declared_path: Some("per_sequence_state_tests.rs"),
+    },
+    TestOnlyRustModule {
         path: "crates/atlas-core/src/config/tests.rs",
         parent: "crates/atlas-core/src/config.rs",
         name: "tests",

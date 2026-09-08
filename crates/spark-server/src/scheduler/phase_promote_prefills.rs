@@ -160,6 +160,7 @@ fn build_active_seq_from_prefill(
         min_tokens: p.min_tokens,
         eos_tokens: p.eos_tokens,
         finished: immediate_finish,
+        error: None,
         guard_stop: None,
         param_close_pending: 0,
         sink: p.sink,
@@ -182,9 +183,9 @@ fn build_active_seq_from_prefill(
         pending_drafts: Vec::new(),
         pending_draft_conf: Vec::new(),
         inside_thinking: if immediate_finish {
-            p.enable_thinking && think_end_token.is_some()
+            born_inside_thinking(p.enable_thinking, think_end_token)
         } else {
-            spontaneous_think || (p.enable_thinking && think_end_token.is_some())
+            spontaneous_think || born_inside_thinking(p.enable_thinking, think_end_token)
         },
         enable_thinking: p.enable_thinking,
         thinking_budget: if !immediate_finish && spontaneous_think {

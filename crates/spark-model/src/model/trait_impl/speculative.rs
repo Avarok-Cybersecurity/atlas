@@ -419,8 +419,53 @@ impl TransformerModel {
         _stream: u64,
         grammar_bitmask: Option<&[i32]>,
     ) -> Result<Vec<u32>> {
-        // MTP loads ALL experts on every rank — no EP all_reduce needed.
-        // Rank 1 does not participate in MTP propose.
+        // 🔴 Whether rank 1 participates is a PROPERTY OF THE PROPOSER, not of MTP.
+        //
+        // The Qwen and DeepSeek-V4 MTP modules load every expert on every rank, so their
+        // propose is complete on rank 0 alone and a comm would double the output via SUM —
+        // that is what the old unconditional comment ("MTP loads ALL experts on every rank")
+        // described, and it stays the default.
+        //
+        // GLM-5.3's MTP block is EP-sharded (144 of 288 experts) with a row-parallel DSA
+        // `o_proj`, so rank-0-only means drafting from half of both. Under
+        // `ATLAS_MTP_EP_PROPOSE=1` the head tells the worker to run the same propose FIRST,
+        // then both ranks issue the same collectives in the same order.
+        //
+        // 🪤 Order matters: the command and its three scalars must be on the wire BEFORE
+        // this rank enters the drafter forward, or the worker is still blocked in
+        // `ep_recv_seq_and_cmd` when rank 0 hits its first all-reduce. That is `t58`.
+        if self.multi_rank_protocol_active()
+            && self.proposer.as_ref().is_some_and(|p| p.needs_comm())
+        {
+            self.ep_broadcast_cmd_for_seq(
+                seq.slot_idx as u32,
+                crate::speculative::EP_CMD_MTP_PROPOSE,
+            )?;
+            self.ep_broadcast_u32(token)?;
+            self.ep_broadcast_u32(position as u32)?;
+            self.ep_broadcast_u32(num_drafts as u32)?;
+            // 🔴 THE FOURTH WORD IS THE WHOLE POINT OF AN ALL-REDUCE HERE.
+            //
+            // `run_mtp_propose_inner` reads its `target_hidden` from `mtp_hidden_save`, and
+            // the worker's command arms never write it — only the head calls
+            // `save_hidden_for_mtp`. Without this the worker drafts from a STALE hidden, so
+            // the two ranks reduce partials computed from DIFFERENT input vectors and the sum
+            // is not the block's output at all. Measured: p1 0.747 -> 0.530, worse than the
+            // rank-0-only half-sum it was meant to fix.
+            //
+            // The index is the one the head's own `save_hidden_for_mtp` just used (verify row
+            // 1 on a K=2 accept, row 0 on a reject), latched by
+            // `save_hidden_for_mtp_dispatch`. Both ranks ran the same verify forward, so row
+            // `idx` of `hidden_states()` holds the same vector on both.
+            //
+            // 🪤 Paths that save from the verify STASH (`save_hidden_for_mtp_from_stash`, the
+            // batched multi-seq verify) do not latch this index — they are multi-seq mode,
+            // which this single-sequence propose protocol does not serve.
+            self.ep_broadcast_u32(
+                self.last_mtp_hidden_idx
+                    .load(std::sync::atomic::Ordering::Relaxed) as u32,
+            )?;
+        }
         self.run_mtp_propose_inner(token, position, num_drafts, seq, grammar_bitmask)
     }
 
@@ -469,6 +514,7 @@ impl TransformerModel {
             profile: false,
             comm: None,
             graph_capture: false,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
             host_token_ids: None,
