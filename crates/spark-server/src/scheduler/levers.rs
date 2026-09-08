@@ -94,6 +94,16 @@ fn opt_in(var: &str) -> bool {
     std::env::var(var).ok().as_deref() == Some("1")
 }
 
+/// `=1` on ANY of `vars` enables. For a lever that outgrew its original name.
+///
+/// 🪤 ALIAS, never a rename. An env flag that is renamed outright does not
+/// error when the old spelling is set — it silently reads as OFF, so every
+/// recipe, script and ledger entry carrying the old name quietly stops taking
+/// effect and the run measures the wrong arm. Both spellings must keep working.
+fn opt_in_any(vars: &[&str]) -> bool {
+    vars.iter().any(|v| opt_in(v))
+}
+
 /// `ATLAS_FOO=0` DISABLES — a default-ON lever whose kill-switch is an
 /// explicit zero. NOT interchangeable with [`on_unless`]: swapping them
 /// inverts the switch, so `=0` would leave the lever on and `=1` would turn
@@ -158,7 +168,12 @@ pub fn mtp_gate_force() -> bool {
 
 impl SchedLevers {
     /// Resolve from the environment. Called once, when the run starts.
-    pub fn from_env() -> Self {
+    ///
+    /// `model_spec_think` is this model's `[behavior].spec_think` from
+    /// MODEL.toml; the env opt-in ORs on top, so an operator can force the
+    /// lever on for a model whose card leaves it off, and a model that has
+    /// EARNED it by measurement needs no flag at all.
+    pub fn from_env(model_spec_think: bool) -> Self {
         Self {
             fast_greedy_grammar: on_unless("ATLAS_DISABLE_FAST_GREEDY"),
             fast_masked: on_unless("ATLAS_DISABLE_FAST_MASKED"),
@@ -208,7 +223,12 @@ impl SchedLevers {
             // and 10/10 -> 7/10 followed_directions DETERMINISTICALLY (three
             // identical runs), and bfcl-subset-echolp, which serves the same
             // recipe, fell 0.44 below both of its floors.
-            dflash_spec_think: opt_in("ATLAS_DFLASH_SPEC_THINK"),
+            // ATLAS_SPEC_THINK is the preferred spelling: this lever is read by
+            // `mtp_gate::spec_dispatch_eligible` on BOTH lanes, so it governs
+            // plain MTP as much as DFlash (GLM-5.3 runs MTP and has no DFlash).
+            // The DFLASH spelling is kept working forever — see `opt_in_any`.
+            dflash_spec_think: opt_in_any(&["ATLAS_SPEC_THINK", "ATLAS_DFLASH_SPEC_THINK"])
+                || model_spec_think,
             dflash_gate_pin_c2: on_unless_zero("ATLAS_DFLASH_GATE_PIN_C2"),
             dflash_batch_verify: on_unless_zero("ATLAS_DFLASH_BATCH_VERIFY"),
             dflash_adaptive_min: num("ATLAS_DFLASH_ADAPTIVE_MIN", 2.0),
@@ -356,7 +376,7 @@ mod tests {
     fn spec_think_is_off_in_the_resolver_the_server_actually_uses() {
         // SAFETY: single-threaded test process; no other thread reads the env.
         unsafe { std::env::remove_var("ATLAS_DFLASH_SPEC_THINK") };
-        let live = SchedLevers::from_env();
+        let live = SchedLevers::from_env(false);
         assert!(
             !live.dflash_spec_think,
             "ATLAS_DFLASH_SPEC_THINK must stay OPT-IN: from_env() resolved it ON. \
@@ -409,7 +429,7 @@ mod tests {
             "an absent flag must leave the cell open for the next writer"
         );
         assert!(
-            SchedLevers::from_env().mtp_gate_force,
+            SchedLevers::from_env(false).mtp_gate_force,
             "and the carried levers read the same resolution — one rule, not two"
         );
     }

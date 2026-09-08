@@ -582,7 +582,23 @@ pub fn compile_grammar_state(
 
     let label = match spec {
         GrammarSpec::ToolCall { parser, tools, .. } => {
-            format!("parser={}, tools={}", parser.name(), tools.len())
+            // Name the ENVELOPE, not just the parser. A bare `parser=poolside_v1`
+            // under a GLM serve reads like a misconfiguration; the hint makes it
+            // self-evident that the format is what the model's own template asks
+            // for. See `ToolCallParser::wire_hint`.
+            match parser.wire_hint() {
+                "" => format!(
+                    "tool-call wire format={}, tools={}",
+                    parser.name(),
+                    tools.len()
+                ),
+                hint => format!(
+                    "tool-call wire format={} [{}], tools={}",
+                    parser.name(),
+                    hint,
+                    tools.len()
+                ),
+            }
         }
         GrammarSpec::JsonObject => "response_format=json_object".to_string(),
         GrammarSpec::JsonSchema { .. } => "response_format=json_schema".to_string(),

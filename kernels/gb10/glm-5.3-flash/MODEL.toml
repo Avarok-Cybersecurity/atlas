@@ -100,6 +100,26 @@ max_thinking_budget = 2048
 # pin outranks it too (serve_load.rs:1281).
 preserve_thinking = true
 
+# Speculation may run inside `<think>` on this model without the
+# ATLAS_SPEC_THINK env opt-in.
+#
+# EARNED BY MEASUREMENT, not inherited. The lever is opt-in globally because the
+# DFlash lane measured agentic followed_directions 10/10 -> 7/10 DETERMINISTICALLY
+# across three identical runs, attributed to batch-K verify not being byte-lossless
+# at T=0. GLM-5.3's verify was separately measured byte-identical at K=2, which is
+# the likely reason that damage does not transfer here.
+#
+# Measured, K2 EP=2/TP=2 + MTP K=2 + prefix caching + reasoning-low,
+# agentic-webserver x3 (2026-09-08):
+#   engagement  serial=0.97/mtp=0.03  ->  serial=0.00/mtp=1.00
+#   decode      13.50  ->  16.90 tok/s median (+25%)
+#   verdict     PASS 3/3 webserver_ok, 3/3 followed_directions, 27/27 stop
+#
+# 🪤 One benchmark on one workload. If a future GLM revision changes the verify
+# numerics, re-measure before trusting this line — and `ATLAS_SPEC_THINK=0` does
+# NOT turn it back off (the env is an OR, not an override); delete the key.
+spec_think = true
+
 
 [[model_types]]
 model_type = "glm5_next"

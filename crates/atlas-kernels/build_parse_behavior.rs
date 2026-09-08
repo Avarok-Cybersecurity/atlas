@@ -78,6 +78,10 @@ pub(crate) struct ParsedBehavior {
     pub rollback_resteer: bool,
     pub rom_head: String,
     pub tool_retry: bool,
+    /// `[behavior].spec_think` — let speculation run inside `<think>` for
+    /// this model without the env opt-in. Default false; see
+    /// `ModelBehavior::spec_think` for why this is per-model.
+    pub spec_think: bool,
     /// Tri-state `preserve_thinking` chat-template flag. `None` (key absent)
     /// = do not inject the Jinja variable; the model template's own default
     /// applies. See `ModelBehavior::preserve_thinking`.
@@ -117,6 +121,7 @@ impl Default for ParsedBehavior {
             rollback_resteer: true,
             rom_head: String::new(),
             tool_retry: true,
+            spec_think: false,
             preserve_thinking: None,
         }
     }
@@ -276,6 +281,12 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.get("tool_retry"))
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    // Default FALSE: thinking-time speculation stays opt-in globally and is
+    // earned per model by measurement.
+    let spec_think = b
+        .and_then(|v| v.get("spec_think"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     // Tri-state: absent key stays `None` (template default), no unwrap_or.
     let preserve_thinking = b
         .and_then(|v| v.get("preserve_thinking"))
@@ -311,6 +322,7 @@ pub(crate) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         rollback_resteer,
         rom_head,
         tool_retry,
+        spec_think,
         preserve_thinking,
     }
 }

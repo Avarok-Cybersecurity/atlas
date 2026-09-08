@@ -108,8 +108,8 @@ fn the_watchdog_command_toggles_the_running_run_not_a_process_global() {
     // `Arc` the scheduler is reading.
     use clap::Parser as _;
     let mut app = App::new(crate::cli::ServeArgs::parse_from(["spark", "some/model"]));
-    let levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
-    let other = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
+    let levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env(false));
+    let other = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env(false));
     app.run = Some(crate::tui::RunHandles {
         levers: levers.clone(),
         snapshot: std::sync::Arc::new(crate::scheduler::snapshot::SnapshotCell::default()),

@@ -1017,7 +1017,9 @@ pub(crate) fn load_model(
     // The run's levers. Shared with the dashboard so `/watchdog on|off`
     // toggles this run's flag; the MODEL.toml `[behavior]` value is its
     // starting position.
-    let sched_levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
+    let sched_levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env(
+        ptx_set.behavior.spec_think,
+    ));
     sched_levers.set_loop_watchdog(crate::scheduler::resolve_content_loop_watchdog(
         ptx_set.behavior.enable_loop_watchdog,
         std::env::var("ATLAS_CONTENT_LOOP_WATCHDOG").ok().as_deref(),
