@@ -182,6 +182,11 @@ pub struct Bfcl {
     baseline_mins: report::BaselineMins,
 }
 
+/// The `shard` parameter value that means "leave the constructor's slice
+/// alone". See the spec's own note for why this is a word and not an empty
+/// string or `0/1`.
+pub const INHERIT_SHARD: &str = "inherit";
+
 impl Bfcl {
     /// The sample count THIS run should produce: the variant's pinned draw, or
     /// this shard's slice of it.
@@ -421,6 +426,28 @@ impl Benchmark for Bfcl {
                 ParamKind::Int { min: 10, max: 3600 },
                 ParamValue::Int(600),
             ),
+            ParamSpec::new(
+                "shard",
+                "Shard",
+                "Run one Nth of the draw, as `index/count` with a 0-based index \
+                 (`2/7`; the whole draw is `0/1`). `inherit` runs whatever this \
+                 benchmark id already selects: the whole draw, or — for a \
+                 registered shard member like `bfcl-subset-a` — its own quarter.",
+                ParamKind::Text,
+                // ★ THE DEFAULT IS `inherit`, NOT `0/1`. The registered shard
+                // members set their slice in the constructor, and a default
+                // that meant "the whole draw" would overwrite it on every
+                // `configure` — which the TUI and every gate run call — turning
+                // all four members into four copies of the whole draw. The
+                // union would be 4 x 995 rows with every sample scored four
+                // times. See
+                // `a_shard_member_keeps_its_slice_under_default_parameters`.
+                //
+                // A word rather than an empty string because `ParamKind::Text`
+                // refuses an empty value outright, so "" could never be the
+                // default that reaches `configure`.
+                ParamValue::Text(INHERIT_SHARD.to_string()),
+            ),
         ];
         specs.extend(report::BaselineMins::specs());
         specs
@@ -444,6 +471,11 @@ impl Benchmark for Bfcl {
             .collect(),
             subset_floor: (floor > 0).then_some(floor),
         };
+        // `inherit` leaves `self.shard` exactly as the constructor set it.
+        let shard = values.text("shard")?;
+        if shard.trim() != INHERIT_SHARD {
+            self.shard = Some(dataset::Shard::parse(shard.trim()).map_err(anyhow::Error::msg)?);
+        }
         self.max_new_tokens = values.usize("max_new_tokens")?;
         self.temperature = values.float("temperature")?;
         self.request_timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
