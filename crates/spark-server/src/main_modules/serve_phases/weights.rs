@@ -116,14 +116,14 @@ pub(crate) fn load_weight_store(
             //
             // These two knobs exist so that can be A/B'd without a rebuild;
             // neither changes the default.
-            if let Some(v) = std::env::var("ATLAS_FAST_LOAD_DIRECT_IO").ok() {
-                if v == "0" || v.eq_ignore_ascii_case("false") {
-                    loader.try_direct_io = false;
-                    tracing::info!(
-                        "Fast weight loader: O_DIRECT DISABLED by \
-                         ATLAS_FAST_LOAD_DIRECT_IO=0 — buffered + readahead for every shard"
-                    );
-                }
+            if std::env::var("ATLAS_FAST_LOAD_DIRECT_IO")
+                .is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("false"))
+            {
+                loader.try_direct_io = false;
+                tracing::info!(
+                    "Fast weight loader: O_DIRECT DISABLED by \
+                     ATLAS_FAST_LOAD_DIRECT_IO=0 — buffered + readahead for every shard"
+                );
             }
             if let Some(cap) = std::env::var("ATLAS_FAST_LOAD_DIRECT_IO_CAP")
                 .ok()

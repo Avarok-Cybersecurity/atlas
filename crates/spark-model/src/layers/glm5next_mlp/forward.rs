@@ -220,8 +220,7 @@ impl Glm5NextMlpWorkspace {
             u_slot: gpu.alloc(rows * cfg.top_k * rows * 4)?,
             ones_f32: {
                 let p = gpu.alloc(rows * 4)?;
-                let ones: Vec<u8> = std::iter::repeat(1.0f32)
-                    .take(rows)
+                let ones: Vec<u8> = std::iter::repeat_n(1.0f32, rows)
                     .flat_map(|v| v.to_le_bytes())
                     .collect();
                 gpu.copy_h2d(&ones, p)?;
