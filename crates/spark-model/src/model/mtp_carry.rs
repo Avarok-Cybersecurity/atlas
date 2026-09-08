@@ -107,13 +107,39 @@ use spark_runtime::gpu::DevicePtr;
 /// `ATLAS_MARCONI_MIN_TOKENS=<n>` overrides; 0 restores the previous
 /// always-restore behaviour.
 pub fn marconi_min_tokens() -> usize {
-    static MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *MIN.get_or_init(|| {
+    *MARCONI_MIN.get_or_init(|| {
         std::env::var("ATLAS_MARCONI_MIN_TOKENS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(256)
+            .unwrap_or(DEFAULT_MARCONI_MIN_TOKENS)
     })
+}
+
+/// The shipped threshold, and the only place it is written down.
+pub const DEFAULT_MARCONI_MIN_TOKENS: usize = 256;
+
+static MARCONI_MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Pin the restore threshold from `--marconi-min-tokens`, before anything
+/// reads it.
+///
+/// ★ WHY A SETTER AND NOT JUST THE ENV VAR. A KAT gate needs this value to be
+/// part of its RECORD, and only recipe keys reach a record — an env var cannot,
+/// so a run configured by `ATLAS_MARCONI_MIN_TOKENS` could not state that it
+/// had been. Issue #936 measured a sharded BFCL draw disagreeing with the same
+/// draw run whole on 12 of 995 samples through cross-request SSM snapshot
+/// reuse; setting this high closes the consumer side and takes that to 2. A
+/// configuration that fixes a correctness property is worthless if a record
+/// cannot say it was used.
+///
+/// First writer wins, and a later call is IGNORED rather than panicking: the
+/// value is a process-wide constant once anything has read it, and a serve
+/// startup that set it twice would otherwise abort a running server over a
+/// duplicate flag. Returns whether this call is the one that set it, so the
+/// caller can warn if it lost the race — which means something read the
+/// threshold before serve configured it, and the flag silently did nothing.
+pub fn set_marconi_min_tokens(v: usize) -> bool {
+    MARCONI_MIN.set(v).is_ok()
 }
 
 /// Is the carry ARMED, given how it is configured and whether MTP is
