@@ -65,6 +65,42 @@ hc_sinkhorn_iters = 20
 #
 # `glm5_next` is the canonical form: the checkpoint's inner object says
 # `glm5_next_text`, and `parse_glm5_next` rewrites it to `glm5_next`.
+[behavior]
+# Thinking ceiling. WITHOUT this key the target inherits
+# DEFAULT_MAX_THINKING_BUDGET = 256, and because the qualitative ladder is
+# `Low = ceiling/2` (api/chat/thinking.rs::effort_budget) a
+# `reasoning_effort: "low"` request got just 128 tokens to reason in — observed
+# as `Thinking enabled, budget=Some(128)` on every agentic turn (2026-09-08).
+#
+# GLM-5.3-Flash is a reasoning model whose own chat_template.jinja consumes
+# `reasoning_effort` directly (six references), so the model already knows what
+# was asked; this ceiling is purely Atlas's SECOND cap on top of that, and at
+# 256 it was cutting the model off mid-thought. 2048 matches
+# qwen3.8-flash-next — the port this one tracks — giving minimal 512 /
+# low 1024 / medium 2048 / high 4096 / xhigh 8192.
+#
+# 🪤 This key MUST live under [behavior]. Placed after a [sampling.*] header it
+# silently becomes a preset key and does nothing (trap noted in
+# qwen3.8-flash-next/MODEL.toml).
+max_thinking_budget = 2048
+
+# Carry the assistant's reasoning back into the next turn's prompt.
+#
+# 🪤 TRI-STATE. Key ABSENT = do not inject the Jinja variable at all, and the
+# model template's own default applies (that is why qwen3.6-27b deliberately
+# leaves it unset). Setting it here means Atlas asserts over the template, so it
+# is set on operator instruction rather than inferred: multi-turn agentic work
+# on this model wants the prior reasoning visible, and the measured runs carried
+# it via the client-side ATLAS_AGENTIC_PRESERVE_THINKING=1. Pinning it in
+# [behavior] extends the same behaviour to plain API clients (opencode et al.)
+# that do not set the kwarg themselves.
+#
+# A per-request `chat_template_kwargs.preserve_thinking` still wins over this
+# (api/chat/prepare.rs:143), and a server-level --default-chat-template-kwargs
+# pin outranks it too (serve_load.rs:1281).
+preserve_thinking = true
+
+
 [[model_types]]
 model_type = "glm5_next"
 hidden_size = 4096
