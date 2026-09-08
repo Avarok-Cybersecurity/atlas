@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! `Glm5NextLayer` — the composite GLM-5.3 decoder layer that implements [`TransformerLayer`].
+//! `Glm5NextLayer` — the composite GLM-5.3 decoder layer that implements `TransformerLayer`.
 //!
 //! This is the piece that makes the model *bind*. Everything it dispatches to already existed
 //! and was numerically gated in Slices 1–13; what did not exist was a single type the loader can
@@ -40,7 +40,7 @@
 //! * **The highway is indexed by TOKEN.** Prefill is overridden rather than left to the trait's
 //!   sequential default, because that default runs every token through layer 0 before layer 1 —
 //!   which with a single-slot highway would leave only the LAST token's streams alive. See
-//!   [`Glm5NextLayer::prefill`].
+//!   `Glm5NextLayer::prefill`.
 //! * **Both MLP arms leave a PARTIAL SUM** whenever TP or EP is on. The single `all_reduce` at
 //!   the end of the FFN site covers both, and it must happen *before* `hc_post` mixes the output
 //!   back into the highway.

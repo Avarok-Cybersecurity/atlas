@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Applying [`super::tp::KdaTpPlan`] — the shard COPIES, at last.
+//! Applying `super::tp::KdaTpPlan` — the shard COPIES, at last.
 //!
 //! # Why this is an adapter and not a change to the binder
 //!
-//! [`super::binding::bind_kda_weights`] is proven: exact tensor set, exact dtypes, exact
+//! `super::binding::bind_kda_weights` is proven: exact tensor set, exact dtypes, exact
 //! shapes, gated numerically on real weights. Teaching it about TP would mean rewriting its
 //! validation to check on-disk (full) shapes against a per-rank config — i.e. editing the one
 //! piece of this lane that has never been wrong.
 //!
-//! So the slicing happens *upstream*. [`KdaShardedSource`] wraps any [`KdaTensorSource`] and
+//! So the slicing happens *upstream*. `KdaShardedSource` wraps any `KdaTensorSource` and
 //! hands the binder bytes that are **already this rank's**, with **local** shapes. The binder
 //! then validates them against the local config exactly as it always has and cannot tell the
 //! difference — which is the point: **TP=1 and TP=2 run the same binder code path**, so there
