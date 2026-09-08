@@ -309,6 +309,35 @@ pub struct ModelLevers {
     /// path alone, each read only to decide whether to do nothing.
     pub ssm_save_dump: bool,
 
+    // ── Batched decode dispatch ──
+    //
+    // Five reads in `decode_batch_dispatch` / `decode_batch_compute_main`,
+    // once per BATCHED DECODE STEP. Note the spellings differ between
+    // neighbouring lines of the same function — two are truthy
+    // (`"1"` or `"true"`, case-SENSITIVE) and three are strict `"1"` — and
+    // each field keeps the one its site had.
+    /// `ATLAS_MLA_PERSEQ_FALLBACK=1|true` — route MLA batches through the
+    /// per-sequence path instead of the batched one.
+    pub mla_perseq_fallback: bool,
+    /// `ATLAS_HC_PERSEQ_DECODE=1` — per-sequence hyper-connection decode.
+    /// ORed with `qsa_active`, and the routing decision is resolved ABOVE
+    /// the EP branch on purpose: it used to sit below, so under EP a
+    /// QSA-active batch returned before reaching the gate, landed on the
+    /// batched multi-seq path, and died on its guard.
+    pub hc_perseq_decode: bool,
+    /// `ATLAS_DECODE_BATCH_LOG=1` — log the batch's slot/position vectors
+    /// each step.
+    pub decode_batch_log: bool,
+    /// `ATLAS_MS_PROFILE=1` — per-phase multi-seq profiling, which forces
+    /// eager execution so the per-phase syncs are legal under capture.
+    ///
+    /// NOT [`Self::ssm_ms_profile`], which is `ATLAS_SSM_MS_PROFILE`. Two
+    /// different variables one underscore apart, both live.
+    pub ms_profile: bool,
+    /// `ATLAS_CONC_HSD=1|true` — per-sequence hidden-state dump, to localize
+    /// where `pos >= 1` diverges from `pos 0` in concurrent batched decode.
+    pub conc_hsd: bool,
+
     // ── Decode graph capture ──
     /// `ATLAS_EP_GRAPHS=1|true` — allow CUDA-graph capture under expert
     /// parallelism. The EP all-reduce queues ncclSend/Recv plus a local add

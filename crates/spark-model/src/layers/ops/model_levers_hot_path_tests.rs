@@ -378,3 +378,58 @@ fn the_nemotron_prefill_levers_are_presence_gated() {
     assert!(!resolve(&[("ATLAS_NO_SHARED_W4A4", "1")]).shared_w4a4_down);
     assert!(resolve(&[("ATLAS_SHARED_W4A4_DOWN", "1")]).shared_w4a4);
 }
+
+/// The batched-decode five, whose spellings differ between NEIGHBOURING
+/// LINES of the same function.
+///
+/// `mla_perseq_fallback` and `conc_hsd` were `is_ok_and(|v| v == "1" || v ==
+/// "true")` — truthy and case-SENSITIVE; the other three were strict `"1"`.
+/// Unifying them would be invisible at every call site and wrong at two of
+/// them, which is why each keeps the rule it arrived with.
+#[test]
+fn the_batched_decode_levers_keep_their_neighbours_spellings() {
+    let d = resolve(&[]);
+    assert!(!d.mla_perseq_fallback);
+    assert!(!d.hc_perseq_decode);
+    assert!(!d.decode_batch_log);
+    assert!(!d.ms_profile);
+    assert!(!d.conc_hsd);
+
+    // Strict `1`: `true` does NOT arm these.
+    for (name, read) in [
+        (
+            "ATLAS_HC_PERSEQ_DECODE",
+            (|l: &ModelLevers| l.hc_perseq_decode) as fn(&ModelLevers) -> bool,
+        ),
+        ("ATLAS_DECODE_BATCH_LOG", |l: &ModelLevers| {
+            l.decode_batch_log
+        }),
+        ("ATLAS_MS_PROFILE", |l: &ModelLevers| l.ms_profile),
+    ] {
+        assert!(read(&resolve(&[(name, "1")])), "{name} at =1");
+        assert!(!read(&resolve(&[(name, "true")])), "{name} is strict `1`");
+        assert!(!read(&resolve(&[(name, "0")])), "{name} at =0");
+    }
+
+    // Truthy but case-SENSITIVE: `true` arms, `TRUE` does not.
+    for (name, read) in [
+        (
+            "ATLAS_MLA_PERSEQ_FALLBACK",
+            (|l: &ModelLevers| l.mla_perseq_fallback) as fn(&ModelLevers) -> bool,
+        ),
+        ("ATLAS_CONC_HSD", |l: &ModelLevers| l.conc_hsd),
+    ] {
+        assert!(read(&resolve(&[(name, "1")])), "{name} at =1");
+        assert!(read(&resolve(&[(name, "true")])), "{name} at =true");
+        assert!(
+            !read(&resolve(&[(name, "TRUE")])),
+            "{name} must stay case-SENSITIVE"
+        );
+        assert!(!read(&resolve(&[(name, "0")])), "{name} at =0");
+    }
+
+    // ★ `ATLAS_MS_PROFILE` and `ATLAS_SSM_MS_PROFILE` are two live variables
+    // one underscore apart. Setting either must not move the other.
+    assert!(!resolve(&[("ATLAS_MS_PROFILE", "1")]).ssm_ms_profile);
+    assert!(!resolve(&[("ATLAS_SSM_MS_PROFILE", "1")]).ms_profile);
+}

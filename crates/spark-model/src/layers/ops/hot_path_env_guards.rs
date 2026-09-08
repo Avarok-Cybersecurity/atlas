@@ -23,7 +23,7 @@
 ///
 /// An empty allow list means the file must not read the environment at all.
 /// Paths are relative to `crates/spark-model/src`.
-const GUARDED: [(&str, &[&str]); 20] = [
+const GUARDED: [(&str, &[&str]); 21] = [
     // ── Dense FFN ──
     (
         "layers/dense_ffn.rs",
@@ -62,6 +62,17 @@ const GUARDED: [(&str, &[&str]); 20] = [
     ),
     // ── Once per propose. ──
     ("model/impl_b3.rs", &[]),
+    (
+        // The BATCHED decode step.
+        "model/trait_impl/decode_a2.rs",
+        &[
+            // `OnceLock`ed, so the read is paid once per process — and its
+            // own doc explains why it is strict `== "1"` on an `ATLAS_NO_*`
+            // name rather than a presence check: the presence-checked flags
+            // in this file are ENABLED by `=0`.
+            "multiseq_graphs_enabled",
+        ],
+    ),
     // ── Nemotron prefill: once per layer per prefill chunk. Nine reads
     //    across these three, one of them asked twice in the same call. ──
     ("layers/nemotron_mamba2/prefill.rs", &[]),
