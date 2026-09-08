@@ -23,7 +23,7 @@
 //! * KDA's `q/k/v_proj` and `q/k/v_conv1d` are **separate tensors on disk** — GDN
 //!   fuses them into `in_proj_qkv` / `conv1d`. So KDA needs no segmented slice: each
 //!   tensor is sliced independently and the 3-segment trap
-//!   ([`crate::tp_shard::gdn::segment_copy_plan`]) simply does not arise.
+//!   (`crate::tp_shard::gdn::segment_copy_plan`) simply does not arise.
 //! * KDA has **no `Z` tensor**. The output gate is low-rank `g_a`/`g_b`.
 //!
 //! # 🪤 Traps this module encodes

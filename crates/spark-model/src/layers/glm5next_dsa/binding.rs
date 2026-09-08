@@ -5,7 +5,7 @@
 //!
 //! Scoped to `LibertAIDAI/GLM-5.3-Flash-NVFP4@9e0d74e3`. Mirrors
 //! [`crate::layers::glm5next_kda::binding`] and deliberately reuses its
-//! [`RawTensor`] / [`TensorSource`] / dtype types instead of growing a parallel set.
+//! `RawTensor` / `TensorSource` / dtype types instead of growing a parallel set.
 //!
 //! Shapes are expressed against [`Glm5NextDsaConfig`], so a geometry change fails
 //! here rather than at kernel launch — the same contract the KDA binder holds.
