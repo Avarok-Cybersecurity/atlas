@@ -104,6 +104,36 @@ pub fn ssm_tail_ckpt_enabled() -> bool {
 /// opposite behaviour with nothing anywhere saying so. A knob that looks like an
 /// opt-out and is not costs more than no knob at all, so an absent flag now
 /// publishes nothing and leaves the environment fallback below to decide.
+/// Publish `spark serve --hermetic`. Call once, at serve time.
+///
+/// Takes a plain `bool` rather than the `Option` its neighbours take, and
+/// publishes ONLY when true. The `Option` dance next door exists because those
+/// flags are default-ON and an absent flag publishing the clap default sealed
+/// a documented opt-out into a no-op. `--hermetic` is opt-IN: there is no
+/// opt-out to seal, and "not given" and "given false" are the same request.
+/// So absent leaves `ATLAS_HERMETIC` live, and passing the flag wins.
+pub fn set_hermetic(on: bool) {
+    if on {
+        let _ = HERMETIC.set(true);
+    }
+}
+
+static HERMETIC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Whether this server is being measured as a known-answer test.
+///
+/// Read on the snapshot lookup path, which is hot, so it is resolved once —
+/// like `ssm_tail_midchunk_enabled` and for the same reason.
+pub fn hermetic_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        HERMETIC
+            .get()
+            .copied()
+            .unwrap_or_else(|| matches!(std::env::var("ATLAS_HERMETIC").as_deref(), Ok("1")))
+    })
+}
+
 pub fn set_ssm_tail_midchunk(on: Option<bool>) {
     if let Some(on) = on {
         let _ = SSM_TAIL_MIDCHUNK.set(on);

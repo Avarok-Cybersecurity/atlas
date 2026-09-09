@@ -104,6 +104,9 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     // still decides. Passing the clap default instead sealed both cells on
     // every boot and made those variables silent no-ops.
     spark_runtime::set_ssm_tail_midchunk(args.ssm_tail_midchunk);
+    // Published BEFORE any prefill, like its neighbours: the snapshot lookup
+    // resolves it once and caches, so a late publish would be read as off.
+    spark_runtime::set_hermetic(args.hermetic);
     crate::scheduler::levers::set_mtp_gate_force(args.mtp_gate_force());
     // Every value RESOLVED, none of them the raw argument. Each of these five
     // may now come from the environment, and a log that echoes what was asked
