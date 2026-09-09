@@ -115,7 +115,7 @@ pub(crate) fn hc_pre_rows(
     let k_up = gpu.kernel("hyper_connection", "hc_dec_up")?;
 
     KernelLaunch::new(gpu, k_stage)
-        .grid([num_tokens, 1, 1])
+        .grid([num_tokens, hc_mult, 1])
         .block([1024, 1, 1])
         .arg_ptr(streams)
         .arg_ptr(w.norm_w)
@@ -129,9 +129,15 @@ pub(crate) fn hc_pre_rows(
     // summed in a fixed order through shared memory): rank rows plus (when
     // injecting) hc inject rows, 8 warps per block.
     let rows = rank + if inject { hc_mult } else { 0 };
-    let rows_per_block = 8 / HC_DOWN_SPLIT;
+    // ATLAS_HC_DOWN_KERNEL / ATLAS_HC_UP_KERNEL (2026-09-09): variant names
+    // under measurement; unset = the kernels above.
+    let (k_down, down_grid) = match hc_variant_down() {
+        "hc_dec_down_v4" => (gpu.kernel("hyper_connection", "hc_dec_down_v4")?, rows),
+        "hc_dec_down_v5" => (gpu.kernel("hyper_connection", "hc_dec_down_v5")?, rows.div_ceil(4)),
+        _ => (k_down, rows.div_ceil(8 / HC_DOWN_SPLIT)),
+    };
     KernelLaunch::new(gpu, k_down)
-        .grid([rows.div_ceil(rows_per_block), 1, 1])
+        .grid([down_grid, 1, 1])
         .block([256, 1, 1])
         .arg_ptr(normed)
         .arg_ptr(w.down_w)
@@ -148,10 +154,23 @@ pub(crate) fn hc_pre_rows(
     // load instruction), four rows per warp, HC_UP_D_PER_BLOCK outputs per
     // block (block = hc*64); chunk partials reduce by shuffle, the stream
     // mean in smem.
-    let smem = (HC_DEC_MAX_T * rank + hc_mult * HC_UP_D_PER_BLOCK * HC_DEC_MAX_T) * 4;
+    let (k_up, up_grid, up_block, smem) = match hc_variant_up() {
+        "hc_dec_up_v3" => (
+            gpu.kernel("hyper_connection", "hc_dec_up_v3")?,
+            hidden_size / 4,
+            hc_mult * 32,
+            hc_mult * 4 * HC_DEC_MAX_T * 4,
+        ),
+        _ => (
+            k_up,
+            hidden_size / HC_UP_D_PER_BLOCK,
+            hc_mult * 64,
+            (HC_DEC_MAX_T * rank + hc_mult * HC_UP_D_PER_BLOCK * HC_DEC_MAX_T) * 4,
+        ),
+    };
     KernelLaunch::new(gpu, k_up)
-        .grid([hidden_size / HC_UP_D_PER_BLOCK, 1, 1])
-        .block([hc_mult * 64, 1, 1])
+        .grid([up_grid, 1, 1])
+        .block([up_block, 1, 1])
         .shared_mem(smem)
         .arg_ptr(normed)
         .arg_ptr(low)
@@ -406,7 +425,7 @@ pub fn hc_post_lowrank(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([num_tokens, 1, 1])
+        .grid([num_tokens, hidden_size.div_ceil(256), 1])
         .block([256, 1, 1])
         .arg_ptr(block_out)
         .arg_ptr(residual)
@@ -444,7 +463,7 @@ pub(crate) fn hc_pre_split(
     let k_fin = gpu.kernel("hyper_connection", "hc_pre_finish")?;
 
     KernelLaunch::new(gpu, k_stage)
-        .grid([num_tokens, 1, 1])
+        .grid([num_tokens, hc_mult, 1])
         .block([1024, 1, 1])
         .arg_ptr(streams)
         .arg_ptr(w.norm_w)
@@ -482,4 +501,14 @@ pub(crate) fn hc_pre_split(
         .arg_u32(hc_mult)
         .arg_u32(w.rank as u32)
         .launch(stream)
+}
+
+fn hc_variant_down() -> &'static str {
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| std::env::var("ATLAS_HC_DOWN_KERNEL").unwrap_or_default()).as_str()
+}
+
+fn hc_variant_up() -> &'static str {
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| std::env::var("ATLAS_HC_UP_KERNEL").unwrap_or_default()).as_str()
 }

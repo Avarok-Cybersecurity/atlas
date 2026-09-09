@@ -586,27 +586,35 @@ fn hc_rows_microbench() {
     let y_out = g.alloc(8 * h * 2).unwrap();
     let inj_out = g.alloc(8 * hc * 4).unwrap();
     let scratch = g.alloc(64 * (hc * h + f.rank) * 4).unwrap();
-    let w = site_weights(g, &f, "attn", true);
+    // 32 device copies of the site's weights (~10.5 MB each = 336 MB, more
+    // than the L2) cycled launch to launch, so the numbers are DRAM-streaming
+    // like the 104 sites of a real step, not L2-warm re-reads of one site.
+    let copies: Vec<_> = (0..32).map(|_| site_weights(g, &f, "attn", true)).collect();
     for rows in [3u32, 1u32] {
-        for _ in 0..50 {
+        for w in copies.iter().take(8) {
             super::hyper_connection_lowrank::hc_pre_rows(
-                g, streams, &w, y_out, inj_out, scratch, rows, h as u32, hc as u32, f.eps, true,
+                g, streams, w, y_out, inj_out, scratch, rows, h as u32, hc as u32, f.eps, true,
                 stream,
             )
             .unwrap();
         }
         g.synchronize(stream).unwrap();
-        let n = 500;
+        let n = 512;
         let t0 = std::time::Instant::now();
-        for _ in 0..n {
+        for i in 0..n {
+            let w = &copies[i % copies.len()];
             super::hyper_connection_lowrank::hc_pre_rows(
-                g, streams, &w, y_out, inj_out, scratch, rows, h as u32, hc as u32, f.eps, true,
+                g, streams, w, y_out, inj_out, scratch, rows, h as u32, hc as u32, f.eps, true,
                 stream,
             )
             .unwrap();
         }
         g.synchronize(stream).unwrap();
         let us = t0.elapsed().as_secs_f64() * 1e6 / n as f64;
-        println!("hc_pre_rows attn site T={rows}: {us:.1} us per call (3 launches)");
+        let mb = (2.0 * f.rank as f64 * (hc * h) as f64 * 2.0 + (hc * hc * h) as f64 * 2.0) / 1e6;
+        println!(
+            "hc_pre_rows attn site T={rows}: {us:.1} us per call (3 launches, {mb:.1} MB of weights = {:.0} GB/s)",
+            mb / us * 1e3
+        );
     }
 }
