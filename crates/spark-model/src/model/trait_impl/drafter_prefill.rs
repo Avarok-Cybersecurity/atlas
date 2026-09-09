@@ -153,8 +153,16 @@ impl TransformerModel {
                 .store(new_len, Ordering::Relaxed);
         }
         if carry_on {
+            // Stamped with THIS sequence's ticket. A write by a different
+            // owner takes the interval over rather than extending it — see
+            // `stamped_merge`, and the ordering it closes.
             let mut r = self.mtp_store_range.lock();
-            *r = crate::model::mtp_carry::merge_interval(*r, chunk_start, proc_count);
+            *r = crate::model::mtp_carry::stamped_merge(
+                *r,
+                seq.mtp_store_gen,
+                chunk_start,
+                proc_count,
+            );
         }
         Ok(())
     }

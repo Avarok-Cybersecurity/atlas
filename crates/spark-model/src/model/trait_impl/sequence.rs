@@ -342,6 +342,10 @@ impl TransformerModel {
                 rows,
                 last_pair_key,
                 tokens: seq.tokens.clone(),
+                // The identity the next adopter is checked against. Stamping
+                // it here is what makes "the next turn of the same session"
+                // above a rule rather than a comment.
+                session_hash: seq.session_hash,
             };
             let previous = self.mtp_carry.lock().replace(entry);
             if let Some(old) = previous {

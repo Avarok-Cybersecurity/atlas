@@ -111,6 +111,11 @@ impl TransformerModel {
         // token slice is read. Destructuring is what makes that legal, and it
         // avoids cloning a 12k-token vector on every propose.
         let capture_gen = seq.mtp_capture_gen;
+        // Read before the destructure below borrows `seq` field-wise. This is
+        // the identity the carry slot is gated on; see `CarriedDrafter`.
+        let session_hash = seq.session_hash;
+        // And the ticket for the shared hidden rows; see `StoreRange`.
+        let store_gen = seq.mtp_store_gen;
         let SequenceState {
             tokens: seq_tokens,
             prompt_len,
@@ -174,6 +179,8 @@ impl TransformerModel {
                     proposer,
                     seq_tokens,
                     p,
+                    session_hash,
+                    store_gen,
                     prop_state.as_mut(),
                     ctx,
                     stream,
@@ -211,6 +218,8 @@ impl TransformerModel {
         proposer: &dyn DraftProposer,
         seq_tokens: &[u32],
         prompt_len: usize,
+        session_hash: u64,
+        store_gen: u64,
         prop_state: &mut dyn crate::speculative::ProposerState,
         ctx: &ForwardContext,
         stream: u64,
@@ -220,13 +229,24 @@ impl TransformerModel {
         let Some(entry) = self.mtp_carry.lock().take() else {
             return CarryOutcome::NoCarry;
         };
-        let Some((rows, last_key)) = entry.usable_by(prompt) else {
-            let common = entry.common_prefix_len(prompt);
-            proposer.free_drafter_kv(&entry.block_table);
-            return CarryOutcome::PrefixMismatch {
-                common,
-                entry_rows: entry.rows,
+        let Some((rows, last_key)) = entry.usable_by(prompt, session_hash) else {
+            // `usable_by` is the single authority on admission; this only
+            // LABELS its refusal, by asking the same predicate which of the
+            // two rules said no. A foreign-session refusal reported as a
+            // prefix mismatch is how the channel stayed invisible.
+            let outcome = if entry.session_matches(session_hash) {
+                CarryOutcome::PrefixMismatch {
+                    common: entry.common_prefix_len(prompt),
+                    entry_rows: entry.rows,
+                }
+            } else {
+                CarryOutcome::ForeignSession {
+                    entry_session: entry.session_hash,
+                    prompt_session: session_hash,
+                }
             };
+            proposer.free_drafter_kv(&entry.block_table);
+            return outcome;
         };
         // `install_drafter_kv` takes ownership on success only; keep a copy of
         // the ids so a refused install frees them instead of leaking.
@@ -237,9 +257,25 @@ impl TransformerModel {
             proposer.free_drafter_kv(&block_ids);
             return CarryOutcome::NoCarry;
         }
-        let (lo, hi) = *self.mtp_store_range.lock();
+        // Only rows THIS sequence wrote are visible; another owner's interval
+        // reads as empty, which `plan_append` then refuses.
+        //
+        // Deliberately placed AFTER `install_drafter_kv`: the carried rows are
+        // already proven valid for this session, and refusing to APPEND is no
+        // reason to throw them away. It also means the blocks must NOT be freed
+        // here — `install_drafter_kv` has taken ownership, and the proposer
+        // state releases or re-deposits them.
+        let stored = *self.mtp_store_range.lock();
+        let (lo, hi) = stored.visible_to(store_gen);
         let Some(plan) = plan_append(last_key, prompt.len(), lo, hi) else {
-            return CarryOutcome::NoHiddens;
+            return if stored.owner != store_gen && stored.owner != 0 {
+                CarryOutcome::ForeignHiddens {
+                    owner: stored.owner,
+                    expected: store_gen,
+                }
+            } else {
+                CarryOutcome::NoHiddens
+            };
         };
         // `drafter_rows_impl` reads `tokens[r + 1]` and `hiddens` row `r` for
         // row r, and RoPE `pos_base + r`. Row r must be pair key

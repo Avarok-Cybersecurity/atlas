@@ -5,6 +5,7 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -256,12 +257,10 @@ impl TransformerModel {
         // PREVIOUS sequence's captured hiddens in the drafter prefill.
         self.mtp_prefill_capture_len
             .store(0, std::sync::atomic::Ordering::Relaxed);
-        // ATLAS_MTP_CARRY_DRAFTER: the position-indexed hidden interval is
-        // per-sequence by construction. Resetting it here is what makes the
-        // carry path immune to the latent cross-sequence stale-hidden bug that
-        // the legacy `captured >= prompt_len` guard still has: a warm-turn
-        // append can only ever read rows THIS sequence's prefill wrote.
-        *self.mtp_store_range.lock() = (0, 0);
+        // ATLAS_MTP_CARRY_DRAFTER: this sequence's ownership ticket for the
+        // shared hidden-row interval. See `mtp_carry::StoreRange`.
+        let store_gen = self.mtp_store_gen_seq.fetch_add(1, Relaxed) + 1;
+        *self.mtp_store_range.lock() = super::super::mtp_carry::StoreRange::EMPTY;
 
         // Build layer states: pool-backed recurrent layers point into the pool
         // (fixed addresses) — Qwen GDN and GLM-5.3 KDA alike, both of which carry
@@ -367,6 +366,7 @@ impl TransformerModel {
             marconi_exact_snap: None,
             session_hash: 0,
             mtp_capture_gen: 0,
+            mtp_store_gen: store_gen,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
             cached_prefix_blocks: 0,
