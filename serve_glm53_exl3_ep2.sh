@@ -94,9 +94,55 @@
 # The agentic benchmark omits reasoning_effort from its body ON PURPOSE
 # (benchmarks/agentic/agent.rs:367) precisely so this serve default governs.
 #
-# NEXT UP — ViT / vision. `benchmark run vision-fidelity` on the K2 pack (same
-# vision tower as 4bpw, loads far quicker). Last known state is
-# geometry_matched 5/14; goal is 100%.
+# VISION — vision-fidelity is now 100% PASS on the K2 pack. It was 5/14, and the
+# ENGINE WAS CORRECT ON ALL FOURTEEN FIXTURES the whole time; the ladder had only
+# ever been taught Qwen3-VL. Fixed in a5ae0a547 (+ cherry-picks 9a1eefb28,
+# d004b6bef bringing PR #661's vision_max_pixels predictor onto this branch).
+#
+#   before   geometry  5/14   probes 2/3   integrity  9/17   FAIL
+#   after    geometry 14/14   probes 3/3   integrity 17/17   PASS
+#
+# Run it as:
+#   ./target/release/spark benchmark run vision-fidelity \
+#     --url http://192.168.177.12:8890 --model glm53-k2 \
+#     --param vision_geometry=glm5 --param max_tokens=2048 --param vision_max_pixels=0
+#
+#   vision_geometry=glm5   GLM is patch 14 / merge 2 on a CEIL canvas with a
+#                          min_image_tokens floor of 16. The ladder hardcoded
+#                          Qwen's patch 16 / merge 2 / round / no floor.
+#   max_tokens=2048        the integrity probes carried literal 8-24 token
+#                          budgets; GLM restates the question before answering,
+#                          so `length` landed before the answer and the cell
+#                          scored an EMPTY reply that reads as a vision failure.
+#   vision_max_pixels=0    this serve passes no --vision-max-pixels and the
+#                          checkpoint bound (3,211,264 px) is above every
+#                          fixture. If you DO cap, pass the same area.
+#
+# 🪤 THE MISS HID ITSELF, which is why it looked like an engine defect. Template
+# overhead is calibrated as total(224) - predicted(224), so a wrong prediction at
+# the anchor is absorbed into a compensating wrong overhead (31 vs the true 16)
+# and every 224-sized rung passes BY CONSTRUCTION. A vision ladder that shows
+# small-pass / large-fail should have its GEOMETRY PROFILE suspected first.
+#
+# 🪤 --vision-max-pixels 262144 (the prod value) is measured to break OCR:
+# commit 694c18ff3 found the label probe fails HEAD-INDEPENDENTLY under it, both
+# fp8 and nvfp4 reading the ~1.9x-downscaled 1280x720 label as "1380". Uncapped
+# passes. That is resolution, not the model.
+#
+# NEXT UP — video-fidelity, which is NOT fixed: 1/8 legs passed, 6 SKIPPED.
+#   - The 6 skips are a DEPLOYMENT setting, not a defect: MP4/MOV decoding needs
+#     --video-allow-ffmpeg, which this script does not pass.
+#   - The GIF path decoded and found something real: 03_colors_fwd.gif came back
+#     with the colour sequence exactly REVERSED ([yellow, blue, green, red] for
+#     [red, green, blue, yellow]). video-before-image returned empty and
+#     video-in-history denied a clip was attached.
+#   - NOT a geometry problem: mixed-media-pads arithmetic was EXACT
+#     (image 108 + video 300 - text 42 = 366 served).
+#   - video/driver.rs:294 still hardcodes tokens_per_group(224, 224, 16, 2),
+#     the same Qwen assumption the still-image ladder just shed.
+#   - Read the buf_out overrun note before running video against a CAPPED serve:
+#     multi-group video can walk past the packed buffer (CUDA 700, wedged 503),
+#     and the only bound is a debug_assert stripped in release.
 #
 # STILL OPEN
 #   - verify_dflash_batch_step.rs has neither the EP broadcast nor the SSM
