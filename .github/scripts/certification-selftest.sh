@@ -2429,6 +2429,34 @@ rm -rf "$TMP/jo/.github/workflows"; mkdir -p "$TMP/jo/.github/workflows"
 want_rc_msg 1 "no workflow files found" "control: a guard that finds nothing must fail" \
   sh -c "cd '$TMP/jo' && python3 '$PWD/.github/scripts/assert-job-outputs-exported.py'"
 
+echo "== stuck runs are recognised before they can hide =="
+# A run that never creates a job publishes no check run, so a required context
+# it owns reads as ABSENT rather than red -- the PR cannot merge and nothing is
+# showing as broken. Each control below is a case that MUST NOT be swept, and
+# each rules out a real, healthy situation.
+STUCK='.github/scripts/stuck-runs.py'
+want_out "1" "a queued run with no jobs, past the threshold, is selected" \
+  sh -c "printf '%s' '{\"now\":\"2026-01-01T12:00:00Z\",\"threshold_minutes\":25,\"runs\":[{\"id\":1,\"status\":\"queued\",\"created_at\":\"2026-01-01T11:00:00Z\",\"job_count\":0}]}' | python3 $STUCK"
+# Control: a run waiting on a busy hosted pool is queued with no jobs and is
+# entirely healthy. Sweeping it would force-cancel real work.
+want_out "SWEPT-NOTHING" "control: a young queued run is left alone" \
+  sh -c "printf '%s' '{\"now\":\"2026-01-01T12:00:00Z\",\"threshold_minutes\":25,\"runs\":[{\"id\":2,\"status\":\"queued\",\"created_at\":\"2026-01-01T11:50:00Z\",\"job_count\":0}]}' | python3 $STUCK && echo SWEPT-NOTHING"
+# Control: a run that HAS jobs is merely slow, and is somebody else's problem.
+want_out "SWEPT-NOTHING" "control: a queued run that created jobs is left alone" \
+  sh -c "printf '%s' '{\"now\":\"2026-01-01T12:00:00Z\",\"threshold_minutes\":25,\"runs\":[{\"id\":3,\"status\":\"queued\",\"created_at\":\"2026-01-01T11:00:00Z\",\"job_count\":4}]}' | python3 $STUCK && echo SWEPT-NOTHING"
+# Control: an unresolved job count is NOT zero. Treating it as zero is the
+# fail-open direction, and it would cancel healthy runs whenever the jobs API
+# hiccups.
+want_out "SWEPT-NOTHING" "control: an unknown job count is not treated as zero" \
+  sh -c "printf '%s' '{\"now\":\"2026-01-01T12:00:00Z\",\"threshold_minutes\":25,\"runs\":[{\"id\":4,\"status\":\"queued\",\"created_at\":\"2026-01-01T11:00:00Z\",\"job_count\":null}]}' | python3 $STUCK && echo SWEPT-NOTHING"
+# Control: a guard that cannot read its input must refuse. Exiting 0 there would
+# report "nothing stuck" for every run forever, which is indistinguishable from
+# a healthy repo -- the exact way a dead guard survives.
+want_rc 2 "control: unreadable input is refused, not passed" \
+  sh -c "printf 'not json' | python3 $STUCK"
+want_rc 2 "control: a payload with no threshold is refused" \
+  sh -c "printf '%s' '{\"runs\":[]}' | python3 $STUCK"
+
 echo
 echo "  $PASS passed, $FAIL failed"
 REACHED_SUMMARY=1
