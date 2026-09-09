@@ -39,7 +39,7 @@ impl NemotronMoeLayer {
             && self.w4a4_gemm_k.0 != 0
             && self.quantize_nvfp4_k.0 != 0
             && ctx.buffers.fp8_act_bytes() >= (shared_inter as usize).max(h) * (n as usize)
-            && std::env::var("ATLAS_NO_SHARED_W4A4").is_err();
+            && ctx.levers.shared_w4a4;
         if w4a4 {
             let a4 = ctx.buffers.fp8_act();
             let a4_sf = a4.offset((n as usize) * h / 2);

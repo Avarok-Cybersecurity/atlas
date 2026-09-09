@@ -76,7 +76,13 @@ pub fn ssm_tail_boundary(total_tokens: usize, block_size: usize) -> Option<usize
 /// kernel) instead of via an extra pass. Until then it stays off by default and
 /// ungated for accuracy.
 pub fn ssm_tail_ckpt_enabled() -> bool {
-    matches!(std::env::var("ATLAS_SSM_TAIL_CKPT").as_deref(), Ok("1"))
+    // Resolved once, like its sibling `ssm_tail_midchunk_enabled` four lines
+    // down — which WAS cached while this one was not, though both are read
+    // from the prefill-continuation path (`run_batched_mixed`,
+    // `run_standard`). Two functions doing the same job with different cost
+    // is how an uncached reader survives review.
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| matches!(std::env::var("ATLAS_SSM_TAIL_CKPT").as_deref(), Ok("1")))
 }
 
 /// Default-ON switch for MID-CHUNK tail SSM capture (opt-out `ATLAS_SSM_TAIL_MIDCHUNK=0`).

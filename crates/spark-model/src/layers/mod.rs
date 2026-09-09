@@ -359,9 +359,9 @@ impl FfnComponent {
     }
 
     /// ATLAS_FP32_ROUTING active for this FFN (MoE only; false otherwise).
-    pub fn fp32_routing_active(&self) -> bool {
+    pub fn fp32_routing_active(&self, levers: &ops::ModelLevers) -> bool {
         match self {
-            Self::Moe(m) => m.fp32_routing_active(),
+            Self::Moe(m) => m.fp32_routing_active(levers),
             _ => false,
         }
     }

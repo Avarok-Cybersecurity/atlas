@@ -392,7 +392,7 @@ pub fn start_chunked_prefill(
             is_last,
             prefill_stream,
         );
-        if std::env::var("ATLAS_VISION_TIMING").is_ok() {
+        if sched.levers.vision_timing {
             let _ = model.synchronize(prefill_stream);
             tracing::info!(
                 "VIT_TIMING prefill_chunk {} tok (img={}): {:.1}ms",

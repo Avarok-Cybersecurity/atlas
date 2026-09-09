@@ -50,6 +50,10 @@ impl MtpHead {
         draft_embed_target: Option<DevicePtr>,
         grammar_bitmask: Option<&[i32]>,
     ) -> Result<u32> {
+        // ★ ONE read, not four. This ran per DRAFTED TOKEN and every one of
+        // the four sites read the same variable only to decide whether to do
+        // nothing. See `ModelLevers`'s module doc.
+        let debug_norms = ctx.levers.mtp_debug_norms;
         let h = ctx.config.hidden_size as u32;
         let nq = ctx.config.num_attention_heads as u32;
         let nkv = ctx.config.num_key_value_heads as u32;
@@ -102,7 +106,7 @@ impl MtpHead {
             stream,
         )?;
 
-        if std::env::var("ATLAS_MTP_DEBUG_NORMS").as_deref() == Ok("1") {
+        if debug_norms {
             ctx.gpu.synchronize(stream).ok();
             tracing::warn!(
                 "MTP_DBG s1-embed ||={:.4} s2-n_embed ||={:.4} s2-n_hidden ||={:.4} s3-concat ||={:.4}",
@@ -116,7 +120,7 @@ impl MtpHead {
         // 4. FC projection: [2*h] → [h]
         let hidden = ctx.buffers.hidden_states();
         self.gemv(ctx.gpu, concat_out, &self.fc, hidden, h, h * 2, stream)?;
-        if std::env::var("ATLAS_MTP_DEBUG_NORMS").as_deref() == Ok("1") {
+        if debug_norms {
             ctx.gpu.synchronize(stream).ok();
             tracing::warn!(
                 "MTP_DBG s4-fc_hidden ||={:.4}",
@@ -372,7 +376,7 @@ impl MtpHead {
             )?;
         }
 
-        if std::env::var("ATLAS_MTP_DEBUG_NORMS").as_deref() == Ok("1") {
+        if debug_norms {
             ctx.gpu.synchronize(stream).ok();
             tracing::warn!(
                 "MTP_DBG s7-attn_out(pre-gate) ||={:.4}  gate ||={:.4}",
@@ -468,7 +472,7 @@ impl MtpHead {
         // A true zero reads as 0.0 regardless of dtype, so these L2 norms
         // pinpoint the first stage to zero out: input_hidden (save bug) →
         // final_normed (forward bug) → logits (lm_head bug).
-        if std::env::var("ATLAS_MTP_DEBUG_NORMS").as_deref() == Ok("1") {
+        if debug_norms {
             ctx.gpu.synchronize(stream).ok();
             let bf16_norm = |p: DevicePtr, n: usize| -> f64 {
                 let mut b = vec![0u8; n * 2];
@@ -500,7 +504,7 @@ impl MtpHead {
         // and fold this draft's top-1 softmax prob into the propose-scoped
         // running MIN (`last_conf_bits`, reset by `propose`). The clamp that
         // acts on it lives in `run_mtp_propose_inner`.
-        if crate::speculative::draft_conf_tau() > 0.0 {
+        if ctx.levers.draft_conf_tau > 0.0 {
             let vocab = v as usize;
             let mut bf16_buf = vec![0u8; vocab * 2];
             if ctx.gpu.copy_d2h(logits, &mut bf16_buf).is_ok() {

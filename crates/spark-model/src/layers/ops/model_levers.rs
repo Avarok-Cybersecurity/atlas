@@ -2,6 +2,33 @@
 
 //! Model-side kernel-path levers, resolved once and then carried.
 //!
+//! # ★ THE ENVIRONMENT IS READ EXACTLY ONCE PER PROCESS. KEEP IT THAT WAY.
+//!
+//! Every `ATLAS_*` variable below is a process constant: nothing mutates the
+//! environment after start (the runtime `set_var` that once could was
+//! deliberately removed — see `main_modules/serve_load.rs` and `config.rs`).
+//! So resolving them more than once is pure waste, and on a hot path it is
+//! worse than waste:
+//!
+//! * `std::env::var` allocates a `String` per read, and
+//! * it takes the PROCESS-WIDE environment lock, so concurrent readers
+//!   SERIALISE against each other.
+//!
+//! MEASURED on GB10: one resolve of the ~30 variables here costs 0.57 us
+//! single-threaded but **4.00 us at 8 threads and 5.76 us at 16** — the cost
+//! grows with concurrency, which makes it invisible to any single-stream
+//! benchmark. `from_env()` was called **32,513 times in one
+//! `concurrency-sweep`** (48 layers x ~680 prefills) while its own doc claimed
+//! it was "called once, when the model is built".
+//!
+//! **The rule for this module and anything like it:** read the environment in
+//! ONE place, at ONE time, and pass the resolved value down. Use
+//! [`ModelLevers::get`] for the process-wide copy; take `levers` from the
+//! `ForwardContext` or the model when you already have one. If you find
+//! yourself calling anything named `*_from_env`, `resolve_*` or `*_env()`
+//! inside a function that runs per token, per layer, per forward pass or per
+//! request, that is the bug this note exists to prevent.
+//!
 //! The second of the two lever categories on [`crate::layer::ForwardContext`]:
 //!
 //! * [`super::GemmDispatch`] — which GEMM implementation each projection takes.
@@ -28,7 +55,10 @@
 /// Plain `Copy` data resolved from the environment at model construction. Group
 /// membership follows the subsystem the lever steers, so a reader can see at a
 /// glance which part of the forward pass a flag reaches.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+// `Eq` is deliberately absent since `draft_conf_tau` joined: it is an f32
+// threshold. Comparing two resolutions is a test-only need and `PartialEq`
+// covers it.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct ModelLevers {
     // ── SSM / GDN recurrence ──
     /// Keep GDN recurrent state in registers across the prefill chunk loop.
@@ -57,6 +87,172 @@ pub struct ModelLevers {
     pub holo_moe_gateup_fp4: bool,
     /// Collect per-layer MoE expert-union statistics. Diagnostic.
     pub moe_union_stats: bool,
+    /// `ATLAS_FP32_ROUTING=1` — emit the MoE-input norm in FP32 so the gate
+    /// GEMM routes at full precision, removing the bf16-store rounding that
+    /// flips experts on gfx1151. Read once per LAYER per DECODE TOKEN from
+    /// six call sites via `MoeFfnLayer::fp32_routing_active`, which also
+    /// checks four weight/kernel preconditions — the lever is only the last
+    /// term of that conjunction, which is why it lives here and the
+    /// preconditions stay on the layer.
+    pub fp32_routing: bool,
+    /// `ATLAS_FP32_GATE=1` — the batched-gate sibling of
+    /// [`Self::fp32_routing`].
+    pub fp32_gate: bool,
+    /// `ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL=1` — route the five DFlash
+    /// capture layers' decode through the PREFILL MoE kernel, on the
+    /// hypothesis that the decode MoE kernel is the dominant cause of low
+    /// drafter acceptance. ~250 us per capture layer, so ~1.25 ms/token
+    /// against a ~58 ms/token decode. Diagnostic; non-capture layers are
+    /// untouched.
+    pub frankenstein_decode_via_prefill: bool,
+    /// `ATLAS_K2_DIAG=1` — K=2 routed-decode diagnostics.
+    pub k2_diag: bool,
+
+    // ── Dense FFN: which GEMM each prefill/decode arm takes ──
+    //
+    // These twelve were read with `std::env::var_os` from inside
+    // `DenseFfnLayer::forward` and `forward_prefill_inner`, i.e. once per
+    // LAYER per decode token and once per layer per prefill chunk — and one
+    // of them from inside a per-GEMM macro, so three times per layer. No
+    // allocation (that is `var_os`'s advantage over `var`) but the same
+    // process-wide environment lock, which serialises concurrent decode
+    // threads. The load-time readers in `finalize_q4k_load` and
+    // `finalize_nvfp4_mmq_load` are deliberately left where they are: they
+    // run once per weight, at load.
+    /// Split SiLU+down on the decode path: `silu_mul` into `gate_out`, then a
+    /// separate `w4a16_decode_gemv` for down. Ships ON;
+    /// `ATLAS_NO_DECODE_SPLIT_SILU` (presence) restores the fused kernel.
+    /// A LoRA adapter pins this path on regardless — the fused alternative
+    /// never materialises `silu(gate)*up`, which the down delta must
+    /// contract over — so the call site is `levers.decode_split_silu ||
+    /// self.lora.is_some()`.
+    pub decode_split_silu: bool,
+    /// `ATLAS_BF16_TC_PREFILL` (presence) — BF16 tensor-core prefill GEMM.
+    /// Read here only; the usable gate is derived at the call site AFTER
+    /// v1/v2 selection, from the handle actually launched. Gating on v1's
+    /// handle while dispatching v2 admitted launches of a kernel the target
+    /// may not carry.
+    pub bf16_tc_prefill: bool,
+    /// `ATLAS_FP8_M64_PREFILL` (presence) — m16n8k32 e4m3 M64 prefill GEMM,
+    /// ~1.47x vs v2 BF16. Lossy (cosine 0.9997), so opt-in only.
+    pub fp8_m64_prefill: bool,
+    /// `ATLAS_INT8_PREFILL` (presence) — requant→`int8_gemm_faith2` prefill
+    /// (cosine 0.999978 vs the host full-precision dequant GEMM).
+    pub int8_prefill: bool,
+    /// `ATLAS_INT8_FAITH5` (presence) — int32 per-sub-block accumulation,
+    /// which breaks the MMA→scale dependency chain. Same kernel signature
+    /// and launch geometry as faith2, so it is a handle swap.
+    pub int8_faith5: bool,
+    /// Vendored llama NVFP4 W4A4 MMQ for the gate/up prefill GEMMs
+    /// (~80 TFLOP/s vs t_m128's ~51). Ships ON;
+    /// `ATLAS_NO_FFN_NVFP4_MMQ` (presence) is the kill switch.
+    pub ffn_nvfp4_mmq: bool,
+    /// The same MMQ arm for the down projection — t_m128 runs the narrow-N
+    /// down at only ~34 TFLOP/s. Ships ON; `ATLAS_NO_FFN_NVFP4_MMQ_DOWN`
+    /// (presence) is the kill switch. Separate from
+    /// [`Self::ffn_nvfp4_mmq`] because down is the heavy-tailed projection
+    /// (W4A4 cosine 0.9961) and gets its own gate.
+    pub ffn_nvfp4_mmq_down: bool,
+    /// `ATLAS_FFN_MMQ` (presence) — Q4_K MMQ prefill arm.
+    pub ffn_mmq: bool,
+    /// `ATLAS_FFN_MMQ_DOWN_Q4K` (presence) — keep the down projection ON
+    /// Q4_K instead of the near-lossless faith2 NVFP4 hybrid.
+    ///
+    /// Stores the POSITIVE of a variable whose call site reads the negative
+    /// (`!levers.ffn_mmq_down_q4k`), the same shape as
+    /// [`Self::moe_legacy_pertoken_decode`]. down = SiLU(gate)*up is
+    /// heavy-tailed and Q4_K superblock scaling clips it — BFCL `multiple`
+    /// −4.0%, which is why llama promotes only down→Q6_K.
+    pub ffn_mmq_down_q4k: bool,
+    /// `ATLAS_FP4_PREFILL` (presence) — native W4A4 FP4 tensor cores
+    /// (sm_121a), NVFP4 weights used directly with no requant. Lossy
+    /// (cos ~0.99 vs fp32).
+    pub fp4_prefill: bool,
+    /// The v2 BF16 t_m128 prefill kernel — faster and bit-identical to v1.
+    /// Ships ON; `ATLAS_DISABLE_PREFILL_V2` (presence) forces v1 so the two
+    /// can be compared for TTFT in one binary.
+    pub prefill_v2: bool,
+
+    // ── MoE routed prefill ──
+    //
+    // Read once per LAYER per prefill chunk from `forward_prefill_routed`,
+    // and the CUTLASS gate is asked TWICE per call through a free function.
+    /// `ATLAS_HOLO_MOE_GROUPED_CUTLASS=1` — single-launch CUTLASS grouped
+    /// NVFP4 gate_up. Off by default; unset falls back to the hand-rolled
+    /// fused FP4/FP8 grouped kernels.
+    pub moe_grouped_cutlass: bool,
+    /// `ATLAS_HOLO_MOE_GROUPED_DOWN=1` — take the down projection through
+    /// the same CUTLASS grouped path. Requires
+    /// [`Self::moe_grouped_cutlass`]; a separate gate because down consumes
+    /// the already-expert-contiguous post-SiLU output and needs no gather.
+    pub moe_grouped_down: bool,
+    /// `ATLAS_MOE_PREFILL_EXACT_TILES=1|0` overrides the tile bound;
+    /// `None` (unset) defers to the checkpoint — the win was measured on
+    /// NVFP4, so the default is scoped to where it was measured.
+    ///
+    /// Tri-state on purpose. Measured: exact_tiles ON gave p90 +4.9% against
+    /// a +5.0% limit (0.1% from failing the gate) and OFF gave p90 −5.0%,
+    /// while the median barely moved either way (+0.1% vs −0.9%). Only the
+    /// tail shows it, so both directions must stay reachable. Graph capture
+    /// forces it off regardless — the bound is read back from device memory.
+    pub moe_prefill_exact_tiles: Option<bool>,
+    /// `ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR=<n>` — cap the per-expert tile
+    /// bound at n times the average when exact tiles are off. `None` (unset
+    /// or `0`) means the worst case.
+    pub moe_prefill_max_load_factor: Option<usize>,
+    /// `ATLAS_MOE_PREFILL_ZERO=1` — memset the grouped scratch before
+    /// dispatch. Implied by EP (`ctx.comm.is_some()`). In non-EP the sort
+    /// produces a dense permutation over exactly the rows the grouped
+    /// kernels write, so skipping the clear removes ~138 MB/layer on Holo.
+    pub moe_prefill_zero: bool,
+    /// `ATLAS_MOE_PREFILL_FP8_DOWN=1` — FP8 grouped GEMM for the routed
+    /// down projection.
+    pub moe_prefill_fp8_down: bool,
+
+    // ── Nemotron prefill (Mamba2 SSM + MoE) ──
+    //
+    // Nine reads across three functions, each once per LAYER per PREFILL
+    // CHUNK. All are PRESENCE-gated — the sites spelled them
+    // `std::env::var(..).is_err()` / `.is_ok()`, so `=0` neither arms an
+    // opt-in nor re-enables an opt-out. Resolution uses `var_os`, which
+    // differs from `var` only for a non-UTF-8 value: `var` reports that as
+    // absent, `var_os` as present. The difference lands on the safe side of
+    // every one of these.
+    /// W4A4 native-FP4 SSM projections at N >= 512. Ships ON;
+    /// `ATLAS_NO_SSM_W4A4` (presence) is the kill switch.
+    pub ssm_w4a4: bool,
+    /// The chunked SSD scan. Ships ON; `ATLAS_NO_SSD` (presence) falls back
+    /// to the sequential scan. Gated additionally on `ssd_scan_fits`, since
+    /// Nano-30B's state_size=128 overflows the shared-memory budget that
+    /// Puzzle-75B's 96 fits — which is why that never surfaced until it did.
+    pub ssd: bool,
+    /// The persistent SSM prefill kernel, which keeps H in shared memory and
+    /// is only reachable when SSD is unavailable. Ships ON;
+    /// `ATLAS_NO_SSM_PERSISTENT` (presence) disables, for a same-binary A/B
+    /// against the sequential scan.
+    pub ssm_persistent: bool,
+    /// Zero the grouped-MoE intermediate arena buffers before dispatch.
+    /// Ships ON; `ATLAS_MOE_NO_ZERO_INTERMEDIATES` (presence) skips.
+    ///
+    /// Defence in depth: these buffers are reused across requests and nothing
+    /// else clears them, so a row a future change fails to write would leak
+    /// the PREVIOUS request's activations rather than merely being wrong.
+    /// Asked twice in one call before this — once for up, once for down.
+    pub moe_zero_intermediates: bool,
+    /// `ATLAS_MOE_MAX_M_TILES_ESTIMATE` (presence) — restore the old
+    /// average-based tile bound. A/B only; the comment at the site says it
+    /// is NOT safe to serve on, because the estimate can under-bound the
+    /// worst case of one expert taking every routed token.
+    pub moe_max_m_tiles_estimate: bool,
+    /// `ATLAS_MOE_W4A4` (presence) — W4A4 grouped up-projection at N >= 512.
+    pub moe_w4a4: bool,
+    /// W4A4 for the shared-expert UP projection at N >= 512. Ships ON;
+    /// `ATLAS_NO_SHARED_W4A4` (presence) is the kill switch.
+    pub shared_w4a4: bool,
+    /// `ATLAS_SHARED_W4A4_DOWN` (presence) — the DOWN half of the same, and
+    /// a SEPARATE opt-in: down is the heavy-tailed projection, so it does not
+    /// inherit [`Self::shared_w4a4`].
+    pub shared_w4a4_down: bool,
 
     // ── Attention ──
     /// Contiguous-attention path for the DFlash head.
@@ -74,12 +270,129 @@ pub struct ModelLevers {
     /// Per-layer hidden-state norm dumps on the Gemma-4 decode path. Heavy —
     /// one device-to-host copy per layer.
     pub gemma4_diag: bool,
+    /// `ATLAS_DFLASH_DEBUG_DUMP_FULL=1` — the model-side half of the DFlash
+    /// full dump: emit the whole token sequence ONCE so a Python reference
+    /// can run the same tokens through HF transformers.
+    ///
+    /// ★ The SAME variable that [`crate::layers::dflash_head::levers::DFlashLevers::debug_dump_full`]
+    /// carries. Two structs, one flag — deliberately, because the two halves
+    /// of the dump are armed together by design and the head is not reachable
+    /// from `TransformerModel` (`proposer` is a `dyn DraftProposer`, so there
+    /// is nothing to read the head's levers through without a downcast).
+    /// `the_two_halves_of_the_dflash_dump_agree` pins that the two
+    /// resolutions cannot drift, which is what makes the duplication safe —
+    /// an unchecked second spelling of one lever is how
+    /// `ATLAS_DSPARK_ANCHOR_BIAS` came to have two implementations.
+    pub dflash_debug_dump_full: bool,
+    /// `ATLAS_MTP_DEBUG_NORMS=1` — per-stage norm dumps inside the MTP
+    /// drafter's `forward_one`, which asked for it FOUR times per drafted
+    /// token, each read only to decide whether to do nothing.
+    pub mtp_debug_norms: bool,
+    /// `ATLAS_MTP_DRAFT_CONF=<t>` — confidence floor for submitting drafts
+    /// to verification, clamped to `[0.0, 0.99]`. `0.0` (unset) disables.
+    ///
+    /// When the drafter's chain confidence (the min top-1 softmax prob
+    /// across one propose's drafts) is below this, the drafts are discarded
+    /// and the next step decodes serially, skipping a verify that would most
+    /// likely reject. Economics at K=1 on the 35B MoE: verify ~35 ms for
+    /// 1+accepted tokens against decode+propose ~21 ms for 1, so a draft is
+    /// only worth verifying at p(accept) >~ 0.66. STAGED OFF pending its
+    /// measured A/B.
+    ///
+    /// Three of its four readers asked per propose whether the feature was
+    /// on, i.e. paid the environment lock to learn it was off. The fourth,
+    /// `MtpHead::last_confidence`, is reached only when it is already ON, so
+    /// it keeps its own read and its own contract — see the note there.
+    pub draft_conf_tau: f32,
+    /// `ATLAS_SSM_SAVE_DUMP` (presence) — the CBD scratch/SSM-state
+    /// fingerprint probe. Asked THREE times per decode step by the decode
+    /// path alone, each read only to decide whether to do nothing.
+    pub ssm_save_dump: bool,
+
+    // ── Batched decode dispatch ──
+    //
+    // Five reads in `decode_batch_dispatch` / `decode_batch_compute_main`,
+    // once per BATCHED DECODE STEP. Note the spellings differ between
+    // neighbouring lines of the same function — two are truthy
+    // (`"1"` or `"true"`, case-SENSITIVE) and three are strict `"1"` — and
+    // each field keeps the one its site had.
+    /// `ATLAS_MLA_PERSEQ_FALLBACK=1|true` — route MLA batches through the
+    /// per-sequence path instead of the batched one.
+    pub mla_perseq_fallback: bool,
+    /// `ATLAS_HC_PERSEQ_DECODE=1` — per-sequence hyper-connection decode.
+    /// ORed with `qsa_active`, and the routing decision is resolved ABOVE
+    /// the EP branch on purpose: it used to sit below, so under EP a
+    /// QSA-active batch returned before reaching the gate, landed on the
+    /// batched multi-seq path, and died on its guard.
+    pub hc_perseq_decode: bool,
+    /// `ATLAS_DECODE_BATCH_LOG=1` — log the batch's slot/position vectors
+    /// each step.
+    pub decode_batch_log: bool,
+    /// `ATLAS_MS_PROFILE=1` — per-phase multi-seq profiling, which forces
+    /// eager execution so the per-phase syncs are legal under capture.
+    ///
+    /// NOT [`Self::ssm_ms_profile`], which is `ATLAS_SSM_MS_PROFILE`. Two
+    /// different variables one underscore apart, both live.
+    pub ms_profile: bool,
+    /// `ATLAS_CONC_HSD=1|true` — per-sequence hidden-state dump, to localize
+    /// where `pos >= 1` diverges from `pos 0` in concurrent batched decode.
+    pub conc_hsd: bool,
+
+    // ── Decode graph capture ──
+    /// `ATLAS_EP_GRAPHS=1|true` — allow CUDA-graph capture under expert
+    /// parallelism. The EP all-reduce queues ncclSend/Recv plus a local add
+    /// on the capture stream and NCCL >= 2.9 supports capture, so this MAY
+    /// capture cleanly; env-gated so a deploy can revert instantly if
+    /// capture crashes or replay hangs.
+    pub ep_graphs: bool,
+    /// `ATLAS_GDN_DECODE_GRAPH=1|true` — capture the whole single-token GDN
+    /// HeadParallel TP decode forward (~130 kernels plus the per-layer TP
+    /// all-reduces) into one replayable graph. Default OFF.
+    pub gdn_decode_graph: bool,
 
     // ── Attention (cont.) ──
     /// BF16 tensor-core attention projections: dequant FP4 to BF16 and use a
     /// BF16 MMA instead of the default path, which crushes activations to FP8
     /// E4M3. Removes the FP8 prefill perturbation on those projections.
     pub bf16_tc_proj: bool,
+    /// The checkpoint's attention weights are ALREADY Hadamard-rotated at load
+    /// (`TQ_PLUS_WEIGHT_ROTATION`), so the runtime must not rotate again.
+    ///
+    /// A property of the loaded checkpoint, and the SSOT for it. It previously
+    /// had FIVE implementations of the same `=1`-or-`true` test — four raw
+    /// `std::env::var` calls on attention paths (one per attention layer per
+    /// DECODE TOKEN in `decode/attention_forward.rs`, one per layer per
+    /// batched decode step in `multi_seq/attn.rs`, two per layer per prefill
+    /// chunk) plus a fifth in the weight loader, whose `#[allow(dead_code)]`
+    /// was stale — `attention_arms.rs` calls it. Reading this per token cost
+    /// an allocation and the process-wide environment lock on the hottest path
+    /// in the model, and five copies of one predicate is how a flag ends up
+    /// decoded two different ways in one binary.
+    pub weight_pre_rotated: bool,
+
+    // ── SSM / GDN decode ──
+    // These five ran on the batched-decode path — per SSM layer per decode
+    // step, ~6-7M environment reads per sweep on a 36-SSM-layer hybrid, the
+    // largest raw count in this crate. Three are diagnostics that are off in
+    // every shipped configuration, and were paying a `String` allocation and
+    // the process-wide environment lock to say so on every layer of every
+    // token. Their neighbour `ssm_tc_proj_min_n()` in the same file was
+    // already `OnceLock`'d with the note "Read ONCE — this site runs under
+    // graph capture", so these were an inconsistency, not a design.
+    /// Per-step multi-sequence SSM profiling dump.
+    pub ssm_ms_profile: bool,
+    /// Finer per-sub-step SSM profiling inside the batched recurrence.
+    pub ssm_detail_profile: bool,
+    /// Ships ON: use the batch-4 GEMV tier for the SSM projections when the
+    /// kernel is resolved and n <= 16. `ATLAS_SSM_GEMV_BATCH4=0` opts out.
+    pub ssm_gemv_batch4: bool,
+    /// Fuse the GDN conv with the F32 norm when the head geometry allows.
+    pub gdn_fused_conv: bool,
+    /// Take the pre-token-major MoE decode kernel. The field stores the
+    /// POSITIVE of the variable's name, so the call site reads
+    /// `!levers.moe_legacy_pertoken_decode` for the default token-major path —
+    /// the inversion lives here, once, rather than at the branch.
+    pub moe_legacy_pertoken_decode: bool,
     /// Configured max decode batch (`--max-batch-size`), the reference count
     /// the split-K attention split count is pinned to. Not from the
     /// environment: `TransformerModel::new` writes it from the serve arg.
@@ -105,216 +418,17 @@ pub struct ModelLevers {
     pub drafter: crate::model::drafter_context::DrafterContext,
 }
 
-fn from_values(
-    mut value: impl FnMut(&str) -> Option<String>,
-    mut present: impl FnMut(&str) -> bool,
-    shadow_topk: usize,
-    drafter: crate::model::drafter_context::DrafterContext,
-) -> ModelLevers {
-    fn opt_in(value: Option<&str>) -> bool {
-        value == Some("1")
-    }
-    fn opt_out(value: Option<&str>) -> bool {
-        value != Some("0")
-    }
-    fn opt_in_truthy(value: Option<&str>) -> bool {
-        value.is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-    }
-
-    ModelLevers {
-        max_decode_seqs: 1,
-        shadow_topk,
-        kv_poison: opt_in(value("ATLAS_KV_POISON").as_deref()),
-        drafter,
-        gdn_regresident: value("ATLAS_NO_GDN_REGRESIDENT").as_deref() != Some("1"),
-        gdn_batched_fla: opt_in(value("ATLAS_GDN_BATCHED_FLA").as_deref()),
-        gdn_wy17: opt_out(value("ATLAS_GDN_WY17").as_deref()),
-        gdn_wyn: opt_out(value("ATLAS_GDN_WYN").as_deref()),
-        ffn_small_m: opt_out(value("ATLAS_FFN_SMALLM").as_deref()),
-        gemv_sw: super::gemv_sw::gemv_sw_from(value("ATLAS_NO_GEMV_SW").as_deref()),
-        decode_ffn_via_gemm: opt_in(value("ATLAS_DECODE_FFN_VIA_GEMM").as_deref()),
-        holo_moe_down_fp4: opt_in_truthy(value("ATLAS_HOLO_MOE_DOWN_FP4").as_deref()),
-        holo_moe_gateup_fp4: opt_in_truthy(value("ATLAS_HOLO_MOE_GATEUP_FP4").as_deref()),
-        moe_union_stats: opt_in(value("ATLAS_MOE_UNION_STATS").as_deref()),
-        dflash_contig_attn: opt_in(value("ATLAS_DFLASH_CONTIG_ATTN").as_deref()),
-        lora_eager: opt_in_truthy(value("ATLAS_LORA_EAGER").as_deref()),
-        lora_rotate: opt_in_truthy(value("ATLAS_LORA_ROTATE").as_deref()),
-        k4_diag: opt_in(value("ATLAS_K4_DIAG").as_deref()),
-        gemma4_diag: opt_in_truthy(value("ATLAS_DIAG_GEMMA4").as_deref()),
-        bf16_tc_proj: present("ATLAS_BF16_TC_PROJ"),
-    }
-}
-
-impl ModelLevers {
-    /// Resolve from the environment. Called once, when the model is built.
-    pub fn from_env() -> Self {
-        from_values(
-            |var| std::env::var(var).ok(),
-            |var| std::env::var_os(var).is_some(),
-            crate::speculative::shadow_topk(),
-            crate::model::drafter_context::resolve_from_env(),
-        )
-    }
-
-    /// What a build resolves to with no `ATLAS_*` set — every opt-in off, the
-    /// one opt-out lever on. Tests construct a context with this instead of
-    /// mutating the process environment.
-    pub fn defaults() -> Self {
-        Self {
-            max_decode_seqs: 1,
-            shadow_topk: 0,
-            kv_poison: false,
-            drafter: crate::model::drafter_context::DrafterContext::BOTH,
-            gdn_regresident: true,
-            gdn_wy17: true,
-            gdn_wyn: true,
-            ffn_small_m: true,
-            gemv_sw: true,
-            ..Self::default()
-        }
-    }
-}
+/// How the levers above are READ. Private: the environment is touched in
+/// exactly one place, and `ModelLevers::get` is the only way out of it.
+#[path = "model_levers_resolve.rs"]
+mod resolve;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
+#[path = "model_levers_tests.rs"]
+mod tests;
 
-    fn resolve(values: &[(&str, &str)]) -> ModelLevers {
-        let values: HashMap<_, _> = values.iter().copied().collect();
-        from_values(
-            |name| values.get(name).map(|value| (*value).to_owned()),
-            |name| values.contains_key(name),
-            0,
-            crate::model::drafter_context::DrafterContext::BOTH,
-        )
-    }
-
-    #[test]
-    fn the_opt_out_lever_is_on_by_default_and_every_opt_in_is_off() {
-        let d = ModelLevers::defaults();
-        assert_eq!(
-            resolve(&[]),
-            d,
-            "absent environment uses the public default"
-        );
-        assert_eq!(
-            d,
-            ModelLevers {
-                gdn_regresident: true,
-                gdn_wy17: true,
-                gdn_wyn: true,
-                gemv_sw: true,
-                ffn_small_m: true,
-                max_decode_seqs: 1,
-                drafter: crate::model::drafter_context::DrafterContext::BOTH,
-                ..ModelLevers::default()
-            }
-        );
-    }
-
-    #[test]
-    fn exact_one_opt_ins_map_to_their_own_fields() {
-        let cases = [
-            ("ATLAS_KV_POISON", [true, false, false, false, false, false]),
-            (
-                "ATLAS_GDN_BATCHED_FLA",
-                [false, true, false, false, false, false],
-            ),
-            (
-                "ATLAS_DECODE_FFN_VIA_GEMM",
-                [false, false, true, false, false, false],
-            ),
-            (
-                "ATLAS_MOE_UNION_STATS",
-                [false, false, false, true, false, false],
-            ),
-            (
-                "ATLAS_DFLASH_CONTIG_ATTN",
-                [false, false, false, false, true, false],
-            ),
-            ("ATLAS_K4_DIAG", [false, false, false, false, false, true]),
-        ];
-        for (name, expected) in cases {
-            let d = resolve(&[(name, "1")]);
-            assert_eq!(
-                [
-                    d.kv_poison,
-                    d.gdn_batched_fla,
-                    d.decode_ffn_via_gemm,
-                    d.moe_union_stats,
-                    d.dflash_contig_attn,
-                    d.k4_diag
-                ],
-                expected,
-                "{name}"
-            );
-        }
-        assert!(!resolve(&[("ATLAS_K4_DIAG", "true")]).k4_diag);
-    }
-
-    #[test]
-    fn truthy_opt_ins_map_independently_and_presence_is_distinct() {
-        let cases = [
-            (
-                "ATLAS_HOLO_MOE_DOWN_FP4",
-                [true, false, false, false, false],
-            ),
-            (
-                "ATLAS_HOLO_MOE_GATEUP_FP4",
-                [false, true, false, false, false],
-            ),
-            ("ATLAS_LORA_EAGER", [false, false, true, false, false]),
-            ("ATLAS_LORA_ROTATE", [false, false, false, true, false]),
-            ("ATLAS_DIAG_GEMMA4", [false, false, false, false, true]),
-        ];
-        for (name, expected) in cases {
-            let d = resolve(&[(name, "TrUe")]);
-            assert_eq!(
-                [
-                    d.holo_moe_down_fp4,
-                    d.holo_moe_gateup_fp4,
-                    d.lora_eager,
-                    d.lora_rotate,
-                    d.gemma4_diag
-                ],
-                expected,
-                "{name}"
-            );
-        }
-        assert!(resolve(&[("ATLAS_BF16_TC_PROJ", "0")]).bf16_tc_proj);
-    }
-
-    #[test]
-    fn kill_switches_and_zero_opt_outs_keep_their_distinct_polarities() {
-        let d = resolve(&[
-            ("ATLAS_NO_GDN_REGRESIDENT", "1"),
-            ("ATLAS_NO_GEMV_SW", "1"),
-            ("ATLAS_GDN_WY17", "0"),
-            ("ATLAS_GDN_WYN", "0"),
-            ("ATLAS_FFN_SMALLM", "0"),
-        ]);
-        assert!(!d.gdn_regresident);
-        assert!(!d.gemv_sw);
-        assert!(!d.gdn_wy17);
-        assert!(!d.gdn_wyn);
-        assert!(!d.ffn_small_m);
-        assert!(resolve(&[("ATLAS_NO_GDN_REGRESIDENT", "0")]).gdn_regresident);
-        assert!(resolve(&[("ATLAS_GDN_WY17", "1")]).gdn_wy17);
-    }
-
-    #[test]
-    fn externally_resolved_shadow_and_drafter_values_are_carried() {
-        let d = from_values(
-            |_| None,
-            |_| false,
-            7,
-            crate::model::drafter_context::DrafterContext::OFF,
-        );
-        assert_eq!(d.shadow_topk, 7);
-        assert_eq!(
-            d.drafter,
-            crate::model::drafter_context::DrafterContext::OFF
-        );
-    }
-}
+/// ★ Where the environment may be read at all. Kept next to the levers it
+/// exists to protect, not inside `tests` — it guards other modules too.
+#[cfg(test)]
+#[path = "hot_path_env_guards.rs"]
+mod hot_path_env_guards;

@@ -79,7 +79,7 @@ pub fn emit_token(
     // Fix B (2026-06-05, kill-switch): <tool_response> hard stop — the model must
     // never generate this control token; if it does (post-tool-call runaway), end
     // the turn. Mirrors the <|im_start|> hard stop above.
-    if tool_response_stop_enabled()
+    if sched.levers.tool_response_stop
         && let Some(trs) = sched.limits.tool_response_hard_stop
         && tok == trs
     {
@@ -406,7 +406,7 @@ pub fn emit_token(
     // enabled and a tool call has completed (and we're not inside a tool body /
     // thinking), lift the grammar suppression so the model's natural EOS ends the
     // turn. Inert unless ATLAS_TOOL_EOS_ESCAPE=1.
-    let eos_escape = tool_eos_escape_enabled()
+    let eos_escape = sched.levers.tool_eos_escape
         && a.tool_call_completed
         && !a.inside_tool_body
         && !a.inside_thinking;

@@ -1283,7 +1283,7 @@ impl DenseFfnLayer {
         let split_silu = self.activation == FfnActivation::SiLU
             && self.act_mul.0 != 0
             && self.w4a16_gemv.0 != 0
-            && (std::env::var_os("ATLAS_NO_DECODE_SPLIT_SILU").is_none() || self.lora.is_some());
+            && (ctx.levers.decode_split_silu || self.lora.is_some());
         if split_silu {
             self.apply_lora_gate_up(ctx, input, gate_out, up_out, 1, stream)?;
             ops::silu_mul(
@@ -2093,13 +2093,12 @@ impl DenseFfnLayer {
         // below AFTER v1/v2 selection, from the handle actually launched.
         // Gating on v1's handle while dispatching v2 admitted launches of a
         // kernel this target may not carry.
-        let bf16_tc_env = std::env::var_os("ATLAS_BF16_TC_PREFILL").is_some();
+        let bf16_tc_env = ctx.levers.bf16_tc_prefill;
         // FP8 M64 fast-prefill opt-in: route prefill GEMMs through the m16n8k32
         // e4m3 M64 kernel (~1.47x vs v2 BF16, smem-relieved). Lossy (cosine 0.9997)
         // → highest priority when set, so it overrides the BF16/FP8 t_m128 arms.
         // PCND: explicit opt-in, default off = byte-for-byte prior behavior.
-        let fp8_m64_prefill =
-            self.w4a16_gemm_t_k.0 != 0 && std::env::var_os("ATLAS_FP8_M64_PREFILL").is_some();
+        let fp8_m64_prefill = self.w4a16_gemm_t_k.0 != 0 && ctx.levers.fp8_m64_prefill;
         // int8 W4A8 fast-prefill opt-in (ATLAS_INT8_PREFILL): route prefill GEMMs
         // through the validated requant→`int8_gemm_faith2` pipeline (cosine
         // 0.999978 vs the host full-precision dequant GEMM). HIGHEST priority when
@@ -2110,8 +2109,7 @@ impl DenseFfnLayer {
         // bit-identical) — the _2.5h IoU gate is the final arbiter.
         // PCND: explicit opt-in, default off = byte-for-byte prior behavior; the
         // arm is a no-op (and no buffers are built) unless the kernels are loaded.
-        let int8_prefill =
-            self.int8_faith2_k.0 != 0 && std::env::var_os("ATLAS_INT8_PREFILL").is_some();
+        let int8_prefill = self.int8_faith2_k.0 != 0 && ctx.levers.int8_prefill;
         if int8_prefill {
             // Log-once latch (see `atlas_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
@@ -2145,7 +2143,7 @@ impl DenseFfnLayer {
             && self.nvfp4_silu_scaled_k.0 != 0
             && matches!(self.activation, FfnActivation::SiLU)
             && self.lora.is_none()
-            && std::env::var_os("ATLAS_NO_FFN_NVFP4_MMQ").is_none();
+            && ctx.levers.ffn_nvfp4_mmq;
         if fp4mmq_prefill {
             // Log-once latch (see `atlas_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
@@ -2163,9 +2161,8 @@ impl DenseFfnLayer {
         // Accuracy note: down W4A4 cosine 0.9961 (random) — better than the previously
         // coherence-validated all-W4A4 config (0.991) — but still the heavy-tailed
         // projection, so it stays a SEPARATE opt-in gate.
-        let fp4mmq_down = fp4mmq_prefill
-            && self.nvfp4_scale_k.0 != 0
-            && std::env::var_os("ATLAS_NO_FFN_NVFP4_MMQ_DOWN").is_none();
+        let fp4mmq_down =
+            fp4mmq_prefill && self.nvfp4_scale_k.0 != 0 && ctx.levers.ffn_nvfp4_mmq_down;
         // HYBRID: route the accuracy-critical down_proj OFF Q4_K onto the near-lossless faith2
         // NVFP4 path (W4A8 requant, cos 0.99998). down=SiLU(gate)*up is heavy-tailed; Q4_K
         // superblock scaling clips it (BFCL `multiple` -4.0%; llama promotes only down→Q6_K for
@@ -2179,8 +2176,8 @@ impl DenseFfnLayer {
             && self.int8_faith2_k.0 != 0
             && self.requant_a_int8_k.0 != 0
             && !fp4mmq_prefill
-            && std::env::var_os("ATLAS_FFN_MMQ").is_some()
-            && std::env::var_os("ATLAS_FFN_MMQ_DOWN_Q4K").is_none();
+            && ctx.levers.ffn_mmq
+            && !ctx.levers.ffn_mmq_down_q4k;
         // Pre-allocate (or reuse) the activation-requant scratch once per call,
         // sized to the largest projection K (= max(h, inter)) so the per-GEMM
         // arms never trigger a mid-call grow/sync. NULL when the int8 path is off.
@@ -2196,9 +2193,8 @@ impl DenseFfnLayer {
         // W4A4 native-FP4 prefill (ATLAS_FP4_PREFILL) — HIGHEST priority. NVFP4 weights
         // used directly (no requant); BF16 activations quantized to NVFP4 each GEMM into
         // the shared scratch. Native FP4 tensor cores (sm_121a). Lossy (cos ~0.99 vs fp32).
-        let fp4_prefill = self.w4a4_gemm_k.0 != 0
-            && self.quantize_nvfp4_k.0 != 0
-            && std::env::var_os("ATLAS_FP4_PREFILL").is_some();
+        let fp4_prefill =
+            self.w4a4_gemm_k.0 != 0 && self.quantize_nvfp4_k.0 != 0 && ctx.levers.fp4_prefill;
         if fp4_prefill {
             // Log-once latch (see `atlas_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
@@ -2226,7 +2222,7 @@ impl DenseFfnLayer {
             && self.q4k_quant_w_k.0 != 0
             && self.dequant_nvfp4_bf16_k.0 != 0
             && !fp4mmq_prefill
-            && std::env::var_os("ATLAS_FFN_MMQ").is_some();
+            && ctx.levers.ffn_mmq;
         if q4k_prefill {
             // Log-once latch (see `atlas_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
@@ -2254,8 +2250,7 @@ impl DenseFfnLayer {
         // A/B escape hatch (benchmark only): force the proven v1 BF16 kernel even
         // when v2 is loaded, so v1-vs-v2 prefill TTFT can be compared in one
         // binary. Default unset → prefer v2 (the faster, bit-identical variant).
-        let use_v2 = self.w4a16_gemm_t_m128_bf16_v2_k.0 != 0
-            && std::env::var_os("ATLAS_DISABLE_PREFILL_V2").is_none();
+        let use_v2 = self.w4a16_gemm_t_m128_bf16_v2_k.0 != 0 && ctx.levers.prefill_v2;
         let bf16_kernel = if use_v2 {
             self.w4a16_gemm_t_m128_bf16_v2_k
         } else {
@@ -2351,9 +2346,7 @@ impl DenseFfnLayer {
                         // faith5 (ATLAS_INT8_FAITH5=1): int32 per-sb accumulation
                         // breaks the MMA→scale dependency chain. Same kernel signature
                         // + grid/block as faith2 — just a different KernelHandle.
-                        let int8_kernel = if self.int8_faith5_k.0 != 0
-                            && std::env::var_os("ATLAS_INT8_FAITH5").is_some()
-                        {
+                        let int8_kernel = if self.int8_faith5_k.0 != 0 && ctx.levers.int8_faith5 {
                             self.int8_faith5_k
                         } else {
                             self.int8_faith2_k
