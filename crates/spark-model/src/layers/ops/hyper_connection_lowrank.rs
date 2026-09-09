@@ -131,10 +131,12 @@ pub(crate) fn hc_pre_rows(
     let rows = rank + if inject { hc_mult } else { 0 };
     // ATLAS_HC_DOWN_KERNEL / ATLAS_HC_UP_KERNEL (2026-09-09): variant names
     // under measurement; unset = the kernels above.
+    // hc_dec_down_v5 (two rows per warp, byte-identical to hc_dec_down, ~6 us
+    // faster per site DRAM-streaming) is the default; ATLAS_HC_DOWN_KERNEL=
+    // hc_dec_down restores the one-row form for A/B.
     let (k_down, down_grid) = match hc_variant_down() {
-        "hc_dec_down_v4" => (gpu.kernel("hyper_connection", "hc_dec_down_v4")?, rows),
-        "hc_dec_down_v5" => (gpu.kernel("hyper_connection", "hc_dec_down_v5")?, rows.div_ceil(4)),
-        _ => (k_down, rows.div_ceil(8 / HC_DOWN_SPLIT)),
+        "hc_dec_down" => (k_down, rows.div_ceil(8 / HC_DOWN_SPLIT)),
+        _ => (gpu.kernel("hyper_connection", "hc_dec_down_v5")?, rows.div_ceil(4)),
     };
     KernelLaunch::new(gpu, k_down)
         .grid([down_grid, 1, 1])
@@ -154,20 +156,11 @@ pub(crate) fn hc_pre_rows(
     // load instruction), four rows per warp, HC_UP_D_PER_BLOCK outputs per
     // block (block = hc*64); chunk partials reduce by shuffle, the stream
     // mean in smem.
-    let (k_up, up_grid, up_block, smem) = match hc_variant_up() {
-        "hc_dec_up_v3" => (
-            gpu.kernel("hyper_connection", "hc_dec_up_v3")?,
-            hidden_size / 4,
-            hc_mult * 32,
-            hc_mult * 4 * HC_DEC_MAX_T * 4,
-        ),
-        _ => (
-            k_up,
-            hidden_size / HC_UP_D_PER_BLOCK,
-            hc_mult * 64,
-            (HC_DEC_MAX_T * rank + hc_mult * HC_UP_D_PER_BLOCK * HC_DEC_MAX_T) * 4,
-        ),
-    };
+    let (up_grid, up_block, smem) = (
+        hidden_size / HC_UP_D_PER_BLOCK,
+        hc_mult * 64,
+        (HC_DEC_MAX_T * rank + hc_mult * HC_UP_D_PER_BLOCK * HC_DEC_MAX_T) * 4,
+    );
     KernelLaunch::new(gpu, k_up)
         .grid([up_grid, 1, 1])
         .block([up_block, 1, 1])
@@ -506,9 +499,4 @@ pub(crate) fn hc_pre_split(
 fn hc_variant_down() -> &'static str {
     static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     V.get_or_init(|| std::env::var("ATLAS_HC_DOWN_KERNEL").unwrap_or_default()).as_str()
-}
-
-fn hc_variant_up() -> &'static str {
-    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    V.get_or_init(|| std::env::var("ATLAS_HC_UP_KERNEL").unwrap_or_default()).as_str()
 }
