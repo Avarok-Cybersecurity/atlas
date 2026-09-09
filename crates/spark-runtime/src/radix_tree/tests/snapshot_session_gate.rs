@@ -2,7 +2,8 @@
 
 //! The one session-gate predicate, and the guard that keeps it one.
 
-use super::super::snapshot::{SnapshotEntry, session_gate_blocks};
+use super::super::snapshot::SnapshotEntry;
+use super::super::snapshot_session::session_gate_blocks;
 
 fn entry(is_tail: bool, session_hash: u64) -> SnapshotEntry {
     sibling_entry(is_tail, false, session_hash)
@@ -111,8 +112,11 @@ fn the_session_gate_is_not_spelled_out_anywhere_but_the_predicate() {
                 .unwrap_or(&p)
                 .to_string_lossy()
                 .to_string();
-            // The predicate itself, and this test, are where it belongs.
-            if rel == "snapshot.rs" || rel.ends_with("snapshot_session_gate.rs") {
+            // The predicate's OWN module, and this test, are where it
+            // belongs. Note `snapshot.rs` is NOT excused: that is where one of
+            // the two original copies lived, so it is precisely the file a
+            // re-spelling would reappear in.
+            if rel == "snapshot_session.rs" || rel.ends_with("snapshot_session_gate.rs") {
                 continue;
             }
             let Ok(text) = std::fs::read_to_string(&p) else {

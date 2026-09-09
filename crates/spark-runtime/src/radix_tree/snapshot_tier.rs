@@ -78,7 +78,7 @@ impl SsmSnapshotIndex {
             // `snapshot::session_gate_blocks` — because this condition and the
             // one in the (dead) `lookup` were separate copies of the same
             // subtle predicate, and only this one runs.
-            if super::snapshot::session_gate_blocks(entry, session_hash, hermetic) {
+            if super::snapshot_session::session_gate_blocks(entry, session_hash, hermetic) {
                 continue;
             }
             if hash_token_prefix(tokens, entry.token_count, adapter_id) != entry.prefix_hash {
