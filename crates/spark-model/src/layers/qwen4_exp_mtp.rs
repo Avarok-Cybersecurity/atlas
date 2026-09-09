@@ -456,11 +456,14 @@ impl Qwen4ExpMtpHead {
                     "qwen4_exp MTP: no NVFP4 and no native-EXL3 lm_head for the draft head"
                 )
             })?;
+            // Single-warp GEMV per the model lever (bit-identical to the base
+            // kernel, gemv_sw.rs): the draft LM head is the widest GEMV of the
+            // step (vocab rows) and ran the base kernel alone.
             ops::w4a16_decode_gemv(
                 ctx.gpu,
                 self.w4a16_gemv_k,
                 self.w4a16_gemv_sw_k,
-                false,
+                ctx.levers.gemv_sw,
                 h_out,
                 w,
                 logits,
