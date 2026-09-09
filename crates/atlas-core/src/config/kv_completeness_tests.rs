@@ -43,6 +43,42 @@ fn glm_prompt_built_dsa_state_is_not_kv_cache_complete() {
     }
 }
 
+/// `ATLAS_GLM53_PREFIX_CACHE_UNPROVEN` opens the prefix-cache arm for GLM and
+/// NOTHING else. Asserted on the pure core so this test never mutates the
+/// process environment the sibling tests above are reading.
+#[test]
+fn glm53_validation_override_opens_only_the_prefix_cache_arm() {
+    let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+
+    for model_type in NOT_KV_COMPLETE {
+        config.model_type = model_type.to_string();
+        assert!(
+            config.kv_only_prefix_cache_is_safe_with(true),
+            "{model_type}: the validation switch must open the prefix-cache arm"
+        );
+        assert!(
+            !config.kv_only_swap_out_is_safe(),
+            "{model_type}: the swap-out image cannot carry aux blobs, so the \
+             validation switch must not reach it"
+        );
+        assert!(
+            !config.kv_only_prefix_cache_is_safe_with(false),
+            "{model_type}: unset is the rollback, and it must close the arm again"
+        );
+    }
+}
+
+/// A stray export must not re-open a model the switch was never about.
+#[test]
+fn glm53_validation_override_does_not_reach_compressed_deepseek_v4() {
+    let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+    config.model_type = "deepseek_v4".to_string();
+    config.compress_ratios = vec![4, 0, 0];
+
+    assert!(!config.kv_only_prefix_cache_is_safe_with(true));
+    assert!(!config.kv_only_swap_out_is_safe());
+}
+
 #[test]
 fn kv_complete_models_keep_both_capabilities() {
     let mut config = ModelConfig::qwen3_next_80b_nvfp4();
