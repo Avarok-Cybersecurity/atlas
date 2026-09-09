@@ -77,6 +77,11 @@ pub fn topk_tile() -> usize {
     t
 }
 
+/// Pools scored per `dsa_index_scores` block. MUST equal `DSA_SCORES_PT` in
+/// `dsa_indexer.cu` — the kernel loops over exactly this many pools per block and sizes
+/// its shared memory from it, so a disagreement either drops pools or overruns `sh`.
+const DSA_SCORES_PT: u32 = 8;
+
 /// Shared memory one `dsa_topk_pools` block needs for a tile of `t` pools.
 pub fn topk_smem_for_tile(t: usize) -> usize {
     t * 2 * 8
@@ -414,6 +419,7 @@ pub fn select_tokens(
     // ── 1. pool compression ─────────────────────────────────────────────────────
     // Launched over the FULL pool count, exactly as the microtest does; the trailing
     // partial pool is written, marked invalid, and never read downstream.
+    let t_stage = crate::layers::glm5next_layer::profile::start();
     KernelLaunch::new(gpu, kernels.kpool_compress)
         .grid([ceiling.map_or(geom.n_pools_full, |m| m + 1) as u32, 1, 1])
         .block([d.min(1024) as u32, 1, 1])
@@ -431,15 +437,25 @@ pub fn select_tokens(
         .arg_ptr(gd)
         .launch(stream)?;
 
+    crate::layers::glm5next_layer::profile::end(
+        crate::layers::glm5next_layer::profile::DSA_KPOOL,
+        t_stage,
+        gpu,
+        stream,
+    );
+
     // 🪤 No `dsa_compact_pools` launch: over a contiguous cache the kept set is the
     // prefix `0..n_pools`, so compaction is a buffer-to-itself copy. See the module
     // header — a left-padded batch would need it.
 
     // ── 2. per-(query, pool) index scores ───────────────────────────────────────
+    let t_stage = crate::layers::glm5next_layer::profile::start();
     if has_pools {
         KernelLaunch::new(gpu, kernels.index_scores)
+            // 🔴 grid.x counts POOL TILES, not pools: each block scores `DSA_SCORES_PT`
+            // of them so the 16 KB q row is read once per tile instead of once per pool.
             .grid([
-                ceiling.unwrap_or(geom.n_pools) as u32,
+                (ceiling.unwrap_or(geom.n_pools) as u32).div_ceil(DSA_SCORES_PT),
                 geom.q_rows as u32,
                 1,
             ])
@@ -448,7 +464,11 @@ pub fn select_tokens(
             // head's contribution there and sums them in head order). The old request was
             // `SCORES_BLOCK` BYTES = 32 floats, which fit GLM's 32 index heads with zero
             // margin and only because `dsa_block_sum` needed just `nthreads/32` slots.
-            .shared_mem(SCORES_BLOCK.max((geom.index_heads * 4) as u32))
+            // [H][PT] floats for the per-head contributions + [PT] candidacy bytes.
+            .shared_mem(
+                SCORES_BLOCK
+                    .max((geom.index_heads as u32) * DSA_SCORES_PT * 4 + DSA_SCORES_PT),
+            )
             .arg_ptr(inputs.q)
             .arg_ptr(scratch.pool_keys)
             .arg_ptr(inputs.weights)
@@ -468,6 +488,13 @@ pub fn select_tokens(
             .arg_ptr(gd)
             .launch(stream)?;
 
+        crate::layers::glm5next_layer::profile::end(
+            crate::layers::glm5next_layer::profile::DSA_SCORES,
+            t_stage,
+            gpu,
+            stream,
+        );
+        let t_stage = crate::layers::glm5next_layer::profile::start();
         // ── 3. top-k over pools ─────────────────────────────────────────────────────
         // Capacity was refused at plan time; this launch cannot overflow shared memory.
         KernelLaunch::new(gpu, kernels.topk_pools)
@@ -482,9 +509,16 @@ pub fn select_tokens(
             .arg_u32(selk_a as u32)
             .arg_ptr(gd)
             .launch(stream)?;
+        crate::layers::glm5next_layer::profile::end(
+            crate::layers::glm5next_layer::profile::DSA_TOPK,
+            t_stage,
+            gpu,
+            stream,
+        );
     }
 
     // ── 4. expand pools to raw token ids ────────────────────────────────────────
+    let t_stage = crate::layers::glm5next_layer::profile::start();
     KernelLaunch::new(gpu, kernels.expand_selection)
         .grid([geom.q_rows as u32, 1, 1])
         .block([ROW_BLOCK, 1, 1])
@@ -505,6 +539,12 @@ pub fn select_tokens(
         .arg_i32(cfg.always_select_tail as i32)
         .arg_ptr(gd)
         .launch(stream)?;
+    crate::layers::glm5next_layer::profile::end(
+        crate::layers::glm5next_layer::profile::DSA_EXPAND,
+        t_stage,
+        gpu,
+        stream,
+    );
 
     Ok(())
 }

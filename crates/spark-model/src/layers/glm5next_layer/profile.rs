@@ -57,7 +57,15 @@ pub const MHC_POST: usize = 19;
 pub const KDA_FRONT: usize = 20;
 pub const KDA_RECUR: usize = 21;
 pub const KDA_BACK: usize = 22;
-const N: usize = 23;
+/// `dsa_select` split by stage. The parent bucket is one number over four kernels with
+/// very different shapes — a whole-context pool compression, a `P*Q`-block score pass, a
+/// top-k, and an expansion — so it cannot say which to attack. Splitting `kda_mixer` the
+/// same way is what found the two largest wins on this branch.
+pub const DSA_KPOOL: usize = 23;
+pub const DSA_SCORES: usize = 24;
+pub const DSA_TOPK: usize = 25;
+pub const DSA_EXPAND: usize = 26;
+const N: usize = 27;
 
 const NAMES: [&str; N] = [
     "mhc",
@@ -83,6 +91,10 @@ const NAMES: [&str; N] = [
     "kda_front",
     "kda_recur",
     "kda_back",
+    "dsa_kpool",
+    "dsa_scores",
+    "dsa_topk",
+    "dsa_expand",
 ];
 
 static NANOS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
