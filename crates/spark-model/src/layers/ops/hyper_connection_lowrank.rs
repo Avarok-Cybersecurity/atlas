@@ -24,6 +24,9 @@ pub(crate) use gemm::hc_pre_gemm;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
+use super::hyper_connection_lowrank_rows::{
+    hc_decode_rows_enabled, hc_decode_rows_shape_ok, hc_pre_rows,
+};
 use crate::layers::qwen3_attention::HcLowRank;
 
 /// `ATLAS_QWEN4EXP_NO_HC_GEMM=1`: revert the large-T collapse to the fused
@@ -40,149 +43,6 @@ fn hc_gemm_disabled() -> bool {
 pub(crate) fn hc_decode_split_forced() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("ATLAS_HC_DECODE_SPLIT").as_deref() == Ok("1"))
-}
-
-// provenance-id: 526f6e616c6420522e205374657369616b
-/// Decode-shaped (T <= 8) collapse that reads every low-rank weight row ONCE
-/// per site with 16-byte lane loads and applies it to all T tokens
-/// (`hc_dec_down` / `hc_dec_up`, see the kernel file). ON by default;
-/// `ATLAS_HC_DECODE_ROWS=0` restores the cuBLASLt arm (the A/B and rollback
-/// switch). The shape contract below falls back to the existing arms for
-/// anything it does not cover.
-pub(crate) fn hc_decode_rows_enabled() -> bool {
-    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_HC_DECODE_ROWS").as_deref() != Ok("0"))
-}
-
-/// Maximum row count the decode-rows arm handles in one launch pair
-/// (`QHC_DEC_MAX_T` in the kernel file).
-pub(crate) const HC_DEC_MAX_T: u32 = 8;
-/// `hc_dec_down`: warps per weight row (kernel `QHC_DOWN_SPLIT`).
-const HC_DOWN_SPLIT: u32 = 4;
-/// `hc_dec_up`: hidden columns per block (kernel `QHC_UP_D_PER_BLOCK`).
-const HC_UP_D_PER_BLOCK: u32 = 8;
-
-/// The decode-rows arm's shape contract (mirrors the kernel-file comment):
-/// `hc*H % 256 == 0` (256 elements per warp step), `H % 16 == 0` (16 outputs
-/// per block), `rank % 32 == 0` (four 16-byte-aligned quarter rows),
-/// `hc <= 8` (block = hc * 64 <= 512 threads), `1 <= T <= 8`.
-pub(crate) fn hc_decode_rows_shape_ok(
-    num_tokens: u32,
-    hidden_size: u32,
-    hc_mult: u32,
-    rank: u32,
-) -> bool {
-    let hc_dim = hc_mult * hidden_size;
-    (1..=HC_DEC_MAX_T).contains(&num_tokens)
-        && hc_dim % (HC_DOWN_SPLIT * 256) == 0
-        && hidden_size % HC_UP_D_PER_BLOCK == 0
-        && rank % 64 == 0
-        && rank <= 512
-        && (1..=8).contains(&hc_mult)
-}
-
-/// The decode-rows collapse: `hc_pre_stage` (existing) + `hc_dec_down` +
-/// `hc_dec_up`. Same math and the same FP32 `normed` as the split arm; the
-/// parity probe holds it to the split arm's tight bound.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn hc_pre_rows(
-    gpu: &dyn GpuBackend,
-    streams: DevicePtr,
-    w: &HcLowRank,
-    y_out: DevicePtr,
-    inj_out: DevicePtr,
-    scratch: DevicePtr,
-    num_tokens: u32,
-    hidden_size: u32,
-    hc_mult: u32,
-    norm_eps: f32,
-    inject: bool,
-    stream: u64,
-) -> Result<()> {
-    let rank = w.rank as u32;
-    anyhow::ensure!(
-        hc_decode_rows_shape_ok(num_tokens, hidden_size, hc_mult, rank),
-        "hc_pre_rows: shape outside the decode-rows contract (T={num_tokens} H={hidden_size} hc={hc_mult} rank={rank})"
-    );
-    let hc_dim = hc_mult * hidden_size;
-    // Scratch: normed F32 [T, hc_dim] at offset 0, then low F32 [T, rank]
-    // IMMEDIATELY after the T rows actually staged. NOT the split arm's fixed
-    // `64 * hc_dim * 4` offset: `sizes.rs` sizes this region with
-    // `t = m.min(64)`, so an arena whose token capacity `m` is below 64 (the
-    // MTP draft module's private arena is sized for a few draft rows) is
-    // SMALLER than that offset, and a fixed offset writes `low` past the end
-    // of the region into the next live buffer. T <= 8 rows at T*hc_dim*4
-    // bytes stay inside the region for every arena with capacity >= T.
-    let normed = scratch;
-    let low = scratch.offset(num_tokens as usize * hc_dim as usize * 4);
-
-    let k_stage = gpu.kernel("hyper_connection", "hc_pre_stage")?;
-    let k_down = gpu.kernel("hyper_connection", "hc_dec_down")?;
-    let k_up = gpu.kernel("hyper_connection", "hc_dec_up")?;
-
-    KernelLaunch::new(gpu, k_stage)
-        .grid([num_tokens, hc_mult, 1])
-        .block([1024, 1, 1])
-        .arg_ptr(streams)
-        .arg_ptr(w.norm_w)
-        .arg_ptr(normed)
-        .arg_u32(hidden_size)
-        .arg_u32(hc_mult)
-        .arg_f32(norm_eps)
-        .launch(stream)?;
-
-    // HC_DOWN_SPLIT warps per weight row (a contiguous slice each, partials
-    // summed in a fixed order through shared memory): rank rows plus (when
-    // injecting) hc inject rows, 8 warps per block.
-    let rows = rank + if inject { hc_mult } else { 0 };
-    // ATLAS_HC_DOWN_KERNEL / ATLAS_HC_UP_KERNEL (2026-09-09): variant names
-    // under measurement; unset = the kernels above.
-    // hc_dec_down_v5 (two rows per warp, byte-identical to hc_dec_down, ~6 us
-    // faster per site DRAM-streaming) is the default; ATLAS_HC_DOWN_KERNEL=
-    // hc_dec_down restores the one-row form for A/B.
-    let (k_down, down_grid) = match hc_variant_down() {
-        "hc_dec_down" => (k_down, rows.div_ceil(8 / HC_DOWN_SPLIT)),
-        _ => (
-            gpu.kernel("hyper_connection", "hc_dec_down_v5")?,
-            rows.div_ceil(4),
-        ),
-    };
-    KernelLaunch::new(gpu, k_down)
-        .grid([down_grid, 1, 1])
-        .block([256, 1, 1])
-        .arg_ptr(normed)
-        .arg_ptr(w.down_w)
-        .arg_ptr(if inject { w.inject_w } else { DevicePtr::NULL })
-        .arg_ptr(low)
-        .arg_ptr(inj_out)
-        .arg_u32(num_tokens)
-        .arg_u32(hc_dim)
-        .arg_u32(hc_mult)
-        .arg_u32(rank)
-        .launch(stream)?;
-
-    // Eight lanes per (stream, d) row (one contiguous 128-byte segment per
-    // load instruction), four rows per warp, HC_UP_D_PER_BLOCK outputs per
-    // block (block = hc*64); chunk partials reduce by shuffle, the stream
-    // mean in smem.
-    let (up_grid, up_block, smem) = (
-        hidden_size / HC_UP_D_PER_BLOCK,
-        hc_mult * 64,
-        (HC_DEC_MAX_T * rank + hc_mult * HC_UP_D_PER_BLOCK * HC_DEC_MAX_T) * 4,
-    );
-    KernelLaunch::new(gpu, k_up)
-        .grid([up_grid, 1, 1])
-        .block([up_block, 1, 1])
-        .shared_mem(smem)
-        .arg_ptr(normed)
-        .arg_ptr(low)
-        .arg_ptr(w.up_w)
-        .arg_ptr(y_out)
-        .arg_u32(num_tokens)
-        .arg_u32(hidden_size)
-        .arg_u32(hc_mult)
-        .arg_u32(rank)
-        .launch(stream)
 }
 
 /// Collapse the `hc_mult` streams to one, and emit the per-stream injection
@@ -525,7 +385,7 @@ pub(crate) fn hc_pre_split(
         .launch(stream)
 }
 
-fn hc_variant_down() -> &'static str {
+pub(super) fn hc_variant_down() -> &'static str {
     static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     V.get_or_init(|| std::env::var("ATLAS_HC_DOWN_KERNEL").unwrap_or_default())
         .as_str()
