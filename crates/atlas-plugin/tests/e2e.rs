@@ -7,6 +7,10 @@
 //! breaks — a benchmark that streams, measures and terminates correctly over a
 //! socket, including the chunked framing the mock deliberately splits mid-line.
 
+// Each test binary uses a different subset of the shared mock's helpers, so
+// what one does not call is dead code in that binary. Same reason, same
+// attribute, as `coherence.rs`.
+#[allow(dead_code)]
 mod mock_endpoint;
 
 use std::sync::Arc;
