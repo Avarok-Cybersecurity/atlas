@@ -26,7 +26,7 @@ fn batch_cache_write_enabled() -> bool {
 
 impl Qwen3AttentionLayer {
     /// Phase 3: per-token RoPE (each sequence has its own position).
-    pub(super) fn ms_phase_rope(&self, c: &MultiSeqCtx<'_>, meta: AttnMetadataDev) -> Result<()> {
+    pub(in crate::layers::qwen3_attention) fn ms_phase_rope(&self, c: &MultiSeqCtx<'_>, meta: AttnMetadataDev) -> Result<()> {
         let MultiSeqCtx {
             fwd,
             n,
@@ -116,7 +116,7 @@ impl Qwen3AttentionLayer {
     }
 
     /// Phase 4: per-token KV cache write.
-    pub(super) fn ms_phase_cache_write(
+    pub(in crate::layers::qwen3_attention) fn ms_phase_cache_write(
         &self,
         c: &MultiSeqCtx<'_>,
         kv_cache: &mut PagedKvCache,
@@ -190,7 +190,7 @@ impl Qwen3AttentionLayer {
 
     /// Phase 5: build contiguous Q buffer + run BATCHED paged decode.
     /// Returns the attn_out buffer pointer for downstream phases.
-    pub(super) fn ms_phase_paged_decode(
+    pub(in crate::layers::qwen3_attention) fn ms_phase_paged_decode(
         &self,
         c: &MultiSeqCtx<'_>,
         kv_cache: &mut PagedKvCache,
