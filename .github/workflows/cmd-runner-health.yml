@@ -2,6 +2,14 @@
 #
 # Automatic fallback for the self-hosted command runner.
 #
+# WANT is `atlas-macos-burst`, the Apple box — not `atlas-cmd`, which lives on
+# the avarok host along with every Linux runner. While that host is down,
+# atlas-cmd can never answer, and a job routed to a label nothing answers does
+# not fail: it QUEUES, creating no check run at all, so a required context reads
+# as absent rather than red. The Apple runner is a separate machine and is up,
+# so it is what the commands should route to. Point WANT back at atlas-cmd when
+# the avarok host returns and the Linux pool is preferred again.
+#
 # `certification-commands.yml` and `certification-bot.yml` resolve their
 # `runs-on` from the CMD_RUNNER_LABEL variable. That makes the switch instant
 # when the runner is healthy and reversible by hand when it is not -- but a
@@ -40,7 +48,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.apptoken.outputs.token || github.token }}
           REPO: ${{ github.repository }}
-          WANT: atlas-cmd
+          WANT: atlas-macos-burst
           FALLBACK: ubuntu-latest
         run: |
           set -uo pipefail
