@@ -15,7 +15,7 @@ use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 impl Qwen3AttentionLayer {
     /// Phase 6: gate multiply (when gated) + O projection. Writes to
     /// `o_out`. Returns the o_out buffer pointer.
-    pub(in super::super) fn ms_phase_o_proj(
+    pub(in crate::layers::qwen3_attention) fn ms_phase_o_proj(
         &self,
         c: &MultiSeqCtx<'_>,
         attn_out: DevicePtr,

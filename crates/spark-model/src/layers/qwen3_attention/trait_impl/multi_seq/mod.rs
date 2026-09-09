@@ -22,7 +22,7 @@ use crate::layers::hc_ffn_plan::{HcFfnPlan, hc_ffn_plan};
 use crate::layers::ops;
 
 mod attn;
-mod ctx;
+pub(in crate::layers::qwen3_attention) mod ctx;
 mod ffn;
 mod mla;
 mod mla_gemv;

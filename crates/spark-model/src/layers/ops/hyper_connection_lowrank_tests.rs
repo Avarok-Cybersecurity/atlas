@@ -26,17 +26,17 @@ use crate::layers::qwen3_attention::HcLowRank;
 #[path = "hyper_connection_verify_tests.rs"]
 mod verify;
 
-struct Fixture {
-    dir: String,
-    hc: usize,
-    h: usize,
-    rank: usize,
-    eps: f32,
-    tokens: usize,
+pub(super) struct Fixture {
+    pub(super) dir: String,
+    pub(super) hc: usize,
+    pub(super) h: usize,
+    pub(super) rank: usize,
+    pub(super) eps: f32,
+    pub(super) tokens: usize,
 }
 
 impl Fixture {
-    fn load() -> Self {
+    pub(super) fn load() -> Self {
         let dir = std::env::var("ATLAS_HC_TEST_DATA").expect(
             "set ATLAS_HC_TEST_DATA — generate with \
              `python3 -u bench/qwen4_exp/hc_golden.py --bin-dir <dir>`",
@@ -64,12 +64,12 @@ impl Fixture {
         }
     }
 
-    fn bytes(&self, name: &str) -> Vec<u8> {
+    pub(super) fn bytes(&self, name: &str) -> Vec<u8> {
         let p = format!("{}/{name}.bin", self.dir);
         std::fs::read(&p).unwrap_or_else(|e| panic!("{p}: {e}"))
     }
 
-    fn f32s(&self, name: &str) -> Vec<f32> {
+    pub(super) fn f32s(&self, name: &str) -> Vec<f32> {
         self.bytes(name)
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -77,13 +77,13 @@ impl Fixture {
     }
 }
 
-fn upload(g: &dyn GpuBackend, bytes: &[u8]) -> DevicePtr {
+pub(super) fn upload(g: &dyn GpuBackend, bytes: &[u8]) -> DevicePtr {
     let p = g.alloc(bytes.len()).unwrap();
     g.copy_h2d_async(bytes, p, g.default_stream()).unwrap();
     p
 }
 
-fn download_bf16(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Vec<f32> {
+pub(super) fn download_bf16(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Vec<f32> {
     let mut raw = vec![0u8; n * 2];
     g.copy_d2h(p, &mut raw).unwrap();
     raw.chunks_exact(2)
@@ -91,7 +91,7 @@ fn download_bf16(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Vec<f32> {
         .collect()
 }
 
-fn download_f32(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Vec<f32> {
+pub(super) fn download_f32(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Vec<f32> {
     let mut raw = vec![0u8; n * 4];
     g.copy_d2h(p, &mut raw).unwrap();
     raw.chunks_exact(4)
@@ -103,7 +103,7 @@ fn download_f32(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Vec<f32> {
 /// — reported together because either alone hides a failure. A near-null
 /// output has a tiny max-abs against a small reference; a correctly-shaped
 /// but mis-scaled one has cosine 1.0.
-fn compare(label: &str, got: &[f32], want: &[f32], tol: f32) {
+pub(super) fn compare(label: &str, got: &[f32], want: &[f32], tol: f32) {
     assert_eq!(got.len(), want.len(), "{label}: length");
     let mut max_abs = 0.0f32;
     let mut dot = 0.0f64;
@@ -134,7 +134,7 @@ fn compare(label: &str, got: &[f32], want: &[f32], tol: f32) {
 }
 
 /// One site's low-rank weights, uploaded.
-fn site_weights(g: &dyn GpuBackend, f: &Fixture, site: &str, inject: bool) -> HcLowRank {
+pub(super) fn site_weights(g: &dyn GpuBackend, f: &Fixture, site: &str, inject: bool) -> HcLowRank {
     HcLowRank {
         norm_w: upload(g, &f.bytes(&format!("{site}_w_hc_norm"))),
         down_w: upload(g, &f.bytes(&format!("{site}_w_down"))),
@@ -155,7 +155,7 @@ fn site_weights(g: &dyn GpuBackend, f: &Fixture, site: &str, inject: bool) -> Hc
 /// and are tight enough that both defects this harness was built for — a
 /// global RMS (max|diff| 15.2) and a dropped offset-from-1 (4.65) — fail by
 /// three orders of magnitude.
-fn tol_for(ref_vals: &[f32]) -> f32 {
+pub(super) fn tol_for(ref_vals: &[f32]) -> f32 {
     let rms = (ref_vals.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / ref_vals.len() as f64)
         .sqrt() as f32;
     (rms * 0.05).max(1e-3)
@@ -166,7 +166,7 @@ fn tol_for(ref_vals: &[f32]) -> f32 {
 /// `dense_gemm_bf16_pipelined`'s, so its worst element sits at ~9% of the
 /// reference RMS where the split/tile arms sit under 5% — same cos grade
 /// (>=0.999996) the prefill GEMM shipped with. Held to 12% + the cosine gate.
-fn tol_gemm(ref_vals: &[f32]) -> f32 {
+pub(super) fn tol_gemm(ref_vals: &[f32]) -> f32 {
     let rms = (ref_vals.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / ref_vals.len() as f64)
         .sqrt() as f32;
     (rms * 0.12).max(1e-3)
