@@ -54,7 +54,7 @@ jobs:
     # is not a status. Safe on our own hardware because the checkout below pins
     # the default branch and never the fork's head -- and
     # assert-cmd-runner-safe.py enforces that for every workflow on this label.
-    runs-on: ${{ (vars.USE_AVAROK_UBUNTU_RUNNERS == '1' && vars.CMD_RUNNER_LABEL) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CMD_RUNNER_LABEL || 'ubuntu-latest' }}
     # A comment on a plain issue has no PR to describe. `check_run` events carry
     # their PRs in an array that is empty for pushes to main.
     if: >-
@@ -226,9 +226,22 @@ jobs:
               # Render THIS PR's certificate. Embedding the committed template
               # directly would publish a certificate carrying the placeholder
               # names it was designed with, which is worse than no image.
-              sudo apt-get -qq update >/dev/null 2>&1 || true
-              sudo apt-get -qq install -y librsvg2-bin >/dev/null 2>&1 || true
-              python3 -m pip install --quiet segno >/dev/null 2>&1 || true
+              # OS-aware because this job follows CMD_RUNNER_LABEL, which now points at
+              # the Apple runner: `apt-get` does not exist there, and these installs are
+              # deliberately non-fatal, so it would have failed in SILENCE and posted the
+              # generic certificate on every merge. brew ships the same rsvg-convert.
+              if command -v apt-get >/dev/null 2>&1; then
+                sudo apt-get -qq update >/dev/null 2>&1 || true
+                sudo apt-get -qq install -y librsvg2-bin >/dev/null 2>&1 || true
+              elif command -v brew >/dev/null 2>&1; then
+                brew list librsvg >/dev/null 2>&1 || brew install librsvg >/dev/null 2>&1 || true
+              fi
+              # A managed Python (Homebrew's, and every recent distro's) refuses a bare
+              # `pip install` under PEP 668; without the retry segno is missing and the
+              # QR code silently disappears from the certificate.
+              python3 -m pip install --quiet segno >/dev/null 2>&1 \
+                || python3 -m pip install --quiet --break-system-packages segno >/dev/null 2>&1 \
+                || true
 
               # Those installs are deliberately non-fatal, so ASK whether they worked.
               # Without this the step runs `rsvg-convert` under `set -e`, dies before the

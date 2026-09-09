@@ -111,19 +111,23 @@ def main():
             if not isinstance(job, dict):
                 continue
             pool = pr_pool_of(job)
-            # The fleet gate is required on EVERY self-hosted route, both pools
-            # and the command runner. For the PR pools the one-expression rule
-            # below would catch a job that dropped it; the command runner has no
-            # such shape check, so without this a new job there could silently
-            # route to an offline box.
-            if pool is not None or uses_cmd_runner(job):
+            # Required on the two avarok Ubuntu pools, which is the hardware the
+            # gate names. The command runner is deliberately NOT covered: it
+            # routes through CMD_RUNNER_LABEL, which cmd-runner-health.yml
+            # repoints every 15 minutes to whichever runner is actually online
+            # (and to ubuntu-latest when none is), so it already has a live
+            # answer to the problem this gate solves statically. Putting both
+            # mechanisms on one job would mean a runner that IS up still cannot
+            # be reached because a variable elsewhere says no.
+            if pool is not None:
                 if FLEET_GATE not in routing_blob(job):
                     problems.append(
                         f"{path.name}:{name} routes to a self-hosted runner "
                         f"without the fleet gate ({FLEET_GATE}) in runs-on — "
                         f"when the box is down this job queues forever instead "
                         f"of falling back to ubuntu-latest, and a queued job "
-                        f"reports no check at all."
+                        f"reports no check at all — it is ABSENT, not red, so "
+                        f"the PR is unmergeable with nothing showing as broken."
                     )
             if pool is not None:
                 routed.append((pool, routing_blob(job), f"{path.name}:{name}"))
@@ -198,8 +202,8 @@ def main():
     print(
         f"no workflow on '{LABEL}' checks out untrusted code; every "
         f"job on {[p[0] for p in PR_POOLS]} under a pull_request trigger carries "
-        f"the same-repo guard, one expression per pool; and every self-hosted "
-        f"route carries the fleet gate."
+        f"the same-repo guard, one expression per pool; and every job on those "
+        f"pools carries the fleet gate."
     )
     return 0
 

@@ -29,7 +29,7 @@ permissions:
 jobs:
   preflight:
     name: certification preflight
-    runs-on: ${{ (vars.USE_AVAROK_UBUNTU_RUNNERS == '1' && vars.CMD_RUNNER_LABEL) || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CMD_RUNNER_LABEL || 'ubuntu-latest' }}
     steps:
       - name: Mint the certification App token
         id: apptoken
