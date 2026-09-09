@@ -178,22 +178,46 @@ pub struct Glm5NextLayer {
 pub(crate) const PREFILL_ROWS: usize = 16;
 
 /// Route GLM prefill's KDA mixer through the chunked scan instead of the per-token
-/// recurrent walk. `ATLAS_GLM_KDA_CHUNK_PREFILL=1` to enable.
+/// recurrent walk.
 ///
-/// Default OFF while it is measured: the chunked scan is NOT bit-identical to the
-/// recurrent walk, so this is a numerics change as well as a speed one, and the default
-/// does not move without evidence on both.
+/// 🔴 DEFAULT ON. `ATLAS_GLM_KDA_CHUNK_PREFILL=0` is the kill-switch.
+///
+/// 🪤 THIS DEFAULT WAS FLIPPED ON EVIDENCE THAT REVERSED. When the arm first landed it
+/// measured 90.5/85.5 tok/s against 94.2/88.6 — 4% SLOWER — and was kept default-off as a
+/// recorded negative result. That verdict was real but it was measuring the LAUNCH, not
+/// the algorithm: `kda_chunk_scan` ran at `BLOCK = 128` on a `grid(H)` of 32 blocks, i.e.
+/// 4,096 threads for a whole layer on a 48-SM part. Splitting the `kda_mixer` bucket
+/// three ways made it legible — chunked `kda_recur` was 227.84 ms/tok against the
+/// recurrent walk's 123.68, so the chunked arm was 1.84x slower at the one thing it
+/// exists to make cheaper. Widening that block to 1,024 (bit-identically — see
+/// `CHUNK_SCAN_BLOCK`) took it to 87.86 ms/tok, below the recurrent walk, and the arm
+/// flipped from a loss to a win:
+///
+///     recurrent            314.8 / 299.1 tok/s   (5.4K / 21K prompt)
+///     chunked, BLOCK=128   280.1 / 267.6         -11%
+///     chunked, BLOCK=1024  337.0 / 319.3         +7.1% / +6.8%
+///
+/// The lesson worth keeping: an arm measured slow while its launch geometry is wrong has
+/// not been measured. Two separate "chunking is slower" results here were both artifacts.
+///
+/// 🪤 STILL NOT BIT-IDENTICAL to the recurrent walk — the chunked scan reassociates the
+/// recurrence. That is why it stays confined to prefill (`is_prefill && k > 1 &&
+/// snaps.is_empty()`, see the call site): decode and the speculative verify keep the
+/// per-token path, so an accepted token still matches what decode would have produced.
+/// Judged on long-context recall, not just throughput — a 700-row ledger needle at row
+/// 431 is recalled exactly on this arm.
 fn kda_chunk_prefill() -> bool {
     static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *E.get_or_init(|| {
-        let on = std::env::var("ATLAS_GLM_KDA_CHUNK_PREFILL").as_deref() == Ok("1");
-        if on {
-            tracing::warn!(
-                "ATLAS_GLM_KDA_CHUNK_PREFILL=1 - GLM prefill KDA uses the CHUNKED scan \
-                 (kda_chunk_prepare + kda_chunk_scan). Not bit-identical to the per-token \
-                 recurrent walk."
-            );
-        }
+        let on = std::env::var("ATLAS_GLM_KDA_CHUNK_PREFILL").as_deref() != Ok("0");
+        tracing::warn!(
+            "ATLAS_GLM_KDA_CHUNK_PREFILL: GLM prefill KDA uses the {}",
+            if on {
+                "CHUNKED scan (kda_chunk_prepare + kda_chunk_scan)"
+            } else {
+                "per-token recurrent walk"
+            }
+        );
         on
     })
 }

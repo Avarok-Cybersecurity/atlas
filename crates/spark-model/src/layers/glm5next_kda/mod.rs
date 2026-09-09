@@ -60,6 +60,32 @@ pub const SMEM_CEILING: usize = 49_152;
 
 const BLOCK: u32 = 128;
 
+/// Block width for `kda_chunk_scan` ONLY.
+///
+/// 🔴 That kernel is the sequential half of the chunked prefill: its grid is `(H)` — 32
+/// blocks at TP=2 — and it walks the chunks in-kernel. At `BLOCK = 128` that is 4,096
+/// threads for the whole layer on a 48-SM part, and it showed: chunked `kda_recur`
+/// measured 227.84 ms/tok against the per-token recurrence's 123.68, i.e. 1.84x SLOWER
+/// despite touching the ~4 MB recurrent state once per 32 tokens instead of once per
+/// token. The algorithm was right and the launch was starving it.
+///
+/// 🪤 Widening is BIT-IDENTICAL, which is why it is a width and not a rewrite. Every loop
+/// in that kernel is `for (idx = threadIdx.x; idx < N; idx += blockDim.x)` accumulating
+/// into a PER-THREAD local — there is no cross-thread reduction whose tree would change
+/// shape. Only which thread owns which output moves; each output's inner loop runs in the
+/// same order over the same values. The `__syncthreads()` calls sit between phases, not
+/// inside them, so they are width-agnostic too.
+///
+/// Shared memory is `(2*C*D + C*C) * 4` = 36,864 B and does not depend on the block width,
+/// so this cannot push the launch past the 48 KiB default ceiling the file's header warns
+/// about. It does pin occupancy to one block per SM, which costs nothing here: there are
+/// only 32 blocks to place.
+///
+/// `kda_chunk_prepare` deliberately keeps `BLOCK`: its grid is `(num_chunks, H)` = 256
+/// blocks, so it is not the starved one, and it carries a `[C]` row scratch in shared
+/// memory that a wider block would need re-checked.
+const CHUNK_SCAN_BLOCK: u32 = 1024;
+
 /// Geometry and the config values that MUST be read from the checkpoint.
 ///
 /// `gate_lower_bound`, `rms_norm_eps` and `hidden_act` coincide with a library default on
@@ -895,7 +921,7 @@ impl Glm5NextKdaLayer {
             .launch(stream)?;
         KernelLaunch::new(gpu, self.kernels.chunk_scan)
             .grid([c.heads as u32, 1, 1])
-            .block([BLOCK, 1, 1])
+            .block([CHUNK_SCAN_BLOCK, 1, 1])
             .shared_mem(c.smem_scan() as u32)
             .arg_ptr(ws.q_f32)
             .arg_ptr(ws.k_f32)
