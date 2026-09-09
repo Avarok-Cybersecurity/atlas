@@ -297,6 +297,34 @@ export ATLAS_EXL3_MOE_ROWS_PER_EXPERT="${ATLAS_EXL3_MOE_ROWS_PER_EXPERT:-4096}"
 # coherence defect rather than a speed one.
 KV_DTYPE="${KV_DTYPE:-fp8}"
 
+# ── Concurrency ──────────────────────────────────────────────────────────────
+# EP_PROTOCOL selects the expert-parallel wire protocol.
+#
+#   v1 (default, historical)  a single implicit sequence. serve_load.rs REFUSES
+#                             to honor --max-batch-size under world_size>1 and
+#                             logs "EP v1 active: forcing max_batch_size=1",
+#                             because the worker has no way to tell which
+#                             sequence a command belongs to and N>1 would
+#                             cross-write KV.
+#   v2                        every command carries a slot-aware seq_id
+#                             preamble, so the worker routes each one to the
+#                             right SSM slot and --max-batch-size is honored.
+#
+# 🪤 BOTH RANKS MUST AGREE. `rank_agree` treats this as a collective-shaping
+# scalar and prints it at boot as `ATLAS_EP_PROTOCOL(v2)=0|1`; a mismatch means
+# one rank frames the wire differently from the other. Setting it here, in the
+# script both ranks run, is what keeps them together.
+EP_PROTOCOL="${EP_PROTOCOL:-v1}"
+export ATLAS_EP_PROTOCOL="$EP_PROTOCOL"
+
+# Concurrent sequences. Only honored under EP v2 (see above); at v1 the server
+# clamps it to 1 no matter what is passed here.
+MAX_BATCH="${MAX_BATCH:-1}"
+if [ "$EP_PROTOCOL" != "v2" ] && [ "$MAX_BATCH" != "1" ]; then
+  echo "NOTE: MAX_BATCH=$MAX_BATCH will be CLAMPED to 1 — EP_PROTOCOL is $EP_PROTOCOL, not v2." >&2
+  echo "      Pass EP_PROTOCOL=v2 to actually run concurrent sequences." >&2
+fi
+
 # ---------------------------------------------------------------------------
 # AGENTIC=1 — loosen the decode-time GUARDS for tool-driven coding sessions.
 #
@@ -374,7 +402,7 @@ exec "$BIN" serve \
   --kv-cache-dtype "$KV_DTYPE" \
   --gpu-memory-utilization "$GPU_UTIL" \
   --oom-guard-mb "${OOM_GUARD_MB:-1024}" \
-  --max-batch-size 1 \
+  --max-batch-size "$MAX_BATCH" \
   --swap-space-gb 0 \
   --fast-load-prefetch-shards \
   --enable-prefix-caching \
