@@ -339,7 +339,6 @@ fn the_dataset_fingerprint_survives_into_a_gate_record() {
         "abc123".into(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     assert_eq!(

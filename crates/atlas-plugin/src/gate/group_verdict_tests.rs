@@ -41,7 +41,6 @@ fn plant_shard(root: &std::path::Path, id: &str, sha: &str, secs: u64, hits: u64
         sha.to_string(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     gate.benchmark_id = id.to_string();
@@ -83,7 +82,6 @@ fn plant_shard_with(
         sha.to_string(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     gate.benchmark_id = id.to_string();

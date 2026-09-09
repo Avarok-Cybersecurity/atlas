@@ -57,16 +57,9 @@ fn from_run_rejects_a_missing_sha_and_a_non_terminal_frame() {
     let record = run_record(BTreeMap::new(), Verdict::pass("ok"));
     for missing in ["", " \t\n"] {
         assert_eq!(
-            GateRecord::from_run(
-                &record,
-                hw(),
-                missing.into(),
-                Vec::new(),
-                None,
-                Default::default(),
-            )
-            .unwrap_err()
-            .to_string(),
+            GateRecord::from_run(&record, hw(), missing.into(), Vec::new(), None,)
+                .unwrap_err()
+                .to_string(),
             "a gate record needs the commit sha it was measured from"
         );
     }
@@ -74,16 +67,9 @@ fn from_run_rejects_a_missing_sha_and_a_non_terminal_frame() {
     let mut running = record.clone();
     running.frame.status = RunStatus::Running;
     assert_eq!(
-        GateRecord::from_run(
-            &running,
-            hw(),
-            SHA.into(),
-            Vec::new(),
-            None,
-            Default::default(),
-        )
-        .unwrap_err()
-        .to_string(),
+        GateRecord::from_run(&running, hw(), SHA.into(), Vec::new(), None,)
+            .unwrap_err()
+            .to_string(),
         "the run never reached a terminal frame — nothing to gate"
     );
 }
@@ -98,7 +84,6 @@ fn from_run_reconstructs_the_exact_cli_command() {
         SHA.into(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     assert_eq!(
@@ -131,7 +116,6 @@ fn a_self_provisioned_run_records_the_recipe_not_a_dead_url() {
         SHA.into(),
         Vec::new(),
         Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".to_string()),
-        Default::default(),
     )
     .unwrap();
     assert_eq!(
@@ -157,15 +141,7 @@ fn a_self_provisioned_run_records_the_recipe_not_a_dead_url() {
 fn the_agentic_bench_needs_yes_in_its_command() {
     let mut record = run_record(BTreeMap::new(), Verdict::pass("ok"));
     record.benchmark_id = "agentic-webserver".to_string();
-    let gate = GateRecord::from_run(
-        &record,
-        hw(),
-        SHA.into(),
-        Vec::new(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
     assert_eq!(
         gate.command,
         [
@@ -195,15 +171,7 @@ fn a_failed_frame_is_recorded_but_never_passes() {
         ),
         ..run_record(BTreeMap::new(), Verdict::fail("scoring crashed"))
     };
-    let gate = GateRecord::from_run(
-        &record,
-        hw(),
-        SHA.into(),
-        Vec::new(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
     assert_eq!(gate.frame_status, RunStatus::Failed);
     assert_eq!(gate.verdict.as_deref(), Some("FAIL"));
     assert_eq!(gate.verdict_reason, "scoring crashed");
@@ -309,4 +277,47 @@ fn repo_root() -> std::path::PathBuf {
         assert!(d.pop(), "no repo root above CARGO_MANIFEST_DIR");
     }
     d
+}
+
+/// The gate record's regime is DERIVED from the run's, not passed beside it.
+///
+/// Both records used to be handed the same map by one caller, which made them
+/// agree by convention — one future edit away from a history record and a gate
+/// record describing different regimes for the same run, with nothing anywhere
+/// saying which was true. Deriving makes that state impossible to express, and
+/// this pins it so the parameter cannot come back.
+#[test]
+fn the_gate_records_regime_is_the_runs_regime() {
+    let mut record = run_record(BTreeMap::new(), Verdict::pass("ok"));
+    record.serve_overrides = [
+        ("hermetic".to_string(), "true".to_string()),
+        ("ssm_cache_slots".to_string(), "0".to_string()),
+    ]
+    .into_iter()
+    .collect();
+
+    let gate = GateRecord::from_run(&record, hw(), SHA.to_string(), Vec::new(), None).unwrap();
+
+    assert_eq!(
+        gate.serve_overrides, record.serve_overrides,
+        "the gate record must carry the regime the run was measured under"
+    );
+    // And it must reach the REPLAY command, or the record describes a server
+    // nobody can start again.
+    let cmd = gate.command.join(" ");
+    assert!(
+        cmd.contains("--serve-override hermetic=true"),
+        "the replay command must reproduce the regime: {cmd}"
+    );
+    assert!(cmd.contains("--serve-override ssm_cache_slots=0"), "{cmd}");
+}
+
+/// A run with no recorded regime produces a gate record with none — an empty
+/// map, not a missing one, and no stray `--serve-override` in the command.
+#[test]
+fn a_run_with_no_recorded_regime_claims_none() {
+    let record = run_record(BTreeMap::new(), Verdict::pass("ok"));
+    let gate = GateRecord::from_run(&record, hw(), SHA.to_string(), Vec::new(), None).unwrap();
+    assert!(gate.serve_overrides.is_empty());
+    assert!(!gate.command.join(" ").contains("--serve-override"));
 }

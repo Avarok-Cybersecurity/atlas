@@ -281,10 +281,10 @@ async fn run(args: RunArgs) -> Result<i32> {
     }
 
     let executor = BenchmarkExecutor::new(tokio::runtime::Handle::current(), store);
-    // Read ONCE, here, and used by both the history record and the gate
-    // record below. `SelfServed::overrides` is already the merged baseline +
-    // `--serve-override` set, so it is the single authority on the regime;
-    // computing it twice is how the two records come to disagree.
+    // The merged baseline + `--serve-override` set: the single authority on
+    // the regime this run was measured under. It goes onto the RunRecord, and
+    // the gate record DERIVES it from there rather than being handed its own
+    // copy — see `GateRecord::from_run`.
     let serve_overrides = served
         .as_ref()
         .map(|s| s.overrides.clone())
@@ -293,7 +293,7 @@ async fn run(args: RunArgs) -> Result<i32> {
         descriptor,
         values,
         target: target.clone(),
-        serve_overrides: serve_overrides.clone(),
+        serve_overrides,
         options: HeadlessOptions {
             poll: std::time::Duration::from_millis(args.poll_ms),
             save: !args.no_save,
@@ -376,7 +376,6 @@ async fn run(args: RunArgs) -> Result<i32> {
             &target.base_url,
             &target.model,
             recipe,
-            serve_overrides,
             sha_at_start,
             dirty_at_start,
             match &args.output_image {
