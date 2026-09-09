@@ -1784,3 +1784,26 @@ What this branch DOES ship for #835 is the comparability pin — `c{c}_accept_le
 plus an INCONCLUSIVE verdict when a cell ran the serial arm — which is the part
 that stops an arm change being reported as a regression. That is orthogonal to
 when the switch happens.
+
+### Step 0b, answered: the baseline did not move, and the score could not have told us
+
+Whole BFCL draw vs its own four shards, one box, current `main`, shipped
+config: 995 vs 995, **12 disagreeing samples** — the identical count measured
+months earlier at a pin that is not an ancestor of `main`. #968's drafter-carry
+session gate landed in between and changed the number by zero.
+
+What makes this worth recording is the instrument. The whole leg scored
+84.22 / 84.12 and the four shards recombine to close to the same totals, so a
+SCORE comparison — the obvious thing to run — would have reported agreement.
+Two different sets of answers can total identically, and here twelve of them
+do. Only a per-sample join on `sample_id` sees it.
+
+This is the same error, in a new costume, as the earlier wrong exclusion of the
+MTP gate for #936: that reading compared aggregate serial-token RATES between
+arms and found them equal, when the mechanism predicts an invariant population
+rate with varying membership. Aggregates are not a weaker version of the
+per-sample diff; for this class of bug they are not evidence at all.
+
+Ten of the twelve are `live_irrelevance`, the subset predicted, and
+`live_irrelevance_2-0-2` — previously recorded as surviving even with SSM
+restore disabled — is among them.
