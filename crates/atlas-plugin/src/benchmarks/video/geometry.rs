@@ -22,7 +22,20 @@
 /// so this deliberately mirrors `vision::geometry::expected_vision_tokens`
 /// rather than reimplementing it differently.
 pub fn tokens_per_group(w: u32, h: u32, patch: u32, merge: u32) -> u32 {
-    crate::benchmarks::vision::geometry::expected_vision_tokens(w, h, patch, merge)
+    use crate::benchmarks::vision::geometry::{QWEN3_VL, VisionGeometry, expected_vision_tokens};
+    // Video keeps its (patch, merge) signature: every fixture is 224x224, so
+    // alignment mode and a token floor cannot bite here. Carrying Qwen3-VL's
+    // round-snap and no-floor is exactly what this call did before the still
+    // image side learned about other families.
+    expected_vision_tokens(
+        w,
+        h,
+        VisionGeometry {
+            patch,
+            merge,
+            ..QWEN3_VL
+        },
+    )
 }
 
 /// What the geometry leg concluded.

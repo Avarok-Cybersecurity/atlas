@@ -25,6 +25,102 @@ pub fn snap(side: u32, grid: u32) -> u32 {
     (((side as f32) / (grid as f32)).round() as u32).max(1) * grid
 }
 
+/// Ceil-align a side to the grid: `ceil(side / grid) * grid`.
+///
+/// Not every preprocessor rounds. GLM-5.3-Flash lays the image on a ceil-aligned
+/// CANVAS and keeps the content at its original size — see
+/// `spark-model`'s `vision_preprocess/glm5_canvas.rs`, whose own tests pin
+/// `ceil(450/28)*28` and `ceil(300/28)*28`. Rounding a 512-wide image to 504
+/// where the engine pads it to 532 is a whole grid unit of drift on one axis,
+/// and two rungs of the ladder differ by less than that.
+pub fn ceil_align(side: u32, grid: u32) -> u32 {
+    side.div_ceil(grid).max(1) * grid
+}
+
+/// How a model family's preprocessor turns pixels into merged vision tokens.
+///
+/// This used to be two bare `u32`s (`patch`, `merge`) hardcoded to `16, 2` at
+/// every call site — Qwen3-VL's geometry, and the only geometry the ladder had
+/// ever been pointed at.
+///
+/// 🪤 That silently mis-scored an ENTIRE OTHER FAMILY. GLM-5.3-Flash is patch
+/// 14 / merge 2 with a ceil canvas and a `min_image_tokens` floor; against the
+/// Qwen model it scored 5/14 with the engine perfectly correct on all fourteen
+/// fixtures. Worse, the miss is self-concealing: the driver calibrates template
+/// overhead as `total(224) - predicted(224)`, so a wrong prediction at the
+/// anchor produces a compensating wrong overhead (31 instead of 16) and every
+/// 224-sized rung passes BY CONSTRUCTION. A reader sees "5/14, and the small
+/// ones are fine" and concludes the engine mishandles large images.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VisionGeometry {
+    /// Side of one square patch, in pixels.
+    pub patch: u32,
+    /// Patches per side in one merge block.
+    pub merge: u32,
+    /// True when sides are ceil-aligned to the grid rather than round-snapped.
+    pub ceil_aligned: bool,
+    /// Floor from the checkpoint's `min_image_tokens`. 0 = no floor.
+    pub min_tokens: u32,
+}
+
+impl VisionGeometry {
+    /// Pixels per side of the block that becomes ONE token.
+    pub const fn grid(&self) -> u32 {
+        self.patch * self.merge
+    }
+
+    fn align(&self, side: u32) -> u32 {
+        if self.ceil_aligned {
+            ceil_align(side, self.grid())
+        } else {
+            snap(side, self.grid())
+        }
+    }
+}
+
+/// Qwen3-VL: patch 16, merge 2, round-snapped, no floor. A 448×448 image is
+/// 784 patches and 196 tokens — measured against a live server 2026-08-14, the
+/// figure this whole model is anchored to. THE DEFAULT, so every variant that
+/// existed before geometry became selectable scores byte-identically.
+pub const QWEN3_VL: VisionGeometry = VisionGeometry {
+    patch: 16,
+    merge: 2,
+    ceil_aligned: false,
+    min_tokens: 0,
+};
+
+/// GLM-5.3-Flash: patch 14, merge 2, ceil canvas, `min_image_tokens` 16.
+/// Every field is read off the checkpoint's own
+/// `processor_config.json [image_processor]`; the ceil comes from
+/// `vision_preprocess/glm5_canvas.rs`. Reproduces the engine on 14/14 fixtures.
+pub const GLM5: VisionGeometry = VisionGeometry {
+    patch: 14,
+    merge: 2,
+    ceil_aligned: true,
+    min_tokens: 16,
+};
+
+impl Default for VisionGeometry {
+    /// Qwen3-VL. The driver derives `Default`, and this is the geometry every
+    /// call site hardcoded before the profile existed — so a driver built and
+    /// never configured behaves exactly as it did.
+    fn default() -> Self {
+        QWEN3_VL
+    }
+}
+
+/// Resolve a `vision_geometry` param value. The set is closed and the param is
+/// a `Choice`, so an unknown name is a bug rather than user error — but it
+/// returns an error instead of panicking because it is reachable from a
+/// hand-built `ParamValues` in a test.
+pub fn geometry_by_name(name: &str) -> anyhow::Result<VisionGeometry> {
+    match name {
+        "qwen3_vl" => Ok(QWEN3_VL),
+        "glm5" => Ok(GLM5),
+        other => anyhow::bail!("unknown vision_geometry {other:?} (expected qwen3_vl or glm5)"),
+    }
+}
+
 /// Merged vision tokens for a `w × h` image at the given geometry.
 ///
 /// Both sides snap to `patch × merge` first, then each `patch × patch` square
@@ -32,11 +128,11 @@ pub fn snap(side: u32, grid: u32) -> u32 {
 /// For Qwen3-VL geometry (patch 16, merge 2) a 448×448 image is 784 patches
 /// and **196 tokens** — the figure measured against a live server on
 /// 2026-08-14, which anchors this whole model.
-pub fn expected_vision_tokens(w: u32, h: u32, patch: u32, merge: u32) -> u32 {
-    let grid = patch * merge;
-    let sw = snap(w, grid);
-    let sh = snap(h, grid);
-    (sw / patch) * (sh / patch) / (merge * merge)
+pub fn expected_vision_tokens(w: u32, h: u32, g: VisionGeometry) -> u32 {
+    let sw = g.align(w);
+    let sh = g.align(h);
+    let t = (sw / g.patch) * (sh / g.patch) / (g.merge * g.merge);
+    t.max(g.min_tokens)
 }
 
 // A `within_bound(w, h, max_pixels)` helper used to live here, documented as
@@ -105,18 +201,13 @@ pub fn served_size(w: u32, h: u32, grid: u32, max_pixels: Option<u64>) -> (u32, 
 /// the checkpoint's own (large) bound governs and nothing downscales, which is
 /// exactly [`expected_vision_tokens`]. The `None` arm of [`served_size`] models
 /// the historical 1280px fallback, which is a DEFECT mode here, not a default.
-pub fn expected_vision_tokens_bounded(
-    w: u32,
-    h: u32,
-    patch: u32,
-    merge: u32,
-    max_pixels: u64,
-) -> u32 {
+pub fn expected_vision_tokens_bounded(w: u32, h: u32, g: VisionGeometry, max_pixels: u64) -> u32 {
     if max_pixels == 0 {
-        return expected_vision_tokens(w, h, patch, merge);
+        return expected_vision_tokens(w, h, g);
     }
-    let (tw, th) = served_size(w, h, patch * merge, Some(max_pixels));
-    (tw / patch) * (th / patch) / (merge * merge)
+    let (tw, th) = served_size(w, h, g.grid(), Some(max_pixels));
+    let t = (tw / g.patch) * (th / g.patch) / (g.merge * g.merge);
+    t.max(g.min_tokens)
 }
 
 #[cfg(test)]

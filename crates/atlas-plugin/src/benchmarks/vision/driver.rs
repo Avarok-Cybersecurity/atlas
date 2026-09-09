@@ -20,7 +20,7 @@ use crate::params::{ParamKind, ParamSpec, ParamValue, ParamValues};
 use crate::plugin::{Plugin, PluginHandle};
 use crate::result::{BenchmarkResult, LogLine, RunStatus, Stat, Verdict as RunVerdict};
 
-use super::geometry::expected_vision_tokens_bounded;
+use super::geometry::{VisionGeometry, expected_vision_tokens_bounded, geometry_by_name};
 use super::probes::{CONTROL, PROBES, Probe, concurrency_probe};
 use super::provision::{FIXTURES, provision};
 use super::request;
@@ -94,6 +94,9 @@ pub struct VisionFidelity {
     conc_results: Vec<crate::benchmarks::video::concurrency::LevelResult>,
     integrity: Vec<crate::benchmarks::media_integrity::Cell>,
     max_tokens: usize,
+    /// This checkpoint family's vision geometry. Defaults to Qwen3-VL, which
+    /// is what every call site hardcoded before it was selectable.
+    geometry: VisionGeometry,
     request_timeout_s: u64,
     /// The area bound the TARGET serve was started with, as an area in pixels;
     /// 0 means "not declared". Every geometry prediction is made under this
@@ -201,6 +204,22 @@ impl Benchmark for VisionFidelity {
     fn parameters(&self) -> Vec<ParamSpec> {
         vec![
             ParamSpec::new(
+                "vision_geometry",
+                "Preprocessor geometry",
+                "Which family's preprocessor geometry the ladder predicts against. \
+                 `qwen3_vl` is patch 16 / merge 2, round-snapped, no token floor. \
+                 `glm5` is patch 14 / merge 2 on a CEIL-aligned canvas with a \
+                 min_image_tokens floor of 16 — read off GLM-5.3-Flash's own \
+                 processor_config.json and glm5_canvas.rs. Pointing the Qwen \
+                 arithmetic at a GLM serve scores 5/14 while the engine is correct \
+                 on all fourteen fixtures, and the miss hides itself: template \
+                 overhead is calibrated as total(224) - predicted(224), so a wrong \
+                 prediction at the anchor is absorbed into the overhead and every \
+                 224-sized rung still passes.",
+                ParamKind::Choice(&["qwen3_vl", "glm5"]),
+                ParamValue::Text("qwen3_vl".into()),
+            ),
+            ParamSpec::new(
                 "max_tokens",
                 "Max tokens per reply",
                 "Probe replies are short by design; the geometry leg needs almost none. \
@@ -246,6 +265,7 @@ impl Benchmark for VisionFidelity {
     }
 
     fn configure(&mut self, values: &ParamValues) -> Result<()> {
+        self.geometry = geometry_by_name(values.text("vision_geometry")?)?;
         self.max_tokens = values.int("max_tokens")? as usize;
         self.request_timeout_s = values.int("request_timeout_s")? as u64;
         self.vision_max_pixels = values.int("vision_max_pixels")? as u64;
@@ -275,13 +295,15 @@ impl Benchmark for VisionFidelity {
                     .await
                     .context("calibration request failed — is this a vision-capable model?")?;
                 let want =
-                    expected_vision_tokens_bounded(w, h, 16, 2, self.vision_max_pixels) as usize;
+                    expected_vision_tokens_bounded(w, h, self.geometry, self.vision_max_pixels)
+                        as usize;
                 let overhead = out.prompt_tokens.checked_sub(want).with_context(|| {
                     format!(
                         "calibration: {name} reported {} prompt tokens but its {want} vision \
-                         tokens alone exceed that — the served geometry is not patch 16 / \
-                         merge 2, so this benchmark's arithmetic does not apply",
-                        out.prompt_tokens
+                         tokens alone exceed that — the served geometry is not patch {} / \
+                         merge {}, so this benchmark's arithmetic does not apply. Try \
+                         --param vision_geometry=<family>",
+                        out.prompt_tokens, self.geometry.patch, self.geometry.merge
                     )
                 })?;
                 self.overhead = Some(overhead);
@@ -300,7 +322,8 @@ impl Benchmark for VisionFidelity {
                 let (name, bytes, w, h) = FIXTURES[self.cursor];
                 let overhead = self.overhead.context("geometry ran before calibration")?;
                 let want =
-                    expected_vision_tokens_bounded(w, h, 16, 2, self.vision_max_pixels) as usize;
+                    expected_vision_tokens_bounded(w, h, self.geometry, self.vision_max_pixels)
+                        as usize;
                 let body = request::body(&handle.target().model, &[bytes], "Colour?", 8);
                 let cell = match http::chat_stream(handle.target(), &body, self.timeout()).await {
                     Ok(o) => match request::vision_tokens(o.prompt_tokens, overhead) {
@@ -390,6 +413,20 @@ impl Benchmark for VisionFidelity {
                 // any other and has no business being the one prediction in this
                 // file that ignores the serve's configuration.
                 let cap = self.vision_max_pixels;
+                // Reply budget, from the `max_tokens` PARAM rather than a literal.
+                //
+                // 🪤 These probes each carried their own small literal (8, 12, 16, 24),
+                // calibrated on models that answer a one-word question with one word.
+                // A reasoning-first checkpoint spends its first tokens restating the
+                // question, so `finish_reason=length` arrives before the answer and the
+                // cell scores an empty reply — which reads as 'the model never saw the
+                // image' and is nothing of the kind. GLM-5.3-Flash failed EIGHT integrity
+                // cells this way with its vision path entirely healthy (2026-09-09).
+                //
+                // This is the same correction the Concurrency leg below already carries,
+                // for the same reason; see its comment. A local, not `self.max_tokens`
+                // inline, because `h` borrows self for the rest of the block.
+                let max_tokens = self.max_tokens;
                 // The flat red/blue split, used as the SECOND image of the cache
                 // probe: its dominant color cannot be confused with the gradient
                 // rungs. It lives in EXIF_PAIR, not the geometry ladder, so it is
@@ -411,17 +448,17 @@ impl Benchmark for VisionFidelity {
                                  rectangles you can see, spelled out.";
                         let subjects: Vec<mi::Subject> = vec![
                             (
-                                mi::image_request(&model, "image/png", a, q, 24),
+                                mi::image_request(&model, "image/png", a, q, max_tokens),
                                 Box::new(|r: &str| !r.trim().is_empty()),
                                 "224".to_string(),
                             ),
                             (
-                                mi::image_request(&model, "image/png", b, q, 24),
+                                mi::image_request(&model, "image/png", b, q, max_tokens),
                                 Box::new(|r: &str| !r.trim().is_empty()),
                                 "1280x720".to_string(),
                             ),
                             (
-                                mi::image_request(&model, "image/png", c, q, 24),
+                                mi::image_request(&model, "image/png", c, q, max_tokens),
                                 Box::new(|r: &str| !r.trim().is_empty()),
                                 "336".to_string(),
                             ),
@@ -431,7 +468,7 @@ impl Benchmark for VisionFidelity {
                             (
                                 serde_json::json!({
                                     "model": model, "stream": true, "temperature": 0.0,
-                                    "max_tokens": 8,
+                                    "max_tokens": max_tokens,
                                     "chat_template_kwargs": {"enable_thinking": false},
                                     "messages": [{"role": "user",
                                         "content": "Reply with exactly: BANANA"}],
@@ -459,8 +496,8 @@ impl Benchmark for VisionFidelity {
                         // come from the second.
                         mi::cache_leak(
                             h,
-                            mi::image_request(&model, "image/png", first, q, 16),
-                            mi::image_request(&model, "image/jpeg", second, q, 16),
+                            mi::image_request(&model, "image/png", first, q, max_tokens),
+                            mi::image_request(&model, "image/jpeg", second, q, max_tokens),
                             &|r: &str| {
                                 let l = r.to_lowercase();
                                 l.contains("red") || l.contains("blue")
@@ -485,8 +522,8 @@ impl Benchmark for VisionFidelity {
                         let long_q = format!("{filler}\n\n{q}");
                         mi::long_prompt_path(
                             h,
-                            mi::image_request(&model, "image/png", img, q, 16),
-                            mi::image_request(&model, "image/png", img, &long_q, 16),
+                            mi::image_request(&model, "image/png", img, q, max_tokens),
+                            mi::image_request(&model, "image/png", img, &long_q, max_tokens),
                             &|r: &str| r.to_uppercase().contains("YES"),
                             tmo,
                         )
@@ -500,7 +537,7 @@ impl Benchmark for VisionFidelity {
                         base64::engine::general_purpose::STANDARD.encode_string(img, &mut uri);
                         let body = serde_json::json!({
                             "model": model, "stream": true, "temperature": 0.0,
-                            "max_tokens": 24,
+                            "max_tokens": max_tokens,
                             "chat_template_kwargs": {"enable_thinking": false},
                             "messages": [
                                 {"role": "user", "content": [
@@ -532,7 +569,7 @@ impl Benchmark for VisionFidelity {
                                 img,
                                 "Reply with exactly one word: YES if this image contains a \
                                  white rectangle, NO otherwise.",
-                                16,
+                                max_tokens,
                             ),
                             &|r: &str| r.to_uppercase().contains("YES"),
                             tmo,
@@ -550,7 +587,7 @@ impl Benchmark for VisionFidelity {
                                 img,
                                 "Reply with exactly one word: YES if this image contains a \
                                  white rectangle, NO otherwise.",
-                                16,
+                                max_tokens,
                             ),
                             2,
                             &|r: &str| r.to_uppercase().contains("YES"),
@@ -569,7 +606,7 @@ impl Benchmark for VisionFidelity {
                         base64::engine::general_purpose::STANDARD.encode_string(img, &mut uri);
                         let body = serde_json::json!({
                             "model": model, "stream": true, "temperature": 0.0,
-                            "max_tokens": 16,
+                            "max_tokens": max_tokens,
                             "chat_template_kwargs": {"enable_thinking": false},
                             "messages": [
                                 {"role": "user", "content": "Take a screenshot."},
@@ -602,8 +639,8 @@ impl Benchmark for VisionFidelity {
                     7 => {
                         let (_, small, sw, sh) = FIXTURES[0]; // 224 -> 49
                         let (_, large, lw, lh) = FIXTURES[1]; // 336 -> 121
-                        let delta = (expected_vision_tokens_bounded(lw, lh, 16, 2, cap)
-                            - expected_vision_tokens_bounded(sw, sh, 16, 2, cap))
+                        let delta = (expected_vision_tokens_bounded(lw, lh, self.geometry, cap)
+                            - expected_vision_tokens_bounded(sw, sh, self.geometry, cap))
                             as usize;
                         let q = "Reply with exactly one word: YES if this image contains a \
                                  white rectangle, NO otherwise.";
@@ -622,8 +659,8 @@ impl Benchmark for VisionFidelity {
                     8 => {
                         let (_, small, sw, sh) = FIXTURES[0]; // 224 -> 49
                         let (_, large, lw, lh) = FIXTURES[1]; // 336 -> 121
-                        let delta = (expected_vision_tokens_bounded(lw, lh, 16, 2, cap)
-                            - expected_vision_tokens_bounded(sw, sh, 16, 2, cap))
+                        let delta = (expected_vision_tokens_bounded(lw, lh, self.geometry, cap)
+                            - expected_vision_tokens_bounded(sw, sh, self.geometry, cap))
                             as usize;
                         let q = "Reply with exactly one word: YES if this image contains a \
                                  white rectangle, NO otherwise.";
@@ -644,7 +681,8 @@ impl Benchmark for VisionFidelity {
                                  RED half on the top, bottom, left, or right? One word.";
                         let mut answers = Vec::new();
                         for (name, bytes) in &pair {
-                            let body = mi::image_request(&model, "image/jpeg", bytes, q, 12);
+                            let body =
+                                mi::image_request(&model, "image/jpeg", bytes, q, max_tokens);
                             match http::chat_stream(h.target(), &body, tmo).await {
                                 Ok(o) => answers.push((*name, o.text.trim().to_lowercase())),
                                 Err(e) => answers.push((

@@ -6,9 +6,9 @@ use super::*;
 fn token_count_is_quadratic_in_the_side() {
     // Catches an off-by-one in the merge divisor that a single hard-coded
     // expectation would not: doubling the side must quadruple the tokens.
-    let a = expected_vision_tokens(224, 224, 16, 2);
-    let b = expected_vision_tokens(448, 448, 16, 2);
-    let c = expected_vision_tokens(896, 896, 16, 2);
+    let a = expected_vision_tokens(224, 224, QWEN3_VL);
+    let b = expected_vision_tokens(448, 448, QWEN3_VL);
+    let c = expected_vision_tokens(896, 896, QWEN3_VL);
     assert_eq!(a, 49);
     assert_eq!(b, a * 4, "{a} -> {b} is not quadratic");
     assert_eq!(c, b * 4, "{b} -> {c} is not quadratic");
@@ -18,7 +18,7 @@ fn token_count_is_quadratic_in_the_side() {
 fn every_ladder_size_has_a_defined_expectation() {
     let got: Vec<_> = crate::benchmarks::vision::provision::FIXTURES
         .iter()
-        .map(|&(name, _, w, h)| (name, w, h, expected_vision_tokens(w, h, 16, 2)))
+        .map(|&(name, _, w, h)| (name, w, h, expected_vision_tokens(w, h, QWEN3_VL)))
         .collect();
     assert_eq!(
         got,
@@ -46,8 +46,8 @@ fn portrait_and_landscape_of_the_same_shape_agree() {
     // Transposing must not change the count. This rejects an expectation that
     // accidentally uses one side twice, which square fixtures cannot expose.
     assert_eq!(
-        expected_vision_tokens(512, 384, 16, 2),
-        expected_vision_tokens(384, 512, 16, 2)
+        expected_vision_tokens(512, 384, QWEN3_VL),
+        expected_vision_tokens(384, 512, QWEN3_VL)
     );
 }
 
@@ -57,7 +57,7 @@ fn snap_never_returns_zero() {
     // a division by zero downstream.
     assert_eq!(snap(1, 32), 32);
     assert_eq!(snap(15, 32), 32);
-    assert_eq!(expected_vision_tokens(1, 1, 16, 2), 1);
+    assert_eq!(expected_vision_tokens(1, 1, QWEN3_VL), 1);
 }
 
 /// ★ The test that justifies the ladder's shape.
@@ -78,8 +78,7 @@ fn the_ladder_can_actually_detect_a_regression_to_the_old_clamp() {
         expected_vision_tokens(
             ((w as f32) * s).round() as u32,
             ((h as f32) * s).round() as u32,
-            16,
-            2,
+            QWEN3_VL,
         )
     }
 
@@ -90,7 +89,7 @@ fn the_ladder_can_actually_detect_a_regression_to_the_old_clamp() {
     let discriminating: Vec<(u32, u32)> = ladder
         .iter()
         .copied()
-        .filter(|&(w, h)| under_old_clamp(w, h) != expected_vision_tokens(w, h, 16, 2))
+        .filter(|&(w, h)| under_old_clamp(w, h) != expected_vision_tokens(w, h, QWEN3_VL))
         .collect();
 
     assert!(
@@ -104,7 +103,7 @@ fn the_ladder_can_actually_detect_a_regression_to_the_old_clamp() {
     // And name the numbers, so a future change to the fixture set that
     // weakens the margin is visible rather than silent.
     assert_eq!(under_old_clamp(1600, 900), 920);
-    assert_eq!(expected_vision_tokens(1600, 900, 16, 2), 1400);
+    assert_eq!(expected_vision_tokens(1600, 900, QWEN3_VL), 1400);
 }
 
 #[test]
@@ -153,7 +152,7 @@ fn the_mirror_matches_the_engines_anchors() {
     //     leaves it alone                                   -> 1400 tokens
     //   * the retired long-side clamp scales it to 1280x720 ->  920 tokens
     assert_eq!(
-        expected_vision_tokens(1600, 900, 16, 2),
+        expected_vision_tokens(1600, 900, QWEN3_VL),
         1400,
         "unbounded: the checkpoint's own bound is far above 1.44M px"
     );
@@ -172,8 +171,8 @@ fn zero_means_nothing_was_declared() {
     // adding the parameter would silently re-baseline every existing record.
     for (w, h) in LADDER {
         assert_eq!(
-            expected_vision_tokens_bounded(w, h, 16, 2, 0),
-            expected_vision_tokens(w, h, 16, 2),
+            expected_vision_tokens_bounded(w, h, QWEN3_VL, 0),
+            expected_vision_tokens(w, h, QWEN3_VL),
             "{w}x{h} moved when no bound was declared"
         );
     }
@@ -191,7 +190,8 @@ fn a_declared_bound_moves_exactly_the_fixtures_above_it() {
         .iter()
         .copied()
         .filter(|&(w, h)| {
-            expected_vision_tokens_bounded(w, h, 16, 2, CAP) != expected_vision_tokens(w, h, 16, 2)
+            expected_vision_tokens_bounded(w, h, QWEN3_VL, CAP)
+                != expected_vision_tokens(w, h, QWEN3_VL)
         })
         .collect();
     assert_eq!(
@@ -219,9 +219,9 @@ fn a_declared_bound_never_upscales() {
     // and a `sqrt(bound/area)` scale factor is greater than 1 for both — so
     // this is the arm where a missing `.min(1.0)` would inflate a fixture
     // instead of leaving it alone.
-    assert_eq!(expected_vision_tokens_bounded(8, 8, 16, 2, 262_144), 1);
+    assert_eq!(expected_vision_tokens_bounded(8, 8, QWEN3_VL, 262_144), 1);
     assert_eq!(
-        expected_vision_tokens_bounded(64, 2048, 16, 2, 262_144),
+        expected_vision_tokens_bounded(64, 2048, QWEN3_VL, 262_144),
         128
     );
 }
@@ -232,7 +232,7 @@ fn the_discriminating_rung_stays_discriminating_under_a_bound() {
     // not blunt the one rung the ladder exists for: under a 262144 bound the
     // correct answer is 252, and an engine that ignored the declared bound and
     // fell back to the 1280px clamp would still answer 920 and still FAIL.
-    let honoured = expected_vision_tokens_bounded(1600, 900, 16, 2, 262_144);
+    let honoured = expected_vision_tokens_bounded(1600, 900, QWEN3_VL, 262_144);
     assert_eq!(honoured, 252);
     let (tw, th) = served_size(1600, 900, 32, None);
     assert_ne!(
@@ -249,4 +249,83 @@ fn the_absolute_long_side_ceiling_still_applies_under_a_bound() {
     // by the ceiling rather than by the area.
     let (_, th) = served_size(64, 8192, 32, Some(16_777_216));
     assert!(th <= ABS_MAX_DIM, "{th} exceeds the absolute ceiling");
+}
+
+/// GLM-5.3-Flash geometry, pinned against a LIVE serve.
+///
+/// Every triple below is the engine's own answer, measured 2026-09-09 on
+/// GLM-5.3-Flash-EXL3 K2 at TP=2/EP=2 (binary fe8a53a1ededa20d): the run's
+/// reported `usage.prompt_tokens` minus the template overhead of 16 that this
+/// geometry solves for. Under the Qwen profile the same fourteen fixtures score
+/// 5/14 with the engine correct on all of them, which is the regression this
+/// test exists to stop recurring for the next family that is not Qwen.
+#[test]
+fn glm5_geometry_reproduces_the_engine_on_every_fixture() {
+    // (w, h, vision tokens the engine actually produced)
+    const MEASURED: &[(u32, u32, u32)] = &[
+        (224, 224, 64),    // 01_square_224, and 12/13/14 which share its size
+        (336, 336, 144),   // 02_square_336
+        (512, 384, 266),   // 03_landscape_512x384
+        (640, 360, 299),   // 04_wide_640x360
+        (768, 768, 784),   // 05_square_768
+        (1024, 576, 777),  // 06_wide_1024x576
+        (1280, 720, 1196), // 07_hd_1280x720
+        (480, 854, 558),   // 08_portrait_480x854
+        (1600, 900, 1914), // 09_over_clamp_1600x900
+        (8, 8, 16),        // 10_tiny_8x8 - the min_image_tokens floor, not 1
+        (64, 2048, 222),   // 11_strip_64x2048
+    ];
+    for &(w, h, want) in MEASURED {
+        assert_eq!(
+            expected_vision_tokens(w, h, GLM5),
+            want,
+            "GLM5 geometry drifted at {w}x{h}"
+        );
+    }
+}
+
+/// The floor is what makes an 8x8 image 16 tokens rather than 1, and it is the
+/// one field a reader is most likely to drop when copying the profile.
+#[test]
+fn the_glm5_token_floor_binds_only_below_it() {
+    assert_eq!(expected_vision_tokens(8, 8, GLM5), 16, "floor must bind");
+    assert_eq!(
+        expected_vision_tokens(224, 224, GLM5),
+        64,
+        "floor must not bind"
+    );
+    assert_eq!(
+        expected_vision_tokens(8, 8, QWEN3_VL),
+        1,
+        "Qwen has no floor and must be unaffected"
+    );
+}
+
+/// Ceil vs round is a whole grid unit on one axis, and 512 is where they split:
+/// round(512/28)=18 -> 504, ceil -> 532.
+#[test]
+fn glm5_ceil_aligns_where_qwen_would_round_down() {
+    assert_eq!(ceil_align(512, 28), 532);
+    assert_eq!(snap(512, 28), 504);
+    // Same patch/merge, alignment the only difference - isolates the mode.
+    let rounding = VisionGeometry {
+        ceil_aligned: false,
+        ..GLM5
+    };
+    assert_ne!(
+        expected_vision_tokens(512, 384, GLM5),
+        expected_vision_tokens(512, 384, rounding),
+        "if these agree the alignment mode is not being consulted"
+    );
+    assert_eq!(expected_vision_tokens(512, 384, GLM5), 266);
+}
+
+/// The default must stay Qwen3-VL, or every variant that predates the profile
+/// silently rescores.
+#[test]
+fn the_default_geometry_is_still_qwen() {
+    assert_eq!(VisionGeometry::default(), QWEN3_VL);
+    assert_eq!(geometry_by_name("qwen3_vl").unwrap(), QWEN3_VL);
+    assert_eq!(geometry_by_name("glm5").unwrap(), GLM5);
+    assert!(geometry_by_name("nope").is_err());
 }
