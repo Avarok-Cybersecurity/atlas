@@ -56,7 +56,8 @@ jobs:
   changes:
     name: classify diff (web-only?)
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -151,7 +152,8 @@ jobs:
   stamp:
     name: stamp status
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -234,7 +236,8 @@ jobs:
   seal:
     name: seal status
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -296,7 +299,8 @@ jobs:
   fmt:
     name: cargo fmt --check
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_RUST_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -322,7 +326,8 @@ jobs:
     # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
     if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_RUST_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -343,7 +348,8 @@ jobs:
   license-headers:
     name: SPDX license headers
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -396,7 +402,8 @@ jobs:
     # exactly that), which is why the rest of the fleet moves only after this
     # one is observed being picked up.
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -407,7 +414,8 @@ jobs:
   kernel-structure:
     name: kernel shadow structure
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -444,7 +452,8 @@ jobs:
   harvest-triage:
     name: harvest triage decision table
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -504,7 +513,8 @@ jobs:
     # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
     if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_RUST_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -1546,7 +1556,8 @@ jobs:
     # which reads as "still running" instead of "the gate said no".
     if: always()
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}

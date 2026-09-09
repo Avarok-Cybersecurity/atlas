@@ -183,12 +183,25 @@ jobs:
 Y
 want_rc 1 "control: cheap pool guarded but checking out a fork ref" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
-# And the shape we actually ship must PASS, or the rule is unusable.
+# The fleet gate is required on every self-hosted route. Without it a job on a
+# box that is down does not fail, it QUEUES -- and a queued job creates no check
+# run, so a required context reads as absent rather than red and the PR is
+# unmergeable with nothing showing as broken. This control is that rule.
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request: { types: [opened] } }
 jobs:
   j:
     runs-on: "${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest') || 'ubuntu-latest' }}"
+    steps: [{ uses: actions/checkout@v4 }]
+Y
+want_rc 1 "control: guarded cheap-pool routing WITHOUT the fleet gate" \
+  sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
+# And the shape we actually ship must PASS, or the rule is unusable.
+cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
+on: { pull_request: { types: [opened] } }
+jobs:
+  j:
+    runs-on: "${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest') || 'ubuntu-latest' }}"
     steps: [{ uses: actions/checkout@v4 }]
 Y
 want_rc 0 "the shipped cheap-pool routing shape is accepted" \

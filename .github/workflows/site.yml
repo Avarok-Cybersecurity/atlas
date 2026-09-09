@@ -51,7 +51,8 @@ jobs:
   changes:
     name: classify diff (web-only?)
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -90,7 +91,8 @@ jobs:
     name: Blog frontmatter
     needs: [changes]
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
