@@ -90,7 +90,7 @@ pub const PERF_PATHS: [&str; 8] = [
 /// The four files here are the ones that decide a verdict. `GATE_MACHINERY`
 /// still covers the rest of the directory — record IO, telemetry rendering,
 /// the CODEOWNERS parser — where the exclusion's argument does hold.
-pub const BOUNDARY_FILES: [&str; 13] = [
+pub const BOUNDARY_FILES: [&str; 14] = [
     "crates/atlas-plugin/src/gate/coverage.rs",
     // `required_for` / `union` / `intent_only`: decides what the INTENT half
     // adds on top of the path-derived floor. Once intent can escalate a gate,
@@ -147,6 +147,13 @@ pub const BOUNDARY_FILES: [&str; 13] = [
     // rebase that brought it in, which is the mechanism working rather than a
     // note someone remembered to act on.
     "crates/atlas-plugin/src/gate/agreement.rs",
+    // `CLOSED_KEYS` / `missing_pins`: the table of what `--hermetic` closes.
+    // It decides a verdict twice over. `bench` REFUSES a baseline entry that
+    // pins `hermetic=true` without these, and the set itself is what
+    // `check_record` will compare a record's serve overrides against — so
+    // editing this table changes which records can discharge a hermetic gate.
+    // A gate whose pin set moved must be re-proven, not inherited.
+    "crates/atlas-plugin/src/gate/hermetic.rs",
     // ★ `amnesty.rs` decides whether a gate is EXCUSED. A PR that widens the
     // amnesty table excuses ITSELF, which is the PR #420 shape with the lock
     // moved one room over again — the same way `scoring.rs` was missed after a

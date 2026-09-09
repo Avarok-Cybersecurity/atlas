@@ -64,14 +64,18 @@
 ///
 /// `hermetic_closures_match_the_resolvers` pins this table against the
 /// resolvers so the disclosure cannot come to disagree with the enforcement.
-pub(crate) const CLOSED_KEYS: &[(&str, &str)] =
-    &[("enable_prefix_caching", "false"), ("mtp_gate", "force")];
+/// Re-exported, NOT redeclared. The table lives in `atlas_plugin::gate::hermetic`
+/// because `gate::bench` needs it too — it refuses a BENCH.toml entry that pins
+/// `hermetic=true` without these — and atlas-plugin cannot depend on this
+/// crate. Two copies would drift, and the failure mode of drift here is a gate
+/// that cannot be discharged by the run it asks for.
+pub(crate) use atlas_plugin::gate::hermetic::CLOSED_KEYS;
 
 /// Fill in the keys `--hermetic` closes, for any the caller did not name.
 pub(crate) fn expand(
     mut requested: std::collections::BTreeMap<String, String>,
 ) -> std::collections::BTreeMap<String, String> {
-    if requested.get("hermetic").map(String::as_str) != Some("true") {
+    if !atlas_plugin::gate::hermetic::is_requested(&requested) {
         return requested;
     }
     for (k, v) in CLOSED_KEYS {

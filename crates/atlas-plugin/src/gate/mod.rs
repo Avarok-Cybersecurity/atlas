@@ -31,6 +31,7 @@ pub mod check_paths;
 pub mod closure;
 pub mod codeowners;
 pub mod coverage;
+pub mod hermetic;
 pub mod record;
 mod record_path;
 pub mod scoring;
