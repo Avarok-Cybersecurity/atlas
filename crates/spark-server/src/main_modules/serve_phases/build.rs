@@ -13,7 +13,7 @@ pub(crate) fn build_prefix_cache(
     args: &cli::ServeArgs,
     config: &ModelConfig,
 ) -> Box<dyn spark_runtime::prefix_cache::PrefixCache> {
-    if args.enable_prefix_caching && !config.kv_only_prefix_cache_is_safe() {
+    if args.prefix_caching_enabled() && !config.kv_only_prefix_cache_is_safe() {
         tracing::warn!(
             model_type = %config.model_type,
             "Prefix caching: DISABLED because this model builds per-sequence state outside KV; \
@@ -21,7 +21,7 @@ pub(crate) fn build_prefix_cache(
         );
         return Box::new(spark_runtime::prefix_cache::NoPrefixCaching);
     }
-    if args.enable_prefix_caching {
+    if args.prefix_caching_enabled() {
         if args.high_speed_swap {
             tracing::info!(
                 "Prefix caching: ENABLED (radix tree, with --high-speed-swap disk-side refcounts)"

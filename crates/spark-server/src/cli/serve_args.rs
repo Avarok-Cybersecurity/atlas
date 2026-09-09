@@ -634,6 +634,25 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = false, num_args = 0..=1, default_missing_value = "true")]
     pub enable_prefix_caching: bool,
 
+    /// Measure this server as a known-answer test: no state produced while
+    /// serving one request may reach another.
+    ///
+    /// ONE name for the whole regime, expanded in code by `cli::hermetic` —
+    /// see that module for which channels this closes and why it is a single
+    /// flag rather than the several `--serve-override`s that found them. It
+    /// is the name that lands in a gate record's `serve_overrides`, so a
+    /// reader comparing two runs can tell in one token whether they were
+    /// measured the same way.
+    ///
+    /// It OVERRIDES rather than merges: `--hermetic` beside a flag it closes
+    /// is a contradiction, and `validate_serve_args` refuses the pair rather
+    /// than picking a winner silently.
+    ///
+    /// Not a production setting. Every channel it closes exists because
+    /// carrying that state is normally worth real throughput.
+    #[arg(long, default_value_t = false, num_args = 0..=1, default_missing_value = "true")]
+    pub hermetic: bool,
+
     /// Dump every /v1/chat/completions, /v1/responses, and
     /// /v1/messages (Anthropic) request — plus the corresponding
     /// response (non-streaming) or aggregated stream — as JSONL to a

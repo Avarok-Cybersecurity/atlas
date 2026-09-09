@@ -188,7 +188,7 @@ pub fn badges(a: &crate::cli::ServeArgs, awaiting_model: bool) -> Vec<Badge> {
         text: format!("sched {}", a.scheduling_policy),
         tint: BadgeTint::Neutral,
     });
-    if a.enable_prefix_caching {
+    if a.prefix_caching_enabled() {
         out.push(Badge {
             text: format!(
                 "prefix-cache · ssm {}@{}",
