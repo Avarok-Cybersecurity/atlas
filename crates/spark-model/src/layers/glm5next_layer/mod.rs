@@ -799,6 +799,216 @@ impl Glm5NextLayer {
         Ok(())
     }
 
+    /// One weight sweep for N sequences' decode rows.
+    ///
+    /// This is [`Self::forward_k`]'s body with the token axis reinterpreted as
+    /// the SEQUENCE axis. Everything that is row-parallel — the mHC highway,
+    /// both norms, the MLP/MoE, the TP all-reduce — runs ONCE over all N rows,
+    /// which is the whole point: a grouped MoE GEMM at 4 rows costs about what
+    /// it costs at 1, so those reads are amortized N ways instead of paid N
+    /// times.
+    ///
+    /// Only the MIXER stays per-sequence, and it has to: KDA carries a
+    /// recurrent state per sequence, and DSA needs each row's own page table
+    /// and length. That is the same split `decode_verify_multi` describes —
+    /// "projections/FFN batch across all rows; the stateful recurrence runs
+    /// per-sequence" — applied to the sequence axis instead of the draft axis.
+    ///
+    /// 🪤 The highway slots must be CONTIGUOUS from `slot_base`, because the mHC
+    /// kernels read `[N, ...]` from that base (`forward_k`: "K contiguous slots
+    /// from there ARE the `[K, ...]` the kernels want"). Row `i` therefore owns
+    /// slot `slot_base + i` — legal only because a decode step REBUILDS the
+    /// highway at the first layer and collapses it at the last, so it never has
+    /// to agree with a scheduler slot or survive to the next step.
+    #[allow(clippy::too_many_arguments)]
+    fn forward_n_seqs<'a, 'b: 'a>(
+        &self,
+        hidden: DevicePtr,
+        n: usize,
+        states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        kv_cache: &mut PagedKvCache,
+        seq_lens: &[usize],
+        block_tables: &[Vec<u32>],
+        slot_base: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let gpu = ctx.gpu;
+        let h = self.hidden;
+        let Some(mhc) = self.mhc.as_ref() else {
+            bail!("GLM layer {}: no hyper-connection bound", self.layer_idx);
+        };
+        let hc = mhc.hc_mult;
+        let streams = ctx.buffers.hc_streams().offset(slot_base * hc * h * 4);
+        let post = ctx.buffers.hc_post().offset(slot_base * hc * 4);
+        let comb = ctx.buffers.hc_comb().offset(slot_base * hc * hc * 4);
+        let normed = ctx.buffers.norm_output();
+        let ffn_out = ctx.buffers.moe_output();
+        let (nt, ht, hct) = (n as u32, h as u32, hc as u32);
+
+        let t_mhc = profile::start();
+        if self.is_first {
+            glm_hc_expand(
+                gpu,
+                mhc.kernels.hc_expand,
+                hidden,
+                streams,
+                nt,
+                ht,
+                hct,
+                stream,
+            )?;
+        }
+
+        // ── attention site ──
+        glm_hc_pre(
+            gpu,
+            &mhc.kernels,
+            streams,
+            &mhc.attn,
+            hidden,
+            post,
+            comb,
+            nt,
+            ht,
+            hct,
+            mhc.sinkhorn_iters as u32,
+            self.rms_eps,
+            mhc.hc_eps,
+            stream,
+        )?;
+        profile::end(profile::MHC, t_mhc, gpu, stream);
+        let t_norm = profile::start();
+        self.norm(gpu, hidden, self.input_norm, normed, n, stream)?;
+        profile::end(profile::NORM, t_norm, gpu, stream);
+
+        let t = profile::start();
+        let attn_out = match &self.mixer {
+            Glm5NextMixer::Kda { layer, ws, .. } => {
+                // Each sequence's recurrence is independent and must run against
+                // its OWN state, so this is a loop by necessity, not by omission.
+                // `decode_k` lands its result in `ws.final_out` row 0 every time,
+                // so each row is copied out before the next call overwrites it.
+                let out = ctx.buffers.attn_output();
+                for (i, state) in states.iter_mut().enumerate().take(n) {
+                    let st = self.kda_state(*state)?;
+                    let kda = KdaSeqState {
+                        conv: st.conv_state,
+                        recurrent: st.h_state,
+                    };
+                    layer.decode_k(gpu, normed.offset(i * h * 2), 1, &kda, ws, &[], stream)?;
+                    gpu.copy_d2d_async(ws.final_out, out.offset(i * h * 2), h * 2, stream)?;
+                }
+                out
+            }
+            Glm5NextMixer::Dsa(layer) => {
+                // DSA writes `o_proj` back over the buffer it is handed, so the
+                // rows land contiguous in `normed` on their own.
+                for (i, state) in states.iter_mut().enumerate().take(n) {
+                    let row_ctx = ForwardContext {
+                        attn_metadata: ctx.attn_metadata.as_ref().map(|m| m.row_view(i)),
+                        ..*ctx
+                    };
+                    let mut bt = block_tables[i].clone();
+                    layer.decode_k(
+                        normed.offset(i * h * 2),
+                        1,
+                        *state,
+                        kv_cache,
+                        seq_lens[i],
+                        &mut bt,
+                        &row_ctx,
+                        stream,
+                        false,
+                        0,
+                    )?;
+                }
+                normed
+            }
+        };
+        profile::end(profile::KDA, t, gpu, stream);
+
+        if self.mixer_all_reduce {
+            self.reduce_probe(profile::REDUCE_ATTN_BAR, "attn", ctx, stream);
+            let t = profile::start_hot();
+            self.reduce_partial(attn_out, n, ctx, stream)?;
+            profile::end_nosync(profile::REDUCE_ATTN_ENQ, t);
+            let t = profile::start_hot();
+            profile::end(profile::REDUCE_ATTN, t, ctx.gpu, stream);
+        }
+        let t_mhc_post = profile::start();
+        glm_hc_post(
+            gpu,
+            mhc.kernels.hc_post,
+            attn_out,
+            streams,
+            post,
+            comb,
+            streams,
+            nt,
+            ht,
+            hct,
+            stream,
+        )?;
+        profile::end(profile::MHC_POST, t_mhc_post, gpu, stream);
+
+        // ── FFN site ──
+        let t_mhc = profile::start();
+        glm_hc_pre(
+            gpu,
+            &mhc.kernels,
+            streams,
+            &mhc.ffn,
+            hidden,
+            post,
+            comb,
+            nt,
+            ht,
+            hct,
+            mhc.sinkhorn_iters as u32,
+            self.rms_eps,
+            mhc.hc_eps,
+            stream,
+        )?;
+        profile::end(profile::MHC, t_mhc, gpu, stream);
+        let t_norm = profile::start();
+        self.norm(gpu, hidden, self.post_attn_norm, normed, n, stream)?;
+        profile::end(profile::NORM, t_norm, gpu, stream);
+        // THE amortized site: one grouped MoE over all N rows.
+        self.mlp_forward(normed, ffn_out, n, ctx, stream)?;
+        let t_mhc_post = profile::start();
+        glm_hc_post(
+            gpu,
+            mhc.kernels.hc_post,
+            ffn_out,
+            streams,
+            post,
+            comb,
+            streams,
+            nt,
+            ht,
+            hct,
+            stream,
+        )?;
+        if self.is_last {
+            hc_head_mean(
+                gpu,
+                mhc.kernels.hc_head,
+                streams,
+                hidden,
+                nt,
+                ht,
+                hct,
+                stream,
+            )?;
+        }
+        profile::end(profile::MHC_POST, t_mhc_post, gpu, stream);
+        if self.is_last {
+            profile::step();
+        }
+        Ok(())
+    }
+
     /// K tokens of one sequence through a KDA layer, with ONE sweep over the weights.
     ///
     /// The site order is exactly [`Self::forward_one`]'s — `hc_pre -> norm -> mixer -> hc_post`
@@ -1147,6 +1357,101 @@ impl TransformerLayer for Glm5NextLayer {
         }
     }
 
+    /// Decode N sequences, each contributing one token, through this layer.
+    ///
+    /// The trait default loops `decode` per row, and `decode` pins highway slot
+    /// 0 and metadata row 0 — the two structural aliases that made
+    /// [`Self::decode_multi_seq_unsupported`] true. This override is the same
+    /// loop with both aliases removed:
+    ///
+    ///   * **D1 — highway.** Row `i` takes highway slot `ctx.hc_row_offset + i`
+    ///     instead of 0. The highway is a PER-TOKEN activation, and a decode
+    ///     step rebuilds it from scratch (`hc_expand` at the first layer) and
+    ///     collapses it at the last, so it only has to be consistent ACROSS
+    ///     LAYERS within one step — never across steps. That is what lets row
+    ///     `i` own slot `i` regardless of which scheduler slot the sequence
+    ///     holds, and it is why the slots are contiguous, which is in turn what
+    ///     a future batched mHC call needs (`forward_k` already documents that
+    ///     "K contiguous slots from there ARE the `[K, ...]` the kernels want").
+    ///   * **D2 — DSA metadata.** Row `i` gets `attn_metadata.row_view(i)`, so
+    ///     it attends with its OWN positions, slot, seq_len and page table.
+    ///
+    /// 🪤 Rows are still executed ONE AT A TIME. This is correctness, not the
+    /// throughput win: the weights are still swept once per row, so aggregate
+    /// tok/s is unchanged and only the wrong-answer hazard is gone. Batching
+    /// the projections/MoE across the N rows — the part that actually pays,
+    /// because a grouped GEMM at 4 rows costs about what it costs at 1 — is the
+    /// follow-up, and it needs the per-sequence KDA recurrence and DSA page
+    /// tables split out from the row-batched sites first.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_multi_seq<'a, 'b: 'a>(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        num_seqs: usize,
+        states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        kv_cache: &mut PagedKvCache,
+        seq_lens: &[usize],
+        block_tables: &[Vec<u32>],
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        // Bail rather than truncate: a short slice means the caller and this
+        // layer disagree about the batch, and serving the rows we happen to
+        // have would answer some sequences with another's activations — the
+        // exact failure this override exists to remove.
+        if states.len() < num_seqs || seq_lens.len() < num_seqs || block_tables.len() < num_seqs {
+            bail!(
+                "GLM layer {}: decode_multi_seq of {num_seqs} seqs got states={} seq_lens={} \
+                 block_tables={}",
+                self.layer_idx,
+                states.len(),
+                seq_lens.len(),
+                block_tables.len()
+            );
+        }
+        // No hyper-connection (the MTP layer) has no highway to alias, so the
+        // trait's per-row default is already correct for it.
+        if self.mhc.is_none() || num_seqs == 1 {
+            let h = self.hidden;
+            for (i, state) in states.iter_mut().enumerate().take(num_seqs) {
+                let off = i * h * 2;
+                let row_ctx = ForwardContext {
+                    attn_metadata: ctx.attn_metadata.as_ref().map(|m| m.row_view(i)),
+                    ..*ctx
+                };
+                let mut bt = block_tables[i].clone();
+                let mut stub_disk = Vec::<u32>::new();
+                let mut stub_last_offloaded = Vec::<u32>::new();
+                self.forward_one(
+                    hidden.offset(off),
+                    residual.offset(off),
+                    ctx.hc_row_offset + i,
+                    *state,
+                    kv_cache,
+                    seq_lens[i],
+                    &mut bt,
+                    &mut stub_disk,
+                    &mut stub_last_offloaded,
+                    &row_ctx,
+                    stream,
+                )?;
+            }
+            return Ok(());
+        }
+        self.forward_n_seqs(
+            hidden,
+            num_seqs,
+            states,
+            kv_cache,
+            seq_lens,
+            block_tables,
+            ctx.hc_row_offset,
+            ctx,
+            stream,
+        )
+    }
+
     /// 🔴 GLM-5.3 CANNOT serve a batched multi-sequence decode step. Two
     /// independent row-0 aliases, both structural, either one sufficient:
     ///
@@ -1167,12 +1472,17 @@ impl TransformerLayer for Glm5NextLayer {
     /// #753 item B's per-sequence highway loop, which serves C>1 correctly at
     /// C=1-equivalent per-request throughput.
     ///
-    /// 🔒 This must stay `true` until the Stage 1 commit that adds a real
-    /// `Glm5NextLayer::decode_multi_seq` (per-row `forward_one` with
-    /// `meta_row_base` threading and `ctx.hc_row_offset` honoured as the
-    /// highway base) flips it to `false` IN THE SAME COMMIT.
+    /// ✅ BOTH ALIASES ARE GONE, which is why this now answers `false`. The
+    /// `Glm5NextLayer::decode_multi_seq` directly above is that Stage 1 commit:
+    /// row `i` runs `forward_one` at highway slot `ctx.hc_row_offset + i` (D1)
+    /// against `attn_metadata.row_view(i)` (D2). The description below is kept
+    /// because it is the reason the override has to exist at all — delete the
+    /// override and both aliases come straight back.
+    ///
+    /// 🪤 It buys CORRECTNESS, not throughput. Rows are still served one at a
+    /// time, so this is what makes a batched step safe, not fast.
     fn decode_multi_seq_unsupported(&self) -> bool {
-        true
+        false
     }
 
     /// 🔴 GLM-5.3 implements no `decode_verify_multi`, so the batched verify

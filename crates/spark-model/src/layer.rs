@@ -179,6 +179,49 @@ pub struct AttnMetadataDev {
     pub moe_row_adapter: DevicePtr,
 }
 
+impl AttnMetadataDev {
+    /// This metadata as seen from sequence row `base`: every per-row array
+    /// advanced by `base` rows, every scalar left alone.
+    ///
+    /// A batched decode step uploads ONE metadata block describing all
+    /// `num_seqs` rows. A layer that serves those rows one at a time — because
+    /// its recurrence or its highway is per-sequence — must still hand each row
+    /// ITS OWN positions, slot, seq_len and block table. Without that the row
+    /// reads row 0's, which is not slow, it is the WRONG SEQUENCE: every row
+    /// attends with sequence 0's page table and length. That is one of the two
+    /// structural aliases `Glm5NextLayer::decode_multi_seq_unsupported`
+    /// documents (D2), and this is the fix for it.
+    ///
+    /// 🪤 The strides are the ELEMENT WIDTHS of the arrays as documented on
+    /// each field — positions u32, slot i64, seq_len i32, block_table
+    /// `max_blocks_per_seq` i32s per row — not a single uniform stride. Getting
+    /// one wrong reads a plausible neighbouring value rather than faulting.
+    ///
+    /// `num_seqs` becomes the rows REMAINING from `base`, so a consumer that
+    /// bounds-checks against it still sees a truthful count.
+    ///
+    /// A null pointer stays null: `DevicePtr(0)` marks "this path has no such
+    /// array" on several of these fields, and offsetting it would turn a
+    /// recognised absence into a wild address.
+    pub fn row_view(&self, base: usize) -> Self {
+        let off = |p: DevicePtr, stride: usize| {
+            if p.0 == 0 { p } else { p.offset(base * stride) }
+        };
+        Self {
+            positions: off(self.positions, 4),
+            positions_h: off(self.positions_h, 4),
+            positions_w: off(self.positions_w, 4),
+            slot: off(self.slot, 8),
+            seq_len: off(self.seq_len, 4),
+            block_table: off(self.block_table, self.max_blocks_per_seq as usize * 4),
+            max_blocks_per_seq: self.max_blocks_per_seq,
+            num_seqs: self.num_seqs.saturating_sub(base as u32),
+            seq_slot: off(self.seq_slot, 4),
+            moe_row_adapter: off(self.moe_row_adapter, 4),
+        }
+    }
+}
+
 /// Q12 batched-prefill device-side metadata.
 ///
 /// The single-stream `AttnMetadataDev` collapses per-stream pointers into
@@ -284,6 +327,10 @@ pub struct GdnPrefillBuffers {
 ///
 /// Provides access to GPU, buffers, and config without coupling
 /// layer implementations to the model struct.
+/// `Copy` so a layer serving a batched step one row at a time can say
+/// `ForwardContext { attn_metadata: Some(m.row_view(i)), ..*ctx }` — every
+/// field is a reference or a scalar, so this copies pointers, never buffers.
+#[derive(Clone, Copy)]
 pub struct ForwardContext<'a> {
     /// Pre-allocated scratch buffers.
     pub buffers: &'a BufferArena,
@@ -388,6 +435,9 @@ pub struct ForwardContext<'a> {
 /// `ssm_layer_counter` is a fresh per-pass counter: each SSM layer's prefill
 /// increments it once, in model order, so the value indexes `h_dsts`/`conv_dsts`
 /// (which are in the same SSM-layer order as the snapshot pool).
+/// `Copy` for the same reason `ForwardContext` is: it is a bundle of
+/// references and scalars that a per-row context rebuild has to carry along.
+#[derive(Clone, Copy)]
 pub struct MidchunkCapture<'a> {
     /// Split point in local token coordinates: capture state AFTER this many
     /// tokens (== `tb - proc_start`).
