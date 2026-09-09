@@ -281,10 +281,19 @@ async fn run(args: RunArgs) -> Result<i32> {
     }
 
     let executor = BenchmarkExecutor::new(tokio::runtime::Handle::current(), store);
+    // Read ONCE, here, and used by both the history record and the gate
+    // record below. `SelfServed::overrides` is already the merged baseline +
+    // `--serve-override` set, so it is the single authority on the regime;
+    // computing it twice is how the two records come to disagree.
+    let serve_overrides = served
+        .as_ref()
+        .map(|s| s.overrides.clone())
+        .unwrap_or_default();
     let request = RunRequest {
         descriptor,
         values,
         target: target.clone(),
+        serve_overrides: serve_overrides.clone(),
         options: HeadlessOptions {
             poll: std::time::Duration::from_millis(args.poll_ms),
             save: !args.no_save,
@@ -361,10 +370,6 @@ async fn run(args: RunArgs) -> Result<i32> {
         // names no box and still exit 0. Write first, tear down second, and
         // tear down even when the write fails.
         let recipe = served.as_ref().map(|s| s.recipe_id.clone());
-        let serve_overrides = served
-            .as_ref()
-            .map(|s| s.overrides.clone())
-            .unwrap_or_default();
         let (sha_at_start, dirty_at_start) = provenance.unwrap_or_default();
         let written = super::bench_record::write_gate_record(
             &outcome.record,

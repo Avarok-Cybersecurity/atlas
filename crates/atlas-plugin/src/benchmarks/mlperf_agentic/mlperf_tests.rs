@@ -325,6 +325,7 @@ fn the_dataset_fingerprint_survives_into_a_gate_record() {
         benchmark_id: "mlperf-agentic-subset".into(),
         benchmark_name: "MLPerf agentic (subset)".into(),
         recorded_at: 1,
+        serve_overrides: Default::default(),
         target_url: "http://localhost:1".into(),
         target_model: "m".into(),
         params: Default::default(),

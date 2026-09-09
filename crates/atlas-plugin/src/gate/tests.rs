@@ -70,6 +70,7 @@ pub(super) fn run_record(metrics: BTreeMap<String, f64>, verdict: Verdict) -> Ru
         benchmark_id: "bfcl-subset".to_string(),
         benchmark_name: "BFCL (subset)".to_string(),
         recorded_at: 1_785_891_382,
+        serve_overrides: Default::default(),
         target_url: "http://127.0.0.1:8888".to_string(),
         target_model: MODEL.to_string(),
         params,

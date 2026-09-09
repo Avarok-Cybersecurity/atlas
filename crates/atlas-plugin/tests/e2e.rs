@@ -301,6 +301,7 @@ async fn a_headless_run_persists_a_record_the_history_pane_can_read() {
                 descriptor,
                 values,
                 target,
+                serve_overrides: Default::default(),
                 options: atlas_plugin::headless::HeadlessOptions::cli("1.0.0-beta-preview"),
             },
             &mut atlas_plugin::headless::SilentReporter,
