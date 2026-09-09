@@ -68,6 +68,15 @@ impl TransformerModel {
     /// configured max K), and R = Σ ks ≤ `VERIFY_ROW_CAP` (the exact
     /// logits-rows / meta-gap / bt-staging capacity — sizes.rs). Everything
     /// outside falls back to the per-seq loop.
+    /// `ATLAS_MTP_EP_BATCH_VERIFY=1` lets the batched verify sweep run under EP.
+    ///
+    /// Default OFF. See the conjunct in `can_batch_verify_dispatch` for why this is
+    /// opt-in rather than simply lifted.
+    pub(super) fn ep_batch_verify_enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("ATLAS_MTP_EP_BATCH_VERIFY").as_deref() == Ok("1"))
+    }
+
     pub(super) fn can_batch_verify_dispatch(&self, ks: &[usize]) -> bool {
         let n = ks.len();
         // Two admissible shapes:
@@ -92,10 +101,59 @@ impl TransformerModel {
         } else {
             ks.iter().all(|k| (2..=4).contains(k))
         };
+        // One-shot: which conjunct refused. The batched verify is selected by a
+        // silent `&&` chain, and a single false term reads downstream as
+        // "concurrency does not amortise" rather than as a specific refusal —
+        // which is exactly how much of this path's history was spent.
+        {
+            static WHY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            WHY.get_or_init(|| {
+                tracing::info!(
+                    n,
+                    ks = ?ks,
+                    n_in_range = (2..=crate::layer::VERIFY_WY_TABLE_SEQS).contains(&n),
+                    shape_ok,
+                    rows_ok = ks.iter().sum::<usize>() <= super::verify_e2::VERIFY_ROW_CAP,
+                    comm_ok = self.comm.is_none() || Self::ep_batch_verify_enabled(),
+                    lora_ok = !(self.lora.is_some() && crate::lora::no_batch_verify()),
+                    stash_ok = !self.verify_hidden_stash.is_null(),
+                    layers_ok = !self
+                        .layers
+                        .iter()
+                        .any(|l| l.decode_verify_multi_unsupported()),
+                    hss_ok = self
+                        .kv_cache
+                        .lock()
+                        .config()
+                        .cache_blocks_per_seq
+                        .is_none(),
+                    "can_batch_verify: first evaluation"
+                );
+            });
+        }
         (2..=crate::layer::VERIFY_WY_TABLE_SEQS).contains(&n)
             && shape_ok
             && ks.iter().sum::<usize>() <= super::verify_e2::VERIFY_ROW_CAP
-            && self.comm.is_none()
+            // MULTI-RANK. The bare `comm.is_none()` this replaces was
+            // introduced with the function (#388) and carries no recorded
+            // rationale beyond the doc's "the envelope verify_e was built and
+            // audited for: non-EP, ...". What it MECHANICALLY guarded is that a
+            // batched forward under EP issues per-layer all-reduces that no
+            // worker was answering — there was no command announcing a batched
+            // verify at all, so both ranks spin at ~96% util on an NCCL wait.
+            //
+            // `EP_CMD_VERIFY_BATCH` + `ep_worker_verify_batch` supply exactly
+            // that, so the gate becomes an opt-in rather than a refusal.
+            // OFF by default: this is speculation across ranks, the failure
+            // mode is a wedged pair rather than a wrong answer, and the
+            // original rationale is unrecorded — so it is earned per-deployment
+            // rather than assumed.
+            //
+            // 🪤 Requires ATLAS_EP_PROTOCOL=v2 on BOTH ranks. The command is
+            // list-shaped (sentinel preamble seq_id, routing in the payload),
+            // exactly like batched decode, and v1 has no seq_id preamble to
+            // carry it.
+            && (self.comm.is_none() || Self::ep_batch_verify_enabled())
             // LoRA is NOT a barrier here. Every weight-bearing op this path
             // batches — QKVZ, o_proj, the dense FFN, lm_head — carries its
             // delta on the batched variants (`forward_km` and the multi_seq
@@ -159,7 +217,10 @@ impl TransformerModel {
     /// state has been advanced. Logits rows stay live for row-based
     /// pipeline picks until the next forward — callers must consume them
     /// (and stash hiddens) BEFORE any propose.
-    pub(super) fn decode_verify_batched_dispatch(
+    // `pub(in crate::model)` rather than `pub(super)`: the EP worker arm lives in
+    // `model::impl_a2` and calls this directly, because the worker must run the
+    // SAME compute the head runs without re-entering the head's broadcast.
+    pub(in crate::model) fn decode_verify_batched_dispatch(
         &self,
         tokens: &[u32],
         ks: &[usize],
@@ -482,7 +543,20 @@ impl TransformerModel {
             // the body, capturing. A full cache no longer disables capture —
             // the LRU entry is destroyed at insert time (see below), so
             // slot-vector churn can never push the path permanently eager.
-            let capture = graphs.is_some();
+            // 🔴 NEVER capture under EP. A multi-rank batched verify carries
+            // its command, its operand lists and its verdicts as
+            // `ep_broadcast_*`, and every one of those is an H2D copy —
+            // `CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED` inside a capturing
+            // stream. Measured: enabling the batched verify under EP with
+            // capture left on poisoned the context on the first free
+            // (status 901 on the next memset/copy, then every later prefill).
+            //
+            // It is also a CORRECTNESS requirement independent of that: both
+            // ranks must make the SAME graph decision, or one bakes a row count
+            // and a collective schedule the other does not replay. Gating on
+            // `comm` is the same thing `decode_a2` does for its drain-tail
+            // borrow, and for the same reason.
+            let capture = graphs.is_some() && self.comm.is_none();
 
             let ctx = ForwardContext {
                 buffers: &self.buffers,

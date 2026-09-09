@@ -1071,7 +1071,11 @@ mod cc6_envelope_streak_tests {
     #[test]
     fn exact_cap_boundary() {
         assert_eq!(
-            advance_envelope_streak(false, MAX_TOOL_ENVELOPE_TOKENS - 1, MAX_TOOL_ENVELOPE_TOKENS),
+            advance_envelope_streak(
+                false,
+                MAX_TOOL_ENVELOPE_TOKENS - 1,
+                MAX_TOOL_ENVELOPE_TOKENS
+            ),
             (MAX_TOOL_ENVELOPE_TOKENS, false)
         );
         assert_eq!(

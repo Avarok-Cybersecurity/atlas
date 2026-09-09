@@ -181,6 +181,24 @@ pub(super) fn step_verify_k4_batched(
         verdicts.push((v, num_accepted, verify_lps));
     }
 
+    // ── EP: publish the verdicts before any of them is applied ──
+    //
+    // The worker ran the same batched forward and is now blocked reading one
+    // word per sequence, in the head's `seqs` order. It must learn every
+    // `num_accepted` BEFORE this rank starts rewinding, for the same reason the
+    // single-sequence K=3/K=4 steps broadcast theirs before their own rewind:
+    // the two ranks have to pop the same rows off the same sequences, and a
+    // rank that rewinds first has already changed what it would report.
+    //
+    // Unconditional once we are here — `ep_broadcast_cmd` is a no-op on a
+    // single-rank run. Skipping it on any path (an error, an EOS, an empty
+    // batch) strands the worker mid-command and wedges the pair.
+    for &(_, num_accepted, _) in verdicts.iter() {
+        if let Err(e) = model.ep_broadcast_cmd(num_accepted as u32) {
+            tracing::error!("EP broadcast of batched verify verdict failed: {e:#}");
+        }
+    }
+
     sched
         .timing
         .record(crate::scheduler::mtp_timing::Phase::PipelineProc, t_phase1);

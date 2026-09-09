@@ -419,6 +419,17 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<Vec<u32>> {
         self.ssm_pool.require_verify_rollback_supported()?;
+        // Announce the batch BEFORE the forward, so the worker is inside the
+        // same sweep and answering its collectives. Head-only: this function
+        // runs on rank 0; the worker reaches the identical
+        // `decode_verify_batched_dispatch` from its own command arm, never
+        // through here, because `ep_broadcast_*` on a worker is a RECEIVE and
+        // re-entering this path would consume words meant for the forward.
+        if self.multi_rank_protocol_active() {
+            let seq_ids: Vec<u32> = seqs.iter().map(|s| s.slot_idx as u32).collect();
+            let ks_u32: Vec<u32> = ks.iter().map(|&k| k as u32).collect();
+            self.ep_broadcast_verify_batch_dispatch(&seq_ids, &ks_u32, tokens)?;
+        }
         self.decode_verify_batched_dispatch(tokens, ks, seqs, _stream)
     }
     fn stash_verify_hidden_rows(&self, rows: &[usize], _stream: u64) -> Result<()> {

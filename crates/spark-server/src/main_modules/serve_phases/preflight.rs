@@ -378,7 +378,6 @@ pub(crate) fn preflight_reserve(
 ///   `metallib_modules()` is a plain alias of target 0, so registering from
 ///   it served another model's kernels in a multi-target build.
 #[cfg(feature = "cuda")]
-
 pub(crate) fn init_gpu_backend(
     args: &cli::ServeArgs,
     ptx_set: &atlas_kernels::TargetPtxSet,

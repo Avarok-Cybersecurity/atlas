@@ -314,6 +314,25 @@ pub const EP_CMD_MTP_PROPOSE: u32 = 0xFFFF_FFF5;
 /// EP-sharded across 144 of 288 experts.
 pub const EP_CMD_DFLASH_VERIFY: u32 = 0xFFFF_FFF7;
 
+/// Batched multi-sequence MTP verify: `n_seqs` sequences x `ks[i]` rows in ONE
+/// weight sweep.
+///
+/// LIST-SHAPED, like the batched-decode command `0xFFFF_FFE0` and unlike the
+/// per-sequence verify commands `0xFFFF_FFF2..F4`: the preamble `seq_id` is a
+/// sentinel 0 and the real routing is the `seq_ids[N]` payload, so it requires
+/// `ATLAS_EP_PROTOCOL=v2` for the same reason batched decode does.
+///
+/// Wire format, head -> worker, in this order:
+///   cmd, N, seq_ids[N], ks[N], tokens[sum ks]
+/// then AFTER the forward, one word per sequence:
+///   num_accepted[N]
+///
+/// 🪤 The verdict words are a SECOND broadcast that arrives after the head's
+/// accept walk, not part of the preamble. The worker must run the forward
+/// first and read them after — exactly as the K=3/K=4 arms do — or the two
+/// ranks disagree about how many words are still on the wire.
+pub const EP_CMD_VERIFY_BATCH: u32 = 0xFFFF_FFE1;
+
 /// Run the drafter on EVERY rank with the communicator, instead of rank-0-only
 /// with `comm: None`. **DEFAULT ON since 2026-08-29**; kill switch
 /// `ATLAS_NO_MTP_EP_PROPOSE=1` restores the rank-0-only path.
