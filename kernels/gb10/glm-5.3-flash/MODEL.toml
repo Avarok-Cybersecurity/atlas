@@ -133,6 +133,62 @@ preserve_thinking = true
 spec_think = true
 
 
+# ── Sampling ─────────────────────────────────────────────────────────────────
+#
+# 🔴 THIS FILE HAD NO `[sampling.*]` TABLE AT ALL, and that is a defect rather than an
+# omission. `ATLAS_AGENTIC_SAMPLING=model-card` deliberately omits temperature and seed
+# from the request so "the server's card presets own sampling"
+# (`benchmarks/agentic/agent.rs`). With no presets to own it, GLM fell through to the
+# CLI defaults.
+#
+# MEASURED, agentic-webserver 1 iteration, model-card + reasoning-low + preserved
+# thinking, 2026-09-08: the run PASSED (6/6 steps, 1/1 webserver_ok, 1/1
+# followed_directions) but 2 of its 15 turns DEGENERATED — one sentence repeated
+# VERBATIM 16 times, then raw GLM tool-call markup emitted as plain TEXT, then
+# `[finish] length` against max_tokens 8192. Finish reasons: 12 tool_calls / 2 length /
+# 1 stop. The loop burns the budget, so the call arrives too late to be surfaced as a
+# call at all — the verdict still passes because the agent recovers on the next turn,
+# which is exactly why the verdict alone is not evidence of a clean trace.
+#
+# 🪤 SETTING TEMPERATURE ALONE WOULD NOT HAVE FIXED IT. The CLI ships
+# `--default-min-p 0.08` and `top_n_sigma 1.0`, and a sigma filter of 1.0 truncates
+# temp-1.0 sampling back to NEAR-GREEDY — the same trap documented at length in
+# qwen3.8-flash-next's card, whose wording is followed here. Both are therefore pinned
+# OFF explicitly so the CLI defaults cannot stack on top of the card values. A preset
+# that named only temperature/top_p would have looked correct and still looped.
+#
+# Values are the CHECKPOINT'S OWN `generation_config.json` — temperature 1.0,
+# top_p 0.95 — not a guess and not borrowed from a sibling model. That card names no
+# top_k, no penalties and no tools-specific row, so none are invented here; unlike
+# Qwen's card there is no separate instruct row to fall back on for tools.
+[sampling.thinking_text]
+temperature = 1.0
+top_p = 0.95
+min_p = 0.0
+top_n_sigma = 0.0
+
+[sampling.thinking_coding]
+temperature = 1.0
+top_p = 0.95
+min_p = 0.0
+top_n_sigma = 0.0
+
+[sampling.non_thinking]
+temperature = 1.0
+top_p = 0.95
+min_p = 0.0
+top_n_sigma = 0.0
+
+# The card gives no tools-specific row. Kept at the card values rather than borrowing
+# another family's instruct row: the property under test is "not truncated to greedy",
+# and inventing a number here would make the next agentic result unattributable.
+[sampling.tools]
+temperature = 1.0
+top_p = 0.95
+min_p = 0.0
+top_n_sigma = 0.0
+
+
 [[model_types]]
 model_type = "glm5_next"
 hidden_size = 4096
