@@ -1757,3 +1757,30 @@ on current `main` and 83.92 / 84.22 under `mtp_gate=force` +
 **not** score-neutral — which is why the floors are re-cut in a second PR and
 why the History pane now draws a labelled band at the boundary instead of one
 continuous line.
+
+### Open finding, not fixed here: the MTP gate's dwell counter can switch on one probe
+
+`SWITCH_DWELL_WINDOWS = 2` is meant to require two consecutive losing windows
+before the scheduler changes arms. It does not.
+
+`arbitrate()` refuses to run when the OTHER mode's EWMA is `stale`, which looks
+like a freshness requirement and is not one. `stale` is set in exactly two
+places — a depth-regime change, and a discarded window — and cleared whenever a
+measurement is recorded. It means "the economics moved", never "this number is
+old". So a single serial probe stays non-stale indefinitely, `arbitrate()`
+re-fires against that same unchanged measurement on the next window, and
+`losing_windows` reaches 2 on the strength of ONE probe.
+
+**Deliberately not fixed on `feat/kat-equality`.** The correct fix requires a
+FRESH other-mode comparison per losing window, which changes WHEN the engine
+switches arms — a throughput-affecting change. This branch already carries
+#971's 68-file diff across the hot paths, and the plan names attribution as its
+main risk: a speed-gate movement here would already need a bisect to explain.
+Adding a second speed-affecting change makes that strictly worse, and the
+equality work does not need it. It belongs in its own PR with its own measured
+A/B.
+
+What this branch DOES ship for #835 is the comparability pin — `c{c}_accept_len`
+plus an INCONCLUSIVE verdict when a cell ran the serial arm — which is the part
+that stops an arm change being reported as a regression. That is orthogonal to
+when the switch happens.
