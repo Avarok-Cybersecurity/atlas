@@ -191,8 +191,31 @@ extern "C" __global__ void glm5next_dsa_mla_decode_fp8(
         const float exp_new = __expf(score - m_new);
         l = l * exp_old + exp_new;
 
+        // 🔴 ABSORBED MLA: K AND V ARE THE SAME LATENT. `attend.rs` is handed one pool for
+        // both (`v_cache: pool, // absorbed NoPE MLA: K and V are the same latent`) and one
+        // scale for both (`k_scale: self.kv_scale, v_scale: self.kv_scale`), so `v_tok`
+        // resolves to the byte-identical address `k_tok` did and `load_kv_fp8` would decode
+        // the byte-identical values a second time. `__restrict__` on both pointers is a
+        // PROMISE they do not alias, so the compiler is not permitted to notice they do and
+        // must emit the second load — the annotation that usually helps is what kept this
+        // alive.
+        //
+        // This kernel is the largest remaining prefill leaf and is bound by exactly this
+        // traffic: ~17 GB per launch, of which half was the same bytes twice.
+        //
+        // 🪤 BIT-IDENTICAL, not approximately equal: same address, same lane offset, same
+        // scale, so `load_kv_fp8` is a pure function of inputs that are all equal. The guard
+        // is a real runtime check rather than an assumption, so a future caller that passes
+        // genuinely distinct K/V or per-tensor scales silently keeps the correct two-load
+        // path. Both operands are kernel-uniform, so the branch costs no divergence.
+        const bool same_kv = (K_cache == V_cache) && (k_scale == v_scale);
         float v_tmp[VEC_BF16];
-        load_kv_fp8(v_tok, lane_offset, v_scale, v_tmp);
+        if (same_kv) {
+            #pragma unroll
+            for (int i = 0; i < VEC_BF16; i++) v_tmp[i] = k_tmp[i];
+        } else {
+            load_kv_fp8(v_tok, lane_offset, v_scale, v_tmp);
+        }
 
         #pragma unroll
         for (int i = 0; i < VEC_BF16; i++)
