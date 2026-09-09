@@ -213,7 +213,13 @@ pub async fn serve_for(
     }
 
     let port = atlas_plugin::benchmarks::agentic::score::free_port()?;
-    let requested = gate::merge_serve_overrides(entry.serve_overrides.clone(), overrides);
+    // `--hermetic` expands into the keys it closes BEFORE the recipe renders,
+    // so a recipe default that turns one of them on does not produce a command
+    // line contradicting itself. See `cli::hermetic::CLOSED_KEYS`.
+    let requested = crate::cli::hermetic::expand(gate::merge_serve_overrides(
+        entry.serve_overrides.clone(),
+        overrides,
+    ));
     let mut overrides = requested.clone();
     overrides.insert("port".to_string(), port.to_string());
     let serve_args = recipe.serve_args(&overrides).with_context(|| {

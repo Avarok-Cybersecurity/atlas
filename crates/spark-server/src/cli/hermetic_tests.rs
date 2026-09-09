@@ -3,7 +3,7 @@
 //! What `--hermetic` must do, and — the part that keeps it true — the guard
 //! that no production code reads the raw fields it is supposed to override.
 
-use super::{mtp_gate_force, prefix_caching_enabled};
+use super::{CLOSED_KEYS, expand, mtp_gate_force, prefix_caching_enabled};
 
 #[test]
 fn hermetic_closes_the_prefix_cache_even_when_it_was_asked_for() {
@@ -169,4 +169,102 @@ fn the_scan_matches_whole_tokens_not_prefixes() {
         "args.prefix_caching_enabled()",
         "enable_prefix_caching"
     ));
+}
+
+// ── `--hermetic` expanding into the keys it closes ─────────────────────────
+
+fn map(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
+}
+
+/// THE BUG THIS FIXES, reproduced at the unit level.
+///
+/// A gate self-starts from a recipe that turns the prefix cache ON. The
+/// rendered command line therefore read `--hermetic --enable-prefix-caching`,
+/// `validate_serve_args` refused it by its own correct rule, and `--hermetic`
+/// was unusable through the only path that self-starts. Five legs failed in 0s
+/// each before anything measured this.
+#[test]
+fn hermetic_expands_into_the_keys_it_closes() {
+    let out = expand(map(&[("hermetic", "true")]));
+    assert_eq!(
+        out.get("enable_prefix_caching").map(String::as_str),
+        Some("false")
+    );
+    assert_eq!(out.get("mtp_gate").map(String::as_str), Some("force"));
+    assert_eq!(
+        out.get("hermetic").map(String::as_str),
+        Some("true"),
+        "and the regime keeps its name"
+    );
+}
+
+/// It must not expand when it was not asked for — otherwise every gate run in
+/// the repository silently loses its prefix cache.
+#[test]
+fn nothing_expands_without_hermetic() {
+    assert_eq!(expand(map(&[])), map(&[]));
+    assert_eq!(
+        expand(map(&[("ssm_cache_slots", "256")])),
+        map(&[("ssm_cache_slots", "256")])
+    );
+    // `hermetic=false` is a request for the ordinary regime, not for hermetic.
+    assert_eq!(
+        expand(map(&[("hermetic", "false")])),
+        map(&[("hermetic", "false")])
+    );
+}
+
+/// ★ An explicit value is INTENT and must survive, so the contradiction is
+/// still refused downstream rather than silently won. A recipe default is not
+/// intent — it never reaches this map — which is exactly why expansion is safe
+/// here and would not be safe inside the recipe renderer.
+#[test]
+fn expansion_never_overwrites_a_value_someone_named() {
+    let out = expand(map(&[
+        ("hermetic", "true"),
+        ("enable_prefix_caching", "true"),
+    ]));
+    assert_eq!(
+        out.get("enable_prefix_caching").map(String::as_str),
+        Some("true"),
+        "an explicit opposite must survive to be refused, not be quietly fixed"
+    );
+    let out = expand(map(&[("hermetic", "true"), ("mtp_gate", "auto")]));
+    assert_eq!(out.get("mtp_gate").map(String::as_str), Some("auto"));
+}
+
+/// ★ THE ANTI-DRIFT GUARD. `CLOSED_KEYS` is the disclosure and the resolvers
+/// are the enforcement; two representations of one fact drift. Every key in
+/// the table must resolve, under hermetic, to the value the table claims.
+#[test]
+fn hermetic_closures_match_the_resolvers() {
+    for (key, value) in CLOSED_KEYS {
+        match *key {
+            "enable_prefix_caching" => {
+                let want: bool = value.parse().expect("a bool");
+                // The resolver is asked for the OPPOSITE of what it should
+                // return, so a resolver that ignored `hermetic` would fail.
+                assert_eq!(
+                    prefix_caching_enabled(!want, true),
+                    want,
+                    "CLOSED_KEYS says {key}={value}, the resolver disagrees"
+                );
+            }
+            "mtp_gate" => {
+                assert_eq!(
+                    mtp_gate_force(Some("auto"), true),
+                    Some(*value == "force"),
+                    "CLOSED_KEYS says {key}={value}, the resolver disagrees"
+                );
+            }
+            other => panic!(
+                "CLOSED_KEYS gained `{other}` with no resolver check — add one here, or \
+                 the disclosure and the enforcement can disagree about it"
+            ),
+        }
+    }
 }

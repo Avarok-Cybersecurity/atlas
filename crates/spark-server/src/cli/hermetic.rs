@@ -40,6 +40,48 @@
 //!
 //! So the raw fields are not read anywhere outside this module's resolvers.
 
+/// The serve keys `--hermetic` forces, and the values it forces them to.
+///
+/// ★ WHY THIS EXISTS AS WELL AS THE RESOLVERS BELOW. The resolvers are the
+/// ENFORCEMENT — they decide what the server actually does. This table is the
+/// DISCLOSURE, and it is needed because a recipe can set one of these keys
+/// itself. A gate self-starts from a recipe that turns the prefix cache on, so
+/// the rendered command line read `--hermetic --enable-prefix-caching` and
+/// `validate_serve_args` refused it — correctly, by its own rule, and the
+/// effect was that `--hermetic` could not be used through the only path that
+/// self-starts. Measured, not reasoned about: five legs failed in 0s each.
+///
+/// So a requested `hermetic=true` EXPANDS into these keys before the recipe is
+/// rendered. Two things fall out of that, both wanted: the rendered args no
+/// longer contradict, and the gate record names the closures explicitly beside
+/// the regime, so a reader does not have to know which combination constitutes
+/// a KAT.
+///
+/// It never overwrites a key someone named. A recipe DEFAULT is not intent; an
+/// explicit `--serve-override enable_prefix_caching=true` or a baseline pin
+/// IS, and beside `--hermetic` it is a real contradiction that must still be
+/// refused rather than silently won.
+///
+/// `hermetic_closures_match_the_resolvers` pins this table against the
+/// resolvers so the disclosure cannot come to disagree with the enforcement.
+pub(crate) const CLOSED_KEYS: &[(&str, &str)] =
+    &[("enable_prefix_caching", "false"), ("mtp_gate", "force")];
+
+/// Fill in the keys `--hermetic` closes, for any the caller did not name.
+pub(crate) fn expand(
+    mut requested: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    if requested.get("hermetic").map(String::as_str) != Some("true") {
+        return requested;
+    }
+    for (k, v) in CLOSED_KEYS {
+        requested
+            .entry((*k).to_string())
+            .or_insert_with(|| (*v).to_string());
+    }
+    requested
+}
+
 /// Whether the radix KV prefix cache runs.
 ///
 /// Channel M2: the prefix cache is keyed on token content with no session
