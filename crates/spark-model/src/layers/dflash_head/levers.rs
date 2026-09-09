@@ -111,7 +111,13 @@ pub struct DFlashLevers {
     /// 19.8 -> 618.7 ms (49.9 -> 5.5 tok/s) because the legacy path launches
     /// one `dense_gemv` per accumulated ctx row over a 262 MB `fc` weight.
     /// Nothing logged a change. Resolution goes through
-    /// [`super::option_b_from`] so the predicate keeps its own tests.
+    /// `super::option_b_from` so the predicate keeps its own tests.
+    ///
+    /// Deliberately NOT an intra-doc link: `option_b_from` is `pub(super)`,
+    /// and rustdoc rejects a link from public documentation to a private
+    /// item under this crate's `deny(warnings)`. Widening the function to
+    /// `pub` to satisfy the link would export a predicate the module keeps
+    /// internal on purpose — the wrong half of the trade.
     pub option_b: bool,
     /// `ATLAS_DFLASH_OPTION_B_NO_CTX=1` — force `ctx_count = 0` in the layer
     /// body so paged attention sees only the γ K/V written in-layer. If the
