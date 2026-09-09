@@ -436,6 +436,18 @@ impl ModelConfig {
     /// — radix prefix reuse and the `--swap-space-gb` spill image alike — is
     /// unsafe for those models, and this is the single fact both gates below
     /// are asking about.
+    ///
+    /// 🔒 `glm5_next` stays `false` even though the machinery to make it true now
+    /// exists. `Glm5NextLayer` implements the Marconi aux hooks
+    /// (`has_aux_state`/`snapshot_aux`/`restore_aux`, `layers/glm5next_dsa/aux_state.rs`),
+    /// so a snapshot CAN now carry the DSA indexer rows the KV pages do not — and
+    /// KDA never needed carrying, because `uses_ssm_pool()` is true for it and
+    /// `SsmSnapshotPool` already captures that region device-to-device. What is
+    /// missing is not code, it is PROOF: the round trip is verified on CPU against
+    /// `MockGpuBackend` only, and nothing has yet shown that a warm-cache GLM-5.3
+    /// serve produces the same tokens as a cold one on real hardware. Flipping this
+    /// arm before that measurement exists would trade a correct-but-slow serve for
+    /// an unproven one. Flip it in the same change that lands the GPU evidence.
     fn per_sequence_state_is_kv_complete(&self) -> bool {
         match self.model_type.as_str() {
             "glm5_next" | "glm5_next_text" => false,

@@ -351,6 +351,13 @@ impl SsmSnapshotPool {
         // Reusing a freed slot: drop any stale last-token hidden tag. The
         // caller re-populates it via `save_hidden` for leaf snapshots only.
         self.slot_has_hidden.lock().remove(&snap_slot);
+        // 🔴 And the stale aux blob, for the same reason and a worse consequence.
+        // `free` clears both, so this is belt-and-braces for the hidden tag — but the
+        // restore gate asks only `aux(snap_id).is_some()`, so a blob that outlived its
+        // slot is a CORRECTLY SIZED blob from another sequence. That passes every check
+        // downstream (`restore_aux` validates geometry and length, not provenance) and
+        // lands another sequence's PLE history or DSA indexer keys in this one.
+        self.aux_blobs.lock().remove(&snap_slot);
         for i in 0..self.num_ssm_layers {
             if h_is_f16 {
                 crate::layers::ops::ssm_h_state_f16_to_f32(

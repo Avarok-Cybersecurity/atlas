@@ -1245,6 +1245,64 @@ impl TransformerLayer for Glm5NextLayer {
         matches!(self.mixer, Glm5NextMixer::Kda { .. })
     }
 
+    /// Marconi aux state: the DSA indexer cache, and ONLY the DSA indexer cache.
+    ///
+    /// 🪤 KDA is deliberately absent. Its recurrent and conv state live in the SSM pool
+    /// (`uses_ssm_pool()` is true for `Kda`), and `SsmSnapshotPool` already captures and
+    /// restores that region device-to-device for every snapshot. Carrying it here as well
+    /// would serialize 148.75 MiB a snapshot to the host to duplicate a copy the pool
+    /// already made.
+    ///
+    /// 🔴 The indexer is the reason `per_sequence_state_is_kv_complete()` returns false for
+    /// `glm5_next`: `k_normed`/`gate` are projections of the HIDDEN state, so a KV-only
+    /// prefix-cache hit cannot reconstruct them. This hook is what would make the snapshot
+    /// complete — the gate stays shut until that is proven on GPU.
+    fn has_aux_state(&self) -> bool {
+        matches!(self.mixer, Glm5NextMixer::Dsa(_))
+    }
+
+    fn snapshot_aux(
+        &self,
+        state: &dyn LayerState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        if !matches!(self.mixer, Glm5NextMixer::Dsa(_)) {
+            return Ok(None);
+        }
+        let st = state
+            .as_any()
+            .downcast_ref::<Glm5NextDsaState>()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "GLM layer {}: a DSA mixer was handed state that is not a Glm5NextDsaState",
+                    self.layer_idx
+                )
+            })?;
+        Ok(Some(st.snapshot_blob(gpu, stream)?))
+    }
+
+    /// 🔴 Refuses rather than skipping. `apply_aux_states` propagates this with `?`, so a
+    /// blob that does not match this sequence's geometry or reservation fails the
+    /// prefix-cache hit outright. The alternative — applying it anyway — selects over
+    /// another sequence's indexer keys and answers HTTP 200 with the wrong text.
+    fn restore_aux(
+        &self,
+        state: &mut dyn LayerState,
+        blob: &[u8],
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        if !matches!(self.mixer, Glm5NextMixer::Dsa(_)) {
+            bail!(
+                "GLM layer {}: restore_aux on a KDA layer — KDA state is pool-backed and \
+                 travels with the SSM snapshot, so a blob addressed here is a routing bug",
+                self.layer_idx
+            );
+        }
+        self.dsa_state(state)?.restore_blob(blob, gpu, stream)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn decode(
         &self,
