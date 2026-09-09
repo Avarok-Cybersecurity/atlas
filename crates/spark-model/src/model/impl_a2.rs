@@ -746,9 +746,6 @@ impl TransformerModel {
                 // the two ranks' KV caches disagreeing silently, which is the failure
                 // mode this whole command exists to avoid.
                 //
-                // No SSM commit/rollback here on purpose: the head's DFlash step does
-                // not run one either (its own docs list `commit_verify_state_async` as
-                // deferred), and mirroring means doing exactly as much as the head does.
                 let pre_verify_len = seq.seq_len.saturating_sub(tokens.len());
                 let target_seq_len = pre_verify_len + num_accepted + 1;
                 let to_drop = seq.seq_len.saturating_sub(target_seq_len);
@@ -758,6 +755,19 @@ impl TransformerModel {
                     for _ in 0..pop_n {
                         seq.tokens.pop();
                     }
+                }
+
+                // 🔴 SSM state, mirroring the head. Popping tokens above does not touch
+                // `h_state`/`conv_state`, and this rank runs the SAME verify, so its
+                // recurrent state is advanced by the same `gamma + 1` rows and must be
+                // rewound by the same amount. A worker that skipped this would diverge
+                // from rank 0 on every partial accept — silently, since the ranks only
+                // compare tokens. Same contract as the K=2/K=4 arms above.
+                let drafts = tokens.len().saturating_sub(1);
+                if num_accepted == drafts {
+                    self.start_checkpoint_async(seq)?;
+                } else {
+                    self.start_rollback_and_checkpoint_async(seq, num_accepted + 1)?;
                 }
             }
             token => {
