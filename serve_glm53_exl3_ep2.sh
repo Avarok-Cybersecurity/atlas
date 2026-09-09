@@ -290,6 +290,13 @@ export ATLAS_GLM_PREFILL_ROWS="${ATLAS_GLM_PREFILL_ROWS:-256}"
 export ATLAS_GLM_MOE_PREFILL_MIN="${ATLAS_GLM_MOE_PREFILL_MIN:-64}"
 export ATLAS_EXL3_MOE_ROWS_PER_EXPERT="${ATLAS_EXL3_MOE_ROWS_PER_EXPERT:-4096}"
 
+# KV cache dtype. fp8 is the default here and halves the KV footprint, but this
+# checkpoint ships NO k_scale/v_scale, so fp8 falls back to a scale of 1.0 and
+# clips bf16 into E4M3's [-448, 448] — the boot log says so in as many words.
+# KV_DTYPE=bf16 is the control for anything that looks like a PERCEPTION or
+# coherence defect rather than a speed one.
+KV_DTYPE="${KV_DTYPE:-fp8}"
+
 # ---------------------------------------------------------------------------
 # AGENTIC=1 — loosen the decode-time GUARDS for tool-driven coding sessions.
 #
@@ -364,7 +371,7 @@ exec "$BIN" serve \
   --master-addr "$MASTER" --master-port 29500 \
   --bind 0.0.0.0 --port "$PORT" \
   --max-seq-len "$MAX_SEQ_LEN" \
-  --kv-cache-dtype fp8 \
+  --kv-cache-dtype "$KV_DTYPE" \
   --gpu-memory-utilization "$GPU_UTIL" \
   --oom-guard-mb "${OOM_GUARD_MB:-1024}" \
   --max-batch-size 1 \

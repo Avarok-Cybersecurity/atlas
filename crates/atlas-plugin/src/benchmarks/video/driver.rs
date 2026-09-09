@@ -28,6 +28,7 @@ use super::request;
 use super::score::{
     CountCell, OrderCell, Verdict as VideoVerdict, asserted, order_matches, passed, verdict,
 };
+use crate::benchmarks::vision::geometry::geometry_by_name;
 
 const SUMMARY: &str = "Video fidelity: temporal-order reading of a color sequence, group-count \
                        geometry, MP4/GIF backend parity, and a no-video control.";
@@ -92,6 +93,9 @@ pub struct VideoFidelity {
     full_tokens: Option<usize>,
     /// Merged tokens per temporal group, from the clip's known geometry.
     plane: usize,
+    /// This checkpoint family's vision geometry; a temporal group is a still,
+    /// so it uses the same profile the image ladder does.
+    geometry: crate::benchmarks::vision::geometry::VisionGeometry,
     cursor: usize,
     conc_results: Vec<LevelResult>,
     integrity: Vec<crate::benchmarks::media_integrity::Cell>,
@@ -245,6 +249,18 @@ impl Benchmark for VideoFidelity {
     fn parameters(&self) -> Vec<ParamSpec> {
         vec![
             ParamSpec::new(
+                "vision_geometry",
+                "Preprocessor geometry",
+                "Which family's preprocessor geometry a temporal group is predicted \
+                 against — the same choice the vision-fidelity ladder takes, because a \
+                 group IS a still spatially. `qwen3_vl` makes a 224x224 group 49 tokens; \
+                 `glm5` makes it 64. This figure is the unit the proportionality check is \
+                 denominated in, so pointing the wrong family at a serve mispredicts every \
+                 group.",
+                ParamKind::Choice(&["qwen3_vl", "glm5"]),
+                ParamValue::Text("qwen3_vl".into()),
+            ),
+            ParamSpec::new(
                 "max_tokens",
                 "Max tokens per reply",
                 "The color list is short by design, so this only needs to be generous \
@@ -291,7 +307,8 @@ impl Benchmark for VideoFidelity {
             bail!("max_tokens must be positive");
         }
         // Every fixture is 224x224, so one figure covers them all.
-        self.plane = tokens_per_group(224, 224, 16, 2) as usize;
+        self.geometry = geometry_by_name(values.text("vision_geometry")?)?;
+        self.plane = tokens_per_group(224, 224, self.geometry) as usize;
         self.started = Some(Instant::now());
         Ok(())
     }
