@@ -39,6 +39,11 @@ const DECODE_BLOCK: u32 = 256;
 #[derive(Clone, Copy)]
 pub struct Glm5NextDsaDecodeKernel(KernelHandle);
 
+/// Heads retired per `glm5next_dsa_mla_decode_fp8` block. MUST equal `HEADS_PER_BLOCK`
+/// in `glm5next_dsa_mla_decode.cu`: the kernel derives its head base from `blockIdx.x *
+/// HEADS_PER_BLOCK`, so a launcher that disagrees either scores a head twice or never.
+const DSA_ATTEND_HEADS_PER_BLOCK: u32 = 2;
+
 impl Glm5NextDsaDecodeKernel {
     /// Resolved with `kernel()`, never `try_kernel`: a missing sparse decode entry point
     /// must be a hard error. Falling back to a dense path would be a correctness bug
@@ -153,7 +158,15 @@ pub fn decode_attention(
     }
 
     KernelLaunch::new(gpu, kernel.0)
-        .grid([paging.num_q_heads as u32, paging.num_seqs as u32, 1])
+        // 🔴 grid.x counts HEAD GROUPS, not heads: `glm5next_dsa_mla_decode_fp8` retires
+        // `DSA_ATTEND_HEADS_PER_BLOCK` heads per block so each selected token's latent is
+        // gathered once for the group instead of once per head. MUST match the kernel's
+        // `HEADS_PER_BLOCK` — too large a grid re-scores heads, too small drops them.
+        .grid([
+            (paging.num_q_heads as u32).div_ceil(DSA_ATTEND_HEADS_PER_BLOCK),
+            paging.num_seqs as u32,
+            1,
+        ])
         .block([DECODE_BLOCK, 1, 1])
         .arg_ptr(inputs.q)
         .arg_ptr(inputs.k_cache)

@@ -466,8 +466,7 @@ pub fn select_tokens(
             // margin and only because `dsa_block_sum` needed just `nthreads/32` slots.
             // [H][PT] floats for the per-head contributions + [PT] candidacy bytes.
             .shared_mem(
-                SCORES_BLOCK
-                    .max((geom.index_heads as u32) * DSA_SCORES_PT * 4 + DSA_SCORES_PT),
+                SCORES_BLOCK.max((geom.index_heads as u32) * DSA_SCORES_PT * 4 + DSA_SCORES_PT),
             )
             .arg_ptr(inputs.q)
             .arg_ptr(scratch.pool_keys)
