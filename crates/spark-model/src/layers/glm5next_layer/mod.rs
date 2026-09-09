@@ -1487,6 +1487,26 @@ impl TransformerLayer for Glm5NextLayer {
         false
     }
 
+    /// GLM's batched multi-sequence decode runs the DSA mixer PER SEQUENCE,
+    /// against that sequence's own `Glm5NextDsaState` — `k_normed`, `gate` and
+    /// `valid` are its own allocations, and its `len` is its own — with its own
+    /// page table, its own `seq_len` and its own `attn_metadata` row. Selection
+    /// is therefore already per-sequence on this path, and a batch does not
+    /// have to leave it when some sequence passes the index budget.
+    ///
+    /// That budget is `index_topk + index_compress_ratio - 1` = 2047 here, and
+    /// before this the whole batch dropped to the per-sequence loop the moment
+    /// ANY sequence crossed it — so concurrency paid on short contexts and
+    /// silently stopped paying on long ones.
+    ///
+    /// 🪤 True because the mixer LOOPS, not because anything about selection was
+    /// made batch-aware. If `forward_n_seqs`'s DSA arm is ever collapsed into a
+    /// single batched attention call, this must go back to `false` in the same
+    /// commit unless that call carries per-row indexer state.
+    fn decode_multi_seq_selection_per_seq(&self) -> bool {
+        true
+    }
+
     /// 🔴 GLM-5.3 implements no `decode_verify_multi`, so the batched verify
     /// sweep must not be selected for it. The trait default already `bail!`s,
     /// but that is a mid-request abort; declaring it here makes

@@ -115,6 +115,28 @@ pub trait TransformerLayer: Send + Sync {
         false
     }
 
+    /// True when this layer's batched multi-sequence decode serves SPARSE
+    /// ATTENTION SELECTION per sequence — its own indexer cache, its own
+    /// selected set — so a batch may stay on the batched path even once
+    /// selection has activated.
+    ///
+    /// Default `false`, which keeps the conservative behaviour: once any
+    /// sequence is past the index budget the caller routes the whole batch to
+    /// the per-sequence loop, because a batched attention path that indexes one
+    /// shared selection would attend with the wrong sequence's chosen blocks —
+    /// and dense-past-the-budget is NOT the reference model, so silently
+    /// widening is not an acceptable fallback either.
+    ///
+    /// 🪤 This is a statement about the layer's OWN `decode_multi_seq`, not
+    /// about the model. Answering `true` while the batched path still reads a
+    /// single shared indexer state is the failure this flag exists to make
+    /// explicit: it is length-dependent, so it is correct on short contexts and
+    /// silently wrong on long ones — exactly the cliff the `hc_perseq` hoist
+    /// comment warns about.
+    fn decode_multi_seq_selection_per_seq(&self) -> bool {
+        false
+    }
+
     /// True when this layer cannot serve a BATCHED multi-sequence VERIFY
     /// sweep (`decode_verify_multi`). Consumed by
     /// `can_batch_verify_dispatch`; a `true` layer falls back to the

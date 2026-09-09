@@ -238,6 +238,12 @@ pub fn bf16_gemm_act_weight_t_f32_out(
 }
 
 /// Shared body of the two wrappers above; `out_dtype` selects the D layout.
+///
+/// One argument over the lint's limit, and the same shape the FP8 entry points
+/// in this file already carry the allow for: every one is a distinct GEMM
+/// operand or dimension, so bundling them into a struct would only move the
+/// same list one level down and cost the call sites a constructor.
+#[allow(clippy::too_many_arguments)]
 fn gemm_act_weight_t_out(
     act: u64,
     weight: u64,

@@ -98,9 +98,19 @@ impl TransformerModel {
         // `index_topk + index_compress_ratio - 1`, so a declining model would
         // be correct on long contexts and silently wrong on short ones.
         let ms_layer_veto = self.layers.iter().any(|l| l.decode_multi_seq_unsupported());
+        // Selection having ACTIVATED only forces the per-seq loop when the
+        // layers cannot serve it per-sequence themselves. A layer whose batched
+        // decode already runs the mixer against each sequence's own indexer
+        // state (GLM's does) stays on the batched path past the index budget —
+        // which is where concurrency used to stop paying.
+        let ms_selection_per_seq = self
+            .layers
+            .iter()
+            .all(|l| l.decode_multi_seq_selection_per_seq());
         let hc_perseq = ms_layer_veto
             || (self.config.hc_mult > 0
-                && (qsa_active || std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1")));
+                && ((qsa_active && !ms_selection_per_seq)
+                    || std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1")));
         // Which route a multi-sequence step actually took, once per process.
         //
         // Worth a permanent line because the route is invisible from outside and
