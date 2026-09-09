@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { describe, expect, it } from 'bun:test';
-import { NEVER_CACHED, shouldPrecache, strategyFor } from './strategy.js';
+import { HOST_CONFIG_FILES, NEVER_CACHED, shouldPrecache, strategyFor } from './strategy.js';
 
 describe('strategyFor', () => {
   // The rule with a consequence outside the browser: a cached installer is a
@@ -59,5 +59,27 @@ describe('shouldPrecache', () => {
     for (const p of ['/logo.svg', '/favicon.ico', '/site.webmanifest', '/llms.txt']) {
       expect(shouldPrecache(p)).toBe(true);
     }
+  });
+});
+
+// The host's own config files. These sit in `static/`, so SvelteKit hands them
+// to the worker in `files`, and Cloudflare Pages answers 404 for them because
+// it consumed them at deploy time. `cache.addAll()` rejects atomically, so a
+// single 404 in the precache list costs the site its entire service worker —
+// no offline, no precache, on every visit. The cost is total and the symptom is
+// silent, which is why this is asserted rather than left to review.
+describe('host configuration files', () => {
+  it('keeps _headers and _redirects out of the precache', () => {
+    for (const p of HOST_CONFIG_FILES) {
+      expect(shouldPrecache(p)).toBe(false);
+    }
+  });
+
+  // Discrimination control: an exclusion written as a substring or prefix would
+  // also drop real routes. `/_headers` must not shadow a page that merely
+  // starts with the same letters.
+  it('excludes them exactly, not by prefix', () => {
+    expect(shouldPrecache('/_headers-guide.html')).toBe(true);
+    expect(shouldPrecache('/docs/_redirects')).toBe(true);
   });
 });

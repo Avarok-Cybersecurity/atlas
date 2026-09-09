@@ -12,6 +12,24 @@
 /** Paths that must never be served or stored by the worker. */
 export const NEVER_CACHED = ['/install.sh', '/install.ps1', '/quickstart.sh'];
 
+/**
+ * Files the host reads as configuration and never serves back.
+ *
+ * `_headers` and `_redirects` live in `static/`, so SvelteKit lists them in
+ * `$service-worker`'s `files` and they would otherwise be precached. Cloudflare
+ * Pages consumes both at deploy time and answers 404 for them — measured, not
+ * assumed — and `cache.addAll()` rejects ATOMICALLY on a single non-2xx, so one
+ * 404 here costs the site its entire worker: no precache and no offline, on
+ * every visit, silently.
+ *
+ * Worth knowing how narrowly that was true: before this site shipped a
+ * `404.html`, Pages answered every unmatched path with index.html and a 200,
+ * and these two would have been cached as copies of the front page instead —
+ * wasteful rather than fatal. The 404 document is what makes the failure mode
+ * the dangerous one, so the two changes belong to the same commit.
+ */
+export const HOST_CONFIG_FILES = ['/_headers', '/_redirects'];
+
 /** Assets whose filenames carry a content hash, so their bytes never change. */
 const IMMUTABLE_PREFIX = '/_app/immutable/';
 
@@ -48,5 +66,6 @@ export function shouldPrecache(path) {
   // feature is used, not at install for everyone.
   if (path.includes('og-image')) return false;
   if (path.startsWith('/lattice/')) return false;
+  if (HOST_CONFIG_FILES.includes(path)) return false;
   return !NEVER_CACHED.includes(path);
 }

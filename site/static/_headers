@@ -1,0 +1,83 @@
+# Cloudflare Pages equivalent of the nginx vhost alongside this file.
+#
+# WHY Cache-Control IS NOT ON `/*`, WHICH LOOKS LIKE THE OBVIOUS PLACE FOR IT:
+# Pages CONCATENATES a header that a later rule re-declares, it does not replace
+# it. With `Cache-Control: public, max-age=300` on `/*`, a hashed asset came back
+# as "public, max-age=300, public, max-age=31536000, immutable" — and a browser
+# reads the first max-age, so the year-long assets were being held for five
+# minutes. Measured on the deployed site; the header gate could not see it,
+# because it tests with a substring match. `! Cache-Control` is not the fix
+# either: in the same block it suppresses the value being set, and the asset
+# falls back to `no-store`. So each cache class names its own paths, and
+# blog/e2e/check-headers.mjs walks the sitemap to catch a route that grew a
+# document without growing a rule.
+#
+# Security headers DO belong on `/*`: they are declared once and never
+# overridden, so nothing concatenates. This is the inverse of the nginx defect
+# these guard — there, one location-level Cache-Control silently discarded every
+# add_header above it.
+
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: SAMEORIGIN
+  X-XSS-Protection: 0
+  Referrer-Policy: strict-origin-when-cross-origin
+
+# Documents. Both spellings of each route: Pages serves control.html at
+# /control, and a visitor or a link can ask for either.
+/
+  Cache-Control: public, max-age=300
+/index.html
+  Cache-Control: public, max-age=300
+/control
+  Cache-Control: public, max-age=300
+/control.html
+  Cache-Control: public, max-age=300
+/diligence
+  Cache-Control: public, max-age=300
+/diligence.html
+  Cache-Control: public, max-age=300
+/robots.txt
+  Cache-Control: public, max-age=300
+/site.webmanifest
+  Cache-Control: public, max-age=300
+/llms.txt
+  Cache-Control: public, max-age=300
+  Content-Type: text/plain; charset=utf-8
+/sitemap.xml
+  Cache-Control: public, max-age=300
+  Content-Type: application/xml
+
+/_app/immutable/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The 763 KB LatticeDB wasm, sha256-pinned and re-vendored per build, so a
+# change arrives as different bytes at the same URL — a month, not a year.
+/lattice/*
+  Cache-Control: public, max-age=2592000
+
+/*.png
+  Cache-Control: public, max-age=2592000
+/*.webp
+  Cache-Control: public, max-age=2592000
+/*.svg
+  Cache-Control: public, max-age=2592000
+/*.ico
+  Cache-Control: public, max-age=2592000
+
+# Keyed to the build version, and the mechanism by which a deploy is noticed.
+# Cached at all, it pins visitors to the worker that shipped before it.
+/service-worker.js
+  Cache-Control: no-cache
+
+# Piped straight into a shell. Whoever runs this must get what the server holds
+# at that moment, never an edge copy — the same rule NEVER_CACHED enforces in
+# the service worker (site/src/lib/sw/strategy.js).
+/install.sh
+  Cache-Control: no-store
+  Content-Type: text/x-shellscript; charset=utf-8
+/install.ps1
+  Cache-Control: no-store
+/quickstart.sh
+  Cache-Control: no-store
+  Content-Type: text/x-shellscript; charset=utf-8
