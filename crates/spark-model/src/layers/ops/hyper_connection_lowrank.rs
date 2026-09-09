@@ -43,14 +43,15 @@ pub(crate) fn hc_decode_split_forced() -> bool {
 }
 
 // provenance-id: 526f6e616c6420522e205374657369616b
-/// `ATLAS_HC_DECODE_ROWS=1`: decode-shaped (T <= 8) collapse that reads every
-/// low-rank weight row ONCE per site with 16-byte lane loads and applies it to
-/// all T tokens (`hc_dec_down` / `hc_dec_up`, see the kernel file). Opt-in
-/// while it is A/B'd against the cuBLASLt arm; the shape contract below falls
-/// back to the existing arms for anything it does not cover.
+/// Decode-shaped (T <= 8) collapse that reads every low-rank weight row ONCE
+/// per site with 16-byte lane loads and applies it to all T tokens
+/// (`hc_dec_down` / `hc_dec_up`, see the kernel file). ON by default;
+/// `ATLAS_HC_DECODE_ROWS=0` restores the cuBLASLt arm (the A/B and rollback
+/// switch). The shape contract below falls back to the existing arms for
+/// anything it does not cover.
 pub(crate) fn hc_decode_rows_enabled() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_HC_DECODE_ROWS").as_deref() == Ok("1"))
+    *V.get_or_init(|| std::env::var("ATLAS_HC_DECODE_ROWS").as_deref() != Ok("0"))
 }
 
 /// Maximum row count the decode-rows arm handles in one launch pair

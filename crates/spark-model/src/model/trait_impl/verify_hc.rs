@@ -888,7 +888,7 @@ impl TransformerModel {
             // slots, so row `t` is a pointer bump of `t*4` / `t*8`. Only the
             // device `seq_len` differs in KIND between the two shapes, and it
             // is uploaded above.
-            // K-ROW ATTENTION BODY (`ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS=1`): the
+            // K-ROW ATTENTION BODY (default on; `ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS=0` disables): the
             // hyper-connection sites, the norms and the FFN run once at T=K
             // (the GDN layers' dispatch); only the attention core stays per
             // row. Same rows, same metadata, same highway rows as the loop
@@ -906,7 +906,7 @@ impl TransformerModel {
                 SAID_ROWS.call_once(|| {
                     tracing::info!(
                         "mHC verify: attention layers run the K-ROW body \
-                         (ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS=1), first pass k={k}"
+                         (default on; ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS=0 disables), first pass k={k}"
                     );
                 });
                 let row_metas: Vec<AttnMetadataDev> = (0..k)

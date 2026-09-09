@@ -34,20 +34,21 @@ use super::multi_seq::ctx::MultiSeqCtx;
 use crate::layer::{AttnMetadataDev, ForwardContext, LayerState};
 use crate::layers::ops;
 
-/// `ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS=1`: K-row attention body under the mHC
-/// verify. Opt-in while it is A/B'd against the per-row decode bodies.
+/// K-row attention body under the mHC verify. ON by default;
+/// `ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS=0` restores the per-row decode bodies
+/// (the A/B and rollback switch).
 pub fn verify_attn_rows_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS").as_deref() != Ok("0"))
 }
 
-/// `ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS_QKV=1`: inside the K-row body, also run
-/// the attention projections at T=K through the multi-sequence phases (QKV,
-/// RoPE, cache write, o_proj batched; paged decode per row). Opt-in on top of
-/// `ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS=1`.
+/// Inside the K-row body, also run the attention projections at T=K through
+/// the multi-sequence phases (QKV, RoPE, cache write, o_proj batched; paged
+/// decode per row). ON by default; `ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS_QKV=0`
+/// keeps the K-row body with per-row projections. Needs the K-row body.
 pub fn verify_attn_rows_qkv_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS_QKV").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS_QKV").as_deref() != Ok("0"))
 }
 
 impl Qwen3AttentionLayer {
@@ -306,7 +307,7 @@ impl Qwen3AttentionLayer {
         SAID.call_once(|| {
             tracing::info!(
                 "mHC verify: attention projections BATCHED at T=K through the multi-seq phases \
-                 (ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS_QKV=1), first pass k={k}"
+                 (default on; ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS_QKV=0 disables), first pass k={k}"
             );
         });
         let h = ctx.config.hidden_size;

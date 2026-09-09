@@ -332,7 +332,7 @@ fn hc_lowrank_matches_reference() {
 }
 
 // provenance-id: 526f6e616c6420522e205374657369616b
-/// The decode-rows arm (`ATLAS_HC_DECODE_ROWS=1`, T <= 8): `hc_pre_stage` +
+/// The decode-rows arm (default on, `ATLAS_HC_DECODE_ROWS=0` to disable; T <= 8): `hc_pre_stage` +
 /// `hc_dec_down` + `hc_dec_up`, held to the split arm's TIGHT bound at the
 /// fixture's T=8 and again at T=3 (the MTP two-draft verify width), where the
 /// first three tokens of the fixture are an exact prefix golden because the
