@@ -565,3 +565,48 @@ fn hc_rows_t3_rows_equal_t1_rows() {
         println!("{site}: T=3 rows byte-identical to T=1 rows ({rows} rows)");
     }
 }
+
+/// Microbench of the decode-rows arm (2026-09-09): wall time per
+/// `hc_pre_rows` call (hc_pre_stage + hc_dec_down + hc_dec_up) at T=3 on the
+/// attn site, 500 launches after a warmup. A number to compare kernel
+/// variants against, beside the reference test above.
+#[test]
+#[ignore]
+fn hc_rows_microbench() {
+    let f = Fixture::load();
+    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
+        "qwen3.8-flash-next/nvfp4 is not in this build",
+    );
+    let gpu =
+        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+    let g: &dyn GpuBackend = &gpu;
+    let stream = g.default_stream();
+    let (h, hc) = (f.h, f.hc);
+    let streams = upload(g, &f.bytes("streams"));
+    let y_out = g.alloc(8 * h * 2).unwrap();
+    let inj_out = g.alloc(8 * hc * 4).unwrap();
+    let scratch = g.alloc(64 * (hc * h + f.rank) * 4).unwrap();
+    let w = site_weights(g, &f, "attn", true);
+    for rows in [3u32, 1u32] {
+        for _ in 0..50 {
+            super::hyper_connection_lowrank::hc_pre_rows(
+                g, streams, &w, y_out, inj_out, scratch, rows, h as u32, hc as u32, f.eps, true,
+                stream,
+            )
+            .unwrap();
+        }
+        g.synchronize(stream).unwrap();
+        let n = 500;
+        let t0 = std::time::Instant::now();
+        for _ in 0..n {
+            super::hyper_connection_lowrank::hc_pre_rows(
+                g, streams, &w, y_out, inj_out, scratch, rows, h as u32, hc as u32, f.eps, true,
+                stream,
+            )
+            .unwrap();
+        }
+        g.synchronize(stream).unwrap();
+        let us = t0.elapsed().as_secs_f64() * 1e6 / n as f64;
+        println!("hc_pre_rows attn site T={rows}: {us:.1} us per call (3 launches)");
+    }
+}

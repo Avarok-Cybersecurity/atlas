@@ -56,6 +56,10 @@ pub(crate) fn hc_decode_rows_enabled() -> bool {
 /// Maximum row count the decode-rows arm handles in one launch pair
 /// (`QHC_DEC_MAX_T` in the kernel file).
 pub(crate) const HC_DEC_MAX_T: u32 = 8;
+/// `hc_dec_down`: warps per weight row (kernel `QHC_DOWN_SPLIT`).
+const HC_DOWN_SPLIT: u32 = 4;
+/// `hc_dec_up`: hidden columns per block (kernel `QHC_UP_D_PER_BLOCK`).
+const HC_UP_D_PER_BLOCK: u32 = 8;
 
 /// The decode-rows arm's shape contract (mirrors the kernel-file comment):
 /// `hc*H % 256 == 0` (256 elements per warp step), `H % 16 == 0` (16 outputs
@@ -64,9 +68,10 @@ pub(crate) const HC_DEC_MAX_T: u32 = 8;
 pub(crate) fn hc_decode_rows_shape_ok(num_tokens: u32, hidden_size: u32, hc_mult: u32, rank: u32) -> bool {
     let hc_dim = hc_mult * hidden_size;
     (1..=HC_DEC_MAX_T).contains(&num_tokens)
-        && hc_dim % 256 == 0
-        && hidden_size % 16 == 0
-        && rank % 32 == 0
+        && hc_dim % (HC_DOWN_SPLIT * 256) == 0
+        && hidden_size % HC_UP_D_PER_BLOCK == 0
+        && rank % 64 == 0
+        && rank <= 512
         && (1..=8).contains(&hc_mult)
 }
 
@@ -120,12 +125,14 @@ pub(crate) fn hc_pre_rows(
         .arg_f32(norm_eps)
         .launch(stream)?;
 
-    // One warp per weight row: rank rows plus (when injecting) hc inject rows.
+    // HC_DOWN_SPLIT warps per weight row (a contiguous slice each, partials
+    // summed in a fixed order through shared memory): rank rows plus (when
+    // injecting) hc inject rows, 8 warps per block.
     let rows = rank + if inject { hc_mult } else { 0 };
-    let warps_per_block = 8u32;
+    let rows_per_block = 8 / HC_DOWN_SPLIT;
     KernelLaunch::new(gpu, k_down)
-        .grid([rows.div_ceil(warps_per_block), 1, 1])
-        .block([warps_per_block * 32, 1, 1])
+        .grid([rows.div_ceil(rows_per_block), 1, 1])
+        .block([256, 1, 1])
         .arg_ptr(normed)
         .arg_ptr(w.down_w)
         .arg_ptr(if inject { w.inject_w } else { DevicePtr::NULL })
@@ -137,11 +144,13 @@ pub(crate) fn hc_pre_rows(
         .arg_u32(rank)
         .launch(stream)?;
 
-    // Four threads per (stream, d) row, 16 outputs per block (block = hc*64);
-    // quarter-row partials reduce by shuffle, the stream mean in smem.
-    let smem = (HC_DEC_MAX_T * rank + hc_mult * 16 * HC_DEC_MAX_T) * 4;
+    // Eight lanes per (stream, d) row (one contiguous 128-byte segment per
+    // load instruction), four rows per warp, HC_UP_D_PER_BLOCK outputs per
+    // block (block = hc*64); chunk partials reduce by shuffle, the stream
+    // mean in smem.
+    let smem = (HC_DEC_MAX_T * rank + hc_mult * HC_UP_D_PER_BLOCK * HC_DEC_MAX_T) * 4;
     KernelLaunch::new(gpu, k_up)
-        .grid([hidden_size / 16, 1, 1])
+        .grid([hidden_size / HC_UP_D_PER_BLOCK, 1, 1])
         .block([hc_mult * 64, 1, 1])
         .shared_mem(smem)
         .arg_ptr(normed)

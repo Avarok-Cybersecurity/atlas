@@ -659,6 +659,22 @@ __device__ __forceinline__ void qhc_unpack8(const uint4 raw, float* w) {
     }
 }
 
+// hc_dec_down (2026-09-09 rework): QHC_DOWN_SPLIT warps per weight row.
+// The single-warp-per-row form issued 32 dependent 16-byte loads per lane
+// (hc_dim = 8192) with no unrolling and put only rows/8 blocks on the machine
+// (41 blocks for rank 320 + 4 inject rows on 48 SMs): latency-bound at
+// 34.8 us against a ~19 us floor for the 5.3 MB of weights (09-08 trace).
+// Now each row is a contiguous slice per warp (hc_dim / QHC_DOWN_SPLIT), the
+// slice's loads are issued QHC_DOWN_UNROLL at a time, and the split partials
+// are summed in a fixed order through shared memory, so every token sees the
+// same reduction order (the T=3-vs-T=1 byte test) regardless of T.
+//
+// Grid: ceil(rows / QHC_DOWN_ROWS_PER_BLOCK)   Block: 256 (8 warps)
+// Contract: hc_dim % (QHC_DOWN_SPLIT * 256) == 0.
+#define QHC_DOWN_SPLIT 4
+#define QHC_DOWN_ROWS_PER_BLOCK (8 / QHC_DOWN_SPLIT)
+#define QHC_DOWN_UNROLL 8
+
 extern "C" __global__ void hc_dec_down(
     const float* __restrict__ normed,          // [T, hc*H] F32
     const __nv_bfloat16* __restrict__ down_w,  // [rank, hc*H]
@@ -670,47 +686,77 @@ extern "C" __global__ void hc_dec_down(
     const unsigned int hc,
     const unsigned int rank
 ) {
+    __shared__ float smem_part[QHC_DOWN_ROWS_PER_BLOCK][QHC_DOWN_SPLIT][QHC_DEC_MAX_T];
     const unsigned int lane = threadIdx.x & 31u;
     const unsigned int warp = threadIdx.x >> 5;
-    const unsigned int warps = blockDim.x >> 5;
-    const unsigned int row = blockIdx.x * warps + warp;
+    const unsigned int row_in_block = warp / QHC_DOWN_SPLIT;
+    const unsigned int part = warp % QHC_DOWN_SPLIT;
+    const unsigned int row = blockIdx.x * QHC_DOWN_ROWS_PER_BLOCK + row_in_block;
     const unsigned int total = rank + (inject_w != nullptr ? hc : 0u);
-    if (row >= total) return;
-    const bool is_inj = row >= rank;
-    const __nv_bfloat16* wrow = is_inj
-        ? inject_w + (size_t)(row - rank) * hc_dim
-        : down_w + (size_t)row * hc_dim;
+    const bool live = row < total;
 
     float acc[QHC_DEC_MAX_T];
     #pragma unroll
     for (int t = 0; t < QHC_DEC_MAX_T; ++t) acc[t] = 0.0f;
 
-    // Each lane owns 8 consecutive elements per iteration: one 16-byte weight
-    // load and two float4 loads per token. 32 lanes x 8 = 256 elements/step.
-    for (unsigned int i = lane * 8u; i < hc_dim; i += 256u) {
-        float w[8];
-        qhc_unpack8(*reinterpret_cast<const uint4*>(wrow + i), w);
-        #pragma unroll
-        for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
-            if (t < (int)num_tokens) {
-                const float* nx = normed + (size_t)t * hc_dim + i;
-                const float4 a = *reinterpret_cast<const float4*>(nx);
-                const float4 b = *reinterpret_cast<const float4*>(nx + 4);
-                acc[t] += w[0] * a.x + w[1] * a.y + w[2] * a.z + w[3] * a.w
-                        + w[4] * b.x + w[5] * b.y + w[6] * b.z + w[7] * b.w;
+    if (live) {
+        const bool is_inj = row >= rank;
+        const __nv_bfloat16* wrow = is_inj
+            ? inject_w + (size_t)(row - rank) * hc_dim
+            : down_w + (size_t)row * hc_dim;
+        const unsigned int seg = hc_dim / QHC_DOWN_SPLIT;
+        const unsigned int base = part * seg;
+        const unsigned int end = base + seg;
+        // Each lane owns 8 consecutive elements per iteration (one 16-byte
+        // weight load, two float4 loads per token); the warp covers 256
+        // elements per iteration and QHC_DOWN_UNROLL iterations are in flight.
+        for (unsigned int i0 = base + lane * 8u; i0 < end; i0 += 256u * QHC_DOWN_UNROLL) {
+            uint4 raw[QHC_DOWN_UNROLL];
+            #pragma unroll
+            for (int u = 0; u < QHC_DOWN_UNROLL; ++u) {
+                const unsigned int i = i0 + 256u * u;
+                raw[u] = (i < end) ? *reinterpret_cast<const uint4*>(wrow + i)
+                                   : make_uint4(0u, 0u, 0u, 0u);
+            }
+            #pragma unroll
+            for (int u = 0; u < QHC_DOWN_UNROLL; ++u) {
+                const unsigned int i = i0 + 256u * u;
+                if (i < end) {
+                    float w[8];
+                    qhc_unpack8(raw[u], w);
+                    #pragma unroll
+                    for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
+                        if (t < (int)num_tokens) {
+                            const float* nx = normed + (size_t)t * hc_dim + i;
+                            const float4 a = *reinterpret_cast<const float4*>(nx);
+                            const float4 b = *reinterpret_cast<const float4*>(nx + 4);
+                            acc[t] += w[0] * a.x + w[1] * a.y + w[2] * a.z + w[3] * a.w
+                                    + w[4] * b.x + w[5] * b.y + w[6] * b.z + w[7] * b.w;
+                        }
+                    }
+                }
             }
         }
     }
-    const float inv_hc = 1.0f / (float)hc;
     #pragma unroll
     for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
-        if (t < (int)num_tokens) {
-            float v = acc[t];
-            #pragma unroll
-            for (int off = 16; off > 0; off >>= 1) {
-                v += __shfl_down_sync(0xFFFFFFFFu, v, off);
-            }
-            if (lane == 0) {
+        float v = acc[t];
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1) {
+            v += __shfl_down_sync(0xFFFFFFFFu, v, off);
+        }
+        if (lane == 0) smem_part[row_in_block][part][t] = v;
+    }
+    __syncthreads();
+    if (live && part == 0 && lane == 0) {
+        const bool is_inj = row >= rank;
+        const float inv_hc = 1.0f / (float)hc;
+        #pragma unroll
+        for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
+            if (t < (int)num_tokens) {
+                float v = 0.0f;
+                #pragma unroll
+                for (int q = 0; q < QHC_DOWN_SPLIT; ++q) v += smem_part[row_in_block][q][t];
                 if (is_inj) {
                     inj_out[(size_t)t * hc + (row - rank)] = 2.0f * qhc_sigmoid(v * inv_hc);
                 } else {
@@ -720,6 +766,24 @@ extern "C" __global__ void hc_dec_down(
         }
     }
 }
+
+// hc_dec_up (2026-09-09 rework): EIGHT lanes per up_w row, four rows per
+// warp, QHC_UP_D_PER_BLOCK hidden columns per block.
+// The quarter-row form (four lanes per row, 16 columns per block, grid H/16
+// = 128 blocks) read 5.2 MB of weights at 47.9 us (09-08 trace) against a
+// ~19 us floor: each load instruction touched four 160-byte-strided 16-byte
+// chunks per row and the grid was under three blocks per SM. Now the eight
+// lanes of a row read one contiguous 128-byte segment per instruction (rank
+// 320 = 5 segments per row), all of a lane's loads are issued before the
+// FMAs, and the grid is H/8 = 256 blocks of hc*64 threads.
+//
+// Block: hc * 64 threads = 2*hc warps; warp w: stream s = w / 2, columns
+// d = blockIdx.x*8 + (w % 2)*4 + lane/8; lane % 8 = the 16-byte chunk lane.
+// Grid: H / 8.  Contract: H % 8 == 0, rank % 64 == 0 (each lane's rank/8
+// elements are 16-byte aligned), hc <= 8 (block <= 512).
+#define QHC_UP_D_PER_BLOCK 8
+#define QHC_UP_LANES_PER_ROW 8
+#define QHC_UP_MAX_CHUNKS 8   // rank <= 512 = 8 lanes x 8 chunks x 8 elements
 
 extern "C" __global__ void hc_dec_up(
     const float* __restrict__ normed,          // [T, hc*H] F32
@@ -731,80 +795,85 @@ extern "C" __global__ void hc_dec_up(
     const unsigned int hc,
     const unsigned int rank
 ) {
-    // blockDim.x == hc * 64. Thread (s = tid / 64, dl = (tid % 64) / 4,
-    // q = tid % 4) owns a QUARTER of up_w row s*H + d, d = blockIdx.x*16 + dl:
-    // rank/4 consecutive elements, so the four lanes of a row read adjacent
-    // 16-byte chunks (coalesced within the row) and the block keeps 4x the
-    // loads in flight of a thread-per-row layout. The four partials reduce
-    // with two xor-shuffles (lanes q = 0..3 are adjacent), the stream mean
-    // reduces in shared memory. Grid = H / 16.
     extern __shared__ float qhc_dec_smem[];
     float* smem_low = qhc_dec_smem;                                  // [T, rank]
-    float* smem_part = qhc_dec_smem + (size_t)QHC_DEC_MAX_T * rank;  // [hc*16, QHC_DEC_MAX_T]
+    float* smem_part = qhc_dec_smem + (size_t)QHC_DEC_MAX_T * rank;  // [hc*8, QHC_DEC_MAX_T]
     const unsigned int tid = threadIdx.x;
-    const unsigned int s = tid >> 6;
-    const unsigned int dl = (tid & 63u) >> 2;
-    const unsigned int q = tid & 3u;
+    const unsigned int lane = tid & 31u;
+    const unsigned int warp = tid >> 5;
+    const unsigned int s = warp >> 1;
+    const unsigned int dl = (warp & 1u) * 4u + (lane >> 3);   // 0..7
+    const unsigned int c = lane & 7u;                          // chunk lane
     const unsigned int H = hidden_size;
     const unsigned int hc_dim = hc * H;
-    const unsigned int d = blockIdx.x * 16u + dl;
+    const unsigned int d = blockIdx.x * QHC_UP_D_PER_BLOCK + dl;
     const unsigned int i = s * H + d;
-    const unsigned int slice = rank >> 2;   // rank % 32 == 0 => slice % 8 == 0
+    const unsigned int slice = rank / QHC_UP_LANES_PER_ROW;    // rank % 64 == 0 => slice % 8 == 0
+    const unsigned int chunks = slice >> 3;
 
     for (unsigned int k = tid; k < num_tokens * rank; k += blockDim.x) {
         smem_low[k] = low[k];
     }
     __syncthreads();
 
+    const __nv_bfloat16* urow = up_w + (size_t)i * rank + (size_t)c * slice;
+    uint4 raw[QHC_UP_MAX_CHUNKS];
+    #pragma unroll
+    for (int u = 0; u < QHC_UP_MAX_CHUNKS; ++u) {
+        raw[u] = (u < (int)chunks) ? *reinterpret_cast<const uint4*>(urow + 8u * u)
+                                   : make_uint4(0u, 0u, 0u, 0u);
+    }
     float acc[QHC_DEC_MAX_T];
     #pragma unroll
     for (int t = 0; t < QHC_DEC_MAX_T; ++t) acc[t] = 0.0f;
-
-    const __nv_bfloat16* urow = up_w + (size_t)i * rank + (size_t)q * slice;
-    const unsigned int r0 = q * slice;
-    #pragma unroll 2
-    for (unsigned int r = 0; r < slice; r += 8u) {
-        float w[8];
-        qhc_unpack8(*reinterpret_cast<const uint4*>(urow + r), w);
-        #pragma unroll
-        for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
-            if (t < (int)num_tokens) {
-                const float* lo = smem_low + (size_t)t * rank + r0 + r;
-                acc[t] += w[0] * lo[0] + w[1] * lo[1] + w[2] * lo[2] + w[3] * lo[3]
-                        + w[4] * lo[4] + w[5] * lo[5] + w[6] * lo[6] + w[7] * lo[7];
+    const unsigned int r0 = c * slice;
+    #pragma unroll
+    for (int u = 0; u < QHC_UP_MAX_CHUNKS; ++u) {
+        if (u < (int)chunks) {
+            float w[8];
+            qhc_unpack8(raw[u], w);
+            #pragma unroll
+            for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
+                if (t < (int)num_tokens) {
+                    const float* lo = smem_low + (size_t)t * rank + r0 + 8u * u;
+                    acc[t] += w[0] * lo[0] + w[1] * lo[1] + w[2] * lo[2] + w[3] * lo[3]
+                            + w[4] * lo[4] + w[5] * lo[5] + w[6] * lo[6] + w[7] * lo[7];
+                }
             }
         }
     }
-    // Reduce the four quarter-row partials (adjacent lanes q = 0..3).
+    // Reduce the eight chunk partials (adjacent lanes c = 0..7).
     #pragma unroll
     for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
         if (t < (int)num_tokens) {
             float v = acc[t];
             v += __shfl_xor_sync(0xFFFFFFFFu, v, 1);
             v += __shfl_xor_sync(0xFFFFFFFFu, v, 2);
+            v += __shfl_xor_sync(0xFFFFFFFFu, v, 4);
             acc[t] = v;
         }
     }
-    if (q == 0) {
+    if (c == 0) {
         #pragma unroll
         for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
             if (t < (int)num_tokens) {
-                smem_part[((size_t)s * 16u + dl) * QHC_DEC_MAX_T + t] =
+                smem_part[((size_t)s * QHC_UP_D_PER_BLOCK + dl) * QHC_DEC_MAX_T + t] =
                     qhc_sigmoid(acc[t]) * normed[(size_t)t * hc_dim + i];
             }
         }
     }
     __syncthreads();
-    if (s == 0 && q == 0) {
+    if (tid < QHC_UP_D_PER_BLOCK) {
+        const unsigned int dd = blockIdx.x * QHC_UP_D_PER_BLOCK + tid;
         const float inv_hc = 1.0f / (float)hc;
         #pragma unroll
         for (int t = 0; t < QHC_DEC_MAX_T; ++t) {
             if (t < (int)num_tokens) {
                 float mixed = 0.0f;
                 for (unsigned int s2 = 0; s2 < hc; ++s2) {
-                    mixed += smem_part[((size_t)s2 * 16u + dl) * QHC_DEC_MAX_T + t];
+                    mixed += smem_part[((size_t)s2 * QHC_UP_D_PER_BLOCK + tid) * QHC_DEC_MAX_T + t];
                 }
-                y_out[(size_t)t * H + d] = __float2bfloat16(mixed * inv_hc);
+                y_out[(size_t)t * H + dd] = __float2bfloat16(mixed * inv_hc);
             }
         }
     }
