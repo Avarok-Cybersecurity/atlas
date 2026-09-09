@@ -431,6 +431,19 @@ jobs:
             --commit-dirty=true
 
   deploy-origin:
+    # The environment is what makes DEPLOY_SSH_* visible: environment secrets
+    # reach ONLY jobs that declare the environment holding them. Splitting the
+    # rsync into its own job dropped this block, so every `secrets.DEPLOY_*`
+    # read as empty, the presence check took its "not configured" branch, and
+    # the mirror soft-skipped every step while the job reported success. The
+    # standby was not stale because the box was down — it was never written to
+    # at all, and the run said nothing was wrong.
+    #
+    # No `url:` here on purpose: the Cloudflare job owns the deployment URL for
+    # this environment, and two jobs claiming it would make the standby look
+    # like the thing serving traffic.
+    environment:
+      name: production-site
     name: Mirror to avarok via rsync (standby)
     needs: [build, unit]
     if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
@@ -503,9 +516,18 @@ jobs:
           # a 404 on a lazily-imported chunk, mid-session, for the duration of a
           # deploy. Deferring the deletions to the end means the old bundle stays
           # whole until the new one is entirely in place.
-          rsync -az --delete-delay --chmod=D755,F644 \
-            -e "ssh -p ${PORT} -o ConnectTimeout=20" \
-            site/ "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/"
+          # `continue-on-error` on this job keeps a dead origin from blocking the
+          # edge deploy — but a green job with no annotation looks exactly like a
+          # mirror that worked, which is the failure shape this change is about.
+          # Say which it was.
+          if rsync -az --delete-delay --chmod=D755,F644 \
+               -e "ssh -p ${PORT} -o ConnectTimeout=20" \
+               site/ "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/"
+          then
+            echo "mirrored the marketing site to ${DEPLOY_SSH_HOST}"
+          else
+            echo "::warning title=avarok mirror did not run::rsync of the marketing site to ${DEPLOY_SSH_HOST} failed. The standby is STALE. Cloudflare Pages is unaffected and still serving."
+          fi
 
       - name: Mirror blog
         if: steps.secret_check.outputs.configured == 'true'
@@ -524,9 +546,18 @@ jobs:
             exit 1
           fi
           PORT="${DEPLOY_SSH_PORT:-22}"
-          rsync -az --delete-delay --chmod=D755,F644 \
-            -e "ssh -p ${PORT} -o ConnectTimeout=20" \
-            blog/ "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_BLOG_PATH}/"
+          # `continue-on-error` on this job keeps a dead origin from blocking the
+          # edge deploy — but a green job with no annotation looks exactly like a
+          # mirror that worked, which is the failure shape this change is about.
+          # Say which it was.
+          if rsync -az --delete-delay --chmod=D755,F644 \
+               -e "ssh -p ${PORT} -o ConnectTimeout=20" \
+               blog/ "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_BLOG_PATH}/"
+          then
+            echo "mirrored the blog to ${DEPLOY_SSH_HOST}"
+          else
+            echo "::warning title=avarok mirror did not run::rsync of the blog to ${DEPLOY_SSH_HOST} failed. The standby is STALE. Cloudflare Pages is unaffected and still serving."
+          fi
 
 
   verify:
