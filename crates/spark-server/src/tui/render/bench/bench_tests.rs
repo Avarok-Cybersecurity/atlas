@@ -384,3 +384,61 @@ fn the_params_form_scrolls_to_keep_the_selected_row_on_screen() {
     let rows = screen(&a, 100, 12);
     assert!(has(&rows, &first_label), "{rows:#?}");
 }
+
+// ── LIKE-FOR-LIKE RULES IN THE RUN LIST ──────────────────────────────────
+//
+// Two runs look identical in this list by design — same table, same tiles.
+// That is what makes them look comparable, and comparability is exactly what
+// a changed model or parameter set destroys. These pin that the list draws a
+// rule where the basis changes, and — the part that matters — that it does
+// NOT draw one where the basis holds.
+
+#[test]
+fn the_basis_is_the_same_for_two_like_for_like_runs() {
+    let a = super::history::basis_of("org/model-a", &pmap(&[("osl", "320")]));
+    let b = super::history::basis_of("org/model-a", &pmap(&[("osl", "320")]));
+    assert_eq!(
+        a, b,
+        "identical basis must compare equal — else every row rules"
+    );
+}
+
+#[test]
+fn a_different_model_changes_the_basis() {
+    let a = super::history::basis_of("org/model-a", &pmap(&[("osl", "320")]));
+    let b = super::history::basis_of("org/model-b", &pmap(&[("osl", "320")]));
+    assert_ne!(
+        a, b,
+        "the same gate against a different checkpoint is a different measurement"
+    );
+}
+
+#[test]
+fn a_different_parameter_changes_the_basis() {
+    let a = super::history::basis_of("org/model-a", &pmap(&[("osl", "320")]));
+    let b = super::history::basis_of("org/model-a", &pmap(&[("osl", "512")]));
+    assert_ne!(a, b, "osl 320 and osl 512 are not comparable numbers");
+}
+
+#[test]
+fn any_parameter_counts_not_a_hand_picked_subset() {
+    // The record stores EVERY parameter precisely so a comparison cannot be
+    // invalidated by one nobody thought to enumerate. A basis built from a
+    // subset would miss this.
+    let a = super::history::basis_of(
+        "org/model-a",
+        &pmap(&[("osl", "320"), ("obscure_knob", "1")]),
+    );
+    let b = super::history::basis_of(
+        "org/model-a",
+        &pmap(&[("osl", "320"), ("obscure_knob", "2")]),
+    );
+    assert_ne!(a, b, "an unlisted parameter must still break the basis");
+}
+
+fn pmap(params: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+    params
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
+}
