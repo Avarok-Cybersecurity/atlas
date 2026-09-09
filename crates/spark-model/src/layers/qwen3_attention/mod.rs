@@ -34,6 +34,7 @@ pub mod innerq_driver;
 mod prefill;
 mod prefill_weights;
 mod trait_impl;
+pub use trait_impl::verify_attn_rows_enabled;
 mod types;
 mod types_weights;
 

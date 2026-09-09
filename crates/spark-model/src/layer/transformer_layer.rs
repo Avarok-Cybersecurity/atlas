@@ -70,6 +70,12 @@ pub trait TransformerLayer: Send + Sync {
         None
     }
 
+    /// `&dyn Any` downcast hook for read-only, layer-specific fast paths
+    /// (the K-row mHC verify body on the attention layer). Default `None`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Whether this layer's ONLINE FP8-KV calibration has frozen its scale.
     /// `None` = this layer runs no online calibration (non-attention layer,
     /// static checkpoint scales, or a non-FP8 KV dtype). The scheduler's

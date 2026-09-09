@@ -13,6 +13,8 @@ use crate::layers::FfnComponent;
 mod decode_inner;
 mod multi_seq;
 mod prefill_inner;
+mod verify_rows_hc;
+pub use verify_rows_hc::verify_attn_rows_enabled;
 
 /// Debug: read back BF16 GPU tensor and compute L2 norm + first 4 values.
 pub(super) fn diag_norm(
@@ -95,6 +97,10 @@ impl TransformerLayer for Qwen3AttentionLayer {
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
