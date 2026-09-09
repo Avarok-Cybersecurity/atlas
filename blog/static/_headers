@@ -1,0 +1,59 @@
+# Cloudflare Pages equivalent of the nginx vhost alongside this file.
+#
+# WHY Cache-Control IS NOT ON `/*`, WHICH LOOKS LIKE THE OBVIOUS PLACE FOR IT:
+# Pages CONCATENATES a header that a later rule re-declares, it does not replace
+# it. With `Cache-Control: public, max-age=300` on `/*`, a hashed asset came back
+# as "public, max-age=300, public, max-age=31536000, immutable" — and a browser
+# reads the first max-age, so the year-long assets were being held for five
+# minutes. Measured on the deployed site; the header gate could not see it,
+# because it tests with a substring match. `! Cache-Control` is not the fix
+# either: in the same block it suppresses the value being set, and the asset
+# falls back to `no-store`. So each cache class names its own paths, and
+# blog/e2e/check-headers.mjs walks the sitemap to catch a route that grew a
+# document without growing a rule.
+#
+# Security headers DO belong on `/*`: they are declared once and never
+# overridden, so nothing concatenates. This is the inverse of the nginx defect
+# these guard — there, one location-level Cache-Control silently discarded every
+# add_header above it.
+
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: SAMEORIGIN
+  Referrer-Policy: strict-origin-when-cross-origin
+
+# Documents, and the feed/sitemap/llms files served alongside them.
+/
+  Cache-Control: public, max-age=300
+/index.html
+  Cache-Control: public, max-age=300
+/404.html
+  Cache-Control: public, max-age=300
+/posts/*
+  Cache-Control: public, max-age=300
+/tags/*
+  Cache-Control: public, max-age=300
+/authors/*
+  Cache-Control: public, max-age=300
+/robots.txt
+  Cache-Control: public, max-age=300
+
+# Content types the vhost set with `location =` blocks. Pages would otherwise
+# serve rss.xml as application/xml.
+/rss.xml
+  Cache-Control: public, max-age=300
+  Content-Type: application/rss+xml
+/sitemap.xml
+  Cache-Control: public, max-age=300
+  Content-Type: application/xml
+/llms.txt
+  Cache-Control: public, max-age=300
+  Content-Type: text/plain; charset=utf-8
+
+# Content-hashed by the build: the URL changes when the bytes do.
+/_app/immutable/*
+  Cache-Control: public, max-age=31536000, immutable
+/fonts/*
+  Cache-Control: public, max-age=31536000, immutable
+/images/*
+  Cache-Control: public, max-age=2592000
