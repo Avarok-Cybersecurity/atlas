@@ -8,7 +8,7 @@ host went down and took both properties with it.
 
 | Project | Serves | pages.dev |
 | --- | --- | --- |
-| `atlas-site` | `atlasinference.io`, `www.atlasinference.io` | `atlas-site-80h.pages.dev` |
+| `atlas-site` | `atlasinference.io` | `atlas-site-80h.pages.dev` |
 | `atlas-blog` | `blog.atlasinference.io` | `atlas-blog-3ja.pages.dev` |
 
 Both are **Direct Upload** projects, not Pages' git integration. The build in
@@ -35,22 +35,35 @@ to as a warm standby. On Pages the same behaviour comes from:
   with index.html and a **200**, so broken links return the front page and
   crawlers index unbounded soft-404s.
 
-## www -> apex is NOT in this repo, and cannot be
+## www -> apex, and why `www` is deliberately NOT a custom domain
 
-The nginx `if ($host = www...)` block has no Pages equivalent. `_redirects`
-supports path rules (verified: a path-only rule redirects correctly) but the
-documented absolute-URL form does **not** match on these projects (verified:
-`https://www.atlasinference.io/* ...` never fires). A path rule cannot be used
-because both hostnames are the same project, so it would bounce the apex too.
+The nginx `if ($host = www...)` block has no in-repo Pages equivalent.
+`_redirects` path rules work (verified: a path-only rule redirects correctly)
+but the documented absolute-URL form does **not** match on these projects
+(verified: `https://www.atlasinference.io/* ...` never fired). A path rule is
+useless here anyway, since it would bounce the apex too.
 
-It lives as a zone-level Redirect Rule on `atlasinference.io`:
+So it is a zone-level Redirect Rule on `atlasinference.io`:
 
     expression: (http.host eq "www.atlasinference.io")
     action:     redirect, 301
     target:     concat("https://atlasinference.io", http.request.uri.path)
     preserve query string: yes
 
-Creating it over the API needs a token with **Zone -> Dynamic Redirect -> Edit**
-(neither of the tokens used for the migration had it; both could only list
-rulesets). Until it exists, `www` serves the site directly on a 200 rather than
-redirecting — functional, but duplicate content for crawlers.
+**`www.atlasinference.io` must stay OFF the Pages project for that rule to
+run.** It was attached at first, and the rule — stored, enabled, correct
+expression — did nothing: every request still returned 200 with the site.
+A Pages custom domain is served by the Pages edge and never reaches the zone's
+ruleset engine. The tell is in the response headers: the apex returns
+`cf-cache-status: DYNAMIC` and `www` returned no `cf-cache-status` at all.
+Detaching it made the redirect fire on the first request afterwards.
+
+The `www` DNS record stays a proxied CNAME to the apex. It needs no origin and
+no Pages binding, because a redirect rule is evaluated before Cloudflare
+resolves one — the request never looks for something to serve.
+
+Creating or editing the rule over the API needs a token with **Zone -> Dynamic
+Redirect -> Edit**, on top of the Pages, DNS and Cache Purge permissions the
+rest of this setup uses. A token holding only some of those fails with
+`request is not authorized` on the ruleset write while still listing rulesets
+happily, which reads like a bug and is not one.
