@@ -68,7 +68,7 @@ impl Bfcl {
             .artifacts
             .clone()
             .context("artifacts were not provisioned")?;
-        let path = artifacts.dir.join("responses.jsonl");
+        let path = artifacts.dir.join(responses_file(self.descriptor().id));
         let mut text = String::new();
         for r in &self.responses {
             text.push_str(&serde_json::to_string(r)?);
@@ -89,8 +89,36 @@ impl Bfcl {
             Some(&artifacts.dir),
         )
         .await
-        .context("scoring failed — responses.jsonl is kept, so this can be rescored")?;
+        .with_context(|| {
+            format!(
+                "scoring failed — {} is kept, so this can be rescored",
+                path.display()
+            )
+        })?;
         serde_json::from_str(out.stdout.trim())
             .with_context(|| format!("scorer printed unexpected output: {}", out.stdout))
     }
 }
+
+/// Where one leg's per-sample output is written, KEYED BY BENCHMARK ID.
+///
+/// ★ It used to be the bare `responses.jsonl` for every leg, which was fine
+/// while `bfcl-subset` was one run and became wrong the moment it became a
+/// GROUP. A sharded gate runs five legs — the whole draw and four quarters —
+/// one after another against the same artifact directory, so each leg
+/// destroyed its predecessor's output and only the last survived. The scoring
+/// error even promised otherwise ("responses.jsonl is kept, so this can be
+/// rescored"), which was true for exactly one of the five.
+///
+/// That output is not a convenience. For #936 it is the ONLY evidence that
+/// distinguishes "the split reproduces the whole" from "the two happen to
+/// score the same" — two different sets of answers can total identically, and
+/// an aggregate that matches is what made an earlier reading of this bug wrong.
+/// A per-sample diff needs both sides to still exist.
+pub(super) fn responses_file(benchmark_id: &str) -> String {
+    format!("responses-{benchmark_id}.jsonl")
+}
+
+#[cfg(test)]
+#[path = "exec_tests.rs"]
+mod exec_tests;
