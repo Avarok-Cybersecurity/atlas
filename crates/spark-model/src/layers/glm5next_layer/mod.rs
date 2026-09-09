@@ -885,21 +885,23 @@ impl Glm5NextLayer {
         let t = profile::start();
         let attn_out = match &self.mixer {
             Glm5NextMixer::Kda { layer, ws, .. } => {
-                // Each sequence's recurrence is independent and must run against
-                // its OWN state, so this is a loop by necessity, not by omission.
-                // `decode_k` lands its result in `ws.final_out` row 0 every time,
-                // so each row is copied out before the next call overwrites it.
-                let out = ctx.buffers.attn_output();
-                for (i, state) in states.iter_mut().enumerate().take(n) {
-                    let st = self.kda_state(*state)?;
-                    let kda = KdaSeqState {
-                        conv: st.conv_state,
-                        recurrent: st.h_state,
-                    };
-                    layer.decode_k(gpu, normed.offset(i * h * 2), 1, &kda, ws, &[], stream)?;
-                    gpu.copy_d2d_async(ws.final_out, out.offset(i * h * 2), h * 2, stream)?;
-                }
-                out
+                // ONE weight sweep for all N rows. The recurrences are independent
+                // across sequences, so only the state update stays per-row — and it
+                // reads row `i` of the workspace `front_end` just filled, which is
+                // why the rows land contiguous in `ws.final_out` with no copy.
+                let seq_states: Vec<KdaSeqState> = states
+                    .iter_mut()
+                    .take(n)
+                    .map(|state| {
+                        let st = self.kda_state(*state)?;
+                        Ok(KdaSeqState {
+                            conv: st.conv_state,
+                            recurrent: st.h_state,
+                        })
+                    })
+                    .collect::<Result<_>>()?;
+                layer.decode_n_seqs(gpu, normed, n, &seq_states, ws, stream)?;
+                ws.final_out
             }
             Glm5NextMixer::Dsa(layer) => {
                 // DSA writes `o_proj` back over the buffer it is handed, so the

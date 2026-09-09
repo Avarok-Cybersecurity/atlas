@@ -604,12 +604,78 @@ impl Glm5NextKdaLayer {
         )
     }
 
+    /// N SEQUENCES, one token each: the projections batched, the recurrences independent.
+    ///
+    /// The sequence-axis twin of [`Self::decode_k`], and strictly the easier of the two.
+    /// `decode_k` batches the weight-heavy halves around a recurrence it must walk IN ORDER,
+    /// because token `t + 1`'s state is a function of token `t`'s. Across SEQUENCES that
+    /// dependency does not exist: N states are independent, so the loop below is a loop only
+    /// because each row needs its own `state` pointer — the order it runs in cannot matter.
+    ///
+    /// The win is the same one that makes speculation pay here, applied to a different axis:
+    /// `front_end`'s q/k/v, both low-rank gate pairs and `b_proj`, and `back_end`'s `o_proj`,
+    /// read KDA's ~4.7 GB/rank ONCE for all N rows instead of once per sequence. On a model
+    /// that is 34/45 KDA layers that is the difference between concurrency time-slicing and
+    /// concurrency paying.
+    ///
+    /// 🔴 Bit-identical to N serial [`Self::decode`] calls, and for a STRONGER reason than
+    /// `decode_k`'s: there, batching had to reproduce a serial reduction order; here the rows
+    /// never interact at all. `dense_gemv_bf16_batchm` reproduces each row's exact K-iteration
+    /// order, the pack/gate/sigmoid/`o_norm` kernels are grid-parallel over the row axis, and
+    /// `stateful_row` reads and writes row `i` only.
+    ///
+    /// Takes no snapshots: this is plain decode, which is never rolled back. A speculative
+    /// verify keeps [`Self::decode_k`], whose per-row rewind points a partial accept needs.
+    pub fn decode_n_seqs(
+        &self,
+        gpu: &dyn GpuBackend,
+        hidden: DevicePtr,
+        n: usize,
+        states: &[KdaSeqState],
+        ws: &Glm5NextKdaWorkspace,
+        stream: u64,
+    ) -> Result<()> {
+        if n == 0 || n > ws.max_tokens {
+            bail!(
+                "KDA decode_n_seqs of {n} sequences does not fit a workspace built for {}",
+                ws.max_tokens
+            );
+        }
+        // Bail rather than serve `min(n, states.len())` rows: a short slice means the caller
+        // and this layer disagree about the batch, and advancing the wrong sequence's
+        // recurrent state is a silent, compounding wrong answer.
+        if states.len() != n {
+            bail!(
+                "KDA decode_n_seqs: {n} sequences but {} states",
+                states.len()
+            );
+        }
+        use crate::layers::glm5next_layer::profile;
+        let t_front = profile::start();
+        self.front_end(gpu, hidden, n, ws, stream)?;
+        profile::end(profile::KDA_FRONT, t_front, gpu, stream);
+        let t_recur = profile::start();
+        for (i, st) in states.iter().enumerate() {
+            self.stateful_row(gpu, i, st, ws, stream)?;
+        }
+        profile::end(profile::KDA_RECUR, t_recur, gpu, stream);
+        let t_back = profile::start();
+        let r = self.back_end(gpu, n, ws, stream);
+        profile::end(profile::KDA_BACK, t_back, gpu, stream);
+        r
+    }
+
     /// The stateful half of one KDA token: conv window update (with SiLU + L2 fused) then the
     /// recurrent scan, both reading row `row` of the workspace and updating `state` IN PLACE.
     ///
-    /// 🔴 This is the part that CANNOT be batched. The recurrent state after token `t + 1` is a
-    /// function of the state after `t`, so K verify rows walk it K times in order — which is why
-    /// [`Self::decode_k`] batches only the projections around it. The chunked [`Self::prefill`]
+    /// 🔴 This is the part that cannot be batched ALONG THE TOKEN AXIS. The recurrent state
+    /// after token `t + 1` is a function of the state after `t`, so K verify rows walk it K
+    /// times in order — which is why [`Self::decode_k`] batches only the projections around it.
+    ///
+    /// 🪤 That argument is about the TOKEN axis and does not carry to the SEQUENCE axis, where
+    /// N states are independent and nothing is ordered. [`Self::decode_n_seqs`] batches the
+    /// same projections across sequences for exactly that reason; reading this note as "the
+    /// recurrence can never be batched" is what leaves concurrency time-slicing. The chunked [`Self::prefill`]
     /// scan computes the same mathematics by a different association and is NOT bit-identical to
     /// this; using it for a verify would move the output of an ACCEPTED token.
     ///
