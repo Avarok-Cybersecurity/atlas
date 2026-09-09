@@ -74,7 +74,7 @@ jobs:
     # The variable is the escape hatch: if the box is down, set
     # CMD_RUNNER_LABEL to `ubuntu-latest` and commands go back to hosted
     # runners without a code change.
-    runs-on: ${{ vars.CMD_RUNNER_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ (vars.USE_AVAROK_UBUNTU_RUNNERS == '1' && vars.CMD_RUNNER_LABEL) || 'ubuntu-latest' }}
     # Cheap gates first so the overwhelming majority of comments cost one
     # skipped job: it must be a PR, and the body must START with a verb we own.
     # `startsWith` on the raw body means a quotation of "/seal" mid-sentence is

@@ -54,7 +54,7 @@ jobs:
     # is not a status. Safe on our own hardware because the checkout below pins
     # the default branch and never the fork's head -- and
     # assert-cmd-runner-safe.py enforces that for every workflow on this label.
-    runs-on: ${{ vars.CMD_RUNNER_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ (vars.USE_AVAROK_UBUNTU_RUNNERS == '1' && vars.CMD_RUNNER_LABEL) || 'ubuntu-latest' }}
     # A comment on a plain issue has no PR to describe. `check_run` events carry
     # their PRs in an array that is empty for pushes to main.
     if: >-
