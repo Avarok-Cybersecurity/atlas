@@ -179,7 +179,11 @@ fn row_fast_greedy(
             let immune = fast_greedy::argmax_immune(tok, scoped, || {
                 fast_greedy::logit_is_positive(model, model.logits_buffer_ptr(), row, vocab, tok)
             });
-            if immune { Ok(()) } else { Err(SlowReason::NotImmune) }
+            if immune {
+                Ok(())
+            } else {
+                Err(SlowReason::NotImmune)
+            }
         }
     }
 }
