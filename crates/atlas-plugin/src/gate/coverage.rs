@@ -544,6 +544,43 @@ const DECODE_FLOOR_EXCLUDES: &[Exclusion] = &[
     ),
 ];
 
+/// What the KAT-equality candidate ignores.
+///
+/// ★ Note what is NOT excluded, because it is the interesting half. The BFCL
+/// driver is absent from this list, unlike every other gate's: this gate
+/// issues the BFCL DRAW, so `bfcl/dataset.rs` and `bfcl/draw.rs` decide which
+/// samples it compares and in what canonical order. A change there changes
+/// what "the same sample set in two orders" means, and must re-open the gate.
+/// Its own directory is likewise absent — a change to the detector re-opens
+/// the detector.
+const KAT_EQUALITY_EXCLUDES: &[Exclusion] = &[
+    GATE_MACHINERY,
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ttft",
+        "the TTFT driver cannot change whether a reply depends on what ran before it",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/agentic",
+        "the agentic driver cannot change whether a reply depends on what ran before it",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ssm_poison",
+        "the SSM poison driver cannot change whether a reply depends on what ran before it",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change whether a reply depends on what ran before it",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        "the concurrency request planner cannot change whether a reply depends on what ran before it",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
+        "the concurrency verdict cannot change whether a reply depends on what ran before it",
+    ),
+];
+
 /// What the cross-contamination candidate ignores: gate bookkeeping and the
 /// OTHER benchmark drivers, exactly as a required gate would. Its own driver
 /// directory is deliberately NOT here — a change to the detector re-opens the
@@ -741,12 +778,18 @@ pub const REQUIRED: [GateCoverage; 11] = [
 /// calibration preconditions were met (see the comments on their REQUIRED
 /// entries). Their old candidate entries are gone from here because a gate
 /// cannot be owed and excused at once — the test above pins that.
-pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[GateCoverage {
-    id: "cross-contamination",
-    excludes: CONTAMINATION_EXCLUDES,
-}];
+pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[
+    GateCoverage {
+        id: "cross-contamination",
+        excludes: CONTAMINATION_EXCLUDES,
+    },
+    GateCoverage {
+        id: "kat-equality-gate",
+        excludes: KAT_EQUALITY_EXCLUDES,
+    },
+];
 
-pub const NOT_REQUIRED: [(&str, &str); 5] = [
+pub const NOT_REQUIRED: [(&str, &str); 6] = [
     (
         "quick-speed-bench",
         "a single-user speed probe with no thresholds and no baseline — a MEASUREMENT tool, \
@@ -767,6 +810,15 @@ pub const NOT_REQUIRED: [(&str, &str); 5] = [
         "not required YET: a promotion candidate (see PROMOTION_CANDIDATES) run on release cuts \
          and recorded as debt until it has proven itself; a fresh gate that fails on day one \
          would train people to override it",
+    ),
+    (
+        "kat-equality-gate",
+        "not required YET, and deliberately not in the PR that introduces it: this gate's \
+         bar is that the shipped serve regime is order-independent, and whether it IS has \
+         not been measured on this tree. A gate cannot certify itself in the same change \
+         that first records it — the same rule that keeps a speed floor from being cut \
+         from the run it is judging. Promote once a measured run under --hermetic reaches \
+         zero divergences, and pin the sample count that was actually measured",
     ),
     (
         "mlperf-agentic-subset",

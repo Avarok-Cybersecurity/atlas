@@ -32,11 +32,19 @@
 //! the sample count matters: a handful of prompts would not have caught it.
 
 pub mod compare;
+pub mod driver;
+pub mod report;
 
 pub use compare::{
     Observation, OrderRun, SampleVerdict, Score, permutation, score, verdict, verdict_for,
 };
 
+pub use driver::{DESCRIPTOR, METADATA};
+
 #[cfg(test)]
 #[path = "compare_tests.rs"]
 mod compare_tests;
+
+#[cfg(test)]
+#[path = "driver_tests.rs"]
+mod driver_tests;
