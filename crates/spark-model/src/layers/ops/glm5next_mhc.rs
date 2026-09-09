@@ -136,10 +136,27 @@ pub struct Glm5NextMhcSiteWeights {
     pub mix: DevicePtr,
 }
 
-/// Token bound on the `mix` scratch. The GLM stack drives mHC one token at a time (the highway
-/// forces a serial prefill), so this is slack, not a shape — but `glm_hc_pre` REFUSES above it
-/// rather than writing past the allocation.
+/// FLOOR for the `mix` scratch, in tokens. The real bound is [`mhc_mix_max_tokens`].
+///
+/// 🪤 The comment that used to sit here said the GLM stack "drives mHC one token at a time
+/// (the highway forces a serial prefill), so this is slack, not a shape". That has not been
+/// true since batched prefill landed: `Glm5NextLayer::prefill` hands `forward_k` whole
+/// `PREFILL_ROWS`-wide sub-chunks and mHC runs over all of them at once. The constant was
+/// therefore a hard ceiling on the prefill width, not slack.
 pub const MHC_MIX_MAX_TOKENS: usize = 256;
+
+/// Token capacity of the `mix` scratch: the floor above, widened to whatever prefill width
+/// is actually configured.
+///
+/// 🔴 Allocation and guard MUST both call this. `glm_hc_pre` refuses above the value rather
+/// than writing past the buffer, so a guard that disagreed with the allocation would either
+/// refuse legal work or scribble past it. This mirrors how the KDA and DSA workspaces are
+/// already sized (`glm5_next_load.rs`: `max(DENSE_GEMV_BATCHM_MAX_M, PREFILL_ROWS,
+/// prefill_rows())`) — before this, those two followed `ATLAS_GLM_PREFILL_ROWS` and mHC did
+/// not, so the lever could only ever be raised to 256.
+pub fn mhc_mix_max_tokens() -> usize {
+    MHC_MIX_MAX_TOKENS.max(crate::layers::glm5next_layer::prefill_rows())
+}
 
 /// `hc_pre`: collapse the `hc_mult` FP32 streams to one BF16 sequence and emit this site's
 /// `post` / `comb` mixing coefficients.
@@ -171,10 +188,12 @@ pub fn glm_hc_pre(
     stream: u64,
 ) -> Result<()> {
     let mix_hc = (2 + hc_mult) * hc_mult;
-    if num_tokens as usize > MHC_MIX_MAX_TOKENS {
+    if num_tokens as usize > mhc_mix_max_tokens() {
         anyhow::bail!(
-            "glm_hc_pre: {num_tokens} tokens exceeds the {MHC_MIX_MAX_TOKENS}-token `mix` \
-             scratch. Raise MHC_MIX_MAX_TOKENS and rebind; do not launch past the allocation."
+            "glm_hc_pre: {num_tokens} tokens exceeds the {}-token `mix` scratch. Raise \
+             ATLAS_GLM_PREFILL_ROWS (which widens it) or MHC_MIX_MAX_TOKENS and rebind; do \
+             not launch past the allocation.",
+            mhc_mix_max_tokens(),
         );
     }
     // 🪤 The two kernels take the SAME arguments; only `hc_fn`'s element width differs, and it

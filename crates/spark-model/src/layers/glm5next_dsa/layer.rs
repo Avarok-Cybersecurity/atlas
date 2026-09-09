@@ -59,7 +59,23 @@ fn gemm(
     // scalar tile GEMM. Same numerics boundary as the KDA block; see
     // `glm5next_layer::cublas_wide_proj` for why M > DENSE_GEMV_BATCHM_MAX_M is the safe
     // cut and why decode and the speculative verify cannot reach it.
-    if m > crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize
+    // 🪤 `batchm.0 != 0` is what says "this caller's destination is BF16".
+    //
+    // `cublas_bf16_proj_dense` writes BF16. Three call sites in this file hand `gemm` an
+    // FP32 destination (`head_weights`, `q_idx`, and the selector's `wq_b` fallback) and
+    // pass `gemm_f32`/`gemv_f32` with `KernelHandle(0)` for `batchm`, exactly because —
+    // in their own words — "no FP32-out batchm twin exists". All three currently pass
+    // M=1 and so cannot reach this arm, but that is an accident of their shapes, not a
+    // guarantee: batching any of them later would silently write BF16 into an FP32
+    // buffer, which reads as plausible garbage rather than as a crash.
+    //
+    // Keying on the batchm handle rather than adding a parameter reuses the marker those
+    // sites ALREADY carry, so a new FP32-out caller is excluded by construction and a new
+    // BF16 caller opts in by passing the handle it would need anyway. FP32-out sites that
+    // want batching call `ops::cublas_bf16_proj_dense_f32_out` directly, as
+    // `select_rows_batched` does.
+    if batchm.0 != 0
+        && m > crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize
         && crate::layers::glm5next_layer::cublas_wide_proj()
     {
         return crate::layers::ops::cublas_bf16_proj_dense(
@@ -528,6 +544,100 @@ impl Glm5NextDsaLayer {
             None => gpu.memset_async(state.valid.offset(pos), 1, 1, stream)?,
         }
         state.advance(1)
+    }
+
+    /// The indexer write for ALL `k` rows in ONE pass — the prefill twin of
+    /// [`Self::indexer_forward`].
+    ///
+    /// 🔴 Per row, `indexer_forward` issues three M=1 GEMVs, each re-reading an ENTIRE
+    /// weight (`wk`, `compress_gate`, `weights_proj`) to produce a single row, plus a
+    /// `grid(1,1,1)` LayerNorm and a 1-byte memset. At 256 prefill rows x 11 DSA layers
+    /// that is ~8,400 full weight sweeps and ~14,000 launches per chunk to compute what
+    /// three GEMMs and one norm can.
+    ///
+    /// Every destination is contiguous across rows, so no repacking is needed:
+    /// `row_offset(pos) = pos * index_head_dim * 2` is linear, making rows
+    /// `[base, base + k)` of `k_normed`/`gate` one `[k, d]` block; `nllb_layernorm_bf16`
+    /// already takes `rows` and indexes by `blockIdx.x`; and `valid` is one byte per row.
+    ///
+    /// 🪤 `weights_proj` writes FP32, which is why this could not simply reuse the `gemm`
+    /// helper — that routes wide shapes to the BF16-out cuBLASLt arm. It calls the FP32-out
+    /// twin explicitly, straight into `head_weights_rows`, which also removes the per-row
+    /// device-to-device stash the caller used to need.
+    ///
+    /// 🪤 PREFILL ONLY. Callable solely under `batch_select`, which requires
+    /// `is_prefill && !graph_capture && k > 1`. That matters for two reasons beyond speed:
+    /// the graph-capture path writes through `stage_k`/`indexer_store` from a DEVICE
+    /// position and is untouched here, and the non-batched selector reads the cache once
+    /// per row expecting it to have grown by exactly one row — this advances by `k` up
+    /// front, which is only sound because the batched selector runs after the whole loop
+    /// and gates each row with `end_c <= q_pos[r]` anyway.
+    fn indexer_forward_rows(
+        &self,
+        gpu: &dyn GpuBackend,
+        hidden: DevicePtr,
+        k: usize,
+        state: &mut Glm5NextDsaState,
+        stream: u64,
+    ) -> Result<()> {
+        // BEFORE any write, exactly as the per-row path does: past the cap the write lands
+        // off the end of the buffer and the sticky CUDA 700 kills the whole context. A62.
+        state.ensure_room(k)?;
+        let d = self.cfg.index_head_dim;
+        let base = state.len();
+        let off = state.row_offset(base);
+        let w = &self.workspace;
+
+        gemm(
+            gpu,
+            self.kernels.gemm,
+            self.kernels.gemv,
+            self.kernels.gemv_batchm,
+            hidden,
+            self.weights.wk,
+            state.k_normed.offset(off),
+            k,
+            d,
+            self.cfg.hidden,
+            stream,
+        )?;
+        // 🪤 LayerNorm WITH BIAS, in place, now over k rows rather than one.
+        KernelLaunch::new(gpu, self.select_kernels.k_norm)
+            .grid([k as u32, 1, 1])
+            .block([d.min(1024) as u32, 1, 1])
+            .shared_mem((d.min(1024) * 4) as u32)
+            .arg_ptr(state.k_normed.offset(off))
+            .arg_ptr(self.weights.k_norm_weight)
+            .arg_ptr(self.weights.k_norm_bias)
+            .arg_u32(k as u32)
+            .arg_u32(d as u32)
+            .arg_f32(self.rms_eps)
+            .launch(stream)?;
+        gemm(
+            gpu,
+            self.kernels.gemm,
+            self.kernels.gemv,
+            self.kernels.gemv_batchm,
+            hidden,
+            self.weights.compress_gate,
+            state.gate.offset(off),
+            k,
+            d,
+            self.cfg.hidden,
+            stream,
+        )?;
+        crate::layers::ops::cublas_bf16_proj_dense_f32_out(
+            hidden,
+            self.weights.weights_proj,
+            w.head_weights_rows,
+            k as u32,
+            self.cfg.index_heads as u32,
+            self.cfg.hidden as u32,
+            stream,
+        )?;
+        // Validity is per position and all k of these are real.
+        gpu.memset_async(state.valid.offset(base), 1, k, stream)?;
+        state.advance(k)
     }
 
     /// Everything after the indexer write: selector inputs and the selection for ONE query
@@ -1178,6 +1288,18 @@ impl Glm5NextDsaLayer {
         // exactly like "this section got worse as the batch grew". Batching the per-row
         // `latent_write` it pointed at then measured 0%, with the arm proven live (k=256,
         // step_meta=false). A bucket ended inside a loop must be started inside it too.
+        // ── ONE indexer write for all K rows (same gate as the batched selector) ──
+        if batch_select {
+            let t = crate::layers::glm5next_layer::profile::start();
+            self.indexer_forward_rows(gpu, hidden, k, st, stream)?;
+            crate::layers::glm5next_layer::profile::end(
+                crate::layers::glm5next_layer::profile::DSA_INDEXER,
+                t,
+                gpu,
+                stream,
+            );
+        }
+
         for row in 0..k {
             let pos = seq_len + row;
             let block_size = kv_cache.config().block_size;
@@ -1251,13 +1373,15 @@ impl Glm5NextDsaLayer {
             } else {
                 None
             };
-            self.indexer_forward(
-                gpu,
-                hidden.offset(row * self.cfg.hidden * 2),
-                st,
-                pos_dev,
-                stream,
-            )?;
+            if !batch_select {
+                self.indexer_forward(
+                    gpu,
+                    hidden.offset(row * self.cfg.hidden * 2),
+                    st,
+                    pos_dev,
+                    stream,
+                )?;
+            }
             profile::end(profile::DSA_INDEXER, t, gpu, stream);
 
             let (q_pos_dev, bt_dev_meta, sl_dev_meta) = match meta {
@@ -1380,14 +1504,9 @@ impl Glm5NextDsaLayer {
                     .launch(stream)?;
             }
             if batch_select {
-                // `indexer_forward` left THIS row's head weights in the scalar slot; stash
-                // them at row stride so the one batched pass below can read `weights[r*H]`.
-                gpu.copy_d2d_async(
-                    w.head_weights,
-                    w.head_weights_rows.offset(row * self.cfg.index_heads * 4),
-                    self.cfg.index_heads * 4,
-                    stream,
-                )?;
+                // No stash: `indexer_forward_rows` wrote every row's head weights straight
+                // into `head_weights_rows` at row stride, so the per-row device-to-device
+                // copy this used to need is gone with the per-row GEMV that fed it.
                 batch_q_pos.push(pos as i32);
             } else {
                 self.select_row(gpu, row, st, q_pos_dev, replay_safe, stream)?;

@@ -47,7 +47,12 @@ fn gemm(
     // Same numerics boundary as everywhere else — see `glm5next_layer::cublas_wide_proj`.
     // M=1 decode and M<=16 verify keep their bit-identical tiers, so the router's M=1 call
     // below cannot reach this arm even though it shares this helper.
-    if m > crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize
+    // 🪤 `batchm.0 != 0` marks a BF16-out caller — see the matching note in
+    // `glm5next_dsa::layer::gemm`. The router hands this helper an FP32 `ws.logits` with
+    // `KernelHandle(0)`, so it must never reach the BF16 cuBLASLt arm; it batches through
+    // `ops::cublas_bf16_proj_dense_f32_out` at its own call site instead.
+    if batchm.0 != 0
+        && m > crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize
         && crate::layers::glm5next_layer::cublas_wide_proj()
     {
         return crate::layers::ops::cublas_bf16_proj_dense(

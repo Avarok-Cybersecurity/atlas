@@ -385,6 +385,13 @@ impl Glm5NextKdaLayer {
         // another and leaves every bit-exact tier — decode and the speculative verify —
         // untouched. A verify must still match what decode produced; it is M<=16 and
         // never reaches here.
+        // 🪤 Same BF16-out invariant the DSA and MLP helpers ENFORCE with a
+        // `batchm.0 != 0` guard. Stated, not enforced, here on purpose: those two take the
+        // batchm handle as a per-call argument, so it genuinely marks the call site's
+        // output dtype, whereas `self.kernels.gemv_batchm` is one optional `try_kernel`
+        // handle shared by every KDA projection. Gating on it would disable cuBLASLt
+        // wholesale on any target where that kernel is simply absent — losing the win for
+        // no safety, since every caller in this file writes BF16.
         if m > ops::DENSE_GEMV_BATCHM_MAX_M as usize
             && crate::layers::glm5next_layer::cublas_wide_proj()
         {
