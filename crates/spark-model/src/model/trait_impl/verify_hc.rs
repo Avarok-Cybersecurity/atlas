@@ -897,9 +897,9 @@ impl TransformerModel {
                 && k > 1
                 && !layer.is_ssm_layer()
                 && crate::layers::qwen3_attention::verify_attn_rows_enabled()
-                && let Some(attn) = layer
-                    .as_any()
-                    .and_then(|a| a.downcast_ref::<crate::layers::qwen3_attention::Qwen3AttentionLayer>())
+                && let Some(attn) = layer.as_any().and_then(|a| {
+                    a.downcast_ref::<crate::layers::qwen3_attention::Qwen3AttentionLayer>()
+                })
                 && attn.verify_rows_hc_ok()
             {
                 static SAID_ROWS: std::sync::Once = std::sync::Once::new();
@@ -923,8 +923,9 @@ impl TransformerModel {
                         moe_row_adapter: attn_metadata.moe_row_adapter,
                     })
                     .collect();
-                let row_lens: Vec<usize> =
-                    (0..k).map(|t| verify_row_decode_seq_len(base_seq_len, t)).collect();
+                let row_lens: Vec<usize> = (0..k)
+                    .map(|t| verify_row_decode_seq_len(base_seq_len, t))
+                    .collect();
                 attn.decode_verify_rows_hc(
                     hidden,
                     k,

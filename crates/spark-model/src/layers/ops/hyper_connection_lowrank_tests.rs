@@ -355,7 +355,12 @@ fn hc_rows_matches_reference() {
         assert!(k.0 != 0, "{name} resolved to handle 0");
     }
     assert!(
-        super::hyper_connection_lowrank::hc_decode_rows_shape_ok(t as u32, h as u32, hc as u32, f.rank as u32),
+        super::hyper_connection_lowrank::hc_decode_rows_shape_ok(
+            t as u32,
+            h as u32,
+            hc as u32,
+            f.rank as u32
+        ),
         "fixture shape is outside the decode-rows contract"
     );
     let streams = upload(g, &f.bytes("streams"));
@@ -370,25 +375,60 @@ fn hc_rows_matches_reference() {
             let want_mixed: Vec<f32> = f.f32s(&format!("{site}_mixed"))[..rows * h].to_vec();
             let want_inj: Vec<f32> = f.f32s(&format!("{site}_inj"))[..rows * hc].to_vec();
             super::hyper_connection_lowrank::hc_pre_rows(
-                g, streams, &w, y_out, inj_out, scratch, rows as u32, h as u32, hc as u32, f.eps,
-                true, stream,
+                g,
+                streams,
+                &w,
+                y_out,
+                inj_out,
+                scratch,
+                rows as u32,
+                h as u32,
+                hc as u32,
+                f.eps,
+                true,
+                stream,
             )
             .unwrap();
             g.synchronize(stream).unwrap();
             println!("{site}_hyper_connection (rows arm, T={rows}):");
-            compare("mixed_input", &download_bf16(g, y_out, rows * h), &want_mixed, tol_for(&want_mixed));
-            compare("injection_weights", &download_f32(g, inj_out, rows * hc), &want_inj, tol_for(&want_inj));
+            compare(
+                "mixed_input",
+                &download_bf16(g, y_out, rows * h),
+                &want_mixed,
+                tol_for(&want_mixed),
+            );
+            compare(
+                "injection_weights",
+                &download_f32(g, inj_out, rows * hc),
+                &want_inj,
+                tol_for(&want_inj),
+            );
         }
         let w_head = site_weights(g, &f, "head", false);
         let want_head: Vec<f32> = f.f32s("head_mixed")[..rows * h].to_vec();
         super::hyper_connection_lowrank::hc_pre_rows(
-            g, streams, &w_head, y_out, DevicePtr::NULL, scratch, rows as u32, h as u32, hc as u32,
-            f.eps, false, stream,
+            g,
+            streams,
+            &w_head,
+            y_out,
+            DevicePtr::NULL,
+            scratch,
+            rows as u32,
+            h as u32,
+            hc as u32,
+            f.eps,
+            false,
+            stream,
         )
         .unwrap();
         g.synchronize(stream).unwrap();
         println!("hyper_connection_mixer (rows arm, T={rows}):");
-        compare("mixed_input", &download_bf16(g, y_out, rows * h), &want_head, tol_for(&want_head));
+        compare(
+            "mixed_input",
+            &download_bf16(g, y_out, rows * h),
+            &want_head,
+            tol_for(&want_head),
+        );
     }
 }
 
@@ -540,7 +580,18 @@ fn hc_rows_t3_rows_equal_t1_rows() {
     for site in ["attn", "mlp"] {
         let w = site_weights(g, &f, site, true);
         super::hyper_connection_lowrank::hc_pre_rows(
-            g, streams, &w, y_t3, inj_t3, scratch, rows as u32, h as u32, hc as u32, f.eps, true, stream,
+            g,
+            streams,
+            &w,
+            y_t3,
+            inj_t3,
+            scratch,
+            rows as u32,
+            h as u32,
+            hc as u32,
+            f.eps,
+            true,
+            stream,
         )
         .unwrap();
         g.synchronize(stream).unwrap();
@@ -550,8 +601,18 @@ fn hc_rows_t3_rows_equal_t1_rows() {
         g.copy_d2h(inj_t3, &mut i3).unwrap();
         for r in 0..rows {
             super::hyper_connection_lowrank::hc_pre_rows(
-                g, streams.offset(r * hc * h * 4), &w, y_t1, inj_t1, scratch, 1, h as u32, hc as u32,
-                f.eps, true, stream,
+                g,
+                streams.offset(r * hc * h * 4),
+                &w,
+                y_t1,
+                inj_t1,
+                scratch,
+                1,
+                h as u32,
+                hc as u32,
+                f.eps,
+                true,
+                stream,
             )
             .unwrap();
             g.synchronize(stream).unwrap();
@@ -559,8 +620,14 @@ fn hc_rows_t3_rows_equal_t1_rows() {
             let mut i1 = vec![0u8; hc * 4];
             g.copy_d2h(y_t1, &mut y1).unwrap();
             g.copy_d2h(inj_t1, &mut i1).unwrap();
-            assert!(y3[r * h * 2..(r + 1) * h * 2] == y1[..], "{site}: mixed_input row {r} differs T=3 vs T=1");
-            assert!(i3[r * hc * 4..(r + 1) * hc * 4] == i1[..], "{site}: injection row {r} differs T=3 vs T=1");
+            assert!(
+                y3[r * h * 2..(r + 1) * h * 2] == y1[..],
+                "{site}: mixed_input row {r} differs T=3 vs T=1"
+            );
+            assert!(
+                i3[r * hc * 4..(r + 1) * hc * 4] == i1[..],
+                "{site}: injection row {r} differs T=3 vs T=1"
+            );
         }
         println!("{site}: T=3 rows byte-identical to T=1 rows ({rows} rows)");
     }
@@ -574,9 +641,8 @@ fn hc_rows_t3_rows_equal_t1_rows() {
 #[ignore]
 fn hc_rows_microbench() {
     let f = Fixture::load();
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
-        "qwen3.8-flash-next/nvfp4 is not in this build",
-    );
+    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
+        .expect("qwen3.8-flash-next/nvfp4 is not in this build");
     let gpu =
         spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;

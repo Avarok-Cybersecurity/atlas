@@ -74,7 +74,11 @@ impl Qwen3AttentionLayer {
     /// `true` when this layer carries an indexer AND at least one row of the
     /// batch is past the inert bound. `false` keeps the batch on the plain
     /// batched attention + ingest-only loop (bit-identical to before).
-    pub(in crate::layers::qwen3_attention) fn ms_qsa_selection_active(&self, seq_lens: &[usize], n: usize) -> bool {
+    pub(in crate::layers::qwen3_attention) fn ms_qsa_selection_active(
+        &self,
+        seq_lens: &[usize],
+        n: usize,
+    ) -> bool {
         self.qsa
             .as_ref()
             .is_some_and(|q| any_selection_active(q.inert_bound(), seq_lens, n))

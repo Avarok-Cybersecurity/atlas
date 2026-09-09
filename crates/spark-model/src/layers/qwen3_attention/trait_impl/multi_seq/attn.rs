@@ -26,7 +26,11 @@ fn batch_cache_write_enabled() -> bool {
 
 impl Qwen3AttentionLayer {
     /// Phase 3: per-token RoPE (each sequence has its own position).
-    pub(in crate::layers::qwen3_attention) fn ms_phase_rope(&self, c: &MultiSeqCtx<'_>, meta: AttnMetadataDev) -> Result<()> {
+    pub(in crate::layers::qwen3_attention) fn ms_phase_rope(
+        &self,
+        c: &MultiSeqCtx<'_>,
+        meta: AttnMetadataDev,
+    ) -> Result<()> {
         let MultiSeqCtx {
             fwd,
             n,

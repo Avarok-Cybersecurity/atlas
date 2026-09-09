@@ -31,7 +31,10 @@ fn fused_qkv_enabled() -> bool {
 }
 
 impl Qwen3AttentionLayer {
-    pub(in crate::layers::qwen3_attention) fn ms_phase_qkv(&self, c: &MultiSeqCtx<'_>) -> Result<()> {
+    pub(in crate::layers::qwen3_attention) fn ms_phase_qkv(
+        &self,
+        c: &MultiSeqCtx<'_>,
+    ) -> Result<()> {
         let MultiSeqCtx {
             fwd,
             n,

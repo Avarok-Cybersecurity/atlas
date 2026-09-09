@@ -66,7 +66,12 @@ const HC_UP_D_PER_BLOCK: u32 = 8;
 /// `hc*H % 256 == 0` (256 elements per warp step), `H % 16 == 0` (16 outputs
 /// per block), `rank % 32 == 0` (four 16-byte-aligned quarter rows),
 /// `hc <= 8` (block = hc * 64 <= 512 threads), `1 <= T <= 8`.
-pub(crate) fn hc_decode_rows_shape_ok(num_tokens: u32, hidden_size: u32, hc_mult: u32, rank: u32) -> bool {
+pub(crate) fn hc_decode_rows_shape_ok(
+    num_tokens: u32,
+    hidden_size: u32,
+    hc_mult: u32,
+    rank: u32,
+) -> bool {
     let hc_dim = hc_mult * hidden_size;
     (1..=HC_DEC_MAX_T).contains(&num_tokens)
         && hc_dim % (HC_DOWN_SPLIT * 256) == 0
@@ -137,7 +142,10 @@ pub(crate) fn hc_pre_rows(
     // hc_dec_down restores the one-row form for A/B.
     let (k_down, down_grid) = match hc_variant_down() {
         "hc_dec_down" => (k_down, rows.div_ceil(8 / HC_DOWN_SPLIT)),
-        _ => (gpu.kernel("hyper_connection", "hc_dec_down_v5")?, rows.div_ceil(4)),
+        _ => (
+            gpu.kernel("hyper_connection", "hc_dec_down_v5")?,
+            rows.div_ceil(4),
+        ),
     };
     KernelLaunch::new(gpu, k_down)
         .grid([down_grid, 1, 1])
@@ -211,8 +219,18 @@ pub fn hc_pre_lowrank(
         && hc_decode_rows_shape_ok(num_tokens, hidden_size, hc_mult, w.rank as u32)
     {
         return hc_pre_rows(
-            gpu, streams, w, y_out, inj_out, scratch, num_tokens, hidden_size, hc_mult, norm_eps,
-            /* inject */ true, stream,
+            gpu,
+            streams,
+            w,
+            y_out,
+            inj_out,
+            scratch,
+            num_tokens,
+            hidden_size,
+            hc_mult,
+            norm_eps,
+            /* inject */ true,
+            stream,
         );
     }
     if num_tokens <= 64 && !scratch.is_null() {
@@ -323,8 +341,18 @@ pub fn hc_head_lowrank(
         && hc_decode_rows_shape_ok(num_tokens, hidden_size, hc_mult, w.rank as u32)
     {
         return hc_pre_rows(
-            gpu, streams, w, y_out, DevicePtr::NULL, scratch, num_tokens, hidden_size, hc_mult,
-            norm_eps, /* inject */ false, stream,
+            gpu,
+            streams,
+            w,
+            y_out,
+            DevicePtr::NULL,
+            scratch,
+            num_tokens,
+            hidden_size,
+            hc_mult,
+            norm_eps,
+            /* inject */ false,
+            stream,
         );
     }
     if num_tokens <= 64 && !scratch.is_null() {
@@ -499,5 +527,6 @@ pub(crate) fn hc_pre_split(
 
 fn hc_variant_down() -> &'static str {
     static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    V.get_or_init(|| std::env::var("ATLAS_HC_DOWN_KERNEL").unwrap_or_default()).as_str()
+    V.get_or_init(|| std::env::var("ATLAS_HC_DOWN_KERNEL").unwrap_or_default())
+        .as_str()
 }

@@ -106,7 +106,16 @@ impl Qwen3AttentionLayer {
         let normed = ctx.buffers.norm_output();
 
         if hc.is_first_model_layer {
-            ops::hc_expand(ctx.gpu, self.hc_expand_k, hidden, hc_streams, n, h as u32, hc_mult, stream)?;
+            ops::hc_expand(
+                ctx.gpu,
+                self.hc_expand_k,
+                hidden,
+                hc_streams,
+                n,
+                h as u32,
+                hc_mult,
+                stream,
+            )?;
         }
 
         // ── Attention sublayer: hc_pre at T=K ──
@@ -126,7 +135,17 @@ impl Qwen3AttentionLayer {
             stream,
         )?;
         if ops::HcVariant::of(hc).applies_block_input_norm() {
-            ops::rms_norm(ctx.gpu, self.rms_norm_w_k, hidden, &self.input_norm, normed, n, h as u32, eps, stream)?;
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                hidden,
+                &self.input_norm,
+                normed,
+                n,
+                h as u32,
+                eps,
+                stream,
+            )?;
         } else {
             ctx.gpu.copy_d2d_async(hidden, normed, k * h * 2, stream)?;
         }
@@ -139,7 +158,14 @@ impl Qwen3AttentionLayer {
         // read their own `normed` row. Each output is moved into
         // `hidden + t*H` (free once `rms_norm` ran) before the next row.
         let batched_out = self.attention_rows_batched(
-            hidden, k, state, kv_cache, row_metas, row_seq_lens, ctx, stream,
+            hidden,
+            k,
+            state,
+            kv_cache,
+            row_metas,
+            row_seq_lens,
+            ctx,
+            stream,
         )?;
         let attn_block_out = if let Some(o) = batched_out { o } else { hidden };
         for t in 0..k {
@@ -182,11 +208,20 @@ impl Qwen3AttentionLayer {
             {
                 comm.all_reduce_async(attn_out.0, h * 2, stream)?;
             }
-            ctx.gpu.copy_d2d_async(attn_out, hidden.offset(t * h * 2), h * 2, stream)?;
+            ctx.gpu
+                .copy_d2d_async(attn_out, hidden.offset(t * h * 2), h * 2, stream)?;
         }
         if let Some(ref post_norm) = self.post_attn_out_norm {
             ops::rms_norm(
-                ctx.gpu, self.rms_norm_w_k, attn_block_out, post_norm, attn_block_out, n, h as u32, eps, stream,
+                ctx.gpu,
+                self.rms_norm_w_k,
+                attn_block_out,
+                post_norm,
+                attn_block_out,
+                n,
+                h as u32,
+                eps,
+                stream,
             )?;
         }
         ops::hc_post_site(
@@ -220,14 +255,34 @@ impl Qwen3AttentionLayer {
             stream,
         )?;
         if ops::HcVariant::of(hc).applies_block_input_norm() {
-            ops::rms_norm(ctx.gpu, self.rms_norm_w_k, hidden, &self.post_attn_norm, normed, n, h as u32, eps, stream)?;
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                hidden,
+                &self.post_attn_norm,
+                normed,
+                n,
+                h as u32,
+                eps,
+                stream,
+            )?;
         } else {
             ctx.gpu.copy_d2d_async(hidden, normed, k * h * 2, stream)?;
         }
         self.verify_rows_ffn(normed, k, ctx, stream)?;
         let ffn_out = ctx.buffers.moe_output();
         if let Some(ref post_norm) = self.post_ffn_out_norm {
-            ops::rms_norm(ctx.gpu, self.rms_norm_w_k, ffn_out, post_norm, ffn_out, n, h as u32, eps, stream)?;
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                ffn_out,
+                post_norm,
+                ffn_out,
+                n,
+                h as u32,
+                eps,
+                stream,
+            )?;
         }
         if let Some(scalar) = self.layer_scalar {
             self.apply_layer_scalar(ctx.gpu, ffn_out, k * h, scalar, stream)?;
@@ -246,7 +301,9 @@ impl Qwen3AttentionLayer {
             stream,
         )?;
 
-        if hc.is_last_model_layer && let Some(ref head) = hc.head {
+        if hc.is_last_model_layer
+            && let Some(ref head) = hc.head
+        {
             ops::hc_head_site(
                 ctx.gpu,
                 self.hc_head_k,
@@ -350,15 +407,25 @@ impl Qwen3AttentionLayer {
         for t in (0..k).rev() {
             let out = self.ms_phase_paged_decode(&row_view(t), kv_cache, row_metas[t])?;
             if t > 0 {
-                ctx.gpu.copy_d2d_async(out, attn_out.offset(t * q_row), q_row, stream)?;
+                ctx.gpu
+                    .copy_d2d_async(out, attn_out.offset(t * q_row), q_row, stream)?;
             } else {
-                anyhow::ensure!(out == attn_out, "paged decode row 0 must land in attn_output() row 0");
+                anyhow::ensure!(
+                    out == attn_out,
+                    "paged decode row 0 must land in attn_output() row 0"
+                );
             }
         }
         if self.qsa.is_some() {
             for t in 0..k {
                 let mut states: [&mut (dyn LayerState + 'static); 1] = [&mut *state];
-                self.ms_qsa_ingest_only(&row_view(t), &mut states, &row_seq_lens[t..t + 1], kv_cache, row_metas[t])?;
+                self.ms_qsa_ingest_only(
+                    &row_view(t),
+                    &mut states,
+                    &row_seq_lens[t..t + 1],
+                    kv_cache,
+                    row_metas[t],
+                )?;
             }
         }
         let o_out = self.ms_phase_o_proj(&c, attn_out)?;
@@ -369,10 +436,18 @@ impl Qwen3AttentionLayer {
     /// dispatch (prefill_inner.rs) so the two verify bodies cannot drift:
     /// 1 -> `forward`, 2 -> `forward_k2`, 3 -> `forward_k3`, else prefill.
     /// Every arm writes `moe_output()`.
-    fn verify_rows_ffn(&self, rows: DevicePtr, k: usize, ctx: &ForwardContext, stream: u64) -> Result<()> {
+    fn verify_rows_ffn(
+        &self,
+        rows: DevicePtr,
+        k: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
         let small_m = {
             static SMALL_M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *SMALL_M.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_HC_SMALL_M_FFN").as_deref() != Ok("0"))
+            *SMALL_M.get_or_init(|| {
+                std::env::var("ATLAS_QWEN4EXP_HC_SMALL_M_FFN").as_deref() != Ok("0")
+            })
         };
         match k {
             1 if small_m => {
