@@ -22,6 +22,19 @@ pub(crate) struct TokenizerRuntime {
     pub(crate) code_fence_token: Option<u32>,
     pub(crate) tool_call_start_token: Option<u32>,
     pub(crate) tool_call_end_token: Option<u32>,
+    /// `(open, close)` token ids delimiting a tool ARGUMENT VALUE, when this
+    /// model's wire format marks one with atomic special tokens.
+    ///
+    /// The envelope-stuck watchdog in `emit_step::update_tool_param_state`
+    /// caps how long a `<tool_call>` may stay open, and EXEMPTS argument-value
+    /// content from that cap — a legitimate single-file write streams
+    /// thousands of tokens there. It can only grant that exemption if it knows
+    /// where a value starts and ends. For the Qwen `<parameter=KEY>…` form the
+    /// boundary is a multi-token signature that `update_tool_param_state`
+    /// scans for itself; for the `poolside_v1` form (Laguna, GLM-5.3-Flash)
+    /// the boundary is two ATOMIC added tokens, resolvable only here where the
+    /// tokenizer is. `None` = no atomic delimiters, use the Qwen scan.
+    pub(crate) tool_value_delims: Option<(u32, u32)>,
     pub(crate) grammar_engine: Option<crate::grammar::GrammarEngine>,
     /// Per-token classification masks for THIS tokenizer's vocabulary. Returned
     /// like every other value here; they used to be pushed into three
@@ -268,6 +281,41 @@ pub(crate) fn resolve_tokenizer_runtime(
         tracing::info!("Tool call end token: {} ({})", tid, tc_end_str);
     }
 
+    // Argument-VALUE delimiters for the envelope watchdog's exemption (see the
+    // `tool_value_delims` field doc). Only `poolside_v1` needs them: its values
+    // sit between two atomic added tokens rather than behind the multi-token
+    // `<parameter=KEY>` signature `update_tool_param_state` scans for.
+    //
+    // 🪤 Without this, GLM-5.3-Flash and Laguna get NO value exemption at all —
+    // the Qwen scan never matches their wire format, so every token of a file
+    // write counted as ENVELOPE and any write past 1024 tokens was force-ended
+    // with "Stuck in tool-call ENVELOPE" mid-file.
+    let tool_value_delims: Option<(u32, u32)> = match tool_call_format_name.as_deref() {
+        Some("poolside_v1") => {
+            let one = |sp: &str| {
+                tokenizer
+                    .encode(sp)
+                    .ok()
+                    .and_then(|ids| if ids.len() == 1 { Some(ids[0]) } else { None })
+            };
+            match (one("<arg_value>"), one("</arg_value>")) {
+                (Some(o), Some(c)) => {
+                    tracing::info!(
+                        "Tool argument-value delimiters: <arg_value> ({o}) .. </arg_value> ({c})                          — value content is exempt from the tool-envelope cap"
+                    );
+                    Some((o, c))
+                }
+                _ => {
+                    tracing::warn!(
+                        "poolside_v1 tool format but <arg_value>/</arg_value> are not atomic                          tokens in this tokenizer — argument values will COUNT against the                          tool-envelope cap; set ATLAS_TOOL_ENVELOPE_WATCHDOG=0 if long writes                          are truncated"
+                    );
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+
     let grammar_engine = {
         let stop_ids: Vec<i32> = eos_tokens.iter().map(|&id| id as i32).collect();
         let model_vocab_size = Some(config.vocab_size);
@@ -296,6 +344,7 @@ pub(crate) fn resolve_tokenizer_runtime(
             max_seq_len: 0,
         },
         vocab_masks,
+        tool_value_delims,
         reasoning_parser_box,
         think_end_token,
         think_start_token,

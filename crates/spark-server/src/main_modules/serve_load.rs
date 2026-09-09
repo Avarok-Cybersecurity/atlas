@@ -852,6 +852,7 @@ pub(crate) fn load_model(
         code_fence_token,
         tool_call_start_token,
         tool_call_end_token,
+        tool_value_delims,
         grammar_engine,
     } = serve_phases::resolve_tokenizer_runtime(
         &args,
@@ -1024,11 +1025,15 @@ pub(crate) fn load_model(
     // Per-model watchdog tunables. Built here, before the scheduler thread
     // spawns — the installer this replaces ran from `log_behavior_audit`,
     // which is called well after the spawn.
-    let watchdog_params = crate::scheduler::WatchdogParams::from_behavior(
+    let mut watchdog_params = crate::scheduler::WatchdogParams::from_behavior(
         &ptx_set.behavior,
         args.max_inter_tool_prose,
         args.content_loop_min_repeats,
     );
+    // The envelope guard's value-body exemption is tokenizer-derived, so
+    // `from_behavior` cannot know it. Filled in here, where both halves are in
+    // scope and still before the scheduler thread spawns.
+    watchdog_params.tool_value_delims = tool_value_delims;
     // The run's levers. Shared with the dashboard so `/watchdog on|off`
     // toggles this run's flag; the MODEL.toml `[behavior]` value is its
     // starting position.

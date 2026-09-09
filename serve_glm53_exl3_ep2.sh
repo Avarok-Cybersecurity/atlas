@@ -164,6 +164,52 @@ export ATLAS_GLM_PREFILL_ROWS="${ATLAS_GLM_PREFILL_ROWS:-256}"
 export ATLAS_GLM_MOE_PREFILL_MIN="${ATLAS_GLM_MOE_PREFILL_MIN:-64}"
 export ATLAS_EXL3_MOE_ROWS_PER_EXPERT="${ATLAS_EXL3_MOE_ROWS_PER_EXPERT:-4096}"
 
+# ---------------------------------------------------------------------------
+# AGENTIC=1 — loosen the decode-time GUARDS for tool-driven coding sessions.
+#
+# These are heuristics that end a response early. Each is defensible on chat
+# traffic and each misfires on agentic traffic, where the model legitimately
+# emits long, repetitive, structured output (file writes, diffs, enumerations).
+# A misfire is not a degraded answer: it TRUNCATES the turn mid-tool-call, and
+# the harness then sees a malformed call and retries forever.
+#
+# 🪤 Do NOT set these for a quality/benchmark run. They are real guards; this
+# profile trades their protection for turns that finish. Measure with them at
+# their defaults.
+#
+#   ATLAS_SIMHASH_LOOP=0
+#     F4 semantic-loop guard. ONE-STRIKE at Jaccard 0.55 over a 16-sentence
+#     ring, which per-method docstrings and boilerplate-heavy code cross
+#     honestly; a fire KILLS the stream mid-reply. Its own source comment
+#     records a false positive on a healthy TUI session (2026-08-21).
+#
+#   ATLAS_LOOP_NO_SUPPRESS=1
+#     Drops the API-layer loop-detect logit mask, which vLLM does not apply.
+#
+#   ATLAS_MAX_INTER_TOOL_PROSE=0  (0 => u32::MAX, i.e. disabled)
+#     Cap on free text BETWEEN tool calls. A legitimate PLAN / analysis turn
+#     is subject to it and gets guillotined mid-sentence at the budget.
+#
+# NOT set here, deliberately: ATLAS_TOOL_ENVELOPE_WATCHDOG. The
+# "Stuck in tool-call ENVELOPE for 1024+ tokens" kill this model was hitting on
+# every long write was a BUG, not a tuning problem — the guard's argument-value
+# exemption only recognised Qwen's `<parameter=KEY>` form, so on GLM's
+# `<arg_value>...</arg_value>` form NO write content was exempt and the cap
+# counted file bytes. That is fixed at the source (the delimiters are now
+# tokenizer-derived), so the guard is left ARMED and still does its real job of
+# catching a `<tool_call>` that never closes. Confirm at boot with:
+#   "Tool argument-value delimiters: <arg_value> (154849) .. </arg_value> (154850)"
+# If that line is absent, the exemption did NOT resolve — then, and only then,
+# set ATLAS_TOOL_ENVELOPE_WATCHDOG=0 as a stopgap.
+AGENTIC="${AGENTIC:-0}"
+if [ "$AGENTIC" = "1" ]; then
+  export ATLAS_SIMHASH_LOOP="${ATLAS_SIMHASH_LOOP:-0}"
+  export ATLAS_LOOP_NO_SUPPRESS="${ATLAS_LOOP_NO_SUPPRESS:-1}"
+  export ATLAS_MAX_INTER_TOOL_PROSE="${ATLAS_MAX_INTER_TOOL_PROSE:-0}"
+  echo "AGENTIC=1: simhash-loop OFF, loop-suppress OFF, inter-tool-prose cap OFF" >&2
+  echo "  (tool-envelope watchdog stays ARMED — its GLM exemption is fixed at source)" >&2
+fi
+
 if [ "$MTP" = "1" ]; then
   # `factory/build.rs` loads the GLM drafter on
   # `model_type == "glm5_next" && use_speculative`, so --speculative is the switch.
@@ -180,7 +226,7 @@ fi
 
 if [ "$RANK" = "0" ]; then PORT=8890; else PORT=0; fi
 echo "GLM-5.3-Flash-EXL3  pack=$PACK rank=$RANK host=$(hostname)"
-echo "  util=$GPU_UTIL ctx=$MAX_SEQ_LEN mtp=$MTP drafts=$DRAFTS prefix-cache=on"
+echo "  util=$GPU_UTIL ctx=$MAX_SEQ_LEN mtp=$MTP drafts=$DRAFTS prefix-cache=on agentic=$AGENTIC"
 echo "  model=$MODEL_DIR"
 echo "  bin=$(sha256sum "$BIN" | cut -c1-16)"
 free -g | sed -n 2p
