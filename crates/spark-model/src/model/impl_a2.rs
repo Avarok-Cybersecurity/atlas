@@ -218,34 +218,11 @@ impl TransformerModel {
     /// most 2 NCCL ops per chunk-0 cache hit (negligible vs the prefill
     /// compute it unblocks).
     pub(super) fn ep_min_u32(&self, val: u32) -> Result<u32> {
-        let Some(comm) = self.comm.as_ref() else {
-            return Ok(val);
-        };
-        let stream = self.gpu.default_stream();
-        // Loop over the ranks of the ACTUAL communicator: under pure TP
-        // (`--tp-size 2 --ep-size 1`) `ep_world_size` is 1 but the comm
-        // spans `tp_world_size` ranks — looping only `0..1` would leave
-        // the head min-reducing over its own value alone (asymmetric
-        // agreement → proc_count mismatch → collective deadlock on a warm
-        // cache-hit divergence). For EP-only and overlapping TP==EP
-        // topologies `max()` is identical to the previous value.
-        let world = self.config.ep_world_size.max(self.config.tp_world_size);
-        let mut min_val = val;
-        for root in 0..world {
-            let v = if comm.rank() == root {
-                self.gpu.copy_h2d(&val.to_le_bytes(), self.ep_cmd_buf)?;
-                comm.broadcast(self.ep_cmd_buf.0, 4, root)?;
-                val
-            } else {
-                comm.broadcast(self.ep_cmd_buf.0, 4, root)?;
-                self.gpu.synchronize(stream)?;
-                let mut buf = [0u8; 4];
-                self.gpu.copy_d2h(self.ep_cmd_buf, &mut buf)?;
-                u32::from_le_bytes(buf)
-            };
-            min_val = min_val.min(v);
-        }
-        Ok(min_val)
+        // A100 (2026-09-09): the rooted-broadcast loop now lives in
+        // `prefill_b::snap_agree::gather_u32_via_broadcast` so the snapshot
+        // restore agreement can reuse the exact same wire schedule.
+        let votes = self.ep_gather_u32(val)?;
+        Ok(votes.into_iter().min().unwrap_or(val))
     }
 
     /// Broadcast a `(seq_id, cmd)` pair from rank 0 to all ranks.
