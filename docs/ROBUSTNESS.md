@@ -1661,3 +1661,99 @@ evidence that the C=2 movement was real.
 Correcting them means rewriting `d8440fb7e`, which is the commit PR #968's
 eleven gate records are measured at; that would void the certification and
 cost a full re-run. Recorded here rather than silently paid.
+
+---
+
+## Wave 35 — a green control, a dead-code fix site, and a required check caught before it ran
+
+Branch `feat/kat-equality`: #936 + #835 + #971 composed. This entry records the
+guards, not the feature work, and what each control actually proved.
+
+### The control that came back GREEN was worth more than the four that went red
+
+`two_failed_requests_do_not_agree_with_each_other` claimed to pin that a failed
+request never reads as agreement. It set **both** orders to `Error`, so
+`verdict_for` returned through the *reference-order* branch and never reached
+the later-order branch the test named. Neutering that branch — making a failed
+later order `continue`, i.e. be skipped as agreement — left the test **passing**.
+
+The test was decorative and nothing but the control could have told me. It is
+now two tests that each reach their own branch, each with its own control, and
+both go red when their branch is neutered.
+
+**The lesson:** a test whose setup satisfies an *earlier* early-return never
+executes the code it is named after. When a control comes back green, the
+default hypothesis is that the test does not reach the mutation — not that the
+mutation was harmless.
+
+### The fix site named in the plan was dead code
+
+The approved plan named `radix_tree/snapshot.rs:238` as the site of the SSM
+snapshot cross-request channel. That line is inside `lookup`, which is
+`#[allow(dead_code)]`. **The serving path is `snapshot_tier::lookup_tiered`**,
+which carried its own copy of the same condition. Editing the cited line would
+have compiled, read correctly in review, and changed nothing that runs.
+
+Both now call one predicate. A source scan fails if the raw condition is
+spelled again anywhere under `radix_tree/`, matching the **shape** of the gate
+(both field reads in one condition) rather than an identifier, because a
+re-spelling would not reuse the name.
+
+**And the exclusion list is the load-bearing half.** The scan excused
+`snapshot.rs` while the predicate lived there. When the predicate moved to its
+own module, leaving that excusal behind would have left a blind spot in exactly
+the file that had held one of the two copies. Control: re-spelling the raw
+condition in `snapshot.rs` now FAILS the guard, naming `snapshot.rs:242`.
+Before the exclusion moved, that same mutation passed.
+
+### A required check caught without pushing
+
+The predicate and its reasoning took `snapshot.rs` from 451 to 532 lines
+against a 500-line cap it is not allow-listed for. `file-size-cap` is required,
+so the branch would have gone red. Found by extracting that workflow's own
+allow-list and running the rule locally over all 1993 files — not by pushing
+and waiting. Allow-listing was the smaller diff and the wrong one; the
+predicate is the shared thing and now says so with its own module.
+
+### A false RED, which is the same family as a false green
+
+A verification chain read `... | grep -c pattern && cargo test ...`. `grep -c`
+exits **1** when the count is zero, so on a CLEAN clippy the `&&`
+short-circuited, the suite never ran, and the wrapper reported `test_exit=1`. A
+clean tree was reported to me as a failure. Terminate any counting grep in a
+chain with `|| true` and test the captured number, never the exit status.
+
+Separately, a control-runner that flagged `error: test failed, to rerun pass…`
+as "BUILD BROKE — control INVALID" was wrong: that is cargo's normal exit line
+for a *failing test*. A build break prints **no** `test` lines at all, which is
+the signal to key on.
+
+### Aggregate scores are not the instrument
+
+An earlier reading excluded channel M1 for #936 on matching *aggregate* serial
+rates. The mechanism predicts an invariant population rate with varying
+membership, so the aggregate could not distinguish the hypotheses. The
+per-sample diff is the instrument; the aggregate is not.
+
+The harness then nearly repeated the mistake in a different way: it reported
+`NO responses.jsonl FOUND` for a completed leg. `bfcl/exec.rs:71` writes **one
+fixed path** and overwrites it every leg, so the whole leg's 995 rows were
+intact and about to be destroyed by the next shard. Both boxes now snapshot the
+file on every change. Two attempts to launch that watcher reported "already
+running" because `pgrep -f` matched the launching SSH command line itself —
+the same self-match family as `pkill -f` killing its own shell.
+
+### What is NOT claimed
+
+The equality gate registers as a **promotion candidate**, not a required gate.
+Its bar is that the shipped regime is order-independent, and that is unmeasured
+on this tree. A gate may not certify itself in the change that first records
+it — the same rule that keeps a speed floor from being cut from the run it
+judges. Promotion, with the sample count actually measured, is a follow-up.
+
+Measured en route and worth recording: the whole BFCL leg scores 84.22 / 84.12
+on current `main` and 83.92 / 84.22 under `mtp_gate=force` +
+`enable_prefix_caching=false`. Both clear the committed bars, so the regime is
+**not** score-neutral — which is why the floors are re-cut in a second PR and
+why the History pane now draws a labelled band at the boundary instead of one
+continuous line.
