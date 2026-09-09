@@ -37,6 +37,7 @@ pub(crate) fn preflight_reserve(
     let spec_on_pool =
         args.speculative || args.self_speculative || args.ngram_speculative || args.dflash;
     ssm_h_fp16_preconditions(args, config)?;
+    dflash_hybrid_precondition(args, config)?;
     // SSM state pool = per-seq live state (max_batch blobs) + MTP verify
     // state (intermediates + checkpoint) for the slots spec dispatch can
     // actually reach. SSOT: `ssm_reserve::mtp_state_slots` — the SAME
@@ -378,6 +379,59 @@ pub(crate) fn preflight_reserve(
 ///   `metallib_modules()` is a plain alias of target 0, so registering from
 ///   it served another model's kernels in a multi-target build.
 #[cfg(feature = "cuda")]
+
+/// Refuse `--dflash` on a target with SSM (linear-attention) layers.
+///
+/// 🔴 DFlash's gamma-verify has no SSM state rollback. `verify_dflash_step.rs` says so
+/// in its own deferred list: "SSM `commit_verify_state_async(num_accepted, k)` loop.
+/// Without it, hybrid models will see SSM state drift after gamma-verify. Single-token
+/// decode unaffected; gamma-verify only correct on PURE-ATTENTION targets until this is
+/// wired." That function still does not exist — it is referenced only in comments.
+///
+/// The drift is not theoretical and it does not announce itself. MEASURED on
+/// GLM-5.3-Flash (34 of its 45 layers are KDA) at TP=2/EP=2, 2026-09-09, once the EP
+/// verify-command deadlock was fixed and DFlash could actually run: every answer
+/// degenerated into repetition and ran to `max_tokens` instead of stopping —
+///
+///     primes -> "...1039, 1052, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43,"
+///     arith  -> "1081. 47*23 = 1081. 1081. 47*23 = 1081. 47*23 = 1081. 47*"
+///
+/// while MTP on the same binary, the same sampling presets and the same prompts
+/// answered cleanly and stopped. A weak substring assertion PASSED all of that, which
+/// is exactly why this refuses at startup rather than trusting a downstream check to
+/// notice fluent-looking garbage.
+///
+/// 🪤 Keyed on SSM layers, not on a model name: the constraint is architectural. A
+/// pure-attention target is unaffected and still serves DFlash.
+///
+/// `ATLAS_DFLASH_ALLOW_HYBRID=1` overrides, for developing the missing rollback.
+fn dflash_hybrid_precondition(args: &cli::ServeArgs, config: &ModelConfig) -> Result<()> {
+    if !args.dflash || config.num_ssm_layers() == 0 {
+        return Ok(());
+    }
+    if std::env::var("ATLAS_DFLASH_ALLOW_HYBRID").as_deref() == Ok("1") {
+        tracing::warn!(
+            "ATLAS_DFLASH_ALLOW_HYBRID=1: serving --dflash on a HYBRID target ({} SSM \
+             layers). gamma-verify has no SSM state rollback, so the recurrent state \
+             drifts every step and generations degenerate into repetition that still \
+             reads as fluent text. Do not judge quality from this configuration.",
+            config.num_ssm_layers(),
+        );
+        return Ok(());
+    }
+    anyhow::bail!(
+        "--dflash is not supported on this model: {} of its layers are SSM \
+         (linear-attention), and DFlash's gamma-verify has no SSM state rollback \
+         (`commit_verify_state_async` is referenced in `verify_dflash_step.rs` but does \
+         not exist). The recurrent state drifts after every gamma-verify and output \
+         degenerates into repetition WITHOUT any error — measured on GLM-5.3-Flash. Use \
+         `--speculative` (MTP), which rolls SSM state back per accepted token, or run \
+         DFlash on a pure-attention target. `ATLAS_DFLASH_ALLOW_HYBRID=1` overrides for \
+         development.",
+        config.num_ssm_layers(),
+    )
+}
+
 pub(crate) fn init_gpu_backend(
     args: &cli::ServeArgs,
     ptx_set: &atlas_kernels::TargetPtxSet,
