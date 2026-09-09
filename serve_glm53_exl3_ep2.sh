@@ -7,6 +7,19 @@
 #   PACK=k2   (default)  ~2.2 bpw experts, 92 GB   — MTP FITS
 #   PACK=4bpw            4 bpw experts,   164 GB   — MTP DOES NOT FIT (see below)
 #
+# INTERACTIVE TUI. It lives on rank 0, the serving rank, and needs a real TTY — so
+# rank 0 has to run in the foreground of an ssh session with `-t`, not under nohup:
+#
+#   # on dgx-00, start the worker in the background first (it retries the connect
+#   # for ~10 min, so either order works):
+#   PACK=k2 nohup ./serve_glm53_exl3_ep2.sh 1 > /tmp/glm53_r1.log 2>&1 &
+#
+#   # then the serving rank WITH the dashboard:
+#   ssh -t gx10-9959 'PACK=k2 TUI=1 /home/ms/serve_glm53_exl3_ep2.sh 0'
+#
+# Without `ssh -t` there is no TTY and the TUI silently falls back to the log
+# stream — which looks like the flag was ignored.
+#
 # ONE Atlas instance at a time: --gpu-memory-utilization RESERVES its whole
 # fraction up front, so a second server fails its OOM pre-flight. Watch
 # `free -g`, never nvidia-smi — this box is UNIFIED memory and nvidia-smi is
@@ -89,6 +102,20 @@ case "$PACK" in
     ;;
   *) echo "unknown PACK=$PACK (expected k2 or 4bpw)" >&2; exit 2 ;;
 esac
+# TUI=1 keeps the interactive dashboard on the SERVING rank. It is off by default
+# because both ranks are normally launched with nohup/setsid, where the TUI would
+# auto-disable anyway (no TTY) — and because rank 1 is a worker with nothing to show.
+#
+# 🪤 Only rank 0 serves and only rank 0 gets the TUI. Asking for it on rank 1 is
+# almost certainly a mistake, so say so rather than silently ignoring it.
+TUI="${TUI:-0}"
+if [ "$TUI" = "1" ] && [ "$RANK" != "0" ]; then
+  echo "TUI=1 ignored: rank $RANK is a worker; the dashboard lives on rank 0 (the" >&2
+  echo "  serving rank, on \$MASTER). Run the TUI there instead." >&2
+  TUI=0
+fi
+if [ "$TUI" = "1" ]; then TUI_ARG=""; else TUI_ARG="--no-tui"; fi
+
 if [ ! -e "$MODEL_DIR/config.json" ]; then
   echo "checkpoint not found: $MODEL_DIR" >&2; exit 1
 fi
@@ -174,4 +201,4 @@ exec "$BIN" serve \
   --enable-prefix-caching \
   $SPEC_ARGS \
   ${EXTRA_ARGS:-} \
-  --no-tui
+  $TUI_ARG
