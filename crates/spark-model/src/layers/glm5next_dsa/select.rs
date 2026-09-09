@@ -444,7 +444,11 @@ pub fn select_tokens(
                 1,
             ])
             .block([SCORES_BLOCK, 1, 1])
-            .shared_mem(SCORES_BLOCK)
+            // `dsa_index_scores` stakes one FP32 slot per index head (it accumulates each
+            // head's contribution there and sums them in head order). The old request was
+            // `SCORES_BLOCK` BYTES = 32 floats, which fit GLM's 32 index heads with zero
+            // margin and only because `dsa_block_sum` needed just `nthreads/32` slots.
+            .shared_mem(SCORES_BLOCK.max((geom.index_heads * 4) as u32))
             .arg_ptr(inputs.q)
             .arg_ptr(scratch.pool_keys)
             .arg_ptr(inputs.weights)

@@ -225,16 +225,43 @@ extern "C" __global__ void dsa_index_scores(
         return;
     }
 
-    float acc = 0.0f;
-    for (unsigned int h = 0; h < H; ++h) {
+    // 🔴 ONE WARP PER HEAD. This loop used to run `dsa_block_sum` once per head — and that
+    // helper carries TWO `__syncthreads()`, so at H=32 every block paid 64 barriers. With
+    // `D == blockDim.x == 128` each thread contributed exactly ONE multiply between them:
+    // the block spent nearly all of its time in reduction and barrier overhead rather than
+    // in arithmetic. Blocks are `P * Q`, so this ran ~576,000 times per DSA layer per chunk.
+    //
+    // Now each warp owns whole heads and reduces with `__shfl_down_sync` alone — no barrier
+    // inside the loop at all, and each lane accumulates D/32 elements in registers first.
+    //
+    // 🪤 Head accumulation ORDER IS PRESERVED. The per-head contributions land in `sh[h]`
+    // and thread 0 sums them h = 0..H-1, exactly the serial order the old code used. Only
+    // the INNER dot-product reduction is reassociated (4 elements per lane, then a 32-lane
+    // shuffle tree, vs 1 element per thread then a 128-thread tree). Keeping the outer sum
+    // ordered confines the numeric change to one place instead of two, which matters
+    // because these scores feed a top-k over KV pools: a flipped tie changes WHICH tokens
+    // the DSA attention sees, so this arm is judged on long-context needle recall.
+    //
+    // `sh` must hold H floats. The launcher requests `max(SCORES_BLOCK, H * 4)` bytes for
+    // exactly this; `dsa_block_sum` needed only `nthreads/32` slots, so the old 128-byte
+    // request was a tight fit at H=32 with no margin.
+    const unsigned int lane = tid & 31u;
+    const unsigned int warp = tid >> 5;
+    const unsigned int nwarps = (blockDim.x + 31u) / 32u;
+    const float* __restrict__ pk = pool_keys + (size_t)p * D;
+    for (unsigned int h = warp; h < H; h += nwarps) {
+        const float* __restrict__ qh = q + ((size_t)r * H + h) * D;
         float dot = 0.0f;
-        for (unsigned int d = tid; d < D; d += blockDim.x)
-            dot += q[((size_t)r * H + h) * D + d] * pool_keys[(size_t)p * D + d];
-        dot = dsa_block_sum(dot, sh, tid, blockDim.x);
-        if (tid == 0) acc += weights[(size_t)r * H + h] * fmaxf(scale * dot, 0.0f);
-        __syncthreads();
+        for (unsigned int d = lane; d < D; d += 32u) dot += qh[d] * pk[d];
+        for (int off = 16; off > 0; off >>= 1) dot += __shfl_down_sync(0xffffffffu, dot, off);
+        if (lane == 0) sh[h] = weights[(size_t)r * H + h] * fmaxf(scale * dot, 0.0f);
     }
-    if (tid == 0) out[(size_t)r * P + p] = acc;
+    __syncthreads();
+    if (tid == 0) {
+        float acc = 0.0f;
+        for (unsigned int h = 0; h < H; ++h) acc += sh[h];
+        out[(size_t)r * P + p] = acc;
+    }
 }
 
 // ── 3. deterministic top-k over pools ───────────────────────────────────────────────────
@@ -411,11 +438,41 @@ extern "C" __global__ void dsa_expand_selection(
         }
     }
 
-    if (always_tail && tid == 0) {
+    if (always_tail) {
         // The in-progress (incomplete) pool, as raw indices.
+        //
+        // 🔴 `vis_count` used to be counted by THREAD 0 ALONE, walking all S entries while
+        // the other 255 threads idled — one warp of eight, 1/256 of the block. GLM-5.3 sets
+        // `index_kpool_always_select_tail`, so this ran on every row of every DSA layer of
+        // every prefill chunk: at a 21K-token context that is ~21,000 dependent iterations
+        // per block, x 256 blocks x 11 layers.
+        //
+        // 🪤 EXACT, not approximate. This is an integer population count, so splitting it
+        // across threads and summing cannot reassociate anything — unlike the float paths
+        // elsewhere in this stack, there is no numerics question to answer here. The
+        // alternative closed form (`q_pos[r] + 1 - first_key`) was NOT taken: it assumes
+        // every key at or below `q_pos[r]` is valid, and `valid_keys` exists precisely
+        // because that is not guaranteed.
+        //
+        // `always_tail` is a kernel-uniform parameter and `r` is `blockIdx.x`, so every
+        // thread of the block reaches the barriers below together. The early
+        // `q_mask[r] == 0` return above is likewise whole-block.
+        __shared__ int vis_warp[32];
+        const int qp = q_pos[r];
+        int local = 0;
+        for (unsigned int t = tid; t < S; t += blockDim.x)
+            if ((int)t <= qp && valid_keys[t] != 0) ++local;
+        for (int off = 16; off > 0; off >>= 1)
+            local += __shfl_down_sync(0xffffffffu, local, off);
+        const unsigned int lane = tid & 31u;
+        const unsigned int warp = tid >> 5;
+        if (lane == 0) vis_warp[warp] = local;
+        __syncthreads();
+        if (tid != 0) return;
+        const unsigned int nwarps = (blockDim.x + 31u) / 32u;
         int vis_count = 0;
-        for (unsigned int t = 0; t < S; ++t)
-            if ((int)t <= q_pos[r] && valid_keys[t] != 0) ++vis_count;
+        for (unsigned int w = 0; w < nwarps; ++w) vis_count += vis_warp[w];
+
         int tail_count = vis_count % (int)KP;
         int tail_start = first_key + vis_count - tail_count;
         unsigned int base = row_select_k * KP;   // per-row, see above
