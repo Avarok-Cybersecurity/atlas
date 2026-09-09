@@ -74,6 +74,11 @@ mod hyper_connection;
 mod hyper_connection_dispatch;
 #[path = "ops/hyper_connection_lowrank.rs"]
 mod hyper_connection_lowrank;
+#[path = "ops/hyper_connection_lowrank_rows.rs"]
+mod hyper_connection_lowrank_rows;
+#[cfg(test)]
+#[path = "ops/hyper_connection_lowrank_rows_tests.rs"]
+mod hyper_connection_lowrank_rows_tests;
 #[cfg(test)]
 #[path = "ops/hyper_connection_lowrank_tests.rs"]
 mod hyper_connection_lowrank_tests;
