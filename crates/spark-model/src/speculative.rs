@@ -288,6 +288,32 @@ pub fn hidden_fingerprint(gpu: &dyn GpuBackend, p: DevicePtr, h: usize) -> u64 {
 /// Payload after the code: `last_token`, `position`, `num_drafts` (3 x u32).
 pub const EP_CMD_MTP_PROPOSE: u32 = 0xFFFF_FFF5;
 
+/// Worker command for a DFlash gamma-wide verify.
+///
+/// 🔴 Without this, `--dflash` at `world_size > 1` DEADLOCKS both ranks. The
+/// scheduler's DFlash step called `decode_verify_dflash` — a target forward over
+/// `gamma + 1` rows, so per-layer all-reduces — while broadcasting NOTHING, leaving
+/// the worker parked in `ep_recv_seq_and_cmd` with no partner for those collectives.
+/// Both GPUs then pin at 96% util / 12-15 W, the NCCL spin-wait signature, after
+/// ~2 short requests. `verify_dflash_step.rs` had already recorded this as deferred
+/// work: "EP=2 broadcast of verify-cmd + drafts ... needs the broadcast pattern from
+/// `step_verify_k2`". This is that pattern.
+///
+/// 🪤 Wire format carries the token COUNT, unlike the fixed-width `0xFFFF_FFF2/3/4`
+/// commands: gamma is a property of the drafter (`dflash_config.block_size` — 8 for
+/// GLM-5.3-Flash-DFlash2) and adaptive speculation can shorten it per step, so the
+/// worker cannot infer the width from the command alone.
+///
+///     cmd, k, tokens[0..k], <both ranks verify>, num_accepted
+///
+/// 🪤 The drafter itself needs NO command. It is REPLICATED under TP, not sharded
+/// ("`tp_size>1` produces the same per-rank result as `tp_size=1`",
+/// `dflash_loader.rs`), so its forward issues no collectives and rank-0-only propose
+/// stays correct. That is why this fixes the hang without an `EP_CMD_DFLASH_PROPOSE`
+/// twin of `EP_CMD_MTP_PROPOSE` — MTP needs one only because GLM's MTP block is
+/// EP-sharded across 144 of 288 experts.
+pub const EP_CMD_DFLASH_VERIFY: u32 = 0xFFFF_FFF7;
+
 /// Run the drafter on EVERY rank with the communicator, instead of rank-0-only
 /// with `comm: None`. **DEFAULT ON since 2026-08-29**; kill switch
 /// `ATLAS_NO_MTP_EP_PROPOSE=1` restores the rank-0-only path.

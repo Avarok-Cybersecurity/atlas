@@ -36,6 +36,14 @@ use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 /// collectives, NCCL spin. Codes 0xF0..0xF5 are taken; this is the next free.
 pub(crate) const EP_CMD_CACHE_SEQ: u32 = 0xFFFF_FFF6;
 
+/// Upper bound on the token count a DFlash verify command may carry.
+///
+/// Not a model limit — published DFlash drafters use `block_size` 8 or 16 — but a
+/// sanity bound on a length read off the wire before it sizes an allocation. A value
+/// outside it means the command stream is already desynchronised, so the worker
+/// refuses instead of verifying a fabricated block.
+const MAX_DFLASH_VERIFY_TOKENS: usize = 64;
+
 impl TransformerModel {
     pub(super) fn comm_ref(&self) -> Option<&dyn spark_comm::CommBackend> {
         self.comm.as_deref()
@@ -694,6 +702,61 @@ impl TransformerModel {
                         seq.tokens.pop();
                         seq.tokens.pop();
                         self.start_rollback_and_checkpoint_async(seq, 1)?;
+                    }
+                }
+            }
+            crate::speculative::EP_CMD_DFLASH_VERIFY => {
+                // DFlash gamma-wide verify. Mirrors `verify_dflash_step.rs` on the head.
+                //
+                // 🔴 This arm is what keeps `--dflash` from deadlocking at
+                // `world_size > 1`. `decode_verify_dflash` is a target forward over
+                // `gamma + 1` rows and issues per-layer all-reduces; before this existed
+                // rank 0 ran it alone and both ranks spun at 96% util / 12-15 W.
+                //
+                // 🪤 The COUNT is on the wire, unlike the fixed-width F2/F3/F4 arms:
+                // gamma comes from the drafter (`block_size`) and adaptive speculation
+                // can shorten it per step. Bounded because a desynchronised or corrupt
+                // wire would otherwise size an allocation from arbitrary bytes — refuse
+                // loudly instead, since a wrong length here desynchronises every
+                // subsequent command anyway.
+                let k = self.ep_broadcast_u32(0)? as usize;
+                if k == 0 || k > MAX_DFLASH_VERIFY_TOKENS {
+                    bail!(
+                        "EP worker: DFlash verify count {k} outside 1..={} — the command \
+                         stream is desynchronised; refusing rather than verifying a \
+                         fabricated block",
+                        MAX_DFLASH_VERIFY_TOKENS
+                    );
+                }
+                let mut tokens = Vec::with_capacity(k);
+                for _ in 0..k {
+                    tokens.push(self.ep_broadcast_u32(0)?);
+                }
+                self.sync_secondary()?;
+                // The SAME entry point the head calls, not an equivalent-looking one:
+                // it dispatches to `decode_verify_graphed_kgamma`, and matching the
+                // method is what matches the collective sequence.
+                self.decode_verify_dflash(&tokens, seq, stream)?;
+                let num_accepted = self.ep_broadcast_u32(0)? as usize;
+
+                // 🪤 Replicated VERBATIM from the head's rollback rather than re-derived
+                // from `num_accepted`. The verify advanced `seq_len` and pushed all
+                // `gamma + 1` tokens; the head keeps prefix + num_accepted drafts + 1
+                // bonus. An equivalent-looking formula that drifted by one would leave
+                // the two ranks' KV caches disagreeing silently, which is the failure
+                // mode this whole command exists to avoid.
+                //
+                // No SSM commit/rollback here on purpose: the head's DFlash step does
+                // not run one either (its own docs list `commit_verify_state_async` as
+                // deferred), and mirroring means doing exactly as much as the head does.
+                let pre_verify_len = seq.seq_len.saturating_sub(tokens.len());
+                let target_seq_len = pre_verify_len + num_accepted + 1;
+                let to_drop = seq.seq_len.saturating_sub(target_seq_len);
+                if to_drop > 0 {
+                    seq.seq_len = target_seq_len;
+                    let pop_n = to_drop.min(seq.tokens.len());
+                    for _ in 0..pop_n {
+                        seq.tokens.pop();
                     }
                 }
             }
