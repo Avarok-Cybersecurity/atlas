@@ -19,6 +19,19 @@ fn configured(concs: Vec<i64>, isls: Vec<i64>) -> ConcurrencySweep {
 }
 
 fn evidence(completion_tokens: usize) -> RequestEvidence {
+    // Default to the MTP arm: `accepted` such that accept_len is ~2.3, this
+    // model's measured accept depth. Existing tests assert on comparable
+    // cells, and a cell that drew the SERIAL arm is deliberately not
+    // comparable — so a serial default would silently gut them.
+    evidence_with_arm(completion_tokens, Some(completion_tokens * 13 / 23))
+}
+
+/// Evidence with an explicit speculation arm. `None` = the server reported no
+/// accept field at all, which must NOT be read as serial.
+fn evidence_with_arm(
+    completion_tokens: usize,
+    accepted_prediction_tokens: Option<usize>,
+) -> RequestEvidence {
     RequestEvidence {
         completion_tokens,
         prompt_tokens: 512,
@@ -26,6 +39,7 @@ fn evidence(completion_tokens: usize) -> RequestEvidence {
         finish_reason: Some("length".into()),
         server_ttft_ms: None,
         server_tps: None,
+        accepted_prediction_tokens,
     }
 }
 
@@ -314,4 +328,104 @@ fn metrics_map_with_no_comparable_cells_still_reports_evidence() {
     assert!(!m.contains_key("c1_aggregate_tok_s"));
     assert_eq!(m.get("min_completion_tokens"), Some(&0.0));
     assert_eq!(m.get("vacuous_cells"), Some(&1.0));
+}
+
+// ── THE ARM PIN (#835) ───────────────────────────────────────────────────
+//
+// `c2_aggregate_tok_s` is trimodal (~30.6 / ~27.5 / ~23.5 tok/s, nothing
+// between) because the C=2 cell's ~640 measured tokens contain only one to
+// three MTP-gate arbitrations, so its outcome is all-MTP, mixed, or
+// all-serial. The committed floor sits in the empty gap, which makes it a
+// mode detector rather than a regression detector. These pin the fix: the arm
+// becomes a COMPARABILITY class, and no floor moves.
+
+#[test]
+fn a_serial_arm_cell_is_not_comparable_and_is_counted_separately() {
+    // accept_len == 1.00 exactly: every emitted token cost one step.
+    let serial = row(
+        2,
+        23.5,
+        Some(2000.0),
+        vec![evidence_with_arm(320, Some(0)); 2],
+        320,
+    );
+    assert_eq!(serial.accept_len(), Some(1.0));
+    assert!(serial.arm_is_not_mtp(), "accept_len 1.00 is the serial arm");
+    assert!(
+        !serial.comparable(),
+        "a serial-arm cell must not be quoted as a throughput measurement"
+    );
+    // ...and it is NOT vacuous or cache-uncontrolled. The three exclusions
+    // are distinct: this cell delivered every token from a warm cache. Only
+    // the arm differs.
+    assert!(!serial.vacuous);
+    assert!(!serial.cache_uncontrolled);
+}
+
+#[test]
+fn an_mtp_arm_cell_is_comparable() {
+    let mtp = row(2, 30.6, Some(2000.0), vec![evidence(320); 2], 320);
+    let a = mtp.accept_len().expect("accept_len derivable");
+    assert!(
+        a > 1.5,
+        "the MTP arm sits well above the 1.5 threshold, got {a}"
+    );
+    assert!(!mtp.arm_is_not_mtp());
+    assert!(mtp.comparable());
+}
+
+#[test]
+fn a_mixed_cell_takes_the_minimum_arm_and_is_excluded() {
+    // One request served serial, one speculative. The aggregate over both is
+    // a MIXTURE, which measures neither arm — so the minimum governs.
+    let mixed = row(
+        2,
+        27.5,
+        Some(2000.0),
+        vec![evidence_with_arm(320, Some(0)), evidence(320)],
+        320,
+    );
+    assert_eq!(mixed.accept_len(), Some(1.0), "the minimum, not the mean");
+    assert!(
+        !mixed.comparable(),
+        "a mixture is not a measurement of either arm"
+    );
+}
+
+#[test]
+fn a_missing_accept_field_is_not_read_as_serial() {
+    // ★ THE TRAP. `None` means the server did not report the field. Treating
+    // it as 1.00 would convert a missing instrument into a verdict about the
+    // engine — and every pre-existing recorded sweep has no accept field.
+    let unknown = row(
+        2,
+        27.5,
+        Some(2000.0),
+        vec![evidence_with_arm(320, None); 2],
+        320,
+    );
+    assert_eq!(unknown.accept_len(), None);
+    assert!(
+        !unknown.arm_is_not_mtp(),
+        "an unreported arm is unknown, not serial"
+    );
+    assert!(
+        unknown.comparable(),
+        "a sweep from before this instrument existed must stay comparable"
+    );
+}
+
+#[test]
+fn a_corrupt_accept_count_does_not_divide_by_zero() {
+    // accepted >= completion is impossible on the wire but must not panic or
+    // produce a negative/infinite accept depth if it ever appears.
+    let corrupt = row(
+        2,
+        27.5,
+        Some(2000.0),
+        vec![evidence_with_arm(320, Some(320)); 2],
+        320,
+    );
+    assert_eq!(corrupt.accept_len(), None);
+    assert!(!corrupt.arm_is_not_mtp());
 }

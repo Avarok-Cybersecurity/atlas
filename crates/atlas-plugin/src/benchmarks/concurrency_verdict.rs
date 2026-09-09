@@ -50,15 +50,36 @@ impl Floors {
 /// or above the floor, while `gate::scoring` allows value + noise to clear
 /// the min. A sub-noise dip fails the run verdict even though scoring would
 /// have passed it — safe conservatism, same as decode-floor's `verdict_for`.
+/// The three reasons a measured cell is not comparable, counted.
+///
+/// One struct rather than three parallel arguments because they are one
+/// concept — "why this cell's tok/s cannot be quoted" — and because keeping
+/// them together makes it obvious that a new exclusion class must be counted
+/// and reported, not silently folded into an existing one. Each stays
+/// SEPARATE: a vacuous cell did not deliver its tokens, a cache-uncontrolled
+/// cell did not prove reuse, and a non-MTP cell delivered its tokens on the
+/// other speculation arm. Reading any of the three as another is how an arm
+/// change gets written down as a regression.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Exclusions {
+    pub(crate) vacuous: usize,
+    pub(crate) cache_uncontrolled: usize,
+    pub(crate) non_mtp_arm: usize,
+}
+
 pub(crate) fn sweep_verdict(
     metrics: &BTreeMap<String, f64>,
     cells: usize,
     errors: usize,
-    vacuous: usize,
-    cache_uncontrolled: usize,
+    excl: Exclusions,
     vacuity_floor_pct: f64,
     floors: &Floors,
 ) -> Verdict {
+    let Exclusions {
+        vacuous,
+        cache_uncontrolled,
+        non_mtp_arm,
+    } = excl;
     if errors > 0 {
         // Errors invalidate the cells they landed in, gating or not.
         return Verdict::fail(format!(
@@ -91,6 +112,28 @@ pub(crate) fn sweep_verdict(
         return Verdict::fail(format!(
             "INCONCLUSIVE: {cache_uncontrolled} of {cells} cells requested warm-up but a \
              measured request did not report a material cached-prompt fraction"
+        ));
+    }
+    if non_mtp_arm > 0 {
+        // ★ NOT A REGRESSION, AND IT MUST NOT BE RECORDED AS ONE.
+        //
+        // The MTP gate arbitrates between the serial and batch-K forwards on
+        // wall-clock throughput, and a C=2 cell's ~640 measured tokens hold
+        // only one to three arbitrations — so which arm a cell draws is close
+        // to a coin flip. The arms differ by ~1.3x in delivered tok/s, which
+        // is why `c2_aggregate_tok_s` is trimodal (~30.6 / ~27.5 / ~23.5)
+        // with nothing in between, and why a floor sitting in that gap fires
+        // on the draw rather than on the engine.
+        //
+        // Saying so is the whole point. Twice a floor has been proposed for
+        // this rung from samples that had silently mixed arms, and twice it
+        // was wrong. A cell that ran serial is not evidence about the engine's
+        // speed; it is evidence that the arbiter picked the other arm.
+        return Verdict::fail(format!(
+            "INCONCLUSIVE: {non_mtp_arm} of {cells} cells ran the SERIAL arm, not the \
+             speculative one (accept_len < 1.5) — the two arms differ by ~1.3x in \
+             delivered tok/s, so this is an arm change and not a regression. Re-run, \
+             or pin the arm, before reading any floor"
         ));
     }
     let mut basis = Vec::new();
