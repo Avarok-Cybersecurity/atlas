@@ -837,12 +837,32 @@ impl Glm5NextKdaLayer {
                 .arg_f32(0.0)
                 .launch(stream)?;
         }
+        // 🔴 PAD ONLY, like `gate`/`beta` above — this used to fill all `tp * qkv`.
+        //
+        // `kda_split_widen` below writes `q[d]`/`k[d]`/`v[d]` for EVERY channel of EVERY
+        // row in `[0, t)` (its grid is `[ceil(qkv/256), t, 1]` and it guards only
+        // `ch >= qkv || t >= T`), so everything the old fill wrote below `t * qkv` was
+        // overwritten a launch later. Three buffers x 256 rows x qkv x 4 B is ~12.6 MB per
+        // layer-call, ~428 MB per prefill chunk across the 34 KDA layers, all of it dead.
+        //
+        // 🪤 At the shipping width it was not merely wasteful, it was ENTIRELY dead:
+        // `PREFILL_ROWS = 256` is a multiple of `cfg.chunk = 32`, so `tp == t`, the pad is
+        // empty, and these three launches wrote a whole buffer that nothing would ever
+        // read. The `padded == real` guard now skips them outright.
+        //
+        // Semantics are unchanged, including for the numeric gate: `pad_fill` exists so the
+        // regression can POISON the tail and prove `kda_chunk_*` guards past `T` in-kernel,
+        // and the poison only ever survived in the pad anyway — split_widen erased the rest.
         for p in [ws.q_f32, ws.k_f32, ws.v_f32] {
+            let (real, padded) = (t * qkv, tp * qkv);
+            if padded == real {
+                continue;
+            }
             KernelLaunch::new(gpu, self.kernels.fill)
-                .grid([div_ceil((tp * qkv) as u32, 256), 1, 1])
+                .grid([div_ceil((padded - real) as u32, 256), 1, 1])
                 .block([256, 1, 1])
-                .arg_ptr(p)
-                .arg_u32((tp * qkv) as u32)
+                .arg_ptr(p.offset(real * 4))
+                .arg_u32((padded - real) as u32)
                 .arg_f32(pad_fill)
                 .launch(stream)?;
         }
