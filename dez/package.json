@@ -19,7 +19,7 @@
     "@sveltejs/adapter-static": "^3.0.10",
     "@sveltejs/kit": "^2.70.2",
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
-    "sharp": "^0.35.3",
+    "sharp": "^0.35.4",
     "svelte": "^5.56.8",
     "svelte-check": "^4.4.3",
     "typescript": "^5.9.3",
