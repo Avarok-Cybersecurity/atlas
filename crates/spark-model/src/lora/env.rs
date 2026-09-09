@@ -15,11 +15,12 @@ use super::LoraModule;
 /// eager decode (no CUDA-graph capture) when an adapter is active, so
 /// graph-vs-eager output parity can be compared in the field. Read ONCE —
 /// the decode graph gate runs per token.
-/// Resolved at the point of use rather than cached in a static: the model
-/// carries this as `ModelLevers::lora_eager` for the per-token decode gate, and
-/// the remaining callers are one-shot startup checks where a getenv is free.
+/// Reads the process-wide `ModelLevers`, which resolve from the environment
+/// exactly once. This used to say the value was "resolved at the point of use
+/// rather than cached … a getenv is free" — but `from_env` reads ~30 variables
+/// per call, and a sibling caller was invoking it once per layer per prefill.
 pub fn lora_eager_env() -> bool {
-    crate::layers::ops::ModelLevers::from_env().lora_eager
+    crate::layers::ops::ModelLevers::get().lora_eager
 }
 
 /// `ATLAS_LORA_ROTATE=1` (or `true`) ARMS runtime adapter rotation: it forces
@@ -30,9 +31,9 @@ pub fn lora_eager_env() -> bool {
 /// only needed to arm rotation on a SINGLE resident adapter (e.g. RDMA
 /// slot-swap-in-place). Unset + a single startup adapter = today's behaviour
 /// exactly (graphs ON, slot-0 pointers baked).
-/// See [`lora_eager_env`] on why this is not cached.
+/// See [`lora_eager_env`]: this reads the once-resolved process levers.
 pub fn lora_rotate_env() -> bool {
-    crate::layers::ops::ModelLevers::from_env().lora_rotate
+    crate::layers::ops::ModelLevers::get().lora_rotate
 }
 
 /// `$ATLAS_LORA_PEER` (host:port of an `atlas-weight-peer` staging a rotation

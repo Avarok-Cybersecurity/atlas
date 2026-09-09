@@ -33,13 +33,13 @@ impl MoeLayer {
         // reads it at full precision via dense_gemm_f32in. Supersedes the
         // gate-only ATLAS_FP32_GATE (which keeps the BF16 router_in but f32 gate
         // accumulation). Either way the gate logits + top-K run in FP32.
-        let fp32_routing = self.fp32_routing_active();
+        let fp32_routing = self.fp32_routing_active(ctx.levers);
         let fp32_gate = fp32_routing
             || (self.gate_nvfp4.is_none()
                 && self.correction_bias_dev.is_none()
                 && self.dense_gemm_f32out.0 != 0
                 && self.moe_topk_f32.0 != 0
-                && std::env::var("ATLAS_FP32_GATE").as_deref() == Ok("1"));
+                && ctx.levers.fp32_gate);
         let gate_elem = if fp32_gate { 4usize } else { 2usize };
 
         // Gemma-4 router pre-norm (no-op for other models).

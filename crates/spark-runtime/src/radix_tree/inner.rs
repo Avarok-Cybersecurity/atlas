@@ -194,7 +194,12 @@ impl RadixTreeInner {
         // our suffix. If any consumer treats `matched_tokens` as a block
         // boundary, the tail of that block is foreign context the model then
         // attends to. This lever exists to A/B exactly that.
-        let subblock_ok = std::env::var("ATLAS_PREFIX_SUBBLOCK").as_deref() != Ok("0");
+        // Resolved once: `walk` runs on every prefix lookup. This is one of
+        // the #936 arm-ladder levers, so it must stay operable — caching does
+        // not change that, since nothing mutates the environment after start.
+        static SUBBLOCK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let subblock_ok =
+            *SUBBLOCK.get_or_init(|| std::env::var("ATLAS_PREFIX_SUBBLOCK").as_deref() != Ok("0"));
         if subblock_ok
             && remainder > 0
             && remainder < block_size

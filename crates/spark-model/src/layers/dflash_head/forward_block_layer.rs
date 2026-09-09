@@ -278,11 +278,7 @@ impl BlockDiffusionDraftHead {
             // ATLAS_DFLASH_DEBUG_DUMP_FULL=1: write the FULL 4096-element
             // attn_out[noise0] row to /tmp/atlas_attn_out.bin so PyTorch
             // can run o_proj on the exact same bytes.
-            if std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
-                .ok()
-                .as_deref()
-                == Some("1")
-            {
+            if self.levers.debug_dump_full {
                 let n_bytes = q_dim as usize * bf16;
                 let mut buf = vec![0u8; n_bytes];
                 gpu.synchronize(stream)?;
@@ -320,11 +316,7 @@ impl BlockDiffusionDraftHead {
                 self.scratch.stream_buf.offset(noise_offset),
                 10,
             )?;
-            if std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
-                .ok()
-                .as_deref()
-                == Some("1")
-            {
+            if self.levers.debug_dump_full {
                 let n_bytes = self.hidden_size * bf16;
                 let mut buf = vec![0u8; n_bytes];
                 gpu.synchronize(stream)?;

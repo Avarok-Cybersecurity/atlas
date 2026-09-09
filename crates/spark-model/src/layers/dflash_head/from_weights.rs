@@ -537,6 +537,8 @@ impl BlockDiffusionDraftHead {
         );
 
         let mut head = Self {
+            // ★ The ONE environment read for the drafter's diagnostic levers.
+            levers: super::levers::DFlashLevers::from_env(),
             num_layers,
             hidden_size,
             intermediate_size,

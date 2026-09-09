@@ -153,6 +153,27 @@ pub fn resolve_from_env() -> DrafterContext {
         let prefill_only = std::env::var(PREFILL_ONLY_ENV).ok();
         let cfg = resolve(disable.as_deref(), prefill_only.as_deref());
 
+        // ★ REPORT ONCE. This function is NOT called once at startup — it runs
+        // ~32,500 times in a single `concurrency-sweep`, once per
+        // drafter-context resolution. Every line below was therefore emitted
+        // 32k times: MEASURED at 32,449 `carry=` lines and an 8.1 MB log before
+        // the INERT warning was added, and 32,513 + 32,513 lines and a 19 MB log
+        // after — the warning DOUBLED the log volume of every run.
+        //
+        // These are startup reports by intent ("logs a warning at startup", per
+        // this module's own docs) and by content: they describe a process-wide
+        // configuration that cannot change after the first call. Emitting them
+        // per call was spam in the parent and worse spam once I added to it.
+        REPORTED.call_once(|| report(cfg));
+        cfg
+    }
+}
+
+/// Emitted once by [`resolve_from_env`]; see the note there.
+static REPORTED: std::sync::Once = std::sync::Once::new();
+
+fn report(cfg: DrafterContext) {
+    {
         for name in OBSOLETE_ENVS {
             if let Ok(v) = std::env::var(name) {
                 tracing::warn!(
@@ -197,7 +218,6 @@ pub fn resolve_from_env() -> DrafterContext {
                  of decode saving (net -927 ms/turn, spent on TTFT).",
             );
         }
-        cfg
     }
 }
 

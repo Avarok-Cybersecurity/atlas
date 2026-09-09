@@ -39,9 +39,13 @@ impl Qwen3AttentionLayer {
         // Gated by ATLAS_BF16_TC_PROJ (default off → unchanged). Removes the
         // FP8 prefill perturbation on the attention projections.
         // Load-time weight prep runs before any `TransformerModel` exists to
-        // carry the levers, so this resolves at the point of use. The
-        // interpretation stays SSOT in `ModelLevers`.
-        let bf16_proj = crate::layers::ops::ModelLevers::from_env().bf16_tc_proj;
+        // carry the levers, so this cannot take a plumbed value and reads the
+        // process-wide levers instead. Those resolve from the environment
+        // exactly ONCE; this site used to call `from_env()`, which re-reads ~30
+        // variables, and it runs once per layer per prefill — MEASURED at
+        // 32,513 resolutions in one `concurrency-sweep`. The interpretation
+        // stays SSOT in `ModelLevers`.
+        let bf16_proj = crate::layers::ops::ModelLevers::get().bf16_tc_proj;
         if bf16_proj && self.w4a16_gemm_t_m128_bf16_k.0 != 0 {
             return crate::layers::ops::w4a16_gemm_n128_m128_bf16(
                 gpu,
