@@ -52,7 +52,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 use spark_runtime::kv_cache::PagedKvCache;
 
-use crate::layer::{ForwardContext, LayerState, SsmLayerState, TransformerLayer};
+use crate::layer::{AttnMetadataDev, ForwardContext, LayerState, SsmLayerState, TransformerLayer};
 use crate::layers::glm5next_dsa;
 use crate::layers::glm5next_dsa::layer::Glm5NextDsaLayer;
 use crate::layers::glm5next_dsa::state::Glm5NextDsaState;
@@ -1507,17 +1507,143 @@ impl TransformerLayer for Glm5NextLayer {
         true
     }
 
+    /// Batched MTP verify: `n_seqs` sequences x `ks[i]` draft rows, seq-major.
+    ///
+    /// The rows are already contiguous in `hidden` (`r = off[i] + j`), so this
+    /// runs `forward_k` once per SEQUENCE at that sequence's row base. It is
+    /// the shape the note below prescribes, and it is deliberately NOT a fused
+    /// R-row body: the per-sequence sweep is BIT-IDENTICAL to the serial verify
+    /// this replaces, because each call sees exactly the rows, the state, the
+    /// length and the page table the serial path gave it. What it buys is not
+    /// weight amortisation inside the layer but the right to run on the batched
+    /// driver at all — one metadata block, one lm_head, one argmax, one D2H for
+    /// the whole batch instead of `n_seqs` of each.
+    ///
+    /// 🪤 `slot_base = off[i]`, never 0. The mHC highway slot is the row's index
+    /// within the WHOLE forward (A65), and the driver hands every sequence one
+    /// `hidden` with `hc_row_offset: 0`; a sequence writing from slot 0 would
+    /// scribble sequence 0's highway and every later layer would read it back.
+    ///
+    /// 🪤 Each sequence gets `num_seqs: ks[i]` on its metadata view, not the
+    /// count `row_view` leaves behind. DSA admits a K-row metadata block ONLY
+    /// when it describes exactly `k` rows; a plain `row_view(off[i])` reports
+    /// the rows REMAINING in the batch, which is right only for the last
+    /// sequence and silently drops every earlier one onto the per-row
+    /// `copy_h2d` path — capture-unsupported, and a stream drain per row.
+    ///
+    /// `residual` is ignored: a GLM text layer's residual lives in the mHC
+    /// highway. `wy_tables` is ignored: those are the GDN family's WY tables,
+    /// and KDA carries its own workspace.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_verify_multi<'a, 'b: 'a>(
+        &self,
+        hidden: DevicePtr,
+        _residual: DevicePtr,
+        n_seqs: usize,
+        ks: &[usize],
+        states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        kv_cache: &mut PagedKvCache,
+        seq_lens: &[usize],
+        block_tables: &[Vec<u32>],
+        _wy_tables: DevicePtr,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        // Bail rather than serve the rows we happen to have: a short slice
+        // means the caller and this layer disagree about the batch, and a
+        // verify that advances the wrong sequence's recurrent state is a
+        // silent, compounding wrong answer that survives as fluent text.
+        if states.len() < n_seqs
+            || ks.len() < n_seqs
+            || seq_lens.len() < n_seqs
+            || block_tables.len() < n_seqs
+        {
+            bail!(
+                "GLM layer {}: decode_verify_multi of {n_seqs} seqs got states={} ks={} \
+                 seq_lens={} block_tables={}",
+                self.layer_idx,
+                states.len(),
+                ks.len(),
+                seq_lens.len(),
+                block_tables.len()
+            );
+        }
+        let h = self.hidden;
+        let mut base = 0usize;
+        for (i, state) in states.iter_mut().enumerate().take(n_seqs) {
+            let k = ks[i];
+            if k == 0 {
+                continue;
+            }
+            // The per-row rewind points a PARTIAL accept restores. `forward_k`
+            // indexes `h_state_intermediates[t]` unguarded, and the pool tier is
+            // per slot, so a sequence whose slot came from a narrow tier would
+            // run off the end mid-sweep. Checked HERE, before any launch, for
+            // the same reason `decode_batched` checks it: bailing is recoverable,
+            // a short pool is not.
+            if matches!(self.mixer, Glm5NextMixer::Kda { .. }) && k > 1 {
+                let st = self.kda_state(*state)?;
+                if st.h_state_intermediates.len() + 1 < k
+                    || st.conv_state_intermediates.len() + 1 < k
+                {
+                    bail!(
+                        "GLM layer {}: seq {i} of a batched {k}-token verify needs {} \
+                         per-token state snapshots but its slot's pool has h={} conv={}",
+                        self.layer_idx,
+                        k - 1,
+                        st.h_state_intermediates.len(),
+                        st.conv_state_intermediates.len(),
+                    );
+                }
+            }
+            let row_ctx = ForwardContext {
+                attn_metadata: ctx.attn_metadata.as_ref().map(|m| AttnMetadataDev {
+                    num_seqs: k as u32,
+                    ..m.row_view(base)
+                }),
+                ..*ctx
+            };
+            let mut bt = block_tables[i].clone();
+            self.forward_k(
+                hidden.offset(base * h * 2),
+                k,
+                *state,
+                kv_cache,
+                seq_lens[i],
+                &mut bt,
+                &row_ctx,
+                stream,
+                true, // take_snapshots: a partial accept must have a rewind point
+                base, // slot_base: this sequence's highway rows
+                // A BATCHED speculative verify, NOT a prefill sub-chunk. Same
+                // answer as the single-sequence verify caller and for the same
+                // reason: DSA's batched selector is qualified on prefill only,
+                // and a verify that claimed prefill would take it.
+                false,
+                0, // kv_write_floor: a verify never replays a cached prefix
+            )?;
+            base += k;
+        }
+        Ok(())
+    }
+
     /// 🔴 GLM-5.3 implements no `decode_verify_multi`, so the batched verify
     /// sweep must not be selected for it. The trait default already `bail!`s,
     /// but that is a mid-request abort; declaring it here makes
     /// `can_batch_verify_dispatch` route around it instead, leaving spec-on
     /// C>1 on the per-sequence verify loop — the sealed K=3 path.
     ///
-    /// 🔒 Flipped to `false` by the PR-3 commit that adds
-    /// `Glm5NextLayer::decode_verify_multi` (per-sequence `forward_k` sweep
-    /// with `slot_base = meta_row_base = row_base`).
+    /// ✅ NOW FALSE — `Glm5NextLayer::decode_verify_multi` above is that commit:
+    /// a per-sequence `forward_k` sweep with `slot_base = row_base` and a
+    /// per-sequence metadata view. The text below is kept because it is why the
+    /// override has to exist; delete the override and the bail comes back.
+    ///
+    /// 🪤 The LAYER answering `false` is necessary, not sufficient. Under EP the
+    /// batched sweep is still refused by `can_batch_verify_dispatch`'s
+    /// `comm.is_none()` conjunct, which has no worker-side command behind it —
+    /// so this alone changes nothing on a multi-rank serve.
     fn decode_verify_multi_unsupported(&self) -> bool {
-        true
+        false
     }
 
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {

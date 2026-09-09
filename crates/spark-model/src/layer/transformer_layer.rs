@@ -721,9 +721,21 @@ pub trait TransformerLayer: Send + Sync {
     /// `states[i]` with row-offset buffer bases — per-sequence math is
     /// byte-identical to the single-sequence `decode_batched` K-token body.
     ///
-    /// Only SSM layers override (attention layers are handled by the caller
-    /// via `decode_multi_seq`, which already takes per-row block tables and
-    /// seq lens). Default: unsupported.
+    /// 🪤 "Only SSM layers override" is TRUE ONLY FOR `LayerType::FullAttention`.
+    /// The caller splits on that one type (`verify_e.rs`), so a
+    /// `SparseAttention` mixer — GLM-5.3-Flash's DSA — lands HERE, not in
+    /// `decode_multi_seq`. A hybrid model whose single layer type wraps either
+    /// mixer therefore needs this method to carry attention arguments too,
+    /// which is why `seq_lens` and `block_tables` exist below.
+    ///
+    /// `seq_lens[i]` is sequence `i`'s length BEFORE its `ks[i]` rows, and
+    /// `block_tables[i]` its page table — both per SEQUENCE, not per row.
+    /// A pure-SSM implementor ignores them. They are not derivable inside the
+    /// layer: `PagedKvCache` exposes no sequence→table map, `LayerState`
+    /// carries no sequence id, and a sparse-attention indexer's own `len()`
+    /// runs AHEAD of `seq_len` after a rejected draft, so it cannot stand in.
+    ///
+    /// Default: unsupported.
     ///
     /// `wy_tables`: this layer's slice of the model-staged WY pointer tables
     /// (layout above, `VERIFY_WY_LAYER_STRIDE_BYTES`; refreshed pre-graph
@@ -738,6 +750,8 @@ pub trait TransformerLayer: Send + Sync {
         _ks: &[usize],
         _states: &'a mut [&'b mut (dyn LayerState + 'static)],
         _kv_cache: &mut PagedKvCache,
+        _seq_lens: &[usize],
+        _block_tables: &[Vec<u32>],
         _wy_tables: DevicePtr,
         _ctx: &ForwardContext,
         _stream: u64,

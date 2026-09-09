@@ -519,6 +519,15 @@ impl TransformerModel {
                 }
             }
 
+            // The same values per SEQUENCE, for `decode_verify_multi`. A layer
+            // whose mixer is sparse attention lands there rather than in the
+            // FullAttention arm above and needs its own page table and the
+            // length BEFORE its rows — `seq_lens_vec[off[i]]` by construction,
+            // spelled directly here so the two do not have to be kept in step.
+            let seq_lens_seq: Vec<usize> = seqs.iter().map(|s| s.seq_len).collect();
+            let block_tables_seq: Vec<Vec<u32>> =
+                seqs.iter().map(|s| s.block_table.clone()).collect();
+
             // Dummy attention states are stateless (multi_seq attention
             // ignores them) — allocated OUTSIDE the capture window.
             let mut attn_dummy_states: Vec<Vec<Box<dyn LayerState>>> = Vec::new();
@@ -579,6 +588,8 @@ impl TransformerModel {
                         ks,
                         &mut state_refs,
                         &mut kv_cache,
+                        &seq_lens_seq,
+                        &block_tables_seq,
                         wy_slice,
                         &ctx,
                         stream,

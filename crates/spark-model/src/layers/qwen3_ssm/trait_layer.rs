@@ -159,6 +159,10 @@ impl TransformerLayer for Qwen3SsmLayer {
         ks: &[usize],
         states: &'a mut [&'b mut (dyn LayerState + 'static)],
         _kv_cache: &mut PagedKvCache,
+        // Pure-SSM layer: no page table, no attention length. The hybrid
+        // GLM-5.3 layer needs both because its DSA mixer lands in this method.
+        _seq_lens: &[usize],
+        _block_tables: &[Vec<u32>],
         wy_tables: DevicePtr,
         ctx: &ForwardContext,
         stream: u64,
