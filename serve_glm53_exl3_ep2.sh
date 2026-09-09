@@ -26,6 +26,86 @@
 # blind to the carveout. Over-allocation has hard-rebooted it three times.
 #
 # ─────────────────────────────────────────────────────────────────────────────
+# HANDOFF — state as of 2026-09-09, branch `research/glm-exl3`.
+# Written so the next session can pick this up cold.
+#
+# WHAT SHIPPED THIS SESSION
+#
+#   2bb9933ad  the tool-envelope guard counted GLM/Laguna file writes as
+#              envelope junk. `update_tool_param_state` exempts tool ARGUMENT
+#              VALUES from the 1024-token envelope cap so a large write can
+#              stream — but the exemption recognised only Qwen's
+#              `<parameter=KEY>` form, matched by hardcoded Qwen3.6 token ids.
+#              GLM/Laguna use poolside_v1 (`<arg_value>`…`</arg_value>`), so
+#              NOTHING was exempt and every write past the cap was force-ended
+#              mid-file with "Stuck in tool-call ENVELOPE". Delimiters are now
+#              TOKENIZER-DERIVED (GLM: 154849/154850). `ATLAS_TOOL_ENVELOPE_
+#              WATCHDOG` also became REAL — it was named in two source comments
+#              and in operator recipes while nothing read it.
+#   4352645d7  DFlash2 SSM rollback after gamma-verify (hybrid targets).
+#   b1fe16445  TUI=1 on the serving rank.
+#
+# BOOT PROOF for the envelope fix — if this line is ABSENT the exemption did
+# not resolve and long writes will truncate again:
+#   "Tool argument-value delimiters: <arg_value> (154849) .. </arg_value> (154850)"
+#
+# MEASURED — Gate A `agentic-webserver`, 2026-09-09, binary fe8a53a1ededa20d.
+# The REAL harness (`spark benchmark run agentic-webserver`), not a hand-rolled
+# probe: the model writes an Axum ping/pong server with write_file/read_file/
+# bash in a sandbox, and the scorer builds it and curls /ping.
+#
+#   AGENTIC=1, reasoning_effort=low pinned server-side, preserve-thinking on
+#   (MODEL.toml [behavior] + client ATLAS_AGENTIC_PRESERVE_THINKING=1),
+#   iterations=3, wall_budget_s=30000, max_turns=40.
+#
+#                        webserver_ok  followed_dirs  s/turn   Σwall   decode
+#     K2   util 0.65 MTP on    2/3          2/3       26.80s    699s   17-19 tok/s
+#     K4   util 0.80 MTP off   3/3          2/3       19.44s    528s   13.6-13.9
+#
+#   ZERO tool-envelope and ZERO inter-tool-prose guard fires in either tier —
+#   the envelope watchdog stayed ARMED and never tripped. That is the fix
+#   confirmed under the real agentic loop.
+#
+#   🪤 NOT a one-variable A/B: quantization, MTP (forced off — 4bpw+MTP refuses
+#   at boot ~1.8 GB short), util AND checkpoint storage all differ. At n=3 with
+#   a 0/1 outcome metric, 3/3 vs 2/3 is ONE run's difference and is NOT
+#   significant. `followed_directions` was identical. K4-looks-better is a
+#   hypothesis needing more iterations, not a finding. The one durable
+#   observation: K4 decodes SLOWER per token yet finishes turns FASTER
+#   (19.4 vs 26.8 s/turn at similar turn counts), i.e. it emits less text to
+#   reach the same place.
+#
+#   🪤 K4 was run at util 0.80, NOT this script's 0.85 default. At 0.85 the box
+#   sat at 116 GB used / 1 GB AVAILABLE, and the agentic scorer runs cargo
+#   builds on that same box — the OOM shape that has hard-rebooted this machine
+#   three times. 0.80 still clears the 90.79 GB/rank of weights.
+#
+#   Neither tier GATES: the harness warns GLM is not a declared variant of
+#   agentic-webserver, so no committed thresholds exist and `GATE_A_EXIT=2` is
+#   the schema's followed_directions bound, not a GLM threshold.
+#
+# REASONING EFFORT IS A CHAT-TEMPLATE KWARG, and the model card CANNOT express
+# it: `ModelBehavior` carries max_thinking_budget / thinking_default /
+# effort_capped_at_ceiling / preserve_thinking but has NO default-effort field.
+# The only server-side lever is
+#   --default-chat-template-kwargs '{"reasoning_effort":"low"}'
+# Confirm it took: a request with NO reasoning params must log
+#   "Thinking enabled, budget=Some(1024)"   (= max_thinking_budget/2 = low)
+# The agentic benchmark omits reasoning_effort from its body ON PURPOSE
+# (benchmarks/agentic/agent.rs:367) precisely so this serve default governs.
+#
+# NEXT UP — ViT / vision. `benchmark run vision-fidelity` on the K2 pack (same
+# vision tower as 4bpw, loads far quicker). Last known state is
+# geometry_matched 5/14; goal is 100%.
+#
+# STILL OPEN
+#   - verify_dflash_batch_step.rs has neither the EP broadcast nor the SSM
+#     rollback. Unreachable at --max-batch-size 1; left untested rather than
+#     changed blind.
+#   - 2 pre-existing spark-model test failures from 3a121dbbb (arena leak +
+#     vision sidecar).
+#
+# ─────────────────────────────────────────────────────────────────────────────
 # MEASURED, 2026-09-09, binary 91f7f4def3eb38d8 (branch research/glm-exl3,
 # f800f4725), prefix caching ON, salted cold prompts, arm liveness verified on
 # RANK 0 (`spark::scheduler::mtp_accept_debug` runs on the serving rank — a
