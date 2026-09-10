@@ -1896,3 +1896,33 @@ One comparison, three claims:
 Wall time is unchanged (5786 s vs the base arm's 5838 s) even though hermetic
 disables the prefix cache — consistent with BFCL being single-turn, where a
 prefix cache has almost nothing to reuse.
+
+### Watch item for this campaign: #835 is live on `concurrency-sweep`
+
+Located precisely, because an earlier reading of mine inferred the ladder from
+an old RECORD rather than the config and got it wrong:
+
+| gate | ladder | `c2_aggregate_tok_s` floor |
+|---|---|---|
+| `concurrency-sweep` | `1,2,4,8,16,32,64,128` (a `param_overrides` pin, not the schema default) | **min 25.0, noise 0.95 → effective 24.05** |
+| `concurrency-sweep-dflash2` | `1,2,4,8,16` | min 36.0, noise 0.62 |
+
+The C=2 cell is TRIMODAL at roughly 30.6 / 27.5 / 23.5 tok/s with nothing
+between, and the lowest mode sits BELOW the effective floor. So
+`concurrency-sweep` can fail on this campaign for reasons that have nothing to
+do with this branch's diff — that is the whole of #835.
+
+**What the fix does and does not do.** With the accept-len pin, a C=2 cell that
+ran the SERIAL arm (`accept_len < 1.5`, against ~2.3 on MTP) now reports
+INCONCLUSIVE naming the arm change, instead of a floor breach claiming a
+regression two samples cannot support. That is more honest and it is NOT a
+pass: `verdict_passes()` is `verdict == "PASS"`, so an INCONCLUSIVE gate is
+still undischarged and the leg needs re-running.
+
+**Which is fine, and is the point.** A re-run whose cause is NAMED ("the C=2
+cell ran the serial arm") is a different thing from a re-run that turned red to
+green for no stated reason — the latter is on the enumerated list of cases a
+human must see. If this gate goes INCONCLUSIVE, the cause is in the verdict
+string and the re-run is defensible; if it goes FAIL on the floor with
+`accept_len` ~2.3, that is a real speed finding and must be attributed, which
+on this branch means bisecting against #971's 68-file hot-path diff.
