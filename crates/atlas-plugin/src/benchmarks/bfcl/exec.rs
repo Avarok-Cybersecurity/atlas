@@ -68,7 +68,9 @@ impl Bfcl {
             .artifacts
             .clone()
             .context("artifacts were not provisioned")?;
-        let path = artifacts.dir.join(responses_file(self.descriptor().id));
+        let path = artifacts
+            .dir
+            .join(responses_file(self.descriptor().id, self.shard));
         let mut text = String::new();
         for r in &self.responses {
             text.push_str(&serde_json::to_string(r)?);
@@ -115,8 +117,22 @@ impl Bfcl {
 /// score the same" — two different sets of answers can total identically, and
 /// an aggregate that matches is what made an earlier reading of this bug wrong.
 /// A per-sample diff needs both sides to still exist.
-pub(super) fn responses_file(benchmark_id: &str) -> String {
-    format!("responses-{benchmark_id}.jsonl")
+/// ★ THE SHARD IS PART OF THE KEY, and the benchmark id alone is NOT enough.
+/// `Bfcl::descriptor()` returns `self.variant.descriptor()`, and a shard carries
+/// the BASE variant plus a `shard` field — so `bfcl-subset-a` reports the id
+/// `bfcl-subset`, exactly like the group and like its three siblings. Keying on
+/// the id alone therefore left all five legs writing one filename, which is the
+/// collision this function exists to prevent.
+///
+/// Caught by running it, not by reasoning about it: the first sharded leg after
+/// the id-only fix reported "wrote no per-sample output", because the harness
+/// looked for `responses-bfcl-subset-a.jsonl` and the leg had written
+/// `responses-bfcl-subset.jsonl` on top of the whole draw's.
+pub(super) fn responses_file(benchmark_id: &str, shard: Option<super::dataset::Shard>) -> String {
+    match shard {
+        None => format!("responses-{benchmark_id}.jsonl"),
+        Some(s) => format!("responses-{benchmark_id}-{}of{}.jsonl", s.index, s.count),
+    }
 }
 
 #[cfg(test)]
