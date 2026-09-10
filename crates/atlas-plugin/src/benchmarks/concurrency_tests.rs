@@ -336,11 +336,24 @@ fn metrics_map_with_no_comparable_cells_still_reports_evidence() {
 // between) because the C=2 cell's ~640 measured tokens contain only one to
 // three MTP-gate arbitrations, so its outcome is all-MTP, mixed, or
 // all-serial. The committed floor sits in the empty gap, which makes it a
-// mode detector rather than a regression detector. These pin the fix: the arm
-// becomes a COMPARABILITY class, and no floor moves.
+// mode detector rather than a regression detector.
+//
+// ★ CORRECTED after a real campaign. The arm was first wired as a COMPARABILITY
+// class — a serial cell excluded from scoring, and any such cell failing the run
+// INCONCLUSIVE. That was wrong, and only a live gate run showed it: at wide batch
+// the MTP gate drops speculation ON PURPOSE, so C=8 upward legitimately run
+// serial, and the floors for those rungs were calibrated on runs that did
+// exactly that. The pin dropped five of eight cells, made `peak_aggregate_tok_s`
+// read 49.5 (from C=4) instead of ~115 (from C=64), and failed a gate with nine
+// consecutive passing records.
+//
+// The arm is now PUBLISHED and never gated on: the benchmark cannot know which
+// arm should have run, and asserting otherwise is a claim it cannot support.
+// What #835 needs is that a human reading a low C=2 can see whether the serial
+// arm explains it — and a metric on the record does that.
 
 #[test]
-fn a_serial_arm_cell_is_not_comparable_and_is_counted_separately() {
+fn a_serial_arm_cell_is_reported_but_still_scored() {
     // accept_len == 1.00 exactly: every emitted token cost one step.
     let serial = row(
         2,
@@ -351,13 +364,13 @@ fn a_serial_arm_cell_is_not_comparable_and_is_counted_separately() {
     );
     assert_eq!(serial.accept_len(), Some(1.0));
     assert!(serial.arm_is_not_mtp(), "accept_len 1.00 is the serial arm");
+    // ★ THE CORRECTION. It stays comparable. At wide batch the gate drops
+    // speculation deliberately and those floors were calibrated that way, so
+    // excluding a serial cell throws away a measurement the floor expects.
     assert!(
-        !serial.comparable(),
-        "a serial-arm cell must not be quoted as a throughput measurement"
+        serial.comparable(),
+        "a serial cell is still comparable to a floor calibrated on serial"
     );
-    // ...and it is NOT vacuous or cache-uncontrolled. The three exclusions
-    // are distinct: this cell delivered every token from a warm cache. Only
-    // the arm differs.
     assert!(!serial.vacuous);
     assert!(!serial.cache_uncontrolled);
 }
@@ -375,9 +388,10 @@ fn an_mtp_arm_cell_is_comparable() {
 }
 
 #[test]
-fn a_mixed_cell_takes_the_minimum_arm_and_is_excluded() {
-    // One request served serial, one speculative. The aggregate over both is
-    // a MIXTURE, which measures neither arm — so the minimum governs.
+fn a_mixed_cell_reports_the_minimum_arm_and_is_still_scored() {
+    // One request served serial, one speculative. The MINIMUM governs the
+    // reported figure, so a cell that touched the serial arm at all says so —
+    // that is the signal a human needs to explain a low reading.
     let mixed = row(
         2,
         27.5,
@@ -387,8 +401,8 @@ fn a_mixed_cell_takes_the_minimum_arm_and_is_excluded() {
     );
     assert_eq!(mixed.accept_len(), Some(1.0), "the minimum, not the mean");
     assert!(
-        !mixed.comparable(),
-        "a mixture is not a measurement of either arm"
+        mixed.comparable(),
+        "reporting the arm must not remove the cell from scoring"
     );
 }
 

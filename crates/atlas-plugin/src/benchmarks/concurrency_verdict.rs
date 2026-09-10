@@ -114,28 +114,12 @@ pub(crate) fn sweep_verdict(
              measured request did not report a material cached-prompt fraction"
         ));
     }
-    if non_mtp_arm > 0 {
-        // ★ NOT A REGRESSION, AND IT MUST NOT BE RECORDED AS ONE.
-        //
-        // The MTP gate arbitrates between the serial and batch-K forwards on
-        // wall-clock throughput, and a C=2 cell's ~640 measured tokens hold
-        // only one to three arbitrations — so which arm a cell draws is close
-        // to a coin flip. The arms differ by ~1.3x in delivered tok/s, which
-        // is why `c2_aggregate_tok_s` is trimodal (~30.6 / ~27.5 / ~23.5)
-        // with nothing in between, and why a floor sitting in that gap fires
-        // on the draw rather than on the engine.
-        //
-        // Saying so is the whole point. Twice a floor has been proposed for
-        // this rung from samples that had silently mixed arms, and twice it
-        // was wrong. A cell that ran serial is not evidence about the engine's
-        // speed; it is evidence that the arbiter picked the other arm.
-        return Verdict::fail(format!(
-            "INCONCLUSIVE: {non_mtp_arm} of {cells} cells ran the SERIAL arm, not the \
-             speculative one (accept_len < 1.5) — the two arms differ by ~1.3x in \
-             delivered tok/s, so this is an arm change and not a regression. Re-run, \
-             or pin the arm, before reading any floor"
-        ));
-    }
+    // ★ NO INCONCLUSIVE ON AN ARM CHANGE. It used to fail here and that was
+    // wrong: at wide batch the MTP gate drops speculation BY DESIGN, and those
+    // rungs' floors were calibrated on runs that did. `non_mtp_arm` is still
+    // counted and published so a low reading can be explained, but it does not
+    // decide a verdict. See `CellRow::arm_is_not_mtp`.
+    let _ = non_mtp_arm;
     let mut basis = Vec::new();
     for (c, floor) in floors.per_c.iter().filter(|(_, f)| *f > 0.0) {
         let key = format!("c{c}_aggregate_tok_s");

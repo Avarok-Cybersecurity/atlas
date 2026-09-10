@@ -323,6 +323,24 @@ impl CellRow {
     /// 1.00 and this model's ~2.3 MTP accept depth. `None` — the server did
     /// not report the field — is NOT treated as serial: that would turn a
     /// missing instrument into a verdict.
+    /// Did this cell run WITHOUT speculation? Reported, never gated on.
+    ///
+    /// ★ THIS USED TO EXCLUDE THE CELL FROM SCORING, AND THAT WAS WRONG.
+    /// Measured on a real campaign: at wide batch the MTP gate switches to the
+    /// serial arm ON PURPOSE, because speculation stops being net-positive
+    /// there — so C=8 upward legitimately run serial, and the floors for those
+    /// rungs were CALIBRATED on runs that did exactly that (c64 floor 109.5
+    /// against a measured 115.4, nine passing records running). Excluding them
+    /// as "not comparable" dropped five of eight cells, corrupted
+    /// `peak_aggregate_tok_s` (49.5 from C=4 instead of ~115 from C=64) and
+    /// failed a gate that had passed nine times.
+    ///
+    /// The benchmark cannot know which arm SHOULD have run. Publishing that it
+    /// did not speculate is informative; gating on it asserts knowledge the
+    /// benchmark does not have. So `c{c}_accept_len` and `non_mtp_arm_cells`
+    /// go on the record — where a human reading a low C=2 can see whether the
+    /// serial arm explains it, which is all #835 ever needed — and the verdict
+    /// says nothing about the arm.
     fn arm_is_not_mtp(&self) -> bool {
         self.accept_len().is_some_and(|a| a < 1.5)
     }
@@ -330,7 +348,9 @@ impl CellRow {
     /// Clean, above the vacuity floor, cache-controlled, and on the MTP arm —
     /// the only rows metrics may quote.
     fn comparable(&self) -> bool {
-        self.errors == 0 && !self.vacuous && !self.cache_uncontrolled && !self.arm_is_not_mtp()
+        // `arm_is_not_mtp` is deliberately ABSENT: see its doc. A cell that ran
+        // serial is still comparable to a floor calibrated on serial.
+        self.errors == 0 && !self.vacuous && !self.cache_uncontrolled
     }
 }
 
