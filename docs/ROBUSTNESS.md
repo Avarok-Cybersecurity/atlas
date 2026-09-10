@@ -1844,3 +1844,28 @@ committed bars, so nothing is blocked — but the regime is not score-neutral,
 which is exactly why the History pane now draws a labelled band at a regime
 boundary instead of one continuous line, and why no floor is declared in the
 change that first measures it.
+
+### This branch may not seal itself: 7 of 15 BOUNDARY_FILES change
+
+Sealing a certified campaign is delegated by default in this repository, with
+an enumerated list of cases that still need a human. One applies: *the merge
+lands a `BOUNDARY_FILE` change whose only evidence is this campaign.*
+
+Touched here, four of them new files:
+
+| file | |
+|---|---|
+| `gate/coverage.rs` | the BOUNDARY_FILES list itself, PROMOTION_CANDIDATES, NOT_REQUIRED, a new excludes set |
+| `gate/bench.rs` | refuses an under-pinned hermetic baseline |
+| `gate/check.rs` | modified |
+| `gate/hermetic.rs` | **new** — the table of what `--hermetic` closes |
+| `gate/group.rs`, `gate/check_group.rs`, `gate/check_paths.rs` | **new**, from the sharding work |
+
+A boundary file decides whether any gate passes. Offering the campaign those
+files govern as proof that the files are right is circular — the unit tests and
+the 226-check certification self-test cover the LOGIC, but the campaign is the
+only BEHAVIOURAL evidence, which is precisely the condition the rule names.
+
+So the campaign runs to completion and the evidence gets posted, and the merge
+waits for a human. Recorded here rather than decided at the end of a long
+night, because that is when the temptation to call it "clean enough" is largest.
