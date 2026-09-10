@@ -1999,3 +1999,37 @@ pinning in BENCH.toml, which is the follow-up PR's job) and must be reported as
 one. The distinction matters because "a gate failed and a re-run made it green,
 with no named cause" is on the enumerated list of things a human must see — and
 the whole point of the verdict string is that the cause here IS named.
+
+### A negative control proves the code does what you designed. It cannot prove the design is right.
+
+The #835 arm pin had everything this document argues for. Unit tests that
+reached the branch they named. A negative control that was RUN and observed red.
+A verdict string that explained itself. It shipped, and it was wrong — and only
+a real gate run could show it.
+
+The design said: a cell that ran the serial arm is not comparable, so exclude it
+and fail the run INCONCLUSIVE. Every test asserted exactly that, and every test
+passed. What no test could know is that at wide batch **the MTP gate drops
+speculation on purpose**, so C=8 upward legitimately run serial, and those rungs'
+floors were CALIBRATED on runs that did. The pin dropped five of eight cells,
+made `peak_aggregate_tok_s` read 49.5 (from C=4) instead of ~115 (from C=64),
+and failed a gate carrying nine consecutive passing records.
+
+The cell #835 is actually about — C=2 — ran the MTP arm and passed at 30.02
+against a 25.0 floor. The pin fired everywhere except the place it was for.
+
+**What separates this from the twelve failure modes already in
+[[a-passing-test-may-not-have-run]]:** those are all ways a check fails to
+measure what it claims. This one measured exactly what it claimed. The claim was
+wrong. A control answers "is this check wired to the thing it checks"; it is
+silent on "is the thing worth checking".
+
+**The rule.** For any check that will REFUSE something — a gate, a validator, a
+parse-time bail — ask what the refused state looks like when it is CORRECT.
+Here: "a cell ran without speculation" is correct and expected at wide batch,
+and the design never asked. The cheap version of that question is to look at
+what the existing passing records contain: nine of them carried the very
+condition the new rule refuses.
+
+And the corollary already in practice here: run the guard against real history
+before trusting it. The nine records were on disk the whole time.
