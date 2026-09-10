@@ -60,6 +60,32 @@ pub const SMEM_CEILING: usize = 49_152;
 
 const BLOCK: u32 = 128;
 
+/// Block width for `kda_chunk_scan` ONLY.
+///
+/// 🔴 That kernel is the sequential half of the chunked prefill: its grid is `(H)` — 32
+/// blocks at TP=2 — and it walks the chunks in-kernel. At `BLOCK = 128` that is 4,096
+/// threads for the whole layer on a 48-SM part, and it showed: chunked `kda_recur`
+/// measured 227.84 ms/tok against the per-token recurrence's 123.68, i.e. 1.84x SLOWER
+/// despite touching the ~4 MB recurrent state once per 32 tokens instead of once per
+/// token. The algorithm was right and the launch was starving it.
+///
+/// 🪤 Widening is BIT-IDENTICAL, which is why it is a width and not a rewrite. Every loop
+/// in that kernel is `for (idx = threadIdx.x; idx < N; idx += blockDim.x)` accumulating
+/// into a PER-THREAD local — there is no cross-thread reduction whose tree would change
+/// shape. Only which thread owns which output moves; each output's inner loop runs in the
+/// same order over the same values. The `__syncthreads()` calls sit between phases, not
+/// inside them, so they are width-agnostic too.
+///
+/// Shared memory is `(2*C*D + C*C) * 4` = 36,864 B and does not depend on the block width,
+/// so this cannot push the launch past the 48 KiB default ceiling the file's header warns
+/// about. It does pin occupancy to one block per SM, which costs nothing here: there are
+/// only 32 blocks to place.
+///
+/// `kda_chunk_prepare` deliberately keeps `BLOCK`: its grid is `(num_chunks, H)` = 256
+/// blocks, so it is not the starved one, and it carries a `[C]` row scratch in shared
+/// memory that a wider block would need re-checked.
+const CHUNK_SCAN_BLOCK: u32 = 1024;
+
 /// Geometry and the config values that MUST be read from the checkpoint.
 ///
 /// `gate_lower_bound`, `rms_norm_eps` and `hidden_act` coincide with a library default on
@@ -369,6 +395,42 @@ impl Glm5NextKdaLayer {
         k: usize,
         stream: u64,
     ) -> Result<()> {
+        // 🔴 PREFILL WIDTHS GO TO cuBLASLt. `dense_gemm_bf16` is, by its own doc, a
+        // "scalar strict-order BF16 GEMM, no reassociation" — correctness-first, not a
+        // tensor-core kernel. With the KDA bucket split three ways it is the single
+        // largest leaf in prefill: `kda_front` 642.4 ms/tok = 24.4% (and `kda_back`
+        // another 7.7%), against `kda_recur` — the per-token recurrence everyone assumes
+        // is the problem — at just 4.6%. At 256 rows that is 19.8 ms per layer-call to
+        // move ~268 MB of weights, ~20x off a 273 GB/s part.
+        //
+        // 🪤 The threshold is not a tuning knob, it is the numerics boundary.
+        // `dense_mm_bf16` routes M=1 to the GEMV and M=2..=16 to the batched single-sweep
+        // kernel, both of which accumulate per row in FP32 in a fixed K order and are
+        // BIT-IDENTICAL. Only above `DENSE_GEMV_BATCHM_MAX_M` does it fall to the tile
+        // GEMM, which already reassociates. So this swaps one non-bit-exact path for
+        // another and leaves every bit-exact tier — decode and the speculative verify —
+        // untouched. A verify must still match what decode produced; it is M<=16 and
+        // never reaches here.
+        // 🪤 Same BF16-out invariant the DSA and MLP helpers ENFORCE with a
+        // `batchm.0 != 0` guard. Stated, not enforced, here on purpose: those two take the
+        // batchm handle as a per-call argument, so it genuinely marks the call site's
+        // output dtype, whereas `self.kernels.gemv_batchm` is one optional `try_kernel`
+        // handle shared by every KDA projection. Gating on it would disable cuBLASLt
+        // wholesale on any target where that kernel is simply absent — losing the win for
+        // no safety, since every caller in this file writes BF16.
+        if m > ops::DENSE_GEMV_BATCHM_MAX_M as usize
+            && crate::layers::glm5next_layer::cublas_wide_proj()
+        {
+            return ops::cublas_bf16_proj_dense(
+                input,
+                weight.weight,
+                out,
+                m as u32,
+                n as u32,
+                k as u32,
+                stream,
+            );
+        }
         // M=1 decode -> GEMV, M=2..8 verify/short-chunk -> ONE weight sweep, wider -> tile GEMM.
         ops::dense_mm_bf16(
             gpu,
@@ -542,12 +604,78 @@ impl Glm5NextKdaLayer {
         )
     }
 
+    /// N SEQUENCES, one token each: the projections batched, the recurrences independent.
+    ///
+    /// The sequence-axis twin of [`Self::decode_k`], and strictly the easier of the two.
+    /// `decode_k` batches the weight-heavy halves around a recurrence it must walk IN ORDER,
+    /// because token `t + 1`'s state is a function of token `t`'s. Across SEQUENCES that
+    /// dependency does not exist: N states are independent, so the loop below is a loop only
+    /// because each row needs its own `state` pointer — the order it runs in cannot matter.
+    ///
+    /// The win is the same one that makes speculation pay here, applied to a different axis:
+    /// `front_end`'s q/k/v, both low-rank gate pairs and `b_proj`, and `back_end`'s `o_proj`,
+    /// read KDA's ~4.7 GB/rank ONCE for all N rows instead of once per sequence. On a model
+    /// that is 34/45 KDA layers that is the difference between concurrency time-slicing and
+    /// concurrency paying.
+    ///
+    /// 🔴 Bit-identical to N serial [`Self::decode`] calls, and for a STRONGER reason than
+    /// `decode_k`'s: there, batching had to reproduce a serial reduction order; here the rows
+    /// never interact at all. `dense_gemv_bf16_batchm` reproduces each row's exact K-iteration
+    /// order, the pack/gate/sigmoid/`o_norm` kernels are grid-parallel over the row axis, and
+    /// `stateful_row` reads and writes row `i` only.
+    ///
+    /// Takes no snapshots: this is plain decode, which is never rolled back. A speculative
+    /// verify keeps [`Self::decode_k`], whose per-row rewind points a partial accept needs.
+    pub fn decode_n_seqs(
+        &self,
+        gpu: &dyn GpuBackend,
+        hidden: DevicePtr,
+        n: usize,
+        states: &[KdaSeqState],
+        ws: &Glm5NextKdaWorkspace,
+        stream: u64,
+    ) -> Result<()> {
+        if n == 0 || n > ws.max_tokens {
+            bail!(
+                "KDA decode_n_seqs of {n} sequences does not fit a workspace built for {}",
+                ws.max_tokens
+            );
+        }
+        // Bail rather than serve `min(n, states.len())` rows: a short slice means the caller
+        // and this layer disagree about the batch, and advancing the wrong sequence's
+        // recurrent state is a silent, compounding wrong answer.
+        if states.len() != n {
+            bail!(
+                "KDA decode_n_seqs: {n} sequences but {} states",
+                states.len()
+            );
+        }
+        use crate::layers::glm5next_layer::profile;
+        let t_front = profile::start();
+        self.front_end(gpu, hidden, n, ws, stream)?;
+        profile::end(profile::KDA_FRONT, t_front, gpu, stream);
+        let t_recur = profile::start();
+        for (i, st) in states.iter().enumerate() {
+            self.stateful_row(gpu, i, st, ws, stream)?;
+        }
+        profile::end(profile::KDA_RECUR, t_recur, gpu, stream);
+        let t_back = profile::start();
+        let r = self.back_end(gpu, n, ws, stream);
+        profile::end(profile::KDA_BACK, t_back, gpu, stream);
+        r
+    }
+
     /// The stateful half of one KDA token: conv window update (with SiLU + L2 fused) then the
     /// recurrent scan, both reading row `row` of the workspace and updating `state` IN PLACE.
     ///
-    /// 🔴 This is the part that CANNOT be batched. The recurrent state after token `t + 1` is a
-    /// function of the state after `t`, so K verify rows walk it K times in order — which is why
-    /// [`Self::decode_k`] batches only the projections around it. The chunked [`Self::prefill`]
+    /// 🔴 This is the part that cannot be batched ALONG THE TOKEN AXIS. The recurrent state
+    /// after token `t + 1` is a function of the state after `t`, so K verify rows walk it K
+    /// times in order — which is why [`Self::decode_k`] batches only the projections around it.
+    ///
+    /// 🪤 That argument is about the TOKEN axis and does not carry to the SEQUENCE axis, where
+    /// N states are independent and nothing is ordered. [`Self::decode_n_seqs`] batches the
+    /// same projections across sequences for exactly that reason; reading this note as "the
+    /// recurrence can never be batched" is what leaves concurrency time-slicing. The chunked [`Self::prefill`]
     /// scan computes the same mathematics by a different association and is NOT bit-identical to
     /// this; using it for a verify would move the output of an ACCEPTED token.
     ///
@@ -684,9 +812,16 @@ impl Glm5NextKdaLayer {
                 ws.max_tokens
             );
         }
+        use crate::layers::glm5next_layer::profile;
         let c = &self.cfg;
         let (h_bytes, conv_bytes) = (c.recurrent_state_elems() * 4, c.conv_state_elems() * 4);
+        // Three spans, not one: see the KDA_FRONT doc comment. Each is closed where it
+        // ends — a bucket ended inside a loop against a start taken outside it is exactly
+        // the double-count that made dsa_proj read 94.6%.
+        let t_front = profile::start();
         self.front_end(gpu, hidden, k, ws, stream)?;
+        profile::end(profile::KDA_FRONT, t_front, gpu, stream);
+        let t_recur = profile::start();
         for row in 0..k {
             self.stateful_row(gpu, row, state, ws, stream)?;
             if let Some((h_dst, conv_dst)) = snapshots.get(row) {
@@ -694,7 +829,92 @@ impl Glm5NextKdaLayer {
                 gpu.copy_d2d_async(state.conv, *conv_dst, conv_bytes, stream)?;
             }
         }
-        self.back_end(gpu, k, ws, stream)
+        profile::end(profile::KDA_RECUR, t_recur, gpu, stream);
+        let t_back = profile::start();
+        let r = self.back_end(gpu, k, ws, stream);
+        profile::end(profile::KDA_BACK, t_back, gpu, stream);
+        r
+    }
+
+    /// N SEQUENCES x `ks[i]` VERIFY ROWS: the projections batched over ALL rows,
+    /// the recurrences per sequence, the per-row rewind points preserved.
+    ///
+    /// The two-axis generalisation of [`Self::decode_k`] (one sequence, K rows,
+    /// projections batched) and [`Self::decode_n_seqs`] (N sequences, one row
+    /// each). A speculative verify at C>1 wants both at once: `front_end` and
+    /// `back_end` read KDA's ~4.7 GB/rank ONCE for R = Σ`ks` rows instead of
+    /// once per sequence, while each sequence walks its own recurrence in order
+    /// against its own state.
+    ///
+    /// 🔴 Bit-identical to calling [`Self::decode_k`] once per sequence, PROVIDED
+    /// R stays inside the batched-GEMV band: `dense_gemv_bf16_batchm` reproduces
+    /// each row's exact K-iteration order, and past `DENSE_GEMV_BATCHM_MAX_M` the
+    /// tile GEMM reassociates instead. The caller enforces the bound; this
+    /// refuses anything the workspace cannot hold.
+    ///
+    /// 🪤 Row order is SEQ-MAJOR and the recurrence order WITHIN a sequence is
+    /// load-bearing: row `base + j` must run after `base + j - 1` because it
+    /// reads the state that one left. Only the sequences are independent.
+    ///
+    /// `snapshots[i][j]` receives sequence `i`'s state AFTER its row `j` — the
+    /// point a partial accept of `j + 1` rows rewinds to. Pass `ks[i] - 1` of
+    /// them per sequence (a full accept never rewinds) or none.
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_rows_n_seqs(
+        &self,
+        gpu: &dyn GpuBackend,
+        hidden: DevicePtr,
+        ks: &[usize],
+        states: &[KdaSeqState],
+        snapshots: &[Vec<(DevicePtr, DevicePtr)>],
+        ws: &Glm5NextKdaWorkspace,
+        stream: u64,
+    ) -> Result<()> {
+        let r_total: usize = ks.iter().sum();
+        if r_total == 0 || r_total > ws.max_tokens {
+            bail!(
+                "KDA verify_rows_n_seqs of {r_total} rows does not fit a workspace built for {}",
+                ws.max_tokens
+            );
+        }
+        // Bail rather than serve the sequences we happen to have: a mismatch
+        // means the caller and this layer disagree about the batch, and
+        // advancing the wrong sequence's recurrent state is a silent,
+        // compounding wrong answer.
+        if states.len() != ks.len() || snapshots.len() != ks.len() {
+            bail!(
+                "KDA verify_rows_n_seqs: {} ks but {} states and {} snapshot sets",
+                ks.len(),
+                states.len(),
+                snapshots.len()
+            );
+        }
+        use crate::layers::glm5next_layer::profile;
+        let c = &self.cfg;
+        let (h_bytes, conv_bytes) = (c.recurrent_state_elems() * 4, c.conv_state_elems() * 4);
+
+        let t_front = profile::start();
+        self.front_end(gpu, hidden, r_total, ws, stream)?;
+        profile::end(profile::KDA_FRONT, t_front, gpu, stream);
+
+        let t_recur = profile::start();
+        let mut base = 0usize;
+        for (i, &k) in ks.iter().enumerate() {
+            for j in 0..k {
+                self.stateful_row(gpu, base + j, &states[i], ws, stream)?;
+                if let Some((h_dst, conv_dst)) = snapshots[i].get(j) {
+                    gpu.copy_d2d_async(states[i].recurrent, *h_dst, h_bytes, stream)?;
+                    gpu.copy_d2d_async(states[i].conv, *conv_dst, conv_bytes, stream)?;
+                }
+            }
+            base += k;
+        }
+        profile::end(profile::KDA_RECUR, t_recur, gpu, stream);
+
+        let t_back = profile::start();
+        let res = self.back_end(gpu, r_total, ws, stream);
+        profile::end(profile::KDA_BACK, t_back, gpu, stream);
+        res
     }
 
     /// Chunked prefill over `t` tokens from the carried state.
@@ -737,7 +957,17 @@ impl Glm5NextKdaLayer {
         }
         let nchunks = t.div_ceil(c.chunk);
         let tp = nchunks * c.chunk;
+        // Same three buckets as `decode_k`, so the recurrent and chunked arms can be
+        // compared part by part rather than only on a total.
+        let t_front = crate::layers::glm5next_layer::profile::start();
         self.front_end(gpu, hidden, t, ws, stream)?;
+        crate::layers::glm5next_layer::profile::end(
+            crate::layers::glm5next_layer::profile::KDA_FRONT,
+            t_front,
+            gpu,
+            stream,
+        );
+        let t_recur = crate::layers::glm5next_layer::profile::start();
 
         // Prefill conv is conv + SiLU ONLY — L2 is a separate launch over q|k.
         KernelLaunch::new(gpu, self.kernels.conv_prefill)
@@ -780,12 +1010,32 @@ impl Glm5NextKdaLayer {
                 .arg_f32(0.0)
                 .launch(stream)?;
         }
+        // 🔴 PAD ONLY, like `gate`/`beta` above — this used to fill all `tp * qkv`.
+        //
+        // `kda_split_widen` below writes `q[d]`/`k[d]`/`v[d]` for EVERY channel of EVERY
+        // row in `[0, t)` (its grid is `[ceil(qkv/256), t, 1]` and it guards only
+        // `ch >= qkv || t >= T`), so everything the old fill wrote below `t * qkv` was
+        // overwritten a launch later. Three buffers x 256 rows x qkv x 4 B is ~12.6 MB per
+        // layer-call, ~428 MB per prefill chunk across the 34 KDA layers, all of it dead.
+        //
+        // 🪤 At the shipping width it was not merely wasteful, it was ENTIRELY dead:
+        // `PREFILL_ROWS = 256` is a multiple of `cfg.chunk = 32`, so `tp == t`, the pad is
+        // empty, and these three launches wrote a whole buffer that nothing would ever
+        // read. The `padded == real` guard now skips them outright.
+        //
+        // Semantics are unchanged, including for the numeric gate: `pad_fill` exists so the
+        // regression can POISON the tail and prove `kda_chunk_*` guards past `T` in-kernel,
+        // and the poison only ever survived in the pad anyway — split_widen erased the rest.
         for p in [ws.q_f32, ws.k_f32, ws.v_f32] {
+            let (real, padded) = (t * qkv, tp * qkv);
+            if padded == real {
+                continue;
+            }
             KernelLaunch::new(gpu, self.kernels.fill)
-                .grid([div_ceil((tp * qkv) as u32, 256), 1, 1])
+                .grid([div_ceil((padded - real) as u32, 256), 1, 1])
                 .block([256, 1, 1])
-                .arg_ptr(p)
-                .arg_u32((tp * qkv) as u32)
+                .arg_ptr(p.offset(real * 4))
+                .arg_u32((padded - real) as u32)
                 .arg_f32(pad_fill)
                 .launch(stream)?;
         }
@@ -818,7 +1068,7 @@ impl Glm5NextKdaLayer {
             .launch(stream)?;
         KernelLaunch::new(gpu, self.kernels.chunk_scan)
             .grid([c.heads as u32, 1, 1])
-            .block([BLOCK, 1, 1])
+            .block([CHUNK_SCAN_BLOCK, 1, 1])
             .shared_mem(c.smem_scan() as u32)
             .arg_ptr(ws.q_f32)
             .arg_ptr(ws.k_f32)
@@ -834,7 +1084,21 @@ impl Glm5NextKdaLayer {
             .arg_u32(t as u32)
             .arg_f32(1.0 / (hd as f32).sqrt())
             .launch(stream)?;
+        crate::layers::glm5next_layer::profile::end(
+            crate::layers::glm5next_layer::profile::KDA_RECUR,
+            t_recur,
+            gpu,
+            stream,
+        );
 
-        self.back_end(gpu, t, ws, stream)
+        let t_back = crate::layers::glm5next_layer::profile::start();
+        let r = self.back_end(gpu, t, ws, stream);
+        crate::layers::glm5next_layer::profile::end(
+            crate::layers::glm5next_layer::profile::KDA_BACK,
+            t_back,
+            gpu,
+            stream,
+        );
+        r
     }
 }

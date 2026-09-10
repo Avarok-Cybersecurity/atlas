@@ -156,6 +156,14 @@ pub struct Glm5NextMlpKernels {
     pub swiglu: KernelHandle,
     pub router: KernelHandle,
     pub combine: KernelHandle,
+    /// Counting sort that groups routed slots by expert, for the PREFILL arm.
+    ///
+    /// The decode arm does not need it — it sweeps the union of a handful of
+    /// rows — which is why this struct went without one and GLM ran every
+    /// prefill through the decode kernel. `try_kernel`, not `kernel`: a target
+    /// that never compiled `moe_permute` keeps the decode-only behaviour rather
+    /// than refusing to serve.
+    pub moe_sort_by_expert: KernelHandle,
 }
 
 impl Glm5NextMlpKernels {
@@ -195,6 +203,14 @@ impl Glm5NextMlpKernels {
             swiglu: gpu.kernel(FFN_MODULE, "glm5next_swiglu_clamp")?,
             router: gpu.kernel(FFN_MODULE, "glm5next_router_topk")?,
             combine: gpu.kernel(FFN_MODULE, "glm5next_moe_combine")?,
+            // 🪤 Module is `moe`, NOT `moe_permute`. The source file is
+            // `kernels/gb10/common/moe_permute.cu`, but `KERNEL.toml:47` maps
+            // `moe_permute = "moe"` and the lookup takes the POST-mapping name —
+            // the same string `moe/init.rs:132` and `nemotron_moe.rs:191` use.
+            // Naming the file instead resolves to handle 0, and the startup
+            // audit then REFUSES the serve rather than letting this dispatch
+            // site sit on a silent fallback. That refusal is the feature.
+            moe_sort_by_expert: crate::layers::try_kernel(gpu, "moe", "moe_sort_by_expert"),
         })
     }
 }

@@ -87,6 +87,9 @@ impl Model for TransformerModel {
     fn tokens_contain_vision_pad(&self, tokens: &[u32]) -> bool {
         self.tokens_have_vision_pad(tokens)
     }
+    fn vision_p_max(&self) -> usize {
+        self.vision_encoder.as_ref().map_or(0, |ve| ve.p_max())
+    }
     fn prefill(&self, tokens: &[u32], seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
         self.stamp_overlay_route(seq.adapter_slot);
         let logits = self.prefill_dispatch(tokens, seq, stream)?;
@@ -408,6 +411,15 @@ impl Model for TransformerModel {
     fn can_batch_verify(&self, ks: &[usize]) -> bool {
         self.can_batch_verify_dispatch(ks)
     }
+    fn batched_verify_row_cap(&self) -> usize {
+        // The tightest opinion among the layers, so the scheduler chunks to the
+        // same bound `can_batch_verify` will judge the chunk against.
+        self.layers
+            .iter()
+            .filter_map(|l| l.decode_verify_multi_row_cap())
+            .min()
+            .unwrap_or(usize::MAX)
+    }
     fn decode_verify_batched(
         &self,
         tokens: &[u32],
@@ -416,6 +428,17 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<Vec<u32>> {
         self.ssm_pool.require_verify_rollback_supported()?;
+        // Announce the batch BEFORE the forward, so the worker is inside the
+        // same sweep and answering its collectives. Head-only: this function
+        // runs on rank 0; the worker reaches the identical
+        // `decode_verify_batched_dispatch` from its own command arm, never
+        // through here, because `ep_broadcast_*` on a worker is a RECEIVE and
+        // re-entering this path would consume words meant for the forward.
+        if self.multi_rank_protocol_active() {
+            let seq_ids: Vec<u32> = seqs.iter().map(|s| s.slot_idx as u32).collect();
+            let ks_u32: Vec<u32> = ks.iter().map(|&k| k as u32).collect();
+            self.ep_broadcast_verify_batch_dispatch(&seq_ids, &ks_u32, tokens)?;
+        }
         self.decode_verify_batched_dispatch(tokens, ks, seqs, _stream)
     }
     fn stash_verify_hidden_rows(&self, rows: &[usize], _stream: u64) -> Result<()> {
@@ -938,6 +961,59 @@ impl TransformerModel {
         self.layers.iter().any(|l| l.has_aux_state())
     }
 
+    /// Whether a snapshot's aux set is COMPLETE for this model: every
+    /// `has_aux_state()` layer has exactly one blob, and no blob targets a
+    /// layer that carries none.
+    ///
+    /// The restore sites gate on this rather than on "any blob present".
+    /// A partial set — one DSA layer missing, or a PLE/QSA save that
+    /// returned `None` for a layer whose lazily-created state never
+    /// existed — would restore a stale MIX: some layers at the snapshot
+    /// position, the rest at zero, behind a KV image that assumes all of
+    /// them populated. On GLM that mix is loud (the first DSA row after the
+    /// restore hits `decode_k`'s lockstep bail), so declining here converts
+    /// a per-request error into a graceful "recompute from 0"; on a model
+    /// whose missing layer is not lockstep-checked it would be silent, which
+    /// is the stronger reason. A duplicate index is refused too: the save
+    /// path never produces one, so its presence means a corrupted set.
+    ///
+    /// Takes layer indices, not blobs — `SsmSnapshotPool::aux_layers` — so
+    /// the gate does not pay for a clone of the whole set.
+    pub(in crate::model) fn aux_set_is_complete(&self, layers: &[u32]) -> bool {
+        let carries: Vec<bool> = self.layers.iter().map(|l| l.has_aux_state()).collect();
+        aux_set_covers(&carries, layers)
+    }
+
+    /// The three restore sites' aux precondition: either no layer carries aux
+    /// state, or this snapshot's set is complete for the model. Written once so
+    /// the sites cannot drift (they already carried three copies of the weaker
+    /// "any blob present" predicate).
+    pub(in crate::model) fn snapshot_aux_is_restorable(&self, snap_id: usize) -> bool {
+        if !self.requires_aux_state() {
+            return true;
+        }
+        match self.ssm_snapshots.aux_layers(snap_id) {
+            Some(layers) if self.aux_set_is_complete(&layers) => true,
+            Some(layers) => {
+                tracing::info!(
+                    "Marconi snapshot {snap_id}: aux set is incomplete ({} blobs for {} \
+                     aux-carrying layers) — declining the restore, recomputing from 0",
+                    layers.len(),
+                    self.layers.iter().filter(|l| l.has_aux_state()).count()
+                );
+                false
+            }
+            None => {
+                tracing::info!(
+                    "Marconi snapshot {snap_id}: no aux set (over the aux cap, a mid-chunk \
+                     tail capture, or a pre-aux save) — declining the restore, recomputing \
+                     from 0"
+                );
+                false
+            }
+        }
+    }
+
     /// Apply a snapshot's aux blobs to the owning layers.
     pub(in crate::model) fn apply_aux_states(
         &self,
@@ -956,3 +1032,25 @@ impl TransformerModel {
         Ok(())
     }
 }
+
+/// Pure core of [`TransformerModel::aux_set_is_complete`]: `carries[i]` is
+/// layer `i`'s `has_aux_state()`, `layers` the indices a snapshot's aux set
+/// covers. Complete iff the two are the same set — every carrier present
+/// exactly once, nothing else present. Out-of-range indices are refused
+/// rather than ignored: a blob for a layer the model does not have is a
+/// corrupted set, not a harmless extra.
+pub(in crate::model) fn aux_set_covers(carries: &[bool], layers: &[u32]) -> bool {
+    let mut seen = vec![false; carries.len()];
+    for &i in layers {
+        let i = i as usize;
+        if i >= seen.len() || !carries[i] || seen[i] {
+            return false;
+        }
+        seen[i] = true;
+    }
+    carries.iter().zip(&seen).all(|(c, s)| !c || *s)
+}
+
+#[cfg(test)]
+#[path = "aux_gate_tests.rs"]
+mod aux_gate_tests;

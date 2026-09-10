@@ -7,6 +7,14 @@ use super::*;
 pub struct PoolsideV1Parser;
 
 impl ToolCallParser for PoolsideV1Parser {
+    /// Named for where the envelope was first implemented, NOT for the models
+    /// that use it — GLM-5.3-Flash's own chat_template.jinja asks the model for
+    /// byte-identical output, which is why `tool_defaults.toml` maps
+    /// `glm5_next` here instead of duplicating the parser.
+    fn wire_hint(&self) -> &'static str {
+        "<tool_call>name<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>"
+    }
+
     fn name(&self) -> &str {
         "poolside_v1"
     }

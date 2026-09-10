@@ -325,6 +325,22 @@ impl GpuBackend for AtlasCudaBackend {
         }
     }
 
+    fn launch_cooperative(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        params: &mut [*mut c_void],
+    ) -> Result<()> {
+        self.launch_cooperative_cu(func, grid, block, shared_mem, stream, params)
+    }
+
+    fn set_kernel_max_dynamic_smem(&self, kernel: KernelHandle, bytes: usize) -> Result<()> {
+        self.set_kernel_max_dynamic_smem_cu(kernel, bytes)
+    }
+
     fn synchronize(&self, stream: u64) -> Result<()> {
         let status = unsafe { cuStreamSynchronize(stream) };
         if status != 0 {

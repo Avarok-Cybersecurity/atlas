@@ -26,6 +26,7 @@
 use anyhow::{Context, Result, bail};
 
 use super::super::{Glm5NextRouterMode, LayerType, ModelConfig, finalize_config};
+use super::vision::parse_vision_config;
 
 /// `num_hidden_layers` counts text layers only; the MTP layer sits at index
 /// `num_hidden_layers` (45) and is NOT included in that count.
@@ -266,6 +267,20 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
             )
         })?,
     };
+
+    // GLM-5.3 ships a `glm5_next_vision` ViT under the OUTER object (the text
+    // fields all live under `text_config`). `dispatch.rs` returns from
+    // `parse_glm5_next` before it ever reaches its own generic `vision_config`
+    // arm, so without this line `config.vision` is unconditionally `None` for
+    // this family and every vision plumbing decision downstream — the bind
+    // gate, the pad-token ids, the preprocessor's canvas arm — silently takes
+    // its text-only branch.
+    //
+    // Ordering mirrors `parsers/step3p7.rs`: before `finalize_config`, whose
+    // `validate_config` is the last cheap shape check on the way out.
+    if raw.get("vision_config").is_some() {
+        config.vision = parse_vision_config(&raw);
+    }
 
     finalize_config(&mut config, &raw).context("glm5_next: finalize_config")?;
     refuse_shared_indexer(text, &config).context("glm5_next: indexer_types")?;

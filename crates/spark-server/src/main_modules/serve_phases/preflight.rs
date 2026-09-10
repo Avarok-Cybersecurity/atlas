@@ -193,6 +193,17 @@ pub(crate) fn preflight_reserve(
     // unreachable — 2380 MiB on GLM-5.3 (16 slots x 34 KDA layers x FP32
     // h+conv) that nothing can ever restore from. Kill switch:
     // ATLAS_SSM_MARCONI_FULL.
+    //
+    // GLM-5.3 now answers `kv_only_prefix_cache_is_safe() == true` (KDA rides
+    // the slot, DSA rides `snapshot_aux`), so with --enable-prefix-caching
+    // this region FIRES for it and the 2380 MiB is charged for real. That
+    // figure was measured at TP=2 (2x GB10, EP=2); `topology.rs` halves the
+    // linear-attention heads per rank, so ~1190 MiB/rank is what the
+    // arithmetic predicts there and 2380 MiB is the TP=1 expectation — the
+    // two have not been reconciled by measurement. Re-budget under
+    // gpu-util <= 0.85 before the first single-node GLM prefix-cache serve.
+    // The DSA aux blobs are HOST memory on top (up to ~176 MiB per slot at
+    // the default ATLAS_GLM_DSA_AUX_MAX_TOKENS=32768; see glm5next_dsa::aux).
     let marconi = spark_model::ssm_reserve::marconi_snapshot_slots(
         args.ssm_cache_slots,
         spark_model::ssm_reserve::prefix_caching_active(
@@ -217,10 +228,36 @@ pub(crate) fn preflight_reserve(
         * (h_state_bytes + conv_state_bytes);
     // Same predicate as the pool term: DFlash IS a speculative serve and
     // pays the same graph/JIT/scratch overheads the 4 GB headroom exists for.
-    let cuda_headroom: usize = if spec_on_pool {
-        4 * 1024 * 1024 * 1024
-    } else {
-        512 * 1024 * 1024
+    //
+    // 🪤 This is an ESTIMATE, not a measurement, and on a large checkpoint it can be
+    // the whole difference between serving and refusing. GLM-5.3-Flash-EXL3 4bpw at
+    // TP=2/EP=2 refuses `--speculative` by 1.8 GB, and the reserve breakdown shows why:
+    //   ssm_pool 303 MB + ssm_snapshot 1190 MB + gdn_two_phase 322 MB + headroom 4096 MB
+    // The MTP block's own extra charge is the 303 MB pool line; the 3.5 GB step from
+    // 512 MB to 4 GB is this constant alone, and it is twice the shortfall.
+    //
+    // `ATLAS_SPEC_CUDA_HEADROOM_MB` overrides it so that trade can be made explicitly
+    // and measured, rather than requiring a rebuild to find out. Lowering it does NOT
+    // make anything unsafe by itself — the OOM guard and the runtime watchdog still
+    // apply — but it removes slack that exists for CUDA graph capture, JIT and kernel
+    // scratch, so a value that boots can still fail later under graph capture. Prove a
+    // lowered value on the workload you intend to run before shipping it.
+    let cuda_headroom: usize = {
+        let default_mb = if spec_on_pool { 4096 } else { 512 };
+        let mb = std::env::var("ATLAS_SPEC_CUDA_HEADROOM_MB")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .inspect(|v| {
+                tracing::warn!(
+                    "ATLAS_SPEC_CUDA_HEADROOM_MB={v} overrides the {default_mb} MB \
+                     preflight CUDA headroom (spec_on={spec_on_pool}). This is slack for \
+                     graph capture, JIT and kernel scratch; a lowered value that boots can \
+                     still fail later under graph capture."
+                );
+            })
+            .unwrap_or(default_mb);
+        mb * 1024 * 1024
     };
     let gdn_two_phase_bytes: usize = {
         let key_dim = config.linear_num_key_heads * config.linear_key_head_dim;

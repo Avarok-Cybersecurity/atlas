@@ -98,9 +98,45 @@ impl TransformerModel {
         // `index_topk + index_compress_ratio - 1`, so a declining model would
         // be correct on long contexts and silently wrong on short ones.
         let ms_layer_veto = self.layers.iter().any(|l| l.decode_multi_seq_unsupported());
+        // Selection having ACTIVATED only forces the per-seq loop when the
+        // layers cannot serve it per-sequence themselves. A layer whose batched
+        // decode already runs the mixer against each sequence's own indexer
+        // state (GLM's does) stays on the batched path past the index budget —
+        // which is where concurrency used to stop paying.
+        let ms_selection_per_seq = self
+            .layers
+            .iter()
+            .all(|l| l.decode_multi_seq_selection_per_seq());
         let hc_perseq = ms_layer_veto
             || (self.config.hc_mult > 0
-                && (qsa_active || std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1")));
+                && ((qsa_active && !ms_selection_per_seq)
+                    || std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1")));
+        // Which route a multi-sequence step actually took, once per process.
+        //
+        // Worth a permanent line because the route is invisible from outside and
+        // the two differ in CORRECTNESS, not just speed: a model whose layers
+        // veto row indexing must be on the per-seq loop, and "it answered
+        // plausibly" does not distinguish them. The boot-time
+        // "mHC highway model: concurrency N via the per-seq highway decode loop"
+        // note is printed from the max_batch_size check alone and does NOT
+        // reflect this decision, so reading it as the route is a trap.
+        if seqs.len() > 1 {
+            static ROUTE: std::sync::Once = std::sync::Once::new();
+            ROUTE.call_once(|| {
+                tracing::info!(
+                    n_seqs = seqs.len(),
+                    ms_layer_veto,
+                    qsa_active,
+                    hc_mult = self.config.hc_mult,
+                    "multi-seq decode route: {}",
+                    if hc_perseq {
+                        "PER-SEQ loop (one sequence at a time)"
+                    } else {
+                        "BATCHED decode_multi_seq"
+                    }
+                );
+            });
+        }
         // ★ The per-seq routing decision is resolved ABOVE the EP branch on
         // purpose. It used to sit below, so under EP a QSA-active batch
         // returned at `decode_batch_compute_main` before ever reaching the

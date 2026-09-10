@@ -349,6 +349,20 @@ pub struct WatchdogParams {
     /// well-formed boundary and re-steer instead of hard-stopping.
     /// Default `true`. See [`super::rollback::rollback_to_boundary`].
     pub rollback_resteer: bool,
+    /// Cap on tool-call ENVELOPE tokens — everything between `<tool_call>` and
+    /// `</tool_call>` that is NOT argument-VALUE content. Catches a model that
+    /// opens a tool call and never closes it, which would otherwise burn to
+    /// `max_tokens`. Default [`MAX_TOOL_ENVELOPE_TOKENS`] (1024); `u32::MAX`
+    /// means an operator disabled the guard with
+    /// `ATLAS_TOOL_ENVELOPE_WATCHDOG=0`.
+    pub max_tool_envelope_tokens: u32,
+    /// `(open, close)` token ids delimiting a tool argument VALUE, from
+    /// `resolve_tokenizer_runtime`. Value content is exempt from
+    /// `max_tool_envelope_tokens`, so this is the guard's own configuration
+    /// rather than a `[behavior]` tunable — `from_behavior` leaves it `None`
+    /// and `serve_load` fills it in from the tokenizer. `None` = fall back to
+    /// the Qwen `<parameter=KEY>` token-id scan in `update_tool_param_state`.
+    pub tool_value_delims: Option<(u32, u32)>,
     /// Operator override for the content-loop detector's repeat threshold
     /// (`--content-loop-min-repeats` / `ATLAS_CONTENT_LOOP_MIN_REPEATS`).
     /// `None` = the built-in [`CONTENT_LOOP_MIN_REPEATS`] (3). A
@@ -370,6 +384,8 @@ const DEFAULT_WATCHDOG_PARAMS: WatchdogParams = WatchdogParams {
     confidence_run_length: super::confidence::CONFIDENCE_RUN_LIMIT,
     fuzzy_repeat_tolerance_div: 12,
     max_inter_tool_prose: MAX_INTER_TOOL_PROSE,
+    max_tool_envelope_tokens: MAX_TOOL_ENVELOPE_TOKENS,
+    tool_value_delims: None,
     max_post_think_content_tokens: MAX_POST_THINK_CONTENT_TOKENS,
     rollback_resteer: true,
     // FALSE = pre-p350 behaviour: a mid-think EOS is discarded, not honored.
@@ -425,6 +441,11 @@ impl WatchdogParams {
             rollback_resteer: b.rollback_resteer,
             honor_eos_inside_thinking: b.honor_eos_inside_thinking,
             enable_think_loop_watchdog: b.enable_think_loop_watchdog,
+            // Both are set below / by the caller, not from `[behavior]`:
+            // the envelope cap has only an env override, and the value
+            // delimiters are tokenizer-derived (`serve_load` fills them in).
+            max_tool_envelope_tokens: MAX_TOOL_ENVELOPE_TOKENS,
+            tool_value_delims: None,
             content_loop_min_repeats: None,
         };
         // P2-1 (2026-07-09): `max_inter_tool_prose` (384) was tuned as an
@@ -454,6 +475,28 @@ impl WatchdogParams {
         };
         p.max_inter_tool_prose =
             resolve_max_inter_tool_prose(p.max_inter_tool_prose, env, max_inter_tool_prose_cli);
+        // The envelope cap has no `[behavior]` key: it is a structural
+        // grammar guard, not a tuned budget, so the only override is the
+        // house kill-switch. `ATLAS_TOOL_ENVELOPE_WATCHDOG=0` disables it;
+        // any other u32 sets the cap directly.
+        //
+        // 🪤 This env var was named in `emit_step.rs`'s and `handle_token.rs`'s
+        // comments — and in operator recipes — for months while NOTHING read
+        // it. Setting it did nothing; the guard was unconditional.
+        p.max_tool_envelope_tokens = match std::env::var("ATLAS_TOOL_ENVELOPE_WATCHDOG") {
+            Ok(v) => match v.parse::<u32>() {
+                Ok(0) => u32::MAX,
+                Ok(n) => n,
+                Err(_) => {
+                    tracing::warn!(
+                        value = %v,
+                        "ATLAS_TOOL_ENVELOPE_WATCHDOG is set but not a u32; ignoring it"
+                    );
+                    MAX_TOOL_ENVELOPE_TOKENS
+                }
+            },
+            Err(_) => MAX_TOOL_ENVELOPE_TOKENS,
+        };
         p.content_loop_min_repeats = content_loop_min_repeats_cli.or(parse_env_u32(
             "ATLAS_CONTENT_LOOP_MIN_REPEATS",
             std::env::var("ATLAS_CONTENT_LOOP_MIN_REPEATS")
@@ -569,6 +612,11 @@ pub fn resolve_max_inter_tool_prose(toml: u32, env: Option<u32>, cli: Option<u32
 /// `from_behavior` actually reads for every model) stayed 384, so the
 /// "fixed" budget kept amputating agent narration for a month (#328).
 pub const MAX_INTER_TOOL_PROSE: u32 = atlas_kernels::DEFAULT_MAX_INTER_TOOL_PROSE;
+
+/// CC6 (2026-06-07): cap on tool-call ENVELOPE tokens. Moved here from a
+/// private `const` in `emit_step.rs` when it became operator-overridable via
+/// `ATLAS_TOOL_ENVELOPE_WATCHDOG` — the value is unchanged.
+pub const MAX_TOOL_ENVELOPE_TOKENS: u32 = 1024;
 
 /// F1 (2026-06-02): unconditional per-generation cap on post-`</think>`
 /// content tokens for tool-active requests (`grammar_state.is_some()`).

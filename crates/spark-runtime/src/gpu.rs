@@ -176,6 +176,68 @@ pub trait GpuBackend: Send + Sync {
     /// `launch()`. The Metal backend overrides this to map each
     /// `KernelArg::Buffer` to `setBuffer:offset:atIndex:` and each
     /// `KernelArg::Bytes` to `setBytes:length:atIndex:`.
+    /// Cooperative kernel launch (`cuLaunchCooperativeKernel`).
+    ///
+    /// Every block of the grid is resident on the device for the kernel's
+    /// whole lifetime, which is what makes an in-kernel `grid.sync()` legal —
+    /// the EXL3 trellis GEMM/GEMV kernels rely on it for their split-k
+    /// lock/barrier protocol. The GRID MUST FIT: callers size the grid from
+    /// [`GpuBackend::sm_count`], because a grid one block too large fails the
+    /// launch outright rather than serializing.
+    ///
+    /// Unlike `launch`, this path does NOT auto-raise the kernel's dynamic
+    /// shared memory cap: a kernel wanting more than the 48 KB default (EXL3
+    /// GEMM asks for 90 KB) must opt in ONCE via
+    /// [`GpuBackend::set_kernel_max_dynamic_smem`].
+    ///
+    /// Default: unsupported. A backend without co-resident-grid semantics must
+    /// refuse rather than silently launch non-cooperatively — the kernel's
+    /// `grid.sync()` would deadlock or race.
+    fn launch_cooperative(
+        &self,
+        _func: KernelHandle,
+        _grid: [u32; 3],
+        _block: [u32; 3],
+        _shared_mem: u32,
+        _stream: u64,
+        _params: &mut [*mut std::ffi::c_void],
+    ) -> Result<()> {
+        anyhow::bail!("launch_cooperative: not supported by this backend")
+    }
+
+    /// Typed-args cooperative launch — `launch_typed`'s cooperative twin,
+    /// reached from `KernelLaunch::cooperative()`.
+    fn launch_cooperative_typed(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        args: &[KernelArg<'_>],
+    ) -> Result<()> {
+        let (storage, starts) = pack_kernel_args(args);
+        let mut params: Vec<*mut std::ffi::c_void> = starts
+            .iter()
+            .map(|&i| &storage[i] as *const u64 as *mut std::ffi::c_void)
+            .collect();
+        self.launch_cooperative(func, grid, block, shared_mem, stream, &mut params)
+    }
+
+    /// Raise `kernel`'s dynamic shared-memory cap to `bytes`
+    /// (`CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES`).
+    ///
+    /// Kernels default to a 48 KB ceiling; anything larger (EXL3 GEMM: 90 KB)
+    /// must opt in per FUNCTION before the first launch. The attribute is
+    /// sticky on the `CUfunction`, so call this ONCE where the handle is
+    /// resolved, never per launch.
+    ///
+    /// Default no-op: backends with no such attribute (mock, Metal) have
+    /// nothing to raise and must not fail the caller's init for it.
+    fn set_kernel_max_dynamic_smem(&self, _kernel: KernelHandle, _bytes: usize) -> Result<()> {
+        Ok(())
+    }
+
     fn launch_typed(
         &self,
         func: KernelHandle,

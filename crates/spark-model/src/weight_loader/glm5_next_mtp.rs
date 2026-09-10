@@ -98,6 +98,34 @@ pub fn load_glm5next_mtp_module(
     }));
 
     let expert = |id: usize| super::glm5_next_load::bind_expert_at(gpu, store, idx, id);
+    // The draft block's routed experts are packed too on an EXL3 checkpoint.
+    // The earlier assumption here was that `scope: glm53_routed_experts_only`
+    // meant the MAIN layers only and the draft block stayed NVFP4 — measured
+    // false on GLM-5.3-Flash-EXL3-K2, whose `.trellis` tensors span layers
+    // 3..=45 with 864 of them (288 experts x 3 projections) on layer 45 alone.
+    //
+    // Without this arm `--speculative` died on
+    // `layers.45.mlp.experts.144.gate_proj.weight` — the BF16 name at rank 1's
+    // EP-local start — and speculative decoding was DISABLED while the server
+    // came up serial. An MTP benchmark would then have measured the serial path
+    // and reported it as MTP.
+    //
+    // Probe an expert THIS rank owns: under EP the store is sharded and expert
+    // 0 lives only on rank 0 (see bf9e8b23d).
+    let q = |leaf: &str| super::glm5_next_load::qualify_at(idx, leaf);
+    let local = mlp_cfg.local_expert_range();
+    let exl3 = if super::glm5_next_exl3::layer_is_exl3(store, &q, local.start) {
+        Some(super::glm5_next_exl3::bind_experts_exl3(
+            gpu,
+            store,
+            &q,
+            mlp_cfg.num_experts,
+            (local.start, local.end),
+            (mlp_cfg.hidden, mlp_cfg.moe_intermediate, mlp_cfg.top_k),
+        )?)
+    } else {
+        None
+    };
     let mlp = Glm5NextMlpSite::Moe(Box::new(mlp_build::build_moe(
         gpu,
         &mlp_cfg,
@@ -105,6 +133,7 @@ pub fn load_glm5next_mtp_module(
         config.shared_expert_intermediate_size,
         &load,
         &expert,
+        exl3,
     )?));
 
     let up =
@@ -116,8 +145,16 @@ pub fn load_glm5next_mtp_module(
             mlp,
             mlp_cfg,
             mlp_kernels,
+            // 🔴 Sized for the WIDEST batched propose, not for one row. The drafter's
+            // cross-sequence path (`Glm5NextMtpHead::propose_batch`) runs this block's MoE
+            // over `n` sequences in one sweep — that amortisation is the point of batching
+            // it — and `forward_moe` REFUSES a row count past `max_rows` rather than
+            // clamping. At 1 the refusal fired on every batched propose and the whole group
+            // silently lost its drafts. ~1 MB at 8 rows against a 92 GB pack.
             mlp_ws: crate::layers::glm5next_mlp::forward::Glm5NextMlpWorkspace::new(
-                gpu, &mlp_cfg, 1,
+                gpu,
+                &mlp_cfg,
+                crate::layers::glm5next_mtp_head::MTP_BATCH_PROPOSE_MAX_SEQS,
             )?,
             // 🔴 The one GLM-5.3 block with no hyper-connection. The checkpoint carries zero
             // `hc_*` tensors here, and `forward_one` takes its plain residual path.

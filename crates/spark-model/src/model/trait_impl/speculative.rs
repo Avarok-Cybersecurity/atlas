@@ -520,6 +520,63 @@ impl TransformerModel {
         seqs: &mut [&mut SequenceState],
         out_conf: Option<&mut Vec<Vec<f32>>>,
     ) -> Result<Option<Vec<Vec<u32>>>> {
+        // 🔴 Whether rank 1 participates is a PROPERTY OF THE PROPOSER — the same
+        // distinction `run_mtp_propose_multi_dispatch` documents at width 1, and for the same
+        // reason: GLM's MTP block is EP-sharded, everyone else's is replicated.
+        //
+        // 🪤 The predicate is evaluated BEFORE the broadcast, not after. `propose_batch` is
+        // allowed to decline, and a worker that ran a drafter forward the head declined has
+        // its drafter rows one propose ahead — see `EP_CMD_MTP_PROPOSE_BATCH`.
+        if self.multi_rank_protocol_active()
+            && self.proposer.as_ref().is_some_and(|p| p.needs_comm())
+        {
+            let n = tokens.len();
+            let wide_enough = n >= 2
+                && n == positions.len()
+                && n == stash_idx.len()
+                && n == seqs.len()
+                && num_drafts > 0
+                && n <= self
+                    .proposer
+                    .as_ref()
+                    .map_or(1, |p| p.propose_batch_max(&self.buffers, &self.config));
+            if !wide_enough {
+                return Ok(None);
+            }
+            let slots: Vec<u32> = seqs.iter().map(|s| s.slot_idx as u32).collect();
+            self.ep_broadcast_seq_and_cmd(
+                0,
+                crate::speculative::EP_CMD_MTP_PROPOSE_BATCH,
+                true,
+            )?;
+            self.ep_broadcast_u32(n as u32)?;
+            self.ep_broadcast_tokens(&slots)?;
+            self.ep_broadcast_tokens(tokens)?;
+            let pos32: Vec<u32> = positions.iter().map(|&p| p as u32).collect();
+            self.ep_broadcast_tokens(&pos32)?;
+            let stash32: Vec<u32> = stash_idx.iter().map(|&p| p as u32).collect();
+            self.ep_broadcast_tokens(&stash32)?;
+            self.ep_broadcast_u32(num_drafts as u32)?;
+        }
+        self.run_mtp_propose_batched_inner(
+            tokens, positions, stash_idx, num_drafts, seqs, out_conf,
+        )
+    }
+
+    /// The batched propose itself, with no EP preamble: rank 0 reaches it through
+    /// [`Self::run_mtp_propose_batched_dispatch`] (which broadcasts first) and the worker
+    /// through its `EP_CMD_MTP_PROPOSE_BATCH` arm. Both ranks must run the SAME body or the
+    /// collectives inside the drafter have no partner.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_mtp_propose_batched_inner(
+        &self,
+        tokens: &[u32],
+        positions: &[usize],
+        stash_idx: &[usize],
+        num_drafts: usize,
+        seqs: &mut [&mut SequenceState],
+        out_conf: Option<&mut Vec<Vec<f32>>>,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
         let proposer = match &self.proposer {
             Some(p) => p.as_ref(),
             None => return Ok(None),
@@ -548,7 +605,17 @@ impl TransformerModel {
             stats: &self.stats,
             attn_metadata: None,
             profile: false,
-            comm: None,
+            // 🔴 `None` is the DEFAULT and load-bearing for the Qwen and DeepSeek-V4
+            // drafters: their MTP modules load every expert on every rank, so a comm would
+            // DOUBLE the output via SUM. GLM's is EP-sharded, so for it the same `None`
+            // means drafting from half the routed sum. `needs_comm()` is that distinction,
+            // and it is only true once the worker runs this same propose — the caller has
+            // already put `EP_CMD_MTP_PROPOSE_BATCH` on the wire by the time we get here.
+            comm: if proposer.needs_comm() {
+                self.comm_ref()
+            } else {
+                None
+            },
             graph_capture: false,
             decode_step: false,
             gdn_exact_replay: false,

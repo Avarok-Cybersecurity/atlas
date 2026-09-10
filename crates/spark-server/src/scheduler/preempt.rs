@@ -144,12 +144,36 @@ pub(super) fn decode_batch_with_preemption(
                 match spill.as_deref_mut() {
                     Some(sp) => match spill_out_sequence(model, v, sp) {
                         Ok(s) => swapped.push(s),
-                        Err((v, spill_err)) => {
-                            tracing::warn!(
-                                "decode-preempt spill failed ({spill_err:#}); \
-                                 requeuing victim for re-prefill instead"
-                            );
-                            preempted.push(preempt_requeue(model, v));
+                        Err((mut v, spill_err)) => {
+                            // A VISION sequence must not fall back to requeue.
+                            // `choose_decode_victim` only admits one while
+                            // spilling is possible, because a requeue resumes
+                            // by RE-PREFILLING tokens — and the pixels are long
+                            // gone, so the model would continue the stream
+                            // against an image it never saw. `PreemptedSeq`
+                            // carries only `a` and `tokens`, so there is nothing
+                            // to rebuild the embeddings from. Fail the request
+                            // instead; the client sees an error rather than a
+                            // confident answer about nothing.
+                            if model.tokens_contain_vision_pad(&v.seq.tokens) {
+                                tracing::error!(
+                                    "decode-preempt spill failed ({spill_err:#}) for a \
+                                     sequence with vision pads; failing the request rather \
+                                     than re-prefilling tokens whose image embeddings are gone"
+                                );
+                                send_error(
+                                    model,
+                                    &mut v,
+                                    "preempted: KV spill failed and this request's image \
+                                     embeddings cannot be recomputed",
+                                );
+                            } else {
+                                tracing::warn!(
+                                    "decode-preempt spill failed ({spill_err:#}); \
+                                     requeuing victim for re-prefill instead"
+                                );
+                                preempted.push(preempt_requeue(model, v));
+                            }
                         }
                     },
                     None => preempted.push(preempt_requeue(model, v)),

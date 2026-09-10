@@ -90,6 +90,20 @@ pub struct ChatTokenizer {
     /// OpenAI-variant template: gates historical `<think>` wrappers on enable_thinking.
     /// Falls back to jinja_env if no openai/ variant exists.
     openai_jinja_env: Option<minijinja::Environment<'static>>,
+    /// 🔴 `(image_pad, video_pad)` token ids, resolved from `ModelConfig.vision`
+    /// at load time. `None` on a text-only checkpoint.
+    ///
+    /// This used to be derived by ENCODING the literal strings `"<|image_pad|>"`
+    /// and `"<|video_pad|>"` and accepting the result only when it was exactly
+    /// one token. That spelling is Qwen's. GLM-5.3 spells the same role
+    /// `<|image|>` (154854) / `<|video|>` (154855) and has no `<|image_pad|>`
+    /// in its vocabulary at all, so both getters returned `None`,
+    /// `expand_vision_pads` short-circuited, and a 4096-token image shipped
+    /// exactly ONE pad. The splice then wrote one row and dropped the rest,
+    /// with token counts that look correct end to end.
+    ///
+    /// The id is in `config.json` for both families; the spelling is not.
+    vision_pad_ids: Option<(u32, u32)>,
 }
 
 /// Wrapper around tokenizers::DecodeStream that hides the generic parameters.
@@ -116,3 +130,5 @@ impl StreamingDecoder<'_> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vision_pad_tests;

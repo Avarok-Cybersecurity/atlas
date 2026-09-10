@@ -32,11 +32,35 @@ fn gemm(
     kk: usize,
     stream: u64,
 ) -> Result<()> {
+    // 🔴 Wide (prefill) shapes go to cuBLASLt. `dense_gemm_bf16` says of itself "Phase 1:
+    // Correct scalar implementation ... Phase 2: Will add mma.sync" — one output element
+    // per thread, no tensor cores. It measured 1.45 TFLOP/s on `mlp_dense` and 1.38 on
+    // `moe_shared`; the two agreeing at different shapes is what proves it is the KERNEL
+    // and not the shape. Together they were ~275 ms/step, ~20% of prefill.
+    //
+    // 🪤 This file kept the scalar path after the DSA and KDA blocks moved off it, so the
+    // same defect survived a commit that was supposed to have killed it. The dense MLP and
+    // the shared expert are BF16 and unquantized in the EXL3 K2 checkpoint (its scope is
+    // `glm53_routed_experts_only` — only the routed experts are trellis), so they were
+    // always eligible; nothing about the quantization stopped this.
+    //
+    // Same numerics boundary as everywhere else — see `glm5next_layer::cublas_wide_proj`.
+    // M=1 decode and M<=16 verify keep their bit-identical tiers, so the router's M=1 call
+    // below cannot reach this arm even though it shares this helper.
+    // 🪤 `batchm.0 != 0` marks a BF16-out caller — see the matching note in
+    // `glm5next_dsa::layer::gemm`. The router hands this helper an FP32 `ws.logits` with
+    // `KernelHandle(0)`, so it must never reach the BF16 cuBLASLt arm; it batches through
+    // `ops::cublas_bf16_proj_dense_f32_out` at its own call site instead.
+    if batchm.0 != 0
+        && m > crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize
+        && crate::layers::glm5next_layer::cublas_wide_proj()
+    {
+        return crate::layers::ops::cublas_bf16_proj_dense(
+            a, b, c, m as u32, n as u32, kk as u32, stream,
+        );
+    }
     // M=1 decode -> GEMV; M=2..8 (a K-token verify sweep) -> ONE weight read for all rows;
     // wider -> the tile GEMM. `ops::dense_mm_bf16` owns the policy and the grid coupling.
-    //
-    // 🔴 The router is the worst tile-GEMM case in the whole stack: N = 288 tiles to **18
-    // blocks**, measured 6.8 GB/s. It has no FP32-out batchm twin, so it stays on gemv/tile.
     crate::layers::ops::dense_mm_bf16(
         gpu,
         &crate::layers::ops::DenseMmKernels {
@@ -174,9 +198,37 @@ pub struct Glm5NextMlpWorkspace {
     u_eid: DevicePtr,
     /// `[rows * top_k, rows]` I32 slot per union entry per row, `-1` = row absent.
     u_slot: DevicePtr,
+    /// `[rows]` F32 all-ones, uploaded ONCE.
+    ///
+    /// The EXL3 routed arm folds the router probabilities into its `down`
+    /// projection, so it emits the routed SUM rather than `top_k` weighted
+    /// slots. Reusing `glm5next_moe_combine` with `top_k = 1` and this vector
+    /// makes the combine compute `1 * routed_sum + shared`, which is exactly
+    /// right and avoids a second combine kernel that could drift from the
+    /// NVFP4 one.
+    ones_f32: DevicePtr,
     max_inter: usize,
     /// Widest verify this scratch can serve. `1` on the serial decode path.
     max_rows: usize,
+    /// Widest row group the UNION / per-row arms may be handed.
+    ///
+    /// 🔴 Those arms index `a_gate`/`a_up`/`a_act`, `expert_out`, `u_eid` and
+    /// `u_slot` by `row * top_k * ...`. The FUSED prefill arm does not: it writes
+    /// `expert_out` per TOKEN and combines with `top_k = 1`. Charging that
+    /// `top_k`-fold extent at the full width is what makes a WIDE prefill window
+    /// unaffordable — `u_slot` alone is QUADRATIC in rows (33.5 MB per layer at
+    /// 1024, ~1.4 GB across the 42 sparse layers) for scratch a wide prefill
+    /// never touches.
+    ///
+    /// 🪤 At the shipping widths this EQUALS `max_rows`, so the default path
+    /// allocates exactly what it always did. It only narrows for a window wider
+    /// than `PREFILL_ROWS`, which is opt-in. `forward_moe` re-checks it at
+    /// dispatch instead of trusting the derivation, because an NVFP4 pack has no
+    /// fused arm at all and would otherwise run the union arm off the end.
+    union_rows: usize,
+    /// Allocated elements of `expert_out`, so the pre-zero covers the buffer
+    /// rather than a shape it may no longer have.
+    expert_out_elems: usize,
 }
 
 impl Glm5NextMlpWorkspace {
@@ -195,9 +247,20 @@ impl Glm5NextMlpWorkspace {
         // `top_k` slots at a time. Both share these buffers, so take the wider.
         // The row-batched MoE arm computes every (row, slot) pair in ONE launch, so its
         // activations are `[rows, top_k, moe_intermediate]` — wider than either of the above.
+        // Union extent: unchanged at the shipping widths, narrowed only for a
+        // window wider than the default prefill sub-chunk. The union arm runs
+        // exactly when the fused one does not (`rows < moe_prefill_min_rows()`),
+        // so anything at or above that threshold is headroom.
+        let union_rows = rows.min(
+            crate::layers::glm5next_layer::PREFILL_ROWS.max(moe_prefill_min_rows()),
+        );
         let act_elems = (rows * max_inter)
-            .max(rows * cfg.top_k * cfg.moe_intermediate)
+            .max(union_rows * cfg.top_k * cfg.moe_intermediate)
             .max(1);
+        // Two shapes share `expert_out`: the fused arm writes `[rows, hidden]`
+        // (one routed SUM per token), the union / per-row arms `[rows, top_k,
+        // hidden]`. Take whichever is wider, and remember it for the pre-zero.
+        let expert_out_elems = (rows * cfg.hidden).max(union_rows * cfg.top_k * cfg.hidden);
         Ok(Self {
             a_gate: gpu.alloc(act_elems * 2)?,
             a_up: gpu.alloc(act_elems * 2)?,
@@ -205,12 +268,24 @@ impl Glm5NextMlpWorkspace {
             logits: gpu.alloc(rows * cfg.num_experts * 4)?,
             ids: gpu.alloc(rows * cfg.top_k * 4)?,
             wts: gpu.alloc(rows * cfg.top_k * 4)?,
-            expert_out: gpu.alloc(rows * cfg.top_k * cfg.hidden * 2)?,
+            expert_out: gpu.alloc(expert_out_elems * 2)?,
             shared_out: gpu.alloc(rows * cfg.hidden * 2)?,
-            u_eid: gpu.alloc(rows * cfg.top_k * 4)?,
-            u_slot: gpu.alloc(rows * cfg.top_k * rows * 4)?,
+            u_eid: gpu.alloc(union_rows * cfg.top_k * 4)?,
+            // 🪤 QUADRATIC in rows — the one term that made a wide window
+            // unaffordable before it was charged at the union width.
+            u_slot: gpu.alloc(union_rows * cfg.top_k * union_rows * 4)?,
+            ones_f32: {
+                let p = gpu.alloc(rows * 4)?;
+                let ones: Vec<u8> = std::iter::repeat_n(1.0f32, rows)
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect();
+                gpu.copy_h2d(&ones, p)?;
+                p
+            },
             max_inter,
             max_rows: rows,
+            union_rows,
+            expert_out_elems,
         })
     }
 }
@@ -537,6 +612,38 @@ fn announce_dispatch(grouped: bool) {
 /// The SHARED expert is a different animal again: it is the same weights for every row, so it
 /// runs once over all of them regardless.
 #[allow(clippy::too_many_arguments)]
+/// Row count at or above which the routed sweep takes the FUSED PREFILL kernel
+/// rather than the decode kernel's per-row-group union sweep.
+///
+/// 🔴 GLM ran EVERY routed call through `exl3_moe_decode_routed`, prefill
+/// included, because the MoE site had no prefill arm at all. A 21k-token prompt
+/// was therefore ground through the decode kernel in `row-batched expert union
+/// (12 rows, one sweep each)` steps: measured ~51 tok/s cold prefill, about
+/// 0.7% of BF16 roofline on two GB10s, while the 151 MB of prefill slabs the
+/// state allocator had already reserved went untouched. The `moe_experts`
+/// profiler span never fired and `ATLAS_EXL3_MOE_TIER_STATS` printed nothing —
+/// both because the fused path was unreachable.
+///
+/// 64 is deliberately conservative: the union sweep is genuinely better for a
+/// verify's handful of rows (the routed union is 8.00/13.74/18.76/23.35 experts
+/// at K=1..4, so K rows sweep far fewer than 8K experts), and the fused path
+/// pays a counting sort plus a staged slab pass before it wins. The crossover
+/// has NOT been measured — 64 is a starting point chosen to be safely past the
+/// decode regime, and the threshold is the first thing to sweep once the arm is
+/// known correct.
+///
+/// `ATLAS_GLM_MOE_PREFILL_MIN=0` disables the arm and restores the previous
+/// decode-only behaviour, which is the one-variable A/B for this change.
+fn moe_prefill_min_rows() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("ATLAS_GLM_MOE_PREFILL_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(64)
+    })
+}
+
 pub fn forward_moe(
     gpu: &dyn GpuBackend,
     k: &Glm5NextMlpKernels,
@@ -554,7 +661,35 @@ pub fn forward_moe(
             ws.max_rows
         );
     }
-    if w.experts.len() != cfg.local_experts {
+    // 🔴 The UNION and PER-ROW arms index `expert_out` and the activations by
+    // `row * top_k * ...`; that extent is charged at `ws.union_rows`, which is
+    // narrower than the window once a wide prefill window is in play. Only the
+    // FUSED sort-by-expert arm avoids it (it writes `expert_out` per TOKEN and
+    // combines with `top_k = 1`), so a wide call that CANNOT reach that arm must
+    // be refused, not served off the end of the allocation.
+    //
+    // 🪤 Covers the NVFP4 packs too, which have no fused arm at any width — hence
+    // the check here rather than beside `use_prefill`, which exists only inside
+    // the EXL3 branch.
+    let fused_reachable = w.exl3.is_some()
+        && k.moe_sort_by_expert.0 != 0
+        && moe_prefill_min_rows() > 0
+        && rows >= moe_prefill_min_rows();
+    if !fused_reachable && rows > ws.union_rows {
+        bail!(
+            "GLM MoE: {rows} rows on a non-fused arm whose scratch is built for {} \
+             (exl3={}, sort_by_expert={:#x}, moe_prefill_min={}). A prefill window wider \
+             than the sub-chunk is only affordable through the fused sort-by-expert arm.",
+            ws.union_rows,
+            w.exl3.is_some(),
+            k.moe_sort_by_expert.0,
+            moe_prefill_min_rows(),
+        );
+    }
+    // EXL3 binds its own tables and leaves `experts` empty on purpose, so this
+    // count only describes the NVFP4 arm. Checking it unconditionally refused
+    // every EXL3 layer at the first routed forward.
+    if w.exl3.is_none() && w.experts.len() != cfg.local_experts {
         bail!(
             "GLM MoE: {} bound experts but this rank owns {} of {}",
             w.experts.len(),
@@ -590,21 +725,48 @@ pub fn forward_moe(
 
     // ── router: FULL expert set, FP32 logits, replicated on every rank ──
     let t = profile::start();
-    for r in 0..rows {
-        gemm(
-            gpu,
-            k.gemm_f32,
-            k.gemv_f32,
-            // No FP32-out batchm twin exists; the router stays on gemv/tile.
-            KernelHandle(0),
-            x.offset(r * cfg.hidden * 2),
+    // 🔴 ONE GEMM for every row. This was `rows` M=1 GEMVs — at 256 prefill rows x 42
+    // sparse layers, ~10,700 launches per chunk, each re-reading the ENTIRE router weight
+    // to produce one row of logits. The comment this replaces named the blocker exactly:
+    // "No FP32-out batchm twin exists". It exists now.
+    //
+    // The tile GEMM was no escape either: the router is the worst tile case in the stack,
+    // N = 288 tiling to 18 blocks at a measured 6.8 GB/s.
+    //
+    // 🪤 Router logits pick the experts, so reassociation can flip a top-k tie and route a
+    // token to a different expert. That is a real behaviour change, not just a numeric one,
+    // which is why it is gated and measured on answer quality rather than on tok/s alone.
+    // Bounded to prefill widths by the same M > 16 cut used everywhere: decode and the
+    // speculative verify stay on the bit-identical GEMV and route exactly as before.
+    if rows > crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize
+        && crate::layers::glm5next_layer::cublas_wide_proj()
+    {
+        crate::layers::ops::cublas_bf16_proj_dense_f32_out(
+            x,
             w.router,
-            ws.logits.offset(r * cfg.num_experts * 4),
-            1,
-            cfg.num_experts,
-            cfg.hidden,
+            ws.logits,
+            rows as u32,
+            cfg.num_experts as u32,
+            cfg.hidden as u32,
             stream,
         )?;
+    } else {
+        for r in 0..rows {
+            gemm(
+                gpu,
+                k.gemm_f32,
+                k.gemv_f32,
+                // No FP32-out batchm twin at these widths; stays on gemv/tile.
+                KernelHandle(0),
+                x.offset(r * cfg.hidden * 2),
+                w.router,
+                ws.logits.offset(r * cfg.num_experts * 4),
+                1,
+                cfg.num_experts,
+                cfg.hidden,
+                stream,
+            )?;
+        }
     }
     // ONE top-k for every row. `glm5next_router_topk` already takes the row on `blockIdx.x`
     // and strides `logits`/`ids`/`wts` by it, so this is the identical per-row work in one
@@ -631,10 +793,158 @@ pub fn forward_moe(
     // all-reduced sum; leaving the previous token's expert output there is a wrong answer
     // that only appears at EP > 1 and only for tokens whose routing moved. `expert_out` is
     // `[rows, top_k, hidden]` and contiguous, so one memset covers every row.
-    gpu.memset_async(ws.expert_out, 0, rows * cfg.top_k * cfg.hidden * 2, stream)?;
+    // 🪤 The buffer's OWN extent, not `rows * top_k * hidden`: those differ once
+    // the union extent is narrower than the window (a wide prefill), and the old
+    // expression would then memset past the end of the allocation.
+    gpu.memset_async(ws.expert_out, 0, ws.expert_out_elems * 2, stream)?;
+
+    // ── EXL3 routed arm ──────────────────────────────────────────────────────
+    //
+    // Replaces the NVFP4 gate/up/down dispatch entirely: `exl3_moe_decode_routed`
+    // runs all three trellis mGEMMs for every routed slot in one call and FOLDS
+    // the router probabilities into `down`, so what lands in `expert_out` is the
+    // routed SUM for each row, not `top_k` weighted slots.
+    //
+    // That is why the combine below switches to `top_k = 1` + an all-ones vector:
+    // `1 * routed_sum + shared` is the same arithmetic the NVFP4 path reaches by
+    // summing slots, through the SAME kernel, so the two arms cannot drift.
+    //
+    // The router, the shared expert and the all-reduce are untouched — the
+    // published packs quantize routed experts only.
+    let exl3_routed = w.exl3.is_some();
+    if let Some(ex) = w.exl3.as_ref() {
+        let st = ex.state.as_ref();
+        let _dispatch = st.dispatch_guard(gpu, stream)?;
+        let proj = |t: &crate::layers::moe::Exl3ExpertPtrTable| crate::layers::ops::Exl3MoeProj {
+            trellis_ptrs: t.trellis_ptrs,
+            suh_ptrs: t.suh_ptrs,
+            svh_ptrs: t.svh_ptrs,
+            k_bits: t.k_bits,
+            cb: t.cb,
+        };
+        let scratch = crate::layers::ops::Exl3MoeScratch {
+            a_f16: st.a_f16,
+            a_had_f16: st.a_had_f16,
+            a_had_capacity_elems: st.s_cap * st.hidden,
+            c_gate_f16: st.c_gate_f32,
+            c_up_f16: st.c_up_f32,
+            inter_f16: st.inter_f16,
+            c_down_f32: st.c_down_f32,
+            b_indices: st.b_indices,
+            b_weights: st.b_weights,
+            s_cap: st.s_cap,
+        };
+        let (local_start, num_local) = (ex.tables[0].local_start, ex.tables[0].num_local);
+
+        // ── PREFILL arm: one fused pass per token batch ──────────────────────
+        //
+        // Before this existed, EVERY routed call took the decode kernel below,
+        // prefill included — a 21k-token prompt swept as `row-batched expert
+        // union (12 rows, one sweep each)`, measured ~51 tok/s cold prefill,
+        // ~0.7% of BF16 roofline on two GB10s, while the 151 MB of prefill slabs
+        // the state allocator reserves sat unused. Same kernels, same state,
+        // same blend; only the sweep shape changes.
+        let use_prefill = k.moe_sort_by_expert.0 != 0
+            && moe_prefill_min_rows() > 0
+            && rows >= moe_prefill_min_rows();
+        if use_prefill {
+            let pf = st.prefill_scratch();
+            let ov = crate::layers::ops::Exl3MoeOverflowCtx {
+                gate_host: &ex.tables[0].host_ptrs,
+                up_host: &ex.tables[1].host_ptrs,
+                down_host: &ex.tables[2].host_ptrs,
+            };
+            let tables = [
+                proj(&ex.tables[0]),
+                proj(&ex.tables[1]),
+                proj(&ex.tables[2]),
+            ];
+            let prof_experts = profile::start();
+            let mut t0 = 0usize;
+            while t0 < rows {
+                let tb = pf.t_cap.min(rows - t0);
+                let te_b = tb * cfg.top_k;
+                // Sort scratch aliases the router logits: the router consumed
+                // them into `ids`/`wts` above, so the buffer is dead from here.
+                let sorted_token_ids = ws.logits;
+                let sorted_expert_ids = ws.logits.offset(te_b * 4);
+                let expert_offsets = ws.logits.offset(te_b * 8);
+                let token_to_perm = ws.logits.offset(te_b * 8 + (cfg.num_experts + 1) * 4);
+                crate::layers::ops::moe_sort_by_expert(
+                    gpu,
+                    k.moe_sort_by_expert,
+                    ws.ids.offset(t0 * cfg.top_k * 4),
+                    sorted_token_ids,
+                    sorted_expert_ids,
+                    expert_offsets,
+                    token_to_perm,
+                    te_b as u32,
+                    cfg.num_experts as u32,
+                    cfg.top_k as u32,
+                    stream,
+                )?;
+                let stats = crate::layers::ops::exl3_moe_prefill_routed(
+                    gpu,
+                    x.offset(t0 * cfg.hidden * 2),
+                    ws.wts.offset(t0 * cfg.top_k * 4),
+                    expert_offsets,
+                    token_to_perm,
+                    ws.expert_out.offset(t0 * cfg.hidden * 2),
+                    &tables,
+                    &ov,
+                    &pf,
+                    st.locks,
+                    tb,
+                    cfg.top_k,
+                    cfg.hidden,
+                    cfg.moe_intermediate,
+                    local_start,
+                    num_local,
+                    cfg.swiglu_limit,
+                    st.sm_count,
+                    stream,
+                )?;
+                tracing::trace!(
+                    "GLM MoE prefill [{t0}, {}): fused num_active={} overflow_experts={}",
+                    t0 + tb,
+                    stats.num_active,
+                    stats.overflow_experts,
+                );
+                t0 += tb;
+            }
+            profile::end(profile::MOE_EXPERTS, prof_experts, gpu, stream);
+        }
+        if !use_prefill {
+            crate::layers::ops::exl3_moe_decode_routed(
+                gpu,
+                x,
+                ws.ids,
+                ws.wts,
+                ws.expert_out,
+                &[
+                    proj(&ex.tables[0]),
+                    proj(&ex.tables[1]),
+                    proj(&ex.tables[2]),
+                ],
+                &scratch,
+                st.locks,
+                rows,
+                cfg.top_k,
+                cfg.hidden,
+                cfg.moe_intermediate,
+                local_start,
+                num_local,
+                cfg.swiglu_limit,
+                false,
+                st.sm_count,
+                stream,
+            )?;
+        }
+    }
 
     for r in 0..rows {
-        if batched {
+        if batched || exl3_routed {
+            // EXL3 already produced the routed sum for every row above.
             break; // the experts run once for ALL rows, after this loop
         }
         let xr = x.offset(r * cfg.hidden * 2);
@@ -826,7 +1136,7 @@ pub fn forward_moe(
         }
     }
 
-    if batched {
+    if batched && !exl3_routed {
         let t = profile::start();
         let mi = cfg.moe_intermediate;
         // ONE sweep per sub-group. At `rows <= MOE_ROW_BATCH_MAX_ROWS` this is the single pass it
@@ -948,11 +1258,13 @@ pub fn forward_moe(
         .grid([rows as u32, 1, 1])
         .block([ACT_BLOCK, 1, 1])
         .arg_ptr(ws.expert_out)
-        .arg_ptr(ws.wts)
+        // EXL3 folded the probabilities into `down`, so its single slot is
+        // combined with weight 1.0; the NVFP4 arm still weights `top_k` slots.
+        .arg_ptr(if exl3_routed { ws.ones_f32 } else { ws.wts })
         .arg_ptr(ws.shared_out)
         .arg_ptr(out)
         .arg_u32(cfg.hidden as u32)
-        .arg_u32(cfg.top_k as u32)
+        .arg_u32(if exl3_routed { 1 } else { cfg.top_k } as u32)
         .launch(stream)?;
     profile::end(profile::MOE_COMBINE, t, gpu, stream);
     Ok(())

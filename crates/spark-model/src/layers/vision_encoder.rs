@@ -126,4 +126,8 @@ pub struct VisionEncoder {
     rope_inv_freq: Vec<f32>,      // [head_dim / 4] frequencies
 }
 
-mod enc_impl;
+// `pub(crate)` so the GLM tower (`layers/glm5next_vision/`) can reuse this
+// tree's geometry-agnostic pieces — `derive_max_patches`, `check_pixel_len`,
+// `check_packed_rows`, the BF16 rounding and the debug dump — by lifting
+// rather than copying. Nothing outside `crate::layers` sees it.
+pub(crate) mod enc_impl;

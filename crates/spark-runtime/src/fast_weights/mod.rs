@@ -34,6 +34,11 @@ use header::{parse_header, resolve_shards};
 
 /// Pure-Rust InstantTensor-style loader. Same public shape as
 /// [`crate::weights::SafetensorsLoader`].
+/// "Should this tensor be pooled into a weight arena?" — name + shape in,
+/// decision out. The EXL3 materialization pass supplies one so trellis
+/// triplets land in an arena instead of one allocation per tensor.
+pub type PoolPredicate = std::sync::Arc<dyn Fn(&str, &[usize]) -> bool + Send + Sync>;
+
 pub struct FastSafetensorsLoader {
     pub ep_rank: usize,
     pub ep_world_size: usize,

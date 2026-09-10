@@ -23,6 +23,20 @@ pub fn bf16_gemm_act_weight_t(
     unreachable!("cublaslt::bf16_gemm_act_weight_t is cuda-only (not built for metal)")
 }
 
+/// F32-output twin of [`bf16_gemm_act_weight_t`]. Same operands; only the
+/// output dtype differs (LayoutD f32), so the stub mirrors it exactly.
+pub fn bf16_gemm_act_weight_t_f32_out(
+    _act: u64,
+    _weight: u64,
+    _out: u64,
+    _m: u32,
+    _n: u32,
+    _k: u32,
+    _stream: u64,
+) -> Result<()> {
+    unreachable!("cublaslt::bf16_gemm_act_weight_t_f32_out is cuda-only (not built for metal)")
+}
+
 pub fn fp8_gemm_act_weight_t_rowwise(
     _act_fp8: u64,
     _act_scale: u64,

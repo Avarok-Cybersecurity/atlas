@@ -257,6 +257,17 @@ pub trait ToolCallParser: Send + Sync {
     /// Parser name for logging (e.g. "hermes", "qwen3_coder").
     fn name(&self) -> &str;
 
+    /// One-line description of the WIRE FORMAT this parser accepts, for logs.
+    ///
+    /// Parser names record where a format was first implemented, not which
+    /// model uses it — `poolside_v1` under a GLM serve reads like a
+    /// misconfiguration until you know GLM-5.3's own chat template asks for
+    /// byte-identical output. Naming the envelope in the log saves that
+    /// source-dive. Empty by default.
+    fn wire_hint(&self) -> &'static str {
+        ""
+    }
+
     /// Generate the system prompt that teaches the model how to make tool calls.
     ///
     /// `levers` carries the model's `[behavior]` prompt-rendering decisions

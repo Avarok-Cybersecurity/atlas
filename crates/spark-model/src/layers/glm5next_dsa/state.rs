@@ -200,6 +200,50 @@ impl Glm5NextDsaState {
         Ok(())
     }
 
+    /// Restore-only: put `len` at a Marconi aux snapshot's row count, AFTER the caller has
+    /// uploaded rows `[0, n)` of `k_normed`/`gate`/`valid` as one complete image.
+    ///
+    /// Deliberately neither `advance` nor `rewind_to`. Those two encode the LOCKSTEP contract
+    /// (`len` only moves by rows the indexer actually wrote, or back over rows a rejected draft
+    /// left unreachable), and widening either to "jump anywhere" would let a caller that lost
+    /// the sequence position pass silently. A restore is the one legitimate jump: the blob is
+    /// a byte image of the prefix the KV blocks it travels with were built from, so after the
+    /// upload the rows ARE written and `len = n` is the truth, not a claim.
+    ///
+    /// Overwriting a LIVE state is sound and allowed. The selector reads `[0, len)` and the
+    /// next write starts at `len`, so whatever rows were here before are unreachable the moment
+    /// `len` moves — the same argument `rewind_to` makes for rejected draft rows. Refusing here
+    /// would only convert a prefix-cache hit on a reused slot into a per-request error.
+    ///
+    /// Refuses a released state (the pointers are null; an upload would already have failed,
+    /// but the counter must not claim rows that do not exist) and `n > capacity` — a blob taken
+    /// under a larger `--max-seq-len` than this serve reserved. That is `ensure_room_through`,
+    /// the same A62 refusal, so the message names the reservation.
+    pub fn set_len_restored(&mut self, n: usize) -> Result<()> {
+        if self.released {
+            bail!(
+                "DSA indexer restore into a released state: the per-sequence buffers were \
+                 already freed, so there is nothing to restore into"
+            );
+        }
+        self.ensure_room_through(n)?;
+        if self.len != 0 {
+            tracing::debug!(
+                "DSA indexer restore over a live state (len {} -> {n}); the old rows are \
+                 unreachable once len moves",
+                self.len
+            );
+        }
+        self.len = n;
+        Ok(())
+    }
+
+    /// Width of one `k_normed`/`gate` row in elements. The aux codec pins a blob to this so a
+    /// snapshot from a differently-configured indexer cannot be uploaded over these buffers.
+    pub fn index_head_dim(&self) -> usize {
+        self.index_head_dim
+    }
+
     /// Put the counter where a RUN step would have left it, for a step served by a replayed
     /// CUDA graph. `seq_len` is the sequence length before this step's `k` rows.
     ///

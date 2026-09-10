@@ -193,6 +193,10 @@ fn run_batched_verify(
         ks,
         &mut states,
         &mut kv,
+        // Pure-SSM layer ignores both; empty is the honest shape for a test
+        // that drives no attention mixer.
+        &[],
+        &[],
         DevicePtr::NULL, // no staged WY tables → per-sequence GDN loop
         &ctx,
         0,

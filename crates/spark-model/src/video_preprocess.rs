@@ -39,7 +39,7 @@ use anyhow::{Context, Result, ensure};
 use atlas_core::config::VisionConfig;
 use image::RgbImage;
 
-use crate::vision_preprocess::{MEAN, STD, decode_data_uri_bytes, target_size_for};
+use crate::vision_preprocess::{decode_data_uri_bytes, norm_stats, target_size_for};
 
 /// Frames per second to sample at, when the caller has no better idea.
 /// Matches the `fps: 2` every Qwen3-VL `video_processor` block declares.
@@ -307,6 +307,10 @@ pub fn preprocess_video(
             .collect();
 
         let mut pixels = vec![0.0f32; plane * patch_dim];
+        // Same resolver as the image path, called once per group. A video frame
+        // is not a different kind of pixel, and two copies of the stats is two
+        // places for them to drift.
+        let (mean, std) = norm_stats(vcfg);
         for ph in 0..grid_h {
             for pw in 0..grid_w {
                 let patch_idx = ph * grid_w + pw;
@@ -319,7 +323,7 @@ pub fn preprocess_video(
                                     as f32
                                     / 255.0;
                                 let off = c * (tp * ps * ps) + t * (ps * ps) + py * ps + px;
-                                pixels[patch_idx * patch_dim + off] = (raw - MEAN[c]) / STD[c];
+                                pixels[patch_idx * patch_dim + off] = (raw - mean[c]) / std[c];
                             }
                         }
                     }

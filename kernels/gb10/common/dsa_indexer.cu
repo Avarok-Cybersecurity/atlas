@@ -28,6 +28,13 @@
 
 #define DSA_INVALID (-1)
 
+// Pools scored per `dsa_index_scores` block. The q row is read once per block and reused
+// across the tile, so this divides that read's traffic. Shared memory is `H*PT` floats
+// plus `PT` bytes — 1,056 B at H=32, PT=8 — so it stays far under the 48 KiB ceiling.
+#define DSA_SCORES_PT 8
+// Upper bound on `ceil(D / 32)` q values a lane keeps in registers. D=128 gives 4.
+#define DSA_SCORES_QMAX 8
+
 __device__ __forceinline__ float dsa_block_sum(float v, float* smem, unsigned tid, unsigned nthreads) {
     for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
     if ((tid & 31u) == 0u) smem[tid >> 5] = v;
@@ -200,41 +207,99 @@ extern "C" __global__ void dsa_index_scores(
     float scale,
     const int* __restrict__ geom              // [5] or null
 ) {
-    const unsigned int p = blockIdx.x;
+    // 🔴 POOL TILING. This block scores `DSA_SCORES_PT` pools, not one.
+    //
+    // The grid used to be `(P, Q)` — ~1.34M blocks at a 21K context — and EVERY block
+    // re-read the whole 16 KB q row (H=32 heads x D=128 floats) to produce a single
+    // scalar. That is ~22 GB of L2 traffic per launch for 4 MB of unique q, and it made
+    // `dsa_index_scores` 93% of the selection cost (64.12 ms/tok of `dsa_select`'s 69.05).
+    //
+    // The q values already live in REGISTERS (each lane holds D/32 of one head), so
+    // reusing them across several pools costs no extra shared memory — only a loop. Pool
+    // keys are unaffected: each pool's key is still read once per query row either way.
+    const unsigned int tile = blockIdx.x;
     const unsigned int r = blockIdx.y;
     const unsigned int tid = threadIdx.x;
     extern __shared__ float sh[];
     if (geom) {
         S = (unsigned int)geom[DSA_GEOM_S];
         P = (unsigned int)geom[DSA_GEOM_NPOOLS];
-        // 🪤 `P` is also the row stride of `out`/`valid_cand`. Legal to vary ONLY because the
-        // device-geometry path is decode-only (Q == 1), so every `r * P` is `0 * P`. The
-        // launcher refuses Q > 1 rather than writing a stride the next step disagrees with.
-        if (p >= P) return;
     }
+    const unsigned int p0 = tile * DSA_SCORES_PT;
+    // 🪤 `P` is also the row stride of `out`/`valid_cand`. Legal to vary under `geom` ONLY
+    // because that path is decode-only (Q == 1), so every `r * P` is `0 * P`.
+    if (p0 >= P) return;
+
+    // `sh` holds [H][PT] per-head contributions, then [PT] candidacy flags.
+    float* head_acc = sh;
+    unsigned char* cand_sh = (unsigned char*)(sh + (size_t)H * DSA_SCORES_PT);
 
     // A pool is a candidate only when it is complete AND its LAST token is visible to this
     // query (causal + not padding). The clamp mirrors HF's `pool_end.clamp(0, kv_len-1)`.
-    int end = pool_indices[p * KP + KP - 1];
-    int end_c = end < 0 ? 0 : (end >= (int)S ? (int)S - 1 : end);
-    bool vis = (end_c <= q_pos[r]) && (valid_keys[end_c] != 0);
-    bool cand = (pool_valid[p] != 0) && vis;
-    if (tid == 0) valid_cand[(size_t)r * P + p] = cand ? 1 : 0;
-    if (!cand) {
-        if (tid == 0) out[(size_t)r * P + p] = -FLT_MAX;
-        return;
+    for (unsigned int pt = tid; pt < DSA_SCORES_PT; pt += blockDim.x) {
+        const unsigned int p = p0 + pt;
+        if (p >= P) { cand_sh[pt] = 0; continue; }
+        int end = pool_indices[p * KP + KP - 1];
+        int end_c = end < 0 ? 0 : (end >= (int)S ? (int)S - 1 : end);
+        bool vis = (end_c <= q_pos[r]) && (valid_keys[end_c] != 0);
+        bool cand = (pool_valid[p] != 0) && vis;
+        valid_cand[(size_t)r * P + p] = cand ? 1 : 0;
+        cand_sh[pt] = cand ? 1 : 0;
+        if (!cand) out[(size_t)r * P + p] = -FLT_MAX;
     }
+    __syncthreads();
 
-    float acc = 0.0f;
-    for (unsigned int h = 0; h < H; ++h) {
-        float dot = 0.0f;
-        for (unsigned int d = tid; d < D; d += blockDim.x)
-            dot += q[((size_t)r * H + h) * D + d] * pool_keys[(size_t)p * D + d];
-        dot = dsa_block_sum(dot, sh, tid, blockDim.x);
-        if (tid == 0) acc += weights[(size_t)r * H + h] * fmaxf(scale * dot, 0.0f);
-        __syncthreads();
+    // 🔴 ONE WARP PER HEAD. This loop used to run `dsa_block_sum` once per head — and that
+    // helper carries TWO `__syncthreads()`, so at H=32 every block paid 64 barriers. With
+    // `D == blockDim.x == 128` each thread contributed exactly ONE multiply between them:
+    // the block spent nearly all of its time in reduction and barrier overhead rather than
+    // in arithmetic. Blocks are `P * Q`, so this ran ~576,000 times per DSA layer per chunk.
+    //
+    // Now each warp owns whole heads and reduces with `__shfl_down_sync` alone — no barrier
+    // inside the loop at all, and each lane accumulates D/32 elements in registers first.
+    //
+    // 🪤 Head accumulation ORDER IS PRESERVED. The per-head contributions land in `sh[h]`
+    // and thread 0 sums them h = 0..H-1, exactly the serial order the old code used. Only
+    // the INNER dot-product reduction is reassociated (4 elements per lane, then a 32-lane
+    // shuffle tree, vs 1 element per thread then a 128-thread tree). Keeping the outer sum
+    // ordered confines the numeric change to one place instead of two, which matters
+    // because these scores feed a top-k over KV pools: a flipped tie changes WHICH tokens
+    // the DSA attention sees, so this arm is judged on long-context needle recall.
+    //
+    // `sh` must hold H floats. The launcher requests `max(SCORES_BLOCK, H * 4)` bytes for
+    // exactly this; `dsa_block_sum` needed only `nthreads/32` slots, so the old 128-byte
+    // request was a tight fit at H=32 with no margin.
+    const unsigned int lane = tid & 31u;
+    const unsigned int warp = tid >> 5;
+    const unsigned int nwarps = (blockDim.x + 31u) / 32u;
+    for (unsigned int h = warp; h < H; h += nwarps) {
+        const float* __restrict__ qh = q + ((size_t)r * H + h) * D;
+        // Loaded ONCE and reused across the whole pool tile — the point of the tiling.
+        float qv[DSA_SCORES_QMAX];
+        unsigned int nq = 0;
+        for (unsigned int d = lane; d < D; d += 32u) qv[nq++] = qh[d];
+        const float hw = weights[(size_t)r * H + h];
+        for (unsigned int pt = 0; pt < DSA_SCORES_PT; ++pt) {
+            if (!cand_sh[pt]) continue;
+            const float* __restrict__ pk = pool_keys + (size_t)(p0 + pt) * D;
+            float dot = 0.0f;
+            unsigned int i = 0;
+            for (unsigned int d = lane; d < D; d += 32u) dot += qv[i++] * pk[d];
+            for (int off = 16; off > 0; off >>= 1)
+                dot += __shfl_down_sync(0xffffffffu, dot, off);
+            if (lane == 0) head_acc[(size_t)h * DSA_SCORES_PT + pt] =
+                hw * fmaxf(scale * dot, 0.0f);
+        }
     }
-    if (tid == 0) out[(size_t)r * P + p] = acc;
+    __syncthreads();
+    // Head order preserved per output, exactly as before: h ascending.
+    for (unsigned int pt = tid; pt < DSA_SCORES_PT; pt += blockDim.x) {
+        const unsigned int p = p0 + pt;
+        if (p >= P || !cand_sh[pt]) continue;
+        float acc = 0.0f;
+        for (unsigned int h = 0; h < H; ++h) acc += head_acc[(size_t)h * DSA_SCORES_PT + pt];
+        out[(size_t)r * P + p] = acc;
+    }
 }
 
 // ── 3. deterministic top-k over pools ───────────────────────────────────────────────────
@@ -411,11 +476,41 @@ extern "C" __global__ void dsa_expand_selection(
         }
     }
 
-    if (always_tail && tid == 0) {
+    if (always_tail) {
         // The in-progress (incomplete) pool, as raw indices.
+        //
+        // 🔴 `vis_count` used to be counted by THREAD 0 ALONE, walking all S entries while
+        // the other 255 threads idled — one warp of eight, 1/256 of the block. GLM-5.3 sets
+        // `index_kpool_always_select_tail`, so this ran on every row of every DSA layer of
+        // every prefill chunk: at a 21K-token context that is ~21,000 dependent iterations
+        // per block, x 256 blocks x 11 layers.
+        //
+        // 🪤 EXACT, not approximate. This is an integer population count, so splitting it
+        // across threads and summing cannot reassociate anything — unlike the float paths
+        // elsewhere in this stack, there is no numerics question to answer here. The
+        // alternative closed form (`q_pos[r] + 1 - first_key`) was NOT taken: it assumes
+        // every key at or below `q_pos[r]` is valid, and `valid_keys` exists precisely
+        // because that is not guaranteed.
+        //
+        // `always_tail` is a kernel-uniform parameter and `r` is `blockIdx.x`, so every
+        // thread of the block reaches the barriers below together. The early
+        // `q_mask[r] == 0` return above is likewise whole-block.
+        __shared__ int vis_warp[32];
+        const int qp = q_pos[r];
+        int local = 0;
+        for (unsigned int t = tid; t < S; t += blockDim.x)
+            if ((int)t <= qp && valid_keys[t] != 0) ++local;
+        for (int off = 16; off > 0; off >>= 1)
+            local += __shfl_down_sync(0xffffffffu, local, off);
+        const unsigned int lane = tid & 31u;
+        const unsigned int warp = tid >> 5;
+        if (lane == 0) vis_warp[warp] = local;
+        __syncthreads();
+        if (tid != 0) return;
+        const unsigned int nwarps = (blockDim.x + 31u) / 32u;
         int vis_count = 0;
-        for (unsigned int t = 0; t < S; ++t)
-            if ((int)t <= q_pos[r] && valid_keys[t] != 0) ++vis_count;
+        for (unsigned int w = 0; w < nwarps; ++w) vis_count += vis_warp[w];
+
         int tail_count = vis_count % (int)KP;
         int tail_start = first_key + vis_count - tail_count;
         unsigned int base = row_select_k * KP;   // per-row, see above

@@ -184,6 +184,30 @@ pub fn cublas_bf16_proj_dense(
     spark_runtime::cublaslt::bf16_gemm_act_weight_t(act.0, weight_bf16.0, out.0, m, n, k, stream)
 }
 
+/// [`cublas_bf16_proj_dense`] writing an **FP32** output buffer.
+///
+/// For consumers whose downstream kernel reads FP32 — GLM's DSA indexer `wq_b` — which
+/// otherwise cannot use a batched GEMM at all and degrade to one M=1 GEMV per row.
+pub fn cublas_bf16_proj_dense_f32_out(
+    act: spark_runtime::gpu::DevicePtr,
+    weight_bf16: spark_runtime::gpu::DevicePtr,
+    out: spark_runtime::gpu::DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> anyhow::Result<()> {
+    spark_runtime::cublaslt::bf16_gemm_act_weight_t_f32_out(
+        act.0,
+        weight_bf16.0,
+        out.0,
+        m,
+        n,
+        k,
+        stream,
+    )
+}
+
 /// Route a projection `out[M,N] = act[M,K] @ weightᵀ` through CUTLASS BF16.
 ///
 /// ★ A REFERENCE PATH FOR BENCHMARKING, NOT A SHIPPING ONE. Opt-in behind

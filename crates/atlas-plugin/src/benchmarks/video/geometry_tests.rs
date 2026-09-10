@@ -3,12 +3,13 @@
 //! Tests for the proportionality check.
 
 use super::*;
+use crate::benchmarks::vision::geometry::QWEN3_VL;
 
 /// 224x224 at patch 16 / merge 2: a 14x14 patch grid, 7x7 merged = 49 tokens
 /// per temporal group. The number every fixture assertion is built on.
 #[test]
 fn a_224_square_group_is_49_tokens() {
-    assert_eq!(tokens_per_group(224, 224, 16, 2), 49);
+    assert_eq!(tokens_per_group(224, 224, QWEN3_VL), 49);
 }
 
 /// ★ The check must be independent of the server's sampling rate — that is

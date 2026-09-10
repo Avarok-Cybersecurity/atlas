@@ -11,6 +11,34 @@ use super::{
     normalize_tool_call_arguments, remap_developer_role, resolve_think_control,
 };
 
+/// Resolve `(image_pad, video_pad)` from the checkpoint's `vision_config`.
+///
+/// This is the tokenizer half of a pair that MUST agree: the tokenizer decides
+/// how many pad tokens to fan an image out to, and `spark-model`'s
+/// `model/impl_a2.rs::vision_pad_ids` decides which positions the ViT rows
+/// overwrite. A disagreement writes vision rows over ordinary text with a
+/// token count that adds up end to end. Same `!= 0` filter, same family
+/// fallbacks, and the fallbacks are the SAME CONSTANTS, not copies.
+///
+/// `None` for a text-only checkpoint, which is what makes
+/// `expand_vision_pads` a no-op there.
+pub(crate) fn resolve_vision_pad_ids(
+    vision: Option<&atlas_core::config::VisionConfig>,
+) -> Option<(u32, u32)> {
+    let v = vision?;
+    let image = if v.image_pad_token_id != 0 {
+        v.image_pad_token_id
+    } else {
+        spark_model::layers::vision_encoder::IMAGE_PAD_TOKEN_ID
+    };
+    let video = if v.video_pad_token_id != 0 {
+        v.video_pad_token_id
+    } else {
+        spark_model::layers::vision_encoder::VIDEO_PAD_TOKEN_ID
+    };
+    Some((image, video))
+}
+
 /// Run Atlas's cross-cutting message preprocessing (formerly encoded in
 /// per-model jinja overrides) so it applies to EVERY model's own template:
 ///   1. parse stringified `tool_calls[*].function.arguments` (F76),
@@ -46,6 +74,7 @@ impl ChatTokenizer {
         model_type: &str,
         repo_root: Option<&Path>,
         disable_template_overrides: bool,
+        vision: Option<&atlas_core::config::VisionConfig>,
     ) -> Result<Self> {
         let tokenizer_path = model_dir.join("tokenizer.json");
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path)
@@ -116,6 +145,11 @@ impl ChatTokenizer {
             ChatEncoding::Jinja
         };
 
+        let vision_pad_ids = resolve_vision_pad_ids(vision);
+        if let Some((image, video)) = vision_pad_ids {
+            tracing::info!("Vision pad token ids: image={image} video={video}");
+        }
+
         tracing::info!("Loaded tokenizer from {}", tokenizer_path.display());
         Ok(Self {
             tokenizer,
@@ -125,6 +159,7 @@ impl ChatTokenizer {
             chat_template,
             jinja_env,
             openai_jinja_env,
+            vision_pad_ids,
         })
     }
 
@@ -391,22 +426,18 @@ impl ChatTokenizer {
         self.chat_encoding == ChatEncoding::DeepseekV4
     }
 
-    /// Encode the `<|image_pad|>` placeholder token and return its ID.
-    /// Returns `None` when the tokenizer doesn't have this token (text-only
-    /// models). Cheap to call repeatedly — the underlying tokenizer caches
-    /// single-token encodes.
+    /// The image placeholder token id. `None` on a text-only checkpoint.
+    ///
+    /// Config-driven, never a literal encode — see `ChatTokenizer::vision_pad_ids`
+    /// for the GLM-5.3 failure that spelling caused.
     pub fn image_pad_token_id(&self) -> Option<u32> {
-        self.encode("<|image_pad|>")
-            .ok()
-            .and_then(|ids| if ids.len() == 1 { Some(ids[0]) } else { None })
+        self.vision_pad_ids.map(|(image, _)| image)
     }
 
-    /// `<|video_pad|>`, the temporal sibling. `None` on a tokenizer without
-    /// it — every text-only model, and any VL model that predates video.
+    /// The VIDEO placeholder, the temporal sibling of
+    /// [`Self::image_pad_token_id`]. Same source, same rationale.
     pub fn video_pad_token_id(&self) -> Option<u32> {
-        self.encode("<|video_pad|>")
-            .ok()
-            .and_then(|ids| if ids.len() == 1 { Some(ids[0]) } else { None })
+        self.vision_pad_ids.map(|(_, video)| video)
     }
 
     /// Post-process a rendered token sequence to expand `<|image_pad|>`

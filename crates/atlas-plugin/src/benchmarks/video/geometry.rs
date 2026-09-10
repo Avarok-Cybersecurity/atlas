@@ -16,13 +16,23 @@
 //! violated the moment sampling or grouping breaks, and needs no knowledge of
 //! how the server was started.
 
+use crate::benchmarks::vision::geometry::{VisionGeometry, expected_vision_tokens};
+
 /// Merged tokens one temporal group of a `w x h` clip occupies.
 ///
 /// Identical arithmetic to a still image's — a group IS a still, spatially —
 /// so this deliberately mirrors `vision::geometry::expected_vision_tokens`
 /// rather than reimplementing it differently.
-pub fn tokens_per_group(w: u32, h: u32, patch: u32, merge: u32) -> u32 {
-    crate::benchmarks::vision::geometry::expected_vision_tokens(w, h, patch, merge)
+pub fn tokens_per_group(w: u32, h: u32, g: VisionGeometry) -> u32 {
+    // A temporal group IS a still, spatially, so this deliberately defers to the
+    // still-image model rather than reimplementing the arithmetic differently.
+    //
+    // 🪤 It took a geometry PROFILE for the same reason the still ladder did:
+    // 224x224 is 49 tokens under Qwen3-VL (patch 16) and 64 under GLM-5.3-Flash
+    // (patch 14), and this figure is the unit the whole proportionality check is
+    // denominated in. Hardcoding Qwen's meant the video gate mispredicted every
+    // group on a GLM serve by 15 tokens.
+    expected_vision_tokens(w, h, g)
 }
 
 /// What the geometry leg concluded.

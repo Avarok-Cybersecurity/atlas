@@ -162,7 +162,7 @@ impl ModelWeightLoader for Qwen35WeightLoader {
         store: &WeightStore,
         config: &ModelConfig,
         gpu: &dyn GpuBackend,
-    ) -> Result<Option<crate::layers::VisionEncoder>> {
+    ) -> Result<Option<crate::layers::VisionTower>> {
         let vcfg = match &config.vision {
             Some(v) => v.clone(),
             None => return Ok(None),
@@ -269,6 +269,6 @@ impl ModelWeightLoader for Qwen35WeightLoader {
             vcfg.hidden_size,
             vcfg.num_heads,
         );
-        Ok(Some(ve))
+        Ok(Some(crate::layers::VisionTower::Qwen(ve)))
     }
 }

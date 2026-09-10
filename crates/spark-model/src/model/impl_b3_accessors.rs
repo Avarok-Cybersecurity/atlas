@@ -85,6 +85,38 @@ impl TransformerModel {
                 ),
             }
         }
+        // The batched-verify hidden stash belongs to whichever proposer the model
+        // ends up with, and `new()` could not know there would be one: it
+        // allocates the stash only when a proposer is passed to the CONSTRUCTOR,
+        // and V4 / GLM-5.3 / DFlash all arrive here instead, afterwards.
+        //
+        // 🪤 Silent, and exactly the shape that hides: `can_batch_verify`
+        // self-gates on `!verify_hidden_stash.is_null()`, so a model whose
+        // proposer is installed late never takes the batched verify at ANY
+        // width, on any number of ranks — and the symptom is not an error but
+        // "speculation does not amortise across sequences". Measured on
+        // GLM-5.3-Flash: every conjunct passed except `stash_ok=false`.
+        if self.verify_hidden_stash.is_null() {
+            let bytes = crate::layer::VERIFY_WY_TABLE_SEQS * self.config.hidden_size * 2;
+            match self.gpu.alloc(bytes) {
+                Ok(p) => {
+                    self.verify_hidden_stash = p;
+                    tracing::info!(
+                        "Batched-verify hidden stash allocated for the post-construction \
+                         proposer: {} seqs x {} hidden ({:.1} MB)",
+                        crate::layer::VERIFY_WY_TABLE_SEQS,
+                        self.config.hidden_size,
+                        bytes as f64 / 1e6,
+                    );
+                }
+                // Not fatal: a NULL stash is the batched path's own "off"
+                // state, so the serve keeps running on the per-sequence verify.
+                Err(e) => tracing::warn!(
+                    "Batched-verify hidden stash allocation failed ({e:#}) — batched \
+                     multi-sequence verify stays DISABLED for this serve"
+                ),
+            }
+        }
         self.proposer = Some(proposer);
     }
 

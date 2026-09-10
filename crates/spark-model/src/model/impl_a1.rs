@@ -70,7 +70,7 @@ impl TransformerModel {
         comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,
         self_speculative: bool,
         num_drafts: usize,
-        vision_encoder: Option<crate::layers::VisionEncoder>,
+        vision_encoder: Option<crate::layers::VisionTower>,
         ssm_cache_slots: usize,
         ssm_checkpoint_interval: usize,
     ) -> Result<Self> {
@@ -627,6 +627,22 @@ impl TransformerModel {
                         "ATLAS_GLM_PREFILL_ROWS",
                         crate::layers::glm5next_layer::prefill_rows() as u64,
                     ),
+                    // The KDA layers may sub-chunk at a DIFFERENT width from the DSA ones,
+                    // and 34 of the 45 layers are KDA — so a skew here mismatches the
+                    // collective schedule for most of the model, exactly as a skew in the
+                    // lever above does for the rest of it.
+                    (
+                        "ATLAS_GLM_KDA_PREFILL_ROWS",
+                        crate::layers::glm5next_layer::kda_prefill_rows() as u64,
+                    ),
+                    // 🔴 The FFN window decides how many MLP-site all-reduces a chunk issues
+                    // and how wide each one is — the same property that puts
+                    // `ATLAS_GLM_PREFILL_ROWS` on this list. A rank skew here is a mismatched
+                    // collective schedule, not a perf difference.
+                    (
+                        "ATLAS_GLM_MOE_PREFILL_WINDOW",
+                        crate::layers::glm5next_layer::moe_prefill_window() as u64,
+                    ),
                     // Perf-only (the MLP reduces once per site whichever arm runs), but a skew
                     // here is still a confusing asymmetry and the check is free.
                     (
@@ -847,6 +863,9 @@ impl TransformerModel {
             lm_head_nvfp4,
             lm_head_nvfp4_t,
             lm_head_fp8,
+            // Installed post-construction by `set_lm_head_exl3` when the
+            // EXL3 materialization pass kept `lm_head` packed.
+            lm_head_exl3: None,
             layers,
             buffers,
             lora: None,

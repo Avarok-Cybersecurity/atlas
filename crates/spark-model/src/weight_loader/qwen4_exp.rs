@@ -439,7 +439,7 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
         store: &WeightStore,
         config: &ModelConfig,
         gpu: &dyn GpuBackend,
-    ) -> Result<Option<crate::layers::VisionEncoder>> {
+    ) -> Result<Option<crate::layers::VisionTower>> {
         // The ViT tower IS the Qwen3-VL family shape the qwen35 loader
         // already reads: 27 blocks under `model.visual.*`, patch 16,
         // spatial-merge 2, plain BF16 weights (no quant tensors under

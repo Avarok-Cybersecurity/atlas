@@ -16,8 +16,8 @@ pub(crate) fn build_prefix_cache(
     if args.enable_prefix_caching && !config.kv_only_prefix_cache_is_safe() {
         tracing::warn!(
             model_type = %config.model_type,
-            "Prefix caching: DISABLED because this model builds per-sequence state outside KV; \
-             the KV-only cache cannot resume it exactly"
+            "Prefix caching: DISABLED because this model builds per-sequence state outside KV \
+             that the Marconi snapshot does not carry; a KV+SSM restore would resume it zeroed"
         );
         return Box::new(spark_runtime::prefix_cache::NoPrefixCaching);
     }
@@ -351,13 +351,17 @@ mod prefix_cache_tests {
         assert!(!cache.is_active());
     }
 
+    /// GLM's non-KV state (KDA pool slot + DSA aux blobs) rides the Marconi
+    /// snapshot, so the flag now installs a real radix tree. The swap gate
+    /// below is unchanged for the same model — the spill image carries no aux.
     #[test]
-    fn glm5_next_disables_incomplete_prefix_cache() {
+    fn glm5_next_enables_prefix_cache_via_marconi() {
         let mut config = ModelConfig::qwen3_next_80b_nvfp4();
-        config.model_type = "glm5_next".to_string();
-
-        let cache = build_prefix_cache(&enabled_args(), &config);
-        assert!(!cache.is_active());
+        for model_type in ["glm5_next", "glm5_next_text"] {
+            config.model_type = model_type.to_string();
+            let cache = build_prefix_cache(&enabled_args(), &config);
+            assert!(cache.is_active(), "{model_type}");
+        }
     }
 }
 

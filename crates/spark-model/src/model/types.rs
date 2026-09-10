@@ -83,6 +83,14 @@ pub struct TransformerModel {
     /// with `lm_head_nvfp4` (that stays `None` on the FP8 path). Additive: when
     /// `None`, the NVFP4/BF16 LM-head dispatch is byte-identical to before.
     pub(super) lm_head_fp8: Option<Fp8DenseWeight>,
+    /// Native EXL3 (QTIP trellis) LM head (`ATLAS_EXL3_NATIVE=1`): serves the
+    /// vocab projection from the packed checkpoint tensors via the fused
+    /// cooperative `exl3_matmul` kernels. When `Some`, it is the LEADING arm
+    /// of every LM-head dispatch and decode-graph capture is vetoed
+    /// (cooperative launches cannot be captured). Installed post-construction
+    /// via `set_lm_head_exl3`. Shared (`Arc`) because a draft head must
+    /// project through the SAME trellis — a checkpoint ships one `lm_head`.
+    pub(super) lm_head_exl3: Option<std::sync::Arc<super::lm_head_exl3::Exl3LmHead>>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
     pub(super) buffers: BufferArena,
     /// Startup-static LoRA adapter (pool + per-layer pairs + M2 pointer
@@ -393,8 +401,8 @@ pub struct TransformerModel {
     pub(super) self_speculative: bool,
     /// Last token index passed to save_hidden_for_mtp (for EP broadcast to rank 1).
     pub(super) last_mtp_hidden_idx: std::sync::atomic::AtomicUsize,
-    /// Optional vision encoder for VL models (Qwen3-VL).
-    pub(super) vision_encoder: Option<crate::layers::VisionEncoder>,
+    /// Optional vision tower (Qwen3-VL-shaped or GLM-5.3-shaped).
+    pub(super) vision_encoder: Option<crate::layers::VisionTower>,
     /// Number of patches encoded by the last prepare_vision_embed() call.
     /// 0 means no vision embeddings pending.
     pub(super) vision_embed_patches: Mutex<usize>,

@@ -93,6 +93,9 @@ pub trait QuantFormat: Send + Sync + std::fmt::Debug {
 ///      `tracing::warn!`. This preserves existing behavior for the
 ///      rarely-used pure-BF16 checkpoints while making the guess loud.
 pub fn detect_quant_format(config: &ModelConfig, store: &WeightStore) -> Box<dyn QuantFormat> {
+    // Set when the checkpoint declares EXL3, so the BF16-raw arm below can tell
+    // "native by design" from "quantization metadata is missing".
+    let mut exl3_declared = false;
     // (1) Config-level dispatch — the path that fixes the
     // `lukealonso/MiniMax-M2.7-NVFP4` bug.
     if let Some(qc) = &config.quantization_config {
@@ -123,11 +126,32 @@ pub fn detect_quant_format(config: &ModelConfig, store: &WeightStore) -> Box<dyn
                 );
                 return Box::new(Fp8BlockScaledFormat::new(ignore));
             }
+            // EXL3 (QTIP trellis) is not a QuantFormat at all: the packed
+            // routed experts are bound by `Exl3Weight::from_store` and decoded
+            // in-kernel, never passing through this machinery. What is left for
+            // QuantFormat to judge is the NON-routed remainder, which these
+            // packs ship at native dtype on purpose
+            // (`scope: glm53_routed_experts_only`,
+            // `non_routed_dtype_policy: official_source_native`).
+            //
+            // Deliberately NOT a short-circuit: a future pack could pair EXL3
+            // routed experts with NVFP4 elsewhere, and the tensor-name
+            // heuristic below is what would spot it. Only the message changes.
+            "exl3" => {
+                tracing::info!(
+                    "QuantFormat: exl3 — routed experts stay PACKED and are decoded \
+                     in-kernel by the EXL3 loader, outside QuantFormat. Judging the \
+                     non-routed remainder by tensor name ({} ignored module(s)).",
+                    ignore.len(),
+                );
+                exl3_declared = true;
+                // fall through
+            }
             other if !other.is_empty() => {
                 tracing::warn!(
                     "QuantFormat: config declares unrecognized quant_method={other:?}; \
                      falling back to tensor-name heuristic. Atlas currently understands \
-                     {{compressed-tensors, modelopt, fp8}}. Checkpoint load may fail."
+                     {{compressed-tensors, modelopt, fp8, exl3}}. Checkpoint load may fail."
                 );
                 // fall through
             }
@@ -164,11 +188,23 @@ pub fn detect_quant_format(config: &ModelConfig, store: &WeightStore) -> Box<dyn
             // Pure BF16 / partial-metadata checkpoint. The ModelOpt
             // impl with empty ignore list will route every call to
             // `Bf16Raw` via `variant_for` — which is what we want.
-            tracing::warn!(
-                "QuantFormat: no quantization declared and no pre-quantized weights found; \
-                 treating checkpoint as BF16 raw (weights will be runtime-quantized). \
-                 Quality will be inferior to a calibrated NVFP4 release."
-            );
+            if exl3_declared {
+                // Expected and correct on an EXL3 pack: the quantized half is
+                // the routed experts, which the EXL3 loader owns. Nothing here
+                // is runtime-quantized and nothing is degraded.
+                tracing::info!(
+                    "QuantFormat: exl3 — no NVFP4/FP8 tensors outside the packed routed \
+                     experts, as the pack declares. The remainder is native dtype by \
+                     design; no runtime quantization is performed."
+                );
+            } else {
+                tracing::warn!(
+                    "QuantFormat: no quantization declared and no pre-quantized weights \
+                     found; treating checkpoint as BF16 raw (weights will be \
+                     runtime-quantized). Quality will be inferior to a calibrated NVFP4 \
+                     release."
+                );
+            }
             Box::new(ModeloptFormat::new(String::new(), ignore)) as Box<dyn QuantFormat>
         }
     }

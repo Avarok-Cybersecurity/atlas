@@ -66,6 +66,19 @@
 #define VEC_U32  8    // 16 bf16 = 8 uint32
 #define NUM_WARPS 8
 
+// 🔴 Heads retired per block. Every head of a given row gathers the SAME selected tokens
+// — `sel_width` of them, 2,051 at production settings — so a one-head-per-block grid read
+// each token's 512-byte latent `num_q_heads` times over. This block loads it once and
+// dots it against `HEADS_PER_BLOCK` queries.
+//
+// 🪤 Bounded by REGISTERS, not by shared memory: each head carries its own `q_reg` and
+// `o_reg` (VEC_BF16 floats apiece) plus running `m`/`l`, so per-lane state grows as
+// 2*VEC_BF16*HG. At HG=2 that is ~68 floats/lane, which keeps the same occupancy the
+// one-head version had. The cross-warp merge is run once per head reusing ONE
+// `smem_o[NUM_WARPS][512]` buffer, so shared memory does not scale with HG at all.
+#define HEADS_PER_BLOCK 2
+
+
 // GLM-5.3's latent width. Compile-time because the per-lane register tiling above is
 // derived from it (32 lanes * VEC_BF16 == 512 exactly). The host refuses any checkpoint
 // whose kv_lora_rank differs -- Glm5NextDsaConfig::validate, KERNEL_KV_LORA_DIM.
@@ -110,13 +123,13 @@ extern "C" __global__ void glm5next_dsa_mla_decode_fp8(
     const float v_scale,
     const unsigned long long cache_stride_bytes
 ) {
-    const unsigned int q_head  = blockIdx.x;
+    const unsigned int q_head_base = blockIdx.x * HEADS_PER_BLOCK;
     const unsigned int seq_idx = blockIdx.y;
     const unsigned int tid     = threadIdx.x;
     const unsigned int warp_id = tid / WARP_SIZE;
     const unsigned int lane_id = tid % WARP_SIZE;
 
-    if (q_head >= num_q_heads) return;
+    if (q_head_base >= num_q_heads) return;
 
     const unsigned int seq_len = (unsigned int)seq_lens[seq_idx];
     if (seq_len == 0) return;
@@ -135,15 +148,26 @@ extern "C" __global__ void glm5next_dsa_mla_decode_fp8(
     // is 0 and the decode path is untouched.
     const unsigned long long row_off = (unsigned long long)seq_idx * num_q_heads * kv_lora_dim;
 
-    // Q for this head, this lane's 16 dims.
-    const unsigned int* q32 =
-        (const unsigned int*)(Q + row_off + (unsigned long long)q_head * kv_lora_dim + lane_offset);
-    float q_reg[VEC_BF16];
+    // Q for each head of this group, this lane's 16 dims. `ng` is how many of
+    // HEADS_PER_BLOCK actually exist — the last group is short when num_q_heads is not a
+    // multiple, and a missing head must not be scored or written.
+    const unsigned int ng = (q_head_base + HEADS_PER_BLOCK <= num_q_heads)
+                          ? HEADS_PER_BLOCK
+                          : (num_q_heads - q_head_base);
+    float q_reg[HEADS_PER_BLOCK][VEC_BF16];
     #pragma unroll
-    for (int i = 0; i < VEC_U32; i++) {
-        unsigned int v = q32[i];
-        q_reg[2*i]     = __bfloat162float(__ushort_as_bfloat16((unsigned short)(v & 0xFFFF)));
-        q_reg[2*i + 1] = __bfloat162float(__ushort_as_bfloat16((unsigned short)(v >> 16)));
+    for (int g = 0; g < HEADS_PER_BLOCK; g++) {
+        if ((unsigned int)g >= ng) break;
+        const unsigned int* q32 =
+            (const unsigned int*)(Q + row_off
+                                  + (unsigned long long)(q_head_base + g) * kv_lora_dim
+                                  + lane_offset);
+        #pragma unroll
+        for (int i = 0; i < VEC_U32; i++) {
+            unsigned int v = q32[i];
+            q_reg[g][2*i]     = __bfloat162float(__ushort_as_bfloat16((unsigned short)(v & 0xFFFF)));
+            q_reg[g][2*i + 1] = __bfloat162float(__ushort_as_bfloat16((unsigned short)(v >> 16)));
+        }
     }
 
     // Warps split the SELECTION ROW, not the sequence. A warp whose whole slice is -1
@@ -153,11 +177,16 @@ extern "C" __global__ void glm5next_dsa_mla_decode_fp8(
     unsigned int j_end = j + chunk;
     if (j_end > sel_width) j_end = sel_width;
 
-    float m = -1e30f;
-    float l = 0.0f;
-    float o_reg[VEC_BF16];
+    float m[HEADS_PER_BLOCK];
+    float l[HEADS_PER_BLOCK];
+    float o_reg[HEADS_PER_BLOCK][VEC_BF16];
     #pragma unroll
-    for (int i = 0; i < VEC_BF16; i++) o_reg[i] = 0.0f;
+    for (int g = 0; g < HEADS_PER_BLOCK; g++) {
+        m[g] = -1e30f;
+        l[g] = 0.0f;
+        #pragma unroll
+        for (int i = 0; i < VEC_BF16; i++) o_reg[g][i] = 0.0f;
+    }
 
     for (; j < j_end; j++) {
         const int t = my_sel[j];
@@ -177,79 +206,126 @@ extern "C" __global__ void glm5next_dsa_mla_decode_fp8(
         float k_tmp[VEC_BF16];
         load_kv_fp8(k_tok, lane_offset, k_scale, k_tmp);
 
-        float dot = 0.0f;
+        // The latent is loaded ONCE above; every head of the group now consumes it from
+        // registers. Each head keeps its own online-softmax state, so the arithmetic per
+        // head is exactly what the one-head-per-block version did.
+        float dot_g[HEADS_PER_BLOCK];
         #pragma unroll
-        for (int i = 0; i < VEC_BF16; i++)
-            if (lane_offset + i < kv_lora_dim) dot += q_reg[i] * k_tmp[i];
-        #pragma unroll
-        for (int off = WARP_SIZE / 2; off > 0; off >>= 1)
-            dot += __shfl_xor_sync(0xffffffff, dot, off);
+        for (int g = 0; g < HEADS_PER_BLOCK; g++) {
+            float dot = 0.0f;
+            #pragma unroll
+            for (int i = 0; i < VEC_BF16; i++)
+                if (lane_offset + i < kv_lora_dim) dot += q_reg[g][i] * k_tmp[i];
+            #pragma unroll
+            for (int off = WARP_SIZE / 2; off > 0; off >>= 1)
+                dot += __shfl_xor_sync(0xffffffff, dot, off);
+            dot_g[g] = dot;
+        }
 
-        const float score   = dot * inv_sqrt_d;
-        const float m_new   = fmaxf(m, score);
-        const float exp_old = __expf(m - m_new);
-        const float exp_new = __expf(score - m_new);
-        l = l * exp_old + exp_new;
-
+        // 🔴 ABSORBED MLA: K AND V ARE THE SAME LATENT. `attend.rs` is handed one pool for
+        // both (`v_cache: pool, // absorbed NoPE MLA: K and V are the same latent`) and one
+        // scale for both (`k_scale: self.kv_scale, v_scale: self.kv_scale`), so `v_tok`
+        // resolves to the byte-identical address `k_tok` did and `load_kv_fp8` would decode
+        // the byte-identical values a second time. `__restrict__` on both pointers is a
+        // PROMISE they do not alias, so the compiler is not permitted to notice they do and
+        // must emit the second load — the annotation that usually helps is what kept this
+        // alive.
+        //
+        // This kernel is the largest remaining prefill leaf and is bound by exactly this
+        // traffic: ~17 GB per launch, of which half was the same bytes twice.
+        //
+        // 🪤 BIT-IDENTICAL, not approximately equal: same address, same lane offset, same
+        // scale, so `load_kv_fp8` is a pure function of inputs that are all equal. The guard
+        // is a real runtime check rather than an assumption, so a future caller that passes
+        // genuinely distinct K/V or per-tensor scales silently keeps the correct two-load
+        // path. Both operands are kernel-uniform, so the branch costs no divergence.
+        const bool same_kv = (K_cache == V_cache) && (k_scale == v_scale);
         float v_tmp[VEC_BF16];
-        load_kv_fp8(v_tok, lane_offset, v_scale, v_tmp);
+        if (same_kv) {
+            #pragma unroll
+            for (int i = 0; i < VEC_BF16; i++) v_tmp[i] = k_tmp[i];
+        } else {
+            load_kv_fp8(v_tok, lane_offset, v_scale, v_tmp);
+        }
 
         #pragma unroll
-        for (int i = 0; i < VEC_BF16; i++)
-            o_reg[i] = o_reg[i] * exp_old + exp_new * v_tmp[i];
-        m = m_new;
+        for (int g = 0; g < HEADS_PER_BLOCK; g++) {
+            const float score   = dot_g[g] * inv_sqrt_d;
+            const float m_new   = fmaxf(m[g], score);
+            const float exp_old = __expf(m[g] - m_new);
+            const float exp_new = __expf(score - m_new);
+            l[g] = l[g] * exp_old + exp_new;
+            #pragma unroll
+            for (int i = 0; i < VEC_BF16; i++)
+                o_reg[g][i] = o_reg[g][i] * exp_old + exp_new * v_tmp[i];
+            m[g] = m_new;
+        }
     }
 
     // ── cross-warp merge (verbatim from mla_paged_decode_fp8; no sinks on GLM) ──
+    //
+    // 🪤 ONE buffer, reused per head, rather than `[HEADS_PER_BLOCK]` of them. `smem_o` is
+    // NUM_WARPS x 512 floats = 16 KB on its own; scaling it with the group would blow the
+    // 48 KiB ceiling at HG=4 and cap the grouping on shared memory instead of registers.
+    // The merge is a fixed cost per head, tiny beside the `sel_width`-long token loop, so
+    // serialising it costs far less than the loads the grouping saves.
     __shared__ float smem_m[NUM_WARPS];
     __shared__ float smem_l[NUM_WARPS];
     __shared__ float smem_o[NUM_WARPS][GLM_KV_LORA_DIM];
 
-    if (lane_id == 0) {
-        smem_m[warp_id] = m;
-        smem_l[warp_id] = l;
-    }
-    #pragma unroll
-    for (int i = 0; i < VEC_BF16; i++)
-        if (lane_offset + i < GLM_KV_LORA_DIM) smem_o[warp_id][lane_offset + i] = o_reg[i];
-    __syncthreads();
-
-    #pragma unroll
-    for (int stride = NUM_WARPS / 2; stride > 0; stride >>= 1) {
-        if (warp_id < (unsigned int)stride) {
-            const unsigned int other = warp_id + stride;
-            const float lw = smem_l[other];
-            if (lw > 0.0f) {
-                const float mw     = smem_m[other];
-                const float my_m   = smem_m[warp_id];
-                const float my_l   = smem_l[warp_id];
-                const float m_new  = fmaxf(my_m, mw);
-                const float sc_me  = __expf(my_m - m_new);
-                const float sc_w   = __expf(mw - m_new);
-                smem_l[warp_id] = my_l * sc_me + lw * sc_w;
-                smem_m[warp_id] = m_new;
-                #pragma unroll
-                for (int i = 0; i < GLM_KV_LORA_DIM; i++)
-                    smem_o[warp_id][i] = smem_o[warp_id][i] * sc_me + smem_o[other][i] * sc_w;
-            }
-        }
+    for (unsigned int g = 0; g < ng; g++) {
+        // Before overwriting: the previous head's merge still had warp 0 READING
+        // `smem_o[0]` when the other warps reached here.
         __syncthreads();
-    }
-
-    if (warp_id == 0) {
-        const float final_l = smem_l[0];
-        // l == 0 means this row selected nothing at all: write zeros, which is the
-        // identity element of a cross-rank LSE merge. Never divide by zero.
-        const float inv_l = (final_l > 0.0f) ? (1.0f / final_l) : 0.0f;
-        unsigned int* o32 =
-            (unsigned int*)(O + row_off + (unsigned long long)q_head * kv_lora_dim + lane_offset);
+        if (lane_id == 0) {
+            smem_m[warp_id] = m[g];
+            smem_l[warp_id] = l[g];
+        }
         #pragma unroll
-        for (int i = 0; i < VEC_U32; i++) {
-            const float v0 = smem_o[0][lane_offset + 2*i]     * inv_l;
-            const float v1 = smem_o[0][lane_offset + 2*i + 1] * inv_l;
-            const unsigned int lo = (unsigned int)__bfloat16_as_ushort(__float2bfloat16(v0));
-            const unsigned int hi = (unsigned int)__bfloat16_as_ushort(__float2bfloat16(v1));
-            o32[i] = lo | (hi << 16);
+        for (int i = 0; i < VEC_BF16; i++)
+            if (lane_offset + i < GLM_KV_LORA_DIM)
+                smem_o[warp_id][lane_offset + i] = o_reg[g][i];
+        __syncthreads();
+
+        #pragma unroll
+        for (int stride = NUM_WARPS / 2; stride > 0; stride >>= 1) {
+            if (warp_id < (unsigned int)stride) {
+                const unsigned int other = warp_id + stride;
+                const float lw = smem_l[other];
+                if (lw > 0.0f) {
+                    const float mw     = smem_m[other];
+                    const float my_m   = smem_m[warp_id];
+                    const float my_l   = smem_l[warp_id];
+                    const float m_new  = fmaxf(my_m, mw);
+                    const float sc_me  = __expf(my_m - m_new);
+                    const float sc_w   = __expf(mw - m_new);
+                    smem_l[warp_id] = my_l * sc_me + lw * sc_w;
+                    smem_m[warp_id] = m_new;
+                    #pragma unroll
+                    for (int i = 0; i < GLM_KV_LORA_DIM; i++)
+                        smem_o[warp_id][i] = smem_o[warp_id][i] * sc_me + smem_o[other][i] * sc_w;
+                }
+            }
+            __syncthreads();
+        }
+
+        if (warp_id == 0) {
+            const float final_l = smem_l[0];
+            // l == 0 means this row selected nothing at all: write zeros, which is the
+            // identity element of a cross-rank LSE merge. Never divide by zero.
+            const float inv_l = (final_l > 0.0f) ? (1.0f / final_l) : 0.0f;
+            unsigned int* o32 =
+                (unsigned int*)(O + row_off
+                                + (unsigned long long)(q_head_base + g) * kv_lora_dim
+                                + lane_offset);
+            #pragma unroll
+            for (int i = 0; i < VEC_U32; i++) {
+                const float v0 = smem_o[0][lane_offset + 2*i]     * inv_l;
+                const float v1 = smem_o[0][lane_offset + 2*i + 1] * inv_l;
+                const unsigned int lo = (unsigned int)__bfloat16_as_ushort(__float2bfloat16(v0));
+                const unsigned int hi = (unsigned int)__bfloat16_as_ushort(__float2bfloat16(v1));
+                o32[i] = lo | (hi << 16);
+            }
         }
     }
 }

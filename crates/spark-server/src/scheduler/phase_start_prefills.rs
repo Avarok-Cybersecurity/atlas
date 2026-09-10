@@ -84,7 +84,17 @@ pub(super) fn start_new_requests(
     let vision_codispatch = std::env::var("ATLAS_VISION_CODISPATCH")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    const VISION_P_MAX: usize = 6400; // VisionEncoder scratch cap (Σ pre-merge patches)
+    // Σ pre-merge patches the shared encoder scratch holds. Read from the tower
+    // rather than hard-coded: the 6400 that used to sit here was a copy of the
+    // QWEN default, and both towers derive their capacity from the resolved
+    // --vision-max-pixels bound instead (GLM's recommended operating point is
+    // 16384). Under-booking only under-admits into the batched encode, so the
+    // stale literal was correctness-neutral — but it should not stay a lie.
+    // 0 means "this model has no tower", and then nothing below runs anyway.
+    let vision_p_max = match model.vision_p_max() {
+        0 => 6400,
+        n => n,
+    };
     let mut vision_slices: Vec<VisionSlice> = vec![VisionSlice::default(); new_reqs.len()];
     if vision_codispatch && chunked {
         let mut batched_idx: Vec<usize> = Vec::new();
@@ -111,7 +121,7 @@ pub(super) fn start_new_requests(
                 .iter()
                 .map(|it| it.t_len() * it.grid_h * it.grid_w)
                 .sum();
-            if running_patches + req_patches > VISION_P_MAX {
+            if running_patches + req_patches > vision_p_max {
                 overflow = true;
                 break;
             }

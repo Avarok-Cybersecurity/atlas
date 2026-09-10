@@ -37,8 +37,10 @@ pub use dflash_loader::{
     DflashConfig, DflashLayerWeights, DflashSubConfig, DflashWeights, load_dflash_weights,
     store_has_dflash_weights,
 };
-pub mod glm5_next_load;
+pub mod glm5_next_exl3;
+mod glm5_next_load;
 mod glm5_next_mtp;
+mod glm5_next_vision_load;
 pub use gemma4::Gemma4WeightLoader;
 pub use glm5_next_load::Glm5NextWeightLoader;
 pub(crate) use glm5_next_mtp::{Glm5NextMtpModule, load_glm5next_mtp_module};
@@ -61,7 +63,7 @@ use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
-use crate::layers::VisionEncoder;
+use crate::layers::VisionTower;
 use crate::weight_map::{DenseWeight, MtpWeights, Nvfp4Variant, detect_nvfp4_variant};
 
 /// Can this box hold the transposed `[K/2, N]` MoE prefill copies for EVERY
@@ -383,7 +385,14 @@ pub trait ModelWeightLoader {
     /// unified memory that nothing will bind. `build_model` still frees an
     /// unbound tower afterwards (keyed off the bind result, not off this), so
     /// this is a peak-memory optimisation, not the correctness gate.
-    fn binds_vision_encoder(&self) -> bool {
+    ///
+    /// Takes the config because the decision must track `config.vision`, which
+    /// `serve_load.rs` NULLS when the kernel target ships no `vision_encoder`
+    /// PTX module. If this and `load_vision_encoder` disagree the two halves
+    /// split: bound-then-freed (dangling pointers) or skipped-then-bound (null
+    /// pointers), both of which surface as CUDA-700 at the first image rather
+    /// than as a clean refusal at load.
+    fn binds_vision_encoder(&self, _config: &ModelConfig) -> bool {
         true
     }
 
@@ -393,7 +402,7 @@ pub trait ModelWeightLoader {
         _store: &WeightStore,
         _config: &ModelConfig,
         _gpu: &dyn GpuBackend,
-    ) -> Result<Option<VisionEncoder>> {
+    ) -> Result<Option<VisionTower>> {
         Ok(None)
     }
 }

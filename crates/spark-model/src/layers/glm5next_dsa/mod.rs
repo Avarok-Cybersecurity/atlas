@@ -47,6 +47,7 @@ use atlas_core::config::ModelConfig;
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 
 pub mod attend;
+pub mod aux;
 pub mod binding;
 pub mod build;
 pub mod layer;

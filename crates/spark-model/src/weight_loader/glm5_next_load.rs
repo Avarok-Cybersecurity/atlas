@@ -45,7 +45,7 @@ use crate::layers::glm5next_layer::{Glm5NextLayer, Glm5NextMhc, Glm5NextMixer, G
 use crate::layers::glm5next_mlp::weights::{Glm5NextExpertWeights, Nvfp4Proj};
 use crate::layers::glm5next_mlp::{Glm5NextMlpConfig, Glm5NextMlpKernels, build as mlp_build};
 use crate::layers::glm5next_skeleton::{Glm5NextTextSkeleton, Mixer, Mlp};
-use crate::layers::ops::{Glm5NextMhcKernels, Glm5NextMhcSiteWeights, MHC_MIX_MAX_TOKENS, mix_hc};
+use crate::layers::ops::{Glm5NextMhcKernels, Glm5NextMhcSiteWeights, mix_hc};
 use crate::weight_map::DenseWeight;
 
 pub struct Glm5NextWeightLoader;
@@ -54,6 +54,12 @@ pub struct Glm5NextWeightLoader;
 ///
 /// 🪤 GLM-5.3 nests the text stack under `model.language_model.`, not `model.`. And it does NOT
 /// use `mtp.0.*` — the MTP block is `layers.45`.
+/// `qualify` for callers outside this module (the MTP block builds layer
+/// `num_hidden_layers` and needs the same name shape).
+pub(super) fn qualify_at(layer: usize, leaf: &str) -> String {
+    qualify(layer, leaf)
+}
+
 fn qualify(layer: usize, leaf: &str) -> String {
     format!("model.language_model.layers.{layer}.{leaf}")
 }
@@ -242,7 +248,7 @@ fn bind_mhc_site(
         hc_scale: upload_f32(gpu, &scale)?,
         hc_base: upload_f32(gpu, &base)?,
         // `hc_mix` -> `hc_finish` handoff. Per site so the layer's two sites cannot alias.
-        mix: gpu.alloc(MHC_MIX_MAX_TOKENS * mix_hc(hc_mult) * 4)?,
+        mix: gpu.alloc(crate::layers::ops::mhc_mix_max_tokens() * mix_hc(hc_mult) * 4)?,
     })
 }
 
@@ -288,14 +294,27 @@ fn dense(store: &WeightStore, name: &str) -> Result<DenseWeight> {
 }
 
 impl ModelWeightLoader for Glm5NextWeightLoader {
-    /// Text-only port. `weight_loader/glm5_next.rs` classifies `model.visual.*`
-    /// as `TensorRole::Vision` and excludes it from `is_required()`; nothing in
-    /// this loader binds it. Saying so here keeps the tower off the GPU in the
-    /// first place — on the LibertAIDAI NVFP4 checkpoint that is 1.05 GiB per
-    /// rank, sitting between `--speculative --num-drafts 2` and a serve that
-    /// fits (measured 2026-08-29: K=3 at 32 K needs 13.58 GiB against 12.07 free).
-    fn binds_vision_encoder(&self) -> bool {
-        false
+    /// The tower is bound iff a vision config survived to this point.
+    ///
+    /// This USED to be an unconditional `false` (a text-only port), which left
+    /// 1.05 GiB per rank of `model.visual.*` resident and unreachable. It is now
+    /// keyed off `config.vision` and NOT off `model_type`, because
+    /// `serve_load.rs:364-378` nulls `config.vision` when the kernel target
+    /// ships no `vision_encoder` PTX module — a text-only GLM build still gets
+    /// the old behaviour, for the old reason, without a second switch to keep in
+    /// sync. `load_vision_encoder` below tests the SAME thing; see the mutation
+    /// gate at the bottom of this file for what happens when they disagree.
+    fn binds_vision_encoder(&self, config: &ModelConfig) -> bool {
+        config.vision.is_some()
+    }
+
+    fn load_vision_encoder(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<Option<crate::layers::VisionTower>> {
+        super::glm5_next_vision_load::load_glm5_next_vision(store, config, gpu)
     }
 
     /// All three halves shard: DSA by head, KDA by head/channel, the MLP by width (TP) and by
@@ -370,9 +389,20 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
         // 🪤 `prefill_rows()` too, not just the constant: `ATLAS_GLM_PREFILL_ROWS` can widen the
         // sub-chunk at launch, and a workspace built for the default would make `forward_k` bail
         // the first time the A/B lever was actually used.
+        // 🪤 `kda_prefill_rows()` too: the KDA layers may take a WIDER prefill
+        // sub-chunk than the DSA ones (see its doc), and a workspace built for the
+        // narrower width would make `forward_k` bail the first time that lever was
+        // used — the same trap `prefill_rows()` was added here for.
         let verify_k = (crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize)
             .max(crate::layers::glm5next_layer::PREFILL_ROWS)
-            .max(crate::layers::glm5next_layer::prefill_rows());
+            .max(crate::layers::glm5next_layer::prefill_rows())
+            .max(crate::layers::glm5next_layer::kda_prefill_rows());
+        // 🪤 The FFN window is the MLP's alone. `mlp_forward` is handed the WHOLE window in one
+        // call, so the MLP workspace must hold it or `forward_moe` refuses at the first wide
+        // call — but the KDA and DSA workspaces never see it, because the MIXER keeps its own
+        // narrower sub-chunk. Folding it into `verify_k` would have oversized both for nothing,
+        // and the KDA scratch is the expensive one (FP32 q/k/v, ~200 MB per buffer at 2048).
+        let mlp_rows = verify_k.max(crate::layers::glm5next_layer::moe_prefill_window());
         let kda_ws = std::sync::Arc::new(crate::layers::glm5next_kda::Glm5NextKdaWorkspace::new(
             gpu, &kda_cfg, verify_k,
         )?);
@@ -393,8 +423,10 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
 
         for sl in &skeleton.layers {
             let idx = sl.index;
+            let t_layer = std::time::Instant::now();
             let src = LayerSource::collect(gpu, store, idx)
                 .with_context(|| format!("glm5_next: collecting layer {idx}"))?;
+            let t_collect = t_layer.elapsed();
 
             let mixer = match sl.mixer {
                 Mixer::Kda => {
@@ -440,6 +472,8 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                 }
             };
 
+            let t_mixer = t_layer.elapsed();
+
             let load = |n: &str| src.f32(n);
             let mlp = match sl.mlp {
                 Mlp::Dense => Glm5NextMlpSite::Dense(mlp_build::build_dense_mlp(
@@ -451,6 +485,27 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                     &load,
                 )?),
                 Mlp::RoutedMoe => {
+                    // EXL3 packs (e.g. vcruz305/GLM-5.3-Flash-EXL3-K2) ship the
+                    // routed experts as trellis triplets instead of NVFP4. The
+                    // probe is per LAYER, not per checkpoint, so a pack that
+                    // quantizes only some routed sites still loads: each layer
+                    // takes whichever arm its own tensors describe.
+                    let q = |leaf: &str| qualify(idx, leaf);
+                    // Probe an expert THIS rank owns: under EP the store is
+                    // sharded and expert 0 lives only on rank 0.
+                    let local = mlp_cfg.local_expert_range();
+                    let exl3 = if super::glm5_next_exl3::layer_is_exl3(store, &q, local.start) {
+                        Some(super::glm5_next_exl3::bind_experts_exl3(
+                            gpu,
+                            store,
+                            &q,
+                            mlp_cfg.num_experts,
+                            (local.start, local.end),
+                            (mlp_cfg.hidden, mlp_cfg.moe_intermediate, mlp_cfg.top_k),
+                        )?)
+                    } else {
+                        None
+                    };
                     let expert = |id: usize| bind_expert(gpu, store, idx, id);
                     Glm5NextMlpSite::Moe(Box::new(mlp_build::build_moe(
                         gpu,
@@ -459,9 +514,26 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                         config.shared_expert_intermediate_size,
                         &load,
                         &expert,
+                        exl3,
                     )?))
                 }
             };
+
+            let t_mlp = t_layer.elapsed();
+            // Splits the unattributed post-load window by ARM. A dense layer has
+            // neither a DSA mixer nor a MoE arm; a KDA+MoE layer has one; a
+            // DSA+MoE layer has both — three shapes, so the byte-proportional
+            // host round trip and the non-proportional per-arm work (absorb_q,
+            // the expert sync storm) stop being collinear and can be separated.
+            tracing::info!(
+                "glm5_next layer {idx} built: collect {:.2}s mixer {:.2}s mlp {:.2}s \
+                 (mixer={:?} mlp={:?})",
+                t_collect.as_secs_f64(),
+                (t_mixer - t_collect).as_secs_f64(),
+                (t_mlp - t_mixer).as_secs_f64(),
+                sl.mixer,
+                sl.mlp,
+            );
 
             let mhc = if sl.hyper_connection {
                 Some(Glm5NextMhc {
@@ -483,7 +555,7 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                 mlp_cfg,
                 mlp_kernels,
                 mlp_ws: crate::layers::glm5next_mlp::forward::Glm5NextMlpWorkspace::new(
-                    gpu, &mlp_cfg, verify_k,
+                    gpu, &mlp_cfg, mlp_rows,
                 )?,
                 mhc,
                 input_norm: upload_f32_as_bf16(gpu, &src.f32("input_layernorm.weight")?)?,
@@ -641,15 +713,29 @@ pub(super) fn upload_bf16(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> 
 mod vision_capability_tests {
     use super::Glm5NextWeightLoader;
     use crate::weight_loader::ModelWeightLoader;
+    use atlas_core::config::ModelConfig;
 
+    /// The gate INVERTED when the tower landed: it no longer asserts
+    /// "text-only", it asserts the PAIRING between the two halves of the
+    /// decision.
+    ///
+    /// `serve_phases/weights.rs` skips READING the tower when
+    /// `binds_vision_encoder` is false; `factory/build.rs` FREES it when
+    /// `load_vision_encoder` returned `None`. Both must answer from
+    /// `config.vision.is_some()`. If they split you get bound-then-freed
+    /// (dangling device pointers) or skipped-then-bound (null ones) — CUDA-700
+    /// at the first image, not a clean error at load.
     #[test]
-    fn glm5_next_declares_itself_text_only() {
-        // Mutation gate: flipping this to `true` re-loads 1.05 GiB/rank of
-        // vision tower that nothing binds, and K=3 stops fitting at 32 K.
+    fn the_bind_decision_follows_the_vision_config() {
+        // Any concrete config works — the predicate reads exactly one field.
+        let without = ModelConfig::qwen3_next_80b_nvfp4();
+        let mut with_vision = ModelConfig::qwen3_next_80b_nvfp4();
+        with_vision.vision = Some(Default::default());
+        assert!(Glm5NextWeightLoader.binds_vision_encoder(&with_vision));
         assert!(
-            !Glm5NextWeightLoader.binds_vision_encoder(),
-            "GLM-5.3's port binds no vision encoder; saying otherwise makes the \
-             weight loader read the tower into unified memory for nothing"
+            !Glm5NextWeightLoader.binds_vision_encoder(&without),
+            "a build whose kernel target ships no vision_encoder module has \
+             config.vision nulled, and must still keep the 1.05 GiB/rank tower off the GPU"
         );
     }
 
@@ -657,6 +743,9 @@ mod vision_capability_tests {
     fn a_multimodal_loader_still_declares_true_by_default() {
         // The trait default must stay "load everything" — a loader that never
         // overrides this must never lose weights.
-        assert!(crate::weight_loader::qwen35::Qwen35WeightLoader.binds_vision_encoder());
+        assert!(
+            crate::weight_loader::qwen35::Qwen35WeightLoader
+                .binds_vision_encoder(&ModelConfig::qwen3_next_80b_nvfp4())
+        );
     }
 }

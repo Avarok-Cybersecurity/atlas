@@ -35,7 +35,7 @@
 
 use std::collections::BTreeSet;
 
-use spark_model::weight_loader::glm5_next::classify;
+use spark_model::weight_loader::glm5_next::{TensorRole, classify};
 use spark_runtime::weights::{SafetensorsLoader, parse_expert_index};
 
 const NUM_EXPERTS: usize = 288;
@@ -303,4 +303,49 @@ fn glm53_has_no_mtp_prefixed_tensors() {
         .filter(|r| layer_of(&r.name) == Some(45) && parse_expert_index(&r.name).is_some())
         .count();
     assert_eq!(l45_experts, 2_592, "layer-45 routed expert tensor count");
+}
+
+/// Vision-tower tensors. A SEPARATE predicate from
+/// [`TensorRole::is_text_model`] on purpose: vision genuinely is not a
+/// text-model role, and folding it in would corrupt every per-rank expectation
+/// in this file. The tower is REPLICATED, not EP/TP-sharded — 347 BF16 tensors,
+/// identical on every rank — so it must stay out of the residency arithmetic
+/// even once the encoder is bound.
+fn is_vision_replicated(name: &str) -> bool {
+    matches!(
+        classify(name).unwrap_or_else(|| panic!("unclassified tensor: {name}")),
+        TensorRole::Vision
+    )
+}
+
+/// The tower's size, pinned. Read from the safetensors headers of the
+/// reference checkpoint: all 347 tensors are BF16 and all live in the single
+/// shard `model-00120-of-00120.safetensors`, in BOTH the EXL3-K2 and the
+/// NVFP4 checkpoints — there is no quantized vision arm to write.
+///
+/// This is the count the encoder bind has to account for. A drift here means
+/// the classifier's `model.visual.` prefix stopped matching, which would send
+/// tower tensors down the text-model path.
+#[test]
+fn the_vision_tower_is_347_replicated_tensors() {
+    let rows = index_or_skip!();
+    let vision: Vec<&str> = rows
+        .iter()
+        .map(|r| r.name.as_str())
+        .filter(|n| is_vision_replicated(n))
+        .collect();
+    assert_eq!(vision.len(), 347, "GLM-5.3 vision tower tensor count");
+
+    // Disjoint from the text-model set by construction, and the loader must
+    // not shard any of them: `should_skip_tensor` keeps every rank's copy.
+    for name in &vision {
+        assert!(
+            !is_text_model_loaded(name),
+            "vision tensor {name} counted as text-model"
+        );
+        assert!(
+            parse_expert_index(name).is_none(),
+            "vision tensor {name} parsed as a routed expert — it would be EP-sharded"
+        );
+    }
 }

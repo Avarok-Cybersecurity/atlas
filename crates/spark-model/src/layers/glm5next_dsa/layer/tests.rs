@@ -321,21 +321,33 @@ fn only_a_multi_row_eager_prefill_takes_the_batched_selector() {
 }
 
 /// `is_prefill` is only worth anything if every caller states it correctly. `forward_k` has
-/// exactly two call sites — the prefill sub-chunk loop and the speculative verify — and the
-/// verify one must pass `false`. A third caller has to come here and choose.
+/// exactly three call sites — the prefill sub-chunk loop, the single-sequence speculative
+/// verify, and the BATCHED multi-sequence verify — and both verify callers must pass `false`.
+/// A fourth caller has to come here and choose.
 #[test]
-fn forward_k_has_two_callers_and_the_verify_one_is_not_prefill() {
+fn forward_k_has_three_callers_and_neither_verify_one_is_prefill() {
     let src = include_str!("../../glm5next_layer/mod.rs");
     assert_eq!(
         src.matches("self.forward_k(").count(),
-        2,
+        3,
         "a new forward_k caller must decide its own `is_prefill`, not inherit one"
     );
     assert!(
-        src.contains(
-            "// This IS the prefill sub-chunk caller.
-                    true,"
-        ),
+        src.contains("// A BATCHED speculative verify, NOT a prefill sub-chunk"),
+        "the batched verify must pass is_prefill = false, and say why"
+    );
+    // 🪤 Indentation-insensitive on purpose. The literal this used to match carried the call
+    // site's exact leading whitespace, so merely NESTING the prefill loop one level deeper
+    // (the FFN-window split) failed a test whose subject had not changed. Trim each line and
+    // require the comment to be immediately followed by `true,` — that is the claim, and it
+    // survives re-indentation while still catching a caller that flips the flag.
+    let flat: String = src
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        flat.contains("// This IS the prefill sub-chunk caller.\ntrue,"),
         "the prefill sub-chunk must pass is_prefill = true"
     );
     assert!(

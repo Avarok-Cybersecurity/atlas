@@ -73,6 +73,54 @@ impl ProposerState for Glm5NextMtpProposerState {
     }
 }
 
+/// Widest cross-sequence batch the GLM drafter can be asked for in ONE forward.
+///
+/// 🔴 SSOT, and it must be: the head sizes its own row-contiguous scratch from this, and the
+/// MTP module's MoE WORKSPACE is sized from it in `weight_loader::glm5_next_mtp`. Those two
+/// are allocated in different crates' worth of code and only meet at runtime, where a
+/// disagreement is not a compile error — it is `forward_moe` bailing "N rows do not fit a
+/// workspace built for 1" on every batched propose, which the caller then reports as a
+/// declined group. That failure is INVISIBLE in the throughput number it produces: every
+/// sequence in the group silently loses its drafts for that step, the verify batch narrows
+/// to whatever is left, and the arm measures SLOWER than the serial one it was meant to
+/// beat. Measured 2026-09-10 at exactly this bug: C=4 aggregate 16.5 tok/s batched vs 20.5
+/// serial, accept p1 0.31 vs 0.49 — all of it the fallback, none of it the batching.
+///
+/// 🪤 8, the DECODE band (`DENSE_GEMV_BATCHM_DECODE_MAX_M`), not the GEMV kernel's own 16:
+/// the batched verify this propose feeds is capped at 8 rows on the same reasoning, so a
+/// wider drafter batch could never be filled. Raising it means raising both, and re-measuring
+/// the band — see the constant's own doc.
+pub const MTP_BATCH_PROPOSE_MAX_SEQS: usize =
+    crate::layers::ops::DENSE_GEMV_BATCHM_DECODE_MAX_M as usize;
+
+/// Row-contiguous scratch for the cross-sequence batched propose.
+///
+/// The per-sequence [`Glm5NextMtpProposerState`] buffers are one row each and
+/// live in different allocations, so they cannot be the input to a batched
+/// GEMV — the kernels read `[M, K]` as one packed block. This is that block,
+/// allocated once on the head and sized to `max_rows`.
+///
+/// 🪤 It is scratch, NOT state: everything in here is written and consumed
+/// inside a single `propose_batch`. The drafter's real per-sequence state —
+/// the indexer cache, the KV blocks, `seq_len` — stays where it was.
+struct BatchScratch {
+    /// `[max_rows, 2 * hidden]` BF16: `enorm(embed)` ‖ `hnorm(target_hidden)`.
+    concat: DevicePtr,
+    /// `[max_rows, hidden]` BF16: the block input, then the block output, then
+    /// (normed in place) the head input — exactly the three lives `st.x` has
+    /// on the per-sequence path.
+    x: DevicePtr,
+    /// `[max_rows, head_n]` BF16.
+    logits: DevicePtr,
+    /// `[max_rows]` u32 argmax indices, drained in ONE D2H.
+    arg: DevicePtr,
+    /// `[max_rows, 8]` BF16 lanes for the vocab-sharded cross-rank pick — the
+    /// per-sequence 8-lane packing of `forward_one`, laid end to end so all
+    /// `n` sequences settle in ONE all-reduce instead of `n`.
+    xchg: DevicePtr,
+    max_rows: usize,
+}
+
 pub struct Glm5NextMtpHead {
     module: Glm5NextMtpModule,
     embed_tokens: DenseWeight,
@@ -103,6 +151,27 @@ pub struct Glm5NextMtpHead {
     /// the whole drafter costs (nsys 2026-08-29). Kill switch `ATLAS_GLM_MTP_HEAD_FP8=0`.
     head_fp8: Option<crate::weight_map::Fp8DenseWeight>,
     gemv_fp8w_k: KernelHandle,
+    /// Batched (`M <= 8`) BF16 GEMV — `eh_proj` for every sequence at once, and
+    /// the unsharded `lm_head`. Zero when the target has no such kernel, which
+    /// is one of the conditions that keeps `propose_batch_max` at 1.
+    gemv_batchm_k: KernelHandle,
+    /// One CTA per row instead of one CTA for the whole call.
+    argmax_batch_k: KernelHandle,
+    /// Register-tiled batched row-scaled FP8 GEMV, the DFlash drafter's own
+    /// propose kernel — reused verbatim rather than reinvented. It is what
+    /// makes the batched SHARDED head one sweep instead of `n`.
+    ///
+    /// 🪤 NOT bit-identical to `n` calls of `dense_gemv_fp8w`: it is a
+    /// different reduction shape, so the batched drafter's logits differ from
+    /// the serial drafter's in the last bits. That is correctness-free — the
+    /// target verifies every drafted token with its own BF16 `lm_head`, the
+    /// same argument the FP8 draft head itself rests on — but it does mean a
+    /// batched-vs-serial A/B compares ACCEPTANCE, not bytes.
+    /// `ATLAS_GLM_MTP_BATCH_PROPOSE=1` is the bisect lever.
+    fp8_batchm_k: KernelHandle,
+    /// `None` when the batched propose cannot run at all (a kernel is missing
+    /// or an allocation failed). Never a silent half-capability.
+    batch: Option<BatchScratch>,
 }
 
 /// Rows the GLM drafter can ever be asked for: the served context, clamped to what its own
@@ -225,6 +294,58 @@ impl Glm5NextMtpHead {
             }
         };
 
+        // ── Cross-sequence batched propose ──────────────────────────────────
+        //
+        // Every batched site needs a kernel the target may not carry, so resolve them all
+        // OPTIONALLY and treat a single miss as "no batched propose". A half-batched propose
+        // — batched block, per-sequence head — would be slower than the serial one and would
+        // hide the miss; `propose_batch_max() == 1` says it plainly instead.
+        let gemv_batchm_k =
+            crate::layers::try_kernel(gpu, "dense_gemv_bf16_batchm", "dense_gemv_bf16_batchm");
+        let argmax_batch_k = crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch");
+        let fp8_batchm_k =
+            crate::layers::try_kernel(gpu, "fp8_gemv_rt", "fp8_gemv_rowscale_batch8_rt2");
+        // The SAME constant the MTP module's MoE workspace is built from — see its doc for
+        // what a disagreement costs and how it hides.
+        let max_rows = MTP_BATCH_PROPOSE_MAX_SEQS;
+        let h = config.hidden_size;
+        let batch = if gemv_batchm_k.0 == 0 || argmax_batch_k.0 == 0 {
+            tracing::info!(
+                "GLM MTP: batched propose unavailable (batchm={:#x} argmax_batch={:#x}); \
+                 staying on the per-sequence drafter",
+                gemv_batchm_k.0,
+                argmax_batch_k.0,
+            );
+            None
+        } else {
+            // `head_n` rows, not `vocab`: the logits block only ever holds this rank's shard,
+            // and unsharded `head_n == vocab` already.
+            match (|| -> Result<BatchScratch> {
+                Ok(BatchScratch {
+                    concat: gpu.alloc(max_rows * 2 * h * 2)?,
+                    x: gpu.alloc(max_rows * h * 2)?,
+                    logits: gpu.alloc(max_rows * head_n * 2)?,
+                    arg: gpu.alloc(max_rows * 4)?,
+                    xchg: gpu.alloc(max_rows * 16)?,
+                    max_rows,
+                })
+            })() {
+                Ok(b) => {
+                    tracing::info!(
+                        "GLM MTP: batched propose armed (up to {max_rows} sequences per drafter \
+                         forward, fp8_batchm={:#x})",
+                        fp8_batchm_k.0,
+                    );
+                    Some(b)
+                }
+                Err(e) => {
+                    tracing::warn!("GLM MTP: batched propose scratch alloc failed ({e:#}); \
+                                    staying on the per-sequence drafter");
+                    None
+                }
+            }
+        };
+
         Ok(Self {
             module,
             embed_tokens,
@@ -241,6 +362,10 @@ impl Glm5NextMtpHead {
             head_n,
             head_fp8,
             gemv_fp8w_k,
+            gemv_batchm_k,
+            argmax_batch_k,
+            fp8_batchm_k,
+            batch,
         })
     }
 
@@ -419,6 +544,234 @@ impl Glm5NextMtpHead {
             a + ((lane(2 + win * 3 + d) as usize) << (8 * d))
         });
         Ok(idx as u32)
+    }
+
+    /// ONE draft token for each of `n` sequences, in a single sweep of the drafter's weights.
+    ///
+    /// The cross-sequence sibling of [`Self::forward_one`], site for site:
+    ///
+    /// ```text
+    ///   per-seq  enorm(embed[tok_i]) ‖ hnorm(hidden_i)   ->  concat[i]      [n, 2H]
+    ///   BATCHED  eh_proj                                 ->  x              [n, H]
+    ///   BATCHED  layer 45 (per-seq DSA, ONE MoE, ONE reduce, in place)      [n, H]
+    ///   BATCHED  shared_head.norm (in place)                                [n, H]
+    ///   BATCHED  lm_head shard                            ->  logits        [n, V']
+    ///   BATCHED  argmax                                   ->  arg           [n]
+    ///   ONE      cross-rank (max, argmax) all-reduce over n * 8 lanes
+    /// ```
+    ///
+    /// Only the two input norms stay per-sequence, because an embedding row is a POINTER into
+    /// a scattered table rather than a row of a packed block — and they are two 4096-element
+    /// reductions, the cheapest thing in the drafter.
+    ///
+    /// 🔴 WHAT THIS SAVES, in the order it matters. (1) The `lm_head` shard: 7.3 of the
+    /// drafter's 8.84 ms is that sweep, and it is the SAME weights for every sequence, so it
+    /// collapses from `n` reads to one. (2) The routed MoE, which costs the same at one row as
+    /// at eight. (3) The collectives: one attention reduce, one MLP reduce and one head
+    /// exchange for the whole batch, each of which is a network round trip whose cost is
+    /// latency, not bytes. (4) The D2H drain: one copy of `n` indices behind one sync.
+    ///
+    /// 🪤 Row `i` is sequence `i` end to end and the rows must not overlap — the DSA writes
+    /// its `o_proj` back over the row it was handed, and `shared_head.norm` writes over `x` in
+    /// place exactly as the per-sequence path does. That in-place norm is also why the caller
+    /// feeds the NEXT draft from `x`: the per-sequence path's `hidden = st.x` is the normed
+    /// block output, not the raw one, and this must match it or acceptance moves for a reason
+    /// that has nothing to do with batching.
+    fn forward_n(
+        &self,
+        tokens: &[u32],
+        hiddens: &[DevicePtr],
+        sts: &mut [&mut Glm5NextMtpProposerState],
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        let gpu = ctx.gpu;
+        let h = self.hidden;
+        let n = tokens.len();
+        let b = self
+            .batch
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("GLM MTP forward_n without batch scratch"))?;
+        if n == 0 || n > b.max_rows || hiddens.len() != n || sts.len() != n {
+            bail!(
+                "GLM MTP forward_n: n={n} against {} hiddens / {} states / {} scratch rows",
+                hiddens.len(),
+                sts.len(),
+                b.max_rows,
+            );
+        }
+        for st in sts.iter() {
+            if st.seq_len >= self.max_seq_len {
+                bail!(
+                    "GLM MTP drafter: row {} is past the {} it was sized for",
+                    st.seq_len,
+                    self.max_seq_len
+                );
+            }
+        }
+
+        // ── inputs: enorm(embed) ‖ hnorm(target hidden), one row pair per sequence ──
+        for (i, st) in sts.iter().enumerate() {
+            let _ = st;
+            let embed_row = self.embed_tokens.weight.offset(tokens[i] as usize * h * 2);
+            let row = b.concat.offset(i * 2 * h * 2);
+            self.norm(gpu, embed_row, self.module.enorm, row, h, stream)?;
+            self.norm(gpu, hiddens[i], self.module.hnorm, row.offset(h * 2), h, stream)?;
+        }
+        ops::dense_gemv_batchm(
+            gpu,
+            self.gemv_batchm_k,
+            b.concat,
+            &self.module.eh_proj,
+            b.x,
+            n as u32,
+            h as u32,
+            (2 * h) as u32,
+            h as u32,
+            stream,
+        )?;
+
+        // ── the block: per-sequence DSA, everything else batched ──
+        //
+        // The block table is cloned per sequence because the layer takes `&mut Vec<u32>` and
+        // the three per-sequence facts live behind one `&mut` state. `alloc_state` claims the
+        // drafter's whole private pool up front, so this never grows; writing it back keeps
+        // that an assumption the code does not RELY on.
+        let mut seq_lens: Vec<usize> = Vec::with_capacity(n);
+        let mut block_tables: Vec<Vec<u32>> = Vec::with_capacity(n);
+        for st in sts.iter() {
+            seq_lens.push(st.seq_len);
+            block_tables.push(st.block_table.clone());
+        }
+        {
+            let mut layer_states: Vec<&mut dyn LayerState> = Vec::with_capacity(n);
+            for st in sts.iter_mut() {
+                layer_states.push(&mut st.dsa);
+            }
+            let mut kv = self.kv_cache.lock();
+            self.module.layer.decode_n_for_drafter(
+                b.x,
+                n,
+                &mut layer_states,
+                &mut kv,
+                &seq_lens,
+                &mut block_tables,
+                ctx,
+                stream,
+            )?;
+        }
+        for (i, st) in sts.iter_mut().enumerate() {
+            st.block_table = std::mem::take(&mut block_tables[i]);
+            st.seq_len += 1;
+        }
+
+        // ── head ──
+        self.norm(gpu, b.x, self.module.final_norm, b.x, n, stream)?;
+        let sharded = ctx.comm.is_some() && self.head_n != self.vocab;
+        let (w, cols, v0) = if sharded {
+            (
+                DenseWeight {
+                    weight: self.lm_head.weight.offset(self.head_v0 * h * 2),
+                },
+                self.head_n,
+                self.head_v0,
+            )
+        } else {
+            (self.lm_head, self.vocab, 0)
+        };
+        match self
+            .head_fp8
+            .filter(|_| sharded && cols == self.head_n && self.fp8_batchm_k.0 != 0)
+        {
+            Some(q) => ops::fp8_gemv_rowscale_batch8_rt2(
+                gpu,
+                self.fp8_batchm_k,
+                b.x,
+                &q,
+                b.logits,
+                n as u32,
+                cols as u32,
+                h as u32,
+                stream,
+            )?,
+            None => ops::dense_gemv_batchm(
+                gpu,
+                self.gemv_batchm_k,
+                b.x,
+                &w,
+                b.logits,
+                n as u32,
+                cols as u32,
+                h as u32,
+                cols as u32,
+                stream,
+            )?,
+        }
+        ops::argmax_bf16_batch(
+            gpu,
+            self.argmax_batch_k,
+            b.logits,
+            b.arg,
+            cols as u32,
+            n as u32,
+            cols as u32,
+            stream,
+        )?;
+
+        // ONE sync, ONE drain, `n` indices.
+        let mut argbuf = vec![0u8; n * 4];
+        gpu.synchronize(stream)?;
+        gpu.copy_d2h(b.arg, &mut argbuf)?;
+        let locals: Vec<usize> = (0..n)
+            .map(|i| u32::from_le_bytes(argbuf[i * 4..][..4].try_into().unwrap()) as usize)
+            .collect();
+
+        let Some(comm) = ctx.comm.filter(|_| sharded) else {
+            return Ok(locals.iter().map(|&l| (v0 + l) as u32).collect());
+        };
+
+        // ── ONE cross-rank pick for the whole batch ──
+        //
+        // The 8-lane packing is `forward_one`'s, verbatim and for its reasons (BF16-typed
+        // collective, a token id needs 18 bits and BF16 carries 8, so the index travels as
+        // three base-256 digits). The only change is that `n` of those groups are laid end to
+        // end and settled in ONE all-reduce: SUM is elementwise, so groups do not interact,
+        // and each rank still writes only its own lanes and leaves the others zero.
+        let mut pack = vec![0u8; n * 16];
+        let bf = |x: f32| ((x.to_bits() >> 16) as u16).to_le_bytes();
+        for (i, &local) in locals.iter().enumerate() {
+            let mut lb = [0u8; 2];
+            gpu.copy_d2h(b.logits.offset((i * cols + local) * 2), &mut lb)?;
+            let g = v0 + local;
+            let base = i * 16;
+            pack[base + self.head_rank * 2..][..2].copy_from_slice(&lb);
+            for d in 0..3 {
+                let digit = ((g >> (8 * d)) & 0xFF) as f32;
+                pack[base + 4 + (self.head_rank * 3 + d) * 2..][..2].copy_from_slice(&bf(digit));
+            }
+        }
+        gpu.copy_h2d(&pack, b.xchg)?;
+        comm.all_reduce_async(b.xchg.0, n * 16, stream)?;
+        gpu.synchronize(stream)?;
+        gpu.copy_d2h(b.xchg, &mut pack)?;
+
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let base = i * 16;
+            let lane = |j: usize| {
+                f32::from_bits(
+                    (u16::from_le_bytes(pack[base + j * 2..][..2].try_into().unwrap()) as u32)
+                        << 16,
+                )
+            };
+            // `>=` makes the LOWER rank win a tie, identically on both ranks.
+            let win = if lane(0) >= lane(1) { 0 } else { 1 };
+            let idx = (0..3).fold(0usize, |a, d| {
+                a + ((lane(2 + win * 3 + d) as usize) << (8 * d))
+            });
+            out.push(idx as u32);
+        }
+        Ok(out)
     }
 
     /// Append `tokens.len() - 1` drafter CONTEXT rows: row `r` is pair key `row_base + r` =
@@ -723,6 +1076,135 @@ impl DraftProposer for Glm5NextMtpHead {
         }
         st.last_drafted = drafts.len();
         Ok(drafts)
+    }
+
+    /// Widest batch one drafter forward can carry.
+    ///
+    /// `1` means the batched path cannot run and the caller stays on the per-sequence
+    /// [`Self::propose`] — every reason it can return 1 is a genuine missing capability, never
+    /// a judgement call the caller has to second-guess.
+    ///
+    /// `ATLAS_GLM_MTP_BATCH_PROPOSE=<width>` overrides: `1` (or `0`) restores the
+    /// per-sequence loop, `N` caps the batch at N sequences. Numeric rather than boolean for
+    /// the reason the DFlash head gives — bisecting the WIDTH against acceptance is what
+    /// localises a banding bug, and an on/off flag cannot ask that question. It is also the
+    /// lever for the one numerics difference this path has: the batched sharded head runs
+    /// `fp8_gemv_rowscale_batch8_rt2`, not `n` calls of `dense_gemv_fp8w`.
+    fn propose_batch_max(
+        &self,
+        _buffers: &spark_runtime::buffers::BufferArena,
+        _config: &atlas_core::config::ModelConfig,
+    ) -> usize {
+        let Some(b) = self.batch.as_ref() else {
+            return 1;
+        };
+        let want: usize = std::env::var("ATLAS_GLM_MTP_BATCH_PROPOSE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(usize::MAX);
+        if want < 2 {
+            return 1;
+        }
+        want.min(b.max_rows)
+    }
+
+    /// Cross-sequence batched propose: ONE drafter forward per draft depth over all `n`
+    /// sequences, instead of `n` forwards.
+    ///
+    /// Site for site the same drafter as [`Self::propose`] — see [`Self::forward_n`] for the
+    /// mapping and for what it saves. The autoregressive shape is unchanged: draft `d + 1`
+    /// consumes draft `d`'s token and the drafter's own normed block output, per sequence,
+    /// which is why the batch is over SEQUENCES and the depth loop stays serial.
+    ///
+    /// Returns `Ok(None)` to decline, and the caller falls back to the per-sequence loop —
+    /// never a wrong answer.
+    ///
+    /// 🪤 The timing arms (`ATLAS_GLM_MTP_SKIP`) decline rather than being reimplemented here.
+    /// They exist to attribute the SERIAL drafter's milliseconds; a batched arm would measure
+    /// a different thing under the same name.
+    #[allow(clippy::too_many_arguments)]
+    fn propose_batch(
+        &self,
+        last_tokens: &[u32],
+        target_hiddens: &[spark_runtime::gpu::DevicePtr],
+        positions: &[usize],
+        num_drafts: usize,
+        states: &mut [&mut dyn ProposerState],
+        ctx: &crate::layer::ForwardContext,
+        stream: u64,
+        _out_conf: Option<&mut Vec<Vec<f32>>>,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        let n = last_tokens.len();
+        let Some(b) = self.batch.as_ref() else {
+            return Ok(None);
+        };
+        if n < 2
+            || n > b.max_rows
+            || target_hiddens.len() != n
+            || positions.len() != n
+            || states.len() != n
+            || num_drafts == 0
+            || skip_block()
+            || skip_head()
+        {
+            return Ok(None);
+        }
+        // Width the caller is allowed to ask for, including the kill switch.
+        if n > DraftProposer::propose_batch_max(self, ctx.buffers, ctx.config) {
+            return Ok(None);
+        }
+
+        let mut sts: Vec<&mut Glm5NextMtpProposerState> = Vec::with_capacity(n);
+        for state in states.iter_mut() {
+            match state.as_any_mut().downcast_mut::<Glm5NextMtpProposerState>() {
+                Some(st) => sts.push(st),
+                // A foreign state in the batch means the caller mixed proposers; decline the
+                // whole batch rather than draft for the ones that happen to match.
+                None => return Ok(None),
+            }
+        }
+
+        // The drafter's own sequence must sit where the target's does, or its indexer selects
+        // over the wrong context — `propose`'s rewind, per sequence.
+        for (i, st) in sts.iter_mut().enumerate() {
+            if st.seq_len > positions[i] {
+                st.dsa.rewind_to(positions[i])?;
+                st.seq_len = positions[i];
+            }
+        }
+        if crate::speculative::mtp_refeed_debug() {
+            for (i, st) in sts.iter().enumerate() {
+                let fp =
+                    crate::speculative::hidden_fingerprint(ctx.gpu, target_hiddens[i], self.hidden);
+                tracing::info!(
+                    "GLM_MTP_DBG propose_batch[{i}/{n}] position={} drafter_rows={} tok={} \
+                     fp_target={fp:016x}",
+                    positions[i],
+                    st.seq_len,
+                    last_tokens[i],
+                );
+            }
+        }
+
+        let h = self.hidden;
+        let mut drafts: Vec<Vec<u32>> = vec![Vec::with_capacity(num_drafts); n];
+        let mut tokens: Vec<u32> = last_tokens.to_vec();
+        let mut hiddens: Vec<spark_runtime::gpu::DevicePtr> = target_hiddens.to_vec();
+        for _ in 0..num_drafts {
+            let picked = self.forward_n(&tokens, &hiddens, &mut sts, ctx, stream)?;
+            for (i, &t) in picked.iter().enumerate() {
+                drafts[i].push(t);
+            }
+            tokens = picked;
+            // 🪤 Draft 1 consumes the TARGET's verified hidden; every later draft consumes the
+            // drafter's OWN block output — row `i` of the batched `x`, which is exactly the
+            // per-sequence path's `st.x`. Same handoff, same acceptance falloff.
+            hiddens = (0..n).map(|i| b.x.offset(i * h * 2)).collect();
+        }
+        for (i, st) in sts.iter_mut().enumerate() {
+            st.last_drafted = drafts[i].len();
+        }
+        Ok(Some(drafts))
     }
 
     fn after_verify(

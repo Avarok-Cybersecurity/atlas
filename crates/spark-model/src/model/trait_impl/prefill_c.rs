@@ -146,13 +146,10 @@ impl TransformerModel {
                 let mut img_idx = 0usize;
                 for (i, &tok) in tokens.iter().enumerate() {
                     if tok == image_pad || tok == video_pad {
-                        let src = ve
-                            .scratch()
-                            .buf_out
-                            .offset(img_idx * ve.out_hidden_size * 2);
+                        let src = ve.out_row(img_idx);
                         let dst = hidden.offset(i * h * fp32);
                         self.gpu
-                            .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
+                            .copy_d2d_async(src, dst, ve.out_hidden_size() * 2, stream)?;
                         img_idx += 1;
                     }
                 }
@@ -193,9 +190,13 @@ impl TransformerModel {
                 && self
                     .ssm_snapshots
                     .session_matches(snap_id, seq.session_hash)
-                // See prefill_a: aux-carrying models decline aux-less slots.
-                && (!self.requires_aux_state() || self.ssm_snapshots.aux(snap_id).is_some())
+                // See prefill_a: aux-carrying models decline aux-less or
+                // incomplete slots.
+                && self.snapshot_aux_is_restorable(snap_id)
             {
+                // See prefix_lookup: order after any in-flight default-stream
+                // snapshot save before reading the slot on the prefill stream.
+                self.wait_snapshot_saves_dispatch(stream)?;
                 self.ssm_snapshots.restore(
                     snap_id,
                     seq.slot_idx,

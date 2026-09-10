@@ -12,12 +12,12 @@
 //! - `forward`     — top-level `forward`
 //! - `utils`       — `gpu_copy_bf16`, `maybe_dump_buf`
 
-mod forward;
-mod init;
+pub(crate) mod forward;
+pub(crate) mod init;
 mod merger;
-mod patch_embed;
+pub(crate) mod patch_embed;
 mod pos_embed;
-mod utils;
+pub(crate) mod utils;
 mod vit_block;
 
 /// Convert an f32 to BF16 bits using round-to-nearest-even. The input
@@ -25,7 +25,7 @@ mod vit_block;
 /// BF16 range, so the special-case handling for NaN / overflow is
 /// inlined as standard bit-level rounding.
 #[inline]
-pub(super) fn f32_to_bf16_bits(v: f32) -> u16 {
+pub(crate) fn f32_to_bf16_bits(v: f32) -> u16 {
     let bits = v.to_bits();
     if (bits & 0x7fff_ffff) > 0x7f80_0000 {
         // NaN → canonical quiet NaN in BF16.

@@ -18,10 +18,12 @@ use super::*;
 ///     on rank 0; verify on a single-rank target is correct, but EP=2 needs
 ///     the broadcast pattern from `step_verify_k2`).
 ///   * Per-position logprobs extraction.
-///   * SSM `commit_verify_state_async(num_accepted, k)` loop. Without it,
-///     hybrid models (Qwen3.6-A3B has GDN layers) will see SSM state drift
-///     after γ-verify. Single-token decode unaffected; γ-verify only
-///     correct on pure-attention targets until this is wired.
+///   * ~~SSM state commit/rollback~~ — DONE. The γ-verify now rolls the
+///     recurrent state back to `intermediate[num_accepted]` (or checkpoints on
+///     a full accept), the same contract the ngram K=2 head and the K=2/K=4 EP
+///     worker arms use. It is spelled with the existing
+///     `start_rollback_and_checkpoint_async`; the `commit_verify_state_async`
+///     named here was never written. Hybrid targets no longer drift.
 ///   * `save_hidden_for_mtp` / `save_hidden_for_dflash` hook on the
 ///     accepted bonus token (the next propose() needs the latest hidden).
 ///   * Sliding-window state rollback for sliding-attention layers
@@ -51,6 +53,42 @@ pub fn step_verify_dflash(
     // The ledger never had this split — it guessed "FFN + double sweep". This
     // measures it. Gated so the hot path pays nothing when the env is unset.
     let step_timing = std::env::var("ATLAS_DFLASH_STEP_TIMING").ok().as_deref() == Some("1");
+
+    // ── EP: put the verify on the wire BEFORE running it ────────────────────
+    //
+    // 🔴 This is what stops `--dflash` deadlocking at `world_size > 1`. The verify
+    // below is a target forward over `gamma + 1` rows and issues per-layer
+    // all-reduces; without a matching command the worker sits in
+    // `ep_recv_seq_and_cmd` and both ranks spin at 96% util / 12-15 W.
+    //
+    // 🪤 ORDER IS LOAD-BEARING, exactly as in the MTP propose path: the command and
+    // its operands must be on the wire before this rank enters the forward, or the
+    // worker is still blocked receiving when rank 0 reaches its first collective.
+    //
+    // The COUNT goes first because gamma is not fixed — the drafter declares it
+    // (`block_size`, 8 for GLM-5.3-Flash-DFlash2) and adaptive speculation can
+    // shorten it per step — so the worker cannot infer the width from the command.
+    if let Err(e) = model.ep_broadcast_cmd_for_seq(
+        a.seq.slot_idx as u32,
+        spark_model::speculative::EP_CMD_DFLASH_VERIFY,
+    ) {
+        tracing::error!("EP broadcast dflash verify cmd: {e:#}");
+        super::lifecycle::fail_sequence(a, format!("EP broadcast dflash verify cmd: {e:#}"));
+        return;
+    }
+    if let Err(e) = model.ep_broadcast_cmd(tokens.len() as u32) {
+        tracing::error!("EP broadcast dflash verify count: {e:#}");
+        super::lifecycle::fail_sequence(a, format!("EP broadcast dflash verify count: {e:#}"));
+        return;
+    }
+    for &t in &tokens {
+        if let Err(e) = model.ep_broadcast_cmd(t) {
+            tracing::error!("EP broadcast dflash verify token: {e:#}");
+            super::lifecycle::fail_sequence(a, format!("EP broadcast dflash verify token: {e:#}"));
+            return;
+        }
+    }
+
     let t_verify = std::time::Instant::now();
     let verified_argmax = match model.decode_verify_dflash(&tokens, &mut a.seq, 0) {
         Ok(v) => v,
@@ -104,6 +142,47 @@ pub fn step_verify_dflash(
         } else {
             break;
         }
+    }
+
+    // EP: the worker is blocked waiting for this. Sent BEFORE the rollback below so
+    // both ranks apply the identical `seq_len`/`tokens` correction from the same
+    // number — the worker replays that arithmetic verbatim rather than re-deriving
+    // it, because a formula that drifted would desynchronise the KV cache silently.
+    if let Err(e) = model.ep_broadcast_cmd(num_accepted as u32) {
+        tracing::error!("EP broadcast dflash num_accepted: {e:#}");
+        super::lifecycle::fail_sequence(a, format!("EP broadcast dflash num_accepted: {e:#}"));
+        return;
+    }
+
+    // ── SSM state rollback ──────────────────────────────────────────────────
+    //
+    // 🔴 THE SECOND HALF of making DFlash correct on a hybrid target. The verify ran
+    // `gamma + 1` rows, so a KDA/Mamba layer's recurrent state is now advanced past
+    // the accepted boundary. Popping tokens above fixes `seq_len` and `seq.tokens`;
+    // it does NOT touch `h_state`/`conv_state`. Without this call the recurrent state
+    // drifts every step and generations degenerate into repetition that still reads
+    // as fluent text — measured on GLM-5.3-Flash (34 of 45 layers KDA):
+    //     "1081. 47*23 = 1081. 1081. 47*23 = 1081. 47*23 = 1081. 47*"
+    //
+    // Contract (identical to the ngram K=2 head and the K=2/K=4 EP worker arms):
+    //   all drafts accepted -> checkpoint the current state, nothing to rewind
+    //   otherwise           -> restore intermediate[num_accepted], then checkpoint
+    // `start_rollback_and_checkpoint_async(seq, n)` reads `intermediate[n - 1]`, and
+    // `decode_batched` writes "row `t` into slot `t`", so keeping rows `0..=num_accepted`
+    // means `n = num_accepted + 1`. `num_accepted == drafts` takes the checkpoint arm,
+    // so the index never exceeds `gamma - 1` — exactly the range the pool allocates
+    // (the K-1 slot is never written; GLM's `decode_batched` bails if it is short).
+    let ssm_res = if num_accepted == drafts.len() {
+        model.start_checkpoint_async(&mut a.seq)
+    } else {
+        model.start_rollback_and_checkpoint_async(&mut a.seq, num_accepted + 1)
+    };
+    if let Err(e) = ssm_res {
+        // Fail the sequence rather than continue: past this point the recurrent state
+        // is known-wrong, and continuing would emit fluent garbage instead of an error.
+        tracing::error!("dflash SSM rollback (num_accepted={num_accepted}): {e:#}");
+        super::lifecycle::fail_sequence(a, format!("dflash SSM rollback: {e:#}"));
+        return;
     }
 
     // Adaptive speculation (ATLAS_DFLASH_ADAPTIVE=1): feed the rolling

@@ -152,7 +152,7 @@ pub fn emit_token(
     // was silently dead code. (The pos-0 close-tag/AM1 logit-bias that
     // also depended on this state was removed 2026-06-03; the state is
     // still required for A1/B1 and the adadec_diag dump.)
-    update_tool_param_state(a, tok);
+    update_tool_param_state(a, tok, &sched.watchdog);
 
     // Fix A (2026-06-05): mark a tool call complete on `</tool_call>` (outside
     // thinking) so the EOS-escape gate can lift suppression. Inert unless
@@ -582,7 +582,23 @@ pub fn compile_grammar_state(
 
     let label = match spec {
         GrammarSpec::ToolCall { parser, tools, .. } => {
-            format!("parser={}, tools={}", parser.name(), tools.len())
+            // Name the ENVELOPE, not just the parser. A bare `parser=poolside_v1`
+            // under a GLM serve reads like a misconfiguration; the hint makes it
+            // self-evident that the format is what the model's own template asks
+            // for. See `ToolCallParser::wire_hint`.
+            match parser.wire_hint() {
+                "" => format!(
+                    "tool-call wire format={}, tools={}",
+                    parser.name(),
+                    tools.len()
+                ),
+                hint => format!(
+                    "tool-call wire format={} [{}], tools={}",
+                    parser.name(),
+                    hint,
+                    tools.len()
+                ),
+            }
         }
         GrammarSpec::JsonObject => "response_format=json_object".to_string(),
         GrammarSpec::JsonSchema { .. } => "response_format=json_schema".to_string(),
@@ -649,15 +665,25 @@ pub enum StartPrefillResult {
 //  - `a.tool_body_streak_tokens`  ++ per body token, reset on enter/exit
 //  - `a.inside_parameter_body`    set on `<parameter=KEY>` close `>`, cleared on `</`
 //  - `a.param_body_chars_emitted` ++ per non-close body token
-//  - `a.finished`                 forced when stuck >MAX_TOOL_BODY_TOKENS
+//  - `a.finished`                 forced when stuck >MAX_TOOL_ENVELOPE_TOKENS
 //
-// Token IDs are Qwen3.6 byte-level BPE (verified via /tokenize 2026-05-25):
-//   27 = `<`, 28 = `=`, 29 = `>`, 510 = `</`, 15704 = `parameter`.
-
-/// Cap on tool-call ENVELOPE tokens (everything inside `<tool_call>…</tool_call>`
-/// that is NOT a parameter-value body). Catches a model that opens `<tool_call>`
-/// and never reaches `</tool_call>` — it would otherwise burn to max_tokens.
-const MAX_TOOL_BODY_TOKENS: u32 = 1024;
+// There are TWO ways a value body is recognised, because there are two tool
+// wire formats in the tree:
+//
+//  1. ATOMIC delimiters (`wd.tool_value_delims`), resolved from the tokenizer in
+//     `resolve_tokenizer_runtime`. Used by `poolside_v1` — Laguna and
+//     GLM-5.3-Flash — whose values sit between the single added tokens
+//     `<arg_value>` and `</arg_value>`. Checked FIRST: when a model has them,
+//     the token-id scan below is not just unnecessary but wrong for it.
+//  2. The `<parameter=KEY>` multi-token signature scan, for the Qwen XML form.
+//     Its token IDs are Qwen3.6 byte-level BPE (verified via /tokenize
+//     2026-05-25): 27 = `<`, 28 = `=`, 29 = `>`, 510 = `</`, 15704 =
+//     `parameter`. These ids are MEANINGLESS against another tokenizer, which
+//     is why path 1 exists rather than a second hardcoded id set.
+//
+// 🪤 Until 2026-09-09 only path 2 existed, so on GLM/Laguna `inside_parameter_body`
+// was never set and EVERY token of a file write counted as envelope — any write
+// longer than the cap was force-ended mid-file with "Stuck in tool-call ENVELOPE".
 
 /// Pure decision core for the envelope-stuck guard (CC6, 2026-06-07).
 /// Tokens of a parameter VALUE (`inside_parameter_body`) are exempt — a
@@ -665,17 +691,23 @@ const MAX_TOOL_BODY_TOKENS: u32 = 1024;
 /// Only envelope tokens (`<parameter=KEY>` openers, inter-parameter junk, any
 /// non-value token) advance the streak. Pure over scalars so it is unit-tested
 /// directly, mirroring `rollback_tests.rs`'s pure-core approach (no `ActiveSeq`
-/// fixture needed). Returns `(new_streak, exceeded_cap)`.
-fn advance_envelope_streak(inside_parameter_body: bool, streak: u32) -> (u32, bool) {
+/// fixture needed). `max` is `WatchdogParams::max_tool_envelope_tokens`;
+/// `u32::MAX` (from `ATLAS_TOOL_ENVELOPE_WATCHDOG=0`) never trips.
+/// Returns `(new_streak, exceeded_cap)`.
+fn advance_envelope_streak(inside_parameter_body: bool, streak: u32, max: u32) -> (u32, bool) {
     if inside_parameter_body {
         (streak, false)
     } else {
         let s = streak.saturating_add(1);
-        (s, s > MAX_TOOL_BODY_TOKENS)
+        (s, s > max)
     }
 }
 
-pub fn update_tool_param_state(a: &mut ActiveSeq, tok: u32) {
+pub fn update_tool_param_state(
+    a: &mut ActiveSeq,
+    tok: u32,
+    wd: &crate::scheduler::helpers::WatchdogParams,
+) {
     if a.inside_thinking {
         return;
     }
@@ -701,16 +733,46 @@ pub fn update_tool_param_state(a: &mut ActiveSeq, tok: u32) {
     // inter-parameter junk, any token emitted while `inside_parameter_body ==
     // false` still counts). Resets on tool open/close (above) and `</parameter>`
     // exit (below) are unchanged.
-    let (streak, exceeded) =
-        advance_envelope_streak(a.inside_parameter_body, a.tool_body_streak_tokens);
+    let max_envelope = wd.max_tool_envelope_tokens;
+    let (streak, exceeded) = advance_envelope_streak(
+        a.inside_parameter_body,
+        a.tool_body_streak_tokens,
+        max_envelope,
+    );
     a.tool_body_streak_tokens = streak;
     if exceeded {
         tracing::warn!(
             streak = a.tool_body_streak_tokens,
-            "Stuck in tool-call ENVELOPE for {MAX_TOOL_BODY_TOKENS}+ tokens with no </tool_call> (excludes parameter-value content); ending response (model never closed the envelope — would otherwise burn to max_tokens). Sanitizer will salvage what it can."
+            max = max_envelope,
+            "Stuck in tool-call ENVELOPE for {max_envelope}+ tokens with no </tool_call> \
+             (excludes argument-value content); ending response (model never closed the \
+             envelope — would otherwise burn to max_tokens). Sanitizer will salvage what it \
+             can. Raise or disable via ATLAS_TOOL_ENVELOPE_WATCHDOG (0 disables)."
         );
         a.guard_stop = Some("tool_envelope_stuck");
         a.finished = true;
+    }
+
+    // Path 1: atomic value delimiters (poolside_v1 — Laguna, GLM-5.3-Flash).
+    // A model that has them never uses the Qwen signature scan: its `>` tokens
+    // are ordinary text, and running the scan would set `inside_parameter_body`
+    // on arbitrary prose.
+    if let Some((value_open, value_close)) = wd.tool_value_delims {
+        if a.inside_parameter_body {
+            if tok == value_close {
+                // Confirmed close — exit the value and reset the envelope
+                // streak, since a closed argument IS forward progress.
+                a.inside_parameter_body = false;
+                a.param_body_chars_emitted = 0;
+                a.tool_body_streak_tokens = 0;
+            } else {
+                a.param_body_chars_emitted = a.param_body_chars_emitted.saturating_add(1);
+            }
+        } else if tok == value_open {
+            a.inside_parameter_body = true;
+            a.param_body_chars_emitted = 0;
+        }
+        return;
     }
 
     const TOK_LT: u32 = 27;
@@ -726,7 +788,7 @@ pub fn update_tool_param_state(a: &mut ActiveSeq, tok: u32) {
         // HTML/Svelte close tags (`</script>`, `</div>`, …), every one of
         // which starts with token 510. Each false exit reclassified the
         // rest of the file content as ENVELOPE tokens, walked the streak
-        // to MAX_TOOL_BODY_TOKENS, and force-killed legitimate writes
+        // to MAX_TOOL_ENVELOPE_TOKENS, and force-killed legitimate writes
         // mid-file (8 kills in the 2026-07-09 45k session). Now the exit
         // COMMITS only on the full confirmed `</` `parameter` `>` token
         // sequence; any other continuation re-enters the value body and
@@ -822,19 +884,154 @@ pub fn update_tool_param_state(a: &mut ActiveSeq, tok: u32) {
 // the A1 rep-penalty toggle / B1 margin-detector behaviour.
 
 #[cfg(test)]
+mod poolside_value_body_tests {
+    //! The envelope guard on the `poolside_v1` wire format (GLM-5.3-Flash,
+    //! Laguna): `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>`.
+    //!
+    //! Regression for the 2026-09-09 fix. The guard's value-body exemption
+    //! recognised ONLY Qwen's `<parameter=KEY>` multi-token signature, so on
+    //! this format `inside_parameter_body` was never set: every token of a
+    //! written file counted as ENVELOPE and any write longer than the cap died
+    //! mid-file with "Stuck in tool-call ENVELOPE". These drive the REAL
+    //! `update_tool_param_state`, not a pure core, because the bug was in which
+    //! branch ran — a pure predicate cannot see that.
+    use crate::scheduler::helpers::{MAX_TOOL_ENVELOPE_TOKENS, WatchdogParams};
+    use crate::scheduler::test_support::test_seq;
+
+    // GLM-5.3-Flash added-token ids (checkpoint tokenizer.json, 2026-09-09).
+    const TOOL_CALL: u32 = 154843;
+    const TOOL_CALL_END: u32 = 154844;
+    const ARG_VALUE: u32 = 154849;
+    const ARG_VALUE_END: u32 = 154850;
+    /// Any ordinary content token; stands in for file bytes.
+    const TEXT: u32 = 1000;
+
+    fn glm_watchdog() -> WatchdogParams {
+        WatchdogParams {
+            tool_value_delims: Some((ARG_VALUE, ARG_VALUE_END)),
+            ..WatchdogParams::default()
+        }
+    }
+
+    /// Drive `n` copies of `tok` through the state machine.
+    fn feed(a: &mut crate::scheduler::types::ActiveSeq, wd: &WatchdogParams, tok: u32, n: usize) {
+        for _ in 0..n {
+            super::update_tool_param_state(a, tok, wd);
+        }
+    }
+
+    #[test]
+    fn a_large_glm_file_write_is_not_truncated() {
+        let wd = glm_watchdog();
+        let (mut a, _rx) = test_seq(vec![], 64, None, 0);
+        a.finished = false;
+        a.tool_call_start_token = Some(TOOL_CALL);
+        a.tool_call_end_token = Some(TOOL_CALL_END);
+
+        super::update_tool_param_state(&mut a, TOOL_CALL, &wd);
+        assert!(a.inside_tool_body);
+        super::update_tool_param_state(&mut a, ARG_VALUE, &wd);
+        assert!(
+            a.inside_parameter_body,
+            "<arg_value> must open the exempt value body"
+        );
+
+        // A file far longer than the cap. Before the fix this tripped at 1025.
+        feed(&mut a, &wd, TEXT, (MAX_TOOL_ENVELOPE_TOKENS as usize) * 4);
+        assert!(
+            !a.finished,
+            "a legitimate large write must not be force-ended"
+        );
+        assert_eq!(a.guard_stop, None);
+
+        super::update_tool_param_state(&mut a, ARG_VALUE_END, &wd);
+        assert!(!a.inside_parameter_body);
+        assert_eq!(
+            a.tool_body_streak_tokens, 0,
+            "a closed argument is forward progress and resets the streak"
+        );
+        super::update_tool_param_state(&mut a, TOOL_CALL_END, &wd);
+        assert!(!a.inside_tool_body);
+        assert!(!a.finished);
+    }
+
+    #[test]
+    fn a_never_closing_glm_envelope_still_trips() {
+        // The guard must keep doing its real job on this format: envelope
+        // tokens OUTSIDE any `<arg_value>` still accumulate.
+        let wd = glm_watchdog();
+        let (mut a, _rx) = test_seq(vec![], 64, None, 0);
+        a.finished = false;
+        a.tool_call_start_token = Some(TOOL_CALL);
+        a.tool_call_end_token = Some(TOOL_CALL_END);
+
+        super::update_tool_param_state(&mut a, TOOL_CALL, &wd);
+        feed(&mut a, &wd, TEXT, MAX_TOOL_ENVELOPE_TOKENS as usize + 1);
+        assert!(a.finished, "an unclosed envelope must still be caught");
+        assert_eq!(a.guard_stop, Some("tool_envelope_stuck"));
+    }
+
+    #[test]
+    fn a_bare_gt_token_does_not_open_a_value_body_on_glm() {
+        // 🪤 The Qwen scan keys on `>` (29). On GLM that is ordinary text, so
+        // running the scan here would mark arbitrary prose exempt and silently
+        // disarm the guard. The atomic path must return before reaching it.
+        const TOK_GT: u32 = 29;
+        let wd = glm_watchdog();
+        let (mut a, _rx) = test_seq(vec![], 64, None, 0);
+        a.finished = false;
+        a.tool_call_start_token = Some(TOOL_CALL);
+        a.tool_call_end_token = Some(TOOL_CALL_END);
+
+        super::update_tool_param_state(&mut a, TOOL_CALL, &wd);
+        for t in [27u32, 15704, 28, TOK_GT] {
+            a.output_tokens.push(t);
+            super::update_tool_param_state(&mut a, t, &wd);
+        }
+        assert!(
+            !a.inside_parameter_body,
+            "the Qwen <parameter=> signature must NOT open a value body on a \
+             model with atomic delimiters"
+        );
+    }
+
+    #[test]
+    fn qwen_models_are_unaffected() {
+        // No atomic delimiters => the Qwen signature scan still runs.
+        let wd = WatchdogParams::default();
+        assert_eq!(wd.tool_value_delims, None);
+        let (mut a, _rx) = test_seq(vec![], 64, None, 0);
+        a.finished = false;
+        a.tool_call_start_token = Some(TOOL_CALL);
+        a.tool_call_end_token = Some(TOOL_CALL_END);
+
+        super::update_tool_param_state(&mut a, TOOL_CALL, &wd);
+        for t in [27u32, 15704, 28, 5000, 29] {
+            a.output_tokens.push(t);
+            super::update_tool_param_state(&mut a, t, &wd);
+        }
+        assert!(
+            a.inside_parameter_body,
+            "<parameter=KEY> must still open the value body for Qwen-format models"
+        );
+    }
+}
+
+#[cfg(test)]
 mod cc6_envelope_streak_tests {
     //! CC6 (2026-06-07): the envelope-stuck guard must NOT truncate a large
     //! legitimate file write (parameter-value content), while STILL catching a
     //! `<tool_call>` that never closes. Tested on the pure `advance_envelope_streak`
     //! core (mirrors `rollback_tests.rs` — no `ActiveSeq` fixture required).
-    use super::{MAX_TOOL_BODY_TOKENS, advance_envelope_streak};
+    use super::advance_envelope_streak;
+    use crate::scheduler::helpers::MAX_TOOL_ENVELOPE_TOKENS;
 
     #[test]
     fn parameter_value_content_is_exempt_at_any_size() {
         // Simulate a ~6000-token file content streaming inside <parameter=content>.
         let mut streak = 0u32;
         for _ in 0..6000 {
-            let (s, exceeded) = advance_envelope_streak(true, streak);
+            let (s, exceeded) = advance_envelope_streak(true, streak, MAX_TOOL_ENVELOPE_TOKENS);
             streak = s;
             assert!(
                 !exceeded,
@@ -852,8 +1049,8 @@ mod cc6_envelope_streak_tests {
         // True runaway: envelope tokens (NOT inside a parameter value) past the cap.
         let mut streak = 0u32;
         let mut tripped = false;
-        for _ in 0..(MAX_TOOL_BODY_TOKENS + 5) {
-            let (s, exceeded) = advance_envelope_streak(false, streak);
+        for _ in 0..(MAX_TOOL_ENVELOPE_TOKENS + 5) {
+            let (s, exceeded) = advance_envelope_streak(false, streak, MAX_TOOL_ENVELOPE_TOKENS);
             streak = s;
             if exceeded {
                 tripped = true;
@@ -866,7 +1063,7 @@ mod cc6_envelope_streak_tests {
         );
         assert_eq!(
             streak,
-            MAX_TOOL_BODY_TOKENS + 1,
+            MAX_TOOL_ENVELOPE_TOKENS + 1,
             "fires exactly one token past the cap"
         );
     }
@@ -874,19 +1071,36 @@ mod cc6_envelope_streak_tests {
     #[test]
     fn exact_cap_boundary() {
         assert_eq!(
-            advance_envelope_streak(false, MAX_TOOL_BODY_TOKENS - 1),
-            (MAX_TOOL_BODY_TOKENS, false)
+            advance_envelope_streak(
+                false,
+                MAX_TOOL_ENVELOPE_TOKENS - 1,
+                MAX_TOOL_ENVELOPE_TOKENS
+            ),
+            (MAX_TOOL_ENVELOPE_TOKENS, false)
         );
         assert_eq!(
-            advance_envelope_streak(false, MAX_TOOL_BODY_TOKENS),
-            (MAX_TOOL_BODY_TOKENS + 1, true)
+            advance_envelope_streak(false, MAX_TOOL_ENVELOPE_TOKENS, MAX_TOOL_ENVELOPE_TOKENS),
+            (MAX_TOOL_ENVELOPE_TOKENS + 1, true)
         );
+    }
+
+    #[test]
+    fn disabled_watchdog_never_trips() {
+        // ATLAS_TOOL_ENVELOPE_WATCHDOG=0 resolves to u32::MAX, which the streak
+        // can reach but never EXCEED — so `exceeded` stays false at the top of
+        // the range instead of wrapping to a trip.
+        let (s, exceeded) = advance_envelope_streak(false, u32::MAX - 1, u32::MAX);
+        assert_eq!(s, u32::MAX);
+        assert!(!exceeded, "a disabled watchdog must not trip at any streak");
+        let (s2, exceeded2) = advance_envelope_streak(false, u32::MAX, u32::MAX);
+        assert_eq!(s2, u32::MAX, "saturating_add must not wrap");
+        assert!(!exceeded2);
     }
 
     #[test]
     fn saturates_without_panic() {
         // Envelope streak at u32::MAX must not panic (saturating_add) and stays tripped.
-        let (s, exceeded) = advance_envelope_streak(false, u32::MAX);
+        let (s, exceeded) = advance_envelope_streak(false, u32::MAX, MAX_TOOL_ENVELOPE_TOKENS);
         assert_eq!(s, u32::MAX);
         assert!(exceeded);
     }

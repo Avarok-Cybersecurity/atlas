@@ -106,6 +106,13 @@ use spark_runtime::gpu::DevicePtr;
 ///
 /// `ATLAS_MARCONI_MIN_TOKENS=<n>` overrides; 0 restores the previous
 /// always-restore behaviour.
+///
+/// 🪤 Measured on qwen3.8-flash-next only. GLM-5.3 reaches this floor since
+/// its prefix cache opened (KDA slot + DSA aux), and its trade is different on
+/// both sides: the skipped prefill is 34 KDA + 11 DSA layers per token, and
+/// its MTP head implements neither `take_drafter_kv` nor `install_drafter_kv`,
+/// so a warm hit always leaves the drafter blind (NoCarry) regardless of
+/// where this floor sits. 256 is untuned for GLM; measure before moving it.
 pub fn marconi_min_tokens() -> usize {
     static MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *MIN.get_or_init(|| {

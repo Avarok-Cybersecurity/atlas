@@ -77,11 +77,22 @@ impl TransformerModel {
         // below, which is the one `ForwardContext` built with a NON-ZERO
         // `hc_row_offset` (`padded_n`).
         let ms_layer_veto = self.layers.iter().any(|l| l.decode_multi_seq_unsupported());
+        // Selection having ACTIVATED only forces the per-seq loop when the
+        // layers cannot serve it per-sequence themselves. A layer whose batched
+        // decode already runs the mixer against each sequence's own indexer
+        // state (GLM's does) stays on the batched path past the index budget.
+        let ms_selection_per_seq = self
+            .layers
+            .iter()
+            .all(|l| l.decode_multi_seq_selection_per_seq());
         let hc_qsa_perseq = ms_layer_veto
-            || (self.config.hc_mult > 0 && self.config.index_topk > 0 && {
-                let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
-                decode_seqs.iter().any(|s| s.seq_len >= bound)
-            });
+            || (self.config.hc_mult > 0
+                && !ms_selection_per_seq
+                && self.config.index_topk > 0
+                && {
+                    let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
+                    decode_seqs.iter().any(|s| s.seq_len >= bound)
+                });
         if self.comm.is_some()
             || self.is_mla_dispatch()
             || hc_qsa_perseq

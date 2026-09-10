@@ -56,5 +56,37 @@ pub(crate) fn parse_vision_config(raw: &serde_json::Value) -> Option<VisionConfi
         // installed by the server right after config load, before the encoder
         // is built. `None` here means "not yet resolved", never "unbounded".
         max_pixels: None,
+        // `vision_config.model_type` is the ONLY family discriminant the
+        // preprocessor is allowed to dispatch on. Absent on older VL configs,
+        // where the empty string keeps the historical Qwen arm.
+        model_type: vc
+            .get("model_type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        projection_intermediate_size: vc
+            .get("projection_intermediate_size")
+            .and_then(serde_json::Value::as_u64)
+            .map(|v| v as usize),
+        swiglu_limit: vc
+            .get("swiglu_limit")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map(|v| v as f32),
+        // Default TRUE: every tower Atlas binds today is biased, and a
+        // checkpoint that says otherwise should be refused at bind time
+        // rather than silently served with the biases it does not have.
+        attention_bias: vc
+            .get("attention_bias")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+        // Same rationale as `max_pixels`: the token budget and the per-channel
+        // normalisation live in the PROCESSOR config, which this parser never
+        // sees. The server resolves them right after config load, in the same
+        // block that installs `max_pixels`.
+        min_image_tokens: None,
+        max_image_tokens: None,
+        image_mean: None,
+        image_std: None,
     })
 }

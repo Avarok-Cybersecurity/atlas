@@ -39,6 +39,12 @@ pub struct Glm5NextMhcKernels {
     /// **Bit-identical** — widening BF16 to F32 is lossless, so it multiplies the same floats.
     /// `try_kernel`; selected per site by `Glm5NextMhcSiteWeights::hc_fn_bf16`.
     pub hc_mix_bf16: KernelHandle,
+    /// [`Self::hc_mix_bf16`] with `HC_MIX_ROWS` mixing rows per block: grid
+    /// `(T, mix_hc / HC_MIX_ROWS)`. Bit-identical — every `(t, m)` keeps its own dot in the
+    /// same order — and the win is that the RMS pass and the stream re-reads are shared across
+    /// the rows a block owns, which is what stops the kernel going superlinear in row count.
+    /// `try_kernel`; zero when the target lacks it and the one-row kernel stands.
+    pub hc_mix_bf16_mr: KernelHandle,
     /// Split + Sinkhorn + collapse, reading the mixes from global.
     pub hc_finish: KernelHandle,
     pub hc_post: KernelHandle,
@@ -60,6 +66,11 @@ impl Glm5NextMhcKernels {
                 gpu,
                 GLM5NEXT_MHC_MODULE,
                 "glm5next_hc_mix_bf16",
+            ),
+            hc_mix_bf16_mr: crate::layers::try_kernel(
+                gpu,
+                GLM5NEXT_MHC_MODULE,
+                "glm5next_hc_mix_bf16_mr",
             ),
             hc_finish: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_finish")?,
             hc_post: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_post")?,
@@ -136,10 +147,36 @@ pub struct Glm5NextMhcSiteWeights {
     pub mix: DevicePtr,
 }
 
-/// Token bound on the `mix` scratch. The GLM stack drives mHC one token at a time (the highway
-/// forces a serial prefill), so this is slack, not a shape — but `glm_hc_pre` REFUSES above it
-/// rather than writing past the allocation.
+/// FLOOR for the `mix` scratch, in tokens. The real bound is [`mhc_mix_max_tokens`].
+///
+/// 🪤 The comment that used to sit here said the GLM stack "drives mHC one token at a time
+/// (the highway forces a serial prefill), so this is slack, not a shape". That has not been
+/// true since batched prefill landed: `Glm5NextLayer::prefill` hands `forward_k` whole
+/// `PREFILL_ROWS`-wide sub-chunks and mHC runs over all of them at once. The constant was
+/// therefore a hard ceiling on the prefill width, not slack.
 pub const MHC_MIX_MAX_TOKENS: usize = 256;
+
+/// Token capacity of the `mix` scratch: the floor above, widened to whatever prefill width
+/// is actually configured.
+///
+/// 🔴 Allocation and guard MUST both call this. `glm_hc_pre` refuses above the value rather
+/// than writing past the buffer, so a guard that disagreed with the allocation would either
+/// refuse legal work or scribble past it. This mirrors how the KDA and DSA workspaces are
+/// already sized (`glm5_next_load.rs`: `max(DENSE_GEMV_BATCHM_MAX_M, PREFILL_ROWS,
+/// prefill_rows())`) — before this, those two followed `ATLAS_GLM_PREFILL_ROWS` and mHC did
+/// not, so the lever could only ever be raised to 256.
+pub fn mhc_mix_max_tokens() -> usize {
+    // 🪤 `kda_prefill_rows()` too. The KDA layers may sub-chunk WIDER than the DSA ones,
+    // and every layer's `hc_pre` writes this same scratch — so following only
+    // `prefill_rows()` capped the KDA lever at the DSA width and refused the first wide
+    // call ("512 tokens exceeds the 256-token `mix` scratch"). Same failure this function
+    // was written to fix, one lever later.
+    MHC_MIX_MAX_TOKENS
+        .max(crate::layers::glm5next_layer::prefill_rows())
+        .max(crate::layers::glm5next_layer::kda_prefill_rows())
+        // The FFN half may run WIDER than any mixer sub-chunk, and it calls `hc_pre` too.
+        .max(crate::layers::glm5next_layer::moe_prefill_window())
+}
 
 /// `hc_pre`: collapse the `hc_mult` FP32 streams to one BF16 sequence and emit this site's
 /// `post` / `comb` mixing coefficients.
@@ -171,22 +208,35 @@ pub fn glm_hc_pre(
     stream: u64,
 ) -> Result<()> {
     let mix_hc = (2 + hc_mult) * hc_mult;
-    if num_tokens as usize > MHC_MIX_MAX_TOKENS {
+    if num_tokens as usize > mhc_mix_max_tokens() {
         anyhow::bail!(
-            "glm_hc_pre: {num_tokens} tokens exceeds the {MHC_MIX_MAX_TOKENS}-token `mix` \
-             scratch. Raise MHC_MIX_MAX_TOKENS and rebind; do not launch past the allocation."
+            "glm_hc_pre: {num_tokens} tokens exceeds the {}-token `mix` scratch. Raise \
+             ATLAS_GLM_PREFILL_ROWS (which widens it) or MHC_MIX_MAX_TOKENS and rebind; do \
+             not launch past the allocation.",
+            mhc_mix_max_tokens(),
         );
     }
     // 🪤 The two kernels take the SAME arguments; only `hc_fn`'s element width differs, and it
     // is the pointer's own dtype, not something the signature can catch. Pairing the wrong
     // flag with the pointer reads BF16 as F32 (or the reverse) and produces plausible garbage.
-    let mix_kernel = if w.hc_fn_bf16 && kernels.hc_mix_bf16.0 != 0 {
-        kernels.hc_mix_bf16
+    // Mixing rows per block. MUST match `HC_MIX_ROWS` in the kernel: the grid is derived from
+    // it, so a disagreement silently drops rows (grid too small) or writes them twice.
+    const HC_MIX_ROWS: u32 = 4;
+    // 🪤 `mix_hc` is `(2 + hc_mult) * hc_mult` = 24 at GLM's shape, which HC_MIX_ROWS divides
+    // exactly. `div_ceil` covers a shape where it does not, and the kernel's own `m >= mix_hc`
+    // guard retires the tail rows of that last block.
+    let multirow = w.hc_fn_bf16
+        && kernels.hc_mix_bf16_mr.0 != 0
+        && std::env::var("ATLAS_GLM_HC_MIX_MULTIROW").as_deref() != Ok("0");
+    let (mix_kernel, grid_y) = if multirow {
+        (kernels.hc_mix_bf16_mr, mix_hc.div_ceil(HC_MIX_ROWS))
+    } else if w.hc_fn_bf16 && kernels.hc_mix_bf16.0 != 0 {
+        (kernels.hc_mix_bf16, mix_hc)
     } else {
-        kernels.hc_mix
+        (kernels.hc_mix, mix_hc)
     };
     KernelLaunch::new(gpu, mix_kernel)
-        .grid([num_tokens, mix_hc, 1])
+        .grid([num_tokens, grid_y, 1])
         .block([256, 1, 1])
         .arg_ptr(streams)
         .arg_ptr(w.hc_fn)

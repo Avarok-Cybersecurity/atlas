@@ -209,3 +209,110 @@ fn default_kwargs_fail_fast_on_typos() {
     // Invalid JSON.
     assert!(parse_default_chat_template_kwargs("not json").is_err());
 }
+
+/// The nvfp4-labeled bundle carries the EXL3 dispatch (exl3_matmul/exl3_moe/
+/// exl3_reconstruct compile into it). A `quant_method: "exl3"` pack must reach
+/// the loader rather than be refused at the gate — and the reverse pair must
+/// still be refused, since a bundle built WITHOUT the EXL3 kernels cannot
+/// decode a trellis.
+#[test]
+fn nvfp4_bundle_accepts_exl3_but_not_the_reverse() {
+    assert!(super::quant_pair_compatible("nvfp4", "exl3"));
+    assert!(!super::quant_pair_compatible("exl3", "nvfp4"));
+    assert!(!super::quant_pair_compatible("bf16", "exl3"));
+}
+
+// ── GLM-5.3's token-budget spelling ──────────────────────────────────────
+
+/// GLM-5.3-Flash's real `processor_config.json[image_processor]` shape: a token
+/// budget, a patch size and a merge size, and NO `size` / `max_pixels`. Before
+/// the token arm this returned `None` and every image took the 1280px clamp.
+///
+/// 8000 tokens x (14*2)^2 = 6_272_000 px, which is 32000 pre-merge patches —
+/// twice the encoder's 16384 ceiling — so the clamp bites and the resolved
+/// bound is 16384 * 14^2 = 3_211_264.
+#[test]
+fn a_token_budget_resolves_and_clamps_to_the_encoder_ceiling() {
+    let d = dir_with(&[(
+        "processor_config.json",
+        r#"{"image_processor": {"patch_size": 14, "merge_size": 2,
+             "min_image_tokens": 16, "max_image_tokens": 8000}}"#,
+    )]);
+    assert_eq!(
+        read_preprocessor_max_tokens_as_pixels(d.path()),
+        Some(3_211_264)
+    );
+}
+
+/// Under the ceiling the declared budget passes through unclamped.
+#[test]
+fn a_small_token_budget_passes_through_unclamped() {
+    let d = dir_with(&[(
+        "processor_config.json",
+        r#"{"image_processor": {"patch_size": 14, "merge_size": 2, "max_image_tokens": 1024}}"#,
+    )]);
+    // 1024 * 28^2 = 802_816, and 802_816 / 14^2 = 4096 patches < 16384.
+    assert_eq!(
+        read_preprocessor_max_tokens_as_pixels(d.path()),
+        Some(802_816)
+    );
+}
+
+/// An AREA bound is exact where a token budget has to be converted, so the
+/// area wins whenever a checkpoint states both.
+#[test]
+fn an_area_bound_outranks_a_token_budget() {
+    let d = dir_with(&[(
+        "preprocessor_config.json",
+        r#"{"max_pixels": 1048576, "max_image_tokens": 8000,
+            "patch_size": 14, "merge_size": 2}"#,
+    )]);
+    assert_eq!(read_preprocessor_max_pixels(d.path()), Some(1_048_576));
+}
+
+/// ⚠ The video budget is 30x the image budget on GLM-5.3 (240000 vs 8000).
+/// Explicit `[image_processor]` addressing is what keeps it out; a recursive
+/// key search would over-admit every still image by that factor.
+#[test]
+fn a_video_only_token_budget_yields_no_image_bound() {
+    let d = dir_with(&[(
+        "processor_config.json",
+        r#"{"video_processor": {"patch_size": 14, "merge_size": 2,
+             "max_image_tokens": 240000}}"#,
+    )]);
+    assert_eq!(read_preprocessor_max_tokens_as_pixels(d.path()), None);
+}
+
+/// The mean/std pair is all-or-nothing, and a zero std is rejected because it
+/// divides in the preprocessor's patch loop.
+#[test]
+fn image_stats_are_all_or_nothing() {
+    let glm = dir_with(&[(
+        "processor_config.json",
+        r#"{"image_processor": {"image_mean": [0.48145466, 0.4578275, 0.40821073],
+             "image_std": [0.26862954, 0.26130258, 0.27577711],
+             "min_image_tokens": 16, "max_image_tokens": 8000}}"#,
+    )]);
+    let (mean, std, min_t, max_t) = read_preprocessor_image_stats(glm.path());
+    assert_eq!(mean.expect("mean")[0], 0.481_454_66);
+    assert_eq!(std.expect("std")[2], 0.275_777_1);
+    assert_eq!((min_t, max_t), (Some(16), Some(8000)));
+
+    let zero = dir_with(&[(
+        "preprocessor_config.json",
+        r#"{"image_mean": [0.5, 0.5, 0.5], "image_std": [0.5, 0.0, 0.5]}"#,
+    )]);
+    assert_eq!(
+        read_preprocessor_image_stats(zero.path()),
+        (None, None, None, None)
+    );
+
+    let half = dir_with(&[(
+        "preprocessor_config.json",
+        r#"{"image_mean": [0.5, 0.5, 0.5]}"#,
+    )]);
+    assert_eq!(
+        read_preprocessor_image_stats(half.path()),
+        (None, None, None, None)
+    );
+}

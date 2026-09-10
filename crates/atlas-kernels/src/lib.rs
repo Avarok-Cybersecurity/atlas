@@ -341,6 +341,17 @@ pub struct ModelBehavior {
     /// specific model is known to ALWAYS get tool args right on the
     /// first attempt (extra inference round-trip cost is wasted there).
     pub tool_retry: bool,
+    /// Allow speculation inside `<think>` for this model without the
+    /// `ATLAS_SPEC_THINK` env opt-in. Default `false`.
+    ///
+    /// 🔴 PER-MODEL BY DESIGN. The lever is opt-in globally because the
+    /// DFlash lane measured agentic followed_directions 10/10 -> 7/10
+    /// DETERMINISTICALLY across three identical runs, attributed to
+    /// batch-K verify not being byte-lossless at T=0. GLM-5.3 measured
+    /// byte-identical verify at K=2 and scored 3/3 with speculation on
+    /// every step, so the damage does not transfer THERE. Another model
+    /// must earn this key with its own measurement, not inherit it.
+    pub spec_think: bool,
     /// Jinja `preserve_thinking` chat-template flag (Qwen3.6+ dense family):
     /// keep historical `<think>` blocks in re-rendered assistant turns
     /// instead of stripping them before the last user query.
@@ -410,6 +421,7 @@ impl Default for ModelBehavior {
             rollback_resteer: true,
             rom_head: "",
             tool_retry: true,
+            spec_think: false,
             preserve_thinking: None,
         }
     }

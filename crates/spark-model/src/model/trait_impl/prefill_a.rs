@@ -149,11 +149,17 @@ impl TransformerModel {
                 && self
                     .ssm_snapshots
                     .session_matches(snap_id, seq.session_hash)
-                // Aux-carrying models (PLE/QSA) decline aux-less slots — a
-                // mid-chunk tail capture, or a snapshot from before this
-                // feature — rather than restore a stale lexical state.
-                && (!self.requires_aux_state() || self.ssm_snapshots.aux(snap_id).is_some())
+                // Aux-carrying models (PLE/QSA/GLM-DSA) decline aux-less OR
+                // incomplete slots — a mid-chunk tail capture, a snapshot from
+                // before this feature, or a GLM save over the DSA aux cap —
+                // rather than restore a stale mix. See `aux_set_is_complete`.
+                && self.snapshot_aux_is_restorable(snap_id)
             {
+                // Cross-stream ordering, as in prefix_lookup: the decode
+                // checkpoint saves on the default stream and this restore runs
+                // on the prefill stream. The preempt-resume path re-enters here
+                // with that save possibly still in flight.
+                self.wait_snapshot_saves_dispatch(stream)?;
                 self.ssm_snapshots.restore(
                     snap_id,
                     seq.slot_idx,
@@ -285,6 +291,52 @@ impl TransformerModel {
                 stream,
             )?;
             self.scale_embeddings(hidden, proc_count, stream)?;
+        }
+
+        // ── 2b. Overwrite pad-token positions with vision encoder rows ──
+        //
+        // Phase A embedded but never spliced, so an image request that reached
+        // here got its raw <|image|> token embeddings and the model described
+        // nothing. Two live routes reach it with pixels pending:
+        //   * `--max-prefill-tokens 0` (scheduler/mod.rs:284 →
+        //     phase_start_prefills.rs:186 → prefill_b_step.rs:252 →
+        //     model.prefill), and
+        //   * decode-preempt requeue, whose re-prefill runs the whole prompt
+        //     through this path.
+        // Same arithmetic as the phase-C splice; `proc_tokens` is the slice
+        // actually embedded above, so the pad index must be counted over it and
+        // not over `tokens`.
+        {
+            let pending = *self.vision_embed_patches.lock();
+            if pending > 0
+                && let Some(ve) = &self.vision_encoder
+            {
+                let (image_pad, video_pad) = self.vision_pad_ids();
+                let row_base = *self.vision_row_base.lock();
+                let mut img_idx = 0usize;
+                for (i, &tok) in proc_tokens.iter().enumerate() {
+                    if tok == image_pad || tok == video_pad {
+                        let src = ve.out_row(row_base + img_idx);
+                        let dst = hidden.offset(i * h * fp32);
+                        self.gpu
+                            .copy_d2d_async(src, dst, ve.out_hidden_size() * 2, stream)?;
+                        img_idx += 1;
+                    }
+                }
+                if img_idx > 0 && proc_count != tokens.len() {
+                    // A prefix-cache hit truncated the prompt, so the pads that
+                    // survived into `proc_tokens` are NOT the first pads of the
+                    // request and `row_base + img_idx` names the wrong encoder
+                    // rows. Same class as the chunked-splice bug in
+                    // `prefill_b/embed_chunk.rs`; audible, not silently wrong.
+                    tracing::error!(
+                        "vision splice (phase A): {img_idx} pad(s) in a prompt truncated to \
+                         {proc_count} of {} tokens by a prefix-cache hit — the encoder rows \
+                         spliced here start at {row_base} and are WRONG for this suffix",
+                        tokens.len()
+                    );
+                }
+            }
         }
 
         // ── 3. Upload attention metadata via pinned staging (one H2D copy) ──

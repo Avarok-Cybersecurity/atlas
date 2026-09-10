@@ -55,6 +55,33 @@ fn gemm(
     kk: usize,
     stream: u64,
 ) -> Result<()> {
+    // 🔴 Wide (prefill) shapes go to cuBLASLt — `dsa_proj` was 14.9% of prefill on the
+    // scalar tile GEMM. Same numerics boundary as the KDA block; see
+    // `glm5next_layer::cublas_wide_proj` for why M > DENSE_GEMV_BATCHM_MAX_M is the safe
+    // cut and why decode and the speculative verify cannot reach it.
+    // 🪤 `batchm.0 != 0` is what says "this caller's destination is BF16".
+    //
+    // `cublas_bf16_proj_dense` writes BF16. Three call sites in this file hand `gemm` an
+    // FP32 destination (`head_weights`, `q_idx`, and the selector's `wq_b` fallback) and
+    // pass `gemm_f32`/`gemv_f32` with `KernelHandle(0)` for `batchm`, exactly because —
+    // in their own words — "no FP32-out batchm twin exists". All three currently pass
+    // M=1 and so cannot reach this arm, but that is an accident of their shapes, not a
+    // guarantee: batching any of them later would silently write BF16 into an FP32
+    // buffer, which reads as plausible garbage rather than as a crash.
+    //
+    // Keying on the batchm handle rather than adding a parameter reuses the marker those
+    // sites ALREADY carry, so a new FP32-out caller is excluded by construction and a new
+    // BF16 caller opts in by passing the handle it would need anyway. FP32-out sites that
+    // want batching call `ops::cublas_bf16_proj_dense_f32_out` directly, as
+    // `select_rows_batched` does.
+    if batchm.0 != 0
+        && m > crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize
+        && crate::layers::glm5next_layer::cublas_wide_proj()
+    {
+        return crate::layers::ops::cublas_bf16_proj_dense(
+            a, b, c, m as u32, n as u32, kk as u32, stream,
+        );
+    }
     // M=1 decode -> GEMV; M=2..8 (a K-token verify sweep) -> ONE weight read for all rows;
     // wider -> the tile GEMM. `ops::dense_mm_bf16` owns the policy and the grid coupling.
     crate::layers::ops::dense_mm_bf16(
@@ -148,6 +175,17 @@ pub struct Glm5NextDsaWeights {
     pub weights_proj: DevicePtr,
     /// `[index_kpool, index_head_dim]` **FP32**. 🪤 BF16 on disk; upconverted at load.
     pub ape: DevicePtr,
+}
+
+/// One `latent_write` launch for the whole prefill chunk instead of one per row.
+///
+/// Default ON. `ATLAS_GLM_DSA_BATCH_KV_WRITE=0` restores the per-row upload+launch,
+/// kept so the two arms live in ONE binary and the A/B is genuinely one-variable —
+/// and as a fallback, because the batched arm widens the `slot` allocation from 8
+/// bytes to `rows * 8` and ANOMALIES A55 records heap-layout changes in this
+/// workspace moving sampled output.
+fn batch_kv_write_enabled() -> bool {
+    std::env::var("ATLAS_GLM_DSA_BATCH_KV_WRITE").as_deref() != Ok("0")
 }
 
 /// The PREFILL selector runs once for the whole row group instead of once per token.
@@ -334,7 +372,11 @@ impl Glm5NextDsaWorkspace {
                 gpu.synchronize(0)?;
                 p
             },
-            slot: gpu.alloc(8)?,
+            // `[rows]` i64 slot ids, NOT one. The prefill arm uploads every row's slot
+            // in ONE `copy_h2d` and runs ONE `grid([k,1,1])` `latent_write`; sized
+            // exactly like `kv_a` above (both are indexed by `row < k`) so the two
+            // cannot disagree on capacity.
+            slot: gpu.alloc(rows * 8)?,
             attn_out: gpu.alloc(rows * (cfg.local_heads * cfg.kv_lora_rank * 2))?,
             // One entry per cached token is the worst case (block_size == 1), so the
             // DSA context cap bounds it for every block size.
@@ -504,6 +546,100 @@ impl Glm5NextDsaLayer {
         state.advance(1)
     }
 
+    /// The indexer write for ALL `k` rows in ONE pass — the prefill twin of
+    /// [`Self::indexer_forward`].
+    ///
+    /// 🔴 Per row, `indexer_forward` issues three M=1 GEMVs, each re-reading an ENTIRE
+    /// weight (`wk`, `compress_gate`, `weights_proj`) to produce a single row, plus a
+    /// `grid(1,1,1)` LayerNorm and a 1-byte memset. At 256 prefill rows x 11 DSA layers
+    /// that is ~8,400 full weight sweeps and ~14,000 launches per chunk to compute what
+    /// three GEMMs and one norm can.
+    ///
+    /// Every destination is contiguous across rows, so no repacking is needed:
+    /// `row_offset(pos) = pos * index_head_dim * 2` is linear, making rows
+    /// `[base, base + k)` of `k_normed`/`gate` one `[k, d]` block; `nllb_layernorm_bf16`
+    /// already takes `rows` and indexes by `blockIdx.x`; and `valid` is one byte per row.
+    ///
+    /// 🪤 `weights_proj` writes FP32, which is why this could not simply reuse the `gemm`
+    /// helper — that routes wide shapes to the BF16-out cuBLASLt arm. It calls the FP32-out
+    /// twin explicitly, straight into `head_weights_rows`, which also removes the per-row
+    /// device-to-device stash the caller used to need.
+    ///
+    /// 🪤 PREFILL ONLY. Callable solely under `batch_select`, which requires
+    /// `is_prefill && !graph_capture && k > 1`. That matters for two reasons beyond speed:
+    /// the graph-capture path writes through `stage_k`/`indexer_store` from a DEVICE
+    /// position and is untouched here, and the non-batched selector reads the cache once
+    /// per row expecting it to have grown by exactly one row — this advances by `k` up
+    /// front, which is only sound because the batched selector runs after the whole loop
+    /// and gates each row with `end_c <= q_pos[r]` anyway.
+    fn indexer_forward_rows(
+        &self,
+        gpu: &dyn GpuBackend,
+        hidden: DevicePtr,
+        k: usize,
+        state: &mut Glm5NextDsaState,
+        stream: u64,
+    ) -> Result<()> {
+        // BEFORE any write, exactly as the per-row path does: past the cap the write lands
+        // off the end of the buffer and the sticky CUDA 700 kills the whole context. A62.
+        state.ensure_room(k)?;
+        let d = self.cfg.index_head_dim;
+        let base = state.len();
+        let off = state.row_offset(base);
+        let w = &self.workspace;
+
+        gemm(
+            gpu,
+            self.kernels.gemm,
+            self.kernels.gemv,
+            self.kernels.gemv_batchm,
+            hidden,
+            self.weights.wk,
+            state.k_normed.offset(off),
+            k,
+            d,
+            self.cfg.hidden,
+            stream,
+        )?;
+        // 🪤 LayerNorm WITH BIAS, in place, now over k rows rather than one.
+        KernelLaunch::new(gpu, self.select_kernels.k_norm)
+            .grid([k as u32, 1, 1])
+            .block([d.min(1024) as u32, 1, 1])
+            .shared_mem((d.min(1024) * 4) as u32)
+            .arg_ptr(state.k_normed.offset(off))
+            .arg_ptr(self.weights.k_norm_weight)
+            .arg_ptr(self.weights.k_norm_bias)
+            .arg_u32(k as u32)
+            .arg_u32(d as u32)
+            .arg_f32(self.rms_eps)
+            .launch(stream)?;
+        gemm(
+            gpu,
+            self.kernels.gemm,
+            self.kernels.gemv,
+            self.kernels.gemv_batchm,
+            hidden,
+            self.weights.compress_gate,
+            state.gate.offset(off),
+            k,
+            d,
+            self.cfg.hidden,
+            stream,
+        )?;
+        crate::layers::ops::cublas_bf16_proj_dense_f32_out(
+            hidden,
+            self.weights.weights_proj,
+            w.head_weights_rows,
+            k as u32,
+            self.cfg.index_heads as u32,
+            self.cfg.hidden as u32,
+            stream,
+        )?;
+        // Validity is per position and all k of these are real.
+        gpu.memset_async(state.valid.offset(base), 1, k, stream)?;
+        state.advance(k)
+    }
+
     /// Everything after the indexer write: selector inputs and the selection for ONE query
     /// row, into row `row` of the workspace's selection scratch.
     ///
@@ -637,21 +773,55 @@ impl Glm5NextDsaLayer {
         // to its own horizon via `q_pos[r]`.
         let geom = state.geometry(&self.cfg, k)?;
         let idx_row = self.cfg.index_heads * self.cfg.index_head_dim;
-        for row in 0..k {
-            gemm(
-                gpu,
-                self.kernels.gemm_f32,
-                self.kernels.gemv_f32,
-                // Same as `select_row`: no FP32-out batchm twin exists.
-                KernelHandle(0),
-                w.q_resid.offset(row * self.cfg.q_lora_rank * 2),
+        // 🔴 ONE GEMM for all k rows, not k GEMVs. This loop used to run an M=1 GEMV per
+        // row — at 256 prefill rows x 11 DSA layers, 2,816 launches per chunk, each one
+        // sweeping the ENTIRE `wq_b` weight to produce a single row. 256 full weight reads
+        // where one suffices.
+        //
+        // It was written that way for a concrete reason, recorded in the comment this
+        // replaces: "no FP32-out batchm twin exists". `q_idx_rows` is FP32, and Atlas's
+        // batched-M kernel only has a BF16-out form, so `batchm` was passed as
+        // `KernelHandle(0)` and `dense_mm_bf16` had no batched tier to route to. The twin
+        // now exists — `cublas_bf16_proj_dense_f32_out` — so the reason is gone.
+        //
+        // Shapes line up with no repacking: `q_resid` is a contiguous `[k, q_lora_rank]`
+        // BF16 block (the loop indexed it by `row * q_lora_rank`) and `q_idx_rows` a
+        // contiguous `[k, idx_row]` FP32 one, which is exactly `out[M,N] = act[M,K] @ Wt`.
+        //
+        // 🪤 PREFILL ONLY, and not by inference: `select_rows_batched` is reached solely
+        // through `batch_select`, which requires `is_prefill && !graph_capture && k > 1`.
+        // Decode and the speculative verify go through `select_row`, whose M=1 GEMV is
+        // untouched — so the bit-exact tiers still produce what they always did. This does
+        // reassociate, and the DSA indexer feeds a top-k over KV positions, so a tie near
+        // the selection boundary could pick a different token: that is why the arm is
+        // measured on long-context needle recall, not just on throughput.
+        if crate::layers::glm5next_layer::dsa_batch_qidx() {
+            crate::layers::ops::cublas_bf16_proj_dense_f32_out(
+                w.q_resid,
                 self.weights.wq_b,
-                w.q_idx_rows.offset(row * idx_row * 4),
-                1,
-                idx_row,
-                self.cfg.q_lora_rank,
+                w.q_idx_rows,
+                k as u32,
+                idx_row as u32,
+                self.cfg.q_lora_rank as u32,
                 stream,
             )?;
+        } else {
+            for row in 0..k {
+                gemm(
+                    gpu,
+                    self.kernels.gemm_f32,
+                    self.kernels.gemv_f32,
+                    // Same as `select_row`: no FP32-out batchm twin exists.
+                    KernelHandle(0),
+                    w.q_resid.offset(row * self.cfg.q_lora_rank * 2),
+                    self.weights.wq_b,
+                    w.q_idx_rows.offset(row * idx_row * 4),
+                    1,
+                    idx_row,
+                    self.cfg.q_lora_rank,
+                    stream,
+                )?;
+            }
         }
         let q_pos_bytes: Vec<u8> = q_pos_host.iter().flat_map(|p| p.to_le_bytes()).collect();
         gpu.copy_h2d(&q_pos_bytes, w.q_pos_rows)?;
@@ -865,6 +1035,21 @@ impl Glm5NextDsaLayer {
         // it from `use_graphs`, which is false under `ATLAS_GLM_VERIFY_GRAPHS=0`, under
         // high-speed swap, and under `ATLAS_LORA_EAGER`. See `select_rows_batched`.
         is_prefill: bool,
+        // ABSOLUTE position below which this call must NOT write the MLA latent. Rows at
+        // `pos < kv_write_floor` still run the indexer, the select and the gather-attend
+        // (they read the latents already in the KV blocks), but skip `latent_write`.
+        //
+        // 🔴 This is the Marconi replay window. On an intermediate prefix-cache hit the
+        // resumed prefill re-runs `[snap_tok, matched)` to bring the KDA state up to the
+        // match point, and those positions' latents already live in RADIX blocks that other
+        // live sequences may be reading. The generic prefill floor
+        // (`prefill_a.rs`/`forward_layers.rs` `layer_kv_write_start`) exists for exactly
+        // this, and the composite ignored it. A rewrite is a non-bit-exact recompute
+        // (kda_chunk_scan vs kda_recurrent rounding upstream of `kv_a`), so it would
+        // drift the shared blocks and ratchet across turns. Callers that never replay —
+        // the speculative verify, single-token decode, the drafter — pass 0, which also
+        // keeps this host-side branch inert under graph capture.
+        kv_write_floor: usize,
     ) -> Result<()> {
         use crate::layers::glm5next_layer::profile;
         // Captured before the KV borrows below, for the block-table trim at the
@@ -1010,6 +1195,111 @@ impl Glm5NextDsaLayer {
         let batch_select =
             batch_select_enabled(w.q_idx_rows.0 != 0, is_prefill, ctx.graph_capture, k);
         let mut batch_q_pos: Vec<i32> = Vec::with_capacity(if batch_select { k } else { 0 });
+
+        // `meta` does not depend on `row`, so the choice of KV-write arm is made once.
+        let step_meta = if ctx.decode_step {
+            ctx.attn_metadata.as_ref()
+        } else {
+            rowwise_meta
+        };
+        // ── Batched prefill KV write ──────────────────────────────────────────────
+        //
+        // 🔴 The per-row version of this cost 94.6% of prefill (ATLAS_GLM_PROFILE,
+        // DSA_PROJ, 256 rows). Per row it did a BLOCKING 8-byte `copy_h2d` of the slot
+        // id — every one a `cuStreamSynchronize` — and then launched `latent_write`
+        // with `grid([1,1,1])`, i.e. ONE of the GB10's 48 SMs. At 256 rows x 11 DSA
+        // layers that is 2,816 stream drains and 2,816 single-block launches per chunk,
+        // for a kernel that was ALREADY written to be batched: it indexes rows by
+        // `blockIdx.x`, takes `slot_mapping` as a `[num_tokens]` array, and already
+        // treats a negative slot as "skip this token". Only the caller was serial.
+        //
+        // 🪤 Hoisting is safe on ORDERING, not merely on causal masking: `attend_rows`
+        // runs ONCE after this loop (ANOMALIES A65), so no row's attend has read the KV
+        // pool at the point the old code interleaved these writes. Nothing between here
+        // and that call reads the pool either. The writes themselves are independent —
+        // row `r` reads `kv_a[r]` and writes slot `r` — so batching cannot reassociate
+        // anything; the arithmetic is bit-identical per row by construction.
+        //
+        // Floored rows keep their latent (it is already in a shared radix block — see
+        // the `kv_write_floor` argument) and are passed as `-1`, which is exactly the
+        // skip the kernel already implements. That keeps the launch geometry a plain
+        // `[k,1,1]` regardless of where the floor falls.
+        //
+        // Decode/verify (`step_meta.is_some()`) is untouched: it already has a K-row
+        // slot array uploaded at a stable address, its `k` is 1 or a narrow verify
+        // width, and it must stay capturable. It keeps the in-loop launch below.
+        let batch_kv_write = batch_kv_write_enabled();
+        if batch_kv_write && step_meta.is_none() && k > 0 {
+            let block_size = kv_cache.config().block_size;
+            let mut slots: Vec<i64> = Vec::with_capacity(k);
+            for row in 0..k {
+                let pos = seq_len + row;
+                if pos < kv_write_floor {
+                    slots.push(-1);
+                    continue;
+                }
+                let logical = pos / block_size;
+                let physical = *block_table.get(logical).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "DSA layer {}: block table has {} entries, needs logical block \
+                         {logical} for position {pos}",
+                        self.layer_idx,
+                        block_table.len()
+                    )
+                })? as usize;
+                slots.push((physical * block_size + pos % block_size) as i64);
+            }
+            if slots.iter().any(|&s| s >= 0) {
+                let bytes: Vec<u8> = slots.iter().flat_map(|s| s.to_le_bytes()).collect();
+                gpu.copy_h2d(&bytes, w.slot)?;
+                KernelLaunch::new(gpu, self.kernels.latent_write)
+                    .grid([k as u32, 1, 1])
+                    .block([self.cfg.kv_lora_rank as u32, 1, 1])
+                    .arg_ptr(w.kv_a)
+                    .arg_ptr(self.weights.kv_a_layernorm)
+                    .arg_ptr(kv_cache.k_pool_ptr(self.attn_layer_idx))
+                    .arg_ptr(w.slot)
+                    .arg_u32(self.cfg.kv_lora_rank as u32)
+                    .arg_f32(self.rms_eps)
+                    .arg_f32(1.0 / self.kv_scale)
+                    .launch(stream)?;
+            }
+        }
+
+        crate::layers::glm5next_layer::profile::end(
+            crate::layers::glm5next_layer::profile::DSA_PROJ,
+            t_proj,
+            gpu,
+            stream,
+        );
+        // 🔴 DSA_PROJ closes HERE, once, and NOT inside the row loop.
+        //
+        // It used to be ended at the top of every iteration against this same `t_proj`,
+        // which is bound once above and never reassigned. `profile::end_us` does
+        // `NANOS[b].fetch_add(t0.elapsed())` — an ABSOLUTE elapsed, not a delta — so k
+        // rows added "time since the projections started" k times over:
+        // `sum_i (G + i*r)` = `k*G + r*k*(k-1)/2` against a true cost of `G`. The bucket
+        // therefore grew QUADRATICALLY in k and, because the per-row indexer/select/
+        // attend work happens between iterations, it charged those buckets' time to itself.
+        //
+        // 🪤 Not academic: at `ATLAS_GLM_PREFILL_ROWS=256` it reported dsa_proj as 94.6% of
+        // prefill (vs kda_mixer 3.3%, moe_experts 0.4%) and sent a day of work after a
+        // phantom hotspot. Raising rows 16 -> 256 inflated it ~8x -> ~128x, which reads
+        // exactly like "this section got worse as the batch grew". Batching the per-row
+        // `latent_write` it pointed at then measured 0%, with the arm proven live (k=256,
+        // step_meta=false). A bucket ended inside a loop must be started inside it too.
+        // ── ONE indexer write for all K rows (same gate as the batched selector) ──
+        if batch_select {
+            let t = crate::layers::glm5next_layer::profile::start();
+            self.indexer_forward_rows(gpu, hidden, k, st, stream)?;
+            crate::layers::glm5next_layer::profile::end(
+                crate::layers::glm5next_layer::profile::DSA_INDEXER,
+                t,
+                gpu,
+                stream,
+            );
+        }
+
         for row in 0..k {
             let pos = seq_len + row;
             let block_size = kv_cache.config().block_size;
@@ -1028,45 +1318,49 @@ impl Glm5NextDsaLayer {
             // 🪤 ONLY on a real decode step — `prefill_default` calls this same `decode` per
             // token with the prefill context, where these are arrays or NULL. See
             // `ForwardContext::decode_step`.
-            let meta = if ctx.decode_step {
-                ctx.attn_metadata.as_ref()
-            } else {
-                rowwise_meta
-            };
+            let meta = step_meta;
             // Row strides into the K-row arrays. At k == 1 every one of these is 0.
             let bt_stride = meta.map_or(0, |m| m.max_blocks_per_seq as usize) * 4;
-            let slot_dev = match meta {
-                Some(m) => m.slot.offset(row * 8),
-                None => {
-                    let logical = pos / block_size;
-                    let physical = *block_table.get(logical).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "DSA layer {}: block table has {} entries, needs logical block \
-                             {logical} for position {pos}",
-                            self.layer_idx,
-                            block_table.len()
-                        )
-                    })? as usize;
-                    let slot = (physical * block_size + pos % block_size) as i64;
-                    gpu.copy_h2d(&slot.to_le_bytes(), w.slot)?;
-                    w.slot
+            // Floored rows keep their latent: it is already in a shared radix block (see
+            // the `kv_write_floor` argument). The slot upload is only for `latent_write`,
+            // so it is skipped with it; nothing below reads `slot_dev`.
+            // Prefill (`meta.is_none()`) wrote every row above, in one launch, unless
+            // the batched arm is disabled — then this falls back to the serial upload.
+            if pos >= kv_write_floor
+                && let Some(slot_dev) = match meta {
+                    Some(m) => Some(m.slot.offset(row * 8)),
+                    None if batch_kv_write => None,
+                    None => {
+                        let logical = pos / block_size;
+                        let physical = *block_table.get(logical).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "DSA layer {}: block table has {} entries, needs logical block \
+                                 {logical} for position {pos}",
+                                self.layer_idx,
+                                block_table.len()
+                            )
+                        })? as usize;
+                        let slot = (physical * block_size + pos % block_size) as i64;
+                        gpu.copy_h2d(&slot.to_le_bytes(), w.slot)?;
+                        Some(w.slot)
+                    }
                 }
-            };
-            KernelLaunch::new(gpu, self.kernels.latent_write)
-                .grid([1, 1, 1])
-                .block([self.cfg.kv_lora_rank as u32, 1, 1])
-                .arg_ptr(w.kv_a.offset(row * self.cfg.kv_lora_rank * 2))
-                .arg_ptr(self.weights.kv_a_layernorm)
-                .arg_ptr(kv_cache.k_pool_ptr(self.attn_layer_idx))
-                .arg_ptr(slot_dev)
-                .arg_u32(self.cfg.kv_lora_rank as u32)
-                .arg_f32(self.rms_eps)
-                .arg_f32(1.0 / self.kv_scale)
-                .launch(stream)?;
+            {
+                KernelLaunch::new(gpu, self.kernels.latent_write)
+                    .grid([1, 1, 1])
+                    .block([self.cfg.kv_lora_rank as u32, 1, 1])
+                    .arg_ptr(w.kv_a.offset(row * self.cfg.kv_lora_rank * 2))
+                    .arg_ptr(self.weights.kv_a_layernorm)
+                    .arg_ptr(kv_cache.k_pool_ptr(self.attn_layer_idx))
+                    .arg_ptr(slot_dev)
+                    .arg_u32(self.cfg.kv_lora_rank as u32)
+                    .arg_f32(self.rms_eps)
+                    .arg_f32(1.0 / self.kv_scale)
+                    .launch(stream)?;
+            }
 
             // ── indexer stream, then select + gather-attend ──
             use crate::layers::glm5next_layer::profile;
-            profile::end(profile::DSA_PROJ, t_proj, gpu, stream);
             let t = profile::start();
             // Replay-safe placement only while a graph is RECORDING. An eager step keeps the
             // host-offset path, so the shipping numbers and byte-identity are untouched.
@@ -1079,13 +1373,15 @@ impl Glm5NextDsaLayer {
             } else {
                 None
             };
-            self.indexer_forward(
-                gpu,
-                hidden.offset(row * self.cfg.hidden * 2),
-                st,
-                pos_dev,
-                stream,
-            )?;
+            if !batch_select {
+                self.indexer_forward(
+                    gpu,
+                    hidden.offset(row * self.cfg.hidden * 2),
+                    st,
+                    pos_dev,
+                    stream,
+                )?;
+            }
             profile::end(profile::DSA_INDEXER, t, gpu, stream);
 
             let (q_pos_dev, bt_dev_meta, sl_dev_meta) = match meta {
@@ -1208,14 +1504,9 @@ impl Glm5NextDsaLayer {
                     .launch(stream)?;
             }
             if batch_select {
-                // `indexer_forward` left THIS row's head weights in the scalar slot; stash
-                // them at row stride so the one batched pass below can read `weights[r*H]`.
-                gpu.copy_d2d_async(
-                    w.head_weights,
-                    w.head_weights_rows.offset(row * self.cfg.index_heads * 4),
-                    self.cfg.index_heads * 4,
-                    stream,
-                )?;
+                // No stash: `indexer_forward_rows` wrote every row's head weights straight
+                // into `head_weights_rows` at row stride, so the per-row device-to-device
+                // copy this used to need is gone with the per-row GEMV that fed it.
                 batch_q_pos.push(pos as i32);
             } else {
                 self.select_row(gpu, row, st, q_pos_dev, replay_safe, stream)?;
@@ -1345,6 +1636,8 @@ impl TransformerLayer for Glm5NextDsaLayer {
             stream,
             // A single-token decode, never a prefill sub-chunk. Moot at k == 1, stated anyway.
             false,
+            // A decode step never replays a cached position: no write floor.
+            0,
         )
     }
 }

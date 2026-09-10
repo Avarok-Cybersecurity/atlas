@@ -432,10 +432,11 @@ impl ModelConfig {
     ///
     /// False for models whose PREFILL builds per-sequence state that KV pages
     /// do not carry: GLM-5.3's DSA indexer rows (`Glm5NextDsaState`) and
-    /// compressed DeepSeek V4's compressor pool/ring. Every KV-only mechanism
-    /// — radix prefix reuse and the `--swap-space-gb` spill image alike — is
-    /// unsafe for those models, and this is the single fact both gates below
-    /// are asking about.
+    /// compressed DeepSeek V4's compressor pool/ring. A mechanism that carries
+    /// ONLY KV — the `--swap-space-gb` spill image — is unsafe for those
+    /// models. The radix prefix cache is not KV-only: it travels with a
+    /// Marconi snapshot, which is why the prefix-cache gate below asks a
+    /// second question before refusing.
     fn per_sequence_state_is_kv_complete(&self) -> bool {
         match self.model_type.as_str() {
             "glm5_next" | "glm5_next_text" => false,
@@ -444,10 +445,39 @@ impl ModelConfig {
         }
     }
 
+    /// Whether the per-sequence state OUTSIDE KV is carried completely by the
+    /// Marconi snapshot a prefix-cache node holds: the SSM pool slot plus the
+    /// per-layer `snapshot_aux` blobs.
+    ///
+    /// GLM-5.3: the 34 KDA layers' recurrent `h`/conv state IS the pool's
+    /// `SsmLayerState` and rides the slot (the same D2D copy qwen3.8-flash-next's
+    /// 36 GDN layers ship on); the 11 DSA layers' indexer rows ride the
+    /// composite layer's `snapshot_aux` (`glm5next_dsa::aux`). Restore sites
+    /// decline any snapshot whose aux set is incomplete, so the answer here is
+    /// "the machinery exists", and a missing blob degrades to recompute, never
+    /// to a stale restore.
+    ///
+    /// 🔴 This does NOT open swap-out. The spill image
+    /// (`save_sequence_state_dispatch`) writes KV blocks and LinearAttention
+    /// `SsmLayerState` only — no aux record — and the swap-out then
+    /// `release_state`s the DSA state, which a swap-in re-allocates at zero
+    /// rows. Compressed DeepSeek-V4 is deliberately absent: its compressor
+    /// pool/ring has no aux carry.
+    fn non_kv_state_is_marconi_snapshottable(&self) -> bool {
+        matches!(self.model_type.as_str(), "glm5_next" | "glm5_next_text")
+    }
+
     /// Whether the radix prefix cache captures every state needed to resume
-    /// this model exactly. Preflight SSOT for `build_prefix_cache`.
+    /// this model exactly. Preflight SSOT for `build_prefix_cache` and for
+    /// `ssm_reserve::prefix_caching_active` (the Marconi region is sized off
+    /// the same answer, so a `true` here is what makes GLM's 16 × 34-layer
+    /// region — 2380 MiB measured at TP=2 — actually reachable).
+    ///
+    /// Two ways to be safe: the KV blocks are the whole state, or what is not
+    /// in them rides the Marconi snapshot. The second arm is the ONLY place
+    /// the two gates in this file diverge.
     pub fn kv_only_prefix_cache_is_safe(&self) -> bool {
-        self.per_sequence_state_is_kv_complete()
+        self.per_sequence_state_is_kv_complete() || self.non_kv_state_is_marconi_snapshottable()
     }
 
     /// Whether a sequence may be swapped out to the `--swap-space-gb` pool and
@@ -460,7 +490,9 @@ impl ModelConfig {
     /// KV-complete therefore resumes with a freshly ZEROED pool behind a KV
     /// image that assumes a populated one — a silently wrong answer, not a
     /// crash. Distinct from the prefix-cache predicate because they are
-    /// distinct guarantees; they happen to have the same answer today.
+    /// distinct guarantees, and since GLM's Marconi aux carry they no longer
+    /// have the same answer: the spill image carries no aux record, so this
+    /// gate stays on KV-completeness alone.
     pub fn kv_only_swap_out_is_safe(&self) -> bool {
         self.per_sequence_state_is_kv_complete()
     }

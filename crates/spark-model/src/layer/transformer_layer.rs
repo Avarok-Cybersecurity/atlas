@@ -115,6 +115,53 @@ pub trait TransformerLayer: Send + Sync {
         false
     }
 
+    /// True when this layer's batched multi-sequence decode serves SPARSE
+    /// ATTENTION SELECTION per sequence — its own indexer cache, its own
+    /// selected set — so a batch may stay on the batched path even once
+    /// selection has activated.
+    ///
+    /// Default `false`, which keeps the conservative behaviour: once any
+    /// sequence is past the index budget the caller routes the whole batch to
+    /// the per-sequence loop, because a batched attention path that indexes one
+    /// shared selection would attend with the wrong sequence's chosen blocks —
+    /// and dense-past-the-budget is NOT the reference model, so silently
+    /// widening is not an acceptable fallback either.
+    ///
+    /// 🪤 This is a statement about the layer's OWN `decode_multi_seq`, not
+    /// about the model. Answering `true` while the batched path still reads a
+    /// single shared indexer state is the failure this flag exists to make
+    /// explicit: it is length-dependent, so it is correct on short contexts and
+    /// silently wrong on long ones — exactly the cliff the `hc_perseq` hoist
+    /// comment warns about.
+    fn decode_multi_seq_selection_per_seq(&self) -> bool {
+        false
+    }
+
+    /// The widest R = Σ`ks` this layer's batched verify may be given while
+    /// still producing the bits the SERIAL verify would have produced.
+    ///
+    /// `None` (default) = no opinion, and the caller keeps its own
+    /// `VERIFY_ROW_CAP`. `Some(n)` caps it at `n` rows.
+    ///
+    /// WHY A CAP EXISTS AT ALL. `DENSE_GEMV_BATCHM_DECODE_MAX_M` is the band on
+    /// which the MTP row dispatch and the BF16 lm_head choose
+    /// `dense_gemv_bf16_batchm` over a REASSOCIATING tile GEMM — so the band's
+    /// upper edge decides which bits a decode of that width produces, and its
+    /// own doc records the edge as frozen at 8 with an A/B behind it
+    /// ("NEGATIVE above 8 against the tile GEMM"). A verify wider than that
+    /// stops being bit-identical to the serial path, and an accepted draft is
+    /// then not necessarily the token the unspeculated engine would have
+    /// emitted — the one property speculation may not lose.
+    ///
+    /// 🪤 The constant is universal but the ENFORCEMENT is per model on
+    /// purpose: models already shipping a batched verify at the caller's cap
+    /// have their own measured envelope, and silently narrowing them here would
+    /// be a numerics change on a path this reasoning says nothing about. A model
+    /// opts in when it wants the serial path's bits.
+    fn decode_verify_multi_row_cap(&self) -> Option<usize> {
+        None
+    }
+
     /// True when this layer cannot serve a BATCHED multi-sequence VERIFY
     /// sweep (`decode_verify_multi`). Consumed by
     /// `can_batch_verify_dispatch`; a `true` layer falls back to the
@@ -699,9 +746,21 @@ pub trait TransformerLayer: Send + Sync {
     /// `states[i]` with row-offset buffer bases — per-sequence math is
     /// byte-identical to the single-sequence `decode_batched` K-token body.
     ///
-    /// Only SSM layers override (attention layers are handled by the caller
-    /// via `decode_multi_seq`, which already takes per-row block tables and
-    /// seq lens). Default: unsupported.
+    /// 🪤 "Only SSM layers override" is TRUE ONLY FOR `LayerType::FullAttention`.
+    /// The caller splits on that one type (`verify_e.rs`), so a
+    /// `SparseAttention` mixer — GLM-5.3-Flash's DSA — lands HERE, not in
+    /// `decode_multi_seq`. A hybrid model whose single layer type wraps either
+    /// mixer therefore needs this method to carry attention arguments too,
+    /// which is why `seq_lens` and `block_tables` exist below.
+    ///
+    /// `seq_lens[i]` is sequence `i`'s length BEFORE its `ks[i]` rows, and
+    /// `block_tables[i]` its page table — both per SEQUENCE, not per row.
+    /// A pure-SSM implementor ignores them. They are not derivable inside the
+    /// layer: `PagedKvCache` exposes no sequence→table map, `LayerState`
+    /// carries no sequence id, and a sparse-attention indexer's own `len()`
+    /// runs AHEAD of `seq_len` after a rejected draft, so it cannot stand in.
+    ///
+    /// Default: unsupported.
     ///
     /// `wy_tables`: this layer's slice of the model-staged WY pointer tables
     /// (layout above, `VERIFY_WY_LAYER_STRIDE_BYTES`; refreshed pre-graph
@@ -716,6 +775,8 @@ pub trait TransformerLayer: Send + Sync {
         _ks: &[usize],
         _states: &'a mut [&'b mut (dyn LayerState + 'static)],
         _kv_cache: &mut PagedKvCache,
+        _seq_lens: &[usize],
+        _block_tables: &[Vec<u32>],
         _wy_tables: DevicePtr,
         _ctx: &ForwardContext,
         _stream: u64,

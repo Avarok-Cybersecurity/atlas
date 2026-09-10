@@ -331,7 +331,186 @@ pub(super) fn resolve_vision_max_pixels(
             }
         }
     }
-    Ok(read_preprocessor_max_pixels(model_dir))
+    if let Some(px) = read_preprocessor_max_pixels(model_dir) {
+        return Ok(Some(px));
+    }
+    // Token-budget spelling, tried LAST: a checkpoint that states an area
+    // states it exactly, while a token budget has to be converted and clamped.
+    Ok(read_preprocessor_max_tokens_as_pixels(model_dir))
+}
+
+/// The largest pre-merge patch count the ViT scratch is allocated for
+/// (`spark-model`'s `enc_impl/init.rs` `CEILING_MAX_PATCHES`). Duplicated as a
+/// literal because `spark-server` must not depend on the encoder's internals
+/// just to clamp a config number; a drift here shows up as the WARN below
+/// naming a ceiling that no longer matches, not as a silent overrun.
+const VISION_CEILING_MAX_PATCHES: usize = 16_384;
+
+/// GLM-5.3 declares its image budget in TOKENS, not pixels: its
+/// `processor_config.json[image_processor]` carries `max_image_tokens`,
+/// `patch_size` and `merge_size` and no `size`/`max_pixels` at all. Without
+/// this arm `resolve_vision_max_pixels` returns `None` for that checkpoint and
+/// every image silently takes the historical 1280px long-side clamp.
+///
+/// `px = max_image_tokens * (patch_size * merge_size)^2`, then clamped to
+/// `CEILING_MAX_PATCHES * patch_size^2`. The clamp is the point: GLM declares
+/// 8000 tokens = 32000 pre-merge patches, exactly 2x what the encoder's
+/// scratch is sized for, so the FULL declared budget is not serveable. Clamping
+/// here turns that into a downscaled image; not clamping turns it into a failed
+/// H2D copy deep inside the scheduler.
+///
+/// ⚠ Uses the same explicit three-entry `SOURCES` table as
+/// `read_preprocessor_max_pixels`, and for the same reason: GLM's
+/// `video_processor.max_image_tokens` is **240000**, thirty times the image
+/// budget. A recursive search for the first `max_image_tokens` in the document
+/// would pick that one up on some checkpoints and over-admit every still image.
+pub(super) fn read_preprocessor_max_tokens_as_pixels(model_dir: &std::path::Path) -> Option<usize> {
+    for (file, nest) in PROCESSOR_SOURCES {
+        let Some((scope, path)) = processor_scope(model_dir, file, nest) else {
+            continue;
+        };
+        let tokens = scope
+            .get("max_image_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|&t| t > 0)? as usize;
+        // Both default to GLM-5.3's declared geometry, which is also Qwen's.
+        let patch = scope
+            .get("patch_size")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|&p| p > 0)
+            .unwrap_or(14) as usize;
+        let merge = scope
+            .get("merge_size")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|&m| m > 0)
+            .unwrap_or(2) as usize;
+        let px = tokens
+            .saturating_mul(patch * merge)
+            .saturating_mul(patch * merge);
+        let ceiling = VISION_CEILING_MAX_PATCHES * patch * patch;
+        let resolved = if px > ceiling {
+            tracing::warn!(
+                "Vision token budget {} tokens = {} px exceeds the encoder ceiling of {}                  patches = {} px — clamping. The checkpoint's full declared budget is NOT                  serveable; pass --vision-max-pixels explicitly to pin the operating point.",
+                tokens,
+                px,
+                VISION_CEILING_MAX_PATCHES,
+                ceiling,
+            );
+            ceiling
+        } else {
+            px
+        };
+        tracing::info!(
+            "Vision area bound {} px derived from max_image_tokens={} (patch {}, merge {}) in              {}{}",
+            resolved,
+            tokens,
+            patch,
+            merge,
+            path.display(),
+            nest.map(|k| format!(" [{k}]")).unwrap_or_default(),
+        );
+        return Some(resolved);
+    }
+    None
+}
+
+/// `(image_mean, image_std, min_image_tokens, max_image_tokens)`, exactly the
+/// four `VisionConfig` fields the processor config supplies.
+pub(super) type ImageStats = (
+    Option<[f32; 3]>,
+    Option<[f32; 3]>,
+    Option<usize>,
+    Option<usize>,
+);
+
+/// Per-channel normalisation statistics plus the token-budget bounds, read off
+/// the same processor config and over the same explicit source table.
+///
+/// 🔴 The mean/std pair is the single most dangerous number in the vision path.
+/// GLM-5.3 normalises with CLIP statistics while Atlas's preprocessor has
+/// SigLIP `[0.5; 3]` hard-coded; feeding an image through the wrong pair yields
+/// a confident, fluent, WRONG description with nothing logged. Returned as an
+/// all-or-nothing pair and only when both are three finite values with no zero
+/// in the std (a zero divides in the patch loop), so a malformed config
+/// degrades to today's hard-coded behaviour rather than to garbage.
+pub(super) fn read_preprocessor_image_stats(model_dir: &std::path::Path) -> ImageStats {
+    for (file, nest) in PROCESSOR_SOURCES {
+        let Some((scope, path)) = processor_scope(model_dir, file, nest) else {
+            continue;
+        };
+        let triple = |key: &str| -> Option<[f32; 3]> {
+            let arr = scope.get(key)?.as_array()?;
+            if arr.len() != 3 {
+                return None;
+            }
+            let mut out = [0.0f32; 3];
+            for (i, v) in arr.iter().enumerate() {
+                let f = v.as_f64()?;
+                if !f.is_finite() {
+                    return None;
+                }
+                out[i] = f as f32;
+            }
+            Some(out)
+        };
+        let mean = triple("image_mean");
+        let std = triple("image_std").filter(|s| s.iter().all(|c| *c != 0.0));
+        let (mean, std) = match (mean, std) {
+            (Some(m), Some(s)) => (Some(m), Some(s)),
+            // All-or-nothing: half a pair is worse than none, because the
+            // preprocessor would mix one family's mean with the other's std.
+            _ => (None, None),
+        };
+        let min_tokens = scope
+            .get("min_image_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .map(|v| v as usize);
+        let max_tokens = scope
+            .get("max_image_tokens")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|&v| v > 0)
+            .map(|v| v as usize);
+        if mean.is_none() && min_tokens.is_none() && max_tokens.is_none() {
+            continue;
+        }
+        tracing::info!(
+            "Vision preprocessing stats from {}{}: mean={:?} std={:?} tokens={:?}..{:?}",
+            path.display(),
+            nest.map(|k| format!(" [{k}]")).unwrap_or_default(),
+            mean,
+            std,
+            min_tokens,
+            max_tokens,
+        );
+        return (mean, std, min_tokens, max_tokens);
+    }
+    (None, None, None, None)
+}
+
+/// Ordered by precedence. `preprocessor_config.json` is the dedicated
+/// image-processor file, so it wins if a checkpoint somehow ships both.
+const PROCESSOR_SOURCES: [(&str, Option<&str>); 3] = [
+    ("preprocessor_config.json", None),
+    ("preprocessor_config.json", Some("image_processor")),
+    ("processor_config.json", Some("image_processor")),
+];
+
+/// Open one `SOURCES` entry and return the addressed object plus its path.
+/// `None` on absence or malformation — a checkpoint we cannot read must keep
+/// the historical behaviour rather than fail to serve.
+fn processor_scope(
+    model_dir: &std::path::Path,
+    file: &str,
+    nest: Option<&str>,
+) -> Option<(serde_json::Value, std::path::PathBuf)> {
+    let path = model_dir.join(file);
+    let text = std::fs::read_to_string(&path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let scope = match nest {
+        Some(key) => json.get(key)?.clone(),
+        None => json,
+    };
+    Some((scope, path))
 }
 
 /// Pull the IMAGE area bound out of the checkpoint's processor config, if it
@@ -362,27 +541,9 @@ pub(super) fn resolve_vision_max_pixels(
 /// (16777216 = 4096², 65536 = 256²). Older/other processors write
 /// `max_pixels` directly.
 pub(super) fn read_preprocessor_max_pixels(model_dir: &std::path::Path) -> Option<usize> {
-    // Ordered by precedence. `preprocessor_config.json` is the dedicated
-    // image-processor file, so it wins if a checkpoint somehow ships both.
-    const SOURCES: [(&str, Option<&str>); 3] = [
-        ("preprocessor_config.json", None),
-        ("preprocessor_config.json", Some("image_processor")),
-        ("processor_config.json", Some("image_processor")),
-    ];
-    for (file, nest) in SOURCES {
-        let path = model_dir.join(file);
-        let Ok(text) = std::fs::read_to_string(&path) else {
+    for (file, nest) in PROCESSOR_SOURCES {
+        let Some((scope, path)) = processor_scope(model_dir, file, nest) else {
             continue;
-        };
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
-        };
-        let scope = match nest {
-            Some(key) => match json.get(key) {
-                Some(v) => v,
-                None => continue,
-            },
-            None => &json,
         };
         let from_size = scope
             .get("size")
@@ -496,6 +657,16 @@ pub(super) fn quant_pair_compatible(kernel_quant: &str, model_quant: &str) -> bo
         // The NVFP4 bundle also handles unquantized BF16 inputs via
         // runtime dequant → quantize. Slow but correct.
         ("nvfp4", "bf16") |
+        // The NVFP4-labeled bundle carries the EXL3 (QTIP trellis) dispatch
+        // too — `exl3_matmul.cu`, `exl3_moe.cu`, `exl3_reconstruct.cu` compile
+        // into it, which is why the gb10 targets report 183 kernels rather than
+        // 180. Two ways a checkpoint reaches it, both real:
+        //   * kept PACKED and decoded in-kernel (`ATLAS_EXL3_NATIVE`, and the
+        //     routed-expert arm GLM-5.3 uses), or
+        //   * materialized to NVFP4/BF16 at load by `exl3_materialize`.
+        // Without this pair a `quant_method: "exl3"` pack is refused before any
+        // weight loads, even though every kernel it needs is present.
+        ("nvfp4", "exl3") |
         // BF16 reference bundle handles any quant by dequant on load.
         ("bf16", "fp8") |
         ("bf16", "nvfp4")

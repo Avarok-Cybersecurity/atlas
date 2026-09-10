@@ -86,4 +86,14 @@ pub struct Glm5NextMoeWeights {
     /// Global-id-indexed device pointer tables over the same experts, for the grouped
     /// device-dispatch forward. Null entries mark remote ids.
     pub ptrs: Glm5NextMoePtrTables,
+    /// Routed experts kept PACKED as EXL3 trellis, when the checkpoint ships
+    /// them that way (`quant_method: exl3`).
+    ///
+    /// `Some` REPLACES the routed arm: `experts` is then empty and `ptrs` holds
+    /// only null pointers, because the trellis is decoded in-kernel by
+    /// `exl3_mgemm` and there is no NVFP4 packed/scale pair to point at. The
+    /// router and the shared expert are untouched either way — the published
+    /// packs quantize routed experts ONLY (`scope: glm53_routed_experts_only`),
+    /// so everything else stays on its existing BF16 path.
+    pub exl3: Option<crate::weight_loader::glm5_next_exl3::Glm5NextExl3Experts>,
 }

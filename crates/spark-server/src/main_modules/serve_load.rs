@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 
 use super::serve::{
     Prepared, canonicalize_model_quant, describe_quant_source, parse_default_chat_template_kwargs,
-    quant_pair_compatible, resolve_vision_max_pixels,
+    quant_pair_compatible, read_preprocessor_image_stats, resolve_vision_max_pixels,
 };
 use crate::api::InferenceRequest;
 use crate::main_modules::AppState;
@@ -166,8 +166,18 @@ pub(crate) fn load_model(
     // maximum image — the preprocessor clamped to 1280px, the encoder
     // allocated for 6400 patches, and nothing connected them.
     let vision_max_pixels = resolve_vision_max_pixels(&args, &model_dir)?;
+    // The same ordering argument covers all four: the preprocessor's canvas
+    // arm reads the token bounds and the normalisation stats, and the encoder
+    // sizes every device buffer from the area bound. Both must be final before
+    // `build_model` below constructs either.
+    let (image_mean, image_std, min_image_tokens, max_image_tokens) =
+        read_preprocessor_image_stats(&model_dir);
     if let Some(v) = config.vision.as_mut() {
         v.max_pixels = vision_max_pixels;
+        v.image_mean = image_mean;
+        v.image_std = image_std;
+        v.min_image_tokens = min_image_tokens;
+        v.max_image_tokens = max_image_tokens;
     }
     match vision_max_pixels {
         Some(px) => tracing::info!(
@@ -819,6 +829,11 @@ pub(crate) fn load_model(
         &config.model_type,
         Some(std::path::Path::new(".")), // repo root for override templates
         args.disable_template_overrides,
+        // Pad-token ids come from the CONFIG, not from encoding a literal
+        // spelling. Ordering is already correct: `config.vision` is finalised
+        // above and possibly nulled by the text-only kernel-target check, both
+        // before this point.
+        config.vision.as_ref(),
     )?;
 
     // (AM1 attractor-mask registration removed 2026-06-03 — see
@@ -837,6 +852,7 @@ pub(crate) fn load_model(
         code_fence_token,
         tool_call_start_token,
         tool_call_end_token,
+        tool_value_delims,
         grammar_engine,
     } = serve_phases::resolve_tokenizer_runtime(
         &args,
@@ -1009,15 +1025,21 @@ pub(crate) fn load_model(
     // Per-model watchdog tunables. Built here, before the scheduler thread
     // spawns — the installer this replaces ran from `log_behavior_audit`,
     // which is called well after the spawn.
-    let watchdog_params = crate::scheduler::WatchdogParams::from_behavior(
+    let mut watchdog_params = crate::scheduler::WatchdogParams::from_behavior(
         &ptx_set.behavior,
         args.max_inter_tool_prose,
         args.content_loop_min_repeats,
     );
+    // The envelope guard's value-body exemption is tokenizer-derived, so
+    // `from_behavior` cannot know it. Filled in here, where both halves are in
+    // scope and still before the scheduler thread spawns.
+    watchdog_params.tool_value_delims = tool_value_delims;
     // The run's levers. Shared with the dashboard so `/watchdog on|off`
     // toggles this run's flag; the MODEL.toml `[behavior]` value is its
     // starting position.
-    let sched_levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
+    let sched_levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env(
+        ptx_set.behavior.spec_think,
+    ));
     sched_levers.set_loop_watchdog(crate::scheduler::resolve_content_loop_watchdog(
         ptx_set.behavior.enable_loop_watchdog,
         std::env::var("ATLAS_CONTENT_LOOP_WATCHDOG").ok().as_deref(),

@@ -286,6 +286,85 @@ extern "C" __global__ void glm5next_hc_mix(
 // right, so nothing failed — it just doubled the bandwidth of the hottest small kernel in the
 // model, silently, for the life of the port. Check the on-disk dtype of anything a decode
 // kernel streams, in BOTH directions.
+// ── glm5next_hc_mix_bf16_mr ──
+// `glm5next_hc_mix_bf16` with SEVERAL mixing rows per block.
+//
+// 🔴 THE ONE-ROW GRID RE-READS THE STREAM VECTOR 48 TIMES PER TOKEN. Grid (T, mix_hc) gives
+// every mixing row its own block, and each block reads `x` TWICE — once for the RMS pass, once
+// for its dot. At GLM's shape that is mix_hc = (2 + 4) * 4 = 24 blocks x 2 x 64 KB = 3.1 MB of
+// reads per token for 64 KB of distinct data. The one-row kernel's own note calls the repeated
+// RMS deliberate — "L2-resident after the first" — and at a 256-row sub-chunk that holds: the
+// live set is 16.8 MB. It is exactly why the kernel goes SUPERLINEAR when the row count grows.
+// At a 2048-row FFN window the live set is 134 MB, nothing is L2-resident, and the 24x re-read
+// becomes 3.2 GB of DRAM traffic. Measured: `glm5next_hc_mix_bf16` goes from 6.9% of prefill
+// at 256 rows to 15.8% at 2048 (peak 15.9 ms/call) — enough to eat the whole MoE saving that
+// the wider window buys, which is why widening GLM prefill has never paid.
+//
+// Rows per block cut both terms: `HC_MIX_ROWS` rows share ONE RMS pass and amortise the `x`
+// reads. At 4 rows a token costs 6 blocks x (1 + 4) = 30 reads instead of 24 x 2 = 48, and the
+// grid is still (T, 6) = 1536 blocks at T = 256 — nowhere near the single-block defect the
+// split was created to fix.
+//
+// 🪤 BIT-IDENTICAL, and deliberately so. Every (t, m) keeps its own dot with the SAME 256-wide
+// strided accumulation order and the SAME tree reduce, and the RMS is the same expression over
+// the same inputs — computing it once per block rather than once per row cannot change its
+// value. `examples/glm5next_hc_split_gate.rs` asserts the split against the fused
+// `glm5next_hc_pre` oracle byte for byte and covers this kernel too.
+#ifndef HC_MIX_ROWS
+#define HC_MIX_ROWS 4
+#endif
+
+extern "C" __global__ void glm5next_hc_mix_bf16_mr(
+    const float* __restrict__ streams,  // [T, hc, H] FP32 highway (mHC)
+    const __nv_bfloat16* __restrict__ hc_fn, // [mix_hc, hc*H] BF16 — as on disk
+    float* __restrict__ mix_out,        // [T, mix_hc]
+    const unsigned int hidden_size,
+    const unsigned int hc_mult,
+    const float norm_eps
+) {
+    const unsigned int t = blockIdx.x;
+    const unsigned int m0 = blockIdx.y * HC_MIX_ROWS;
+    const unsigned int tid = threadIdx.x;
+    const unsigned int hc_dim = hc_mult * hidden_size;
+    const unsigned int mix_hc = (2 + hc_mult) * hc_mult;
+
+    const float* x = streams + (size_t)t * hc_dim;
+    __shared__ float red[GLM_HC_BLOCK];
+
+    // Pass 1: RMS over the flattened hc*H vector — identical order to the fused kernel, and
+    // now paid ONCE for every row this block owns.
+    float ss = 0.f;
+    for (unsigned int k = tid; k < hc_dim; k += GLM_HC_BLOCK) {
+        float v = (float)x[k];
+        ss += v * v;
+    }
+    red[tid] = ss;
+    __syncthreads();
+    const float ssum = glm_hc_block_reduce(red, tid);
+    const float rsqrt = rsqrtf(ssum / (float)hc_dim + norm_eps);
+    // Every thread read red[0] above; `red` is reused below, so nobody may write it yet.
+    __syncthreads();
+
+    // Pass 2: this block's mixing rows, each exactly as the one-row kernel does it.
+    // `m0` and `j` are block-uniform, so the bound is uniform and the `__syncthreads()` inside
+    // the loop is reached by every thread or by none.
+    for (unsigned int j = 0; j < HC_MIX_ROWS; ++j) {
+        const unsigned int m = m0 + j;
+        if (m >= mix_hc) break;
+        const __nv_bfloat16* fn_row = hc_fn + (size_t)m * hc_dim;
+        float acc = 0.f;
+        for (unsigned int k = tid; k < hc_dim; k += GLM_HC_BLOCK) {
+            acc += __bfloat162float(fn_row[k]) * (float)x[k];
+        }
+        red[tid] = acc;
+        __syncthreads();
+        const float r = glm_hc_block_reduce(red, tid);
+        if (tid == 0) mix_out[(size_t)t * mix_hc + m] = r * rsqrt;
+        // `red` is rewritten by the next row; nobody may run ahead of the reduce above.
+        __syncthreads();
+    }
+}
+
 extern "C" __global__ void glm5next_hc_mix_bf16(
     const float* __restrict__ streams,  // [T, hc, H] FP32 highway (mHC)
     const __nv_bfloat16* __restrict__ hc_fn, // [mix_hc, hc*H] BF16 — as on disk
