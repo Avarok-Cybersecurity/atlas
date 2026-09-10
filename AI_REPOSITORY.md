@@ -208,14 +208,14 @@ descriptor; the agentic figures are from the committed gate record
 | `ttft-warm-gate` | **required** | ~3–6 min | cached-prefix TTFT vs a stored same-box baseline (median ≤3%, p90 ≤5%) |
 | `ttft-cold-gate` | **required** | ~3–6 min | uncached prefill TTFT — the leg that sees a cold-load regression |
 | `cross-contamination` | promotion candidate (PR #433) | ~2–5 min | concurrent requests must not change each other's output; zero tolerance |
-| `kat-equality-gate` | promotion candidate (#936) | ~2× one BFCL leg | the same sample must answer identically whatever ran before it — one draw, ≥2 request ORDERS, one server, byte-exact per `sample_id`. Serve it with `--hermetic`. A candidate, not required, because its bar is that the shipped regime is order-independent and a gate may not certify itself in the change that first records it |
+| `kat-equality-gate` | **required** (since 2026-09-10) | ~65 min | the same sample must answer identically whatever ran before it — 257 samples, 2 request ORDERS, one server, byte-exact per `sample_id`. Its BENCH.toml entry pins `hermetic=true` plus the two keys `--hermetic` expands into, so the serve regime IS the subject. Open, it reads 36 of 257; closed, 0. The cap is a PREFIX of the golden draw, chosen as the smallest one covering every subset order-dependence has appeared in — it is not a random subsample, and it never looks at the 738-sample `non_live` tail |
 | `agentic-webserver` | **required** (35B MoE flagship); dense 27B registered unmeasured — baselining only, no thresholds | ~5 min × 10 iterations | the flagship agentic task, scored on outcome and process |
 | `bfcl-subset` | **required** | ~3.5 h | BFCL v4 single-turn, golden MLPerf draw (pinned n=995), dense 27B |
 | `bfcl-subset-echolp` | **required** | ~3.5 h | BFCL v4, echolp draw (pinned n=1004), 35B MoE — the two draws are not score-comparable (`gate/mod.rs:56`) |
 | `bfcl-full` | not required | ~12 h | the unsampled ~3,625-sample BFCL run |
 | `serve-matrix` | not required | ~5–10 min / checkpoint | multi-checkpoint breadth survey for release notes |
 
-The eleven **required** gates are `REQUIRED_GATES`
+The twelve **required** gates are `REQUIRED_GATES`
 (`crates/atlas-plugin/src/gate/mod.rs`), derived element-by-element from
 `coverage::REQUIRED` so the two lists cannot diverge. (This paragraph said
 "five" and listed `concurrency-sweep` as not required until 2026-08-29; the

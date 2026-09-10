@@ -212,9 +212,12 @@ impl Benchmark for KatEquality {
             ParamSpec::new(
                 "sample_cap",
                 "Sample cap",
-                "Truncate the draw to this many samples (0 = the whole draw). The \
-                 measured effect was 12 samples in 995, so a small cap buys speed by \
-                 giving up the power to see it — say what you capped when you report.",
+                "Truncate the draw to this many samples (0 = the whole draw). This is \
+                 a PREFIX, not a sample: the draw concatenates subsets in sorted name \
+                 order, so a cap decides which subsets are compared at all. Pick it from \
+                 where the effect lives, and re-run the negative control AT the cap — one \
+                 taken on the whole draw does not describe a capped run, because \
+                 truncating changes what ran before every surviving sample.",
                 ParamKind::Int { min: 0, max: 5000 },
                 ParamValue::Int(DEFAULT_SAMPLE_CAP as i64),
             ),
@@ -282,8 +285,10 @@ impl Benchmark for KatEquality {
                     )));
                 if self.sample_cap > 0 {
                     frame = frame.log_line(LogLine::warn(format!(
-                        "capped at {n} samples — the effect this gate hunts was 12 in 995, \
-                         so a green here has less power than the whole draw would give"
+                        "capped at {n} of the golden 995 — the cap TRUNCATES, and the draw \
+                         concatenates in sorted subset order, so this selects which subsets \
+                         are compared rather than a random subsample of them; say the cap \
+                         when you report a green"
                     )));
                 }
                 Ok(frame)

@@ -57,8 +57,8 @@ fn the_generation_budget_is_bfcls_own_not_a_second_opinion() {
     };
 
     let kat = KatEquality::default().parameters();
-    let bfcl = crate::benchmarks::bfcl::Bfcl::new(crate::benchmarks::bfcl::Variant::Subset)
-        .parameters();
+    let bfcl =
+        crate::benchmarks::bfcl::Bfcl::new(crate::benchmarks::bfcl::Variant::Subset).parameters();
 
     assert_eq!(
         int_default(&kat, "max_new_tokens"),

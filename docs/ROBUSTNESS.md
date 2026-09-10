@@ -2033,3 +2033,53 @@ condition the new rule refuses.
 
 And the corollary already in practice here: run the guard against real history
 before trusting it. The nine records were on disk the whole time.
+
+### A cap that truncates is not a cap that samples
+
+The equality gate takes a `sample_cap`. Reading it as "trade power for time"
+— 257 of 995 buys ~95 % of the power for a quarter of the GPU — is wrong twice
+over, and the second error is the dangerous one.
+
+`sample_cap` calls `Vec::truncate` on the drawn samples, and `draw::plan`
+concatenates subsets in **sorted name order**. So the cap does not sample the
+draw; it selects a deterministic PREFIX of it, and therefore selects WHICH
+SUBSETS are compared at all. A cap of 257 compares `irrelevance`,
+`live_irrelevance`, `live_multiple`, `live_parallel` and
+`live_parallel_multiple`, and never looks at `multiple`, `parallel`,
+`parallel_multiple` or any `simple_*` — 738 samples, permanently invisible.
+"95 % power" describes a random subsample. This is not one, and no amount of
+repetition changes which samples it omits.
+
+The second error: the gate hunts an ORDER effect, and truncating the draw
+changes what ran before every surviving sample. The 12-in-995 divergence was
+measured with all 995 running. Nothing about that measurement licenses the
+claim that the same 12 appear when only 257 run. A cap validated by a control
+at the FULL draw is a control for a different instrument.
+
+So the cap was chosen from the divergence's own distribution rather than from
+a power calculation. The 12 samples that diverge on this checkpoint are 10
+`live_irrelevance`, 1 `live_multiple` and 1 `live_parallel_multiple`. In the
+golden draw's concatenation order those sit at positions 25–112, 113–217 and
+234–257. **257 is the end of `live_parallel_multiple`** — the smallest prefix
+containing every subset in which the effect has ever been observed. The 738
+samples it gives up are precisely the ones that have never produced one.
+
+**The control, run at the cap.** The open arm at 257 samples in two orders
+reads **36 divergences of 257** (spark-43fa, 2026-09-10, 3878 s; identical 221,
+unmeasured 0, empty_replies 0). So the cap is red with a wide margin and the
+gate is not measuring nothing.
+
+Note 36 against #936's 12: those are different instruments, not a regression
+between them. #936 compared the whole draw against its own four shards; this
+gate reverses the request order against ONE server, which perturbs more, so it
+sees more. The prose that reports a gate's sensitivity has to name which
+instrument produced the number, or the two get read as a trend.
+
+The cap also turned out to be the cheap half of the decision it looked like.
+At 257 the gate costs ~65 min; the whole draw in two orders would be ~4.2 h, on
+every PR, forever — against a campaign that is ~4.5 h in total today.
+
+**The rule.** Before capping any draw, ask whether the cap samples or
+truncates, and if it truncates, ask what it deterministically stops looking at.
+Then re-run the negative control AT THE CAP: a control that went red on the
+full draw says nothing about a capped one.
