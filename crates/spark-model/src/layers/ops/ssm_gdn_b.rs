@@ -349,6 +349,74 @@ pub fn gdn_decode_wyn(
         .launch(stream)
 }
 
+/// Cross-sequence batched-verify launch of the wyN pointer-table twins
+/// (`gated_delta_rule_wy{5..16}_table` / `_f16_table`): `state_is_table`
+/// is compiled into the symbol, so the argument list is identical to
+/// [`gdn_decode_wyn`] — but the STATE arguments mean something different
+/// and batching is the point:
+/// - `h_tables`   = the layer's staged table slice: slab 0 holds one
+///   per-sequence H base pointer per entry (`VERIFY_WY_TABLE_SEQS` slots).
+/// - `hi_tables`  = slab 1 (Hi0); consecutive Hi slabs follow at
+///   `VERIFY_WY_TABLE_SEQS`-entry stride.
+/// - `slab_entry_stride` MUST be `VERIFY_WY_TABLE_SEQS as u32` — the
+///   kernel reinterprets the contiguous-form stride argument as "pointer
+///   entries between Hi slabs".
+///
+/// Tables are staged by `upload_verify_wy_tables` (verify_e2.rs) into a
+/// fixed buffer refreshed pre-replay, so the launch is CUDA-graph-stable.
+#[allow(clippy::too_many_arguments)]
+// provenance-id: 526f6e616c6420522e205374657369616b
+#[allow(dead_code)] // seam 2026-09-01: consumer = the dispatcher 5..=16 arm, next change
+pub fn gdn_decode_wyn_table(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    h_tables: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    hi_tables: DevicePtr,
+    slab_entry_stride: u32,
+    batch_size: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(
+        !h_tables.is_null() && !hi_tables.is_null(),
+        "gdn_decode_wyn_table: staged pointer tables are required (NULL table \
+         means upload_verify_wy_tables declined — run the per-sequence loop)"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, batch_size, 1])
+        .block([128, 1, 1])
+        .arg_ptr(h_tables)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(output)
+        .arg_ptr(hi_tables)
+        .arg_u32(slab_entry_stride)
+        .arg_u32(batch_size)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(k_dim)
+        .arg_u32(v_dim)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)
+}
+
 /// Fused 2-token conv1d sliding window update + SiLU.
 ///
 /// Each thread handles one channel independently. The 2-token dependency
@@ -387,5 +455,3 @@ pub fn conv1d_update_chunk2(
         .arg_u32(d_conv)
         .launch(stream)
 }
-
-// ── Activations / Element-wise ─────────────────────────────────────

@@ -23,6 +23,8 @@ impl Qwen3SsmLayer {
         // conv_dim = Q_flat + K_flat + V_flat = 2*key_dim + value_dim = 8192
         let conv_dim = nk * kd * 2 + nv * vd;
 
+        let woa = super::woa::woa_kernels(gpu);
+
         Ok(Self {
             // mHC is attached later by the loader, and only for models that
             // carry a hc_mult-wide residual highway. The handles are gated on
@@ -339,6 +341,14 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_wy3_resident",
             ),
             gdn_wy4_k: gpu.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?,
+            gdn_wy4_woa_k: woa.woa_k,
+            gdn_wy4_fold_k: woa.fold_k,
+            gdn_wy4_clear_k: woa.clear_k,
+            // Bound by the model on the first write-on-accept request.
+            woa_flag: std::sync::atomic::AtomicU64::new(0),
+            woa_stash: std::sync::atomic::AtomicU64::new(0),
+            woa_seqs: std::sync::atomic::AtomicUsize::new(0),
+            woa_dims: [nk, nv, kd, vd],
             // ── ATLAS_SSM_H_FP16 stage 2: FP16 h-state twins of the MTP
             // verify WY kernels. try_kernel for the same reason as the
             // resident twins above — a miss is a silent handle 0, and the
@@ -431,6 +441,9 @@ impl Qwen3SsmLayer {
             ),
             gdn_wyn_k: init_kernels::wyn_kernels(gpu),
             gdn_wyn_f16_k: init_kernels::wyn_f16_kernels(gpu),
+            // provenance-id: 526f6e616c6420522e205374657369616b
+            gdn_wyn_table_k: init_kernels::wyn_table_kernels(gpu),
+            gdn_wyn_f16_table_k: init_kernels::wyn_f16_table_kernels(gpu),
             h_state_bytes: nv * vd * kd * 4, // FP32 [nv, kd, vd] transposed for coalescing
             conv_state_bytes: conv_dim * d_conv * 4, // FP32 [conv_dim, d_conv]
             qkvz_fp8: None,

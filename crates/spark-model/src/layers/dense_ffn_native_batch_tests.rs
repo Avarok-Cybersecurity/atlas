@@ -76,6 +76,7 @@ fn run_batch(native_fp8: bool, rows: u32) {
         // reads the decode scalars this flag guards.
         decode_step: false,
         gdn_exact_replay: false,
+        gdn_write_on_accept: false,
         token_ids: None,
         host_token_ids: None,
         routed_lora_layers: None,
