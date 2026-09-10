@@ -13,7 +13,7 @@ pub(crate) fn build_prefix_cache(
     args: &cli::ServeArgs,
     config: &ModelConfig,
 ) -> Box<dyn spark_runtime::prefix_cache::PrefixCache> {
-    if args.enable_prefix_caching && !config.kv_only_prefix_cache_is_safe() {
+    if args.prefix_caching_enabled() && !config.kv_only_prefix_cache_is_safe() {
         tracing::warn!(
             model_type = %config.model_type,
             "Prefix caching: DISABLED because this model builds per-sequence state outside KV; \
@@ -21,7 +21,7 @@ pub(crate) fn build_prefix_cache(
         );
         return Box::new(spark_runtime::prefix_cache::NoPrefixCaching);
     }
-    if args.enable_prefix_caching {
+    if args.prefix_caching_enabled() {
         if args.high_speed_swap {
             tracing::info!(
                 "Prefix caching: ENABLED (radix tree, with --high-speed-swap disk-side refcounts)"
@@ -80,6 +80,26 @@ pub(crate) fn build_model(
     nllb_lang: Option<(u32, u32)>,
     nllb_lora_dir: Option<std::path::PathBuf>,
 ) -> Result<Box<dyn spark_model::traits::Model>> {
+    // ★ PIN THE RESTORE THRESHOLD BEFORE THE MODEL EXISTS. `marconi_min_tokens`
+    // is a process-wide `OnceLock`, so whoever reads it first fixes it for the
+    // life of the serve. Setting it here — ahead of every prefill path that
+    // consults it — is what makes `--marconi-min-tokens` (and therefore the
+    // recipe key, and therefore the gate record) actually take effect.
+    //
+    // A lost race means something read the threshold before serve configured
+    // it, i.e. the flag silently did nothing. That is exactly the class of
+    // failure that cost a night on #936 — a lever set but never armed — so it
+    // warns loudly rather than being ignored.
+    if !spark_model::set_marconi_min_tokens(args.marconi_min_tokens) {
+        tracing::warn!(
+            "--marconi-min-tokens={} was NOT applied: the threshold had already \
+             been read and is fixed for this process. The serve is running with \
+             the earlier value, and any record it writes would misstate its \
+             configuration.",
+            args.marconi_min_tokens,
+        );
+    }
+
     let mtp_quant: spark_model::layers::MtpQuantization = args
         .mtp_quantization
         .parse()

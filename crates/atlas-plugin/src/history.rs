@@ -77,6 +77,23 @@ pub struct RunRecord {
     /// EVERY parameter, not just the overridden ones.
     #[serde(default)]
     pub params: BTreeMap<String, String>,
+    /// The serve overrides in force when this run was measured — the merged
+    /// result of the baseline's `[benchmarks.serve_overrides]` and any
+    /// `--serve-override`, i.e. exactly what `GateRecord.serve_overrides`
+    /// carries, so the two never disagree about one run.
+    ///
+    /// This is the run's REGIME, and it is the half of comparability that
+    /// `params` cannot express: two runs with identical parameters measured
+    /// under different serve overrides are different measurements that look
+    /// the same.
+    ///
+    /// LIMIT, stated because it is not detectable from the record: empty means
+    /// "this process did not serve the endpoint", NOT "the endpoint had no
+    /// overrides". A run attached to an already-running server with `--url`
+    /// records empty however that server was configured. Only self-started
+    /// runs (`--pull-request-gate`) carry a trustworthy regime here.
+    #[serde(default)]
+    pub serve_overrides: BTreeMap<String, String>,
     #[serde(default)]
     pub source: RunSource,
     #[serde(default)]
@@ -94,6 +111,7 @@ impl RunRecord {
         descriptor: &BenchmarkDescriptor,
         values: &ParamValues,
         target: &TargetEndpoint,
+        serve_overrides: BTreeMap<String, String>,
         source: RunSource,
         atlas_version: &str,
         frame: BenchmarkResult,
@@ -107,6 +125,7 @@ impl RunRecord {
             target_url: target.base_url.clone(),
             target_model: target.model.clone(),
             params: values.to_strings(),
+            serve_overrides,
             source,
             atlas_version: atlas_version.to_string(),
             frame,
@@ -164,6 +183,9 @@ impl RunRecord {
             target_url: String::new(),
             target_model: String::new(),
             params: BTreeMap::new(),
+            // A legacy record predates the field; empty is the only honest
+            // answer, and `RunSource::Unknown` beside it says why.
+            serve_overrides: BTreeMap::new(),
             source: RunSource::Unknown,
             atlas_version: String::new(),
             frame,

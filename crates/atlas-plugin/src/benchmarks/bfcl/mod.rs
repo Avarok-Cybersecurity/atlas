@@ -48,7 +48,8 @@ pub use report::{
 
 mod descriptors;
 pub use descriptors::{
-    ECHOLP_METADATA, FULL_DESCRIPTOR, FULL_METADATA, SUBSET_DESCRIPTOR, SUBSET_ECHOLP_DESCRIPTOR,
+    ECHOLP_A, ECHOLP_B, ECHOLP_C, ECHOLP_D, ECHOLP_METADATA, FULL_DESCRIPTOR, FULL_METADATA,
+    SUBSET_A, SUBSET_B, SUBSET_C, SUBSET_D, SUBSET_DESCRIPTOR, SUBSET_ECHOLP_DESCRIPTOR,
     SUBSET_METADATA,
 };
 
@@ -57,71 +58,6 @@ pub enum Variant {
     Subset,
     SubsetEcholp,
     Full,
-}
-
-impl Variant {
-    fn descriptor(self) -> &'static BenchmarkDescriptor {
-        match self {
-            Variant::Subset => &SUBSET_DESCRIPTOR,
-            Variant::SubsetEcholp => &SUBSET_ECHOLP_DESCRIPTOR,
-            Variant::Full => &FULL_DESCRIPTOR,
-        }
-    }
-    fn metadata(self) -> &'static PluginMetadata {
-        match self {
-            Variant::Subset => &SUBSET_METADATA,
-            Variant::SubsetEcholp => &ECHOLP_METADATA,
-            Variant::Full => &FULL_METADATA,
-        }
-    }
-    fn default_pct(self, category: &str) -> f64 {
-        match (self, category) {
-            (Variant::Full, _) => 100.0,
-            (Variant::Subset, "non_live") => 62.0,
-            (Variant::Subset, _) => 10.0,
-            (Variant::SubsetEcholp, "non_live") => 46.0,
-            (Variant::SubsetEcholp, "live") => 23.0,
-            (Variant::SubsetEcholp, _) => 12.0,
-        }
-    }
-    /// The subset floor this variant's draw is DEFINED with.
-    ///
-    /// ★ Read from the variant's own `DrawSpec`, never written out again here.
-    /// `configure` rebuilds the whole spec from parameter defaults, so a floor
-    /// spelled out a second time in this file is a second source of truth that
-    /// silently wins. It already went wrong exactly that way: the echolp
-    /// variant was added without extending an `if v == Variant::Subset { 25 }
-    /// else { 0 }`, so its floor defaulted to 0. That takes `live_parallel`
-    /// (16 rows) and `live_parallel_multiple` (24) by percentage instead of
-    /// whole, and the draw silently became n=972 rather than the pinned 1004 --
-    /// a plausible-looking score measured against a baseline for a different
-    /// draw.
-    fn default_floor(self) -> usize {
-        self.spec().subset_floor.unwrap_or(0)
-    }
-
-    /// The draw this variant is defined by. Single source of truth for both
-    /// the constructor and the parameter defaults.
-    fn spec(self) -> DrawSpec {
-        match self {
-            Variant::Subset => DrawSpec::golden(),
-            Variant::SubsetEcholp => DrawSpec::echolp(),
-            Variant::Full => DrawSpec::full(),
-        }
-    }
-
-    /// The sample count this draw must produce, if it is a pinned draw.
-    ///
-    /// A draw that silently drifts off its pinned n produces a score that looks
-    /// fine and compares against nothing — the same failure mode as scoring one
-    /// draw against another's threshold.
-    fn expected_samples(self) -> Option<usize> {
-        match self {
-            Variant::Subset => Some(995),
-            Variant::SubsetEcholp => Some(1004),
-            Variant::Full => None,
-        }
-    }
 }
 
 /// What the scorer prints.
@@ -133,6 +69,11 @@ struct Scores {
     subset_scores: BTreeMap<String, f64>,
     total_samples: usize,
     unmatched_responses: usize,
+    /// Per-subset `(hits, n)` from `score.py`. The only thing that recombines
+    /// exactly across shards — see `benchmarks::bfcl::aggregate`. `default` so
+    /// a record written before the scorer emitted these still deserializes.
+    #[serde(default)]
+    subset_totals: BTreeMap<String, (u64, u64)>,
 }
 
 /// Where the state machine is.
@@ -145,6 +86,9 @@ enum Phase {
 
 pub struct Bfcl {
     variant: Variant,
+    /// Which slice of the draw this run measures, if it is a shard of a group.
+    /// `None` is the whole draw and is byte-for-byte the pre-shard behaviour.
+    shard: Option<dataset::Shard>,
     handle: Option<PluginHandle>,
     phase: Phase,
     artifacts: Option<provision::Artifacts>,
@@ -160,6 +104,9 @@ pub struct Bfcl {
     request_timeout: Duration,
     started: Option<Instant>,
     tool_call_samples: usize,
+    /// Samples whose request failed at the transport, scored as "no call".
+    /// Published as a metric so a group can refuse a degraded member.
+    transport_errors: usize,
     /// The served model, captured at `load()` from the target endpoint.
     /// Decides whether the MLPerf floor VERDICT applies (`report.rs`) — the
     /// floor rides on the Qwen3.6-27B submission checkpoints and does not
@@ -170,10 +117,47 @@ pub struct Bfcl {
     baseline_mins: report::BaselineMins,
 }
 
+/// The `shard` parameter value that means "leave the constructor's slice
+/// alone". See the spec's own note for why this is a word and not an empty
+/// string or `0/1`.
+pub const INHERIT_SHARD: &str = "inherit";
+
 impl Bfcl {
+    /// The sample count THIS run should produce: the variant's pinned draw, or
+    /// this shard's slice of it.
+    ///
+    /// Derived with `draw::shard_take` over the same plan the loader uses, so a
+    /// shard cannot disagree with the rows it was handed. Restating a per-shard
+    /// number here is the `default_floor` mistake this file already documents.
+    fn expected_samples(&self) -> Option<usize> {
+        let whole = self.variant.expected_samples()?;
+        match self.shard {
+            None => Some(whole),
+            Some(sh) => {
+                let totals = draw::reference_subset_totals();
+                let plan = draw::plan(&self.variant.spec(), &totals);
+                Some(
+                    plan.iter()
+                        .map(|(_, take)| draw::shard_take(*take, sh.index, sh.count))
+                        .sum(),
+                )
+            }
+        }
+    }
+
     pub fn new(variant: Variant) -> Self {
+        Self::maybe_sharded(variant, None)
+    }
+
+    /// One shard of `variant`'s draw. The group aggregates the members.
+    pub fn sharded(variant: Variant, index: usize, count: usize) -> Self {
+        Self::maybe_sharded(variant, Some(dataset::Shard { index, count }))
+    }
+
+    fn maybe_sharded(variant: Variant, shard: Option<dataset::Shard>) -> Self {
         Self {
             variant,
+            shard,
             handle: None,
             phase: Phase::Provision,
             artifacts: None,
@@ -188,6 +172,7 @@ impl Bfcl {
             request_timeout: Duration::from_secs(600),
             started: None,
             tool_call_samples: 0,
+            transport_errors: 0,
             target_model: None,
             baseline_mins: report::BaselineMins::default(),
         }
@@ -199,81 +184,6 @@ impl Bfcl {
 
     fn elapsed(&self) -> Duration {
         self.started.map(|s| s.elapsed()).unwrap_or_default()
-    }
-
-    async fn generate_one(&mut self) -> Result<()> {
-        let handle = self.handle()?.clone();
-        let sample = self.samples[self.cursor].clone();
-        let target = handle.target();
-        let body = json!({
-            "model": target.model,
-            "stream": true,
-            "temperature": self.temperature,
-            "max_tokens": self.max_new_tokens,
-            "messages": sample.messages,
-            "tools": sample.tools,
-            "tool_choice": sample.tool_choice,
-        });
-        let outcome = http::chat_stream(target, &body, self.request_timeout).await;
-        let (tool_calls, has_tool_calls) = match &outcome {
-            Ok(o) => (
-                o.tool_calls
-                    .iter()
-                    .map(|c| json!({"name": c.name, "arguments": c.arguments}))
-                    .collect::<Vec<_>>(),
-                !o.tool_calls.is_empty(),
-            ),
-            Err(e) => {
-                // A transport failure is scored as "no call", which is the
-                // honest reading: the endpoint produced nothing. It is also
-                // logged, so a run degraded by errors is visible rather than
-                // showing up only as a mysteriously low score.
-                handle.warn(one_line(format!("sample {}: {e:#}", sample.sample_id)));
-                (Vec::new(), false)
-            }
-        };
-        if has_tool_calls {
-            self.tool_call_samples += 1;
-        }
-        self.responses.push(json!({
-            "sample_id": sample.sample_id,
-            "subset": sample.subset,
-            "has_tool_calls": has_tool_calls,
-            "tool_calls": tool_calls,
-        }));
-        self.cursor += 1;
-        Ok(())
-    }
-
-    async fn score(&mut self) -> Result<Scores> {
-        let artifacts = self
-            .artifacts
-            .clone()
-            .context("artifacts were not provisioned")?;
-        let path = artifacts.dir.join("responses.jsonl");
-        let mut text = String::new();
-        for r in &self.responses {
-            text.push_str(&serde_json::to_string(r)?);
-            text.push('\n');
-        }
-        std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
-        self.responses_path = Some(path.clone());
-
-        let out = crate::python::run(
-            &artifacts.python,
-            &[
-                artifacts.scorer.to_str().context("scorer path")?,
-                "--dataset",
-                artifacts.dataset.to_str().context("dataset path")?,
-                "--responses",
-                path.to_str().context("responses path")?,
-            ],
-            Some(&artifacts.dir),
-        )
-        .await
-        .context("scoring failed — responses.jsonl is kept, so this can be rescored")?;
-        serde_json::from_str(out.stdout.trim())
-            .with_context(|| format!("scorer printed unexpected output: {}", out.stdout))
     }
 }
 
@@ -366,6 +276,28 @@ impl Benchmark for Bfcl {
                 ParamKind::Int { min: 10, max: 3600 },
                 ParamValue::Int(600),
             ),
+            ParamSpec::new(
+                "shard",
+                "Shard",
+                "Run one Nth of the draw, as `index/count` with a 0-based index \
+                 (`2/7`; the whole draw is `0/1`). `inherit` runs whatever this \
+                 benchmark id already selects: the whole draw, or — for a \
+                 registered shard member like `bfcl-subset-a` — its own quarter.",
+                ParamKind::Text,
+                // ★ THE DEFAULT IS `inherit`, NOT `0/1`. The registered shard
+                // members set their slice in the constructor, and a default
+                // that meant "the whole draw" would overwrite it on every
+                // `configure` — which the TUI and every gate run call — turning
+                // all four members into four copies of the whole draw. The
+                // union would be 4 x 995 rows with every sample scored four
+                // times. See
+                // `a_shard_member_keeps_its_slice_under_default_parameters`.
+                //
+                // A word rather than an empty string because `ParamKind::Text`
+                // refuses an empty value outright, so "" could never be the
+                // default that reaches `configure`.
+                ParamValue::Text(INHERIT_SHARD.to_string()),
+            ),
         ];
         specs.extend(report::BaselineMins::specs());
         specs
@@ -389,6 +321,11 @@ impl Benchmark for Bfcl {
             .collect(),
             subset_floor: (floor > 0).then_some(floor),
         };
+        // `inherit` leaves `self.shard` exactly as the constructor set it.
+        let shard = values.text("shard")?;
+        if shard.trim() != INHERIT_SHARD {
+            self.shard = Some(dataset::Shard::parse(shard.trim()).map_err(anyhow::Error::msg)?);
+        }
         self.max_new_tokens = values.usize("max_new_tokens")?;
         self.temperature = values.float("temperature")?;
         self.request_timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
@@ -414,7 +351,7 @@ impl Benchmark for Bfcl {
                     .artifacts
                     .clone()
                     .context("artifacts were not provisioned")?;
-                self.samples = dataset::load(&artifacts.dataset, &self.spec)?;
+                self.samples = dataset::load_shard(&artifacts.dataset, &self.spec, self.shard)?;
                 self.phase = Phase::Generate;
                 let n = self.samples.len();
                 let mut frame = BenchmarkResult::running("draw", self.elapsed())
@@ -429,12 +366,16 @@ impl Benchmark for Bfcl {
                     )));
                 // The single most useful thing to say up front: whether this
                 // is the MLPerf-comparable draw or something else.
-                if let Some(want) = self.variant.expected_samples()
+                if let Some(want) = self.expected_samples()
                     && n != want
                 {
+                    let of = match self.shard {
+                        None => String::new(),
+                        Some(sh) => format!(" (shard {} of {})", sh.index, sh.count),
+                    };
                     frame = frame.log_line(LogLine::warn(format!(
-                        "n={n}, not the pinned {want} — this run is NOT comparable to this \
-                         draw's baseline"
+                        "n={n}, not the pinned {want}{of} — this run is NOT comparable to \
+                         this draw's baseline"
                     )));
                 }
                 Ok(frame)
@@ -490,9 +431,19 @@ impl Benchmark for Bfcl {
     }
 }
 
+#[path = "variant.rs"]
+mod variant_impl;
+
+#[path = "exec.rs"]
+mod exec;
+
 #[cfg(test)]
 #[path = "bfcl_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bfcl_shard_tests.rs"]
+mod shard_tests;
 
 #[cfg(test)]
 #[path = "aggregate_tests.rs"]

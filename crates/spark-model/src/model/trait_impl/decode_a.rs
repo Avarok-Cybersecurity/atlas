@@ -88,7 +88,7 @@ impl TransformerModel {
         // path bypasses will show (a) a different fingerprint cold-vs-ON or
         // (b) a different fingerprint between two ON runs (leftover from the
         // prior pool occupant) — that is the stale-scratch culprit.
-        if seq.seq_len == seq.prompt_len && std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+        if seq.seq_len == seq.prompt_len && self.levers.ssm_save_dump {
             self.buffers
                 .debug_buffer_checksum(self.gpu.as_ref(), stream, "decode_step0_pre");
             self.ssm_pool.debug_state_checksum(
@@ -256,14 +256,13 @@ impl TransformerModel {
         // CBD: run the FIRST decode step eagerly when dumping so per-layer
         // probes can sync (illegal under graph capture). Subsequent steps
         // still capture/replay normally.
-        let dump_step0 =
-            seq.seq_len == seq.prompt_len && std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok();
+        let dump_step0 = seq.seq_len == seq.prompt_len && self.levers.ssm_save_dump;
         // EXPERIMENT (ATLAS_EP_GRAPHS=1): allow CUDA-graph capture under EP. The
         // EP all-reduce queues ncclSend/Recv + local-add on the compute (capture)
         // stream; NCCL ≥2.9 supports graph capture, so this MAY capture cleanly
         // and remove per-kernel launch overhead. Env-gated so it can be toggled
         // off at deploy time (instant revert) if capture crashes / replay hangs.
-        let ep_graphs = std::env::var("ATLAS_EP_GRAPHS").is_ok_and(|v| v == "1" || v == "true");
+        let ep_graphs = self.levers.ep_graphs;
         // GDN HeadParallel TP decode graphs (ATLAS_GDN_DECODE_GRAPH=1, default
         // OFF): capture the whole single-token decode forward — ~130 kernels
         // plus the per-layer TP all-reduces (48 GDN SSM out_proj + 16
@@ -279,8 +278,7 @@ impl TransformerModel {
         // so replay is shape/pointer-static. This removes the per-token host
         // launch cost that dominates 2-node GDN HeadParallel decode. Capture
         // failure falls back to eager execution (graphs then stay disabled).
-        let gdn_graphs =
-            std::env::var("ATLAS_GDN_DECODE_GRAPH").is_ok_and(|v| v == "1" || v == "true");
+        let gdn_graphs = self.levers.gdn_decode_graph;
         // LoRA debugging hatch (ATLAS_LORA_EAGER=1): force eager decode when an
         // adapter is active so graph-vs-eager delta parity can be compared.
         // Default (unset) keeps graphs ON — the LoRA delta launches are
@@ -290,7 +288,7 @@ impl TransformerModel {
         // A layer that can never be captured (QSA's host top-k) vetoes
         // graphs for the whole model — a graph captured on the dense path
         // would silently replay WRONG attention once selection activates.
-        let layer_veto = self.layers.iter().any(|l| l.decode_graph_unsupported());
+        let layer_veto = self.decode_graph_veto;
         let use_graphs = (self.comm.is_none() || ep_graphs || gdn_graphs)
             && !self.profile
             && !self
@@ -394,9 +392,8 @@ impl TransformerModel {
             }
         }
 
-        let probe_layers = !use_graphs
-            && seq.seq_len == seq.prompt_len
-            && std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok();
+        let probe_layers =
+            !use_graphs && seq.seq_len == seq.prompt_len && self.levers.ssm_save_dump;
         if let Err(e) = self.decode_forward_body(
             hidden,
             residual,

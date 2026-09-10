@@ -10,16 +10,6 @@
 
 use super::*;
 
-/// Whether the single-launch CUTLASS grouped NVFP4 gate_up path is enabled
-/// (`ATLAS_HOLO_MOE_GROUPED_CUTLASS=1`). Off by default; falls back to the
-/// hand-rolled fused FP4/FP8 grouped kernels when unset.
-fn grouped_cutlass_gate_up_enabled() -> bool {
-    std::env::var("ATLAS_HOLO_MOE_GROUPED_CUTLASS")
-        .ok()
-        .as_deref()
-        == Some("1")
-}
-
 impl MoeLayer {
     /// Routed-expert grouped-GEMM path: upper-bound grid sizing → grouped
     /// gate+up GEMM → SiLU+mul → grouped down GEMM.
@@ -79,14 +69,14 @@ impl MoeLayer {
         //     exact_tiles off  p90 -5.0%
         // Median barely moved either way (+0.1% vs -0.9%), so only the tail shows it.
         // The win was measured on NVFP4; scope the default to where it was measured.
-        let exact_tiles = match std::env::var("ATLAS_MOE_PREFILL_EXACT_TILES")
-            .ok()
-            .as_deref()
-        {
-            Some("0") => false,
-            Some("1") => true,
-            _ => self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Nvfp4,
-        } && !ctx.graph_capture;
+        // The lever is tri-state; the DEFAULT is model-dependent, so it
+        // stays here rather than in `ModelLevers` — the win was measured on
+        // NVFP4 and the default is scoped to where it was measured.
+        let exact_tiles = ctx
+            .levers
+            .moe_prefill_exact_tiles
+            .unwrap_or(self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Nvfp4)
+            && !ctx.graph_capture;
         let max_m_tiles = if exact_tiles {
             let mut offsets = vec![0u8; (ne + 1) * 4];
             ctx.gpu
@@ -100,10 +90,8 @@ impl MoeLayer {
             }
             max_rows.div_ceil(64).max(1).min(worst_case_m_tiles)
         } else {
-            std::env::var("ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .filter(|&factor| factor > 0)
+            ctx.levers
+                .moe_prefill_max_load_factor
                 .map(|factor| {
                     let capped_rows = avg_per_expert.saturating_mul(factor);
                     worst_case_m_tiles.min(capped_rows.div_ceil(64).max(1) as u32)
@@ -131,7 +119,7 @@ impl MoeLayer {
         // dense token_to_perm over exactly [0, total_expanded), and grouped
         // kernels write every row that can be referenced by unpermute_reduce.
         // Skipping the memset removes ~138 MB/layer of scratch clears on Holo.
-        let force_zero = std::env::var("ATLAS_MOE_PREFILL_ZERO").ok().as_deref() == Some("1");
+        let force_zero = ctx.levers.moe_prefill_zero;
         if ctx.comm.is_some() || force_zero {
             let gate_bytes = total_expanded as usize * inter as usize * 2;
             let up_bytes = gate_bytes;
@@ -151,7 +139,7 @@ impl MoeLayer {
             // transposed ones, so it must be reachable when gate_ptrs_t is
             // absent — that is exactly the originals-only layout a
             // checkpoint-native model runs in.
-            if grouped_cutlass_gate_up_enabled() && self.cutlass_grouped_host.is_some() {
+            if ctx.levers.moe_grouped_cutlass && self.cutlass_grouped_host.is_some() {
                 // ── SINGLE-LAUNCH CUTLASS grouped NVFP4 gate_up
                 // (ATLAS_HOLO_MOE_GROUPED_CUTLASS=1) ── one
                 // GemmUniversalMode::kGrouped launch over all active experts in
@@ -366,12 +354,12 @@ impl MoeLayer {
             // Compounds with the FP4 gate_up path to run the whole FFN at FP4.
             // CUTLASS grouped down reads the ORIGINAL [N,K/2] table, so like
             // gate_up it must be reachable without down_ptrs_t.
-            if grouped_cutlass_gate_up_enabled()
+            if ctx.levers.moe_grouped_cutlass
                 && let Some(down_host) = self
                     .cutlass_grouped_host
                     .as_ref()
                     .and_then(|t| t.down.as_ref())
-                && std::env::var("ATLAS_HOLO_MOE_GROUPED_DOWN").ok().as_deref() == Some("1")
+                && ctx.levers.moe_grouped_down
             {
                 // ── CUTLASS grouped NVFP4 down (ATLAS_HOLO_MOE_GROUPED_CUTLASS
                 //    + ATLAS_HOLO_MOE_GROUPED_DOWN) ──
@@ -438,8 +426,7 @@ impl MoeLayer {
                         stream,
                     )?;
                 } else {
-                    let fp8_down = std::env::var("ATLAS_MOE_PREFILL_FP8_DOWN").ok().as_deref()
-                        == Some("1")
+                    let fp8_down = ctx.levers.moe_prefill_fp8_down
                         && self.moe_fp8_grouped_gemm_t.0 != 0
                         && self.bf16_to_fp8_k.0 != 0;
                     if fp8_down {

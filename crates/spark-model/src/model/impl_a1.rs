@@ -148,6 +148,13 @@ impl TransformerModel {
         // a sequence's attention reduction is invariant to how many other
         // sequences are co-batched (concurrent-decode determinism — see
         // tasks/determinism_investigation.md).
+        // ★ A FRESH RESOLVE, DELIBERATELY — not `*ModelLevers::get()`.
+        // `speculative::shadow_topk` documents the rule: the levers resolve
+        // "once per run rather than caching the answer in a `OnceLock` that a
+        // swap would pin". Building a second model must re-resolve, so this
+        // path stays uncached. It runs once per model, so it costs nothing;
+        // `get()` exists for the read-only sites that used to call this per
+        // layer per prefill.
         let mut levers = ops::ModelLevers::from_env();
         levers.max_decode_seqs = (max_batch_size as u32).max(1);
 
@@ -847,6 +854,9 @@ impl TransformerModel {
             lm_head_nvfp4,
             lm_head_nvfp4_t,
             lm_head_fp8,
+            // ★ Before `layers` is moved: the veto is a fold over the layers
+            // and must be computed while they are still nameable here.
+            decode_graph_veto: layers.iter().any(|l| l.decode_graph_unsupported()),
             layers,
             buffers,
             lora: None,

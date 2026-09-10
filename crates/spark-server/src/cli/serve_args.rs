@@ -634,6 +634,25 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = false, num_args = 0..=1, default_missing_value = "true")]
     pub enable_prefix_caching: bool,
 
+    /// Measure this server as a known-answer test: no state produced while
+    /// serving one request may reach another.
+    ///
+    /// ONE name for the whole regime, expanded in code by `cli::hermetic` —
+    /// see that module for which channels this closes and why it is a single
+    /// flag rather than the several `--serve-override`s that found them. It
+    /// is the name that lands in a gate record's `serve_overrides`, so a
+    /// reader comparing two runs can tell in one token whether they were
+    /// measured the same way.
+    ///
+    /// It OVERRIDES rather than merges: `--hermetic` beside a flag it closes
+    /// is a contradiction, and `validate_serve_args` refuses the pair rather
+    /// than picking a winner silently.
+    ///
+    /// Not a production setting. Every channel it closes exists because
+    /// carrying that state is normally worth real throughput.
+    #[arg(long, default_value_t = false, num_args = 0..=1, default_missing_value = "true")]
+    pub hermetic: bool,
+
     /// Dump every /v1/chat/completions, /v1/responses, and
     /// /v1/messages (Anthropic) request — plus the corresponding
     /// response (non-streaming) or aggregated stream — as JSONL to a
@@ -749,6 +768,32 @@ pub struct ServeArgs {
     /// 0 = tail + leaf snapshots only. 256 = every 4096 tokens (block_size=16).
     #[arg(long, default_value_t = 256)]
     pub ssm_checkpoint_interval: usize,
+
+    /// Minimum matched tokens before an SSM snapshot is RESTORED rather than
+    /// recomputed. Default 256; raise it very high to disable restore.
+    ///
+    /// Below the threshold a restore costs more in lost drafter acceptance
+    /// than the skipped prefill saves — measured at C=1 on identical-prompt
+    /// reps, the crossover is sharp between ~99 and ~219 matched tokens, and
+    /// 256 sits inside the win region and is block-aligned.
+    ///
+    /// ★ WHY THIS IS A FLAG AND NOT ONLY AN ENV VAR. Restoring from a snapshot
+    /// another request produced is a cross-request channel: which snapshots
+    /// survive in the shared pool depends on what ran before, a later request
+    /// restores from whichever anchor is there, and different anchors give
+    /// numerically different SSM state. Issue #936 measured that as a sharded
+    /// BFCL draw disagreeing with the same draw run whole on 12 of 995
+    /// samples; disabling restore takes it to 2. A known-answer gate needs that
+    /// configuration IN ITS RECORD, and only recipe keys reach a record —
+    /// `ATLAS_MARCONI_MIN_TOKENS` cannot, so a run using it could not say so.
+    ///
+    /// This is a correctness knob for KAT gates, not a throughput knob:
+    /// disabling restore gives up the warm-turn saving. On single-turn
+    /// workloads that saving measured as nothing (shard legs ran 1486-1492 s
+    /// with the pool off versus 1486-1539 s with it on), but a multi-turn
+    /// deployment should leave this alone.
+    #[arg(long, default_value_t = spark_model::DEFAULT_MARCONI_MIN_TOKENS)]
+    pub marconi_min_tokens: usize,
 
     /// Enable automatic context compaction for long conversations.
     /// **DISABLED BY DEFAULT** (2026-04-25): the auto-compactor has

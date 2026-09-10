@@ -122,6 +122,64 @@ Total: days of engineering, <1 minute of added CI time, <1% bench overhead.
 
 ---
 
+## 5b. Sharded (grouped) gates: what a merged record proves
+
+Two gates — `bfcl-subset` and `bfcl-subset-echolp` — are **groups**: their number
+is produced by four member runs that may execute on different boxes at the same
+time. That changes what a verifier has to check, in ways the layers above do not
+cover on their own.
+
+**Each member record is signed by the box that ran it.** These are
+`Sensitivity::Correctness` gates, which the agreement rule already permits to
+span registered signers, so a group whose four members carry three different
+fingerprints is legitimate. That is deliberate — it is the point of sharding —
+and it means the "one PR, one commit, one signer" CI step does not apply to a
+group's members the way it applies to a plain gate.
+
+**The composition is part of the claim.** Splitting a measurement across four
+signed records creates a failure mode that no single-record scheme has: every
+member can be individually valid while the SET is not the draw. A verifier must
+therefore check, and `check_group` does:
+
+1. every member has a record still standing at this commit — a subset is a
+   different sample set, not a partial one;
+2. all members name the same commit;
+3. the members' recorded shard identities are exactly `0..N` once each;
+4. no member reports transport failures.
+
+(3) is the one that is easy to miss and impossible to catch downstream. Two
+members that both ran shard C still contribute the right number of rows, so the
+exactly-pinned `samples` threshold passes while shard D was never measured. The
+shard identity is read from the RECORD — what the run says it did — rather than
+from the registry, so a mislabelled or hand-copied record is caught by the same
+rule.
+
+(4) matters because of which direction the error points. A transport failure is
+scored as "made no call", and "no call" is the *correct* answer across the
+irrelevance subsets — so a shard degraded by the network can score **better**
+while measuring less of the draw. A degraded member is refused rather than
+folded in.
+
+**Aggregation is over counts.** The group sums each member's per-subset
+`(hits, n)` integers and applies `score.py`'s category hierarchy once to the
+totals. Averaging four member scores would be wrong — `non_live` is
+hierarchical and `hallucination` is unweighted, so a subset missing from one
+shard silently changes a divisor. The merged record carries the aggregate under
+the group's id, with one member's provenance (checkpoint, serve overrides,
+hardware), which is sound only because (2) has already established the members
+agree on the commit.
+
+**What this does not prove.** A group inherits every limit in §1–§4, and adds
+one: the four members were measured in four separate processes, so any property
+that depends on request ORDER within a run is not preserved by the split. That
+is not hypothetical — issue #936 is exactly a case where the sharded and
+unsharded runs of the same draw at the same commit disagree on a handful of
+samples. Until that is explained, a merged record proves that each sample was
+scored once at this commit; it does not prove the merged score equals the score
+the same draw would have produced serially.
+
+---
+
 ## 6. What to Say in the README Instead
 
 > **What the gate verifies — and what it cannot.**

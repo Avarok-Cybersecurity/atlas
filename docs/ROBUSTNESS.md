@@ -1461,3 +1461,575 @@ I also had to correct myself publicly on that issue: a first "reproduced 3/3
 under load" was `grep -q a_hanging_decoder`, which matches the **passing**
 `test ... ok` line. Fourth checker bug of this record, same shape as the other
 three.
+
+## Wave 32 — a benchmark that disagrees with itself, and three levers that proved nothing until one did
+
+**#936: the same BFCL draw, at one commit, scored 12 of 995 samples
+differently depending on whether it ran whole or in four shards.** Both paths
+are deterministic, so something was carrying state between requests. Six arms
+later the channel is named.
+
+**The result, all legs single-variable** — each arm ran BOTH the whole draw and
+its own four shards under the SAME setting, so the only thing differing inside
+an arm is sharding:
+
+| arm | setting | whole vs its own 4 shards |
+|---|---|---|
+| baseline | shipped | **12 disagree** |
+| tail split off (`ATLAS_NO_TAIL_SPLIT=1`) | snapshot *producer* | 4 |
+| Marconi restore off (`ATLAS_MARCONI_MIN_TOKENS=1e8`) | snapshot *consumer* | **2** |
+
+The cause is cross-request **SSM snapshot reuse**. A snapshot saved by one
+request enters a shared, globally evicted pool (128 slots / 19392 MB on GB10);
+a later request restores from whichever eligible anchor is still there;
+restoring at a different depth gives numerically different SSM state; at a
+near-tied argmax the token flips. Sharding changes eviction pressure because it
+changes run length. Closing the consumer is the more complete fix because
+disabling the split removes only *one* producer — the checkpoint interval still
+writes others, which is why 4 remain rather than 2.
+
+**Corroboration that this is one mechanism and not two.** Across three
+independent shards the two levers move overwhelmingly the same samples: 61
+moved by the split lever, 15 by the restore lever, **11 shared** against an
+independence prediction of 1.2 — a 9× enrichment, with 73% of the restore set
+contained in the split set. Containment in that direction is what
+producer/consumer predicts.
+
+**Determinism, established rather than assumed.** Two runs of the same shard at
+the same commit hours apart were **byte-identical** (md5 `4b3b58f0…`), and a
+second arm was byte-identical to baseline. Every disagreement here is therefore
+an ordering effect, not run-to-run noise.
+
+**Ruled out, with evidence rather than argument.** The prefill pass shape:
+`total = tokens.len()`, `cut` derives from `(total, block_size)`, and
+`chunk_start` walks a fixed stride from 0, so the split *condition* is
+deterministic on `(tokens, config)`. Sub-block prefix matching: with
+`ATLAS_PREFIX_SUBBLOCK=0` — lever verified armed in `/proc/PID/environ` — the
+output was byte-identical to baseline, 0 of 251 samples moved.
+
+**Neither lever is a fix.** `NO_TAIL_SPLIT` changes 8.2% of all answers (61 of
+748); restore-off changes 2% and discards the warm-turn saving Marconi exists
+for. The floors were cut with both features on. The shippable form is
+`ssm_cache_slots = "0"` as a serve override on KAT gates — a first-class flag,
+recorded in the gate record — with the floors re-cut; that is queued as its own
+arm rather than assumed.
+
+**Four process failures of my own this wave, all of which produced a wrong
+statement before they were caught.**
+
+1. **An A/B on a lever that was never armed.** `mtp_carry_drafter_enabled` is
+   `levers.drafter.carry && !mtp_multi_seq_mode()`, and `ATLAS_MTP_MAX_SEQS`
+   defaults to **32**, so the cross-turn carry is force-disabled on any serve
+   that does not set it to 1 — while the startup line printed `carry=ON
+   (default)`, because it reported the two env vars and never consulted the
+   cap. I ran a GPU arm turning that carry off and reported the null as
+   evidence. The output was **byte-identical** to baseline: nothing changed,
+   because nothing was on. A null arm that changes literally nothing is the
+   signature of an inert lever, not of a lever without effect. Fixed in #968;
+   both readers now share one predicate.
+2. **An arm that moved two variables.** The first Marconi arm ran the lever on
+   the *shards* and compared against the original lever-*on* whole run. Its
+   "negative" result could not be read at all, and I reported it as a finding
+   before withdrawing it. Every later arm runs both legs under the lever.
+3. **A negative control that could not fail.** The control for the `shard`
+   parameter's inherit-default changed `INHERIT_SHARD` itself — but `configure`
+   compares against that same constant, so the two moved together and the test
+   stayed green whatever it was set to. The real control changes only the
+   ParamSpec default. Written into the test's own doc, because the inert
+   version is the one a reader reaches for first.
+4. **Four hours of commits on a detached HEAD.** An arm script's
+   `git checkout --detach <pin>` left the worktree detached; nothing warns, and
+   `git log origin/main..HEAD` looks normal. The work survived only because
+   every push used `HEAD:refs/heads/<branch>`. Checking the branch out then
+   silently rewound six commits. Recovery was safe only because
+   `merge-base --is-ancestor` and an empty `log <remote>..<local>` confirmed a
+   fast-forward first.
+
+**Two defects found in passing, both fixed.** The cross-turn drafter carry had
+no request identity — admission was a *two-token* common prefix, and every
+templated request shares hundreds — and the shared hidden-row interval had no
+owner, so the warm path could pair one request's tokens with another's hidden
+states. Both are #968, with every new test observed red against the
+reintroduced defect. Neither is #936's mechanism: the carry was never armed.
+
+**Doc comments that asserted safety the code did not have**, all corrected:
+`mtp_store_range` claimed to be "per-sequence by construction … which is why
+the carry path cannot inherit another sequence's hiddens"; three comments
+justified a single carry slot with "MTP is concurrency-1", false since the
+ladder raised the cap to 32; and `prefill_b.rs` carried two blocks disagreeing
+about whether the tail split is conditional. A false safety comment is worse
+than none — the concurrency-1 claim is what made the missing ownership check
+look deliberate.
+
+## Wave 33 — the fix from wave 32 regressed a gate, and the cell that did not move is what found it
+
+Wave 32's ownership stamp shipped with a **24% decode regression at C=2**,
+caught by its own certification campaign within the hour.
+
+The stamp drew its per-sequence ticket from `mtp_prefill_capture_gen` — the
+counter `owns_capture` compares against. Every `alloc_sequence` advanced it, and
+`owns_capture` requires a sequence's captured generation to still EQUAL the
+model's current one, so **any sequence admitted between another's capture and
+its first propose silently turned that sequence's drafter prefill off**. Fewer
+drafter rows, lower acceptance, slower decode.
+
+| C | parent `main` | with the bug | again | after the fix |
+|---|---|---|---|---|
+| 1 | 18.5 | 18.5 | 18.5 | 18.4 |
+| **2** | **30.8** | **23.7** | **23.4** | **27.8** |
+| 4 | 45.4 | 51.1 | — | 51.8 |
+| 8–128 | 63.0 / 90.1 / 105.3 / 116.0 / 115.9 | within ~1% | — | 65.5 … |
+
+`concurrency-sweep` failed its 24.1 floor twice, on two boxes, against a
+same-morning control on the parent commit. C=2 TPOT went 62 → 79 → 66 ms.
+
+**★ I read the diagnostic backwards, and said so publicly before the evidence
+corrected me.** Seven cells matched and C=1 was *identical*, and I argued that
+an unchanged C=1 proved there was no regression — a real decode regression would
+surely show on the pure single-sequence path. It is the opposite: nothing is
+admitted between a lone sequence's capture and its propose, so the shared
+counter cannot move under it. C=1 could not have changed. **An invariant cell
+narrows where a defect lives; it is not an alibi.** Cells that differ by
+concurrency differ in scheduler discretion, so a C≥2-only regression points at
+cross-sequence state rather than per-token math — which is exactly what this
+was.
+
+**The advice was there and I followed its letter.** The audit that proposed the
+stamp warned that overloading `mtp_prefill_capture_gen` regresses the cold path,
+and recommended a separate FIELD. I added the separate field and then drew it
+from the shared counter, reinstating the hazard the advice existed to prevent.
+**If two things need generations, they need two dispensers.**
+
+**What actually caught it** was the control run on the parent commit, same box,
+same hour. Without it the failure reads as box noise — this gate is
+`Sensitivity::Speed` and its C=2 cell is known to sit close to its floor — and I
+would have shipped a real regression while arguing it was variance. The
+re-run that I queued *to confirm the variance hypothesis* is what refuted it.
+
+Guarded by a source-level test asserting the ticket draw never names the capture
+counter, observed red against the reintroduced defect. Source-level because the
+coupling lives at a call site in `alloc_sequence_dispatch` that needs a whole
+model to exercise, and a defect costing 24% of C=2 decode deserves a check that
+runs in milliseconds rather than one that needs a GPU.
+
+Cost on the record: the fix touches `crates/`, so the **ten gates that had
+already passed at the previous pin are void** and the campaign is running again
+from scratch. Sequencing the sweep first in the re-run was deliberate — had it
+still failed, the two BFCL legs behind it were 3.5 h of waste.
+
+Still open, and recorded as open rather than declared: 27.8 clears the 24.1
+floor but sits below the parent's 30.8. One fixed run against one parent run
+cannot separate residual regression from ordinary C=2 spread.
+
+## Wave 34 — the wave-33 entry above is wrong, and the metric is why
+
+**Withdrawn: the "24% decode regression at C=2" in wave 33.** There was no
+24% regression. The number came from comparing three parent samples that all
+happened to draw the fast mode against two candidate samples that both drew
+the slow one.
+
+**What the evidence actually shows.** `c2_aggregate_tok_s` on this recipe is
+**trimodal**, not noisy around a mean: TPOT clusters at 62–63 / 66–67 / 79 ms
+— about 30.6 / 27.5 / 23.5 tok/s — with nothing in between. Verified from the
+run store: clean `main` on 2026-09-07 scored **30.21 → 23.70 → 30.54 → 23.56**
+in four consecutive runs at one commit. And on 2026-09-08 an interleaved A/B
+on one box saw the *baseline arm alone* draw **28.7 then 25.2** at C=2 at the
+identical commit — a 12% swing against itself — while every other concurrency
+rung stayed inside ±2.9%.
+
+So two C=2 numbers differing by 20% are two draws from different modes, not a
+before-and-after. Any claim built on a handful of draws from that cell is
+unsupported, in either direction.
+
+**What survives.** The dispenser fix itself stands, on MECHANISM: the store
+ticket sharing the capture counter is a defect whether or not it costs
+measurable throughput, and the source-level test that goes red against the
+reintroduced coupling proves the fix is wired to the thing it fixes. Wave
+33's other claim — that an invariant cell narrows where a defect lives rather
+than exonerating it — also stands; it is what located the bug. Only the
+magnitude is withdrawn.
+
+**The lesson, stated so the next wave does not repeat it.** Before attributing
+a difference in a benchmark cell to a diff, establish the cell's
+DISTRIBUTION. A cell that is multi-modal cannot be read from n≈2 per arm, and
+the tell is cheap to look for: run the *same* commit several times and see
+whether it disagrees with itself. Wave 33 did not do that, and the invariant
+C=1 cell — correctly used to locate the defect — was also, wrongly, taken as
+evidence that the C=2 movement was real.
+
+**The commit subjects on this branch still carry the withdrawn number.**
+Correcting them means rewriting `d8440fb7e`, which is the commit PR #968's
+eleven gate records are measured at; that would void the certification and
+cost a full re-run. Recorded here rather than silently paid.
+
+---
+
+## Wave 35 — a green control, a dead-code fix site, and a required check caught before it ran
+
+Branch `feat/kat-equality`: #936 + #835 + #971 composed. This entry records the
+guards, not the feature work, and what each control actually proved.
+
+### The control that came back GREEN was worth more than the four that went red
+
+`two_failed_requests_do_not_agree_with_each_other` claimed to pin that a failed
+request never reads as agreement. It set **both** orders to `Error`, so
+`verdict_for` returned through the *reference-order* branch and never reached
+the later-order branch the test named. Neutering that branch — making a failed
+later order `continue`, i.e. be skipped as agreement — left the test **passing**.
+
+The test was decorative and nothing but the control could have told me. It is
+now two tests that each reach their own branch, each with its own control, and
+both go red when their branch is neutered.
+
+**The lesson:** a test whose setup satisfies an *earlier* early-return never
+executes the code it is named after. When a control comes back green, the
+default hypothesis is that the test does not reach the mutation — not that the
+mutation was harmless.
+
+### The fix site named in the plan was dead code
+
+The approved plan named `radix_tree/snapshot.rs:238` as the site of the SSM
+snapshot cross-request channel. That line is inside `lookup`, which is
+`#[allow(dead_code)]`. **The serving path is `snapshot_tier::lookup_tiered`**,
+which carried its own copy of the same condition. Editing the cited line would
+have compiled, read correctly in review, and changed nothing that runs.
+
+Both now call one predicate. A source scan fails if the raw condition is
+spelled again anywhere under `radix_tree/`, matching the **shape** of the gate
+(both field reads in one condition) rather than an identifier, because a
+re-spelling would not reuse the name.
+
+**And the exclusion list is the load-bearing half.** The scan excused
+`snapshot.rs` while the predicate lived there. When the predicate moved to its
+own module, leaving that excusal behind would have left a blind spot in exactly
+the file that had held one of the two copies. Control: re-spelling the raw
+condition in `snapshot.rs` now FAILS the guard, naming `snapshot.rs:242`.
+Before the exclusion moved, that same mutation passed.
+
+### A required check caught without pushing
+
+The predicate and its reasoning took `snapshot.rs` from 451 to 532 lines
+against a 500-line cap it is not allow-listed for. `file-size-cap` is required,
+so the branch would have gone red. Found by extracting that workflow's own
+allow-list and running the rule locally over all 1993 files — not by pushing
+and waiting. Allow-listing was the smaller diff and the wrong one; the
+predicate is the shared thing and now says so with its own module.
+
+### A false RED, which is the same family as a false green
+
+A verification chain read `... | grep -c pattern && cargo test ...`. `grep -c`
+exits **1** when the count is zero, so on a CLEAN clippy the `&&`
+short-circuited, the suite never ran, and the wrapper reported `test_exit=1`. A
+clean tree was reported to me as a failure. Terminate any counting grep in a
+chain with `|| true` and test the captured number, never the exit status.
+
+Separately, a control-runner that flagged `error: test failed, to rerun pass…`
+as "BUILD BROKE — control INVALID" was wrong: that is cargo's normal exit line
+for a *failing test*. A build break prints **no** `test` lines at all, which is
+the signal to key on.
+
+### Aggregate scores are not the instrument
+
+An earlier reading excluded channel M1 for #936 on matching *aggregate* serial
+rates. The mechanism predicts an invariant population rate with varying
+membership, so the aggregate could not distinguish the hypotheses. The
+per-sample diff is the instrument; the aggregate is not.
+
+The harness then nearly repeated the mistake in a different way: it reported
+`NO responses.jsonl FOUND` for a completed leg. `bfcl/exec.rs:71` writes **one
+fixed path** and overwrites it every leg, so the whole leg's 995 rows were
+intact and about to be destroyed by the next shard. Both boxes now snapshot the
+file on every change. Two attempts to launch that watcher reported "already
+running" because `pgrep -f` matched the launching SSH command line itself —
+the same self-match family as `pkill -f` killing its own shell.
+
+### What is NOT claimed
+
+The equality gate registers as a **promotion candidate**, not a required gate.
+Its bar is that the shipped regime is order-independent, and that is unmeasured
+on this tree. A gate may not certify itself in the change that first records
+it — the same rule that keeps a speed floor from being cut from the run it
+judges. Promotion, with the sample count actually measured, is a follow-up.
+
+Measured en route and worth recording: the whole BFCL leg scores 84.22 / 84.12
+on current `main` and 83.92 / 84.22 under `mtp_gate=force` +
+`enable_prefix_caching=false`. Both clear the committed bars, so the regime is
+**not** score-neutral — which is why the floors are re-cut in a second PR and
+why the History pane now draws a labelled band at the boundary instead of one
+continuous line.
+
+### Open finding, not fixed here: the MTP gate's dwell counter can switch on one probe
+
+`SWITCH_DWELL_WINDOWS = 2` is meant to require two consecutive losing windows
+before the scheduler changes arms. It does not.
+
+`arbitrate()` refuses to run when the OTHER mode's EWMA is `stale`, which looks
+like a freshness requirement and is not one. `stale` is set in exactly two
+places — a depth-regime change, and a discarded window — and cleared whenever a
+measurement is recorded. It means "the economics moved", never "this number is
+old". So a single serial probe stays non-stale indefinitely, `arbitrate()`
+re-fires against that same unchanged measurement on the next window, and
+`losing_windows` reaches 2 on the strength of ONE probe.
+
+**Deliberately not fixed on `feat/kat-equality`.** The correct fix requires a
+FRESH other-mode comparison per losing window, which changes WHEN the engine
+switches arms — a throughput-affecting change. This branch already carries
+#971's 68-file diff across the hot paths, and the plan names attribution as its
+main risk: a speed-gate movement here would already need a bisect to explain.
+Adding a second speed-affecting change makes that strictly worse, and the
+equality work does not need it. It belongs in its own PR with its own measured
+A/B.
+
+What this branch DOES ship for #835 is the comparability pin — `c{c}_accept_len`
+plus an INCONCLUSIVE verdict when a cell ran the serial arm — which is the part
+that stops an arm change being reported as a regression. That is orthogonal to
+when the switch happens.
+
+### Step 0b, answered: the baseline did not move, and the score could not have told us
+
+Whole BFCL draw vs its own four shards, one box, current `main`, shipped
+config: 995 vs 995, **12 disagreeing samples** — the identical count measured
+months earlier at a pin that is not an ancestor of `main`. #968's drafter-carry
+session gate landed in between and changed the number by zero.
+
+What makes this worth recording is the instrument. The whole leg scored
+84.22 / 84.12 and the four shards recombine to close to the same totals, so a
+SCORE comparison — the obvious thing to run — would have reported agreement.
+Two different sets of answers can total identically, and here twelve of them
+do. Only a per-sample join on `sample_id` sees it.
+
+This is the same error, in a new costume, as the earlier wrong exclusion of the
+MTP gate for #936: that reading compared aggregate serial-token RATES between
+arms and found them equal, when the mechanism predicts an invariant population
+rate with varying membership. Aggregates are not a weaker version of the
+per-sample diff; for this class of bug they are not evidence at all.
+
+Ten of the twelve are `live_irrelevance`, the subset predicted, and
+`live_irrelevance_2-0-2` — previously recorded as surviving even with SSM
+restore disabled — is among them.
+
+### Equality reached: 0 of 995, against a baseline of 12
+
+The acceptance criterion for #936 was EXACT equality — the whole BFCL draw and
+its own four shards answering identically for every `sample_id`, not "within
+noise". Measured on one box, one commit, temperature 0:
+
+| arm | serve config | n | disagreeing |
+|---|---|---|---|
+| historical (pin `e897463b54`) | shipped | 995 | 12 |
+| base (current `main`) | shipped | 995 | 12 |
+| **C** | `mtp_gate=force` + `enable_prefix_caching=false` | 995 | **0** |
+
+Under the base arm's rate a zero has probability about 6e-6, but the point is
+not the p-value: the criterion was exactness, and exactness is what the diff
+reports. 995 of 995 byte-identical.
+
+**Both levers were proven armed, and proven to be the only difference.** The
+base arm's log says `Prefix caching: ENABLED (radix tree)` and `mtp_gate=auto`;
+arm C's says `Prefix caching: disabled` and `mtp_gate=force`; every other entry
+in the `kernel flags:` line is identical between them. That check matters more
+than it looks: `enable_prefix_caching` DEFAULTS to false, so the override could
+have been a no-op — it is the gate's recipe that turns it on, and only the base
+arm's log proves it was on to begin with.
+
+**What this does NOT establish.** Arm C is not the shipped regime. `--hermetic`
+closes those two channels AND gates every snapshot entry by session, so it is
+strictly more closed. Inferring hermetic from arm C is the same shape of step
+that produced the earlier wrong exclusion of the MTP gate, so arm D measures
+`--hermetic` exactly as it ships rather than reasoning from arm C.
+
+**Equality costs score, and that is why floors are a separate PR.** The whole
+leg scores 84.22 / 84.12 unclosed and 83.92 / 84.22 closed. Both clear the
+committed bars, so nothing is blocked — but the regime is not score-neutral,
+which is exactly why the History pane now draws a labelled band at a regime
+boundary instead of one continuous line, and why no floor is declared in the
+change that first measures it.
+
+### This branch may not seal itself: 7 of 15 BOUNDARY_FILES change
+
+Sealing a certified campaign is delegated by default in this repository, with
+an enumerated list of cases that still need a human. One applies: *the merge
+lands a `BOUNDARY_FILE` change whose only evidence is this campaign.*
+
+Touched here, four of them new files:
+
+| file | |
+|---|---|
+| `gate/coverage.rs` | the BOUNDARY_FILES list itself, PROMOTION_CANDIDATES, NOT_REQUIRED, a new excludes set |
+| `gate/bench.rs` | refuses an under-pinned hermetic baseline |
+| `gate/check.rs` | modified |
+| `gate/hermetic.rs` | **new** — the table of what `--hermetic` closes |
+| `gate/group.rs`, `gate/check_group.rs`, `gate/check_paths.rs` | **new**, from the sharding work |
+
+A boundary file decides whether any gate passes. Offering the campaign those
+files govern as proof that the files are right is circular — the unit tests and
+the 226-check certification self-test cover the LOGIC, but the campaign is the
+only BEHAVIOURAL evidence, which is precisely the condition the rule names.
+
+So the campaign runs to completion and the evidence gets posted, and the merge
+waits for a human. Recorded here rather than decided at the end of a long
+night, because that is when the temptation to call it "clean enough" is largest.
+
+### `--hermetic` is byte-identical to its hand-configured equivalent, across boxes
+
+Arm C closed the two channels by hand (`mtp_gate=force` +
+`enable_prefix_caching=false`) and reached 0/995. Arm D ran the SHIPPED flag,
+`--hermetic`, on a different box. The whole leg's per-sample output:
+
+| run | box | config | sha256 (first 32) |
+|---|---|---|---|
+| arm D | `spark-43fa` | `--hermetic` | `a9aadaa1f0e337ec9afd4a6728f057b2` |
+| arm C | `spark-28c2` | the two overrides by hand | `a9aadaa1f0e337ec9afd4a6728f057b2` |
+| base | `spark-43fa` | shipped | `8490c4bdef100bc1c8fee30879184fda` |
+
+One comparison, three claims:
+
+1. **The flag expands to exactly what it claims.** Not approximately equivalent
+   to the hand-configured pair — byte-identical over 995 samples.
+2. **Neither lever is a no-op.** Base differs, which is the check that stops a
+   green from meaning "the override did nothing".
+3. **The engine is bit-reproducible under hermetic ACROSS MACHINES.** Two
+   different GB10 boxes, 995 samples, identical bytes. Only within-box
+   reproducibility had been established before; this is stronger, and it is
+   what makes a cross-box shard comparison meaningful at all.
+
+Wall time is unchanged (5786 s vs the base arm's 5838 s) even though hermetic
+disables the prefix cache — consistent with BFCL being single-turn, where a
+prefix cache has almost nothing to reuse.
+
+### Watch item for this campaign: #835 is live on `concurrency-sweep`
+
+Located precisely, because an earlier reading of mine inferred the ladder from
+an old RECORD rather than the config and got it wrong:
+
+| gate | ladder | `c2_aggregate_tok_s` floor |
+|---|---|---|
+| `concurrency-sweep` | `1,2,4,8,16,32,64,128` (a `param_overrides` pin, not the schema default) | **min 25.0, noise 0.95 → effective 24.05** |
+| `concurrency-sweep-dflash2` | `1,2,4,8,16` | min 36.0, noise 0.62 |
+
+The C=2 cell is TRIMODAL at roughly 30.6 / 27.5 / 23.5 tok/s with nothing
+between, and the lowest mode sits BELOW the effective floor. So
+`concurrency-sweep` can fail on this campaign for reasons that have nothing to
+do with this branch's diff — that is the whole of #835.
+
+**What the fix does and does not do.** With the accept-len pin, a C=2 cell that
+ran the SERIAL arm (`accept_len < 1.5`, against ~2.3 on MTP) now reports
+INCONCLUSIVE naming the arm change, instead of a floor breach claiming a
+regression two samples cannot support. That is more honest and it is NOT a
+pass: `verdict_passes()` is `verdict == "PASS"`, so an INCONCLUSIVE gate is
+still undischarged and the leg needs re-running.
+
+**Which is fine, and is the point.** A re-run whose cause is NAMED ("the C=2
+cell ran the serial arm") is a different thing from a re-run that turned red to
+green for no stated reason — the latter is on the enumerated list of cases a
+human must see. If this gate goes INCONCLUSIVE, the cause is in the verdict
+string and the re-run is defensible; if it goes FAIL on the floor with
+`accept_len` ~2.3, that is a real speed finding and must be attributed, which
+on this branch means bisecting against #971's 68-file hot-path diff.
+
+### Equality proven on the SHIPPED regime: `--hermetic` is 0 of 995
+
+Arm C proved equality was reachable with the two channels closed by hand. Arm D
+ran the flag as it ships. Whole draw versus its own four shards
+(251 + 249 + 248 + 247 = 995), one box, one commit, temperature 0:
+
+| arm | serve config | n | disagreeing |
+|---|---|---|---|
+| historical (pin `e897463b54`) | shipped | 995 | 12 |
+| base (current `main`) | shipped | 995 | **12** |
+| C | `mtp_gate=force` + `enable_prefix_caching=false` | 995 | **0** |
+| **D** | **`--hermetic`** | **995** | **0** |
+
+The chain, so no link is taken on trust:
+
+1. **Base is broken and unchanged.** 12/995 on current `main`, the same count
+   measured at a pin that is not an ancestor of it — #968 moved it by zero.
+2. **The closures fix it.** Arm C, 0/995.
+3. **The shipped flag IS the closures.** Arm D's whole leg is byte-identical to
+   arm C's across two different boxes (`a9aadaa1…`), while base differs.
+4. **The shipped flag reaches equality itself.** Arm D, 0/995 — not inferred
+   from arm C, measured.
+5. **The levers were proven armed.** Base logs `Prefix caching: ENABLED (radix
+   tree)` / `mtp_gate=auto`; arms C and D log `disabled` / `force`; every other
+   entry in the `kernel flags:` line is identical.
+
+The negative control the plan demanded — "the same comparison without hermetic
+must go red on the known 12" — is satisfied by the base arm, which produced
+exactly twelve, ten of them `live_irrelevance` (the predicted subset) and one
+of them `live_irrelevance_2-0-2`, a sample the plan named specifically. The
+count, the distribution and a named member all agree; the historical list of
+ids was not available to compare set-for-set, and that limit is stated rather
+than glossed.
+
+### #835's pin fired on a real campaign, and stopped a false regression report
+
+`concurrency-sweep` failed on this branch's certification campaign with:
+
+> INCONCLUSIVE: 4 of 8 cells ran the SERIAL arm, not the speculative one
+> (accept_len < 1.5) — the two arms differ by ~1.3x in delivered tok/s, so this
+> is an arm change and not a regression. Re-run, or pin the arm, before reading
+> any floor
+
+That is the verdict this work added. **Without it the run would have been judged
+against the floors and reported as a regression caused by this branch** — the
+exact false claim #835 is about, made from a cell whose distribution cannot
+support it.
+
+The comparison that makes it unambiguous ran on the SAME BOX minutes later:
+`concurrency-sweep-dflash2`, whose ladder pins C=2 with DFlash speculation
+armed, measured **C2 = 46.6 against a 35.4 floor** and passed every rung. Same
+hardware, same commit, same night — one gate's C=2 cell in the serial arm, the
+other's in the speculative arm. That is #835 in a single pair of runs.
+
+**And it is evidence for the defect this branch deliberately did NOT fix.** Four
+of eight cells changing arms inside one sweep is a lot of switching, and the MTP
+dwell counter is why: `SWITCH_DWELL_WINDOWS = 2` is meant to require two
+consecutive losing windows, but `stale` means "the economics moved", never "this
+number is old", so a single probe carries both. The hysteresis fix was deferred
+because it changes WHEN arms switch and this branch already carries #971's
+68-file hot-path diff; this run is the measured cost of that deferral, recorded
+so the follow-up PR has evidence rather than an argument.
+
+**What an INCONCLUSIVE verdict does and does not license.** It is not a pass:
+`verdict_passes()` requires `PASS`, so the gate stays undischarged. It licenses
+ONE re-run, because the first run measured nothing about the diff — 4 of 8 cells
+ran a different arm. It does not license re-running until green: if the second
+run is also INCONCLUSIVE, that is a finding about the INSTRUMENT (the arm needs
+pinning in BENCH.toml, which is the follow-up PR's job) and must be reported as
+one. The distinction matters because "a gate failed and a re-run made it green,
+with no named cause" is on the enumerated list of things a human must see — and
+the whole point of the verdict string is that the cause here IS named.
+
+### A negative control proves the code does what you designed. It cannot prove the design is right.
+
+The #835 arm pin had everything this document argues for. Unit tests that
+reached the branch they named. A negative control that was RUN and observed red.
+A verdict string that explained itself. It shipped, and it was wrong — and only
+a real gate run could show it.
+
+The design said: a cell that ran the serial arm is not comparable, so exclude it
+and fail the run INCONCLUSIVE. Every test asserted exactly that, and every test
+passed. What no test could know is that at wide batch **the MTP gate drops
+speculation on purpose**, so C=8 upward legitimately run serial, and those rungs'
+floors were CALIBRATED on runs that did. The pin dropped five of eight cells,
+made `peak_aggregate_tok_s` read 49.5 (from C=4) instead of ~115 (from C=64),
+and failed a gate carrying nine consecutive passing records.
+
+The cell #835 is actually about — C=2 — ran the MTP arm and passed at 30.02
+against a 25.0 floor. The pin fired everywhere except the place it was for.
+
+**What separates this from the twelve failure modes already in
+[[a-passing-test-may-not-have-run]]:** those are all ways a check fails to
+measure what it claims. This one measured exactly what it claimed. The claim was
+wrong. A control answers "is this check wired to the thing it checks"; it is
+silent on "is the thing worth checking".
+
+**The rule.** For any check that will REFUSE something — a gate, a validator, a
+parse-time bail — ask what the refused state looks like when it is CORRECT.
+Here: "a cell ran without speculation" is correct and expected at wide batch,
+and the design never asked. The cheap version of that question is to look at
+what the existing passing records contain: nine of them carried the very
+condition the new rule refuses.
+
+And the corollary already in practice here: run the guard against real history
+before trusting it. The nine records were on disk the whole time.

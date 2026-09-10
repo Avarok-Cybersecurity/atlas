@@ -84,6 +84,17 @@ pub struct TransformerModel {
     /// `None`, the NVFP4/BF16 LM-head dispatch is byte-identical to before.
     pub(super) lm_head_fp8: Option<Fp8DenseWeight>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
+    /// `true` when ANY layer's decode can never be captured into a CUDA
+    /// graph, so the whole model stays eager.
+    ///
+    /// Computed ONCE at construction. It was
+    /// `self.layers.iter().any(|l| l.decode_graph_unsupported())` — 48
+    /// virtual calls through `dyn TransformerLayer` per DECODE STEP, from two
+    /// sites (`decode_a` and `decode_a2`), to recompute a value that cannot
+    /// change: every implementation is a pure function of load-time structure
+    /// (`false`, `self.qsa.is_some()`, `self.ple.is_some()`). A new model is
+    /// a new `TransformerModel`, so this cannot go stale across a swap.
+    pub(super) decode_graph_veto: bool,
     pub(super) buffers: BufferArena,
     /// Startup-static LoRA adapter (pool + per-layer pairs + M2 pointer
     /// tables). `None` = no adapter. Installed post-construction via

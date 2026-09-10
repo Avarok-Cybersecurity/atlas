@@ -196,7 +196,7 @@ pub(crate) fn preflight_reserve(
     let marconi = spark_model::ssm_reserve::marconi_snapshot_slots(
         args.ssm_cache_slots,
         spark_model::ssm_reserve::prefix_caching_active(
-            args.enable_prefix_caching,
+            args.prefix_caching_enabled(),
             config.kv_only_prefix_cache_is_safe(),
         ),
     );

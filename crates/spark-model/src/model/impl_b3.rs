@@ -45,12 +45,7 @@ impl TransformerModel {
         // transformers and dump matching hidden-state captures.
         // Per-model latch: a static would let the previous model swallow this
         // one's dump. Env first, so a disabled dump never burns the shot.
-        if std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
-            .ok()
-            .as_deref()
-            == Some("1")
-            && self.stats.dumped.keyed("dump:dflash_tokens")
-        {
+        if self.levers.dflash_debug_dump_full && self.stats.dumped.keyed("dump:dflash_tokens") {
             let tokens_json = serde_json::json!({
                 "prompt_len": position - seq.tokens.len() + seq.tokens.len(),
                 "position": position,
@@ -258,7 +253,7 @@ impl TransformerModel {
         // K=1 on the 35B MoE is ~0.66). The drafter KV rows written by
         // this propose MUST be trimmed exactly as a full rejection would
         // (after_verify(0)), or the drafter desyncs from the target.
-        let tau = crate::speculative::draft_conf_tau();
+        let tau = self.levers.draft_conf_tau;
         if tau > 0.0
             && !drafts.is_empty()
             && let Some(conf) = proposer.last_confidence()

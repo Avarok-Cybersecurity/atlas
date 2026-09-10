@@ -86,8 +86,8 @@ impl Qwen3SsmLayer {
         let bf16 = 2usize;
         let eps = ctx.config.rms_norm_eps as f32;
         let n = num_seqs;
-        let ssm_ms_profile = std::env::var("ATLAS_SSM_MS_PROFILE").ok().as_deref() == Some("1")
-            && !ctx.graph_capture;
+        let ssm_ms_profile =
+            crate::layers::ops::ModelLevers::get().ssm_ms_profile && !ctx.graph_capture;
         let phase_a_t0 = if ssm_ms_profile {
             ctx.gpu.synchronize(stream).ok();
             Some(std::time::Instant::now())
@@ -337,11 +337,7 @@ impl Qwen3SsmLayer {
                         (n * h) as u32,
                         stream,
                     )?;
-                } else if std::env::var("ATLAS_MOE_LEGACY_PERTOKEN_DECODE")
-                    .ok()
-                    .as_deref()
-                    != Some("1")
-                {
+                } else if !crate::layers::ops::ModelLevers::get().moe_legacy_pertoken_decode {
                     // Token-major N-token MoE decode — DEFAULT for n>=4. Packs
                     // (token, expert) into blockIdx.y so all N tokens' experts run
                     // in ~3 batched kernel launches/layer instead of the legacy

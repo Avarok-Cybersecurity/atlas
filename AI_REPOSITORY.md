@@ -208,6 +208,7 @@ descriptor; the agentic figures are from the committed gate record
 | `ttft-warm-gate` | **required** | ~3–6 min | cached-prefix TTFT vs a stored same-box baseline (median ≤3%, p90 ≤5%) |
 | `ttft-cold-gate` | **required** | ~3–6 min | uncached prefill TTFT — the leg that sees a cold-load regression |
 | `cross-contamination` | promotion candidate (PR #433) | ~2–5 min | concurrent requests must not change each other's output; zero tolerance |
+| `kat-equality-gate` | promotion candidate (#936) | ~2× one BFCL leg | the same sample must answer identically whatever ran before it — one draw, ≥2 request ORDERS, one server, byte-exact per `sample_id`. Serve it with `--hermetic`. A candidate, not required, because its bar is that the shipped regime is order-independent and a gate may not certify itself in the change that first records it |
 | `agentic-webserver` | **required** (35B MoE flagship); dense 27B registered unmeasured — baselining only, no thresholds | ~5 min × 10 iterations | the flagship agentic task, scored on outcome and process |
 | `bfcl-subset` | **required** | ~3.5 h | BFCL v4 single-turn, golden MLPerf draw (pinned n=995), dense 27B |
 | `bfcl-subset-echolp` | **required** | ~3.5 h | BFCL v4, echolp draw (pinned n=1004), 35B MoE — the two draws are not score-comparable (`gate/mod.rs:56`) |

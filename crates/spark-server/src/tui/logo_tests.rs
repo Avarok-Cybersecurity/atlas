@@ -244,3 +244,23 @@ fn the_wave_returns_to_where_it_started_every_three_steps() {
         );
     }
 }
+
+/// The banner must NAME the KAT regime, not merely reflect it.
+///
+/// Under `--hermetic` the prefix-cache chip disappears, and an absent chip
+/// does not say why: an operator reads "no prefix cache" and cannot tell a
+/// deliberate known-answer-test regime from a flag nobody set. This is the
+/// banner someone looks at when a score moves, and under hermetic the regime
+/// IS why it moved.
+#[test]
+fn the_hermetic_chip_names_the_regime_rather_than_leaving_a_gap() {
+    let off = strip(&args(&[]));
+    assert!(!off.contains("HERMETIC"), "{off}");
+
+    let on = strip(&args(&["--hermetic"]));
+    assert!(on.contains("HERMETIC"), "the regime must be named: {on}");
+    assert!(
+        !on.contains("prefix-cache"),
+        "and the channel it closes must not still be advertised: {on}"
+    );
+}

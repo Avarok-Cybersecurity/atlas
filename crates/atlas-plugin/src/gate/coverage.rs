@@ -90,7 +90,7 @@ pub const PERF_PATHS: [&str; 8] = [
 /// The four files here are the ones that decide a verdict. `GATE_MACHINERY`
 /// still covers the rest of the directory — record IO, telemetry rendering,
 /// the CODEOWNERS parser — where the exclusion's argument does hold.
-pub const BOUNDARY_FILES: [&str; 10] = [
+pub const BOUNDARY_FILES: [&str; 14] = [
     "crates/atlas-plugin/src/gate/coverage.rs",
     // `required_for` / `union` / `intent_only`: decides what the INTENT half
     // adds on top of the path-derived floor. Once intent can escalate a gate,
@@ -113,6 +113,18 @@ pub const BOUNDARY_FILES: [&str; 10] = [
     // `record_covers` / `invalidating_paths`: decides whether a record
     // stands against the changed paths.
     "crates/atlas-plugin/src/gate/check.rs",
+    // `invalidating_paths` itself, split out of `check.rs` when that file
+    // crossed the 500-LoC cap. It decides whether a record still stands, which
+    // is the same criterion as `check.rs` above — moving it did not make it
+    // less load-bearing. `every_verdict_symbol_is_defined_inside_the_boundary`
+    // caught this the moment the split landed, which is exactly the PR #420
+    // hole that test exists to prevent.
+    "crates/atlas-plugin/src/gate/check_paths.rs",
+    // `check_group`: turns a group's member records into ONE verdict, and
+    // enforces all-members-present, one-commit, a real shard partition and no
+    // transport-degraded member. Split out of `check.rs` for the same cap.
+    // Same criterion as `group.rs` below: it rules on record SETS.
+    "crates/atlas-plugin/src/gate/check_group.rs",
     // `check_record` / `compare`: decides whether a record's numbers pass.
     // Split out of check.rs at the 500-line boundary — the verdict logic
     // moved, so the boundary moves with it (a `hardening_tests` test walks
@@ -135,11 +147,30 @@ pub const BOUNDARY_FILES: [&str; 10] = [
     // rebase that brought it in, which is the mechanism working rather than a
     // note someone remembered to act on.
     "crates/atlas-plugin/src/gate/agreement.rs",
+    // `CLOSED_KEYS` / `missing_pins`: the table of what `--hermetic` closes.
+    // It decides a verdict twice over. `bench` REFUSES a baseline entry that
+    // pins `hermetic=true` without these, and the set itself is what
+    // `check_record` will compare a record's serve overrides against — so
+    // editing this table changes which records can discharge a hermetic gate.
+    // A gate whose pin set moved must be re-proven, not inherited.
+    "crates/atlas-plugin/src/gate/hermetic.rs",
     // ★ `amnesty.rs` decides whether a gate is EXCUSED. A PR that widens the
     // amnesty table excuses ITSELF, which is the PR #420 shape with the lock
     // moved one room over again — the same way `scoring.rs` was missed after a
     // split and `agreement.rs` after an addition. An escape hatch is a verdict.
     "crates/atlas-plugin/src/gate/amnesty.rs",
+    // ★ `group.rs` decides whether a set of SHARD records satisfies a gate —
+    // membership, completeness, and what a partial group means. That is the
+    // same criterion as `agreement.rs` one entry up: it rules on record SETS,
+    // not on one record's numbers.
+    //
+    // Unclassified it would be the sharpest instance of this list's whole
+    // reason for existing. A group is only as trustworthy as its "ALL of its
+    // members" rule, so a PR that loosened that rule — accepting three shards
+    // of four, or a member measured at another commit — would be certified by
+    // a gate running its own loosened rule, and the missing quarter of the
+    // draw would never be scored.
+    "crates/atlas-plugin/src/gate/group.rs",
 ];
 
 /// Gate sources deliberately reviewed and found NOT to decide a verdict.
@@ -520,6 +551,43 @@ const DECODE_FLOOR_EXCLUDES: &[Exclusion] = &[
     ),
 ];
 
+/// What the KAT-equality candidate ignores.
+///
+/// ★ Note what is NOT excluded, because it is the interesting half. The BFCL
+/// driver is absent from this list, unlike every other gate's: this gate
+/// issues the BFCL DRAW, so `bfcl/dataset.rs` and `bfcl/draw.rs` decide which
+/// samples it compares and in what canonical order. A change there changes
+/// what "the same sample set in two orders" means, and must re-open the gate.
+/// Its own directory is likewise absent — a change to the detector re-opens
+/// the detector.
+const KAT_EQUALITY_EXCLUDES: &[Exclusion] = &[
+    GATE_MACHINERY,
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ttft",
+        "the TTFT driver cannot change whether a reply depends on what ran before it",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/agentic",
+        "the agentic driver cannot change whether a reply depends on what ran before it",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/ssm_poison",
+        "the SSM poison driver cannot change whether a reply depends on what ran before it",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/contamination",
+        "the contamination driver cannot change whether a reply depends on what ran before it",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        "the concurrency request planner cannot change whether a reply depends on what ran before it",
+    ),
+    concurrency_driver(
+        "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
+        "the concurrency verdict cannot change whether a reply depends on what ran before it",
+    ),
+];
+
 /// What the cross-contamination candidate ignores: gate bookkeeping and the
 /// OTHER benchmark drivers, exactly as a required gate would. Its own driver
 /// directory is deliberately NOT here — a change to the detector re-opens the
@@ -717,12 +785,18 @@ pub const REQUIRED: [GateCoverage; 11] = [
 /// calibration preconditions were met (see the comments on their REQUIRED
 /// entries). Their old candidate entries are gone from here because a gate
 /// cannot be owed and excused at once — the test above pins that.
-pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[GateCoverage {
-    id: "cross-contamination",
-    excludes: CONTAMINATION_EXCLUDES,
-}];
+pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[
+    GateCoverage {
+        id: "cross-contamination",
+        excludes: CONTAMINATION_EXCLUDES,
+    },
+    GateCoverage {
+        id: "kat-equality-gate",
+        excludes: KAT_EQUALITY_EXCLUDES,
+    },
+];
 
-pub const NOT_REQUIRED: [(&str, &str); 5] = [
+pub const NOT_REQUIRED: [(&str, &str); 6] = [
     (
         "quick-speed-bench",
         "a single-user speed probe with no thresholds and no baseline — a MEASUREMENT tool, \
@@ -743,6 +817,15 @@ pub const NOT_REQUIRED: [(&str, &str); 5] = [
         "not required YET: a promotion candidate (see PROMOTION_CANDIDATES) run on release cuts \
          and recorded as debt until it has proven itself; a fresh gate that fails on day one \
          would train people to override it",
+    ),
+    (
+        "kat-equality-gate",
+        "not required YET, and deliberately not in the PR that introduces it: this gate's \
+         bar is that the shipped serve regime is order-independent, and whether it IS has \
+         not been measured on this tree. A gate cannot certify itself in the same change \
+         that first records it — the same rule that keeps a speed floor from being cut \
+         from the run it is judging. Promote once a measured run under --hermetic reaches \
+         zero divergences, and pin the sample count that was actually measured",
     ),
     (
         "mlperf-agentic-subset",
