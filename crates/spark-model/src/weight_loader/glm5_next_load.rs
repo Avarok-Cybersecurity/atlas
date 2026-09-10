@@ -397,6 +397,12 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
             .max(crate::layers::glm5next_layer::PREFILL_ROWS)
             .max(crate::layers::glm5next_layer::prefill_rows())
             .max(crate::layers::glm5next_layer::kda_prefill_rows());
+        // 🪤 The FFN window is the MLP's alone. `mlp_forward` is handed the WHOLE window in one
+        // call, so the MLP workspace must hold it or `forward_moe` refuses at the first wide
+        // call — but the KDA and DSA workspaces never see it, because the MIXER keeps its own
+        // narrower sub-chunk. Folding it into `verify_k` would have oversized both for nothing,
+        // and the KDA scratch is the expensive one (FP32 q/k/v, ~200 MB per buffer at 2048).
+        let mlp_rows = verify_k.max(crate::layers::glm5next_layer::moe_prefill_window());
         let kda_ws = std::sync::Arc::new(crate::layers::glm5next_kda::Glm5NextKdaWorkspace::new(
             gpu, &kda_cfg, verify_k,
         )?);
@@ -549,7 +555,7 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                 mlp_cfg,
                 mlp_kernels,
                 mlp_ws: crate::layers::glm5next_mlp::forward::Glm5NextMlpWorkspace::new(
-                    gpu, &mlp_cfg, verify_k,
+                    gpu, &mlp_cfg, mlp_rows,
                 )?,
                 mhc,
                 input_norm: upload_f32_as_bf16(gpu, &src.f32("input_layernorm.weight")?)?,

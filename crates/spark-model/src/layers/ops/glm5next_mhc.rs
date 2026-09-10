@@ -163,6 +163,8 @@ pub fn mhc_mix_max_tokens() -> usize {
     MHC_MIX_MAX_TOKENS
         .max(crate::layers::glm5next_layer::prefill_rows())
         .max(crate::layers::glm5next_layer::kda_prefill_rows())
+        // The FFN half may run WIDER than any mixer sub-chunk, and it calls `hc_pre` too.
+        .max(crate::layers::glm5next_layer::moe_prefill_window())
 }
 
 /// `hc_pre`: collapse the `hc_mult` FP32 streams to one BF16 sequence and emit this site's

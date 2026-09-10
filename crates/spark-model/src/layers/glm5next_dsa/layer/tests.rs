@@ -336,11 +336,18 @@ fn forward_k_has_three_callers_and_neither_verify_one_is_prefill() {
         src.contains("// A BATCHED speculative verify, NOT a prefill sub-chunk"),
         "the batched verify must pass is_prefill = false, and say why"
     );
+    // 🪤 Indentation-insensitive on purpose. The literal this used to match carried the call
+    // site's exact leading whitespace, so merely NESTING the prefill loop one level deeper
+    // (the FFN-window split) failed a test whose subject had not changed. Trim each line and
+    // require the comment to be immediately followed by `true,` — that is the claim, and it
+    // survives re-indentation while still catching a caller that flips the flag.
+    let flat: String = src
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        src.contains(
-            "// This IS the prefill sub-chunk caller.
-                    true,"
-        ),
+        flat.contains("// This IS the prefill sub-chunk caller.\ntrue,"),
         "the prefill sub-chunk must pass is_prefill = true"
     );
     assert!(

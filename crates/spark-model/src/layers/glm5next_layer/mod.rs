@@ -341,6 +341,38 @@ fn verify_fused_rows() -> bool {
 /// `Glm5NextMlpWorkspace::union_rows`. Keep `ATLAS_GLM_MOE_PREFILL_MIN` at or
 /// below this width, or `forward_moe` refuses the call rather than run off the
 /// end of that scratch.
+/// Rows the FFN half of a prefill layer runs over at once, when it should be WIDER than the
+/// mixer's sub-chunk.
+///
+/// 🔴 THE MoE IS A BANDWIDTH TERM, AND THE WIDTH IS ITS DIVISOR. This rank holds 997 MB of
+/// routed-expert weights per layer (288 experts x 3 x 4096 x 2048 at ~2.2 bpw, halved by EP=2)
+/// and the MoE sweeps ALL of it once per call. At 256 rows that is 164 MB per token across the
+/// 42 sparse layers — 0.60 ms/token at ~273 GB/s, against a 2.63 ms/token prefill. `nsys` puts
+/// `exl3_moe_k2_n256_cb1` at 4.52 ms/call versus a 3.65 ms roofline, so the kernel is already
+/// at 81% of bandwidth: the only thing left to change is how OFTEN it sweeps.
+///
+/// 🪤 And why this is a SEPARATE width rather than just a bigger `PREFILL_ROWS`: widening the
+/// MIXER costs more than the MoE saves. Measured 4K cold prefill, n=3, one variable —
+/// 256/512/1024 rows over all layers gave 360.4/329.6/336.5 tok/s, and widening only the KDA
+/// layers gave 364.4/341.0/343.0/342.3, flat past 512 because the MoE saving is exactly
+/// cancelled. Width helps one half and hurts the other, so they get their own.
+///
+/// Unset (the default) means "same as the mixer's width" and the split never runs.
+pub(crate) fn moe_prefill_window() -> usize {
+    static W: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *W.get_or_init(|| {
+        let w = std::env::var("ATLAS_GLM_MOE_PREFILL_WINDOW")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|w| *w >= 1)
+            .unwrap_or(0);
+        if w > 0 {
+            tracing::warn!("GLM prefill FFN window {w} rows (mixer stays at its own width)");
+        }
+        w
+    })
+}
+
 pub(crate) fn kda_prefill_rows() -> usize {
     static ROWS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *ROWS.get_or_init(|| {
@@ -1458,6 +1490,10 @@ impl Glm5NextLayer {
         // `kv_write_start`; the verify passes 0. KDA ignores it (no KV). See
         // `Glm5NextDsaLayer::decode_k`.
         kv_write_floor: usize,
+        // FALSE runs only the MIXER half and leaves the FFN to a later, WIDER call — the
+        // prefill window split. See [`Self::forward_k_ffn`] for why the two halves want
+        // different widths and why splitting them is exact.
+        run_ffn: bool,
     ) -> Result<()> {
         let gpu = ctx.gpu;
         let h = self.hidden;
@@ -1477,7 +1513,6 @@ impl Glm5NextLayer {
         let post = ctx.buffers.hc_post().offset(slot_base * hc * 4);
         let comb = ctx.buffers.hc_comb().offset(slot_base * hc * hc * 4);
         let normed = ctx.buffers.norm_output();
-        let ffn_out = ctx.buffers.moe_output();
         let (kt, ht, hct) = (k as u32, h as u32, hc as u32);
 
         // Per-token state snapshots a partial accept rewinds to; row `t` writes slot `t`, and
@@ -1641,7 +1676,49 @@ impl Glm5NextLayer {
         )?;
         profile::end(profile::MHC_POST, t_mhc_post, gpu, stream);
 
-        // ── FFN site ──
+        if !run_ffn {
+            return Ok(());
+        }
+        self.forward_k_ffn(hidden, k, slot_base, ctx, stream)
+    }
+
+    /// The FFN half of [`Self::forward_k`]: `hc_pre(ffn) -> norm -> MLP -> hc_post`, plus the
+    /// highway collapse at the last layer.
+    ///
+    /// 🔴 SEPARATE SO IT CAN RUN WIDER THAN THE MIXER. The sub-chunk width sets how often the
+    /// routed MoE re-reads its weights, and this rank sweeps 997 MB of expert weights per
+    /// layer EVERY sub-chunk — 164 MB per token across the 42 sparse layers at 256 rows, i.e.
+    /// 0.60 ms/token of a 2.63 ms/token prefill. But widening the MIXER costs more than that
+    /// saves, measured on both mixers (256/512/1024 = 360.4/329.6/336.5 tok/s over all layers;
+    /// 364.4/341.0/343.0/342.3 widening only KDA, flat past 512 because the MoE saving is
+    /// exactly cancelled). Width helps this half and hurts the other, so the two get their own.
+    ///
+    /// 🪤 The reorder is EXACT, and that is the whole licence for it: within one layer the FFN
+    /// of sub-chunk `i` never feeds the mixer of sub-chunk `i+1`. The mixer reads the PREVIOUS
+    /// layer's highway plus its own KV / KDA state, and that state's ordering is untouched —
+    /// the attn halves still run in sub-chunk order. Same kernels, same rows, same slots.
+    #[allow(clippy::too_many_arguments)]
+    fn forward_k_ffn(
+        &self,
+        hidden: DevicePtr,
+        k: usize,
+        slot_base: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let gpu = ctx.gpu;
+        let h = self.hidden;
+        let Some(mhc) = self.mhc.as_ref() else {
+            bail!("GLM layer {}: no hyper-connection bound", self.layer_idx);
+        };
+        let hc = mhc.hc_mult;
+        let streams = ctx.buffers.hc_streams().offset(slot_base * hc * h * 4);
+        let post = ctx.buffers.hc_post().offset(slot_base * hc * 4);
+        let comb = ctx.buffers.hc_comb().offset(slot_base * hc * hc * 4);
+        let normed = ctx.buffers.norm_output();
+        let ffn_out = ctx.buffers.moe_output();
+        let (kt, ht, hct) = (k as u32, h as u32, hc as u32);
+
         let t_mhc = profile::start();
         glm_hc_pre(
             gpu,
@@ -2047,6 +2124,8 @@ impl TransformerLayer for Glm5NextLayer {
                 // and a verify that claimed prefill would take it.
                 false,
                 0, // kv_write_floor: a verify never replays a cached prefix
+                // A verify is one call at one width — there is no wider window to defer to.
+                true,
             )?;
             base += k;
         }
@@ -2362,28 +2441,54 @@ impl TransformerLayer for Glm5NextLayer {
             1
         };
         if rows > 1 {
-            let mut t = 0usize;
-            while t < num_tokens {
-                let k = rows.min(num_tokens - t);
-                self.forward_k(
-                    hidden.offset(t * self.hidden * 2),
-                    k,
-                    state,
-                    kv_cache,
-                    seq_len_start + t,
-                    block_table,
-                    ctx,
-                    stream,
-                    // Prefill is never rolled back, so it takes no per-row KDA snapshots.
-                    false,
-                    // Absolute slot within this prefill, so sub-chunks never share a slot.
-                    t,
-                    // This IS the prefill sub-chunk caller.
-                    true,
-                    // The trait's floor is chunk-relative; DSA positions are absolute.
-                    seq_len_start + kv_write_start,
-                )?;
-                t += k;
+            // FFN window. `0` (the default) means "same as the mixer", and `split` is then
+            // false: every sub-chunk runs whole, exactly as it always did. A wider window runs
+            // the mixer halves in sub-chunk ORDER and then ONE FFN half across all of them —
+            // see `moe_prefill_window` for the bandwidth argument and `forward_k_ffn` for why
+            // the reorder is exact.
+            let window = match moe_prefill_window() {
+                0 => rows,
+                w => w.max(rows).min(cap),
+            };
+            let split = window > rows;
+            let mut base = 0usize;
+            while base < num_tokens {
+                let wlen = window.min(num_tokens - base);
+                let mut t = base;
+                while t < base + wlen {
+                    let k = rows.min(base + wlen - t);
+                    self.forward_k(
+                        hidden.offset(t * self.hidden * 2),
+                        k,
+                        state,
+                        kv_cache,
+                        seq_len_start + t,
+                        block_table,
+                        ctx,
+                        stream,
+                        // Prefill is never rolled back, so it takes no per-row KDA snapshots.
+                        false,
+                        // Absolute slot within this prefill, so sub-chunks never share a slot.
+                        t,
+                        // This IS the prefill sub-chunk caller.
+                        true,
+                        // The trait's floor is chunk-relative; DSA positions are absolute.
+                        seq_len_start + kv_write_start,
+                        // Inline unless the FFN is being batched across this whole window.
+                        !split,
+                    )?;
+                    t += k;
+                }
+                if split {
+                    self.forward_k_ffn(
+                        hidden.offset(base * self.hidden * 2),
+                        wlen,
+                        base,
+                        ctx,
+                        stream,
+                    )?;
+                }
+                base += wlen;
             }
             return Ok(());
         }
@@ -2479,6 +2584,8 @@ impl TransformerLayer for Glm5NextLayer {
             // A verify writes fresh positions only; no replay window, no floor. Also what
             // keeps the floor branch inert under the graphed verify's capture.
             0,
+            // A verify is one call at one width — there is no wider window to defer to.
+            true,
         )
     }
 

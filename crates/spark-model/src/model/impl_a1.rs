@@ -635,6 +635,14 @@ impl TransformerModel {
                         "ATLAS_GLM_KDA_PREFILL_ROWS",
                         crate::layers::glm5next_layer::kda_prefill_rows() as u64,
                     ),
+                    // 🔴 The FFN window decides how many MLP-site all-reduces a chunk issues
+                    // and how wide each one is — the same property that puts
+                    // `ATLAS_GLM_PREFILL_ROWS` on this list. A rank skew here is a mismatched
+                    // collective schedule, not a perf difference.
+                    (
+                        "ATLAS_GLM_MOE_PREFILL_WINDOW",
+                        crate::layers::glm5next_layer::moe_prefill_window() as u64,
+                    ),
                     // Perf-only (the MLP reduces once per site whichever arm runs), but a skew
                     // here is still a confusing asymmetry and the check is free.
                     (
