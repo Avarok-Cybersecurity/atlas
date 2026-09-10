@@ -960,25 +960,31 @@ impl TransformerModel {
             accepted.push(self.ep_broadcast_u32(0)? as usize);
         }
 
+        // 🔴 Mirror `k4_apply_verdict` — the BATCHED head step — not the
+        // single-sequence K=3/K=4 arms above. Both restore `intermediate[na]`,
+        // but they are different entry points with different width arguments,
+        // and the head this worker is paired with is the batched one. Mirroring
+        // the wrong head leaves the two ranks' recurrent state disagreeing,
+        // which does not fault: it degrades a later sequence's logits.
+        //
+        // The ORDER is part of the contract too — pops before `trim`, then the
+        // commit — because `trim_proposer_state` reads the sequence length it
+        // is trimming against.
         for (i, seq) in refs.iter_mut().enumerate() {
-            let drafts = ks[i].saturating_sub(1);
-            let na = accepted[i].min(drafts);
-            self.trim_proposer_state(seq, na, 0)?;
-            if na == drafts {
-                // Full accept never rewinds.
-                self.start_checkpoint_async(seq)?;
+            let k_rows = ks[i];
+            let nd = k_rows.saturating_sub(1);
+            let na = accepted[i].min(nd);
+            if na == nd {
+                // Full accept: the verify kernel already wrote the canonical
+                // h_state, so this commit is the no-op the head takes.
+                self.commit_accepted_prefix(seq, k_rows, k_rows)?;
             } else {
-                // Drop the rows past the accepted prefix, then restore the
-                // recurrent state to the one AFTER the last KEPT row —
-                // `start_rollback_and_checkpoint_async(seq, n)` restores
-                // `intermediate[n - 1]`, so `na + 1` is the right index. Same
-                // contract the K=3 / K=4 arms above apply, per sequence.
-                let pop = drafts - na;
-                seq.seq_len -= pop;
-                for _ in 0..pop {
+                seq.seq_len -= nd - na;
+                for _ in 0..(nd - na) {
                     seq.tokens.pop();
                 }
-                self.start_rollback_and_checkpoint_async(seq, na + 1)?;
+                self.trim_proposer_state(seq, na, 0)?;
+                self.commit_accepted_prefix(seq, na + 1, k_rows)?;
             }
         }
         Ok(true)
