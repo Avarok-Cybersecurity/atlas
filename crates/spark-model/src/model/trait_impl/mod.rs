@@ -411,6 +411,15 @@ impl Model for TransformerModel {
     fn can_batch_verify(&self, ks: &[usize]) -> bool {
         self.can_batch_verify_dispatch(ks)
     }
+    fn batched_verify_row_cap(&self) -> usize {
+        // The tightest opinion among the layers, so the scheduler chunks to the
+        // same bound `can_batch_verify` will judge the chunk against.
+        self.layers
+            .iter()
+            .filter_map(|l| l.decode_verify_multi_row_cap())
+            .min()
+            .unwrap_or(usize::MAX)
+    }
     fn decode_verify_batched(
         &self,
         tokens: &[u32],

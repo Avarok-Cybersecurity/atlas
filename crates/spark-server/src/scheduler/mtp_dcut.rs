@@ -328,17 +328,24 @@ pub(super) fn plan(
 /// D-Cut-off stays byte-identical per chunk. `ks` is deepest-first, so the
 /// widest row count is the chunk's first element and the cap never changes
 /// mid-chunk.
-pub(super) fn chunk_ranges(ks: &[usize]) -> Vec<(usize, usize)> {
+pub(super) fn chunk_ranges(ks: &[usize], model_row_cap: usize) -> Vec<(usize, usize)> {
+    // The model's own bound and the scheduler's row budget, whichever binds.
+    //
+    // 🪤 Chunking to the WIDER of the two builds chunks `can_batch_verify` then
+    // REFUSES, and a refused chunk does not shrink — it goes wholly serial. That
+    // turns a model declaring a narrow bit-exact band into a model with no
+    // batched verify at all, which is the opposite of what declaring it means.
+    let budget = VERIFY_ROW_BUDGET.min(model_row_cap.max(1));
     let mut out = Vec::new();
     let mut lo = 0usize;
     while lo < ks.len() {
         // Derived, not hardcoded: rows <= 4 is ensured by the ladder clamp,
         // so the division is well-defined and >= 40. Clamped by the verify
         // stash width so the chunk is one `can_batch_verify` will accept.
-        let seq_cap = (VERIFY_ROW_BUDGET / ks[lo].max(1)).min(WIDTH_CAP);
+        let seq_cap = (budget / ks[lo].max(1)).min(WIDTH_CAP);
         let mut hi = lo;
         let mut r = 0usize;
-        while hi < ks.len() && hi - lo < seq_cap && r + ks[hi] <= VERIFY_ROW_BUDGET {
+        while hi < ks.len() && hi - lo < seq_cap && r + ks[hi] <= budget {
             r += ks[hi];
             hi += 1;
         }

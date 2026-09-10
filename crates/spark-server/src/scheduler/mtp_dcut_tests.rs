@@ -63,14 +63,14 @@ fn missing_confidences_are_never_pruned() {
 fn chunk_ranges_reproduce_the_uniform_caps() {
     // Every default-ladder-reachable shape is a SINGLE chunk — true under
     // the old 64-row budget too, so the 96 widening is default-inert.
-    assert_eq!(chunk_ranges(&[4; 8]), vec![(0, 8)]);
-    assert_eq!(chunk_ranges(&[3; 8]), vec![(0, 8)]);
+    assert_eq!(chunk_ranges(&[4; 8], usize::MAX), vec![(0, 8)]);
+    assert_eq!(chunk_ranges(&[3; 8], usize::MAX), vec![(0, 8)]);
     // The 16:2 default rung: [3; 16] = 48 rows, one chunk.
-    assert_eq!(chunk_ranges(&[3; 16]), vec![(0, 16)]);
-    assert_eq!(chunk_ranges(&[2; 16]), vec![(0, 16)]);
+    assert_eq!(chunk_ranges(&[3; 16], usize::MAX), vec![(0, 16)]);
+    assert_eq!(chunk_ranges(&[2; 16], usize::MAX), vec![(0, 16)]);
     // The 32:1 rung: one chunk up to n=32 (R = 64).
-    assert_eq!(chunk_ranges(&[2; 17]), vec![(0, 17)]);
-    assert_eq!(chunk_ranges(&[2; 32]), vec![(0, 32)]);
+    assert_eq!(chunk_ranges(&[2; 17], usize::MAX), vec![(0, 17)]);
+    assert_eq!(chunk_ranges(&[2; 32], usize::MAX), vec![(0, 32)]);
 }
 
 #[test]
@@ -83,23 +83,26 @@ fn chunk_ranges_seq_cap_derives_from_the_row_budget() {
     // this test states the boundary arithmetic and not frozen values.
     const W: usize = spark_model::layer::VERIFY_WY_TABLE_SEQS; // 32
     // rows=3: the row budget would allow 53, the stash allows 32.
-    assert_eq!(chunk_ranges(&[3; 21]), vec![(0, 21)]);
-    assert_eq!(chunk_ranges(&[3; W]), vec![(0, W)]);
+    assert_eq!(chunk_ranges(&[3; 21], usize::MAX), vec![(0, 21)]);
+    assert_eq!(chunk_ranges(&[3; W], usize::MAX), vec![(0, W)]);
     // Past the stash the chunker SPLITS rather than emitting a chunk the
     // model refuses (it previously returned a single (0,33) / (0,53)).
-    assert_eq!(chunk_ranges(&[3; 33]), vec![(0, W), (W, 33)]);
-    assert_eq!(chunk_ranges(&[3; 53]), vec![(0, W), (W, 53)]);
+    assert_eq!(chunk_ranges(&[3; 33], usize::MAX), vec![(0, W), (W, 33)]);
+    assert_eq!(chunk_ranges(&[3; 53], usize::MAX), vec![(0, W), (W, 53)]);
     // rows=4: row budget 40, stash 32.
-    assert_eq!(chunk_ranges(&[4; 9]), vec![(0, 9)]);
-    assert_eq!(chunk_ranges(&[4; 40]), vec![(0, W), (W, 40)]);
+    assert_eq!(chunk_ranges(&[4; 9], usize::MAX), vec![(0, 9)]);
+    assert_eq!(chunk_ranges(&[4; 40], usize::MAX), vec![(0, W), (W, 40)]);
     // rows=2: row budget 80, stash 32.
-    assert_eq!(chunk_ranges(&[2; 80]), vec![(0, W), (W, 64), (64, 80)]);
+    assert_eq!(
+        chunk_ranges(&[2; 80], usize::MAX),
+        vec![(0, W), (W, 64), (64, 80)]
+    );
     // rows=3 with 10 seqs (the old (0,8),(8,10) split): one chunk now.
-    assert_eq!(chunk_ranges(&[3; 10]), vec![(0, 10)]);
+    assert_eq!(chunk_ranges(&[3; 10], usize::MAX), vec![(0, 10)]);
     // The row budget still binds where it is TIGHTER than the stash: at
     // rows=8 (the DFlash uniform K=γ+1 shape) 160/8 = 20 < 32, so 20 wins.
-    assert_eq!(chunk_ranges(&[8; 20]), vec![(0, 20)]);
-    assert_eq!(chunk_ranges(&[8; 21]), vec![(0, 20), (20, 21)]);
+    assert_eq!(chunk_ranges(&[8; 20], usize::MAX), vec![(0, 20)]);
+    assert_eq!(chunk_ranges(&[8; 21], usize::MAX), vec![(0, 20), (20, 21)]);
 }
 
 #[test]
@@ -107,7 +110,7 @@ fn chunk_ranges_respect_the_row_budget_when_ragged() {
     // Deepest-first, mixed depths: rows must never exceed the budget per
     // chunk.
     let ks = vec![4, 4, 4, 4, 4, 3, 3, 2, 2, 2];
-    for (lo, hi) in chunk_ranges(&ks) {
+    for (lo, hi) in chunk_ranges(&ks, usize::MAX) {
         let rows: usize = ks[lo..hi].iter().sum();
         assert!(rows <= VERIFY_ROW_BUDGET, "rows={rows}");
         assert!(hi > lo);
@@ -162,7 +165,7 @@ fn canonical_assignment_preserves_the_selected_row_total() {
     // (`can_batch_verify`, `gdn_decode_wy{2,3,4}`).
     assert!(depths.iter().all(|k| (2..=4).contains(k)));
     // Chunking sees the same shape it always did.
-    assert_eq!(chunk_ranges(&depths), vec![(0, 4)]);
+    assert_eq!(chunk_ranges(&depths, usize::MAX), vec![(0, 4)]);
 }
 
 #[test]
@@ -204,7 +207,11 @@ fn width_two_is_inside_the_pruning_envelope_and_is_not_uniform() {
     assert_ne!(rows, vec![4, 4], "the n=2 plan is NOT the uniform shape");
     assert_eq!(rows.iter().sum::<usize>(), 7);
     // ...and the row saving is real: one fewer verify row than uniform.
-    assert_eq!(chunk_ranges(&rows), vec![(0, 2)], "still a single chunk");
+    assert_eq!(
+        chunk_ranges(&rows, usize::MAX),
+        vec![(0, 2)],
+        "still a single chunk"
+    );
 }
 
 /// The width gate reverts the ASSIGNMENT below
@@ -245,7 +252,7 @@ fn below_the_gate_the_pairing_is_legacy_but_the_pruning_is_kept() {
         "each sequence keeps the depth its confidence earned"
     );
     assert_eq!(depths, vec![4, 3]);
-    assert_eq!(chunk_ranges(&depths), vec![(0, 2)]);
+    assert_eq!(chunk_ranges(&depths, usize::MAX), vec![(0, 2)]);
 
     // The canonical arm re-pairs: deepest onto the lowest slot.
     let (c_order, c_depths) = verify_batch_order(&slots, &ks, true);
@@ -284,7 +291,7 @@ fn chunk_ranges_never_exceed_the_verify_width_bound() {
     for rows in 2..=4usize {
         for n in 2..=96usize {
             let ks = vec![rows; n];
-            for (lo, hi) in chunk_ranges(&ks) {
+            for (lo, hi) in chunk_ranges(&ks, usize::MAX) {
                 assert!(
                     hi - lo <= WIDTH_CAP,
                     "rows={rows} n={n}: chunk ({lo},{hi}) is {} sequences wide, \
@@ -307,7 +314,7 @@ fn ragged_chunks_also_respect_the_width_bound() {
     // well past the 32-slot stash.
     let mut ks = vec![4usize; 4];
     ks.extend(std::iter::repeat_n(2usize, 60));
-    for (lo, hi) in chunk_ranges(&ks) {
+    for (lo, hi) in chunk_ranges(&ks, usize::MAX) {
         assert!(
             hi - lo <= spark_model::layer::VERIFY_WY_TABLE_SEQS,
             "ragged chunk ({lo},{hi}) is {} wide",
@@ -319,4 +326,50 @@ fn ragged_chunks_also_respect_the_width_bound() {
         assert!(r <= VERIFY_ROW_BUDGET, "rows={r}");
         assert!(hi > lo, "empty range");
     }
+}
+
+/// A model that declares a narrow bit-exact band must get chunks INSIDE it.
+///
+/// `can_batch_verify` judges the chunk against the same cap, and a refused chunk
+/// does not shrink — it goes wholly serial. So chunking to the scheduler's own
+/// budget while the model's is narrower turns "declare a narrow band" into "have
+/// no batched verify at all", which is the opposite of what declaring it means.
+#[test]
+fn chunk_ranges_respects_a_narrower_model_cap() {
+    // GLM-5.3's band: 8 rows (the lm_head batchm edge).
+    const CAP: usize = 8;
+
+    // Four sequences at depth 2 fit exactly — one chunk, 8 rows.
+    assert_eq!(chunk_ranges(&[2, 2, 2, 2], CAP), vec![(0, 4)]);
+
+    // At depth 3 only two fit (3+3=6, a third would be 9) — two chunks, NOT one
+    // 12-row chunk the verify would refuse.
+    assert_eq!(chunk_ranges(&[3, 3, 3, 3], CAP), vec![(0, 2), (2, 4)]);
+
+    // Every emitted chunk is inside the cap, ragged ladders included.
+    for ks in [
+        vec![2, 3, 4, 2, 3],
+        vec![4, 4, 4],
+        vec![2, 2, 2, 2, 2, 2],
+        vec![3, 2, 3, 2, 4],
+    ] {
+        for (lo, hi) in chunk_ranges(&ks, CAP) {
+            let rows: usize = ks[lo..hi].iter().sum();
+            assert!(
+                rows <= CAP,
+                "chunk {lo}..{hi} of {ks:?} is {rows} rows, past the {CAP}-row cap"
+            );
+            assert!(hi > lo, "empty chunk range");
+        }
+    }
+}
+
+/// The cap only ever NARROWS: an unopinionated model keeps the scheduler's
+/// budget, so nothing that shipped before this changes shape.
+#[test]
+fn an_unopinionated_model_keeps_the_scheduler_budget() {
+    assert_eq!(
+        chunk_ranges(&[4; 8], usize::MAX),
+        chunk_ranges(&[4; 8], VERIFY_ROW_BUDGET)
+    );
 }

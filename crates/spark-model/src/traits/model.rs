@@ -645,6 +645,20 @@ pub trait Model: Send + Sync {
     /// default loop impl of the batched form — a loop over the per-seq
     /// verify would leave the shared logits buffer holding only the LAST
     /// sequence's rows and silently poison row-based pipeline picks.
+    /// The widest R = Σ`ks` a batched verify may be given on this model.
+    ///
+    /// The scheduler CHUNKS sequences before asking [`Self::can_batch_verify`],
+    /// so it needs the same bound the answer will be judged against — a chunk
+    /// built to a wider budget is simply refused, and the whole chunk then falls
+    /// to the per-sequence loop. Losing batching for a bound the caller could
+    /// have respected is worse than a narrower chunk.
+    ///
+    /// Default `usize::MAX` = no model opinion; the scheduler keeps its own
+    /// row budget.
+    fn batched_verify_row_cap(&self) -> usize {
+        usize::MAX
+    }
+
     fn can_batch_verify(&self, _ks: &[usize]) -> bool {
         false
     }

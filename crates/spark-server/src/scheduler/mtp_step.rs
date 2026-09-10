@@ -522,7 +522,7 @@ pub fn step_mtp(
     // shape above n=8 the same way (fixer r2 2026-07-30: a 16:2 env-ladder
     // leg read `n=8 k_drafts=2` in its accept telemetry — two chunks). The
     // cap is now anchored to the row budget so the artifact class is closed.
-    for (lo, hi) in mtp_dcut::chunk_ranges(&ks) {
+    for (lo, hi) in mtp_dcut::chunk_ranges(&ks, model.batched_verify_row_cap()) {
         let chunk = &batchable_idxs[lo..hi];
         let chunk_ks = &ks[lo..hi];
         if chunk.len() >= 2 && model.can_batch_verify(chunk_ks) {
