@@ -26,6 +26,24 @@ pub fn step_mtp(
     // bootstrap, D-Cut plan, chunk sort) — one component of the out-of-step
     // GAP. One Instant::now() when disarmed, same cost note as StepTimer.
     let t_step_outer = std::time::Instant::now();
+    // DFlash GAMMA RESOLVER: this step's draft count from the current
+    // concurrency (and, single-stream, the accept signal). Shadows the
+    // serve-wide value so every propose and re-propose below inherits it;
+    // the verify width follows `pending_drafts.len()` on the next step.
+    // Identity when pinned (`--dflash-gamma`) or not DFlash.
+    //
+    // `active.len()` counts EVERY active sequence, including ones still in
+    // bootstrap or prefill this step, so the C=1 arm means "one sequence on
+    // the server", not "one sequence generating". A lone generator gets the
+    // C>=2 width on a step where a second request is prefilling, and the
+    // C=1 observer skips that step. That is right for the batched verify
+    // that follows once both draft, and mildly pessimistic for the lone
+    // sequence in the meantime.
+    let num_drafts = if dflash_verify_raw_argmax {
+        crate::scheduler::dflash_rung::drafts_for(active.len(), num_drafts)
+    } else {
+        num_drafts
+    };
     let mut bootstrap_idxs: Vec<usize> = Vec::new();
     let mut verify_idxs: Vec<usize> = Vec::new();
     for (i, a) in active.iter().enumerate() {
@@ -399,18 +417,37 @@ pub fn step_mtp(
             m_max -= 1;
         }
         if batchable_idxs.len() >= 2 && m_max >= 2 {
-            let mut asc = batchable_idxs.clone();
-            asc.sort_unstable();
-            for chunk in asc.chunks(m_max) {
+            // SLOT ORDER, not arrival order. The batched conv+WY GDN path
+            // requires the batch to sit on CONSECUTIVE ssm-pool slots in
+            // batch order (checked on the pointers in
+            // trait_decode_batched_conv_gdn_multi.rs). The pool freelist is
+            // LIFO, so the first fill hands out slots 0..n in arrival order
+            // and engages, but every later fill re-issues released slots in
+            // reverse finish order and the same batch DECLINED to the
+            // per-sequence loop (~47% of steps engaged in a two-round C=16
+            // prose bench, 2026-09-02). Drafts travel inside each
+            // `ActiveSeq`, so batch order is free to the caller. Sequences
+            // without a slot sort last; the model re-checks the layout and
+            // declines safely if a gap remains.
+            let mut by_slot = batchable_idxs.clone();
+            by_slot.sort_by_key(|&i| (active[i].seq.ssm_slot_idx().unwrap_or(usize::MAX), i));
+            for chunk in by_slot.chunks(m_max) {
                 if chunk.len() >= 2 {
-                    let mut refs: Vec<&mut ActiveSeq> = Vec::with_capacity(chunk.len());
+                    // Borrow in ascending active-index order (one forward
+                    // walk), then restore the chunk's slot order.
+                    let mut asc: Vec<usize> = chunk.to_vec();
+                    asc.sort_unstable();
+                    let mut tagged: Vec<(usize, &mut ActiveSeq)> = Vec::with_capacity(asc.len());
                     let mut it = active.iter_mut();
                     let mut consumed = 0usize;
-                    for &i in chunk {
+                    for &i in &asc {
                         let a = it.nth(i - consumed).expect("verify index within active");
                         consumed = i + 1;
-                        refs.push(a);
+                        let pos = chunk.iter().position(|&c| c == i).expect("chunk member");
+                        tagged.push((pos, a));
                     }
+                    tagged.sort_by_key(|t| t.0);
+                    let mut refs: Vec<&mut ActiveSeq> = tagged.into_iter().map(|t| t.1).collect();
                     step_verify_dflash_batched(
                         model, &mut refs, sched, gamma, num_drafts, verify_ctx,
                     );

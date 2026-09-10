@@ -464,6 +464,13 @@ impl TransformerModel {
         } else {
             DevicePtr::NULL
         };
+        let gdn_woa_na_tab = if verify_wy_tables.is_null() {
+            DevicePtr::NULL
+        } else {
+            let b = gpu.alloc(crate::layer::VERIFY_WY_TABLE_SEQS * 4)?;
+            gpu.memset(b, 0, crate::layer::VERIFY_WY_TABLE_SEQS * 4)?;
+            b
+        };
         // Catch-up ring: 512 rows covers the gate's serial re-probe interval
         // (256 tokens) with 2x margin; ~4 MB at hidden 4096. Only allocated
         // when the staged feature is enabled.
@@ -483,16 +490,31 @@ impl TransformerModel {
         // can actually run at — an NVFP4/FP8 MTP head would allocate this and
         // never write it.
         //
-        // `rows` is `max_seq_len` unless the proposer declares a smaller ceiling
-        // it can never be asked past (`DraftProposer::prefill_hidden_rows`, default
-        // `max_seq_len`). GLM-5.3's drafter is a DSA block capped at
-        // `max_dsa_context`, so at `--max-seq-len 524288` this buffer was 4.0 GiB
-        // of which all but 128 MiB was unreachable — and unreserved, because it is
-        // allocated after the KV pool is sized. ANOMALIES A59.
+        // Two ceilings, both binding, one value. The proposer's reachable
+        // context (`DraftProposer::prefill_hidden_rows`, default `max_seq_len`):
+        // GLM-5.3's drafter is a DSA block capped at `max_dsa_context`, so at
+        // `--max-seq-len 524288` this buffer was 4.0 GiB of which all but
+        // 128 MiB was unreachable, and unreserved, because it is allocated
+        // after the KV pool is sized (ANOMALIES A59). And the DFlash ctx cap
+        // when DFlash is on: a DFlash serve above the 16K cap wrote past the
+        // allocation once a prompt crossed it (`cuMemcpyDtoDAsync` status 1,
+        // reported on #844 by rsafier). `capture_rows` is computed OUTSIDE the
+        // branch because it is also the buffer's row capacity
+        // (`mtp_prefill_capacity` below): the two numbers must be one value.
         let mtp_prefill_rows = proposer
             .as_ref()
             .map_or(max_seq_len, |p| p.prefill_hidden_rows(max_seq_len))
             .min(max_seq_len);
+        let capture_rows = if dflash_kgamma > 0 {
+            let cap = crate::layers::dflash_ctx_cap();
+            if cap == 0 {
+                mtp_prefill_rows
+            } else {
+                mtp_prefill_rows.min(cap)
+            }
+        } else {
+            mtp_prefill_rows
+        };
         let mtp_prefill_hidden = if has_mtp
             && mtp_quant.supports_drafter_prefill()
             && crate::layers::mtp_drafter_prefill_enabled(&levers)
@@ -510,16 +532,6 @@ impl TransformerModel {
             // Pure-MTP serves keep the full ceiling: this narrowing is only
             // sound because the DFlash drafter's own capacity is the binding
             // constraint, and that reasoning does not transfer.
-            let capture_rows = if dflash_kgamma > 0 {
-                let cap = crate::layers::dflash_ctx_cap();
-                if cap == 0 {
-                    max_seq_len
-                } else {
-                    max_seq_len.min(cap)
-                }
-            } else {
-                max_seq_len
-            };
             let bytes = capture_rows * config.hidden_size * 2;
             tracing::info!(
                 "MTP drafter context: allocating {:.0} MB prompt-hidden capture \
@@ -527,10 +539,10 @@ impl TransformerModel {
                 bytes as f64 / 1e6,
                 capture_rows,
                 config.hidden_size,
-                if mtp_prefill_rows < max_seq_len {
+                if capture_rows < max_seq_len {
                     format!(
-                        " — capped from --max-seq-len {max_seq_len} to the proposer's \
-                         reachable context (A59)"
+                        " — capped from --max-seq-len {max_seq_len} to the reachable \
+                         context (proposer ceiling A59 and/or the DFlash ctx cap)"
                     )
                 } else {
                     String::new()
@@ -902,13 +914,13 @@ impl TransformerModel {
             mtp_catchup_ring,
             mtp_catchup_meta: parking_lot::Mutex::new((0, 0)),
             mtp_prefill_hidden,
-            // SSOT for the capture bounds check — must be the ROW COUNT actually
-            // allocated, not `max_seq_len` (A59): a capacity above the allocation
-            // would let the capture epilogue write past it.
+            // SSOT for the capture bounds check: the ROW COUNT actually
+            // allocated (both ceilings applied), never `max_seq_len`. The
+            // capture guard in `drafter_prefill.rs` compares against this.
             mtp_prefill_capacity: if mtp_prefill_hidden.is_null() {
                 0
             } else {
-                mtp_prefill_rows
+                capture_rows
             },
             mtp_prefill_capture_len: std::sync::atomic::AtomicUsize::new(0),
             mtp_prefill_capture_gen: std::sync::atomic::AtomicU64::new(0),
@@ -924,6 +936,10 @@ impl TransformerModel {
             verify4_graph: Mutex::new(std::collections::HashMap::new()),
             verify_batched_graphs: Mutex::new((std::collections::HashMap::new(), 0)),
             verify_wy_tables,
+            gdn_woa_na_tab,
+            gdn_woa_folded_slots: parking_lot::Mutex::new(Vec::new()),
+            gdn_woa_eligible: std::sync::atomic::AtomicBool::new(false),
+            gdn_woa_bound: parking_lot::Mutex::new((DevicePtr::NULL, DevicePtr::NULL, 0)),
             // Nothing staged yet: the buffer was memset to zero above, and no
             // key describes zero, so the first verify step always uploads.
             verify_wy_cache: Mutex::new(None),

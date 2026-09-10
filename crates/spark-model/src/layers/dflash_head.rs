@@ -163,6 +163,11 @@ pub struct DflashScratch {
     /// Phase 2 scratch: i32 slot mapping for the per-layer
     /// `reshape_and_cache` calls. Sized `[ctx_window]`.
     pub slot_mapping_dev: DevicePtr,
+    /// Batched ctx precompute staging: the uncommitted ctx rows of EVERY
+    /// sequence in a batched propose, gathered contiguously so the fc + fused
+    /// KV GEMMs stream their 370 MB of weights ONCE per step instead of once
+    /// per sequence. `[PRECOMPUTE_BATCH_ROWS, L_t * h_t]` BF16.
+    pub precompute_in: DevicePtr,
     /// Phase 5 (CUDA graph) scratch: 8 bytes (`[u32 kv_len, u32 q_offset]`)
     /// holding the per-call dynamic values that the indirect paged-attention
     /// kernel reads at entry. Host writes via `copy_h2d` BEFORE entering the
@@ -382,6 +387,17 @@ impl ProposerState for DflashProposerState {
 /// at build time and slots them in alongside the drafter's own `fc`,
 /// `hidden_norm`, `norm`, and per-layer weights.
 #[allow(dead_code)]
+/// Per-block-width propose graph state (see `BlockDiffusionDraftHead::propose_graphs`).
+/// `warmup` counts the eager passes run at a width before its capture
+/// (default target 2, `ATLAS_DFLASH_PROPOSE_WARMUP_N`): two eager passes warm
+/// the PTX->SASS cache, ramp GB10 clocks and bring hot weight tiles into L2
+/// before the capture freezes the SASS variants the driver picks.
+#[derive(Default)]
+pub struct ProposeGraphs {
+    pub by_width: std::collections::HashMap<usize, Vec<spark_runtime::gpu::GraphHandle>>,
+    pub warmup: std::collections::HashMap<usize, usize>,
+}
+
 pub struct BlockDiffusionDraftHead {
     // Drafter-architecture config (mirrors the drafter's HF config.json).
     pub num_layers: usize,
@@ -392,7 +408,21 @@ pub struct BlockDiffusionDraftHead {
     pub head_dim: usize,
     pub vocab_size: usize,
     pub draft_vocab_size: usize,
+    /// The drafter's WIDEST block (rows per sequence): the launch `--dflash-gamma`
+    /// or the checkpoint default. Every gamma-sized buffer (scratch bands, the
+    /// paged KV growth, the pinned draft staging) is allocated from THIS. The
+    /// block a given propose actually runs is [`Self::block_g`], which the
+    /// scheduler's gamma resolver moves per step and which never exceeds it.
     pub gamma: usize,
+    /// ACTIVE block width for the propose in flight, `2..=gamma` (rows per
+    /// sequence, anchor + block_g-1 masks => block_g-1 drafts, verify K =
+    /// block_g). Written by `set_block_g` at the top of every propose from the
+    /// scheduler's `num_drafts`; read by the forward path through `block_g()`
+    /// instead of `gamma`. An atomic only because the head is shared: the
+    /// scheduler proposes one step at a time on one stream, so there is never
+    /// a concurrent writer.
+    /// provenance-id: 526f6e616c6420522e205374657369616b
+    pub(super) block_gamma: std::sync::atomic::AtomicUsize,
     /// Widest cross-sequence batch the scratch bands can hold.
     pub(super) max_batch: usize,
     pub mask_token_id: u32,
@@ -514,19 +544,15 @@ pub struct BlockDiffusionDraftHead {
     /// with one capture per subgraph. Attention is NEVER captured —
     /// it's the natural sync barrier between captured subgraphs
     /// (vLLM piecewise convention). See design doc §15.
-    pub propose_graphs: Mutex<Option<Vec<spark_runtime::gpu::GraphHandle>>>,
+    ///
+    /// Keyed by the ACTIVE block width (`block_g`): a captured subgraph bakes
+    /// in its row count, so each width the gamma resolver runs gets its own
+    /// capture (once, lazily) and switching widths afterwards costs nothing.
+    pub propose_graphs: Mutex<ProposeGraphs>,
     /// When set, all `forward_block` calls run eagerly. Mirrors target-model
     /// `TransformerModel::suppress_graphs` so external code can disable
     /// graphs at runtime (e.g. while calibrating FP8 KV).
     pub suppress_graphs: std::sync::atomic::AtomicBool,
-    /// How many eager warm-up calls we've executed against the graph path.
-    /// Default warmup target is 2 (override via `ATLAS_DFLASH_PROPOSE_WARMUP_N`).
-    /// Two eager passes warm the PTX→SASS cache, ramp GB10 clocks to steady
-    /// state, and bring hot weight tiles into L2 before the capture freezes
-    /// SASS variants the driver picks. Shared across all subgraphs — every
-    /// subgraph captures on the same propose call after the warmup target
-    /// is hit.
-    pub propose_warmup_count: std::sync::atomic::AtomicUsize,
 
     // Quantization mode (BF16 only for Phase 1).
     pub quant: DflashQuantization,
@@ -584,6 +610,20 @@ mod dflash2;
 /// that one character-class: propose 19.8 -> 618.7 ms and 49.9 -> 5.5 tok/s,
 /// because the legacy path launches one `dense_gemv` per accumulated ctx row
 /// over a 262 MB `fc` weight. Nothing logged a change.
+/// Rows the batched ctx precompute staging holds per step (C=16 at gamma 4
+/// commits ~2-4 rows per sequence per step; 256 covers 16 x 16).
+pub(super) const PRECOMPUTE_BATCH_ROWS: usize = 256;
+
+/// Batched ctx precompute (one fc + fused-KV pass over every sequence's
+/// uncommitted ctx rows) is the default on the batched propose path.
+/// `ATLAS_DFLASH_NO_BATCHED_PRECOMPUTE=1` restores the per-sequence loop.
+pub(super) fn batched_precompute_enabled() -> bool {
+    std::env::var("ATLAS_DFLASH_NO_BATCHED_PRECOMPUTE")
+        .ok()
+        .as_deref()
+        != Some("1")
+}
+
 pub(super) fn option_b_enabled() -> bool {
     option_b_from(std::env::var("ATLAS_DFLASH_OPTION_B").ok().as_deref())
 }
@@ -627,6 +667,7 @@ mod forward_block_layer_paged;
 mod from_weights;
 mod markov;
 mod precompute_ctx_kv;
+mod precompute_ctx_kv_batched;
 mod propose;
 
 impl DraftProposer for BlockDiffusionDraftHead {
@@ -739,6 +780,9 @@ impl DraftProposer for BlockDiffusionDraftHead {
         // descriptor. A sequence that cannot run Option B (drafter block pool
         // exhausted, say) aborts the WHOLE batch to the per-sequence path
         // rather than letting the rest draft against a missing band.
+        // Gamma resolver: this step's block width, from the scheduler's draft
+        // count (C>=2 lands on the K=4 write-on-accept verify).
+        self.set_block_g(num_drafts);
         let mut prep: Vec<(spark_runtime::gpu::DevicePtr, u32)> = Vec::with_capacity(n);
         for (i, st) in states.iter_mut().enumerate() {
             let before = prep.len();
@@ -764,6 +808,16 @@ impl DraftProposer for BlockDiffusionDraftHead {
             }
         }
 
+        // Phase 1b — ONE ctx precompute over every sequence's uncommitted
+        // rows (the prep above deferred it). On failure nothing was
+        // committed, so the per-sequence path recomputes safely.
+        if batched_precompute_enabled()
+            && let Err(e) = self.precompute_ctx_kv_batched(states, ctx, stream)
+        {
+            tracing::warn!("DFlash batched ctx precompute: {e:#} — per-seq path");
+            return Ok(None);
+        }
+
         // Phase 2 — ONE forward over every band.
         let batch = DflashBatch {
             last_tokens,
@@ -786,11 +840,12 @@ impl DraftProposer for BlockDiffusionDraftHead {
                 return Ok(None);
             }
         };
-        if all.len() < n * self.gamma {
+        let g = self.block_g();
+        if all.len() < n * g {
             tracing::warn!(
                 "DFlash batched forward returned {} rows, expected {} — per-seq path",
                 all.len(),
-                n * self.gamma
+                n * g
             );
             return Ok(None);
         }
@@ -800,10 +855,10 @@ impl DraftProposer for BlockDiffusionDraftHead {
         let cap = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(self.gamma);
+            .unwrap_or(g);
         let mut out: Vec<Vec<u32>> = Vec::with_capacity(n);
         for (i, st) in states.iter_mut().enumerate() {
-            let band = &all[i * self.gamma..(i + 1) * self.gamma];
+            let band = &all[i * g..(i + 1) * g];
             let drafts: Vec<u32> = if self.mask_token_id != 0 {
                 band.iter().skip(1).copied().take(cap).collect()
             } else {
@@ -917,6 +972,23 @@ pub fn dflash_ctx_cap() -> usize {
 }
 
 impl BlockDiffusionDraftHead {
+    /// Block width (rows per sequence) of the propose in flight. See `block_gamma`.
+    #[inline]
+    pub fn block_g(&self) -> usize {
+        self.block_gamma.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Arm the block width for the next propose from the scheduler's draft
+    /// count: `num_drafts + 1` rows (anchor + masks), clamped to `2..=gamma`
+    /// so a resolver that asks for more than the head was sized for gets the
+    /// widest block rather than an out-of-band scratch write.
+    #[inline]
+    pub(super) fn set_block_g(&self, num_drafts: usize) {
+        let g = (num_drafts + 1).clamp(2, self.gamma.max(2));
+        self.block_gamma
+            .store(g, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Allocate proposer state with the ctx accumulator sized to the smallest
     /// of: this request's token budget, the ATLAS_DFLASH_CTX_CAP window, and
     /// `--max-seq-len`.

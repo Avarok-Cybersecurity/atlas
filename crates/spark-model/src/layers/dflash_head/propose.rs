@@ -18,7 +18,7 @@ impl BlockDiffusionDraftHead {
         last_token: u32,
         _target_hidden: DevicePtr,
         position: usize,
-        _num_drafts: usize,
+        num_drafts: usize,
         state: &mut dyn ProposerState,
         ctx: &ForwardContext,
         _stream: u64,
@@ -33,6 +33,11 @@ impl BlockDiffusionDraftHead {
         // single-sequence paths cannot drift apart if only one of them exists.
         collect_prep: Option<&mut Vec<(DevicePtr, u32)>>,
     ) -> Result<Vec<u32>> {
+        // Gamma resolver: the block this propose runs is the scheduler's draft
+        // count + 1 (anchor row), never wider than the head was sized for.
+        // The batched entry armed the same value before its prep loop; the
+        // store is idempotent.
+        self.set_block_g(num_drafts);
         let dstate = state
             .as_any_mut()
             .downcast_mut::<DflashProposerState>()
@@ -380,7 +385,12 @@ impl BlockDiffusionDraftHead {
                 dstate.ctx_committed.min(dstate.ctx_len)
             };
             let new_count = dstate.ctx_len - committed;
-            if dstate.ctx_len > 0 && new_count > 0 {
+            // Batched propose: the tail is precomputed ONCE for the whole
+            // batch by `precompute_ctx_kv_batched` after every sequence's
+            // prep (weights streamed once, not n times). Leave
+            // `ctx_committed` where it is so that pass sees the same tail.
+            let defer_to_batch = collect_prep.is_some() && super::batched_precompute_enabled();
+            if !defer_to_batch && dstate.ctx_len > 0 && new_count > 0 {
                 // Ctx-holes follow-up (2026-07-08): the precompute scratch
                 // (fc_proj / fused_kv_out / slot_mapping_dev) is sized for
                 // ctx_window rows. A serial-append stretch (think-gated /
@@ -538,7 +548,7 @@ impl BlockDiffusionDraftHead {
         let cap: usize = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(self.gamma);
+            .unwrap_or(self.block_g());
 
         // ATLAS_DFLASH_VERIFY_TRACE=1: log all γ drafts BEFORE the cap so we
         // can see whether the drafter echoes only at position 0 or across
