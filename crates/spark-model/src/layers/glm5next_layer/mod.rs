@@ -1913,6 +1913,24 @@ impl TransformerLayer for Glm5NextLayer {
     /// `can_batch_verify_dispatch` route around it instead, leaving spec-on
     /// C>1 on the per-sequence verify loop — the sealed K=3 path.
     ///
+    /// GLM's batched verify is asserted to be bit-identical to the serial one —
+    /// the per-sequence sweep by construction, and the fused body by staying
+    /// inside the batched-GEMV band — so it takes the band as its cap rather
+    /// than the caller's much wider `VERIFY_ROW_CAP`.
+    ///
+    /// At the production ladder this is not restrictive: K=2 admits 4 sequences,
+    /// K=4 admits 2, and D-Cut is free to spend the 8 rows unevenly across them
+    /// (deeper where drafts survive) because `ks` is ragged end to end.
+    ///
+    /// 🪤 8, NOT `DENSE_GEMV_BATCHM_MAX_M` (16). Two different bands: 16 is the
+    /// GEMV kernel's own ceiling, 8 is where the DECODE sites — including the
+    /// BF16 lm_head this verify's argmax comes out of — stop choosing the
+    /// non-reassociating kernel. The argmax is what the accept walk compares,
+    /// so the lm_head band is the one that binds.
+    fn decode_verify_multi_row_cap(&self) -> Option<usize> {
+        Some(crate::layers::ops::DENSE_GEMV_BATCHM_DECODE_MAX_M as usize)
+    }
+
     /// ✅ NOW FALSE — `Glm5NextLayer::decode_verify_multi` above is that commit:
     /// a per-sequence `forward_k` sweep with `slot_base = row_base` and a
     /// per-sequence metadata view. The text below is kept because it is why the

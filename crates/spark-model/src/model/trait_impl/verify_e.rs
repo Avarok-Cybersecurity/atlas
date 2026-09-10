@@ -113,7 +113,13 @@ impl TransformerModel {
                     ks = ?ks,
                     n_in_range = (2..=crate::layer::VERIFY_WY_TABLE_SEQS).contains(&n),
                     shape_ok,
-                    rows_ok = ks.iter().sum::<usize>() <= super::verify_e2::VERIFY_ROW_CAP,
+                    rows = ks.iter().sum::<usize>(),
+                    row_cap = self
+                        .layers
+                        .iter()
+                        .filter_map(|l| l.decode_verify_multi_row_cap())
+                        .min()
+                        .unwrap_or(super::verify_e2::VERIFY_ROW_CAP),
                     comm_ok = self.comm.is_none() || Self::ep_batch_verify_enabled(),
                     lora_ok = !(self.lora.is_some() && crate::lora::no_batch_verify()),
                     stash_ok = !self.verify_hidden_stash.is_null(),
@@ -133,7 +139,13 @@ impl TransformerModel {
         }
         (2..=crate::layer::VERIFY_WY_TABLE_SEQS).contains(&n)
             && shape_ok
-            && ks.iter().sum::<usize>() <= super::verify_e2::VERIFY_ROW_CAP
+            && ks.iter().sum::<usize>()
+                <= self
+                    .layers
+                    .iter()
+                    .filter_map(|l| l.decode_verify_multi_row_cap())
+                    .min()
+                    .unwrap_or(super::verify_e2::VERIFY_ROW_CAP)
             // MULTI-RANK. The bare `comm.is_none()` this replaces was
             // introduced with the function (#388) and carries no recorded
             // rationale beyond the doc's "the envelope verify_e was built and

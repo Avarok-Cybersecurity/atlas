@@ -137,6 +137,31 @@ pub trait TransformerLayer: Send + Sync {
         false
     }
 
+    /// The widest R = Σ`ks` this layer's batched verify may be given while
+    /// still producing the bits the SERIAL verify would have produced.
+    ///
+    /// `None` (default) = no opinion, and the caller keeps its own
+    /// `VERIFY_ROW_CAP`. `Some(n)` caps it at `n` rows.
+    ///
+    /// WHY A CAP EXISTS AT ALL. `DENSE_GEMV_BATCHM_DECODE_MAX_M` is the band on
+    /// which the MTP row dispatch and the BF16 lm_head choose
+    /// `dense_gemv_bf16_batchm` over a REASSOCIATING tile GEMM — so the band's
+    /// upper edge decides which bits a decode of that width produces, and its
+    /// own doc records the edge as frozen at 8 with an A/B behind it
+    /// ("NEGATIVE above 8 against the tile GEMM"). A verify wider than that
+    /// stops being bit-identical to the serial path, and an accepted draft is
+    /// then not necessarily the token the unspeculated engine would have
+    /// emitted — the one property speculation may not lose.
+    ///
+    /// 🪤 The constant is universal but the ENFORCEMENT is per model on
+    /// purpose: models already shipping a batched verify at the caller's cap
+    /// have their own measured envelope, and silently narrowing them here would
+    /// be a numerics change on a path this reasoning says nothing about. A model
+    /// opts in when it wants the serial path's bits.
+    fn decode_verify_multi_row_cap(&self) -> Option<usize> {
+        None
+    }
+
     /// True when this layer cannot serve a BATCHED multi-sequence VERIFY
     /// sweep (`decode_verify_multi`). Consumed by
     /// `can_batch_verify_dispatch`; a `true` layer falls back to the
