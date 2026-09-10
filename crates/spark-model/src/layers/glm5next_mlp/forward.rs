@@ -210,6 +210,25 @@ pub struct Glm5NextMlpWorkspace {
     max_inter: usize,
     /// Widest verify this scratch can serve. `1` on the serial decode path.
     max_rows: usize,
+    /// Widest row group the UNION / per-row arms may be handed.
+    ///
+    /// 🔴 Those arms index `a_gate`/`a_up`/`a_act`, `expert_out`, `u_eid` and
+    /// `u_slot` by `row * top_k * ...`. The FUSED prefill arm does not: it writes
+    /// `expert_out` per TOKEN and combines with `top_k = 1`. Charging that
+    /// `top_k`-fold extent at the full width is what makes a WIDE prefill window
+    /// unaffordable — `u_slot` alone is QUADRATIC in rows (33.5 MB per layer at
+    /// 1024, ~1.4 GB across the 42 sparse layers) for scratch a wide prefill
+    /// never touches.
+    ///
+    /// 🪤 At the shipping widths this EQUALS `max_rows`, so the default path
+    /// allocates exactly what it always did. It only narrows for a window wider
+    /// than `PREFILL_ROWS`, which is opt-in. `forward_moe` re-checks it at
+    /// dispatch instead of trusting the derivation, because an NVFP4 pack has no
+    /// fused arm at all and would otherwise run the union arm off the end.
+    union_rows: usize,
+    /// Allocated elements of `expert_out`, so the pre-zero covers the buffer
+    /// rather than a shape it may no longer have.
+    expert_out_elems: usize,
 }
 
 impl Glm5NextMlpWorkspace {
@@ -228,9 +247,20 @@ impl Glm5NextMlpWorkspace {
         // `top_k` slots at a time. Both share these buffers, so take the wider.
         // The row-batched MoE arm computes every (row, slot) pair in ONE launch, so its
         // activations are `[rows, top_k, moe_intermediate]` — wider than either of the above.
+        // Union extent: unchanged at the shipping widths, narrowed only for a
+        // window wider than the default prefill sub-chunk. The union arm runs
+        // exactly when the fused one does not (`rows < moe_prefill_min_rows()`),
+        // so anything at or above that threshold is headroom.
+        let union_rows = rows.min(
+            crate::layers::glm5next_layer::PREFILL_ROWS.max(moe_prefill_min_rows()),
+        );
         let act_elems = (rows * max_inter)
-            .max(rows * cfg.top_k * cfg.moe_intermediate)
+            .max(union_rows * cfg.top_k * cfg.moe_intermediate)
             .max(1);
+        // Two shapes share `expert_out`: the fused arm writes `[rows, hidden]`
+        // (one routed SUM per token), the union / per-row arms `[rows, top_k,
+        // hidden]`. Take whichever is wider, and remember it for the pre-zero.
+        let expert_out_elems = (rows * cfg.hidden).max(union_rows * cfg.top_k * cfg.hidden);
         Ok(Self {
             a_gate: gpu.alloc(act_elems * 2)?,
             a_up: gpu.alloc(act_elems * 2)?,
@@ -238,10 +268,12 @@ impl Glm5NextMlpWorkspace {
             logits: gpu.alloc(rows * cfg.num_experts * 4)?,
             ids: gpu.alloc(rows * cfg.top_k * 4)?,
             wts: gpu.alloc(rows * cfg.top_k * 4)?,
-            expert_out: gpu.alloc(rows * cfg.top_k * cfg.hidden * 2)?,
+            expert_out: gpu.alloc(expert_out_elems * 2)?,
             shared_out: gpu.alloc(rows * cfg.hidden * 2)?,
-            u_eid: gpu.alloc(rows * cfg.top_k * 4)?,
-            u_slot: gpu.alloc(rows * cfg.top_k * rows * 4)?,
+            u_eid: gpu.alloc(union_rows * cfg.top_k * 4)?,
+            // 🪤 QUADRATIC in rows — the one term that made a wide window
+            // unaffordable before it was charged at the union width.
+            u_slot: gpu.alloc(union_rows * cfg.top_k * union_rows * 4)?,
             ones_f32: {
                 let p = gpu.alloc(rows * 4)?;
                 let ones: Vec<u8> = std::iter::repeat_n(1.0f32, rows)
@@ -252,6 +284,8 @@ impl Glm5NextMlpWorkspace {
             },
             max_inter,
             max_rows: rows,
+            union_rows,
+            expert_out_elems,
         })
     }
 }
@@ -627,6 +661,31 @@ pub fn forward_moe(
             ws.max_rows
         );
     }
+    // 🔴 The UNION and PER-ROW arms index `expert_out` and the activations by
+    // `row * top_k * ...`; that extent is charged at `ws.union_rows`, which is
+    // narrower than the window once a wide prefill window is in play. Only the
+    // FUSED sort-by-expert arm avoids it (it writes `expert_out` per TOKEN and
+    // combines with `top_k = 1`), so a wide call that CANNOT reach that arm must
+    // be refused, not served off the end of the allocation.
+    //
+    // 🪤 Covers the NVFP4 packs too, which have no fused arm at any width — hence
+    // the check here rather than beside `use_prefill`, which exists only inside
+    // the EXL3 branch.
+    let fused_reachable = w.exl3.is_some()
+        && k.moe_sort_by_expert.0 != 0
+        && moe_prefill_min_rows() > 0
+        && rows >= moe_prefill_min_rows();
+    if !fused_reachable && rows > ws.union_rows {
+        bail!(
+            "GLM MoE: {rows} rows on a non-fused arm whose scratch is built for {} \
+             (exl3={}, sort_by_expert={:#x}, moe_prefill_min={}). A prefill window wider \
+             than the sub-chunk is only affordable through the fused sort-by-expert arm.",
+            ws.union_rows,
+            w.exl3.is_some(),
+            k.moe_sort_by_expert.0,
+            moe_prefill_min_rows(),
+        );
+    }
     // EXL3 binds its own tables and leaves `experts` empty on purpose, so this
     // count only describes the NVFP4 arm. Checking it unconditionally refused
     // every EXL3 layer at the first routed forward.
@@ -734,7 +793,10 @@ pub fn forward_moe(
     // all-reduced sum; leaving the previous token's expert output there is a wrong answer
     // that only appears at EP > 1 and only for tokens whose routing moved. `expert_out` is
     // `[rows, top_k, hidden]` and contiguous, so one memset covers every row.
-    gpu.memset_async(ws.expert_out, 0, rows * cfg.top_k * cfg.hidden * 2, stream)?;
+    // 🪤 The buffer's OWN extent, not `rows * top_k * hidden`: those differ once
+    // the union extent is narrower than the window (a wide prefill), and the old
+    // expression would then memset past the end of the allocation.
+    gpu.memset_async(ws.expert_out, 0, ws.expert_out_elems * 2, stream)?;
 
     // ── EXL3 routed arm ──────────────────────────────────────────────────────
     //

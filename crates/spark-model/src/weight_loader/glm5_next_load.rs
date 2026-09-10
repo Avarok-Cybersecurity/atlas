@@ -389,9 +389,14 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
         // 🪤 `prefill_rows()` too, not just the constant: `ATLAS_GLM_PREFILL_ROWS` can widen the
         // sub-chunk at launch, and a workspace built for the default would make `forward_k` bail
         // the first time the A/B lever was actually used.
+        // 🪤 `kda_prefill_rows()` too: the KDA layers may take a WIDER prefill
+        // sub-chunk than the DSA ones (see its doc), and a workspace built for the
+        // narrower width would make `forward_k` bail the first time that lever was
+        // used — the same trap `prefill_rows()` was added here for.
         let verify_k = (crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize)
             .max(crate::layers::glm5next_layer::PREFILL_ROWS)
-            .max(crate::layers::glm5next_layer::prefill_rows());
+            .max(crate::layers::glm5next_layer::prefill_rows())
+            .max(crate::layers::glm5next_layer::kda_prefill_rows());
         let kda_ws = std::sync::Arc::new(crate::layers::glm5next_kda::Glm5NextKdaWorkspace::new(
             gpu, &kda_cfg, verify_k,
         )?);

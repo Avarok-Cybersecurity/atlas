@@ -627,6 +627,14 @@ impl TransformerModel {
                         "ATLAS_GLM_PREFILL_ROWS",
                         crate::layers::glm5next_layer::prefill_rows() as u64,
                     ),
+                    // The KDA layers may sub-chunk at a DIFFERENT width from the DSA ones,
+                    // and 34 of the 45 layers are KDA — so a skew here mismatches the
+                    // collective schedule for most of the model, exactly as a skew in the
+                    // lever above does for the rest of it.
+                    (
+                        "ATLAS_GLM_KDA_PREFILL_ROWS",
+                        crate::layers::glm5next_layer::kda_prefill_rows() as u64,
+                    ),
                     // Perf-only (the MLP reduces once per site whichever arm runs), but a skew
                     // here is still a confusing asymmetry and the check is free.
                     (

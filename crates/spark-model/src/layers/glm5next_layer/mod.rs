@@ -310,6 +310,55 @@ fn verify_fused_rows() -> bool {
     *ON.get_or_init(|| std::env::var("ATLAS_GLM_VERIFY_FUSED").as_deref() == Ok("1"))
 }
 
+/// Prefill sub-chunk width for the KDA layers ONLY, when it should differ from
+/// [`prefill_rows`].
+///
+/// 🔴 WHY THE TWO WIDTHS WANT TO DIFFER. The sub-chunk width sets how often the
+/// routed MoE re-reads its weights, and that traffic dominates prefill: this
+/// rank holds 997 MB of expert weights per layer (288 experts x 3 x 4096 x 2048
+/// at ~2.2 bpw, halved by EP=2), and the MoE sweeps ALL of it once per
+/// sub-chunk. At 256 rows that is 164 MB per token across the 42 sparse layers
+/// — 0.60 ms/token at GB10's ~273 GB/s, measured as `exl3_moe_k2_n256_cb1` at
+/// 4.52 ms/call against a 3.65 ms roofline, i.e. 81% of bandwidth. The kernel is
+/// not the problem; how often it sweeps is. Doubling the width halves that term.
+///
+/// But widening the MIXER costs more than the MoE saves: measured 2026-09-10 at
+/// 4K, one variable, n=3 — 256 rows 360.4 tok/s, 512 rows 329.6, 1024 rows
+/// 336.5. (512 reproduces the serve script's own recorded 329.8 almost exactly.)
+/// The DSA mixer is why: each query row gathers its own `index_topk` = 2048
+/// selected latents, ~2 MB per row, so its cost is per-row and widening only
+/// enlarges the working set.
+///
+/// The two live in different layers — 34 KDA and 11 DSA — and
+/// [`Glm5NextLayer::prefill`] sub-chunks PER LAYER, so they need not share a
+/// width. This lets the KDA layers take a wide window (their MoE amortises)
+/// while the DSA layers keep the narrow one (their gather does not).
+///
+/// Unset (the default) means "same as `prefill_rows()`" and nothing changes.
+///
+/// 🪤 A width past `PREFILL_ROWS` is only affordable because the FUSED
+/// sort-by-expert MoE arm avoids the union arm's `top_k`-fold scratch — see
+/// `Glm5NextMlpWorkspace::union_rows`. Keep `ATLAS_GLM_MOE_PREFILL_MIN` at or
+/// below this width, or `forward_moe` refuses the call rather than run off the
+/// end of that scratch.
+pub(crate) fn kda_prefill_rows() -> usize {
+    static ROWS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *ROWS.get_or_init(|| {
+        let r = std::env::var("ATLAS_GLM_KDA_PREFILL_ROWS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|r| *r >= 1)
+            .unwrap_or_else(prefill_rows);
+        if r != prefill_rows() {
+            tracing::warn!(
+                "GLM KDA prefill sub-chunk {r} rows (DSA layers stay at {})",
+                prefill_rows()
+            );
+        }
+        r
+    })
+}
+
 pub(crate) fn prefill_rows() -> usize {
     static ROWS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *ROWS.get_or_init(|| {
@@ -2301,8 +2350,14 @@ impl TransformerLayer for Glm5NextLayer {
         //
         // 🪤 `mhc: None` is the MTP drafter block, whose plain residual path `forward_k` does
         // not implement — it bails on a missing highway. That block keeps the per-token walk.
+        // Per-LAYER width. `prefill` is driven once per layer, so the KDA and DSA
+        // blocks sub-chunk independently and a wide window for one does not widen
+        // the other — see `kda_prefill_rows` for why they want different widths.
         let rows = if self.mhc.is_some() {
-            prefill_rows().min(cap)
+            match &self.mixer {
+                Glm5NextMixer::Kda { .. } => kda_prefill_rows().min(cap),
+                Glm5NextMixer::Dsa(_) => prefill_rows().min(cap),
+            }
         } else {
             1
         };

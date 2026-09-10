@@ -155,7 +155,14 @@ pub const MHC_MIX_MAX_TOKENS: usize = 256;
 /// prefill_rows())`) — before this, those two followed `ATLAS_GLM_PREFILL_ROWS` and mHC did
 /// not, so the lever could only ever be raised to 256.
 pub fn mhc_mix_max_tokens() -> usize {
-    MHC_MIX_MAX_TOKENS.max(crate::layers::glm5next_layer::prefill_rows())
+    // 🪤 `kda_prefill_rows()` too. The KDA layers may sub-chunk WIDER than the DSA ones,
+    // and every layer's `hc_pre` writes this same scratch — so following only
+    // `prefill_rows()` capped the KDA lever at the DSA width and refused the first wide
+    // call ("512 tokens exceeds the 256-token `mix` scratch"). Same failure this function
+    // was written to fix, one lever later.
+    MHC_MIX_MAX_TOKENS
+        .max(crate::layers::glm5next_layer::prefill_rows())
+        .max(crate::layers::glm5next_layer::kda_prefill_rows())
 }
 
 /// `hc_pre`: collapse the `hc_mult` FP32 streams to one BF16 sequence and emit this site's
