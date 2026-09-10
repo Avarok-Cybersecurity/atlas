@@ -1869,3 +1869,30 @@ only BEHAVIOURAL evidence, which is precisely the condition the rule names.
 So the campaign runs to completion and the evidence gets posted, and the merge
 waits for a human. Recorded here rather than decided at the end of a long
 night, because that is when the temptation to call it "clean enough" is largest.
+
+### `--hermetic` is byte-identical to its hand-configured equivalent, across boxes
+
+Arm C closed the two channels by hand (`mtp_gate=force` +
+`enable_prefix_caching=false`) and reached 0/995. Arm D ran the SHIPPED flag,
+`--hermetic`, on a different box. The whole leg's per-sample output:
+
+| run | box | config | sha256 (first 32) |
+|---|---|---|---|
+| arm D | `spark-43fa` | `--hermetic` | `a9aadaa1f0e337ec9afd4a6728f057b2` |
+| arm C | `spark-28c2` | the two overrides by hand | `a9aadaa1f0e337ec9afd4a6728f057b2` |
+| base | `spark-43fa` | shipped | `8490c4bdef100bc1c8fee30879184fda` |
+
+One comparison, three claims:
+
+1. **The flag expands to exactly what it claims.** Not approximately equivalent
+   to the hand-configured pair — byte-identical over 995 samples.
+2. **Neither lever is a no-op.** Base differs, which is the check that stops a
+   green from meaning "the override did nothing".
+3. **The engine is bit-reproducible under hermetic ACROSS MACHINES.** Two
+   different GB10 boxes, 995 samples, identical bytes. Only within-box
+   reproducibility had been established before; this is stronger, and it is
+   what makes a cross-box shard comparison meaningful at all.
+
+Wall time is unchanged (5786 s vs the base arm's 5838 s) even though hermetic
+disables the prefix cache — consistent with BFCL being single-turn, where a
+prefix cache has almost nothing to reuse.
