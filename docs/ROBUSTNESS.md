@@ -1926,3 +1926,37 @@ human must see. If this gate goes INCONCLUSIVE, the cause is in the verdict
 string and the re-run is defensible; if it goes FAIL on the floor with
 `accept_len` ~2.3, that is a real speed finding and must be attributed, which
 on this branch means bisecting against #971's 68-file hot-path diff.
+
+### Equality proven on the SHIPPED regime: `--hermetic` is 0 of 995
+
+Arm C proved equality was reachable with the two channels closed by hand. Arm D
+ran the flag as it ships. Whole draw versus its own four shards
+(251 + 249 + 248 + 247 = 995), one box, one commit, temperature 0:
+
+| arm | serve config | n | disagreeing |
+|---|---|---|---|
+| historical (pin `e897463b54`) | shipped | 995 | 12 |
+| base (current `main`) | shipped | 995 | **12** |
+| C | `mtp_gate=force` + `enable_prefix_caching=false` | 995 | **0** |
+| **D** | **`--hermetic`** | **995** | **0** |
+
+The chain, so no link is taken on trust:
+
+1. **Base is broken and unchanged.** 12/995 on current `main`, the same count
+   measured at a pin that is not an ancestor of it — #968 moved it by zero.
+2. **The closures fix it.** Arm C, 0/995.
+3. **The shipped flag IS the closures.** Arm D's whole leg is byte-identical to
+   arm C's across two different boxes (`a9aadaa1…`), while base differs.
+4. **The shipped flag reaches equality itself.** Arm D, 0/995 — not inferred
+   from arm C, measured.
+5. **The levers were proven armed.** Base logs `Prefix caching: ENABLED (radix
+   tree)` / `mtp_gate=auto`; arms C and D log `disabled` / `force`; every other
+   entry in the `kernel flags:` line is identical.
+
+The negative control the plan demanded — "the same comparison without hermetic
+must go red on the known 12" — is satisfied by the base arm, which produced
+exactly twelve, ten of them `live_irrelevance` (the predicted subset) and one
+of them `live_irrelevance_2-0-2`, a sample the plan named specifically. The
+count, the distribution and a named member all agree; the historical list of
+ids was not available to compare set-for-set, and that limit is stated rather
+than glossed.
