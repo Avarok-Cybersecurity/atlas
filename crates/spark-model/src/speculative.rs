@@ -333,6 +333,27 @@ pub const EP_CMD_DFLASH_VERIFY: u32 = 0xFFFF_FFF7;
 /// ranks disagree about how many words are still on the wire.
 pub const EP_CMD_VERIFY_BATCH: u32 = 0xFFFF_FFE1;
 
+/// Batched cross-sequence MTP propose. Same list shape as
+/// [`EP_CMD_VERIFY_BATCH`]: a sentinel preamble `seq_id`, with the real
+/// routing in the `seq_ids[N]` payload that follows.
+///
+/// 🔴 It exists for the reason [`EP_CMD_MTP_PROPOSE`] exists, one width up.
+/// GLM-5.3's MTP block is EP-sharded with a row-parallel DSA `o_proj`, so the
+/// batched drafter forward issues the same collectives the single-sequence one
+/// does — and one all-reduce per site for the WHOLE batch, which is most of
+/// why batching the propose pays. A head that issued them with no worker
+/// answering is the documented multi-rank speculation hang; a head that
+/// dropped the comm instead would draft from half the routed sum and half the
+/// attention output, which costs acceptance silently.
+///
+/// 🪤 The head must decide the batch WILL run before it puts this on the wire.
+/// A broadcast the head then declines leaves the worker's drafter rows one
+/// propose ahead of the head's. That is not a wrong answer — the target
+/// verifies every drafted token, so a desynchronised drafter costs acceptance
+/// only — but it is a silent tax, so `run_mtp_propose_batched_dispatch`
+/// evaluates the full decline predicate first.
+pub const EP_CMD_MTP_PROPOSE_BATCH: u32 = 0xFFFF_FFE2;
+
 /// Run the drafter on EVERY rank with the communicator, instead of rank-0-only
 /// with `comm: None`. **DEFAULT ON since 2026-08-29**; kill switch
 /// `ATLAS_NO_MTP_EP_PROPOSE=1` restores the rank-0-only path.

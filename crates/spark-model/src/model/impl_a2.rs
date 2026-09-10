@@ -565,6 +565,12 @@ impl TransformerModel {
             return self.ep_worker_verify_batch(slots);
         }
 
+        // Batched cross-sequence MTP PROPOSE (`0xFFFF_FFE2`): same list shape
+        // again. Only proposers that declare `needs_comm()` ever send it.
+        if cmd == crate::speculative::EP_CMD_MTP_PROPOSE_BATCH {
+            return self.ep_worker_mtp_propose_batch(slots);
+        }
+
         let slot_idx = seq_id as usize;
         if slot_idx >= slots.len() {
             anyhow::bail!(
@@ -960,6 +966,34 @@ impl TransformerModel {
             accepted.push(self.ep_broadcast_u32(0)? as usize);
         }
 
+        // Mirror the head's Phase 2 stash: row `off_i + accepted_i` of the batched
+        // forward — each sequence's accepted-position hidden — into stash slot `i`.
+        //
+        // 🔴 No worker command arm writes `verify_hidden_stash`, exactly as none writes
+        // `mtp_hidden_save`, and the batched propose reads its drafter input straight out of
+        // it. Without this the worker would draft from a STALE hidden and the two ranks would
+        // reduce partials computed from DIFFERENT input vectors — the same defect the fourth
+        // word of `EP_CMD_MTP_PROPOSE` fixes at width 1, where it measured p1 0.747 -> 0.530.
+        //
+        // 🪤 BEFORE the verdict loop, and before any propose, for the head's own reason: the
+        // live rows are about to be overwritten. Degraded, not fatal — a failed stash costs
+        // the worker's next batched propose its partner-quality drafts, nothing else.
+        {
+            let mut off = 0usize;
+            let stash_rows: Vec<usize> = ks
+                .iter()
+                .enumerate()
+                .map(|(i, &k)| {
+                    let row = off + accepted[i].min(k.saturating_sub(1));
+                    off += k;
+                    row
+                })
+                .collect();
+            if let Err(e) = self.stash_verify_hidden_rows(&stash_rows, 0) {
+                tracing::warn!("EP worker stash_verify_hidden_rows: {e:#}");
+            }
+        }
+
         // 🔴 Mirror `k4_apply_verdict` — the BATCHED head step — not the
         // single-sequence K=3/K=4 arms above. Both restore `intermediate[na]`,
         // but they are different entry points with different width arguments,
@@ -986,6 +1020,83 @@ impl TransformerModel {
                 self.trim_proposer_state(seq, na, 0)?;
                 self.commit_accepted_prefix(seq, na + 1, k_rows)?;
             }
+        }
+        Ok(true)
+    }
+
+    /// Worker side of [`crate::speculative::EP_CMD_MTP_PROPOSE_BATCH`].
+    ///
+    /// Runs the SAME batched drafter forward rank 0 is running, so its collectives have a
+    /// partner. The drafts themselves are discarded — rank 0 broadcasts the tokens it
+    /// actually verifies — but the drafter KV and indexer rows this writes must stay in
+    /// lockstep with the head's, which they do because both ranks consume identical
+    /// `(last_token, position)` lists and identical target hiddens (each rank stashed them
+    /// itself out of the batched verify forward both ranks ran).
+    fn ep_worker_mtp_propose_batch(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
+        let n = self.ep_broadcast_u32(0)? as usize;
+        let seq_ids = self.ep_broadcast_tokens(&vec![0u32; n])?;
+        let tokens = self.ep_broadcast_tokens(&vec![0u32; n])?;
+        let positions: Vec<usize> = self
+            .ep_broadcast_tokens(&vec![0u32; n])?
+            .iter()
+            .map(|&p| p as usize)
+            .collect();
+        let stash_idx: Vec<usize> = self
+            .ep_broadcast_tokens(&vec![0u32; n])?
+            .iter()
+            .map(|&p| p as usize)
+            .collect();
+        let num_drafts = self.ep_broadcast_u32(0)? as usize;
+
+        // Validate before touching slot state, and read the WHOLE payload first (above) so a
+        // bail never leaves words on the wire for the next command to mis-read.
+        let mut seen = std::collections::HashSet::new();
+        for &id in seq_ids.iter() {
+            let idx = id as usize;
+            if idx >= slots.len() {
+                anyhow::bail!(
+                    "ep_worker_mtp_propose_batch: seq_id {id} exceeds slot capacity {}",
+                    slots.len(),
+                );
+            }
+            if !seen.insert(id) {
+                anyhow::bail!("ep_worker_mtp_propose_batch: duplicate seq_id {id} in batch");
+            }
+        }
+
+        let mut slot_refs: Vec<(usize, &mut SequenceState)> = slots
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, opt)| opt.as_mut().map(|s| (i, s)))
+            .collect();
+        // The head's order, not slot order — the batched drafter forward issues ONE
+        // all-reduce over the contiguous row span, so a worker that rebuilt its refs in a
+        // different order would sum partials of different sequences.
+        let mut refs: Vec<&mut SequenceState> = Vec::with_capacity(n);
+        for &id in &seq_ids {
+            let idx = id as usize;
+            let pos = slot_refs
+                .iter()
+                .position(|(i, _)| *i == idx)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("ep_worker_mtp_propose_batch: slot {idx} not allocated")
+                })?;
+            let (_, seq) = slot_refs.swap_remove(pos);
+            refs.push(seq);
+        }
+
+        // Never fail the worker on a drafter error: rank 0 decides what is verified, so a
+        // degraded worker draft costs acceptance, not correctness. Bailing here would
+        // desynchronise the command stream instead — the same rule the width-1 arm follows.
+        if let Err(e) = self.run_mtp_propose_batched_inner(
+            &tokens,
+            &positions,
+            &stash_idx,
+            num_drafts,
+            &mut refs,
+            None,
+        ) {
+            tracing::warn!("EP worker batched MTP propose failed (continuing): {e:#}");
         }
         Ok(true)
     }

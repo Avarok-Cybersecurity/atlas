@@ -145,8 +145,16 @@ pub fn load_glm5next_mtp_module(
             mlp,
             mlp_cfg,
             mlp_kernels,
+            // 🔴 Sized for the WIDEST batched propose, not for one row. The drafter's
+            // cross-sequence path (`Glm5NextMtpHead::propose_batch`) runs this block's MoE
+            // over `n` sequences in one sweep — that amortisation is the point of batching
+            // it — and `forward_moe` REFUSES a row count past `max_rows` rather than
+            // clamping. At 1 the refusal fired on every batched propose and the whole group
+            // silently lost its drafts. ~1 MB at 8 rows against a 92 GB pack.
             mlp_ws: crate::layers::glm5next_mlp::forward::Glm5NextMlpWorkspace::new(
-                gpu, &mlp_cfg, 1,
+                gpu,
+                &mlp_cfg,
+                crate::layers::glm5next_mtp_head::MTP_BATCH_PROPOSE_MAX_SEQS,
             )?,
             // 🔴 The one GLM-5.3 block with no hyper-connection. The checkpoint carries zero
             // `hc_*` tensors here, and `forward_one` takes its plain residual path.

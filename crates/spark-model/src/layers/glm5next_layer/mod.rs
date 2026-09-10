@@ -617,6 +617,103 @@ impl Glm5NextLayer {
         )
     }
 
+    /// N sequences, ONE row each, through the drafter's block in a single weight sweep.
+    ///
+    /// The multi-sequence sibling of [`Self::decode_one_for_drafter`], and the drafter's
+    /// answer to what [`Self::forward_n_seqs`] does for the target: the norms, the routed
+    /// MoE, the residual adds and the cross-rank reduce all run ONCE over `n` contiguous
+    /// rows, and only the DSA mixer stays per-sequence because its indexer cache, its KV
+    /// blocks and its `seq_len` are per-sequence facts.
+    ///
+    /// 🔴 THE MoE IS THE WHOLE POINT. The routed experts sweep the same weights for one row
+    /// as for eight (the small-M MoE trap), so `n` drafters that each pay a full grouped
+    /// GEMM collapse into one that pays it once. The reduce is the second win: one
+    /// `all_reduce` over `n * hidden` instead of `n` collectives, each of which costs a
+    /// network round trip whatever its size.
+    ///
+    /// 🪤 Rows are contiguous and OWNED: row `i` of `hidden` belongs to sequence `i` from the
+    /// caller's `eh_proj` all the way to the head. There is no highway to alias here — this
+    /// block has no hyper-connection, which is exactly why the batched form is this short —
+    /// but the DSA writes its `o_proj` back over the buffer it is handed, so the per-row
+    /// slices must not overlap.
+    ///
+    /// Bit-identity with `n` serial [`Self::decode_one_for_drafter`] calls is NOT claimed and
+    /// is not needed: the target verifies every drafted token with its own `lm_head`, so a
+    /// batched drafter can move the ACCEPTANCE rate and never an emitted token. (It is in
+    /// fact expected to be identical at `n <= 8`, where every batched site is either
+    /// grid-parallel over rows or the non-reassociating `dense_gemv_batchm` band — but the
+    /// caller must not depend on it.)
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_n_for_drafter(
+        &self,
+        hidden: DevicePtr,
+        n: usize,
+        states: &mut [&mut dyn LayerState],
+        kv_cache: &mut PagedKvCache,
+        seq_lens: &[usize],
+        block_tables: &mut [Vec<u32>],
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if self.mhc.is_some() {
+            bail!(
+                "GLM layer {}: decode_n_for_drafter is the MTP block's path; this layer has a \
+                 hyper-connection",
+                self.layer_idx
+            );
+        }
+        if !matches!(self.mixer, Glm5NextMixer::Dsa(_)) {
+            bail!(
+                "GLM layer {}: decode_n_for_drafter needs the DSA mixer; the KDA batched form \
+                 is `decode_n_seqs` on the KDA layer",
+                self.layer_idx
+            );
+        }
+        if n == 0 || n != states.len() || n != seq_lens.len() || n != block_tables.len() {
+            bail!(
+                "GLM layer {}: decode_n_for_drafter got n={n} against {} states / {} seq_lens \
+                 / {} block tables",
+                self.layer_idx,
+                states.len(),
+                seq_lens.len(),
+                block_tables.len(),
+            );
+        }
+        let gpu = ctx.gpu;
+        let h = self.hidden;
+        let normed = ctx.buffers.norm_output();
+        let ffn_out = ctx.buffers.moe_output();
+
+        self.norm(gpu, hidden, self.input_norm, normed, n, stream)?;
+        for (i, state) in states.iter_mut().enumerate() {
+            // The drafter's pool is small, private and fully resident, so there are no disk
+            // tiers to thread — same as the single-row path.
+            let (mut disk_a, mut disk_b) = (Vec::new(), Vec::new());
+            self.mixer_forward(
+                normed.offset(i * h * 2),
+                hidden.offset(i * h * 2),
+                *state,
+                kv_cache,
+                seq_lens[i],
+                &mut block_tables[i],
+                &mut disk_a,
+                &mut disk_b,
+                ctx,
+                stream,
+            )?;
+        }
+        // 🔴 Row-parallel `o_proj` ⇒ a PARTIAL SUM at TP>1, and the DSA left it in `normed`.
+        // One collective over all `n` rows, before it joins the residual.
+        if self.mixer_all_reduce {
+            self.reduce_partial(normed, n, ctx, stream)?;
+        }
+        self.add_inplace(gpu, hidden, normed, n * h, stream)?;
+
+        self.norm(gpu, hidden, self.post_attn_norm, normed, n, stream)?;
+        self.mlp_forward(normed, ffn_out, n, ctx, stream)?;
+        self.add_inplace(gpu, hidden, ffn_out, n * h, stream)
+    }
+
     /// One drafter CONTEXT row: `input_norm` then the DSA caches only.
     ///
     /// `x` is the block input (post `eh_proj`) for a row whose OUTPUT is discarded — a prompt
