@@ -1807,3 +1807,40 @@ per-sample diff; for this class of bug they are not evidence at all.
 Ten of the twelve are `live_irrelevance`, the subset predicted, and
 `live_irrelevance_2-0-2` — previously recorded as surviving even with SSM
 restore disabled — is among them.
+
+### Equality reached: 0 of 995, against a baseline of 12
+
+The acceptance criterion for #936 was EXACT equality — the whole BFCL draw and
+its own four shards answering identically for every `sample_id`, not "within
+noise". Measured on one box, one commit, temperature 0:
+
+| arm | serve config | n | disagreeing |
+|---|---|---|---|
+| historical (pin `e897463b54`) | shipped | 995 | 12 |
+| base (current `main`) | shipped | 995 | 12 |
+| **C** | `mtp_gate=force` + `enable_prefix_caching=false` | 995 | **0** |
+
+Under the base arm's rate a zero has probability about 6e-6, but the point is
+not the p-value: the criterion was exactness, and exactness is what the diff
+reports. 995 of 995 byte-identical.
+
+**Both levers were proven armed, and proven to be the only difference.** The
+base arm's log says `Prefix caching: ENABLED (radix tree)` and `mtp_gate=auto`;
+arm C's says `Prefix caching: disabled` and `mtp_gate=force`; every other entry
+in the `kernel flags:` line is identical between them. That check matters more
+than it looks: `enable_prefix_caching` DEFAULTS to false, so the override could
+have been a no-op — it is the gate's recipe that turns it on, and only the base
+arm's log proves it was on to begin with.
+
+**What this does NOT establish.** Arm C is not the shipped regime. `--hermetic`
+closes those two channels AND gates every snapshot entry by session, so it is
+strictly more closed. Inferring hermetic from arm C is the same shape of step
+that produced the earlier wrong exclusion of the MTP gate, so arm D measures
+`--hermetic` exactly as it ships rather than reasoning from arm C.
+
+**Equality costs score, and that is why floors are a separate PR.** The whole
+leg scores 84.22 / 84.12 unclosed and 83.92 / 84.22 closed. Both clear the
+committed bars, so nothing is blocked — but the regime is not score-neutral,
+which is exactly why the History pane now draws a labelled band at a regime
+boundary instead of one continuous line, and why no floor is declared in the
+change that first measures it.
