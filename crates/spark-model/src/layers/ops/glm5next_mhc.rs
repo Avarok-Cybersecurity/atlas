@@ -39,6 +39,12 @@ pub struct Glm5NextMhcKernels {
     /// **Bit-identical** — widening BF16 to F32 is lossless, so it multiplies the same floats.
     /// `try_kernel`; selected per site by `Glm5NextMhcSiteWeights::hc_fn_bf16`.
     pub hc_mix_bf16: KernelHandle,
+    /// [`Self::hc_mix_bf16`] with `HC_MIX_ROWS` mixing rows per block: grid
+    /// `(T, mix_hc / HC_MIX_ROWS)`. Bit-identical — every `(t, m)` keeps its own dot in the
+    /// same order — and the win is that the RMS pass and the stream re-reads are shared across
+    /// the rows a block owns, which is what stops the kernel going superlinear in row count.
+    /// `try_kernel`; zero when the target lacks it and the one-row kernel stands.
+    pub hc_mix_bf16_mr: KernelHandle,
     /// Split + Sinkhorn + collapse, reading the mixes from global.
     pub hc_finish: KernelHandle,
     pub hc_post: KernelHandle,
@@ -60,6 +66,11 @@ impl Glm5NextMhcKernels {
                 gpu,
                 GLM5NEXT_MHC_MODULE,
                 "glm5next_hc_mix_bf16",
+            ),
+            hc_mix_bf16_mr: crate::layers::try_kernel(
+                gpu,
+                GLM5NEXT_MHC_MODULE,
+                "glm5next_hc_mix_bf16_mr",
             ),
             hc_finish: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_finish")?,
             hc_post: gpu.kernel(GLM5NEXT_MHC_MODULE, "glm5next_hc_post")?,
@@ -208,13 +219,24 @@ pub fn glm_hc_pre(
     // 🪤 The two kernels take the SAME arguments; only `hc_fn`'s element width differs, and it
     // is the pointer's own dtype, not something the signature can catch. Pairing the wrong
     // flag with the pointer reads BF16 as F32 (or the reverse) and produces plausible garbage.
-    let mix_kernel = if w.hc_fn_bf16 && kernels.hc_mix_bf16.0 != 0 {
-        kernels.hc_mix_bf16
+    // Mixing rows per block. MUST match `HC_MIX_ROWS` in the kernel: the grid is derived from
+    // it, so a disagreement silently drops rows (grid too small) or writes them twice.
+    const HC_MIX_ROWS: u32 = 4;
+    // 🪤 `mix_hc` is `(2 + hc_mult) * hc_mult` = 24 at GLM's shape, which HC_MIX_ROWS divides
+    // exactly. `div_ceil` covers a shape where it does not, and the kernel's own `m >= mix_hc`
+    // guard retires the tail rows of that last block.
+    let multirow = w.hc_fn_bf16
+        && kernels.hc_mix_bf16_mr.0 != 0
+        && std::env::var("ATLAS_GLM_HC_MIX_MULTIROW").as_deref() != Ok("0");
+    let (mix_kernel, grid_y) = if multirow {
+        (kernels.hc_mix_bf16_mr, mix_hc.div_ceil(HC_MIX_ROWS))
+    } else if w.hc_fn_bf16 && kernels.hc_mix_bf16.0 != 0 {
+        (kernels.hc_mix_bf16, mix_hc)
     } else {
-        kernels.hc_mix
+        (kernels.hc_mix, mix_hc)
     };
     KernelLaunch::new(gpu, mix_kernel)
-        .grid([num_tokens, mix_hc, 1])
+        .grid([num_tokens, grid_y, 1])
         .block([256, 1, 1])
         .arg_ptr(streams)
         .arg_ptr(w.hc_fn)
