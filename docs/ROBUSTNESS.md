@@ -1960,3 +1960,42 @@ of them `live_irrelevance_2-0-2`, a sample the plan named specifically. The
 count, the distribution and a named member all agree; the historical list of
 ids was not available to compare set-for-set, and that limit is stated rather
 than glossed.
+
+### #835's pin fired on a real campaign, and stopped a false regression report
+
+`concurrency-sweep` failed on this branch's certification campaign with:
+
+> INCONCLUSIVE: 4 of 8 cells ran the SERIAL arm, not the speculative one
+> (accept_len < 1.5) — the two arms differ by ~1.3x in delivered tok/s, so this
+> is an arm change and not a regression. Re-run, or pin the arm, before reading
+> any floor
+
+That is the verdict this work added. **Without it the run would have been judged
+against the floors and reported as a regression caused by this branch** — the
+exact false claim #835 is about, made from a cell whose distribution cannot
+support it.
+
+The comparison that makes it unambiguous ran on the SAME BOX minutes later:
+`concurrency-sweep-dflash2`, whose ladder pins C=2 with DFlash speculation
+armed, measured **C2 = 46.6 against a 35.4 floor** and passed every rung. Same
+hardware, same commit, same night — one gate's C=2 cell in the serial arm, the
+other's in the speculative arm. That is #835 in a single pair of runs.
+
+**And it is evidence for the defect this branch deliberately did NOT fix.** Four
+of eight cells changing arms inside one sweep is a lot of switching, and the MTP
+dwell counter is why: `SWITCH_DWELL_WINDOWS = 2` is meant to require two
+consecutive losing windows, but `stale` means "the economics moved", never "this
+number is old", so a single probe carries both. The hysteresis fix was deferred
+because it changes WHEN arms switch and this branch already carries #971's
+68-file hot-path diff; this run is the measured cost of that deferral, recorded
+so the follow-up PR has evidence rather than an argument.
+
+**What an INCONCLUSIVE verdict does and does not license.** It is not a pass:
+`verdict_passes()` requires `PASS`, so the gate stays undischarged. It licenses
+ONE re-run, because the first run measured nothing about the diff — 4 of 8 cells
+ran a different arm. It does not license re-running until green: if the second
+run is also INCONCLUSIVE, that is a finding about the INSTRUMENT (the arm needs
+pinning in BENCH.toml, which is the follow-up PR's job) and must be reported as
+one. The distinction matters because "a gate failed and a re-run made it green,
+with no named cause" is on the enumerated list of things a human must see — and
+the whole point of the verdict string is that the cause here IS named.
