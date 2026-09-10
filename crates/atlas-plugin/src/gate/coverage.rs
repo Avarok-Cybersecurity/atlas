@@ -386,6 +386,10 @@ const TTFT_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change what a first-token latency probe measures",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change what a first-token latency probe measures",
+    ),
 ];
 
 const BFCL_EXCLUDES: &[Exclusion] = &[
@@ -414,6 +418,10 @@ const BFCL_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change a tool-calling accuracy score",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change a tool-calling accuracy score",
+    ),
 ];
 
 const AGENTIC_EXCLUDES: &[Exclusion] = &[
@@ -441,6 +449,10 @@ const AGENTIC_EXCLUDES: &[Exclusion] = &[
     concurrency_driver(
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change whether the agent's webserver task succeeds",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change whether the agent's webserver task succeeds",
     ),
 ];
 
@@ -479,6 +491,10 @@ const SSM_POISON_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change whether an identical replay returns identical bytes",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change whether an identical replay returns identical bytes",
+    ),
 ];
 
 /// The concurrency curve is a LATENCY/THROUGHPUT measurement of the serving
@@ -509,6 +525,10 @@ const CONCURRENCY_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/ttft",
         "the TTFT driver issues single requests client-side; it cannot change how fast the \
          server answers a batch of 32",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change the server's latency/throughput curve",
     ),
 ];
 
@@ -548,6 +568,10 @@ const DECODE_FLOOR_EXCLUDES: &[Exclusion] = &[
     concurrency_driver(
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change the server's single-user decode rate",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change the server's single-user decode rate",
     ),
 ];
 
@@ -614,6 +638,11 @@ const CONTAMINATION_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change whether one request's state leaks into another",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change whether one request's state leaks into \
+         another's output",
+    ),
 ];
 
 /// The vision gate answers one question — does the served model see the image
@@ -646,6 +675,11 @@ const VISION_EXCLUDES: &[Exclusion] = &[
     concurrency_driver(
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change image preprocessing or encoder tokens",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change how an image is patched or how many tokens \
+         it becomes",
     ),
 ];
 
