@@ -78,6 +78,27 @@ vision = true
 # `glm5_next` is the canonical form: the checkpoint's inner object says
 # `glm5_next_text`, and `parse_glm5_next` rewrites it to `glm5_next`.
 [behavior]
+# Decode-time rollback + re-steer, ON by the engine default. Turned OFF here so a
+# quality measurement sees the MODEL, not an intervention: when a watchdog fires,
+# re-steer rewinds to the last well-formed boundary and lets generation continue,
+# which is a repair the score then attributes to the model. The AGENTIC=1 serve
+# profile already disables the other decode-time guards (simhash-loop,
+# loop-suppress, inter-tool-prose) for the same reason and simply never covered
+# this one.
+rollback_resteer = false
+
+# Apply this card's `[sampling.*]` presets to the CORE knobs (temperature, top_k,
+# top_p, min_p, top_n_sigma), not just the ones the server has no default for.
+#
+# 🪤 A REQUEST'S EXPLICIT VALUE STILL WINS — `sampling_setup.rs` is
+# `req.sampling.temperature.unwrap_or(preset)`. So this changes nothing for a
+# client that pins its own sampling, and in particular NOT for the
+# `agentic-webserver` gate, which pins `TEMPERATURE = 0.0` on purpose for a
+# repeatable trajectory. It matters for traffic that omits them (opencode et al.),
+# where the server default `top_n_sigma = 1` was reaching the sampler instead of
+# the card's `0.0`.
+use_sampling_presets_for_core = true
+
 # Thinking ceiling. WITHOUT this key the target inherits
 # DEFAULT_MAX_THINKING_BUDGET = 256, and because the qualitative ladder is
 # `Low = ceiling/2` (api/chat/thinking.rs::effort_budget) a
