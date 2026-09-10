@@ -122,6 +122,15 @@ pub struct Bfcl {
 /// string or `0/1`.
 pub const INHERIT_SHARD: &str = "inherit";
 
+/// The per-sample output budget the MLPerf-edge config uses, and the budget
+/// every committed BFCL record was measured at.
+///
+/// Exported because `kat_equality` replays this exact request body to ask
+/// whether BFCL's own conditions are order-independent. Two literals would let
+/// the equality gate certify a generation regime BFCL never runs — it shipped
+/// that way once, at 512 against BFCL's 1024.
+pub const MAX_NEW_TOKENS: usize = 1024;
+
 impl Bfcl {
     /// The sample count THIS run should produce: the variant's pinned draw, or
     /// this shard's slice of it.
@@ -167,7 +176,7 @@ impl Bfcl {
             responses_path: None,
             scores: None,
             spec: variant.spec(),
-            max_new_tokens: 1024,
+            max_new_tokens: MAX_NEW_TOKENS,
             temperature: 0.0,
             request_timeout: Duration::from_secs(600),
             started: None,
@@ -260,7 +269,7 @@ impl Benchmark for Bfcl {
                     min: 16,
                     max: 32_768,
                 },
-                ParamValue::Int(1024),
+                ParamValue::Int(MAX_NEW_TOKENS as i64),
             ),
             ParamSpec::new(
                 "temperature",

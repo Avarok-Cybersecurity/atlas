@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 use crate::benchmark::{Benchmark, BenchmarkDescriptor};
-use crate::benchmarks::bfcl::{dataset, draw::DrawSpec, provision};
+use crate::benchmarks::bfcl::{MAX_NEW_TOKENS, dataset, draw::DrawSpec, provision};
 use crate::benchmarks::transcript::{RequestOutcome, Transcript};
 use crate::hardware::Sensitivity;
 use crate::http;
@@ -103,7 +103,7 @@ impl Default for KatEquality {
             current: Vec::new(),
             orders: DEFAULT_ORDERS,
             sample_cap: DEFAULT_SAMPLE_CAP,
-            max_new_tokens: 512,
+            max_new_tokens: MAX_NEW_TOKENS,
             request_timeout: Duration::from_secs(300),
             started: None,
         }
@@ -221,9 +221,11 @@ impl Benchmark for KatEquality {
             ParamSpec::new(
                 "max_new_tokens",
                 "Max new tokens",
-                "Generation cap per sample.",
+                "Generation cap per sample. Defaults to BFCL's own budget: this \
+                 gate asks whether BFCL's conditions are order-independent, so a \
+                 different budget would answer about a regime nobody measures.",
                 ParamKind::Int { min: 32, max: 4096 },
-                ParamValue::Int(512),
+                ParamValue::Int(MAX_NEW_TOKENS as i64),
             ),
             ParamSpec::new(
                 "request_timeout_s",
