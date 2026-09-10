@@ -836,6 +836,87 @@ impl Glm5NextKdaLayer {
         r
     }
 
+    /// N SEQUENCES x `ks[i]` VERIFY ROWS: the projections batched over ALL rows,
+    /// the recurrences per sequence, the per-row rewind points preserved.
+    ///
+    /// The two-axis generalisation of [`Self::decode_k`] (one sequence, K rows,
+    /// projections batched) and [`Self::decode_n_seqs`] (N sequences, one row
+    /// each). A speculative verify at C>1 wants both at once: `front_end` and
+    /// `back_end` read KDA's ~4.7 GB/rank ONCE for R = Σ`ks` rows instead of
+    /// once per sequence, while each sequence walks its own recurrence in order
+    /// against its own state.
+    ///
+    /// 🔴 Bit-identical to calling [`Self::decode_k`] once per sequence, PROVIDED
+    /// R stays inside the batched-GEMV band: `dense_gemv_bf16_batchm` reproduces
+    /// each row's exact K-iteration order, and past `DENSE_GEMV_BATCHM_MAX_M` the
+    /// tile GEMM reassociates instead. The caller enforces the bound; this
+    /// refuses anything the workspace cannot hold.
+    ///
+    /// 🪤 Row order is SEQ-MAJOR and the recurrence order WITHIN a sequence is
+    /// load-bearing: row `base + j` must run after `base + j - 1` because it
+    /// reads the state that one left. Only the sequences are independent.
+    ///
+    /// `snapshots[i][j]` receives sequence `i`'s state AFTER its row `j` — the
+    /// point a partial accept of `j + 1` rows rewinds to. Pass `ks[i] - 1` of
+    /// them per sequence (a full accept never rewinds) or none.
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_rows_n_seqs(
+        &self,
+        gpu: &dyn GpuBackend,
+        hidden: DevicePtr,
+        ks: &[usize],
+        states: &[KdaSeqState],
+        snapshots: &[Vec<(DevicePtr, DevicePtr)>],
+        ws: &Glm5NextKdaWorkspace,
+        stream: u64,
+    ) -> Result<()> {
+        let r_total: usize = ks.iter().sum();
+        if r_total == 0 || r_total > ws.max_tokens {
+            bail!(
+                "KDA verify_rows_n_seqs of {r_total} rows does not fit a workspace built for {}",
+                ws.max_tokens
+            );
+        }
+        // Bail rather than serve the sequences we happen to have: a mismatch
+        // means the caller and this layer disagree about the batch, and
+        // advancing the wrong sequence's recurrent state is a silent,
+        // compounding wrong answer.
+        if states.len() != ks.len() || snapshots.len() != ks.len() {
+            bail!(
+                "KDA verify_rows_n_seqs: {} ks but {} states and {} snapshot sets",
+                ks.len(),
+                states.len(),
+                snapshots.len()
+            );
+        }
+        use crate::layers::glm5next_layer::profile;
+        let c = &self.cfg;
+        let (h_bytes, conv_bytes) = (c.recurrent_state_elems() * 4, c.conv_state_elems() * 4);
+
+        let t_front = profile::start();
+        self.front_end(gpu, hidden, r_total, ws, stream)?;
+        profile::end(profile::KDA_FRONT, t_front, gpu, stream);
+
+        let t_recur = profile::start();
+        let mut base = 0usize;
+        for (i, &k) in ks.iter().enumerate() {
+            for j in 0..k {
+                self.stateful_row(gpu, base + j, &states[i], ws, stream)?;
+                if let Some((h_dst, conv_dst)) = snapshots[i].get(j) {
+                    gpu.copy_d2d_async(states[i].recurrent, *h_dst, h_bytes, stream)?;
+                    gpu.copy_d2d_async(states[i].conv, *conv_dst, conv_bytes, stream)?;
+                }
+            }
+            base += k;
+        }
+        profile::end(profile::KDA_RECUR, t_recur, gpu, stream);
+
+        let t_back = profile::start();
+        let res = self.back_end(gpu, r_total, ws, stream);
+        profile::end(profile::KDA_BACK, t_back, gpu, stream);
+        res
+    }
+
     /// Chunked prefill over `t` tokens from the carried state.
     pub fn prefill(
         &self,

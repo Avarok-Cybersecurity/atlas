@@ -292,6 +292,24 @@ pub(crate) fn dsa_batch_qidx() -> bool {
 /// this lever at or below that constant.
 ///
 /// 🪤 Read once and cached: an env read per layer per sub-chunk would sit in the hot loop.
+/// `ATLAS_GLM_VERIFY_FUSED=1` selects the fused R-row verify body.
+///
+/// DEFAULT OFF, and the default is the per-sequence `forward_k` sweep, which is
+/// the BIT-IDENTITY REFERENCE: each call sees exactly the rows, state, length
+/// and page table the serial verify gave it.
+///
+/// 🔴 The fused body is FASTER and NOT YET CORRECT. Measured on GLM-5.3-Flash at
+/// C=4/K=2 (R=8): the verify forward drops 313 ms -> 148.6 ms and C=4 throughput
+/// rises 19.5 -> 23.1 tok/s, but a long-context needle probe that the
+/// per-sequence sweep passes 4/4 scores 3/4 with it, and cross-contamination
+/// goes 6/6 identical -> 5/6. Short-context known-answer probes are 4/4 either
+/// way, so the defect needs the LONG-context probe to see — which is why this
+/// ships opt-in rather than as the default it is fast enough to deserve.
+fn verify_fused_rows() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_GLM_VERIFY_FUSED").as_deref() == Ok("1"))
+}
+
 pub(crate) fn prefill_rows() -> usize {
     static ROWS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *ROWS.get_or_init(|| {
@@ -789,6 +807,249 @@ impl Glm5NextLayer {
                 1,
                 h as u32,
                 hc as u32,
+                stream,
+            )?;
+        }
+        profile::end(profile::MHC_POST, t_mhc_post, gpu, stream);
+        if self.is_last {
+            profile::step();
+        }
+        Ok(())
+    }
+
+    /// ONE weight sweep for a whole batched VERIFY: N sequences x `ks[i]` rows.
+    ///
+    /// [`Self::forward_n_seqs`] on the sequence axis with `ks[i]` rows per
+    /// sequence instead of one. Every row-parallel site — both mHC sites, both
+    /// norms, the MLP/MoE, the TP all-reduce — runs ONCE over R = Σ`ks` rows,
+    /// which is the amortisation a per-sequence `forward_k` sweep cannot give:
+    /// that one re-reads every layer's weights once per sequence, and the
+    /// weights are the whole cost.
+    ///
+    /// Only the mixer stays per-sequence, and only where it must: KDA walks each
+    /// sequence's recurrence in order against its own state (with the per-row
+    /// rewind points a partial accept needs), and DSA attends each sequence with
+    /// its own page table, length and metadata rows.
+    ///
+    /// 🪤 R MUST STAY INSIDE THE BATCHED-GEMV BAND. Past
+    /// `DENSE_GEMV_BATCHM_MAX_M` the dense sites reassociate, and an accepted
+    /// draft is then no longer necessarily the token the unspeculated engine
+    /// would have emitted — which is the one thing a verify may not do. The
+    /// caller checks it; this refuses what the workspaces cannot hold.
+    #[allow(clippy::too_many_arguments)]
+    fn forward_verify_n_seqs<'a, 'b: 'a>(
+        &self,
+        hidden: DevicePtr,
+        ks: &[usize],
+        states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        kv_cache: &mut PagedKvCache,
+        seq_lens: &[usize],
+        block_tables: &[Vec<u32>],
+        slot_base: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let gpu = ctx.gpu;
+        let h = self.hidden;
+        let n = ks.len();
+        let r_total: usize = ks.iter().sum();
+        let Some(mhc) = self.mhc.as_ref() else {
+            bail!("GLM layer {}: no hyper-connection bound", self.layer_idx);
+        };
+        let hc = mhc.hc_mult;
+        let streams = ctx.buffers.hc_streams().offset(slot_base * hc * h * 4);
+        let post = ctx.buffers.hc_post().offset(slot_base * hc * 4);
+        let comb = ctx.buffers.hc_comb().offset(slot_base * hc * hc * 4);
+        let normed = ctx.buffers.norm_output();
+        let ffn_out = ctx.buffers.moe_output();
+        let (rt, ht, hct) = (r_total as u32, h as u32, hc as u32);
+
+        // Row offsets, seq-major.
+        let mut off = Vec::with_capacity(n);
+        let mut acc = 0usize;
+        for &k in ks {
+            off.push(acc);
+            acc += k;
+        }
+
+        let t_mhc = profile::start();
+        if self.is_first {
+            glm_hc_expand(
+                gpu,
+                mhc.kernels.hc_expand,
+                hidden,
+                streams,
+                rt,
+                ht,
+                hct,
+                stream,
+            )?;
+        }
+        glm_hc_pre(
+            gpu,
+            &mhc.kernels,
+            streams,
+            &mhc.attn,
+            hidden,
+            post,
+            comb,
+            rt,
+            ht,
+            hct,
+            mhc.sinkhorn_iters as u32,
+            self.rms_eps,
+            mhc.hc_eps,
+            stream,
+        )?;
+        profile::end(profile::MHC, t_mhc, gpu, stream);
+        let t_norm = profile::start();
+        self.norm(gpu, hidden, self.input_norm, normed, r_total, stream)?;
+        profile::end(profile::NORM, t_norm, gpu, stream);
+
+        let t = profile::start();
+        let attn_out = match &self.mixer {
+            Glm5NextMixer::Kda { layer, ws, .. } => {
+                // Per-sequence state and per-row rewind points, gathered before
+                // the call so the recurrence walk itself is a plain loop.
+                let mut seq_states: Vec<KdaSeqState> = Vec::with_capacity(n);
+                let mut snaps: Vec<Vec<(DevicePtr, DevicePtr)>> = Vec::with_capacity(n);
+                for (i, state) in states.iter_mut().enumerate().take(n) {
+                    let st = self.kda_state(*state)?;
+                    // Same guard `decode_batched` makes, per sequence: the pool
+                    // tier is per slot and `verify_rows_n_seqs` indexes it
+                    // unguarded. Bail rather than skip — skipping leaves the
+                    // state advanced past the accepted boundary with no error.
+                    if ks[i] > 1
+                        && (st.h_state_intermediates.len() + 1 < ks[i]
+                            || st.conv_state_intermediates.len() + 1 < ks[i])
+                    {
+                        bail!(
+                            "GLM layer {}: seq {i} of a batched {}-token verify needs {} \
+                             snapshots but its slot's pool has h={} conv={}",
+                            self.layer_idx,
+                            ks[i],
+                            ks[i] - 1,
+                            st.h_state_intermediates.len(),
+                            st.conv_state_intermediates.len(),
+                        );
+                    }
+                    seq_states.push(KdaSeqState {
+                        conv: st.conv_state,
+                        recurrent: st.h_state,
+                    });
+                    snaps.push(
+                        (0..ks[i].saturating_sub(1))
+                            .map(|t| (st.h_state_intermediates[t], st.conv_state_intermediates[t]))
+                            .collect(),
+                    );
+                }
+                layer.verify_rows_n_seqs(gpu, normed, ks, &seq_states, &snaps, ws, stream)?;
+                ws.final_out
+            }
+            Glm5NextMixer::Dsa(layer) => {
+                // DSA writes o_proj back over the buffer it is handed, so the
+                // rows land contiguous in `normed` on their own.
+                for (i, state) in states.iter_mut().enumerate().take(n) {
+                    // num_seqs MUST be this sequence's row count: DSA admits a
+                    // K-row metadata block only when it describes exactly `k`
+                    // rows, and a plain row_view reports the rows REMAINING.
+                    let row_ctx = ForwardContext {
+                        attn_metadata: ctx.attn_metadata.as_ref().map(|m| AttnMetadataDev {
+                            num_seqs: ks[i] as u32,
+                            ..m.row_view(off[i])
+                        }),
+                        ..*ctx
+                    };
+                    let mut bt = block_tables[i].clone();
+                    layer.decode_k(
+                        normed.offset(off[i] * h * 2),
+                        ks[i],
+                        *state,
+                        kv_cache,
+                        seq_lens[i],
+                        &mut bt,
+                        &row_ctx,
+                        stream,
+                        false,
+                        0,
+                    )?;
+                }
+                normed
+            }
+        };
+        profile::end(profile::KDA, t, gpu, stream);
+
+        if self.mixer_all_reduce {
+            self.reduce_probe(profile::REDUCE_ATTN_BAR, "attn", ctx, stream);
+            let t = profile::start_hot();
+            self.reduce_partial(attn_out, r_total, ctx, stream)?;
+            profile::end_nosync(profile::REDUCE_ATTN_ENQ, t);
+            let t = profile::start_hot();
+            profile::end(profile::REDUCE_ATTN, t, ctx.gpu, stream);
+        }
+        let t_mhc_post = profile::start();
+        glm_hc_post(
+            gpu,
+            mhc.kernels.hc_post,
+            attn_out,
+            streams,
+            post,
+            comb,
+            streams,
+            rt,
+            ht,
+            hct,
+            stream,
+        )?;
+        profile::end(profile::MHC_POST, t_mhc_post, gpu, stream);
+
+        // ── FFN site ──
+        let t_mhc = profile::start();
+        glm_hc_pre(
+            gpu,
+            &mhc.kernels,
+            streams,
+            &mhc.ffn,
+            hidden,
+            post,
+            comb,
+            rt,
+            ht,
+            hct,
+            mhc.sinkhorn_iters as u32,
+            self.rms_eps,
+            mhc.hc_eps,
+            stream,
+        )?;
+        profile::end(profile::MHC, t_mhc, gpu, stream);
+        let t_norm = profile::start();
+        self.norm(gpu, hidden, self.post_attn_norm, normed, r_total, stream)?;
+        profile::end(profile::NORM, t_norm, gpu, stream);
+        // THE amortised site: one grouped MoE over every row in the batch.
+        self.mlp_forward(normed, ffn_out, r_total, ctx, stream)?;
+        let t_mhc_post = profile::start();
+        glm_hc_post(
+            gpu,
+            mhc.kernels.hc_post,
+            ffn_out,
+            streams,
+            post,
+            comb,
+            streams,
+            rt,
+            ht,
+            hct,
+            stream,
+        )?;
+        if self.is_last {
+            hc_head_mean(
+                gpu,
+                mhc.kernels.hc_head,
+                streams,
+                hidden,
+                rt,
+                ht,
+                hct,
                 stream,
             )?;
         }
@@ -1568,6 +1829,25 @@ impl TransformerLayer for Glm5NextLayer {
                 block_tables.len()
             );
         }
+        // Per-sequence sweep by DEFAULT — it is the bit-identity reference and
+        // the one that passes the long-context probe. `ATLAS_GLM_VERIFY_FUSED=1`
+        // selects the fused R-row body, which is ~2x faster on the verify
+        // forward and has an open long-context defect; see `verify_fused_rows`.
+        let r_total: usize = ks[..n_seqs].iter().sum();
+        if verify_fused_rows() && r_total <= crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize {
+            return self.forward_verify_n_seqs(
+                hidden,
+                &ks[..n_seqs],
+                states,
+                kv_cache,
+                seq_lens,
+                block_tables,
+                ctx.hc_row_offset,
+                ctx,
+                stream,
+            );
+        }
+
         let h = self.hidden;
         let mut base = 0usize;
         for (i, state) in states.iter_mut().enumerate().take(n_seqs) {
