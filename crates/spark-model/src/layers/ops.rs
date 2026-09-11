@@ -53,6 +53,10 @@ pub mod gdn_flashinfer;
 #[cfg(not(unix))]
 #[path = "ops/gdn_flashinfer_absent.rs"]
 pub mod gdn_flashinfer;
+// Tensor-core BF16 decode GEMM with a 16-row M tile — the BF16 LM-head arm
+// (#927/#928). Behind ATLAS_LM_HEAD_M16_TC; SSOT for its launch geometry.
+#[path = "ops/dense_gemm_m16_bf16.rs"]
+mod dense_gemm_m16_bf16;
 #[path = "ops/gemm_dense.rs"]
 mod gemm_dense;
 #[path = "ops/gemm_dense_int8.rs"]
@@ -184,6 +188,7 @@ pub mod token_overlay;
 mod wide_prefill;
 
 pub use activations::*;
+pub use dense_gemm_m16_bf16::*;
 pub use derived_weights::{Derivation, DerivedWeights};
 pub use dispatch_config::{CublasScope, GemmDispatch, parse_cublas_scope};
 pub use dispatch_helpers::*;

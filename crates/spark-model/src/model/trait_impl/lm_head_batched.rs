@@ -85,6 +85,112 @@ fn lm_head_batchm_max() -> u32 {
     })
 }
 
+/// The BF16 head's TENSOR-CORE arm, resolved once at model construction:
+/// which kernels this target actually carries, whether the operator asked for
+/// them, and at what CTA width.
+///
+/// A struct rather than four parameters because the rule that reads them
+/// ([`lm_head_m16_tc_route`]) is the thing worth testing, and a test that has
+/// to spell out four positional flags grades the spelling as much as the rule.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LmHeadM16Tc {
+    /// `dense_gemm_m16_bf16` (N_TILE=32). 0 when the kernel set lacks it.
+    pub narrow: KernelHandle,
+    /// `dense_gemm_m16_bf16_n64` (N_TILE=64). 0 when absent.
+    pub wide: KernelHandle,
+    /// `ATLAS_LM_HEAD_M16_TC` present.
+    pub enabled: bool,
+    /// Requested CTA width: 32 (default) or 64.
+    pub n_tile: u32,
+}
+
+/// `ATLAS_LM_HEAD_M16_TC` — PRESENCE, default OFF.
+///
+/// Presence rather than `== "1"`, matching `ATLAS_FFN_M16_TC` /
+/// `ATLAS_ATTN_M16_TC` next door: every A/B recipe stays a bare `VAR=1` prefix
+/// with no "=0 means on" trap. Default OFF because this arm REASSOCIATES the K
+/// reduction against `dense_gemv_bf16` (see [`lm_head_m16_tc_route`]) and the
+/// LM head is the one layer where a near-tie argmax flip changes the emitted
+/// token — so it ships dark until an H100 receipt says it wins.
+fn m16_tc_enabled_from_presence(present: bool) -> bool {
+    present
+}
+
+/// `ATLAS_LM_HEAD_M16_TC_NTILE` — 32 (default) or 64. An unrecognised value
+/// falls back to 32 rather than failing the boot: the tile is a perf A/B knob,
+/// and the route log names the tile that actually ran.
+fn m16_tc_n_tile_from_value(value: Option<&str>) -> u32 {
+    match value.map(str::trim) {
+        Some("64") => ops::DENSE_GEMM_M16_BF16_N_TILE_WIDE,
+        _ => ops::DENSE_GEMM_M16_BF16_N_TILE,
+    }
+}
+
+/// Process-wide resolution of both, `OnceLock`-cached for the reason the band
+/// above is: the route must be CONSTANT across CUDA-graph replays, and a
+/// per-call `env::var` could change the captured launch set between capture and
+/// replay.
+fn lm_head_m16_tc_env() -> (bool, u32) {
+    static ENV: std::sync::OnceLock<(bool, u32)> = std::sync::OnceLock::new();
+    *ENV.get_or_init(|| {
+        let n_tile = std::env::var("ATLAS_LM_HEAD_M16_TC_NTILE").ok();
+        (
+            m16_tc_enabled_from_presence(std::env::var_os("ATLAS_LM_HEAD_M16_TC").is_some()),
+            m16_tc_n_tile_from_value(n_tile.as_deref()),
+        )
+    })
+}
+
+/// The WHOLE selection rule for the tensor-core head arm, as a pure function of
+/// the row count, the reduction depth and the resolved lever/handles.
+///
+/// 🔴 THE BAND IS 5..=16 AND NOTHING ELSE.
+/// * `m <= 4` keeps today's path by construction: `dense_gemv_batchm` measures
+///   at the memory roofline there (round 7: 798 us = 3.2 TB/s-class at C=1 on
+///   the 2.54 GB head), so there is nothing to buy and a reassociating kernel
+///   would only trade bits for noise. `m == 1` is the greedy single-sequence
+///   decode path and is deliberately untouched.
+/// * `m > 16` is past the kernel's M tile — rows above it are never computed,
+///   which is stale output rather than a launch failure, so the tier DECLINES
+///   and the batched GEMV (or the fallback GEMM) serves it.
+///
+/// `k` is part of the rule and not an `ensure!` at the call site: the kernel's
+/// cp.async pipeline advances 64 elements per step and its 16-byte weight-row
+/// chunks need `k % 8 == 0` anyway, so a K that is not a whole number of steps
+/// has no correct route and the tier must decline rather than launch and be
+/// wrong. Every Atlas BF16 head satisfies it (Qwen3.8-27B: K=5120).
+///
+/// Returns the launcher, its handle and the CTA width that will actually run —
+/// a shadow built before the wide arm existed has no `_n64`, so a `=64` request
+/// falls back to the 32-wide kernel rather than launching a zero handle.
+fn lm_head_m16_tc_route(
+    tc: LmHeadM16Tc,
+    m: u32,
+    k: u32,
+) -> Option<(ops::DenseM16Bf16Gemm, KernelHandle, u32)> {
+    if !tc.enabled
+        || !(5..=ops::DENSE_GEMM_M16_BF16_MAX_M).contains(&m)
+        || !k.is_multiple_of(ops::DENSE_GEMM_M16_BF16_K_STEP)
+    {
+        return None;
+    }
+    if tc.n_tile == ops::DENSE_GEMM_M16_BF16_N_TILE_WIDE && tc.wide.0 != 0 {
+        return Some((
+            ops::dense_gemm_m16_bf16_n64,
+            tc.wide,
+            ops::DENSE_GEMM_M16_BF16_N_TILE_WIDE,
+        ));
+    }
+    if tc.narrow.0 != 0 {
+        return Some((
+            ops::dense_gemm_m16_bf16,
+            tc.narrow,
+            ops::DENSE_GEMM_M16_BF16_N_TILE,
+        ));
+    }
+    None
+}
+
 fn lmhead_batch_gemv_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
@@ -104,6 +210,7 @@ fn project_bf16_lm_head(
     [m, n, k]: [u32; 3],
     batch_enabled: bool,
     batchm_max: u32,
+    m16_tc: LmHeadM16Tc,
     stream: u64,
 ) -> Result<()> {
     // The existing kernel shares one BF16 weight read across up to eight rows.
@@ -118,6 +225,22 @@ fn project_bf16_lm_head(
     // number any more. See `layers/ops/gemm_quant.rs` for the frozen band and
     // `batchm_max_from_value` above for the `ATLAS_LM_HEAD_BATCHM_MAX` lever
     // that moves it for THIS head only (default: the frozen 8).
+    // TENSOR-CORE ARM FIRST, and only at 5..=16 rows (#927/#928). nsys round 7
+    // puts this one launch at 3,571 us = 8.19% of the 43.6 ms step at batch 16
+    // — 2.54 GB of BF16 vocab weight at ~710 GB/s, where the SAME kernel reads
+    // the SAME bytes at 3.2 TB/s-class for a single row. The batched GEMV is
+    // FP32-FMA-bound, not bandwidth-bound, and an m16n8k16 MMA is what removes
+    // the per-row scalar FFMA. Rule + band: `lm_head_m16_tc_route`.
+    //
+    // 🔴 It REASSOCIATES the K reduction, so it is NOT bit-identical to the
+    // batched GEMV (which is bit-identical to M serial `dense_gemv_bf16`
+    // calls). At the LM head that is a token-visible seam, which is why the arm
+    // is behind `ATLAS_LM_HEAD_M16_TC` and defaults OFF. With the lever unset
+    // this whole block vanishes and the ladder is exactly what round 7 measured.
+    if let Some((gemm, kernel, n_tile)) = lm_head_m16_tc_route(m16_tc, m, k) {
+        log_m16_tc_head_route(n_tile, m16_tc.n_tile);
+        return gemm(gpu, kernel, input, weight, output, m, n, k, k, n, stream);
+    }
     if batch_enabled && batch_gemv.0 != 0 && (1..=batchm_max).contains(&m) && k.is_multiple_of(8) {
         ops::dense_gemv_batchm(gpu, batch_gemv, input, weight, output, m, n, k, n, stream)
     } else {
@@ -125,7 +248,37 @@ fn project_bf16_lm_head(
     }
 }
 
+/// Log-once latch for the tensor-core head arm. Worth a line because this arm
+/// is the one that is NOT bit-identical to the M=1 decode path: a TPOT report
+/// or a parity complaint at 5..=16 rows needs to say which tier ran.
+fn log_m16_tc_head_route(n_tile: u32, asked: u32) {
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| {
+        tracing::info!(
+            "[atlas] BF16 lm_head decode: ATLAS_LM_HEAD_M16_TC — tensor-core \
+             dense_gemm_m16_bf16 N_TILE={n_tile} (asked {asked}) for 5..=16 rows, ahead of \
+             dense_gemv_bf16_batchm. One weight pass, m16n8k16 MMA, so logits are \
+             REASSOCIATED vs the scalar dense_gemv_bf16 (<= 2 BF16 ULP), unlike the \
+             batched GEMV. Unset it to restore the bit-exact tier (#927/#928)."
+        );
+    });
+}
+
 impl TransformerModel {
+    /// This model's tensor-core head arm: the handles this target actually
+    /// carries, plus the process-wide lever. Assembled here rather than stored
+    /// so the env resolution stays in ONE `OnceLock` and the struct stays a
+    /// pure description of what is available.
+    fn lm_head_m16_tc(&self) -> LmHeadM16Tc {
+        let (enabled, n_tile) = lm_head_m16_tc_env();
+        LmHeadM16Tc {
+            narrow: self.lm_head_m16_tc_kernel,
+            wide: self.lm_head_m16_tc_n64_kernel,
+            enabled,
+            n_tile,
+        }
+    }
+
     /// Project `normed` [padded_n, H] into `logits` [padded_n, V].
     ///
     /// `v` is read from `self.config.vocab_size` rather than passed: it is the
@@ -250,6 +403,7 @@ impl TransformerModel {
                 [padded_n as u32, v as u32, h as u32],
                 lmhead_batch_gemv_enabled(),
                 lm_head_batchm_max(),
+                self.lm_head_m16_tc(),
                 stream,
             )?;
         }
