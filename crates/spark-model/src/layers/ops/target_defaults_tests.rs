@@ -46,6 +46,7 @@ const GB10: TargetDefaults = TargetDefaults {
     ssm_decode_ring_slots: "auto",
     w8a8_prefill_max_m_widening: 64,
     w8a8_prefill_max_m_narrowing: 384,
+    attn_decode_splitk: "legacy",
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]` — the round-9 recipe, plus the
@@ -69,6 +70,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     // No cap: W8A8 is 2.0-3.1x over W8A16 at every M measured on H100.
     w8a8_prefill_max_m_widening: u32::MAX,
     w8a8_prefill_max_m_narrowing: u32::MAX,
+    attn_decode_splitk: "auto",
 };
 
 fn with(defaults: &TargetDefaults, env: &[(&str, &str)]) -> TargetLevers {
@@ -440,6 +442,7 @@ fn the_serve_line_names_every_lever_and_marks_the_environment_ones() {
         "decode_split_silu=on",
         "ssm_decode_ring_slots=auto",
         "w8a8_prefill_max_m=max/max",
+        "attn_decode_splitk=auto",
     ] {
         assert!(line.contains(field), "missing `{field}` in:\n{line}");
     }
@@ -463,6 +466,46 @@ fn the_serve_line_names_every_lever_and_marks_the_environment_ones() {
     assert!(line.contains("lm_head_batchm_max=16 (env)"), "{line}");
     assert!(line.contains("lm_head_m16_tc=off"), "{line}");
     assert!(!line.contains("lm_head_m16_tc=off (env)"), "{line}");
+    // GB10 keeps the pre-#928 split rule and says so.
+    assert!(line.contains("attn_decode_splitk=legacy"), "{line}");
+}
+
+/// The split-K policy row (#928): declaration first, environment second, and
+/// the resolved value printed in the spelling that reproduces it.
+#[test]
+fn the_split_k_policy_resolves_and_reports_like_every_other_lever() {
+    use atlas_kernels::attn_splitk::SplitkPolicy;
+    assert_eq!(
+        empty(&HOPPER).attn_decode_splitk.value,
+        SplitkPolicy::Auto,
+        "an H100 serve with an empty environment must reach the split count \
+         that fills 132 SMs — the whole content of #928"
+    );
+    assert_eq!(
+        empty(&GB10).attn_decode_splitk.value,
+        SplitkPolicy::Legacy,
+        "GB10 is unchanged"
+    );
+    assert!(!empty(&HOPPER).attn_decode_splitk.from_env());
+
+    // The A/B an H100 round runs against the new default.
+    let off = with(&HOPPER, &[("ATLAS_ATTN_DECODE_SPLITK", "0")]);
+    assert_eq!(off.attn_decode_splitk.value, SplitkPolicy::Pinned(1));
+    assert!(off.attn_decode_splitk.from_env());
+    assert!(
+        format_levers(&off).contains("attn_decode_splitk=1 (env)"),
+        "{}",
+        format_levers(&off)
+    );
+
+    // …and the one that arms it on a target that declares `legacy`.
+    let on = with(&GB10, &[("ATLAS_ATTN_DECODE_SPLITK", "auto")]);
+    assert_eq!(on.attn_decode_splitk.value, SplitkPolicy::Auto);
+    assert!(
+        format_levers(&on).contains("attn_decode_splitk=auto (env)"),
+        "{}",
+        format_levers(&on)
+    );
 }
 
 /// A target that names no hardware (a build that read no HARDWARE.toml) still

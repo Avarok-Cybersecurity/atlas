@@ -8,6 +8,13 @@ vendor = "nvidia"
 # their own target. Consumer/GB10 Blackwell (sm_120/sm_121) lacks tcgen05.
 arch = "sm_100a"
 compute_capability = "10.0"
+# Streaming multiprocessors. B200 / GB200 SXM report 148 through
+# `cudaDevAttrMultiProcessorCount` (GB100 ships 148 of the die's SMs enabled).
+# DOCUMENTATION plus roofline/grid-sizing input, like the bandwidth row — and
+# unlike the bandwidth row it is cross-checked at boot against the driver's own
+# count, which logs a warning naming both numbers if this is wrong. No B200 has
+# been booted in this campaign, so treat the boot line as the authority.
+sm_count = 148
 # B200 SXM 180 GB HBM3e: ~8000 GB/s. Documentation + roofline input only;
 # the runtime reads real free memory via cuMemGetInfo.
 memory_bandwidth_gbps = 8000
@@ -74,6 +81,12 @@ ssm_decode_ring_slots = "auto"
 # another's is how a lever comes to mean two things in one repository.
 w8a8_prefill_max_m_widening = 4294967295
 w8a8_prefill_max_m_narrowing = 4294967295
+# Paged-decode attention split-K (#928). `legacy` — the pre-#928 rule — for
+# want of a receipt, like every other row here. B200's 148 SMs would make
+# Hopper's `auto` land on 13 splits by the same formula, which is an ARGUMENT;
+# the split-K twins are not even symlinked into this tree, so `auto` here would
+# resolve the gb10 FP8 pair and no BF16 pair at all.
+attn_decode_splitk = "legacy"
 
 # ── Kernels this target OVERRIDES instead of inheriting ────────────────────
 #

@@ -163,7 +163,11 @@ fn target_defaults_literal(workspace_root: &std::path::Path) -> String {
     if path.exists() {
         println!("cargo:rerun-if-changed={}", path.display());
     }
-    build_defaults::literal(&build_defaults::read_defaults(&kernels_root, &hw))
+    format!(
+        "{}{}",
+        build_defaults::literal(&build_defaults::read_defaults(&kernels_root, &hw)),
+        build_defaults::sm_count_literal(build_defaults::read_sm_count(&kernels_root, &hw)),
+    )
 }
 
 fn main() {

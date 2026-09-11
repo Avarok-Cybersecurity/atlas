@@ -3,6 +3,13 @@ name = "gb10"
 vendor = "nvidia"
 arch = "sm_121f"
 compute_capability = "12.1"
+# Streaming multiprocessors — the GB10 value that `atlas_core::device::sm121`
+# has always carried, stated here so the attention dispatch can read it from
+# the TARGET instead of from a constant named after one card (#928). Declaring
+# it changes nothing on GB10 and is the whole fix on H100, which was running
+# this 48 (`ATTN-DECODE-SPLITK-ATTRIBUTION.md`). `atlas_core::device::sm121::
+# NUM_SMS` stays for the gb10 callers that are genuinely about this part.
+sm_count = 48
 memory_bandwidth_gbps = 273
 memory_type = "LPDDR5X"
 memory_gb = 120
@@ -84,6 +91,13 @@ gdn_prefill_tc = false
 # much better fit for a 48-SM part than for a 132-SM H100, and there is no GB10
 # A/B. See `kernels/hopper/HARDWARE.toml` and `SSM-BA-GATES-ATTRIBUTION.md`.
 ssm_ba_gates_hopper = false
+# Paged-decode attention split-K. `legacy` is the rule GB10 has always run —
+# `num_splits = sm_count / (num_q_heads * split_ref_seqs(num_seqs, max batch))`
+# — restated, not changed. Hopper's `auto` fills 132 SMs at the single-stream
+# shape; a 48-SM GB10 is the part that rule was written for and there is no
+# GB10 A/B, so this row does not move until there is one.
+# `ATLAS_ATTN_DECODE_SPLITK=auto` is how that A/B is run.
+attn_decode_splitk = "legacy"
 # Split SiLU+down on the decode path — shipped ON everywhere since #928.
 decode_split_silu = true
 # `auto` = size the decode-rollback ring from free memory at preflight (#915).
