@@ -68,6 +68,8 @@
 //! PR brings its own row; this module ships only the rows whose arms are
 //! already here.
 
+use atlas_kernels::attn_splitk::{self, SplitkPolicy};
+
 use super::gemm_quant::{DENSE_GEMV_BATCHM_DECODE_MAX_M, DENSE_GEMV_BATCHM_MAX_M};
 
 /// Where a resolved value came from — the whole point of the log line.
@@ -168,6 +170,7 @@ pub struct TargetLevers {
     pub lm_head_batchm_max: Resolved<u32>,
     pub ssm_batched_recurrent: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
+    pub attn_decode_splitk: Resolved<SplitkPolicy>,
 }
 
 /// The whole table, as a pure function of the baked declaration and a variable
@@ -202,6 +205,24 @@ pub fn resolve(
         // stays PRESENCE-gated and unchanged, so every script that predates
         // this file means what it meant.
         decode_split_silu: resolve_toggle(defaults.decode_split_silu, None, split_silu_off),
+        // The paged-decode split-K policy (#928). The RULE is
+        // `atlas_kernels::attn_splitk::resolve_policy`, not a fourth copy of
+        // the rung order here: `spark-runtime`'s buffer arena has to reach the
+        // same answer to size the split-K workspace, and it sits BELOW this
+        // crate. One pure function, two callers — a second spelling is how the
+        // grid comes to index past the allocation, silently, into device memory
+        // it does not own. This table is still the only thing that REPORTS it.
+        attn_decode_splitk: {
+            let (policy, from_env) = attn_splitk::resolve_policy(
+                defaults.attn_decode_splitk,
+                var("ATLAS_ATTN_DECODE_SPLITK").as_deref(),
+            );
+            if from_env {
+                Resolved::env(policy)
+            } else {
+                Resolved::target(policy)
+            }
+        },
     }
 }
 
@@ -247,7 +268,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
     format!(
         "target defaults ({hw}): sm_count={sms} \
          lm_head_batchm_max={batchm}{batchm_src} \
-         ssm_batched_recurrent={recurrent} decode_split_silu={silu}",
+         ssm_batched_recurrent={recurrent} decode_split_silu={silu} \
+         attn_decode_splitk={splitk}{splitk_src}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
         // at boot against the driver. Printed on this line because the levers
@@ -258,6 +280,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
         batchm_src = l.lm_head_batchm_max.source.tag(),
         recurrent = onoff(l.ssm_batched_recurrent),
         silu = onoff(l.decode_split_silu),
+        splitk = l.attn_decode_splitk.value.label(),
+        splitk_src = l.attn_decode_splitk.source.tag(),
     )
 }
 

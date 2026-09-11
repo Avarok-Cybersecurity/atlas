@@ -30,6 +30,7 @@ const GB10: TargetDefaults = TargetDefaults {
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: false,
     decode_split_silu: true,
+    attn_decode_splitk: "legacy",
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]`.
@@ -43,6 +44,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: true,
     decode_split_silu: true,
+    attn_decode_splitk: "auto",
 };
 
 fn with(defaults: &TargetDefaults, env: &[(&str, &str)]) -> TargetLevers {
@@ -202,6 +204,7 @@ fn the_summary_line_names_every_lever_and_flags_the_environment() {
         "lm_head_batchm_max=12 (env)",
         "ssm_batched_recurrent=on",
         "decode_split_silu=on",
+        "attn_decode_splitk=auto",
     ] {
         assert!(line.contains(field), "missing `{field}` in:\n{line}");
     }
@@ -209,6 +212,62 @@ fn the_summary_line_names_every_lever_and_flags_the_environment() {
     // always means a prefix was typed.
     let clean = format_levers(&empty(&HOPPER));
     assert!(!clean.contains("(env)"), "{clean}");
+    // GB10 keeps the pre-#928 split rule and says so.
+    assert!(
+        format_levers(&empty(&GB10)).contains("attn_decode_splitk=legacy"),
+        "{}",
+        format_levers(&empty(&GB10))
+    );
+}
+
+/// The split-K policy row (#928): declaration first, environment second, and
+/// the resolved value printed in the spelling that reproduces it.
+///
+/// The `=0` rendering is deliberate and is the one an A/B log carries:
+/// `ATLAS_ATTN_DECODE_SPLITK=0` resolves to `Pinned(1)` — one split IS no
+/// split-K — so the line reads `attn_decode_splitk=1 (env)`. The label is the
+/// RESOLVED policy, not the string that was typed, because the number the
+/// grid used is the thing a reader needs.
+#[test]
+fn the_split_k_policy_resolves_and_reports_like_every_other_lever() {
+    assert_eq!(
+        empty(&HOPPER).attn_decode_splitk.value,
+        SplitkPolicy::Auto,
+        "an H100 serve with an empty environment must reach the split count \
+         that fills 132 SMs — the whole content of #928"
+    );
+    assert_eq!(
+        empty(&GB10).attn_decode_splitk.value,
+        SplitkPolicy::Legacy,
+        "GB10 is unchanged"
+    );
+    assert_eq!(empty(&HOPPER).attn_decode_splitk.source, Source::Target);
+
+    // The A/B an H100 round runs against the new default.
+    let off = with(&HOPPER, &[("ATLAS_ATTN_DECODE_SPLITK", "0")]);
+    assert_eq!(off.attn_decode_splitk.value, SplitkPolicy::Pinned(1));
+    assert_eq!(off.attn_decode_splitk.source, Source::Env);
+    assert!(
+        format_levers(&off).contains("attn_decode_splitk=1 (env)"),
+        "{}",
+        format_levers(&off)
+    );
+
+    // …and the one that arms it on a target that declares `legacy`.
+    let on = with(&GB10, &[("ATLAS_ATTN_DECODE_SPLITK", "auto")]);
+    assert_eq!(on.attn_decode_splitk.value, SplitkPolicy::Auto);
+    assert!(
+        format_levers(&on).contains("attn_decode_splitk=auto (env)"),
+        "{}",
+        format_levers(&on)
+    );
+
+    // A typo keeps the DECLARATION rather than guessing: silently resolving a
+    // misspelling to `auto` would arm a geometry change on a card with no
+    // receipt for it.
+    let typo = with(&HOPPER, &[("ATLAS_ATTN_DECODE_SPLITK", "atuo")]);
+    assert_eq!(typo.attn_decode_splitk.value, SplitkPolicy::Auto);
+    assert_eq!(typo.attn_decode_splitk.source, Source::Target);
 }
 
 /// A build that read no HARDWARE.toml at all has an empty `hw`, and the line
