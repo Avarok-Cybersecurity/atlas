@@ -202,9 +202,9 @@ pub(super) fn fit_ring(
             (requested * slot_bytes) as f64 / GIB,
             if fitted_total > limit {
                 format!(
-                    "even 0 slots leaves {:.2} GB under the {:.2} GB it needs beside the KV \
-                     floor — the KV budget stage will decide",
-                    fitted_total as f64 / GIB,
+                    "even 0 slots does not clear the {:.2} GB KV floor inside {:.2} GB of \
+                     predicted headroom — the KV budget stage will decide, on measured bytes",
+                    beside as f64 / GIB,
                     limit as f64 / GIB,
                 )
             } else {

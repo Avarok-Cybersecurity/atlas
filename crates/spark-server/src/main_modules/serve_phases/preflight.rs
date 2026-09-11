@@ -277,6 +277,7 @@ pub(crate) fn preflight_reserve(
                 ring_requested,
                 ring_slots: fit.slots,
                 per_seq_blob,
+                ring_pinned: spark_model::ssm_reserve::published_decode_ring_slots().is_some(),
             },
         ));
     }
