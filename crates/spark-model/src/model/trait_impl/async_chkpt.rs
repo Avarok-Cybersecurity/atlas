@@ -77,6 +77,67 @@ impl TransformerModel {
         Ok(())
     }
 
+    /// Advance a replay-mode rollback over the accepted rows.
+    ///
+    /// The copies above put every layer back to its PRE-VERIFY checkpoint —
+    /// correct as-is for a full reject, and the reconstruction base for a
+    /// partial accept. This walks the recurrent layers and re-runs each one's
+    /// `num_accepted` cached rows forward from that base.
+    ///
+    /// Runs on the DEFAULT stream, not the secondary rollback stream: the
+    /// state copies are pure d2d and safe to overlap, but this is KERNEL work
+    /// reading the shared decode scratch, so overlapping it with the next
+    /// forward would race on those buffers. Replay is the capacity mode, not
+    /// the fast one.
+    /// Minimal [`ForwardContext`] for a replay-mode rollback.
+    ///
+    /// See the module note: `comm` MUST stay `None` (this pass runs the
+    /// recurrence only and must issue no collective, or the EP ranks
+    /// desynchronise), and `gdn_exact_replay` stays `false` so the arm is
+    /// chosen by the replay gate rather than by the pass-scoped exact leg.
+    fn replay_forward_ctx(&self) -> crate::layer::ForwardContext<'_> {
+        crate::layer::ForwardContext {
+            buffers: &self.buffers,
+            hc_row_offset: 0,
+            gpu: self.gpu.as_ref(),
+            config: &self.config,
+            dispatch: &self.dispatch,
+            moe_lora_route: self.decode_moe_route(),
+            derived: &self.derived,
+            levers: &self.levers,
+            stats: &self.stats,
+            attn_metadata: None,
+            profile: false,
+            comm: None,
+            graph_capture: false,
+            gdn_exact_replay: false,
+            token_ids: None,
+            host_token_ids: None,
+            routed_lora_layers: None,
+            midchunk_capture: None,
+        }
+    }
+
+    fn replay_rollback_rows(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+        _stream: u64,
+    ) -> Result<()> {
+        if num_accepted == 0 {
+            return Ok(());
+        }
+        let stream = self.gpu.default_stream();
+        let ctx = self.replay_forward_ctx();
+        for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
+            if self.config.layer_type(i) != LayerType::LinearAttention {
+                continue;
+            }
+            self.layers[i].replay_verify_rows(layer_state.as_mut(), num_accepted, &ctx, stream)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn start_rollback_and_checkpoint_async_dispatch(
         &self,
         seq: &mut SequenceState,
@@ -116,7 +177,15 @@ impl TransformerModel {
                 let conv_bytes = conv_dim * d_conv * 4;
 
                 // Rollback: restore h_state and conv_state from the appropriate source.
-                if num_accepted == 0 {
+                //
+                // Under `--ssm-rollback-mode replay` there are no per-token
+                // intermediates, so EVERY accept count restores the pre-verify
+                // checkpoint here and a partial accept is then advanced by
+                // `replay_verify_rows` below. `num_accepted == 0` is already
+                // that same restore, so the two modes agree on the reject path
+                // and differ only in how a partial accept gets forward again.
+                let replay_rollback = !ssm.replay_inputs.is_empty();
+                if num_accepted == 0 || replay_rollback {
                     // No tokens accepted: restore from checkpoint (pre-verify state).
                     if let Some(ckpt) = ssm.h_state_checkpoint {
                         h_back.push(StateCopy {
@@ -170,6 +239,11 @@ impl TransformerModel {
             }
         }
         run_ssm_state_copies(self.gpu.as_ref(), &h_back, &conv_back, stream)?;
+        // Replay: the checkpoint is only the BASE. Advance it over the
+        // accepted rows before re-checkpointing, or the next verify would
+        // start from the pre-verify state and silently drop the accepted
+        // tokens from the recurrence.
+        self.replay_rollback_rows(seq, num_accepted, stream)?;
         run_ssm_state_copies(self.gpu.as_ref(), &h_ckpt, &conv_ckpt, stream)?;
         // Record event so default stream can wait (GPU-side, no CPU block).
         self.gpu.record_event(self.secondary_event, stream)?;

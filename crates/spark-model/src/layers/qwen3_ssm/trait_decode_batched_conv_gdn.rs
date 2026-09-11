@@ -93,6 +93,55 @@ pub(super) struct ConvGdnArgs {
 }
 
 impl Qwen3SsmLayer {
+    /// Build [`ConvGdnArgs`] for a row-0-based call (`GdnStates::Single` and
+    /// the replay reconstruction).
+    ///
+    /// Every field but the two input buffers is derived from `ctx.config` or
+    /// `self`, identically at both call sites — shared here so a dim change
+    /// cannot land at one and miss the other.
+    pub(super) fn conv_gdn_args_single(
+        &self,
+        ctx: &ForwardContext,
+        num_tokens: usize,
+        deinterleaved: DevicePtr,
+        gates_buf: DevicePtr,
+        stream: u64,
+    ) -> ConvGdnArgs {
+        let nk = ctx.config.linear_num_key_heads;
+        let kd = ctx.config.linear_key_head_dim;
+        let nv = ctx.config.linear_num_value_heads;
+        let vd = ctx.config.linear_value_head_dim;
+        let key_dim = nk * kd;
+        let value_dim = nv * vd;
+        let conv_dim = key_dim * 2 + value_dim;
+        let conv_out_buf = ctx.buffers.ssm_qkvz();
+        ConvGdnArgs {
+            num_tokens,
+            deinterleaved,
+            gates_buf,
+            conv_out_buf,
+            gdn_out_buf: ctx.buffers.attn_output(),
+            // row0 == 0: the normed base and conv base coincide.
+            normed_out: conv_out_buf,
+            h_bytes: self.h_slot_stride_bytes(),
+            conv_bytes: self.conv_state_bytes,
+            qkvz_size: ctx.config.ssm_qkvz_size(),
+            conv_dim,
+            key_dim,
+            value_dim,
+            d_conv: ctx.config.linear_conv_kernel_dim,
+            qk_ch: (key_dim * 2) as u32,
+            nk,
+            nv,
+            kd,
+            vd,
+            bf16: 2,
+            fp32: 4,
+            stream,
+        }
+    }
+
+
     /// STAGE 1: whether the fused K=2 MTP-verify epilogue (single-launch
     /// conv1d+L2norm and gated-RMS-norm for both draft positions) should run.
     ///
@@ -354,7 +403,15 @@ impl Qwen3SsmLayer {
         // the three legs that takes it to N/N. Kill switch
         // `ATLAS_NO_VERIFY_ROW_EXACT`. Phase 8 in `decode_batched_inner`
         // reads the SAME predicate to skip its norm.
-        if super::verify_row_exact_leg(ctx.gdn_exact_replay, super::RowExactLeg::ConvGdn) {
+        // `--ssm-rollback-mode replay` also takes the exact chain, and must:
+        // the WY arms below read `h_state_intermediates[..]` as kernel args
+        // and replay does not allocate that pool. Taking the SAME sequential
+        // chain the reconstruction will re-run also makes a replayed partial
+        // accept reproduce what the forward committed, instead of differing
+        // by the #435 divergence documented above.
+        if super::verify_row_exact_leg(ctx.gdn_exact_replay, super::RowExactLeg::ConvGdn)
+            || !ssm_state.replay_inputs.is_empty()
+        {
             return self.decode_batched_conv_gdn_exact(ssm_state, ctx, args);
         }
 

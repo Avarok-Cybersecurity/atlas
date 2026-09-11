@@ -78,6 +78,16 @@ pub struct SsmLayerState {
     pub h_state_intermediates: Vec<DevicePtr>,
     /// Intermediate conv_state snapshots during batched verification.
     pub conv_state_intermediates: Vec<DevicePtr>,
+    /// Cached verify-row GDN INPUTS for `--ssm-rollback-mode replay`: element
+    /// `t` holds token `t`'s deinterleaved qkvz row (BF16) followed by its
+    /// gate/beta row (FP32), laid out by `ssm_reserve::ssm_replay_row_bytes`.
+    ///
+    /// Replay keeps these instead of the per-token STATE snapshots above and
+    /// reconstructs a partial accept by re-running the sequential conv+GDN
+    /// chain from the checkpoint over the accepted rows. Empty in snapshot
+    /// mode — exactly as `h_state_intermediates` is empty in replay mode, so
+    /// the vec length is the mode gate as well as the capacity gate.
+    pub replay_inputs: Vec<DevicePtr>,
     /// Storage dtype of `h_state`: `false` = FP32, `true` = FP16
     /// (`--ssm-h-dtype f16`).
     ///

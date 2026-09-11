@@ -241,6 +241,26 @@ pub trait TransformerLayer: Send + Sync {
         Ok(())
     }
 
+    /// Reconstruct this layer's SSM state after a PARTIAL accept under
+    /// `--ssm-rollback-mode replay`, by re-running `num_accepted` cached
+    /// verify rows forward from the pre-verify checkpoint.
+    ///
+    /// Snapshot mode does this with a single copy out of
+    /// `h_state_intermediates[num_accepted - 1]`; replay does not allocate
+    /// those and keeps the rows' INPUTS instead. The caller has already
+    /// restored the checkpoint, so this only advances.
+    ///
+    /// Default no-op: only the recurrent layers have state to reconstruct.
+    fn replay_verify_rows(
+        &self,
+        _state: &mut dyn LayerState,
+        _num_accepted: usize,
+        _ctx: &crate::layer::ForwardContext,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Roll this layer's aux carry back by `rows`, after a rejected
     /// speculative draft.
     ///

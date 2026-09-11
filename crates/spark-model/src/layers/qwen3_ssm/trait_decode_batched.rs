@@ -890,29 +890,8 @@ impl Qwen3SsmLayer {
                     );
                 }
 
-                let args = super::trait_decode_batched_conv_gdn::ConvGdnArgs {
-                    num_tokens,
-                    deinterleaved,
-                    gates_buf,
-                    conv_out_buf,
-                    gdn_out_buf,
-                    normed_out: conv_out_buf, // row0 == 0: bases coincide
-                    h_bytes,
-                    conv_bytes,
-                    qkvz_size,
-                    conv_dim,
-                    key_dim,
-                    value_dim,
-                    d_conv,
-                    qk_ch,
-                    nk,
-                    nv,
-                    kd,
-                    vd,
-                    bf16,
-                    fp32,
-                    stream,
-                };
+                let args =
+                    self.conv_gdn_args_single(ctx, num_tokens, deinterleaved, gates_buf, stream);
                 self.decode_batched_conv_gdn(ssm_state, ctx, &args)?;
             }
             GdnStates::Multi {

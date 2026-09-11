@@ -428,6 +428,20 @@ impl TransformerModel {
                                     ));
                             }
                         }
+                        // Same re-point for the replay cache: these address
+                        // the OLD slot's rows until this runs, and a rollback
+                        // through them would replay another sequence's tokens.
+                        if !ssm.replay_inputs.is_empty() {
+                            let rows = ssm.replay_inputs.len();
+                            ssm.replay_inputs.clear();
+                            for t in 0..rows {
+                                ssm.replay_inputs.push(self.ssm_pool.replay_input(
+                                    ssm_layer_idx,
+                                    new_slot,
+                                    t,
+                                ));
+                            }
+                        }
                     }
                 }
                 ssm_layer_idx += 1;

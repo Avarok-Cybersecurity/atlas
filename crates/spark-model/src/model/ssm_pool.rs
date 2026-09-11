@@ -107,6 +107,17 @@ pub(crate) struct SsmStatePool {
     /// Empty in snapshot mode. Allocated so boot sizing is honest; the
     /// capture that would fill it is not wired yet.
     pub(super) replay_input_rings: Vec<DevicePtr>,
+    /// Bytes per cached replay row (`ssm_reserve::ssm_replay_row_bytes`):
+    /// the deinterleaved qkvz row (BF16) plus the gate/beta row (FP32). Zero
+    /// in snapshot mode. Stored so `replay_input` cannot re-derive it from a
+    /// different config field than the allocation used.
+    pub(super) replay_row_bytes: usize,
+    /// Replay is wired for the MTP conv+GDN verify chain only. The DFlash
+    /// block drafter reads `ssm_pool.h_intermediate(..)` directly
+    /// (`dflash_head/propose.rs`), which replay does not allocate, so a
+    /// DFlash serve under replay must still refuse rather than index an
+    /// empty pool.
+    pub(super) replay_uncovered_dflash: bool,
     pub(super) free_slots: Mutex<Vec<usize>>,
 }
 
@@ -294,6 +305,7 @@ impl SsmStatePool {
         };
         let (h_inter_offsets, h_inter_total) = h_inter_layout(&h_inter_counts);
         let mut replay_input_rings = Vec::new();
+        let mut replay_row_bytes = 0usize;
         if has_mtp {
             let ni = num_intermediates;
             let mtp_total = mtp_slots + 1;
@@ -318,6 +330,7 @@ impl SsmStatePool {
                 let ring = crate::ssm_reserve::ssm_replay_ring_bytes(1, row, ni, mtp_total);
                 let (layers, allocations) = alloc_layer_pools(gpu, num_ssm_layers, ring)?;
                 replay_input_rings = layers;
+                replay_row_bytes = row;
                 owned_allocations.extend(allocations);
             }
 
@@ -391,6 +404,8 @@ impl SsmStatePool {
             h_inter_offsets,
             rollback_mode,
             replay_input_rings,
+            replay_row_bytes,
+            replay_uncovered_dflash: replay && !config.dflash_capture_layers.is_empty(),
             free_slots: Mutex::new(free_slots),
         })
     }
@@ -640,6 +655,29 @@ impl SsmStatePool {
         self.h_inter_counts[slot]
     }
 
+    /// Address cached replay row `t` of `slot` in `ssm_layer_idx`'s ring.
+    ///
+    /// Layout mirrors `h_intermediate`: the per-layer region holds
+    /// `mtp_total x (num_intermediates - 1)` rows, slot-major. Returns NULL
+    /// when replay is not the active mode (no ring is allocated), when the
+    /// slot is not verify-covered, or when `t` is past the K-1 window — every
+    /// caller treats NULL as "no capture/replay for this row" rather than
+    /// indexing a vec that snapshot mode sizes differently.
+    pub(super) fn replay_input(&self, ssm_layer_idx: usize, slot: usize, t: usize) -> DevicePtr {
+        if self.replay_input_rings.is_empty() || self.replay_row_bytes == 0 {
+            return DevicePtr::NULL;
+        }
+        let rows_per_slot = self.num_intermediates.saturating_sub(1);
+        if t >= rows_per_slot {
+            return DevicePtr::NULL;
+        }
+        let mapped = self.mtp_slot(slot);
+        let Some(base) = self.replay_input_rings.get(ssm_layer_idx) else {
+            return DevicePtr::NULL;
+        };
+        base.offset((mapped * rows_per_slot + t) * self.replay_row_bytes)
+    }
+
     /// Refuse a speculative VERIFY under the replay scaffold. The replay
     /// mode's device path (verify-window input capture + checkpoint-replay
     /// reconstruction) is not wired; running a verify would either index
@@ -649,13 +687,21 @@ impl SsmStatePool {
         if self.rollback_mode == crate::ssm_reserve::SsmRollbackMode::Replay
             && self.num_ssm_layers > 0
         {
-            bail!(
-                "--ssm-rollback-mode replay is an EXPERIMENTAL scaffold: the verify-window \
-                 input capture and checkpoint-replay reconstruction are not wired yet, so \
-                 speculative verify cannot run. The serve boots (reserve sizing shows the \
-                 replay capacity win) but --speculative traffic must use \
-                 --ssm-rollback-mode snapshot."
-            );
+            // Capture + reconstruction ARE wired now (the verify takes the
+            // sequential conv+GDN arm, caches each row's inputs, and rebuilds
+            // a partial accept from the checkpoint). What is NOT wired is the
+            // batched single-launch WY arm, which reads
+            // `h_state_intermediates` as kernel arguments — replay allocates
+            // no such pool — and the DFlash block drafter's own verify chain.
+            // Both are declined by `decode_batched_conv_gdn_multi` falling
+            // back to the per-sequence loop, so nothing here needs to refuse
+            // the whole serve any more.
+            if self.replay_uncovered_dflash {
+                bail!(
+                    "--ssm-rollback-mode replay does not cover the DFlash block drafter's \
+                     verify chain yet. Serve DFlash traffic with --ssm-rollback-mode snapshot."
+                );
+            }
         }
         Ok(())
     }

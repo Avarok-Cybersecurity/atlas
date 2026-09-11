@@ -155,7 +155,36 @@ impl Qwen3SsmLayer {
         let fused_gdn_norm = use_f32_gdn
             && self.gdn_f32_norm_k.0 != 0
             && crate::layers::qwen3_ssm::gdn_fused_norm_enabled();
-        let snap = fused_gdn_norm && self.gdn_f32_norm_snap_k.0 != 0;
+        // Replay keeps INPUT rows, not state snapshots: there is no
+        // `h_state_intermediates` to write, so snapshotting is off and the
+        // capture below stands in for it.
+        let replay = !ssm_state.replay_inputs.is_empty();
+        let snap = !replay && fused_gdn_norm && self.gdn_f32_norm_snap_k.0 != 0;
+
+        // ── Capture the verify-window inputs for replay reconstruction ──
+        // Rows 0..K-2 only: a partial accept replays at most K-1 tokens and a
+        // full accept replays nothing, which is how the ring is sized.
+        if replay {
+            let nv_gate_bytes = nv * 2 * fp32;
+            for t in 0..num_tokens.saturating_sub(1) {
+                let Some(&dst) = ssm_state.replay_inputs.get(t) else {
+                    break;
+                };
+                let row = exact_row(t, num_tokens, qkvz_size, conv_dim, value_dim, nv);
+                ctx.gpu.copy_d2d_async(
+                    deinterleaved.offset(row.qkv_in),
+                    dst,
+                    qkvz_size * bf16,
+                    stream,
+                )?;
+                ctx.gpu.copy_d2d_async(
+                    gates_buf.offset(row.gate),
+                    dst.offset(qkvz_size * bf16),
+                    nv_gate_bytes,
+                    stream,
+                )?;
+            }
+        }
         let f32_conv_base = ctx.buffers.ssm_conv_out_f32();
 
         // FP32 fused verify conv: one launch for all K positions with the

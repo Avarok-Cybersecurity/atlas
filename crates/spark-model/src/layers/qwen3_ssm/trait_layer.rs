@@ -162,6 +162,57 @@ impl TransformerLayer for Qwen3SsmLayer {
         ple.rewind_verify_row(st, row, gpu, stream)
     }
 
+    fn replay_verify_rows(
+        &self,
+        state: &mut dyn LayerState,
+        num_accepted: usize,
+        ctx: &crate::layer::ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if num_accepted == 0 {
+            return Ok(());
+        }
+        let Some(ssm) = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::SsmLayerState>()
+        else {
+            return Ok(());
+        };
+        if ssm.replay_inputs.is_empty() {
+            return Ok(());
+        }
+        let qkvz_size = ctx.config.ssm_qkvz_size();
+        let nv = ctx.config.linear_num_value_heads;
+        let bf16 = 2usize;
+        let fp32 = 4usize;
+        // Row 0 of the shared decode scratch: the verify forward is complete
+        // and the next one has not started (the scheduler applies verdicts
+        // between forwards), and this runs on the default stream, so staging
+        // each replayed token through row 0 cannot race the forward.
+        let deinterleaved = ctx.buffers.ssm_deinterleaved();
+        let gates_buf = ctx.buffers.ssm_gates();
+        for t in 0..num_accepted {
+            let Some(&row) = ssm.replay_inputs.get(t) else {
+                anyhow::bail!(
+                    "replay rollback: {num_accepted} rows accepted but only {} cached — \
+                     the verify window and the replay ring disagree",
+                    ssm.replay_inputs.len()
+                );
+            };
+            ctx.gpu
+                .copy_d2d_async(row, deinterleaved, qkvz_size * bf16, stream)?;
+            ctx.gpu.copy_d2d_async(
+                row.offset(qkvz_size * bf16),
+                gates_buf,
+                nv * 2 * fp32,
+                stream,
+            )?;
+            let args = self.conv_gdn_args_single(ctx, 1, deinterleaved, gates_buf, stream);
+            self.decode_batched_conv_gdn(ssm, ctx, &args)?;
+        }
+        Ok(())
+    }
+
     fn decode_prestage_rearm(&self, state: &mut dyn LayerState) {
         if let Some(ple) = self.ple.as_ref()
             && let Some(ssm) = state
