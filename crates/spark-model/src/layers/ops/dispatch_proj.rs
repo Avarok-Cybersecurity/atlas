@@ -63,10 +63,12 @@ pub fn cublas_fp8_proj(
 /// both, then quantizes the post-SiLU intermediate once for `down`.
 ///
 /// ⚠ PADDED-M EXTENTS. cuBLASLt is handed `ceil16(M)`, so:
-///   * `out` must hold `ceil16(M) * N` BF16 elements — the phantom rows are
-///     WRITTEN (well-defined: their activation scales are zeroed below).
-///   * `act_fp8` must hold `ceil16(M) * K` bytes and `act_scale`
-///     `ceil16(M) * (K/128)` f32 — the phantom rows are READ.
+///
+/// * `out` must hold `ceil16(M) * N` BF16 elements — the phantom rows are
+///   WRITTEN (well-defined: their activation scales are zeroed below).
+/// * `act_fp8` must hold `ceil16(M) * K` bytes and `act_scale`
+///   `ceil16(M) * (K/128)` f32 — the phantom rows are READ.
+///
 /// The arena sizes that headroom in; see the sizing notes in
 /// `spark_runtime::buffers::sizes` (`fp8_act`, `ffn_act_a`, `expert_gate_out`,
 /// `moe_output`).
