@@ -108,9 +108,14 @@ pub(super) fn run_batched_prefill_step(
             // planner groups all N tails into ONE forward. #927 measured the
             // standalone alternative at 29.3 ms for 25 tokens — 1 170 µs/token,
             // 11.7% of prefill GPU time for 2.1% of the tokens.
+            //
+            // The condition mirrors `prefill_chunk_dispatch`'s own
+            // (`cut > chunk_start && cut < total`, on a last chunk) exactly,
+            // plus the requirement that the cut lie inside THIS chunk — a
+            // prompt longer than the budget reaches its final chunk at a
+            // nonzero offset and splits there just the same.
             if varlen
                 && is_last
-                && p.chunk_offset == 0
                 && let Some(cut) = model.prefill_tail_cut(&p.prompt_tokens)
                 && cut > p.chunk_offset
                 && cut < p.prompt_tokens.len()
