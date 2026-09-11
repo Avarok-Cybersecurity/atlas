@@ -962,8 +962,15 @@ note = """\
 Does the same sample answer the same, whatever ran before it? One draw issued \
 in two orders against ONE server, diffed byte-exact per `sample_id`. \
 ★ It rides the BFCL checkpoint and recipe DELIBERATELY: the gate replays \
-BFCL's request body to ask whether BFCL's own conditions are order-independent, \
-so a different subject would answer about a regime nobody measures. That is \
+BFCL's request body, so a different subject would answer about a workload \
+nobody scores. ★ BUT DO NOT READ A GREEN HERE AS CERTIFYING THE BFCL GATE'S \
+OWN CONDITIONS. This entry pins the CLOSED regime; the bfcl-subset entry pins \
+no serve_overrides at all and is scored OPEN, which is the regime this gate \
+measures at 36 divergences of 257. So a green says the BFCL workload is \
+order-independent WHEN THE CHANNELS ARE CLOSED, and says nothing about the \
+conditions the committed 84.22 / 84.12 were taken under. Closing that gap \
+means pinning hermetic on bfcl-subset, which would invalidate every \
+whole-draw record on main and is deliberately not done here. That is \
 also why `max_new_tokens` is pinned to BFCL's 1024 and not the driver's old \
 512 — see the MAX_NEW_TOKENS commit. \
 ★ THE BOUNDS BELOW ARE INVARIANTS, NOT MEASURED PERFORMANCE. `diverged` and \
@@ -991,8 +998,12 @@ spent."""
 [benchmarks.serve_overrides]
 # All three, not just `hermetic`: bench.rs refuses an under-pinned hermetic
 # baseline at PARSE time precisely so this cannot be discovered after a run.
-# A record measured this way carries all three (verified against the arm-D
-# record at bfcl-subset/2026-09-10-0d7d7b2862.json).
+# A record measured this way carries all three: see this gate's own committed
+# record under .benchmarks/kat-equality-gate/, whose serve_overrides read
+# {enable_prefix_caching: false, hermetic: true, mtp_gate: force}. (An earlier
+# draft of this note cited an arm-D bfcl-subset record by sha; that record was
+# measured on a box and never committed, so the citation named a file no
+# reader could open. Cite something in the tree.)
 hermetic = "true"
 enable_prefix_caching = "false"
 mtp_gate = "force"
@@ -1012,11 +1023,24 @@ mtp_gate = "force"
 #                     live_parallel_multiple; 257 is exactly the end of
 #                     live_parallel_multiple, so it covers every subset in
 #                     which the effect has ever been observed. What it gives
-#                     up is the 738-sample non_live tail (multiple, parallel,
-#                     parallel_multiple, simple_*), which has never produced
-#                     one — and the whole draw in two orders costs ~3 h against
-#                     this cap's ~1 h, on every PR, forever. State the cap when
-#                     you report a green: the driver logs the same warning.
+#                     up is 738 samples: live_simple (25) plus the whole
+#                     non_live half (713 — multiple, parallel,
+#                     parallel_multiple, simple_java, simple_javascript,
+#                     simple_python). ★ Say live_simple out loud rather than
+#                     calling the remainder "the non_live tail", which an
+#                     earlier draft of this note did: live_simple is a `live`
+#                     subset, so the cap DOES blind this gate to one subset of
+#                     the category the effect lives in. Neither instrument has
+#                     produced a live_simple divergence — not the 12 the shard
+#                     split found, not the 36 the order reversal found — but
+#                     that is a measured absence, not a structural one, and it
+#                     is the first thing to re-check if a future divergence
+#                     lands outside the capped prefix.
+#                     The whole draw in two orders costs ~4.3 h (1990
+#                     generations at the 7.9 s/generation this record measured)
+#                     against this cap's ~1 h, on every PR, forever. State the
+#                     cap when you report a green: the driver logs the same
+#                     warning.
 #   max_new_tokens  — BFCL's own budget. Divergence surface scales with it, and
 #                     every committed bfcl-subset record was measured at 1024.
 orders = "2"

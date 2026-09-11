@@ -2045,8 +2045,9 @@ concatenates subsets in **sorted name order**. So the cap does not sample the
 draw; it selects a deterministic PREFIX of it, and therefore selects WHICH
 SUBSETS are compared at all. A cap of 257 compares `irrelevance`,
 `live_irrelevance`, `live_multiple`, `live_parallel` and
-`live_parallel_multiple`, and never looks at `multiple`, `parallel`,
-`parallel_multiple` or any `simple_*` — 738 samples, permanently invisible.
+`live_parallel_multiple`, and never looks at `live_simple`, `multiple`,
+`parallel`, `parallel_multiple` or any `simple_*` — 738 samples, permanently
+invisible.
 "95 % power" describes a random subsample. This is not one, and no amount of
 repetition changes which samples it omits.
 
@@ -2061,8 +2062,15 @@ a power calculation. The 12 samples that diverge on this checkpoint are 10
 `live_irrelevance`, 1 `live_multiple` and 1 `live_parallel_multiple`. In the
 golden draw's concatenation order those sit at positions 25–112, 113–217 and
 234–257. **257 is the end of `live_parallel_multiple`** — the smallest prefix
-containing every subset in which the effect has ever been observed. The 738
-samples it gives up are precisely the ones that have never produced one.
+containing every subset in which the effect has ever been observed.
+
+★ Do not describe the remaining 738 as "the non_live tail", which the first
+draft of this entry did. It is live_simple (25) plus the non_live half (713),
+and live_simple is a **`live`** subset — the same category the effect was
+argued to live in. No live_simple divergence has been seen by either
+instrument, so the cap is still defensible, but the honest form of the claim
+names the one subset a reviewer would ask about instead of hiding it behind a
+category label that happened to be convenient.
 
 **The control, run at the cap.** The open arm at 257 samples in two orders
 reads **36 divergences of 257** (spark-43fa, 2026-09-10, 3878 s; identical 221,
