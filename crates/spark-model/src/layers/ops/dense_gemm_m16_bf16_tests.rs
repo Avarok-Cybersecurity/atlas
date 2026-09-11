@@ -39,6 +39,7 @@
 //! 4-stage ring wraps twice.
 
 use super::{DENSE_GEMM_M16_BF16_N_TILE, DENSE_GEMM_M16_BF16_N_TILE_WIDE};
+use crate::layers::dense_ffn::m16_tc::oracle::compare_m16_tc_block;
 use crate::layers::dense_ffn::m16_tc::within_m16_tc_budget;
 use half::bf16;
 
@@ -107,6 +108,16 @@ enum Mutation {
     StageARowMap,
     /// The second A fragment row at `group_id + 4` instead of `+ 8`.
     FragmentARowPair,
+    /// 🔴 THE ROUND-9 NEGATIVE CONTROL. The store's `col < N` mask dropped in
+    /// favour of a WRAP — the last (always partial) CTA writes its tail lanes
+    /// onto columns `col - N` instead of dropping them. This is defect class
+    /// (b) from the round-9 triage: "the tail of 13 columns at N=248,077". It
+    /// is the one hypothesis the `over_budget`-linear-in-M and
+    /// `n64`-identical arguments cannot fully exclude on their own, because
+    /// 248,064 is a multiple of BOTH 32 and 64 — so the last partial CTA is the
+    /// SAME 13 columns on both instantiations. The metric has to be shown to
+    /// catch it, and it is, here.
+    TailStoreWrap,
 }
 
 /// One CTA's shared tiles for one pipeline stage.
@@ -264,6 +275,11 @@ fn simulate(f: &Fixture, m: usize, n_tile: usize, mu: Mutation) -> Vec<u16> {
                     .into_iter()
                     .enumerate()
                     {
+                        let col = if mu == Mutation::TailStoreWrap && col >= N {
+                            col - N
+                        } else {
+                            col
+                        };
                         if row < m && col < N {
                             out[row * N + col] = bf16::from_f32(regs[j * 4 + r]).to_bits();
                         }
@@ -317,17 +333,20 @@ fn reference(f: &Fixture, m: usize) -> Vec<u16> {
     out
 }
 
-/// RMS of a BF16 block — the scale [`within_m16_tc_budget`]'s absolute floor is
-/// expressed in.
-fn rms(block: &[u16]) -> f64 {
-    let sum: f64 = block
+/// RMS of one reference ROW — the scale [`within_m16_tc_budget`]'s absolute
+/// floor is expressed in since round 9. Per row, not per block: an element's
+/// FP32 accumulation noise is proportional to the norm of the activation row
+/// that produced it, and the row's output RMS is the observable that tracks it.
+fn row_rms(block: &[u16], row: usize) -> f64 {
+    let r = &block[row * N..(row + 1) * N];
+    let sum: f64 = r
         .iter()
         .map(|b| {
             let v = f64::from(bf16::from_bits(*b).to_f32());
             v * v
         })
         .sum();
-    (sum / block.len() as f64).sqrt()
+    (sum / r.len() as f64).sqrt()
 }
 
 /// THE INDEX-MATH PIN. Staging map, fragment gather and store map together
@@ -338,17 +357,17 @@ fn the_fragment_and_index_math_reproduce_the_scalar_gemv() {
     let f = Fixture::new();
     for m in [5_usize, 8, 13, 16] {
         let want = reference(&f, m);
-        let scale = rms(&want[..m * N]);
         for n_tile in [
             DENSE_GEMM_M16_BF16_N_TILE as usize,
             DENSE_GEMM_M16_BF16_N_TILE_WIDE as usize,
         ] {
             let got = simulate(&f, m, n_tile, Mutation::None);
             for row in 0..m {
+                let scale = row_rms(&want, row);
                 for col in 0..N {
                     let i = row * N + col;
                     assert!(
-                        within_m16_tc_budget(got[i], want[i], scale),
+                        within_m16_tc_budget(got[i], want[i], K, scale),
                         "m={m} n_tile={n_tile} row={row} col={col}: \
                          got {:+e} want {:+e}",
                         bf16::from_bits(got[i]).to_f32(),
@@ -374,6 +393,7 @@ fn every_corrupted_index_term_is_caught() {
         Mutation::StoreColumnStride,
         Mutation::StageARowMap,
         Mutation::FragmentARowPair,
+        Mutation::TailStoreWrap,
     ] {
         assert_ne!(
             good,
@@ -406,5 +426,50 @@ fn the_kernel_writes_nothing_outside_the_used_extent() {
                 "m={m} n_tile={n_tile}: an in-extent output was left unwritten"
             );
         }
+    }
+}
+
+/// 🔴 THE ROUND-9 NEGATIVE CONTROL FOR DEFECT CLASS (b) — the partial tail.
+///
+/// Round 9's triage had to rule out "the last, always-partial CTA at
+/// N=248,077". Two of the three arguments against it are statistical (the
+/// rejected count is linear in M, and `n64` rejects the identical set), and the
+/// third — that a different tile width would move the boundary — does NOT hold
+/// for the LAST CTA specifically: 248,064 is a multiple of both 32 and 64, so
+/// the tail is the SAME 13 columns on both instantiations. The remaining
+/// argument has to be that the METRIC would have caught it, which is what this
+/// pins: a tail defect is refused by [`compare_m16_tc_block`] on both widths,
+/// under the round-9 K-aware floor, with the rejected elements landing in the
+/// tail rather than scattered.
+#[test]
+fn a_partial_tail_defect_is_refused_by_the_metric_on_both_widths() {
+    let f = Fixture::new();
+    let want = reference(&f, M_TILE);
+    let want_bytes: Vec<u8> = want.iter().flat_map(|b| b.to_le_bytes()).collect();
+    for n_tile in [
+        DENSE_GEMM_M16_BF16_N_TILE as usize,
+        DENSE_GEMM_M16_BF16_N_TILE_WIDE as usize,
+    ] {
+        let got = simulate(&f, M_TILE, n_tile, Mutation::TailStoreWrap);
+        let got_bytes: Vec<u8> = got.iter().flat_map(|b| b.to_le_bytes()).collect();
+        let d = compare_m16_tc_block(&got_bytes, &want_bytes, N, K);
+        assert!(
+            !d.over_budget.is_empty(),
+            "n_tile={n_tile}: the metric admitted a wrapped partial-CTA store — \
+             the round-9 tail hypothesis would have been unfalsifiable"
+        );
+        // ...and it is refused because the tail wrote real columns, not because
+        // the floor happened to be narrow: the errors are of matrix scale.
+        let worst = d
+            .over_budget
+            .iter()
+            .map(|o| f64::from((o.actual - o.reference).abs()))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            worst > 0.1 * d.rms,
+            "n_tile={n_tile}: a tail defect must land errors of matrix scale, got {worst:.3e} \
+             against rms {:.3e}",
+            d.rms
+        );
     }
 }

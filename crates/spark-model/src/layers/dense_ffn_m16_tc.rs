@@ -140,7 +140,9 @@ use spark_runtime::gpu::DevicePtr;
 #[path = "dense_ffn_m16_tc_oracle.rs"]
 pub mod oracle;
 
-pub use oracle::{M16_TC_ACC_FLOOR, M16_TC_MAX_ULP, bf16_ord, within_m16_tc_budget};
+pub use oracle::{
+    M16_TC_ACC_FLOOR_MARGIN, M16_TC_MAX_ULP, bf16_ord, m16_tc_acc_floor, within_m16_tc_budget,
+};
 
 use super::DenseFfnLayer;
 use crate::layer::ForwardContext;

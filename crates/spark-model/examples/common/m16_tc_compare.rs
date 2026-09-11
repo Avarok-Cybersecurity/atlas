@@ -15,7 +15,8 @@
 //! `examples/` would be exactly the drift that arrangement exists to prevent.
 //! This module only calls it.
 //!
-//! ⚠ THE ABSOLUTE FLOOR IS ROUND 6'S FIX AND IT IS NOT A LOOSENING. Round 6
+//! ⚠ THE ABSOLUTE FLOOR IS ROUND 6'S FIX, RE-SCALED IN ROUND 9, AND IT IS NOT
+//! A LOOSENING. Round 6
 //! failed `gate/up M=32` on `max_ulp 28`, 5 of 557,056 elements, `sign_flips 0`,
 //! `rel_rms 4.2e-5`, and that was read as a possible row/pitch defect in the
 //! two-halves rung. It was the metric: a host simulation of the same geometry
@@ -23,10 +24,16 @@
 //! output that cancelled to |ref| 5.7e-6..1.6e-4 against a reference RMS of
 //! 39.1 — 1e-7..4e-6 of the matrix scale, where an ordinal ULP has nothing left
 //! to measure and one FP32 accumulation rounding spans hundreds of them. The
-//! floor is 13,500x below the BF16 quantum at the top of the same matrix, so a
-//! real misplacement (errors of order the RMS) still fails. Derivation:
-//! `layers::dense_ffn::m16_tc::M16_TC_ACC_FLOOR`; both directions are pinned in
-//! `dense_ffn_m16_tc_m32_tests.rs`.
+//! floor is four orders below the matrix RMS, so a real misplacement (errors of
+//! order the RMS) still fails. ROUND 9 replaced round 6's fixed `2^-20 * rms`
+//! with `8 * u32 * sqrt(K) * row_rms`, because the fixed constant did not scale
+//! with the reduction depth and was fitted to THIS kernel pair — the BF16 LM
+//! head's single 320-step FP32 chain is several times noisier and the constant
+//! landed under its noise (`native_bf16_lm_head_m16_microtest`, H100 round 9:
+//! `over_budget` 10/16/25/37 at M=5/8/13/16, every rejected element a logit
+//! cancelled to 4.9e-6..2.6e-4 of the block RMS). Derivation:
+//! `layers::dense_ffn::m16_tc::m16_tc_acc_floor`; both directions are pinned in
+//! `dense_ffn_m16_tc_m32_tests.rs` and `ops/dense_gemm_m16_bf16_floor_tests.rs`.
 //!
 //! Sign flips below |scalar| < 0.05 are still counted separately rather than
 //! graded: one ULP across zero is a full sign change. Nothing is silently
@@ -38,7 +45,7 @@
 use anyhow::{Result, ensure};
 use half::bf16;
 use spark_model::layers::dense_ffn::m16_tc::oracle::{
-    M16_TC_MAX_ULP, M16TcDiff, compare_m16_tc_block,
+    M16_TC_MAX_ULP, M16TcDiff, compare_m16_tc_block, m16_tc_acc_floor,
 };
 
 /// Qwen/Qwen3.8-27B hidden size.
@@ -51,7 +58,7 @@ pub(crate) const GUARD: usize = 64;
 pub(crate) const A_PAD: usize = 8;
 pub(crate) const C_PAD: usize = 64;
 /// Block-level relative-RMS gate. The per-element budget lives in the lib
-/// (`M16_TC_MAX_ULP` + `M16_TC_ACC_FLOOR`), so neither half of this microtest
+/// (`M16_TC_MAX_ULP` + `m16_tc_acc_floor`), so neither half of this microtest
 /// can grade the tier differently from the host simulation that pins the same
 /// contract.
 pub(crate) const REL_RMS_GATE: f64 = 1e-3;
@@ -151,20 +158,28 @@ pub(crate) fn transpose(weights: &[u8], scales: &[u8], n: usize, k: usize) -> (V
     (wt, st)
 }
 
-/// Print every element the criterion rejected, with its coordinates, magnitude
-/// and how far below the block RMS it sits — the three numbers that separate a
-/// cancellation tail from a defect.
-pub(crate) fn report_outliers(label: &str, d: &M16TcDiff) {
+/// Print every element the criterion rejected, with its coordinates, magnitude,
+/// how far below its own ROW's RMS it sits and the floor it missed — the
+/// numbers that separate a cancellation tail from a defect, and the ones round
+/// 9 needed to settle the LM head without a second H100 run.
+pub(crate) fn report_outliers(label: &str, d: &M16TcDiff, k: usize) {
     for o in &d.over_budget {
-        let relative = if d.rms > 0.0 {
-            f64::from(o.reference).abs() / d.rms
+        let relative = if o.row_rms > 0.0 {
+            f64::from(o.reference).abs() / o.row_rms
         } else {
             f64::NAN
         };
         println!(
             "  OVER_BUDGET {label} (m={}, n={}) reference={:+.9e} actual={:+.9e} \
-             ulp={} |ref|/rms={relative:.3e} budget={M16_TC_MAX_ULP} ULP or the floor",
-            o.row, o.col, o.reference, o.actual, o.ulp
+             ulp={} |ref|/row_rms={relative:.3e} row_rms={:.4} floor={:.6e} \
+             budget={M16_TC_MAX_ULP} ULP or the floor",
+            o.row,
+            o.col,
+            o.reference,
+            o.actual,
+            o.ulp,
+            o.row_rms,
+            m16_tc_acc_floor(k, o.row_rms)
         );
     }
 }
@@ -197,6 +212,7 @@ pub(crate) fn check_strided(
     baseline: &[u8],
     m: usize,
     n: usize,
+    k: usize,
     c_pitch: usize,
 ) -> StridedCheck {
     let mut gaps_intact = strided[..GUARD] == sentinel_s[..GUARD];
@@ -210,6 +226,7 @@ pub(crate) fn check_strided(
                 &strided[base..base + n * 2],
                 &baseline[GUARD + row * n * 2..GUARD + (row + 1) * n * 2],
                 n,
+                k,
             );
             max_ulp = max_ulp.max(sd.max_ulp);
             if !sd.over_budget.is_empty() {
@@ -312,21 +329,22 @@ pub(crate) fn report_case(c: &Case) -> bool {
         sp2 = t.tile_ms / t.tc_ms,
         verdict = if ok { "PASS" } else { "FAIL" },
     );
-    report_outliers("m16_tc", d);
-    report_outliers("n64", d64);
+    report_outliers("m16_tc", d, c.k);
+    report_outliers("n64", d64, c.k);
     ok
 }
 
 /// Oracle self-checks, once per shape: the comparison the loop runs MUST refuse
 /// a known-bad block, so a green report cannot mean "the comparison was
-/// vacuous". TWO controls, because round 6's fix widened the criterion and a
-/// widened criterion has to prove it still bites — one at three ULP on a LARGE
-/// value (which the absolute floor must not rescue), one that MOVES A WHOLE ROW
-/// (the row/pitch defect the M=32 cell was suspected of, which is what the gate
-/// is really for).
+/// vacuous". THREE controls, because round 6's fix widened the criterion and
+/// round 9 re-scaled it, and a widened criterion has to prove it still bites —
+/// one at three ULP on a LARGE value (which the absolute floor must not
+/// rescue), one that MOVES A WHOLE ROW (the row/pitch defect the M=32 cell was
+/// suspected of, which is what the gate is really for), and one that shifts the
+/// PARTIAL TAIL (round 9's defect class (b); see [`assert_tail_control`]).
 ///
 /// `good` is the scalar baseline buffer, sentinel guards included.
-pub(crate) fn assert_oracle_bites(good: &[u8], name: &str, n: usize) -> Result<()> {
+pub(crate) fn assert_oracle_bites(good: &[u8], name: &str, n: usize, k: usize) -> Result<()> {
     let rows = &good[GUARD..GUARD + MAX_M * n * 2];
     let mut bad = good.to_vec();
     // Find an element well outside the sign-flip band and push it 3 ULP.
@@ -341,7 +359,7 @@ pub(crate) fn assert_oracle_bites(good: &[u8], name: &str, n: usize) -> Result<(
         .expect("baseline has a value above 1.0");
     let bits = u16::from_le_bytes([good[idx], good[idx + 1]]);
     bad[idx..idx + 2].copy_from_slice(&(bits.wrapping_add(3)).to_le_bytes());
-    let caught = !compare_m16_tc_block(&bad[GUARD..GUARD + MAX_M * n * 2], rows, n)
+    let caught = !compare_m16_tc_block(&bad[GUARD..GUARD + MAX_M * n * 2], rows, n, k)
         .over_budget
         .is_empty();
     println!("KNOWN_BAD {name} three-ULP mutation on a |value| > 1: refused={caught}");
@@ -355,13 +373,40 @@ pub(crate) fn assert_oracle_bites(good: &[u8], name: &str, n: usize) -> Result<(
     let (src, dst) = (GUARD + 16 * n * 2, GUARD + 17 * n * 2);
     let row16 = good[src..src + n * 2].to_vec();
     shifted[dst..dst + n * 2].copy_from_slice(&row16);
-    let caught_row = !compare_m16_tc_block(&shifted[GUARD..GUARD + MAX_M * n * 2], rows, n)
+    let caught_row = !compare_m16_tc_block(&shifted[GUARD..GUARD + MAX_M * n * 2], rows, n, k)
         .over_budget
         .is_empty();
     println!("KNOWN_BAD {name} second-half row offset (row 17 <- row 16): refused={caught_row}");
     ensure!(
         caught_row,
         "comparison oracle admitted a misplaced output row — the absolute floor is too wide"
+    );
+    assert_tail_control(good, rows, name, n, k)
+}
+
+/// 🔴 ROUND 9's THIRD CONTROL — the PARTIAL TAIL. Round 9's LM-head triage had
+/// to rule out "the last, always-partial CTA" (N=248,077 is 7,753 CTAs at
+/// N_TILE=32 with a 13-column tail), and the usual "a different tile width
+/// moves the boundary" argument does NOT hold for the LAST CTA: 248,064 is a
+/// multiple of both 32 and 64, so both instantiations end on the SAME 13
+/// columns. The only remaining argument is that the metric would have caught
+/// it, so the metric is made to prove it: the tail columns of row 0 are served
+/// from 16 columns to their left, and that must be refused.
+fn assert_tail_control(good: &[u8], rows: &[u8], name: &str, n: usize, k: usize) -> Result<()> {
+    let tail = n.min(16);
+    let mut wrapped = good.to_vec();
+    let src = GUARD + (n - 2 * tail) * 2;
+    let dst = GUARD + (n - tail) * 2;
+    let moved = good[src..src + tail * 2].to_vec();
+    wrapped[dst..dst + tail * 2].copy_from_slice(&moved);
+    let caught = !compare_m16_tc_block(&wrapped[GUARD..GUARD + MAX_M * n * 2], rows, n, k)
+        .over_budget
+        .is_empty();
+    println!("KNOWN_BAD {name} partial-tail store (last {tail} columns shifted): refused={caught}");
+    ensure!(
+        caught,
+        "comparison oracle admitted a shifted partial-CTA tail — the round-9 tail \
+         hypothesis would have been unfalsifiable"
     );
     Ok(())
 }

@@ -246,6 +246,9 @@ impl Qwen3AttentionLayer {
                     1,
                 )
             } else if tc {
+                crate::layers::qwen3_attention::attn_m16_tc_route::log_o_proj_m16_tc_route(
+                    fwd.stats,
+                );
                 (ops::w8a16_gemm_m16 as BatchGemv, self.w8a16_gemm_m16_k, 16)
             } else if let Some((gemv, kernel)) = self.ncol_contiguous_route(n) {
                 // N-COLUMN-BLOCKED, BIT-EXACT (#927, `attn_ncol_gemv.rs`): the

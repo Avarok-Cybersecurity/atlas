@@ -206,3 +206,11 @@ fn launch(
 #[cfg(test)]
 #[path = "dense_gemm_m16_bf16_tests.rs"]
 mod tests;
+
+/// Host simulation of the ACCUMULATION FLOOR — the round-9 LM-head red cell,
+/// why round 6's fixed `2^-20 * rms` constant could not carry this tier, and
+/// the margins the K-aware floor keeps. Split from `tests` for the 500-line
+/// cap.
+#[cfg(test)]
+#[path = "dense_gemm_m16_bf16_floor_tests.rs"]
+mod floor_tests;

@@ -248,19 +248,42 @@ fn project_bf16_lm_head(
     }
 }
 
+/// The route line's TEXT, split out from the `Once` latch below so a test can
+/// pin the wording without tripping a process-global latch that would only
+/// fire once across the whole test binary.
+///
+/// 🔴 The ULP parenthetical is NOT "<= 2 BF16 ULP" — that bound is what round
+/// 7 assumed and it is wrong. The round-9 `native_bf16_lm_head_m16_microtest`
+/// measured up to **100 ordinal BF16 ULP** at M=16 (`over_budget=37`,
+/// `sign_flips=1`), all on logits that had catastrophically cancelled: every
+/// violation's `|ref|/rms` fell in 4.9e-6..2.6e-4 of the row scale, where one
+/// FP32 accumulation rounding spans hundreds of ordinal BF16 ULP. The
+/// aggregate stayed inside budget the whole time (rel_rms 1.1e-4 against a
+/// 1.0e-3 gate, a 9x margin) — it is a per-element tail, not a broken kernel.
+/// The tier's actual contract is `layers::dense_ffn::m16_tc::within_m16_tc_budget`:
+/// 2 ordinal BF16 ULP, OR the FP32 accumulation floor for an output that has
+/// cancelled that far — never a bare 2-ULP bound on every element.
+fn m16_tc_head_route_message(n_tile: u32, asked: u32) -> String {
+    format!(
+        "[atlas] BF16 lm_head decode: ATLAS_LM_HEAD_M16_TC — tensor-core \
+         dense_gemm_m16_bf16 N_TILE={n_tile} (asked {asked}) for 5..=16 rows, ahead of \
+         dense_gemv_bf16_batchm. One weight pass, m16n8k16 MMA, so logits are \
+         REASSOCIATED vs the scalar dense_gemv_bf16 — within 2 ordinal BF16 ULP, OR the \
+         FP32 accumulation floor for outputs that have catastrophically cancelled (the \
+         contract is layers::dense_ffn::m16_tc::within_m16_tc_budget, not a bare 2-ULP \
+         bound; H100 round 9 measured up to 100 ordinal ULP on logits cancelled to \
+         4.9e-6..2.6e-4 of the row RMS) — unlike the batched GEMV. Unset it to restore the \
+         bit-exact tier (#927/#928)."
+    )
+}
+
 /// Log-once latch for the tensor-core head arm. Worth a line because this arm
 /// is the one that is NOT bit-identical to the M=1 decode path: a TPOT report
 /// or a parity complaint at 5..=16 rows needs to say which tier ran.
 fn log_m16_tc_head_route(n_tile: u32, asked: u32) {
     static LOGGED: std::sync::Once = std::sync::Once::new();
     LOGGED.call_once(|| {
-        tracing::info!(
-            "[atlas] BF16 lm_head decode: ATLAS_LM_HEAD_M16_TC — tensor-core \
-             dense_gemm_m16_bf16 N_TILE={n_tile} (asked {asked}) for 5..=16 rows, ahead of \
-             dense_gemv_bf16_batchm. One weight pass, m16n8k16 MMA, so logits are \
-             REASSOCIATED vs the scalar dense_gemv_bf16 (<= 2 BF16 ULP), unlike the \
-             batched GEMV. Unset it to restore the bit-exact tier (#927/#928)."
-        );
+        tracing::info!("{}", m16_tc_head_route_message(n_tile, asked));
     });
 }
 
