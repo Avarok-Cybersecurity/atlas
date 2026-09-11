@@ -89,6 +89,23 @@ impl Qwen3SsmLayer {
         let rows: usize = ks.iter().sum();
         let n = rows as u32;
 
+        let stage_timing = {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1")
+            })
+        };
+        let mark = |t: &mut std::time::Instant, acc: &mut u128| {
+            if stage_timing {
+                let _ = ctx.gpu.synchronize(stream);
+                *acc += t.elapsed().as_micros();
+                *t = std::time::Instant::now();
+            }
+        };
+        let mut tk = std::time::Instant::now();
+        let (mut us_ple, mut us_pre_a, mut us_gdn, mut us_post_a,
+             mut us_pre_f, mut us_ffn, mut us_post_f) = (0u128, 0u128, 0u128, 0u128, 0u128, 0u128, 0u128);
+
         // Same refusal the other three hc bodies carry: `hc_norm` inside
         // `hc_pre` replaces the fused gate-f32 norm, so ATLAS_FP32_ROUTING
         // would have the router read the PREVIOUS layer's activations.
@@ -194,6 +211,8 @@ impl Qwen3SsmLayer {
             }
         }
 
+        mark(&mut tk, &mut us_ple);
+
         // ── GDN sublayer. `hidden` is scratch; the highway is the residual. ──
         ops::hc_pre_site(
             ctx.gpu,
@@ -210,6 +229,8 @@ impl Qwen3SsmLayer {
             eps,
             stream,
         )?;
+        mark(&mut tk, &mut us_pre_a);
+
         // ── Carry 1: the recurrence + its per-row intermediates ──
         let out_proj_buf = self.decode_batched_block(
             hidden,
@@ -222,6 +243,7 @@ impl Qwen3SsmLayer {
             ctx,
             stream,
         )?;
+        mark(&mut tk, &mut us_gdn);
         ops::hc_post_site(
             ctx.gpu,
             self.hc_post_k,
@@ -235,6 +257,8 @@ impl Qwen3SsmLayer {
             h as u32,
             stream,
         )?;
+
+        mark(&mut tk, &mut us_post_a);
 
         // ── MoE sublayer ──
         // `decode_batched_block` returned `moe_output()`, which the FFN is
@@ -255,12 +279,54 @@ impl Qwen3SsmLayer {
             eps,
             stream,
         )?;
-        self.hc_small_m_ffn(hidden, rows, ctx, stream)?;
+        mark(&mut tk, &mut us_pre_f);
+        // ── The MoE FFN runs PER SEQUENCE, not over all R rows ──
+        //
+        // 🔴 THE cost of this whole path, measured. `hc_ffn_dispatch` has fused
+        // arms only at 1 / 2 / 3 rows and falls to `Prefill` for anything else,
+        // and `Prefill` is the grouped GEMM, which streams ALL 512 experts'
+        // weights regardless of row count. At R=6 there is no fused arm, so one
+        // call cost 3793 us — 90% of a 4182 us layer, and 36 layers of it is
+        // 136 ms of the 150 ms the GDN layers took:
+        //
+        //   ple 13   hc_pre_attn 101   gdn_block 364   hc_post_attn 10
+        //   hc_pre_ffn 141   moe_ffn 3793   hc_post_ffn 8      (us, one layer)
+        //
+        // Each SEQUENCE has ks[i] rows — 3 on the usual MTP ladder — which is
+        // exactly the fused K3 arm. Two K3 calls read the experts twice; one
+        // Prefill call reads all 512 once but at grouped-GEMM cost, which the
+        // repo already records as the same at 1 row as at 28. This is the
+        // "spec verify must use the fused single/K2/K3 kernels" rule.
+        //
+        // Output staging: every arm writes `moe_output()` at rows [0, k), so a
+        // per-sequence call would overwrite the previous sequence's rows. Each
+        // result is copied out to `norm_output()` at its batch offset, and
+        // `hc_post` below consumes THAT. `norm_output` is free here: this body
+        // sends `hc_pre`'s collapse to `hidden`, never to `norm_output`.
+        let stage = ctx.buffers.norm_output();
+        {
+            let mut off = 0usize;
+            for i in 0..n_seqs {
+                let k = ks[i];
+                self.hc_small_m_ffn(hidden.offset(off * h * 2), k, ctx, stream)?;
+                ctx.gpu.copy_d2d_async(
+                    ctx.buffers.moe_output(),
+                    stage.offset(off * h * 2),
+                    k * h * 2,
+                    stream,
+                )?;
+                off += k;
+            }
+        }
+        mark(&mut tk, &mut us_ffn);
         ops::hc_post_site(
             ctx.gpu,
             self.hc_post_k,
             hc,
-            ctx.buffers.moe_output(),
+            // `stage`, not `moe_output()`: the per-sequence FFN above wrote
+            // each sequence's rows to moe_output[0, k) and copied them out to
+            // their batch offsets here.
+            stage,
             streams,
             post,
             comb,
@@ -269,6 +335,23 @@ impl Qwen3SsmLayer {
             h as u32,
             stream,
         )?;
+        mark(&mut tk, &mut us_post_f);
+        if stage_timing {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                tracing::info!(
+                    rows,
+                    ple_us = us_ple as u64,
+                    hc_pre_attn_us = us_pre_a as u64,
+                    gdn_block_us = us_gdn as u64,
+                    hc_post_attn_us = us_post_a as u64,
+                    hc_pre_ffn_us = us_pre_f as u64,
+                    moe_ffn_us = us_ffn as u64,
+                    hc_post_ffn_us = us_post_f as u64,
+                    "hc multi-seq GDN body stage split (ONE layer, synced per stage)"
+                );
+            });
+        }
         Ok(())
     }
 }

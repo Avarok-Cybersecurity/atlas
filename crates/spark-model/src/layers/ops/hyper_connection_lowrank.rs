@@ -78,6 +78,13 @@ pub fn hc_pre_lowrank(
         && hc_decode_rows_enabled()
         && hc_decode_rows_shape_ok(num_tokens, hidden_size, hc_mult, w.rank as u32)
     {
+        {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| tracing::info!(
+                num_tokens, hidden_size, hc_mult, rank = w.rank,
+                "hc_pre_lowrank arm: DECODE-ROWS"
+            ));
+        }
         return hc_pre_rows(
             gpu,
             streams,
@@ -101,6 +108,13 @@ pub fn hc_pre_lowrank(
         // the prefill collapse and the batched-decode QKVZ arms, and the
         // same cure. ATLAS_HC_DECODE_SPLIT=1 keeps the split path (A/B).
         if !hc_decode_split_forced() {
+            {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| tracing::info!(
+                    num_tokens, hidden_size, hc_mult, rank = w.rank,
+                    "hc_pre_lowrank arm: DECODE-GEMM(cuBLASLt)"
+                ));
+            }
             return hc_pre_gemm(
                 gpu,
                 streams,
@@ -117,6 +131,13 @@ pub fn hc_pre_lowrank(
                 /* row_exact */ false,
                 stream,
             );
+        }
+        {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| tracing::info!(
+                num_tokens, hidden_size, hc_mult, rank = w.rank,
+                "hc_pre_lowrank arm: DECODE-SPLIT"
+            ));
         }
         return hc_pre_split(
             gpu,
@@ -137,6 +158,13 @@ pub fn hc_pre_lowrank(
     // this collapse running as FP32 warp loops. Kill switch reverts to the
     // fused kernel below.
     if !scratch.is_null() && !hc_gemm_disabled() {
+        {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| tracing::info!(
+                num_tokens, hidden_size, hc_mult, rank = w.rank,
+                "hc_pre_lowrank arm: PREFILL-GEMM"
+            ));
+        }
         return hc_pre_gemm(
             gpu,
             streams,

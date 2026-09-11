@@ -642,10 +642,19 @@ impl TransformerModel {
                 self.gpu.begin_capture(stream)?;
             }
 
+            let stage_timing = {
+                static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *ON.get_or_init(|| {
+                    std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1")
+                })
+            };
+            let mut us_attn = 0u128;
+            let mut us_ssm = 0u128;
             let mut attn_idx = 0usize;
             let mut ssm_idx = 0usize;
             for (layer_idx, layer) in self.layers.iter().enumerate() {
                 let layer_type = self.config.layer_type(layer_idx);
+                let t_layer = stage_timing.then(std::time::Instant::now);
 
                 if layer_type == LayerType::FullAttention && self.config.hc_mult > 0 {
                     // ── Highway attention: one-row DECODE bodies against the
@@ -874,6 +883,17 @@ impl TransformerModel {
                     }
                 }
 
+                if let Some(t0) = t_layer {
+                    // SYNC: the launches above are async, so without this the
+                    // split would measure launch cost, not kernel cost.
+                    let _ = self.gpu.synchronize(stream);
+                    let us = t0.elapsed().as_micros();
+                    if layer_type == LayerType::FullAttention {
+                        us_attn += us;
+                    } else {
+                        us_ssm += us;
+                    }
+                }
                 if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
                     anyhow::bail!(
                         "K4_DIAG(batched): CUDA error after layer {layer_idx} ({layer_type:?}): {e:#}"
@@ -897,7 +917,26 @@ impl TransformerModel {
             }
 
             // R ≤ VERIFY_ROW_CAP = the 96-row logits buffer cap (sizes.rs).
+            let t_head = stage_timing.then(std::time::Instant::now);
             self.lm_head_batched(normed, r_total as u32, self.buffers.logits(), stream)?;
+            if let Some(t0) = t_head {
+                let _ = self.gpu.synchronize(stream);
+                let us_head = t0.elapsed().as_micros();
+                let n_attn = self.layers.len().saturating_sub(self.config.num_ssm_layers());
+                let n_ssm = self.config.num_ssm_layers();
+                tracing::info!(
+                    r_total,
+                    n_seqs = n,
+                    attn_ms = us_attn as f64 / 1000.0,
+                    ssm_ms = us_ssm as f64 / 1000.0,
+                    head_ms = us_head as f64 / 1000.0,
+                    attn_layers = n_attn,
+                    ssm_layers = n_ssm,
+                    attn_us_per_layer = if n_attn > 0 { us_attn / n_attn as u128 } else { 0 },
+                    ssm_us_per_layer = if n_ssm > 0 { us_ssm / n_ssm as u128 } else { 0 },
+                    "hc batched verify stage split (SYNCED per layer — split, not total)"
+                );
+            }
 
             if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
                 anyhow::bail!("K4_DIAG(batched): CUDA error after lm_head_batched: {e:#}");
