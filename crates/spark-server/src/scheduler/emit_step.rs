@@ -591,7 +591,11 @@ pub fn compile_grammar_state(
     match compiled {
         Ok(grammar) => {
             let vocab_size = engine.vocab_size();
-            match GrammarState::new(&grammar, vocab_size) {
+            // #918: `on_warm` persists the cross-grammar mask cache from
+            // the background prewarm thread, so the NEXT process starts
+            // warm. `None` when the on-disk cache is off.
+            let on_warm = engine.mask_snapshot_hook();
+            match GrammarState::new_with_hook(&grammar, vocab_size, on_warm) {
                 Ok(state) => {
                     tracing::info!("Grammar constrained decoding active: {label}");
                     // Exempt the model's stop/EOS tokens from grammar refusal

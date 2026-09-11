@@ -5,6 +5,7 @@
 use xgrammar::{CompiledGrammar, GrammarMatcher, allocate_token_bitmask, reset_token_bitmask};
 
 use super::engine::GrammarError;
+use super::prewarm::Prewarm;
 
 // ── GrammarState ───────────────────────────────────────────────────────
 
@@ -17,6 +18,13 @@ use super::engine::GrammarError;
 /// — which runs during the prefill phase of a grammar-constrained
 /// request, while the GPU is busy with the prompt — so the first decode
 /// steps never pay a cold mask-computation stall.
+///
+/// #918: this is ALSO the dominant cold-start cost — ~621 ms of a
+/// ~625 ms cold grammar preparation on CPU (M5 Max, release, Qwen3
+/// 151,669-token vocabulary, the coherency gate's `get_weather` schema,
+/// n=3; ~3.2 s at 248K vocab on the H100 host). It now runs on its own
+/// thread so it overlaps the prompt forward pass instead of preceding
+/// it; the first call that reads a mask joins. See [`super::prewarm`].
 ///
 /// `512`: measured on Qwen3.6-35B-A3B (248K vocab, qwen3_coder structural-tag
 /// grammar, GB10), the old `8` left the decode loop's resident states —
@@ -37,6 +45,12 @@ pub struct GrammarState {
     /// The run's verify-timing sink.
     timing: std::sync::Arc<crate::scheduler::mtp_timing::RunTiming>,
     matcher: GrammarMatcher,
+    /// #918: the top-k mask prewarm, running on its own thread so it
+    /// overlaps prefill. Joined by [`Self::await_masks`] before ANY
+    /// read of a token mask, so a constrained sample never observes a
+    /// half-warmed cache — the ordering the pre-#918 synchronous call
+    /// gave for free.
+    prewarm: Prewarm,
     /// Bitmask buffer: `Box<[i32]>` of shape `(1, ceil(vocab_size / 32))`.
     bitmask_data: Box<[i32]>,
     vocab_size: usize,
@@ -79,6 +93,24 @@ impl GrammarState {
         Self::with_timing(compiled, vocab_size, std::sync::Arc::default())
     }
 
+    /// Same as [`Self::new`], plus the #918 on-disk mask-cache hook the
+    /// background prewarm calls once this grammar's masks are warm.
+    /// The production creation site (`compile_grammar_state`) uses this;
+    /// unit tests of pure grammar structure keep the two-arg form.
+    pub fn new_with_hook(
+        compiled: &CompiledGrammar,
+        vocab_size: usize,
+        on_warm: Option<super::PrewarmHook>,
+    ) -> Result<Self, GrammarError> {
+        Self::build_with(
+            compiled,
+            vocab_size,
+            None,
+            super::prewarm::overlap_enabled_for_serve(),
+            on_warm,
+        )
+    }
+
     /// Same, with the run's timing sink. The grammar engine records two verify
     /// phases and has no scheduler context of its own — it is handed the sink
     /// rather than reaching for a global one.
@@ -93,6 +125,36 @@ impl GrammarState {
     }
 
     fn build(compiled: &CompiledGrammar, vocab_size: usize) -> Result<Self, GrammarError> {
+        Self::build_with(
+            compiled,
+            vocab_size,
+            None,
+            super::prewarm::overlap_enabled_for_serve(),
+            None,
+        )
+    }
+
+    /// Construction seam for the #918 ordering test: `gate`, when
+    /// `Some`, parks the background prewarm worker until the test
+    /// releases it. Production always passes `None` via [`Self::build`].
+    pub(super) fn build_gated(
+        compiled: &CompiledGrammar,
+        vocab_size: usize,
+        gate: Option<super::prewarm::PrewarmGate>,
+    ) -> Result<Self, GrammarError> {
+        Self::build_with(compiled, vocab_size, gate, true, None)
+    }
+
+    /// Same, with the overlap decision forced — the #918 tests drive
+    /// both the overlapped and the inline path without touching the
+    /// process environment.
+    pub(super) fn build_with(
+        compiled: &CompiledGrammar,
+        vocab_size: usize,
+        gate: Option<super::prewarm::PrewarmGate>,
+        overlap: bool,
+        on_warm: Option<super::PrewarmHook>,
+    ) -> Result<Self, GrammarError> {
         let matcher = GrammarMatcher::new(
             compiled, None,  // use stop tokens from compiled grammar
             false, // require stop token for proper termination
@@ -102,19 +164,17 @@ impl GrammarState {
 
         // Tier 2 (overlapped mask generation): eagerly compute the
         // costliest masks so they are warm before the first decode
-        // step. Pure cache population — no behavioral effect.
-        let warmed = compiled.compile_top_k_masks(FORCED_TOKEN_TOP_K);
-        tracing::debug!(
-            warmed,
-            requested = FORCED_TOKEN_TOP_K,
-            "Grammar: pre-warmed top-k token masks during prefill"
-        );
+        // step. Pure cache population — no behavioral effect, which is
+        // why it is safe to run concurrently with the prompt forward
+        // pass and join lazily (#918).
+        let prewarm = Prewarm::start_with(compiled, FORCED_TOKEN_TOP_K, gate, overlap, on_warm);
 
         let bitmask_data = allocate_token_bitmask(1, vocab_size);
 
         Ok(Self {
             timing: std::sync::Arc::default(),
             matcher,
+            prewarm,
             bitmask_data,
             vocab_size,
             stop_tokens: Box::new([]),
@@ -133,6 +193,30 @@ impl GrammarState {
     pub fn with_stop_tokens(mut self, stop_tokens: &[u32]) -> Self {
         self.stop_tokens = stop_tokens.to_vec().into_boxed_slice();
         self
+    }
+
+    /// Whether the background prewarm has completed, without joining
+    /// it — the ordering oracle for the #918 tests.
+    #[cfg(test)]
+    pub(super) fn prewarm_finished(&self) -> bool {
+        self.prewarm.is_finished()
+    }
+
+    /// Join the background top-k mask prewarm (#918).
+    ///
+    /// Called at the head of every path that reads a token mask. After
+    /// it returns, the mask cache holds exactly what the pre-#918
+    /// synchronous `compile_top_k_masks` left there, so nothing
+    /// downstream can observe the difference except the latency.
+    fn await_masks(&mut self) {
+        let warmed = self.prewarm.wait();
+        if warmed > 0 {
+            tracing::debug!(
+                warmed,
+                requested = FORCED_TOKEN_TOP_K,
+                "Grammar: pre-warmed top-k token masks overlapped with prefill"
+            );
+        }
     }
 
     /// Fill the allowed-token bitmask for the next decode step.
@@ -163,6 +247,9 @@ impl GrammarState {
         if self.bitmask_valid {
             return self.bitmask_fill_result;
         }
+        // The FIRST fill is the first constrained sample of the request:
+        // this is where the overlapped prewarm is collected (#918).
+        self.await_masks();
         let t_fill = std::time::Instant::now();
         reset_token_bitmask(&mut self.bitmask_data);
         let filled = self
@@ -315,6 +402,7 @@ impl GrammarState {
     /// `None` if no close is found within `max_bytes`. `Some(empty)` means
     /// the grammar can already stop. Leaves matcher state unchanged.
     pub fn completion_token_ids(&mut self, max_bytes: usize) -> Option<Vec<i32>> {
+        self.await_masks();
         self.matcher.find_completion_token_ids(max_bytes)
     }
 
