@@ -34,9 +34,14 @@ fn test_buffer_sizes_qwen3() {
     // (Was FP32 = 8192 in earlier prototypes; NVFP4 path keeps the
     // residual stream in BF16, halving the buffer size.)
     assert_eq!(sizes.hidden_states, 4096);
-    // qkv: 1 * (16*2 + 2*2) * 256 * 2 = 1 * 36 * 256 * 2 = 18432
-    // Q+gate: 16*2*256, K: 2*256, V: 2*256
-    assert_eq!(sizes.qkv_output, 18432);
+    // qkv: ceil16(1) * (16*2 + 2*2) * 256 * 2 = 16 * 36 * 256 * 2 = 294912
+    // Q+gate: 16*2*256, K: 2*256, V: 2*256 — and the row extent is the
+    // cuBLASLt M-pad, exactly as for `ssm_qkvz` / `ssm_deinterleaved` below:
+    // the cache-skip Q/K/V prefill's cuBLASLt arm hands the library ceil16(M)
+    // and WRITES the phantom rows (#928, `sizes.rs`'s `m_pad`). The 16x here
+    // is an artifact of sizing at M=1; at a real prefill arena the pad is
+    // <= 15 rows out of thousands.
+    assert_eq!(sizes.qkv_output, 294912);
     // attn: 1 * 16 * 256 * 2 = 8192
     assert_eq!(sizes.attn_output, 8192);
     // gate: 1 * 512 * 2 = 1024
