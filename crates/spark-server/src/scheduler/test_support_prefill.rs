@@ -20,6 +20,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// promotion pushes onto `active` rather than finishing.
 pub(super) const FIRST: u32 = 7;
 
+/// A NON-NULL sentinel logits pointer. It is never dereferenced — the greedy
+/// fast path (temperature 0, no suppressed ids) answers from
+/// `argmax_on_device`, which this stub scripts. It must not be `NULL` because
+/// the batched paths treat NULL-on-a-last-chunk as "the model returned no
+/// logits" and fail the stream, which is a real contract worth keeping: a stub
+/// returning NULL would make every batched test look like a dropped request.
+const LOGITS: DevicePtr = DevicePtr(0x1000);
+
 /// How the stub answers `prefill_batch_chunk` for a batch of 2+ streams.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BatchedBehaviour {
@@ -113,7 +121,7 @@ impl Model for PrefillStubModel {
         seq.tokens
             .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
         seq.seq_len = seq.tokens.len();
-        Ok(DevicePtr::NULL)
+        Ok(LOGITS)
     }
     fn argmax_on_device(&self, _logits_ptr: DevicePtr, _stream: u64) -> Result<u32> {
         Ok(FIRST)
