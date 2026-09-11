@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Qwen3.8-Flash-Next NVFP4 across 2x DGX Spark (GB10) at TP=2 / EP=2, on the
+# Qwen3.8-Flash-Next NVFP4 across 2x DGX Spark (GB10) at EP=2 (TP=1), on the
 # PR #973 stack plus the ported multi-rank prefix-cache chain
 # (branch `pr973-ep-prefix-cache`).
 #
@@ -15,6 +15,14 @@
 #
 # Start rank 1 FIRST or at the same time; rank 0 blocks in the NCCL bootstrap
 # until its peer appears.
+#
+# EP-ONLY, and not by choice: the qwen4_exp weight loader REFUSES --tp-size > 1
+# ("TP is not supported by the qwen4_exp weight loader. Run with --tp-size 1
+# (EP-only)"), pointing at `crate::tp_shard::slice_for_rank` and
+# `weight_loader/minimax.rs` as the work needed to add it. That is fine here:
+# EP is the dimension that splits the 512 routed experts, which is where the
+# memory actually is. It also means the "pure TP admits an unverified MTP path"
+# hole in probe_mtp.rs is unreachable on this model — the loader stops first.
 #
 # ONE Atlas instance at a time per box: --gpu-memory-utilization RESERVES its
 # whole fraction up front. Watch `free -g`, NOT nvidia-smi — this is a UNIFIED
@@ -68,7 +76,17 @@ else
 fi
 MAX_SEQ_LEN="${MAX_SEQ_LEN:-131072}"
 NUM_SEQS="${NUM_SEQS:-4}"
-GPU_UTIL="${GPU_UTIL:-0.76}"
+# 🪤 0.65, NOT the single-node 0.76. util multiplies TOTAL box memory and the KV
+# pool then expands to fill whatever the weights leave over. At EP=2 the expert
+# weights are HALVED, so pre-KV drops from 85.6 GB to roughly half that and a
+# 0.76 budget would inflate KV to ~40 GB for a workload that needs ~14 —
+# on top of the ~21 GB of n-gram page cache that lives OUTSIDE the budget.
+# That is the overcommit path: the GLM EP=2 run at 0.80 reached 112 GB used /
+# 9 GB available and had to be killed, and this box has hard-rebooted from
+# over-allocation before. 0.65 settles around 100 GB used / 21 GB available and
+# still leaves ~24 GB of KV — about 1M tokens, against the 524,288 that
+# 128K x 4 needs. Raise it only while watching `free -g` UNDER LOAD.
+GPU_UTIL="${GPU_UTIL:-0.65}"
 MTP="${MTP:-1}"
 DRAFTS="${DRAFTS:-2}"
 
@@ -110,6 +128,21 @@ export ATLAS_INTHINK_TOOL_LEAK_OPENERS=0
 export ATLAS_NO_HW_PRECHECK=1
 export ATLAS_QWEN4EXP_BF16_GDN="${ATLAS_QWEN4EXP_BF16_GDN:-0}"
 
+# ── EP wire protocol. v1 FORCES max_batch_size=1 at world_size > 1 ("EP v1
+# active: forcing max_batch_size=1" in serve_load.rs), because each v1 command
+# addressed a single slot and the head's per-token broadcast loop could not name
+# slot N. v2 adds a per-command seq_id preamble, so the worker routes by
+# slot_idx and decodes per sequence — that is what makes C>1 possible at all.
+#
+# 🪤 BOTH RANKS MUST AGREE (`types.rs`): the preamble changes the wire shape, so
+# a one-sided setting desynchronises the command stream. It is exported here,
+# before the rank split, for exactly that reason.
+#
+# It is not free: `ssm_reserve.rs` treats v2 as implying FULL-WIDTH slot
+# reserve (v2 pins slots in place rather than recycling one), so the SSM pool
+# grows with max-num-seqs. Watch `free -g` on the first boot after changing it.
+export ATLAS_EP_PROTOCOL="${ATLAS_EP_PROTOCOL:-v2}"
+
 # ── The #972 gates. Set on BOTH ranks, always — see the header. ─────────────
 export ATLAS_QWEN4EXP_MTP_HC_BATCHED="${ATLAS_QWEN4EXP_MTP_HC_BATCHED:-1}"
 export ATLAS_VERIFY_ROW_PROJ="${ATLAS_VERIFY_ROW_PROJ:-1}"
@@ -127,7 +160,7 @@ else
   SPEC_ARGS=""
 fi
 
-echo "Qwen3.8-Flash-Next NVFP4  TP=2/EP=2  rank=$RANK host=$(hostname)"
+echo "Qwen3.8-Flash-Next NVFP4  EP=2 (TP=1)  rank=$RANK host=$(hostname)"
 echo "  ctx=$MAX_SEQ_LEN seqs=$NUM_SEQS util=$GPU_UTIL mtp=$MTP prefix-cache=on"
 echo "  qsa_cap=$ATLAS_QSA_MAX_TOKENS (> ctx) ple_chunk=$ATLAS_PLE_MAX_TOKENS"
 echo "  bin=$(sha256sum "$BIN" | cut -c1-16)  master=$MASTER"
@@ -137,7 +170,7 @@ exec "$BIN" serve \
   --model-from-path "$MODEL_DIR" \
   --model-name qwen4exp-nvfp4 --kernel-target qwen3.8-flash-next \
   --rank "$RANK" --world-size 2 \
-  --tp-size 2 --ep-size 2 \
+  --tp-size 1 --ep-size 2 \
   --master-addr "$MASTER" --master-port 29500 \
   --bind 0.0.0.0 --port "$PORT" \
   --max-seq-len "$MAX_SEQ_LEN" \
