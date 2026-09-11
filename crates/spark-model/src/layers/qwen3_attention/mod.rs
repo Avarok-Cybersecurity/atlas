@@ -36,6 +36,9 @@ mod op_dump;
 #[cfg(feature = "cuda")]
 pub mod innerq_driver;
 mod prefill;
+// The cuBLASLt W8A8 prefill arm that replaced `ATLAS_CUBLAS_GEMM=attn`'s
+// off-ledger BF16 weight dequant (#917 round 3 / #927).
+mod prefill_w8a8;
 mod prefill_weights;
 mod trait_impl;
 mod types;

@@ -196,6 +196,16 @@ impl Qwen3AttentionLayer {
                 )?;
             }
         } else if let Some(o_fp8) = self.o_weight.as_ref().and_then(|w| w.as_fp8()) {
+            // ── W8A8 block-scaled cuBLASLt at 5..16 rows (#927) ──
+            // Round 7 (H100, 2026-09-11, n=16): the 16 `o_proj` launches inside
+            // the GrdX=1280 `w8a16_gemv_batch16` group are ~1.70 ms of the
+            // 43.595 ms step, while the dense FFN ran the SAME 16 rows through
+            // cuBLASLt W8A8 at ~128 us/layer. Both operands are contiguous
+            // here, so this is the plain `ldc == N` case. Declining for ANY
+            // reason keeps the GEMV group loop below, untouched.
+            if self.try_ms_o_proj_decode_w8a8(c, o_fp8, attn_out, o_out)? {
+                return self.ms_o_proj_lora(c, attn_out, o_out);
+            }
             // Both matrices are contiguous. Share each block-scaled weight
             // pass across as many rows as one kernel instantiation covers,
             // without staging or requantization. Keep the scalar route for
@@ -343,10 +353,32 @@ impl Qwen3AttentionLayer {
             }
         }
 
-        // ── Per-request O LoRA delta (batched bgmv). x = attn_out (post-gate,
-        // contiguous [n, q_dim]); base_out = o_out (contiguous [n, h]) folded in
-        // place — matches the single-seq apply_lora_delta on o after o_proj.
-        // No-op unless a routing table is installed AND seq_slot is non-null.
+        self.ms_o_proj_lora(c, attn_out, o_out)
+    }
+
+    /// Per-request O LoRA delta (batched bgmv). x = attn_out (post-gate,
+    /// contiguous `[n, q_dim]`); base_out = o_out (contiguous `[n, h]`) folded
+    /// in place — matches the single-seq `apply_lora_delta` on o after o_proj.
+    /// No-op unless a routing table is installed AND `seq_slot` is non-null.
+    ///
+    /// A method rather than a tail block so the W8A8 arm above can hand back
+    /// through it: every o_proj route must fold the adapter, and an early
+    /// return that skipped it would be a silent correctness bug on any served
+    /// LoRA.
+    fn ms_o_proj_lora(
+        &self,
+        c: &MultiSeqCtx<'_>,
+        attn_out: DevicePtr,
+        o_out: DevicePtr,
+    ) -> Result<DevicePtr> {
+        let MultiSeqCtx {
+            fwd,
+            n,
+            h,
+            q_dim,
+            stream,
+            ..
+        } = *c;
         if let Some(ref lw) = self.lora
             && c.seq_slot.0 != 0
             && let Some(ref route) = lw.o_route
