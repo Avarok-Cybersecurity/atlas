@@ -95,6 +95,9 @@ fn check_dispatch(
         profile: false,
         comm: None,
         graph_capture: false,
+        // `attn_metadata` is None here and the output projection never reads
+        // the decode scalars this flag guards, so the prefill shape is correct.
+        decode_step: false,
         gdn_exact_replay: false,
         token_ids: None,
         host_token_ids: None,
