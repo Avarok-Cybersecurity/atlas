@@ -282,8 +282,9 @@ fn main() -> Result<()> {
         let last_row = hi - NQ * HD;
         let last_unequal = (last_row..hi).filter(|&i| a[i] != b_out[i]).count();
         println!(
-            "seq {b}: len={:4}  blocks={:3}  unequal={unequal}/{}  last-position unequal={last_unequal}/{}",
+            "seq {b}: len={:4} blocks={:3}  unequal={unequal}/{}  last-position unequal={last_unequal}/{}",
             LENS[b],
+            tables[b].len(),
             hi - lo,
             NQ * HD,
         );
