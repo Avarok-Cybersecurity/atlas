@@ -85,21 +85,40 @@ fn tool(name: &str, a: &str, b: &str) -> Vec<ToolDefinition> {
     .unwrap()
 }
 
-/// Compile a tool grammar and warm its masks, returning the wall time of
-/// the whole cold path a request pays before its first constrained
-/// token, plus the state (so callers can compare the resulting masks).
-fn prepare(engine: &mut GrammarEngine, tools: &[ToolDefinition]) -> (Duration, GrammarState) {
+/// What one request pays before its first constrained token, split at
+/// the boundary the fix acts on.
+struct Prepared {
+    /// Schema -> EBNF -> parse -> normalize -> optimize -> decompose.
+    /// Unaffected by #918 and, on a narrow synthetic vocabulary in a
+    /// debug build, large enough to swamp the phase under test — which
+    /// is why the ratios below are asserted on `masks`, not on the sum.
+    construct: Duration,
+    /// Matcher construction + the top-k mask prewarm + the first
+    /// constrained fill (which joins the overlapped prewarm). This is
+    /// the ~99% of the cold path #918 is about.
+    masks: Duration,
+    state: GrammarState,
+}
+
+fn prepare(engine: &mut GrammarEngine, tools: &[ToolDefinition]) -> Prepared {
     let started = Instant::now();
     let compiled = engine
         .compile_qwen3_coder_tool_grammar(tools, true, "</parameter>")
         .expect("tool grammar compiles");
+    let construct = started.elapsed();
+
+    let started = Instant::now();
     let hook = engine.mask_snapshot_hook();
     let mut state =
         GrammarState::new_with_hook(&compiled, engine.vocab_size(), hook).expect("grammar state");
     // The first constrained sample — this is what joins the overlapped
-    // prewarm, so it is the honest end of the cold path.
+    // prewarm, so it is the honest end of the mask phase.
     state.fill_bitmask();
-    (started.elapsed(), state)
+    Prepared {
+        construct,
+        masks: started.elapsed(),
+        state,
+    }
 }
 
 /// Size of the snapshot file under `dir`, once it appears.
@@ -186,25 +205,33 @@ fn a_persisted_snapshot_removes_the_cold_prewarm_for_the_next_process() {
     // background prewarm persists the cross-grammar masks.
     let mut first = engine();
     first.attach_mask_cache(&dir);
-    let (cold, cold_state) = prepare(&mut first, &tools);
+    let cold = prepare(&mut first, &tools);
     let snapshot = await_snapshot(&dir).expect("snapshot written by the background prewarm");
     assert!(snapshot > 0, "snapshot file is empty");
 
     // "Process" 2: same model directory, fresh engine.
     let mut second = engine();
     second.attach_mask_cache(&dir);
-    let (warm, warm_state) = prepare(&mut second, &tools);
+    let warm = prepare(&mut second, &tools);
 
     // Correctness before speed: the warm path must produce the same
     // first-token mask, bit for bit.
     assert_eq!(
-        cold_state.bitmask_data(),
-        warm_state.bitmask_data(),
+        cold.state.bitmask_data(),
+        warm.state.bitmask_data(),
         "snapshot-warmed grammar admits a different first token set"
     );
+    // Measured 621.2 ms -> ~0.3 ms on the real Qwen3 vocabulary; a 3x
+    // floor is the loose version for a 1,027-token synthetic vocabulary
+    // in a debug build on a contended box.
     assert!(
-        cold > warm * 3,
-        "the snapshot did not remove the cold prewarm: cold={cold:?} warm={warm:?}"
+        cold.masks > warm.masks * 3,
+        "the snapshot did not remove the cold prewarm: cold={:?} warm={:?} \
+         (construct {:?} / {:?})",
+        cold.masks,
+        warm.masks,
+        cold.construct,
+        warm.construct,
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -311,16 +338,16 @@ fn cold_vs_snapshot_warm_with_a_real_tokenizer() {
 
     let mut cold_engine = build();
     cold_engine.attach_mask_cache(&dir);
-    let (cold, _) = prepare(&mut cold_engine, &tools);
+    let cold = prepare(&mut cold_engine, &tools);
     await_snapshot(&dir).expect("snapshot persisted");
 
     for rep in 0..3 {
         let mut warm_engine = build();
         warm_engine.attach_mask_cache(&dir);
-        let (warm, _) = prepare(&mut warm_engine, &tools);
+        let warm = prepare(&mut warm_engine, &tools);
         let mut unseen_engine = build();
         unseen_engine.attach_mask_cache(&dir);
-        let (unseen, _) = prepare(&mut unseen_engine, &tool("run_cmd", "command", "timeout"));
+        let unseen = prepare(&mut unseen_engine, &tool("run_cmd", "command", "timeout"));
         await_snapshot(&dir);
         // How long the REQUEST thread itself is held before prefill can
         // start — the part candidate (4) moves behind the forward pass.
@@ -337,9 +364,9 @@ fn cold_vs_snapshot_warm_with_a_real_tokenizer() {
         println!(
             "rep={rep} cold_ms={:.1} warm_same_schema_ms={:.1} warm_unseen_schema_ms={:.1} \
              cold_admit_ms={admit_ms:.1} cold_admit_to_first_fill_ms={joined_ms:.1}",
-            cold.as_secs_f64() * 1000.0,
-            warm.as_secs_f64() * 1000.0,
-            unseen.as_secs_f64() * 1000.0,
+            (cold.construct + cold.masks).as_secs_f64() * 1000.0,
+            (warm.construct + warm.masks).as_secs_f64() * 1000.0,
+            (unseen.construct + unseen.masks).as_secs_f64() * 1000.0,
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
