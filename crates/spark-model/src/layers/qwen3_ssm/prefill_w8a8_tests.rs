@@ -4,7 +4,7 @@
 //! Every case defaults to SELECTING and perturbs exactly one thing, so a
 //! failure names the clause. The numerics are the GPU microtest's job.
 
-use super::prefill_w8a8::qkvz_cublas_selected;
+use super::qkvz_cublas_selected;
 use crate::layers::ops::cublas_fp8_m_pad;
 use crate::weight_map::WeightQuantFormat;
 use spark_runtime::gpu::{DevicePtr, KernelHandle};
