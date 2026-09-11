@@ -160,7 +160,7 @@ pub fn prefill_request(
             req_require_tool_call && grammar_state.is_none() && tool_call_start_token.is_some();
         let tool_request = grammar_state.is_some() || use_legacy_tool_call;
         let now = Instant::now();
-        let cached_prompt_tok = seq.cached_prefix_tokens as u32;
+        let cached_prompt_tok = seq.reused_prefix_tokens as u32;
         let mut a = ActiveSeq {
             seq,
             session_hash: req_session_hash,
@@ -358,7 +358,7 @@ pub fn prefill_request(
     let tool_request = grammar_state.is_some() || use_legacy_tool_call;
 
     let now = Instant::now();
-    let cached_prompt_tok = seq.cached_prefix_tokens as u32;
+    let cached_prompt_tok = seq.reused_prefix_tokens as u32;
 
     if !spontaneous_think && (eos_tokens.contains(&first) || max_tokens <= 1) {
         let mut a = ActiveSeq {
