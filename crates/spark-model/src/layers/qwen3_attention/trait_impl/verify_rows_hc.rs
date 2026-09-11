@@ -87,11 +87,9 @@ impl Qwen3AttentionLayer {
             row_seq_lens.len(),
             tokens.len()
         );
-        anyhow::ensure!(
-            ctx.hc_row_offset == 0,
-            "decode_verify_rows_hc: the K-row body addresses highway rows 0..K (hc_row_offset={})",
-            ctx.hc_row_offset
-        );
+        // `hc_row_offset` is the highway base this pass's K rows live at — 0
+        // for the single-sequence verify, `off[i]` when the cross-sequence
+        // verify drives one sequence at a time.
         let h = ctx.config.hidden_size;
         let eps = ctx.config.rms_norm_eps as f32;
         let n = k as u32;
@@ -100,7 +98,17 @@ impl Qwen3AttentionLayer {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("decode_verify_rows_hc on a layer without mHC"))?;
         let hc_mult = hc.hc_mult as u32;
-        let hc_streams = ctx.buffers.hc_streams();
+        // Highway base row. The K-row verify runs at 0; the CROSS-SEQUENCE
+        // verify calls this body once per sequence, with sequence i's rows
+        // parked at `off[i]`, so the streams have to start there — the same
+        // `hc_row_offset * hc_mult * H * 4` arithmetic the GDN hc bodies use.
+        // `hidden` is already offset by the caller; `norm_output` / `hc_post`
+        // / `hc_comb` / `moe_output` are per-CALL scratch consumed before the
+        // next sequence runs, so they stay at their base.
+        let hc_streams = ctx
+            .buffers
+            .hc_streams()
+            .offset(ctx.hc_row_offset * hc.hc_mult * h * 4);
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
         let normed = ctx.buffers.norm_output();

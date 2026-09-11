@@ -719,9 +719,26 @@ impl TransformerModel {
                                 })?
                                 .insert(seqs[i].slot_idx, (base_seq_len, ks[i]));
                         }
+                        // ── ONE call per sequence, not one per row ──
+                        //
+                        // `layer.decode()` per row carries the whole highway
+                        // bracket at T=1 (two hc_pre, two hc_post, the norms,
+                        // the FFN), i.e. R x 6 sites per step per attention
+                        // layer — precisely what `verify_rows_hc.rs` exists to
+                        // remove. MEASURED with the per-row loop: C=4
+                        // aggregate 41.19 -> 14.99 tok/s at EP=2.
+                        //
+                        // The K-row body runs that bracket ONCE at T=ks[i]
+                        // with the projections batched over the sequence's
+                        // rows, and keeps only the attention core per row —
+                        // where the ordering constraint actually is (row t
+                        // must see rows < t, a WITHIN-sequence property; rows
+                        // of different sequences are independent).
+                        let mut row_metas: Vec<AttnMetadataDev> = Vec::with_capacity(ks[i]);
+                        let mut row_seq_lens: Vec<usize> = Vec::with_capacity(ks[i]);
                         for t in 0..ks[i] {
                             let row = off[i] + t;
-                            let row_meta = AttnMetadataDev {
+                            row_metas.push(AttnMetadataDev {
                                 positions: meta_base.offset(row * 4),
                                 positions_h: meta_base.offset(row * 4),
                                 positions_w: meta_base.offset(row * 4),
@@ -733,45 +750,65 @@ impl TransformerModel {
                                 num_seqs: 1,
                                 seq_slot: metadata.seq_slot,
                                 moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
-                            };
-                            let row_ctx = ForwardContext {
-                                buffers: &self.buffers,
-                                hc_row_offset: row,
-                                gpu: self.gpu.as_ref(),
-                                config: &self.config,
-                                dispatch: &self.dispatch,
-                                derived: &self.derived,
-                                levers: &self.levers,
-                                stats: &self.stats,
-                                attn_metadata: Some(row_meta),
-                                profile: false,
-                                comm: self.comm_ref(),
-                                // Never capture: this loop is reached only on
-                                // the hc path, which vetoes graphs above.
-                                graph_capture: false,
-                                gdn_exact_replay: false,
-                                token_ids: None,
-                                host_token_ids: Some(&tokens[row..row + 1]),
-                                routed_lora_layers: None,
-                                midchunk_capture: None,
-                                moe_lora_route: self.decode_moe_route(),
-                            };
-                            let seq = &mut *seqs[i];
-                            layer.decode(
-                                hidden.offset(row * h * bf16),
-                                residual.offset(row * h * bf16),
-                                seq.layer_states[layer_idx].as_mut(),
-                                &mut kv_cache,
-                                // PRE-APPEND length, the decode convention:
-                                // this row's token sits at `base + t`.
-                                base_seq_len + t,
-                                &mut seq.block_table,
-                                &mut seq.disk_block_ids,
-                                &mut seq.disk_last_offloaded_per_layer,
-                                &row_ctx,
-                                stream,
-                            )?;
+                            });
+                            // PRE-APPEND length, the decode convention.
+                            row_seq_lens.push(base_seq_len + t);
                         }
+                        let seq_ctx = ForwardContext {
+                            buffers: &self.buffers,
+                            // This sequence's rows live at `off[i]` on the
+                            // highway; the body offsets its streams by it.
+                            hc_row_offset: off[i],
+                            gpu: self.gpu.as_ref(),
+                            config: &self.config,
+                            dispatch: &self.dispatch,
+                            derived: &self.derived,
+                            levers: &self.levers,
+                            stats: &self.stats,
+                            attn_metadata: Some(row_metas[0]),
+                            profile: false,
+                            comm: self.comm_ref(),
+                            // Never capture: reached only on the hc path,
+                            // which vetoes graphs above.
+                            graph_capture: false,
+                            gdn_exact_replay: false,
+                            token_ids: None,
+                            host_token_ids: Some(&tokens[off[i]..off[i] + ks[i]]),
+                            routed_lora_layers: None,
+                            midchunk_capture: None,
+                            moe_lora_route: self.decode_moe_route(),
+                        };
+                        let seq = &mut *seqs[i];
+                        let attn = layer
+                            .as_any()
+                            .and_then(|a| {
+                                a.downcast_ref::<crate::layers::qwen3_attention::Qwen3AttentionLayer>()
+                            })
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "hc batched verify: attention layer {layer_idx} is not a \
+                                     Qwen3AttentionLayer"
+                                )
+                            })?;
+                        anyhow::ensure!(
+                            attn.verify_rows_hc_ok(),
+                            "hc batched verify: attention layer {layer_idx} has no K-row \
+                             highway body (hc/ffn missing)"
+                        );
+                        attn.decode_verify_rows_hc(
+                            hidden.offset(off[i] * h * bf16),
+                            ks[i],
+                            seq.layer_states[layer_idx].as_mut(),
+                            &mut kv_cache,
+                            &row_metas,
+                            &row_seq_lens,
+                            &tokens[off[i]..off[i] + ks[i]],
+                            &mut seq.block_table,
+                            &mut seq.disk_block_ids,
+                            &mut seq.disk_last_offloaded_per_layer,
+                            &seq_ctx,
+                            stream,
+                        )?;
                     }
                 } else if layer_type == LayerType::FullAttention {
                     let mut refs: Vec<&mut (dyn LayerState + 'static)> = attn_dummy_states
