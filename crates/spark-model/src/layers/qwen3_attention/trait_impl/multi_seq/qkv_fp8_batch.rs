@@ -176,6 +176,16 @@ impl Qwen3AttentionLayer {
             )
         } else if tc {
             (ops::w8a16_gemm_m16_strided, self.w8a16_gemm_m16_strided_k)
+        } else if let Some(route) = self.ncol_strided_route(n) {
+            // N-COLUMN-BLOCKED, BIT-EXACT (#927, `attn_ncol_gemv.rs`). Same
+            // one-weight-pass shape as the batch16 GEMV below and the same
+            // per-row reduction order — one thread just owns N_COLS adjacent
+            // output columns, so the 32 `uint4` activation loads and 256
+            // BF16->FP32 converts it pays per 16 weight bytes amortise over
+            // N_COLS of them. BELOW the `tc` arm on purpose: an operator who
+            // sets `ATLAS_FFN_M16_TC` is asking for the MMA route explicitly,
+            // and that lever reaches the FFN too.
+            route
         } else {
             (
                 ops::w8a16_gemv_batch16_strided,

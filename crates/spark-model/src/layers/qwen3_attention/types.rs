@@ -211,6 +211,18 @@ pub struct Qwen3AttentionLayer {
     /// QKV and o_proj tiers together; a field, not a per-call env read, so the
     /// route cannot vary across CUDA-graph replays.
     pub(super) m16_tc: bool,
+    /// N-column-blocked W8A16 GEMVs (#927) — the BIT-EXACT sibling of
+    /// `w8a16_gemv_batch16`, contiguous (o_proj) and strided (multi-seq Q/K/V)
+    /// at 5..=16 rows. Zero on a shadow without the entry points, which keeps
+    /// the batch16 GEMVs. Rule + WHY: `attn_ncol_gemv.rs`.
+    pub(super) w8a16_gemv_ncol2_k: KernelHandle,
+    pub(super) w8a16_gemv_ncol4_k: KernelHandle,
+    pub(super) w8a16_gemv_ncol2_strided_k: KernelHandle,
+    pub(super) w8a16_gemv_ncol4_strided_k: KernelHandle,
+    /// `ATLAS_ATTN_NCOL_GEMV` (+ `ATLAS_ATTN_NCOL_WIDTH`), resolved ONCE at
+    /// construction for the same graph-replay reason as `m16_tc`. `None` when
+    /// the lever is unset or `ATLAS_NO_ATTN_DECODE_BATCH` forces it off.
+    pub(super) attn_ncol: Option<super::attn_ncol_gemv::NcolWidth>,
     pub(super) w8a16_gemm_k: KernelHandle,
     pub(super) w8a16_gemm_pipelined_k: KernelHandle,
     pub(super) w4a16_gemv_dual_k: KernelHandle,

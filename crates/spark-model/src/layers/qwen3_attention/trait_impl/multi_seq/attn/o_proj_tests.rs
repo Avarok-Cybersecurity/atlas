@@ -3,6 +3,7 @@
 use super::super::super::ctx::MultiSeqCtx;
 use crate::layer::{ForwardContext, MoeLoraRoute};
 use crate::layers::ops::{DerivedWeights, GemmDispatch, ModelLevers, ModelStats};
+use crate::layers::qwen3_attention::attn_ncol_gemv::NcolWidth;
 use crate::layers::{FfnComponent, qwen3_attention::Qwen3AttentionLayer};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, Fp8Weight, QuantWeight, QuantizedWeight, WeightQuantFormat,
@@ -20,6 +21,10 @@ enum Tier {
     Scalar,
     Batch4,
     Batch16,
+    /// The bit-exact N-column-blocked rung (#927) — same 16-row group as
+    /// `Batch16`, so only the kernel differs.
+    Ncol2,
+    Ncol4,
 }
 
 impl Tier {
@@ -27,7 +32,7 @@ impl Tier {
         match self {
             Tier::Scalar => 1,
             Tier::Batch4 => 4,
-            Tier::Batch16 => 16,
+            Tier::Batch16 | Tier::Ncol2 | Tier::Ncol4 => 16,
         }
     }
 
@@ -36,6 +41,8 @@ impl Tier {
             Tier::Scalar => SCALAR_K,
             Tier::Batch4 => BATCH4_K,
             Tier::Batch16 => BATCH16_K,
+            Tier::Ncol2 => NCOL2_K,
+            Tier::Ncol4 => NCOL4_K,
         }
     }
 }
@@ -43,6 +50,8 @@ impl Tier {
 const SCALAR_K: u64 = 0xF081;
 const BATCH4_K: u64 = 0xF084;
 const BATCH16_K: u64 = 0xF08C;
+const NCOL2_K: u64 = 0xF0C2;
+const NCOL4_K: u64 = 0xF0C4;
 
 #[test]
 fn native_fp8_attention_o_projection_batches_four_real_rows() {
@@ -92,7 +101,22 @@ fn check_dispatch(
     format: WeightQuantFormat,
     tier: Tier,
 ) {
-    check_dispatch_with(rows, width, available, available, format, tier)
+    check_dispatch_with(rows, width, available, available, format, tier, None)
+}
+
+/// `check_dispatch` with the N-column tier opted in — injected as the layer
+/// field the lever resolves to, so the test drives the rule and not the
+/// process-global `OnceLock`.
+fn check_dispatch_ncol(rows: usize, tier: Tier, ncol: NcolWidth) {
+    check_dispatch_with(
+        rows,
+        128,
+        true,
+        true,
+        WeightQuantFormat::Fp8BlockScaled,
+        tier,
+        Some(ncol),
+    )
 }
 
 /// `wide` is the presence of the MAX_M=16 handle, separate from `available`
@@ -104,6 +128,7 @@ fn check_dispatch_with(
     wide: bool,
     format: WeightQuantFormat,
     tier: Tier,
+    ncol: Option<NcolWidth>,
 ) {
     let gpu = MockGpuBackend::new();
     let mut config = ModelConfig::qwen3_next_80b_nvfp4();
@@ -151,6 +176,9 @@ fn check_dispatch_with(
     layer.w8a16_gemv_k = KernelHandle(SCALAR_K);
     layer.w8a16_gemv_batch4_k = KernelHandle(if available { BATCH4_K } else { 0 });
     layer.w8a16_gemv_batch16_k = KernelHandle(if wide { BATCH16_K } else { 0 });
+    layer.w8a16_gemv_ncol2_k = KernelHandle(NCOL2_K);
+    layer.w8a16_gemv_ncol4_k = KernelHandle(NCOL4_K);
+    layer.attn_ncol = ncol;
     let fp8 = Fp8Weight {
         weight: gpu.alloc(128 * 128).unwrap(),
         row_scale: gpu.alloc(4).unwrap(),
@@ -280,6 +308,40 @@ fn native_fp8_attention_o_projection_without_batch16_keeps_four_row_groups() {
             false,
             WeightQuantFormat::Fp8BlockScaled,
             Tier::Batch4,
+            None,
         );
     }
+}
+
+/// The N-column tier serves the o_proj across the band `w8a16_gemv_batch16`
+/// owns, in the same ONE 16-row group — a kernel swap, not a launch-count
+/// change, and bit-exact per row (oracle:
+/// `examples/native_fp8_attn_decode_batch_microtest`).
+#[test]
+fn native_fp8_attention_o_projection_takes_the_ncol_tier() {
+    for rows in [5, 8, 12, 16] {
+        check_dispatch_ncol(rows, Tier::Ncol2, NcolWidth::Two);
+        check_dispatch_ncol(rows, Tier::Ncol4, NcolWidth::Four);
+    }
+}
+
+/// m <= 4 keeps `w8a16_gemv_batch4`: the ALU wall the tier attacks is
+/// proportional to M and that kernel is already near the bandwidth floor.
+#[test]
+fn native_fp8_attention_o_projection_ncol_leaves_small_batches_alone() {
+    for rows in [1, 2, 4] {
+        let tier = if rows == 1 {
+            Tier::Scalar
+        } else {
+            Tier::Batch4
+        };
+        check_dispatch_ncol(rows, tier, NcolWidth::Two);
+    }
+}
+
+/// Above MAX_M the group loop still walks in 16-row groups on the batch16
+/// GEMV — the tier declines rather than clamping rows away.
+#[test]
+fn native_fp8_attention_o_projection_ncol_declines_above_max_m() {
+    check_dispatch_ncol(20, Tier::Batch16, NcolWidth::Two);
 }
