@@ -39,7 +39,8 @@ const GB10: TargetDefaults = TargetDefaults {
     ssm_decode_ring_slots: "auto",
 };
 
-/// `kernels/hopper/HARDWARE.toml` `[defaults]` — the round-9 recipe.
+/// `kernels/hopper/HARDWARE.toml` `[defaults]` — the round-9 recipe, plus the
+/// one row round 13 added to it (`gdn_prefill_tc`).
 const HOPPER: TargetDefaults = TargetDefaults {
     hw: "hopper",
     cublas_gemm_scope: "ffn,ssm,attn",
@@ -51,7 +52,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     lm_head_batchm_max: 16,
     ssm_batched_recurrent: true,
     gdn_decode_hopper: false,
-    gdn_prefill_tc: false,
+    gdn_prefill_tc: true,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
 };
@@ -99,6 +100,12 @@ fn hopper_resolves_the_round_nine_recipe_from_an_empty_environment() {
     assert!(l.lm_head_m16_tc.value, "+4% on the serve");
     assert_eq!(l.lm_head_batchm_max.value, 16);
     assert!(l.ssm_batched_recurrent.value, "+6%, md5-identical output");
+    assert!(
+        l.gdn_prefill_tc.value,
+        "round 13: the tensor-core GDN prefill family is the H100 default — \
+         C=1 TTFT -39.6%/-44.7%, C=16 aggregate +21.5%/+31.4%, coherency 4/4, \
+         determinism 8/8 x 3"
+    );
     assert!(l.decode_split_silu.value);
     // The two arms round 6 measured as LOSSES stay off, and so does the tier
     // whose receipt does not exist.
@@ -118,6 +125,7 @@ fn hopper_resolves_the_round_nine_recipe_from_an_empty_environment() {
         l.lm_head_m16_tc.from_env(),
         l.lm_head_batchm_max.from_env(),
         l.ssm_batched_recurrent.from_env(),
+        l.gdn_prefill_tc.from_env(),
     ] {
         assert!(!from_env, "an empty environment sourced nothing from it");
     }
@@ -176,8 +184,10 @@ fn gb10_with_an_empty_environment_is_todays_behaviour() {
     );
     assert!(
         !l.gdn_prefill_tc.value,
-        "the scalar GDN prefill spine stays the default: the tensor-core arm \
-         reassociates the k-reduction and has no accuracy receipt"
+        "the scalar GDN prefill spine stays GB10's default. Round 13 promoted \
+         the tensor-core family on HOPPER, on an H100 receipt; a 48-SM GB10 is \
+         the part the 48-CTA grid nearly fills, so that number does not \
+         transfer by argument and this row waits for a GB10 A/B"
     );
     assert!(l.decode_split_silu.value);
     assert_eq!(l.ssm_decode_ring_slots.value, None);
@@ -216,7 +226,10 @@ fn the_environment_overrides_every_toggle_in_both_directions() {
     assert_eq!(off.lm_head_m16_tc, Resolved::env(false));
     assert_eq!(off.ssm_batched_recurrent, Resolved::env(false));
     // ⚠️ the polarity change, on the one lever that had no `=0` spelling
-    // before: `ATLAS_GDN_PREFILL_TC=0` was PRESENCE, i.e. ON.
+    // before: `ATLAS_GDN_PREFILL_TC=0` was PRESENCE, i.e. ON. Since round 13 it
+    // is also the KILL SWITCH for the shipped H100 default — the whole family,
+    // spine and both remnant twins, because the twins read this same resolved
+    // bit (`ssm_gdn_remnants_tests::the_twins_read_the_spines_resolved_lever`).
     assert_eq!(off.gdn_prefill_tc, Resolved::env(false));
     assert_eq!(off.cublas, Resolved::env(CublasScope::OFF));
     assert_eq!(off.lm_head_batchm_max, Resolved::env(8));
@@ -392,7 +405,7 @@ fn the_serve_line_names_every_lever_and_marks_the_environment_ones() {
         "lm_head_batchm_max=16",
         "ssm_batched_recurrent=on",
         "gdn_decode_hopper=off",
-        "gdn_prefill_tc=off",
+        "gdn_prefill_tc=on",
         "decode_split_silu=on",
         "ssm_decode_ring_slots=auto",
     ] {

@@ -66,6 +66,12 @@ gdn_decode_hopper = false
 # tree, and this kernel's standing lesson is that a spine change can read
 # cos=1.0000 and still cost 1.4 BFCL points: promotion needs the ssm-poisoning
 # tripwire. `ATLAS_GDN_PREFILL_TC=1` is how the A/B is run.
+#
+# HOPPER now ships it ON (round 13, -39.6%/-44.7% C=1 TTFT, coherency 4/4,
+# determinism 8/8 x 3 — see `kernels/hopper/HARDWARE.toml`). That receipt is an
+# H100 receipt: a 48-SM GB10 is the part the 48-CTA grid nearly fills, so the
+# Hopper speedup does not transfer by argument, and this row does not move
+# until a GB10 A/B says so.
 gdn_prefill_tc = false
 # Split SiLU+down on the decode path — shipped ON everywhere since #928.
 decode_split_silu = true
