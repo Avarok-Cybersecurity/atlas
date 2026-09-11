@@ -3,13 +3,19 @@
 //! Launchers for the Hopper GDN decode twins.
 //!
 //! The kernels are `kernels/hopper/common/gdn_decode_hopper.cu`, which exists
-//! only under `kernels/hopper`, so [`KernelHandle`]s for them resolve on that
-//! target and are `KernelHandle(0)` everywhere else. That — not an env var —
-//! is what keeps every other hardware set on its gb10 parents; the kill
-//! switch below exists to run the A/B, not to enable the tier.
+//! only under `kernels/hopper` (and, by symlink, `kernels/b200`), so
+//! [`KernelHandle`]s for them are `KernelHandle(0)` on every other target and
+//! the launchers below fall through to the gb10 parents there without reading
+//! anything.
+//!
+//! On a target that DOES have them, the choice is a declared lever —
+//! `[defaults] gdn_decode_hopper`, resolved in
+//! [`super::target_defaults`] — and not kernel presence. It was presence
+//! (#927) until H100 round 12 measured the twins, which is the whole content
+//! of [`gdn_decode_hopper_enabled`] below.
 //!
 //! SSOT for the geometry and the numbers: `GDN-DECODE-ATTRIBUTION.md`
-//! (#927/#928) and the kernel's own header.
+//! (#927/#928/round 12) and the kernel's own header.
 
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
@@ -74,6 +80,53 @@ pub fn gdn_hopper_dims_ok(k_dim: u32, v_dim: u32) -> bool {
 /// does, so the head cannot be split and `v_dim` cannot differ from 128.
 pub fn gdn_hopper_strided_dims_ok(k_dim: u32, v_dim: u32) -> bool {
     gdn_hopper_dims_ok(k_dim, v_dim) && v_dim == GDN_HOPPER_MAX_COLS
+}
+
+/// Are the Hopper GDN decode twins selected? — `[defaults] gdn_decode_hopper`,
+/// with `ATLAS_GDN_DECODE_HOPPER` overriding and `ATLAS_NO_GDN_HOPPER=1`
+/// outranking both ([`super::target_defaults`]).
+///
+/// ⚠️ **FALSE on every target today, hopper included.** #927 selected the twins
+/// by KERNEL PRESENCE, so a hopper build ran them unconditionally. H100 round
+/// 12 (2026-09-11, 1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8 @ `cc5a21e46`,
+/// `h100-round12-report.md`) measured that choice three independent ways and
+/// all three came out negative:
+///
+/// | measurement | twin vs parent |
+/// |---|---|
+/// | `native_gdn_decode_hopper_microtest`, contiguous n=1 | 13.62 vs 11.30 us — **0.83x** |
+/// | the same microtest, the other 11 legs | 0.98-1.01x — null |
+/// | nsys, C=1 step, 48 launches | 912.7 vs 854.2 us — **+6.8%** |
+/// | nsys, n=16 step, 48 launches | 2749.9 vs 2744.8 us — +0.19%, null |
+/// | serve A/B, cell F vs cell E, C=1 | **+0.41%** aggregate, -0.43% TPOT |
+///
+/// The serve delta is larger than either cell's rep spread (0.02% / 0.04%) and
+/// points the same way on both metrics, so it is a sign rather than noise —
+/// and a small one. Numerics are not the reason: the twins are BIT-IDENTICAL
+/// to their parents on all 12 legs (`state_diff`/`out_diff` 0), so this row is
+/// a pure speed claim and the claim failed. A 132-SM H100 leaves the
+/// column-tiled grid nothing to fill — the parent already saturates the device
+/// at n>=4, and at n=1 the extra CTAs cost more in launch and reduction than
+/// they recover.
+///
+/// It is an H100 finding, NOT a verdict on the kernel, which is why
+/// `gdn_decode_hopper.cu` stays in `kernels/hopper/HARDWARE.toml`'s
+/// `[kernels] overrides` and keeps being compiled: on a smaller-SM Hopper part
+/// the trade may go the other way, and `ATLAS_GDN_DECODE_HOPPER=1` is how the
+/// next part measures it.
+pub fn gdn_decode_hopper_enabled() -> bool {
+    super::target_defaults::resolved().gdn_decode_hopper.value
+}
+
+/// Is the UNSTRIDED twin usable for this shape? — the lever, a resolved
+/// handle, and the kernel's own dimension contract, in one place.
+pub fn gdn_decode_hopper_selected(twin: KernelHandle, k_dim: u32, v_dim: u32) -> bool {
+    twin.0 != 0 && gdn_decode_hopper_enabled() && gdn_hopper_dims_ok(k_dim, v_dim)
+}
+
+/// The strided twin's version of [`gdn_decode_hopper_selected`].
+pub fn gdn_decode_strided_hopper_selected(twin: KernelHandle, k_dim: u32, v_dim: u32) -> bool {
+    twin.0 != 0 && gdn_decode_hopper_enabled() && gdn_hopper_strided_dims_ok(k_dim, v_dim)
 }
 
 /// Hopper twin of [`super::gdn_decode_f32_strided`] — same arguments, same
@@ -171,6 +224,145 @@ pub fn gdn_decode_f32_hopper(
         .arg_u32(v_dim)
         .launch(stream)
 }
+
+/// The C=1 GDN decode launch — twin or gb10 parent, chosen ONCE, here.
+///
+/// One entry point rather than an `if` at each dispatch site: the decision is
+/// three conditions (the lever, a resolved handle, the kernel's dimension
+/// contract) and the two arms take the SAME arguments, so a call site that
+/// spelled it itself would be a second copy of a rule that has already moved
+/// once. `twin` is `KernelHandle(0)` off hopper and whenever the caller is not
+/// on the FP32 state, which makes this the parent's plain launcher there.
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_decode_f32_auto(
+    gpu: &dyn GpuBackend,
+    parent: KernelHandle,
+    twin: KernelHandle,
+    h_state: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    batch_size: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    stream: u64,
+) -> Result<()> {
+    if gdn_decode_hopper_selected(twin, k_dim, v_dim) {
+        return gdn_decode_f32_hopper(
+            gpu,
+            twin,
+            h_state,
+            query,
+            key,
+            value,
+            gate,
+            beta,
+            output,
+            batch_size,
+            num_k_heads,
+            num_v_heads,
+            k_dim,
+            v_dim,
+            stream,
+        );
+    }
+    super::gdn_decode(
+        gpu,
+        parent,
+        h_state,
+        query,
+        key,
+        value,
+        gate,
+        beta,
+        output,
+        batch_size,
+        num_k_heads,
+        num_v_heads,
+        k_dim,
+        v_dim,
+        stream,
+    )
+}
+
+/// [`gdn_decode_f32_auto`] for the batched decode path's strided launch.
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_decode_f32_strided_auto(
+    gpu: &dyn GpuBackend,
+    parent: KernelHandle,
+    twin: KernelHandle,
+    h_state: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    batch_size: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    out_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    if gdn_decode_strided_hopper_selected(twin, k_dim, v_dim) {
+        return gdn_decode_f32_strided_hopper(
+            gpu,
+            twin,
+            h_state,
+            query,
+            key,
+            value,
+            gate,
+            beta,
+            output,
+            batch_size,
+            num_k_heads,
+            num_v_heads,
+            k_dim,
+            v_dim,
+            qk_stride,
+            v_stride,
+            gb_stride,
+            out_stride,
+            stream,
+        );
+    }
+    super::gdn_decode_f32_strided(
+        gpu,
+        parent,
+        h_state,
+        query,
+        key,
+        value,
+        gate,
+        beta,
+        output,
+        batch_size,
+        num_k_heads,
+        num_v_heads,
+        k_dim,
+        v_dim,
+        qk_stride,
+        v_stride,
+        gb_stride,
+        out_stride,
+        stream,
+    )
+}
+
+#[cfg(test)]
+#[path = "ssm_gdn_hopper_lever_tests.rs"]
+mod lever_tests;
 
 #[cfg(test)]
 #[path = "ssm_gdn_hopper_tests.rs"]

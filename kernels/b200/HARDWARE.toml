@@ -57,6 +57,7 @@ attn_ncol_gemv = false
 lm_head_m16_tc = false
 lm_head_batchm_max = 8
 ssm_batched_recurrent = false
+gdn_decode_hopper = false
 gdn_prefill_tc = false
 decode_split_silu = true
 ssm_decode_ring_slots = "auto"

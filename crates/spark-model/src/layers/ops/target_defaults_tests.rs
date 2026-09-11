@@ -33,6 +33,7 @@ const GB10: TargetDefaults = TargetDefaults {
     lm_head_m16_tc: false,
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: false,
+    gdn_decode_hopper: false,
     gdn_prefill_tc: false,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
@@ -49,6 +50,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     lm_head_m16_tc: true,
     lm_head_batchm_max: 16,
     ssm_batched_recurrent: true,
+    gdn_decode_hopper: false,
     gdn_prefill_tc: false,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
@@ -167,6 +169,11 @@ fn gb10_with_an_empty_environment_is_todays_behaviour() {
          on GB10 (-14.4% at C=16)"
     );
     assert!(!l.ssm_batched_recurrent.value);
+    assert!(
+        !l.gdn_decode_hopper.value,
+        "GB10 does not compile the twins at all — the row is declared so the \
+         lever list is one list, not to change anything"
+    );
     assert!(
         !l.gdn_prefill_tc.value,
         "the scalar GDN prefill spine stays the default: the tensor-core arm \
@@ -384,6 +391,7 @@ fn the_serve_line_names_every_lever_and_marks_the_environment_ones() {
         "lm_head_m16_tc=on",
         "lm_head_batchm_max=16",
         "ssm_batched_recurrent=on",
+        "gdn_decode_hopper=off",
         "gdn_prefill_tc=off",
         "decode_split_silu=on",
         "ssm_decode_ring_slots=auto",

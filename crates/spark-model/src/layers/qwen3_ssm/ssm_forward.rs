@@ -349,53 +349,35 @@ impl Qwen3SsmLayer {
                 })?;
             }
         } else {
-            // #927: on Hopper the parent's grid is `nv` CTAs — 48 on this
-            // model — against 132 SMs, so 84 get no work. The twin tiles the
-            // head's columns across CTAs until the grid covers the device and
-            // is BIT-IDENTICAL per column (see GDN-DECODE-ATTRIBUTION.md).
-            // The handle is 0 on every non-hopper target, so this is inert
-            // there without an env read.
-            let hopper_gdn = use_f32_gdn
-                && self.gdn_f32_hopper_k.0 != 0
-                && crate::layers::qwen3_ssm::gdn_hopper_enabled()
-                && ops::gdn_hopper_dims_ok(kd as u32, vd as u32);
-            if hopper_gdn {
-                ops::gdn_decode_f32_hopper(
-                    ctx.gpu,
-                    self.gdn_f32_hopper_k,
-                    state.h_state,
-                    q_conv,
-                    k_conv,
-                    v_conv,
-                    gates,
-                    beta_fp32,
-                    gdn_out,
-                    1,
-                    nk as u32,
-                    nv as u32,
-                    kd as u32,
-                    vd as u32,
-                    stream,
-                )?;
+            // #927's Hopper twin, or the gb10 parent. The lever, the handle
+            // and the kernel's dimension contract are ONE decision and it
+            // lives in `ops::gdn_decode_f32_auto`; the twin is DEFAULT OFF
+            // since H100 round 12 measured it at +6.8% per C=1 step
+            // (`ops::gdn_decode_hopper_enabled`, GDN-DECODE-ATTRIBUTION.md).
+            // A zero handle off the FP32 state keeps the parent, as before.
+            let hopper_twin = if use_f32_gdn {
+                self.gdn_f32_hopper_k
             } else {
-                ops::gdn_decode(
-                    ctx.gpu,
-                    gdn_kernel,
-                    state.h_state,
-                    q_conv,
-                    k_conv,
-                    v_conv,
-                    gates,
-                    beta_fp32,
-                    gdn_out,
-                    1,
-                    nk as u32,
-                    nv as u32,
-                    kd as u32,
-                    vd as u32,
-                    stream,
-                )?;
-            }
+                spark_runtime::gpu::KernelHandle(0)
+            };
+            ops::gdn_decode_f32_auto(
+                ctx.gpu,
+                gdn_kernel,
+                hopper_twin,
+                state.h_state,
+                q_conv,
+                k_conv,
+                v_conv,
+                gates,
+                beta_fp32,
+                gdn_out,
+                1,
+                nk as u32,
+                nv as u32,
+                kd as u32,
+                vd as u32,
+                stream,
+            )?;
             if trace {
                 ctx.gpu.synchronize(stream).inspect_err(|_e| {
                     tracing::error!("CRASH at gdn_decode");

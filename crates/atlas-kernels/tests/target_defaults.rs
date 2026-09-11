@@ -65,6 +65,12 @@ fn hopper_declares_the_round_nine_recipe() {
         "the cuBLASLt FFN arm owns these widths once `cublas_gemm_scope` arms it"
     );
     assert!(!d.attn_ncol_gemv, "no H100 serving receipt");
+    assert!(
+        !d.gdn_decode_hopper,
+        "round 12: the GDN decode twins are bit-identical and SLOWER here — \
+         0.83x at contiguous n=1, +6.8% per C=1 nsys step, -0.4% on the serve \
+         A/B. The kernel stays in [kernels] overrides; only the default moved"
+    );
     assert_eq!(d.ssm_decode_ring_slots, "auto");
 }
 
@@ -110,6 +116,30 @@ fn the_silent_targets_resolve_to_the_baseline() {
             "kernels/{hw}/HARDWARE.toml declares no [defaults] and must be \
              byte-for-byte unaffected"
         );
+    }
+}
+
+/// A HOPPER-ONLY kernel's lever still gets a row in every table that declares
+/// one. `gdn_decode_hopper` is the second such row (`gdn_prefill_tc` was the
+/// first): the twins live only in `kernels/hopper/common`, gb10 never compiles
+/// them, and b200 does only because its `common/` symlinks Hopper's. A row
+/// present in one target's table and missing from another's is how a lever
+/// comes to mean two things in one repository — `parse_defaults` would read
+/// the absence as agreement with the baseline, silently, which is the exact
+/// failure this table was built to end.
+#[test]
+fn a_hopper_only_lever_is_still_declared_by_every_table() {
+    for hw in ["hopper", "gb10", "b200"] {
+        let raw = std::fs::read_to_string(kernels_root().join(hw).join("HARDWARE.toml"))
+            .unwrap_or_else(|e| panic!("kernels/{hw}/HARDWARE.toml: {e}"));
+        for lever in ["gdn_decode_hopper", "gdn_prefill_tc"] {
+            assert!(
+                raw.contains(&format!("\n{lever} = ")),
+                "kernels/{hw}/HARDWARE.toml [defaults] must declare `{lever}` \
+                 explicitly, not inherit it from the baseline"
+            );
+        }
+        assert!(!declared(hw).gdn_decode_hopper, "no target ships them on");
     }
 }
 
@@ -187,6 +217,7 @@ fn the_generated_constant_names_every_field() {
         "lm_head_m16_tc: true",
         "lm_head_batchm_max: 16",
         "ssm_batched_recurrent: true",
+        "gdn_decode_hopper: false",
         "gdn_prefill_tc: false",
         "decode_split_silu: true",
         "ssm_decode_ring_slots: \"auto\"",
@@ -216,6 +247,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.lm_head_m16_tc, declared.lm_head_m16_tc);
     assert_eq!(baked.lm_head_batchm_max, declared.lm_head_batchm_max);
     assert_eq!(baked.ssm_batched_recurrent, declared.ssm_batched_recurrent);
+    assert_eq!(baked.gdn_decode_hopper, declared.gdn_decode_hopper);
     assert_eq!(baked.gdn_prefill_tc, declared.gdn_prefill_tc);
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
     assert_eq!(baked.ssm_decode_ring_slots, declared.ssm_decode_ring_slots);

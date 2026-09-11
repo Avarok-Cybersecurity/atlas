@@ -79,6 +79,30 @@ lm_head_batchm_max = 16
 # One strided recurrent launch per batch on the GDN decode path: +6% on the
 # serve, and md5-identical output to the per-sequence launches.
 ssm_batched_recurrent = true
+# The Hopper GDN DECODE twins (#927, `gdn_decode_hopper.cu` below). OFF — the
+# one Hopper-owned kernel this table turns down, and the only row here whose
+# receipt is a LOSS. H100 round 12 (2026-09-11, 1xH100 80GB HBM3,
+# Qwen/Qwen3.8-27B-FP8 @ `cc5a21e46`, `h100-round12-report.md`), three
+# independent measurements agreeing:
+#   * microtest `native_gdn_decode_hopper_microtest`: BIT-IDENTICAL on all 12
+#     legs (`state_diff`/`out_diff` 0, `max_abs` 0.000e0), and 0.83x the parent
+#     at the leg that decides C=1 (contiguous n=1, 13.62 vs 11.30 us), 0.98-1.01x
+#     — i.e. null — on the other eleven;
+#   * nsys, launch count for launch count: the twin is +6.8% per C=1 step
+#     (912.7 vs 854.2 us over 48 launches) and +0.19% at n=16 (2749.9 vs
+#     2744.8 us), a clean null;
+#   * the serve A/B: cell F (`ATLAS_NO_GDN_HOPPER=1`) beat cell E by +0.41%
+#     aggregate and -0.43% TPOT at C=1, against rep spreads of 0.02%/0.04%.
+# The column-tiled grid has nothing to fill on a 132-SM H100: the parent
+# already saturates the device at n>=4, and at n=1 the extra CTAs cost more in
+# launch and reduction than they recover. This is an H100 finding, NOT a
+# verdict on the kernel — on a smaller-SM Hopper part the trade may go the
+# other way, which is why `gdn_decode_hopper.cu` stays in `[kernels] overrides`
+# below and keeps being compiled. `ATLAS_GDN_DECODE_HOPPER=1` is the positive
+# lever that runs that measurement; `ATLAS_NO_GDN_HOPPER=1`, the kill switch
+# round 12's cell F was run with, still forces it off and outranks the
+# positive. Numbers: `GDN-DECODE-ATTRIBUTION.md`.
+gdn_decode_hopper = false
 # The tensor-core GDN chunked-PREFILL spine (#928). OFF: round 9 put the scalar
 # spine at 26.6%/32.3% of a 1193/4593-token H100 prefill, so the upside is real,
 # but the arm reassociates the k-reduction into the MMA tree and has no accuracy

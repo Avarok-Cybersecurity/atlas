@@ -79,6 +79,19 @@ pub struct TargetDefaults {
     /// One strided recurrent launch per batch on the GDN decode path
     /// (`layers/qwen3_ssm/gdn_flags.rs`).
     pub ssm_batched_recurrent: bool,
+    /// `gated_delta_rule_decode_f32{,_strided}_hopper` serve the GDN decode
+    /// recurrence (`layers/ops/ssm_gdn_hopper.rs`), in place of their gb10
+    /// parents.
+    ///
+    /// FALSE on every target. The twins are BIT-IDENTICAL to their parents on
+    /// all 12 microtest legs, so this row is purely a speed claim, and on H100
+    /// the claim is negative: 0.83x at contiguous n=1, +6.8% per C=1 step in
+    /// nsys, -0.4% on the serve A/B (round 12, `GDN-DECODE-ATTRIBUTION.md`).
+    /// GB10 does not compile the kernel at all; B200 does (its `common/` tree
+    /// symlinks Hopper's) but has no receipt. `ATLAS_GDN_DECODE_HOPPER=1` is
+    /// the positive lever, and the legacy `ATLAS_NO_GDN_HOPPER=1` kill switch
+    /// still outranks it.
+    pub gdn_decode_hopper: bool,
     /// `gated_delta_rule_chunk_delta_h_tcfuse_x2` serves the GDN chunked
     /// PREFILL state spine on tensor cores (`layers/ops/ssm_gdn_a3.rs`).
     ///

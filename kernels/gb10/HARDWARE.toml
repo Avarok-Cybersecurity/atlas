@@ -48,6 +48,17 @@ lm_head_batchm_max = 8
 # One strided recurrent launch per batch on the GDN decode path. No GB10
 # receipt; unchanged from main.
 ssm_batched_recurrent = false
+# The Hopper GDN DECODE twins (#927). OFF, and INERT here: the twins live in
+# `kernels/hopper/common/gdn_decode_hopper.cu`, which GB10's tree does not
+# carry and GB10's build does not compile, so the probe returns
+# `KernelHandle(0)` and the launcher stays on the gb10 parent whatever this
+# row says. Declared anyway, for the same reason `gdn_prefill_tc` is: the
+# lever list is one list, and a row present in one target's table and absent
+# from another's is how a lever comes to mean different things on two cards.
+# H100 turns it down on a measured loss (see `kernels/hopper/HARDWARE.toml`);
+# GB10 has 48 SMs, which is the shape the twin was written for, so a GB10
+# receipt could well move this row — there is not one yet.
+gdn_decode_hopper = false
 # The tensor-core GDN chunked-PREFILL spine (#928). The kernel is SHARED —
 # `common/gated_delta_rule_chunk_tc.cu`, validated here on GB10 — and stays
 # shared; this row is the gate on the probe that loads it, not a claim about

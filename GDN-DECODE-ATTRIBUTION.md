@@ -52,9 +52,12 @@ loads per thread.
 ## What this change does, and what it refuses to do
 
 `kernels/hopper/common/gdn_decode_hopper.cu` — bit-exact twins, same entry
-arguments, selected by kernel PRESENCE (the file exists only under
-`kernels/hopper`, so handles are 0 elsewhere). A/B kill switch
-`ATLAS_NO_GDN_HOPPER=1`.
+arguments. Selection was by kernel PRESENCE (the file exists only under
+`kernels/hopper`, so handles are 0 elsewhere) until round 12 measured them;
+it is now the declared lever `[defaults] gdn_decode_hopper`, **false on every
+target**, with `ATLAS_GDN_DECODE_HOPPER=1` as the positive and the original
+`ATLAS_NO_GDN_HOPPER=1` kill switch still outranking both. See "The H100
+answer" below.
 
 1. **C=1 grid** `(ceil(v_dim/cols), num_v_heads, batch_size)`; `cols` narrows to
    32 only when `num_v_heads * rows < sm_count`, turning 48 CTAs into 192.
@@ -97,4 +100,68 @@ narrows only on underfill.
 Owed on H100, in order: the `ATLAS_NO_GDN_HOPPER` kill-switch A/B at C=1 and
 n=16 under the fingerprint rules; nsys to confirm the new us/layer; then the
 retention re-probe a 50 MB L2 against a 50 MB n=16 working set makes worth
-re-asking.
+re-asking. **The first two were run — round 12, below.**
+
+## The H100 answer: bit-identical, and a small net LOSS
+
+1xH100 80GB HBM3, `Qwen/Qwen3.8-27B-FP8` @ `017b9c7a`, Atlas `cc5a21e46`,
+driver 580.173.02 / CUDA 13.0.88, 2026-09-11 (`h100-round12-report.md`). Three
+independent measurements, taken in this order, agreeing to within a hair:
+
+**1. `native_gdn_decode_hopper_microtest`** — `nv=48 kd=128 vd=128
+sm_count=132`, both state scales, n in {1,4,16}, contiguous and strided. The
+numerics gate is a hard `unequal` count, not a tolerance:
+
+```
+ALL LEGS BIT-IDENTICAL          state_diff 0  out_diff 0  max_abs 0.000e0  (12/12)
+```
+
+| leg | parent | twin | ratio |
+|---|---|---|---|
+| **contiguous n=1** | 11.30 us / 557 GB/s | 13.62 us / 462 GB/s | **0.83x** |
+| strided n=1 | 30.06 us | 29.82 us | 1.01x |
+| contiguous n=4 / n=16 | 12.53 / 80.23 us | 12.61 / 81.93 us | 0.99x / 0.98x |
+| strided n=4 / n=16 | 30.37 / 168.72 us | 30.08 / 170.67 us | 1.01x / 0.99x |
+
+(The `hs=20` half of the matrix reads the same to within 0.01x.)
+
+**2. nsys, launch count for launch count**, against round 10's trace of the
+parents on the same box and the same step shape:
+
+| step | parent | twin | delta |
+|---|---|---|---|
+| C=1, 48 launches | `…decode_f32` 854.2 us | `…decode_f32_hopper` **912.7 us** | **+6.8%** |
+| n=16, 48 launches | `…_strided` 2744.8 us | `…_strided_hopper` **2749.9 us** | +0.19% (null) |
+
+On a 14.913 ms C=1 step that +58.5 us is +0.39%.
+
+**3. The serve A/B**, cell E (twins on) against cell F
+(`ATLAS_NO_GDN_HOPPER=1`), 1193-in/256-out, 3 reps, temp 0 / seed 42, 0 errors:
+
+| | E (on) | F (off) | F vs E |
+|---|---|---|---|
+| tok/s agg C=1 | 66.08 | **66.35** | **+0.41%** |
+| TPOT C=1 | 14.14 ms | **14.08 ms** | **-0.43%** |
+| tok/s agg C=16 | 429.04 | 428.18 | -0.20% |
+| TPOT C=16 | 28.50 ms | 28.50 ms | 0.00% |
+
+The C=1 delta is larger than either cell's rep spread (0.02% and 0.04%) and
+points the same way on both metrics, so it is a sign and not noise — and the
+nsys +0.39% predicted it to within a hair. It is also small.
+
+**Why.** The column-tiled grid has nothing to fill on a 132-SM H100: the parent
+already saturates the device at n>=4, and at n=1 the extra CTAs cost more in
+launch and reduction than they recover. This contradicts nothing above — the
+dgx2 table is 48 SMs, where the underfill this change targets does not exist,
+and the H100 underfill argument in "Where the time goes" is about *CTAs per SM*,
+which the twin does fix while losing more elsewhere.
+
+**What changed, and what did not.** The default moved and nothing else:
+`kernels/hopper/HARDWARE.toml` declares `gdn_decode_hopper = false`, so a
+hopper serve with an empty environment runs the gb10 parents. The kernel stays
+in that target's `[kernels] overrides` and keeps being compiled — the receipt
+is per-target and a smaller-SM Hopper part may well take the other side.
+`ATLAS_GDN_DECODE_HOPPER=1` is how the next one gets measured;
+`ATLAS_NO_GDN_HOPPER=1`, the spelling cell F was run with, still forces off and
+outranks the positive. Numerics were never the question: 12/12 bit-identical
+means the choice is free in both directions.

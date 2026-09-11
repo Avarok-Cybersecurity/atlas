@@ -42,6 +42,9 @@
 //! The legacy `ATLAS_NO_*` kill switches (`ATLAS_FFN_NO_BATCH16`,
 //! `ATLAS_NO_DECODE_SPLIT_SILU`) stay PRESENCE-gated and still force their
 //! lever OFF, so no script that predates this file changes meaning.
+//! `ATLAS_NO_GDN_HOPPER` is the third, and it keeps the `== "1"` spelling it
+//! shipped with rather than the presence rule — same principle, applied to the
+//! grammar that variable was documented and used with.
 //!
 //! # One resolution, one log line
 //!
@@ -174,6 +177,7 @@ pub struct TargetLevers {
     pub lm_head_m16_tc: Resolved<bool>,
     pub lm_head_batchm_max: Resolved<u32>,
     pub ssm_batched_recurrent: Resolved<bool>,
+    pub gdn_decode_hopper: Resolved<bool>,
     pub gdn_prefill_tc: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
     pub ssm_decode_ring_slots: Resolved<Option<usize>>,
@@ -197,6 +201,9 @@ pub fn resolve(
     let batch16_raw = var("ATLAS_FFN_BATCH16");
     let batch16_off = present(&mut var, "ATLAS_FFN_NO_BATCH16");
     let split_silu_off = present(&mut var, "ATLAS_NO_DECODE_SPLIT_SILU");
+    // NOT `present`: see the `gdn_decode_hopper` note below for why this one
+    // kill switch keeps its `== "1"` spelling.
+    let gdn_hopper_off = var("ATLAS_NO_GDN_HOPPER").as_deref() == Some("1");
     // `ATLAS_M16_TC` is the round-6 UMBRELLA: it arms both M16 tensor-core
     // tiers at once. Kept because that is the recipe round 6 was measured
     // with; it can only turn them ON, never off, so a target that declares one
@@ -250,6 +257,24 @@ pub fn resolve(
             defaults.ssm_batched_recurrent,
             var("ATLAS_SSM_BATCHED_RECURRENT").as_deref(),
             false,
+        ),
+        // The Hopper GDN DECODE twins (#927). Every target declares them OFF:
+        // they are bit-identical to their gb10 parents, so the row is a pure
+        // speed claim, and H100 round 12 measured it negative three ways —
+        // 0.83x at contiguous n=1 in the microtest, +6.8% per C=1 step in nsys,
+        // -0.4% on the serve A/B (`GDN-DECODE-ATTRIBUTION.md`).
+        //
+        // ⚠️ `ATLAS_NO_GDN_HOPPER` keeps its ORIGINAL `== "1"` spelling, not the
+        // presence rule the other two legacy kill switches use. It shipped
+        // documented as "`=1` and not presence, so `ATLAS_NO_GDN_HOPPER=0` does
+        // NOT disable the tier"; making it presence-gated here would change what
+        // an existing `=0` in a recipe means, which is the one thing the legacy
+        // rung exists to prevent. It still OUTRANKS the positive lever, the way
+        // `ATLAS_FFN_NO_BATCH16` outranks `ATLAS_FFN_BATCH16`.
+        gdn_decode_hopper: resolve_toggle(
+            defaults.gdn_decode_hopper,
+            var("ATLAS_GDN_DECODE_HOPPER").as_deref(),
+            gdn_hopper_off,
         ),
         // ⚠️ `ATLAS_GDN_PREFILL_TC` was PRESENCE-gated and is now grammar-gated
         // like its neighbours, so `=0` turns it OFF instead of on. Everything
@@ -333,7 +358,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
          ffn_batch16_tier={batch16} ffn_m16_tc={ffn_m16} attn_m16_tc={attn_m16} \
          attn_ncol_gemv={ncol} lm_head_m16_tc={head_m16} \
          lm_head_batchm_max={batchm}{batchm_src} ssm_batched_recurrent={recurrent} \
-         gdn_prefill_tc={gdn_tc} decode_split_silu={silu} \
+         gdn_decode_hopper={gdn_decode} gdn_prefill_tc={gdn_tc} decode_split_silu={silu} \
          ssm_decode_ring_slots={ring}{ring_src}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         cublas_src = l.cublas.source.tag(),
@@ -345,6 +370,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         batchm = l.lm_head_batchm_max.value,
         batchm_src = l.lm_head_batchm_max.source.tag(),
         recurrent = onoff(l.ssm_batched_recurrent),
+        gdn_decode = onoff(l.gdn_decode_hopper),
         gdn_tc = onoff(l.gdn_prefill_tc),
         silu = onoff(l.decode_split_silu),
         ring = match l.ssm_decode_ring_slots.value {
