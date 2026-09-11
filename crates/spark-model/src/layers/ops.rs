@@ -59,6 +59,10 @@ mod gemm_fp4;
 pub mod model_stats;
 #[path = "ops/w8a16_gemm_m16.rs"]
 mod w8a16_gemm_m16;
+// The bit-exact N-column-blocked sibling of `w8a16_gemv_batch16` (#927),
+// for the attention decode projections. Behind ATLAS_ATTN_NCOL_GEMV.
+#[path = "ops/w8a16_gemv_ncol.rs"]
+mod w8a16_gemv_ncol;
 pub use model_stats::ModelStats;
 
 #[path = "ops/gemm_fp8_prefill.rs"]
@@ -229,4 +233,5 @@ pub use ssm_mamba::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;
 pub use w8a16_gemm_m16::*;
+pub use w8a16_gemv_ncol::*;
 pub use wide_prefill::*;

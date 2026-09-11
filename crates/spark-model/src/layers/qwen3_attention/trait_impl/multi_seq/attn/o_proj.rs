@@ -234,6 +234,16 @@ impl Qwen3AttentionLayer {
                 )
             } else if tc {
                 (ops::w8a16_gemm_m16 as BatchGemv, self.w8a16_gemm_m16_k, 16)
+            } else if let Some((gemv, kernel)) = self.ncol_contiguous_route(n) {
+                // N-COLUMN-BLOCKED, BIT-EXACT (#927, `attn_ncol_gemv.rs`): the
+                // batch16 GEMV's one weight pass and its exact per-row
+                // reduction order, with the activation loads and BF16->FP32
+                // converts amortised over N_COLS adjacent output columns. Same
+                // 16-row group, so `step` is unchanged. Reachable only past the
+                // `!batched` arm, so `block_scaled` — which this kernel needs
+                // for the same `block_scale[(n/128) * (K/128) + k/128]` fold as
+                // every rung of this family — already holds.
+                (gemv as BatchGemv, kernel, 16)
             } else if wide {
                 (
                     ops::w8a16_gemv_batch16 as BatchGemv,

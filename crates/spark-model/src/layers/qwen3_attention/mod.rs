@@ -14,6 +14,11 @@
 //!   - `prefill`: batched prefill with paged attention
 //!   - `trait_impl`: `TransformerLayer` trait implementation
 
+// The bit-exact N-column-blocked decode tier for the FP8 attention
+// projections (#927). Lives beside `init` rather than inside `trait_impl`
+// because `init` caches its lever on the layer and BOTH multi-seq call sites
+// (QKV strided, o_proj contiguous) read the one rule.
+mod attn_ncol_gemv;
 mod decode;
 // V4: `pub(crate)` so the DeepSeek-V4 weight loader (`weight_loader::deepseek_v4`)
 // and the V4 attention submodules can call `helpers::yarn_rope_mscale`. Non-V4
