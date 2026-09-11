@@ -76,7 +76,7 @@ impl Qwen3AttentionLayer {
         {
             ops::log_cutlass_nvfp4_route(ctx.gpu, "attn_o", n, h, nq * hd);
             ops::cutlass_nvfp4_proj_from_fp8(ctx, attn_out, fp8w, o_out, n, h, nq * hd, stream)?;
-        } else if ctx.dispatch.cublas_gemm
+        } else if ctx.dispatch.cublas.attn
             && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
         {
             // cuBLASLt BF16 (3x the hand-written mma.sync GEMM on GB10).
@@ -238,7 +238,7 @@ impl Qwen3AttentionLayer {
             // BF16 dense fallback (Gemma-4 dense per Nvidia ModelOpt's
             // ignore list — all self_attn projections must stay BF16).
             // Tensor-core pipelined GEMM (~40× scalar on large-M prefill).
-            if ctx.dispatch.cublas_gemm && n > 1 {
+            if ctx.dispatch.cublas.attn && n > 1 {
                 ops::cublas_bf16_proj_dense(attn_out, o_bf16.weight, o_out, n, h, nq * hd, stream)?;
             } else if self.dense_gemm_pipelined_k.0 != 0 {
                 ops::dense_gemm_bf16_pipelined(

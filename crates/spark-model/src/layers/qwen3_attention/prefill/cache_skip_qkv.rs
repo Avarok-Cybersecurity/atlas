@@ -184,7 +184,7 @@ impl Qwen3AttentionLayer {
         {
             ops::log_cutlass_nvfp4_route(ctx.gpu, label, n, out_dim, h);
             ops::cutlass_nvfp4_proj_from_fp8(ctx, normed, fp8w, out, n, out_dim, h, stream)?;
-        } else if ctx.dispatch.cublas_gemm
+        } else if ctx.dispatch.cublas.attn
             && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
         {
             // cuBLASLt BF16 (3x the hand-written mma.sync GEMM on GB10).
@@ -348,7 +348,7 @@ impl Qwen3AttentionLayer {
             .map_err(|e| {
                 anyhow::anyhow!("{label} w4a16_gemm failed: m={n} n={out_dim} k={h}: {e}")
             })?;
-        } else if ctx.dispatch.cublas_gemm && n > 1 {
+        } else if ctx.dispatch.cublas.attn && n > 1 {
             // Native-BF16 checkpoints (Laguna) never produce an Fp8Weight, so the
             // cuBLAS arm above is unreachable for them; route the dense weight
             // straight to cuBLASLt, which is ~3x the hand-written mma.sync GEMM.

@@ -17,6 +17,9 @@ mod activations;
 mod derived_weights;
 #[path = "ops/dispatch_config.rs"]
 mod dispatch_config;
+#[cfg(test)]
+#[path = "ops/dispatch_config_routing_tests.rs"]
+mod dispatch_config_routing_tests;
 #[path = "ops/dispatch_helpers.rs"]
 mod dispatch_helpers;
 #[path = "ops/dispatch_proj.rs"]
@@ -161,7 +164,7 @@ mod wide_prefill;
 
 pub use activations::*;
 pub use derived_weights::{Derivation, DerivedWeights};
-pub use dispatch_config::GemmDispatch;
+pub use dispatch_config::{CublasScope, GemmDispatch, parse_cublas_scope};
 pub use dispatch_helpers::*;
 pub use dispatch_proj::*;
 pub use dispatch_proj_rowwise::*;

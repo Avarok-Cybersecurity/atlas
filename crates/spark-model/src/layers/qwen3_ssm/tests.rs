@@ -57,7 +57,7 @@ use spark_runtime::buffers::BufferArena;
 /// Wire a layer exactly like the qwen35_dense.rs native-FP8 GDN arm:
 /// dense QKVZ slot NULL, out_proj a null QuantizedWeight, no NVFP4 fields;
 /// `with_qkvz_fp8w` / `with_out_fp8w` control the block-scaled FP8 pair.
-fn native_fp8_gdn_layer(
+pub(super) fn native_fp8_gdn_layer(
     gpu: &MockGpuBackend,
     config: &ModelConfig,
     with_qkvz_fp8w: bool,

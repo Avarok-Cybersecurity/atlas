@@ -135,6 +135,11 @@ fn test_buffer_arena_alloc() {
         ("fp8_act", arena.fp8_act(), sizes.fp8_act),
         ("fp8_act_scale", arena.fp8_act_scale(), sizes.fp8_act_scale),
         (
+            "fp8_act_scale_kmajor",
+            arena.fp8_act_scale_kmajor(),
+            sizes.fp8_act_scale_kmajor,
+        ),
+        (
             "q2_dequant_scratch",
             arena.q2_dequant_scratch(),
             sizes.q2_dequant_scratch,

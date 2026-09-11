@@ -2160,7 +2160,7 @@ impl DenseFfnLayer {
             // q/k/v/o and the head-gate already use. Gated on ATLAS_CUBLAS_GEMM.
             macro_rules! ffn_gemm {
                 ($a:expr, $b:expr, $c:expr, $n:expr, $k:expr) => {
-                    if ctx.dispatch.cublas_gemm {
+                    if ctx.dispatch.cublas.ffn {
                         ops::cublas_bf16_proj_dense($a, $b.weight, $c, m, $n, $k, stream)?;
                     } else if tc {
                         ops::dense_gemm_tc(
