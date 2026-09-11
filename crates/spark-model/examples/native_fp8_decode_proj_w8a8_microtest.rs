@@ -9,10 +9,9 @@
 //! `in_proj_qkvz` (N=16384 K=5120) 48 x 235.3 µs = 11 294 µs at **357 GB/s**;
 //! SSM `out_proj` + attn `o_proj` (N=5120) 64 x 106.5 µs = 6 814 µs; attn
 //! `q_proj` (N=12288, strided) 16 x 180.8 µs = 2 893 µs; attn `k_proj`+
-//! `v_proj` (N=1024, strided) 32 x 26.4 µs = 846 µs. The dense FFN, at the
-//! SAME 16 rows in the SAME step, runs cuBLASLt W8A8 at ~128 µs/layer for
-//! 267 MB of weights — ~2 100 GB/s-equivalent; this is the receipt for giving
-//! the projections that path.
+//! `v_proj` (N=1024, strided) 32 x 26.4 µs = 846 µs. The dense FFN, at the SAME
+//! 16 rows in the SAME step, runs cuBLASLt W8A8 at ~128 µs/layer for 267 MB of
+//! weights — ~2 100 GB/s-equivalent, which is the receipt for this change.
 //!
 //! It answers three questions per projection and guesses none:
 //!
@@ -22,14 +21,13 @@
 //!      <= 3e-2 against the GEMV, plus: nothing outside the route's extent
 //!      (sentinel), nothing non-finite, gaps between Q|K|V untouched.
 //!
-//!      ⚠ THE FLOOR, so a marginal `rel_rms` is read correctly: E4M3 carries
-//!      3 stored mantissa bits, so round-to-nearest costs ~2.5% RMS relative
-//!      error per element, and over a dot product of independent terms that
-//!      error does NOT average down relative to the signal. The EXPECTED
-//!      `rel_rms` here is therefore ~2-2.6% — 3e-2 is one notch of headroom
-//!      over the floor, not a loose tolerance, and cosine (~0.9997 there) is
-//!      the robust metric. Same floor `native_fp8_ffn_w8a8_microtest` states
-//!      for the dense FFN. `ATLAS_W8A8_REL_RMS_GATE` overrides it.
+//!      ⚠ THE FLOOR, so a marginal `rel_rms` is read correctly: E4M3's 3
+//!      stored mantissa bits cost ~2.5% RMS relative error per element, and
+//!      over a dot product of independent terms that does NOT average down
+//!      relative to the signal. EXPECTED `rel_rms` is therefore ~2-2.6%: 3e-2
+//!      is one notch of headroom over the floor, not a loose tolerance, and
+//!      cosine (~0.9997 there) is the robust metric. Same floor as
+//!      `native_fp8_ffn_w8a8_microtest`; `ATLAS_W8A8_REL_RMS_GATE` overrides.
 //!
 //!   2. THE PHANTOM ROWS. cuBLASLt is handed `ceil16(M) = 16` at every rung of
 //!      this band and WRITES rows `m..16`; with the strided Q/K/V output those
@@ -43,22 +41,16 @@
 //! Shapes: hidden 5120, head_dim 256, 24 q-heads / 4 kv-heads, output gate on
 //! (`q_proj` = 12288 interleaved `[Q|gate]`, kv 1024, slot 14336 elements,
 //! `o_proj` N=5120 over K=6144). SSM: fused QKVZ 16384 over K=5120, `out_proj`
-//! N=5120 over K=6144 — `value_dim` read off the round-7 trace, where the SSM
-//! `out_proj` and the attention `o_proj` share the GrdX=1280 group at ~31.5 MB
-//! per launch, i.e. 5120 x 6144 FP8 bytes.
+//! N=5120 over K=6144 — `value_dim` off the round-7 trace, where SSM
+//! `out_proj` and attn `o_proj` share the GrdX=1280 group at ~31.5 MB/launch.
 //!
-//! Run (H100): `cargo run --release -p spark-model --features
-//! cuda,gpu-examples --example native_fp8_decode_proj_w8a8_microtest`. The
-//! example calls cuBLASLt directly, so `ATLAS_CUBLAS_GEMM` is not required
-//! here — the serve spelling is printed at the end for copy-paste.
-//!
-//! ★ REQUIRES A KERNEL SET THAT CARRIES `fp8_scale_transpose.cu`. Since the
-//! 2026-09-11 arch separation that source is a HOPPER-TUNED file
-//! (`kernels/hopper/common`, declared in that target's `[kernels] overrides`)
-//! and `kernels/gb10` does not carry it, so this oracle is for a binary built
-//! with `ATLAS_TARGET_HW=hopper` (or `b200`, which symlinks the same source).
-//! On a GB10 build the `gpu.kernel(...)` lookup below fails by name, which is
-//! the honest answer: the tier this grades does not exist there.
+//! Run (H100): `ATLAS_TARGET_HW=hopper cargo run --release -p spark-model
+//! --features cuda,gpu-examples --example native_fp8_decode_proj_w8a8_microtest`.
+//! ★ The target matters: `fp8_scale_transpose.cu` is a HOPPER-owned source
+//! (`[kernels] overrides`; b200 links it, gb10 has no copy), so a GB10 build
+//! fails the `gpu.kernel` lookup by name — the tier does not exist there.
+//! cuBLASLt is called directly, so `ATLAS_CUBLAS_GEMM` is not needed; the
+//! serve spelling is printed at the end.
 
 use anyhow::{Result, ensure};
 use half::bf16;

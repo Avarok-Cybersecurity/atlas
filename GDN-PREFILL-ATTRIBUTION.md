@@ -68,7 +68,8 @@ the identical algebra in scalar FP32; (1) and (3) are already equivalent.
 
 ## The lever, and what it measured
 
-`ATLAS_GDN_PREFILL_TC` (presence, default OFF) routes the spine to
+`[defaults] gdn_prefill_tc` — false on every target, with
+`ATLAS_GDN_PREFILL_TC` overriding — routes the spine to
 `gated_delta_rule_chunk_delta_h_tcfuse_x2`: both per-chunk products on
 `mma.sync.m16n8k16`, bf16 operands, f32 accumulator — and that accumulator IS
 the recurrent state (64 registers per thread against the scalar spine's 128 of
@@ -76,6 +77,14 @@ live state). `h` stays f32 in memory; the decay math stays exact f32. Per CTA pe
 chunk: 512 MMAs for `W·S` (4 m-tiles × 16 n-tiles × 8 k-steps) + 512 for `Kᵀ·duc`
 (8 × 16 × 4), against 8192 scalar FMAs per thread. Grid `[nv, batch]` and block
 256 are unchanged.
+
+⚠️ **The variable was PRESENCE-gated and is now grammar-gated**, so
+`ATLAS_GDN_PREFILL_TC=0` means OFF where it used to mean ON. Every A/B in this
+document ran it as `=1` and is unaffected. The kernel stays where it is —
+`kernels/gb10/common/gated_delta_rule_chunk_tc.cu`, shared and validated on
+GB10; the declaration gates the PROBE that loads it as well as the launch, so a
+target with the lever off does not ask the kernel audit about a module nothing
+can reach.
 
 **Numerics contract, measured** (`native_gdn_chunk_prefill_microtest`, GB10,
 nv=48, f64 CPU reference, 2026-09-11). Two operands are newly rounded to bf16:

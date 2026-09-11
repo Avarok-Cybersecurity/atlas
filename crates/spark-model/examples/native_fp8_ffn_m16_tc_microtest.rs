@@ -226,7 +226,7 @@ fn main() -> Result<()> {
     let tc_n64 = gpu.kernel("w8a16_gemm_m16", "w8a16_gemm_m16_n64")?;
     let tc_strided = gpu.kernel("w8a16_gemm_m16", "w8a16_gemm_m16_strided")?;
     let tile_t = gpu.kernel("w8a16_gemm_t_m128", "w8a16_gemm_t_m128")?;
-    let mut rng = Rng(0x927_16_7C_2026);
+    let mut rng = Rng(0x0927_167C_2026);
     let mut failures = 0_usize;
 
     for shape in &SHAPES {
