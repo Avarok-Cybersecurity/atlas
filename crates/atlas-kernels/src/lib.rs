@@ -37,19 +37,16 @@ pub use behavior_defaults::{
 };
 
 // The compiled target's SERVING defaults, baked from
-// `kernels/<hw>/HARDWARE.toml` `[defaults]`. The type is hand-written; the
-// `TARGET_DEFAULTS` const below it is generated.
+// `kernels/<hw>/HARDWARE.toml` `[defaults]`. The TYPE is hand-written here;
+// the `TARGET_DEFAULTS` const is generated into the same `target_ptx.rs` the
+// kernel registry lives in — one generated file, one `include!`, one content
+// hash, so there is exactly one thing that can go stale and
+// `ATLAS_KERNEL_SET_HASH` below already covers it.
 mod target_defaults;
 pub use target_defaults::TargetDefaults;
 
-// Auto-generated: `pub const TARGET_DEFAULTS: TargetDefaults`, from the
-// `[defaults]` table of the ONE `kernels/<hw>` tree this binary compiled.
-// Emitted on the `ATLAS_SKIP_BUILD` path too — it is configuration, not a
-// kernel blob, and every CPU gate runs under that flag.
-include!(concat!(env!("OUT_DIR"), "/target_defaults.rs"));
-
 // Auto-generated: per-target PTX constants, ptx_modules() function,
-// and all_ptx_sets() for multi-target builds.
+// all_ptx_sets() for multi-target builds, and `TARGET_DEFAULTS`.
 // NOTE: cargo does NOT track this build-script-generated include! as a
 // recompile trigger, so when build.rs regenerates target_ptx.rs (e.g. the
 // module set changes) this lib can keep a STALE embedded set. Any edit to

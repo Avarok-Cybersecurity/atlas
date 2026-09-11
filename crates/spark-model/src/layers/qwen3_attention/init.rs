@@ -11,12 +11,19 @@ use spark_runtime::kv_cache::KvCacheDtype;
 // function pointer: coercing a `#[track_caller]` fn to a pointer inserts a shim
 // and the audit would name the shim instead of the dispatch site below.
 use super::init_arch_gates::{ArchProbes, gated as gate};
+use super::types::{HeadGateActivation, Qwen3AttentionLayer};
+use crate::layers::FfnComponent;
+use crate::layers::fp8_calibration::Fp8KvCalibration;
+use crate::weight_map::{AttentionWeights, DenseWeight, QuantWeight, QuantizedWeight};
 
 /// Look up one `w8a16_gemv_ncol` entry point, but only when the N-column tier
 /// is armed for this target.
 ///
 /// The four handles differ by NAME alone, so one helper keeps the guard — and
-/// the reason for it — in a single place rather than four.
+/// the reason for it — in a single place rather than four. `#[track_caller]`
+/// for the reason the `gate` import above carries: the startup audit records
+/// the LOOKUP SITE, and without it all four would be attributed to this line.
+#[track_caller]
 fn ncol_probe(gpu: &dyn GpuBackend, func: &str) -> KernelHandle {
     if super::attn_ncol_gemv::ncol_gemv_enabled() {
         crate::layers::try_kernel(gpu, "w8a16_gemv_ncol", func)
@@ -24,10 +31,6 @@ fn ncol_probe(gpu: &dyn GpuBackend, func: &str) -> KernelHandle {
         KernelHandle(0)
     }
 }
-use super::types::{HeadGateActivation, Qwen3AttentionLayer};
-use crate::layers::FfnComponent;
-use crate::layers::fp8_calibration::Fp8KvCalibration;
-use crate::weight_map::{AttentionWeights, DenseWeight, QuantWeight, QuantizedWeight};
 
 impl Qwen3AttentionLayer {
     pub fn new(
