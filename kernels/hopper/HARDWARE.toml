@@ -120,6 +120,17 @@ gdn_prefill_tc = false
 decode_split_silu = true
 # `auto` = size the decode-rollback ring from free memory at preflight (#915).
 ssm_decode_ring_slots = "auto"
+# Upper M for the W8A8 block-scaled dense-FFN prefill (#917). NO CAP here:
+# 4294967295 is u32::MAX, which is `build_defaults::baseline`'s value and the
+# way this table spells "every M takes the W8A8 arm". H100 measures W8A8 at 2.0-3.1x over W8A16 at every M tried (M=64 and
+# M=1193, gate/up and down, 2026-09-11) — the opposite of GB10, where the
+# same arm is a measured 23.4% TTFT regression above the crossover.
+#
+# Declared explicitly rather than left to the baseline for the reason
+# `gdn_decode_hopper` is: a row present in one target's table and missing from
+# another's is how a lever comes to mean two things in one repository.
+w8a8_prefill_max_m_widening = 4294967295
+w8a8_prefill_max_m_narrowing = 4294967295
 
 # ── Kernels this target OVERRIDES instead of inheriting ────────────────────
 #

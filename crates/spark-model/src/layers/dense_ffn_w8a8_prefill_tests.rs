@@ -6,7 +6,7 @@
 //! numerics themselves are the GPU microtest's job
 //! (`examples/native_fp8_ffn_w8a8_microtest.rs`).
 
-use super::w8a8_prefill_selected;
+use super::{max_m_for, w8a8_prefill_selected};
 use crate::layer::{ForwardContext, MoeLoraRoute};
 use crate::layers::dense_ffn::{DenseFfnLayer, DenseFfnWeights};
 use crate::layers::ops::{DerivedWeights, GemmDispatch, ModelLevers, ModelStats, cublas_fp8_m_pad};
@@ -39,7 +39,123 @@ fn selected(
     gemm_k: KernelHandle,
     w8a16_only: bool,
 ) -> bool {
-    w8a8_prefill_selected(m, n, k, fmt, blockscaled_lever, quant_k, gemm_k, w8a16_only)
+    // `u32::MAX` — the baseline, i.e. no cap. Every case below perturbs one of
+    // the OTHER clauses, so they must not also be answering the ceiling
+    // question; the ceiling has its own cases at the bottom of this file.
+    selected_capped(
+        m,
+        n,
+        k,
+        fmt,
+        blockscaled_lever,
+        quant_k,
+        gemm_k,
+        w8a16_only,
+        u32::MAX,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn selected_capped(
+    m: u32,
+    n: u32,
+    k: u32,
+    fmt: WeightQuantFormat,
+    blockscaled_lever: bool,
+    quant_k: KernelHandle,
+    gemm_k: KernelHandle,
+    w8a16_only: bool,
+    max_m: u32,
+) -> bool {
+    w8a8_prefill_selected(
+        m,
+        n,
+        k,
+        fmt,
+        blockscaled_lever,
+        quant_k,
+        gemm_k,
+        w8a16_only,
+        max_m,
+    )
+}
+
+/// The per-arch ceiling (#917). Separate cases from every other clause,
+/// because each of those is measured with NO cap so that a failure there names
+/// the clause it perturbed.
+///
+/// The rule is `m <= max_m`, not `m < max_m`: a ceiling of 64 means M=64 is
+/// still measured to win, and the value declared in `kernels/gb10` is the LOW
+/// end of the measured crossover band for that shape.
+#[test]
+fn the_ceiling_is_inclusive_and_cuts_above_it() {
+    let case = |m: u32, max_m: u32| {
+        selected_capped(
+            m,
+            INTER,
+            H,
+            WeightQuantFormat::Fp8BlockScaled,
+            true,
+            KernelHandle(1),
+            KernelHandle(1),
+            false,
+            max_m,
+        )
+    };
+    assert!(case(63, 64), "below the ceiling stays on W8A8");
+    assert!(
+        case(64, 64),
+        "AT the ceiling stays on W8A8 — the bound is <="
+    );
+    assert!(
+        !case(65, 64),
+        "one row above the ceiling falls back to W8A16"
+    );
+    assert!(
+        !case(949, 64),
+        "the served M that measured -23.4% falls back"
+    );
+}
+
+/// `u32::MAX` is the baseline and must behave as no cap at all — including at
+/// `u32::MAX` itself, which `m <= max_m` admits and `m < max_m` would not.
+#[test]
+fn the_baseline_ceiling_caps_nothing() {
+    let case = |m: u32| {
+        selected_capped(
+            m,
+            INTER,
+            H,
+            WeightQuantFormat::Fp8BlockScaled,
+            true,
+            KernelHandle(1),
+            KernelHandle(1),
+            false,
+            u32::MAX,
+        )
+    };
+    assert!(case(949));
+    assert!(case(u32::MAX));
+}
+
+/// A ceiling of 0 is an operator saying "never take W8A8 on this shape", and
+/// the resolver honours a parsed 0 rather than discarding it. The rule has to
+/// agree: `m > 4` already excludes small M, so 0 must exclude everything.
+#[test]
+fn a_zero_ceiling_selects_nothing() {
+    for m in [5, 64, 949] {
+        assert!(!selected_capped(
+            m,
+            INTER,
+            H,
+            WeightQuantFormat::Fp8BlockScaled,
+            true,
+            KernelHandle(1),
+            KernelHandle(1),
+            false,
+            0,
+        ));
+    }
 }
 
 fn gate_up(m: u32) -> bool {
@@ -255,14 +371,37 @@ fn with_ctx<R>(h: &Harness, dispatch: GemmDispatch, f: impl FnOnce(&ForwardConte
     f(&ctx)
 }
 
+/// The CALL SITE, which is a different question from the pure rule above: it
+/// reads the ceiling the COMPILED TARGET declares, so it cannot hardcode
+/// gb10's 64 — an H100 build of this same suite declares no cap and would then
+/// fail for being correct.
+///
+/// It asserts the RELATIONSHIP instead: selected just inside whatever ceiling
+/// this build carries, declined one row outside it. The values themselves are
+/// pinned as data by `atlas-kernels/tests/target_defaults.rs`.
 #[test]
 fn layer_selects_w8a8_on_a_dense_config() {
     let h = harness(0, 2048);
+    let max_m = max_m_for(INTER, H);
+    let inside = max_m.min(PROMPT_TOKENS);
+    assert!(
+        inside > 4,
+        "the m > 4 clause must not be what this test is measuring"
+    );
     with_ctx(&h, GemmDispatch::defaults(), |ctx| {
         assert!(
-            h.layer
-                .prefill_w8a8_selected(ctx, PROMPT_TOKENS, INTER, H, &h.fp8)
+            h.layer.prefill_w8a8_selected(ctx, inside, INTER, H, &h.fp8),
+            "inside the target's ceiling ({max_m}) the dense config takes W8A8"
         );
+        // No "outside" exists on a target that declares no cap, which is the
+        // baseline and is what H100 declares.
+        if max_m < u32::MAX {
+            assert!(
+                !h.layer
+                    .prefill_w8a8_selected(ctx, max_m + 1, INTER, H, &h.fp8),
+                "one row above the ceiling ({max_m}) must fall back to W8A16"
+            );
+        }
     });
 }
 

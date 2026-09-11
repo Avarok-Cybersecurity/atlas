@@ -80,13 +80,34 @@ fn hopper_declares_the_round_nine_recipe() {
 /// way to keep it that way is for this assertion to be an equality against
 /// [`baseline`] rather than a list somebody has to remember to update.
 #[test]
-fn gb10_declares_exactly_the_baseline() {
+fn gb10_declares_the_baseline_apart_from_the_measured_w8a8_ceiling() {
+    let d = declared("gb10");
+
+    // The one intended divergence, pinned by value so it cannot drift
+    // silently in either direction. gate/up is WIDENING (N=17408 > K=5120),
+    // down is NARROWING; the crossovers differ by ~6x, which is why there are
+    // two rows. Served receipt, spark-256a 2026-09-11, Qwen3.6-27B-FP8 M=949,
+    // n=5/leg, complete separation: W8A8 3343.3 ms vs W8A16 2560.4 ms.
+    assert_eq!(d.w8a8_prefill_max_m_widening, 64);
+    assert_eq!(d.w8a8_prefill_max_m_narrowing, 384);
+    assert_eq!(baseline("gb10").w8a8_prefill_max_m_widening, u32::MAX);
+    assert_eq!(baseline("gb10").w8a8_prefill_max_m_narrowing, u32::MAX);
+
+    // ...and EVERYTHING ELSE still restates the pre-existing hardcoded
+    // defaults. Asserted as an equality against `baseline` rather than a list
+    // somebody has to remember to update: normalising only the two fields
+    // above keeps a third divergence from slipping in unnoticed.
+    let normalised = Defaults {
+        w8a8_prefill_max_m_widening: u32::MAX,
+        w8a8_prefill_max_m_narrowing: u32::MAX,
+        ..d
+    };
     assert_eq!(
-        declared("gb10"),
+        normalised,
         baseline("gb10"),
-        "kernels/gb10/HARDWARE.toml [defaults] must restate the pre-existing \
-         hardcoded defaults and nothing else — it exists to SAY what GB10 \
-         serves with, not to change it"
+        "apart from the W8A8 prefill ceiling, kernels/gb10/HARDWARE.toml \
+         [defaults] must restate the pre-existing hardcoded defaults and \
+         nothing else — it exists to SAY what GB10 serves with"
     );
 }
 
@@ -132,7 +153,15 @@ fn a_hopper_only_lever_is_still_declared_by_every_table() {
     for hw in ["hopper", "gb10", "b200"] {
         let raw = std::fs::read_to_string(kernels_root().join(hw).join("HARDWARE.toml"))
             .unwrap_or_else(|e| panic!("kernels/{hw}/HARDWARE.toml: {e}"));
-        for lever in ["gdn_decode_hopper", "gdn_prefill_tc"] {
+        for lever in [
+            "gdn_decode_hopper",
+            "gdn_prefill_tc",
+            // #917. GB10 caps, hopper and b200 declare u32::MAX. The row is
+            // mandatory everywhere for the same reason as the two above: an
+            // absent cap and a deliberate no-cap must not look identical.
+            "w8a8_prefill_max_m_widening",
+            "w8a8_prefill_max_m_narrowing",
+        ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
                 "kernels/{hw}/HARDWARE.toml [defaults] must declare `{lever}` \

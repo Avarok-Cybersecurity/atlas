@@ -21,8 +21,14 @@
 use super::*;
 use atlas_kernels::TargetDefaults;
 
-/// `kernels/gb10/HARDWARE.toml` `[defaults]`, and also
-/// `atlas-kernels/build_defaults.rs::baseline` — the two agree on purpose.
+/// `kernels/gb10/HARDWARE.toml` `[defaults]`.
+///
+/// It matched `build_defaults::baseline` field for field until #917: the two
+/// `w8a8_prefill_max_m_*` rows are the first values GB10 declares in order to
+/// DIFFER from the baseline rather than to restate it, on a served receipt
+/// (W8A8 3343.3 ms -> W8A16 2560.4 ms at M=949, -23.4%). Everything else still
+/// agrees on purpose, and `gb10_declares_exactly_the_baseline` in
+/// `atlas-kernels/tests` pins exactly that split.
 const GB10: TargetDefaults = TargetDefaults {
     hw: "gb10",
     cublas_gemm_scope: "off",
@@ -37,6 +43,8 @@ const GB10: TargetDefaults = TargetDefaults {
     gdn_prefill_tc: false,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
+    w8a8_prefill_max_m_widening: 64,
+    w8a8_prefill_max_m_narrowing: 384,
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]` — the round-9 recipe.
@@ -54,6 +62,9 @@ const HOPPER: TargetDefaults = TargetDefaults {
     gdn_prefill_tc: false,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
+    // No cap: W8A8 is 2.0-3.1x over W8A16 at every M measured on H100.
+    w8a8_prefill_max_m_widening: u32::MAX,
+    w8a8_prefill_max_m_narrowing: u32::MAX,
 };
 
 fn with(defaults: &TargetDefaults, env: &[(&str, &str)]) -> TargetLevers {

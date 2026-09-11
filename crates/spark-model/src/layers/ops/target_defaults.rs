@@ -135,6 +135,20 @@ pub fn resolve_toggle(default_on: bool, raw: Option<&str>, legacy_off: bool) -> 
 /// worse failure than ignoring the excess. An unparseable or `0` environment
 /// value keeps the target's declaration; the value is a BAND, not a switch, so
 /// there is no "off".
+/// Upper `M` for the W8A8 dense-FFN prefill, per projection shape.
+///
+/// Unlike [`resolve_batchm_max`] a parsed **0 is honoured**, because 0 is a
+/// meaningful operator answer here ("never take the W8A8 arm on this shape")
+/// and silently ignoring it would make `…=0` read as agreement with the
+/// target — the same silent-agreement failure `parse_defaults` panics over.
+/// Anything that is not a u32 falls back to the target's declaration.
+pub fn resolve_max_m(default_max: u32, raw: Option<&str>) -> Resolved<u32> {
+    match raw.and_then(|v| v.trim().parse::<u32>().ok()) {
+        Some(v) => Resolved::env(v),
+        None => Resolved::target(default_max),
+    }
+}
+
 pub fn resolve_batchm_max(default_max: u32, raw: Option<&str>) -> Resolved<u32> {
     let clamp = |v: u32| v.min(DENSE_GEMV_BATCHM_MAX_M);
     match raw
@@ -181,6 +195,8 @@ pub struct TargetLevers {
     pub gdn_prefill_tc: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
     pub ssm_decode_ring_slots: Resolved<Option<usize>>,
+    pub w8a8_prefill_max_m_widening: Resolved<u32>,
+    pub w8a8_prefill_max_m_narrowing: Resolved<u32>,
 }
 
 /// The whole table, as a pure function of the baked declaration and a variable
@@ -252,6 +268,14 @@ pub fn resolve(
         lm_head_batchm_max: resolve_batchm_max(
             defaults.lm_head_batchm_max,
             var("ATLAS_LM_HEAD_BATCHM_MAX").as_deref(),
+        ),
+        w8a8_prefill_max_m_widening: resolve_max_m(
+            defaults.w8a8_prefill_max_m_widening,
+            var("ATLAS_W8A8_PREFILL_MAX_M_WIDENING").as_deref(),
+        ),
+        w8a8_prefill_max_m_narrowing: resolve_max_m(
+            defaults.w8a8_prefill_max_m_narrowing,
+            var("ATLAS_W8A8_PREFILL_MAX_M_NARROWING").as_deref(),
         ),
         ssm_batched_recurrent: resolve_toggle(
             defaults.ssm_batched_recurrent,
@@ -336,6 +360,15 @@ pub fn summary_line() -> String {
 pub fn format_levers(l: &TargetLevers) -> String {
     let onoff =
         |r: Resolved<bool>| format!("{}{}", if r.value { "on" } else { "off" }, r.source.tag());
+    // `u32::MAX` is the no-cap baseline, not a chosen bound. Printing
+    // 4294967295 in the serve log would read as a decision someone made.
+    let cap = |v: u32| {
+        if v == u32::MAX {
+            "max".to_string()
+        } else {
+            v.to_string()
+        }
+    };
     let c = l.cublas.value;
     let scope = if c.any() {
         let mut names = Vec::new();
@@ -359,7 +392,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
          attn_ncol_gemv={ncol} lm_head_m16_tc={head_m16} \
          lm_head_batchm_max={batchm}{batchm_src} ssm_batched_recurrent={recurrent} \
          gdn_decode_hopper={gdn_decode} gdn_prefill_tc={gdn_tc} decode_split_silu={silu} \
-         ssm_decode_ring_slots={ring}{ring_src}",
+         ssm_decode_ring_slots={ring}{ring_src} \
+         w8a8_prefill_max_m={w8a8_wide}/{w8a8_narrow}{w8a8_src}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         cublas_src = l.cublas.source.tag(),
         batch16 = onoff(l.ffn_batch16_tier),
@@ -378,6 +412,11 @@ pub fn format_levers(l: &TargetLevers) -> String {
             None => "auto".to_string(),
         },
         ring_src = l.ssm_decode_ring_slots.source.tag(),
+        // Printed as widening/narrowing. `max` reads as "no cap" rather than
+        // 4294967295, which would look like a number someone chose.
+        w8a8_wide = cap(l.w8a8_prefill_max_m_widening.value),
+        w8a8_narrow = cap(l.w8a8_prefill_max_m_narrowing.value),
+        w8a8_src = l.w8a8_prefill_max_m_widening.source.tag(),
     )
 }
 

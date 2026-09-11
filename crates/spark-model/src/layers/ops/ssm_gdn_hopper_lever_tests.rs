@@ -39,6 +39,8 @@ const HOPPER: TargetDefaults = TargetDefaults {
     gdn_prefill_tc: false,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
+    w8a8_prefill_max_m_widening: u32::MAX,
+    w8a8_prefill_max_m_narrowing: u32::MAX,
 };
 
 fn with(env: &[(&str, &str)]) -> TargetLevers {

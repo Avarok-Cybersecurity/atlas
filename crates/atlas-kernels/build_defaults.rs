@@ -41,6 +41,8 @@ pub(crate) struct Defaults {
     pub gdn_prefill_tc: bool,
     pub decode_split_silu: bool,
     pub ssm_decode_ring_slots: String,
+    pub w8a8_prefill_max_m_widening: u32,
+    pub w8a8_prefill_max_m_narrowing: u32,
 }
 
 /// What a target that declares NO `[defaults]` table gets.
@@ -70,6 +72,11 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         gdn_prefill_tc: false,
         decode_split_silu: true,
         ssm_decode_ring_slots: "auto".to_string(),
+        // No cap. Absence is the correct declaration for every arch on which
+        // W8A8 does not lose to W8A16 at large M, which is every arch that has
+        // not measured otherwise — H100 included (2.0-3.1x at every M).
+        w8a8_prefill_max_m_widening: u32::MAX,
+        w8a8_prefill_max_m_narrowing: u32::MAX,
     }
 }
 
@@ -99,6 +106,15 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             .to_string()
     };
 
+    let unsigned = |key: &str, v: &toml::Value| -> u32 {
+        let n = v.as_integer().unwrap_or_else(|| {
+            panic!("kernels/{hw}/HARDWARE.toml: [defaults] {key} must be an integer")
+        });
+        u32::try_from(n).unwrap_or_else(|_| {
+            panic!("kernels/{hw}/HARDWARE.toml: [defaults] {key} = {n} is not a u32")
+        })
+    };
+
     for (key, value) in table {
         match key.as_str() {
             "cublas_gemm_scope" => out.cublas_gemm_scope = string(key, value),
@@ -107,13 +123,10 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             "attn_m16_tc" => out.attn_m16_tc = boolean(key, value),
             "attn_ncol_gemv" => out.attn_ncol_gemv = boolean(key, value),
             "lm_head_m16_tc" => out.lm_head_m16_tc = boolean(key, value),
-            "lm_head_batchm_max" => {
-                let n = value.as_integer().unwrap_or_else(|| {
-                    panic!("kernels/{hw}/HARDWARE.toml: [defaults] {key} must be an integer")
-                });
-                out.lm_head_batchm_max = u32::try_from(n).unwrap_or_else(|_| {
-                    panic!("kernels/{hw}/HARDWARE.toml: [defaults] {key} = {n} is not a u32")
-                });
+            "lm_head_batchm_max" => out.lm_head_batchm_max = unsigned(key, value),
+            "w8a8_prefill_max_m_widening" => out.w8a8_prefill_max_m_widening = unsigned(key, value),
+            "w8a8_prefill_max_m_narrowing" => {
+                out.w8a8_prefill_max_m_narrowing = unsigned(key, value)
             }
             "ssm_batched_recurrent" => out.ssm_batched_recurrent = boolean(key, value),
             "gdn_decode_hopper" => out.gdn_decode_hopper = boolean(key, value),
@@ -156,6 +169,8 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   gdn_prefill_tc: {gdn_tc},\n\
          \x20   decode_split_silu: {split_silu},\n\
          \x20   ssm_decode_ring_slots: \"{ring}\",\n\
+         \x20   w8a8_prefill_max_m_widening: {w8a8_wide},\n\
+         \x20   w8a8_prefill_max_m_narrowing: {w8a8_narrow},\n\
          }};\n",
         hw = d.hw,
         cublas = d.cublas_gemm_scope,
@@ -170,6 +185,8 @@ pub(crate) fn literal(d: &Defaults) -> String {
         gdn_tc = d.gdn_prefill_tc,
         split_silu = d.decode_split_silu,
         ring = d.ssm_decode_ring_slots,
+        w8a8_wide = d.w8a8_prefill_max_m_widening,
+        w8a8_narrow = d.w8a8_prefill_max_m_narrowing,
     )
 }
 
