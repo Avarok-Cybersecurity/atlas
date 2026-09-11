@@ -181,8 +181,26 @@ what remains is the shape, not the blocking. 87 registers at 256 threads =
 
 `kernels/hopper/common/gdn_fwd_o_hopper.cu` and `..._recompute_wu_hopper.cu`,
 new stems (not same-stem overrides: the parents share a 2105-line file with
-twelve other entry points), selected by `ATLAS_GDN_PREFILL_TC` where the image
-carries them, pinned off by `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1`.
+twelve other entry points), declared with their shared `gdn_prefill_hopper.cuh`
+in `kernels/hopper/HARDWARE.toml`'s `[kernels] overrides` — the SSOT for which
+kernels this target owns rather than inherits, and what
+`crates/atlas-kernels/tests/inherited_overrides.rs` checks them against as
+ADDITIONS (a new stem must bring entry points gb10 does not declare).
+
+**One lever for the family.** The twins are selected by the SAME bit as the
+tensor-core state spine: `[defaults] gdn_prefill_tc`, with
+`ATLAS_GDN_PREFILL_TC` overriding under the 2026-09-11 grammar. It is resolved
+ONCE per prefill, in `ops::gdn_prefill_fla`, and handed to the twins' launcher
+as a value — not re-read from the environment there. That matters in exactly
+one direction: `ATLAS_GDN_PREFILL_TC=0` is an explicit OFF, and a presence
+check would have turned the twins ON for it while the spine stayed off, which
+is a prefill that is neither leg of an A/B.
+
+`ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` is the ONE-VARIABLE A/B that separates
+them: it keeps the spine and pins `wu`/`fwd_o` to their parents. It is
+presence-gated, like the other `ATLAS_NO_*` kill switches, and it is documented
+beside the `gdn_prefill_tc` row in `kernels/hopper/HARDWARE.toml` because that
+row is where an operator reading the target's defaults will look for it.
 
 * `fwd_o`: every product re-tiled 4 m-tiles × 4 n-quarters so all 16 warps
   compute; `kq` masked, decayed and split to two bf16 limbs in the C fragment
