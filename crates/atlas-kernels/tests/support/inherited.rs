@@ -33,19 +33,38 @@ pub struct Inherited {
     pub provenance: &'static str,
     /// The campaign's declared P0 model set for this hardware.
     pub models: &'static [&'static str],
-    /// `common/` entries this hardware set TUNES FOR ITSELF: a real file that
-    /// overrides its gb10 namesake, plus any header only that file needs.
-    /// Maintainer rule, 2026-09-11 — a Hopper-tuned kernel must not edit the
-    /// gb10 source; gb10 keeps its kernel and the hardware target overrides
-    /// it. Every name here is checked BOTH ways by `mirror::mirror_faults`:
-    /// it must exist and must be a regular file, and a name left off the list
-    /// that stops being a symlink is still reported as an undeclared fork.
-    pub owned: &'static [&'static str],
     /// The ptxas rejection this hardware answers by defining
     /// `ATLAS_NO_WARP_BLOCKSCALE_MMA` — the arch-specific half of the reason,
     /// which the MODEL.toml entries must cite. Per-target because the two
     /// architectures reject the W4A4 region for DIFFERENT reasons.
     pub blockscale_rejection: &'static str,
+}
+
+impl Inherited {
+    /// The `common/` entries this target OWNS rather than inherits — read
+    /// from its own `HARDWARE.toml` `[kernels] overrides`, never from a list
+    /// kept here.
+    ///
+    /// A METHOD, not a field, and that is the whole point. The declaration
+    /// arrived twice — once as `[kernels] overrides` in the TOML that
+    /// `scripts/check_kernel_shadows.py` and the build read, once as a Rust
+    /// constant these tests read — and two spellings of "which kernels does
+    /// Hopper own" is exactly how a file comes to be declared in one and
+    /// forgotten in the other. The TOML wins because it is the one the
+    /// non-Rust consumers can read.
+    ///
+    /// Two SHAPES live in the one list, distinguished by whether the oracle
+    /// has the same name, and `inherited_targets.rs` checks each differently:
+    ///
+    /// * an OVERRIDE replaces a gb10 namesake — same entry points, this
+    ///   hardware's instruction selection, and gb10's own file left untouched
+    ///   because five other targets compile it;
+    /// * an ADDITION has a stem gb10 does not have at all, and must bring
+    ///   entry points gb10 does not declare (otherwise one target would
+    ///   compile two definitions of one kernel name).
+    pub fn owned(&self) -> std::collections::BTreeSet<String> {
+        kernel_overrides(self.hw)
+    }
 }
 
 /// The five P0 models shared by the Hopper/B200 campaign.
@@ -69,29 +88,6 @@ pub const HOPPER_MODELS: &[&str] = &[
     "qwen3.8-27b",
 ];
 
-/// `kernels/hopper/common` entries that are Hopper's own, not gb10's.
-///
-/// The W8A16 M=1 decode GEMV family (#928). On an H100 these three entry
-/// points are 71% of the C=1 decode step (nsys, 1xH100, Qwen/Qwen3.8-27B-FP8,
-/// 2026-09-11 round 10) and the gb10 kernels are LSU-bound on the E4M3 LUT
-/// gather rather than bandwidth-bound; the reasoning, the arithmetic and the
-/// bit-identity argument are in `kernels/hopper/common/w8a16_gemv_hopper.cuh`.
-/// The `.cuh` has no gb10 counterpart by design — it is the shared inner loop
-/// of the two `.cu` overrides and nothing else includes it.
-///
-/// `gdn_decode_hopper.cu` is the GDN decode recurrence (#927) and is the other
-/// shape this list allows: a NEW stem rather than an override. Its gb10
-/// namesake, `gated_delta_rule.cu`, is shadowed out of every build that
-/// matters by the model dir's own copy, so a same-stem file in `common/` would
-/// never be compiled — the twins carry new entry names and a launcher tier
-/// instead. Reasoning and numbers: `GDN-DECODE-ATTRIBUTION.md`.
-pub const HOPPER_OWNED_COMMON: &[&str] = &[
-    "gdn_decode_hopper.cu",
-    "w8a16_gemv.cu",
-    "w8a16_gemv_fused.cu",
-    "w8a16_gemv_hopper.cuh",
-];
-
 /// Every hardware set whose kernels are gb10's, reached by symlink.
 ///
 /// ORACLE for the arch strings: NVIDIA's own SM numbering. H100 and H200 are
@@ -106,7 +102,6 @@ pub const INHERITED: &[Inherited] = &[
         cc: "9.0",
         provenance: "Hopper target: kernel set inherited from gb10 via symlink",
         models: HOPPER_MODELS,
-        owned: HOPPER_OWNED_COMMON,
         blockscale_rejection: "cvt with .e2m1x2",
     },
     Inherited {
@@ -115,7 +110,6 @@ pub const INHERITED: &[Inherited] = &[
         cc: "10.0",
         provenance: "B200 target: kernel set inherited from gb10 via symlink",
         models: P0_MODELS,
-        owned: &[],
         blockscale_rejection: "mma with block scale",
     },
 ];
@@ -134,6 +128,31 @@ pub fn hw_dir(hw: &str) -> PathBuf {
 
 pub fn gb10_dir() -> PathBuf {
     kernels_root().join("gb10")
+}
+
+/// `[kernels] overrides` from `kernels/<hw>/HARDWARE.toml` — the file names in
+/// this target's `common/` that are NOT inherited from gb10.
+///
+/// The SSOT for "which kernels does this target tune for itself", read by the
+/// mirror check here and reported by `scripts/check_kernel_shadows.py`. Empty
+/// (and absent from the file) for a target that inherits everything.
+pub fn kernel_overrides(hw: &str) -> std::collections::BTreeSet<String> {
+    hardware_toml(hw)
+        .get("kernels")
+        .and_then(|k| k.get("overrides"))
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .map(|v| {
+                    v.as_str()
+                        .unwrap_or_else(|| {
+                            panic!("kernels/{hw}: [kernels] overrides entries must be strings")
+                        })
+                        .to_string()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn hardware_toml(hw: &str) -> toml::Value {

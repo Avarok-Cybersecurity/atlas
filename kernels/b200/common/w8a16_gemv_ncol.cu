@@ -1,1 +1,1 @@
-../../gb10/common/w8a16_gemv_ncol.cu
+../../hopper/common/w8a16_gemv_ncol.cu

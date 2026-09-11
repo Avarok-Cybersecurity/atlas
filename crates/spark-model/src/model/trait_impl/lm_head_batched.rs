@@ -45,9 +45,12 @@ fn bf16_batch_gemv_from_value(value: Option<&str>) -> bool {
     value != Some("0")
 }
 
-/// Resolve `ATLAS_LM_HEAD_BATCHM_MAX` into the BF16 decode head's batched-GEMV
+/// `ATLAS_LM_HEAD_BATCHM_MAX` alone, as the BF16 decode head's batched-GEMV
 /// band. A RESOLVED VALUE, deliberately, and not an edit to
-/// `DENSE_GEMV_BATCHM_DECODE_MAX_M`.
+/// `DENSE_GEMV_BATCHM_DECODE_MAX_M`. [`lm_head_batchm_max`] below is what the
+/// head reads; this keeps the VARIABLE's own grammar for the tests that grade
+/// it, and now delegates the clamp/reject rules to
+/// `ops::target_defaults::resolve_batchm_max`.
 ///
 /// 🔴 Read `layers/ops/gemm_quant.rs` before touching this. That constant is
 /// the FROZEN band, and it is frozen for a reason that still holds: the MTP
@@ -56,10 +59,16 @@ fn bf16_batch_gemv_from_value(value: Option<&str>) -> bool {
 /// band's upper edge decides whether a width lands on the batched GEMV or on a
 /// REASSOCIATING tile GEMM, and the A/B behind the number measured the GEMV
 /// NEGATIVE above 8 on GB10 (-14.4% at C=16, commits 84d5b763c / 78d276832).
-/// So the default here stays 8 and GB10 bits are unchanged by construction;
-/// H100 sets `ATLAS_LM_HEAD_BATCHM_MAX=16` because on that machine the tile
-/// GEMM is the thing that loses at decode widths (#927, 224 ms/step at 16
-/// active rows). The lever is per-site: it moves THIS head and nothing else.
+///
+/// ★ THE DEFAULT IS NO LONGER A LITERAL. It is the compiled target's
+/// (`kernels/<hw>/HARDWARE.toml` `[defaults] lm_head_batchm_max`): `gb10`
+/// declares the frozen 8, so GB10 bits are unchanged by construction, and
+/// `hopper` declares 16 because on that machine the tile GEMM is the thing
+/// that loses at decode widths (#927, 224 ms/step at 16 active rows). That 16
+/// used to be `ATLAS_LM_HEAD_BATCHM_MAX=16` in an H100 launch script outside
+/// this repository — the arrangement the 2026-09-11 maintainer review called
+/// "discipline rather than structure". The lever stays per-site: it moves THIS
+/// head and nothing else.
 ///
 /// Clamped to `DENSE_GEMV_BATCHM_MAX_M`, the kernel's compile-time row bound —
 /// `dense_gemv_batchm` refuses above it rather than silently writing 16 of m
@@ -67,22 +76,21 @@ fn bf16_batch_gemv_from_value(value: Option<&str>) -> bool {
 /// worse failure than ignoring the excess. Unparseable or `0` keeps the
 /// default; the value is a band, not a switch, so there is no "off".
 fn batchm_max_from_value(value: Option<&str>) -> u32 {
-    value
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .filter(|&v| v > 0)
-        .unwrap_or(ops::DENSE_GEMV_BATCHM_DECODE_MAX_M)
-        .min(ops::DENSE_GEMV_BATCHM_MAX_M)
+    ops::target_defaults::resolve_batchm_max(ops::DENSE_GEMV_BATCHM_DECODE_MAX_M, value).value
 }
 
-/// Process-wide resolution of the band above. `OnceLock`-cached because this
-/// is a per-step site AND because the route must be CONSTANT across
-/// CUDA-graph replays — a per-call `env::var` could change the captured
-/// launch set between capture and replay.
+/// Process-wide resolution of the band.
+///
+/// The DEFAULT is now the compiled target's (`kernels/<hw>/HARDWARE.toml`
+/// `[defaults] lm_head_batchm_max`) rather than a literal that only described
+/// GB10: `kernels/gb10` declares 8 — the frozen band, unchanged — and
+/// `kernels/hopper` declares **16**, which used to be
+/// `ATLAS_LM_HEAD_BATCHM_MAX=16` in an H100 launch script outside this
+/// repository. The variable still overrides, per-site: it moves THIS head and
+/// nothing else. Resolution, clamping and caching are
+/// `ops::target_defaults::resolve_batchm_max` and `resolved()`.
 fn lm_head_batchm_max() -> u32 {
-    static MAX: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *MAX.get_or_init(|| {
-        batchm_max_from_value(std::env::var("ATLAS_LM_HEAD_BATCHM_MAX").ok().as_deref())
-    })
+    ops::target_defaults::resolved().lm_head_batchm_max.value
 }
 
 /// The BF16 head's TENSOR-CORE arm, resolved once at model construction:
@@ -116,6 +124,18 @@ fn m16_tc_enabled_from_presence(present: bool) -> bool {
     present
 }
 
+/// The tensor-core head arm's ENABLE bit for this process.
+///
+/// From the compiled target (`[defaults] lm_head_m16_tc`) with
+/// `ATLAS_LM_HEAD_M16_TC` overriding. `kernels/hopper` declares it ON — the
+/// +4% H100 receipt this arm shipped dark waiting for — and `kernels/gb10`
+/// declares it OFF, where `dense_gemm_m16_bf16.cu` is not in the kernel set at
+/// all. [`m16_tc_enabled_from_presence`] above is retained as the pure
+/// spelling of the variable's own grammar, which `target_defaults` generalises.
+fn m16_tc_enabled() -> bool {
+    ops::target_defaults::resolved().lm_head_m16_tc.value
+}
+
 /// `ATLAS_LM_HEAD_M16_TC_NTILE` — 32 (default) or 64. An unrecognised value
 /// falls back to 32 rather than failing the boot: the tile is a perf A/B knob,
 /// and the route log names the tile that actually ran.
@@ -135,7 +155,7 @@ fn lm_head_m16_tc_env() -> (bool, u32) {
     *ENV.get_or_init(|| {
         let n_tile = std::env::var("ATLAS_LM_HEAD_M16_TC_NTILE").ok();
         (
-            m16_tc_enabled_from_presence(std::env::var_os("ATLAS_LM_HEAD_M16_TC").is_some()),
+            m16_tc_enabled(),
             m16_tc_n_tile_from_value(n_tile.as_deref()),
         )
     })

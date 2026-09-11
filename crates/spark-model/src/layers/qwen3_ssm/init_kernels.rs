@@ -68,3 +68,26 @@ pub(super) fn wyn_f16_kernels(gpu: &dyn GpuBackend) -> [KernelHandle; 12] {
         crate::layers::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy16_f16"),
     ]
 }
+
+/// Resolve one `fp8_scale_transpose` entry point, but ONLY when a cuBLASLt SSM
+/// arm could launch it (`[defaults] cublas_gemm_scope` naming `ssm`, or
+/// `ATLAS_CUBLAS_GEMM` overriding it).
+///
+/// Same rule as [`hc_kernel`], for a second reason on top of the audit one:
+/// since the 2026-09-11 arch separation, `fp8_scale_transpose.cu` is a
+/// HOPPER-TUNED source (`kernels/hopper/common`, declared in that target's
+/// `[kernels] overrides`) and GB10 does not compile it. An unconditional probe
+/// would leave a failed row the fail-closed startup audit refuses the boot on,
+/// for a kernel this target is correct not to have.
+#[track_caller]
+pub(super) fn cublas_ssm_kernel(gpu: &dyn GpuBackend, func: &str) -> KernelHandle {
+    if crate::layers::ops::target_defaults::resolved()
+        .cublas
+        .value
+        .ssm
+    {
+        crate::layers::try_kernel(gpu, "fp8_scale_transpose", func)
+    } else {
+        KernelHandle(0)
+    }
+}

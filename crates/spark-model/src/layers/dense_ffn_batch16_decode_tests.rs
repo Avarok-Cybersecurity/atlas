@@ -152,6 +152,13 @@ fn run(m: u32, expect: Expect, configure: impl FnOnce(&mut DenseFfnLayer)) {
     .unwrap();
     layer.w8a16_gemv_batch4_k = KernelHandle(BATCH4_K);
     layer.w8a16_gemv_batch16_k = KernelHandle(BATCH16_K);
+    // The TIER is armed per target (`[defaults] ffn_batch16_tier`) and this
+    // binary is built for whichever tree `ATLAS_TARGET_HW` selected, so the
+    // dispatch tests set the field rather than depend on the build's target —
+    // the same reason the M16 tests set `m16_tc`. What is graded here is the
+    // ROUTE an armed tier takes; that the targets in tree declare it off is
+    // `target_defaults_tests` and `atlas-kernels/tests/target_defaults.rs`.
+    layer.batch16_tier = true;
     layer.act_mul = KernelHandle(0xAC7);
     let fp8 = Fp8Weight {
         weight: gpu.alloc(128 * 128).unwrap(),

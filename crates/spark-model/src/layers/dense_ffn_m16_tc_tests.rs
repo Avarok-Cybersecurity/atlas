@@ -172,6 +172,12 @@ fn run_tiled(m: u32, expect: Expect, tile: u32, configure: impl FnOnce(&mut Dens
     .unwrap();
     layer.w8a16_gemv_batch4_k = KernelHandle(BATCH4_K);
     layer.w8a16_gemv_batch16_k = KernelHandle(BATCH16_K);
+    // The batch16 tier is rungs 4-5 of the ladder these tests grade, so it has
+    // to be armed for "the M16 lever is unset" to mean "falls through to
+    // batch16" rather than "falls through to the tile GEMMs". Per-target since
+    // the `[defaults]` table landed; set explicitly for the same reason
+    // `lever_on` sets `m16_tc`.
+    layer.batch16_tier = true;
     layer.w8a16_gemm_m16_k = KernelHandle(M16TC_K);
     layer.w8a16_gemm_m16_n64_k = KernelHandle(M16TC_N64_K);
     layer.act_mul = KernelHandle(0xAC7);

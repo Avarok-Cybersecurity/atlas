@@ -36,8 +36,17 @@ pub use behavior_defaults::{
     DEFAULT_EFFORT_CAPPED_AT_CEILING, DEFAULT_MAX_INTER_TOOL_PROSE, DEFAULT_MAX_THINKING_BUDGET,
 };
 
+// The compiled target's SERVING defaults, baked from
+// `kernels/<hw>/HARDWARE.toml` `[defaults]`. The TYPE is hand-written here;
+// the `TARGET_DEFAULTS` const is generated into the same `target_ptx.rs` the
+// kernel registry lives in — one generated file, one `include!`, one content
+// hash, so there is exactly one thing that can go stale and
+// `ATLAS_KERNEL_SET_HASH` below already covers it.
+mod target_defaults;
+pub use target_defaults::TargetDefaults;
+
 // Auto-generated: per-target PTX constants, ptx_modules() function,
-// and all_ptx_sets() for multi-target builds.
+// all_ptx_sets() for multi-target builds, and `TARGET_DEFAULTS`.
 // NOTE: cargo does NOT track this build-script-generated include! as a
 // recompile trigger, so when build.rs regenerates target_ptx.rs (e.g. the
 // module set changes) this lib can keep a STALE embedded set. Any edit to

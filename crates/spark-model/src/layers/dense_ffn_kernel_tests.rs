@@ -166,16 +166,22 @@ fn larger_native_ffn_uses_existing_pipelined_gemm() {
 /// so only the handle distinguishes the two rungs. (`run_case` asserts one
 /// launch per projection, which is the other half of the contract: the tile
 /// GEMM it replaces also emitted one, but over an M-padded MMA tile.)
+///
+/// The tier is ARMED explicitly (`layer.batch16_tier`): since the per-target
+/// `[defaults]` table landed, whether it is on depends on which `kernels/<hw>`
+/// tree this binary was built for, and a dispatch test must grade the route
+/// rather than the build's target. Which targets declare it on is
+/// `ops::target_defaults`'s tests.
 #[test]
 fn five_to_sixteen_row_native_ffn_uses_the_batch16_gemv() {
+    let arm = |layer: &mut DenseFfnLayer| {
+        layer.batch16_tier = true;
+        layer.w8a16_gemv_batch16_k = KernelHandle(0xB16);
+    };
     for rows in [5, 8, 16] {
-        run_case(rows, true, 0xB16, [32, 1, 1], [256, 1, 1], |layer| {
-            layer.w8a16_gemv_batch16_k = KernelHandle(0xB16)
-        });
+        run_case(rows, true, 0xB16, [32, 1, 1], [256, 1, 1], arm);
     }
-    run_case(5, false, 0xB16, [32, 1, 1], [256, 1, 1], |layer| {
-        layer.w8a16_gemv_batch16_k = KernelHandle(0xB16)
-    });
+    run_case(5, false, 0xB16, [32, 1, 1], [256, 1, 1], arm);
 }
 
 #[test]

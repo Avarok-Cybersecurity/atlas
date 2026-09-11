@@ -500,11 +500,11 @@ impl Qwen3SsmLayer {
                 "fp8_gemm_t_blockscaled",
                 "fp8_gemm_t_blockscaled",
             ),
-            fp8_act_scale_kmajor_k: super::super::try_kernel(
-                gpu,
-                "fp8_scale_transpose",
-                "fp8_act_scale_to_kmajor",
-            ),
+            // Probed only under a cuBLASLt SSM scope (the condition the
+            // dispatch launches under, `prefill_w8a8.rs`): the source is
+            // Hopper-tuned and absent from GB10's kernel set, where the boot
+            // audit fails closed on an unresolved lookup nothing declared.
+            fp8_act_scale_kmajor_k: cublas_ssm_kernel(gpu, "fp8_act_scale_to_kmajor"),
         })
     }
 
@@ -513,7 +513,7 @@ impl Qwen3SsmLayer {
 
 #[path = "init_kernels.rs"]
 mod init_kernels;
-use init_kernels::hc_kernel;
+use init_kernels::{cublas_ssm_kernel, hc_kernel};
 
 #[path = "init_sequential.rs"]
 mod init_sequential;

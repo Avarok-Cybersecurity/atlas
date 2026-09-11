@@ -27,6 +27,27 @@ behind specific subsystems — see the
   result. Previously only the result was stored, so a number could not be
   attributed to a configuration or reproduced. Pre-existing files still load.
 
+### Changed
+- **Serving defaults are now per-hardware-target and live in the repository.**
+  `kernels/<hw>/HARDWARE.toml` gained a `[defaults]` table, baked into the
+  binary by `build.rs` as `atlas_kernels::TARGET_DEFAULTS`. Every kernel-path
+  lever that differs between GB10 and H100 — the cuBLASLt scope, the M16
+  tensor-core tiers, the BF16 head's batched-GEMV band, the batched GDN
+  recurrence — resolves from that declaration FIRST and the environment second.
+  An H100 serve therefore reproduces its measured configuration with no
+  `ATLAS_*` prefix at all, and a serve prints one `target defaults (<hw>): …`
+  line naming every resolved value and which of them came from the
+  environment. GB10's declaration restates the previous hardcoded defaults
+  exactly, asserted as an equality in `atlas-kernels/tests/target_defaults.rs`,
+  so GB10 behaviour is unchanged.
+- **`ATLAS_*=0` now means OFF for the kernel-path toggles** it previously left
+  ON (`ATLAS_ATTN_M16_TC`, `ATLAS_FFN_M16_TC`, `ATLAS_M16_TC`,
+  `ATLAS_LM_HEAD_M16_TC`, `ATLAS_ATTN_NCOL_GEMV`,
+  `ATLAS_SSM_BATCHED_RECURRENT`). They were presence-gated, which cannot
+  express "off" — and once a target's default can be ON, an operator needs to
+  be able to turn one off without editing a launch script. `VAR=1` is unchanged
+  everywhere, and the `ATLAS_NO_*` kill switches stay presence-gated.
+
 ### Added
 
 - DeepSeek-V4-Flash support on GB10: native MXFP4 (E8M0) routed-expert

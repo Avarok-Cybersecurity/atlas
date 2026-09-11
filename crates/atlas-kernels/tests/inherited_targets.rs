@@ -7,19 +7,24 @@
 //! Same posture as `target_resolution.rs`: `src/*_tests.rs` prove the rules on
 //! fixtures, these prove the DATA that is actually checked in.
 //!
-//! Every source they compile is a relative symlink into `kernels/gb10` EXCEPT
-//! the handful each target declares in [`inherited::Inherited::owned`], which
-//! makes `gb10` the ORACLE for this whole file: an inherited kernel set is
-//! correct exactly when it is gb10's kernel set, reachable, plus the overrides
-//! that were declared. A symlink that dangles, a gb10 file that gained no
-//! counterpart, or a fork nobody declared is a kernel that silently vanishes
-//! from — or silently diverges in — that hardware's build: the shadow-drift
-//! failure class documented in `build.rs`, arriving through a different door.
+//! Almost every source they compile is a relative symlink into
+//! `kernels/gb10`, which makes `gb10` the ORACLE for this whole file: an
+//! inherited kernel set is correct exactly when it is gb10's kernel set,
+//! reachable, plus the handful each target DECLARES it owns. A symlink that
+//! dangles, a gb10 file that gained no counterpart, or a fork nobody declared
+//! is a kernel that silently vanishes from — or silently diverges in — that
+//! hardware's build: the shadow-drift failure class documented in `build.rs`,
+//! arriving through a different door.
 //!
-//! The declared overrides are the maintainer rule of 2026-09-11: a kernel
-//! tuned for one hardware set REPLACES its link in that set's `common/` and
-//! leaves the gb10 source untouched, rather than editing a file five other
-//! targets compile.
+//! The exception is DECLARED, per target, in `HARDWARE.toml` `[kernels]
+//! overrides` — the SSOT, read here through
+//! [`inherited::Inherited::owned`] and by
+//! `scripts/check_kernel_shadows.py`. Maintainer rule, 2026-09-11 (tbraun96):
+//! "symlinks are fine provided the pointed-to gb10 file is not edited when
+//! iterating on Hopper; Hopper-tuned kernels must be real files under
+//! `kernels/hopper/`." Declared rather than merely tolerated, because an
+//! UNDECLARED regular file in a mirror is a silent fork of a shared kernel and
+//! nothing on disk tells the two apart.
 //!
 //! `cargo test` runs GPU-free with `ATLAS_SKIP_BUILD=1`, where `build.rs`
 //! returns before target resolution ever happens, so without this file nothing
@@ -31,18 +36,19 @@
 //! in its failure message, so a red still says which tree is wrong.
 //!
 //! This binary covers the tree AS MIRRORED — HARDWARE.toml, `common/`, the P0
-//! MODEL.tomls, and what `build.rs` would resolve. The `ATLAS_NO_WARP_
-//! BLOCKSCALE_MMA` opt-out and the `[expected_absent]` pins that answer it are
-//! `inherited_targets_w4a4.rs`; both read [`INHERITED`] from
-//! `support/inherited.rs`, so neither can be told about a target the other has
-//! not heard of.
+//! MODEL.tomls, and what `build.rs` would resolve. Two siblings carry the rest
+//! and read [`INHERITED`] from `support/inherited.rs`, so none of the three can
+//! be told about a target the others have not heard of:
+//! `inherited_overrides.rs` pins what each DECLARED override must be, and
+//! `inherited_targets_w4a4.rs` the `ATLAS_NO_WARP_BLOCKSCALE_MMA` opt-out and
+//! the `[expected_absent]` pins that answer it.
 
 #[path = "support/inherited.rs"]
 mod inherited;
 #[path = "support/mirror.rs"]
 mod mirror;
 
-use inherited::{HOPPER_OWNED_COMMON, INHERITED, gb10_dir, hardware_toml, hw_dir};
+use inherited::{INHERITED, gb10_dir, hardware_toml, hw_dir};
 use mirror::mirror_faults;
 
 use std::path::PathBuf;
@@ -127,26 +133,62 @@ fn every_inherited_hardware_toml_carries_the_same_key_set_as_gb10() {
     }
 }
 
+/// Every NVIDIA target declares the SAME `[defaults]` levers, even where the
+/// value agrees with gb10's.
+///
+/// An absent key falls through to `build_defaults::baseline`, which is
+/// correct behaviour and terrible documentation: a reader of
+/// `kernels/hopper/HARDWARE.toml` would have to know the baseline to know what
+/// H100 serves with, which is the "recipe lives somewhere else" problem this
+/// whole table replaces. The values are asserted in
+/// `tests/target_defaults.rs`; what is asserted here is that the three files
+/// are answerable side by side.
+#[test]
+fn every_inherited_hardware_toml_declares_the_same_serving_levers_as_gb10() {
+    let gb10_path = gb10_dir().join("HARDWARE.toml");
+    let gb10: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&gb10_path).expect("gb10 HARDWARE.toml"))
+            .expect("valid TOML");
+    let levers = |v: &toml::Value| -> std::collections::BTreeSet<String> {
+        v.get("defaults")
+            .and_then(|d| d.as_table())
+            .expect("[defaults] table")
+            .keys()
+            .cloned()
+            .collect()
+    };
+    for t in INHERITED {
+        assert_eq!(
+            levers(&hardware_toml(t.hw)),
+            levers(&gb10),
+            "kernels/{}/HARDWARE.toml [defaults] must state every lever              explicitly, so the file answers 'what does this target serve              with' on its own",
+            t.hw
+        );
+    }
+}
+
 // ── (b) common/ — inherited from gb10 by relative symlink ──
 
-/// ORACLE: `kernels/gb10/common`. Each inherited `common/` is that directory,
-/// reachable — all 181 entries (171 `.cu`, 9 `.cuh` headers the `.cu` files
-/// `#include`, and `KERNEL.toml`, which `build.rs` merges as the base layer of
-/// every target's flags and `[modules]` overrides) — with each name in that
-/// target's `owned` list a real file in place of the link instead.
+/// ORACLE: `kernels/gb10/common`, PLUS this target's declared overrides. Each
+/// inherited `common/` is that directory, reachable — every `.cu`, every
+/// `.cuh` header the `.cu` files `#include`, and `KERNEL.toml`, which
+/// `build.rs` merges as the base layer of every target's flags and
+/// `[modules]` overrides — with each DECLARED name a real file (or a link to
+/// another target's real file) in place of the link instead.
 ///
 /// Unlike strix's curated 99, nothing is left out: these are NVIDIA targets
 /// compiled by the same nvcc, so a file gb10 compiles is a file they must
-/// compile, and a subset here would be an undocumented kernel drop. An
-/// override is not a subset: the entry point keeps its name, so the module
-/// still resolves; only the source behind it is this hardware's.
+/// compile, and a subset here would be an undocumented kernel drop. What they
+/// may REPLACE or ADD is exactly `[kernels] overrides`; an override is not a
+/// subset, because the entry point keeps its name and only the source behind
+/// it is this hardware's.
 #[test]
 fn every_inherited_common_mirrors_every_gb10_common_file() {
     for t in INHERITED {
         let faults = mirror_faults(
             &hw_dir(t.hw).join("common"),
             &gb10_dir().join("common"),
-            t.owned,
+            &t.owned(),
         );
         assert!(
             faults.is_empty(),
@@ -154,152 +196,6 @@ fn every_inherited_common_mirrors_every_gb10_common_file() {
             t.hw,
             faults.join("\n  ")
         );
-    }
-}
-
-/// The maintainer rule of 2026-09-11, as a property of the checked-in tree:
-/// a Hopper-tuned kernel OVERRIDES its gb10 namesake and does not edit it.
-///
-/// Three things, because the rule has three ways to be broken and the `owned`
-/// list only covers the first:
-///  1. the hopper entry is a real file (the override exists at all);
-///  2. the gb10 source it overrides is still gb10's — a regular file, still
-///     the shared-memory `E4M3_LUT` gather, with no Hopper instruction in it.
-///     `w8a16_gemv.cu` is compiled by gb10, b200, strix and strix-hip; editing
-///     it to serve Hopper would change all four;
-///  3. the OTHER inherited target still links to gb10. An override that leaked
-///     into b200 would ship sm_90a-tuned code to a B200 with no receipt.
-///
-/// The instruction strings are the discriminator because they are what the
-/// override is FOR — see `kernels/hopper/common/w8a16_gemv_hopper.cuh`.
-#[test]
-fn a_hopper_owned_kernel_overrides_gb10_without_editing_it() {
-    let hopper = hw_dir("hopper").join("common");
-    let gb10 = gb10_dir().join("common");
-    // An owned source is one of two things, and only the first is an
-    // OVERRIDE: a file whose stem gb10 also has. A file with a NEW stem —
-    // `gdn_decode_hopper.cu` (#927) — overrides nothing, so the three
-    // assertions below have no gb10 side to check and are answered by
-    // `a_hopper_owned_addition_brings_entry_points_gb10_does_not` instead.
-    let sources: Vec<&str> = HOPPER_OWNED_COMMON
-        .iter()
-        .copied()
-        .filter(|n| n.ends_with(".cu") && gb10.join(n).exists())
-        .collect();
-    assert!(
-        !sources.is_empty(),
-        "the owned list has no gb10-overriding sources to check"
-    );
-
-    for name in sources {
-        let over = hopper.join(name);
-        assert!(
-            std::fs::read_link(&over).is_err(),
-            "kernels/hopper/common/{name} is still a symlink; it is declared as \
-             a Hopper override"
-        );
-        let over_text = std::fs::read_to_string(&over).unwrap();
-        assert!(
-            over_text.contains("cvt.rn.f16x2.e4m3x2") || over_text.contains("w8a16_gemv_hopper"),
-            "kernels/hopper/common/{name} overrides gb10 without using anything \
-             this hardware has; an override that is not tuned is drift"
-        );
-
-        let base = gb10.join(name);
-        assert!(
-            std::fs::read_link(&base).is_err(),
-            "kernels/gb10/common/{name} must stay a real file"
-        );
-        let base_text = std::fs::read_to_string(&base).unwrap();
-        assert!(
-            base_text.contains("s_lut["),
-            "kernels/gb10/common/{name} no longer holds the shared-memory E4M3 \
-             LUT gather — the Hopper work edited gb10 instead of overriding it"
-        );
-        assert!(
-            !base_text.contains("cvt.rn.f16x2.e4m3x2"),
-            "kernels/gb10/common/{name} gained a Hopper dequant instruction; \
-             gb10, b200, strix and strix-hip all compile this file"
-        );
-
-        let b200 = hw_dir("b200").join("common").join(name);
-        assert!(
-            std::fs::read_link(&b200).is_ok(),
-            "kernels/b200/common/{name} stopped being a link to gb10; the \
-             override leaked to a target with no receipt for it"
-        );
-    }
-}
-
-/// The other half of the rule, for an owned source with a NEW stem.
-///
-/// `gdn_decode_hopper.cu` (#927) does not replace a gb10 file; it adds entry
-/// points beside them, because its gb10 namesake `gated_delta_rule.cu` is
-/// shadowed out of the build by the model directory's own copy and a
-/// same-stem override in `common/` would never be compiled.
-///
-/// That freedom is exactly what needs a guard. A new stem that re-declared an
-/// entry gb10 already declares would put two definitions of one kernel name in
-/// one target's module set, and a new stem whose bytes are a gb10 file's are a
-/// fork wearing a new name. Both are checked here; neither is visible to
-/// `mirror_faults`, which only knows the name is declared.
-#[test]
-fn a_hopper_owned_addition_brings_entry_points_gb10_does_not() {
-    let hopper = hw_dir("hopper").join("common");
-    let gb10 = gb10_dir().join("common");
-    let additions: Vec<&str> = HOPPER_OWNED_COMMON
-        .iter()
-        .copied()
-        .filter(|n| n.ends_with(".cu") && !gb10.join(n).exists())
-        .collect();
-
-    // Entry names and file hashes of everything gb10's common/ declares.
-    let entry = |text: &str| -> Vec<String> {
-        text.lines()
-            .filter_map(|l| l.split_once("__global__ void "))
-            .filter_map(|(_, rest)| {
-                let name = rest.trim().split(['(', ' ']).next()?;
-                (!name.is_empty()).then(|| name.to_string())
-            })
-            .collect()
-    };
-    let mut gb10_entries = std::collections::BTreeSet::new();
-    let mut gb10_bodies = std::collections::BTreeSet::new();
-    for f in std::fs::read_dir(&gb10).expect("gb10 common").flatten() {
-        let path = f.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("cu") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).expect("gb10 source");
-        gb10_entries.extend(entry(&text));
-        gb10_bodies.insert(text);
-    }
-
-    for name in additions {
-        let path = hopper.join(name);
-        assert!(
-            std::fs::read_link(&path).is_err(),
-            "kernels/hopper/common/{name} is declared owned and is still a symlink"
-        );
-        let text = std::fs::read_to_string(&path).expect("hopper source");
-        assert!(
-            !gb10_bodies.contains(&text),
-            "kernels/hopper/common/{name} is byte-identical to a gb10 common source — \
-             an undeclared fork under a new name, not a tuned addition"
-        );
-        let declared = entry(&text);
-        assert!(
-            !declared.is_empty(),
-            "kernels/hopper/common/{name} declares no entry point, so nothing can \
-             dispatch to it"
-        );
-        for e in declared {
-            assert!(
-                !gb10_entries.contains(&e),
-                "kernels/hopper/common/{name} re-declares `{e}`, which kernels/gb10/common \
-                 already defines: one target would compile two definitions of one kernel name"
-            );
-        }
     }
 }
 
@@ -443,12 +339,16 @@ fn every_model_nvfp4_dir_mirrors_gb10() {
                 assert!(!hw_dir(t.hw).join(model).join("nvfp4").exists());
                 continue;
             }
+            // No overrides here, deliberately: `[kernels] overrides` names
+            // files in `common/`, which every model on the target shares. A
+            // per-MODEL fork would be the shadow-drift class, and the rule
+            // that the model dirs are a pure symlink mirror is unchanged.
             let faults = mirror_faults(
                 &hw_dir(t.hw).join(model).join("nvfp4"),
                 &gb10_dir().join(model).join("nvfp4"),
-                // Per-model quant dirs own nothing: `[Inherited::owned]` is
+                // Per-model quant dirs own nothing: `[kernels] overrides` is
                 // scoped to `common/`, which is where a tuned kernel lands.
-                &[],
+                &std::collections::BTreeSet::new(),
             );
             assert!(
                 faults.is_empty(),

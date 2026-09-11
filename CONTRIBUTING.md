@@ -85,7 +85,8 @@ CI enforces (all GPU-free): `fmt`, `clippy`, `cargo test --workspace`
 (unit tests + non-`#[ignore]` integration tests), license-headers, typo check,
 **kernel shadow structure** (`scripts/check_kernel_shadows.py` — no shadow
 byte-identical to its `common/` namesake, no duplicate regular copies of the
-same shadow), file-size cap (≤500 LoC per `crates/**/*.rs`), and mdBook +
+same shadow, and no undeclared regular file in an inheriting target's
+`common/`), file-size cap (≤500 LoC per `crates/**/*.rs`), and mdBook +
 `cargo doc --workspace --no-deps`. `cargo-deny` lives in its own workflow
 (`.github/workflows/security.yml`), not in `ci.yml`.
 PRs fail without an authoring maintainer needing GPU access — the kernel
@@ -166,9 +167,19 @@ Each hardware × model × quantization combination is a self-contained body of w
    `scripts/check_kernel_shadows.py` (CI job `kernel-structure`) rejects a shadow
    that is byte-identical to its `common/` namesake, and duplicate regular copies
    of the same shadow across models — symlink to one canonical file instead.
-2. Register them in the appropriate `crates/atlas-*` kernel crate
-3. Add benchmark shapes to `crates/atlas-spark-bench/`
-4. Demonstrate speedup over the baseline (PyTorch, cuBLAS, etc.)
+   A target whose `common/` MIRRORS another's (`kernels/hopper` and
+   `kernels/b200` mirror `kernels/gb10`) may own a tuned source of its own, as a
+   **real file** listed in its `HARDWARE.toml` `[kernels] overrides` — editing a
+   symlink there would edit the other target's kernel, which is what the
+   declaration exists to prevent. The check reports each target's override list.
+2. Declare the target's SERVING levers in `kernels/<hardware>/HARDWARE.toml`
+   `[defaults]`. `build.rs` bakes them into `atlas_kernels::TARGET_DEFAULTS` and
+   every resolver in `spark-model` reads them before the environment, so a
+   target's measured configuration is a reviewable file rather than a launch
+   script. `crates/atlas-kernels/build_defaults.rs` panics on an unknown key.
+3. Register them in the appropriate `crates/atlas-*` kernel crate
+4. Add benchmark shapes to `crates/atlas-spark-bench/`
+5. Demonstrate speedup over the baseline (PyTorch, cuBLAS, etc.)
 
 ### Kernel Optimization
 
