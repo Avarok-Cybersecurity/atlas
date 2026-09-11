@@ -47,6 +47,26 @@ behind specific subsystems — see the
   express "off" — and once a target's default can be ON, an operator needs to
   be able to turn one off without editing a launch script. `VAR=1` is unchanged
   everywhere, and the `ATLAS_NO_*` kill switches stay presence-gated.
+  `ATLAS_GDN_PREFILL_TC` joins that list: it is now `[defaults] gdn_prefill_tc`
+  (false on every target, and the kernel it reaches stays shared), so `=0`
+  means off there too.
+- **A hardware target declares which kernels it OWNS**, in
+  `kernels/<hw>/HARDWARE.toml` `[kernels] overrides`. `kernels/hopper` and
+  `kernels/b200` are otherwise pure symlink mirrors of `kernels/gb10`; a
+  Hopper-tuned kernel is now a real file under `kernels/hopper/common` that
+  either REPLACES a gb10 namesake (gb10 keeps its own copy — four other targets
+  compile it) or ADDS a stem gb10 does not have. Declared rather than merely
+  tolerated: an undeclared regular file in a mirror is a silent fork of a
+  shared kernel, and nothing on disk tells the two apart.
+  `scripts/check_kernel_shadows.py` RULE 3 and
+  `atlas-kernels/tests/inherited_overrides.rs` check it from the one table.
+
+### Removed
+- **The split-K W8A16 decode GEMV** (`w8a16_gemv_splitk`,
+  `ATLAS_FFN_DOWN_SPLITK`, `layers::ops::w8a16_decode_gemv`). It was written
+  for the down projection's ~1.2-wave grid on a 132-SM H100 and measured a null
+  there (58.9 us staged scalar vs 61.8 us split-K), and 1.5x slower on the
+  short-N k/v shape it was also aimed at. Nothing dispatched it by default.
 
 ### Added
 

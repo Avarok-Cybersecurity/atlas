@@ -128,10 +128,18 @@ def check_common_overrides(hw_name: str, hw_dir: Path) -> tuple[list[str], list[
         # this target owns and tunes the source, a symlink means it shares
         # another target's tuning. Both are legitimate; conflating them in the
         # report would hide which tree an edit lands in.
+        #
+        # And whether the ORIGIN has the same name is the other half. A
+        # declared name the origin also carries REPLACES it (the origin keeps
+        # its own file, untouched, for the targets that inherit it); a name the
+        # origin does not have is an ADDITION. Saying which is what tells a
+        # reader whether editing the origin's file would reach this target.
+        origin_has = (hw_dir.parent / MIRRORED_COMMON[hw_name] / "common" / name).exists()
+        shape = "replaces" if origin_has else "adds"
         if path.is_symlink():
-            reported.append(f"{name} -> {os.readlink(path)}")
+            reported.append(f"{name} ({shape}) -> {os.readlink(path)}")
         else:
-            reported.append(f"{name} (own source)")
+            reported.append(f"{name} ({shape}, own source)")
     return (violations, reported)
 
 
@@ -241,8 +249,9 @@ def main() -> int:
         origin = MIRRORED_COMMON[hw_name]
         if overrides:
             print(
-                f"  {hw_name}/common overrides {len(overrides)} kernel(s) that "
-                f"{origin}/common does not supply:"
+                f"  {hw_name}/common declares {len(overrides)} override(s) of "
+                f"{origin}/common — `replaces` = {origin} has the same name and "
+                f"keeps its own copy, `adds` = {origin} does not have it at all:"
             )
             for entry in overrides:
                 print(f"      {entry}")
