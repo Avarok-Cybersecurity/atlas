@@ -323,11 +323,14 @@ impl TransformerModel {
             // by K and the scheduler's reject branches rewind it at different
             // points — deriving the base from a moving `seq_len` is how the
             // carries end up one row off.
-            *self
-                .pending_verify_span
+            // Keyed by SLOT: the batched multi-sequence verify has N of these
+            // in flight at once, and a single slot would have one sequence
+            // consume another's base — a silently wrong rewind, which surfaces
+            // as an EMPTY completion rather than an error.
+            self.pending_verify_span
                 .lock()
-                .map_err(|_| anyhow::anyhow!("verify span stash poisoned"))? =
-                Some((seq.seq_len, k));
+                .map_err(|_| anyhow::anyhow!("verify span stash poisoned"))?
+                .insert(seq.slot_idx, (seq.seq_len, k));
             return self.verify_hc_rows(tokens, seq, stream);
         }
 
@@ -342,7 +345,7 @@ impl TransformerModel {
             // behaviour this file's fix replaced, so the diagnostic arm
             // reproduces the corruption rather than erroring on a missing row.
             let stash = self.collect_verify_aux_states(seq, stream_d)?;
-            self.stash_verify_aux(VerifyAuxRows {
+            self.stash_verify_aux(seq.slot_idx, VerifyAuxRows {
                 base_pos,
                 k,
                 rows: vec![stash; hc_publish_rows(k).len().max(1)],
@@ -377,7 +380,7 @@ impl TransformerModel {
             }
         }
         if k > 1 {
-            self.stash_verify_aux(VerifyAuxRows {
+            self.stash_verify_aux(seq.slot_idx, VerifyAuxRows {
                 base_pos,
                 k,
                 rows: aux_rows,
@@ -386,11 +389,13 @@ impl TransformerModel {
         Ok(out)
     }
 
-    fn stash_verify_aux(&self, stash: VerifyAuxRows) -> Result<()> {
-        *self
-            .pending_verify_aux
+    fn stash_verify_aux(&self, slot: usize, stash: VerifyAuxRows) -> Result<()> {
+        // Per SLOT — see the span stash above for why a single slot is wrong
+        // once more than one sequence is verified in a sweep.
+        self.pending_verify_aux
             .lock()
-            .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))? = Some(stash);
+            .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))?
+            .insert(slot, stash);
         Ok(())
     }
 
@@ -481,7 +486,7 @@ impl TransformerModel {
             .pending_verify_aux
             .lock()
             .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))?
-            .take();
+            .remove(&seq.slot_idx);
         let Some(stash) = stash else {
             anyhow::bail!(
                 "commit_verify_aux({num_accepted}/{k}) with no stashed aux snapshot — \
@@ -573,7 +578,7 @@ impl TransformerModel {
             .pending_verify_span
             .lock()
             .map_err(|_| anyhow::anyhow!("verify span stash poisoned"))?
-            .take();
+            .remove(&seq.slot_idx);
         let Some((base, k)) = span else {
             return Ok(());
         };

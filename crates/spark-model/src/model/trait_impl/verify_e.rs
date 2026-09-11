@@ -621,6 +621,26 @@ impl TransformerModel {
                         // the previous layer legitimately advanced.
                         if attn_idx == 1 {
                             self.align_verify_aux_states(seqs[i], base_seq_len, stream)?;
+                            // Record THIS sequence's verify span, the ABSOLUTE
+                            // base a partial accept is measured from. The
+                            // batched-GDN arm lands its carries from
+                            // `commit_verify_aux_rows`, which reads this — and
+                            // with no span it returns Ok(()) having restored
+                            // nothing, so a partial accept keeps PLE's carry
+                            // advanced over the rejected rows. That does not
+                            // error; it returns an EMPTY completion.
+                            //
+                            // Recorded BEFORE the pass for the same reason the
+                            // single-sequence path does it: the sweep advances
+                            // `seq_len` by k and the scheduler's reject
+                            // branches rewind it at different points, so a base
+                            // derived from a moving `seq_len` lands one row off.
+                            self.pending_verify_span
+                                .lock()
+                                .map_err(|_| {
+                                    anyhow::anyhow!("verify span stash poisoned")
+                                })?
+                                .insert(seqs[i].slot_idx, (base_seq_len, ks[i]));
                         }
                         for t in 0..ks[i] {
                             let row = off[i] + t;

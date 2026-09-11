@@ -452,7 +452,7 @@ impl Model for TransformerModel {
                 .pending_verify_aux
                 .lock()
                 .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))?
-                .take();
+                .remove(&seq.slot_idx);
             return Ok(false);
         }
         self.restore_verify_aux_at(seq, num_accepted, k)?;

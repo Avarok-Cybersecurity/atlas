@@ -822,8 +822,8 @@ impl TransformerModel {
             // is loaded in `factory::build`, which owns the WeightStore).
             qwen4_exp_mtp: None,
             qwen4_exp_mtp_head: None,
-            pending_verify_aux: std::sync::Mutex::new(None),
-            pending_verify_span: std::sync::Mutex::new(None),
+            pending_verify_aux: std::sync::Mutex::new(std::collections::HashMap::new()),
+            pending_verify_span: std::sync::Mutex::new(std::collections::HashMap::new()),
             qwen4_exp_mtp_state: None,
             mtp_hidden_save,
             decode_aux_ring: Default::default(),

@@ -261,12 +261,14 @@ pub struct TransformerModel {
     /// A single row-0 snapshot (what this held before 2026-09-03) is only
     /// correct when exactly one row commits; every K=3 partial accept restored
     /// a row SHORT. See verify_hc.
-    pub(super) pending_verify_aux: std::sync::Mutex<Option<VerifyAuxRows>>,
+    pub(super) pending_verify_aux:
+        std::sync::Mutex<std::collections::HashMap<usize, VerifyAuxRows>>,
     /// `(seq_len before the verify, verify width K)` for the K-row mHC
     /// BATCHED verify, so the aux commit can compute the ABSOLUTE position a
     /// partial accept lands on (`base + num_accepted`) instead of guessing
     /// whether the scheduler has already rewound `seq.seq_len`.
-    pub(super) pending_verify_span: std::sync::Mutex<Option<(usize, usize)>>,
+    pub(super) pending_verify_span:
+        std::sync::Mutex<std::collections::HashMap<usize, (usize, usize)>>,
     /// The head's single-sequence draft state. Shadow mode is C=1 only: one
     /// state, so a concurrent batch would interleave two sequences' drafts into
     /// it. The shadow step refuses to run when the batch is wider than one.
