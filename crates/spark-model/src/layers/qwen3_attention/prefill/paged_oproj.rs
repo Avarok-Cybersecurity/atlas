@@ -85,6 +85,10 @@ impl Qwen3AttentionLayer {
         // `ATLAS_CUBLAS_GEMM=ffn,ssm,attn`. The W8A8 arm below IS the
         // replacement: it now routes to cuBLASLt when `attn` is armed, with no
         // dequant and no allocation (`prefill_w8a8.rs`).
+        // `alloc_tests.rs` drives this chain on a mock backend with the `attn`
+        // family armed and fails if it allocates at all — the assertion is taken
+        // BEFORE the first call, because the dequant was cached by weight
+        // pointer and a first-vs-second comparison alone would pass it.
         } else if force_w8a8
             && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
             && self.per_token_group_quant_fp8_k.available()
