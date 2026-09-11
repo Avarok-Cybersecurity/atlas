@@ -140,14 +140,22 @@ impl TransformerModel {
         // Buffer-arena fit check (per-stream sequential layout still respects
         // arena cap on each call). Bail loud if any stream's chunk exceeds
         // the arena — CUDA 700 territory.
+        //
+        // DECLINE, not failure: this runs before a single stream has been
+        // touched, so the caller re-runs the wave per-stream and only the
+        // oversized stream fails (against its own guard, with its own error).
+        // As a plain bail it took the whole wave's requests down for one
+        // stream's chunk — the same all-or-nothing shape as #927 cell E.
         let arena_cap = self.buffers.max_batch_tokens();
         for (i, s) in streams.iter().enumerate() {
             if s.chunk_len > arena_cap {
-                anyhow::bail!(
-                    "Batched prefill stream {i} chunk_len={} exceeds arena \
-                     capacity {arena_cap}. Reduce --max-prefill-tokens.",
-                    s.chunk_len
-                );
+                return Err(anyhow::Error::new(
+                    crate::traits::BatchedPrefillDeclined::new(format!(
+                        "stream {i} chunk_len={} exceeds arena capacity {arena_cap} \
+                         (reduce --max-prefill-tokens)",
+                        s.chunk_len
+                    )),
+                ));
             }
         }
 
