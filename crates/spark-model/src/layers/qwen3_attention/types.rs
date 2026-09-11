@@ -268,6 +268,18 @@ pub struct Qwen3AttentionLayer {
     pub(super) dense_gemm_tc_k: KernelHandle,
     pub(super) paged_decode_splitk_k: Option<KernelHandle>,
     pub(super) paged_decode_reduce_k: Option<KernelHandle>,
+    /// The Hopper paged-decode split-K twins (#928), when this build carries
+    /// them: `kernels/hopper/common/paged_decode_{fp8,bf16}_splitk_hopper.cu`.
+    ///
+    /// `None` on every target whose `common/` tree does not have the sources —
+    /// which is all of them but `hopper` — so the FP8 pair falls back to gb10's
+    /// and the BF16 pair to the single-CTA kernel, exactly as before. The FP8
+    /// twin restores the non-split kernel's batched inner loop; the BF16 twin
+    /// is split-K that BF16 KV never had.
+    pub(super) paged_decode_splitk_hopper_k: Option<KernelHandle>,
+    pub(super) paged_decode_reduce_hopper_k: Option<KernelHandle>,
+    pub(super) paged_decode_splitk_bf16_hopper_k: Option<KernelHandle>,
+    pub(super) paged_decode_reduce_bf16_hopper_k: Option<KernelHandle>,
     pub(super) residual_add_k: KernelHandle,
     pub(super) sigmoid_gate_mul_k: KernelHandle,
     pub(super) deinterleave_qg_k: KernelHandle,
