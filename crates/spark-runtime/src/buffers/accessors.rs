@@ -156,6 +156,10 @@ impl BufferArena {
     pub fn fp8_act_scale(&self) -> DevicePtr {
         self.fp8_act_scale
     }
+    /// Allocated byte size of `fp8_act_scale` (debug bounds-check at call sites).
+    pub fn fp8_act_scale_bytes(&self) -> usize {
+        self.sizes.fp8_act_scale
+    }
     /// Transposed (`[K/128, ceil16(M)]`) copy of `fp8_act_scale` — the VEC128
     /// B-scale layout the cuBLASLt block-scaled FP8 GEMM documents. The
     /// prefill-projection sibling of `ffn_act_scale_kmajor`.
