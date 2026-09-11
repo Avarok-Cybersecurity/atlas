@@ -60,11 +60,11 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
             // compiled target declaring it (`kernels/hopper` says ON, +6% and
             // md5-identical), a `false` here would silently un-declare the
             // target's own default on every serve that names any GDN flag.
-            batched_recurrent: args
-                .ssm_batched_recurrent
-                .unwrap_or(spark_model::layers::ops::target_defaults::resolved()
+            batched_recurrent: args.ssm_batched_recurrent.unwrap_or(
+                spark_model::layers::ops::target_defaults::resolved()
                     .ssm_batched_recurrent
-                    .value),
+                    .value,
+            ),
             exact_verify: args.exact_verify.unwrap_or(false),
         };
         let in_force = spark_model::layers::qwen3_ssm::gdn_flags::set_from_cli(flags);
@@ -151,7 +151,10 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     // whether the environment overrode it. The deliverable of the 2026-09-11
     // maintainer review: a reader of a serve log can now tell which
     // configuration produced a number without also having the launch script.
-    tracing::info!("{}", spark_model::layers::ops::target_defaults::summary_line());
+    tracing::info!(
+        "{}",
+        spark_model::layers::ops::target_defaults::summary_line()
+    );
     let gdn = spark_model::layers::qwen3_ssm::gdn_flags::flags();
     tracing::info!(
         "kernel flags: ssm_h_dtype={} gdn_fused_norm={} ssm_batched_recurrent={} \

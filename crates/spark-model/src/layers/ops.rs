@@ -23,12 +23,12 @@ mod dispatch_config_routing_tests;
 // The compiled target's serving defaults (`kernels/<hw>/HARDWARE.toml`
 // `[defaults]`, baked into atlas_kernels), resolved BEFORE the environment.
 // SSOT for every lever that differs between GB10 and Hopper.
-#[path = "ops/target_defaults.rs"]
-pub mod target_defaults;
 #[path = "ops/dispatch_helpers.rs"]
 mod dispatch_helpers;
 #[path = "ops/dispatch_proj.rs"]
 mod dispatch_proj;
+#[path = "ops/target_defaults.rs"]
+pub mod target_defaults;
 // W8A8 block-scaled cuBLASLt routing for the 5..16-row DECODE projections
 // (#927), a sibling of dispatch_proj.rs so neither file crosses the cap.
 #[path = "ops/dispatch_proj_decode.rs"]
@@ -196,7 +196,6 @@ pub use activations::*;
 pub use dense_gemm_m16_bf16::*;
 pub use derived_weights::{Derivation, DerivedWeights};
 pub use dispatch_config::{CublasScope, GemmDispatch, parse_cublas_scope};
-pub use target_defaults::{Resolved, Source, TargetLevers};
 pub use dispatch_helpers::*;
 pub use dispatch_proj::*;
 pub use dispatch_proj_decode::*;
@@ -257,6 +256,7 @@ pub use ssm_gdn_snap::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;
+pub use target_defaults::{Resolved, Source, TargetLevers};
 pub use w8a16_decode_gemv::{
     SPLITK_MAX, SPLITK_TARGET_BLOCKS, SplitKGemv, SplitKPlan, splitk_partial_bytes, splitk_plan,
     w8a16_decode_gemv, w8a16_gemv_splitk, w8a16_gemv_splitk_reduce,

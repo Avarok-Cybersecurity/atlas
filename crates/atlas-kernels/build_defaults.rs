@@ -83,8 +83,9 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
     };
 
     let boolean = |key: &str, v: &toml::Value| -> bool {
-        v.as_bool()
-            .unwrap_or_else(|| panic!("kernels/{hw}/HARDWARE.toml: [defaults] {key} must be a bool"))
+        v.as_bool().unwrap_or_else(|| {
+            panic!("kernels/{hw}/HARDWARE.toml: [defaults] {key} must be a bool")
+        })
     };
     let string = |key: &str, v: &toml::Value| -> String {
         v.as_str()

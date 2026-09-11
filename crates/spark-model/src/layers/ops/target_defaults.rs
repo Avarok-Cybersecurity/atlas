@@ -134,7 +134,10 @@ pub fn resolve_toggle(default_on: bool, raw: Option<&str>, legacy_off: bool) -> 
 /// there is no "off".
 pub fn resolve_batchm_max(default_max: u32, raw: Option<&str>) -> Resolved<u32> {
     let clamp = |v: u32| v.min(DENSE_GEMV_BATCHM_MAX_M);
-    match raw.and_then(|v| v.trim().parse::<u32>().ok()).filter(|&v| v > 0) {
+    match raw
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|&v| v > 0)
+    {
         Some(v) => Resolved::env(clamp(v)),
         None => Resolved::target(clamp(default_max)),
     }
@@ -255,9 +258,7 @@ pub fn resolve(
         // plain integer would give `=1` two contradictory meanings in one
         // binary. `spark-server` publishes a non-`auto` declaration as the
         // default depth, where the CLI's explicit `N` still outranks it.
-        ssm_decode_ring_slots: Resolved::target(resolve_ring_slots(
-            defaults.ssm_decode_ring_slots,
-        )),
+        ssm_decode_ring_slots: Resolved::target(resolve_ring_slots(defaults.ssm_decode_ring_slots)),
     }
 }
 
@@ -292,7 +293,8 @@ pub fn declared() -> &'static atlas_kernels::TargetDefaults {
 /// lever stays invisible for a campaign (`serve_flags.rs`'s own lesson).
 pub fn summary_line() -> String {
     let l = resolved();
-    let onoff = |r: Resolved<bool>| format!("{}{}", if r.value { "on" } else { "off" }, r.source.tag());
+    let onoff =
+        |r: Resolved<bool>| format!("{}{}", if r.value { "on" } else { "off" }, r.source.tag());
     let c = l.cublas.value;
     let scope = if c.any() {
         let mut names = Vec::new();

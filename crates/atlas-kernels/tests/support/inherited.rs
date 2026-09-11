@@ -33,6 +33,15 @@ pub struct Inherited {
     pub provenance: &'static str,
     /// The campaign's declared P0 model set for this hardware.
     pub models: &'static [&'static str],
+    /// The `common/` file names this target owns as REAL SOURCES rather than
+    /// inheriting from gb10 — `[kernels] overrides` in its HARDWARE.toml.
+    ///
+    /// Per-target because the list is a claim about THIS hardware's tuning,
+    /// even though both current targets happen to declare the same four: B200
+    /// reaches them by symlinking Hopper's copies (ordinary datacentre MMA,
+    /// nothing sm_90a about it), which is a sharing decision that could change
+    /// the day a B200 receipt calls for something different.
+    pub overrides: &'static [&'static str],
     /// The ptxas rejection this hardware answers by defining
     /// `ATLAS_NO_WARP_BLOCKSCALE_MMA` — the arch-specific half of the reason,
     /// which the MODEL.toml entries must cite. Per-target because the two
@@ -61,6 +70,21 @@ pub const HOPPER_MODELS: &[&str] = &[
     "qwen3.8-27b",
 ];
 
+/// The Hopper-tuned sources that are NOT in `kernels/gb10/common` at all.
+///
+/// Maintainer rule, 2026-09-11 (tbraun96): "symlinks are fine provided the
+/// pointed-to gb10 file is not edited when iterating on Hopper; Hopper-tuned
+/// kernels must be real files under `kernels/hopper/`." These four exist for
+/// H100 decode performance, are reached only under a `[defaults]` lever that
+/// no GB10 target sets, and were moved out of gb10's tree so a GB10 build does
+/// not compile them.
+pub const HOPPER_TUNED: &[&str] = &[
+    "dense_gemm_m16_bf16.cu",
+    "fp8_scale_transpose.cu",
+    "w8a16_gemm_m16.cu",
+    "w8a16_gemv_ncol.cu",
+];
+
 /// Every hardware set whose kernels are gb10's, reached by symlink.
 ///
 /// ORACLE for the arch strings: NVIDIA's own SM numbering. H100 and H200 are
@@ -75,6 +99,7 @@ pub const INHERITED: &[Inherited] = &[
         cc: "9.0",
         provenance: "Hopper target: kernel set inherited from gb10 via symlink",
         models: HOPPER_MODELS,
+        overrides: HOPPER_TUNED,
         blockscale_rejection: "cvt with .e2m1x2",
     },
     Inherited {
@@ -83,6 +108,7 @@ pub const INHERITED: &[Inherited] = &[
         cc: "10.0",
         provenance: "B200 target: kernel set inherited from gb10 via symlink",
         models: P0_MODELS,
+        overrides: HOPPER_TUNED,
         blockscale_rejection: "mma with block scale",
     },
 ];
@@ -101,6 +127,31 @@ pub fn hw_dir(hw: &str) -> PathBuf {
 
 pub fn gb10_dir() -> PathBuf {
     kernels_root().join("gb10")
+}
+
+/// `[kernels] overrides` from `kernels/<hw>/HARDWARE.toml` — the file names in
+/// this target's `common/` that are NOT inherited from gb10.
+///
+/// The SSOT for "which kernels does this target tune for itself", read by the
+/// mirror check here and reported by `scripts/check_kernel_shadows.py`. Empty
+/// (and absent from the file) for a target that inherits everything.
+pub fn kernel_overrides(hw: &str) -> std::collections::BTreeSet<String> {
+    hardware_toml(hw)
+        .get("kernels")
+        .and_then(|k| k.get("overrides"))
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .map(|v| {
+                    v.as_str()
+                        .unwrap_or_else(|| {
+                            panic!("kernels/{hw}: [kernels] overrides entries must be strings")
+                        })
+                        .to_string()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn hardware_toml(hw: &str) -> toml::Value {

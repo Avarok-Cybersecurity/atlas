@@ -83,3 +83,43 @@ ssm_batched_recurrent = true
 decode_split_silu = true
 # `auto` = size the decode-rollback ring from free memory at preflight (#915).
 ssm_decode_ring_slots = "auto"
+
+# ── Kernels this target OVERRIDES instead of inheriting ────────────────────
+#
+# Every other entry in `kernels/hopper/common/` is a relative symlink into
+# `kernels/gb10/common/`, which is what makes gb10 the oracle for this tree
+# (`crates/atlas-kernels/tests/inherited_targets.rs`). The files listed here
+# are REAL FILES: sources that exist for HOPPER PERFORMANCE and are not used on
+# GB10, so gb10's tree does not carry them at all and gb10's build does not
+# compile them.
+#
+# Maintainer rule, 2026-09-11 (tbraun96): "symlinks are fine provided the
+# pointed-to gb10 file is not edited when iterating on Hopper; Hopper-tuned
+# kernels must be real files under kernels/hopper/". A declaration rather than
+# "any regular file is fine": an UNDECLARED regular file in a mirror is a
+# silent fork of a shared kernel, which is the defect the mirror check exists
+# to catch, and the two cases are indistinguishable without this list.
+#
+#   dense_gemm_m16_bf16.cu   BF16 decode head, m16n8k16 M tile (#927/#928).
+#                            Reached only under `[defaults] lm_head_m16_tc`.
+#   fp8_scale_transpose.cu   K-major activation-scale adapter for cuBLASLt
+#                            block-scaled FP8. Reached only under a
+#                            `cublas_gemm_scope` family; cuBLASLt is not the
+#                            GB10 path.
+#   w8a16_gemm_m16.cu        Native-FP8 M16 tensor-core tiers for the dense
+#                            FFN and the decode QKV/o_proj. Reached only under
+#                            `[defaults] ffn_m16_tc` / `attn_m16_tc`.
+#   w8a16_gemv_ncol.cu       N-column-blocked decode attention projections.
+#                            Reached only under `[defaults] attn_ncol_gemv`.
+#
+# Every consumer resolves these through `try_kernel` and declines on a zero
+# handle, and every probe is gated on the same lever that would launch the
+# kernel — so a target without them boots, rather than failing the kernel
+# audit on a lookup nothing declared.
+[kernels]
+overrides = [
+  "dense_gemm_m16_bf16.cu",
+  "fp8_scale_transpose.cu",
+  "w8a16_gemm_m16.cu",
+  "w8a16_gemv_ncol.cu",
+]

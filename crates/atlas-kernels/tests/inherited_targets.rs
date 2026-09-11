@@ -7,13 +7,22 @@
 //! Same posture as `target_resolution.rs`: `src/*_tests.rs` prove the rules on
 //! fixtures, these prove the DATA that is actually checked in.
 //!
-//! Neither target ships a kernel of its own. Every source they compile is a
-//! relative symlink into `kernels/gb10`, which makes `gb10` the ORACLE for
-//! this whole file: an inherited kernel set is correct exactly when it is
-//! gb10's kernel set, reachable. A symlink that dangles, or a gb10 file that
-//! gained no counterpart, is a kernel that silently vanishes from that
-//! hardware's build — the shadow-drift failure class documented in `build.rs`,
-//! arriving through a different door.
+//! Almost every source they compile is a relative symlink into
+//! `kernels/gb10`, which makes `gb10` the ORACLE for this whole file: an
+//! inherited kernel set is correct exactly when it is gb10's kernel set,
+//! reachable. A symlink that dangles, or a gb10 file that gained no
+//! counterpart, is a kernel that silently vanishes from that hardware's build
+//! — the shadow-drift failure class documented in `build.rs`, arriving through
+//! a different door.
+//!
+//! The EXCEPTION is declared, per target, in `HARDWARE.toml` `[kernels]
+//! overrides`: sources that exist for one architecture's performance and are
+//! not in gb10's tree at all. Maintainer rule, 2026-09-11 (tbraun96):
+//! "symlinks are fine provided the pointed-to gb10 file is not edited when
+//! iterating on Hopper; Hopper-tuned kernels must be real files under
+//! `kernels/hopper/`." Declared rather than merely tolerated, because an
+//! UNDECLARED regular file in a mirror is a silent fork of a shared kernel and
+//! nothing on disk tells the two apart.
 //!
 //! `cargo test` runs GPU-free with `ATLAS_SKIP_BUILD=1`, where `build.rs`
 //! returns before target resolution ever happens, so without this file nothing
@@ -36,7 +45,7 @@ mod inherited;
 #[path = "support/mirror.rs"]
 mod mirror;
 
-use inherited::{INHERITED, gb10_dir, hardware_toml, hw_dir};
+use inherited::{INHERITED, gb10_dir, hardware_toml, hw_dir, kernel_overrides};
 use mirror::mirror_faults;
 
 use std::path::PathBuf;
@@ -121,25 +130,119 @@ fn every_inherited_hardware_toml_carries_the_same_key_set_as_gb10() {
     }
 }
 
+/// Every NVIDIA target declares the SAME `[defaults]` levers, even where the
+/// value agrees with gb10's.
+///
+/// An absent key falls through to `build_defaults::baseline`, which is
+/// correct behaviour and terrible documentation: a reader of
+/// `kernels/hopper/HARDWARE.toml` would have to know the baseline to know what
+/// H100 serves with, which is the "recipe lives somewhere else" problem this
+/// whole table replaces. The values are asserted in
+/// `tests/target_defaults.rs`; what is asserted here is that the three files
+/// are answerable side by side.
+#[test]
+fn every_inherited_hardware_toml_declares_the_same_serving_levers_as_gb10() {
+    let gb10_path = gb10_dir().join("HARDWARE.toml");
+    let gb10: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&gb10_path).expect("gb10 HARDWARE.toml"))
+            .expect("valid TOML");
+    let levers = |v: &toml::Value| -> std::collections::BTreeSet<String> {
+        v.get("defaults")
+            .and_then(|d| d.as_table())
+            .expect("[defaults] table")
+            .keys()
+            .cloned()
+            .collect()
+    };
+    for t in INHERITED {
+        assert_eq!(
+            levers(&hardware_toml(t.hw)),
+            levers(&gb10),
+            "kernels/{}/HARDWARE.toml [defaults] must state every lever              explicitly, so the file answers 'what does this target serve              with' on its own",
+            t.hw
+        );
+    }
+}
+
 // ── (b) common/ — inherited from gb10 by relative symlink ──
 
-/// ORACLE: `kernels/gb10/common`. Each inherited `common/` is that directory,
-/// reachable — all 181 entries (171 `.cu`, 9 `.cuh` headers the `.cu` files
-/// `#include`, and `KERNEL.toml`, which `build.rs` merges as the base layer of
-/// every target's flags and `[modules]` overrides).
+/// ORACLE: `kernels/gb10/common`, PLUS this target's declared overrides. Each
+/// inherited `common/` is that directory, reachable — every `.cu`, every
+/// `.cuh` header the `.cu` files `#include`, and `KERNEL.toml`, which
+/// `build.rs` merges as the base layer of every target's flags and
+/// `[modules]` overrides.
 ///
 /// Unlike strix's curated 99, nothing is left out: these are NVIDIA targets
 /// compiled by the same nvcc, so a file gb10 compiles is a file they must
-/// compile, and a subset here would be an undocumented kernel drop.
+/// compile, and a subset here would be an undocumented kernel drop. What they
+/// may ADD is exactly `[kernels] overrides`.
 #[test]
 fn every_inherited_common_mirrors_every_gb10_common_file() {
     for t in INHERITED {
-        let faults = mirror_faults(&hw_dir(t.hw).join("common"), &gb10_dir().join("common"));
+        let faults = mirror_faults(
+            &hw_dir(t.hw).join("common"),
+            &gb10_dir().join("common"),
+            &kernel_overrides(t.hw),
+        );
         assert!(
             faults.is_empty(),
             "kernels/{}/common has drifted from kernels/gb10/common:\n  {}",
             t.hw,
             faults.join("\n  ")
+        );
+    }
+}
+
+/// The declaration and the tree agree, and the overridden sources are GONE
+/// from gb10 — which is the half of the change that makes an H100 build stop
+/// compiling GB10's kernel tree and a GB10 build stop compiling Hopper's
+/// tuning. A file present in both places would leave the separation resting on
+/// which `[defaults]` lever happened to be false, i.e. on discipline.
+#[test]
+fn the_declared_overrides_are_the_hopper_tuned_sources_and_gb10_has_none_of_them() {
+    let gb10_common = gb10_dir().join("common");
+    for t in INHERITED {
+        let declared = kernel_overrides(t.hw);
+        assert_eq!(
+            declared.iter().map(String::as_str).collect::<Vec<_>>(),
+            t.overrides,
+            "kernels/{}/HARDWARE.toml [kernels] overrides",
+            t.hw
+        );
+        for name in t.overrides {
+            assert!(
+                !gb10_common.join(name).exists(),
+                "kernels/gb10/common/{name} still exists: an override that the \
+                 oracle also carries leaves both targets compiling it"
+            );
+        }
+    }
+}
+
+/// Hopper holds the tuned sources as REAL FILES — the rule, verbatim — and
+/// B200 reaches them by relative symlink into Hopper rather than by copying,
+/// because two identical regular files is the cross-target duplicate
+/// `scripts/check_kernel_shadows.py` RULE2 forbids.
+#[test]
+fn hopper_owns_the_tuned_sources_and_b200_links_to_them() {
+    for name in inherited::HOPPER_TUNED {
+        let hopper = hw_dir("hopper").join("common").join(name);
+        assert!(
+            std::fs::symlink_metadata(&hopper)
+                .unwrap_or_else(|e| panic!("{}: {e}", hopper.display()))
+                .file_type()
+                .is_file(),
+            "kernels/hopper/common/{name} must be a REAL FILE — editing a \
+             symlink here would edit gb10's kernel, which is what the rule \
+             exists to prevent"
+        );
+        let b200 = hw_dir("b200").join("common").join(name);
+        let link = std::fs::read_link(&b200)
+            .unwrap_or_else(|e| panic!("kernels/b200/common/{name}: expected a symlink: {e}"));
+        assert_eq!(
+            link,
+            PathBuf::from("../../hopper/common").join(name),
+            "kernels/b200/common/{name} must point at Hopper's copy"
         );
     }
 }

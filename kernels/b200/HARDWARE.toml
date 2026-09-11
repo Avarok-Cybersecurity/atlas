@@ -59,3 +59,29 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = false
 decode_split_silu = true
 ssm_decode_ring_slots = "auto"
+
+# ── Kernels this target OVERRIDES instead of inheriting ────────────────────
+#
+# The same four Hopper-tuned sources as `kernels/hopper` — see that file for
+# what each one is and which `[defaults]` lever reaches it. They are NOT in
+# `kernels/gb10/common`, so they cannot be inherited from the oracle the rest
+# of this mirror points at.
+#
+# ★ SYMLINKS INTO `kernels/hopper/common`, NOT COPIES. They are ordinary
+# datacentre-GPU CUDA — m16n8k16 MMA, a scale transpose — with nothing sm_90a
+# about them, so B200 and Hopper want the same source, and a second regular
+# file with the same content is the cross-target duplicate
+# `scripts/check_kernel_shadows.py` RULE2 exists to forbid. If a B200 receipt
+# ever calls for a genuinely different kernel, the fix is a real file here and
+# a line in this comment saying what diverged and why.
+#
+# Compiling them costs nothing at serve time: every `[defaults]` lever that
+# reaches them is false on this target, so the probes are never issued. They
+# are built so an operator CAN A/B them with an environment override.
+[kernels]
+overrides = [
+  "dense_gemm_m16_bf16.cu",
+  "fp8_scale_transpose.cu",
+  "w8a16_gemm_m16.cu",
+  "w8a16_gemv_ncol.cu",
+]

@@ -44,7 +44,10 @@ fn neither_family_resolved_on_leaves_every_tier_off() {
 fn the_ffn_lever_reaches_the_ffn_arm_only() {
     let l = resolve_m16_tc_levers(true, false, None);
     assert!(l.ffn);
-    assert!(!l.attn, "the FFN family must leave the attention tiers alone");
+    assert!(
+        !l.attn,
+        "the FFN family must leave the attention tiers alone"
+    );
 }
 
 /// ...and its mirror, which is what `kernels/hopper/HARDWARE.toml` declares:
@@ -53,7 +56,10 @@ fn the_ffn_lever_reaches_the_ffn_arm_only() {
 fn the_attn_lever_reaches_the_attention_tiers_only() {
     let l = resolve_m16_tc_levers(false, true, None);
     assert!(l.attn);
-    assert!(!l.ffn, "the attention family must leave the dense FFN alone");
+    assert!(
+        !l.ffn,
+        "the attention family must leave the dense FFN alone"
+    );
 }
 
 /// Both families on — round 6's serve J, which `ATLAS_M16_TC` still spells.

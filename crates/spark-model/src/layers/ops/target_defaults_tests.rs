@@ -88,7 +88,10 @@ fn hopper_resolves_the_round_nine_recipe_from_an_empty_environment() {
         "cuBLASLt must arm exactly ffn+ssm+attn — `head` has no consumer and \
          arming it would be a claim nothing measured"
     );
-    assert!(l.attn_m16_tc.value, "round 6: -21.7% on the attention phase");
+    assert!(
+        l.attn_m16_tc.value,
+        "round 6: -21.7% on the attention phase"
+    );
     assert!(l.lm_head_m16_tc.value, "+4% on the serve");
     assert_eq!(l.lm_head_batchm_max.value, 16);
     assert!(l.ssm_batched_recurrent.value, "+6%, md5-identical output");
@@ -303,7 +306,10 @@ fn the_m16_umbrella_only_arms() {
 /// erroring at every decode step, and an unusable value keeps the target's.
 #[test]
 fn the_band_clamps_and_ignores_unusable_values() {
-    assert_eq!(resolve_batchm_max(8, Some("999")).value, DENSE_GEMV_BATCHM_MAX_M);
+    assert_eq!(
+        resolve_batchm_max(8, Some("999")).value,
+        DENSE_GEMV_BATCHM_MAX_M
+    );
     assert_eq!(resolve_batchm_max(8, Some("0")), Resolved::target(8));
     assert_eq!(resolve_batchm_max(8, Some("junk")), Resolved::target(8));
     assert_eq!(resolve_batchm_max(8, None), Resolved::target(8));

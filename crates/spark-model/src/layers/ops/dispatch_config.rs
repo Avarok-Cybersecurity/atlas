@@ -169,10 +169,8 @@ fn from_values(mut value: impl FnMut(&str) -> Option<String>) -> GemmDispatch {
             _ => 0,
         },
         fp8_blockscaled_prefill: !on(&mut value, "ATLAS_FP8_SINGLE_SCALE"),
-        // OVERRIDDEN by `from_env`, which takes the scope from the compiled
-        // target's `[defaults] cublas_gemm_scope` when the variable is absent.
-        // Kept here so the grammar table below stays testable as a pure
-        // function of the variable alone.
+        // OVERRIDDEN by `from_env` from `[defaults] cublas_gemm_scope`; kept
+        // so the grammar table below stays pure in the variable alone.
         cublas: parse_cublas_scope(value("ATLAS_CUBLAS_GEMM").as_deref()).0,
         cublas_fp8: on(&mut value, "ATLAS_CUBLAS_FP8"),
         cutlass_gemm: on(&mut value, "ATLAS_CUTLASS_GEMM"),
@@ -190,12 +188,11 @@ impl GemmDispatch {
     /// Resolve from the compiled target's defaults and the environment.
     /// Called once, when the model is built.
     ///
-    /// `cublas` comes from [`super::target_defaults::resolved`], NOT from
-    /// `from_values` — it is the one field here whose default differs by
-    /// hardware (`kernels/hopper` declares `ffn,ssm,attn`; `kernels/gb10`
-    /// declares `off`, because cuBLASLt is not the GB10 path). Every other
-    /// field is a diagnostic or an A/B arm with no target opinion, so it
-    /// still reads the environment directly.
+    /// `cublas` comes from [`super::target_defaults::resolved`] — it is the one
+    /// field here whose default differs by hardware (`kernels/hopper` declares
+    /// `ffn,ssm,attn`; `kernels/gb10` declares `off`, cuBLASLt not being the
+    /// GB10 path). The rest are diagnostics and A/B arms with no target
+    /// opinion, and still read the environment directly.
     pub fn from_env() -> Self {
         let raw = std::env::var("ATLAS_CUBLAS_GEMM").ok();
         let levers = super::target_defaults::resolved();
@@ -245,9 +242,8 @@ impl GemmDispatch {
 /// unset — a serve that never asked for cuBLASLt should not narrate it.
 fn log_cublas_scope(raw: Option<&str>, scope: CublasScope) {
     let Some(raw) = raw else {
-        // Silent: the target's own declaration is reported once, with every
-        // other lever, by `target_defaults::summary_line()`. Repeating it here
-        // would put the same fact in two log lines that can disagree.
+        // Silent: the target's declaration is reported once, with every other
+        // lever, by `target_defaults::summary_line()`.
         return;
     };
     let (_, unknown) = parse_cublas_scope(Some(raw));
