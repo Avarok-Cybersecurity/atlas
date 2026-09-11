@@ -41,6 +41,8 @@ pub(crate) struct Defaults {
     pub lm_head_m16_tc: bool,
     pub attn_ncol_gemv: bool,
     pub ffn_gateup_fused: bool,
+    pub w8a8_prefill_max_m_widening: u32,
+    pub w8a8_prefill_max_m_narrowing: u32,
 }
 
 /// What a target that declares NO `[defaults]` table gets.
@@ -77,6 +79,11 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         // INERT anywhere the file is not compiled. OFF is what every
         // target served before #927.
         ffn_gateup_fused: false,
+        // No cap. Absence is the correct declaration for every arch on which
+        // W8A8 does not lose to W8A16 at large M, which is every arch that has
+        // not measured otherwise — H100 included (2.0-3.1x at every M).
+        w8a8_prefill_max_m_widening: u32::MAX,
+        w8a8_prefill_max_m_narrowing: u32::MAX,
     }
 }
 
@@ -175,6 +182,10 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
     for (key, value) in table {
         match key.as_str() {
             "lm_head_batchm_max" => out.lm_head_batchm_max = unsigned(key, value),
+            "w8a8_prefill_max_m_widening" => out.w8a8_prefill_max_m_widening = unsigned(key, value),
+            "w8a8_prefill_max_m_narrowing" => {
+                out.w8a8_prefill_max_m_narrowing = unsigned(key, value)
+            }
             "ssm_batched_recurrent" => out.ssm_batched_recurrent = boolean(key, value),
             "gdn_prefill_tc" => out.gdn_prefill_tc = boolean(key, value),
             "ssm_ba_gates_hopper" => out.ssm_ba_gates_hopper = boolean(key, value),
@@ -223,6 +234,8 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   lm_head_m16_tc: {lm_head_m16_tc},\n\
          \x20   attn_ncol_gemv: {attn_ncol_gemv},\n\
          \x20   ffn_gateup_fused: {gateup_fused},\n\
+         \x20   w8a8_prefill_max_m_widening: {w8a8_wide},\n\
+         \x20   w8a8_prefill_max_m_narrowing: {w8a8_narrow},\n\
          }};\n",
         hw = d.hw,
         batchm = d.lm_head_batchm_max,
@@ -237,6 +250,8 @@ pub(crate) fn literal(d: &Defaults) -> String {
         lm_head_m16_tc = d.lm_head_m16_tc,
         attn_ncol_gemv = d.attn_ncol_gemv,
         gateup_fused = d.ffn_gateup_fused,
+        w8a8_wide = d.w8a8_prefill_max_m_widening,
+        w8a8_narrow = d.w8a8_prefill_max_m_narrowing,
     )
 }
 
