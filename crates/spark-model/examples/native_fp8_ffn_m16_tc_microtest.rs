@@ -324,18 +324,20 @@ fn main() -> Result<()> {
                 &observed[GUARD..GUARD + bytes],
                 &baseline[GUARD..GUARD + bytes],
                 n,
+                k,
             );
             let d64 = compare_m16_tc_block(
                 &observed_n64[GUARD..GUARD + bytes],
                 &baseline[GUARD..GUARD + bytes],
                 n,
+                k,
             );
 
             // GUARDS. Nothing outside [M, N] on either instantiation, and the
             // strided leg's row gaps, rows past M and used extent all sound.
             // Both audits live beside the criterion they enforce.
             let guards = guards_intact(&observed, &observed_n64, &sentinel, bytes);
-            let strided_check = check_strided(&strided, &sentinel_s, &baseline, m, n, c_pitch);
+            let strided_check = check_strided(&strided, &sentinel_s, &baseline, m, n, k, c_pitch);
 
             let tc_ms = time_ms(&gpu, || {
                 tc_route(
@@ -404,7 +406,7 @@ fn main() -> Result<()> {
         // green report cannot mean "the comparison was vacuous".
         let mut good = vec![0_u8; sentinel.len()];
         gpu.copy_d2h(scalar_base, &mut good)?;
-        assert_oracle_bites(&good, shape.name, n)?;
+        assert_oracle_bites(&good, shape.name, n, k)?;
     }
 
     ensure!(

@@ -46,7 +46,7 @@
 //! REDUCTION DEPTH, and K is the real 5120 (40 whole 128-wide scale blocks).
 //! Running the real N here would be a 2.9-GMAC unit test.
 
-use super::{M16_TC_ACC_FLOOR, M16TcPlan, bf16_ord, m16_tc_plan, within_m16_tc_budget};
+use super::{M16TcPlan, bf16_ord, m16_tc_acc_floor, m16_tc_plan, within_m16_tc_budget};
 use half::bf16;
 
 /// gate/up's real reduction depth — 40 whole 128-wide FP8 scale blocks.
@@ -212,8 +212,9 @@ fn halves_route(f: &Fixture, m: usize, a_skew: isize, c_skew: isize) -> Vec<u16>
     out
 }
 
-/// RMS of a BF16 block — the scale [`within_m16_tc_budget`]'s absolute floor is
-/// expressed in.
+/// RMS of a BF16 row — the scale [`within_m16_tc_budget`]'s absolute floor is
+/// expressed in since round 9 (per ROW, because an element's accumulation noise
+/// is proportional to the norm of the activation row that produced it).
 fn rms(block: &[u16]) -> f64 {
     let sum: f64 = block
         .iter()
@@ -329,14 +330,14 @@ fn the_m32_red_cell_is_a_cancelled_output_not_a_row_offset() {
         "the round-6 pair must be the one the ordinal budget rejects"
     );
     assert!(
-        within_m16_tc_budget(actual, reference, RMS),
+        within_m16_tc_budget(actual, reference, K, RMS),
         "an output cancelled to 1.5e-7 of the matrix RMS has no relative accuracy to grade"
     );
     // ...and so are the other two sites the full-geometry run flagged.
     for (r, a) in [(-1.163_48e-4, -1.058_58e-4), (-1.564_03e-4, -1.506_81e-4)] {
         let (rb, ab) = (bf16::from_f32(r).to_bits(), bf16::from_f32(a).to_bits());
         assert!(
-            within_m16_tc_budget(ab, rb, RMS),
+            within_m16_tc_budget(ab, rb, K, RMS),
             "ref={r} actual={a} is inside the accumulation floor"
         );
     }
@@ -360,7 +361,7 @@ fn the_accumulation_floor_still_rejects_a_structural_error() {
     ] {
         let (rb, ab) = (bf16::from_f32(r).to_bits(), bf16::from_f32(a).to_bits());
         assert!(
-            !within_m16_tc_budget(ab, rb, RMS),
+            !within_m16_tc_budget(ab, rb, K, RMS),
             "{label}: ref={r} actual={a} must still fail the budget"
         );
     }
@@ -376,12 +377,17 @@ fn the_accumulation_floor_still_rejects_a_structural_error() {
         1,
         "max_abs 0.500 is 1 ULP"
     );
-    assert!(within_m16_tc_budget(a, r, RMS));
-    // The floor is 2^-20 of the RMS: state the number the constant buys, so a
-    // future widening has to argue with an assertion instead of a comment.
+    assert!(within_m16_tc_budget(a, r, K, RMS));
+    // ROUND 9 WIDENED THIS, and the number the constant buys is stated here so
+    // a future change has to argue with an assertion instead of a comment. The
+    // floor is `8 * u32 * sqrt(K) * row_rms`; at K=5120 and round 6's RMS that
+    // is 1.34e-3, where round 6's fixed `2^-20 * rms` was 3.73e-5. Both are
+    // above round 6's five red elements (worst absolute error 1.05e-5) — the
+    // widening is not what makes those pass — and both are four orders below a
+    // misplaced output, which is what the assertions above check.
     assert!(
-        (M16_TC_ACC_FLOOR * RMS - 3.731e-5).abs() < 1e-8,
-        "the absolute floor at the round-6 RMS is ~3.7e-5"
+        (m16_tc_acc_floor(K, RMS) - 1.335_103e-3).abs() < 1e-8,
+        "the absolute floor at the round-6 RMS and K=5120 is ~1.34e-3"
     );
 }
 
@@ -399,10 +405,13 @@ fn the_two_halves_rung_meets_the_oracle_budget_against_the_scalar_gemv() {
             reference[r * N + col] = gemv_reference(&f, row, col);
         }
     }
-    let scale = rms(&reference);
-    assert!(scale > 1.0, "the fixture must produce a real matrix scale");
+    assert!(
+        rms(&reference) > 1.0,
+        "the fixture must produce a real matrix scale"
+    );
     let mut worst = (0_i32, 0_usize, 0_usize);
     for r in 0..M {
+        let scale = rms(&reference[r * N..(r + 1) * N]);
         for col in 0..N {
             let (a, b) = (actual[r * N + col], reference[r * N + col]);
             let ulp = (bf16_ord(a) - bf16_ord(b)).abs();
@@ -410,7 +419,7 @@ fn the_two_halves_rung_meets_the_oracle_budget_against_the_scalar_gemv() {
                 worst = (ulp, r, col);
             }
             assert!(
-                within_m16_tc_budget(a, b, scale),
+                within_m16_tc_budget(a, b, K, scale),
                 "row {r} col {col}: reference {} actual {} ({ulp} ordinal ULP) is outside \
                  both the 2-ULP budget and the accumulation floor",
                 bf16::from_bits(b),
@@ -422,7 +431,10 @@ fn the_two_halves_rung_meets_the_oracle_budget_against_the_scalar_gemv() {
     // wins is a property of the draw, and pinning it would make the test a
     // record of this fixture instead of of the contract.
     println!(
-        "worst ordinal ULP {} at row {} col {} (reference RMS {scale:.3})",
-        worst.0, worst.1, worst.2
+        "worst ordinal ULP {} at row {} col {} (that row's reference RMS {:.3})",
+        worst.0,
+        worst.1,
+        worst.2,
+        rms(&reference[worst.1 * N..(worst.1 + 1) * N])
     );
 }

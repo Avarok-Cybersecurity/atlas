@@ -25,6 +25,25 @@
 //! What the odd N does cost is a permanently PARTIAL last CTA, which is why the
 //! guard checks below are not ceremony.
 //!
+//! 🔴 ROUND 9 RE-SCALED THE ACCEPTANCE FLOOR — THIS FILE IS WHY.
+//! Round 9 (1xH100, 2026-09-11) MET the speed target (M=16 best arm 0.914 ms /
+//! 2,779 GB/s, 3.67x `dense_gemv_bf16_batchm`'s 3.486 ms) and passed the
+//! block-level `rel_rms` gate with a 9x margin (1.107e-4 against 1e-3), but
+//! FAILED the per-element gate at every M: `over_budget` 10/16/25/37 at
+//! M=5/8/13/16, `max_ulp` 32/100/100/100, with `n64` rejecting the IDENTICAL
+//! set. That count is linear in M (~2 elements per row out of 248,077
+//! columns), which is a per-element statistical tail and not a boundary defect;
+//! every rejected element was a logit cancelled to 4.9e-6..2.6e-4 of the block
+//! RMS, the worst being `reference=-1.173019409e-4` at 100 ordinal ULP against
+//! a block RMS of 23.80. The floor was the problem: round 6's fixed `2^-20 *
+//! rms` was fitted to `w8a16_gemm_m16`, whose reduction folds a 128-wide FP8
+//! scale block onto an outer accumulator; THIS kernel has no block scale, so
+//! its accumulator is ONE uninterrupted 320-step FP32 chain at K=5120 and the
+//! fixed constant landed under its noise. The floor is now
+//! `8 * u32 * sqrt(K) * row_rms` — see
+//! `layers::dense_ffn::m16_tc::m16_tc_acc_floor` and the host pins in
+//! `layers/ops/dense_gemm_m16_bf16_floor_tests.rs`.
+//!
 //! 🔴 THE PASS CONDITION IS A TOLERANCE, NOT BIT-EQUALITY.
 //! `dense_gemv_bf16_batchm` reduces each output in ONE FP32 accumulator in
 //! strict K order and is byte-identical to M serial `dense_gemv_bf16` calls; an
@@ -33,9 +52,9 @@
 //! `w8a16_gemm_m16` and with the host simulation
 //! (`layers/ops/dense_gemm_m16_bf16_tests.rs`) so the three cannot drift:
 //! `layers::dense_ffn::m16_tc::within_m16_tc_budget` — within 2 ordinal BF16
-//! ULP, OR an absolute error under 2^-20 of the reference block's RMS — plus
-//! `rel_rms <= 1e-3` over the block. At the LM head that seam is token-visible,
-//! which is why the arm defaults OFF.
+//! ULP, OR an absolute error under `8 * u32 * sqrt(K)` of the reference ROW's
+//! RMS — plus `rel_rms <= 1e-3` over the block. At the LM head that seam is
+//! token-visible, which is why the arm defaults OFF.
 //!
 //! It also pins the guards the wrapper promises (nothing written outside
 //! `[M, N]`, on either CTA width) and times the arm against
@@ -57,7 +76,7 @@
 use anyhow::{Result, ensure};
 use half::bf16;
 use spark_model::layers::dense_ffn::m16_tc::oracle::{
-    M16_TC_MAX_ULP, M16TcDiff, compare_m16_tc_block,
+    M16_TC_MAX_ULP, M16TcDiff, compare_m16_tc_block, m16_tc_acc_floor,
 };
 use spark_model::layers::ops;
 use spark_model::weight_map::DenseWeight;
@@ -70,6 +89,11 @@ const K: usize = 5120;
 /// The UNPADDED vocab. See the module note on why it is not 248,192.
 const N: usize = 248_077;
 const MAX_M: usize = 16;
+/// The two CTA widths, from the launcher's own SSOT — 7,753 resp. 3,877 CTAs
+/// at this N, both ending on the SAME 13-column tail because 248,064 is a
+/// multiple of both.
+const N_TILE: usize = ops::DENSE_GEMM_M16_BF16_N_TILE as usize;
+const N_TILE_WIDE: usize = ops::DENSE_GEMM_M16_BF16_N_TILE_WIDE as usize;
 const GUARD: usize = 64;
 const REPS: u32 = 20;
 const WARMUP: u32 = 3;
@@ -107,21 +131,35 @@ fn fill_bf16(rng: &mut Rng, dst: &mut [u8]) {
     }
 }
 
-/// Print every element the criterion rejected, with its coordinates and how far
-/// below the block RMS it sits — the three numbers that separate a cancellation
-/// tail from a defect. Capped: at 248,077 columns a real defect would otherwise
-/// print millions of lines.
-fn report_outliers(label: &str, d: &M16TcDiff) {
+/// Print every element the criterion rejected, with its coordinates, how far
+/// below its own ROW's RMS it sits and the floor it missed — the numbers that
+/// separate a cancellation tail from a defect, and the ones round 9's diagnosis
+/// ran on. Capped: at 248,077 columns a real defect would otherwise print
+/// millions of lines. The CTA a column belongs to is printed too, because the
+/// one defect class the statistics cannot exclude on their own is the last,
+/// always-partial CTA (248,064 is a multiple of both tile widths, so the tail
+/// is the same 13 columns on both arms).
+fn report_outliers(label: &str, d: &M16TcDiff, n_tile: usize) {
     for o in d.over_budget.iter().take(16) {
-        let relative = if d.rms > 0.0 {
-            f64::from(o.reference).abs() / d.rms
+        let relative = if o.row_rms > 0.0 {
+            f64::from(o.reference).abs() / o.row_rms
         } else {
             f64::NAN
         };
         println!(
             "  OVER_BUDGET {label} (m={}, n={}) reference={:+.9e} actual={:+.9e} \
-             ulp={} |ref|/rms={relative:.3e} budget={M16_TC_MAX_ULP} ULP or the floor",
-            o.row, o.col, o.reference, o.actual, o.ulp
+             ulp={} |ref|/row_rms={relative:.3e} row_rms={:.4} floor={:.6e} \
+             cta={} of {} (tail={}) budget={M16_TC_MAX_ULP} ULP or the floor",
+            o.row,
+            o.col,
+            o.reference,
+            o.actual,
+            o.ulp,
+            o.row_rms,
+            m16_tc_acc_floor(K, o.row_rms),
+            o.col / n_tile,
+            N.div_ceil(n_tile),
+            o.col >= (N / n_tile) * n_tile,
         );
     }
     if d.over_budget.len() > 16 {
@@ -239,11 +277,13 @@ fn main() -> Result<()> {
             &observed[GUARD..GUARD + bytes],
             &baseline[GUARD..GUARD + bytes],
             N,
+            K,
         );
         let d64 = compare_m16_tc_block(
             &observed_n64[GUARD..GUARD + bytes],
             &baseline[GUARD..GUARD + bytes],
             N,
+            K,
         );
 
         // GUARDS. Nothing outside [M, N]: the leading/trailing sentinel and
@@ -292,8 +332,8 @@ fn main() -> Result<()> {
             sp1 = batchm_ms / tc_ms,
             verdict = if ok { "PASS" } else { "FAIL" },
         );
-        report_outliers(arms[0].label, &d);
-        report_outliers(arms[1].label, &d64);
+        report_outliers(arms[0].label, &d, N_TILE);
+        report_outliers(arms[1].label, &d64, N_TILE_WIDE);
         if m == MAX_M {
             // The acceptance line. Reported, NOT asserted: the numerics gate
             // is this file's pass/fail, and a perf target that fails the build
@@ -331,7 +371,7 @@ fn main() -> Result<()> {
         .expect("baseline has a value above 1.0");
     let bits = u16::from_le_bytes([good[idx], good[idx + 1]]);
     bad[idx..idx + 2].copy_from_slice(&bits.wrapping_add(3).to_le_bytes());
-    let caught = !compare_m16_tc_block(&bad[GUARD..GUARD + MAX_M * N * 2], rows, N)
+    let caught = !compare_m16_tc_block(&bad[GUARD..GUARD + MAX_M * N * 2], rows, N, K)
         .over_budget
         .is_empty();
     println!("KNOWN_BAD three-ULP mutation on a |value| > 1: refused={caught}");
@@ -343,13 +383,36 @@ fn main() -> Result<()> {
     let (src, dst) = (GUARD + 8 * N * 2, GUARD + 9 * N * 2);
     let row8 = good[src..src + N * 2].to_vec();
     shifted[dst..dst + N * 2].copy_from_slice(&row8);
-    let caught_row = !compare_m16_tc_block(&shifted[GUARD..GUARD + MAX_M * N * 2], rows, N)
+    let caught_row = !compare_m16_tc_block(&shifted[GUARD..GUARD + MAX_M * N * 2], rows, N, K)
         .over_budget
         .is_empty();
     println!("KNOWN_BAD misplaced output row (row 9 <- row 8): refused={caught_row}");
     ensure!(
         caught_row,
         "comparison oracle admitted a misplaced output row — the absolute floor is too wide"
+    );
+    // 🔴 THE PARTIAL-TAIL CONTROL — round 9's defect class (b). N=248,077 is
+    // 7,753 CTAs at N_TILE=32 with a 13-column tail, and 248,064 is a multiple
+    // of 32 AND 64, so BOTH arms end on the SAME 13 columns: "the two arms
+    // agree, therefore it is not a tile-edge bug" does not cover the LAST CTA.
+    // The metric has to be shown to catch a tail defect, so here it is served
+    // the tail columns from 13 columns to their left and must refuse.
+    let tail = N - (N / N_TILE) * N_TILE;
+    let mut wrapped = good.clone();
+    let (src, dst) = (GUARD + (N - 2 * tail) * 2, GUARD + (N - tail) * 2);
+    let moved = good[src..src + tail * 2].to_vec();
+    wrapped[dst..dst + tail * 2].copy_from_slice(&moved);
+    let caught_tail = !compare_m16_tc_block(&wrapped[GUARD..GUARD + MAX_M * N * 2], rows, N, K)
+        .over_budget
+        .is_empty();
+    println!(
+        "KNOWN_BAD partial-tail store (last {tail} columns of the 7,753rd CTA shifted): \
+         refused={caught_tail}"
+    );
+    ensure!(
+        caught_tail,
+        "comparison oracle admitted a shifted partial-CTA tail — the round-9 tail \
+         hypothesis would have been unfalsifiable"
     );
 
     ensure!(
