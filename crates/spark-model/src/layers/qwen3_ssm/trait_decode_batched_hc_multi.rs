@@ -303,6 +303,16 @@ impl Qwen3SsmLayer {
         // result is copied out to `norm_output()` at its batch offset, and
         // `hc_post` below consumes THAT. `norm_output` is free here: this body
         // sends `hc_pre`'s collapse to `hidden`, never to `norm_output`.
+        //
+        // 🪤 The obvious next move — ONE R-row `forward_token_major_decode`,
+        // the arm the DECODE path uses, whose comment promises "exactly one EP
+        // all-reduce over all n rows" and "correct for every n regardless" —
+        // was TRIED AND IS SLOWER. MEASURED at rows=11: MoE 6541 us per
+        // sequence vs 9492 us for the single R-row call, and C=4 aggregate
+        // 27.44 -> 18.56 tok/s. Correct, just slower: the n-row token-major
+        // NVFP4 arm is built for the padded decode widths (1, 2, 4, 8, …) and
+        // does not like these ragged verify widths. Do not re-try it without a
+        // shape it was actually tuned for.
         let stage = ctx.buffers.norm_output();
         {
             let mut off = 0usize;
