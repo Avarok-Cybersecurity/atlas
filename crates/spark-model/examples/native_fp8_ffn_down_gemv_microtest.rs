@@ -303,7 +303,7 @@ fn main() -> Result<()> {
         splitk: gpu.kernel("w8a16_gemv_splitk", "w8a16_gemv_splitk")?,
         reduce: gpu.kernel("w8a16_gemv_splitk", "w8a16_gemv_splitk_reduce")?,
     };
-    let mut rng = Rng(0x928_d0_2026);
+    let mut rng = Rng(0x0928_2026_5a5a_0001);
     let mut failures = 0_usize;
 
     let down = Case::build(&gpu, &mut rng, "down", H, INTER)?;
