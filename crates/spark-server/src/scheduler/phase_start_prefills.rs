@@ -10,6 +10,37 @@ use super::*;
 use crate::api::InferenceRequest;
 use crate::grammar::GrammarEngine;
 
+/// The chunk-0 lengths a VARLEN wave could pack THIS tick: the co-admitted
+/// requests plus any stream still parked at `chunk_offset == 0`.
+///
+/// Chunk-0 only. A wave's members must share `chunk_start` and `is_last`
+/// (`check_kernel_batched_eligible`), so a fresh prompt can only ever batch
+/// with another fresh prompt — counting a mid-prefill stream's 25-token tail
+/// here would claim company that the planner cannot actually seat.
+///
+/// Each length is an UPPER bound on the head the planner will see: the VARLEN
+/// tail pre-split makes the real head `prefill_tail_cut(..) <= prompt_len`.
+/// Bounding high makes `varlen_defer_pays` conservative in the safe direction
+/// — it can decline a deferral that would have marginally paid, never admit
+/// one that cannot batch at all. Both round-13 shapes are decided exactly:
+/// `2 x 1193 = 2386 <= 8192` defers, `2 x 4593 = 9186 > 8192` does not.
+fn varlen_chunk_zero_heads(
+    new_reqs: &[InferenceRequest],
+    prefilling: &[PrefillInProgress],
+    max_prefill_tokens: usize,
+) -> Vec<usize> {
+    new_reqs
+        .iter()
+        .map(|r| r.prompt_len().min(max_prefill_tokens))
+        .chain(
+            prefilling
+                .iter()
+                .filter(|p| p.chunk_offset == 0)
+                .map(|p| p.prompt_tokens.len().min(max_prefill_tokens)),
+        )
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn start_new_requests(
     model: &dyn Model,
@@ -54,11 +85,37 @@ pub(super) fn start_new_requests(
     // chunk-0 (and its `max_batch_tokens` solo budget) — deferral there
     // would only shrink its first chunk. Vision excluded per request, same
     // shared-buffer reason as codispatch; EP excluded like every batched path.
-    let want_varlen_defer = chunked
+    //
+    // AND only when the deferral can actually buy a batch. Waves run
+    // back-to-back inside one tick, so a deferred stream is not promoted
+    // until every wave of that tick has run — which collapses every TTFT
+    // onto the p99. When no two chunk-0s fit one wave that buys nothing at
+    // all: round 13's long shape pre-split 4593 to `4576 + 17`, `2 x 4576 =
+    // 9152 > 8192`, and the planner degenerated to `16 streams -> 14
+    // wave(s)` while C=16 TTFT went 7 524.7 -> 13 756.1 ms (+82.8%) and
+    // aggregate 308.86 -> 214.25 tok/s (-30.6%). `varlen_defer_pays` is the
+    // skip (#1002); the predicate lives beside the wave planner so the two
+    // cannot disagree about the budget.
+    let wave_token_cap = max_prefill_tokens.min(max_batch_tokens).max(1);
+    let varlen_on = spark_model::layers::ops::prefill_varlen_enabled();
+    let varlen_eligible = chunked
         && !model.is_ep()
         && active.is_empty()
         && (new_reqs.len() >= 2 || !prefilling.is_empty())
-        && spark_model::layers::ops::prefill_varlen_enabled();
+        && varlen_on;
+    let varlen_pays = varlen_eligible
+        && super::phase_continue_prefills::varlen_defer_pays(
+            varlen_chunk_zero_heads(&new_reqs, prefilling, max_prefill_tokens),
+            wave_token_cap,
+        );
+    if varlen_eligible && !varlen_pays {
+        tracing::info!(
+            "Varlen prefill: deferral SKIPPED for {} co-admitted request(s) — no two chunk-0s \
+             fit one wave (cap {wave_token_cap}); running inline chunk-0 per request",
+            new_reqs.len(),
+        );
+    }
+    let want_varlen_defer = varlen_pays;
     // Always-mixed chunk-0 fuse: when decodes are active and ATLAS_HOLO_ALWAYS_MIXED
     // is on, DEFER a new request's chunk-0 (admit it to `prefilling` with
     // chunk_offset=0, skip the inline blocking prefill) so it runs this SAME tick
