@@ -81,12 +81,6 @@ pub fn ffn_batch16_tier() -> bool {
         .value
 }
 
-/// Legacy spelling of `!`[`ffn_batch16_tier`], kept for the call sites and
-/// tests that read the tier as a kill switch.
-pub fn ffn_no_batch16() -> bool {
-    !ffn_batch16_tier()
-}
-
 /// How the batch16 tier serves `m` rows, or `None` when it does not claim them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Batch16Plan {
@@ -121,9 +115,10 @@ pub(crate) fn batch16_plan(m: u32, batch16_loaded: bool, disabled: bool) -> Opti
 }
 
 impl DenseFfnLayer {
-    /// The plan for `m` rows on THIS layer — handle presence plus the switch.
+    /// The plan for `m` rows on THIS layer — handle presence plus the tier the
+    /// compiled target armed, both resolved once at construction.
     pub(crate) fn ffn_batch16_plan(&self, m: u32) -> Option<Batch16Plan> {
-        batch16_plan(m, self.w8a16_gemv_batch16_k.0 != 0, ffn_no_batch16())
+        batch16_plan(m, self.w8a16_gemv_batch16_k.0 != 0, !self.batch16_tier)
     }
 
     /// Run one dense-FFN projection through `w8a16_gemv_batch16`.

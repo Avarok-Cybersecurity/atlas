@@ -243,6 +243,15 @@ pub struct DenseFfnLayer {
     /// (#927). KernelHandle(0) on a shadow that lacks the entry point, which
     /// puts those widths back on the tile GEMMs. Rule: `batch16_decode.rs`.
     w8a16_gemv_batch16_k: KernelHandle,
+    /// Whether the compiled target ARMS that tier (`[defaults]
+    /// ffn_batch16_tier`, overridable with `ATLAS_FFN_BATCH16` /
+    /// `ATLAS_FFN_NO_BATCH16`), cached at construction.
+    ///
+    /// A FIELD rather than a per-call accessor for the two reasons `m16_tc`
+    /// below is: the selector runs per projection per layer per step, and the
+    /// dispatch tests drive both polarities without racing the process-global
+    /// `OnceLock` the resolution lives in.
+    batch16_tier: bool,
     /// Tensor-core 16-row-M-tile GEMM (#927) — the `ATLAS_FFN_M16_TC` tier
     /// that sits AHEAD of `w8a16_gemv_batch16_k` at 5..=32 rows when the lever
     /// is set. KernelHandle(0) on a shadow that lacks the entry point, which
@@ -462,6 +471,7 @@ impl DenseFfnLayer {
             w8a16_gemm_k: super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemv_batch4_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch4"),
             w8a16_gemv_batch16_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch16"),
+            batch16_tier: batch16_decode::ffn_batch16_tier(),
             // ★ PROBED ONLY WHEN THE TIER IS ARMED. `w8a16_gemm_m16.cu` is a
             // HOPPER-TUNED source (`kernels/hopper/common`, a real file
             // overriding the gb10 mirror) and is not compiled for GB10 at all.
