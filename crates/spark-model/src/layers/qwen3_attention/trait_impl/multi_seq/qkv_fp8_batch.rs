@@ -137,10 +137,7 @@ impl Qwen3AttentionLayer {
             nkv,
             hd,
             bf16,
-            q_proj_dim,
-            q_proj_bytes,
             per_seq_qkv,
-            normed,
             qkv_buf,
             ..
         } = *c;
@@ -154,6 +151,60 @@ impl Qwen3AttentionLayer {
         let a_stride = h as u32;
         let c_stride = (per_seq_qkv / bf16) as u32;
         let kv_dim = nkv * hd;
+
+        // ── W8A8 block-scaled cuBLASLt at 5..16 rows (#927) ──
+        // Round 7 (H100, 2026-09-11, n=16) put these three at 3.74 ms = 8.6%
+        // of the 43.595 ms step on `w8a16_gemv_batch16_strided`, while the
+        // dense FFN ran the SAME 16 rows through cuBLASLt W8A8 at ~128
+        // us/layer. `ldc = per_seq_qkv` writes each row straight into its slot;
+        // the phantom rows and the write-extent bound are argued in
+        // `w8a8_decode.rs`. Declining for ANY reason keeps the GEMV tier below
+        // — and the post-GEMV deinterleave runs either way.
+        if !self.try_ms_qkv_decode_w8a8(c, q, k, v, kv_dim)? {
+            self.ms_qkv_batchm_fp8_gemv(c, q, k, v, kv_dim, a_stride, c_stride)?;
+        }
+
+        if self.gated && !self.q_lora_active() {
+            ops::deinterleave_qg(
+                fwd.gpu,
+                self.deinterleave_qg_k,
+                qkv_buf,
+                n as u32,
+                nq,
+                hd,
+                c_stride,
+                stream,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The unchanged one-strided-launch-per-projection GEMV tier: `batch4`
+    /// below 5 rows, then the `ATLAS_FFN_M16_TC` MMA arm, the bit-exact
+    /// N-column arm, and `batch16`.
+    #[allow(clippy::too_many_arguments)]
+    fn ms_qkv_batchm_fp8_gemv(
+        &self,
+        c: &MultiSeqCtx<'_>,
+        q: &Fp8Weight,
+        k: &Fp8Weight,
+        v: &Fp8Weight,
+        kv_dim: u32,
+        a_stride: u32,
+        c_stride: u32,
+    ) -> Result<()> {
+        let MultiSeqCtx {
+            fwd,
+            n,
+            stream,
+            h,
+            bf16,
+            q_proj_dim,
+            q_proj_bytes,
+            qkv_buf,
+            normed,
+            ..
+        } = *c;
         let kv_bytes = kv_dim as usize * bf16;
 
         // batch4 for n<=4, batch16 for 5..=16 — one launch either way; the only
@@ -192,19 +243,6 @@ impl Qwen3AttentionLayer {
         gemv(q, qkv_buf, q_proj_dim)?;
         gemv(k, qkv_buf.offset(q_proj_bytes), kv_dim)?;
         gemv(v, qkv_buf.offset(q_proj_bytes + kv_bytes), kv_dim)?;
-
-        if self.gated && !self.q_lora_active() {
-            ops::deinterleave_qg(
-                fwd.gpu,
-                self.deinterleave_qg_k,
-                qkv_buf,
-                n as u32,
-                nq,
-                hd,
-                c_stride,
-                stream,
-            )?;
-        }
         Ok(())
     }
 }

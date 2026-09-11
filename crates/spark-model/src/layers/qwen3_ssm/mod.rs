@@ -108,6 +108,13 @@ pub struct Qwen3SsmLayer {
     rms_norm_residual_k: KernelHandle,
     gated_rms_norm_k: KernelHandle,
     gated_rms_norm_f32_k: KernelHandle,
+    /// `gated_rms_norm_f32_input_strided` — the SAME per-(sequence, head) math
+    /// as `gated_rms_norm_f32_k`, with `blockIdx.y` walking the sequences, so
+    /// a batched decode step spends ONE launch per layer instead of one per
+    /// row. 0 when absent (notably on a `gdn_norm_sigmoid` model, which has no
+    /// strided sigmoid twin), which keeps the per-seq loop. #927: the H100
+    /// batch-16 trace showed the per-seq loop at 768 launches / 1.61 ms.
+    gated_rms_norm_f32_strided_k: KernelHandle,
     dense_gemv_k: KernelHandle,
     /// K=2 verify: batched (M=2) BF16 GDN in_proj_qkvz — one weight pass for
     /// both verify tokens instead of two M=1 `dense_gemv` reads.
@@ -383,6 +390,7 @@ pub struct Qwen3SsmLayer {
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod debug;
+mod decode_w8a8_proj;
 pub mod gdn_flags;
 mod init;
 mod init_fp8;
