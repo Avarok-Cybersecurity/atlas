@@ -32,6 +32,8 @@ pub(crate) struct Defaults {
     pub lm_head_batchm_max: u32,
     pub ssm_batched_recurrent: bool,
     pub decode_split_silu: bool,
+    pub w8a8_prefill_max_m_widening: u32,
+    pub w8a8_prefill_max_m_narrowing: u32,
 }
 
 /// What a target that declares NO `[defaults]` table gets.
@@ -52,6 +54,11 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         lm_head_batchm_max: 8,
         ssm_batched_recurrent: false,
         decode_split_silu: true,
+        // No cap. Absence is the correct declaration for every arch on which
+        // W8A8 does not lose to W8A16 at large M, which is every arch that has
+        // not measured otherwise — H100 included (2.0-3.1x at every M).
+        w8a8_prefill_max_m_widening: u32::MAX,
+        w8a8_prefill_max_m_narrowing: u32::MAX,
     }
 }
 
@@ -143,6 +150,10 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
     for (key, value) in table {
         match key.as_str() {
             "lm_head_batchm_max" => out.lm_head_batchm_max = unsigned(key, value),
+            "w8a8_prefill_max_m_widening" => out.w8a8_prefill_max_m_widening = unsigned(key, value),
+            "w8a8_prefill_max_m_narrowing" => {
+                out.w8a8_prefill_max_m_narrowing = unsigned(key, value)
+            }
             "ssm_batched_recurrent" => out.ssm_batched_recurrent = boolean(key, value),
             "decode_split_silu" => out.decode_split_silu = boolean(key, value),
             other => panic!(
@@ -173,11 +184,15 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   lm_head_batchm_max: {batchm},\n\
          \x20   ssm_batched_recurrent: {batched_recurrent},\n\
          \x20   decode_split_silu: {split_silu},\n\
+         \x20   w8a8_prefill_max_m_widening: {w8a8_wide},\n\
+         \x20   w8a8_prefill_max_m_narrowing: {w8a8_narrow},\n\
          }};\n",
         hw = d.hw,
         batchm = d.lm_head_batchm_max,
         batched_recurrent = d.ssm_batched_recurrent,
         split_silu = d.decode_split_silu,
+        w8a8_wide = d.w8a8_prefill_max_m_widening,
+        w8a8_narrow = d.w8a8_prefill_max_m_narrowing,
     )
 }
 

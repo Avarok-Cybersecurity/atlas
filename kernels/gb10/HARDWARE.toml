@@ -52,3 +52,33 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = false
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+# Upper M for the W8A8 block-scaled dense-FFN prefill (#917). These are the
+# only two rows in this table that GB10 declares in order to DIFFER from the
+# baseline rather than to restate it: the baseline is no cap, which is right
+# for H100 and wrong here.
+#
+# W8A8 feeds the FP8 tensor cores directly instead of dequantizing into a BF16
+# MMA. On H100 that is 2.0-3.1x at every M measured. On sm_121 it is not: W8A8
+# is FLAT at ~14 TFLOP/s from M=128 to M=2048 while W8A16 climbs to ~26 and
+# stays there. A kernel whose throughput does not move with M is not
+# compute-bound -- it is pinned by the per-token activation quantization and
+# its FP32 scale epilogue, which W8A16 never pays. So W8A8 wins only while the
+# GEMM is small enough that the quantization is not the bill.
+#
+# Two rows because the crossover is shape-dependent. Measured 2026-09-11 on
+# spark-256a at the real Qwen3.8-27B dims (H=5120, INTER=17408): gate/up
+# (N=17408, K=5120, WIDENING) crosses at M~64-128; down (N=5120, K=17408,
+# NARROWING) at M~384-512. Each row is the low end of its band, so the arm is
+# kept only where it is measured to win.
+#
+# SERVED RECEIPT, same box, `Qwen3.6-27B-FP8`, M=949, n=5/leg, byte-identical
+# prompt, TTFT median, complete separation between the legs:
+#
+#     no cap  (W8A8)   3343.3 ms
+#     capped  (W8A16)  2560.4 ms      -23.4%
+#
+# Override per shape with ATLAS_W8A8_PREFILL_MAX_M_WIDENING / _NARROWING; 0
+# means "never take W8A8 on this shape" and is honoured, not ignored.
+w8a8_prefill_max_m_widening = 64
+w8a8_prefill_max_m_narrowing = 384
+

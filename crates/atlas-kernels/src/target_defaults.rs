@@ -75,4 +75,25 @@ pub struct TargetDefaults {
     pub ssm_batched_recurrent: bool,
     /// Split SiLU+down on the decode path (`ModelLevers::decode_split_silu`).
     pub decode_split_silu: bool,
+    /// Upper `M` for the W8A8 block-scaled dense-FFN prefill on a WIDENING
+    /// projection (`n > k`: gate/up). `u32::MAX` = no cap, the baseline.
+    ///
+    /// W8A8 feeds the FP8 tensor cores instead of dequantizing into a BF16
+    /// MMA, and on H100 that is 2.0-3.1x at every M measured — so Hopper
+    /// declares nothing here and keeps the baseline. On sm_121 it is not: W8A8
+    /// throughput is FLAT at ~14 TFLOP/s from M=128 to M=2048 while W8A16
+    /// climbs to ~26 and stays there. A kernel whose throughput does not move
+    /// with M is not compute-bound — it is pinned by the per-token activation
+    /// quantization and its FP32 scale epilogue, which W8A16 never pays. So
+    /// W8A8 wins only while the GEMM is small enough that the quantization is
+    /// not the bill, and where that stops is a property of the ARCH.
+    ///
+    /// Two rows and not one because the crossover is shape-dependent: measured
+    /// 2026-09-11 on spark-256a at the real Qwen3.8-27B dims, gate/up
+    /// (N=17408, K=5120) crosses at M~64-128 and down (N=5120, K=17408) at
+    /// M~384-512.
+    pub w8a8_prefill_max_m_widening: u32,
+    /// Upper `M` for the same path on a NARROWING projection (`n <= k`: down).
+    /// See [`Self::w8a8_prefill_max_m_widening`].
+    pub w8a8_prefill_max_m_narrowing: u32,
 }
