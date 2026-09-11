@@ -190,6 +190,12 @@ pub struct Qwen3AttentionLayer {
     pub(super) w8a16_gemv_k: KernelHandle,
     /// Optional four-row block-scaled FP8 GEMV; zero retains scalar dispatch.
     pub(super) w8a16_gemv_batch4_k: KernelHandle,
+    /// Strided siblings of the above (caller-supplied A/C row pitches) — the
+    /// multi-seq decode Q/K/V tier writes into the `per_seq_qkv`-strided QKV
+    /// buffer, which the contiguous `[M, N]` writers cannot address. Zero on
+    /// either handle retains the per-sequence scalar `w8a16_gemv` loop.
+    pub(super) w8a16_gemv_batch4_strided_k: KernelHandle,
+    pub(super) w8a16_gemv_batch16_strided_k: KernelHandle,
     pub(super) w8a16_gemm_k: KernelHandle,
     pub(super) w8a16_gemm_pipelined_k: KernelHandle,
     pub(super) w4a16_gemv_dual_k: KernelHandle,

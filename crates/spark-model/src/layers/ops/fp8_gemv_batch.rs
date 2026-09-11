@@ -178,3 +178,145 @@ pub fn w8a16_gemv_batch2(
         .arg_u32(k)
         .launch(stream)
 }
+
+/// Strided sibling of [`w8a16_gemv_batch4`] (M<=4).
+///
+/// WHY: the multi-sequence decode Q/K/V buffer is `[n, per_seq_qkv]` with Q at
+/// offset 0, K after Q and V after K inside every row, so the contiguous
+/// `[M, N]` writer cannot address one projection across rows. Without a
+/// strided writer the native-FP8 attention projections fell back to three
+/// scalar `w8a16_gemv` launches PER ROW at decode concurrency 2..=8 — the
+/// third-largest bucket in the C=4 decode profile (issue #927). This writes one
+/// projection for all M rows in ONE launch.
+///
+/// LAYOUT: `input` `[M, a_row_stride]` BF16, only the first `k` elements of
+/// each row read; `weight`/`block_scale` are the raw `w8a16_gemv` pointers
+/// (`[N, K]` FP8 E4M3 and `[N/128, K/128]` FP32); `output`
+/// `[M, c_row_stride]` BF16, only the first `n` elements of each row written.
+/// Both strides are in ELEMENTS. `a_row_stride` must keep each activation row
+/// 16-byte aligned (multiple of 8) — the kernel's activation loads are `uint4`.
+///
+/// Bit-identical per row to `w8a16_gemv`: same template body, same K-iteration
+/// order and same reduction tree as [`w8a16_gemv_batch4`]; only the row pitches
+/// change. Verified by `examples/native_fp8_qkv_batch_microtest`.
+///
+/// Kernel: `w8a16_gemv_batch4_strided` (module `w8a16_gemv_batch4`).
+/// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn w8a16_gemv_batch4_strided(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: DevicePtr,
+    block_scale: DevicePtr,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    a_row_stride: u32,
+    c_row_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    ensure!(
+        (1..=4).contains(&m),
+        "w8a16_gemv_batch4_strided: m={m} outside 1..=4 (kernel MAX_M)"
+    );
+    strided_batch_launch(
+        gpu,
+        kernel,
+        input,
+        weight,
+        block_scale,
+        output,
+        m,
+        n,
+        k,
+        a_row_stride,
+        c_row_stride,
+        stream,
+    )
+}
+
+/// MAX_M=16 sibling of [`w8a16_gemv_batch4_strided`], for decode concurrency
+/// 5..=16. Same template, same launch geometry, same per-row accumulation
+/// order; the wider register array is the only difference.
+///
+/// Kernel: `w8a16_gemv_batch16_strided` (module `w8a16_gemv_batch4`).
+/// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn w8a16_gemv_batch16_strided(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: DevicePtr,
+    block_scale: DevicePtr,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    a_row_stride: u32,
+    c_row_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    ensure!(
+        (1..=16).contains(&m),
+        "w8a16_gemv_batch16_strided: m={m} outside 1..=16 (kernel MAX_M)"
+    );
+    strided_batch_launch(
+        gpu,
+        kernel,
+        input,
+        weight,
+        block_scale,
+        output,
+        m,
+        n,
+        k,
+        a_row_stride,
+        c_row_stride,
+        stream,
+    )
+}
+
+/// Shared launch body for the two `_strided` entry points — identical argument
+/// order and geometry, so the only thing that differs above is the MAX_M bound
+/// the caller must respect.
+#[allow(clippy::too_many_arguments)]
+fn strided_batch_launch(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: DevicePtr,
+    block_scale: DevicePtr,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    a_row_stride: u32,
+    c_row_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    ensure!(
+        a_row_stride >= k && c_row_stride >= n,
+        "w8a16_gemv batch strided: row pitches (a={a_row_stride}, c={c_row_stride}) \
+         must cover the used extents (k={k}, n={n})"
+    );
+    ensure!(
+        a_row_stride.is_multiple_of(8),
+        "w8a16_gemv batch strided: a_row_stride={a_row_stride} must keep rows \
+         16B-aligned (uint4 activation loads)"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 4), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight)
+        .arg_ptr(block_scale)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .arg_u32(a_row_stride)
+        .arg_u32(c_row_stride)
+        .launch(stream)
+}

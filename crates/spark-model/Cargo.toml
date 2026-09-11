@@ -291,3 +291,7 @@ test = true
 [[example]]
 name = "native_fp8_oproj_batch_microtest"
 required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_qkv_batch_microtest"
+required-features = ["cuda", "gpu-examples"]
