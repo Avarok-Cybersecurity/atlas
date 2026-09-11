@@ -3,6 +3,10 @@
 # PR #973 stack plus the ported multi-rank prefix-cache chain
 # (branch `pr973-ep-prefix-cache`).
 #
+# DEFAULTS ARE THE SAFE PROFILING SHAPE: 32K x 4 at util 0.58. For the 128K x 4
+# capacity run set MAX_SEQ_LEN=131072 and GPU_UTIL=0.65 explicitly, and watch
+# `free -g` under load.
+#
 # WHY 2 NODES: 128K context x 4 sequences needs ~14 GB of KV (24 KiB/token over
 # 12 full-attention layers, x4 seqs, plus the MTP drafter's 1-layer KV). One
 # GB10 cannot do it — the weights are 85.6 GB of a 92.4 GB budget at util 0.76,
@@ -74,19 +78,24 @@ else
   BIN="${BIN:-/home/ms/spark-pr973-ep}"
   PORT=0
 fi
-MAX_SEQ_LEN="${MAX_SEQ_LEN:-131072}"
+MAX_SEQ_LEN="${MAX_SEQ_LEN:-32768}"
 NUM_SEQS="${NUM_SEQS:-4}"
-# 🪤 0.65, NOT the single-node 0.76. util multiplies TOTAL box memory and the KV
-# pool then expands to fill whatever the weights leave over. At EP=2 the expert
-# weights are HALVED, so pre-KV drops from 85.6 GB to roughly half that and a
-# 0.76 budget would inflate KV to ~40 GB for a workload that needs ~14 —
-# on top of the ~21 GB of n-gram page cache that lives OUTSIDE the budget.
-# That is the overcommit path: the GLM EP=2 run at 0.80 reached 112 GB used /
-# 9 GB available and had to be killed, and this box has hard-rebooted from
-# over-allocation before. 0.65 settles around 100 GB used / 21 GB available and
-# still leaves ~24 GB of KV — about 1M tokens, against the 524,288 that
-# 128K x 4 needs. Raise it only while watching `free -g` UNDER LOAD.
-GPU_UTIL="${GPU_UTIL:-0.65}"
+# 🪤 0.58, and deliberately CONSERVATIVE. util multiplies TOTAL box memory and
+# the KV pool then expands to fill whatever the weights leave over, so a high
+# util on an EP=2 rank (expert weights HALVED) inflates KV far past what the
+# workload needs — on top of the ~21 GB of n-gram page cache that lives OUTSIDE
+# the engine budget and is invisible to the pledge.
+#
+# That is the overcommit path, and it is not theoretical on these boxes: the GLM
+# EP=2 run at 0.80 reached 112 GB used / 9 GB available and had to be killed,
+# util 0.80 single-node thrashed to 0.3 tok/s, and over-allocation has HARD
+# REBOOTED these machines more than once. 0.65 was comfortable; 0.58 leaves a
+# wider margin for profiling runs, which add their own buffers on top.
+#
+# At 32K x 4 the KV need is small — 4 x 32768 x 24 KiB ~= 3.2 GB — so there is
+# no reason to bid high. Raise it only while watching `free -g` UNDER LOAD,
+# never at rest.
+GPU_UTIL="${GPU_UTIL:-0.58}"
 MTP="${MTP:-1}"
 DRAFTS="${DRAFTS:-2}"
 
