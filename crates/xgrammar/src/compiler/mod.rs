@@ -12,6 +12,7 @@
 // Module map:
 //   mask             — AdaptiveTokenMask (accept/reject/uncertain set)
 //   mask_gen         — per-state mask computation (EarleyParser scan)
+//   mask_snapshot    — cross-process persistence of the rule cache (#918)
 //   compiled_grammar — CompiledGrammar / CompiledGrammarImpl
 //   compile          — no-cache compilation core (XGrammar-2 JIT)
 //   compiler         — GrammarCompiler with the dashmap-backed cache
@@ -68,6 +69,7 @@ mod decompose;
 mod grammar_cache;
 mod mask;
 mod mask_gen;
+pub mod mask_snapshot;
 mod prewarm;
 mod rule_cache;
 
@@ -76,6 +78,7 @@ pub use compiled_grammar::{CompiledGrammar, CompiledGrammarImpl};
 pub use compiler::{CompileError, GrammarCompiler};
 pub use decompose::{GrammarDecomposition, RuleDecomposition, Segment, decompose_static_regions};
 pub use mask::{AdaptiveTokenMask, StoreType, USE_BITSET_THRESHOLD};
+pub use mask_snapshot::{SnapshotError, SnapshotIdentity};
 pub use rule_cache::{RuleLevelCache, RuleMaskKey, UNLIMITED_SIZE};
 
 #[cfg(test)]

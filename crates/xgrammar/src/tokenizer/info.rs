@@ -192,6 +192,39 @@ impl TokenizerInfo {
         &self.trie_subtree_nodes_range
     }
 
+    /// A PROCESS-STABLE digest of everything an adaptive token mask
+    /// depends on: the vocab type / size / prefix-space flag, the
+    /// sorted decoded vocabulary (ids *and* bytes, in order), and the
+    /// stop / special id sets.
+    ///
+    /// #918: the on-disk mask snapshot
+    /// ([`crate::compiler::mask_snapshot`]) is only valid for the exact
+    /// tokenizer it was computed against — a mask is a partition of
+    /// [`Self::sorted_decoded_vocab`] by index. This is the key that
+    /// decides hit vs miss across processes, so it is FNV-1a with a
+    /// fixed basis rather than `ahash`/`DefaultHasher`, whose seeds are
+    /// randomized per process.
+    pub fn fingerprint(&self) -> u64 {
+        use crate::compiler::mask_snapshot::{fnv1a, fnv1a_of};
+        let mut h = fnv1a_of(b"xgrammar.TokenizerInfo.v1");
+        h = fnv1a(h, &(self.vocab_type as u8).to_le_bytes());
+        h = fnv1a(h, &(self.vocab_size as u64).to_le_bytes());
+        h = fnv1a(h, &[self.add_prefix_space as u8]);
+        h = fnv1a(h, &(self.sorted_decoded_vocab.len() as u64).to_le_bytes());
+        for (id, token) in &self.sorted_decoded_vocab {
+            h = fnv1a(h, &id.to_le_bytes());
+            h = fnv1a(h, &(token.len() as u32).to_le_bytes());
+            h = fnv1a(h, token);
+        }
+        for ids in [&self.stop_token_ids, &self.special_token_ids] {
+            h = fnv1a(h, &(ids.len() as u64).to_le_bytes());
+            for id in ids {
+                h = fnv1a(h, &id.to_le_bytes());
+            }
+        }
+        h
+    }
+
     /// Serialize the metadata to the compact JSON form C++
     /// `DumpMetadata` emits:
     /// `{"vocab_type":N,"vocab_size":N,"add_prefix_space":b,"stop_token_ids":[...]}`.
