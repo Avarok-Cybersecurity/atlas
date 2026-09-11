@@ -107,4 +107,13 @@ pub struct TargetDefaults {
     /// `auto` — size the decode-rollback ring from free memory at preflight
     /// (#915) — or a decimal depth `0..=DECODE_ROLLBACK_RING_SLOTS`.
     pub ssm_decode_ring_slots: &'static str,
+    /// How the paged-decode attention path picks its KV split count (#928):
+    /// `legacy` (the pre-#928 rule), `auto` (fill this target's SMs at the
+    /// single-stream shape) or a pinned decimal count. Parsed by
+    /// [`crate::attn_splitk::parse`], which owns the grammar and the clamps.
+    ///
+    /// A STRING for the reason `cublas_gemm_scope` is one: the policy is a
+    /// small grammar, not a bool, and the target declares WHICH RULE it wants
+    /// rather than a number that would silently be wrong on the next card.
+    pub attn_decode_splitk: &'static str,
 }

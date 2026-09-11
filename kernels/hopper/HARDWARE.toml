@@ -8,6 +8,19 @@ vendor = "nvidia"
 # sm_100/sm_120 devices — this target is Hopper-only by design.
 arch = "sm_90a"
 compute_capability = "9.0"
+# Streaming multiprocessors. H100 SXM5/PCIe and H200 SXM5 are all GH100 with
+# 132 SMs enabled; the H100 NVL card is 132 too. READ by
+# `atlas_kernels::attn_splitk` for the paged-decode split-K split count, and
+# CROSS-CHECKED at boot against `cudaDevAttrMultiProcessorCount` — a serve on a
+# part with a different count logs a warning naming both numbers rather than
+# silently sizing a grid for the wrong machine (`arch_preflight.rs`).
+#
+# The defect it closes (#928): `atlas_core::device::sm121::NUM_SMS = 48`, the
+# GB10 constant, was compiled into the H100 attention dispatch, so
+# `num_splits` was 1 at every batch size and `paged_decode_attn_fp8` ran 24
+# CTAs on 132 SMs — 22.7% of a C=1 decode step at 1.28% of HBM
+# (`ATTN-DECODE-SPLITK-ATTRIBUTION.md`).
+sm_count = 132
 # H100 SXM5 80 GB HBM3: 3350 GB/s. H200 SXM5 141 GB HBM3e: 4800 GB/s.
 # Sized to the smaller SKU; the runtime reads real free memory via
 # cuMemGetInfo, this is documentation + roofline input only.
@@ -145,6 +158,33 @@ gdn_decode_hopper = false
 # resemblance (`tests/target_defaults.rs`).
 gdn_prefill_tc = true
 # Split SiLU+down on the decode path — shipped ON everywhere since #928.
+# Paged-decode attention split-K. `auto` — the split count that fills this
+# target's SMs at the single-stream shape:
+#
+#   num_splits = clamp(ceil(2 * sm_count / num_q_heads), 1, 16)
+#
+# which on Qwen3.8-27B (24 q heads) is 11, i.e. 264 CTAs where the shipped
+# geometry launched 24. It is a pure function of (sm_count, num_q_heads) and
+# therefore of CONFIGURATION ONLY — never of the runtime co-batched count, so
+# the reduction tree a sequence sees is fixed per serve and a sequence decoded
+# alone produces the same bytes as the same sequence decoded beside fifteen
+# others. That invariant is what `split_ref_seqs` was added for
+# (`tasks/determinism_investigation.md`) and it is preserved, not relaxed.
+#
+# `legacy` is the pre-#928 rule, `sm_count / (num_q_heads * split_ref_seqs)`,
+# which every other target keeps. `ATLAS_ATTN_DECODE_SPLITK=legacy|auto|N|0`
+# is the A/B; `0`/`off` pins one split, which is what an H100 served before
+# this row existed.
+#
+# EVIDENCE, and what is still owed. nsys on 1xH100 80GB HBM3,
+# Qwen/Qwen3.8-27B-FP8, round 13 cell T1N: `paged_decode_attn_fp8` at C=1 is
+# `grid=(24,1,1)`, 231.51 us/launch for 9.93 MB of KV = 42.9 GB/s = 1.28% of
+# HBM; with the BF16-KV sibling the pair is 3.79 ms of a 16.69 ms step. That is
+# the receipt for the DEFECT. The receipt for the FIX is round 14 — the
+# predicted `4096x512` C=1 TPOT is 16.86 -> ~13.1 ms — and this row ships `auto`
+# on the strength of the geometry, which is the one thing the trace measures
+# directly. Numbers: `ATTN-DECODE-SPLITK-ATTRIBUTION.md`.
+attn_decode_splitk = "auto"
 decode_split_silu = true
 # `auto` = size the decode-rollback ring from free memory at preflight (#915).
 ssm_decode_ring_slots = "auto"
@@ -228,6 +268,37 @@ ssm_decode_ring_slots = "auto"
 #                            under `[defaults] gdn_prefill_tc`. Reached only
 #                            under that row. Numbers:
 #                            `GDN-PREFILL-ATTRIBUTION.md`.
+#   paged_decode_fp8_splitk_hopper.cu   The paged-decode SPLIT-K pair (#928):
+#   paged_decode_bf16_splitk_hopper.cu  a partial-attention kernel per KV split
+#                            plus the merge that folds the partials. ADDITIONS,
+#                            the `gdn_*_hopper.cu` shape: gb10's
+#                            `paged_decode_attn_fp8.cu` already declares a
+#                            split-K pair, but a same-stem override there would
+#                            fork the NON-split `paged_decode_attn_fp8` entry
+#                            beside them — the kernel five targets compile and
+#                            six KV dtypes route through — to retune two. New
+#                            stems fork nothing. The FP8 twin restores the
+#                            PD_BC=4 batched inner loop (gb10's split-K path is
+#                            the scalar one, which a 132-SM split count would
+#                            multiply rather than hide); the BF16 twin is a new
+#                            CAPABILITY — `run_paged_decode.rs` had an explicit
+#                            "no Split-K (not implemented for BF16 yet)" branch,
+#                            so the `--kv-high-precision-layers auto` layers had
+#                            nothing to select. Reached only under
+#                            `[defaults] attn_decode_splitk`.
+#   paged_decode_splitk_hopper.cuh   Their shared machinery — the split
+#                            partition, the smem tree merge, the workspace
+#                            format and the reduce body. No gb10 counterpart by
+#                            design, the shape `w8a16_gemv_hopper.cuh` and
+#                            `gdn_prefill_hopper.cuh` take.
+#
+#                            NOT symlinked into `kernels/b200`: that target
+#                            declares `attn_decode_splitk = "legacy"` for want
+#                            of a receipt, exactly as it does for every other
+#                            Hopper row, so the kernels would be compiled and
+#                            never reached. Same disposition as
+#                            `gdn_decode_hopper.cu`.
+#
 #   gdn_prefill_hopper.cuh   Their shared operand machinery — padded smem
 #                            strides and the MMA fragment maps both twins
 #                            read. No gb10 counterpart by design, the same
@@ -240,6 +311,9 @@ ssm_decode_ring_slots = "auto"
 [kernels]
 overrides = [
   "dense_gemm_m16_bf16.cu",
+  "paged_decode_bf16_splitk_hopper.cu",
+  "paged_decode_fp8_splitk_hopper.cu",
+  "paged_decode_splitk_hopper.cuh",
   "fp8_scale_transpose.cu",
   "gdn_decode_hopper.cu",
   "gdn_fwd_o_hopper.cu",
