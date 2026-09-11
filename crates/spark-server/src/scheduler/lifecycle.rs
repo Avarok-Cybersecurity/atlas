@@ -294,7 +294,23 @@ pub fn swap_out_sequence(
     let mut a = active.swap_remove(victim_idx);
 
     // Compact the swapped-in sequence (same logic as retire path).
-    if victim_idx < active.len() && active[victim_idx].seq.slot_idx != victim_idx {
+    //
+    // `a.seq.slot_idx == victim_idx` is the ownership-TRANSFER precondition,
+    // and it is load-bearing (#1002). `compact_sequence` calls
+    // `ssm_pool.claim_specific(target)` and IGNORES a false return, so
+    // migrating onto a slot the victim does not own silently double-owns it —
+    // and with `--prefill-varlen-batch` the active vec is routinely
+    // non-contiguous because the streams parked in `prefilling` hold the low
+    // slots. Round 13 cell V is the receipt: a survivor migrated onto a
+    // prefilling stream's slot, the two shared one GDN h_state, and the
+    // later double release poisoned the pool free list for the rest of the
+    // serve. When the premise does not hold, skip the compaction (and the
+    // detach that pairs with it): non-contiguous slots cost the batched-GDN
+    // fast path, shared recurrent state costs correctness.
+    if victim_idx < active.len()
+        && active[victim_idx].seq.slot_idx != victim_idx
+        && a.seq.slot_idx == victim_idx
+    {
         // NOT `?`. `a` is already OUT of `active` — this function holds the
         // only handle to it — so an early return here is the one owner
         // dropping the request, and the drop is silent twice over: the sink

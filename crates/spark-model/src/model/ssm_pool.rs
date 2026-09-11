@@ -441,12 +441,34 @@ impl SsmStatePool {
         })
     }
 
+    /// Return `idx` to the free list.
+    ///
+    /// IDEMPOTENT BY CONSTRUCTION (#1002). This used to be a `debug_assert`,
+    /// which is a release-build no-op — and release is exactly where it bites: on H100
+    /// round 13 cell V two sequences ended up owning one slot (the scheduler
+    /// compacted an active survivor onto a slot a `prefilling` stream still
+    /// held), and each of them released it. The duplicate entry made
+    /// `claim_slot` hand that index to two FRESH sequences, so a burst-scoped
+    /// collision became permanent state corruption: a 16-way probe minutes
+    /// later — with the varlen lever not even engaging — still decoded with
+    /// `slots=[0, 0, 0, 1, 1, 2, 2, 3, ...]` and lost 6/16 responses to the
+    /// content-loop watchdog.
+    ///
+    /// A double release is always a bug upstream; refusing the second push
+    /// bounds its blast radius to the sequences already involved instead of
+    /// poisoning the pool for the life of the process. The refusal is a
+    /// runtime check rather than an assertion precisely so it holds in the
+    /// build that shipped the failure, and it is loud: one ERROR line names
+    /// the slot.
     pub(super) fn release_slot(&self, idx: usize) {
         let mut free = self.free_slots.lock();
-        debug_assert!(
-            !free.contains(&idx),
-            "release_slot: slot {idx} already free (double-release hands it to two seqs)"
-        );
+        if free.contains(&idx) {
+            tracing::error!(
+                "release_slot: SSM pool slot {idx} was already free — refusing the duplicate \
+                 push (a double release hands one slot to two sequences; see #1002)"
+            );
+            return;
+        }
         free.push(idx);
     }
 
@@ -1189,6 +1211,47 @@ mod slot_guard_tests {
 
     fn free_count(pool: &SsmStatePool) -> usize {
         pool.free_slots.lock().len()
+    }
+
+    /// #1002. A duplicated free-list entry hands ONE slot to TWO sequences —
+    /// the shape round-13 cell V left behind after an active survivor was
+    /// compacted onto a `prefilling` stream's slot and both owners later
+    /// released it. First half pins the damage a duplicate does; second half
+    /// pins that `release_slot` refuses to create one.
+    #[test]
+    fn a_duplicated_free_entry_issues_one_slot_to_two_sequences() {
+        let pool = bare_pool(2);
+        // Bypass `release_slot` to construct the corrupted state directly.
+        pool.free_slots.lock().push(1);
+        let claimed: Vec<usize> = (0..3).map(|_| pool.claim_slot().unwrap()).collect();
+        assert_eq!(claimed.len(), 3);
+        let distinct: std::collections::HashSet<usize> = claimed.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            2,
+            "a duplicated entry issues one index twice: {claimed:?}"
+        );
+    }
+
+    #[test]
+    fn double_release_is_refused_not_pushed() {
+        let pool = bare_pool(2);
+        let idx = pool.claim_slot().unwrap();
+        pool.release_slot(idx);
+        assert_eq!(free_count(&pool), 2);
+        // The bug: a second owner of the same slot releases it too.
+        pool.release_slot(idx);
+        assert_eq!(
+            free_count(&pool),
+            2,
+            "the duplicate push must be refused — otherwise `claim_slot` hands \
+             slot {idx} to two future sequences for the life of the process"
+        );
+        // And the pool still issues each claimable index exactly once.
+        let a = pool.claim_slot().unwrap();
+        let b = pool.claim_slot().unwrap();
+        assert_ne!(a, b);
+        assert!(pool.claim_slot().is_err(), "pool must now be exhausted");
     }
 
     #[test]
