@@ -35,12 +35,14 @@ const GB10: TargetDefaults = TargetDefaults {
     ssm_batched_recurrent: false,
     gdn_decode_hopper: false,
     gdn_prefill_tc: false,
+    ssm_ba_gates_hopper: false,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]` — the round-9 recipe, plus the
-/// one row round 13 added to it (`gdn_prefill_tc`).
+/// row round 13 added to it (`gdn_prefill_tc`) and the one round 14 did
+/// (`ssm_ba_gates_hopper`).
 const HOPPER: TargetDefaults = TargetDefaults {
     hw: "hopper",
     cublas_gemm_scope: "ffn,ssm,attn",
@@ -53,6 +55,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     ssm_batched_recurrent: true,
     gdn_decode_hopper: false,
     gdn_prefill_tc: true,
+    ssm_ba_gates_hopper: true,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
 };
@@ -106,6 +109,12 @@ fn hopper_resolves_the_round_nine_recipe_from_an_empty_environment() {
          C=1 TTFT -39.6%/-44.7%, C=16 aggregate +21.5%/+31.4%, coherency 4/4, \
          determinism 8/8 x 3"
     );
+    assert!(
+        l.ssm_ba_gates_hopper.value,
+        "the BA-gates twin is bit-identical to its parent, so it ships on: its \
+         worst case is a null and off it re-reads every activation row 96 \
+         times, once per BA output"
+    );
     assert!(l.decode_split_silu.value);
     // The two arms round 6 measured as LOSSES stay off, and so does the tier
     // whose receipt does not exist.
@@ -126,6 +135,7 @@ fn hopper_resolves_the_round_nine_recipe_from_an_empty_environment() {
         l.lm_head_batchm_max.from_env(),
         l.ssm_batched_recurrent.from_env(),
         l.gdn_prefill_tc.from_env(),
+        l.ssm_ba_gates_hopper.from_env(),
     ] {
         assert!(!from_env, "an empty environment sourced nothing from it");
     }
@@ -189,6 +199,11 @@ fn gb10_with_an_empty_environment_is_todays_behaviour() {
          the part the 48-CTA grid nearly fills, so that number does not \
          transfer by argument and this row waits for a GB10 A/B"
     );
+    assert!(
+        !l.ssm_ba_gates_hopper.value,
+        "GB10 does not compile the twin at all — the row is declared so the \
+         lever list is one list, not to change anything"
+    );
     assert!(l.decode_split_silu.value);
     assert_eq!(l.ssm_decode_ring_slots.value, None);
 }
@@ -218,6 +233,7 @@ fn the_environment_overrides_every_toggle_in_both_directions() {
             ("ATLAS_LM_HEAD_M16_TC", "false"),
             ("ATLAS_SSM_BATCHED_RECURRENT", "off"),
             ("ATLAS_GDN_PREFILL_TC", "0"),
+            ("ATLAS_SSM_BA_GATES_HOPPER", "no"),
             ("ATLAS_CUBLAS_GEMM", "off"),
             ("ATLAS_LM_HEAD_BATCHM_MAX", "8"),
         ],
@@ -231,6 +247,7 @@ fn the_environment_overrides_every_toggle_in_both_directions() {
     // spine and both remnant twins, because the twins read this same resolved
     // bit (`ssm_gdn_remnants_tests::the_twins_read_the_spines_resolved_lever`).
     assert_eq!(off.gdn_prefill_tc, Resolved::env(false));
+    assert_eq!(off.ssm_ba_gates_hopper, Resolved::env(false));
     assert_eq!(off.cublas, Resolved::env(CublasScope::OFF));
     assert_eq!(off.lm_head_batchm_max, Resolved::env(8));
 
@@ -243,6 +260,7 @@ fn the_environment_overrides_every_toggle_in_both_directions() {
             ("ATLAS_LM_HEAD_M16_TC", "1"),
             ("ATLAS_SSM_BATCHED_RECURRENT", "1"),
             ("ATLAS_GDN_PREFILL_TC", "1"),
+            ("ATLAS_SSM_BA_GATES_HOPPER", "1"),
             ("ATLAS_ATTN_NCOL_GEMV", "1"),
             ("ATLAS_FFN_BATCH16", "1"),
             ("ATLAS_CUBLAS_GEMM", "ffn"),
@@ -253,6 +271,7 @@ fn the_environment_overrides_every_toggle_in_both_directions() {
     assert_eq!(on.lm_head_m16_tc, Resolved::env(true));
     assert_eq!(on.ssm_batched_recurrent, Resolved::env(true));
     assert_eq!(on.gdn_prefill_tc, Resolved::env(true));
+    assert_eq!(on.ssm_ba_gates_hopper, Resolved::env(true));
     assert_eq!(on.attn_ncol_gemv, Resolved::env(true));
     assert_eq!(on.ffn_batch16_tier, Resolved::env(true));
     assert_eq!(
@@ -406,6 +425,7 @@ fn the_serve_line_names_every_lever_and_marks_the_environment_ones() {
         "ssm_batched_recurrent=on",
         "gdn_decode_hopper=off",
         "gdn_prefill_tc=on",
+        "ssm_ba_gates_hopper=on",
         "decode_split_silu=on",
         "ssm_decode_ring_slots=auto",
     ] {

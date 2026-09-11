@@ -80,6 +80,16 @@ fn hopper_declares_the_round_nine_recipe() {
         "round 13: the tensor-core GDN prefill family is Hopper's default — \
          -39.6%/-44.7% on C=1 TTFT, +21.5%/+31.4% on C=16 aggregate"
     );
+    // The row round 14 adds. BIT-IDENTICAL to its parent by construction, so
+    // it is on without an accuracy receipt and its worst case is a null; the
+    // cost it attacks is nsys round 13's 26 881.8 us = 5.85% of the 4593-token
+    // prefill at 96 reads of every token's activation row, one per BA output.
+    assert!(
+        d.ssm_ba_gates_hopper,
+        "the BA-gates twin is bit-identical to its parent and Hopper-only; it \
+         is on because it cannot change output and off it re-reads every \
+         activation row 96 times (`SSM-BA-GATES-ATTRIBUTION.md`)"
+    );
     assert_eq!(d.ssm_decode_ring_slots, "auto");
 }
 
@@ -117,6 +127,11 @@ fn b200_declares_the_conservative_table_not_hoppers() {
          and OFF here for want of one — the same rule, stated on the row that \
          most recently moved"
     );
+    assert!(
+        !d.ssm_ba_gates_hopper && declared("hopper").ssm_ba_gates_hopper,
+        "the BA-gates twin is Hopper-only source; B200's common/ does not link \
+         it, so the row is inert here and must read false"
+    );
 }
 
 /// The targets that declare NO `[defaults]` table are unaffected: they resolve
@@ -147,7 +162,7 @@ fn a_hopper_only_lever_is_still_declared_by_every_table() {
     for hw in ["hopper", "gb10", "b200"] {
         let raw = std::fs::read_to_string(kernels_root().join(hw).join("HARDWARE.toml"))
             .unwrap_or_else(|e| panic!("kernels/{hw}/HARDWARE.toml: {e}"));
-        for lever in ["gdn_decode_hopper", "gdn_prefill_tc"] {
+        for lever in ["gdn_decode_hopper", "gdn_prefill_tc", "ssm_ba_gates_hopper"] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
                 "kernels/{hw}/HARDWARE.toml [defaults] must declare `{lever}` \
@@ -234,6 +249,7 @@ fn the_generated_constant_names_every_field() {
         "ssm_batched_recurrent: true",
         "gdn_decode_hopper: false",
         "gdn_prefill_tc: true",
+        "ssm_ba_gates_hopper: true",
         "decode_split_silu: true",
         "ssm_decode_ring_slots: \"auto\"",
     ] {
@@ -264,6 +280,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.ssm_batched_recurrent, declared.ssm_batched_recurrent);
     assert_eq!(baked.gdn_decode_hopper, declared.gdn_decode_hopper);
     assert_eq!(baked.gdn_prefill_tc, declared.gdn_prefill_tc);
+    assert_eq!(baked.ssm_ba_gates_hopper, declared.ssm_ba_gates_hopper);
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
     assert_eq!(baked.ssm_decode_ring_slots, declared.ssm_decode_ring_slots);
 }

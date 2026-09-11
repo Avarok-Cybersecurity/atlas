@@ -263,6 +263,12 @@ pub struct Qwen3SsmLayer {
     gdn_prefill_split4_batched_k: KernelHandle,
     compute_gdn_gates_k: KernelHandle,
     ba_gates_prefill_k: KernelHandle,
+    /// Hopper twin of `ba_gates_prefill_k`
+    /// (`ssm_ba_gates_hopper::dense_gemm_ba_gates_prefill_hopper`, #928): one
+    /// CTA per token instead of `ceil(N/4)`, bit-identical output. Null on
+    /// every target but hopper, and declined below the token-count floor —
+    /// `ops::ba_gates_pick` owns both rules.
+    ba_gates_prefill_hopper_k: KernelHandle,
     // Kernels — prefill (multi-token sequential)
     conv1d_prefill_k: KernelHandle,
     /// Token-parallel prefill conv1d (`causal_conv1d_update_prefill_tp`).

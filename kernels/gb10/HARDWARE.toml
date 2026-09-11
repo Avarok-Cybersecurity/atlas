@@ -73,6 +73,17 @@ gdn_decode_hopper = false
 # Hopper speedup does not transfer by argument, and this row does not move
 # until a GB10 A/B says so.
 gdn_prefill_tc = false
+# The Hopper BA-gates twin (#928). OFF, and INERT here: the kernel lives in
+# `kernels/hopper/common/ssm_ba_gates_hopper.cu`, which GB10's tree does not
+# carry and GB10's build does not compile, so the probe returns
+# `KernelHandle(0)` and the launcher stays on the gb10 parent
+# `ssm_preprocess::dense_gemm_ba_gates_prefill` whatever this row says.
+# Declared anyway, for the same reason `gdn_decode_hopper` is: the lever list is
+# one list. The twin is bit-identical to that parent, so a GB10 receipt could
+# move this row on speed alone — but the parent's 24-CTAs-per-token grid is a
+# much better fit for a 48-SM part than for a 132-SM H100, and there is no GB10
+# A/B. See `kernels/hopper/HARDWARE.toml` and `SSM-BA-GATES-ATTRIBUTION.md`.
+ssm_ba_gates_hopper = false
 # Split SiLU+down on the decode path — shipped ON everywhere since #928.
 decode_split_silu = true
 # `auto` = size the decode-rollback ring from free memory at preflight (#915).

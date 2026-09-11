@@ -144,6 +144,41 @@ gdn_decode_hopper = false
 # receipt for the family, and b200 must not inherit a Hopper recipe by
 # resemblance (`tests/target_defaults.rs`).
 gdn_prefill_tc = true
+# The Hopper BA-gates twin (#928, `ssm_ba_gates_hopper.cu` below). ON, and
+# BIT-IDENTICAL to its gb10 parent by construction, so this row is a pure speed
+# claim with no accuracy question attached — the microtest
+# `native_ssm_ba_gates_hopper_microtest` asserts byte equality of `gate` and
+# `beta` at M in {17, 25, 1168, 4576}, not a tolerance.
+#
+# WHAT IT FIXES. `dense_gemm_ba_gates_prefill` launches `ceil(N/4)` CTAs per
+# token and each one walks that token's entire `K=5120` activation row for the
+# four BA outputs it owns — and each of those four sweeps the WHOLE row, because
+# the CTA's 256 threads are four 64-lane groups, one per output. At
+# `N = ssm_ba_size = 2*nv = 96` that is 24 CTAs per token and **96 reads and 96
+# conversions of each activation row**, one per BA output. nsys, 1xH100 80GB
+# HBM3, Qwen/Qwen3.8-27B-FP8 @ `815c9f160`, round 13 cell T1
+# (`h100-r13-attribution.md` SS A.3/A.4): 26 881.8 us = 5.85% of the 4593-token
+# prefill, 555.04 us per launch at M=4576, observed grid `(24, 4576)`, 88 GB/s
+# of compulsory traffic — 2.6% of HBM, i.e. nowhere near a bandwidth bound. The
+# twin is one CTA per token and one A fetch per 8 outputs, so the row is read 12
+# times instead of 96; SASS on sm_90a puts the launch at ~1.8x fewer
+# instructions for the same bits.
+#
+# ⚠️ NO SERVING RECEIPT YET. Round 13's nsys is the receipt for the COST; the
+# saving is a round-14 deliverable, and `SSM-BA-GATES-ATTRIBUTION.md` states the
+# prediction as arithmetic (instruction-issue counts) rather than as a measured
+# number, because the kernel is issue-bound and not bandwidth-bound: the
+# attribution doc's roofline "60% of HBM" target does not apply to it. Turned ON
+# rather than left off because the arm cannot change a bit of output and its
+# worst case is a null; `ATLAS_SSM_BA_GATES_HOPPER=0` is the one-variable A/B
+# that pins the parent.
+#
+# The launcher declines the twin below `2 * SM count` tokens and keeps the
+# parent: at one CTA per token a 16-row decode step would occupy 16 SMs of 132,
+# and this kernel is on the BATCHED DECODE path too (nsys round 13 SS C.2:
+# 227.5 us/step at n=16). That guard is `ops::ssm_ba_gates_hopper_reject`, and
+# it is why this row does not put the decode step at risk.
+ssm_ba_gates_hopper = true
 # Split SiLU+down on the decode path — shipped ON everywhere since #928.
 decode_split_silu = true
 # `auto` = size the decode-rollback ring from free memory at preflight (#915).
@@ -233,6 +268,19 @@ ssm_decode_ring_slots = "auto"
 #                            read. No gb10 counterpart by design, the same
 #                            shape `w8a16_gemv_hopper.cuh` takes.
 #
+#   ssm_ba_gates_hopper.cu   The SSM BA projection + GDN gate transforms with
+#                            ONE CTA per token (#928). An ADDITION for the
+#                            third distinct reason: its parent
+#                            `dense_gemm_ba_gates_prefill` lives in
+#                            `common/ssm_preprocess.cu` beside two other entry
+#                            points that GB10 and four other targets compile,
+#                            so a same-stem override would fork those two as
+#                            well. A new stem with a new entry name forks
+#                            nothing, and `ops::ssm_ba_gates_pick` selects
+#                            parent or twin by kernel presence under
+#                            `[defaults] ssm_ba_gates_hopper` plus a token-count
+#                            guard. Numbers: `SSM-BA-GATES-ATTRIBUTION.md`.
+#
 # The two shapes are checked differently and both are checked: an override must
 # be tuned and must leave gb10's file alone; an addition must declare entry
 # points gb10 does not and must not be a gb10 source under a new name. See
@@ -245,6 +293,7 @@ overrides = [
   "gdn_fwd_o_hopper.cu",
   "gdn_prefill_hopper.cuh",
   "gdn_recompute_wu_hopper.cu",
+  "ssm_ba_gates_hopper.cu",
   "w8a16_gemm_m16.cu",
   "w8a16_gemv.cu",
   "w8a16_gemv_fused.cu",
