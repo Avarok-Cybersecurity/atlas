@@ -7,13 +7,19 @@
 //! Same posture as `target_resolution.rs`: `src/*_tests.rs` prove the rules on
 //! fixtures, these prove the DATA that is actually checked in.
 //!
-//! Neither target ships a kernel of its own. Every source they compile is a
-//! relative symlink into `kernels/gb10`, which makes `gb10` the ORACLE for
-//! this whole file: an inherited kernel set is correct exactly when it is
-//! gb10's kernel set, reachable. A symlink that dangles, or a gb10 file that
-//! gained no counterpart, is a kernel that silently vanishes from that
-//! hardware's build — the shadow-drift failure class documented in `build.rs`,
-//! arriving through a different door.
+//! Every source they compile is a relative symlink into `kernels/gb10` EXCEPT
+//! the handful each target declares in [`inherited::Inherited::owned`], which
+//! makes `gb10` the ORACLE for this whole file: an inherited kernel set is
+//! correct exactly when it is gb10's kernel set, reachable, plus the overrides
+//! that were declared. A symlink that dangles, a gb10 file that gained no
+//! counterpart, or a fork nobody declared is a kernel that silently vanishes
+//! from — or silently diverges in — that hardware's build: the shadow-drift
+//! failure class documented in `build.rs`, arriving through a different door.
+//!
+//! The declared overrides are the maintainer rule of 2026-09-11: a kernel
+//! tuned for one hardware set REPLACES its link in that set's `common/` and
+//! leaves the gb10 source untouched, rather than editing a file five other
+//! targets compile.
 //!
 //! `cargo test` runs GPU-free with `ATLAS_SKIP_BUILD=1`, where `build.rs`
 //! returns before target resolution ever happens, so without this file nothing
@@ -36,7 +42,7 @@ mod inherited;
 #[path = "support/mirror.rs"]
 mod mirror;
 
-use inherited::{INHERITED, gb10_dir, hardware_toml, hw_dir};
+use inherited::{HOPPER_OWNED_COMMON, INHERITED, gb10_dir, hardware_toml, hw_dir};
 use mirror::mirror_faults;
 
 use std::path::PathBuf;
@@ -126,20 +132,96 @@ fn every_inherited_hardware_toml_carries_the_same_key_set_as_gb10() {
 /// ORACLE: `kernels/gb10/common`. Each inherited `common/` is that directory,
 /// reachable — all 181 entries (171 `.cu`, 9 `.cuh` headers the `.cu` files
 /// `#include`, and `KERNEL.toml`, which `build.rs` merges as the base layer of
-/// every target's flags and `[modules]` overrides).
+/// every target's flags and `[modules]` overrides) — with each name in that
+/// target's `owned` list a real file in place of the link instead.
 ///
 /// Unlike strix's curated 99, nothing is left out: these are NVIDIA targets
 /// compiled by the same nvcc, so a file gb10 compiles is a file they must
-/// compile, and a subset here would be an undocumented kernel drop.
+/// compile, and a subset here would be an undocumented kernel drop. An
+/// override is not a subset: the entry point keeps its name, so the module
+/// still resolves; only the source behind it is this hardware's.
 #[test]
 fn every_inherited_common_mirrors_every_gb10_common_file() {
     for t in INHERITED {
-        let faults = mirror_faults(&hw_dir(t.hw).join("common"), &gb10_dir().join("common"));
+        let faults = mirror_faults(
+            &hw_dir(t.hw).join("common"),
+            &gb10_dir().join("common"),
+            t.owned,
+        );
         assert!(
             faults.is_empty(),
             "kernels/{}/common has drifted from kernels/gb10/common:\n  {}",
             t.hw,
             faults.join("\n  ")
+        );
+    }
+}
+
+/// The maintainer rule of 2026-09-11, as a property of the checked-in tree:
+/// a Hopper-tuned kernel OVERRIDES its gb10 namesake and does not edit it.
+///
+/// Three things, because the rule has three ways to be broken and the `owned`
+/// list only covers the first:
+///  1. the hopper entry is a real file (the override exists at all);
+///  2. the gb10 source it overrides is still gb10's — a regular file, still
+///     the shared-memory `E4M3_LUT` gather, with no Hopper instruction in it.
+///     `w8a16_gemv.cu` is compiled by gb10, b200, strix and strix-hip; editing
+///     it to serve Hopper would change all four;
+///  3. the OTHER inherited target still links to gb10. An override that leaked
+///     into b200 would ship sm_90a-tuned code to a B200 with no receipt.
+///
+/// The instruction strings are the discriminator because they are what the
+/// override is FOR — see `kernels/hopper/common/w8a16_gemv_hopper.cuh`.
+#[test]
+fn a_hopper_owned_kernel_overrides_gb10_without_editing_it() {
+    let hopper = hw_dir("hopper").join("common");
+    let gb10 = gb10_dir().join("common");
+    let sources: Vec<&str> = HOPPER_OWNED_COMMON
+        .iter()
+        .copied()
+        .filter(|n| n.ends_with(".cu"))
+        .collect();
+    assert!(
+        !sources.is_empty(),
+        "the owned list has no sources to check"
+    );
+
+    for name in sources {
+        let over = hopper.join(name);
+        assert!(
+            std::fs::read_link(&over).is_err(),
+            "kernels/hopper/common/{name} is still a symlink; it is declared as \
+             a Hopper override"
+        );
+        let over_text = std::fs::read_to_string(&over).unwrap();
+        assert!(
+            over_text.contains("cvt.rn.f16x2.e4m3x2") || over_text.contains("w8a16_gemv_hopper"),
+            "kernels/hopper/common/{name} overrides gb10 without using anything \
+             this hardware has; an override that is not tuned is drift"
+        );
+
+        let base = gb10.join(name);
+        assert!(
+            std::fs::read_link(&base).is_err(),
+            "kernels/gb10/common/{name} must stay a real file"
+        );
+        let base_text = std::fs::read_to_string(&base).unwrap();
+        assert!(
+            base_text.contains("s_lut["),
+            "kernels/gb10/common/{name} no longer holds the shared-memory E4M3 \
+             LUT gather — the Hopper work edited gb10 instead of overriding it"
+        );
+        assert!(
+            !base_text.contains("cvt.rn.f16x2.e4m3x2"),
+            "kernels/gb10/common/{name} gained a Hopper dequant instruction; \
+             gb10, b200, strix and strix-hip all compile this file"
+        );
+
+        let b200 = hw_dir("b200").join("common").join(name);
+        assert!(
+            std::fs::read_link(&b200).is_ok(),
+            "kernels/b200/common/{name} stopped being a link to gb10; the \
+             override leaked to a target with no receipt for it"
         );
     }
 }
@@ -287,6 +369,9 @@ fn every_model_nvfp4_dir_mirrors_gb10() {
             let faults = mirror_faults(
                 &hw_dir(t.hw).join(model).join("nvfp4"),
                 &gb10_dir().join(model).join("nvfp4"),
+                // Per-model quant dirs own nothing: `[Inherited::owned]` is
+                // scoped to `common/`, which is where a tuned kernel lands.
+                &[],
             );
             assert!(
                 faults.is_empty(),

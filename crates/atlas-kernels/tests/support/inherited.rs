@@ -33,6 +33,14 @@ pub struct Inherited {
     pub provenance: &'static str,
     /// The campaign's declared P0 model set for this hardware.
     pub models: &'static [&'static str],
+    /// `common/` entries this hardware set TUNES FOR ITSELF: a real file that
+    /// overrides its gb10 namesake, plus any header only that file needs.
+    /// Maintainer rule, 2026-09-11 — a Hopper-tuned kernel must not edit the
+    /// gb10 source; gb10 keeps its kernel and the hardware target overrides
+    /// it. Every name here is checked BOTH ways by `mirror::mirror_faults`:
+    /// it must exist and must be a regular file, and a name left off the list
+    /// that stops being a symlink is still reported as an undeclared fork.
+    pub owned: &'static [&'static str],
     /// The ptxas rejection this hardware answers by defining
     /// `ATLAS_NO_WARP_BLOCKSCALE_MMA` — the arch-specific half of the reason,
     /// which the MODEL.toml entries must cite. Per-target because the two
@@ -61,6 +69,21 @@ pub const HOPPER_MODELS: &[&str] = &[
     "qwen3.8-27b",
 ];
 
+/// `kernels/hopper/common` entries that are Hopper's own, not gb10's.
+///
+/// The W8A16 M=1 decode GEMV family (#928). On an H100 these three entry
+/// points are 71% of the C=1 decode step (nsys, 1xH100, Qwen/Qwen3.8-27B-FP8,
+/// 2026-09-11 round 10) and the gb10 kernels are LSU-bound on the E4M3 LUT
+/// gather rather than bandwidth-bound; the reasoning, the arithmetic and the
+/// bit-identity argument are in `kernels/hopper/common/w8a16_gemv_hopper.cuh`.
+/// The `.cuh` has no gb10 counterpart by design — it is the shared inner loop
+/// of the two `.cu` overrides and nothing else includes it.
+pub const HOPPER_OWNED_COMMON: &[&str] = &[
+    "w8a16_gemv.cu",
+    "w8a16_gemv_fused.cu",
+    "w8a16_gemv_hopper.cuh",
+];
+
 /// Every hardware set whose kernels are gb10's, reached by symlink.
 ///
 /// ORACLE for the arch strings: NVIDIA's own SM numbering. H100 and H200 are
@@ -75,6 +98,7 @@ pub const INHERITED: &[Inherited] = &[
         cc: "9.0",
         provenance: "Hopper target: kernel set inherited from gb10 via symlink",
         models: HOPPER_MODELS,
+        owned: HOPPER_OWNED_COMMON,
         blockscale_rejection: "cvt with .e2m1x2",
     },
     Inherited {
@@ -83,6 +107,7 @@ pub const INHERITED: &[Inherited] = &[
         cc: "10.0",
         provenance: "B200 target: kernel set inherited from gb10 via symlink",
         models: P0_MODELS,
+        owned: &[],
         blockscale_rejection: "mma with block scale",
     },
 ];

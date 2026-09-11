@@ -227,6 +227,12 @@ pub fn w8a16_decode_gemv(
     super::w8a16_gemv(gpu, gemv, input, weight, block_scale, output, n, k, stream)
 }
 
+/// Host simulation of the Hopper override's index and pipeline math against
+/// this module's reduction order. Kept in its own file under the 500-LoC cap.
+#[cfg(test)]
+#[path = "w8a16_gemv_hopper_tests.rs"]
+mod w8a16_gemv_hopper_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
