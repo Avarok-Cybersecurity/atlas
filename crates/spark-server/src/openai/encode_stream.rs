@@ -83,6 +83,7 @@ fn delta_to_payloads(d: &StreamDelta, model: &str, id: &str, include_usage: bool
             reason,
             usage,
             token_ids,
+            stop_reason,
         } => {
             let wire_usage = wire_usage(usage);
             if include_usage {
@@ -91,17 +92,24 @@ fn delta_to_payloads(d: &StreamDelta, model: &str, id: &str, include_usage: bool
                 // final `finish_reason` chunk (usage omitted). Residual
                 // token ids ride the final chunk, keeping
                 // Σ token_ids == completion_tokens.
+                //
+                // `stop_reason` rides the FINISH chunk, not the
+                // usage-only one: it is a property of how the response
+                // ended, and the usage chunk carries `choices: []` —
+                // there is no choice object on it to hang it from.
                 vec![
                     chunk_json(ChatCompletionChunk::usage_only_chunk(model, id, wire_usage)),
                     chunk_json(
                         ChatCompletionChunk::final_chunk_no_usage(model, id, reason.as_wire())
-                            .with_token_ids(token_ids.clone()),
+                            .with_token_ids(token_ids.clone())
+                            .with_stop_reason(*stop_reason),
                     ),
                 ]
             } else {
                 vec![chunk_json(
                     ChatCompletionChunk::done_chunk(model, id, reason.as_wire(), wire_usage)
-                        .with_token_ids(token_ids.clone()),
+                        .with_token_ids(token_ids.clone())
+                        .with_stop_reason(*stop_reason),
                 )]
             }
         }
@@ -292,6 +300,7 @@ mod tests {
             reason: FinishReason::Stop,
             usage,
             token_ids: vec![7],
+            stop_reason: None,
         };
 
         // include_usage=true: usage-only chunk (`choices:[]`) FIRST,
@@ -355,6 +364,106 @@ mod tests {
         assert!(p[0].contains("\"usage\":{"), "payload: {}", p[0]);
         assert!(p[0].contains("\"total_tokens\":15"), "payload: {}", p[0]);
         assert!(p[0].contains("\"token_ids\":[7]"), "payload: {}", p[0]);
+    }
+
+    /// A degeneration guard cut: `finish_reason` stays `"length"` and
+    /// the guard's NAME rides the new `stop_reason` key beside it.
+    ///
+    /// #927 / #1000 / #1002. Round-13 cell V (`--prefill-varlen-batch`)
+    /// produced 6 of 16 responses truncated at 49 tokens by the
+    /// content-loop / fuzzy / SimHash watchdogs, every one of them
+    /// reporting `finish_reason: "length"` — indistinguishable on the
+    /// wire from a response that simply hit `max_tokens`. This asserts
+    /// the pairing, not a replacement: the `"length"` value is a
+    /// measured contract (relabelling guard cuts to `"stop"` cost 2/10
+    /// then 6/10 episodes of the agentic gate) and must still be there.
+    #[test]
+    fn guard_cut_stamps_stop_reason_beside_length() {
+        let d = StreamDelta::Finish {
+            reason: FinishReason::Length,
+            usage: crate::ir::Usage::default(),
+            token_ids: Vec::new(),
+            stop_reason: Some("content_loop_watchdog"),
+        };
+
+        // include_usage=false: the single done chunk carries both.
+        let p = delta_to_payloads(&d, "m", "id-1", false);
+        assert_eq!(p.len(), 1);
+        let choice = &norm(&p[0])["choices"][0];
+        assert_eq!(choice["finish_reason"], "length", "payload: {}", p[0]);
+        assert_eq!(
+            choice["stop_reason"], "content_loop_watchdog",
+            "payload: {}",
+            p[0]
+        );
+
+        // include_usage=true: the guard name rides the FINISH chunk,
+        // never the usage-only chunk — that one has `choices: []` and
+        // so has no choice object to hang it from.
+        let p = delta_to_payloads(&d, "m", "id-1", true);
+        assert_eq!(p.len(), 2);
+        assert!(
+            !p[0].contains("stop_reason"),
+            "usage-only chunk must not carry it: {}",
+            p[0]
+        );
+        let choice = &norm(&p[1])["choices"][0];
+        assert_eq!(choice["finish_reason"], "length", "payload: {}", p[1]);
+        assert_eq!(
+            choice["stop_reason"], "content_loop_watchdog",
+            "payload: {}",
+            p[1]
+        );
+
+        // Every guard name the two families can produce rides through
+        // verbatim — the encoder does not whitelist, classify, or
+        // rewrite it.
+        for guard in [
+            "fuzzy_repetition",
+            "simhash_semantic_loop",
+            "token_loop_watchdog",
+            "content_loop_watchdog",
+        ] {
+            let d = StreamDelta::Finish {
+                reason: FinishReason::Length,
+                usage: crate::ir::Usage::default(),
+                token_ids: Vec::new(),
+                stop_reason: Some(guard),
+            };
+            let p = delta_to_payloads(&d, "m", "id-1", false);
+            assert_eq!(norm(&p[0])["choices"][0]["stop_reason"], guard);
+        }
+    }
+
+    /// NEGATIVE, and the hard requirement of the change: an ordinary
+    /// stop must be BYTE-IDENTICAL to what shipped before the field
+    /// existed. `skip_serializing_if` means the key is absent, not
+    /// `null` — asserted on the parsed value, because a substring check
+    /// would also pass for `"stop_reason":null`.
+    #[test]
+    fn natural_stop_omits_stop_reason_key() {
+        let d = StreamDelta::Finish {
+            reason: FinishReason::Stop,
+            usage: crate::ir::Usage::default(),
+            token_ids: Vec::new(),
+            stop_reason: None,
+        };
+        for include_usage in [false, true] {
+            for payload in delta_to_payloads(&d, "m", "id-1", include_usage) {
+                let v = norm(&payload);
+                assert!(
+                    !payload.contains("stop_reason"),
+                    "wire moved for a normal stop: {payload}"
+                );
+                for choice in v["choices"].as_array().expect("choices array") {
+                    assert!(
+                        choice.get("stop_reason").is_none(),
+                        "key must be ABSENT, not null: {payload}"
+                    );
+                    assert_eq!(choice["finish_reason"], "stop");
+                }
+            }
+        }
     }
 
     #[test]
