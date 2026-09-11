@@ -260,11 +260,21 @@ impl TransformerLayer for Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        self.refuse_batched_under_hc("decode_verify_multi")?;
         anyhow::ensure!(
             states.len() == n_seqs && ks.len() == n_seqs,
             "decode_verify_multi: states/ks/n mismatch"
         );
+        // Highway models take the bracketed body: the non-hc path below
+        // maintains its OWN residual, which the highway replaces, so running
+        // it here would count every block output twice (the defect
+        // `refuse_batched_under_hc` guarded until this existed — #753 item B
+        // for the verify axis, the analogue of `trait_decode_multi_seq/hc.rs`
+        // for decode).
+        if self.hc.is_some() {
+            return self.decode_verify_multi_inner_hc(
+                hidden, n_seqs, ks, states, wy_tables, ctx, stream,
+            );
+        }
         let num_tokens: usize = ks.iter().sum();
         self.decode_batched_inner(
             hidden,
