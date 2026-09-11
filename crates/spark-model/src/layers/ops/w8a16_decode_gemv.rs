@@ -21,6 +21,13 @@
 //! fills the machine at all. Splitting K across CTAs is the lever that moves
 //! the grid without touching the per-lane work.
 //!
+//! ptxas pins that 8: `nvcc -cubin -Xptxas -v -arch=sm_90a --fmad=false`
+//! (CUDA 13.0, 2026-09-11) reports 32 registers and 1,056 B smem for BOTH
+//! `w8a16_gemv` and `w8a16_gemv_splitk`, and 32 x 256 x 8 = 65,536 is exactly
+//! the SM register file — so the split buys CTAs without costing occupancy.
+//! (`w8a16_gemv_silu_input`, by contrast, needs 53 registers and fits only 4
+//! CTAs/SM.)
+//!
 //! The plan below targets [`SPLITK_TARGET_BLOCKS`] CTAs, which is where the
 //! measured shapes stop losing to wave quantisation, and caps the split at
 //! [`SPLITK_MAX`] so the partial buffer and the combine stay trivial. On the

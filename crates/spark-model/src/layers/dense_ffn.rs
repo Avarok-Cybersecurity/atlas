@@ -1151,7 +1151,7 @@ impl DenseFfnLayer {
                     ops::w8a16_decode_gemv(
                         ctx.gpu,
                         self.w8a16_gemv_k,
-                        self.w8a16_splitk(ctx.gpu, h),
+                        self.w8a16_splitk(ctx.gpu, h, ctx.levers.ffn_down_splitk),
                         ctx.levers.ffn_down_splitk,
                         gate_out,
                         fp8w.down_proj.weight,
@@ -1211,7 +1211,7 @@ impl DenseFfnLayer {
             ops::w8a16_decode_gemv(
                 ctx.gpu,
                 self.w8a16_gemv_k,
-                self.w8a16_splitk(ctx.gpu, h),
+                self.w8a16_splitk(ctx.gpu, h, ctx.levers.ffn_down_splitk),
                 ctx.levers.ffn_down_splitk,
                 gate_out,
                 fp8w.down_proj.weight,

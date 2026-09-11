@@ -42,6 +42,16 @@
 //! more than 2 CTAs/SM) sit at 861 GB/s too. The fix is split-K — SSOT
 //! `ops::w8a16_decode_gemv`, lever `ATLAS_FFN_DOWN_SPLITK`.
 //!
+//! PTXAS RECEIPT (`nvcc -cubin -Xptxas -v -arch=sm_90a --fmad=false`, CUDA
+//! 13.0, taken 2026-09-11 on the gate box): `w8a16_gemv` and
+//! `w8a16_gemv_splitk` both use **32 registers / 1,056 B smem / 0 spills**, so
+//! 32 x 256 x 8 = 65,536 = exactly the SM's register file — 8 CTAs/SM is not
+//! an estimate, it is the ptxas-pinned ceiling, and split-K does not move it.
+//! `w8a16_gemv_silu_input` uses **53 registers**, which is 13,568 per CTA and
+//! therefore only **4 CTAs/SM**. The fused kernel halves resident warps on top
+//! of the redundant transcendentals — a third, independent cost, and one
+//! staging the activation removes for free.
+//!
 //! A CHILD module of `dense_ffn`, not a sibling: `w8a16_splitk` reads the
 //! layer's private kernel handles and scratch, and `dense_ffn.rs` is already
 //! at the CI size cap.
@@ -103,6 +113,13 @@ impl DenseFfnLayer {
     /// Split-K handles plus the `[SPLITK_MAX, n]` FP32 partial scratch for the
     /// decode down projection, allocated on the first call that asks for it.
     ///
+    /// `enabled` is `ModelLevers::ffn_down_splitk` and it gates the ALLOCATION,
+    /// not just the launch. `ops::w8a16_decode_gemv` checks the lever too, but
+    /// this argument is evaluated first, so without it the default path would
+    /// allocate a scratch it never uses — which is exactly what
+    /// `fp8_residency_tests::every_small_batch_entry_point_runs_without_nvfp4_weights`
+    /// counts and refuses (it caught this in review).
+    ///
     /// `n` is the projection's output width (`hidden_size`), and the scratch
     /// is sized for [`ops::SPLITK_MAX`] rather than for one shape's plan, so
     /// one allocation serves whatever `splitk_plan` returns. ~160 KB at
@@ -111,9 +128,14 @@ impl DenseFfnLayer {
     /// allocation failure parks `DevicePtr::NULL`, which `SplitKGemv::armed`
     /// reads as disarmed — the token falls back to the plain `w8a16_gemv`
     /// rather than failing.
-    pub(crate) fn w8a16_splitk(&self, gpu: &dyn GpuBackend, n: u32) -> ops::SplitKGemv {
+    pub(crate) fn w8a16_splitk(
+        &self,
+        gpu: &dyn GpuBackend,
+        n: u32,
+        enabled: bool,
+    ) -> ops::SplitKGemv {
         let handles_present =
-            self.w8a16_gemv_splitk_k.0 != 0 && self.w8a16_gemv_splitk_reduce_k.0 != 0;
+            enabled && self.w8a16_gemv_splitk_k.0 != 0 && self.w8a16_gemv_splitk_reduce_k.0 != 0;
         let partials = if handles_present {
             *self.w8a16_splitk_partials.get_or_init(|| {
                 gpu.alloc(ops::splitk_partial_bytes(n))
