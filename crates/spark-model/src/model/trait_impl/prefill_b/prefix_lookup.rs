@@ -244,7 +244,17 @@ impl TransformerModel {
                         || self
                             .ssm_snapshots
                             .session_matches(snap_id, seq.session_hash);
-                    dbg_aux_ok = self.snapshot_aux_is_restorable(snap_id);
+                    // The aux gate MUST be the same predicate the restore site
+                    // below uses, or the value we agree on is not "the token I
+                    // will actually restore at" and a rank can still restore
+                    // while its peer recomputes. On `research/glm-exl3` that is
+                    // `snapshot_aux_is_restorable` (a set-COMPLETENESS check
+                    // built for the DSA aux carry); this tree has neither
+                    // `SsmSnapshotPool::aux_layers` nor `aux_set_is_complete`,
+                    // and its restore site takes the weaker "any blob present"
+                    // form. Mirror THAT, so the two stay in lockstep.
+                    dbg_aux_ok =
+                        !self.requires_aux_state() || self.ssm_snapshots.aux(snap_id).is_some();
                     let eligible = dbg_min_ok
                         && matched <= total
                         && !dbg_ewh
