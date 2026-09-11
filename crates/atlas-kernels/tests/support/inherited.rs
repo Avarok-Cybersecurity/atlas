@@ -78,7 +78,15 @@ pub const HOPPER_MODELS: &[&str] = &[
 /// bit-identity argument are in `kernels/hopper/common/w8a16_gemv_hopper.cuh`.
 /// The `.cuh` has no gb10 counterpart by design — it is the shared inner loop
 /// of the two `.cu` overrides and nothing else includes it.
+///
+/// `gdn_decode_hopper.cu` is the GDN decode recurrence (#927) and is the other
+/// shape this list allows: a NEW stem rather than an override. Its gb10
+/// namesake, `gated_delta_rule.cu`, is shadowed out of every build that
+/// matters by the model dir's own copy, so a same-stem file in `common/` would
+/// never be compiled — the twins carry new entry names and a launcher tier
+/// instead. Reasoning and numbers: `GDN-DECODE-ATTRIBUTION.md`.
 pub const HOPPER_OWNED_COMMON: &[&str] = &[
+    "gdn_decode_hopper.cu",
     "w8a16_gemv.cu",
     "w8a16_gemv_fused.cu",
     "w8a16_gemv_hopper.cuh",
