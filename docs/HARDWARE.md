@@ -179,10 +179,12 @@ requires:
 `kernels/hopper/` is H100 and H200 — both SM 9.0. It is the worked example of
 a target that ships **no kernels of its own**.
 
-**Kernel set: inherited from gb10 by symlink.** `kernels/hopper/common/` is 181
-relative symlinks into `kernels/gb10/common/` (all 171 `.cu`, the 9 `.cuh`
-headers, and `KERNEL.toml`), and each of the five model targets mirrors gb10's
-`nvfp4/` directory file by file the same way. Git stores them as symlinks
+**Kernel set: inherited from gb10 by symlink.** `kernels/hopper/common/` is 188
+relative symlinks into `kernels/gb10/common/` (all 178 `.cu`, the 9 `.cuh`
+headers, and `KERNEL.toml`), and each of the seven model targets mirrors gb10's
+`nvfp4/` directory file by file the same way. The mirror is a whole-directory
+rule, not a list: a kernel added to `kernels/gb10/common/` needs a link here
+or this target silently compiles a smaller inventory than GB10 does. Git stores them as symlinks
 (mode 120000); nothing is copied. This works because the gb10 kernels are
 written to an SM80-class instruction floor — `mma.sync.m16n8k16`, `cp.async.cg`,
 with TMA and `cp.async.bulk` deliberately avoided — and carry no
@@ -261,10 +263,15 @@ the ptxas error as the reason, so the boot audit reports them as an expected
 absence rather than refusing to serve. Both are `try_kernel` lookups fired only
 behind a default-off opt-in (`ATLAS_HOLO_MOE_GATEUP_FP4` /
 `ATLAS_HOLO_MOE_DOWN_FP4`); what Hopper loses is the FP4 escape hatch, and the
-FP8 path serves. Receipt:
-`receipts/ptx_gate_hopper_qwen36_w4a4guard_2026-09-05.*` — 173/173 under
-`--strict`, i.e. with the `--Werror all-warnings` the real build adds.
-`nemotron-super-120b-a12b` passes `--strict` too.
+FP8 path serves. 173/173 under `--strict`, i.e. with the
+`--Werror all-warnings` the real build adds. `nemotron-super-120b-a12b`
+passes `--strict` too.
+
+**Current totals**, re-derived on 2026-09-11 (same CUDA 13.0.88, seven hopper
+model targets, `--model all --strict`): **1282/1282**, 0 failed, 0 rejected
+entry functions — `deepseek-v4-flash` 192, `qwen3.6-27b` and `qwen3.8-27b` 188
+each, `qwen3.6-35b-a3b` 180, the other three 178. The 871 above is the
+pre-guard five-target figure and is kept as the dated finding it was.
 
 This does NOT make Hopper an NVFP4 target. It removes a compile-time
 blocker; an Sm90 block-scaled path still does not exist, and nothing here has
@@ -292,7 +299,8 @@ failure path proves nothing.
 
 Compilation is not correctness. A green gate says these kernels exist for
 sm_90a; it says nothing about whether they produce the right numbers or run
-well. Receipts live in `docs/campaigns/`.
+well. Re-run the gate for a current ledger; it writes JSON and markdown
+wherever `--out` points.
 
 **`--hw gb10` is not yet usable as a control.** The gate takes any set under
 `kernels/`, and pointing it at gb10 for the first time (2026-09-05, sm_121f,
@@ -303,15 +311,14 @@ the gate's `ptxas` stage is stricter than the shipped pipeline — which emits
 PTX and lets the driver JIT it, where a kernel may opt into >48 KB shared
 memory at runtime — or those entry points are dead on GB10. That is open. It is
 not caused by anything in this campaign: the same 22 stems fail against the
-tree before it. Receipts:
-`receipts/ptx_gate_gb10_qwen36_w4a4guard_2026-09-05.*` and
-`receipts/ptx_gate_gb10_qwen36_preguard_control_2026-09-05.*`.
+tree before it. Reproduce with
+`scripts/hopper_ptx_gate.sh --hw gb10 --model qwen3.6-27b --strict`.
 
 ## The B200 (sm_100a) target
 
 `kernels/b200/` is B200 and GB200 — both SM 10.0, datacenter Blackwell. It is
-built exactly like `kernels/hopper/`: 218 relative symlinks into
-`kernels/gb10/` (the 181-entry `common/` plus each of the five P0 models'
+built exactly like `kernels/hopper/`: 225 relative symlinks into
+`kernels/gb10/` (the 188-entry `common/` plus each of the five P0 models'
 `nvfp4/`), with a real `MODEL.toml` per model whose header records that its
 `[expected_absent]` tables were harvested on GB10 and **not** re-harvested on a
 B200. `crates/atlas-kernels/tests/inherited_targets.rs` holds both trees to the
@@ -351,9 +358,9 @@ and the *warp-level block-scaled MMA* is what is missing.
 **It is now 173/173 here too**, by the same mechanism as Hopper:
 `kernels/b200/HARDWARE.toml` defines `-DATLAS_NO_WARP_BLOCKSCALE_MMA`, the
 W4A4 tail of that file is compiled out, and its two entry points are declared
-`[expected_absent.moe_w4a16]` in `kernels/b200/qwen3.6-35b-a3b/MODEL.toml`.
-Receipt: `receipts/ptx_gate_b200_qwen36_w4a4guard_2026-09-05.*`, `--strict`.
-One define covers both architectures because neither has the warp-level form —
+`[expected_absent.moe_w4a16]` in `kernels/b200/qwen3.6-35b-a3b/MODEL.toml`,
+under `--strict`. Re-derived 2026-09-11 across all five b200 model targets:
+**906/906**, 0 failed. One define covers both architectures because neither has the warp-level form —
 Hopper for want of an NVFP4 datapath, B200 because it issues block-scaled MMA
 through tcgen05 — so an arch comparison would get one of them wrong.
 
