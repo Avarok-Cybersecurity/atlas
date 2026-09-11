@@ -64,7 +64,9 @@ typos  # crate-ci/typos — install once, `cargo install typos-cli`
 #    kernels/<hw>/ looks like one tree per hardware and is not: strix is 7 real
 #    files and 105 symlinks into kernels/gb10/common/. A gb10 edit therefore
 #    changes what AMD compiles, and the CI job `cross-hardware kernel reach
-#    (CHKI)` will say so.
+#    (CHKI, advisory)` will say so. ADVISORY since 2026-09-11 — AMD is
+#    second-tier support, so a red does not block a merge. It is still the only
+#    thing that sees this class of reach: read it, do not skip it.
 python3 scripts/check_cross_hardware.py --base origin/main --worktree
 ```
 
@@ -98,8 +100,13 @@ emitting `false`. The oracle's T12 does the dating; do not do it by eye.
 For a `kernels/` change that reaches a second hardware, run
 `/oracle_pre_commit_cross_hardware_check` before pushing: it chooses the remedy (benign,
 parameterize in `kernels/<hw>/HARDWARE.toml` **with a reader added in the same change**, or a
-separate kernel with **no symlink**) and writes the `Hardware:` and `CHKI-Verdict:` trailers CI
-requires.
+separate kernel with **no symlink**) and writes the `Hardware:` and `CHKI-Verdict:` trailers.
+
+The CI job is **advisory** (AMD second-tier), so those trailers are no longer enforced at merge
+— which makes running the oracle a judgement you make rather than one CI makes for you. The
+reach it reports is real either way: a `kernels/gb10/common/` edit is compiled verbatim by
+hipcc through 105 symlinks, and `d584c0c50` was caught only because a release compile leg
+happened to fail.
 
 ## Adding a new model
 
