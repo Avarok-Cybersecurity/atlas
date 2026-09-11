@@ -570,7 +570,113 @@ impl TransformerModel {
             for (layer_idx, layer) in self.layers.iter().enumerate() {
                 let layer_type = self.config.layer_type(layer_idx);
 
-                if layer_type == LayerType::FullAttention {
+                if layer_type == LayerType::FullAttention && self.config.hc_mult > 0 {
+                    // ── Highway attention: one-row DECODE bodies against the
+                    // OWNING SEQUENCE's real layer state ──
+                    //
+                    // The dummy-state branch below is correct for residual
+                    // models, whose attention layers carry nothing across
+                    // tokens (`AttnLayerState::default()` is empty; the KV
+                    // lives in the paged cache, addressed by block table). It
+                    // is WRONG here: this checkpoint's attention layers own a
+                    // QSA indexer carry, attached lazily per sequence, and
+                    // `decode_select` asserts `pos == st.ingested`. A fresh
+                    // dummy reports 0, so every row died with
+                    //   QSA: decode at pos 58 but 0 tokens ingested
+                    // and the completion came back EMPTY. MEASURED at C=2.
+                    //
+                    // Shape copied from the single-sequence highway verify
+                    // (`verify_hc.rs`): K sequential one-row decode bodies,
+                    // each at `hc_row_offset = row`, because row 0 re-processes
+                    // a token a serial decode already committed and its logits
+                    // must match — prefill attention (paged flash over K
+                    // queries) and decode attention (paged GEMV at M=1) differ
+                    // enough on this checkpoint to flip greedy argmaxes.
+                    //
+                    // Rows of one sequence share ONE state, so they cannot be
+                    // handed to `decode_multi_seq` as R independent rows — two
+                    // `&mut` to the same state. Hence the sequential loop.
+                    // Attention is 12 of 48 layers; the 36 GDN layers, the MoE
+                    // and both highway sites still run once over all R rows,
+                    // which is where the amortisation is.
+                    attn_idx += 1;
+                    for i in 0..n {
+                        let base_seq_len = seqs[i].seq_len;
+                        // ── Align the QSA marks to this sequence's position
+                        // BEFORE the pass, once per layer-sweep entry ──
+                        //
+                        // Row 0 re-processes the token the PRECEDING decode
+                        // already sampled and already ingested, so the marks
+                        // sit exactly one ahead of where row 0 decodes:
+                        //   QSA: decode at pos 58 but 59 tokens ingested
+                        // (measured at C=2 once the real per-sequence state
+                        // was in play — with dummy states it read 0 instead).
+                        // `align_aux` is an absolute move and a no-op when the
+                        // marks already agree, so this is safe on every row and
+                        // every step.
+                        //
+                        // Only layer 0 of the sweep does it: the marks are
+                        // per-sequence, not per-layer, and re-aligning on each
+                        // of the 12 attention layers would rewind marks that
+                        // the previous layer legitimately advanced.
+                        if attn_idx == 1 {
+                            self.align_verify_aux_states(seqs[i], base_seq_len, stream)?;
+                        }
+                        for t in 0..ks[i] {
+                            let row = off[i] + t;
+                            let row_meta = AttnMetadataDev {
+                                positions: meta_base.offset(row * 4),
+                                positions_h: meta_base.offset(row * 4),
+                                positions_w: meta_base.offset(row * 4),
+                                slot: meta_base.offset(VMETA_SLOTS + row * 8),
+                                seq_len: meta_base.offset(VMETA_SEQ_LENS + row * 4),
+                                block_table: meta_base
+                                    .offset(VMETA_BT + row * max_blocks as usize * 4),
+                                max_blocks_per_seq: max_blocks,
+                                num_seqs: 1,
+                                seq_slot: metadata.seq_slot,
+                                moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
+                            };
+                            let row_ctx = ForwardContext {
+                                buffers: &self.buffers,
+                                hc_row_offset: row,
+                                gpu: self.gpu.as_ref(),
+                                config: &self.config,
+                                dispatch: &self.dispatch,
+                                derived: &self.derived,
+                                levers: &self.levers,
+                                stats: &self.stats,
+                                attn_metadata: Some(row_meta),
+                                profile: false,
+                                comm: self.comm_ref(),
+                                // Never capture: this loop is reached only on
+                                // the hc path, which vetoes graphs above.
+                                graph_capture: false,
+                                gdn_exact_replay: false,
+                                token_ids: None,
+                                host_token_ids: Some(&tokens[row..row + 1]),
+                                routed_lora_layers: None,
+                                midchunk_capture: None,
+                                moe_lora_route: self.decode_moe_route(),
+                            };
+                            let seq = &mut *seqs[i];
+                            layer.decode(
+                                hidden.offset(row * h * bf16),
+                                residual.offset(row * h * bf16),
+                                seq.layer_states[layer_idx].as_mut(),
+                                &mut kv_cache,
+                                // PRE-APPEND length, the decode convention:
+                                // this row's token sits at `base + t`.
+                                base_seq_len + t,
+                                &mut seq.block_table,
+                                &mut seq.disk_block_ids,
+                                &mut seq.disk_last_offloaded_per_layer,
+                                &row_ctx,
+                                stream,
+                            )?;
+                        }
+                    }
+                } else if layer_type == LayerType::FullAttention {
                     let mut refs: Vec<&mut (dyn LayerState + 'static)> = attn_dummy_states
                         [attn_idx]
                         .iter_mut()
