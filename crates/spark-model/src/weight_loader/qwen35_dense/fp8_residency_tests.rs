@@ -287,12 +287,12 @@ fn the_h100_ledger_rows_reproduce_from_the_model_shapes() {
     // (scales), 8,960 MB + 1,120 MB each across 256 allocations: 64 layers x 3
     // FFN projections plus 16 attention layers x 4.
     let ffn = dense_ffn_nvfp4_bytes(H, INTER);
+    assert_eq!(ffn / MIB, 286, "127.5 MiB of NVFP4 per layer, twice over");
     assert_eq!(
-        ffn / MIB,
-        3 * 2 * (42 * 2 + 5) + 3,
-        "≈127.5 MiB x2 per layer"
+        64 * ffn / MIB,
+        2 * (8160 + 1020),
+        "8,160 MB of the 8,960 packed row and 1,020 of the 1,120 scale row"
     );
-    assert_eq!(64 * ffn / MIB, 2 * (8160 + 1020));
 
     // 16 attention layers: q_n = 10240 (gated), kv_n = 2560, o_k = 5120.
     let attn = attn_nvfp4_bytes(10240, 2560, 5120, H);
