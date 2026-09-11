@@ -126,6 +126,43 @@ pub(super) fn gdn_prefill_tc_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
     )
 }
 
+/// The SCALAR fused GDN state-spine handle, and the one route line
+/// `qwen3_ssm::init` prints per layer while binding it.
+///
+/// DEFAULT is `..._vfused` (SPLIT=2 / 256 threads): 2.01x over ksplit and 12/12
+/// byte-identical on the ssm-poisoning tripwire. `ATLAS_GDN_VTILE=1` swaps in
+/// the SPLIT=4 / 512-thread build, which is 2.15x but scores 1/12 there and
+/// fails two accuracy gates — kept reachable for whoever diagnoses it, never
+/// default. The two are ABI-identical apart from block size, which the launcher
+/// derives from the same env, so nothing else downstream changes.
+///
+/// LOGGED, not silent: which spine ran is the single most consequential fact
+/// about a GDN measurement, and a run record that cannot say which one it used
+/// cannot be compared to another. An A/B on this kernel is otherwise
+/// unfalsifiable — both arms produce a number either way.
+///
+/// `tc_spine` is the handle [`gdn_prefill_tc_kernel`] resolved just above, and
+/// the line is built from it by
+/// [`ops::gdn_init_spine_line`](crate::layers::ops::gdn_init_spine_line), so
+/// what this prints is the entry the PREFILL will launch rather than the
+/// fallback sitting underneath it — round 14 caught 48 of these lines naming
+/// the scalar parent while all 14 400 dispatches went to the tensor-core entry.
+pub(super) fn fused_spine_kernel(gpu: &dyn GpuBackend, tc_spine: KernelHandle) -> KernelHandle {
+    use crate::layers::ops::{
+        GDN_SCALAR_SPINE_PIPE, GDN_SCALAR_SPINE_VFUSED, GDN_SCALAR_SPINE_VTILE, gdn_init_spine_line,
+    };
+    let scalar = match (
+        std::env::var("ATLAS_GDN_PIPE").ok().as_deref(),
+        std::env::var("ATLAS_GDN_VTILE").ok().as_deref(),
+    ) {
+        (Some("1"), _) => GDN_SCALAR_SPINE_PIPE,
+        (_, Some("1")) => GDN_SCALAR_SPINE_VTILE,
+        _ => GDN_SCALAR_SPINE_VFUSED,
+    };
+    tracing::info!("{}", gdn_init_spine_line(tc_spine.0 != 0, scalar));
+    crate::layers::try_kernel(gpu, "gated_delta_rule_fla", scalar)
+}
+
 // ── The four HOPPER-ONLY twin probes, one function each ───────────────────
 //
 // `try_kernel` and not `kernel` in all four: these modules exist only under

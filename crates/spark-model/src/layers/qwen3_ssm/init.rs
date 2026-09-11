@@ -23,6 +23,12 @@ impl Qwen3SsmLayer {
         // conv_dim = Q_flat + K_flat + V_flat = 2*key_dim + value_dim = 8192
         let conv_dim = nk * kd * 2 + nv * vd;
 
+        // Resolved BEFORE the struct literal because two fields need it: the
+        // tensor-core spine's handle IS the bit that decides which spine the
+        // prefill launches, so the scalar spine's route line has to read it,
+        // and a field initializer cannot read a sibling field.
+        let gdn_tc_spine = gdn_prefill_tc_kernel(gpu);
+
         Ok(Self {
             // mHC is attached later by the loader, and only for models that
             // carry a hc_mult-wide residual highway. The handles are gated on
@@ -255,35 +261,11 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_fla",
                 "gated_delta_rule_chunk_delta_h_tc_vblock",
             ),
-            gdn_prefill_fla_chunk_delta_h_tcfuse_k: gdn_prefill_tc_kernel(gpu),
-            // ONE handle for the fused GDN state spine. DEFAULT is `..._vfused`
-            // (SPLIT=2 / 256 threads): 2.01x over ksplit and 12/12 byte-identical on
-            // the ssm-poisoning tripwire. `ATLAS_GDN_VTILE=1` swaps in the SPLIT=4 /
-            // 512-thread build, which is 2.15x but scores 1/12 there and fails two
-            // accuracy gates — kept reachable for whoever diagnoses it, never default.
-            // The two are ABI-identical apart from block size, which the launcher
-            // derives from the same env, so nothing else downstream changes.
-            gdn_prefill_fla_chunk_delta_h_fused_k: super::super::try_kernel(
-                gpu,
-                "gated_delta_rule_fla",
-                // Logged, not silent: which spine ran is the single most
-                // consequential fact about a GDN measurement, and a run record
-                // that cannot say which one it used cannot be compared to
-                // another. An A/B on this kernel is otherwise unfalsifiable —
-                // both arms produce a number either way.
-                {
-                    let name = match (
-                        std::env::var("ATLAS_GDN_PIPE").ok().as_deref(),
-                        std::env::var("ATLAS_GDN_VTILE").ok().as_deref(),
-                    ) {
-                        (Some("1"), _) => "gated_delta_rule_chunk_delta_h_pipe",
-                        (_, Some("1")) => "gated_delta_rule_chunk_delta_h_vtile",
-                        _ => "gated_delta_rule_chunk_delta_h_vfused",
-                    };
-                    tracing::info!("GDN state spine: {name}");
-                    name
-                },
-            ),
+            gdn_prefill_fla_chunk_delta_h_tcfuse_k: gdn_tc_spine,
+            // ONE handle for the scalar fused GDN state spine, and the route
+            // line naming whichever spine the prefill will launch — see
+            // `init_kernels::fused_spine_kernel` for both.
+            gdn_prefill_fla_chunk_delta_h_fused_k: fused_spine_kernel(gpu, gdn_tc_spine),
             gdn_prefill_fla_chunk_delta_h_tma_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule_fla",
@@ -490,7 +472,7 @@ impl Qwen3SsmLayer {
 
 #[path = "init_kernels.rs"]
 mod init_kernels;
-use init_kernels::{cublas_ssm_kernel, gdn_prefill_tc_kernel, hc_kernel};
+use init_kernels::{cublas_ssm_kernel, fused_spine_kernel, gdn_prefill_tc_kernel, hc_kernel};
 
 #[path = "init_sequential.rs"]
 mod init_sequential;

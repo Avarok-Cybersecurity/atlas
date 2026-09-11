@@ -35,6 +35,53 @@ pub const GDN_TC_SPINE_ENTRY: &str = "gated_delta_rule_chunk_delta_h_tcfuse_x2";
 /// gated_delta_rule_chunk_tc.cu`, shared, not relocated to `kernels/hopper`.
 pub const GDN_TC_SPINE_MODULE: &str = "gated_delta_rule_chunk_tc";
 
+/// The SCALAR spine entries `qwen3_ssm::init` can bind — `ATLAS_GDN_PIPE=1`,
+/// `ATLAS_GDN_VTILE=1`, and the default. Named here beside the tensor-core
+/// entry for the same reason that one is: the init route line and the handle
+/// are built from the same string or they drift apart.
+pub const GDN_SCALAR_SPINE_PIPE: &str = "gated_delta_rule_chunk_delta_h_pipe";
+/// SPLIT=4 / 512 threads. Reachable, never default — see `init_kernels`.
+pub const GDN_SCALAR_SPINE_VTILE: &str = "gated_delta_rule_chunk_delta_h_vtile";
+/// SPLIT=2 / 256 threads: the default scalar spine.
+pub const GDN_SCALAR_SPINE_VFUSED: &str = "gated_delta_rule_chunk_delta_h_vfused";
+
+/// `GDN state spine: …` — the line `qwen3_ssm::init` prints ONCE PER LAYER as
+/// it binds the handles, before any prefill has run.
+///
+/// # Why it is not simply the scalar entry's name
+///
+/// H100 round 14 (`h100-round14-report.md`, anomaly 2). A serve with the
+/// tensor-core spine live logged both of these:
+///
+/// ```text
+///    48  qwen3_ssm::init: GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+/// 14400  GDN state spine: gated_delta_rule_chunk_delta_h_tcfuse_x2 (…)
+/// ```
+///
+/// 48 init lines naming the scalar parent, one per layer, ahead of 14 400
+/// dispatch lines naming the kernel that actually ran. `f9ae638` fixed the
+/// dispatch line; the init line was not touched, and it is the FIRST GDN line
+/// a reader meets in a log they opened to answer "did the lever engage?" — so
+/// it read as "the TC spine is not engaged" on a serve where it was.
+///
+/// The line now reads the handle the probe resolved, which is the same bit the
+/// dispatch reads: with the `[defaults] gdn_prefill_tc` handle bound, the spine
+/// that will launch is [`GDN_TC_SPINE_ENTRY`] and the line says so. The scalar
+/// entry stays bound underneath — the dispatch's shape guards fall back to it,
+/// and the dispatch logs whichever one it launched — but it is no longer what
+/// this line NAMES, which was the whole defect.
+pub fn gdn_init_spine_line(tc_spine_bound: bool, scalar_entry: &str) -> String {
+    if tc_spine_bound {
+        format!(
+            "GDN state spine: {GDN_TC_SPINE_ENTRY} ([defaults] gdn_prefill_tc; the \
+             scalar spine stays bound as the fallback the prefill's shape guards \
+             drop to, and the prefill logs the entry it launches)"
+        )
+    } else {
+        format!("GDN state spine: {scalar_entry}")
+    }
+}
+
 /// `GDN state spine: …` — the line the prefill prints when the tensor-core
 /// spine is live, built from [`GDN_TC_SPINE_ENTRY`] so it can only ever name
 /// the kernel the probe bound.
@@ -52,7 +99,10 @@ pub fn gdn_tc_spine_route_line(num_v_heads: u32, batch_size: u32, smem_bytes: u3
 
 #[cfg(test)]
 mod tests {
-    use super::{GDN_TC_SPINE_ENTRY, gdn_tc_spine_route_line};
+    use super::{
+        GDN_SCALAR_SPINE_PIPE, GDN_SCALAR_SPINE_VFUSED, GDN_SCALAR_SPINE_VTILE, GDN_TC_SPINE_ENTRY,
+        gdn_init_spine_line, gdn_tc_spine_route_line,
+    };
 
     /// THE ROUND-12 NIT, pinned: the line names the `_x2` entry, not the
     /// family. `…_tcfuse ` with a trailing space is what the old line printed
@@ -79,6 +129,49 @@ mod tests {
             "ATLAS_GDN_PREFILL_TC",
         ] {
             assert!(line.contains(field), "missing `{field}` in:\n{line}");
+        }
+    }
+
+    /// THE ROUND-14 NIT, pinned. With the tensor-core handle bound, the INIT
+    /// line names the entry the dispatch will launch — not the scalar parent
+    /// that merely stays bound behind it (round 14, anomaly 2: 48 of these
+    /// lines said `…_vfused` while all 14 400 dispatches went to `…_x2`).
+    #[test]
+    fn the_init_line_names_the_tc_entry_when_its_handle_is_bound() {
+        let line = gdn_init_spine_line(true, GDN_SCALAR_SPINE_VFUSED);
+        assert!(line.contains(GDN_TC_SPINE_ENTRY), "{line}");
+        assert!(
+            !line.contains(GDN_SCALAR_SPINE_VFUSED),
+            "the init line must not NAME the scalar spine where the probe bound \
+             the tensor-core one:\n{line}"
+        );
+    }
+
+    /// …and the init line and the dispatch line name the SAME entry, which is
+    /// the property that makes 48 lines and 14 400 lines one answer.
+    #[test]
+    fn the_two_route_lines_agree_on_the_entry() {
+        let init = gdn_init_spine_line(true, GDN_SCALAR_SPINE_VFUSED);
+        let dispatch = gdn_tc_spine_route_line(48, 1, 88_324);
+        for line in [&init, &dispatch] {
+            assert!(line.contains(GDN_TC_SPINE_ENTRY), "{line}");
+        }
+    }
+
+    /// With the probe OFF — every target but `kernels/hopper` today — the line
+    /// is the scalar entry it has always been, in all three arms, and spells no
+    /// string of its own.
+    #[test]
+    fn the_init_line_names_the_scalar_entry_when_the_probe_is_off() {
+        for entry in [
+            GDN_SCALAR_SPINE_PIPE,
+            GDN_SCALAR_SPINE_VTILE,
+            GDN_SCALAR_SPINE_VFUSED,
+        ] {
+            assert_eq!(
+                gdn_init_spine_line(false, entry),
+                format!("GDN state spine: {entry}"),
+            );
         }
     }
 }
