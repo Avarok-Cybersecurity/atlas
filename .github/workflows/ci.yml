@@ -430,7 +430,28 @@ jobs:
       - run: python3 scripts/check_kernel_shadows.py
 
   cross-hardware-reach:
-    name: cross-hardware kernel reach (CHKI)
+    # ADVISORY, by maintainer decision 2026-09-11 (tbraun96): "make it an
+    # advisory since AMD is second tier support".
+    #
+    # What that trades away, stated plainly so a later reader does not have to
+    # rediscover it: the reach this check reports is real. `taxon::hardware_of`
+    # is a path prefix, so a `kernels/gb10/common/*.cu` edit reads as gb10-only
+    # while hipcc compiles the same bytes through 105 symlinks. d584c0c50 was
+    # caught ONLY because a release compile leg failed, and a
+    # performance-only leak on AMD has no leg at all. Advisory means that class
+    # of defect can now land; it is accepted because strix/strix-hip are
+    # second-tier targets with no serving receipt, not because the risk is
+    # imaginary.
+    #
+    # The signal stays visible and stays honest: the job still runs on every
+    # PR, still fails closed on rc 2, and still prints the full reach table and
+    # remedies. Nothing `needs:` it, so a red blocks no merge.
+    #
+    # To make it enforcing again, delete `continue-on-error`, drop "advisory"
+    # from the name, and restore the two `release-matrix` references removed in
+    # this commit. Do that when AMD gets a compile leg on PRs.
+    name: cross-hardware kernel reach (CHKI, advisory)
+    continue-on-error: true
     runs-on: >-
       ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
           && (github.event_name != 'pull_request'
@@ -809,12 +830,11 @@ jobs:
           needs.license-headers.result == 'success' &&
           needs.typos.result == 'success' &&
           needs.kernel-structure.result == 'success' &&
-          needs.cross-hardware-reach.result == 'success' &&
           (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
           (needs.test.result == 'success' || needs.test.result == 'skipped') &&
           (needs.test-macos-metal.result == 'success' || needs.test-macos-metal.result == 'skipped') &&
           needs.stamp.outputs.stamped != 'false' }}
-    needs: [changes, stamp, fmt, clippy, license-headers, typos, kernel-structure, cross-hardware-reach, test, test-macos-metal]
+    needs: [changes, stamp, fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
     uses: ./.github/workflows/release-build.yml
     with:
       version: 0.0.0-pr${{ github.event.number || 'queue' }}
