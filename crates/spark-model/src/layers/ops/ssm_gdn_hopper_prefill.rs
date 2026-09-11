@@ -198,8 +198,17 @@ pub(crate) fn gdn_hopper_remnants(
     };
     let wu = pick(k_wu, 256, smem_wu, k_wu_hopper, GDN_WU_HOPPER_SMEM);
     let fo = pick(k_fo, 512, smem_fo, k_fo_hopper, GDN_FWD_O_HOPPER_SMEM);
-    gdn_hopper_remnant_log("recompute_wu", &wu, requested);
-    gdn_hopper_remnant_log("chunk_fwd_o", &fo, requested);
+    // ONCE PER PROCESS, not once per layer. This runs inside the per-layer
+    // prefill call, so on a 48-layer model an unconditional line is 96 of them
+    // per request — and on every non-Hopper target with the lever set, the
+    // refusal is the NORMAL state, so it would be 96 warnings per request for
+    // a correct build. The verdict cannot change between calls: it is a
+    // function of the environment and of compile-time tile constants.
+    static SAID: std::sync::Once = std::sync::Once::new();
+    SAID.call_once(|| {
+        gdn_hopper_remnant_log("recompute_wu", &wu, requested);
+        gdn_hopper_remnant_log("chunk_fwd_o", &fo, requested);
+    });
     (requested, wu, fo)
 }
 
