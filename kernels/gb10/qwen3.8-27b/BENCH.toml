@@ -237,15 +237,36 @@ flip-flop all over again."""
 # conservative ratchet rather than the tightest the data allows (that would be
 # 25.3).
 #
-# ★ WHY THE LEVEL MOVED, because a ratchet that cannot say why is a ratchet
-# from a hot box. It is a STEP, not drift: every record from 2026-08-23 to
-# 09-07 reads 22.4-23.5, and every record from 09-08 onward reads 26.1-26.3.
-# The window contains f9fd8ca43, "mtp-carry: give the store ticket its own
-# dispenser — sharing the capture counter cost 24% of C=2 decode" (#968).
-# accept_len_mean is 2.6826 across the whole span, unchanged, so this is not
-# better speculation; it is that fix. The bar is raised BECAUSE of it: at the
-# superseded 22.2 a regression undoing #968 entirely would have landed back at
-# ~23 and passed silently, which is the hole this closes.
+# ★ WHY THE LEVEL MOVED. It is a STEP, not drift: records from 2026-08-23 to
+# 09-07 read 22.4-23.5 and records from 09-08 onward read 26.1-26.3, with
+# accept_len_mean 2.6826 unchanged across the whole span — so this is a
+# wall-clock change, not better speculation.
+#
+# ★ THE CAUSE IS NOT #968, AND AN EARLIER DRAFT OF THIS NOTE SAID IT WAS.
+# Three things in this repository refute it, and they are recorded here so the
+# wrong story is not re-derived:
+#   * f9fd8ca43's own message states "C=1 IS IDENTICAL, AND THAT IS THE
+#     DIAGNOSTIC — parent 18.5 / with bug 18.5". The bug it fixed only bites
+#     when admissions interleave, so it cannot move a serial rung.
+#   * The campaign measured AT f9fd8ca43 reads 22.58 here and C1 18.42 on the
+#     sweep — both PRE-step values, at the very commit credited with the step.
+#     That record was committed in ac736e938 and dropped in 3cfe4d8c45, which
+#     is the only reason "every record from 09-08 reads 26.1-26.3" looked true.
+#     `git show ac736e938:.benchmarks/decode-floor/2026-09-08-f9fd8ca431.json`.
+#   * The DFlash2 ladder stepped on the same day, and that gate is
+#     conflicts_with = "speculative", so an mtp-carry fix cannot reach it.
+#
+# The leading candidate is 7dd531f59 (#965, the GLM-5.3-Flash port), the only
+# code change on the first-parent path through this window; it rewrote the
+# dense_gemv M=1 sites that a 248K-vocab BF16 lm head leans on, which fits a
+# gain that is large serially and vanishes above C=2. STATED AS A CANDIDATE,
+# NOT A FINDING: no A/B across 7dd531f59^ has been run, and this note has
+# already been wrong once about the cause.
+#
+# What the bar does NOT depend on: the step is measured, reproduced 15 times,
+# and 24.5 sits far above the entire pre-step band whatever moved it. The
+# attribution matters for knowing what to protect, not for whether to protect
+# it.
 #
 # ★ RATCHETED 2026-09-06, 21.0 -> 22.7, and this is the FIRST time this
 # entry's own ">=10-run set on this same instrument" rule has actually been
