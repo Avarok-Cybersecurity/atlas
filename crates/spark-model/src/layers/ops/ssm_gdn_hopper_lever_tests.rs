@@ -36,7 +36,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     lm_head_batchm_max: 16,
     ssm_batched_recurrent: true,
     gdn_decode_hopper: false,
-    gdn_prefill_tc: false,
+    gdn_prefill_tc: true,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
     w8a8_prefill_max_m_widening: u32::MAX,
@@ -123,16 +123,40 @@ fn the_kill_switch_keeps_its_equals_one_spelling() {
 }
 
 /// `ATLAS_GDN_DECODE_HOPPER` is ONE lever and reaches ONE row. The prefill
-/// family (`gdn_prefill_tc`) shares a kernel-family name and nothing else.
+/// family (`gdn_prefill_tc`) shares a kernel-family name and nothing else —
+/// and since round 13 the two rows point OPPOSITE ways on this target, which
+/// is the sharpest available statement that they are separate receipts: the
+/// decode twins are a measured loss here and the prefill family a measured win.
 #[test]
 fn the_decode_lever_does_not_reach_the_prefill_spine() {
     let l = with(&[("ATLAS_GDN_DECODE_HOPPER", "1")]);
     assert!(l.gdn_decode_hopper.value);
     assert!(
-        !l.gdn_prefill_tc.value,
-        "the decode twins and the prefill spine are separate receipts"
+        l.gdn_prefill_tc.value && l.gdn_prefill_tc.source == Source::Target,
+        "the prefill family keeps the TARGET's value and is not marked (env): \
+         a decode lever that silently re-sourced the prefill row would make a \
+         serve log attribute the prefill win to the operator's shell"
     );
     assert!(l.ssm_batched_recurrent.value, "and nothing else moved");
+}
+
+/// The kill switch for the shipped default. `ATLAS_GDN_PREFILL_TC=0` turns the
+/// WHOLE family off — the spine here, and both remnant twins because they read
+/// this same resolved bit (`ssm_gdn_remnants_tests`) — and the boot line says
+/// the environment did it, so an A/B leg is legible in its own log.
+#[test]
+fn the_prefill_family_kill_switch_turns_it_off_and_is_visible() {
+    let l = with(&[("ATLAS_GDN_PREFILL_TC", "0")]);
+    assert!(!l.gdn_prefill_tc.value && l.gdn_prefill_tc.source == Source::Env);
+    assert!(
+        format_levers(&l).contains("gdn_prefill_tc=off (env)"),
+        "{}",
+        format_levers(&l)
+    );
+    assert!(
+        !l.gdn_decode_hopper.value && l.ssm_batched_recurrent.value,
+        "and it reaches nothing else"
+    );
 }
 
 /// THE BOOT LINE. An operator reading a serve log must be able to tell which
@@ -147,6 +171,11 @@ fn the_boot_line_names_the_lever_and_marks_an_override() {
     assert!(
         line.contains("gdn_decode_hopper=off"),
         "the default must be visible in the line:\n{line}"
+    );
+    assert!(
+        line.contains("gdn_prefill_tc=on") && !line.contains("gdn_prefill_tc=on (env)"),
+        "…and so must the prefill family, which this target now ships ON from \
+         its own declaration:\n{line}"
     );
     assert!(
         !line.contains("gdn_decode_hopper=off (env)"),

@@ -204,7 +204,8 @@ pub struct Qwen3SsmLayer {
     /// and `gdn_fwd_o_hopper.cu`'s masked `tril(kq).uc` square. They live only
     /// under `kernels/hopper`, so `try_kernel` gives 0 everywhere else and the
     /// launcher then runs the unchanged parents. Selected by the family lever
-    /// `ATLAS_GDN_PREFILL_TC`; `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` pins them
+    /// `[defaults] gdn_prefill_tc` (`ATLAS_GDN_PREFILL_TC` overriding), which
+    /// Hopper ships ON since round 13; `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` pins them
     /// off while keeping the tensor-core state spine, which is the A/B that
     /// separates the three kernels. The nsys receipt that motivates them is in
     /// `GDN-PREFILL-ATTRIBUTION.md`: 5.5% and 4.0% of a 1193-token H100
@@ -222,7 +223,9 @@ pub struct Qwen3SsmLayer {
     gdn_prefill_fla_chunk_delta_h_tc_vblock_k: KernelHandle,
     /// TENSOR-CORE chunked-prefill state spine
     /// (`gated_delta_rule_chunk_tc::gated_delta_rule_chunk_delta_h_tcfuse`),
-    /// behind `ATLAS_GDN_PREFILL_TC` (presence, default OFF). Both per-chunk
+    /// behind `[defaults] gdn_prefill_tc` — ON for `kernels/hopper` since round
+    /// 13, OFF elsewhere, with `ATLAS_GDN_PREFILL_TC` overriding either way.
+    /// Both per-chunk
     /// products run on `mma.sync.m16n8k16` with bf16 operands and an f32
     /// accumulator that IS the recurrent state; `h` stays f32 in memory. The
     /// nsys receipt that motivates it is in `GDN-PREFILL-ATTRIBUTION.md`

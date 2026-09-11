@@ -28,6 +28,18 @@ behind specific subsystems — see the
   attributed to a configuration or reproduced. Pre-existing files still load.
 
 ### Changed
+- **The tensor-core GDN chunked-prefill family is ON by default on Hopper.**
+  `kernels/hopper/HARDWARE.toml` `[defaults] gdn_prefill_tc = true` — the state
+  spine and both Hopper prefill remnant twins. H100 round 13 measured it on one
+  binary against a same-round control: C=1 TTFT 269.1 → 162.4 ms on 1193/256 and
+  889.3 → 491.5 ms on 4593/512, C=16 aggregate +21.5% / +31.4%, coherency 4/4,
+  determinism 8/8 identical over three runs, and nsys pricing the two twins at
+  4.28× (`chunk_fwd_o_hopper`) and 1.60× (`recompute_wu_hopper`) with the shared
+  spine kernel unchanged at 0.99× as the internal control. `kernels/gb10` and
+  `kernels/b200` keep `false` — this is an H100 receipt. `ATLAS_GDN_PREFILL_TC=0`
+  turns the whole family off and `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` keeps the
+  spine while pinning the twins to their parents; both print on the serve's
+  `target defaults (hopper): …` line. Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
 - **Serving defaults are now per-hardware-target and live in the repository.**
   `kernels/<hw>/HARDWARE.toml` gained a `[defaults]` table, baked into the
   binary by `build.rs` as `atlas_kernels::TARGET_DEFAULTS`. Every kernel-path
@@ -48,8 +60,7 @@ behind specific subsystems — see the
   be able to turn one off without editing a launch script. `VAR=1` is unchanged
   everywhere, and the `ATLAS_NO_*` kill switches stay presence-gated.
   `ATLAS_GDN_PREFILL_TC` joins that list: it is now `[defaults] gdn_prefill_tc`
-  (false on every target, and the kernel it reaches stays shared), so `=0`
-  means off there too.
+  (and the kernel it reaches stays shared), so `=0` means off there too.
 - **A hardware target declares which kernels it OWNS**, in
   `kernels/<hw>/HARDWARE.toml` `[kernels] overrides`. `kernels/hopper` and
   `kernels/b200` are otherwise pure symlink mirrors of `kernels/gb10`; a

@@ -44,8 +44,9 @@ extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
 # this repo — not as arch-selected code. 'No interference' rests on discipline
 # rather than structure." Every value below WAS a line in that external recipe.
 # The recipe is now the target's own declaration, so an H100 serve with NO
-# environment set reproduces the round-9 best configuration, and a GB10 serve
-# cannot be reached by it — the two tables are separate files.
+# environment set reproduces the round-9 best configuration — plus the one row
+# that has been added to it since, `gdn_prefill_tc`, on round 13's receipt —
+# and a GB10 serve cannot be reached by it: the two tables are separate files.
 #
 # The environment still overrides any of these; the serve log's
 # `target defaults (hopper): …` line marks which values came from it.
@@ -103,19 +104,46 @@ ssm_batched_recurrent = true
 # round 12's cell F was run with, still forces it off and outranks the
 # positive. Numbers: `GDN-DECODE-ATTRIBUTION.md`.
 gdn_decode_hopper = false
-# The tensor-core GDN chunked-PREFILL spine (#928). OFF: round 9 put the scalar
-# spine at 26.6%/32.3% of a 1193/4593-token H100 prefill, so the upside is real,
-# but the arm reassociates the k-reduction into the MMA tree and has no accuracy
-# receipt yet. The kernel is shared (`kernels/gb10/common/
-# gated_delta_rule_chunk_tc.cu`, validated on GB10) and is NOT relocated here.
-# `ATLAS_GDN_PREFILL_TC=1` runs the A/B, and `=0` turns the family off.
+# The tensor-core GDN chunked-PREFILL spine (#928). ON, and the largest measured
+# win of the H100 campaign. Round 9 put the scalar spine at 26.6%/32.3% of a
+# 1193/4593-token H100 prefill; the accuracy receipt this row was waiting for
+# arrived with round 13 (2026-09-11, 1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8 @
+# `3c0379030`, `h100-round13-report.md`), cell T1 against cell A on the SAME
+# binary:
+#   * 1193/256 tokens: C=1 TTFT 269.1 -> 162.4 ms (-39.6%) — the first metric in
+#     this campaign where Atlas leads vLLM on this box (162.4 vs 179 ms);
+#     C=16 aggregate 429.05 -> 521.19 tok/s (+21.5%);
+#   * 4593/512 tokens: C=1 TTFT 889.3 -> 491.5 ms (-44.7%); C=16 aggregate
+#     308.86 -> 405.91 tok/s (+31.4%), TTFT 7524.7 -> 4145.5 ms (-44.9%);
+#   * coherency 4/4 on every gate, determinism 8/8 identical over 3 runs, and
+#     the only differences against the control are two cosmetic word choices in
+#     7 coherency prompts ("we can" -> "you can", "Thus" -> "Therefore");
+#   * numerics are gated on GB10 by `native_gdn_chunk_prefill_microtest`: the
+#     shipped `_x2` arm reproduces the scalar spine's `uc`/`S_c` to four digits
+#     (rel_rms 1.6721e-3 on both at T=4593), holds the f32 state at 3.9e-6 with
+#     `cosine=1.000000000`, drift BOUNDED, KNOWN_BAD refused at all three T.
+# The kernel is still SHARED (`kernels/gb10/common/gated_delta_rule_chunk_tc.cu`,
+# validated on GB10) and is NOT relocated here — only the default moved.
+# `ATLAS_GDN_PREFILL_TC=0` turns the whole family off, which is how the A/B is
+# re-run now that the positive arm is the default.
 #
 # It is a FAMILY lever: it also selects the two Hopper prefill remnant twins
 # declared below (`gdn_recompute_wu_hopper.cu`, `gdn_fwd_o_hopper.cu`), because
 # the three kernels are one pipeline. `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` is
 # the one-variable A/B that keeps the spine and pins those two to their
-# parents; it is the ONLY way to run them apart.
-gdn_prefill_tc = false
+# parents; it is the ONLY way to run them apart, and round 13 ran it: cell T2
+# isolates the twins at -12.1%/-13.0% of C=1 TTFT on the two shapes
+# (184.7 -> 162.4 ms and 565.0 -> 491.5 ms). nsys on the same two cells prices
+# them per kernel at T=4593 — `chunk_fwd_o_hopper` 4.28x (71 548 -> 16 716 us),
+# `recompute_wu_hopper` 1.60x (47 389 -> 29 558 us) — with the SHARED spine
+# kernel as the internal control at 0.99x (51 775 vs 52 060 us), so the -71.7 ms
+# of prefill GPU busy is accounted for by the twins' -72.4 ms and by nothing
+# else. Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
+#
+# HOPPER ONLY. gb10 and b200 keep `false`: no target but this one has a serving
+# receipt for the family, and b200 must not inherit a Hopper recipe by
+# resemblance (`tests/target_defaults.rs`).
+gdn_prefill_tc = true
 # Split SiLU+down on the decode path — shipped ON everywhere since #928.
 decode_split_silu = true
 # `auto` = size the decode-rollback ring from free memory at preflight (#915).

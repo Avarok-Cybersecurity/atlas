@@ -472,19 +472,21 @@ fn main() {
         if let Some(ref common) = target.common_kernel_dir {
             println!("cargo:rerun-if-changed={}", common.display());
         }
+        // THE line: one `cargo:warning=` per target, so the resolved kernel
+        // count reaches the terminal of a plain `cargo build` instead of only
+        // `target/<profile>/build/atlas-kernels-*/output` (H100 rounds 11 and
+        // 13). Text formatted by `build_summary::summary`, which
+        // `tests/build_summary.rs` grades.
         let n_overrides = find_cu_files(&target.model_kernel_dir, source_ext).len();
         println!(
-            "cargo:warning=atlas-kernels: compiled {} kernels for target {} ({}, {}, {}){}",
-            cu_files.len(),
-            idx,
-            target.hw,
-            target.model,
-            target.quant,
-            if n_overrides > 0 {
-                format!(" ({n_overrides} model-specific overrides)")
-            } else {
-                String::new()
-            },
+            "cargo:warning={}",
+            build_summary::summary(
+                cu_files.len(),
+                &target.hw,
+                &target.model,
+                &target.quant,
+                n_overrides,
+            )
         );
     }
 
@@ -1449,6 +1451,11 @@ mod build_flags;
 // kernels/ tree.
 #[path = "build_defaults.rs"]
 mod build_defaults;
+
+// The one summary line a build prints per kernel target. Same reason for its
+// own file: `tests/build_summary.rs` compiles it directly.
+#[path = "build_summary.rs"]
+mod build_summary;
 
 #[path = "build_codegen.rs"]
 mod build_codegen;

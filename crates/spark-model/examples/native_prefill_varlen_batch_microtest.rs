@@ -31,7 +31,12 @@
 //!   3. EXTENT. Guard bands either side of every output buffer are untouched,
 //!      and stream `b`'s packed output region is written only by stream `b`
 //!      (checked by running the batch twice with one stream's Q perturbed and
-//!      asserting only that stream's rows move).
+//!      asserting BOTH that that stream's rows move AND that no other stream's
+//!      do). The perturbation is a whole head of the victim's LAST query row:
+//!      the FIRST row attends to exactly one key under causal masking, so its
+//!      softmax weight is 1.0 and its output is `V[0]` whatever Q holds — a
+//!      control placed there cannot trip on any hardware, which is how round 13
+//!      spent an H100 slot on `the harness is inert`.
 //!
 //! Run (H100 / any CUDA box with the kernels built):
 //!   cargo run --release -p spark-model --features cuda,gpu-examples \
@@ -328,10 +333,27 @@ fn main() -> Result<()> {
     // indexes Q/O at `b * max_len` (the uniform layout) on a buffer packed by
     // `cu_seqlens` — the exact defect the varlen geometry exists to avoid, and
     // one that a same-length fixture cannot see.
+    //
+    // ⚠️ WHICH ROW IS PERTURBED IS THE WHOLE CONTROL. H100 round 13 ran this
+    // example and it failed on `perturbing seq 1's Q changed nothing — the
+    // harness is inert`, after every substantive assertion above had passed.
+    // The reason was not the kernel: it perturbed element 0 of head 0 of the
+    // victim's FIRST query row, and under causal masking that row attends to
+    // exactly one key, so its softmax weight is identically 1.0 and its output
+    // is `V[0]` REGARDLESS OF Q. The control could not trip on any hardware.
+    //
+    // So the perturbation lands on the victim's LAST row, which attends to all
+    // `LENS[victim]` keys, and it moves a WHOLE HEAD by a full unit rather than
+    // one element by an epsilon — Q is drawn from [-1, 1) and bf16 keeps 8
+    // mantissa bits, so a per-element +1.0 across the head cannot be rounded
+    // away inside the dot product. Both halves are then asserted: the victim's
+    // last row MUST move, and no other sequence may.
     let victim = 1usize;
     let mut q_perturbed = q_host.clone();
-    let lo = cu[victim] as usize * NQ * HD;
-    q_perturbed[lo] = bf16::from_f32(q_host[lo].to_f32() + 1.0);
+    let victim_last_row = (cu[victim + 1] as usize - 1) * NQ * HD;
+    for x in &mut q_perturbed[victim_last_row..victim_last_row + HD] {
+        *x = bf16::from_f32(x.to_f32() + 1.0);
+    }
     let bytes: Vec<u8> = q_perturbed
         .iter()
         .flat_map(|x| x.to_bits().to_le_bytes())
@@ -361,20 +383,38 @@ fn main() -> Result<()> {
     )?;
     gpu.synchronize(stream)?;
     let perturbed = download_bf16(&gpu, out_batched, total_tokens * NQ * HD)?;
+    // The ARMING half, checked first and on the exact row that was touched: a
+    // control that cannot trip is worth nothing, and "somewhere in the victim
+    // moved" is a weaker statement than "the row whose Q changed moved".
+    let victim_moved = (victim_last_row..victim_last_row + HD)
+        .filter(|&i| perturbed[i] != b_out[i])
+        .count();
+    ensure!(
+        victim_moved > 0,
+        "perturbing head 0 of seq {victim}'s LAST query row (element {victim_last_row}, \
+         attending to all {} keys) changed none of its {HD} outputs — the harness is \
+         inert and nothing below it is evidence",
+        LENS[victim],
+    );
+    println!(
+        "stream isolation: seq {victim}'s last row moved in {victim_moved}/{HD} \
+         outputs of the perturbed head"
+    );
+    // …and the ISOLATION half: every other sequence is byte-identical.
     for b in 0..n {
         let lo = cu[b] as usize * NQ * HD;
         let hi = cu[b + 1] as usize * NQ * HD;
-        let moved = (lo..hi).any(|i| perturbed[i] != b_out[i]);
+        let moved = (lo..hi).filter(|&i| perturbed[i] != b_out[i]).count();
         if b == victim {
             ensure!(
-                moved,
+                moved > 0,
                 "perturbing seq {b}'s Q changed nothing — the harness is inert"
             );
         } else {
             ensure!(
-                !moved,
-                "perturbing seq {victim}'s Q moved seq {b}'s output — the batched \
-                 path is crossing stream boundaries in the packed layout",
+                moved == 0,
+                "perturbing seq {victim}'s Q moved {moved} of seq {b}'s outputs — the \
+                 batched path is crossing stream boundaries in the packed layout",
             );
         }
     }
