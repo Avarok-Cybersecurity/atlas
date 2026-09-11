@@ -52,3 +52,11 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = false
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+# The fused dense-FFN gate+up decode GEMM (#927). OFF: the arm is a cuBLASLt
+# call-shape change on the W8A8 block-scaled path, and GB10 has neither a
+# receipt nor the arm the receipt was taken on. GB10 also does not compile the
+# arm's strided-SiLU consumer (`silu_mul_strided.cu` is Hopper-owned), so the
+# row is INERT here and is declared only so the lever list is one list. A GB10
+# receipt moves the source down and this row with it. See
+# `kernels/hopper/HARDWARE.toml` and `FFN-GATEUP-FUSION-ATTRIBUTION.md`.
+ffn_gateup_fused = false

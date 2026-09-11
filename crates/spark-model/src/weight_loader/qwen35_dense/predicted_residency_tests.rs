@@ -67,6 +67,10 @@ fn qwen38_27b() -> ModelConfig {
 /// The route the round-6 serve booted in: `ATLAS_DENSE_FP8=1`, tp 1, a
 /// config-declared FP8 checkpoint, no NVFP4 lever, both W8A8 prefill kernels
 /// present in the hopper kernel set.
+///
+/// `ffn_gateup_fused` is FALSE here: round 6 predates the lever (#927), and
+/// the round-6 receipt below is the join between this arithmetic and a serve
+/// log that was printed before the arm existed.
 fn round6_route() -> Fp8RouteInputs {
     Fp8RouteInputs {
         dense_fp8: true,
@@ -80,6 +84,7 @@ fn round6_route() -> Fp8RouteInputs {
             attn_w4a4: false,
             attn_prefill_q_t: false,
         },
+        ffn_gateup_fused: false,
     }
 }
 
@@ -146,6 +151,59 @@ fn each_term_is_the_loaders_shape_arithmetic() {
         predicted(&round6_route()).ssm_fp8_concat,
         48 * per_layer as u64,
     );
+}
+
+/// THE RESIDENCY CONSTRAINT, as an equation (#927). The fused gate+up weight
+/// is 178.3 MB x 64 layers = 11.4 GB — more than the bs32 KV budget has to
+/// give — and it is spent ONLY because the same 11.4 GB comes back off the
+/// checkpoint at `prune_after_load`. The prediction feeds `headroom.rs`, whose
+/// `weights` term is the on-disk size and therefore still counts the two
+/// tensors the loader released, so the two must cancel EXACTLY. If they ever
+/// do not, an H100 serve quietly picks a smaller decode-rollback ring, or is
+/// refused with `No memory left for KV cache`, and nothing says why.
+#[test]
+fn the_gateup_fusion_is_residency_neutral() {
+    let mut route = round6_route();
+    route.ffn_gateup_fused = true;
+    let p = predicted(&route);
+    let base = predicted(&round6_route());
+
+    // Qwen3.8-27B: 2 x 17408 x 5120 = 178,257,920 B per layer, 64 layers.
+    assert_eq!(p.ffn_gateup_fused, 64 * 178_257_920);
+    assert_eq!(p.ffn_gateup_fused, 11_408_506_880, "11.4 GB, as briefed");
+    assert_eq!(
+        p.ffn_gateup_fused, p.ffn_gateup_pruned,
+        "the fused weight IS the two store tensors copied side by side"
+    );
+    assert_eq!(
+        p.total(),
+        base.total(),
+        "arming the fusion must not move the preflight yardstick by one byte"
+    );
+    assert!(p.twins.ffn_gateup_fused, "but the log still names it");
+    assert!(!base.twins.ffn_gateup_fused);
+}
+
+/// An `intermediate_size` that is not a whole number of 128-blocks is NOT
+/// priced for the fusion, because the loader will not build it: the concat
+/// appends the two `[N/128, K/128]` scale grids, and that is only the fused
+/// grid when the seam falls on a block boundary. The prediction and
+/// `qwen35_dense::ffn_gateup_fused_selected` must agree on which models fuse —
+/// a prediction that priced a fusion the loader declines would under-state the
+/// KV headroom by 11.4 GB.
+#[test]
+fn a_width_that_is_not_a_whole_block_grid_is_never_priced() {
+    let mut c = qwen38_27b();
+    c.intermediate_size = 17408 - 64;
+    let mut route = round6_route();
+    route.ffn_gateup_fused = true;
+    let p = match predicted_derived_bytes(&c, &route) {
+        DerivedBytesEstimate::NativeFp8Dense(p) => p,
+        DerivedBytesEstimate::Unavailable(why) => panic!("expected a prediction, got: {why}"),
+    };
+    assert_eq!(p.ffn_gateup_fused, 0);
+    assert_eq!(p.ffn_gateup_pruned, 0);
+    assert!(!p.twins.ffn_gateup_fused);
 }
 
 /// A target missing either W8A8 prefill kernel builds the Q and O twins too —

@@ -197,6 +197,67 @@ fn ffn_inter(config: &ModelConfig) -> usize {
     }
 }
 
+/// Whether the native-FP8 dense-FFN overlay runs for THIS layer.
+///
+/// The condition `load_layers` applied inline before `prune_after_load` needed
+/// the same answer. Pure — a function of the store, the config and the
+/// detected variant — so the two sites cannot drift, which is the failure a
+/// prune predicate must not have: freeing a store tensor a layer still aliases
+/// is a use-after-free with no diagnostic.
+fn ffn_fp8_arm_selected(
+    store: &WeightStore,
+    config: &ModelConfig,
+    variant: Nvfp4Variant,
+    lp: &str,
+) -> bool {
+    dense_fp8_enabled()
+        && config.tp_world_size.max(1) == 1
+        && matches!(variant, Nvfp4Variant::Fp8Dequanted)
+        && proj_is_native_fp8(store, &format!("{lp}.mlp.gate_proj"))
+}
+
+/// Whether THIS layer's gate and up are fused into one `[2*inter, hidden]`
+/// block-scaled FP8 weight (#927).
+///
+/// Beyond the FP8 overlay itself: the target must arm the arm (`[defaults]
+/// ffn_gateup_fused`), the model must be DENSE (a MoE config has no
+/// `ffn_gate_up_fused` arena buffer and never reaches the dense-FFN path), and
+/// both extents must be whole 128-blocks — `concat_fp8_block_scaled` appends
+/// the `[N/128, K/128]` scale grids, which is only the fused grid when the
+/// seam falls on a block boundary (`ceil` of a sum is not the sum of `ceil`s).
+///
+/// The SECOND caller is `prune_after_load`, which releases exactly the store
+/// tensors this returned true for. Rule and the receipt:
+/// `layers/dense_ffn_gateup_fused.rs`.
+fn ffn_gateup_fused_selected(
+    store: &WeightStore,
+    config: &ModelConfig,
+    variant: Nvfp4Variant,
+    lp: &str,
+) -> bool {
+    let inter = ffn_inter(config);
+    let hidden = config.hidden_size;
+    // The CONFIG's widths are what the ledger terms, the prediction and the
+    // view offsets are all computed from, so a checkpoint whose tensors
+    // disagree with them must DECLINE rather than be concatenated at the wrong
+    // stride. Checked here and not at the call site because `prune_after_load`
+    // asks this same question and frees on the answer: a predicate the loader
+    // narrows locally is a store tensor freed out from under a live view.
+    let on_disk = |name: &str| {
+        store
+            .get(&format!("{lp}.mlp.{name}.weight"))
+            .is_ok_and(|w| w.shape == [inter, hidden])
+    };
+    ffn_fp8_arm_selected(store, config, variant, lp)
+        && crate::layers::dense_ffn::gateup_fused::ffn_gateup_fused()
+        && config.num_experts == 0
+        && inter > 0
+        && inter.is_multiple_of(128)
+        && hidden.is_multiple_of(128)
+        && on_disk("gate_proj")
+        && on_disk("up_proj")
+}
+
 // `pub` (re-exported from `weight_loader/mod.rs`): the pre-load residency
 // PREDICTION in `predicted_residency` is read by spark-server's preflight,
 // and it prices its terms with this module's shape helpers so the prediction
@@ -321,10 +382,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // load gate/up/down directly as block-scaled `Fp8Weight` and
             // dispatch w8a16 — no NVFP4 requant. TP>1 still uses the NVFP4
             // path (FP8 FFN sharding is a follow-up).
-            let ffn_fp8 = dense_fp8_enabled()
-                && config.tp_world_size.max(1) == 1
-                && matches!(variant, Nvfp4Variant::Fp8Dequanted)
-                && proj_is_native_fp8(store, &format!("{lp}.mlp.gate_proj"));
+            let ffn_fp8 = ffn_fp8_arm_selected(store, config, variant, &lp);
             // 2026-09-11 (#915), replacing "always load the NVFP4 weights so
             // every dispatch path has a valid weight to fall back to": there is
             // no such path any more. `forward_k2`/`k3`/`km` redirect to
@@ -451,11 +509,58 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         .adopt("ffn fp8 block scale (widened)", w.row_scale, bytes);
                     Ok(w)
                 };
-                dffn.set_fp8_weights(
-                    load_ffn_fp8("gate_proj")?,
-                    load_ffn_fp8("up_proj")?,
-                    load_ffn_fp8("down_proj")?,
-                );
+                let mut gate = load_ffn_fp8("gate_proj")?;
+                let mut up = load_ffn_fp8("up_proj")?;
+                let down = load_ffn_fp8("down_proj")?;
+                // FUSED gate+up (#927). ONE `[2*inter, hidden]` E4M3 buffer
+                // and ONE `[2*inter/128, hidden/128]` FP32 scale grid, with
+                // `gate` and `up` re-pointed at VIEWS inside them — so the
+                // fused decode GEMM and every un-fused rung of `w8_gemm!` read
+                // the SAME bytes and neither needs a second copy.
+                //
+                // RESIDENCY IS NET ZERO, and that is the whole design
+                // constraint: a second copy is 178.3 MB x 64 layers = 11.4 GB,
+                // straight out of the bs32 KV budget. `prune_after_load`
+                // releases the two source store tensors this copied
+                // (`{lp}.mlp.{gate,up}_proj.weight` + their scale tensors),
+                // exactly as the SSM `[QKV|Z]` concat above has done since
+                // #915, and `predicted_residency` prices the pair at zero for
+                // the preflight ring fit.
+                let inter = ffn_inter(config);
+                let fused = if ffn_gateup_fused_selected(store, config, variant, &lp) {
+                    let fused = concat_fp8_block_scaled(&gate, &up, h, gpu)?;
+                    let (w_bytes, s_bytes) = fp8_residency::ffn_gateup_fused_parts(h, inter);
+                    // The concat COPIED both widened grids, so the two
+                    // per-projection allocations are dead. They were adopted a
+                    // few lines up; disown before freeing, or teardown frees
+                    // them a second time.
+                    let d = store.derived();
+                    let grid = inter.div_ceil(128) * h.div_ceil(128) * 4;
+                    for ptr in [gate.row_scale, up.row_scale] {
+                        d.disown(ptr);
+                        gpu.free(ptr)?;
+                    }
+                    residency.free(2 * grid);
+                    // The views. `gate` is the fused buffer's head and `up`
+                    // starts one `[inter, hidden]` block in; the scale grids
+                    // meet at the same boundary because `inter % 128 == 0` is
+                    // a clause of the selector above.
+                    gate.weight = fused.weight;
+                    gate.row_scale = fused.row_scale;
+                    up.weight = fused.weight.offset(inter * h);
+                    up.row_scale = fused.row_scale.offset(grid);
+                    d.adopt("ffn gate+up fp8 concat", fused.weight, w_bytes);
+                    d.adopt("ffn gate+up fp8 block scale", fused.row_scale, s_bytes);
+                    residency.keep(w_bytes + s_bytes);
+                    residency.twins.ffn_gateup_fused = true;
+                    Some(fused)
+                } else {
+                    None
+                };
+                dffn.set_fp8_weights(gate, up, down);
+                if let Some(fused) = fused {
+                    dffn.set_fp8_gate_up_fused(fused);
+                }
             }
             // ATLAS_FFN_MMQ: eagerly materialize Q4_K + free the dead `_t` copies at load,
             // BEFORE KV cache sizing, so net FFN footprint == NVFP4 baseline (no decode OOM-throttle).
@@ -1691,9 +1796,12 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
     /// 🪤 Narrow on purpose. `out_proj.weight` IS `out_proj_fp8w.weight`
     /// (zero-copy from the store), `conv1d`, `A_log`, `dt_bias` and
     /// `norm.weight` are aliased or conditionally aliased depending on their
-    /// on-disk dtype, and every attention / FFN tensor is bound zero-copy.
-    /// Only the four names below are freed, and only for layers where
-    /// `gdn_fp8_arm_selected` (private to this module) says that arm actually ran.
+    /// on-disk dtype, and every attention tensor — and `mlp.down_proj` — is
+    /// bound zero-copy. Only the names below are freed, and only for layers
+    /// where the module-private predicate that SELECTED the corresponding
+    /// concat (`gdn_fp8_arm_selected` for the SSM `[QKV|Z]` weight,
+    /// `ffn_gateup_fused_selected` for the dense-FFN gate+up weight, #927)
+    /// says that arm actually ran.
     fn prune_after_load(
         &self,
         store: &mut WeightStore,
@@ -1711,6 +1819,29 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             config.layer_types.clone()
         };
         let mut doomed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // The dense-FFN gate+up fusion (#927) consumed these the same way the
+        // SSM `[QKV|Z]` concat below consumes its two: the fused buffer holds
+        // the bytes, and `gate_proj`/`up_proj` are VIEWS inside it, so nothing
+        // aliases the store tensors any more. Releasing them is what makes the
+        // fusion residency-neutral; keeping them would be the 11.4 GB the
+        // fused arm exists to not spend. `down_proj` is NOT pruned — it is
+        // still bound zero-copy.
+        //
+        // Same `variant` the load used (`detect_nvfp4_variant` is a pure
+        // function of the store and the config), and the SAME predicate, so a
+        // layer that did not fuse cannot be pruned here.
+        let variant = detect_nvfp4_variant(store, config);
+        for i in 0..layer_types.len() {
+            let lp = config.layer_prefix(i);
+            if !ffn_gateup_fused_selected(store, config, variant, &lp) {
+                continue;
+            }
+            for proj in ["gate_proj", "up_proj"] {
+                for leaf in ["weight", "weight_scale_inv", "weight_scale"] {
+                    doomed.insert(format!("{lp}.mlp.{proj}.{leaf}"));
+                }
+            }
+        }
         for (i, lt) in layer_types.iter().enumerate() {
             if *lt != LayerType::LinearAttention {
                 continue;
@@ -1737,7 +1868,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         }
         let (count, bytes) = store.free_matching(gpu, |name| doomed.contains(name))?;
         tracing::info!(
-            "native FP8 GDN: released {count} store tensors ({:.2} GB) consumed by the fused              [QKV|Z] concat and the BA interleave; out_proj/conv1d/A_log/dt_bias/norm kept              (still aliased)",
+            "native FP8: released {count} store tensors ({:.2} GB) consumed by the fused              [QKV|Z] SSM concat, the BA interleave and the dense-FFN gate+up fusion;              out_proj/conv1d/A_log/dt_bias/norm/down_proj kept (still aliased)",
             bytes as f64 / 1e9,
         );
         Ok(())

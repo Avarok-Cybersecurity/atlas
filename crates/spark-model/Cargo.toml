@@ -292,6 +292,13 @@ required-features = ["cuda", "gpu-examples"]
 # pulls in with `#[path]`.
 test = true
 
+# The FUSED gate+up decode GEMM (#927) against the two-GEMM pair. A BYTE
+# equality gate, not a tolerance: splitting N gives independent output columns
+# over the same K with the same block scales.
+[[example]]
+name = "native_fp8_ffn_gateup_fused_microtest"
+required-features = ["cuda", "gpu-examples"]
+
 [[example]]
 name = "native_fp8_oproj_batch_microtest"
 required-features = ["cuda", "gpu-examples"]

@@ -168,6 +168,7 @@ pub struct TargetLevers {
     pub lm_head_batchm_max: Resolved<u32>,
     pub ssm_batched_recurrent: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
+    pub ffn_gateup_fused: Resolved<bool>,
 }
 
 /// The whole table, as a pure function of the baked declaration and a variable
@@ -202,6 +203,16 @@ pub fn resolve(
         // stays PRESENCE-gated and unchanged, so every script that predates
         // this file means what it meant.
         decode_split_silu: resolve_toggle(defaults.decode_split_silu, None, split_silu_off),
+        // DECLARATION plus `ATLAS_FFN_GATEUP_FUSED`, which is the A/B a Hopper
+        // round runs against the new default. `=0` kills the arm and returns
+        // the layer to two cuBLASLt calls; there is no positive spelling that
+        // arms it on a target whose tree lacks `silu_mul_strided.cu`, because
+        // the handle probe would then fail the boot audit closed.
+        ffn_gateup_fused: resolve_toggle(
+            defaults.ffn_gateup_fused,
+            var("ATLAS_FFN_GATEUP_FUSED").as_deref(),
+            false,
+        ),
     }
 }
 
@@ -247,7 +258,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
     format!(
         "target defaults ({hw}): sm_count={sms} \
          lm_head_batchm_max={batchm}{batchm_src} \
-         ssm_batched_recurrent={recurrent} decode_split_silu={silu}",
+         ssm_batched_recurrent={recurrent} decode_split_silu={silu} \
+         ffn_gateup_fused={gateup}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
         // at boot against the driver. Printed on this line because the levers
@@ -258,6 +270,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         batchm_src = l.lm_head_batchm_max.source.tag(),
         recurrent = onoff(l.ssm_batched_recurrent),
         silu = onoff(l.decode_split_silu),
+        gateup = onoff(l.ffn_gateup_fused),
     )
 }
 
