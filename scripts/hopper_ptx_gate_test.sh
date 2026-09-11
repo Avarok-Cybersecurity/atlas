@@ -53,10 +53,16 @@ out38="$(bash "$GATE" --hw gb10 --model qwen3.8-27b --list-tasks 2>&1)"; rc=$?
 [ $rc -eq 0 ] || fail a "--list-tasks exited $rc:
 $out38"
 
+# A FLOOR, not an exact total. The exact number was pinned here once and went
+# stale the first time `kernels/gb10/common/` gained a kernel — which says
+# nothing about redirect resolution, the only thing this case tests. The
+# floor still catches the failure that matters (a redirect that resolves to a
+# handful of kernels, or to none); case (b) below pins the exact SET against
+# the redirect target, which is the invariant with a reason behind it.
 tasks38="$(grep -c '^qwen3\.8-27b	' <<<"$out38")"
-[ "$tasks38" -eq 181 ] || fail a "expected 181 tasks for qwen3.8-27b, got $tasks38:
+[ "$tasks38" -ge 150 ] || fail a "expected a full kernel set for qwen3.8-27b, got $tasks38:
 $out38"
-ok a "qwen3.8-27b lists 181 tasks"
+ok a "qwen3.8-27b lists $tasks38 tasks"
 
 model_files="$(awk -F'\t' '$3 !~ /^kernels\/gb10\/common\// {print $3}' <<<"$out38" | sort)"
 n_model="$(grep -c . <<<"$model_files")"
