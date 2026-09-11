@@ -12,9 +12,9 @@ each question has a DISTINCT, short, unambiguous answer, so a cross-sequence
 mix-up shows up as one sequence answering another's question rather than as a
 token-level diff. Run cold (no solo pass first) so no warm restore is involved.
 """
-import json, threading, urllib.request, sys
+import os, json, threading, urllib.request, sys
 
-PORT = 8892
+PORT = int(os.environ.get("ATLAS_BENCH_PORT", "8892"))
 MODEL = "qwen4exp-nvfp4"
 
 PROBES = [
