@@ -118,6 +118,67 @@ impl TransformerModel {
         }
     }
 
+    /// Partial-accept rollback under replay: checkpoint, then replay.
+    ///
+    /// Mirrors the snapshot path's contract — on return the live state is the
+    /// state after the committed prefix, and the checkpoint holds that same
+    /// state ready for the next verify.
+    fn replay_commit_accepted_prefix(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+    ) -> Result<()> {
+        let stream = self.gpu.default_stream();
+        let mut h_back: Vec<StateCopy> = Vec::new();
+        let mut conv_back: Vec<StateCopy> = Vec::new();
+        let mut h_ckpt: Vec<StateCopy> = Vec::new();
+        let mut conv_ckpt: Vec<StateCopy> = Vec::new();
+        let h_bytes = self.ssm_pool.h_stored_bytes;
+        let conv_bytes = (self.config.linear_num_key_heads * self.config.linear_key_head_dim * 2
+            + self.config.linear_num_value_heads * self.config.linear_value_head_dim)
+            * self.config.linear_conv_kernel_dim
+            * 4;
+        for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
+            if self.config.layer_type(i) != LayerType::LinearAttention {
+                continue;
+            }
+            let Some(ssm) = layer_state.as_any_mut().downcast_mut::<SsmLayerState>() else {
+                continue;
+            };
+            if let Some(ckpt) = ssm.h_state_checkpoint {
+                h_back.push(StateCopy {
+                    src: ckpt,
+                    dst: ssm.h_state,
+                    bytes: h_bytes,
+                });
+                h_ckpt.push(StateCopy {
+                    src: ssm.h_state,
+                    dst: ckpt,
+                    bytes: h_bytes,
+                });
+            }
+            if let Some(ckpt) = ssm.conv_state_checkpoint {
+                conv_back.push(StateCopy {
+                    src: ckpt,
+                    dst: ssm.conv_state,
+                    bytes: conv_bytes,
+                });
+                conv_ckpt.push(StateCopy {
+                    src: ssm.conv_state,
+                    dst: ckpt,
+                    bytes: conv_bytes,
+                });
+            }
+        }
+        // Restore -> advance -> re-checkpoint, all on the default stream: the
+        // advance is kernel work on shared decode scratch and must not overlap
+        // the next forward.
+        run_ssm_state_copies(self.gpu.as_ref(), &h_back, &conv_back, stream)?;
+        self.replay_rollback_rows(seq, num_accepted, stream)?;
+        run_ssm_state_copies(self.gpu.as_ref(), &h_ckpt, &conv_ckpt, stream)?;
+        self.commit_verify_aux_rows(seq, num_accepted, stream)
+    }
+
     fn replay_rollback_rows(
         &self,
         seq: &mut SequenceState,
@@ -353,6 +414,17 @@ impl TransformerModel {
                  Use rollback_ssm_states() for a full-reject rewind to the pre-verify \
                  checkpoint."
             );
+        }
+
+        // Replay: the per-token intermediates are SHARED scratch, so there is
+        // no per-sequence blob to rewind to. Restore the pre-verify checkpoint
+        // and re-run the accepted rows instead — the same reconstruction the
+        // full-reject path uses, with `num_accepted` rows to replay rather
+        // than none. `num_accepted` here counts the committed prefix
+        // (`na + 1` from the verdict), and the rows cached are the verify
+        // window's, so the replay advances by exactly the committed tokens.
+        if self.ssm_pool.intermediates_shared {
+            return self.replay_commit_accepted_prefix(seq, num_accepted);
         }
 
         let stream = self.secondary_stream;

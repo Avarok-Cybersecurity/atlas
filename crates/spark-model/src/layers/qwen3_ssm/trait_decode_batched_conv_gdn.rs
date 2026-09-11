@@ -403,15 +403,37 @@ impl Qwen3SsmLayer {
         // the three legs that takes it to N/N. Kill switch
         // `ATLAS_NO_VERIFY_ROW_EXACT`. Phase 8 in `decode_batched_inner`
         // reads the SAME predicate to skip its norm.
-        // `--ssm-rollback-mode replay` also takes the exact chain, and must:
-        // the WY arms below read `h_state_intermediates[..]` as kernel args
-        // and replay does not allocate that pool. Taking the SAME sequential
-        // chain the reconstruction will re-run also makes a replayed partial
-        // accept reproduce what the forward committed, instead of differing
-        // by the #435 divergence documented above.
-        if super::verify_row_exact_leg(ctx.gdn_exact_replay, super::RowExactLeg::ConvGdn)
-            || !ssm_state.replay_inputs.is_empty()
-        {
+        // ── Replay capture, before any arm ──
+        // `--ssm-rollback-mode replay` reconstructs a partial accept by
+        // re-running the accepted rows from the checkpoint, so it needs each
+        // row's INPUTS. Captured here rather than inside an arm: every arm
+        // dispatches from this function, and a captured row must not depend on
+        // which recurrence implementation ran.
+        //
+        // Rows 0..K-2 only — a partial accept replays at most K-1 tokens and a
+        // full accept replays nothing, which is how the ring is sized.
+        if !ssm_state.replay_inputs.is_empty() {
+            let nv_gate_bytes = nv * 2 * fp32;
+            for t in 0..num_tokens.saturating_sub(1) {
+                let Some(&dst) = ssm_state.replay_inputs.get(t) else {
+                    break;
+                };
+                ctx.gpu.copy_d2d_async(
+                    deinterleaved.offset(t * qkvz_size * bf16),
+                    dst,
+                    qkvz_size * bf16,
+                    ctx.gpu.default_stream(),
+                )?;
+                ctx.gpu.copy_d2d_async(
+                    gates_buf.offset(t * nv * 2 * fp32),
+                    dst.offset(qkvz_size * bf16),
+                    nv_gate_bytes,
+                    ctx.gpu.default_stream(),
+                )?;
+            }
+        }
+
+        if super::verify_row_exact_leg(ctx.gdn_exact_replay, super::RowExactLeg::ConvGdn) {
             return self.decode_batched_conv_gdn_exact(ssm_state, ctx, args);
         }
 

@@ -112,6 +112,12 @@ pub(crate) struct SsmStatePool {
     /// in snapshot mode. Stored so `replay_input` cannot re-derive it from a
     /// different config field than the allocation used.
     pub(super) replay_row_bytes: usize,
+    /// Every slot shares slot 0's per-token intermediates (replay mode).
+    ///
+    /// Safe only because nothing reads them back under replay — the rollback
+    /// reconstructs from the checkpoint — and because the arms that reach them
+    /// do so one sequence at a time. See the module note on the multi arm.
+    pub(super) intermediates_shared: bool,
     /// Replay is wired for the MTP conv+GDN verify chain only. The DFlash
     /// block drafter reads `ssm_pool.h_intermediate(..)` directly
     /// (`dflash_head/propose.rs`), which replay does not allocate, so a
@@ -286,9 +292,10 @@ impl SsmStatePool {
         let uniform_h =
             !config.dflash_capture_layers.is_empty() || num_intermediates != num_drafts + 1;
         let h_inter_counts: Vec<usize> = if has_mtp && replay {
-            // Replay: no per-token snapshots exist — every slot's count is 0
-            // (the vec stays populated so accessors keep their shape).
-            vec![0; mtp_slots + 1]
+            // Replay: full per-slot CAPACITY (every verify arm checks this vec's
+            // length before writing, and the WY arms must still pass), but the
+            // offsets below make every slot address the same storage.
+            vec![num_intermediates.saturating_sub(1); mtp_slots + 1]
         } else if has_mtp {
             (0..=mtp_slots)
                 .map(|s| {
@@ -303,22 +310,36 @@ impl SsmStatePool {
         } else {
             Vec::new()
         };
-        let (h_inter_offsets, h_inter_total) = h_inter_layout(&h_inter_counts);
+        let (h_inter_offsets, h_inter_total) = if replay {
+            // Shared: every slot starts at element 0, and the pool is one
+            // slot's worth. This is the whole memory win, and it is expressed
+            // as a LAYOUT rather than as a special case in the accessors.
+            (
+                vec![0usize; h_inter_counts.len()],
+                num_intermediates.saturating_sub(1),
+            )
+        } else {
+            h_inter_layout(&h_inter_counts)
+        };
         let mut replay_input_rings = Vec::new();
         let mut replay_row_bytes = 0usize;
         if has_mtp {
             let ni = num_intermediates;
             let mtp_total = mtp_slots + 1;
-            if !replay {
+            {
+                // `h_inter_total` is already one slot's worth under replay, and
+                // the conv pool takes the matching `shared_slots` width.
+                let shared_slots = if replay { 1 } else { mtp_total };
                 let (layers, allocations) =
                     alloc_layer_pools(gpu, num_ssm_layers, h_inter_total * h_stored_bytes)?;
                 h_intermediate_pools = layers;
                 owned_allocations.extend(allocations);
                 let (layers, allocations) =
-                    alloc_layer_pools(gpu, num_ssm_layers, mtp_total * ni * conv_bytes)?;
+                    alloc_layer_pools(gpu, num_ssm_layers, shared_slots * ni * conv_bytes)?;
                 conv_intermediate_pools = layers;
                 owned_allocations.extend(allocations);
-            } else {
+            }
+            if replay {
                 // Replay: verify-window INPUT rows instead of state
                 // snapshots — (mtp_total slots incl. dummy) × (K-1)
                 // rows of qkvz+gates per layer. Sized by the same SSOT
@@ -405,6 +426,7 @@ impl SsmStatePool {
             rollback_mode,
             replay_input_rings,
             replay_row_bytes,
+            intermediates_shared: replay,
             replay_uncovered_dflash: replay && !config.dflash_capture_layers.is_empty(),
             free_slots: Mutex::new(free_slots),
         })
@@ -640,13 +662,9 @@ impl SsmStatePool {
         if !self.has_mtp {
             return usize::MAX;
         }
-        // Replay scaffold: capacity is NOT snapshot-bounded (no per-token
-        // snapshots exist to overflow). Report unconstrained so the
-        // scheduler does not silently zero out speculation — dispatch then
-        // hits `require_verify_rollback_supported`'s LOUD refusal instead.
-        if self.rollback_mode == crate::ssm_reserve::SsmRollbackMode::Replay {
-            return usize::MAX;
-        }
+        // Replay now carries the same per-slot CAPACITY as snapshot (shared
+        // storage, real counts), so the ordinary bound below is correct for
+        // both modes and needs no escape hatch.
         if slot >= self.mtp_slots {
             return 0;
         }
@@ -713,7 +731,13 @@ impl SsmStatePool {
         token_idx: usize,
     ) -> DevicePtr {
         let ni = self.num_intermediates;
-        let slot = self.mtp_slot(slot);
+        // Replay shares one set across slots; `h_intermediate` gets the same
+        // effect from its zeroed offset table.
+        let slot = if self.intermediates_shared {
+            0
+        } else {
+            self.mtp_slot(slot)
+        };
         self.conv_intermediate_pools[ssm_layer_idx]
             .offset((slot * ni + token_idx) * self.conv_bytes)
     }
