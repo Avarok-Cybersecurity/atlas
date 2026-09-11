@@ -5,45 +5,37 @@
 //!
 //! WHY. H100, 2026-09-11 round 7, batch 16, steady-state n=16 decode step
 //! **43.595 ms** (idle 4.2%), nsys `--cuda-graph-trace=node`. Resolved by grid
-//! shape, these four projections are **21.85 ms = 50.1% of the step**:
+//! shape, these four projections are **21.85 ms = 50.1% of the step**: SSM
+//! `in_proj_qkvz` (N=16384 K=5120) 48 x 235.3 µs = 11 294 µs at **357 GB/s**;
+//! SSM `out_proj` + attn `o_proj` (N=5120) 64 x 106.5 µs = 6 814 µs; attn
+//! `q_proj` (N=12288, strided) 16 x 180.8 µs = 2 893 µs; attn `k_proj`+
+//! `v_proj` (N=1024, strided) 32 x 26.4 µs = 846 µs. The dense FFN, at the
+//! SAME 16 rows in the SAME step, runs cuBLASLt W8A8 at ~128 µs/layer for
+//! 267 MB of weights — ~2 100 GB/s-equivalent; this is the receipt for giving
+//! the projections that path.
 //!
-//! | projection | launches | µs each | µs/step | achieved |
-//! |---|---|---|---|---|
-//! | SSM `in_proj_qkvz` N=16384 K=5120 | 48 | 235.3 | 11 294 | **357 GB/s** |
-//! | SSM `out_proj` + attn `o_proj` N=5120 | 64 | 106.5 | 6 814 | |
-//! | attn `q_proj` N=12288 (strided) | 16 | 180.8 | 2 893 | |
-//! | attn `k_proj`+`v_proj` N=1024 (strided) | 32 | 26.4 | 846 | |
-//!
-//! The dense FFN, at the SAME 16 rows in the SAME step, runs cuBLASLt W8A8 at
-//! ~128 µs/layer for 267 MB of weights — ~2 100 GB/s-equivalent. This test is
-//! the receipt for giving the projections that path.
-//!
-//! It answers two questions per projection and refuses to guess either:
+//! It answers three questions per projection and guesses none:
 //!
 //!   1. NUMBERS. W8A8 quantizes the ACTIVATION to E4M3 per 128-wide K group,
 //!      which the W8A16 GEMV does not, so the two are NOT bit-identical and no
-//!      bit gate is honest here. The gate is cosine >= 0.999 and relative RMS
-//!      <= 3e-2 against the GEMV, plus: nothing written outside the route's
-//!      extent (sentinel), nothing non-finite, and the strided gaps between
-//!      Q|K|V inside each sequence's slot untouched.
+//!      bit gate would be honest. The gate is cosine >= 0.999 and relative RMS
+//!      <= 3e-2 against the GEMV, plus: nothing outside the route's extent
+//!      (sentinel), nothing non-finite, gaps between Q|K|V untouched.
 //!
-//!      ⚠ THE FLOOR, so a marginal `rel_rms` is read correctly: E4M3 carries 3
-//!      stored mantissa bits, so round-to-nearest costs ~2.5% RMS relative
-//!      error per element, and for a dot product of independent terms that
+//!      ⚠ THE FLOOR, so a marginal `rel_rms` is read correctly: E4M3 carries
+//!      3 stored mantissa bits, so round-to-nearest costs ~2.5% RMS relative
+//!      error per element, and over a dot product of independent terms that
 //!      error does NOT average down relative to the signal. The EXPECTED
-//!      `rel_rms` of this comparison on random inputs is therefore ~2-2.6% —
-//!      the 3e-2 bound is one notch of headroom over the floor, not a loose
-//!      tolerance, and cosine (~0.9997 at that error) is the robust metric.
-//!      This is the same floor `native_fp8_ffn_w8a8_microtest` states for the
-//!      dense FFN, which already ships this arithmetic at these row counts.
-//!      `ATLAS_W8A8_REL_RMS_GATE` overrides it; the value used is printed.
+//!      `rel_rms` here is therefore ~2-2.6% — 3e-2 is one notch of headroom
+//!      over the floor, not a loose tolerance, and cosine (~0.9997 there) is
+//!      the robust metric. Same floor `native_fp8_ffn_w8a8_microtest` states
+//!      for the dense FFN. `ATLAS_W8A8_REL_RMS_GATE` overrides it.
 //!
 //!   2. THE PHANTOM ROWS. cuBLASLt is handed `ceil16(M) = 16` at every rung of
-//!      this band, and it WRITES rows `m..16`. With the strided Q/K/V output
-//!      those rows land in decode slots that are not in the step. This test
-//!      pins that they land THERE and nowhere else: rows `m..16` must be
-//!      finite and confined to their own projection's columns, the gaps must
-//!      still hold the sentinel, and nothing past row 15's extent may move.
+//!      this band and WRITES rows `m..16`; with the strided Q/K/V output those
+//!      land in decode slots not in the step. This pins that they land THERE
+//!      and nowhere else: finite, inside their own projection's columns,
+//!      gaps still holding the sentinel.
 //!
 //!   3. TIME. Per projection, sync'd over `REPS`: µs per launch and the
 //!      weight-bytes-per-second it implies, for both routes.
@@ -55,12 +47,10 @@
 //! `out_proj` and the attention `o_proj` share the GrdX=1280 group at ~31.5 MB
 //! per launch, i.e. 5120 x 6144 FP8 bytes.
 //!
-//! Run (H100):
-//!   ATLAS_CUBLAS_GEMM=ssm,attn cargo run --release -p spark-model \
-//!     --features cuda,gpu-examples \
-//!     --example native_fp8_decode_proj_w8a8_microtest
-//! (the example calls cuBLASLt directly, so the lever is not required — it is
-//! the serve-side spelling, printed below for copy-paste.)
+//! Run (H100): `cargo run --release -p spark-model --features
+//! cuda,gpu-examples --example native_fp8_decode_proj_w8a8_microtest`. The
+//! example calls cuBLASLt directly, so `ATLAS_CUBLAS_GEMM` is not required
+//! here — the serve spelling is printed at the end for copy-paste.
 
 use anyhow::{Result, ensure};
 use half::bf16;
@@ -84,20 +74,17 @@ const SENTINEL: u8 = 0x5a;
 const COSINE_GATE: f64 = 0.999;
 const REL_RMS_GATE: f64 = 3e-2;
 
-/// One projection under test.
+/// One projection under test. `ldc` is the BF16 elements between output ROWS
+/// (equal to `n` when contiguous) and `offset` this projection's BF16 element
+/// offset inside a row; `act` is `[MAX_M, k]` BF16.
 struct Proj {
     name: &'static str,
-    /// Output width.
     n: usize,
-    /// Contract width.
     k: usize,
-    /// BF16 elements between output ROWS. Equals `n` for a contiguous output.
     ldc: usize,
-    /// BF16 element offset of this projection inside a row.
     offset: usize,
     weight: DevicePtr,
     scale: DevicePtr,
-    /// The activation, `[MAX_M, k]` BF16.
     act: DevicePtr,
 }
 
@@ -160,10 +147,9 @@ fn metrics(observed: &[u8], baseline: &[u8], live: &[(usize, usize)]) -> (f64, f
 }
 
 /// The oracle. `live` is what the route is COMPARED on (rows 0..m); `written`
-/// is everything it is ALLOWED to touch (rows 0..m_pad for the W8A8 route,
-/// because cuBLASLt writes the phantom rows). Everything outside `written`
-/// must still hold the sentinel — that is the ldc/extent check — and every
-/// value inside it must be finite, phantom rows included.
+/// is everything it may TOUCH (rows 0..m_pad — cuBLASLt writes the phantom
+/// rows). Outside `written` the sentinel must survive (the ldc/extent check);
+/// inside it every value must be finite, phantom rows included.
 fn check(
     observed: &[u8],
     baseline: &[u8],
@@ -275,16 +261,15 @@ fn main() -> Result<()> {
     );
 
     // A struct, not a nest of closures: three generators sharing one `random`
-    // closure would each hold a mutable borrow of it, and the order in which
-    // they happen to be last-used is not a thing this file should depend on.
+    // closure would each hold a mutable borrow of it, and this file should not
+    // depend on the order in which they happen to be last-used.
     struct Rng(u64);
     impl Rng {
         fn bits(&mut self) -> u32 {
             self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1);
             (self.0 >> 32) as u32
         }
-        /// FP8 E4M3 bytes, sign bit kept, exponent range clipped away from
-        /// the NaN encodings.
+        /// FP8 E4M3 bytes, sign kept, exponents clipped off the NaN encodings.
         fn fp8(&mut self, n: usize, depth: usize) -> Vec<u8> {
             (0..n * depth)
                 .map(|_| {
@@ -412,9 +397,8 @@ fn main() -> Result<()> {
             let observed = capture(true)?;
 
             if !controls_done && p.strided() {
-                // A green run has to be able to go red. Each control corrupts
-                // the OBSERVED buffer in one of the four ways this test exists
-                // to catch, and the real oracle must refuse every one.
+                // A green run has to be able to go red: four corruptions of
+                // the OBSERVED buffer, all refused by the real oracle.
                 for control in ["gap", "guard", "nonfinite", "value"] {
                     let mut bad = observed.clone();
                     match control {
@@ -490,12 +474,11 @@ fn main() -> Result<()> {
                 }
                 gpu.synchronize(0)?;
                 let us = t0.elapsed().as_secs_f64() * 1e6 / REPS as f64;
-                // "GB/s-equivalent": the weight bytes read once, over the wall
-                // time of the whole projection. NOT a memory-bandwidth claim
-                // for the W8A8 route — it is compute-bound tensor-core work
-                // and the number can exceed HBM peak. It is the figure of
-                // merit the round-7 table uses (357 GB/s for `in_proj_qkvz`),
-                // so both routes are reported in the same unit.
+                // "GB/s-equivalent": weight bytes read once over the wall
+                // time. NOT a bandwidth claim for the W8A8 route — that is
+                // compute-bound tensor-core work and can exceed HBM peak. It
+                // is the unit the round-7 table uses (357 GB/s for
+                // `in_proj_qkvz`), so both routes are reported in it.
                 println!(
                     "  {:<18} {:<14} {us:>9.1} us  {:>7.0} GB/s-equiv",
                     p.name,
