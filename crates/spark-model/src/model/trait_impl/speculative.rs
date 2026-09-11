@@ -471,6 +471,26 @@ impl TransformerModel {
         if crate::speculative::draft_conf_tau() > 0.0 {
             return Ok(None);
         }
+        // The qwen4_exp proposer reads the accepted target's HIGHWAY row
+        // (`impl_b3.rs`), indexed by `last_mtp_hidden_idx`. One context carries
+        // ONE `hc_row_offset`, so this path cannot express a per-sequence row
+        // and would silently draft every sequence from sequence 0's row
+        // (measured: draft match 0.242 vs 0.86, p1 0.19 vs 0.86). The
+        // per-sequence fallback re-saves each stash slot immediately before its
+        // own propose and so publishes the right row. Decline, loudly, once.
+        if self.config.model_type == "qwen4_exp"
+            && crate::layers::qwen3_ssm::trait_decode_batched_hc::hc_batched_verify_enabled()
+        {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                tracing::info!(
+                    "batched propose DECLINED for qwen4_exp: one ForwardContext cannot \
+                     carry a per-sequence hc_row_offset; using the per-sequence propose, \
+                     which publishes each sequence's highway row"
+                );
+            });
+            return Ok(None);
+        }
         if self.verify_hidden_stash.is_null() {
             return Ok(None);
         }
