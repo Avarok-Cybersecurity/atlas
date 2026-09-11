@@ -283,7 +283,17 @@ fn every_excusal_names_a_real_benchmark_and_a_reason() {
 #[test]
 fn a_driver_change_invalidates_only_its_own_gate() {
     let hit = coverage::invalidated_by(["crates/atlas-plugin/src/benchmarks/bfcl/report.rs"]);
-    assert_eq!(hit, ["bfcl-subset", "bfcl-subset-echolp"]);
+    // kat-equality-gate joins the two BFCL gates here, and that is deliberate
+    // rather than leakage: KAT_EQUALITY_EXCLUDES is the one gate's list that
+    // does NOT exclude the BFCL driver, because the equality gate issues the
+    // BFCL draw and `bfcl/draw.rs` decides which samples it compares in what
+    // canonical order. The exclusion is directory-shaped, so the scorer comes
+    // with it — fail-closed, at the cost of re-opening the equality gate for a
+    // scoring change it does not actually read.
+    assert_eq!(
+        hit,
+        ["bfcl-subset", "bfcl-subset-echolp", "kat-equality-gate"]
+    );
 }
 
 /// The concurrency driver is made of flat files, unlike the directory-shaped
@@ -447,5 +457,24 @@ fn the_bench_toml_exemption_is_scoped_to_the_kernel_tree() {
     assert!(
         coverage::invalidates(gate, "crates/spark-model/BENCH.toml"),
         "the exemption must not apply outside kernels/"
+    );
+}
+
+/// The equality driver shipped in #981 with no sibling exclusion at all, so a
+/// change to it re-opened all eleven required gates — roughly 4.5 GPU-hours
+/// owed for editing one detector. Every other driver is excluded by its peers;
+/// this one was not, and nothing failed to say so.
+///
+/// The second half is the control: the detector's own gate MUST still re-open,
+/// or the exclusion has been applied one array too far and the gate can no
+/// longer see changes to itself.
+#[test]
+fn a_change_to_the_equality_driver_reopens_that_gate_and_no_other() {
+    let hit =
+        coverage::invalidated_by(["crates/atlas-plugin/src/benchmarks/kat_equality/compare.rs"]);
+    assert_eq!(
+        hit,
+        ["kat-equality-gate"],
+        "editing the equality detector must cost its own gate and nothing else"
     );
 }

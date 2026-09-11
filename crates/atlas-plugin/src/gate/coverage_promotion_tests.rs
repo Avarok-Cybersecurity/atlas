@@ -23,7 +23,7 @@ fn every_promotion_candidate_is_a_registered_benchmark() {
             .iter()
             .map(|gate| gate.id)
             .collect::<Vec<_>>(),
-        ["cross-contamination", "kat-equality-gate"],
+        ["cross-contamination"],
         "promotion tracking must not pass vacuously or gain an unreviewed candidate"
     );
     for gate in coverage::PROMOTION_CANDIDATES {
@@ -85,11 +85,13 @@ fn the_contamination_candidate_accrues_debt_for_engine_changes() {
     let owed = coverage::promotion_debt(["crates/spark-server/src/scheduler/mod.rs"]);
     assert_eq!(
         owed,
-        ["cross-contamination", "kat-equality-gate"],
+        ["cross-contamination"],
         "a scheduler change is exactly the kind of edit that can cross-wire \
-         concurrent requests — and the same edit can make one request's reply \
-         depend on what the scheduler ran before it, so BOTH candidates are \
-         owed; got {owed:?}"
+         concurrent requests, so the contamination candidate is owed. \
+         kat-equality-gate was the second entry here until 2026-09-10; it is \
+         REQUIRED now, and a required gate is owed as a gate, never as debt — \
+         `every_promotion_candidate_is_a_registered_benchmark` refuses both at \
+         once; got {owed:?}"
     );
     assert!(
         coverage::promotion_debt(["docs/adr/README.md", "site/index.html"]).is_empty(),

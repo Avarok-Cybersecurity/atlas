@@ -386,6 +386,10 @@ const TTFT_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change what a first-token latency probe measures",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change what a first-token latency probe measures",
+    ),
 ];
 
 const BFCL_EXCLUDES: &[Exclusion] = &[
@@ -414,6 +418,10 @@ const BFCL_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change a tool-calling accuracy score",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change a tool-calling accuracy score",
+    ),
 ];
 
 const AGENTIC_EXCLUDES: &[Exclusion] = &[
@@ -441,6 +449,10 @@ const AGENTIC_EXCLUDES: &[Exclusion] = &[
     concurrency_driver(
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change whether the agent's webserver task succeeds",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change whether the agent's webserver task succeeds",
     ),
 ];
 
@@ -479,6 +491,10 @@ const SSM_POISON_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change whether an identical replay returns identical bytes",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change whether an identical replay returns identical bytes",
+    ),
 ];
 
 /// The concurrency curve is a LATENCY/THROUGHPUT measurement of the serving
@@ -509,6 +525,10 @@ const CONCURRENCY_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/ttft",
         "the TTFT driver issues single requests client-side; it cannot change how fast the \
          server answers a batch of 32",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change the server's latency/throughput curve",
     ),
 ];
 
@@ -548,6 +568,10 @@ const DECODE_FLOOR_EXCLUDES: &[Exclusion] = &[
     concurrency_driver(
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change the server's single-user decode rate",
+    ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change the server's single-user decode rate",
     ),
 ];
 
@@ -614,6 +638,11 @@ const CONTAMINATION_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change whether one request's state leaks into another",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change whether one request's state leaks into \
+         another's output",
+    ),
 ];
 
 /// The vision gate answers one question — does the served model see the image
@@ -647,10 +676,15 @@ const VISION_EXCLUDES: &[Exclusion] = &[
         "crates/atlas-plugin/src/benchmarks/concurrency_verdict.rs",
         "the concurrency verdict cannot change image preprocessing or encoder tokens",
     ),
+    other_driver(
+        "crates/atlas-plugin/src/benchmarks/kat_equality",
+        "the equality driver cannot change how an image is patched or how many tokens \
+         it becomes",
+    ),
 ];
 
 /// The gates whose records must pass, and what each one ignores.
-pub const REQUIRED: [GateCoverage; 11] = [
+pub const REQUIRED: [GateCoverage; 12] = [
     GateCoverage {
         id: "agentic-webserver",
         excludes: AGENTIC_EXCLUDES,
@@ -749,6 +783,42 @@ pub const REQUIRED: [GateCoverage; 11] = [
         id: "concurrency-sweep-dflash2",
         excludes: CONCURRENCY_EXCLUDES,
     },
+    // ── Promoted from PROMOTION_CANDIDATES 2026-09-10 ──────────────────────
+    //
+    // The excusal this replaces set one precondition: "promote once a measured
+    // run under --hermetic reaches zero divergences, and pin the sample count
+    // that was actually measured". Both halves are now met.
+    //
+    // Two measurements stand behind this, and they are DIFFERENT INSTRUMENTS.
+    //
+    // #936's, which closed the channels: the whole golden draw against its own
+    // four shards, byte-exact per `sample_id`, 0 of 995 under `--hermetic`
+    // against 12 of 995 open — reproduced on two boxes, whole legs
+    // byte-identical across them.
+    //
+    // This gate's own, which is what the BENCH.toml entry pins: 257 samples
+    // issued in two ORDERS against ONE server. Its negative control was run at
+    // that cap on 2026-09-10 and reads **36 divergences of 257** with the
+    // channels open. Reversing the order against one server is a stronger
+    // perturbation than a four-way shard split, which is why it sees 36 where
+    // sharding saw 12; the two numbers are not comparable and neither is a
+    // regression against the other.
+    //
+    // The control was re-run AT THE CAP rather than inherited, because the cap
+    // truncates the draw and so changes what ran before every surviving
+    // sample — a control taken on the whole draw describes a different
+    // instrument. Without that run, a green here could have been the check
+    // measuring nothing.
+    //
+    // ★ Promoting on a run this gate itself judges is legitimate ONLY because
+    // its bar is an absolute invariant — `diverged max = 0`, like ssm-poison's
+    // `collapsed max = 0` — and not a threshold cut from the run judging it.
+    // The one quantity taken FROM the measurement is the sample count, which
+    // is exactly what the excusal instructed to pin.
+    GateCoverage {
+        id: "kat-equality-gate",
+        excludes: KAT_EQUALITY_EXCLUDES,
+    },
 ];
 
 /// Registered benchmarks that are deliberately **not** gates, each with the
@@ -781,22 +851,17 @@ pub const REQUIRED: [GateCoverage; 11] = [
 /// `every_promotion_candidate_is_a_registered_benchmark` pins that.
 ///
 /// ★ The list is the PIPELINE, not a parking lot: `concurrency-sweep` and
-/// `decode-floor` both graduated to [`REQUIRED`] on 2026-08-15 once their
-/// calibration preconditions were met (see the comments on their REQUIRED
-/// entries). Their old candidate entries are gone from here because a gate
-/// cannot be owed and excused at once — the test above pins that.
-pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[
-    GateCoverage {
-        id: "cross-contamination",
-        excludes: CONTAMINATION_EXCLUDES,
-    },
-    GateCoverage {
-        id: "kat-equality-gate",
-        excludes: KAT_EQUALITY_EXCLUDES,
-    },
-];
+/// `decode-floor` both graduated to [`REQUIRED`] on 2026-08-15, and
+/// `kat-equality-gate` on 2026-09-10, once their calibration preconditions
+/// were met (see the comments on their REQUIRED entries). Their old candidate
+/// entries are gone from here because a gate cannot be owed and excused at
+/// once — the test above pins that.
+pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[GateCoverage {
+    id: "cross-contamination",
+    excludes: CONTAMINATION_EXCLUDES,
+}];
 
-pub const NOT_REQUIRED: [(&str, &str); 6] = [
+pub const NOT_REQUIRED: [(&str, &str); 5] = [
     (
         "quick-speed-bench",
         "a single-user speed probe with no thresholds and no baseline — a MEASUREMENT tool, \
@@ -817,15 +882,6 @@ pub const NOT_REQUIRED: [(&str, &str); 6] = [
         "not required YET: a promotion candidate (see PROMOTION_CANDIDATES) run on release cuts \
          and recorded as debt until it has proven itself; a fresh gate that fails on day one \
          would train people to override it",
-    ),
-    (
-        "kat-equality-gate",
-        "not required YET, and deliberately not in the PR that introduces it: this gate's \
-         bar is that the shipped serve regime is order-independent, and whether it IS has \
-         not been measured on this tree. A gate cannot certify itself in the same change \
-         that first records it — the same rule that keeps a speed floor from being cut \
-         from the run it is judging. Promote once a measured run under --hermetic reaches \
-         zero divergences, and pin the sample count that was actually measured",
     ),
     (
         "mlperf-agentic-subset",
