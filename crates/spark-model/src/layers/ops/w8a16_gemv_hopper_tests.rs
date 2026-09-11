@@ -20,16 +20,17 @@
 //!    reordering ACCUMULATION is not, because every batch oracle in the tree
 //!    compares against this exact FP32 chain. That is what is pinned here.
 //!
-//! [`hopper_row`] is a transcription of the override's loop — the `UNROLL`-wide
-//! prefetch body plus the one-at-a-time tail — and [`reference_row`] is the
-//! gb10 loop. They are asserted to emit the same chunk sequence and the same
-//! FP32 accumulator, at K values that exercise every relevant residue: an exact
-//! multiple of `UNROLL * LANES` chunks, a tail shorter than one unroll group,
-//! and a K with a partial chunk group in the middle of a scale block.
+//! [`hopper_chunks`] is a transcription of the override's loop — the
+//! `UNROLL`-wide prefetch body plus the one-at-a-time tail — and
+//! [`reference_chunks`] is the gb10 loop. They are asserted to emit the same
+//! chunk sequence and the same per-lane FP32 accumulator, at K values that
+//! exercise every relevant residue: an exact multiple of `UNROLL * LANES`
+//! chunks, a tail shorter than one unroll group, and a K with a partial chunk
+//! group in the middle of a scale block.
 //!
-//! Both assertions are shown to have teeth: [`rotated_row`] is the same code
-//! with the unroll group consumed in a different order — the one mistake the
-//! rewrite could actually make — and it is required to DIFFER.
+//! Both assertions are shown to have teeth: [`rotated_chunks`] is the same loop
+//! with the unroll group consumed last-to-first — the one mistake the rewrite
+//! could actually make — and it is required to DIFFER.
 
 use half::bf16;
 
@@ -139,29 +140,34 @@ fn reduce(partials: &[f32; LANES]) -> bf16 {
     bf16::from_f32(warp(0) + warp(32))
 }
 
-/// One output row, for a chunk-sequence rule.
-fn row(
+/// The 64 lane accumulators of one output row, for a chunk-sequence rule.
+///
+/// The FP32 partials, not the reduced BF16, are what the comparisons below
+/// use. The kernel's contract is the FP32 chain; the final `__float2bfloat16`
+/// is one round on top of it, and it is coarse enough to hide a real
+/// reassociation — which is exactly what it did to the first version of
+/// [`reordering_the_unroll_group_is_detected`], where a reversed unroll group
+/// changed every lane accumulator and no output bit.
+fn partials(
     seq: fn(usize, usize) -> Vec<usize>,
     chunk_count: usize,
     weights: &[u8],
     act: &[f32],
     scales: &[f32],
-) -> bf16 {
-    let mut partials = [0.0_f32; LANES];
-    for (lane, p) in partials.iter_mut().enumerate() {
+) -> [f32; LANES] {
+    let mut out = [0.0_f32; LANES];
+    for (lane, p) in out.iter_mut().enumerate() {
         *p = lane_acc(&seq(lane, chunk_count), weights, act, scales);
     }
-    reduce(&partials)
+    out
 }
 
-fn reference_row(n: usize, w: &[u8], a: &[f32], s: &[f32]) -> bf16 {
-    row(reference_chunks, n, w, a, s)
-}
-fn hopper_row(n: usize, w: &[u8], a: &[f32], s: &[f32]) -> bf16 {
-    row(hopper_chunks, n, w, a, s)
-}
-fn rotated_row(n: usize, w: &[u8], a: &[f32], s: &[f32]) -> bf16 {
-    row(rotated_chunks, n, w, a, s)
+/// How many of the 64 lanes disagree, bit for bit.
+fn lanes_differing(a: &[f32; LANES], b: &[f32; LANES]) -> usize {
+    a.iter()
+        .zip(b.iter())
+        .filter(|(x, y)| x.to_bits() != y.to_bits())
+        .count()
 }
 
 /// K values that exercise the loop's residues. 16,384 chunks is 64 whole
@@ -220,9 +226,19 @@ fn the_scale_index_is_the_gb10_expression() {
 fn the_unrolled_accumulator_is_bit_identical_to_the_gb10_order() {
     for count in CHUNK_COUNTS {
         let (w, a, s) = fixture(count);
+        let (h, r) = (
+            partials(hopper_chunks, count, &w, &a, &s),
+            partials(reference_chunks, count, &w, &a, &s),
+        );
         assert_eq!(
-            hopper_row(count, &w, &a, &s).to_bits(),
-            reference_row(count, &w, &a, &s).to_bits(),
+            lanes_differing(&h, &r),
+            0,
+            "{count} chunks (K={}): lane accumulators diverged",
+            count * K_PER_CHUNK
+        );
+        assert_eq!(
+            reduce(&h).to_bits(),
+            reduce(&r).to_bits(),
             "{count} chunks (K={})",
             count * K_PER_CHUNK
         );
@@ -230,11 +246,10 @@ fn the_unrolled_accumulator_is_bit_identical_to_the_gb10_order() {
 }
 
 /// ...and the comparison is not vacuous: consuming the prefetched group in a
-/// different order changes the chunk sequence AND the FP32 result, at every K
-/// long enough to contain a whole unroll group.
+/// different order changes the chunk sequence AND every lane's FP32 chain, at
+/// every K long enough to contain a whole unroll group.
 #[test]
 fn reordering_the_unroll_group_is_detected() {
-    let mut differing = 0;
     for count in CHUNK_COUNTS {
         assert_ne!(
             rotated_chunks(0, count),
@@ -242,13 +257,19 @@ fn reordering_the_unroll_group_is_detected() {
             "{count} chunks: the mutation did not even change the sequence"
         );
         let (w, a, s) = fixture(count);
-        if rotated_row(count, &w, &a, &s).to_bits() != reference_row(count, &w, &a, &s).to_bits() {
-            differing += 1;
-        }
+        let differing = lanes_differing(
+            &partials(rotated_chunks, count, &w, &a, &s),
+            &partials(reference_chunks, count, &w, &a, &s),
+        );
+        // Measured on this fixture: 59, 62, 34 and 31 of the 64 lanes change,
+        // in CHUNK_COUNTS order. Not all 64, because a lane whose reassociated
+        // groups happen to round identically is a real outcome of FP32, not a
+        // missed detection — so the floor is a quarter of the lanes, which is
+        // half the margin to the smallest measured value.
+        assert!(
+            differing >= LANES / 4,
+            "{count} chunks: an accumulation reordering moved only {differing} \
+             of {LANES} lane chains"
+        );
     }
-    assert_eq!(
-        differing,
-        CHUNK_COUNTS.len(),
-        "an accumulation reordering went unnoticed at some K"
-    );
 }
