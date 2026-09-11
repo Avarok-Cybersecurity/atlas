@@ -182,3 +182,19 @@ pub(super) fn prefill_fwd_o_hopper_k(gpu: &dyn GpuBackend) -> KernelHandle {
         "gated_delta_rule_chunk_fwd_o_hopper",
     )
 }
+
+/// The SSM BA-gates twin: one CTA per token, bit-identical to the gb10 parent
+/// (#928). Hopper-only source, so the lookup MISSES quietly everywhere else and
+/// `ops::ba_gates_pick` keeps the launcher on `ssm_preprocess`'s parent.
+///
+/// NOT gated on `[defaults] ssm_ba_gates_hopper`, unlike the spine probe above:
+/// the parent is always loaded and is always a valid launch, so a twin that is
+/// merely absent costs nothing to have looked for, and the lever is read at the
+/// dispatch site where the token-count guard is read too.
+pub(super) fn ba_gates_hopper_k(gpu: &dyn GpuBackend) -> KernelHandle {
+    crate::layers::try_kernel(
+        gpu,
+        "ssm_ba_gates_hopper",
+        "dense_gemm_ba_gates_prefill_hopper",
+    )
+}

@@ -37,6 +37,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     ssm_batched_recurrent: true,
     gdn_decode_hopper: false,
     gdn_prefill_tc: true,
+    ssm_ba_gates_hopper: true,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
     w8a8_prefill_max_m_widening: u32::MAX,

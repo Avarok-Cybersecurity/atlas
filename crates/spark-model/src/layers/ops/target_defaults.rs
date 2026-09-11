@@ -193,6 +193,7 @@ pub struct TargetLevers {
     pub ssm_batched_recurrent: Resolved<bool>,
     pub gdn_decode_hopper: Resolved<bool>,
     pub gdn_prefill_tc: Resolved<bool>,
+    pub ssm_ba_gates_hopper: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
     pub ssm_decode_ring_slots: Resolved<Option<usize>>,
     pub w8a8_prefill_max_m_widening: Resolved<u32>,
@@ -309,6 +310,16 @@ pub fn resolve(
             var("ATLAS_GDN_PREFILL_TC").as_deref(),
             false,
         ),
+        // The Hopper BA-gates twin (#928). Hopper declares it ON; the twin is
+        // BIT-IDENTICAL to its gb10 parent by construction, so unlike every
+        // other Hopper-owned row this one carries no accuracy question and no
+        // `ATLAS_NO_*` legacy spelling — `ATLAS_SSM_BA_GATES_HOPPER=0` is the
+        // whole A/B, under the 2026-09-11 grammar above.
+        ssm_ba_gates_hopper: resolve_toggle(
+            defaults.ssm_ba_gates_hopper,
+            var("ATLAS_SSM_BA_GATES_HOPPER").as_deref(),
+            false,
+        ),
         decode_split_silu: resolve_toggle(defaults.decode_split_silu, None, split_silu_off),
         // DECLARATION ONLY — never an environment read. `ATLAS_SSM_DECODE_RING`
         // has its own grammar (`1` = the full depth, `0` = no ring) and its own
@@ -391,7 +402,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
          ffn_batch16_tier={batch16} ffn_m16_tc={ffn_m16} attn_m16_tc={attn_m16} \
          attn_ncol_gemv={ncol} lm_head_m16_tc={head_m16} \
          lm_head_batchm_max={batchm}{batchm_src} ssm_batched_recurrent={recurrent} \
-         gdn_decode_hopper={gdn_decode} gdn_prefill_tc={gdn_tc} decode_split_silu={silu} \
+         gdn_decode_hopper={gdn_decode} gdn_prefill_tc={gdn_tc} \
+         ssm_ba_gates_hopper={ba_gates} decode_split_silu={silu} \
          ssm_decode_ring_slots={ring}{ring_src} \
          w8a8_prefill_max_m={w8a8_wide}/{w8a8_narrow}{w8a8_src}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
@@ -406,6 +418,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         recurrent = onoff(l.ssm_batched_recurrent),
         gdn_decode = onoff(l.gdn_decode_hopper),
         gdn_tc = onoff(l.gdn_prefill_tc),
+        ba_gates = onoff(l.ssm_ba_gates_hopper),
         silu = onoff(l.decode_split_silu),
         ring = match l.ssm_decode_ring_slots.value {
             Some(n) => n.to_string(),

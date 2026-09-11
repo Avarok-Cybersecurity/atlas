@@ -168,6 +168,8 @@ mod qsa;
 mod quant_dispatch;
 #[path = "ops/sampling.rs"]
 mod sampling;
+#[path = "ops/ssm_ba_gates_hopper.rs"]
+mod ssm_ba_gates_hopper;
 #[path = "ops/ssm_gdn_a.rs"]
 mod ssm_gdn_a;
 #[path = "ops/ssm_gdn_a2.rs"]
@@ -251,6 +253,7 @@ pub use q4k_mmq::*;
 pub use qsa::*;
 pub use quant_dispatch::*;
 pub use sampling::*;
+pub use ssm_ba_gates_hopper::*;
 pub use ssm_gdn_a::*;
 pub use ssm_gdn_a2::*;
 pub use ssm_gdn_a3::*;
