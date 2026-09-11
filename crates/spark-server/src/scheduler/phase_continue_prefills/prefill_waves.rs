@@ -76,156 +76,100 @@ pub(super) fn plan_prefill_waves(
     waves.into_iter().map(|(_, _, members)| members).collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{WaveGeom, plan_prefill_waves};
-
-    fn g(chunk_start: usize, chunk_len: usize, is_last: bool) -> WaveGeom {
-        WaveGeom {
-            chunk_start,
-            chunk_len,
-            is_last,
-        }
+/// Per-stream chunk geometry for ONE dispatch tick: how many tokens the
+/// stream advances and whether that chunk is its last.
+///
+/// SSOT for `run_batched_prefill_step`'s per-stream loop, factored out so the
+/// geometry a stream gets in a batched wave can be compared — in a test, with
+/// no model and no GPU — against the sequence the same stream gets on the
+/// per-stream path. #1002 asked that question of the round-13 shapes and the
+/// answer has to stay pinned: BF16 accumulation is not associative, so a
+/// stream that takes a different chunk shape depending on who it batched with
+/// is a different answer to the same request at temperature 0.
+///
+/// * `effective_max` — `max_prefill_tokens`, or `remaining` for MLA models
+///   (no paged-MLA prefill kernel ⇒ multi-chunk prefill is forced off).
+/// * `tail_cut` — `Model::prefill_tail_cut`, the offset where
+///   `prefill_chunk_dispatch` would split this prompt's FINAL chunk to land an
+///   SSM tail checkpoint. Under VARLEN the scheduler pre-splits there so the
+///   tails of a co-arriving burst share a `chunk_start` and batch.
+///
+/// NOTE the budget NEVER truncates a chunk-0 below the cut: `chunk_len` starts
+/// at `min(remaining, effective_max)` and the wave cap is applied by the
+/// PLANNER, which opens a new wave rather than shrinking a member (a stream
+/// whose own chunk exceeds the cap gets a singleton wave). Pinned by
+/// `chunk_zero_is_never_truncated_by_the_wave_budget`.
+pub(super) fn plan_stream_chunk(
+    chunk_offset: usize,
+    total: usize,
+    effective_max: usize,
+    tail_cut: Option<usize>,
+    varlen: bool,
+) -> (usize, bool) {
+    let remaining = total - chunk_offset;
+    let mut chunk_len = remaining.min(effective_max);
+    let mut is_last = chunk_offset + chunk_len >= total;
+    // TAIL PRE-SPLIT (VARLEN only) — the condition mirrors
+    // `prefill_chunk_dispatch`'s own (`cut > chunk_start && cut < total`, on a
+    // last chunk) exactly, plus the requirement that the cut lie inside THIS
+    // chunk.
+    if varlen
+        && is_last
+        && let Some(cut) = tail_cut
+        && cut > chunk_offset
+        && cut < total
+        && cut <= chunk_offset + chunk_len
+    {
+        chunk_len = cut - chunk_offset;
+        is_last = false;
     }
-
-    #[test]
-    fn flag_off_is_one_wave_with_every_stream_in_order() {
-        // Byte-identical dispatch behaviour: the pre-wave scheduler made ONE
-        // prefill_batch_chunk call with all streams, whatever their geometry
-        // or total token count.
-        let geoms = [g(0, 200, true), g(2048, 512, false), g(0, 4096, true)];
-        assert_eq!(plan_prefill_waves(&geoms, false, 2048), vec![vec![0, 1, 2]]);
+    // Align intermediate chunks to the GDN WY4 boundary (4 tokens). The tail
+    // cut is a multiple of the KV block size, itself a multiple of 4 on every
+    // shipped config, so this is a no-op there.
+    if !is_last && chunk_len >= 4 {
+        chunk_len = (chunk_len / 4) * 4;
     }
-
-    #[test]
-    fn empty_streams_no_waves() {
-        assert!(plan_prefill_waves(&[], true, 2048).is_empty());
-        assert!(plan_prefill_waves(&[], false, 2048).is_empty());
-    }
-
-    #[test]
-    fn ragged_chunk0_wave_packs_up_to_the_budget() {
-        // Ten ~200-token fresh prompts against the 2048-token budget: the
-        // first ten fit (Σ = 2000), the eleventh opens wave 2 — the measured
-        // C=32 case (285 ms/prompt serial) becomes ⌈32/10⌉ dispatches.
-        let geoms: Vec<WaveGeom> = (0..11).map(|_| g(0, 200, true)).collect();
-        let waves = plan_prefill_waves(&geoms, true, 2048);
-        assert_eq!(waves.len(), 2);
-        assert_eq!(waves[0], (0..10).collect::<Vec<_>>());
-        assert_eq!(waves[1], vec![10]);
-    }
-
-    #[test]
-    fn the_h100_c16_burst_packs_six_prompts_per_prefill_step() {
-        // The #927 receipt, exactly: sixteen 1193-token prompts arriving
-        // together against `--max-prefill-tokens 8192`. Measured behaviour
-        // before this work was 32 prefill chunks for 32 requests — one prompt
-        // per step, 220.8 ms each, budget never binding (2048 and 24576 both
-        // changed nothing, ±0.4%). Six fit: 6 x 1193 = 7158 <= 8192, and a
-        // seventh would be 8351.
-        //
-        // The tail pre-split in `run_batched_prefill_step` makes each prompt's
-        // HEAD 1168 tokens (one KV block below the last boundary under 1193),
-        // so seven heads is 8176 — still inside the budget. Both geometries
-        // are pinned here because the planner sees whichever one the caller
-        // built, and "how many prompts per step" is the whole claim.
-        let whole: Vec<WaveGeom> = (0..16).map(|_| g(0, 1193, true)).collect();
-        let waves = plan_prefill_waves(&whole, true, 8192);
-        assert_eq!(waves.len(), 3, "16 prompts / 6 per wave = 3 waves");
-        assert_eq!(waves[0].len(), 6);
-        assert_eq!(waves[1].len(), 6);
-        assert_eq!(waves[2].len(), 4);
-
-        let heads: Vec<WaveGeom> = (0..16).map(|_| g(0, 1168, false)).collect();
-        let waves = plan_prefill_waves(&heads, true, 8192);
-        assert_eq!(waves[0].len(), 7, "1168-token heads pack 7 per step");
-
-        // And the 25-token tails all share `chunk_start == 1168`, so the
-        // planner puts every one of them in a SINGLE forward — against 32
-        // standalone 25-token passes measured at 29.26 ms each (1170 µs/token,
-        // 11.7% of prefill GPU time for 2.1% of the tokens).
-        let tails: Vec<WaveGeom> = (0..16).map(|_| g(1168, 25, true)).collect();
-        let waves = plan_prefill_waves(&tails, true, 8192);
-        assert_eq!(waves, vec![(0..16).collect::<Vec<_>>()]);
-    }
-
-    #[test]
-    fn flag_off_still_admits_every_prompt_in_one_call() {
-        // Control for the test above: with VARLEN off the planner must not
-        // start splitting anything — the model-side dispatcher is what refuses
-        // the batch, and it needs to see the same one-call shape it always did.
-        let whole: Vec<WaveGeom> = (0..16).map(|_| g(0, 1193, true)).collect();
-        assert_eq!(
-            plan_prefill_waves(&whole, false, 8192),
-            vec![(0..16).collect::<Vec<_>>()],
-        );
-    }
-
-    #[test]
-    fn budget_cap_is_exact_not_off_by_one() {
-        // 1024 + 1024 == cap exactly ⇒ same wave; +1 more opens a new one.
-        let geoms = [g(0, 1024, true), g(0, 1024, true), g(0, 1, true)];
-        let waves = plan_prefill_waves(&geoms, true, 2048);
-        assert_eq!(waves, vec![vec![0, 1], vec![2]]);
-    }
-
-    #[test]
-    fn mixed_geometry_splits_into_compatible_waves() {
-        // The model-side contract: chunk_start and is_last must match across
-        // a batch (check_kernel_batched_eligible). A wave mixing them would
-        // be rejected wholesale and every stream would fall back to serial —
-        // the planner must never emit one.
-        let geoms = [
-            g(0, 200, true),     // fresh single-chunk
-            g(0, 2048, false),   // fresh long prompt, chunk 0 of many
-            g(0, 300, true),     // fresh single-chunk → wave of stream 0
-            g(2048, 512, false), // mid-prefill continuation
-            g(0, 250, true),     // fresh single-chunk → wave of stream 0
-        ];
-        let waves = plan_prefill_waves(&geoms, true, 2048);
-        assert_eq!(waves, vec![vec![0, 2, 4], vec![1], vec![3]]);
-        // Cross-check the invariant directly: uniform (chunk_start, is_last)
-        // per wave, Σ ≤ cap for every multi-member wave.
-        for wave in &waves {
-            let head = geoms[wave[0]];
-            let total: usize = wave.iter().map(|&i| geoms[i].chunk_len).sum();
-            assert!(wave.len() == 1 || total <= 2048);
-            for &i in wave {
-                assert_eq!(geoms[i].chunk_start, head.chunk_start);
-                assert_eq!(geoms[i].is_last, head.is_last);
-            }
-        }
-    }
-
-    #[test]
-    fn oversized_stream_gets_a_singleton_wave() {
-        // chunk_len > cap must still dispatch (single-stream path); it must
-        // not absorb siblings past the cap.
-        let geoms = [g(0, 4096, true), g(0, 100, true)];
-        let waves = plan_prefill_waves(&geoms, true, 2048);
-        assert_eq!(waves, vec![vec![0], vec![1]]);
-    }
-
-    #[test]
-    fn every_stream_is_assigned_exactly_once() {
-        let geoms: Vec<WaveGeom> = (0..37)
-            .map(|i| g((i % 3) * 1024, 100 + i * 7, i % 2 == 0))
-            .collect();
-        let waves = plan_prefill_waves(&geoms, true, 1024);
-        let mut seen = vec![0usize; geoms.len()];
-        for wave in &waves {
-            assert!(!wave.is_empty());
-            for &i in wave {
-                seen[i] += 1;
-            }
-        }
-        assert!(
-            seen.iter().all(|&c| c == 1),
-            "each stream in exactly one wave"
-        );
-        // FIFO order preserved within each wave.
-        for wave in &waves {
-            assert!(wave.windows(2).all(|w| w[0] < w[1]));
-        }
-    }
+    (chunk_len, is_last)
 }
+
+/// Does deferring these chunk-0s into `prefilling` so they can BATCH actually
+/// buy anything? True only when the two smallest heads fit one wave together.
+///
+/// #1002 / round 13, long shape. Sixteen 4593-token prompts pre-split to
+/// `4576 + 17`, and `2 x 4576 = 9152 > 8192`, so the planner emitted
+/// `16 streams -> 14 wave(s), M per wave [51, 4576 x13]`. Fourteen waves for
+/// sixteen streams is not batching — but the deferral was paid anyway, and it
+/// is not free: waves run back-to-back inside ONE tick, so no stream is
+/// promoted until every wave has run, and every TTFT collapses onto the p99.
+/// Measured: long-shape C=16 TTFT 7 524.7 -> 13 756.1 ms (+82.8%) and
+/// aggregate 308.86 -> 214.25 tok/s (-30.6%) against the same-binary control,
+/// for zero batching. When this returns false the request keeps the inline
+/// chunk-0 of `phase_start_prefills` and the staggered TTFT that comes with it.
+///
+/// Two heads, not `n`: the planner is first-fit, so a single pair sharing a
+/// wave is the smallest win that justifies the deferral, and the two smallest
+/// heads are the pair most likely to fit.
+pub(in crate::scheduler) fn varlen_defer_pays<I>(heads: I, wave_token_cap: usize) -> bool
+where
+    I: IntoIterator<Item = usize>,
+{
+    let mut smallest = usize::MAX;
+    let mut second = usize::MAX;
+    for h in heads {
+        if h < smallest {
+            second = smallest;
+            smallest = h;
+        } else if h < second {
+            second = h;
+        }
+    }
+    if second == usize::MAX {
+        // Fewer than two candidates — nothing to batch with.
+        return false;
+    }
+    smallest.saturating_add(second) <= wave_token_cap
+}
+
+#[cfg(test)]
+#[path = "prefill_waves_tests.rs"]
+mod tests;
