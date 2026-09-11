@@ -43,6 +43,7 @@ const GB10: TargetDefaults = TargetDefaults {
     gdn_prefill_tc: false,
     ssm_ba_gates_hopper: false,
     ffn_gateup_fused: false,
+    attn_qkv_fused: false,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
     w8a8_prefill_max_m_widening: 64,
@@ -67,6 +68,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     gdn_prefill_tc: true,
     ssm_ba_gates_hopper: true,
     ffn_gateup_fused: true,
+    attn_qkv_fused: true,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
     // No cap: W8A8 is 2.0-3.1x over W8A16 at every M measured on H100.
@@ -152,6 +154,7 @@ fn hopper_resolves_the_round_nine_recipe_from_an_empty_environment() {
         l.gdn_prefill_tc.from_env(),
         l.ssm_ba_gates_hopper.from_env(),
         l.ffn_gateup_fused.from_env(),
+        l.attn_qkv_fused.from_env(),
     ] {
         assert!(!from_env, "an empty environment sourced nothing from it");
     }
@@ -478,9 +481,11 @@ fn the_serve_line_names_every_lever_and_marks_the_environment_ones() {
 #[path = "target_defaults_splitk_tests.rs"]
 mod splitk;
 
-/// The `ffn_gateup_fused` row (#927). Same seam and the same reason.
+/// The two #927 fusion rows. Same seam as `splitk` above, and the same reason.
 #[path = "target_defaults_gateup_tests.rs"]
 mod gateup;
+#[path = "target_defaults_qkv_fused_tests.rs"]
+mod qkv_fused;
 
 /// A target that names no hardware (a build that read no HARDWARE.toml) still
 /// produces a readable line rather than `target defaults (): …`.

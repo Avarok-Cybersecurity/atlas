@@ -269,6 +269,16 @@ impl Qwen3AttentionLayer {
     pub fn set_fused_qkv_prefill_weight(&mut self, qkv_nvfp4_t: Option<QuantizedWeight>) {
         self.qkv_nvfp4_t = qkv_nvfp4_t;
     }
+    /// Install the fused `[q|k|v]` block-scaled FP8 DECODE weight (#927).
+    ///
+    /// Separate from [`Self::set_fp8_weights`] because the three per-projection
+    /// weights installed there are VIEWS INSIDE this buffer — the loader builds
+    /// the concat, re-points them, and hands the whole thing here, so the
+    /// un-fused tiers and the fused arm read the same bytes and the fusion
+    /// costs no resident memory. `None` leaves the three-GEMM arm.
+    pub fn set_fp8_qkv_fused(&mut self, qkv_fp8_fused: Option<Fp8Weight>) {
+        self.qkv_fp8_fused = qkv_fp8_fused;
+    }
     /// Set native FP8 checkpoint weights for the `w8a16_gemv` decode path.
     ///
     /// The block-scaled FP8 weights stored here (weight + per-128 `row_scale`)

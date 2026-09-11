@@ -140,6 +140,29 @@ pub struct TargetDefaults {
     /// inherit a Hopper recipe by resemblance. `ATLAS_FFN_GATEUP_FUSED=0` is
     /// the A/B. Numbers: `FFN-GATEUP-FUSION-ATTRIBUTION.md`.
     pub ffn_gateup_fused: bool,
+    /// The attention Q/K/V decode projections run as ONE block-scaled FP8
+    /// cuBLASLt GEMM at `N = q_proj_dim + 2*kv_dim` on the 5..=16-row decode
+    /// band, instead of three — `q_proj` at N=12288 plus `k_proj` and
+    /// `v_proj` at N=1024 each
+    /// (`qwen3_attention/trait_impl/multi_seq/qkv_fused.rs`).
+    ///
+    /// TRUE on hopper, false elsewhere. Same shape of claim as
+    /// [`Self::ffn_gateup_fused`]: the weight bytes are read once either way,
+    /// so this is a per-LAUNCH row. nsys `--cuda-graph-trace=node`, 1xH100
+    /// 80GB HBM3, Qwen/Qwen3.8-27B-FP8 @ `3717cb05e`, round 13 cell V
+    /// (`h100-r13-attribution.md` SS C.2-C.4): at n=16 `q_proj` is 16 graph
+    /// nodes, 460.0 us = 28.75 us/node = 2 189 GB/s (65.3% of HBM), while
+    /// `k_proj` + `v_proj` are 32 nodes, 510.9 us = 15.97 us/node for a
+    /// **10.5 MB** weight read = **328 GB/s, 9.8% of HBM**. A 10 MB GEMM
+    /// cannot amortise a launch; appended onto `q_proj` it is 8 more 128-wide
+    /// N tiles on a wave that is already running. Rank 5 of the round-13
+    /// decode table: **428 us of a 19.887 ms step (2.2%)**.
+    ///
+    /// gb10 and b200 declare FALSE — no receipt on either, and both declare
+    /// `cublas_gemm_scope` without the attention arm this row changes.
+    /// `ATLAS_ATTN_QKV_FUSED=0` is the A/B. Numbers:
+    /// `ATTN-QKV-FUSION-ATTRIBUTION.md`.
+    pub attn_qkv_fused: bool,
     /// Split SiLU+down on the decode path (`ModelLevers::decode_split_silu`).
     pub decode_split_silu: bool,
     /// `auto` — size the decode-rollback ring from free memory at preflight

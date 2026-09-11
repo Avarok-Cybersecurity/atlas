@@ -48,6 +48,7 @@ use super::ctx::MultiSeqCtx;
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
+use crate::layers::qwen3_attention::attn_qkv_fused;
 use crate::weight_map::Fp8Weight;
 
 /// The [`ops::CublasScope`] slice that arms this family, as ONE function so a
@@ -159,10 +160,79 @@ impl Qwen3AttentionLayer {
         ops::decode_w8a8_quant_act(
             fwd.gpu, &scratch, c.normed, c.n as u32, c.h as u32, c.stream,
         )?;
+        // ── FUSED [q|k|v] at N = q_proj_dim + 2*kv_dim (#927) ──
+        // The three plans above already passed, so the fused arm is the SAME
+        // arithmetic with the three N ranges adjacent instead of separate, and
+        // its output IS `qkv_buf`'s slot layout byte for byte (`ldc ==
+        // fused_n`). Rule + receipt: `attn_qkv_fused.rs`.
+        if let Some((fused_w, fused_plan)) = self.qkv_fused_plan(c, kv_dim, true) {
+            self.log_qkv_fused_route(fwd, c.n, fused_plan.n);
+            return ops::decode_w8a8_gemm(&scratch, fused_w, c.qkv_buf, &fused_plan, c.stream)
+                .map(|()| true);
+        }
         for ((offset, plan), w) in plans.iter().zip(weights) {
             ops::decode_w8a8_gemm(&scratch, w, c.qkv_buf.offset(*offset), plan, c.stream)?;
         }
         Ok(true)
+    }
+
+    /// The fused `[q|k|v]` weight and its plan for THIS step, or `None` to
+    /// keep the three-GEMM arm.
+    ///
+    /// `three_ok` is the caller's already-resolved answer for the three
+    /// separate projections, passed in rather than re-derived: asking again
+    /// here would be a second copy of the W8A8 rule that could disagree with
+    /// the one the loop below uses, and the fused arm must never run where the
+    /// un-fused one would not have.
+    ///
+    /// The plan is built from the SAME `per_seq_qkv` row pitch the three use,
+    /// and `decode_w8a8_selected` is re-run on it because the fused `n` is a
+    /// different width with a different write extent — the clause that a
+    /// `qkv_output` too small for `ceil16(m)` fused rows must decline on.
+    pub(super) fn qkv_fused_plan(
+        &self,
+        c: &MultiSeqCtx<'_>,
+        kv_dim: u32,
+        three_ok: bool,
+    ) -> Option<(&Fp8Weight, ops::DecodeW8a8Plan)> {
+        let fused_w = self.qkv_fp8_fused.as_ref()?;
+        let k = c.h as u32;
+        let ldc = (c.per_seq_qkv / c.bf16) as u32;
+        let n = attn_qkv_fused::fused_n(c.q_proj_dim, kv_dim);
+        let plan = ops::DecodeW8a8Plan::strided(c.n, n, k, ldc, c.fwd.buffers.qkv_output_bytes());
+        attn_qkv_fused::attn_qkv_fused_selected(
+            c.n,
+            c.q_proj_dim,
+            kv_dim,
+            k,
+            ldc,
+            self.attn_qkv_fused,
+            // "the loader built THIS weight": the shape is checked and not
+            // assumed, because a checkpoint whose q/k/v widths disagree with
+            // the config would otherwise be read at the wrong stride.
+            fused_w.n == n && fused_w.k == k,
+            three_ok && self.decode_w8a8_selected(c.fwd, &plan, fused_w),
+        )
+        .then_some((fused_w, plan))
+    }
+
+    /// Say ONCE that the three Q/K/V decode GEMMs became one. Worth a line for
+    /// the reason the gate+up route log is: a TPOT report at 5..=16 rows is
+    /// measuring this arm, and its absence at a width that should have it is
+    /// the first thing to check when the round-13 9.8%-of-HBM k/v figure
+    /// appears to be back.
+    fn log_qkv_fused_route(&self, fwd: &ForwardContext, rows: usize, n: u32) {
+        if fwd.stats.once("log:attn_qkv_fused") {
+            tracing::info!(
+                "[atlas] attention decode: q/k/v FUSED into ONE W8A8 block-scaled GEMM at \
+                 N={n} (n={rows} rows, band 5..={max}) — same weight bytes, one launch \
+                 instead of three, writing the existing [n, per_seq_qkv] slot layout \
+                 unchanged. Round 13 priced k_proj+v_proj at 15.97 us/node = 328 GB/s = \
+                 9.8% of HBM against q_proj's 65.3%. Bit-identical per element; \
+                 ATLAS_ATTN_QKV_FUSED=0 restores the three-GEMM arm (#927).",
+                max = spark_runtime::buffers::ATTN_QKV_FUSED_MAX_M,
+            );
+        }
     }
 
     /// Route the O projection through cuBLASLt W8A8; `Ok(false)` leaves it to

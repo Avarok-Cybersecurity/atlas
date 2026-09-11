@@ -329,6 +329,37 @@ pub fn ffn_gateup_fused_parts(hidden: usize, inter: usize) -> (usize, usize) {
     )
 }
 
+/// What ONE fused attention `[q|k|v]` decode weight costs: the three
+/// `[N_i, hidden]` E4M3 blocks appended along N, plus their three
+/// `[N_i/128, hidden/128]` FP32 block-scale grids appended the same way
+/// (#927).
+///
+/// The sum of the three grids and NOT one grid over the fused N, for the
+/// reason `predicted_residency::ssm_concat_bytes` gives: `ceil` of a sum is
+/// not the sum of the `ceil`s, and the concat copies the grids side by side.
+/// (Both widths are whole 128-blocks on every config that selects the arm, so
+/// the two agree there — the form is what keeps it true off that path.)
+///
+/// RESIDENCY-NEUTRAL: `prune_after_load` releases the three `[N_i, hidden]`
+/// store tensors this copied, so the weight term is also what the checkpoint
+/// gives back, and the three per-projection scale grids it replaces are freed
+/// at the concat. Both sides are priced from this one function.
+pub fn attn_qkv_fused_bytes(hidden: usize, q_proj_dim: usize, kv_dim: usize) -> usize {
+    let (w, s) = attn_qkv_fused_parts(hidden, q_proj_dim, kv_dim);
+    w + s
+}
+
+/// [`attn_qkv_fused_bytes`] split into `(weight bytes, scale-grid bytes)` —
+/// the loader adopts the two buffers separately, so it needs the terms rather
+/// than the sum, and taking them from here is what keeps the prediction and
+/// the tally one arithmetic.
+pub fn attn_qkv_fused_parts(hidden: usize, q_proj_dim: usize, kv_dim: usize) -> (usize, usize) {
+    let kb = hidden.div_ceil(128);
+    let n_total = q_proj_dim + 2 * kv_dim;
+    let grids = q_proj_dim.div_ceil(128) + 2 * kv_dim.div_ceil(128);
+    (n_total * hidden, grids * kb * 4)
+}
+
 /// Running tally of the derived (non-checkpoint) device bytes this loader
 /// allocated, and of the ones it decided not to build.
 ///
@@ -363,6 +394,12 @@ pub struct TwinsBuilt {
     /// reader comparing two serve logs needs to know which of the two numbers
     /// moved and why.
     pub ffn_gateup_fused: bool,
+    /// The attention `[q|k|v]` concat (#927). Named in the summary like the
+    /// others, and worth naming even though it is residency-NEUTRAL: its bytes
+    /// appear in `kept` while the three store tensors they replace disappear
+    /// from `WeightStore::resident_bytes` at the prune, so a reader comparing
+    /// two serve logs needs to know which of the two numbers moved and why.
+    pub attn_qkv_fused: bool,
 }
 
 impl TwinsBuilt {
@@ -383,6 +420,9 @@ impl TwinsBuilt {
         }
         if self.ffn_gateup_fused {
             parts.push("ffn-gateup-fp8");
+        }
+        if self.attn_qkv_fused {
+            parts.push("attn-qkv-fp8");
         }
         if parts.is_empty() {
             "none".to_owned()

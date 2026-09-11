@@ -238,6 +238,58 @@ ssm_ba_gates_hopper = true
 # prefill arm is untouched. `ATLAS_FFN_GATEUP_FUSED=0` is the A/B. Numbers:
 # `FFN-GATEUP-FUSION-ATTRIBUTION.md`.
 ffn_gateup_fused = true
+# The FUSED attention Q/K/V decode GEMM (#927). ON. One block-scaled FP8
+# cuBLASLt call at `N = q_proj_dim + 2*kv_dim = 14336` on the 5..=16-row decode
+# band replaces three: `q_proj` at N=12288 and `k_proj`/`v_proj` at N=1024 each.
+#
+# Like the gate+up row above, the weight bytes are read once either way — the
+# fused weight is the three `[N_i, 5120]` E4M3 blocks appended along N — so
+# this is a per-LAUNCH row, and the trace prices it directly. nsys
+# `--cuda-graph-trace=node`, 1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8 @
+# `3717cb05e`, round 13 cell V, median n=16 decode step 19.887 ms busy
+# (`h100-r13-attribution.md` SS C.2-C.4):
+#
+#   arm            K     N      nodes  us (us/node)  GB/s   % HBM
+#   attn q_proj    5120  12288  16     460.0 (28.75) 2 189  65.3%
+#   attn k + v     5120  1024   32     510.9 (15.97)   328   9.8%
+#
+# k/v are the worst-utilised GEMMs in the step by a factor of six. 10.5 MB of
+# weight per node CANNOT amortise a launch: at 128-wide N tiles a node is 8
+# tiles on 132 SMs, so 124 SMs sit idle for the whole launch, twice per layer.
+# Appended onto `q_proj` those 8 tiles ride a wave of 96 that is already
+# running and the two launches disappear. Rank 5 of the round-13 decode table:
+# 428 us/step, 2.2% of the step.
+#
+# NUMERICS: a bit claim, not a tolerance. Splitting N produces INDEPENDENT
+# output columns over the same K with the same block scales, so every element
+# of the fused result is the same dot product in the same order as its
+# un-fused twin. `native_fp8_attn_qkv_fused_microtest` asserts BYTE equality of
+# the Q, K and V slices, of the `deinterleave_qg` output that reads Q, and of
+# the KV-cache bytes the FP8 and BF16 KV writes produce — not a cosine.
+#
+# NO NEW KERNEL, and that is the layout argument. `qkv_output` is ALREADY
+# `[n, per_seq_qkv]` with Q at column 0, K at `q_proj_dim` and V after it, and
+# `per_seq_qkv / 2 == q_proj_dim + 2*kv_dim == 14336`. So the fused GEMM's
+# `[m, 14336]` output IS that layout byte for byte: `deinterleave_qg` already
+# takes the row stride, the KV-cache write already reads K and V at their
+# column offsets, and the decode attention already reads Q at column 0. An
+# interleaved fused layout would have needed all three to change; this one
+# needs none, which is why it is N-concatenation. (The NVFP4 wide-verify path
+# in `multi_seq/qkv.rs` has fused on exactly this identity since #915.)
+#
+# RESIDENCY: net zero. The loader builds the fused `[14336, 5120]` weight and
+# its `[112, 40]` FP32 block-scale grid once per full-attention layer, re-points
+# q/k/v at VIEWS inside them, and `prune_after_load` releases the three source
+# store tensors it copied. Rule:
+# `qwen3_attention/trait_impl/multi_seq/qkv_fused.rs`.
+#
+# SCOPED TO DECODE. The n=1 path runs the W8A16 GEMVs at 2 567 GB/s = 76.6% of
+# HBM (SS C.5) — no headroom to buy — and the PREFILL W8A8 arm writes Q into
+# `qkv_output` CONTIGUOUS while K and V go to `ssm_qkvz`, so a fused N there
+# would need a scatter and is a separate measurement. Both are untouched.
+# `ATLAS_ATTN_QKV_FUSED=0` is the A/B. Numbers:
+# `ATTN-QKV-FUSION-ATTRIBUTION.md`.
+attn_qkv_fused = true
 # Split SiLU+down on the decode path — shipped ON everywhere since #928.
 # Paged-decode attention split-K. `auto` — the split count that fills this
 # target's SMs at the single-stream shape:

@@ -25,6 +25,12 @@ mod attn_ncol_gemv;
 // reach it via the full crate path, the same way `dense_ffn_m16_tc`'s route
 // log is reached from outside its own file.
 pub(crate) mod attn_m16_tc_route;
+// The FUSED attention Q/K/V decode GEMM rule (#927). Beside `init` for the
+// same reason `attn_m16_tc_route` is: `init` caches the lever on the layer,
+// the multi-seq dispatch site in `trait_impl::multi_seq::w8a8_decode` selects
+// on it, and the weight loader + the residency PREDICTION both have to ask the
+// same question before a checkpoint exists. One rule, one file.
+pub(crate) mod attn_qkv_fused;
 mod decode;
 // V4: `pub(crate)` so the DeepSeek-V4 weight loader (`weight_loader::deepseek_v4`)
 // and the V4 attention submodules can call `helpers::yarn_rope_mscale`. Non-V4

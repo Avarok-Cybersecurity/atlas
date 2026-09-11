@@ -335,6 +335,14 @@ test = true
 name = "native_fp8_ffn_gateup_fused_microtest"
 required-features = ["cuda", "gpu-examples"]
 
+# The FUSED attention Q/K/V decode GEMM (#927) against the three GEMMs it
+# replaces at Qwen3.8-27B shapes. Byte-equality gate on the three slices AND on
+# both consumers — `deinterleave_qg` and the KV-cache write on both KV dtypes —
+# because the fused output IS the existing `[n, per_seq_qkv]` slot layout.
+[[example]]
+name = "native_fp8_attn_qkv_fused_microtest"
+required-features = ["cuda", "gpu-examples"]
+
 [[example]]
 name = "native_fp8_qkv_batch_microtest"
 required-features = ["cuda", "gpu-examples"]

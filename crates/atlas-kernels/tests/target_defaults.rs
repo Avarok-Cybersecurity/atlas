@@ -105,6 +105,17 @@ fn hopper_declares_the_round_nine_recipe() {
          saving on the cuBLASLt W8A8 arm this target arms, worth 1 476 us of a \
          19.887 ms step (`FFN-GATEUP-FUSION-ATTRIBUTION.md`)"
     );
+    // The row round 17 adds (#927), on the same argument as the gate+up row
+    // above: splitting N produces INDEPENDENT output columns over the same K,
+    // so the fused GEMM cannot change a bit. The cost it attacks is nsys round
+    // 13's k_proj+v_proj at 15.97 us/node = 328 GB/s = 9.8% of HBM, against
+    // q_proj's 65.3% on the same arm in the same step.
+    assert!(
+        d.attn_qkv_fused,
+        "the fused q/k/v decode GEMM is Hopper's default: it is a per-launch \
+         saving on the cuBLASLt W8A8 arm this target arms, worth 428 us of a \
+         19.887 ms step (`ATTN-QKV-FUSION-ATTRIBUTION.md`)"
+    );
     assert_eq!(d.ssm_decode_ring_slots, "auto");
     // The row round 13's attribution added (#928). `auto` is the split count
     // that fills 132 SMs at the single-stream shape; `legacy` is what was
@@ -224,6 +235,11 @@ fn b200_declares_the_conservative_table_not_hoppers() {
          (round 13 nsys) and OFF here for want of one — B200 also declares \
          `cublas_gemm_scope = \"off\"`, so the arm it changes is not even armed"
     );
+    assert!(
+        !d.attn_qkv_fused && declared("hopper").attn_qkv_fused,
+        "the fused q/k/v decode GEMM is ON for Hopper on a Hopper receipt \
+         (round 13 nsys) and OFF here for want of one"
+    );
     assert_eq!(
         d.attn_decode_splitk, "legacy",
         "B200 has 148 SMs and would benefit by the same argument — which is an \
@@ -269,6 +285,9 @@ fn a_hopper_only_lever_is_still_declared_by_every_table() {
             // #927. The fourth hopper-only boolean. gb10 and b200 declare it
             // false rather than omitting it, for the same reason.
             "ffn_gateup_fused",
+            // #927. The fifth hopper-only boolean, declared false by gb10 and
+            // b200 rather than omitted, for the same reason.
+            "attn_qkv_fused",
             // #917. GB10 caps, hopper and b200 declare u32::MAX. The row is
             // mandatory everywhere for the same reason as the two above: an
             // absent cap and a deliberate no-cap must not look identical.
@@ -363,6 +382,7 @@ fn the_generated_constant_names_every_field() {
         "gdn_prefill_tc: true",
         "ssm_ba_gates_hopper: true",
         "ffn_gateup_fused: true",
+        "attn_qkv_fused: true",
         "decode_split_silu: true",
         "ssm_decode_ring_slots: \"auto\"",
     ] {
@@ -395,6 +415,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.gdn_prefill_tc, declared.gdn_prefill_tc);
     assert_eq!(baked.ssm_ba_gates_hopper, declared.ssm_ba_gates_hopper);
     assert_eq!(baked.ffn_gateup_fused, declared.ffn_gateup_fused);
+    assert_eq!(baked.attn_qkv_fused, declared.attn_qkv_fused);
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
     assert_eq!(baked.ssm_decode_ring_slots, declared.ssm_decode_ring_slots);
 }
