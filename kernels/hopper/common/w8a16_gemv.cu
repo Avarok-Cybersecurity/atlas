@@ -32,11 +32,25 @@
 #include "w8a16_gemv_hopper.cuh"
 
 // `__launch_bounds__` states the geometry the host launcher guarantees. The
-// second argument is a FLOOR on CTAs per SM, not a wish: at 256 threads it
-// caps ptxas at 64 registers, which is what keeps the UNROLL=4 pipeline from
-// trading its bytes-in-flight win back for an occupancy loss. Register and
-// spill counts are pinned by `scripts/hopper_ptx_gate.sh` and by the
-// `nvcc -cubin -Xptxas -v -arch=sm_90a` receipt in the commit message.
+// second argument is a FLOOR on CTAs per SM: at 256 threads it caps ptxas at
+// 64 registers. That is the ONE knob this file trades against, and the trade
+// was measured rather than guessed (CUDA 13.0.88, `-Xptxas -v` plus SASS from
+// `cuobjdump -sass`, sm_90a):
+//
+//   min CTAs/SM | registers | LDGs ptxas hoists to the head of the loop
+//             4 |        64 | 6      <- chosen
+//             5 |        48 | 7
+//             6 |        40 | 3
+//             8 |        32 | 3
+//
+// No spills at any of them. 4 is chosen because the deep hoist is the whole
+// point: this kernel's problem is bytes in flight, and half the bytes belong
+// to shapes whose grid puts ~2 CTAs on an SM no matter what the occupancy
+// limit allows (`w8a16_gemv_hopper.cuh`, DIAGNOSIS 2), where CTAs/SM buys
+// nothing and outstanding loads per warp buys everything. The cost is 4
+// resident CTAs against the gb10 kernel's 8; the receipt that would revisit it
+// is the microtest's GB/s at `gate/up N=17408` — the one shape that was
+// already at 1,979 GB/s and is the most exposed to losing resident warps.
 extern "C" __global__ __launch_bounds__(BLOCK_SIZE, 4) void w8a16_gemv(
     const __nv_bfloat16* __restrict__ A,            // [1, K]
     const unsigned char* __restrict__ B,             // [N, K] FP8 E4M3
