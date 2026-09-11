@@ -228,8 +228,9 @@ ledger plus a markdown summary with per-model pass/fail counts, the first error
 line of every failure, and the worst register/spill numbers. It exits non-zero
 if anything failed.
 
-**What it found, 2026-09-05** (CUDA 13.0.88, receipts in
-`docs/campaigns/hopper-atlas-vs-vllm-2026-09/receipts/`): **870 of 871** kernels
+**What it found, 2026-09-05** (CUDA 13.0.88; re-run the gate to reproduce —
+`scripts/hopper_ptx_gate.sh --hw hopper --model all --strict`, see #899):
+**870 of 871** kernels
 across the five P0 targets emitted PTX and assembled for sm_90a on the first
 pass. The one that did not was
 `kernels/gb10/qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu`, which ptxas
@@ -333,8 +334,8 @@ instruction; on sm_100a the same work goes through `tcgen05.mma` against tensor
 memory. So `sm_100a` PTX is not "sm_121 PTX that also runs on a B200", and
 neither arch's PTX runs on the other.
 
-**What the gate found, 2026-09-05** (CUDA 13.0.88, receipts in
-`docs/campaigns/hopper-atlas-vs-vllm-2026-09/receipts/ptx_gate_b200_2026-09-05.*`):
+**What the gate found, 2026-09-05** (CUDA 13.0.88;
+`scripts/hopper_ptx_gate.sh --hw b200 --model all`, see #899):
 **870 of 871** kernels across the five P0 targets emitted PTX and assembled for
 sm_100a on the first pass — the same count as Hopper, and the same single
 kernel failing, but for a **different reason**:

@@ -23,7 +23,8 @@ memory_gb = 180
 # `mma.sync ... .kind::mxf4nvf4.block_scale` is a consumer/GB10 Blackwell
 # (sm_120/sm_121) instruction — ptxas: "Instruction 'mma with block scale'
 # not supported on .target 'sm_100a'" (measured 2026-09-05, CUDA 13.0.88;
-# receipt under docs/campaigns/hopper-atlas-vs-vllm-2026-09/receipts/).
+# reproduce with `scripts/hopper_ptx_gate.sh --hw b200 --model
+# qwen3.6-35b-a3b --strict` after dropping this flag — see #899).
 # A tcgen05 rewrite of that kernel would lift this; nothing here does that.
 #
 # A hardware-level define, not a per-model one, because it is a fact about

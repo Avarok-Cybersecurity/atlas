@@ -6,8 +6,9 @@
 # the target parses. Re-harvest them on a B200/GB200 before trusting a
 # startup kernel audit on this hardware.
 #
-# W4A4 GAP (measured 2026-09-05, CUDA 13.0.88, receipts in
-# docs/campaigns/hopper-atlas-vs-vllm-2026-09/receipts/): the W4A4 tail of
+# W4A4 GAP (measured 2026-09-05, CUDA 13.0.88; reproduce with
+# `scripts/hopper_ptx_gate.sh --hw b200 --model qwen3.6-35b-a3b --strict`
+# after dropping the hardware define — see #899): the W4A4 tail of
 # this target's moe_w4a16_grouped_gemm.cu cannot exist on sm_100a — its NVFP4
 # block-scaled MMA is the WARP-level `mma ... .kind::mxf4nvf4.block_scale`,
 # which datacentre Blackwell does not have (it issues block-scaled MMA

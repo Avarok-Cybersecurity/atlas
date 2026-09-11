@@ -4,7 +4,7 @@
 //! and `kernels/b200` compile sits inside `#ifndef ATLAS_NO_WARP_BLOCKSCALE_MMA`.
 //!
 //! ORACLE — two ptxas rejections, measured on Spark 1 with CUDA 13.0.88 and
-//! recorded in `docs/campaigns/hopper-atlas-vs-vllm-2026-09/receipts/`:
+//! reproducible with `scripts/hopper_ptx_gate.sh` (see #899):
 //!
 //! ```text
 //! sm_90a : error : Instruction 'cvt with .e2m1x2' not supported on .target 'sm_90a'

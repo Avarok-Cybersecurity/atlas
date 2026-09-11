@@ -22,11 +22,9 @@
 #     atlas-b200:latest \
 #     serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8 --check-kernels --no-tui
 #
-# Then serve. On a multi-GPU node use the single-node launcher rather than N
-# hand-written `docker run` lines — it pins rank i to GPU i and ships NO NCCL
-# environment, which is the correct configuration on an NVLink box:
-#   NGPUS=8 IMAGE=atlas-b200:latest \
-#     scripts/start-node-ep.sh nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
+# Then serve. On a multi-GPU node run ONE CONTAINER PER RANK with rank i
+# pinned to GPU i, and ship NO NCCL environment — on an NVLink box that is
+# the correct configuration (see the NCCL note further down).
 #
 # sm_100a IS NOT A STEP UP FROM sm_121. The two Blackwell architectures are
 # siblings: datacentre Blackwell has tcgen05 and `redux.sync.max.abs.f32`,
@@ -149,8 +147,8 @@ COPY README.md /README.md
 # on an NVLink node: it names a NIC that does not exist, disables NVLink
 # SHARP, and forces the slowest algorithm pair onto an intra-node transport.
 # On one node with NVLink the right NCCL configuration is no NCCL
-# configuration. scripts/start-node-ep.sh agrees, and its NCCL_PROFILE knob is
-# where a deliberate override belongs.
+# configuration; a deliberate override belongs in whatever starts the ranks,
+# not baked into the image where nothing can see it.
 ENV RUST_LOG=info
 EXPOSE 8888
 

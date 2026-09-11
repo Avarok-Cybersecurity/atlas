@@ -39,7 +39,7 @@ const GUARDED_KERNELS: &[&str] = &[
 ];
 
 /// ORACLE: the two ptxas rejections measured on Spark 1 (CUDA 13.0.88),
-/// receipts under `docs/campaigns/hopper-atlas-vs-vllm-2026-09/receipts/`.
+/// `scripts/hopper_ptx_gate.sh --strict` on each target (see #899).
 /// Both targets define the guard; gb10 must NOT, because its PTX may not move.
 #[test]
 fn both_inherited_targets_compile_out_the_warp_block_scale_path() {

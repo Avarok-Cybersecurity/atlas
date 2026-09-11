@@ -22,11 +22,9 @@
 #     atlas-hopper:latest \
 #     serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8 --check-kernels --no-tui
 #
-# Then serve. On a multi-GPU node use the single-node launcher rather than N
-# hand-written `docker run` lines — it pins rank i to GPU i and ships NO NCCL
-# environment, which is the correct configuration on an NVLink box:
-#   NGPUS=4 IMAGE=atlas-hopper:latest \
-#     scripts/start-node-ep.sh nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
+# Then serve. On a multi-GPU node run ONE CONTAINER PER RANK with rank i
+# pinned to GPU i, and ship NO NCCL environment — on an NVLink box that is
+# the correct configuration (see the NCCL note further down).
 #
 # NOT AN NVFP4 IMAGE. Hopper has no NVFP4 datapath; these kernels serve FP8
 # and BF16 checkpoints. `kernels/hopper/<model>/nvfp4/` is a directory name,
@@ -141,8 +139,8 @@ COPY README.md /README.md
 # on an NVLink node: it names a NIC that does not exist, disables NVLink
 # SHARP, and forces the slowest algorithm pair onto an intra-node transport.
 # On one node with NVLink the right NCCL configuration is no NCCL
-# configuration. scripts/start-node-ep.sh agrees, and its NCCL_PROFILE knob is
-# where a deliberate override belongs.
+# configuration; a deliberate override belongs in whatever starts the ranks,
+# not baked into the image where nothing can see it.
 ENV RUST_LOG=info
 EXPOSE 8888
 

@@ -176,23 +176,15 @@ docker run --gpus all --ipc=host --network host \
   serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8 --no-tui
 ```
 
-N GPUs on one node — use the launcher rather than N hand-written `docker run`
-lines. It pins rank `i` to GPU `i` and ships **no** NCCL environment, which is
-the correct configuration on an NVLink box:
-
-```bash
-NGPUS=4 IMAGE=atlas-hopper:latest \
-  scripts/start-node-ep.sh nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
-
-NGPUS=8 IMAGE=atlas-b200:latest \
-  scripts/start-node-ep.sh deepseek-ai/DeepSeek-V4-Flash
-```
+N GPUs on one node: run **one container per rank**, rank `i` pinned to GPU
+`i`, with **no** NCCL environment — on an NVLink box that is the correct
+configuration.
 
 Neither image bakes in any `NCCL_*` variable. `scripts/start-ep2.sh`'s block
 is tuned for two GB10 chassis over RoCE and is actively wrong here: it names a
 NIC these machines do not have, disables NVLink SHARP, and forces the slowest
-protocol/algorithm pair onto an intra-node transport. `start-node-ep.sh`'s
-`NCCL_PROFILE` knob is where a deliberate override belongs.
+protocol/algorithm pair onto an intra-node transport. A deliberate override
+belongs in whatever starts the ranks, not baked into the image.
 
 Both runtime stages enforce **NCCL >= 2.28** at build time (`ncclMemAlloc` /
 `ncclMemFree` symmetric-memory windows); the build fails rather than shipping
