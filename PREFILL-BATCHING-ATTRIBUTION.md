@@ -98,3 +98,65 @@ max_batch_tokens) = 8192`. Sixteen whole 1193-token prompts pack 6 per wave
 (`--prefill-varlen-batch`, legacy `ATLAS_PREFILL_VARLEN=1`, default OFF) until
 the H100 A/B; the boot route line prints the resolved chunk-zero decision beside
 it, and `ATLAS_NO_TAIL_SPLIT=1` stays the A/B for the split itself.
+
+## 5. Why the lever then degenerated its output (#1002, H100 round 13)
+
+Phase-2 attribution. The lever now engages as §1-§4 describe — `16 streams ->
+3 wave(s), M per wave [50, 8176, 8176] (cap 8192)`, `Q12 kernel-batched prefill
+dispatched (fused large-M) n=7 total_tokens=8176`, every response carrying
+tokens and a `finish_reason`. And cell V logged **24 content-loop-watchdog
+fires, 2 fuzzy-repetition stops and 5 SimHash stops against ZERO on cells A, D,
+T1 and T2** — same binary, same prompts, temp 0, seed 42 — with 6/16 probe
+responses cut at 49 tokens.
+
+**Not the varlen kernel path. The scheduler hands two live sequences one SSM
+pool slot.** A sequence claims its slot at admission, so a stream parked in
+`prefilling` owns one; `compact_survivors_into_range` derived its free targets
+from the DECODING set alone. Varlen is the first configuration that parks
+slot-owning streams there (`want_varlen_defer`: 96 deferrals on cell V, zero on
+A/D/T1), so the per-tick compaction migrated an active survivor onto a
+prefilling stream's slot — visible in the log 30 ms apart as
+`slots=Some([0, 7])` then `slots=Some([0, 1])`. `compact_sequence` calls
+`ssm_pool.claim_specific` and discards its false return, so the collision is
+silent, and two sequences then share one GDN `h_state`/`conv_state`.
+
+It outlives the burst: both owners release that index, `release_slot`'s only
+guard was a `debug_assert` (a no-op in the shipped `--release` binary), and the
+duplicated free-list entry makes `claim_slot` issue it to two fresh sequences
+for the life of the process. That is why the 16-way probe four minutes later —
+**with varlen not engaging at all**, every prefill logging `Prefilled (single
+chunk)` — still decoded at `slots=[0, 0, 0, 1, 1, 2, 2, 3, ...]` and lost 6/16
+responses. Duplicate REAL slots appear in 16 of cell V's 24 batched-decode
+captures and in none of any other cell's in this campaign.
+
+**The `50`-token wave is not a truncated chunk 0.** `[50, 8176, 8176]` is two
+25-token TAILS (from streams that arrived one tick early, their heads dispatched
+as the `2336` forward) plus fourteen 1168-token heads: `2 x 25 + 14 x 1168 =
+16402`. The budget can never shrink a chunk 0 — `plan_stream_chunk` budgets
+against `max_prefill_tokens` and the WAVE cap belongs to the planner, which
+opens a new wave rather than trimming a member. Pinned in `prefill_waves_tests`
+alongside a tick-by-tick replay of the burst's arrival pattern.
+
+**The long shape's +83% TTFT was deferral with no batching.** 4593 pre-splits
+to `4576 + 17` and `2 x 4576 = 9152 > 8192`, so the planner emitted 14 waves for
+16 streams; waves run back-to-back inside one tick, so no stream is promoted
+until all of them have run and every TTFT collapses onto the p99 (7 524.7 ->
+13 756.1 ms while p99 barely moved). `varlen_defer_pays` now declines the
+deferral when the two smallest chunk-0s cannot share a wave.
+
+**And a watchdog stop is no longer only a `"length"`.** The wire
+`finish_reason` still reports `"length"` for every non-timeout guard — that
+mapping is a measured contract, and minting a new enum value hard-fails typed
+clients — but the guard's name now rides beside it in the `stop_reason`
+extension field, on the streaming chunk and the blocking choice alike (the
+round-13 probe ran `stream=false`).
+
+**Still open after this:** the batching itself does not pay. nsys on cell V
+measured `M=8176` (7 prompts fused) at **190.4 us/token against 188.8 us/token
+at M=1168** — 0.8% WORSE — with total prefill busy moving 8 000.5 -> 7 925.2 ms
+(-0.9%) for the same 38 176 tokens, and total GDN prefill identical at 54% of
+prefill either way. Round 11's arithmetic-intensity hypothesis (§1, "every
+projection GEMM at a sixth of the arithmetic intensity it could have") is
+refuted by measurement: the M=1168 GEMMs are already at full efficiency on an
+H100. Varlen repackages the GDN work; it does not reduce it. The lever stays
+default OFF, and the C=16 gap to vLLM is not a prefill-batching deficit.
