@@ -115,7 +115,8 @@
       lines={[
         `for g in ttft-cold-gate ttft-warm-gate vision-fidelity \\`,
         `         ssm-state-poisoning-gate decode-floor concurrency-sweep \\`,
-        `         video-fidelity bfcl-subset bfcl-subset-echolp agentic-webserver; do`,
+        `         video-fidelity bfcl-subset bfcl-subset-echolp \\`,
+        `         kat-equality-gate agentic-webserver; do`,
         `  timeout 21600 ./target/release/spark benchmark run "$g" \\`,
         `      --pull-request-gate --yes`,
         `done`,

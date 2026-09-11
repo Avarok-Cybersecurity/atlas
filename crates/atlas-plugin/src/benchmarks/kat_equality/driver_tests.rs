@@ -35,3 +35,35 @@ fn the_orders_parameter_cannot_be_set_below_two() {
         ref other => panic!("orders should be an Int, got {other:?}"),
     }
 }
+
+/// The gate replays BFCL's request body to ask whether BFCL's own conditions
+/// are order-independent, so its generation budget must BE BFCL's. It shipped
+/// once at 512 against BFCL's 1024 — compiling, reading correctly in review,
+/// and silently certifying a regime no committed record was measured at.
+///
+/// This compares the two DECLARED defaults rather than asserting a literal:
+/// an assertion against `1024` would still pass if BFCL moved and the gate did
+/// not, which is the exact drift that has to be caught.
+#[test]
+fn the_generation_budget_is_bfcls_own_not_a_second_opinion() {
+    let int_default = |specs: &[crate::params::ParamSpec], key: &str| match specs
+        .iter()
+        .find(|s| s.key == key)
+        .unwrap_or_else(|| panic!("{key} is declared"))
+        .default
+    {
+        crate::params::ParamValue::Int(v) => v,
+        ref other => panic!("{key} should be an Int, got {other:?}"),
+    };
+
+    let kat = KatEquality::default().parameters();
+    let bfcl =
+        crate::benchmarks::bfcl::Bfcl::new(crate::benchmarks::bfcl::Variant::Subset).parameters();
+
+    assert_eq!(
+        int_default(&kat, "max_new_tokens"),
+        int_default(&bfcl, "max_new_tokens"),
+        "the equality gate would answer about a generation regime bfcl-subset \
+         never runs, and whose divergence count was never measured"
+    );
+}
