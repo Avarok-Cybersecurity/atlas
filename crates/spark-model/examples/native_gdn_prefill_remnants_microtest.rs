@@ -20,7 +20,9 @@
 //!   * GUARD BYTES: every kernel output is allocated with a sentinel tail that
 //!     must come back untouched. The twins write from C fragments rather than
 //!     from bounded loops, which is exactly the change that can walk off a row.
-//!   * a KNOWN_BAD mutation proves the comparison can fail.
+//!   * a KNOWN_BAD mutation proves the comparison can fail — priced in the
+//!     arm's OWN clean extreme, so it trips at every T rather than only while
+//!     the tensor is small enough (round 14, §2.1).
 //!
 //! ONLY RUNS ON A `kernels/hopper` IMAGE — the twins exist in no other kernel
 //! set, and the run SKIPS (loudly) elsewhere. The GPU-free half of their
@@ -37,8 +39,9 @@ use spark_runtime::kernel_args::KernelLaunch;
 #[path = "common/gdn_remnants.rs"]
 mod gdn_remnants;
 use gdn_remnants::{
-    C, Case, KD, NK, NV, VD, alloc_guarded, dn_bf16, dn_f32, gen_case, guard_intact, metrics,
-    ref_fwd_o, ref_wu, report, selfcheck_take, take, up_bf16, up_f32,
+    C, Case, KD, NK, NV, VD, alloc_guarded, dn_bf16, dn_f32, gen_case, guard_intact,
+    known_bad_probe, metrics, ref_fwd_o, ref_wu, report, selfcheck_known_bad, selfcheck_take, take,
+    up_bf16, up_f32,
 };
 
 const SMEM_WU: u32 = (C * KD * 2 + C * C * 4 + C * 4) as u32;
@@ -235,6 +238,11 @@ fn main() -> Result<()> {
     // the argument contract is now decided without a GPU and before the fixture
     // is built.
     selfcheck_take();
+    // Same rung, same reason: round 14 spent an H100 slot on a KNOWN_BAD
+    // control that could not trip at T=4593, so the control's own arithmetic
+    // is now decided on synthetic data at all three T before the device is
+    // touched.
+    selfcheck_known_bad();
 
     let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
@@ -398,14 +406,13 @@ fn main() -> Result<()> {
                 );
                 all_ok &= ok;
                 // KNOWN_BAD: a harness that has never rejected is not evidence.
-                // Perturb one reference element by 10% of the tensor rms and
-                // require max_abs to move — the norm gate is deliberately blind
-                // to a single element, so this tests the other half.
-                let mut bad = ro.clone();
-                let rms = (ro.iter().map(|x| x * x).sum::<f64>() / ro.len() as f64).sqrt();
-                bad[0] += 0.1 * rms;
-                let (mb, _) = metrics(&take(&o, t, VD), &bad);
-                let (mo, _) = metrics(&take(&o, t, VD), &ro);
+                // Perturb ONE reference element and require max_abs to move —
+                // the norm gate is deliberately blind to a single element, so
+                // this tests the other half. The injection is priced in the
+                // CLEAN extreme (`known_bad_probe`): round 14's `0.1 * rms`
+                // could not move a max_abs that had grown to 2.774e-2 by
+                // T=4593, and failed the run on a green result.
+                let (mb, mo) = known_bad_probe(&take(&o, t, VD), &ro);
                 if mb <= mo {
                     println!("  KNOWN_BAD control DID NOT trip ({mb:.3e} <= {mo:.3e})");
                     all_ok = false;
