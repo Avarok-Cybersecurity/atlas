@@ -45,6 +45,14 @@ pub use behavior_defaults::{
 mod target_defaults;
 pub use target_defaults::TargetDefaults;
 
+// The paged-decode attention split-K policy (#928). Lives HERE, below
+// spark-model, because two crates need the same answer: the dispatch that
+// picks `num_splits` and the buffer arena that sizes the split-K workspace
+// (`spark-runtime`'s `sizes.rs`). One pure rule, two call sites — a second
+// copy is how the grid comes to index past the allocation.
+pub mod attn_splitk;
+pub use attn_splitk::{MAX_DECODE_SPLITS, SplitkPolicy};
+
 // Auto-generated: per-target PTX constants, ptx_modules() function,
 // all_ptx_sets() for multi-target builds, and `TARGET_DEFAULTS` /
 // `TARGET_SM_COUNT`.

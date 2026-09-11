@@ -71,3 +71,9 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = false
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+# Paged-decode attention split-K (#928). `legacy` — the pre-#928 rule — for
+# want of a receipt, like every other row here. B200's 148 SMs would make
+# Hopper's `auto` land on 13 splits by the same formula, which is an ARGUMENT;
+# the split-K twins are not symlinked into this tree, so `auto` here would
+# resolve the gb10 FP8 pair and no BF16 pair at all.
+attn_decode_splitk = "legacy"

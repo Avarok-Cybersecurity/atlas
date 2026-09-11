@@ -58,6 +58,13 @@ fn hopper_declares_what_an_h100_serve_runs_with() {
         "+6% on the serve, md5-identical output to the per-sequence launches"
     );
     assert!(d.decode_split_silu);
+    // The one row this target does NOT share with gb10's rule: `auto` picks
+    // the split count that fills 132 SMs at the single-stream shape, where
+    // `legacy` picked 1 at every batch size from a 48-SM constant (#928).
+    assert_eq!(
+        d.attn_decode_splitk, "auto",
+        "H100 serves paged-decode attention with the occupancy-filling split          count; `legacy` is the rule that gave it 24 CTAs on 132 SMs"
+    );
     // ★ NOT 16. The 16 an H100 recipe exported was measured with the
     // tensor-core head arm (`dense_gemm_m16_bf16`, #927) also on, where that
     // arm serves 5..=16 and this band is very nearly inert. The arm is not in
@@ -136,6 +143,7 @@ fn every_declaring_target_states_every_lever() {
             "lm_head_batchm_max",
             "ssm_batched_recurrent",
             "decode_split_silu",
+            "attn_decode_splitk",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
@@ -267,6 +275,7 @@ fn the_generated_constant_names_every_field() {
         "lm_head_batchm_max: 8",
         "ssm_batched_recurrent: true",
         "decode_split_silu: true",
+        "attn_decode_splitk: \"auto\"",
     ] {
         assert!(
             generated.contains(field),
@@ -288,6 +297,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.lm_head_batchm_max, declared.lm_head_batchm_max);
     assert_eq!(baked.ssm_batched_recurrent, declared.ssm_batched_recurrent);
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
+    assert_eq!(baked.attn_decode_splitk, declared.attn_decode_splitk);
     assert_eq!(
         atlas_kernels::TARGET_SM_COUNT,
         read_sm_count(&kernels_root(), baked.hw),

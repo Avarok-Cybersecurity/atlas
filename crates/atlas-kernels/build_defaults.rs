@@ -32,6 +32,7 @@ pub(crate) struct Defaults {
     pub lm_head_batchm_max: u32,
     pub ssm_batched_recurrent: bool,
     pub decode_split_silu: bool,
+    pub attn_decode_splitk: String,
 }
 
 /// What a target that declares NO `[defaults]` table gets.
@@ -52,6 +53,10 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         lm_head_batchm_max: 8,
         ssm_batched_recurrent: false,
         decode_split_silu: true,
+        // `atlas_kernels::attn_splitk::SplitkPolicy::Legacy` — the rule
+        // `run_paged_decode.rs` hardcoded before #928. The baseline is
+        // "unchanged", and on a 48-SM part that rule IS the measured one.
+        attn_decode_splitk: "legacy".to_string(),
     }
 }
 
@@ -139,12 +144,20 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             panic!("kernels/{hw}/HARDWARE.toml: [defaults] {key} = {n} is not a u32")
         })
     };
+    let string = |key: &str, v: &toml::Value| -> String {
+        v.as_str()
+            .unwrap_or_else(|| {
+                panic!("kernels/{hw}/HARDWARE.toml: [defaults] {key} must be a string")
+            })
+            .to_string()
+    };
 
     for (key, value) in table {
         match key.as_str() {
             "lm_head_batchm_max" => out.lm_head_batchm_max = unsigned(key, value),
             "ssm_batched_recurrent" => out.ssm_batched_recurrent = boolean(key, value),
             "decode_split_silu" => out.decode_split_silu = boolean(key, value),
+            "attn_decode_splitk" => out.attn_decode_splitk = string(key, value),
             other => panic!(
                 "kernels/{hw}/HARDWARE.toml: [defaults] has no key `{other}`. \
                  The lever list is the field list of `TargetDefaults` \
@@ -173,11 +186,13 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   lm_head_batchm_max: {batchm},\n\
          \x20   ssm_batched_recurrent: {batched_recurrent},\n\
          \x20   decode_split_silu: {split_silu},\n\
+         \x20   attn_decode_splitk: \"{splitk}\",\n\
          }};\n",
         hw = d.hw,
         batchm = d.lm_head_batchm_max,
         batched_recurrent = d.ssm_batched_recurrent,
         split_silu = d.decode_split_silu,
+        splitk = d.attn_decode_splitk,
     )
 }
 

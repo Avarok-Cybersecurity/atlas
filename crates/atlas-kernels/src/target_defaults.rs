@@ -75,4 +75,13 @@ pub struct TargetDefaults {
     pub ssm_batched_recurrent: bool,
     /// Split SiLU+down on the decode path (`ModelLevers::decode_split_silu`).
     pub decode_split_silu: bool,
+    /// How the paged-decode attention path picks its KV split count (#928):
+    /// `legacy` (the pre-#928 rule), `auto` (fill this target's SMs at the
+    /// single-stream shape) or a pinned decimal count. Parsed by
+    /// [`crate::attn_splitk::parse`], which owns the grammar and the clamps.
+    ///
+    /// A STRING rather than a number: the policy is a small grammar, and the
+    /// target declares WHICH RULE it wants rather than a count that would
+    /// silently be wrong on the next card.
+    pub attn_decode_splitk: &'static str,
 }

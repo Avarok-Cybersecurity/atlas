@@ -91,3 +91,76 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = true
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+# Paged-decode attention split-K. `auto` — the split count that fills this
+# target's SMs at the single-stream shape:
+#
+#   num_splits = clamp(ceil(2 * sm_count / num_q_heads), 1, 16)
+#
+# which on Qwen3.8-27B (24 q heads) is 11, i.e. 264 CTAs where the shipped
+# geometry launched 24. It is a pure function of (sm_count, num_q_heads) and
+# therefore of CONFIGURATION ONLY — never of the runtime co-batched count, so
+# the reduction tree a sequence sees is fixed per serve and a sequence decoded
+# alone produces the same bytes as the same sequence decoded beside fifteen
+# others. That invariant is what `split_ref_seqs` was added for
+# (`tasks/determinism_investigation.md`) and it is preserved, not relaxed.
+#
+# `legacy` is the pre-#928 rule, `sm_count / (num_q_heads * split_ref_seqs)`,
+# which every other target keeps. `ATLAS_ATTN_DECODE_SPLITK=legacy|auto|N|0`
+# is the A/B; `0`/`off` pins one split, which is what an H100 served before
+# this row existed, and the boot line renders that as `1 (env)`. The kernel
+# the policy then launches is named once per KV dtype on the decode route
+# line (`splitk_dispatch::route_line`).
+#
+# EVIDENCE. nsys on 1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8, round 13 cell
+# T1N: `paged_decode_attn_fp8` at C=1 is `grid=(24,1,1)`, 231.51 us/launch for
+# 9.93 MB of KV = 42.9 GB/s = 1.28% of HBM; with the BF16-KV sibling the pair
+# is 3.79 ms of a 16.69 ms step. Round 15 measured the fix on the same binary:
+# `grid=(24,11,1)`, 32.70 us/launch = 303.7 GB/s, C=1 TPOT 16.79 -> 13.66 ms
+# (-18.6%) and +21.4% tok/s. C=16 is a NULL and is not claimed. Numbers:
+# `ATTN-DECODE-SPLITK-ATTRIBUTION.md`.
+attn_decode_splitk = "auto"
+
+# ── Kernels this target OVERRIDES or ADDS instead of inheriting ────────────
+#
+# `kernels/hopper/common/` is gb10's directory reached by symlink, PLUS the
+# real files named here. The maintainer rule (2026-09-11): symlinks are fine
+# provided the pointed-to gb10 file is not edited while iterating on Hopper;
+# a Hopper-TUNED kernel must be a real file under `kernels/hopper/`.
+#
+# This list is graded on disk by `tests/inherited_overrides.rs` — an entry
+# that is still a symlink, or an ADDITION that re-declares a gb10 entry point,
+# fails there rather than in a reader's head.
+#
+#   paged_decode_fp8_splitk_hopper.cu   The paged-decode SPLIT-K pair (#928):
+#   paged_decode_bf16_splitk_hopper.cu  a partial-attention kernel per KV split
+#                            plus the merge that folds the partials. ADDITIONS
+#                            — new stems, new entry names. gb10's
+#                            `paged_decode_attn_fp8.cu` already declares a
+#                            split-K pair, but a same-stem override there would
+#                            fork the NON-split `paged_decode_attn_fp8` entry
+#                            beside them — the kernel five targets compile and
+#                            six KV dtypes route through — to retune two. New
+#                            stems fork nothing. The FP8 twin restores the
+#                            PD_BC=4 batched inner loop (gb10's split-K path is
+#                            the scalar remainder one, which a 132-SM split
+#                            count would multiply rather than hide); the BF16
+#                            twin is a new CAPABILITY — `run_paged_decode.rs`
+#                            had an explicit "no Split-K (not implemented for
+#                            BF16 yet)" branch, so the
+#                            `--kv-high-precision-layers auto` layers had
+#                            nothing to select. Reached only under
+#                            `[defaults] attn_decode_splitk`.
+#   paged_decode_splitk_hopper.cuh   Their shared machinery — the split
+#                            partition, the smem tree merge, the workspace
+#                            format and the reduce body.
+#
+#                            NOT symlinked into `kernels/b200`: that target
+#                            declares `attn_decode_splitk = "legacy"` for want
+#                            of a receipt, so the kernels would be compiled and
+#                            never reached.
+[kernels]
+overrides = [
+  "paged_decode_bf16_splitk_hopper.cu",
+  "paged_decode_fp8_splitk_hopper.cu",
+  "paged_decode_splitk_hopper.cuh",
+]
