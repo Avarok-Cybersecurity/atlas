@@ -120,14 +120,117 @@ pub fn dense_gemv_fp8w_batch2(
         .launch(stream)
 }
 
+/// The shared shape of `w8a16_gemv_batch4` / `w8a16_gemv_batch16` (contiguous
+/// A and C), so a caller that picks its MAX_M tier by row count can hold the
+/// wrapper and the handle as one pair instead of duplicating the call site.
+/// The `_strided` pair's sibling alias lives with its own callers.
+pub type ContiguousBatchGemv = fn(
+    &dyn GpuBackend,
+    KernelHandle,
+    DevicePtr,
+    DevicePtr,
+    DevicePtr,
+    DevicePtr,
+    u32,
+    u32,
+    u32,
+    u64,
+) -> Result<()>;
+
 /// Block-scaled FP8 batched GEMV (M<=4). `input` is `[M, K]` BF16, `output` is
 /// `[M, N]` BF16; `weight`/`block_scale` are the raw `w8a16_gemv` pointers (2D
 /// block-scaled FP8). One pass over the FP8 weight serves all M rows — the M=4
 /// sibling of `w8a16_gemv`, replacing `w8a16_gemm_pipelined` for n<=4 batched
 /// decode (which pads M to a 128-row MMA tile). Bit-identical per-row to
 /// `w8a16_gemv`. Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
+///
+/// REFUSES m>4. The kernel is `w8a16_gemv_batchm_impl<4>`: at M=5 it computes
+/// rows 0..3 and never writes rows 4.. — stale memory, not a launch failure.
+/// Callers with 5..=16 rows want [`w8a16_gemv_batch16`], which takes the same
+/// arguments and the same launch geometry (issue #927).
 #[allow(clippy::too_many_arguments)]
 pub fn w8a16_gemv_batch4(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: DevicePtr,
+    block_scale: DevicePtr,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    ensure!(
+        (1..=4).contains(&m),
+        "w8a16_gemv_batch4: m={m} outside 1..=4 (kernel MAX_M; use w8a16_gemv_batch16)"
+    );
+    contiguous_batch_launch(
+        gpu,
+        kernel,
+        input,
+        weight,
+        block_scale,
+        output,
+        m,
+        n,
+        k,
+        stream,
+    )
+}
+
+/// MAX_M=16 sibling of [`w8a16_gemv_batch4`], for decode concurrency 5..=16.
+///
+/// WHY (#927). On 1xH100 with Qwen/Qwen3.8-27B-FP8 the decode step measured
+/// 44 ms at 4 active rows and 224 ms at 16 — C=16 aggregate FELL from 76 to
+/// 62 tok/s when the batch cap went 4 -> 16, because every native-FP8 site
+/// stopped at the M<=4 GEMV and handed 5..16 rows to the transposed /
+/// pipelined tile GEMMs (5-12 TFLOP/s class, M padded to a 128-row MMA tile).
+/// This kernel streams the weight ONCE for up to 16 rows instead.
+///
+/// Same template body, same K-iteration order and the same per-row reduction
+/// tree as `w8a16_gemv_batch4`, so each row is bit-identical to the scalar
+/// `w8a16_gemv` (H100 receipt on #932: M=8/16 `unequal_bf16=0`). The wider
+/// register array is the only difference.
+///
+/// Kernel: `w8a16_gemv_batch16` (module `w8a16_gemv_batch4`).
+/// Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn w8a16_gemv_batch16(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: DevicePtr,
+    block_scale: DevicePtr,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    ensure!(
+        (1..=16).contains(&m),
+        "w8a16_gemv_batch16: m={m} outside 1..=16 (kernel MAX_M)"
+    );
+    contiguous_batch_launch(
+        gpu,
+        kernel,
+        input,
+        weight,
+        block_scale,
+        output,
+        m,
+        n,
+        k,
+        stream,
+    )
+}
+
+/// Shared launch body for the two contiguous entry points. Identical argument
+/// order and geometry — the only thing that differs above is the MAX_M bound
+/// the caller must respect, exactly as for the `_strided` pair below.
+#[allow(clippy::too_many_arguments)]
+fn contiguous_batch_launch(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
     input: DevicePtr,

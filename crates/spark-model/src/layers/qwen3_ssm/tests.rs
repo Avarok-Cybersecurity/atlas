@@ -199,29 +199,55 @@ fn run_batched_verify(
     )
 }
 
-/// POSITIVE: R = 4+3 = 7 on an fp8w-only layer must dispatch the
-/// block-scaled W8A16 GEMM for BOTH projections and succeed. Before the
-/// fix this fell through to `dense_gemm`/`w4a16_gemm` on NULL slots
-/// (device 700 in production; here the fail-fast guards turn it into Err,
-/// so `is_ok` is the load-bearing assertion).
+/// POSITIVE: R = 4+3 = 7 on an fp8w-only layer must dispatch a block-scaled
+/// W8A16 kernel for BOTH projections and succeed. Before the fix this fell
+/// through to `dense_gemm`/`w4a16_gemm` on NULL slots (device 700 in
+/// production; here the fail-fast guards turn it into Err, so `is_ok` is the
+/// load-bearing assertion).
+///
+/// #927 moved the arm this lands on: 5..=16 now takes `w8a16_gemv_batch16`
+/// (grid ceil(N/4)) instead of `w8a16_gemm_pipelined`'s M-padded MMA tile
+/// (grid [ceil(N/32), ceil(M/128)]). Same weights, same M/N/K — and each row
+/// is now bit-identical to the M=1 decode GEMV rather than reassociated.
 #[test]
-fn native_fp8_gdn_batched_verify_r7_dispatches_w8a16_gemm() {
+fn native_fp8_gdn_batched_verify_r7_dispatches_batch16_gemv() {
     let config = ModelConfig::qwen3_next_80b_nvfp4();
     let gpu = MockGpuBackend::new();
     let layer = native_fp8_gdn_layer(&gpu, &config, true, true);
     run_batched_verify(&gpu, &config, &layer, &[4, 3]).unwrap();
-    // Pin the arm identity: w8a16_gemm_pipelined geometry at M=7 —
-    // QKVZ (N=12288): grid [ceil(12288/32)=384, ceil(7/128)=1, 1];
-    // out_proj (N=2048): grid [64, 1, 1]; both block [256,1,1].
+    // QKVZ (N=12288): grid [12288/4 = 3072, 1, 1];
+    // out_proj (N=2048): grid [512, 1, 1]; both block [256,1,1].
+    let qkvz = layer.qkvz_fp8w.as_ref().unwrap();
+    let out = layer.out_proj_fp8w.as_ref().unwrap();
+    assert!(
+        has_fp8_projection(&gpu, qkvz, 7, 12_288, 2_048, [3_072, 1, 1]),
+        "QKVZ must consume its block-scaled FP8 pair at M=7"
+    );
+    assert!(
+        has_fp8_projection(&gpu, out, 7, 2_048, 4_096, [512, 1, 1]),
+        "out_proj must consume its block-scaled FP8 pair at M=7"
+    );
+}
+
+/// NEGATIVE for the new arm: a shadow WITHOUT the MAX_M=16 entry point must
+/// land exactly where R=7 landed before #927 — the pipelined tile GEMM — and
+/// not on a zero handle or a NULL slot.
+#[test]
+fn native_fp8_gdn_batched_verify_r7_without_batch16_keeps_the_tile_gemm() {
+    let config = ModelConfig::qwen3_next_80b_nvfp4();
+    let gpu = MockGpuBackend::new();
+    let mut layer = native_fp8_gdn_layer(&gpu, &config, true, true);
+    layer.w8a16_gemv_batch16_k = spark_runtime::gpu::KernelHandle(0);
+    run_batched_verify(&gpu, &config, &layer, &[4, 3]).unwrap();
     let qkvz = layer.qkvz_fp8w.as_ref().unwrap();
     let out = layer.out_proj_fp8w.as_ref().unwrap();
     assert!(
         has_fp8_projection(&gpu, qkvz, 7, 12_288, 2_048, [384, 1, 1]),
-        "QKVZ must consume its block-scaled FP8 pair at M=7"
+        "QKVZ must fall back to w8a16_gemm_pipelined at M=7"
     );
     assert!(
         has_fp8_projection(&gpu, out, 7, 2_048, 4_096, [64, 1, 1]),
-        "out_proj must consume its block-scaled FP8 pair at M=7"
+        "out_proj must fall back to w8a16_gemm_pipelined at M=7"
     );
 }
 
