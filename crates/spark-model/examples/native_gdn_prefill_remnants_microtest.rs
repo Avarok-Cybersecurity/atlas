@@ -38,7 +38,7 @@ use spark_runtime::kernel_args::KernelLaunch;
 mod gdn_remnants;
 use gdn_remnants::{
     C, Case, KD, NK, NV, VD, alloc_guarded, dn_bf16, dn_f32, gen_case, guard_intact, metrics,
-    ref_fwd_o, ref_wu, report, take, up_bf16, up_f32,
+    ref_fwd_o, ref_wu, report, selfcheck_take, take, up_bf16, up_f32,
 };
 
 const SMEM_WU: u32 = (C * KD * 2 + C * C * 4 + C * 4) as u32;
@@ -228,6 +228,14 @@ fn time_ms(g: &dyn GpuBackend, iters: u32, mut f: impl FnMut(u64) -> Result<()>)
 }
 
 fn main() -> Result<()> {
+    // Host-side first, before the device is touched: every `take` this example
+    // performs, at this example's own geometry, on synthetic buffers. Round 13
+    // spent its only H100 slot discovering a unit error in those arguments
+    // 0.06 s into the run (`take(&w, c.nt * NV, ..)` — NV applied twice), so
+    // the argument contract is now decided without a GPU and before the fixture
+    // is built.
+    selfcheck_take();
+
     let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
     let fla = "gated_delta_rule_fla";
@@ -258,12 +266,10 @@ fn main() -> Result<()> {
     for &t in &[256usize, 1193, 4593] {
         let c = gen_case(t);
         let iters = if t > 2048 { 10 } else { 30 };
-        let (nb, wb, ub, gcb) = (
-            c.nt * NV,
-            c.nt * NV * C * KD,
-            c.nt * NV * C * VD,
-            c.nt * NV * C,
-        );
+        // `take(full, rows, per)` applies NV ITSELF: `rows` is the outer
+        // dimension only — the CHUNK count for W/U/gc, the token count for O.
+        // The buffer lengths below are the [rows][NV][per] products.
+        let (wb, ub, gcb) = (c.nt * NV * C * KD, c.nt * NV * C * VD, c.nt * NV * C);
         let inp = In {
             q: up_bf16(g, &c.query)?,
             k: up_bf16(g, &c.key)?,
@@ -310,14 +316,14 @@ fn main() -> Result<()> {
             // count would flatter it.
             let fl = (c.nt * NV * 2 * (C * C * KD + 2 * (C * (C - 1) / 2) * KD)) as f64;
             println!("  {name:<16} {ms:.4} ms / {:.2} TFLOP/s", fl / (ms * 1e9));
-            let rwo = report("W (bf16 out)", &take(&w, nb, C * KD), &rw);
-            let ruo = report("U (bf16 out)", &take(&u, nb, C * VD), &ru);
-            let (_, rgo) = metrics(&take(&gc, nb, C), &rgc);
+            let rwo = report("W (bf16 out)", &take(&w, c.nt, C * KD), &rw);
+            let ruo = report("U (bf16 out)", &take(&u, c.nt, C * VD), &ru);
+            let (_, rgo) = metrics(&take(&gc, c.nt, C), &rgc);
             if !gated {
                 base = (rwo, ruo, rgo);
                 println!("    gc (f32)               rel_rms={rgo:.4e}  <- the parent's scan");
             } else {
-                let bit = take(&gc, nb, C) == take(&arms[0].2, nb, C);
+                let bit = take(&gc, c.nt, C) == take(&arms[0].2, c.nt, C);
                 let ok = rwo <= 1.25 * base.0 && ruo <= 1.25 * base.1 && bit;
                 println!(
                     "    gc bit-identical to the parent: {}",
