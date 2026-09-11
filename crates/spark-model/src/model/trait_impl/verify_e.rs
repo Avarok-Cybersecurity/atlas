@@ -123,10 +123,13 @@ impl TransformerModel {
                     comm_ok = self.comm.is_none() || Self::ep_batch_verify_enabled(),
                     lora_ok = !(self.lora.is_some() && crate::lora::no_batch_verify()),
                     stash_ok = !self.verify_hidden_stash.is_null(),
-                    layers_ok = !self
-                        .layers
-                        .iter()
-                        .any(|l| l.decode_verify_multi_unsupported()),
+                    // `decode_verify_multi_unsupported()` is a
+                    // `research/glm-exl3` trait method this tree does not have;
+                    // the equivalent refusal here is the FIRST conjunct
+                    // (`supports_verify_layout(hc_mult)`), reported as
+                    // `hc_layout_ok`. A highway model is admitted only under
+                    // ATLAS_HC_BATCH_VERIFY=1.
+                    hc_layout_ok = eligibility::supports_verify_layout(self.config.hc_mult),
                     hss_ok = self
                         .kv_cache
                         .lock()

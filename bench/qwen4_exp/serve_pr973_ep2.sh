@@ -143,6 +143,26 @@ export ATLAS_QWEN4EXP_BF16_GDN="${ATLAS_QWEN4EXP_BF16_GDN:-0}"
 # grows with max-num-seqs. Watch `free -g` on the first boot after changing it.
 export ATLAS_EP_PROTOCOL="${ATLAS_EP_PROTOCOL:-v2}"
 
+# ── Cross-sequence batched verify. TWO gates, both needed, both on BOTH ranks.
+#
+#   ATLAS_HC_BATCH_VERIFY=1     admits highway models to the batched verify at
+#                               all (`supports_verify_layout`); without it
+#                               `hc_mult > 0` refuses on the FIRST conjunct,
+#                               single-node as well as multi-rank.
+#   ATLAS_MTP_EP_BATCH_VERIFY=1 lets that sweep run under EP, paired with the
+#                               EP_CMD_VERIFY_BATCH command so the worker runs
+#                               the SAME sweep. Without the command the head
+#                               would batch while the worker waited per
+#                               sequence — an NCCL spin, not a wrong answer.
+#
+# Verified 4/4 at C=2 on ONE node (known-answer probes, byte-identical to
+# solo). At EP=2 it is NEW: read `can_batch_verify: first evaluation` for the
+# conjunct-by-conjunct verdict and the path's own
+# `mHC cross-sequence batched verify ACTIVE` line for engagement. Set both to 0
+# to fall back to the proven per-sequence verify.
+export ATLAS_HC_BATCH_VERIFY="${ATLAS_HC_BATCH_VERIFY:-1}"
+export ATLAS_MTP_EP_BATCH_VERIFY="${ATLAS_MTP_EP_BATCH_VERIFY:-1}"
+
 # ── The #972 gates. Set on BOTH ranks, always — see the header. ─────────────
 export ATLAS_QWEN4EXP_MTP_HC_BATCHED="${ATLAS_QWEN4EXP_MTP_HC_BATCHED:-1}"
 export ATLAS_VERIFY_ROW_PROJ="${ATLAS_VERIFY_ROW_PROJ:-1}"
