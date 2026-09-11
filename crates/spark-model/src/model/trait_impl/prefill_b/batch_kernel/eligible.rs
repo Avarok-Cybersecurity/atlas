@@ -3,8 +3,9 @@
 //! Eligibility gating for the Q12 Path B kernel-batched prefill.
 //!
 //! Extracted from `batch_kernel.rs` to keep each file under the 500-LoC
-//! file-size cap. Holds the env-flag predicates (`first_chunk_batched_enabled`,
-//! `varlen_prefill_enabled`), the pure-data eligibility check
+//! file-size cap. Holds the env-flag predicate (`varlen_prefill_enabled`; the
+//! chunk-zero predicate itself is `ops::prefill_batched_chunk_zero_allowed`,
+//! the SSOT this module's admission check reads), the pure-data eligibility check
 //! (`check_kernel_batched_eligible`, unit-tested in `batch_kernel_tests.rs`),
 //! and the `TransformerModel::kernel_batched_eligible` wrapper the dispatcher
 //! calls upfront.
@@ -25,20 +26,6 @@ use spark_runtime::prefix_cache::PrefixMatch;
 /// living as an inline expression no test can see.
 pub(in crate::model) fn config_is_mla(config: &ModelConfig) -> bool {
     config.kv_lora_rank > 0
-}
-
-/// Whether chunk-0 streams may use the batched (paged) prefill path. Enabled by
-/// `ATLAS_Q12_BATCHED_FIRST_CHUNK=1` or `ATLAS_PREFILL_CODISPATCH=1` (the latter
-/// is the single end-to-end flag for cross-request co-dispatch of fresh prompts,
-/// whose every stream starts at chunk_start==0).
-pub(super) fn first_chunk_batched_enabled() -> bool {
-    ["ATLAS_Q12_BATCHED_FIRST_CHUNK", "ATLAS_PREFILL_CODISPATCH"]
-        .iter()
-        .any(|k| {
-            std::env::var(k)
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false)
-        })
 }
 
 impl TransformerModel {
@@ -94,7 +81,9 @@ impl TransformerModel {
             self.config.num_experts_per_tok,
             self.config.mrope_interleaved,
             // VARLEN v1 batches chunk-0 (fresh K/V) through FlashInfer ragged.
-            crate::layers::ops::prefill_batched_first_chunk_enabled() || varlen,
+            // SSOT with the two layer-side guards — see
+            // `ops::prefill_batched_chunk_zero_allowed`.
+            crate::layers::ops::prefill_batched_chunk_zero_allowed(),
             varlen,
         )
     }

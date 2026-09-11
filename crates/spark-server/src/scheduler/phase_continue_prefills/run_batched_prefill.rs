@@ -10,12 +10,11 @@
 //! FIFO `prefilling.first_mut()` starvation). Phase 2/3 replace the default
 //! impl with batched kernel dispatch for true L2-amortised throughput.
 
-use spark_model::traits::{Model, PrefillSlice};
-use spark_runtime::gpu::DevicePtr;
+use spark_model::traits::{BatchedPrefillDeclined, Model, PrefillSlice};
 use std::time::Instant;
 
 use super::super::types::PrefillInProgress;
-use super::super::{FirstTokenPolicy, sample_first_token};
+use super::prefill_fallback::{advance_and_sample, run_wave_per_stream};
 use super::prefill_waves::{WaveGeom, plan_prefill_waves};
 
 pub(super) fn run_batched_prefill_step(
@@ -90,8 +89,39 @@ pub(super) fn run_batched_prefill_step(
                 max_prefill_tokens
             };
             let mut chunk_len = remaining.min(effective_max);
-            let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
-            // Align intermediate chunks to GDN WY4 boundary (4 tokens).
+            let mut is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
+            // TAIL PRE-SPLIT (VARLEN only). `prefill_chunk_dispatch` splits a
+            // model's FINAL prefill chunk once, one KV block below the last
+            // block boundary under the prompt, to land an SSM tail checkpoint
+            // a later turn's block-floored prefix match can actually use. The
+            // batched path does not split, so handing it the whole prompt as
+            // one `is_last` chunk would give a co-admitted stream a DIFFERENT
+            // forward shape than the per-stream path gives the same prompt —
+            // and BF16 accumulation is not associative, so at temperature 0
+            // that is a different answer for the same request (the reason the
+            // model-side split is unconditional in the first place).
+            //
+            // Asking the model where it would cut and cutting there keeps the
+            // geometry identical per sequence, AND it is what lets the tails
+            // batch: every member of a co-arriving burst of equal-length
+            // prompts gets the same `chunk_start` for its tail, so the wave
+            // planner groups all N tails into ONE forward. #927 measured the
+            // standalone alternative at 29.3 ms for 25 tokens — 1 170 µs/token,
+            // 11.7% of prefill GPU time for 2.1% of the tokens.
+            if varlen
+                && is_last
+                && p.chunk_offset == 0
+                && let Some(cut) = model.prefill_tail_cut(&p.prompt_tokens)
+                && cut > p.chunk_offset
+                && cut < p.prompt_tokens.len()
+                && cut <= p.chunk_offset + chunk_len
+            {
+                chunk_len = cut - p.chunk_offset;
+                is_last = false;
+            }
+            // Align intermediate chunks to GDN WY4 boundary (4 tokens). The
+            // tail cut is a multiple of the KV block size, which is itself a
+            // multiple of 4 on every shipped config, so this is a no-op there.
             if !is_last && chunk_len >= 4 {
                 chunk_len = (chunk_len / 4) * 4;
             }
@@ -162,14 +192,44 @@ pub(super) fn run_batched_prefill_step(
         let logits_per_stream = match model.prefill_batch_chunk(&mut slices, prefill_stream) {
             Ok(v) => v,
             Err(e) => {
+                let declined = BatchedPrefillDeclined::is_decline(&e);
                 tracing::error!(
-                    "Batched prefill error (wave of {} streams, {n} prefilling): {e:#}",
+                    "Batched prefill error (wave of {} streams, {n} prefilling, \
+                     declined={declined}): {e:#}",
                     wave.len()
                 );
-                // Fail ONLY this wave's streams (freed in
-                // `promote_completed_prefills`). Later waves are left
-                // untouched — they have not advanced this tick and retry
-                // next tick rather than dispatching after a failed forward.
+                drop(slices);
+                if declined {
+                    // DECLINE: the model refused before touching a single
+                    // stream, so every member of this wave still has to be
+                    // prefilled — one at a time, which is what the model would
+                    // have done anyway. Dropping them here is what produced
+                    // #927 cell E's sixteen empty HTTP 200s.
+                    run_wave_per_stream(
+                        model,
+                        sched,
+                        prefilling,
+                        completed_indices,
+                        &wave,
+                        &chunk_lens,
+                        &is_last_flags,
+                        n,
+                        prefill_stream,
+                        prefill_event,
+                        think_end_token,
+                        tool_call_start_token,
+                    );
+                    continue;
+                }
+                // HARD ERROR: an admitted batch can already own KV blocks and
+                // prefix reservations, so re-running it per-stream would
+                // double-allocate. Fail ONLY this wave's streams —
+                // `promote_completed_prefills` now sends each of them an error
+                // frame, so a failed wave is visible to its clients instead of
+                // closing sixteen streams with no content and no
+                // `finish_reason`. Later waves are left untouched: they have
+                // not advanced this tick and retry next tick rather than
+                // dispatching after a failed forward.
                 for &i in &wave {
                     completed_indices.push((i, None));
                 }
@@ -193,52 +253,19 @@ pub(super) fn run_batched_prefill_step(
         // completed — BEFORE the next wave dispatches, because every wave
         // reuses the same logits rows.
         for (k, &i) in wave.iter().enumerate() {
-            let p = &mut prefilling[i];
-            p.chunk_offset += chunk_lens[i];
-            if !is_last_flags[i] {
-                continue;
-            }
-            let logits = logits_per_stream[k];
-            if logits == DevicePtr::NULL {
-                tracing::error!(
-                    "Batched prefill: stream {i} marked is_last but model returned NULL logits",
-                );
-                completed_indices.push((i, None));
-                continue;
-            }
-            // #131: grammar-constrain the FIRST token (and advance the matcher);
-            // no-op without a grammar.
-            // P1-4 (2026-07-09): thread the resolved `min_p` — previously a
-            // hardcoded 0.0 inside the sampler. Kill-switch: ATLAS_NO_MTP_MINP=1.
-            match sample_first_token(
+            advance_and_sample(
                 model,
-                logits,
-                p.temperature,
-                p.top_k,
-                p.top_p,
-                p.min_p,
-                &p.eos_tokens,
-                p.grammar_state.as_mut(),
-                FirstTokenPolicy::for_birth(
-                    p.enable_thinking,
-                    think_end_token,
-                    tool_call_start_token,
-                ),
-                &sched.levers.sampling(),
-            ) {
-                Ok(first) => {
-                    tracing::info!(
-                        "Batched prefill[{i}/{n}] first token: {first} (chunk_len={}, total_tokens={})",
-                        chunk_lens[i],
-                        p.prompt_tokens.len(),
-                    );
-                    completed_indices.push((i, Some(first)));
-                }
-                Err(e) => {
-                    tracing::error!("Batched prefill[{i}] sampling: {e:#}");
-                    completed_indices.push((i, None));
-                }
-            }
+                sched,
+                &mut prefilling[i],
+                i,
+                n,
+                chunk_lens[i],
+                is_last_flags[i],
+                logits_per_stream[k],
+                completed_indices,
+                think_end_token,
+                tool_call_start_token,
+            );
         }
     }
 

@@ -56,6 +56,8 @@ mod prefill_a_step;
 mod prefill_a_step_params;
 mod prefill_b_step;
 #[cfg(test)]
+mod prefill_fallback_tests;
+#[cfg(test)]
 mod prefill_fifo_tests;
 mod repetition;
 mod rollback;
@@ -74,6 +76,8 @@ mod swap_out_tests;
 mod teardown;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod test_support_prefill;
 #[cfg(test)]
 mod think_skip_tests;
 mod types;

@@ -68,6 +68,26 @@ pub fn prefill_varlen_enabled() -> bool {
         .get_or_init(|| bool_value_enabled(std::env::var("ATLAS_PREFILL_VARLEN").ok().as_deref()))
 }
 
+/// SSOT: may a batch of CHUNK-ZERO (fresh-prompt) streams co-admit into one
+/// batched prefill forward?
+///
+/// Four readers have to agree on this one predicate, and for a while they did
+/// not: the admission check (`check_kernel_batched_eligible`) and the batched
+/// paged-attention entry (`prefill_attention_paged_attn_batched`) both read
+/// `codispatch || varlen`, while the attention layer body
+/// (`Qwen3AttentionLayer::prefill_inner`) read `codispatch` alone. With
+/// `--prefill-varlen-batch` on, admission therefore ACCEPTED a wave of fresh
+/// prompts that the layer then refused mid-forward — after Phase A had already
+/// allocated KV blocks and staged hidden — and the whole wave's requests were
+/// failed. That is the H100 round-11 cell-E failure (#927): sixteen HTTP 200s
+/// with zero tokens at C=16.
+///
+/// One function, four call sites. Adding a fifth reader means calling this,
+/// never re-deriving it.
+pub fn prefill_batched_chunk_zero_allowed() -> bool {
+    prefill_batched_first_chunk_enabled() || prefill_varlen_enabled()
+}
+
 fn bool_value_enabled(value: Option<&str>) -> bool {
     matches!(value, Some("1")) || value.is_some_and(|value| value.eq_ignore_ascii_case("true"))
 }
