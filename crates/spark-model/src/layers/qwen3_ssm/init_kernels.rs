@@ -120,4 +120,3 @@ pub(super) fn gdn_prefill_tc_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
         "gated_delta_rule_chunk_delta_h_tcfuse_x2",
     )
 }
-

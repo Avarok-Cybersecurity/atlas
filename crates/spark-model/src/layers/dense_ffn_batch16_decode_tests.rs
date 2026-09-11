@@ -302,8 +302,7 @@ fn a_stock_serve_keeps_the_pre_927_routing_at_every_cliff_width() {
     for m in [5, 8, 16, 17, 32] {
         run(m, Expect::Tile, |layer| {
             assert_ne!(
-                layer.w8a16_gemv_batch16_k,
-                KernelHandle(0),
+                layer.w8a16_gemv_batch16_k.0, 0,
                 "the handle must be LOADED — otherwise this passes for the \
                  wrong reason and says nothing about the declaration"
             );
@@ -316,8 +315,9 @@ fn a_stock_serve_keeps_the_pre_927_routing_at_every_cliff_width() {
 #[test]
 fn the_batch4_rung_is_untouched_by_the_tier() {
     for m in [1, 4] {
-        run(m, Expect::One(BATCH4_K, m), |layer| layer.batch16_tier = false);
+        run(m, Expect::One(BATCH4_K, m), |layer| {
+            layer.batch16_tier = false
+        });
         run(m, Expect::One(BATCH4_K, m), |_| {});
     }
 }
-
