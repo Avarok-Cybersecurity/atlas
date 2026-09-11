@@ -311,8 +311,8 @@ fn the_h100_ledger_rows_reproduce_from_the_model_shapes() {
     let declined =
         64 * ffn + 16 * attn + 16 * (twins - attn_fp8_twin_bytes(KV_ONLY, 10240, 2560, 5120, H));
     assert!(
-        (20.0..23.0).contains(&(declined as f64 / 1e9)),
-        "expected ~21 GB not built, got {} GB",
+        (22.5..23.5).contains(&(declined as f64 / 1e9)),
+        "expected ~23.1 GB of the sweep's 28.01 GB not to be built, got {} GB",
         declined as f64 / 1e9
     );
 }
