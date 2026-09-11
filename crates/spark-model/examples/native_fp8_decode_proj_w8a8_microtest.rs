@@ -279,7 +279,7 @@ fn main() -> Result<()> {
     // they happen to be last-used is not a thing this file should depend on.
     struct Rng(u64);
     impl Rng {
-        fn next(&mut self) -> u32 {
+        fn bits(&mut self) -> u32 {
             self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1);
             (self.0 >> 32) as u32
         }
@@ -288,7 +288,7 @@ fn main() -> Result<()> {
         fn fp8(&mut self, n: usize, depth: usize) -> Vec<u8> {
             (0..n * depth)
                 .map(|_| {
-                    let x = self.next();
+                    let x = self.bits();
                     ((x % 127) as u8) | (((x >> 7) & 1) as u8 * 128)
                 })
                 .collect()
@@ -296,13 +296,13 @@ fn main() -> Result<()> {
         /// One FP32 scale per 128x128 weight block.
         fn scales(&mut self, n: usize, depth: usize) -> Vec<u8> {
             (0..(n / 128) * (depth / 128))
-                .flat_map(|_| (((self.next() % 16 + 1) as f32) / 1024.0).to_le_bytes())
+                .flat_map(|_| (((self.bits() % 16 + 1) as f32) / 1024.0).to_le_bytes())
                 .collect()
         }
         fn acts(&mut self, elems: usize) -> Vec<u8> {
             (0..elems)
                 .flat_map(|_| {
-                    bf16::from_f32(((self.next() % 2049) as f32 - 1024.0) / 1024.0)
+                    bf16::from_f32(((self.bits() % 2049) as f32 - 1024.0) / 1024.0)
                         .to_bits()
                         .to_le_bytes()
                 })
@@ -316,19 +316,18 @@ fn main() -> Result<()> {
     let act_h = upload(&gpu, &rng.acts(MAX_M * H))?;
     let act_v = upload(&gpu, &rng.acts(MAX_M * O_K))?;
 
-    let mut mk =
-        |rng: &mut Rng, name, n: usize, kk: usize, ldc: usize, offset, act| -> Result<Proj> {
-            Ok(Proj {
-                name,
-                n,
-                k: kk,
-                ldc,
-                offset,
-                weight: upload(&gpu, &rng.fp8(n, kk))?,
-                scale: upload(&gpu, &rng.scales(n, kk))?,
-                act,
-            })
-        };
+    let mk = |rng: &mut Rng, name, n: usize, kk: usize, ldc: usize, offset, act| -> Result<Proj> {
+        Ok(Proj {
+            name,
+            n,
+            k: kk,
+            ldc,
+            offset,
+            weight: upload(&gpu, &rng.fp8(n, kk))?,
+            scale: upload(&gpu, &rng.scales(n, kk))?,
+            act,
+        })
+    };
     // Each group shares one output buffer, so the strided gaps and the
     // neighbouring projections' slots are real neighbours and not padding.
     let ssm_qkvz = mk(&mut rng, "ssm in_proj_qkvz", QKVZ_N, H, QKVZ_N, 0, act_h)?;
