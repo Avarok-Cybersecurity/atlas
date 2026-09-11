@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use super::super::types::PrefillInProgress;
 use super::prefill_fallback::{advance_and_sample, run_wave_per_stream};
-use super::prefill_waves::{WaveGeom, plan_prefill_waves, plan_stream_chunk};
+use super::prefill_waves::{WaveGeom, plan_prefill_waves, plan_stream_chunk, waves_this_tick};
 
 pub(super) fn run_batched_prefill_step(
     model: &dyn Model,
@@ -136,21 +136,34 @@ pub(super) fn run_batched_prefill_step(
             is_last: is_last_flags[i],
         })
         .collect();
-    let waves = plan_prefill_waves(&geoms, varlen, wave_cap);
+    let planned = plan_prefill_waves(&geoms, varlen, wave_cap);
+    let n_planned = planned.len();
+    // ONE WAVE PER TICK under VARLEN. Waves used to run back-to-back inside a
+    // tick, so no stream was promoted until every wave had run and every TTFT
+    // in the burst collapsed onto the slowest — H100 round 15 measured the
+    // short shape at TTFT p50 1 359.4 -> 4 141.2 ms (p50 = p99) and aggregate
+    // 513.86 -> 427.53 tok/s (-16.8%) whenever the lever engaged, with TPOT
+    // going the OTHER way (25.90 -> 21.28 ms). The rule and its reasoning live
+    // in `prefill_waves::waves_this_tick`; the deferred streams re-plan next
+    // tick and batch among themselves (#1002).
+    let waves = waves_this_tick(planned, varlen);
     let n_waves = waves.len();
     if varlen {
         // Engagement proof for serve-log diagnosis: one INFO line per tick
-        // with the planned wave shapes. M per wave = Σ chunk_len of its
-        // members — the row count every fused per-layer GEMM launches at
-        // (assuming the model-side dispatch admits; it logs its own verdict
-        // under target "atlas::q12").
+        // with the planned wave shapes and how much of it this tick runs.
+        // M per wave = Σ chunk_len of its members — the row count every fused
+        // per-layer GEMM launches at (assuming the model-side dispatch admits;
+        // it logs its own verdict under target "atlas::q12").
         let wave_m: Vec<usize> = waves
             .iter()
             .map(|w| w.iter().map(|&i| chunk_lens[i]).sum())
             .collect();
+        let dispatched: usize = waves.iter().map(Vec::len).sum();
         tracing::info!(
-            "Varlen prefill waves: {n} streams -> {n_waves} wave(s), M per wave {wave_m:?} \
-             (cap {wave_cap})"
+            "Varlen prefill waves: {n} streams -> {n_planned} wave(s) planned, \
+             {n_waves} dispatched this tick, M per wave {wave_m:?} (cap {wave_cap}), \
+             {} stream(s) deferred to the next tick",
+            n - dispatched,
         );
     }
 
@@ -259,6 +272,8 @@ pub(super) fn run_batched_prefill_step(
 
     let elapsed = t0_batch.elapsed().as_micros();
     if elapsed > 1000 {
-        tracing::debug!("Batched prefill step: {n} streams, {n_waves} waves, {elapsed}µs total");
+        tracing::debug!(
+            "Batched prefill step: {n} streams, {n_waves}/{n_planned} waves, {elapsed}µs total"
+        );
     }
 }

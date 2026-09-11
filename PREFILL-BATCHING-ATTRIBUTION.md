@@ -160,3 +160,86 @@ projection GEMM at a sixth of the arithmetic intensity it could have") is
 refuted by measurement: the M=1168 GEMMs are already at full efficiency on an
 H100. Varlen repackages the GDN work; it does not reduce it. The lever stays
 default OFF, and the C=16 gap to vLLM is not a prefill-batching deficit.
+
+## 6. The slot fix held; the SCHEDULING of the waves was the loss (#1002, H100 round 15)
+
+Round 15 rebuilt at `8a6f50b61` with #1002's slot-aliasing fix in. **Every
+structural check passes**: cell V15 logged **0 `SSM pool slot SHARED`, 0
+`release_slot … already free`, 0 content-loop / fuzzy / SimHash stops, 16/16
+responses at the full 256 tokens**, and every `Captured CUDA graph … slots=`
+list carries distinct real slots (index 16 is the padding sentinel). Against
+round 13's cell V — 24 content-loop fires, 2 fuzzy stops, 5 SimHash stops, 6/16
+probe responses cut at 49 tokens — that is a clean reversal. On the LONG shape
+`deferral SKIPPED` fires and the numbers land on the no-lever cell's exactly
+(398.34 vs 401.28 tok/s, 4 115.2 vs 4 118.8 ms TTFT): round 13's +83% TTFT
+regression is gone, replaced by a null.
+
+**And the lever was still a loss on the SHORT shape, for a scheduling reason,
+not a kernel one.** Whenever the 16-stream varlen batching engaged:
+
+| | A15 (no lever) | **V15 (engaged)** | Δ |
+|---|---:|---:|---:|
+| `1024x256` C=16 aggregate | 513.86 | **427.53** | **−16.8%** |
+| TTFT p50 | 1 359.4 ms | **4 141.2 ms** | **3.05×** |
+| TTFT p99 | 2 504.5 ms | 4 142.2 ms | +65% |
+| **TPOT** | 25.90 ms | **21.28 ms** | **−17.8%** |
+| e2e p50 | 7.97 s | 9.57 s | +20% |
+
+**TPOT moved the right way by 17.8%** — batching the prefill up front genuinely
+removes the prefill/decode interference round 11 traced — so the batching works.
+What did not work was that **p50 = p99**: `16 streams -> 3 wave(s)` ran
+back-to-back inside ONE tick. Promotion is a phase, not a callback: a stream's
+first token reaches its client in `promote_completed_prefills`, after
+`continue_in_progress_prefills` returns, and decode runs later still in the
+tick's own decode step. So a stream that finished in wave 1 waited for waves 2
+and 3 before anyone heard from it, and every TTFT in the burst landed on the
+slowest.
+
+**The fix is ONE WAVE PER TICK** (`prefill_waves::waves_this_tick`), not a
+second guard condition. Wave 1 runs, its finished streams are promoted at the
+end of that tick, decode interleaves from the next one, and the streams that did
+not fit re-plan next tick — where they batch among themselves, because the
+planner is re-run from the live geometry every tick. On the round-15 shape:
+sixteen 1193-token prompts plan 7 / 7 / 2, seven prefill on tick 1, and on tick
+2 those seven stand first in FIFO order and their tails complete as one
+175-token forward before any further head wave is issued.
+
+The alternative — promoting inside the wave loop — buys nothing here.
+`promote_completed_prefills` removes from `prefilling`, which invalidates the
+wave indices mid-loop, and decode still would not run until the prefill phase
+returned; the promoted stream's token would leave at the same wall time. The
+tick boundary is where the scheduler already interleaves, so that is where the
+cut belongs.
+
+FAIRNESS is unchanged in kind. The planner is first-fit in FIFO order, so wave 1
+always contains stream 0: the head of the queue advances exactly one chunk per
+tick, which is the guarantee the single-stream `prefilling.first_mut()` path
+gives — and it now carries everyone who fits with it. With the flag OFF the
+planner returns one wave holding every stream and this cap returns it whole, so
+that path stays byte-identical. Pinned in `prefill_waves_tick_tests`.
+
+**Why engagement varied burst to burst, and what is done about it.** Round 15
+saw two of four otherwise identical short-shape bursts engage (427 tok/s) and
+two not (514 tok/s — the no-lever numbers), a 17.52% rep spread that is not
+measurement noise. The planner is not the source: `plan_prefill_waves` is a pure
+function of the geometries. The ADMISSION is: it requires `active.is_empty()`
+and two chunk-0s co-admitted in the SAME tick, and a burst whose first request
+has already been promoted to decode by the time the rest arrive fails the first
+test. That is arrival timing against the scheduler's tick period — **inherent,
+not pinnable** — so `varlen_admission` now returns the one input that decided
+each verdict and `phase_start_prefills` logs it per burst:
+
+```
+Varlen prefill admission: defer=false reason="decode already active this tick (arrival timing)" new_reqs=9 prefilling=0 active=7 smallest_chunk0=[1193, 1193] cap=8192
+```
+
+A run's engagement is now readable from its serve log instead of inferred from
+its throughput. The `deferral SKIPPED` line is unchanged and still fires on the
+long shape.
+
+**The lever stays default OFF.** §5's finding stands: `M=8176` (7 prompts fused)
+measured **190.4 µs/token against 188.8 µs/token at M=1168** — 0.8% WORSE —
+so varlen repackages the GDN work rather than reducing it. This change removes
+the TTFT collapse that made the lever a 16.8% aggregate loss on top of that; it
+does not make batching pay, and the C=16 gap to vLLM is still not a
+prefill-batching deficit.

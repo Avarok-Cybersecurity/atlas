@@ -45,9 +45,9 @@ use super::{FirstTokenPolicy, sample_first_token};
 use crate::scheduling_policy::{ActiveSeqTiming, SchedulingPolicy};
 
 // Re-export for `phase_start_prefills`: the deferral decision and the wave
-// planner have to agree about the budget, so the predicate lives with the
-// planner (#1002).
-pub(super) use prefill_waves::varlen_defer_pays;
+// planner have to agree about the budget, so the rule lives with the planner
+// (#1002).
+pub(super) use prefill_waves::varlen_admission;
 
 use run_batched_mixed::run_batched_mixed_step;
 use run_batched_prefill::run_batched_prefill_step;
