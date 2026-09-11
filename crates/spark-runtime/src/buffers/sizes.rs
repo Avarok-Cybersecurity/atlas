@@ -134,6 +134,14 @@ pub struct BufferSizes {
     /// widest projection K = max(hidden, intermediate, q_heads*head_dim).
     /// 0 (→ NULL) unless the MMQ sub-flag is set.
     pub q2_act_q8: usize,
+    /// Row-wise FP8 GDN prefill BF16-weight slab (`ATLAS_FP8_ROWWISE=1`).
+    /// ONE arena allocation holding the BF16 dequant of EVERY GDN layer's
+    /// per-row `in_proj_qkvz` + `out_proj`, bump-carved one slice per layer
+    /// on that layer's first prefill and never freed. Replaces the lazy
+    /// `gpu.alloc` memoised by weight pointer that the #917 H100 receipt
+    /// caught at `167772160` B per layer outside this ledger. 0 (→ NULL)
+    /// unless the lever is armed; sizing lives in `sizes_rowwise.rs`.
+    pub ssm_rowwise_w_bf16: usize,
 }
 
 impl BufferSizes {
@@ -399,6 +407,11 @@ impl BufferSizes {
         // Sizing rationale + bounds live on `sizes_q2::q2_scratch_sizes`.
         let (q2_dequant_scratch, q2_act_q8) = super::sizes_q2::q2_scratch_sizes(config, m, h, hd);
 
+        // Row-wise FP8 GDN prefill BF16-weight slab; env-gated, 0 unless
+        // `ATLAS_FP8_ROWWISE=1`. Sizing + the #917 receipt live on
+        // `sizes_rowwise::ssm_rowwise_w_bf16_bytes`.
+        let ssm_rowwise_w_bf16 = super::sizes_rowwise::ssm_rowwise_w_bf16_bytes(config);
+
         // Dense-FFN activation-quant scratch, shared across all layers (SSOT).
         // Sized for the largest projection K = max(hidden, intermediate); the
         // dense_ffn prefill paths pass `h.max(inter)` to the requant kernels.
@@ -595,6 +608,7 @@ impl BufferSizes {
             lora_seq_slot,
             q2_dequant_scratch,
             q2_act_q8,
+            ssm_rowwise_w_bf16,
         }
     }
 
@@ -641,5 +655,6 @@ impl BufferSizes {
             + self.lora_seq_slot
             + self.q2_dequant_scratch
             + self.q2_act_q8
+            + self.ssm_rowwise_w_bf16
     }
 }

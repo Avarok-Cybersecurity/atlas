@@ -73,15 +73,19 @@ impl Qwen3SsmLayer {
     ) -> Result<()> {
         let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
         // PER-ROW FP8 from the checkpoint (`ATLAS_FP8_ROWWISE=1`), dequantised
-        // once to BF16 — see the matching arm in `trait_prefill_proj.rs` for
-        // why BF16 and not the row-wise FP8 GEMM. First because it is the only
-        // arm that never re-quantises.
+        // once to BF16 into the LEDGERED arena slab — see the matching arm in
+        // `trait_prefill_proj.rs` for why BF16 and not the row-wise FP8 GEMM,
+        // and `rowwise_bf16.rs` for why the bytes are the arena's. First
+        // because it is the only arm that never re-quantises.
         if let Some(ref fp8w) = self.out_proj_fp8w_rowwise {
-            return ops::cublas_bf16_proj(
-                ctx.gpu,
-                ctx.derived,
+            // LEDGERED BF16 weight (`rowwise_bf16.rs`, #917): dequantised once
+            // per layer into `BufferSizes::ssm_rowwise_w_bf16`, so this arm
+            // allocates nothing. The predecessor cached a `gpu.alloc` by
+            // weight pointer, outside the ledger the fitter reads.
+            let w_bf16 = self.rowwise_out_proj_bf16(ctx, fp8w, stream)?;
+            return ops::cublas_bf16_proj_dense(
                 normed_out_buf,
-                fp8w,
+                w_bf16,
                 out_proj_buf,
                 k,
                 h as u32,
