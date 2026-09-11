@@ -20,8 +20,7 @@
 #       have, disables NVLink SHARP, and forces the slowest protocol/algorithm
 #       pair onto an intra-node transport. On one NVLink node the right NCCL
 #       configuration is no NCCL configuration, and a stray ENV would apply it
-#       to every rank silently. Same regression scripts/start_node_ep_test.sh
-#       case (a) guards for the launcher.
+#       to every rank silently.
 #   (c) the NCCL >= 2.28 gate in the runtime stage. Below 2.28 there is no
 #       ncclMemAlloc/ncclMemFree symmetric memory, and the failure surfaces as
 #       a runtime error inside a fused allreduce, not as a bad image.
