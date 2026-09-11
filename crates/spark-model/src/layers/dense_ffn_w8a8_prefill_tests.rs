@@ -9,7 +9,9 @@
 use super::{max_m_for, w8a8_prefill_selected};
 use crate::layer::{ForwardContext, MoeLoraRoute};
 use crate::layers::dense_ffn::{DenseFfnLayer, DenseFfnWeights};
-use crate::layers::ops::{DerivedWeights, GemmDispatch, ModelLevers, ModelStats, cublas_fp8_m_pad};
+use crate::layers::ops::{
+    self, DerivedWeights, GemmDispatch, ModelLevers, ModelStats, cublas_fp8_m_pad,
+};
 use crate::weight_map::{Fp8Weight, QuantizedWeight, WeightQuantFormat};
 use atlas_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
@@ -23,7 +25,18 @@ const INTER: u32 = 17408;
 /// The prompt length in the 2026-09-11 H100 TTFT measurement (1075 ms vs
 /// vLLM's 287 ms) that motivated this path.
 const PROMPT_TOKENS: u32 = 1193;
-const QUANT_K: KernelHandle = KernelHandle(0xA8A);
+/// A quantizer pair with only the shared kernel — what every non-Hopper
+/// target resolves. The Hopper twin changes the launch grid, never the
+/// selector, so these gates are written against the shared arm.
+const QUANT_K: ops::Fp8ActQuant = ops::Fp8ActQuant {
+    shared: KernelHandle(0xA8A),
+    hopper: KernelHandle(0),
+};
+/// No quantizer at all.
+const NO_QUANT: ops::Fp8ActQuant = ops::Fp8ActQuant {
+    shared: KernelHandle(0),
+    hopper: KernelHandle(0),
+};
 const GEMM_K: KernelHandle = KernelHandle(0xA88);
 
 /// Every clause of the rule defaulted to its SELECTING value, so each test
@@ -35,7 +48,7 @@ fn selected(
     k: u32,
     fmt: WeightQuantFormat,
     blockscaled_lever: bool,
-    quant_k: KernelHandle,
+    quant_k: ops::Fp8ActQuant,
     gemm_k: KernelHandle,
     w8a16_only: bool,
 ) -> bool {
@@ -62,7 +75,7 @@ fn selected_capped(
     k: u32,
     fmt: WeightQuantFormat,
     blockscaled_lever: bool,
-    quant_k: KernelHandle,
+    quant_k: ops::Fp8ActQuant,
     gemm_k: KernelHandle,
     w8a16_only: bool,
     max_m: u32,
@@ -96,7 +109,7 @@ fn the_ceiling_is_inclusive_and_cuts_above_it() {
             H,
             WeightQuantFormat::Fp8BlockScaled,
             true,
-            KernelHandle(1),
+            QUANT_K,
             KernelHandle(1),
             false,
             max_m,
@@ -128,7 +141,7 @@ fn the_baseline_ceiling_caps_nothing() {
             H,
             WeightQuantFormat::Fp8BlockScaled,
             true,
-            KernelHandle(1),
+            QUANT_K,
             KernelHandle(1),
             false,
             u32::MAX,
@@ -150,7 +163,7 @@ fn a_zero_ceiling_selects_nothing() {
             H,
             WeightQuantFormat::Fp8BlockScaled,
             true,
-            KernelHandle(1),
+            QUANT_K,
             KernelHandle(1),
             false,
             0,
@@ -265,16 +278,7 @@ fn not_selected_when_the_blockscaled_prefill_lever_is_off() {
 #[test]
 fn not_selected_when_either_kernel_is_missing() {
     let f = WeightQuantFormat::Fp8BlockScaled;
-    assert!(!selected(
-        64,
-        INTER,
-        H,
-        f,
-        true,
-        KernelHandle(0),
-        GEMM_K,
-        false
-    ));
+    assert!(!selected(64, INTER, H, f, true, NO_QUANT, GEMM_K, false));
     assert!(!selected(
         64,
         INTER,

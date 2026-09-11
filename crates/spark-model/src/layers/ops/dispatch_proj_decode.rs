@@ -47,7 +47,7 @@ use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 use super::{
-    cublas_fp8_m_pad, cublas_scale_layout_kmajor, fp8_act_scale_to_kmajor,
+    Fp8ActQuant, cublas_fp8_m_pad, cublas_scale_layout_kmajor, fp8_act_scale_to_kmajor,
     per_token_group_quant_fp8,
 };
 
@@ -184,7 +184,7 @@ pub struct DecodeW8a8Scratch {
     pub act_scale_bytes: usize,
     pub act_scale_kmajor: DevicePtr,
     pub act_scale_kmajor_bytes: usize,
-    pub quant_k: KernelHandle,
+    pub quant_k: Fp8ActQuant,
     pub scale_kmajor_k: KernelHandle,
 }
 
@@ -195,7 +195,7 @@ impl DecodeW8a8Scratch {
         let kg = k as usize / 128;
         self.act_fp8.0 != 0
             && self.act_scale.0 != 0
-            && self.quant_k.0 != 0
+            && self.quant_k.available()
             && self.act_fp8_bytes >= rows * k as usize
             && self.act_scale_bytes >= rows * kg * 4
             && (!cublas_scale_layout_kmajor()

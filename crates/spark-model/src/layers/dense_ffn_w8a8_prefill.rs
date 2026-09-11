@@ -154,7 +154,7 @@ pub(crate) fn w8a8_prefill_selected(
     k: u32,
     scale_format: WeightQuantFormat,
     fp8_blockscaled_prefill: bool,
-    quant_k: KernelHandle,
+    quant_k: ops::Fp8ActQuant,
     gemm_k: KernelHandle,
     w8a16_only: bool,
     max_m: u32,
@@ -166,7 +166,7 @@ pub(crate) fn w8a8_prefill_selected(
         && scale_format == WeightQuantFormat::Fp8BlockScaled
         && k.is_multiple_of(128)
         && n.is_multiple_of(128)
-        && quant_k.0 != 0
+        && quant_k.available()
         && gemm_k.0 != 0
 }
 

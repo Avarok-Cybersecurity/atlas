@@ -287,7 +287,14 @@ impl Fp8TwinSet {
 /// the Q and O FP8 prefill twins will be built. A name typo'd in one of the
 /// three would mis-predict ~1.5 GB of residency on the 27B in silence.
 pub const W8A8_PREFILL_KERNELS: [(&str, &str); 2] = [
-    ("per_token_group_quant_fp8", "per_token_group_quant_fp8"),
+    // Spelled through `ops`, which is where `Fp8ActQuant::resolve` reads the
+    // same pair: a fourth reader of this name arrived with the Hopper
+    // quantizer twin (#928), and four spellings of one kernel name is how one
+    // of them comes to be wrong.
+    (
+        crate::layers::ops::FP8_QUANT_MODULE,
+        crate::layers::ops::FP8_QUANT_ENTRY,
+    ),
     ("fp8_gemm_t_blockscaled", "fp8_gemm_t_blockscaled"),
 ];
 

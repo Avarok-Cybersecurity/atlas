@@ -345,6 +345,27 @@ w8a8_prefill_max_m_narrowing = 4294967295
 #                            never reached. Same disposition as
 #                            `gdn_decode_hopper.cu`.
 #
+#   fp8_act_quant_hopper.cu  The per-token / per-128-K-group FP8 E4M3
+#                            ACTIVATION quantizer that feeds every W8A8
+#                            projection (#928). An ADDITION, for the third
+#                            reason on this page: the parent
+#                            `per_token_group_quant_fp8.cu` is a
+#                            SINGLE-entry-point file, so a same-stem override
+#                            would fork nothing — but then the shared kernel
+#                            would not be in the Hopper image at all, and the
+#                            gate for this kernel is BYTE EQUALITY against it
+#                            on device. A new stem keeps both compiled, which
+#                            is what lets
+#                            `native_fp8_act_quant_hopper_microtest` compare
+#                            them in one process at
+#                            M in {16,17,25,1168,4576} x K in {5120,6144,17408}.
+#                            gb10 is untouched and keeps launching its own.
+#                            Selected by kernel PRESENCE (`try_kernel` →
+#                            `ops::Fp8ActQuant`), not by a lever: the two
+#                            kernels are bit-identical by contract, so there
+#                            is no numeric A/B to arm — the only difference is
+#                            GB/s, and the control for that is a build without
+#                            this file. Numbers: `FP8-ACT-QUANT-ATTRIBUTION.md`.
 #   gdn_prefill_hopper.cuh   Their shared operand machinery — padded smem
 #                            strides and the MMA fragment maps both twins
 #                            read. No gb10 counterpart by design, the same
@@ -373,6 +394,7 @@ overrides = [
   "paged_decode_bf16_splitk_hopper.cu",
   "paged_decode_fp8_splitk_hopper.cu",
   "paged_decode_splitk_hopper.cuh",
+  "fp8_act_quant_hopper.cu",
   "fp8_scale_transpose.cu",
   "gdn_decode_hopper.cu",
   "gdn_fwd_o_hopper.cu",

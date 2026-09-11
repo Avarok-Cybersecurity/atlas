@@ -170,7 +170,12 @@ fn main() -> Result<()> {
     let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
     let stream = 0u64;
     let w8a16_k = gpu.kernel("w8a16_gemm_pipelined", "w8a16_gemm_pipelined")?;
-    let quant_k = gpu.kernel("per_token_group_quant_fp8", "per_token_group_quant_fp8")?;
+    // `Fp8ActQuant::resolve` prefers the Hopper twin when the image has it
+    // (`kernels/hopper/common/fp8_act_quant_hopper.cu`), which is bit-identical
+    // to the shared kernel — so this harness measures the chain the serve
+    // actually runs on each target. Byte equality of the two is gated by
+    // `native_fp8_act_quant_hopper_microtest`.
+    let quant_k = ops::Fp8ActQuant::resolve(&gpu);
     let w8a8_k = gpu.kernel("fp8_gemm_t_blockscaled", "fp8_gemm_t_blockscaled")?;
     let scale_kmajor_k = gpu.kernel("fp8_scale_transpose", "fp8_act_scale_to_kmajor")?;
     let want_cublas = std::env::var("ATLAS_CUBLAS_GEMM").as_deref() == Ok("1");

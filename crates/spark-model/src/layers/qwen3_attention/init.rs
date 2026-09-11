@@ -207,11 +207,12 @@ impl Qwen3AttentionLayer {
             // Spelled through `W8A8_PREFILL_KERNELS` (#915): preflight asks
             // the backend for the SAME two kernels to predict, before the
             // load, whether the Q/O FP8 prefill twins will be built.
-            per_token_group_quant_fp8_k: super::super::try_kernel(
-                gpu,
-                super::types_weights::W8A8_PREFILL_KERNELS[0].0,
-                super::types_weights::W8A8_PREFILL_KERNELS[0].1,
-            ),
+            // `Fp8ActQuant` probes the SAME pair (`ops::FP8_QUANT_*`, which
+            // `W8A8_PREFILL_KERNELS[0]` is spelled from) and additionally the
+            // Hopper twin, which only `kernels/hopper` ships. Preflight's
+            // prediction is unaffected: the shared kernel is what it asks for
+            // and every target still has it.
+            per_token_group_quant_fp8_k: crate::layers::ops::Fp8ActQuant::resolve(gpu),
             fp8_gemm_t_blockscaled_k: super::super::try_kernel(
                 gpu,
                 super::types_weights::W8A8_PREFILL_KERNELS[1].0,
