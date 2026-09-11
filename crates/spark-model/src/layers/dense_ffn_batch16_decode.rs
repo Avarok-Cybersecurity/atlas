@@ -32,12 +32,20 @@
 //! of 32 never reaches the tile GEMMs at decode either.
 //!
 //! ARM ORDER in `w8_gemm!` (see `dense_ffn.rs`) is deliberate and this module
-//! owns the 2nd and 3rd rungs:
+//! owns the 4th and 5th rungs:
 //!   1. `m <= 4`     -> `w8a16_gemv_batch4`
-//!   2. `m` 5..=16   -> `w8a16_gemv_batch16`            (here)
-//!   3. `m` 17..=32  -> `w8a16_gemv_batch16` x2 halves  (here)
-//!   4. W8A8 block-scaled prefill (#917/#928)
-//!   5. transposed / pipelined / base W8A16 tile GEMMs
+//!   2. `m` 5..=16   -> `w8a16_gemm_m16`                (ATLAS_FFN_M16_TC only)
+//!   3. `m` 17..=32  -> `w8a16_gemm_m16` x2 halves      (ATLAS_FFN_M16_TC only)
+//!   4. `m` 5..=16   -> `w8a16_gemv_batch16`            (here)
+//!   5. `m` 17..=32  -> `w8a16_gemv_batch16` x2 halves  (here)
+//!   6. W8A8 block-scaled prefill (#917/#928)
+//!   7. transposed / pipelined / base W8A16 tile GEMMs
+//!
+//! Rungs 2-3 (`dense_ffn_m16_tc.rs`) are OFF by default and, when an operator
+//! sets the lever, they take these same widths onto a tensor-core MMA that
+//! REASSOCIATES the K reduction. This module's bit-exactness claim below is
+//! about the arm THIS module owns; with the lever set, the FFN's 5..=32 output
+//! is the MMA's, within 2 BF16 ULP of the scalar rather than equal to it.
 //!
 //! 🪤 CONSEQUENCE, stated because it is a real boundary move: the W8A8 prefill
 //! arm's own rule (`dense_ffn_w8a8_prefill.rs`) starts at `m > 4`, so with

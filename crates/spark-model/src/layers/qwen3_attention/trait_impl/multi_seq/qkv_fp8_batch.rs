@@ -159,11 +159,23 @@ impl Qwen3AttentionLayer {
         // batch4 for n<=4, batch16 for 5..=16 — one launch either way; the only
         // difference is the kernel's compile-time register-array bound (and so
         // the MAX_M the wrapper enforces).
+        //
+        // 5..=16 ALSO has a tensor-core tier (#927): `w8a16_gemm_m16_strided`
+        // is the same one-weight-pass shape but replaces the batch16 GEMV's 16
+        // scalar FFMA per weight byte with one m16n8k16 MMA lane-slot, which is
+        // what the H100 measured as the difference between 342 GB/s and the
+        // HBM3 roofline (SSOT + numbers: `layers::dense_ffn::m16_tc`). It
+        // REASSOCIATES the K reduction, so it is behind `ATLAS_FFN_M16_TC` and
+        // off by default; `h % 128 == 0` is already guaranteed by `dims_ok` in
+        // the selector, and the row pitch guard by `strides_ok`.
+        let tc = self.m16_tc && self.w8a16_gemm_m16_strided_k.0 != 0 && h.is_multiple_of(128);
         let (launch, kernel): (StridedBatchGemv, KernelHandle) = if n <= 4 {
             (
                 ops::w8a16_gemv_batch4_strided,
                 self.w8a16_gemv_batch4_strided_k,
             )
+        } else if tc {
+            (ops::w8a16_gemm_m16_strided, self.w8a16_gemm_m16_strided_k)
         } else {
             (
                 ops::w8a16_gemv_batch16_strided,
