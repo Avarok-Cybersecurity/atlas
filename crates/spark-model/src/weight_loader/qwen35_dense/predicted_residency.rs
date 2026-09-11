@@ -91,8 +91,8 @@ pub enum DerivedBytesEstimate {
     /// The native-FP8 dense route will run and its derived bytes are this.
     NativeFp8Dense(PredictedDerived),
     /// No prediction. The `&'static str` is the reason, written to be
-    /// readable in a serve log ("… — falling back to pre-load free memory
-    /// (<reason>)").
+    /// readable in a serve log (`… — falling back to pre-load free memory
+    /// (<reason>)`).
     Unavailable(&'static str),
 }
 
