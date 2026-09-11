@@ -73,10 +73,14 @@
 //     and the duplicated activation traffic, but the grid is chosen HOST-side
 //     in `ops::w8a16_gemv` as `ceil(N/4)`. Changing it is a Rust change; this
 //     file is a same-signature target override and makes none.
-//   * Split-K for N <= 2048 is the other half of the k/v answer and already
-//     exists as `w8a16_gemv_splitk` + `ops::w8a16_decode_gemv::splitk_plan`,
-//     behind `ATLAS_FFN_DOWN_SPLITK`. It is a two-kernel launch plan, so it
-//     likewise cannot live inside a single-kernel override.
+//   * Split-K for N <= 2048 is the other half of the k/v answer. It was
+//     written (`w8a16_gemv_splitk` + `ops::w8a16_decode_gemv::splitk_plan`,
+//     behind `ATLAS_FFN_DOWN_SPLITK`) and REMOVED (#993) after the H100
+//     microtest measured it a null on the shape it was written for — down
+//     61.8 us split-K vs 58.9 us staged scalar — and 1.5x SLOWER on the k/v
+//     shape it was aimed at. A fresh attempt starts from a fresh profile, not
+//     from that plan; it is a two-kernel launch plan either way, so it cannot
+//     live inside a single-kernel override.
 //
 // ── NUMERICS: bit-identical, with one impossible byte ────────────────────
 //
@@ -103,9 +107,12 @@
 // sm_89 take the `E4M3_LUT` fallback and keep the +-0 behaviour.
 //
 // Receipt: `examples/native_fp8_gemv_hopper_microtest.rs` asserts
-// `unequal == 0` against `w8a16_gemv_splitk` at splits=1 (which is itself
-// pinned bit-identical to the gb10 `w8a16_gemv`) at all six decode shapes, and
-// against an exact host model of the reduction order.
+// `unequal == 0` at all six decode shapes and the dual, against an EXACT HOST
+// MODEL of the gb10 chain's reduction order (`host_gemv`) — the same 64 lanes
+// over the same chunks, the same separate FMUL/FADD per element, the same
+// shfl.down butterfly and the same single bf16 round. A host model and not a
+// second kernel because a build for THIS target does not contain the kernel
+// being compared against: this file is its override.
 
 #ifndef ATLAS_HOPPER_W8A16_GEMV_CUH
 #define ATLAS_HOPPER_W8A16_GEMV_CUH
