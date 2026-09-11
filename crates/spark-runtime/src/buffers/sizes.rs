@@ -3,7 +3,7 @@
 //! Byte sizes for the per-pass GPU buffer arena.
 
 use atlas_core::config::ModelConfig;
-use atlas_core::device::sm121::NUM_SMS;
+use atlas_kernels::attn_splitk;
 
 use super::sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 
@@ -298,14 +298,32 @@ impl BufferSizes {
         let mamba2_d_inner = config.mamba2_d_inner();
         let max_dim = h.max(mamba2_d_inner);
 
-        // Split-K decode workspace: NUM_SMS * (head_dim + 2) * sizeof(f32).
-        // Partials from split CTAs are stored as [o[head_dim], m, l] per split.
-        // Total slots = num_seqs * num_splits ≤ NUM_SMS, so this is constant ~48 KB.
-        // Read NUM_SMS rather than repeating its value: run_paged_decode derives
-        // num_splits from the same constant, so a literal here is a second source
-        // of truth that under-allocates — silently, into out-of-bounds device
-        // writes — the moment the constant moves.
-        let splitk_workspace = NUM_SMS as usize * (hd + 2) * 4;
+        // Split-K decode workspace: one `[o[head_dim], m, l]` F32 slot per
+        // (sequence, q head, split). The split-K kernel addresses
+        // `((seq * q_heads) + head) * num_splits + split`, so a short
+        // allocation here is an out-of-bounds DEVICE WRITE with no error —
+        // which is why the slot count comes from the same pure function the
+        // dispatch picks `num_splits` with (`atlas_kernels::attn_splitk`,
+        // #928) rather than from a literal restated here.
+        //
+        // The bound is `DecodeMetaLayout::rows()`, not the pinned max batch:
+        // rows is the widest batch the metadata upload accepts and therefore
+        // the real ceiling on `num_seqs`.
+        //
+        // Under the `legacy` policy — every target but Hopper — this is
+        // `sm_count` slots, i.e. the ~48 KB it has always been: that rule
+        // divides the SM count by `q_heads * reference batch`, so the product
+        // can never exceed it. Under `auto` it is `rows * q_heads * splits`
+        // (3.2 MB at the H100 27B shape), which buys the C=1 occupancy the
+        // whole lever is for.
+        let splitk_slots = attn_splitk::workspace_slots(
+            attn_splitk::policy_from_env(),
+            atlas_kernels::TARGET_SM_COUNT,
+            q_heads as u32,
+            decode_meta.rows() as u32,
+            (max_batch_size as u32).max(1),
+        ) as usize;
+        let splitk_workspace = splitk_slots * (hd + 2) * 4;
 
         // The residual stream is always BF16.
         let residual_elem = bf16;

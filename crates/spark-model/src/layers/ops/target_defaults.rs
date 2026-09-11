@@ -53,6 +53,8 @@
 //! environment-sourced values marked. A lever resolved in two places is a
 //! lever that can disagree with the line that claims to report it.
 
+use atlas_kernels::attn_splitk::{self, SplitkPolicy};
+
 use super::dispatch_config::{CublasScope, parse_cublas_scope};
 use super::gemm_quant::{DENSE_GEMV_BATCHM_DECODE_MAX_M, DENSE_GEMV_BATCHM_MAX_M};
 
@@ -181,6 +183,7 @@ pub struct TargetLevers {
     pub gdn_prefill_tc: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
     pub ssm_decode_ring_slots: Resolved<Option<usize>>,
+    pub attn_decode_splitk: Resolved<SplitkPolicy>,
 }
 
 /// The whole table, as a pure function of the baked declaration and a variable
@@ -294,6 +297,24 @@ pub fn resolve(
         // binary. `spark-server` publishes a non-`auto` declaration as the
         // default depth, where the CLI's explicit `N` still outranks it.
         ssm_decode_ring_slots: Resolved::target(resolve_ring_slots(defaults.ssm_decode_ring_slots)),
+        // The paged-decode split-K policy (#928). The RULE is
+        // `atlas_kernels::attn_splitk::resolve_policy`, not a fourth copy of
+        // the rung order here: `spark-runtime`'s buffer arena has to reach the
+        // same answer to size the split-K workspace, and it sits BELOW this
+        // crate. One pure function, two callers — a second spelling is how the
+        // grid comes to index past the allocation, silently, into device memory
+        // it does not own. This table is still the only thing that REPORTS it.
+        attn_decode_splitk: {
+            let (policy, from_env) = attn_splitk::resolve_policy(
+                defaults.attn_decode_splitk,
+                var("ATLAS_ATTN_DECODE_SPLITK").as_deref(),
+            );
+            if from_env {
+                Resolved::env(policy)
+            } else {
+                Resolved::target(policy)
+            }
+        },
     }
 }
 
@@ -359,7 +380,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
          attn_ncol_gemv={ncol} lm_head_m16_tc={head_m16} \
          lm_head_batchm_max={batchm}{batchm_src} ssm_batched_recurrent={recurrent} \
          gdn_decode_hopper={gdn_decode} gdn_prefill_tc={gdn_tc} decode_split_silu={silu} \
-         ssm_decode_ring_slots={ring}{ring_src}",
+         ssm_decode_ring_slots={ring}{ring_src} \
+         attn_decode_splitk={splitk}{splitk_src}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         cublas_src = l.cublas.source.tag(),
         batch16 = onoff(l.ffn_batch16_tier),
@@ -378,6 +400,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
             None => "auto".to_string(),
         },
         ring_src = l.ssm_decode_ring_slots.source.tag(),
+        splitk = l.attn_decode_splitk.value.label(),
+        splitk_src = l.attn_decode_splitk.source.tag(),
     )
 }
 

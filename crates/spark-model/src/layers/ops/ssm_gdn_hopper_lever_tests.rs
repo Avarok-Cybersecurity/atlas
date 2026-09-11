@@ -39,6 +39,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     gdn_prefill_tc: true,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
+    attn_decode_splitk: "auto",
 };
 
 fn with(env: &[(&str, &str)]) -> TargetLevers {
