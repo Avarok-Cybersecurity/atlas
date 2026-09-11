@@ -91,7 +91,7 @@ fn batch16_route(
     n: usize,
     k: usize,
 ) -> Result<usize> {
-    let mut launch = |rows: usize, first: usize| {
+    let launch = |rows: usize, first: usize| {
         ops::w8a16_gemv_batch16(
             gpu,
             kernel,
