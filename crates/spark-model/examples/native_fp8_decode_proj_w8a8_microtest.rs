@@ -51,6 +51,14 @@
 //! cuda,gpu-examples --example native_fp8_decode_proj_w8a8_microtest`. The
 //! example calls cuBLASLt directly, so `ATLAS_CUBLAS_GEMM` is not required
 //! here — the serve spelling is printed at the end for copy-paste.
+//!
+//! ★ REQUIRES A KERNEL SET THAT CARRIES `fp8_scale_transpose.cu`. Since the
+//! 2026-09-11 arch separation that source is a HOPPER-TUNED file
+//! (`kernels/hopper/common`, declared in that target's `[kernels] overrides`)
+//! and `kernels/gb10` does not carry it, so this oracle is for a binary built
+//! with `ATLAS_TARGET_HW=hopper` (or `b200`, which symlinks the same source).
+//! On a GB10 build the `gpu.kernel(...)` lookup below fails by name, which is
+//! the honest answer: the tier this grades does not exist there.
 
 use anyhow::{Result, ensure};
 use half::bf16;

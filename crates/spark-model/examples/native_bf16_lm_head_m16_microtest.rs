@@ -73,6 +73,15 @@
 //! Run on the H100:
 //!     cargo run --release --example native_bf16_lm_head_m16_microtest \
 //!       --features cuda,gpu-examples
+//!
+//! ★ REQUIRES A KERNEL SET THAT CARRIES `dense_gemm_m16_bf16.cu`. Since the
+//! 2026-09-11 arch separation that source is a HOPPER-TUNED file
+//! (`kernels/hopper/common`, declared in that target's `[kernels] overrides`)
+//! and `kernels/gb10` does not carry it, so this oracle is for a binary built
+//! with `ATLAS_TARGET_HW=hopper` (or `b200`, which symlinks the same source).
+//! On a GB10 build the `gpu.kernel(...)` lookup below fails by name, which is
+//! the honest answer: the tier this grades does not exist there.
+
 use anyhow::{Result, ensure};
 use half::bf16;
 use spark_model::layers::dense_ffn::m16_tc::oracle::{

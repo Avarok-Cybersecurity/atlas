@@ -44,6 +44,14 @@
 //!   ATLAS_CUBLAS_GEMM=1 ATLAS_CUBLAS_SCALE_LAYOUT=rowmajor cargo run --release \
 //!     -p spark-model --features cuda,gpu-examples \
 //!     --example native_fp8_ffn_w8a8_microtest
+//!
+//! ★ REQUIRES A KERNEL SET THAT CARRIES `fp8_scale_transpose.cu`. Since the
+//! 2026-09-11 arch separation that source is a HOPPER-TUNED file
+//! (`kernels/hopper/common`, declared in that target's `[kernels] overrides`)
+//! and `kernels/gb10` does not carry it, so this oracle is for a binary built
+//! with `ATLAS_TARGET_HW=hopper` (or `b200`, which symlinks the same source).
+//! On a GB10 build the `gpu.kernel(...)` lookup below fails by name, which is
+//! the honest answer: the tier this grades does not exist there.
 
 use anyhow::{Result, bail};
 use half::bf16;
