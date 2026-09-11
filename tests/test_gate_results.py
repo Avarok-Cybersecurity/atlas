@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Self-test for tests/gate_results.py — the serve-matrix release gate.
 
-Pure stdlib (unittest); no server, no GPU. Validates the two properties that
-matter: the per-model bars, and — the reason this gate exists — that a planned
-model which never produced a result FAILS coverage instead of being invisible.
+Pure stdlib (unittest); no server, no GPU. Checks the per-model bars, missing
+and invalid evidence, declared checkpoint identity, baseline eligibility, and
+the process exit status that the release workflow consumes.
 
     python3 -m unittest tests.test_gate_results        # from repo root
     python3 tests/test_gate_results.py                 # direct
 """
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -201,6 +203,127 @@ class MainExit(unittest.TestCase):
         with open(os.path.join(self.tmp, "a.json"), "w") as f:
             json.dump(_model_result("M/a"), f)
         self.assertEqual(self._run(), 0)
+
+
+class EvidenceContracts(unittest.TestCase):
+    """Reject missing or misleading evidence, not just explicit FAIL rows."""
+
+    def test_every_required_probe_must_supply_evidence(self):
+        for key in ("coherence", "fibonacci", "tool_calls", "tps"):
+            for kind in ("absent", "empty", "null"):
+                with self.subTest(probe=key, evidence=kind):
+                    result = _model_result("m")
+                    if kind == "absent":
+                        del result[key]
+                    else:
+                        result[key] = [] if kind == "empty" else None
+                    self.assertEqual(G.verdict(result), [f"{key}(no-evidence)"])
+
+    def test_status_reason_cannot_masquerade_as_a_pass_or_waiver(self):
+        cases = (
+            ("coherence", "FAIL (expected PASS)", ["coherence(0/3)"]),
+            ("fibonacci", "BYPASS", ["fibonacci"]),
+            ("tool_calls", "FAIL (expected N/A)", ["tool_calls"]),
+            ("tool_calls", "NOT PASS", ["tool_calls"]),
+        )
+        for key, status, expected in cases:
+            with self.subTest(probe=key, status=status):
+                result = _model_result("m")
+                for row in result[key]:
+                    row["status"] = status
+                self.assertEqual(G.verdict(result), expected)
+
+    def test_malformed_probe_collections_are_rejected_by_name(self):
+        for key in ("coherence", "fibonacci", "tool_calls", "tps"):
+            for rows in ({}, "PASS", [None], ["PASS"]):
+                with self.subTest(probe=key, rows=rows):
+                    result = _model_result("m")
+                    result[key] = rows
+                    self.assertEqual(G.verdict(result), [f"{key}(invalid)"])
+
+    def test_status_annotations_emitted_by_the_suite_remain_valid(self):
+        self.assertEqual(G.verdict(_model_result(
+            "m", fib=("PASS (plain-text)",),
+            tools=("N/A (parser not supported)",))), [])
+
+    def test_invalid_tps_cannot_hide_alongside_a_valid_sample(self):
+        for value in (float("nan"), float("inf"), -float("inf"), True, "42", None,
+                      10 ** 400):
+            with self.subTest(value=value):
+                self.assertEqual(G.verdict(_model_result("m", tps=(42.0, value))),
+                                 ["tps(invalid)"])
+
+    def test_existing_invalid_baseline_cannot_disable_the_regression_bar(self):
+        for baseline in ({}, [], {"tps": 0}, {"tps": -1}, {"tps": True},
+                         {"tps": float("nan")}, {"tps": float("inf")}, {"tps": "50"}):
+            with self.subTest(baseline=baseline):
+                self.assertEqual(G.verdict(_model_result("m"), baseline=baseline),
+                                 ["tps(invalid-baseline)"])
+
+    def test_tps_tolerance_boundary_is_inclusive(self):
+        self.assertEqual(G.verdict(_model_result("m", tps=(45.0,)),
+                                   baseline={"tps": 50.0}), [])
+        self.assertEqual(G.verdict(_model_result("m", tps=(44.0,)),
+                                   baseline={"tps": 50.0}), ["tps(44.0<45.0)"])
+
+
+class ArtifactContracts(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.bdir = os.path.join(self.tmp.name, "baselines")
+
+    def _write(self, result):
+        with open(os.path.join(self.tmp.name, "a.json"), "w") as f:
+            json.dump(result, f)
+
+    def test_manifest_model_must_match_the_observed_result(self):
+        self._write(_model_result("M/wrong-checkpoint"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            got = G.gate_manifest(self.tmp.name, [("a", "M/expected")], self.bdir)
+        self.assertEqual(got, (0, 1, [("M/expected", ["model-mismatch"])]))
+
+    def test_baseline_update_requires_all_correctness_bars_and_identity(self):
+        cases = (
+            _model_result("M/a", coh=("FAIL",)),
+            _model_result("M/a", fib=("FAIL",)),
+            _model_result("M/a", tools=("FAIL",)),
+            _model_result("M/a", tps=(float("nan"),)),
+            _model_result("M/a", tps=(float("inf"),)),
+            _model_result("M/wrong-checkpoint"),
+        )
+        for result in cases:
+            with self.subTest(result=result):
+                G.write_baseline("a", {"tps": 50.0}, self.bdir)
+                self._write(result)
+                self.assertEqual(G.update_baselines(
+                    self.tmp.name, [("a", "M/a")], self.bdir), [])
+                self.assertEqual(G.load_baseline("a", self.bdir), {"tps": 50.0})
+
+    def test_malformed_baseline_is_present_but_invalid(self):
+        os.makedirs(self.bdir)
+        self._write(_model_result("M/a"))
+        for content in ("{broken json", "null", "[]"):
+            with self.subTest(content=content):
+                with open(os.path.join(self.bdir, "a.json"), "w") as f:
+                    f.write(content)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    got = G.gate_manifest(self.tmp.name, [("a", "M/a")], self.bdir)
+                self.assertEqual(got, (0, 1, [("M/a", ["tps(invalid-baseline)"])]))
+
+    def test_cli_blocks_a_partial_artifact(self):
+        with open(os.path.join(self.tmp.name, G.MANIFEST_NAME), "w") as f:
+            json.dump({"labels": [{"label": "a", "model": "M/a"}]}, f)
+        self._write({"model": "M/a", "coherence": []})
+        # Use the actual entry point: a gate that only prints FAIL is unsafe
+        # for the documented release command sequence.
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, G.__file__, "--results-dir", self.tmp.name,
+             "--baseline-dir", self.bdir], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        for bar in ("coherence", "fibonacci", "tool_calls", "tps"):
+            self.assertIn(f"{bar}(no-evidence)", result.stderr)
 
 
 if __name__ == "__main__":

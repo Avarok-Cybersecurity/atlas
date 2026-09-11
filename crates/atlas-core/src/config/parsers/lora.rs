@@ -75,9 +75,9 @@ pub struct PeftAdapterConfig {
     /// which layers receive deltas; this is kept only for the startup log.
     pub layers_to_transform: Option<Vec<usize>>,
     /// Vocab-extension / trainable-token ids for the token overlay
-    /// (Feature 2). Flattened + deduped union of the config's
-    /// `trainable_token_indices` (list form, or `{"embed_tokens":[…],
-    /// "lm_head":[…]}` dict form). Empty ⇒ no `trainable_tokens` overlay.
+    /// (Feature 2). Unique ascending order from the config's
+    /// `trainable_token_indices` list, or the common order declared for
+    /// `embed_tokens` and `lm_head`. Empty ⇒ no `trainable_tokens` overlay.
     pub trainable_token_indices: Vec<u32>,
     /// Accepted `modules_to_save` leaves — the subset Atlas can apply as a
     /// token overlay (`embed_tokens` / `lm_head` full-row replacement).
@@ -149,7 +149,7 @@ struct RawPeftAdapterConfig {
     /// PEFT `trainable_token_indices` — vocab ids whose embed/lm_head rows the
     /// adapter fully replaces. Emitted as a bare list `[id, …]` OR a per-module
     /// dict `{"embed_tokens":[…], "lm_head":[…]}`. Parsed by
-    /// [`parse_trainable_tokens`] into a deduped `Vec<u32>`.
+    /// [`parse_trainable_tokens`] into one shared unique ascending `Vec<u32>`.
     #[serde(default)]
     trainable_token_indices: Option<serde_json::Value>,
     /// PEFT `target_parameters` — LoRA attached to fused `nn.Parameter`
@@ -286,14 +286,18 @@ fn partition_modules_to_save(mods: Option<&[String]>) -> Result<Vec<String>> {
     Ok(accepted)
 }
 
-/// Parse PEFT `trainable_token_indices` into a deduped ascending `Vec<u32>`.
+/// Parse PEFT `trainable_token_indices` into one unique ascending `Vec<u32>` shared by
+/// the embed and lm-head overlay paths.
 ///
 /// Accepts three on-disk forms: absent/null ⇒ empty; a bare list `[id, …]`;
-/// or a per-module dict `{"embed_tokens":[…], "lm_head":[…]}` whose value
-/// lists are unioned. Negative / non-integer entries are a named reject.
+/// or a per-module dict `{"embed_tokens":[…], "lm_head":[…]}` whose non-null
+/// lists must be identical. Negative, duplicate, unknown-module, and differing
+/// per-module entries are named rejects.
 fn parse_trainable_tokens(v: &Option<serde_json::Value>) -> Result<Vec<u32>> {
-    let mut ids: Vec<u32> = Vec::new();
-    let mut push_arr = |arr: &[serde_json::Value]| -> Result<()> {
+    fn parse_ids(arr: &[serde_json::Value]) -> Result<Vec<u32>> {
+        let mut ids = Vec::with_capacity(arr.len());
+        let mut seen = std::collections::HashSet::new();
+        let mut previous: Option<u32> = None;
         for e in arr {
             let n = e.as_u64().context(
                 "REJECT(trainable_token_indices): entries must be non-negative integers",
@@ -301,35 +305,60 @@ fn parse_trainable_tokens(v: &Option<serde_json::Value>) -> Result<Vec<u32>> {
             if n > u32::MAX as u64 {
                 bail!("REJECT(trainable_token_indices): id {n} exceeds u32 range");
             }
-            ids.push(n as u32);
+            let id = n as u32;
+            if !seen.insert(id) {
+                bail!("REJECT(trainable_token_indices): duplicate id {id}");
+            }
+            if let Some(prev) = previous
+                && id < prev
+            {
+                bail!(
+                    "REJECT(trainable_token_indices): ids must be ascending to preserve \
+                     trainable_tokens_delta row order; {id} follows {prev}"
+                );
+            }
+            previous = Some(id);
+            ids.push(id);
         }
-        Ok(())
-    };
+        Ok(ids)
+    }
+
     match v {
-        None | Some(serde_json::Value::Null) => {}
-        Some(serde_json::Value::Array(arr)) => push_arr(arr)?,
+        None | Some(serde_json::Value::Null) => Ok(Vec::new()),
+        Some(serde_json::Value::Array(arr)) => parse_ids(arr),
         Some(serde_json::Value::Object(map)) => {
-            for (_module, val) in map {
-                match val {
-                    serde_json::Value::Array(arr) => push_arr(arr)?,
-                    serde_json::Value::Null => {}
+            let mut shared: Option<Vec<u32>> = None;
+            for (module, val) in map {
+                if module != "embed_tokens" && module != "lm_head" {
+                    bail!(
+                        "REJECT(trainable_token_indices): unsupported module '{module}'; only \
+                         embed_tokens and lm_head are supported"
+                    );
+                }
+                let module_ids = match val {
+                    serde_json::Value::Array(arr) => parse_ids(arr)?,
+                    serde_json::Value::Null => continue,
                     other => bail!(
                         "REJECT(trainable_token_indices): dict value must be an array, got {other}"
                     ),
+                };
+                if let Some(ref expected) = shared
+                    && expected != &module_ids
+                {
+                    bail!(
+                        "REJECT(trainable_token_indices): per-module token lists differ; \
+                         Atlas requires one shared embed_tokens/lm_head order"
+                    );
                 }
+                shared = Some(module_ids);
             }
+            Ok(shared.unwrap_or_default())
         }
         Some(other) => bail!(
             "REJECT(trainable_token_indices): expected null, an array, or a per-module \
              object, got {other}"
         ),
     }
-    // Dedup while PRESERVING first-occurrence order: the `trainable_tokens_delta`
-    // tensor's rows align positionally to this id list, so a sort would break the
-    // id→delta-row mapping the overlay builder relies on.
-    let mut seen = std::collections::HashSet::new();
-    ids.retain(|id| seen.insert(*id));
-    Ok(ids)
 }
 
 fn parse_layers_to_transform(v: &Option<serde_json::Value>) -> Result<Option<Vec<usize>>> {

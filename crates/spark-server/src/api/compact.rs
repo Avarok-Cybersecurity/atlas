@@ -171,6 +171,21 @@ pub fn compact_messages(
     result
 }
 
+/// The SSE `data:` payload for a mid-stream error on the legacy
+/// `/v1/completions` stream.
+///
+/// Built with `serde_json`, NOT `format!`: `message` is an arbitrary
+/// runtime string — an anyhow `{e:#}` chain, a tokenizer or CUDA
+/// diagnostic, a file path — and interpolating one into a JSON literal
+/// emits a MALFORMED frame the moment it contains a `"`, a `\` or a
+/// newline. The client then reports a parse error instead of the reason
+/// its request died, which is strictly worse than the generic error it
+/// replaced. The envelope shape (`{"error": "<text>"}`) is unchanged;
+/// only the encoding is.
+pub(super) fn completion_error_frame(message: &str) -> String {
+    serde_json::json!({ "error": message }).to_string()
+}
+
 pub(super) fn openai_error_response(status: StatusCode, message: String) -> Response {
     openai_error_response_with_param(status, message, None, None)
 }

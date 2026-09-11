@@ -10,24 +10,7 @@ use super::*;
 /// benchmark reports the n it actually drew and this test is what says the
 /// arithmetic still matches the reference.
 fn real_totals() -> BTreeMap<String, usize> {
-    [
-        ("irrelevance", 240),
-        ("live_irrelevance", 884),
-        ("live_multiple", 1053),
-        ("live_parallel", 16),
-        ("live_parallel_multiple", 24),
-        ("live_relevance", 16),
-        ("live_simple", 258),
-        ("multiple", 200),
-        ("parallel", 200),
-        ("parallel_multiple", 200),
-        ("simple_java", 100),
-        ("simple_javascript", 50),
-        ("simple_python", 400),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v))
-    .collect()
+    super::reference_subset_totals()
 }
 
 #[test]

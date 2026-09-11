@@ -73,6 +73,7 @@ pub(super) fn run_record(metrics: BTreeMap<String, f64>, verdict: Verdict) -> Ru
         benchmark_id: "bfcl-subset".to_string(),
         benchmark_name: "BFCL (subset)".to_string(),
         recorded_at: 1_785_891_382,
+        serve_overrides: Default::default(),
         target_url: "http://127.0.0.1:8888".to_string(),
         target_model: MODEL.to_string(),
         params,
@@ -192,7 +193,6 @@ fn check_record_refuses_a_cross_checkpoint_comparison() {
         SHA.into(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     // The baseline knows only another checkpoint, so the record's model does
@@ -225,7 +225,6 @@ fn check_record_refuses_a_cross_hardware_comparison() {
         SHA.into(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     gate.hardware = Hardware {
@@ -255,7 +254,6 @@ fn an_unknown_fingerprint_never_silently_matches() {
         SHA.into(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     gate.hardware = Hardware::unknown();
@@ -278,7 +276,6 @@ fn check_record_scores_every_bound_and_missing_metric() {
         SHA.into(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     let mut metrics = BTreeMap::new();
@@ -325,7 +322,6 @@ fn write_and_read_round_trip_through_the_repo_layout() {
         SHA.into(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     let path = write_record(dir.path(), &gate).unwrap();
@@ -346,15 +342,7 @@ pub(super) fn plant(root: &Path, id: &str, sha: &str, secs: u64, verdict: &str) 
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 90.0);
     let record = run_record(metrics, Verdict::pass("ok"));
-    let mut gate = GateRecord::from_run(
-        &record,
-        hw(),
-        sha.to_string(),
-        Vec::new(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
+    let mut gate = GateRecord::from_run(&record, hw(), sha.to_string(), Vec::new(), None).unwrap();
     gate.benchmark_id = id.to_string();
     gate.verdict = Some(verdict.to_string());
     gate.recorded_at = secs;

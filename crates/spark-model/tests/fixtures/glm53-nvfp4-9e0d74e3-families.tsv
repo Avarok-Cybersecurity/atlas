@@ -1,0 +1,22 @@
+# GLM-5.3-Flash NVFP4 @ 9e0d74e3 — measured per-family tensor counts and BYTES.
+# Produced by crates/spark-model/src/layers/glm5next_moe_ref/full_account.py, 2026-08-27.
+# family<TAB>tensors<TAB>bytes.  Families tagged (NOT LOADED) are deliberately excluded
+# from the text model: vision tower, and every layer-45 MTP tensor.
+moe_experts_NVFP4	108864	171228411648
+attn_KDA	510	9366356992
+moe_experts_NVFP4(MTP,NOT LOADED)	2592	4076866944
+attn_DSA	154	2748117504
+moe_shared_BF16	126	2113929216
+lm_head	1	1268776960
+embeddings	1	1268776960
+vision(NOT LOADED)	347	1127254016
+dense_ffn	9	905969664
+attn_DSA(MTP,NOT LOADED)	14	249828864
+moe_router	84	99138816
+mHC	270	70788600
+mtp_head(NOT LOADED)	4	67133440
+moe_shared_BF16(MTP,NOT LOADED)	3	50331648
+moe_router(MTP,NOT LOADED)	2	2360448
+layer_norms	90	737280
+layer_norms(MTP,NOT LOADED)	2	16384
+final_norm	1	8192

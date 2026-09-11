@@ -174,7 +174,13 @@ fn unresolved_entries_are_keyed_by_the_including_file() {
     write(&a, "#include \"gone.cuh\"\n");
     write(&b, "#include \"gone.cuh\"\n");
     let closure = hash_with_report(&d, &inputs(vec![a, b])).unwrap();
-    assert_eq!(closure.unresolved.len(), 2, "{:?}", closure.unresolved);
+    assert_eq!(
+        closure.unresolved,
+        BTreeSet::from([
+            "common/a.cu -> gone.cuh".to_string(),
+            "common/b.cu -> gone.cuh".to_string(),
+        ])
+    );
 }
 
 /// A preprocessor conditional is not evaluated, so an include in a branch this
@@ -204,20 +210,44 @@ fn includes_inside_untaken_conditionals_are_still_walked() {
 fn angle_bracket_includes_are_not_followed() {
     let d = tmp();
     let src = d.join("common/x.cu");
+    let toolchain_header = d.join("common/cuda_fp16.h");
     write(&src, "#include <cuda_fp16.h>\n__global__ void k() {}\n");
-    assert!(hash(&d, &inputs(vec![src])).is_ok());
+    write(&toolchain_header, "#define TOOLCHAIN_VALUE 1\n");
+
+    let before = hash_with_report(&d, &inputs(vec![src.clone()])).unwrap();
+    assert!(before.unresolved.is_empty(), "{:?}", before.unresolved);
+
+    write(&toolchain_header, "#define TOOLCHAIN_VALUE 2\n");
+    let after = hash_with_report(&d, &inputs(vec![src])).unwrap();
+    assert!(after.unresolved.is_empty(), "{:?}", after.unresolved);
+    assert_eq!(
+        before.digest, after.digest,
+        "angle-bracket headers are represented by compiler provenance, not local content"
+    );
 }
 
-/// A commented-out include is not compiled, so hashing it would make a comment
-/// edit look like a source change.
+/// A commented-out include is not compiled, so a same-named local header must
+/// remain outside the closure and must not be reported as unresolved.
 #[test]
 fn commented_out_includes_are_ignored() {
     let d = tmp();
     let src = d.join("common/x.cu");
-    write(&src, "// #include \"absent.cuh\"\n__global__ void k() {}\n");
-    assert!(
-        hash(&d, &inputs(vec![src])).is_ok(),
-        "a commented include must not be resolved, let alone demanded"
+    let commented_header = d.join("common/commented.cuh");
+    write(
+        &src,
+        "// #include \"commented.cuh\"\n__global__ void k() {}\n",
+    );
+    write(&commented_header, "#define COMMENTED_VALUE 1\n");
+
+    let before = hash_with_report(&d, &inputs(vec![src.clone()])).unwrap();
+    assert!(before.unresolved.is_empty(), "{:?}", before.unresolved);
+
+    write(&commented_header, "#define COMMENTED_VALUE 2\n");
+    let after = hash_with_report(&d, &inputs(vec![src])).unwrap();
+    assert!(after.unresolved.is_empty(), "{:?}", after.unresolved);
+    assert_eq!(
+        before.digest, after.digest,
+        "a header named only by a commented include must stay outside the closure"
     );
 }
 
@@ -245,6 +275,16 @@ fn non_source_inputs_each_move_the_hash() {
     flags.flags.push("-O3".into());
     assert_ne!(base, hash(&d, &flags).unwrap(), "nvcc flags");
 
+    let mut define_then_undefine = inputs(vec![src.clone()]);
+    define_then_undefine.flags = vec!["-DSELECTED=1".into(), "-USELECTED".into()];
+    let mut undefine_then_define = inputs(vec![src.clone()]);
+    undefine_then_define.flags = vec!["-USELECTED".into(), "-DSELECTED=1".into()];
+    assert_ne!(
+        hash(&d, &define_then_undefine).unwrap(),
+        hash(&d, &undefine_then_define).unwrap(),
+        "nvcc flag order"
+    );
+
     let mut arch = inputs(vec![src.clone()]);
     arch.arch = "sm_120a".into();
     assert_ne!(base, hash(&d, &arch).unwrap(), "arch");
@@ -263,12 +303,13 @@ fn non_source_inputs_each_move_the_hash() {
     assert_ne!(with_cfg, hash(&d, &cfg).unwrap(), "config CONTENT");
 }
 
-/// ★ Identical bytes at a different stem is a different compile.
+/// ★ Identical bytes at a different repo-relative path are a different input.
 ///
-/// The stem decides which common file a source shadows, so content alone is not
-/// the identity — the name is hashed too.
+/// The stem decides which common file a source shadows, and the directory
+/// distinguishes a common source from a model override. Content alone is not
+/// the identity, so the full repo-relative path is hashed too.
 #[test]
-fn identical_content_under_a_different_name_hashes_differently() {
+fn identical_content_under_a_different_path_hashes_differently() {
     let d = tmp();
     let a = d.join("common/one.cu");
     let b = d.join("common/two.cu");
@@ -276,7 +317,18 @@ fn identical_content_under_a_different_name_hashes_differently() {
     write(&b, "__global__ void k() {}\n");
     assert_ne!(
         hash(&d, &inputs(vec![a])).unwrap(),
-        hash(&d, &inputs(vec![b])).unwrap()
+        hash(&d, &inputs(vec![b])).unwrap(),
+        "different stems"
+    );
+
+    let common = d.join("common/same.cu");
+    let model = d.join("model/nvfp4/same.cu");
+    write(&common, "__global__ void same() {}\n");
+    write(&model, "__global__ void same() {}\n");
+    assert_ne!(
+        hash(&d, &inputs(vec![common])).unwrap(),
+        hash(&d, &inputs(vec![model])).unwrap(),
+        "same stem in different source directories"
     );
 }
 
@@ -310,10 +362,23 @@ fn the_hash_does_not_depend_on_the_checkout_location() {
 
     write(&d1.join("common/x.cu"), "__global__ void k() {}\n");
     write(&d2.join("common/x.cu"), "__global__ void k() {}\n");
+    write(&d1.join("model/MODEL.toml"), "[model]\nname = \"same\"\n");
+    std::fs::create_dir_all(d2.join("model")).unwrap();
+    write(&d2.join("model/MODEL.toml"), "[model]\nname = \"same\"\n");
+
+    // Use a lexical alias for one checkout root. `expand` canonicalizes source
+    // files, so the root must be normalized to the same form before paths are
+    // made relative. This reproduces aliases such as macOS `/var` ->
+    // `/private/var` without depending on the host platform.
+    let aliased_d1 = d1.join("model/..");
+    let mut first = inputs(vec![aliased_d1.join("common/x.cu")]);
+    first.configs.push(aliased_d1.join("model/MODEL.toml"));
+    let mut second = inputs(vec![d2.join("common/x.cu")]);
+    second.configs.push(d2.join("model/MODEL.toml"));
 
     assert_eq!(
-        hash(&d1, &inputs(vec![d1.join("common/x.cu")])).unwrap(),
-        hash(&d2, &inputs(vec![d2.join("common/x.cu")])).unwrap(),
+        hash(&aliased_d1, &first).unwrap(),
+        hash(&d2, &second).unwrap(),
         "the same commit checked out twice must hash the same"
     );
 }

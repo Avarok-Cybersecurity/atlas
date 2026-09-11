@@ -52,13 +52,21 @@ fn contend(a: &PrView, b: &PrView) -> bool {
     !a.targets.is_disjoint(&b.targets)
 }
 
-/// The PRs a merge order can contain: open and non-draft. A merged PR has
-/// already landed; a draft cannot land. The old order ranked both, which made
-/// the suggestion wrong on its face whenever the feed carried merged PRs.
+/// The PRs a merge order can contain: open, non-draft, and with a diff this
+/// run could actually read. A merged PR has already landed; a draft cannot
+/// land. The old order ranked both, which made the suggestion wrong on its
+/// face whenever the feed carried merged PRs.
+///
+/// ★ A PR whose changed files came back unreadable is NOT ranked. Ranking is
+/// entirely a function of what a diff touches, so ordering one we cannot see
+/// would be a recommendation with no input behind it — and with an empty path
+/// list it would sort to the FRONT (zero partners, zero targets, zero files)
+/// and be published as "merge next". [`super::render_next_steps`] names them
+/// instead, so they are excluded loudly rather than silently.
 fn orderable(views: &[PrView]) -> Vec<&PrView> {
     views
         .iter()
-        .filter(|v| !v.facts.merged && !v.facts.draft)
+        .filter(|v| !v.facts.merged && !v.facts.draft && !v.facts.paths_unknown)
         .collect()
 }
 
@@ -143,6 +151,17 @@ pub fn render_order_chart(views: &[PrView]) -> String {
     if order.is_empty() {
         // No fence at all: an empty gitGraph (a mainline with no branches)
         // renders as a lone dot, which reads as a broken chart.
+        //
+        // "nothing to order" and "everything was unreadable" are different
+        // facts and must not share a sentence.
+        if views
+            .iter()
+            .any(|v| !v.facts.merged && v.facts.paths_unknown)
+        {
+            return "_Nothing could be ordered: the changed files of the open PR(s) came \
+                    back unreadable on this run._\n"
+                .to_string();
+        }
         return "_No open, non-draft PRs to order._\n".to_string();
     }
     let shown = order.len().min(CHART_PR_BOUND);
@@ -184,6 +203,15 @@ pub fn render_next_steps(views: &[PrView]) -> String {
     let mut out = String::from("\n### Recommended next steps\n\n");
     let order = merge_order(views);
     match order.first() {
+        None if views
+            .iter()
+            .any(|v| !v.facts.merged && v.facts.paths_unknown) =>
+        {
+            out.push_str(
+                "- **No recommendation.** Every rankable PR's changed files came \
+                       back unreadable on this run.\n",
+            )
+        }
         None => out.push_str("- Nothing to merge: no open, non-draft PRs.\n"),
         Some(head) => {
             let v = views.iter().find(|v| v.facts.number == *head).unwrap();
@@ -193,6 +221,21 @@ pub fn render_next_steps(views: &[PrView]) -> String {
                 super::escape(&v.facts.title)
             ));
         }
+    }
+
+    // Unrankable, and said so where the reader is deciding what to merge.
+    let blind: Vec<u64> = views
+        .iter()
+        .filter(|v| !v.facts.merged && v.facts.paths_unknown)
+        .map(|v| v.facts.number)
+        .collect();
+    if !blind.is_empty() {
+        out.push_str(&format!(
+            "- **Cannot rank {}:** their changed files came back unreadable, so this \
+             run has no input to order them by. They are counted as touching \
+             everything elsewhere in this comment; re-run before trusting the order.\n",
+            cap_prs(&blind)
+        ));
     }
 
     // Baselines already moved: open PRs whose targets a merged PR re-opened.

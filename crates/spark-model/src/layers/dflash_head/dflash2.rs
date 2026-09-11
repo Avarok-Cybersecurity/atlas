@@ -54,7 +54,7 @@ impl BlockDiffusionDraftHead {
             && self.kernels.dflash2_conv2.0 != 0
             && self.kernels.dflash2_topk16.0 != 0
             && self.kernels.dflash2_selector_walk.0 != 0
-            && std::env::var("ATLAS_DFLASH2").ok().as_deref() != Some("0")
+            && self.levers.dflash2
     }
 
     fn conv_weights(&self, layer: &DflashLayer, site: ConvSite) -> Option<(DevicePtr, DevicePtr)> {

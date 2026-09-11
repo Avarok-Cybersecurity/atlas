@@ -59,6 +59,15 @@ pub struct GdnFlags {
     /// implementations round differently — ~5e-5 of lanes by 1 ULP, on every
     /// shape measured (#459). Closing that needs single-row routing for the
     /// whole verify forward, which is future work.
+    ///
+    /// ★ Attribution warning, learned the hard way: a 2026-08-21 measurement
+    /// showed gross output degeneration (video-fidelity 0/2, 0/4 at C=2/C=4)
+    /// that this flag appeared to fix. The real cause was the K=4 verdict
+    /// rewind bug (#699); this flag only changed dispatch so the bug stopped
+    /// firing. The 1-ULP divergence this flag actually closes has never been
+    /// shown to cause more than an occasional flipped token at temperature 0.
+    /// If flipping this flag changes gross behavior, suspect a dispatch-
+    /// sensitive scheduler bug first. Details on `ServeArgs::exact_verify`.
     pub exact_verify: bool,
 }
 

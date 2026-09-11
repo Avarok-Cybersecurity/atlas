@@ -145,6 +145,21 @@ existant = "existant"
 # least-squares fit (sl/sl2/sxl naming kept 1:1 with upstream). Not `xsl`.
 sxl = "sxl"
 
+# `dout` — device OUTput buffer handle in the GLM KDA microtests and the
+# chunk mutant (`let dout = up_f32(g, ...)`; `.arg_ptr(dout)`) in
+# `kda_chunk_microtest.rs`, `kda_recurrent_microtest.rs`,
+# `kda_conv_contract_microtest.rs`, `common/kda_chunk_mutant.rs`. The same
+# identifier is already excused under `3rdparty_patches/`. Not `doubt`.
+dout = "dout"
+# `byt` — byte-count `Counter` beside `cnt` in the GLM MoE reference
+# tensor-accounting script (`glm5next_moe_ref/full_account.py`). Not `byte`.
+byt = "byt"
+# `pn` / `shs` — projection tensor name and the second tensor's shape in the
+# GLM FFN microtest runner (`examples/common/glm5next_ffn_run.rs`:
+# `let pn = format!(...)`, `let (dts, shs, ..) = p.meta(&sn)?`). Not `on`/`ssh`.
+pn = "pn"
+shs = "shs"
+
 [default.extend-identifiers]
 # `PNGs` — the plural of PNG, in the vision-fixture provisioning commentary.
 # The checker splits an uppercase run followed by a lowercase tail, so it sees

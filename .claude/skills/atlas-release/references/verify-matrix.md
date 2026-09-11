@@ -100,8 +100,10 @@ result. Missing manifest ⇒ hard FAIL unless you pass `--allow-missing-manifest
 "planned-but-absent = FAIL" property in.
 
 The per-model bars (constants at the top of the script, chosen up front):
-- **present** — the model is in the manifest **and** has a results file (booted
-  past the `/v1/models` health check).
+- **present** — the model is in the manifest and has a matching result with
+  nonempty required probe groups. The orchestrator clears planned prior results
+  before boot attempts and rejects output from failed suite subprocesses. Archive
+  completed artifacts before another run; use one orchestrator per checkout.
 - **coherence** ≥ 2 of 3 probes PASS (tolerates the one temp>0 creative probe).
 - **codegen** — the fibonacci exec smoke PASS.
 - **tools** — at least one real PASS, **or** all `N/A` (known-gap parser). An
@@ -114,9 +116,12 @@ The per-model bars (constants at the top of the script, chosen up front):
   approach proposed by @Sujimoshi in #253; folded into the gate here to keep one
   roster/SSOT rather than a parallel suite.)
 
+The detailed evidence and remaining provenance limits are in
+[`docs/testing/serve-matrix-rst-audit-2026-09-04.md`](../../../../docs/testing/serve-matrix-rst-audit-2026-09-04.md).
+
 Validated against fixtures (full-pass / planned-but-missing / below-bar /
 known-gap-all-N/A / tps-regression / no-baseline / require-baselines) in
-`tests/test_gate_results.py` (23 tests). Run order for `/atlas-release gate`:
+`tests/test_gate_results.py` and `tests/test_gate_results_orchestrator.py` (host-only). Run order for `/atlas-release gate`:
 ```bash
 ATLAS_IMAGE=<tag> python3 tests/run_all_models.py               # boots + probes matrix -> *.json + _manifest.json
 python3 scripts/test_coherence.py --url http://localhost:8888   # leak/determinism/tools, exit 1 on fail

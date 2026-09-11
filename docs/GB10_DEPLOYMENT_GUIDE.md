@@ -212,7 +212,8 @@ The gotchas that cost people an evening, in one place:
    use the Docker image. There is no bypass env var; `ATLAS_SKIP_DRIVER_CHECK`
    is not read anywhere and setting it does nothing.
 5. **First request hangs for 5–30 s.** That's cold-start CUDA-graph capture +
-   autotuner + prefix-cache init, not a hang. Eliminate it with `--warmup-prompt`.
+   autotuner + prefix-cache init, not a hang. Move the cost off your first real
+   request by sending one throwaway request as soon as the server is up.
 6. **Garbage / incoherent output.** Two usual causes: (a) **tool-parser mismatch** —
    the parser must match the model (`qwen3_coder` for Qwen3.5/3.6, `hermes` for
    some, `gemma4` for Gemma-4); pass `--tool-call-parser` explicitly in production

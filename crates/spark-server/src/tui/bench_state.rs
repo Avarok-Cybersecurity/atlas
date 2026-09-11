@@ -453,6 +453,11 @@ impl BenchState {
             descriptor,
             &self.values,
             &self.target,
+            // EMPTY, and it means "the TUI did not start this server", not
+            // "this server has no overrides": the TUI attaches to an endpoint
+            // someone else configured, so it has nothing truthful to record.
+            // A TUI run therefore never claims a regime it cannot see.
+            Default::default(),
             atlas_plugin::RunSource::Tui,
             crate::cli::ATLAS_VERSION,
             frame.clone(),

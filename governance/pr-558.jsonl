@@ -3,3 +3,5 @@
 {"pr":558,"head_sha":"2be523cfea08ae882d44c17fa6dcf38f0123e723","run_id":"32145423709","attempt":1,"at":1787064670,"kind":"category","value":"unknown","status":"abstain"}
 {"pr":558,"head_sha":"943291db7398c916c15e52d5dfce69f072abeae7","run_id":"32311152220","attempt":1,"at":1787180844,"kind":"category","value":"unknown","status":"abstain"}
 {"pr":558,"head_sha":"943291db7398c916c15e52d5dfce69f072abeae7","run_id":"32311152220","attempt":1,"at":1787180879,"kind":"category","value":"infrastructure/build-system","status":"ok"}
+{"pr":558,"head_sha":"a3420c3432f32503a7769f67865c80afbdd9f47e","run_id":"33628779502","attempt":1,"at":1788354424,"kind":"category","value":"unknown","status":"abstain"}
+{"pr":558,"head_sha":"a3420c3432f32503a7769f67865c80afbdd9f47e","run_id":"33628779502","attempt":1,"at":1788354452,"kind":"category","value":"infrastructure/build-system","status":"ok"}

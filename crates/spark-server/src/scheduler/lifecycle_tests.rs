@@ -10,7 +10,7 @@
 //!    bug (wrong field passed for the budget/count) fails a test even
 //!    though the pure function is correct.
 
-use super::lifecycle::{derive_finish_reason, finish_sequence};
+use super::lifecycle::{derive_finish_reason, fail_sequence, finish_sequence};
 use super::types::{ActiveSeq, GUARD_STOP_REQUEST_TIMEOUT, ResponseSink};
 use super::{DEFAULT_LZ_PENALTY, SsmDecodeRing};
 use crate::api::InferenceResponse;
@@ -24,161 +24,15 @@ const EOS: &[u32] = &[151645];
 const TOOL_END: Option<u32> = Some(151658);
 const MAX_SEQ_LEN: usize = 8192;
 
-/// Common-case shorthand: mid-context position (no seqlen ceiling), so
-/// the budget dimension under test is the `remaining` countdown.
-fn derive(guard: Option<&'static str>, last: Option<u32>, remaining: usize) -> &'static str {
-    derive_finish_reason(guard, last, EOS, TOOL_END, remaining, 10, MAX_SEQ_LEN)
-}
-
-#[test]
-fn length_means_budget_exhausted_only() {
-    // max_tokens countdown exhausted on an ordinary content token.
-    assert_eq!(derive(None, Some(42), 0), "length");
-    // Served context ceiling reached with budget left — the other half
-    // of the hard-ceiling stop predicate. OpenAI reports "length" for
-    // the context limit too.
-    assert_eq!(
-        derive_finish_reason(
-            None,
-            Some(42),
-            EOS,
-            TOOL_END,
-            500,
-            MAX_SEQ_LEN - 1,
-            MAX_SEQ_LEN
-        ),
-        "length"
-    );
-}
-
-#[test]
-fn early_stop_one_token_short_of_budget_is_not_length() {
-    // The bug this wave fixes: "length" was the catch-all, so ANY stop
-    // whose last token was not EOS/tool-end claimed the budget was hit
-    // (observed live: `Done: 573 tokens (length)` under
-    // max_new_tokens=1024). One token of budget left ⇒ not "length".
-    let r = derive(None, Some(42), 1);
-    assert_ne!(r, "length");
-    // Early finalize with no guard = client cancel / dropped receiver /
-    // shutdown drain ⇒ "stop" (generation stopped; budget not hit).
-    assert_eq!(r, "stop");
-}
-
-#[test]
-fn normal_stops_are_unchanged() {
-    assert_eq!(derive(None, Some(151645), 100), "stop");
-    assert_eq!(derive(None, Some(151658), 100), "tool_calls");
-}
-
-#[test]
-fn eos_on_the_last_budgeted_token_is_stop_not_length() {
-    // The model finished naturally ON the final budgeted token: the
-    // sampled EOS outranks the exhausted budget (OpenAI parity).
-    assert_eq!(derive(None, Some(151645), 0), "stop");
-}
-
-#[test]
-fn timeout_unchanged_and_still_outranks_everything() {
-    // Shipped contract (2026-08 deadline wave): a deadline cut must be
-    // distinguishable from both a natural stop and a max_tokens stop,
-    // even when the deadline lands on an EOS / tool-close / budget-end
-    // step.
-    for last in [Some(42), Some(151645), Some(151658)] {
-        assert_eq!(
-            derive(Some(GUARD_STOP_REQUEST_TIMEOUT), last, 100),
-            FINISH_REASON_TIMEOUT
-        );
-    }
-    assert_eq!(
-        derive(Some(GUARD_STOP_REQUEST_TIMEOUT), Some(42), 0),
-        FINISH_REASON_TIMEOUT
-    );
-}
-
-#[test]
-fn guard_cuts_report_length_because_the_model_did_not_finish() {
-    // POSITIVE case. A guard cut is a server-side truncation: the model
-    // was still mid-output. `"length"` is the OpenAI-spec slot for
-    // "forcibly truncated" and is what every client's truncation handling
-    // keys on (openai-python `LengthFinishReasonError`, aider's
-    // continuation, Instructor, pydantic-ai).
-    //
-    // ★ This assertion was briefly INVERTED to `"stop"`, and that shipped
-    // a measured regression: the agentic gate fell to 8/10 then 4/10
-    // followed_directions because its `was_cut_off()` stopped firing and
-    // runs ended at 3-10 turns instead of the 12-22 a recovery needs.
-    // `"stop"` claims the model finished; for a mid-sentence repetition
-    // cut that is false, and every client action keyed on it (accept,
-    // validate, commit, end the run) is then wrong. Do not re-invert.
-    for guard in [
-        "fuzzy_repetition",
-        "inter_tool_prose_budget",
-        "tool_envelope_stuck",
-        "simhash_semantic_loop",
-        "token_loop_watchdog",
-    ] {
-        assert_eq!(
-            derive(Some(guard), Some(42), 100),
-            "length",
-            "guard={guard}"
-        );
-        // A guard trip on the exact step the budget ran out is still a
-        // truncation, and both paths agree — precedence is deterministic.
-        assert_eq!(derive(Some(guard), Some(42), 0), "length", "guard={guard}");
-    }
-}
-
-#[test]
-fn non_truncating_stops_are_not_relabelled_as_length() {
-    // NEGATIVE case, and the whole point of the original fix: `"length"`
-    // must NOT become a catch-all again. The bug this replaced derived it
-    // from "the last token wasn't EOS", sweeping in early finalizes and
-    // client cancels that are not truncations at all.
-    //
-    // No guard, budget left (client cancel / dropped receiver / drain):
-    // generation stopped, nothing was truncated ⇒ "stop", never "length".
-    assert_eq!(derive(None, Some(42), 100), "stop");
-    // And the timeout guard keeps its own distinct reason rather than
-    // collapsing into the truncation bucket.
-    assert_eq!(
-        derive(Some(GUARD_STOP_REQUEST_TIMEOUT), Some(42), 100),
-        FINISH_REASON_TIMEOUT
-    );
-}
-
-#[test]
-fn token_derived_stops_outrank_non_timeout_guards() {
-    // Preserved from the old test: a guard that fires on the same step
-    // the model sampled EOS / the tool-call close reports what the
-    // model actually did.
-    assert_eq!(
-        derive(Some("tool_envelope_stuck"), Some(151645), 100),
-        "stop"
-    );
-    assert_eq!(
-        derive(Some("fuzzy_repetition"), Some(151658), 100),
-        "tool_calls"
-    );
-}
-
-#[test]
-fn empty_output_edges() {
-    // max_tokens==0 scoring path: empty output, remaining==0 ⇒ "length"
-    // (the budget of zero was exhausted before the first token).
-    assert_eq!(derive(None, None, 0), "length");
-    // Empty output on a model with NO tool-call end token configured
-    // must not satisfy `None == None` and misreport "tool_calls".
-    assert_eq!(
-        derive_finish_reason(None, None, EOS, None, 5, 10, MAX_SEQ_LEN),
-        "stop"
-    );
-}
-
 // ─── Call-site proof: finish_sequence wires the REAL fields ────────────
 
 /// Minimal `Model`: only the paths `finish_sequence` exercises
 /// (`cache_sequence`, `free_sequence`, `ep_broadcast_cmd_for_seq`
 /// default) are live; everything else is unreachable in these tests.
+/// `pub(super)` because `shutdown_drain_tests` drives the same stub. Sibling
+/// test modules under `scheduler`, nothing wider. `Default` because that is
+/// all that module needs — #911's richer StubModel carried a `freed` field for
+/// `swap_resume_tests`, and that commit is superseded here by 963e22f684.
 pub(super) struct StubModel;
 
 impl Model for StubModel {
@@ -341,6 +195,7 @@ fn test_seq(
         min_tokens: 7,
         eos_tokens: EOS.to_vec(),
         finished: true,
+        error: None,
         guard_stop,
         param_close_pending: 0,
         sink: ResponseSink::Blocking(Some(tx)),
@@ -465,3 +320,114 @@ fn call_site_passes_the_real_guard() {
     let (a, rx) = test_seq(vec![5, 6, 42], 3, Some("fuzzy_repetition"), 10);
     assert_eq!(finish_and_recv(a, rx).finish_reason, "length");
 }
+
+/// Slice 9 decision 2 — a multi-EOS model must stop on EVERY configured stop token, each one
+/// independently, not only on the primary.
+///
+/// GLM-5.3-Flash declares three: `154820 <|endoftext|>`, `154827 <|user|>`,
+/// `154829 <|observation|>`. The last two are turn terminators; an agent model that cannot stop
+/// on them runs past its turn. `ModelConfig::eos_token_id` holds only 154820, which is why the
+/// complete set has to reach `eos_tokens` here.
+#[test]
+fn every_configured_eos_token_stops_generation_independently() {
+    const GLM_EOS: [u32; 3] = [154820, 154827, 154829];
+    for id in GLM_EOS {
+        assert_eq!(
+            derive_finish_reason(None, Some(id), &GLM_EOS, None, 10, 5, 100),
+            "stop",
+            "generation must stop on {id}"
+        );
+    }
+    // Non-vacuity: a token that is NOT in the set must not be read as a stop token.
+    //
+    // 🪤 This cannot be shown with budget left. `"stop"` is also
+    // `derive_finish_reason`'s FALLTHROUGH when no other reason fires, so
+    // `assert_ne!(.., "stop")` at `remaining = 10` compares the EOS answer
+    // against the default answer and fails on a function that is behaving
+    // exactly as specified — which is what it did, silently, from 07114fba
+    // until this re-cut. Exhaust the budget instead: at the hard ceiling the
+    // fallthrough is `"length"`, so the two answers separate and the check
+    // means what its comment says.
+    assert_eq!(
+        derive_finish_reason(None, Some(154821), &GLM_EOS, None, 0, 5, 100),
+        "length",
+        "154821 is not a stop token; at the ceiling it must read as truncation"
+    );
+    for id in GLM_EOS {
+        assert_eq!(
+            derive_finish_reason(None, Some(id), &GLM_EOS, None, 0, 5, 100),
+            "stop",
+            "{id} is a stop token and must outrank the ceiling"
+        );
+    }
+    // And the pre-fix behaviour is exactly what this guards against: with only the primary in
+    // the set, the two turn terminators sail straight through — at the ceiling they are
+    // indistinguishable from a truncated answer.
+    for id in [GLM_EOS[1], GLM_EOS[2]] {
+        assert_eq!(
+            derive_finish_reason(None, Some(id), &GLM_EOS[..1], None, 0, 5, 100),
+            "length",
+            "collapsing to the primary would let {id} through"
+        );
+    }
+}
+
+/// 🔴 A62. A sequence retired because an inference step FAILED must reach the client
+/// as an error, not as a normal completion. The measured failure: a K=3 verify
+/// refused at the 16,384-token DSA ceiling, and because the arm set only
+/// `finished = true` the caller got HTTP 200 and `finish_reason` of an ordinary
+/// stop over a truncated answer — indistinguishable from the model choosing to end.
+#[test]
+fn a_failed_sequence_is_sent_as_an_error_not_a_normal_finish() {
+    let (mut a, mut rx) = test_seq(vec![5, 6, 42], 500, None, 10);
+    fail_sequence(
+        &mut a,
+        "decode_verify_graphed_k3: DSA indexer cache: 16385".into(),
+    );
+    assert!(a.finished, "fail_sequence must still retire the sequence");
+    finish_sequence(&StubModel, &mut a, MAX_SEQ_LEN);
+    let got = rx
+        .try_recv()
+        .expect("a failed sequence must still answer the caller");
+    // `InferenceResponse` is not Debug, so match rather than expect_err.
+    let err = match got {
+        Ok(_) => panic!("it must answer with an ERROR, not a completion"),
+        Err(e) => e,
+    };
+    assert!(
+        format!("{err:#}").contains("16385"),
+        "the client must be told WHY: {err:#}"
+    );
+}
+
+/// The error branch must not swallow ordinary completions — same funnel, no error set.
+#[test]
+fn a_normal_finish_is_unaffected_by_the_error_branch() {
+    let (a, rx) = test_seq(vec![5, 6, 42], 0, None, 10);
+    assert_eq!(finish_and_recv(a, rx).finish_reason, "length");
+}
+
+/// Every error arm in the reachable GLM verify steps must route through
+/// `fail_sequence`. A bare `finished = true` after a `tracing::error!` is the exact
+/// shape that produced the silent truncation, so assert the shape is gone.
+#[test]
+fn no_reachable_verify_error_arm_silently_finishes() {
+    for (name, src) in [
+        ("verify_k2_step", include_str!("verify_k2_step.rs")),
+        ("verify_k3_step", include_str!("verify_k3_step.rs")),
+        ("verify_k4_step", include_str!("verify_k4_step.rs")),
+    ] {
+        for (i, w) in src.lines().collect::<Vec<_>>().windows(2).enumerate() {
+            let silent = w[0].contains("tracing::error!") && w[1].trim() == "a.finished = true;";
+            assert!(
+                !silent,
+                "{name}:{}: an error arm still sets `finished = true` without \
+                 fail_sequence — that returns HTTP 200 over a failed generation",
+                i + 1
+            );
+        }
+    }
+}
+
+#[path = "lifecycle_derive_tests.rs"]
+mod lifecycle_derive_tests;

@@ -201,6 +201,7 @@ pub fn start_chunked_prefill(
             min_tokens: req_min_tokens,
             eos_tokens: eos_tokens.to_vec(),
             finished: true,
+            error: None,
             guard_stop: None,
             param_close_pending: 0,
             sink,
@@ -222,7 +223,7 @@ pub fn start_chunked_prefill(
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
             pending_draft_conf: Vec::new(),
-            inside_thinking: req_enable_thinking && think_end_token.is_some(),
+            inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
             repetition_detection: req_repetition_detection,
@@ -393,7 +394,7 @@ pub fn start_chunked_prefill(
             is_last,
             prefill_stream,
         );
-        if std::env::var("ATLAS_VISION_TIMING").is_ok() {
+        if sched.levers.vision_timing {
             let _ = model.synchronize(prefill_stream);
             tracing::info!(
                 "VIT_TIMING prefill_chunk {} tok (img={}): {:.1}ms",
@@ -453,6 +454,11 @@ pub fn start_chunked_prefill(
             min_p,
             eos_tokens,
             grammar_state.as_mut(),
+            FirstTokenPolicy::for_birth(
+                req_enable_thinking,
+                think_end_token,
+                tool_call_start_token,
+            ),
             &sched.levers.sampling(),
         ) {
             Ok(t) => {
@@ -540,6 +546,7 @@ pub fn start_chunked_prefill(
                 min_tokens: req_min_tokens,
                 eos_tokens: eos_tokens.to_vec(),
                 finished: true,
+                error: None,
                 guard_stop: None,
                 param_close_pending: 0,
                 sink,
@@ -561,7 +568,7 @@ pub fn start_chunked_prefill(
                 logit_bias: logit_bias.clone(),
                 pending_drafts: Vec::new(),
                 pending_draft_conf: Vec::new(),
-                inside_thinking: req_enable_thinking && think_end_token.is_some(),
+                inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
                 enable_thinking: req_enable_thinking,
                 thinking_budget: req_thinking_budget,
                 repetition_detection: req_repetition_detection,
@@ -628,6 +635,7 @@ pub fn start_chunked_prefill(
                 min_tokens: req_min_tokens,
                 eos_tokens: eos_tokens.to_vec(),
                 finished: false,
+                error: None,
                 guard_stop: None,
                 param_close_pending: 0,
                 sink,
@@ -650,7 +658,7 @@ pub fn start_chunked_prefill(
                 pending_drafts: Vec::new(),
                 pending_draft_conf: Vec::new(),
                 inside_thinking: spontaneous_think
-                    || (req_enable_thinking && think_end_token.is_some()),
+                    || born_inside_thinking(req_enable_thinking, think_end_token),
                 enable_thinking: req_enable_thinking,
                 thinking_budget: if spontaneous_think {
                     Some(spontaneous_think_budget)

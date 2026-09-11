@@ -18,7 +18,9 @@ FIRST gate for this target — it had no BENCH.toml, so building the MoE prefill
 copies in the gemma4 loader (cold TTFT 5705.61 -> 4974.56 ms, -12.8%, \
 cold_ttft.py n=8) had nothing holding it.
 
-Ceilings = the GATE's own dgx1 baseline x the gate limits: median 1580.547 ms \
+Ceilings AT THE TIME OF WRITING — SUPERSEDED 2026-08-21, see the ★ RATCHETED \
+paragraph below, which is where the two numbers in force come from — were the GATE's \
+own dgx1 baseline x the gate limits: median 1580.547 ms \
 x +3%, p90 23324.582 ms x +5%. `default` is UNSET — qwen3.6-35b-a3b claims the \
 default for this gate on gb10, and two defaults is a silent coin-flip over which \
 checkpoint a gate scores. The gate's numbers are NOT the cold_ttft.py numbers \

@@ -84,6 +84,17 @@ pub struct TransformerModel {
     /// `None`, the NVFP4/BF16 LM-head dispatch is byte-identical to before.
     pub(super) lm_head_fp8: Option<Fp8DenseWeight>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
+    /// `true` when ANY layer's decode can never be captured into a CUDA
+    /// graph, so the whole model stays eager.
+    ///
+    /// Computed ONCE at construction. It was
+    /// `self.layers.iter().any(|l| l.decode_graph_unsupported())` — 48
+    /// virtual calls through `dyn TransformerLayer` per DECODE STEP, from two
+    /// sites (`decode_a` and `decode_a2`), to recompute a value that cannot
+    /// change: every implementation is a pure function of load-time structure
+    /// (`false`, `self.qsa.is_some()`, `self.ple.is_some()`). A new model is
+    /// a new `TransformerModel`, so this cannot go stale across a swap.
+    pub(super) decode_graph_veto: bool,
     pub(super) buffers: BufferArena,
     /// Startup-static LoRA adapter (pool + per-layer pairs + M2 pointer
     /// tables). `None` = no adapter. Installed post-construction via
@@ -250,20 +261,41 @@ pub struct TransformerModel {
     /// SSOT). 0 = no capture ever started (matches the fresh-seq stamp 0,
     /// which is harmless: `captured >= prompt_len >= 2` fails at len 0).
     pub(super) mtp_prefill_capture_gen: std::sync::atomic::AtomicU64,
+    /// Ticket dispenser for `mtp_store_range` ownership (`SequenceState::
+    /// mtp_store_gen`), drawn once per `alloc_sequence`.
+    ///
+    /// ★ SEPARATE FROM `mtp_prefill_capture_gen`, and it must stay separate.
+    /// Drawing the store ticket from the capture counter advances it on every
+    /// admission, and `owns_capture` (`trait_impl/speculative.rs`) requires the
+    /// sequence's captured generation to still EQUAL the current one — so any
+    /// sequence admitted between a capture and its propose silently disabled
+    /// the other sequence's drafter prefill. Measured: C=1 unaffected (no
+    /// interleaved admission), C=2 TPOT 62 -> 79 ms and 30.8 -> 23.5 tok/s,
+    /// reproduced twice. One counter, two meanings, was the whole bug.
+    pub(super) mtp_store_gen_seq: std::sync::atomic::AtomicU64,
     /// ATLAS_MTP_CARRY_DRAFTER: the previous turn's drafter KV, held so the
     /// next turn of the same session can adopt it instead of rebuilding
     /// (1136 ms at 12k rows) or — as today — silently going without. Single
-    /// slot: MTP is gated `active.len() == 1` on every spec path, and one slot
-    /// makes block ownership unambiguous (blocks are owned here XOR by a live
-    /// sequence). `None` when the feature is off or nothing has been carried.
+    /// slot: the carry is force-disabled outside single-sequence dispatch
+    /// (`mtp_carry::carry_armed_with`), and one slot makes block ownership
+    /// unambiguous (blocks are owned here XOR by a live sequence). This used to
+    /// say "MTP is gated `active.len() == 1` on every spec path" — that is
+    /// false, the dispatch cap defaults to 32. `None` when the feature is off
+    /// or nothing has been carried.
     pub(super) mtp_carry: parking_lot::Mutex<Option<super::mtp_carry::CarriedDrafter>>,
-    /// Absolute position interval `[lo, hi)` of `mtp_prefill_hidden` rows
-    /// written by the CURRENT sequence's prefill chunks. Reset per
-    /// `alloc_sequence`, so a warm-turn append can only ever read hiddens this
-    /// turn computed — which is why the carry path cannot inherit another
-    /// sequence's hiddens the way the legacy `mtp_prefill_capture_len` path
-    /// can. Only maintained when ATLAS_MTP_CARRY_DRAFTER is on.
-    pub(super) mtp_store_range: parking_lot::Mutex<(usize, usize)>,
+    /// Absolute position interval of `mtp_prefill_hidden` rows, WITH the
+    /// sequence generation that wrote them. Only maintained when
+    /// ATLAS_MTP_CARRY_DRAFTER is on.
+    ///
+    /// ★ THE STAMP IS THE GUARD; the `alloc_sequence` reset is not. This doc
+    /// used to claim the interval was "per-sequence by construction" because
+    /// `alloc_sequence` resets it — and that was false, in two orderings. The
+    /// reset happens when a sequence is ADMITTED, but the writer
+    /// (`drafter_prefill`) had no ownership check at all, so a sequence whose
+    /// last chunk landed after another had been admitted merged its write into
+    /// the newcomer's interval and then read the newcomer's rows. Reset still
+    /// happens, as defence in depth; `gen` is what makes the claim true.
+    pub(super) mtp_store_range: parking_lot::Mutex<super::mtp_carry::StoreRange>,
     /// DFlash 5-layer hidden-state stack. Allocated only when a
     /// `BlockDiffusionDraftHead` proposer is built. Layout:
     /// `[5 × hidden_size × bf16]` shallow-to-deep at the layer indices

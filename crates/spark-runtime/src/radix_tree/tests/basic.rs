@@ -7,6 +7,12 @@
 use crate::prefix_cache::PrefixCache;
 use crate::radix_tree::RadixTree;
 
+/// Issue #17 HSS disk-ref acquisition checks — split out to keep this file
+/// under the workspace 500-LoC cap, using the same `#[path]` nesting the
+/// snapshot index tests use.
+#[path = "basic_hss.rs"]
+mod hss;
+
 #[test]
 fn test_insert_and_lookup_exact() {
     let tree = RadixTree::new();
@@ -46,6 +52,35 @@ fn test_partial_match() {
 
     assert_eq!(m.matched_tokens, 32);
     assert_eq!(m.matched_blocks, vec![10, 20]);
+    tree.release(&tokens_b, 16, 0);
+
+    // The match must stop at the DIVERGENCE, not merely somewhere before the
+    // end of the request: the assertions above are equally satisfied by a walk
+    // that stops one block short of the deepest cached node, because block 3
+    // was never cached. Cache a third block under one continuation, then ask
+    // for a different one.
+    let mut tokens_c: Vec<u32> = (0..32).collect();
+    tokens_c.extend(200..216);
+    tree.insert(&tokens_c, &[10, 20, 30], &[], 16, 0, 0);
+    tree.release(&tokens_c, 16, 0);
+
+    let deep = tree.lookup(&tokens_c, 16, 0, 0);
+    assert_eq!(
+        deep.matched_tokens, 48,
+        "the deepest cached block must match"
+    );
+    assert_eq!(deep.matched_blocks, vec![10, 20, 30]);
+    tree.release(&tokens_c, 16, 0);
+
+    let mut tokens_d: Vec<u32> = (0..32).collect();
+    tokens_d.extend(700..716);
+    let diverged = tree.lookup(&tokens_d, 16, 0, 0);
+    assert_eq!(
+        diverged.matched_tokens, 32,
+        "the match stops at the divergent block, not before it"
+    );
+    assert_eq!(diverged.matched_blocks, vec![10, 20]);
+    tree.release(&tokens_d, 16, 0);
 }
 
 #[test]
@@ -59,6 +94,20 @@ fn test_no_match() {
     let m = tree.lookup(&tokens_b, 16, 0, 0);
 
     assert!(m.is_empty());
+    assert!(m.matched_blocks.is_empty(), "a miss hands back no blocks");
+
+    // Positive control: the miss must be caused by the token mismatch, not by
+    // a cache that misses everything. `is_empty()` alone is satisfied by any
+    // lookup-wide defect (verified: a walk that stops one block short of the
+    // deepest node leaves the assertion above green), which is exactly the
+    // shape of failure a no-match check is least able to notice.
+    let hit = tree.lookup(&tokens_a, 16, 0, 0);
+    assert_eq!(
+        hit.matched_tokens, 16,
+        "the same cache still hits its own key"
+    );
+    assert_eq!(hit.matched_blocks, vec![10]);
+    tree.release(&tokens_a, 16, 0);
 }
 
 #[test]
@@ -114,13 +163,22 @@ fn test_evict_lru_order() {
     tree.insert(&tokens_b, &[20], &[], 16, 0, 0);
     tree.release(&tokens_b, 16, 0);
 
-    // Evict 1 — should be A (older LRU)
+    // A cache HIT on A makes it the most recently USED. Ordering the victims by
+    // insertion order alone would still pick A here — this is the partition
+    // that separates real LRU from FIFO, and the only one that observes
+    // `inc_refs` refreshing `last_access` on a hit.
+    let hit = tree.lookup(&tokens_a, 16, 0, 0);
+    assert_eq!(hit.matched_blocks, vec![10]);
+    tree.release(&tokens_a, 16, 0);
+
+    // Evict 1 — must be B, the block that was NOT re-used.
+    let evicted = tree.evict(1);
+    assert_eq!(evicted.physical, vec![20], "the least recently USED block");
+
+    // Evict 1 more — now A is the only entry left.
     let evicted = tree.evict(1);
     assert_eq!(evicted.physical, vec![10]);
-
-    // Evict 1 more — should be B
-    let evicted = tree.evict(1);
-    assert_eq!(evicted.physical, vec![20]);
+    assert_eq!(tree.stats(), (0, 0), "and nothing else survived");
 }
 
 #[test]
@@ -178,6 +236,27 @@ fn test_insert_idempotent() {
     tree.insert(&tokens, &[42], &[], 16, 0, 0);
 
     assert_eq!(tree.stats(), (1, 1));
+
+    // A node count cannot say WHICH block the surviving node holds. The second
+    // sequence normally does not get its block from the cache (it never
+    // matched, or it restored from a swap file), so it re-inserts the same
+    // token chunk with a DIFFERENT physical block. The node must keep the block
+    // the cache already holds a reference on: adopting the sequence's block
+    // strands that reference, and evicting the node then returns a block a live
+    // sequence still owns. See `InsertAcquired`.
+    let second = tree.insert(&tokens, &[43], &[], 16, 0, 0);
+    assert_eq!(tree.stats(), (1, 1), "still one node");
+    assert!(
+        second.blocks.is_empty(),
+        "no node was created, so no KV ref is owed; got {second:?}"
+    );
+    let m = tree.lookup(&tokens, 16, 0, 0);
+    assert_eq!(
+        m.matched_blocks,
+        vec![42],
+        "the node keeps the block the cache references"
+    );
+    tree.release(&tokens, 16, 0);
 }
 
 #[test]
@@ -215,92 +294,27 @@ fn test_sub_block_tokens_ignored() {
     let tree = RadixTree::new();
     // Only 10 tokens — less than one block of 16, not inserted
     let tokens: Vec<u32> = (0..10).collect();
-    tree.insert(&tokens, &[42], &[], 16, 0, 0);
+    let acquired = tree.insert(&tokens, &[42], &[], 16, 0, 0);
 
     // No full blocks → nothing cached
     assert_eq!(tree.stats(), (0, 0));
-}
 
-/// Issue #17 regression: when HSS is active, the cache must report which
-/// disk_block_ids it newly takes ownership of so the caller can balance
-/// `inc_disk_ref`/`dec_disk_ref`. Without this, the second request panics
-/// at `high_speed_swap.rs:167` because the cache holds a stale ID whose
-/// refcount has already hit zero.
-#[test]
-fn test_hss_disk_ref_acquisition_cold_insert() {
-    let tree = RadixTree::new();
-    let tokens: Vec<u32> = (0..32).collect();
-    let block_table = vec![10, 20];
-    let disk_ids = vec![100u32, 101u32];
-
-    // Cold insert with HSS active: cache takes ownership of both disk_ids.
-    let acquired = tree.insert(&tokens, &block_table, &disk_ids, 16, 0, 0);
-    assert_eq!(acquired.disk_block_ids, vec![100, 101]);
-    // Both nodes are new, so the cache also takes a KV ref on both blocks.
-    assert_eq!(acquired.blocks, vec![10, 20]);
-}
-
-#[test]
-fn test_hss_disk_ref_acquisition_re_insert_no_double() {
-    let tree = RadixTree::new();
-    let tokens: Vec<u32> = (0..32).collect();
-    let block_table = vec![10, 20];
-    let disk_ids = vec![100u32, 101u32];
-
-    // First insert acquires both.
-    let acquired1 = tree.insert(&tokens, &block_table, &disk_ids, 16, 0, 0);
-    assert_eq!(acquired1.disk_block_ids, vec![100, 101]);
-
-    // Second insert of the same prefix: nothing newly acquired (the cache
-    // already owns these). Re-acquiring would over-inc and leak the disk
-    // refcount.
-    let acquired2 = tree.insert(&tokens, &block_table, &disk_ids, 16, 0, 0);
+    // …and therefore no reference is owed on block 42. The node count cannot
+    // see the acquisition report, and a reference the cache claims but never
+    // stores is never handed back by `evict`: the block leaks out of the pool
+    // for the life of the run. Nothing else in the radix_tree suite observes
+    // this — verified by reporting the partial block on the root-guard arm of
+    // RadixTreeInner::insert, which left all 86 checks green.
     assert!(
-        acquired2.disk_block_ids.is_empty(),
-        "re-insert should not re-acquire disk_ids; got {acquired2:?}"
+        acquired.blocks.is_empty(),
+        "no ref is owed on a block the cache did not store; got {acquired:?}"
     );
-    // No node was created, so no KV ref is taken either — the cache already
-    // holds exactly one per existing node.
-    assert!(
-        acquired2.blocks.is_empty(),
-        "re-insert should not re-ref blocks; got {acquired2:?}"
-    );
-}
-
-#[test]
-fn test_hss_disk_ref_acquisition_extension() {
-    let tree = RadixTree::new();
-    let tokens_short: Vec<u32> = (0..32).collect();
-    let tokens_long: Vec<u32> = (0..48).collect();
-
-    // Insert 2 blocks first.
-    let acquired1 = tree.insert(&tokens_short, &[10, 20], &[100u32, 101u32], 16, 0, 0);
-    assert_eq!(acquired1.disk_block_ids, vec![100, 101]);
-
-    // Extension: same first 2 blocks (already cached) + 1 new block.
-    // Only the new block's disk_id should be reported as acquired.
-    let acquired2 = tree.insert(
-        &tokens_long,
-        &[10, 20, 30],
-        &[100u32, 101u32, 102u32],
-        16,
-        0,
-        0,
-    );
-    assert_eq!(acquired2.disk_block_ids, vec![102]);
-    // Only the newly created node's block is newly owned.
-    assert_eq!(acquired2.blocks, vec![30]);
-}
-
-#[test]
-fn test_hss_disk_ref_acquisition_no_op_when_hss_inactive() {
-    let tree = RadixTree::new();
-    let tokens: Vec<u32> = (0..32).collect();
-
-    // Empty disk_ids slice ⇒ HSS not active ⇒ nothing acquired regardless
-    // of whether nodes are new or pre-existing.
-    let acquired = tree.insert(&tokens, &[10, 20], &[], 16, 0, 0);
     assert!(acquired.disk_block_ids.is_empty());
+    assert!(acquired.released_blocks.is_empty());
+    assert!(
+        tree.lookup(&tokens, 16, 0, 0).is_empty(),
+        "and nothing is findable"
+    );
 }
 
 #[test]
@@ -407,8 +421,10 @@ fn test_vision_pad_tokens_are_image_blind_collision() {
     // pixels never enter the token IDs: the stream is identical to page A.
     let page_b = page_a.clone();
 
-    // Admitting page A's blocks would let page B match them in full.
-    tree.insert(&page_a, &[10, 20], &[], 16, 0, 0);
+    // Admitting page A's blocks would let page B match them in full — and
+    // restore page A's SSM state on top of them, which is what turns the key
+    // collision into "the previous picture's answer".
+    tree.insert_with_snapshot(&page_a, &[10, 20], &[], 16, 77, 0, 0, 0);
     let m = tree.lookup(&page_b, 16, 0, 0);
 
     assert_eq!(
@@ -418,6 +434,13 @@ fn test_vision_pad_tokens_are_image_blind_collision() {
          vision prefills into the radix cache"
     );
     assert_eq!(m.matched_blocks, vec![10, 20]);
+    assert_eq!(
+        m.ssm_snapshot,
+        Some(77),
+        "page B also restores page A's SSM snapshot"
+    );
+    assert_eq!(m.ssm_snapshot_tokens, 32);
+    tree.release(&page_b, 16, 0);
 }
 
 /// The cache must own a KV ref on a `partial_suffix` block, not just on full
@@ -434,19 +457,23 @@ fn test_partial_suffix_block_is_owned_and_released() {
     // 20 tokens @ bs=16 => 1 full block (10) + a 4-token partial (11).
     let tokens: Vec<u32> = (0..20).collect();
     let acquired = tree.insert(&tokens, &[10, 11], &[], 16, 0, 0);
-    assert!(
-        acquired.blocks.contains(&11),
-        "cache must take a ref on the partial-suffix block; got {:?}",
-        acquired.blocks
+    // Exactly one ref each, and no more: `contains` would also accept a
+    // duplicate report, and the caller inc_refs every entry, so a repeated
+    // block is a ref the cache can never give back. Nothing else in the suite
+    // observes it — verified by pushing the partial block twice, which left
+    // all 86 radix_tree checks green.
+    assert_eq!(
+        acquired.blocks,
+        vec![10, 11],
+        "one ref on the full block and one on the partial-suffix block"
     );
-    assert!(acquired.blocks.contains(&10), "and on the full block");
     assert!(acquired.released_blocks.is_empty());
 
     // Re-inserting the SAME partial block must not re-acquire it.
     let again = tree.insert(&tokens, &[10, 11], &[], 16, 0, 0);
     assert!(
-        !again.blocks.contains(&11),
-        "re-insert must not double-ref the partial block; got {:?}",
+        again.blocks.is_empty(),
+        "re-insert creates no node and re-refs no block; got {:?}",
         again.blocks
     );
 
@@ -454,7 +481,11 @@ fn test_partial_suffix_block_is_owned_and_released() {
     // releases the old, so the displaced block cannot be pinned forever.
     let other: Vec<u32> = (0..16).chain(90..94).collect();
     let swapped = tree.insert(&other, &[10, 12], &[], 16, 0, 0);
-    assert!(swapped.blocks.contains(&12), "new partial block acquired");
+    assert_eq!(
+        swapped.blocks,
+        vec![12],
+        "only the new partial block is acquired"
+    );
     assert_eq!(
         swapped.released_blocks,
         vec![11],

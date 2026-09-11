@@ -23,10 +23,24 @@ pub(super) fn promote_completed_prefills(
     // needs it for the budget-derived `finish_reason` decision.
     max_seq_len: usize,
 ) {
-    // Process in reverse order so swap_remove indices stay valid.
+    // Process in reverse order so the removal indices stay valid: taking a
+    // higher index out never shifts a lower one.
     completed_indices.sort_unstable_by_key(|x| std::cmp::Reverse(x.0));
     for (idx, maybe_token) in completed_indices {
-        let mut p = prefilling.swap_remove(idx);
+        // `remove`, NOT `swap_remove`. `prefilling` is a FIFO — arrivals are
+        // appended by `phase_start_prefills` and the single-stream path in
+        // `phase_continue_prefills` advances `prefilling[0]` — and
+        // `swap_remove` backfills the hole with the vector's LAST element,
+        // i.e. the NEWEST arrival. Removing the head then served the queue
+        // LIFO: `[A,B,C]` became `[C,B]`, so `B` advanced only if the queue
+        // happened to drain to length 2 at the instant a prefill completed.
+        // Under sustained arrivals it never does, and nothing downstream
+        // restores order (this and the `push` in `phase_start_prefills` are
+        // the only mutations of the vector) or times a waiting prefill out
+        // (the deadline sweep walks `active` only) — an unbounded stall.
+        // The shift is O(concurrent prefills) of a move each, against a
+        // chunk forward pass; see `prefill_fifo_tests`.
+        let mut p = prefilling.remove(idx);
         let Some(first) = maybe_token else {
             // Error path: free the sequence.
             let mut seq = p.seq;
@@ -146,6 +160,7 @@ fn build_active_seq_from_prefill(
         min_tokens: p.min_tokens,
         eos_tokens: p.eos_tokens,
         finished: immediate_finish,
+        error: None,
         guard_stop: None,
         param_close_pending: 0,
         sink: p.sink,
@@ -168,9 +183,9 @@ fn build_active_seq_from_prefill(
         pending_drafts: Vec::new(),
         pending_draft_conf: Vec::new(),
         inside_thinking: if immediate_finish {
-            p.enable_thinking && think_end_token.is_some()
+            born_inside_thinking(p.enable_thinking, think_end_token)
         } else {
-            spontaneous_think || (p.enable_thinking && think_end_token.is_some())
+            spontaneous_think || born_inside_thinking(p.enable_thinking, think_end_token)
         },
         enable_thinking: p.enable_thinking,
         thinking_budget: if !immediate_finish && spontaneous_think {

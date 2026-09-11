@@ -84,9 +84,25 @@ pub fn fp8_e4m3_to_f32(bits: u8) -> f32 {
 /// `ATLAS_DISABLE_RNE` is a bisect escape hatch that reverts to
 /// truncation. It is a PRESENCE check, not a value check — `=0` disables
 /// RNE just as `=1` does.
+///
+/// ★ THE ESCAPE HATCH IS READ ONCE PER PROCESS. This is a scalar primitive —
+/// five arithmetic operations, `#[inline(always)]` — called ONCE PER ELEMENT
+/// over whole weight tensors (`weight_map::quant_helpers` iterates every byte
+/// of an FP8 tensor; `fp8_lut` walks every NVFP4 group). A `std::env::var`
+/// here allocates a `String` and takes the process-wide environment lock, and
+/// dominated the arithmetic by roughly three orders of magnitude. The
+/// dequantisation path this serves has a MEASURED cost of ~80 s
+/// (`weight_map/fp8_dequant.rs`), which is ~1.4e8 elements at the per-read
+/// rate — so the getenv plausibly accounted for most of it.
+///
+/// Caching is safe here specifically because the test that varies this
+/// re-execs the test binary as a CHILD PROCESS with the variable set
+/// (`disable_rne_presence_uses_truncation` below), so each process resolves it
+/// once at its own start. Do NOT convert that test to `set_var` in-process.
 #[inline(always)]
 pub fn f32_to_bf16(val: f32) -> u16 {
-    if std::env::var("ATLAS_DISABLE_RNE").is_ok() {
+    static DISABLE_RNE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *DISABLE_RNE.get_or_init(|| std::env::var("ATLAS_DISABLE_RNE").is_ok()) {
         return (val.to_bits() >> 16) as u16;
     }
     let bits = val.to_bits();

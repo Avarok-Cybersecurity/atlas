@@ -44,8 +44,19 @@ pub trait ProposerState: Send + Sync {
 /// p(accept) ≳ 0.66 — the threshold to calibrate around. Staged OFF until
 /// its measured A/B (same discipline as ATLAS_SNAP_EVICT_ALPHA).
 pub fn draft_conf_tau() -> f32 {
-    std::env::var("ATLAS_MTP_DRAFT_CONF")
-        .ok()
+    parse_draft_conf_tau(std::env::var("ATLAS_MTP_DRAFT_CONF").ok().as_deref())
+}
+
+/// The rule itself, pure over the raw value.
+///
+/// Split from the reader so a test can exercise the CLAMP without mutating
+/// the process environment — `set_var` is global and `cargo test` runs this
+/// binary's tests in parallel, so an env-mutating test races every other one.
+/// The clamp is the load-bearing part: an unclamped `5.0` would put the floor
+/// above any achievable confidence and discard EVERY draft, turning
+/// speculation off with nothing logged.
+pub fn parse_draft_conf_tau(value: Option<&str>) -> f32 {
+    value
         .and_then(|v| v.parse::<f32>().ok())
         .map(|t| t.clamp(0.0, 0.99))
         .unwrap_or(0.0)
@@ -284,6 +295,34 @@ pub fn hidden_fingerprint(gpu: &dyn GpuBackend, p: DevicePtr, h: usize) -> u64 {
     hash
 }
 
+/// EP worker command: run one MTP propose in lockstep with rank 0.
+/// Payload after the code: `last_token`, `position`, `num_drafts` (3 x u32).
+pub const EP_CMD_MTP_PROPOSE: u32 = 0xFFFF_FFF5;
+
+/// Run the drafter on EVERY rank with the communicator, instead of rank-0-only
+/// with `comm: None`. **DEFAULT ON since 2026-08-29**; kill switch
+/// `ATLAS_NO_MTP_EP_PROPOSE=1` restores the rank-0-only path.
+///
+/// Both halves move together and neither is safe alone:
+/// * the head broadcasts [`EP_CMD_MTP_PROPOSE`] before every propose, so the
+///   worker runs the SAME drafter forward and issues the SAME collectives in
+///   the same stream order;
+/// * [`DraftProposer::needs_comm`] then hands the block a comm.
+///
+/// Only a proposer that returns true from [`DraftProposer::needs_comm`] is
+/// affected, and today that is GLM-5.3 alone — the Qwen and DeepSeek-V4 MTP
+/// modules load every expert on every rank and must keep `comm: None`.
+///
+/// Measured on 2 x GB10 (t67, six-probe gate byte-identical on every arm):
+/// open512 17.53 -> 19.11 tok/s, p1 0.747 -> 0.875.
+///
+/// 🪤 `ATLAS_MTP_EP_PROPOSE=1` (the opt-in name it shipped behind for one day)
+/// still reads as ON, so a launch script carrying it keeps working.
+pub fn mtp_ep_propose_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_MTP_EP_PROPOSE").ok().as_deref() != Some("1"))
+}
+
 pub trait DraftProposer: Send + Sync {
     /// Allocate per-sequence proposer state.
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>>;
@@ -319,6 +358,65 @@ pub trait DraftProposer: Send + Sync {
     /// 0). `None` = not computed; callers must not gate on it then.
     fn last_confidence(&self) -> Option<f32> {
         None
+    }
+
+    /// Rows this proposer can actually consume from `mtp_prefill_hidden`, given
+    /// the served `--max-seq-len`.
+    ///
+    /// The model allocates that buffer as `[rows, hidden]` BF16 before it knows
+    /// anything about the proposer, so `max_seq_len` is the only bound it has —
+    /// 4.0 GiB at 524,288 and h=4096. A proposer whose own architecture caps the
+    /// position it can ever be asked for returns that cap instead, and the
+    /// difference stops being allocated. See ANOMALIES A59 and the note in
+    /// `Glm5NextMtpHead::new`.
+    ///
+    /// 🔴 Return a SMALLER number ONLY when the proposer can never be handed a
+    /// position past it. A cap below the reachable context does not corrupt
+    /// anything — the capture-coverage check at the propose site disables
+    /// drafter-prefill for a sequence whose rows are short — but it silently
+    /// costs acceptance on exactly the long prompts the feature exists for.
+    ///
+    /// Default: `max_seq_len`, i.e. the pre-A59 sizing, which is correct for any
+    /// proposer that can follow the target to the end of the served context.
+    fn prefill_hidden_rows(&self, max_seq_len: usize) -> usize {
+        max_seq_len
+    }
+
+    /// True when this proposer's block is SHARDED across ranks and its
+    /// forward therefore needs the communicator (a routed-MoE all-reduce and
+    /// a row-parallel `o_proj` reduce), like any target layer.
+    ///
+    /// Default false, which is correct for the Qwen and DeepSeek-V4 drafters:
+    /// their MTP modules load EVERY expert on EVERY rank, so the output is
+    /// already complete and passing a comm would DOUBLE it via SUM.
+    ///
+    /// 🔴 GLM-5.3 is the opposite and it is not a choice: `load_glm5next_mtp_module`
+    /// builds its MoE through the same `Glm5NextMlpConfig` the target layers use, so
+    /// `build_moe` walks `cfg.local_expert_range()` and loads 144 of 288 experts;
+    /// `DsaTpPlan::new(tp_rank, tp_world_size, ..)` splits the DSA heads the same way.
+    ///
+    /// 🪤 Returning true is NOT sufficient on its own — that is exactly what `t58` did and
+    /// it deadlocked at the first propose. The worker rank must ALSO execute the propose,
+    /// or rank 0's drafter collectives land against whatever the worker issues next. See
+    /// `EP_CMD_MTP_PROPOSE`.
+    fn needs_comm(&self) -> bool {
+        false
+    }
+
+    /// True when this proposer's context prefill uses the SHARED forward
+    /// scratch (`ctx.buffers`), so it must not run from the end-of-prefill
+    /// eager hook — only from the first `propose`, where the target owns
+    /// nothing.
+    ///
+    /// MEASURED 2026-08-29 (GLM-5.3, 2x GB10, t61): the eager call site with
+    /// the GLM drafter prefill engaged changed the TARGET's completion on 2 of
+    /// the 6 sealed probes and collapsed p1 from 0.625 to 0.045. The identical
+    /// prefill work moved to the first propose is byte-identical on all six and
+    /// takes p1 to 0.747. The call site is the only variable between the two
+    /// arms; the exact colliding buffer is UNVERIFIED (`norm_output` and
+    /// `moe_output` are the candidates the GLM block writes).
+    fn prefill_uses_shared_buffers(&self) -> bool {
+        false
     }
 
     /// Current drafter KV length (rows), for the catch-up append point.

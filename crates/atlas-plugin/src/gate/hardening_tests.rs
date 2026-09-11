@@ -108,6 +108,83 @@ fn verdict_logic_is_inside_the_boundary() {
 /// to close. This test finds each verdict function's DEFINING file in the
 /// gate sources and asserts that file re-opens every gate, so the next
 /// 500-line split moves the boundary with the function or fails here.
+/// Every source under `src/gate` is classified, and the classification agrees
+/// with `BOUNDARY_FILES`.
+///
+/// ★ WHAT THIS CATCHES THAT NOTHING ELSE DID. The test below walks a hardcoded
+/// list of seven verdict FUNCTIONS and proves each one's defining file re-opens
+/// every gate. It is exactly as complete as that list, so it catches a function
+/// MOVING and is blind to a verdict function that is NEW. `agreement.rs` was
+/// added with `check` and `sensitivity_of` — which decide whether a record SET
+/// is acceptable — and no check in this crate noticed, because nobody added
+/// those symbols to the list below. A new file under `src/gate` was invisible.
+///
+/// So the guard is inverted: a file is not asked to prove it is dangerous, it
+/// is required to declare which it is. `BOUNDARY_FILES` and
+/// `GATE_MACHINERY_FILES` must together be exactly the directory listing, and
+/// no file may be in both. Adding a source here fails this test until its
+/// author classifies it, and classifying it as machinery is a claim someone
+/// wrote down and can be argued with in review — which is the whole point.
+#[test]
+fn gate_sources_are_all_classified() {
+    let gate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gate");
+    let mut on_disk = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(&gate_dir).expect("gate dir listable") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        // Test sources carry no verdict; they are excluded by name, the same
+        // rule the symbol walker uses.
+        if name.ends_with("_tests.rs") || name == "tests.rs" {
+            continue;
+        }
+        on_disk.insert(format!("crates/atlas-plugin/src/gate/{name}"));
+    }
+
+    let boundary: std::collections::BTreeSet<&str> = super::coverage::BOUNDARY_FILES
+        .iter()
+        .copied()
+        .filter(|p| p.starts_with("crates/atlas-plugin/src/gate/"))
+        .collect();
+    let machinery: std::collections::BTreeSet<&str> = super::coverage::gate_machinery_files()
+        .iter()
+        .copied()
+        .collect();
+
+    let both: Vec<_> = boundary.intersection(&machinery).collect();
+    assert!(
+        both.is_empty(),
+        "classified as BOTH boundary and machinery: {both:?} — a file decides a \
+         verdict or it does not"
+    );
+
+    let classified: std::collections::BTreeSet<String> = boundary
+        .iter()
+        .chain(machinery.iter())
+        .map(|s| s.to_string())
+        .collect();
+
+    let unclassified: Vec<_> = on_disk.difference(&classified).collect();
+    assert!(
+        unclassified.is_empty(),
+        "unclassified gate source(s): {unclassified:?}\n\
+         Every file under src/gate must be in BOUNDARY_FILES (it decides a \
+         verdict, so editing it re-opens every gate) or in \
+         GATE_MACHINERY_FILES (it does not, and someone is on record saying \
+         so). `agreement.rs` reached main unclassified and could have judged \
+         its own PR by its own new rule."
+    );
+
+    let stale: Vec<_> = classified.difference(&on_disk).collect();
+    assert!(
+        stale.is_empty(),
+        "classified but not on disk: {stale:?} — a rename or delete left the \
+         classification pointing at nothing, which silently shrinks the boundary"
+    );
+}
+
 #[test]
 fn every_verdict_symbol_is_defined_inside_the_boundary() {
     let gate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gate");

@@ -185,6 +185,31 @@ pub trait GpuBackend: Send + Sync {
         stream: u64,
         args: &[KernelArg<'_>],
     ) -> Result<()> {
+        // ANOMALIES A56: record what this step enqueues so two steps can be
+        // diffed. A graph bakes these bytes; anything that moves between steps
+        // is a host value the replay froze. No-op unless `launch_trace::begin`.
+        if crate::launch_trace::on() {
+            let words = args
+                .iter()
+                .map(|a| match a {
+                    KernelArg::Buffer(p) => p.0,
+                    KernelArg::Bytes(b) => {
+                        let mut w = [0u8; 8];
+                        let n = b.len().min(8);
+                        w[..n].copy_from_slice(&b[..n]);
+                        u64::from_le_bytes(w)
+                    }
+                })
+                .collect();
+            crate::launch_trace::record(crate::launch_trace::Entry {
+                kind: "kernel",
+                func: func.0,
+                grid,
+                block,
+                smem: shared_mem,
+                args: words,
+            });
+        }
         // CUDA-compatible default: each arg becomes one u64 slot. The
         // storage stays alive across the launch call so the *mut c_void
         // pointers we hand to `launch()` remain valid.
@@ -207,6 +232,19 @@ pub trait GpuBackend: Send + Sync {
 
     /// Synchronize a CUDA stream (blocks until all work completes).
     fn synchronize(&self, stream: u64) -> Result<()>;
+
+    /// A55 diagnostic: read every allocation's trailing guard band back and report the ones
+    /// a kernel wrote past. Returns the violation count. `Ok(0)` when `ATLAS_REDZONE` is
+    /// unset or the backend has no red zones — every backend but CUDA.
+    fn scan_redzones(&self) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// A55 bisection: poison guard bands `[lo, hi)` with `0xEE` and the rest with `0x00`.
+    /// Layout-preserving by construction — nothing is allocated, moved or resized.
+    fn poison_redzones(&self, _lo: usize, _hi: usize) -> Result<()> {
+        Ok(())
+    }
 
     /// Get the default stream handle.
     fn default_stream(&self) -> u64;
@@ -376,6 +414,25 @@ pub trait GpuBackend: Send + Sync {
 
     /// Free device memory in bytes.
     fn free_memory(&self) -> Result<usize>;
+
+    /// Free device memory as the DRIVER reports it, with no host leg.
+    ///
+    /// `free_memory` is `max(cuMemGetInfo, MemAvailable)` (ANOMALIES A73), so it
+    /// cannot separate driver-committed device memory from reclaimable host page
+    /// cache — which is exactly the separation a per-request leak measurement
+    /// needs. Default falls back to `free_memory` for backends that have no
+    /// distinct driver leg.
+    fn device_free_memory(&self) -> Result<usize> {
+        self.free_memory()
+    }
+
+    /// Live (allocated, not yet freed) device allocations on this backend.
+    ///
+    /// A COUNT, not bytes: it answers "did this request hand back every buffer it
+    /// took?" without an allocator-size ledger. Default 0 = not tracked.
+    fn live_alloc_count(&self) -> usize {
+        0
+    }
 
     /// Number of streaming multiprocessors (CUDA SMs / HIP CUs) on the device.
     ///

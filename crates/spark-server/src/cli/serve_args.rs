@@ -297,10 +297,51 @@ pub struct ServeArgs {
 
     /// Sequential-decode-exact GDN/SSM verify chain — OPT-IN (default: off).
     ///
+    /// ★ THIS FLAG IS NOT A CORRECTNESS SWITCH. A 2026-08-21 measurement on
+    /// this doc's earlier revision showed the default chain degenerating
+    /// ("count from 1 to 10" → `1, 2, 100, 100, ...`; video-fidelity 0/2 and
+    /// 0/4 at C=2/C=4) and this flag fixing all of it. That attribution was
+    /// WRONG. The degeneration was a scheduler bug — the K=4 verdict rewound
+    /// a sequence by its pending-draft count instead of the forward's row
+    /// count, erasing committed tokens (fixed in #699) — and this flag only
+    /// changed the gate's dispatch pattern so the bug stopped firing. With
+    /// #699 in place every one of those repros passes with the flag OFF.
+    ///
+    /// What the default chain actually does is what #435/#459 measured: ~5e-5
+    /// of lanes differ by 1 ULP against sequential decode, which can flip an
+    /// occasional argmax at temperature 0. No case of that flip causing gross
+    /// degeneration has survived root-causing; every "the default chain broke
+    /// my output" report so far has traced to a different bug that this flag
+    /// happened to perturb. If this flag ever appears to fix a correctness
+    /// problem, treat that as a dispatch-sensitivity SYMPTOM and go find the
+    /// real bug before pinning the flag.
+    ///
+    /// ★ THE COST IS REAL, and measuring it needs a validated serve profile.
+    /// Measured on the LEAN profile (32K ctx, 8 seqs, NO prefix caching — the
+    /// profile this project's recorded baselines were taken on), code prompt,
+    /// aggregate tok/s at C=1/2/4/8:
+    ///
+    ///     default   56 /  88 / 113 / 123    accept 85 / 86 / 80 / 74 %
+    ///     exact     52 /  72 /  78 /  98    accept 81 / 76 / 58 / 64 %
+    ///
+    /// i.e. -7% to -31%. An earlier measurement of this same flag reported it
+    /// as a THROUGHPUT WIN; that was taken on a serve with prefix caching on
+    /// at 128K, where the default arm was degenerating under the #699 bug,
+    /// and it is withdrawn. Benchmark a numerics flag only on a profile you
+    /// have separately validated for throughput — and for correctness.
+    ///
+    /// It does not buy reproducibility either. On the pinned `decode-floor`
+    /// benchmark this flag returned 943/553/943 tokens across three IDENTICAL
+    /// runs — the row-count residual below, showing up directly.
+    ///
     /// SCOPE, and it is narrower than this flag once claimed: it makes the
     /// GDN/SSM verify chain exact. It does NOT make speculative output
     /// bitwise-equal to non-speculative output end to end, and setting it
-    /// will not give you a reproducible spec-on serve.
+    /// will not give you a reproducible spec-on serve. Measured with the flag
+    /// ON, the residual is still visible: an occasional single wrong token,
+    /// and the same request at temperature 0 answering with 45 tokens once and
+    /// 50 the next time — because the accepted-row COUNT varies with runtime
+    /// scheduling, so the row-count-selected projection kernel varies with it.
     ///
     /// Why not (measured on GB10, issue #459): every FFN and attention
     /// projection is computed by a kernel selected on ROW COUNT. A token
@@ -593,6 +634,25 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = false, num_args = 0..=1, default_missing_value = "true")]
     pub enable_prefix_caching: bool,
 
+    /// Measure this server as a known-answer test: no state produced while
+    /// serving one request may reach another.
+    ///
+    /// ONE name for the whole regime, expanded in code by `cli::hermetic` —
+    /// see that module for which channels this closes and why it is a single
+    /// flag rather than the several `--serve-override`s that found them. It
+    /// is the name that lands in a gate record's `serve_overrides`, so a
+    /// reader comparing two runs can tell in one token whether they were
+    /// measured the same way.
+    ///
+    /// It OVERRIDES rather than merges: `--hermetic` beside a flag it closes
+    /// is a contradiction, and `validate_serve_args` refuses the pair rather
+    /// than picking a winner silently.
+    ///
+    /// Not a production setting. Every channel it closes exists because
+    /// carrying that state is normally worth real throughput.
+    #[arg(long, default_value_t = false, num_args = 0..=1, default_missing_value = "true")]
+    pub hermetic: bool,
+
     /// Dump every /v1/chat/completions, /v1/responses, and
     /// /v1/messages (Anthropic) request — plus the corresponding
     /// response (non-streaming) or aggregated stream — as JSONL to a
@@ -708,6 +768,32 @@ pub struct ServeArgs {
     /// 0 = tail + leaf snapshots only. 256 = every 4096 tokens (block_size=16).
     #[arg(long, default_value_t = 256)]
     pub ssm_checkpoint_interval: usize,
+
+    /// Minimum matched tokens before an SSM snapshot is RESTORED rather than
+    /// recomputed. Default 256; raise it very high to disable restore.
+    ///
+    /// Below the threshold a restore costs more in lost drafter acceptance
+    /// than the skipped prefill saves — measured at C=1 on identical-prompt
+    /// reps, the crossover is sharp between ~99 and ~219 matched tokens, and
+    /// 256 sits inside the win region and is block-aligned.
+    ///
+    /// ★ WHY THIS IS A FLAG AND NOT ONLY AN ENV VAR. Restoring from a snapshot
+    /// another request produced is a cross-request channel: which snapshots
+    /// survive in the shared pool depends on what ran before, a later request
+    /// restores from whichever anchor is there, and different anchors give
+    /// numerically different SSM state. Issue #936 measured that as a sharded
+    /// BFCL draw disagreeing with the same draw run whole on 12 of 995
+    /// samples; disabling restore takes it to 2. A known-answer gate needs that
+    /// configuration IN ITS RECORD, and only recipe keys reach a record —
+    /// `ATLAS_MARCONI_MIN_TOKENS` cannot, so a run using it could not say so.
+    ///
+    /// This is a correctness knob for KAT gates, not a throughput knob:
+    /// disabling restore gives up the warm-turn saving. On single-turn
+    /// workloads that saving measured as nothing (shard legs ran 1486-1492 s
+    /// with the pool off versus 1486-1539 s with it on), but a multi-turn
+    /// deployment should leave this alone.
+    #[arg(long, default_value_t = spark_model::DEFAULT_MARCONI_MIN_TOKENS)]
+    pub marconi_min_tokens: usize,
 
     /// Enable automatic context compaction for long conversations.
     /// **DISABLED BY DEFAULT** (2026-04-25): the auto-compactor has
@@ -842,10 +928,15 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 2.0)]
     pub fp8_kv_headroom: f32,
 
-    /// Path to a warmup prompt file (JSON messages or plain text).
-    /// At startup, the server tokenizes and prefills this prompt, inserting the
-    /// resulting KV cache + SSM snapshot into the prefix cache. This eliminates
-    /// the cold-start TTFT penalty (~196ms) on the first real request.
+    /// NOT IMPLEMENTED — rejected at startup. Nothing reads this: no prompt is
+    /// tokenized and no prefill runs, so the cold-start TTFT it was meant to
+    /// remove is still paid. Send one throwaway request after startup instead.
+    ///
+    /// Kept on the CLI (rather than deleted) so an operator who copied it out
+    /// of an older QUICKSTART gets `validate_serve_args`' explanation instead
+    /// of clap's bare "unexpected argument". Remove the flag once the docs it
+    /// appeared in have aged out — or implement it and delete the rule in
+    /// `cli::validate`.
     #[arg(long)]
     pub warmup_prompt: Option<std::path::PathBuf>,
 

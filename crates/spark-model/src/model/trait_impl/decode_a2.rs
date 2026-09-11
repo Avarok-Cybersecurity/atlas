@@ -78,8 +78,7 @@ impl TransformerModel {
         // forward_batched.rs:269) remain at shape `h * elem` per call —
         // batching the comm shape would need new MoE kernel work and is
         // deliberately out of scope here.
-        let mla_perseq_fallback = self.is_mla_dispatch()
-            && std::env::var("ATLAS_MLA_PERSEQ_FALLBACK").is_ok_and(|v| v == "1" || v == "true");
+        let mla_perseq_fallback = self.is_mla_dispatch() && self.levers.mla_perseq_fallback;
         let qsa_active = self.config.index_topk > 0 && {
             // Mirrors QsaIndexer::inert_bound: index_topk IS the selection
             // budget in tokens (2048 on this card); at or below
@@ -88,8 +87,18 @@ impl TransformerModel {
             let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
             seqs.iter().any(|s| s.seq_len >= bound)
         };
-        let hc_perseq = self.config.hc_mult > 0
-            && (qsa_active || std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1"));
+        // A layer may DECLINE the batched multi-seq step outright (Stage 0).
+        // 🪤 Hoisted OUT of the `hc_mult > 0` conjunction on purpose: a layer
+        // that cannot be indexed by row must be routed per-sequence whether or
+        // not it is an mHC-highway model, and whether or not QSA selection has
+        // activated. Keying this on `hc_mult`, `index_topk` or `model_type`
+        // instead would reintroduce exactly the length-dependent cliff below —
+        // `qsa_active` is false for every sequence shorter than
+        // `index_topk + index_compress_ratio - 1`, so a declining model would
+        // be correct on long contexts and silently wrong on short ones.
+        let ms_layer_veto = self.layers.iter().any(|l| l.decode_multi_seq_unsupported());
+        let hc_perseq = ms_layer_veto
+            || (self.config.hc_mult > 0 && (qsa_active || self.levers.hc_perseq_decode));
         // ★ The per-seq routing decision is resolved ABOVE the EP branch on
         // purpose. It used to sit below, so under EP a QSA-active batch
         // returned at `decode_batch_compute_main` before ever reaching the
@@ -219,7 +228,7 @@ impl TransformerModel {
         for s in seqs.iter_mut() {
             self.ssm_h_to_f16_dispatch(s)?;
         }
-        if std::env::var("ATLAS_DECODE_BATCH_LOG").ok().as_deref() == Some("1") {
+        if self.levers.decode_batch_log {
             let slots: Vec<i64> = seqs
                 .iter()
                 .map(|s| {
@@ -258,7 +267,7 @@ impl TransformerModel {
         // DEFAULT-ON since 2026-07-27; disable with
         // ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1. Measurements + the rewrite this
         // retired: `decode_graph_key.rs`.
-        let ms_profile = std::env::var("ATLAS_MS_PROFILE").ok().as_deref() == Some("1");
+        let ms_profile = self.levers.ms_profile;
         // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
         // ATLAS_LORA_EAGER: same LoRA graph-vs-eager debugging hatch as decode_a.
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
@@ -267,7 +276,7 @@ impl TransformerModel {
         // consults it (decode_a `layer_veto`); the batched path must too, or
         // capture hits 'PLE: un-prestaged forward inside CUDA graph capture'
         // on the first joint hc step.
-        let layer_veto = self.layers.iter().any(|l| l.decode_graph_unsupported());
+        let layer_veto = self.decode_graph_veto;
         let graph_key = if !ms_profile && !lora_eager && !layer_veto && multiseq_graphs_enabled() {
             self.batch_decode_graph_key(&*seqs, padded_n)
         } else {
@@ -382,6 +391,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            decode_step: true,
             gdn_exact_replay: false,
             token_ids: None,
             // The batch's token ids: the hc multi-seq PLE rows read their
@@ -470,9 +480,7 @@ impl TransformerModel {
             // CONC_HSD: per-seq hidden-state dump diagnostic. Logs first 4 FP32
             // hidden values for each seq after each layer to localize where
             // pos>=1 diverges from pos 0 in concurrent batched decode.
-            let conc_hsd = std::env::var("ATLAS_CONC_HSD").is_ok_and(|v| v == "1" || v == "true")
-                && padded_n >= 2
-                && self.comm.is_none();
+            let conc_hsd = self.levers.conc_hsd && padded_n >= 2 && self.comm.is_none();
             let dump_hidden = |label: &str, stream: u64| -> Result<()> {
                 if !conc_hsd {
                     return Ok(());

@@ -491,6 +491,118 @@ fn decode_rollback_ring_slots_with(
         },
     }
 }
+
+/// Outcome of the Marconi snapshot-slot decision.
+///
+/// `skip_reason` is `Some` only for the IMPLICIT skip (prefix caching
+/// inactive) — never for an explicit `--ssm-cache-slots 0` and never for an
+/// `ATLAS_SSM_MARCONI_FULL` override — so the allocating call site can log
+/// the savings exactly once.
+pub struct MarconiSlotDecision {
+    pub slots: usize,
+    pub skip_reason: Option<&'static str>,
+}
+
+/// Number of Marconi SSM-snapshot slots to RESERVE and ALLOCATE.
+///
+/// Two call sites MUST agree on this number, exactly as they must for the
+/// decode-rollback ring above, or a serve either under-reserves (runtime
+/// CUDA alloc failure after weights load) or over-reserves (preflight
+/// refuses a configuration the runtime could fund):
+///
+/// * `spark-server` `preflight_reserve` — sizes the pre-load GPU reserve;
+/// * `TransformerModel::new` (`impl_a1.rs`) — allocates `SsmSnapshotPool`.
+///
+/// WHY a gate exists. The Marconi region's ONLY consumer is the prefix
+/// cache: a slot is written by `prefill_b_save_checkpoint` /
+/// `insert_*_snapshot` and can only ever be READ BACK through a prefix-cache
+/// lookup that returns an `ssm_snapshot` id (`prefix_cache.rs`, "SSM state
+/// snapshot ID at the deepest matched node (Marconi caching)"). Without
+/// `--enable-prefix-caching`, `build_prefix_cache` installs `NoPrefixCaching`
+/// — no radix tree exists, no lookup can ever produce a snapshot id, and
+/// every reserved slot is unreachable for the life of the process. Yet
+/// `--ssm-cache-slots` defaults to **16** and was sized independently of the
+/// flag, so a serve with prefix caching disabled still reserved
+/// `16 × num_ssm_layers × (h_state + conv_state)` bytes that nothing can
+/// restore from.
+///
+/// Measured on GLM-5.3-Flash NVFP4, 2× GB10, TP=2 EP=2, K=3, batch 1,
+/// GMU 0.90: **2380 MiB per rank** — 16 slots × 34 KDA layers ×
+/// (h 4.000 MiB + conv 0.375 MiB). Both widths are FP32 by construction
+/// (`ModelConfig::ssm_h_state_bytes` / `ssm_conv_state_bytes` each end in
+/// `* 4`), and `--ssm-h-dtype f16-pool` is opt-in, so the FP32 figure is
+/// what an ordinary serve reserves AND allocates: `SsmStatePool` reads the
+/// same two accessors (`ssm_pool.rs:182`), so reserve and residency agree.
+/// Confirmed by a paired A/B, same session, 90 s apart, identical flags
+/// (`2 131072 1 0.90`): post-load requirement **13.58 → 11.25 GB**, a
+/// 2.33 GB drop that matches 2380 MiB exactly. The gated default now needs
+/// precisely what the same image required only when an operator passed
+/// `--ssm-cache-slots 0` by hand (ANOMALIES A68).
+///
+/// 🪤 `GLM53-MEMORY-LEDGER-20260830.md` §2/§4 records this region as
+/// "16 slots × 74.4 MB = 1190 MB". That is the FP16-width arithmetic
+/// (h 2.000 + conv 0.1875 MiB/layer) and is exactly half; the same halving
+/// applies to its "SSM live state pool 1 slot × 34 layers = 74 MB" row.
+/// Trust the FP32 figure — it is what the code allocates and what the live
+/// A/B measured.
+///
+/// This is the same defect class the decode ring above already fixed:
+/// a pool reserved unconditionally while nothing could reach it.
+///
+/// Nothing degrades when the slots are dropped. `prefill_b_save_checkpoint`
+/// early-returns on `!ssm_snapshots.is_enabled()`, so there is no work and
+/// no warning spam on the prefill path; the only user-visible difference is
+/// that prefix-cache hits would recompute SSM state — and with the cache
+/// inactive there are no hits.
+///
+/// Env contract (read HERE and nowhere else):
+///
+/// * `ATLAS_SSM_MARCONI_FULL` (PRESENCE, house convention — `=0` is NOT
+///   "off"): restore the old unconditional reservation. Accounting-safe
+///   over-reserve; the kill switch for this diet.
+pub fn marconi_snapshot_slots(
+    requested: usize,
+    prefix_caching_active: bool,
+) -> MarconiSlotDecision {
+    marconi_snapshot_slots_with(requested, prefix_caching_active, marconi_reserve_full())
+}
+
+/// The `ATLAS_SSM_MARCONI_FULL` kill switch (PRESENCE, house convention).
+pub fn marconi_reserve_full() -> bool {
+    std::env::var_os("ATLAS_SSM_MARCONI_FULL").is_some()
+}
+
+/// Pure core of [`marconi_snapshot_slots`] (env-free, unit-testable).
+pub fn marconi_snapshot_slots_with(
+    requested: usize,
+    prefix_caching_active: bool,
+    full_reserve: bool,
+) -> MarconiSlotDecision {
+    if requested == 0 || prefix_caching_active || full_reserve {
+        return MarconiSlotDecision {
+            slots: requested,
+            skip_reason: None,
+        };
+    }
+    MarconiSlotDecision {
+        slots: 0,
+        skip_reason: Some("prefix caching inactive — Marconi snapshot slots are unreachable"),
+    }
+}
+
+/// Whether the prefix cache this serve will actually install is a REAL cache.
+///
+/// SSOT mirror of `spark-server`'s `build_prefix_cache`: the flag alone is
+/// not enough, because a compressed DeepSeek-V4 config downgrades to
+/// `NoPrefixCaching` even with `--enable-prefix-caching` (the cache does not
+/// preserve the compressor pool/ring state required for exact reuse). The
+/// allocating call site asks the constructed cache directly
+/// (`PrefixCache::is_active`); preflight runs before it exists and must
+/// reproduce the same predicate from `args` + `config`.
+pub fn prefix_caching_active(enable_flag: bool, kv_only_prefix_cache_is_safe: bool) -> bool {
+    enable_flag && kv_only_prefix_cache_is_safe
+}
+
 #[cfg(test)]
 #[path = "ssm_reserve_tests.rs"]
 mod mtp_state_slot_tests;

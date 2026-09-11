@@ -31,6 +31,27 @@ pub struct SchedLevers {
     pub fast_greedy_chat: bool,
     /// Force temperature 0 regardless of the request. Diagnostic.
     pub force_temp_zero: bool,
+
+    // ── Tool-call turn termination (both ship ON) ──
+    //
+    // These two were `env_flag_default_on` readers called ONCE PER GENERATED
+    // TOKEN PER SEQUENCE, from `emit_step` and `decode_logits_step`, on the
+    // scheduler thread — ~320,000 environment reads in one sweep, each
+    // allocating a `String` and taking the process-wide environment lock.
+    /// Fix B (2026-06-05): hard-stop on the `<tool_response>` control token,
+    /// which the model must never generate; if it does — post-tool-call
+    /// runaway — end the turn. Ships ON;
+    /// `ATLAS_TOOL_RESPONSE_STOP=0`/`false` disables.
+    pub tool_response_stop: bool,
+    /// Fix A (2026-06-05): in `tool_choice="auto"` the grammar's
+    /// `is_terminated()` never becomes true after a tool call, so EOS is
+    /// suppressed forever and the model is trapped into a hallucinated
+    /// transcript. When a tool call has completed — and we are not inside a
+    /// tool body or thinking — lift the suppression so the model's natural
+    /// EOS ends the turn. This is the verified root-cause fix behind the
+    /// webserver_ok 10/10 + Σwall win, so it ships ON and the win is not
+    /// env-dependent. `ATLAS_TOOL_EOS_ESCAPE=0`/`false` disables.
+    pub tool_eos_escape: bool,
     /// Apply min-p during MTP verify. Ships ON; `ATLAS_NO_MTP_MINP=1` opts out.
     pub mtp_minp: bool,
     /// Run the full sample pipeline during MTP verify. Ships ON;
@@ -38,6 +59,21 @@ pub struct SchedLevers {
     pub mtp_verify_sample: bool,
 
     // ── DFlash speculation ──
+    /// The EAGLE k-gamma append fix. Ships ON since the 54.5 record config
+    /// (2026-08-19); `ATLAS_DFLASH_EAGLE_FIX=0` is the kill switch.
+    ///
+    /// ★ Read from TWO files before this — `verify_dflash_step.rs` and
+    /// `verify_k2_step.rs`, each per verify step, each with its own
+    /// `!= Some("0")`. Same variable, same spelling, no shared source: the
+    /// exact shape `ATLAS_DSPARK_ANCHOR_BIAS` had. One field now.
+    pub dflash_eagle_fix: bool,
+    /// `ATLAS_DFLASH_STEP_TIMING=1` — split the step wall into verify (target
+    /// M=1+gamma forward) and propose (drafter forward). The ledger never had
+    /// this split and guessed "FFN + double sweep"; this measures it.
+    pub dflash_step_timing: bool,
+    /// `ATLAS_VISION_TIMING` (presence) — synchronize after each prefill
+    /// chunk and log the ViT chunk wall. Diagnostic, and it forces a sync.
+    pub vision_timing: bool,
     pub dflash_masked_verify: bool,
     pub dflash_seam_serial: bool,
     pub dflash_adaptive: bool,
@@ -164,6 +200,15 @@ impl SchedLevers {
             fast_masked: on_unless("ATLAS_DISABLE_FAST_MASKED"),
             fast_greedy_chat: on_unless("ATLAS_NO_FAST_GREEDY_CHAT"),
             force_temp_zero: opt_in("ATLAS_FORCE_TEMP_ZERO"),
+            // Reuses the tested parser in `helpers` rather than re-deriving
+            // the rule: this idiom accepts "0" OR "false", trimmed, and
+            // re-spelling it here as `!= "1"` would silently ignore `=false`.
+            tool_response_stop: crate::scheduler::helpers::parse_flag_default_on(
+                std::env::var("ATLAS_TOOL_RESPONSE_STOP").ok().as_deref(),
+            ),
+            tool_eos_escape: crate::scheduler::helpers::parse_flag_default_on(
+                std::env::var("ATLAS_TOOL_EOS_ESCAPE").ok().as_deref(),
+            ),
             mtp_minp: on_unless("ATLAS_NO_MTP_MINP"),
             mtp_verify_sample: on_unless("ATLAS_NO_MTP_VERIFY_SAMPLE"),
 
@@ -175,6 +220,9 @@ impl SchedLevers {
             // shipped none of them, so out-of-the-box DFlash ran the slow
             // shape of its own engine. `=0` restores each legacy path for
             // A/B; `=1` remains a harmless no-op in every existing recipe.
+            dflash_eagle_fix: on_unless_zero("ATLAS_DFLASH_EAGLE_FIX"),
+            dflash_step_timing: opt_in("ATLAS_DFLASH_STEP_TIMING"),
+            vision_timing: present("ATLAS_VISION_TIMING"),
             dflash_masked_verify: on_unless_zero("ATLAS_DFLASH_MASKED_VERIFY"),
             dflash_seam_serial: on_unless_zero("ATLAS_DFLASH_SEAM_SERIAL"),
             // NOT graduated: the record env runs adaptive OFF (γ scheduling
@@ -247,8 +295,14 @@ impl SchedLevers {
             fast_masked: true,
             fast_greedy_chat: true,
             force_temp_zero: false,
+            tool_response_stop: true,
+            tool_eos_escape: true,
             mtp_minp: true,
             mtp_verify_sample: true,
+            // Opt-out: ships ON, `=0` disables.
+            dflash_eagle_fix: true,
+            dflash_step_timing: false,
+            vision_timing: false,
             dflash_masked_verify: false,
             dflash_seam_serial: false,
             dflash_adaptive: false,
@@ -306,123 +360,5 @@ impl Default for SchedLevers {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_five_opt_out_levers_ship_on() {
-        // Each of these is spelled as a NEGATIVE env var. Collapsing them into
-        // an opt-in resolver would silently disable five shipped behaviours.
-        let d = SchedLevers::defaults();
-        assert!(d.fast_greedy_grammar, "ATLAS_DISABLE_FAST_GREEDY");
-        assert!(d.fast_masked, "ATLAS_DISABLE_FAST_MASKED");
-        assert!(d.mtp_minp, "ATLAS_NO_MTP_MINP");
-        assert!(d.mtp_verify_sample, "ATLAS_NO_MTP_VERIFY_SAMPLE");
-        assert!(d.forced_token_fastpath, "ATLAS_DISABLE_FORCED_TOKEN");
-    }
-
-    #[test]
-    fn every_opt_in_lever_ships_off() {
-        let d = SchedLevers::defaults();
-        assert!(!d.force_temp_zero);
-        assert!(!d.dflash_masked_verify && !d.dflash_adaptive && !d.dflash_spec_think);
-        assert!(!d.disable_watchdogs);
-        assert!(!d.decode_timing && !d.mtp_timing && !d.adadec_diagnostic);
-    }
-
-    /// ★ `defaults()` CANNOT catch a change to what the SERVER resolves.
-    ///
-    /// It is a hand-written struct literal; `from_env()` is the constructor
-    /// `spark serve` actually calls. When PR #831 graduated
-    /// `dflash_spec_think` from `opt_in` to `on_unless_zero`, ONLY `from_env()`
-    /// changed — `defaults()` still said `false`, so
-    /// `every_opt_in_lever_ships_off` above stayed green and
-    /// `cargo test --workspace` passed. The regression reached the GPU gates
-    /// instead, where it cost a full 11-gate campaign to find.
-    ///
-    /// This asserts the resolver itself, with no env set. It is deliberately
-    /// narrow: `dflash_spec_think` is the one lever in this struct whose value
-    /// escapes the DFlash lane. `mtp_gate::spec_dispatch_eligible` reads it as
-    ///
-    ///     if inside_thinking && !spec_think { return false; }
-    ///
-    /// for BOTH lanes, so defaulting it on lets speculation enter `<think>` on
-    /// plain MTP, where batch-K verify is not byte-lossless at T=0. Measured
-    /// twice with the same signature — the 2026-08-16 bisect, and 2026-09-01
-    /// on this PR: agentic-webserver 10/10 -> 9/10 webserver_ok and 10/10 ->
-    /// 7/10 followed_directions, deterministically, plus bfcl-subset-echolp
-    /// 0.44 below both floors on the same recipe.
-    #[test]
-    fn spec_think_is_off_in_the_resolver_the_server_actually_uses() {
-        // SAFETY: single-threaded test process; no other thread reads the env.
-        unsafe { std::env::remove_var("ATLAS_DFLASH_SPEC_THINK") };
-        let live = SchedLevers::from_env();
-        assert!(
-            !live.dflash_spec_think,
-            "ATLAS_DFLASH_SPEC_THINK must stay OPT-IN: from_env() resolved it ON. \
-             It is the one lever here that is not gated behind dflash_verify_raw_argmax, \
-             so defaulting it on changes plain-MTP serving and deterministically \
-             damages agentic trajectories. See mtp_gate::spec_dispatch_eligible."
-        );
-        // The two levers this PR DID graduate stay graduated: both are
-        // additionally gated on `dflash_verify_raw_argmax` (= args.dflash), so
-        // they cannot reach a no-drafter serve.
-        assert!(
-            live.dflash_masked_verify,
-            "masked_verify is intentionally default-ON"
-        );
-        assert!(
-            live.dflash_seam_serial,
-            "seam_serial is intentionally default-ON"
-        );
-    }
-
-    #[test]
-    fn the_loop_watchdog_is_toggleable_at_runtime() {
-        // The one lever with real runtime mutation: the TUI ops REPL flips it
-        // mid-run. Modelled as an atomic INSIDE the carried struct rather than
-        // as a process global with a setter.
-        let d = SchedLevers::defaults();
-        assert!(!d.loop_watchdog());
-        d.set_loop_watchdog(true);
-        assert!(d.loop_watchdog());
-        d.set_loop_watchdog(false);
-        assert!(!d.loop_watchdog());
-    }
-
-    #[test]
-    fn an_absent_mtp_gate_flag_leaves_the_legacy_variable_reachable() {
-        // The whole of the fix: publishing the clap default sealed
-        // `MTP_GATE_FORCE_CLI` on every `spark serve`, so the
-        // `ATLAS_MTP_GATE_FORCE` fallback in `mtp_gate_force` could never run
-        // even though `--help` documents it. `None` must not seal.
-        //
-        // ★ The cell is process-global with no reset, so this is the only test
-        // in this binary that may write it — a second writer would make both
-        // order-dependent.
-        for _ in 0..3 {
-            set_mtp_gate_force(None);
-        }
-        set_mtp_gate_force(Some(true));
-        assert!(
-            mtp_gate_force(),
-            "an absent flag must leave the cell open for the next writer"
-        );
-        assert!(
-            SchedLevers::from_env().mtp_gate_force,
-            "and the carried levers read the same resolution — one rule, not two"
-        );
-    }
-
-    #[test]
-    fn two_runs_hold_independent_levers() {
-        let a = SchedLevers::defaults();
-        let b = SchedLevers {
-            dflash_adaptive: true,
-            ..SchedLevers::defaults()
-        };
-        assert!(!a.dflash_adaptive && b.dflash_adaptive);
-        a.set_loop_watchdog(true);
-        assert!(!b.loop_watchdog(), "and independent runtime state");
-    }
-}
+#[path = "levers_tests.rs"]
+mod tests;

@@ -50,15 +50,36 @@ impl Floors {
 /// or above the floor, while `gate::scoring` allows value + noise to clear
 /// the min. A sub-noise dip fails the run verdict even though scoring would
 /// have passed it — safe conservatism, same as decode-floor's `verdict_for`.
+/// The three reasons a measured cell is not comparable, counted.
+///
+/// One struct rather than three parallel arguments because they are one
+/// concept — "why this cell's tok/s cannot be quoted" — and because keeping
+/// them together makes it obvious that a new exclusion class must be counted
+/// and reported, not silently folded into an existing one. Each stays
+/// SEPARATE: a vacuous cell did not deliver its tokens, a cache-uncontrolled
+/// cell did not prove reuse, and a non-MTP cell delivered its tokens on the
+/// other speculation arm. Reading any of the three as another is how an arm
+/// change gets written down as a regression.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Exclusions {
+    pub(crate) vacuous: usize,
+    pub(crate) cache_uncontrolled: usize,
+    pub(crate) non_mtp_arm: usize,
+}
+
 pub(crate) fn sweep_verdict(
     metrics: &BTreeMap<String, f64>,
     cells: usize,
     errors: usize,
-    vacuous: usize,
-    cache_uncontrolled: usize,
+    excl: Exclusions,
     vacuity_floor_pct: f64,
     floors: &Floors,
 ) -> Verdict {
+    let Exclusions {
+        vacuous,
+        cache_uncontrolled,
+        non_mtp_arm,
+    } = excl;
     if errors > 0 {
         // Errors invalidate the cells they landed in, gating or not.
         return Verdict::fail(format!(
@@ -93,6 +114,12 @@ pub(crate) fn sweep_verdict(
              measured request did not report a material cached-prompt fraction"
         ));
     }
+    // ★ NO INCONCLUSIVE ON AN ARM CHANGE. It used to fail here and that was
+    // wrong: at wide batch the MTP gate drops speculation BY DESIGN, and those
+    // rungs' floors were calibrated on runs that did. `non_mtp_arm` is still
+    // counted and published so a low reading can be explained, but it does not
+    // decide a verdict. See `CellRow::arm_is_not_mtp`.
+    let _ = non_mtp_arm;
     let mut basis = Vec::new();
     for (c, floor) in floors.per_c.iter().filter(|(_, f)| *f > 0.0) {
         let key = format!("c{c}_aggregate_tok_s");

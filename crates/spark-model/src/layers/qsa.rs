@@ -186,6 +186,37 @@ impl QsaIndexer {
         })
     }
 
+    /// Release one sequence's indexer carry.
+    ///
+    /// `QsaSeqState` holds bare `DevicePtr`s, so dropping the struct frees
+    /// nothing. Without this every finished sequence left
+    /// `max_tokens * hd * 2` (raw) + `max_tokens/ratio * hd * 2` (pooled)
+    /// bytes on the device for EACH full-attention layer — at 200K context
+    /// and 12 such layers, ~739 MB per request. On unified memory that is
+    /// invisible to RSS and to `nvidia-smi`, so it surfaced only as the host
+    /// running out of RAM with no process to blame.
+    ///
+    /// Idempotent: each pointer is nulled as it is freed, so a second call
+    /// (or a release after a partial failure) cannot double-free. A failure
+    /// on the first buffer still attempts the second — leaking the rest
+    /// because the first free failed is the bug this exists to prevent.
+    pub fn release_seq_state(&self, st: &mut QsaSeqState, gpu: &dyn GpuBackend) -> Result<()> {
+        let mut first_err: Option<anyhow::Error> = None;
+        for p in [&mut st.raw_keys, &mut st.block_keys] {
+            if p.is_null() {
+                continue;
+            }
+            if let Err(e) = gpu.free(*p) {
+                first_err.get_or_insert(e);
+            }
+            *p = DevicePtr(0);
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
     pub fn inert_bound(&self) -> usize {
         (self.budget + self.ratio - 1) as usize
     }

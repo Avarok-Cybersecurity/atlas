@@ -54,8 +54,27 @@ on:
 permissions:
   contents: read
 
+# `cancel-in-progress: false` is NOT enough on its own, and the reason is
+# subtle. A concurrency group holds at most ONE pending run: when a newer run
+# enters, GitHub cancels the one already queued. Every comment on the PR
+# triggers this workflow — INCLUDING the bot's own replies — so the sequence
+#
+#   /stamp  ->  bot posts "Stamp recorded."  ->  /seal
+#
+# put three runs in one group, and the bot's reply evicted the queued /seal.
+# It was cancelled before its job could evaluate the `if` that would have made
+# it stand down anyway, so the command vanished with NO reply and no failure:
+# posting it again was the only way to notice. Observed twice on #976.
+#
+# So only real commands share the per-PR group. Anything else — a bot reply, an
+# ordinary review comment — gets a throwaway group of its own, keeps the
+# serialisation it never needed, and can no longer evict a command that does.
 concurrency:
-  group: cert-cmd-${{ github.event.issue.number || github.event.pull_request.number }}
+  group: >-
+    ${{ (github.event_name == 'workflow_dispatch'
+         || startsWith(github.event.comment.body, '/'))
+        && format('cert-cmd-{0}', github.event.issue.number || github.event.pull_request.number || github.event.inputs.pr)
+        || format('cert-noop-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
@@ -259,10 +278,94 @@ jobs:
           # Re-running is safe for a seal: it adds no commit, and a seal is
           # voided by commits, not by CI runs.
           if [ "$VERB" = "/stamp" ] || [ "$VERB" = "/seal" ]; then
-            run_id=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=50" \
-              --jq '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .id' \
-              2>/dev/null || true)
-            if [ -n "${run_id:-}" ] && [ "$run_id" != "null" ]; then
+            # TWO HOLES, ONE LOOKUP, CLOSED TOGETHER — this is a merge of
+            # `stack/ci-honesty` and what landed on main, and taking either
+            # side alone reopens the other's bug.
+            #
+            # (1) `2>/dev/null || true` made an UNANSWERED API indistinguishable
+            # from "this sha has no CI run". The benign branch then said
+            # "nothing to re-run", left $rerun_note empty, posted "**Stamp
+            # recorded.** ... This holds for the life of the PR." and exited 0
+            # — while the held lane kept its `skipped` result and the gate
+            # stayed red telling the operator to comment /stamp, which they had
+            # just done. Same defect as #847, one call earlier. Absent and
+            # unanswered are different answers and must not share a branch.
+            #
+            # (2) The run's STATUS matters as much as its id. Re-running a run
+            # that has not finished returns 403 "This workflow is already
+            # running", which the warning below would report as a failure — and
+            # it is not one. A run still in flight reads the mark when its gate
+            # jobs execute, so there is nothing to re-run. That was found the
+            # first time the warning printed the API's own words, which is what
+            # it is for.
+            run_id=""; run_status=""; list_err=""
+            if runs_json=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=50" 2>&1); then
+              run_meta=$(printf '%s' "$runs_json" \
+                | jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | "\(.id) \(.status)"' 2>&1) \
+                || { list_err="$run_meta"; run_meta=""; }
+              run_id=${run_meta%% *}
+              run_status=${run_meta##* }
+            else
+              list_err="$runs_json"
+            fi
+            if [ -n "$list_err" ]; then
+              echo "::error title=$name recorded, but CI was NOT re-run::could not list the CI runs for $HEAD_SHA: $list_err"
+              rerun_note="
+
+          > [!WARNING]
+          > **The $name is recorded, but CI was not re-run.** The CI run for \`$SHORT\` could not even be looked up, so certification and the nine release-matrix builds still show the \`skipped\` result they reported before this command. Re-run the CI workflow by hand, or push any commit to this PR.
+          >
+          > <details><summary>what the API said</summary>
+          >
+          > \`\`\`
+          > $list_err
+          > \`\`\`
+          > </details>"
+            elif [ -n "${run_id:-}" ] && [ "$run_id" != "null" ] && [ "$run_status" != "completed" ]; then
+              # ★ "IN FLIGHT" IS TWO CASES, AND ONLY ONE OF THEM IS BENIGN.
+              #
+              # The benign one: the run has not reached its gate jobs, so they
+              # will read the mark when they execute and there is nothing to
+              # re-run. The other one: those jobs ALREADY RAN, before the mark
+              # existed, and their verdict is final for this run — the PR sits
+              # red on `seal status` / `stamp status` with no further run coming.
+              #
+              # Treating both as benign happened to #934, #935 and #908 on
+              # 2026-09-06, all three at once:
+              #     #934  seal status done 13:37:51   Seal minted 13:40:22
+              #     #935  seal status done 13:41:46   Seal minted 13:42:44
+              #     #908  seal status done 13:41:50   Seal minted 13:42:57
+              # Each ended with a green `Seal` check run and a red `seal status`,
+              # and this step said nothing. Its own message already named the
+              # case — "if they already ran, re-run CI once this one finishes" —
+              # and then left a human to notice. Nobody was watching.
+              #
+              # A job inside an in-progress run CANNOT be re-run (`gh run rerun
+              # --job` answers "job N cannot be rerun"), so this cannot
+              # self-heal. Say so loudly instead of implying all is well.
+              stale_jobs=""
+              if jobs_json=$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" 2>&1); then
+                stale_jobs=$(printf '%s' "$jobs_json" \
+                  | jq -r '[.jobs[] | select(.status == "completed")
+                            | select(.name == "seal status" or .name == "stamp status"
+                                     or .name == "PR Benchmark Certifications"
+                                     or .name == "PR benchmark gate")
+                            | .name] | unique | join(", ")' 2>/dev/null) || stale_jobs=""
+              fi
+              if [ -n "$stale_jobs" ]; then
+                echo "::error title=$name recorded, but the jobs that read it have already run::run $run_id is '$run_status', and these of its jobs finished BEFORE the mark existed: $stale_jobs"
+                rerun_note="
+
+          > [!WARNING]
+          > **The $name is recorded, but the checks that read it have already run.** CI run [\`$run_id\`](https://github.com/$REPO/actions/runs/$run_id) is still \`$run_status\`, but these jobs finished before the mark was minted and their verdict is final for this run: \`$stale_jobs\`.
+          >
+          > A job inside an in-progress run cannot be re-run, so this cannot fix itself. **Re-run the CI workflow once the current run finishes**, or push any commit to this PR.
+          >
+          > (A \`/seal\` is voided by the next commit, so prefer the re-run.)"
+              else
+                echo "::notice title=CI is still running::run $run_id is '$run_status' and none of the jobs that read the $name have finished yet, so they will see it when they execute. Nothing to re-run."
+              fi
+            elif [ -n "${run_id:-}" ] && [ "$run_id" != "null" ]; then
               # Capture stderr rather than discarding it. The first time this
               # failed in production the reason went to /dev/null, the Stamp
               # check went green, and the gate stayed red telling the operator
@@ -275,7 +378,9 @@ jobs:
                 rerun_note="
 
           > [!WARNING]
-          > **The $name is recorded, but CI was not re-run.** Re-running [CI run \`$run_id\`](https://github.com/$REPO/actions/runs/$run_id) failed, so certification and the nine release-matrix builds still show the \`skipped\` result they reported before the stamp. Re-run that workflow by hand, or push any commit to this PR.
+          > **The $name is recorded, but CI was not re-run.** Re-running [CI run \`$run_id\`](https://github.com/$REPO/actions/runs/$run_id) failed, so certification and the nine release-matrix builds still show the \`skipped\` result they reported before the stamp. Re-run that workflow **in full**, or push any commit to this PR.
+          >
+          > Re-running only the failed jobs will NOT work, and it looks like it should. \`stamp status\` and \`seal status\` did not fail — they SUCCEEDED while emitting \`false\`, because they ran before the mark existed. Job outputs are fixed for the life of a run, so the gate that reads \`needs.stamp.outputs.stamped\` keeps seeing that stale \`false\` no matter how many times you re-run the gate itself. Only a full re-run recomputes it.
           >
           > This is usually the App missing \`actions: write\`. \`certification-preflight.yml\` probes it.
           >

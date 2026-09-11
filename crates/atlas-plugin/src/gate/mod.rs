@@ -26,9 +26,12 @@ pub mod bench;
 pub mod card;
 pub mod check;
 mod check_fmt;
+mod check_group;
+pub mod check_paths;
 pub mod closure;
 pub mod codeowners;
 pub mod coverage;
+pub mod hermetic;
 pub mod record;
 mod record_path;
 pub mod scoring;
@@ -271,6 +274,25 @@ mod hardening_tests;
 mod card_tests;
 
 /// Ed25519 record signatures: round trips and, mostly, negative controls.
+pub mod agreement;
+pub mod group;
+
+#[cfg(test)]
+#[path = "group_tests.rs"]
+mod group_tests;
+
+#[cfg(test)]
+#[path = "group_verdict_tests.rs"]
+mod group_verdict_tests;
+
+#[cfg(test)]
+#[path = "agreement_tests.rs"]
+mod agreement_tests;
+
+#[cfg(test)]
+#[path = "signer_registry_tests.rs"]
+mod signer_registry_tests;
+
 #[cfg(test)]
 #[path = "signing_tests.rs"]
 mod signing_tests;

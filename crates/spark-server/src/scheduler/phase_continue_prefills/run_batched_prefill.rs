@@ -14,8 +14,8 @@ use spark_model::traits::{Model, PrefillSlice};
 use spark_runtime::gpu::DevicePtr;
 use std::time::Instant;
 
-use super::super::sample_first_token;
 use super::super::types::PrefillInProgress;
+use super::super::{FirstTokenPolicy, sample_first_token};
 use super::prefill_waves::{WaveGeom, plan_prefill_waves};
 
 pub(super) fn run_batched_prefill_step(
@@ -27,6 +27,8 @@ pub(super) fn run_batched_prefill_step(
     max_batch_tokens: usize,
     prefill_stream: u64,
     prefill_event: u64,
+    think_end_token: Option<u32>,
+    tool_call_start_token: Option<u32>,
 ) {
     // Per-chunk InnerQ finalize poll — see `phase_continue_prefills::poll_innerq`.
     super::poll_innerq(model);
@@ -217,6 +219,11 @@ pub(super) fn run_batched_prefill_step(
                 p.min_p,
                 &p.eos_tokens,
                 p.grammar_state.as_mut(),
+                FirstTokenPolicy::for_birth(
+                    p.enable_thinking,
+                    think_end_token,
+                    tool_call_start_token,
+                ),
                 &sched.levers.sampling(),
             ) {
                 Ok(first) => {

@@ -519,6 +519,10 @@ pub struct BlockDiffusionDraftHead {
     /// `TransformerModel::suppress_graphs` so external code can disable
     /// graphs at runtime (e.g. while calibrating FP8 KV).
     pub suppress_graphs: std::sync::atomic::AtomicBool,
+    /// Diagnostic and A/B levers, resolved from the environment ONCE when
+    /// this head was built. `forward_block` and its per-layer helpers read
+    /// these instead of the environment — see [`levers::DFlashLevers`].
+    pub levers: levers::DFlashLevers,
     /// How many eager warm-up calls we've executed against the graph path.
     /// Default warmup target is 2 (override via `ATLAS_DFLASH_PROPOSE_WARMUP_N`).
     /// Two eager passes warm the PTX→SASS cache, ramp GB10 clocks to steady
@@ -584,10 +588,6 @@ mod dflash2;
 /// that one character-class: propose 19.8 -> 618.7 ms and 49.9 -> 5.5 tok/s,
 /// because the legacy path launches one `dense_gemv` per accumulated ctx row
 /// over a 262 MB `fc` weight. Nothing logged a change.
-pub(super) fn option_b_enabled() -> bool {
-    option_b_from(std::env::var("ATLAS_DFLASH_OPTION_B").ok().as_deref())
-}
-
 /// The predicate itself, pure over the raw value so a test can exercise the
 /// PRODUCTION code rather than a copy of it. `set_var` is unsafe and
 /// process-global, so a test that mutated the environment would race every
@@ -625,6 +625,7 @@ mod forward_block;
 mod forward_block_layer;
 mod forward_block_layer_paged;
 mod from_weights;
+pub mod levers;
 mod markov;
 mod precompute_ctx_kv;
 mod propose;
@@ -691,10 +692,7 @@ impl DraftProposer for BlockDiffusionDraftHead {
         // bisecting the WIDTH against acceptance is what localises a banding
         // bug — "correct at 2 bands, wrong at 4" is the observation that
         // found the lm_head tile bound, and an on/off flag cannot ask it.
-        let want: usize = std::env::var("ATLAS_DFLASH_BATCH_PROPOSE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(usize::MAX);
+        let want = self.levers.batch_propose_width;
         if want < 2 {
             return 1;
         }
@@ -797,10 +795,7 @@ impl DraftProposer for BlockDiffusionDraftHead {
 
         // Phase 3 — split bands. Row 0 of each band is the anchor echo the
         // single-sequence path drops too; the rest are that sequence's drafts.
-        let cap = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(self.gamma);
+        let cap = self.levers.draft_cap.unwrap_or(self.gamma);
         let mut out: Vec<Vec<u32>> = Vec::with_capacity(n);
         for (i, st) in states.iter_mut().enumerate() {
             let band = &all[i * self.gamma..(i + 1) * self.gamma];

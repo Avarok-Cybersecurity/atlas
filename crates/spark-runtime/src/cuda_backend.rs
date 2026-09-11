@@ -56,6 +56,10 @@ unsafe extern "C" {
     pub(super) fn cuDeviceGet(device: *mut i32, ordinal: i32) -> i32;
     pub(super) fn cuDeviceGetAttribute(pi: *mut i32, attrib: u32, dev: i32) -> i32;
     pub(super) fn cuMemsetD8Async(dst: u64, value: u8, n: usize, stream: u64) -> i32;
+    /// Synchronous variants, used ONLY by the A55 red-zone diagnostic (`scan_redzones`),
+    /// which runs between decode steps and wants the device drained anyway.
+    pub(super) fn cuMemsetD8_v2(dst: u64, value: u8, n: usize) -> i32;
+    pub(super) fn cuMemcpyDtoH_v2(dst: *mut c_void, src: u64, bytes: usize) -> i32;
     // CUDA graph capture/replay
     pub(super) fn cuStreamBeginCapture(hStream: u64, mode: u32) -> i32;
     // Capture-status query (telemetry taps must not sync/copy inside an
@@ -142,10 +146,92 @@ pub struct AtlasCudaBackend {
     /// free (the caller passes it to `cuMemAlloc_v2` already) and the site is
     /// free (`#[track_caller]`), so anonymity here was never buying anything.
     live_allocs: parking_lot::Mutex<std::collections::HashMap<u64, AllocRecord>>,
+    /// `ATLAS_REDZONE=<bytes>` — every live allocation's trailing guard band.
+    ///
+    /// Diagnostic for ANOMALIES A55. Each entry is
+    /// `(user_ptr, user_bytes, pad_bytes, creation_index)`; the pad occupies
+    /// `[user_ptr + user_bytes, user_ptr + user_bytes + pad_bytes)` and is filled with
+    /// `ATLAS_REDZONE_FILL` at birth. [`AtlasCudaBackend::scan_redzones`] reads them back and
+    /// reports any that changed — i.e. a kernel that wrote past the end of its buffer, which
+    /// is invisible to compute-sanitizer when the buffer is a pooled suballocation.
+    redzones: parking_lot::Mutex<Vec<RedZone>>,
     /// Default CUDA stream handle (from the process CUDA host).
     default_stream: u64,
     /// CUDA context handle for cross-thread binding.
     cuda_ctx: u64,
+}
+
+/// One allocation's trailing guard band. See [`AtlasCudaBackend::scan_redzones`].
+#[derive(Clone, Copy)]
+pub(crate) struct RedZone {
+    user_ptr: u64,
+    user_bytes: usize,
+    pad_bytes: usize,
+    idx: usize,
+}
+
+/// `ATLAS_REDZONE=<bytes>` — guard-band size, 0 (default) disables. Rounded up to 16.
+pub(crate) fn redzone_bytes() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("ATLAS_REDZONE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .map(|n| if n == 0 { 0 } else { n.next_multiple_of(16) })
+            .unwrap_or(0)
+    })
+}
+
+/// `ATLAS_REDZONE_MIN_IDX=<n>` — pad only allocations whose creation index is `>= n`.
+///
+/// 🔴 Not a memory optimisation, a targeting decision. GLM-5.3 loads **57,346 weight tensors**
+/// through this allocator before a single arena buffer exists; padding all of them costs ~4 GB
+/// once `cuMemAlloc`'s page granularity rounds each one up, which does not fit. It is also the
+/// wrong set: weights are READ-ONLY to every kernel, so an out-of-bounds WRITE cannot originate
+/// from one. The arena/workspace allocations that kernels write into all come after the load,
+/// so `ATLAS_REDZONE_MIN_IDX=57346` guards exactly the plausible set for ~1 MB.
+///
+/// (An out-of-bounds READ past a weight would be missed by that choice. Widen it only after
+/// the write detector comes back clean.)
+pub(crate) fn redzone_min_idx() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("ATLAS_REDZONE_MIN_IDX")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0)
+    })
+}
+
+/// `ATLAS_REDZONE_TRACE_IDX=<n>` — dump a Rust backtrace at the allocation with this creation
+/// index, which is how a bisected index becomes a source line.
+pub(crate) fn redzone_trace_idx() -> Option<usize> {
+    static N: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("ATLAS_REDZONE_TRACE_IDX")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+    })
+}
+
+/// Monotonic count of allocations this process has made through `GpuBackend::alloc`.
+pub(crate) static ALLOC_SEQ: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// `ATLAS_REDZONE_FILL=<decimal byte>` — the poison value, default `0xEE`.
+///
+/// 🔴 The VALUE is itself an experiment. If the defect is an out-of-bounds READ rather than a
+/// write, the guard band is never modified but its CONTENTS reach the model, so running the
+/// same build at two different fills and diffing the completions separates the two: a write
+/// shows up in `scan_redzones`, a read shows up as different tokens with a clean scan.
+pub(crate) fn redzone_fill() -> u8 {
+    static F: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *F.get_or_init(|| {
+        std::env::var("ATLAS_REDZONE_FILL")
+            .ok()
+            .and_then(|v| v.parse::<u8>().ok())
+            .unwrap_or(0xEE)
+    })
 }
 
 impl AtlasCudaBackend {
@@ -178,12 +264,119 @@ impl AtlasCudaBackend {
 
         Ok(Self {
             live_allocs: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            redzones: parking_lot::Mutex::new(Vec::new()),
             registry,
             debug_sync_kernels: std::env::var("ATLAS_DEBUG_SYNC_KERNELS").as_deref() == Ok("1"),
             op_cache: crate::op_cache::OpCache::new(),
             default_stream,
             cuda_ctx,
         })
+    }
+
+    /// Live allocations not yet freed. The ledger already exists for teardown;
+    /// this only reads it, so a per-request leak check costs one lock.
+    pub(crate) fn live_alloc_len(&self) -> usize {
+        self.live_allocs.lock().len()
+    }
+
+    /// Register one allocation's guard band. Returns its creation index.
+    pub(crate) fn record_redzone(
+        &self,
+        user_ptr: u64,
+        user_bytes: usize,
+        pad_bytes: usize,
+        idx: usize,
+    ) {
+        self.redzones.lock().push(RedZone {
+            user_ptr,
+            user_bytes,
+            pad_bytes,
+            idx,
+        });
+    }
+
+    pub(crate) fn forget_redzone(&self, user_ptr: u64) {
+        self.redzones.lock().retain(|z| z.user_ptr != user_ptr);
+    }
+
+    /// Re-poison every guard band: `0xEE` for zones whose creation index is in `[lo, hi)`,
+    /// `0x00` for all the others.
+    ///
+    /// The BISECTION half of the A55 red-zone hunt. The zones themselves never move, so
+    /// every call leaves the device heap byte-for-byte identical and only the CONTENTS of the
+    /// guard bands change — which is exactly the variable the read detector proved matters.
+    /// Narrowing `[lo, hi)` until the completion flips names the allocation being read past.
+    pub fn poison_redzones(&self, lo: usize, hi: usize) -> anyhow::Result<()> {
+        let zones: Vec<RedZone> = self.redzones.lock().clone();
+        for z in &zones {
+            let v = if z.idx >= lo && z.idx < hi {
+                0xEEu8
+            } else {
+                0x00u8
+            };
+            let st = unsafe { cuMemsetD8_v2(z.user_ptr + z.user_bytes as u64, v, z.pad_bytes) };
+            if st != 0 {
+                anyhow::bail!("poison_redzones: cuMemsetD8_v2 failed: status {st}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Read every guard band back and report the ones that no longer hold the fill byte.
+    ///
+    /// Returns the number of violated zones. Each violation is logged with the allocation's
+    /// creation index, its size, and the first byte of the pad that changed — the size is
+    /// what identifies the buffer (cross-reference the arena sizes in `BufferSizes`), and the
+    /// offset is how far past the end the writer reached.
+    ///
+    /// RE-FILLS every violated zone before returning, so a repeat offender is reported once
+    /// per scan rather than once and then forever.
+    pub fn scan_redzones(&self) -> anyhow::Result<usize> {
+        let fill = redzone_fill();
+        let zones: Vec<RedZone> = self.redzones.lock().clone();
+        let mut bad = 0usize;
+        let mut host = Vec::new();
+        for z in &zones {
+            host.clear();
+            host.resize(z.pad_bytes, 0u8);
+            let st = unsafe {
+                cuMemcpyDtoH_v2(
+                    host.as_mut_ptr() as *mut std::ffi::c_void,
+                    z.user_ptr + z.user_bytes as u64,
+                    z.pad_bytes,
+                )
+            };
+            if st != 0 {
+                anyhow::bail!("redzone scan: cuMemcpyDtoH_v2 failed: status {st}");
+            }
+            let Some(first) = host.iter().position(|b| *b != fill) else {
+                continue;
+            };
+            let changed = host.iter().filter(|b| **b != fill).count();
+            let last = host.iter().rposition(|b| *b != fill).unwrap_or(first);
+            tracing::error!(
+                "🔴 REDZONE VIOLATION alloc#{} user_bytes={} pad={} :                  bytes [{}..={}] past the end were written ({} of {} pad bytes changed),                  first bad value {:#04x}",
+                z.idx,
+                z.user_bytes,
+                z.pad_bytes,
+                first,
+                last,
+                changed,
+                z.pad_bytes,
+                host[first],
+            );
+            bad += 1;
+            let st = unsafe { cuMemsetD8_v2(z.user_ptr + z.user_bytes as u64, fill, z.pad_bytes) };
+            if st != 0 {
+                anyhow::bail!("redzone scan: refill cuMemsetD8_v2 failed: status {st}");
+            }
+        }
+        tracing::info!(
+            "redzone scan: {} zones checked, {} violated",
+            zones.len(),
+            bad
+        );
+        Ok(bad)
     }
 
     /// Free every allocation this backend made and nobody released.

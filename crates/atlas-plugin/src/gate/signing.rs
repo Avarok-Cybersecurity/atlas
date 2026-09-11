@@ -175,6 +175,55 @@ pub fn register(root: &Path, identity: &Identity) -> Result<bool> {
     Ok(true)
 }
 
+/// Fingerprints that are COMMITTED in `.github/record-signers/`, i.e. the
+/// signers a human has actually reviewed.
+///
+/// `register` writes a `.pub` on first use, so presence on disk proves only
+/// that this box once signed something — not that anyone vouched for it. The
+/// question a caller needs answered is "is this key in the tree", so this asks
+/// git, not the filesystem. An untracked auto-registered key is therefore
+/// absent from the result, which is the point.
+pub fn committed_signers(root: &Path) -> Result<Vec<String>> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "--", REGISTRY_DIR])
+        .output()
+        .with_context(|| format!("listing tracked files under {REGISTRY_DIR}"))?;
+    if !out.status.success() {
+        bail!(
+            "git ls-files {REGISTRY_DIR} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.rsplit('/').next())
+        .filter_map(|f| f.strip_suffix(".pub"))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// The operator-facing verdict on "may this box's records be certified".
+///
+/// Pure: the caller supplies the committed set and the fingerprint, so the
+/// wording is testable without a git tree, a keyring, or a GPU. `None` means
+/// stay quiet — the ordinary case, and the one that must not be noisy.
+pub fn signer_notice(committed: &[String], fingerprint: &str) -> Option<String> {
+    if committed.iter().any(|c| c == fingerprint) {
+        return None;
+    }
+    Some(format!(
+        "gate: NOTE — this box signs as {fingerprint}, which is not committed in \
+         {REGISTRY_DIR} ({} signer(s) are).\n\
+         gate: a record signed by an uncommitted key needs its one-line .pub \
+         committed alongside, AND every record one PR adds must carry the SAME \
+         fingerprint — CI rejects a set spanning signers, so a campaign split \
+         across boxes cannot be certified.",
+        committed.len()
+    ))
+}
+
 /// Sign a record already on disk. Returns the sidecar path.
 pub fn sign_record(identity: &Identity, record: &Path, git_sha: &str) -> Result<PathBuf> {
     let bytes = std::fs::read(record).with_context(|| format!("reading {}", record.display()))?;

@@ -4,6 +4,7 @@
 
 use clap::Parser;
 
+pub mod bench_aggregate;
 mod bench_args;
 pub mod bench_card;
 mod bench_gate_check;
@@ -12,7 +13,9 @@ pub mod bench_record;
 mod bench_resolve;
 pub mod bench_run;
 mod bench_selfstart;
+pub(crate) mod doctor;
 pub(crate) mod flag_values;
+pub(crate) mod hermetic;
 pub(crate) mod manifest;
 mod serve_args;
 pub(crate) mod sync_recipes;
@@ -67,6 +70,17 @@ pub enum Command {
     /// `benchmark run`: a benchmark that silently reaches the network mid-run
     /// is a benchmark whose result depends on something nobody declared.
     SyncRecipes,
+    /// Report whether this box can run a benchmark, and say what to fix.
+    ///
+    /// Every finding here is a condition that has cost hours and used to
+    /// present as the same symptom — `recipe "..." is not in the local index
+    /// (0 cached)` — whatever the real cause was: an `~/.atlas` owned by another
+    /// uid, a `sync-recipes` that was never run, or a signing identity minted
+    /// into a scratch ATLAS_HOME whose key nobody committed.
+    ///
+    /// Exits non-zero when anything is wrong, so a provisioning script can gate
+    /// on it.
+    Doctor,
 }
 
 #[cfg(test)]

@@ -185,6 +185,28 @@ impl Bfcl {
             s.normalized_single_turn_score,
         );
         m.insert("samples".to_string(), s.total_samples as f64);
+        // Per-subset tallies, flattened into the metrics map so a shard's record
+        // carries everything the group aggregate needs and no record schema
+        // changes. `check_record` iterates the ENTRY's thresholds and looks each
+        // up here, so metrics nothing gates are ignored.
+        //
+        // Counts, not scores: score.py weights hierarchically, so a mean of
+        // shard scores is not the whole-set value. See `aggregate`.
+        for (subset, (hits, n)) in &s.subset_totals {
+            m.insert(format!("subset.{subset}.hits"), *hits as f64);
+            m.insert(format!("subset.{subset}.n"), *n as f64);
+        }
+        // Transport failures, always emitted (0 is a measurement, not an
+        // absence — an absent key cannot be told from a clean run).
+        m.insert("transport_errors".to_string(), self.transport_errors as f64);
+        // WHICH shard this record is, from the run itself rather than from the
+        // registry. The registry binds an index to an id in a macro; a record
+        // states what actually ran, which also catches a mislabelled or
+        // hand-copied record. `gate::group::partition_ok` reads these.
+        if let Some(shard) = self.shard {
+            m.insert("shard.index".to_string(), shard.index as f64);
+            m.insert("shard.count".to_string(), shard.count as f64);
+        }
         m
     }
 

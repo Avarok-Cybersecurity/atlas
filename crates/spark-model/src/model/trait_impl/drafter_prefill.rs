@@ -153,8 +153,16 @@ impl TransformerModel {
                 .store(new_len, Ordering::Relaxed);
         }
         if carry_on {
+            // Stamped with THIS sequence's ticket. A write by a different
+            // owner takes the interval over rather than extending it — see
+            // `stamped_merge`, and the ordering it closes.
             let mut r = self.mtp_store_range.lock();
-            *r = crate::model::mtp_carry::merge_interval(*r, chunk_start, proc_count);
+            *r = crate::model::mtp_carry::stamped_merge(
+                *r,
+                seq.mtp_store_gen,
+                chunk_start,
+                proc_count,
+            );
         }
         Ok(())
     }
@@ -185,6 +193,12 @@ impl TransformerModel {
         let Some(proposer) = self.proposer.clone() else {
             return;
         };
+        // A proposer whose prefill writes the shared forward scratch cannot run here — the
+        // target's prefill still owns those buffers. See
+        // `DraftProposer::prefill_uses_shared_buffers` for the measurement.
+        if proposer.prefill_uses_shared_buffers() {
+            return;
+        }
         if seq.proposer_state.is_none() {
             return;
         }
@@ -205,6 +219,7 @@ impl TransformerModel {
             profile: false,
             comm: None,
             graph_capture: false,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
             host_token_ids: None,

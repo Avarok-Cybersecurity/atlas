@@ -46,6 +46,12 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
         },
         BenchmarkCommand::History(a) => history_cmd(a),
         BenchmarkCommand::Card(a) => super::bench_card::card_cmd(a),
+        BenchmarkCommand::Aggregate(a) => {
+            // Exits with the code so a script can gate on "is this group
+            // complete", the same shape `Run` uses below.
+            let code = super::bench_aggregate::aggregate_cmd(a)?;
+            std::process::exit(code);
+        }
         BenchmarkCommand::Run(a) => {
             let code = run(a).await?;
             // `run` reports its own outcome; the exit code is the machine-
@@ -115,7 +121,44 @@ fn capture_provenance_at(root: &std::path::Path) -> Result<(String, Vec<String>)
              reject it. Commit (or stash) and rebuild first."
         );
     }
+    warn_if_signer_is_not_committed(root);
     Ok((sha, dirty))
+}
+
+/// Say, BEFORE the GPU-hours are spent, which identity this box will sign with
+/// and whether that identity is committed.
+///
+/// `signing::register` writes `<fp>.pub` into `.github/record-signers/` on
+/// first use and `bench_record` prints a one-time notice — but both happen
+/// AFTER the run, into whatever log the operator redirected it to. On
+/// 2026-09-05 a campaign was split across three boxes to save wall-clock;
+/// each box minted its own identity (the key is per-ATLAS_HOME, not per
+/// machine — one box here holds two), and the notice scrolled past in three
+/// separate log files. The mistake only surfaced at CI, where
+/// `.github/workflows/ci.yml`'s "One PR, one commit, one signer" step rejects
+/// a record set spanning fingerprints outright. Seven gates had to be
+/// re-measured.
+///
+/// So this warns at the point the operator can still act on it. It never
+/// fails the run: a first record from a genuinely new box is legitimate, and
+/// refusing it would make bringing up a box impossible.
+fn warn_if_signer_is_not_committed(root: &std::path::Path) {
+    let Ok(store) = ArtifactStore::discover() else {
+        return;
+    };
+    let Ok(identity) = gate::signing::load_or_create(store.root()) else {
+        return;
+    };
+    let fp = identity.fingerprint();
+    match gate::signing::committed_signers(root) {
+        Ok(committed) => {
+            if let Some(msg) = gate::signing::signer_notice(&committed, fp) {
+                eprintln!("{msg}");
+            }
+        }
+        // Cannot answer: say so rather than imply the signer is fine.
+        Err(e) => eprintln!("gate: NOTE — could not read .github/record-signers/: {e:#}"),
+    }
 }
 
 #[cfg(test)]
@@ -238,10 +281,19 @@ async fn run(args: RunArgs) -> Result<i32> {
     }
 
     let executor = BenchmarkExecutor::new(tokio::runtime::Handle::current(), store);
+    // The merged baseline + `--serve-override` set: the single authority on
+    // the regime this run was measured under. It goes onto the RunRecord, and
+    // the gate record DERIVES it from there rather than being handed its own
+    // copy — see `GateRecord::from_run`.
+    let serve_overrides = served
+        .as_ref()
+        .map(|s| s.overrides.clone())
+        .unwrap_or_default();
     let request = RunRequest {
         descriptor,
         values,
         target: target.clone(),
+        serve_overrides,
         options: HeadlessOptions {
             poll: std::time::Duration::from_millis(args.poll_ms),
             save: !args.no_save,
@@ -318,17 +370,12 @@ async fn run(args: RunArgs) -> Result<i32> {
         // names no box and still exit 0. Write first, tear down second, and
         // tear down even when the write fails.
         let recipe = served.as_ref().map(|s| s.recipe_id.clone());
-        let serve_overrides = served
-            .as_ref()
-            .map(|s| s.overrides.clone())
-            .unwrap_or_default();
         let (sha_at_start, dirty_at_start) = provenance.unwrap_or_default();
         let written = super::bench_record::write_gate_record(
             &outcome.record,
             &target.base_url,
             &target.model,
             recipe,
-            serve_overrides,
             sha_at_start,
             dirty_at_start,
             match &args.output_image {

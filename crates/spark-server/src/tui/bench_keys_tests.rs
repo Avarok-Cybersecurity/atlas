@@ -384,6 +384,7 @@ fn record() -> atlas_plugin::RunRecord {
         descriptor,
         &atlas_plugin::ParamValues::default(),
         &atlas_plugin::TargetEndpoint::local(8888, "m"),
+        Default::default(),
         atlas_plugin::RunSource::Tui,
         crate::cli::ATLAS_VERSION,
         atlas_plugin::BenchmarkResult {

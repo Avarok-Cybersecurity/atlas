@@ -5,6 +5,7 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 
 use anyhow::{Result, bail};
 use atlas_core::config::{LayerType, ModelConfig};
@@ -227,6 +228,8 @@ impl TransformerModel {
     }
 
     pub(super) fn alloc_sequence_dispatch(&self, budget_tokens: usize) -> Result<SequenceState> {
+        // ATLAS_SEQ_MEMTRACE: the opening half of this sequence's memory bracket.
+        crate::model::seq_memtrace::trace(self.gpu.as_ref(), "alloc");
         // Claim via the RAII guard so the slot is returned to the pool on EVERY
         // sequence-exit path (normal finish, abort/cancel, decode error,
         // swap-out failure, panic). The explicit `free_sequence`/
@@ -254,21 +257,20 @@ impl TransformerModel {
         // PREVIOUS sequence's captured hiddens in the drafter prefill.
         self.mtp_prefill_capture_len
             .store(0, std::sync::atomic::Ordering::Relaxed);
-        // ATLAS_MTP_CARRY_DRAFTER: the position-indexed hidden interval is
-        // per-sequence by construction. Resetting it here is what makes the
-        // carry path immune to the latent cross-sequence stale-hidden bug that
-        // the legacy `captured >= prompt_len` guard still has: a warm-turn
-        // append can only ever read rows THIS sequence's prefill wrote.
-        *self.mtp_store_range.lock() = (0, 0);
+        // ATLAS_MTP_CARRY_DRAFTER: this sequence's ownership ticket for the
+        // shared hidden-row interval. See `mtp_carry::StoreRange`.
+        let store_gen = self.mtp_store_gen_seq.fetch_add(1, Relaxed) + 1;
+        *self.mtp_store_range.lock() = super::super::mtp_carry::StoreRange::EMPTY;
 
-        // Build layer states: SSM layers point into the pool (fixed addresses),
-        // attention layers use their own alloc_state (EmptyLayerState).
+        // Build layer states: pool-backed recurrent layers point into the pool
+        // (fixed addresses) — Qwen GDN and GLM-5.3 KDA alike, both of which carry
+        // `SsmLayerState`; everything else uses its own `alloc_state`.
         // When MTP is available, pre-allocate checkpoint + K=2 intermediate
         // buffers so CUDA graph capture doesn't trigger lazy allocation.
         let mut ssm_layer_idx = 0usize;
         let mut layer_states: Vec<Box<dyn LayerState>> = Vec::with_capacity(self.layers.len());
         for (i, layer) in self.layers.iter().enumerate() {
-            if self.config.layer_type(i) == LayerType::LinearAttention {
+            if self.config.layer_type(i) == LayerType::LinearAttention && layer.uses_ssm_pool() {
                 // Layer-independent (one FP32 staging blob per SLOT), so it is
                 let stage = self.ssm_pool.h_prefill_stage(slot);
                 let mut ssm_state = SsmLayerState {
@@ -364,6 +366,7 @@ impl TransformerModel {
             marconi_exact_snap: None,
             session_hash: 0,
             mtp_capture_gen: 0,
+            mtp_store_gen: store_gen,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
             cached_prefix_blocks: 0,

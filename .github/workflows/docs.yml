@@ -51,7 +51,12 @@ jobs:
   # comments; this is the safe half of it.
   changes:
     name: classify diff (web-only?)
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
     permissions:
       contents: read
     outputs:
@@ -80,6 +85,19 @@ jobs:
     # This job must RUN on a web-only diff: its mdBook half IS the gate for
     # `book/`, and it is a required context. Only the rustdoc half is skipped,
     # at STEP level — see the steps below.
+    #
+    # ★ `!cancelled()` is what makes that true even when `changes` FAILS.
+    # Default `needs:` semantics carry an implicit `success()`, so a broken
+    # classify-diff.sh SKIPPED this job — and a skipped required context is
+    # counted as satisfied by branch protection and the merge queue. The docs
+    # gate would then have waved a PR through while reporting nothing, which is
+    # the same defect class as a check that tests a stub. Naming a status
+    # function suppresses the implicit success(); `web_only` then resolves to
+    # the empty string, the step-level `!= 'true'` guards are true, and the
+    # rustdoc half runs. Fails OPEN, exactly as ci.yml's clippy/test and
+    # coverage.yml already do — this job was the one that did not.
+    # Pinned by .github/scripts/assert-gates-are-wired.py.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -136,6 +154,14 @@ jobs:
       # cannot: a canonical URL derived from the file path, and a description
       # taken from each chapter's own first paragraph. The script is its own
       # assertion and exits non-zero if any page ends up without a full card.
+      # The Pages control file. It is not part of the mdBook output, so it is
+      # copied in here the same way the brand assets above are. Read the note at
+      # the top of it before editing: Pages concatenates a re-declared header
+      # rather than replacing it, so every rule in there is scoped not to
+      # overlap another.
+      - name: Cloudflare Pages headers
+        run: cp book/deploy/cloudflare/_headers book/output/_headers
+
       - name: Inject per-page social meta
         run: node book/scripts-inject-meta.mjs book/output
 
@@ -187,14 +213,89 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # Cloudflare Pages is what docs.atlasinference.io resolves to, so this is the
+  # job that publishes. The rsync to avarok follows as its own job and cannot
+  # block it: the origin went down once and took the docs with it, and with both
+  # legs in one job that outage would also have stopped the edge deploy that
+  # exists to survive it.
+  #
+  # Direct Upload rather than Pages' git integration — the build above needs a
+  # Rust toolchain, mdBook and a full `cargo doc --workspace`, and it carries
+  # checks (llms.txt currency, the social-card assertion) that a Pages-native
+  # build would bypass.
   deploy:
-    name: Deploy to avarok via rsync
+    name: Deploy docs to Cloudflare Pages
     needs: build
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
     environment:
       name: production-docs
       url: https://docs.atlasinference.io/
+    steps:
+      - name: Check deploy secret presence
+        id: cf_check
+        env:
+          CF_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CF_API_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set — skipping the Pages deploy."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download site artifact
+        if: steps.cf_check.outputs.configured == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: docs-site
+          path: docs-site
+
+      # Explicit, because nothing else in this workflow needs Node, so the job
+      # would otherwise inherit whatever the runner image ships. wrangler v4
+      # refuses to start below Node 22.
+      - name: Install Node
+        if: steps.cf_check.outputs.configured == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      # `--branch=main` is load-bearing: a deployment on any other branch gets a
+      # preview URL and does NOT move the custom domain, which fails silently as
+      # "the deploy went green and the docs are stale".
+      - name: Publish docs.atlasinference.io
+        if: steps.cf_check.outputs.configured == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx --yes wrangler@4 pages deploy docs-site \
+            --project-name=atlas-docs \
+            --branch=main \
+            --commit-dirty=true
+
+  deploy-origin:
+    # The environment is what makes DEPLOY_SSH_* visible: environment secrets
+    # reach ONLY jobs that declare the environment holding them. Splitting the
+    # rsync into its own job dropped this block, so every `secrets.DEPLOY_*`
+    # read as empty, the presence check took its "not configured" branch, and
+    # the mirror soft-skipped every step while the job reported success. The
+    # standby was not stale because the box was down — it was never written to
+    # at all, and the run said nothing was wrong.
+    #
+    # No `url:` here on purpose: the Cloudflare job owns the deployment URL for
+    # this environment, and two jobs claiming it would make the standby look
+    # like the thing serving traffic.
+    environment:
+      name: production-docs
+    name: Mirror docs to avarok (standby)
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    # The origin no longer serves docs.atlasinference.io, so a failure here means
+    # the standby is stale, not that the docs are down.
+    continue-on-error: true
     steps:
       - name: Check deploy secret presence
         # Skip deploy entirely when DEPLOY_SSH_PRIVATE_KEY is not
@@ -250,6 +351,15 @@ jobs:
           DEPLOY_PATH:      ${{ secrets.DEPLOY_PATH }}
         run: |
           PORT="${DEPLOY_SSH_PORT:-22}"
-          rsync -az --delete --chmod=D755,F644 \
-            -e "ssh -p ${PORT}" \
-            site/ "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/"
+          # `continue-on-error` on this job keeps a dead origin from blocking the
+          # edge deploy — but a green job with no annotation looks exactly like a
+          # mirror that worked, which is the failure shape this change is about.
+          # Say which it was.
+          if rsync -az --delete --chmod=D755,F644 \
+               -e "ssh -p ${PORT}" \
+               site/ "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/"
+          then
+            echo "mirrored the docs to ${DEPLOY_SSH_HOST}"
+          else
+            echo "::warning title=avarok mirror did not run::rsync of the docs to ${DEPLOY_SSH_HOST} failed. The standby is STALE. Cloudflare Pages is unaffected and still serving."
+          fi

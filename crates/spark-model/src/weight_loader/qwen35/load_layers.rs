@@ -871,6 +871,12 @@ pub(super) fn load_layers(
                 unreachable!("unexpected SlidingAttention in this loader")
             }
             LayerType::Moe => unreachable!("Qwen3.5 has no standalone MoE layers"),
+            // GLM-5.3's `deepseek_sparse_attention`: a full-rank mixer whose visible key set
+            // is chosen at runtime by an indexer. Hard error, not a silent fallthrough into
+            // the dense-attention arm -- that would attend over the WHOLE cache and look right.
+            LayerType::SparseAttention => anyhow::bail!(
+                "layer {i}: SparseAttention needs a DSA indexer and per-query top-k; Qwen3.5 has neither"
+            ),
         }
 
         if (i + 1) % 10 == 0 || i < 5 {
@@ -938,7 +944,7 @@ fn holo_moe_gateup_fp4() -> bool {
     // Load-time: the weight loader runs before any `TransformerModel` exists to
     // carry the levers, so this resolves at the point of use rather than in a
     // static. The interpretation stays SSOT in `ModelLevers`.
-    crate::layers::ops::ModelLevers::from_env().holo_moe_gateup_fp4
+    crate::layers::ops::ModelLevers::get().holo_moe_gateup_fp4
 }
 
 /// `ATLAS_HOLO_MOE_DOWN_FP4=1` opts in to the FP4 (NVFP4 block-scaled) down
@@ -948,7 +954,7 @@ fn holo_moe_down_fp4() -> bool {
     // Load-time: the weight loader runs before any `TransformerModel` exists to
     // carry the levers, so this resolves at the point of use rather than in a
     // static. The interpretation stays SSOT in `ModelLevers`.
-    crate::layers::ops::ModelLevers::from_env().holo_moe_down_fp4
+    crate::layers::ops::ModelLevers::get().holo_moe_down_fp4
 }
 
 fn holo_fast_moe_mode() -> Option<HoloFastMoeMode> {

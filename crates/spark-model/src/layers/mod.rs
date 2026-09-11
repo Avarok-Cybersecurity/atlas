@@ -6,6 +6,20 @@ pub mod dflash_head;
 pub mod ep_dispatch;
 pub mod fp8_calibration;
 mod gemv_tier;
+/// GLM-5.3-Flash KDA integrated layer (Slice 6 -- one layer, no scheduler/cache wiring).
+pub mod glm5next_dsa;
+/// GLM-5.3-Flash DSA + kpool indexer CPU reference (Slice 8 design artifact).
+pub mod glm5next_dsa_ref;
+pub mod glm5next_kda;
+/// GLM-5.3-Flash KDA CPU reference (Slice 2 design artifact -- not a production forward path).
+pub mod glm5next_kda_ref;
+/// GLM-5.3-Flash composite decoder layer -- mixer (KDA|DSA) + MLP (dense|MoE) + mHC.
+pub mod glm5next_layer;
+/// GLM-5.3-Flash MLP production surface -- dense FFN + routed NVFP4 MoE (TP + EP sharded).
+pub mod glm5next_mlp;
+pub mod glm5next_mtp_head;
+/// GLM-5.3-Flash 45-layer text-model skeleton (Slice 9 -- topology, wiring, structural binding).
+pub mod glm5next_skeleton;
 pub mod moe;
 pub mod mtp_head;
 pub(crate) mod mtp_meta;
@@ -61,6 +75,7 @@ pub use dense_ffn::{DenseFfnLayer, DenseFfnWeights, FfnActivation};
 pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization, dflash_ctx_cap,
 };
+pub use glm5next_mtp_head::Glm5NextMtpHead;
 pub use moe::MoeLayer;
 pub use mtp_head::{MtpHead, MtpQuantization, mtp_drafter_prefill_enabled};
 pub use nemotron_mamba2::NemotronMamba2Layer;
@@ -344,9 +359,9 @@ impl FfnComponent {
     }
 
     /// ATLAS_FP32_ROUTING active for this FFN (MoE only; false otherwise).
-    pub fn fp32_routing_active(&self) -> bool {
+    pub fn fp32_routing_active(&self, levers: &ops::ModelLevers) -> bool {
         match self {
-            Self::Moe(m) => m.fp32_routing_active(),
+            Self::Moe(m) => m.fp32_routing_active(levers),
             _ => false,
         }
     }

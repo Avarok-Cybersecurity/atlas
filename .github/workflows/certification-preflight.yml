@@ -51,13 +51,17 @@ jobs:
             exit 1
           fi
           fail=0
+          # Kept alongside the log line for the check run's summary. A job log
+          # is not somewhere anyone looks at 06:17 on a Monday; a check run is.
+          REPORT=$(mktemp)
           probe() {  # probe <permission> <why it matters> <cmd...>
-            local perm=$1 why=$2; shift 2
+            local perm=$1 why=$2 line; shift 2
             if "$@" >/dev/null 2>&1; then
-              printf '  ok    %-22s %s\n' "$perm" "$why"
+              line=$(printf '  ok    %-22s %s' "$perm" "$why")
             else
-              printf '  FAIL  %-22s %s\n' "$perm" "$why"; fail=1
+              line=$(printf '  FAIL  %-22s %s' "$perm" "$why"); fail=1
             fi
+            printf '%s\n' "$line" | tee -a "$REPORT"
           }
 
           probe "pull_requests:read" "/stamp resolves the head sha and the author" \
@@ -111,12 +115,51 @@ jobs:
           # checks:write. Without it /stamp, /seal and /expedite cannot mint
           # their marks, which is the whole pipeline. A check run is additive
           # and named for what it is, so this costs one line in the checks list.
-          probe_write "checks:write" "/stamp, /seal and /expedite mint their marks" \
-            gh api -X POST "repos/$REPO/check-runs" \
+          #
+          # It is minted IN PROGRESS and PATCHed to a conclusion only once the
+          # real verdict is known. Posting it `conclusion=success` here -- as
+          # this probe used to -- made the ONE artefact a human ever sees say
+          # the opposite of the truth. Run 33807779248 failed on contents:write
+          # at 21:24:43Z and left a green "Certification preflight / App
+          # permissions verified" on the same commit, minted half a second
+          # earlier by this very probe. Same shape as the certificate's
+          # fallback image: a failure that publishes a confident wrong answer
+          # instead of no answer. The PATCH needs checks:write too, so
+          # POST-then-PATCH probes strictly more than the single POST did.
+          check_run_id=""
+          mint_check_run() {
+            check_run_id=$(gh api -X POST "repos/$REPO/check-runs" \
               -f name="Certification preflight" -f head_sha="$SHA" \
-              -f status=completed -f conclusion=success \
-              -f "output[title]=App permissions verified" \
-              -f "output[summary]=Probed by certification-preflight.yml. If this is missing or red, /stamp, /seal and /expedite cannot mint their marks."
+              -f status=in_progress \
+              -f "output[title]=Probing the App's permissions" \
+              -f "output[summary]=certification-preflight.yml is running. This check is PATCHed with the verdict when the probes finish; still in progress means the run died before it could report." \
+              --jq '.id') || return 1
+            [ -n "$check_run_id" ]
+          }
+          probe_write "checks:write" "/stamp, /seal and /expedite mint their marks" \
+            mint_check_run
+
+          # The verdict, onto the check run itself. This workflow is schedule-
+          # and dispatch-only, so it is not a PR check and cannot be a required
+          # context, and a red run in the Actions tab notifies nobody by
+          # default. The check run sits on the default branch's head commit,
+          # where a red mark shows in the repo header -- the only place this
+          # workflow's answer reaches someone who was not already looking.
+          if [ -n "$check_run_id" ]; then
+            if [ "$fail" -ne 0 ]; then
+              verdict=failure; vtitle="The certification App has lost a permission"
+            else
+              verdict=success; vtitle="App permissions verified"
+            fi
+            summary=$(printf 'Probed by certification-preflight.yml.\n\n%s\n%s\n' \
+              "$(cat "$REPORT")" \
+              "A FAIL above degrades the pipeline SILENTLY: the bot swallows API errors so a broken lookup cannot fail a contributor CI run. Re-check the App repository permissions and that the installation has accepted them.")
+            gh api -X PATCH "repos/$REPO/check-runs/$check_run_id" \
+              -f status=completed -f conclusion="$verdict" \
+              -f "output[title]=$vtitle" -f "output[summary]=$summary" \
+              >/dev/null 2>&1 \
+              || echo "::warning title=The verdict was not reported::the preflight check run is still in progress; read this job log for the result."
+          fi
 
           if [ "$fail" -ne 0 ]; then
             echo "::error title=The certification App has lost a permission::A command will fail the next time someone uses it, and several of those failures are silent by design. Re-check the App's repository permissions and that the installation has accepted them."

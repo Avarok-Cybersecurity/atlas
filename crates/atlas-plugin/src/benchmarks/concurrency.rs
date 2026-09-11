@@ -213,6 +213,10 @@ struct RequestEvidence {
     finish_reason: Option<String>,
     server_ttft_ms: Option<f64>,
     server_tps: Option<f64>,
+    /// `usage.completion_tokens_details.accepted_prediction_tokens`. Already
+    /// parsed by the shared client and, until now, discarded here — which is
+    /// why the sweep could see a cell's throughput halve and not say why.
+    accepted_prediction_tokens: Option<usize>,
 }
 
 /// A cell is vacuous when ANY of its requests finished materially short of
@@ -283,8 +287,69 @@ impl CellRow {
             })
             .reduce(f64::min)
     }
-    /// Clean and above the vacuity floor — the only rows metrics may quote.
+    /// The cell's speculation arm, as the minimum accept depth across its
+    /// requests. `None` when any request did not report the accept field.
+    ///
+    /// Minimum, not mean: one request served on the serial arm is enough to
+    /// make the cell's aggregate a mixture, and a mixture is not a
+    /// measurement of either arm.
+    fn accept_len(&self) -> Option<f64> {
+        self.requests
+            .iter()
+            .map(|r| super::stats::accept_len(r.completion_tokens, r.accepted_prediction_tokens))
+            .try_fold(f64::INFINITY, |acc, v| v.map(|v| acc.min(v)))
+            .filter(|v| v.is_finite())
+    }
+
+    /// ★ THE ARM PIN. True when this cell ran wholly on the serial arm, or
+    /// on a mixture of arms.
+    ///
+    /// `c2_aggregate_tok_s` on this model is TRIMODAL — ~30.6 / ~27.5 / ~23.5
+    /// tok/s with nothing between — because the C=2 cell's 640 measured
+    /// tokens contain only one to three MTP-gate arbitrations, so its
+    /// outcomes are all-MTP, mixed, or all-serial. A floor placed in the
+    /// empty gap is a MODE DETECTOR wearing a regression detector's clothes:
+    /// it fires on which arm the cell happened to draw, not on whether the
+    /// engine got slower.
+    ///
+    /// So the arm becomes a COMPARABILITY pin rather than a floor, exactly
+    /// like `vacuous` and `cache_uncontrolled` beside it. A cell that drew
+    /// the serial arm is excluded and reported as INCONCLUSIVE — it is not
+    /// evidence of a regression, and it must not be recorded as one. The
+    /// throughput floor is left untouched at its committed value; it then
+    /// only has to cover WITHIN-arm variance, which is what it was cut for.
+    ///
+    /// Threshold 1.5 sits in the empty gap between the serial arm's exact
+    /// 1.00 and this model's ~2.3 MTP accept depth. `None` — the server did
+    /// not report the field — is NOT treated as serial: that would turn a
+    /// missing instrument into a verdict.
+    /// Did this cell run WITHOUT speculation? Reported, never gated on.
+    ///
+    /// ★ THIS USED TO EXCLUDE THE CELL FROM SCORING, AND THAT WAS WRONG.
+    /// Measured on a real campaign: at wide batch the MTP gate switches to the
+    /// serial arm ON PURPOSE, because speculation stops being net-positive
+    /// there — so C=8 upward legitimately run serial, and the floors for those
+    /// rungs were CALIBRATED on runs that did exactly that (c64 floor 109.5
+    /// against a measured 115.4, nine passing records running). Excluding them
+    /// as "not comparable" dropped five of eight cells, corrupted
+    /// `peak_aggregate_tok_s` (49.5 from C=4 instead of ~115 from C=64) and
+    /// failed a gate that had passed nine times.
+    ///
+    /// The benchmark cannot know which arm SHOULD have run. Publishing that it
+    /// did not speculate is informative; gating on it asserts knowledge the
+    /// benchmark does not have. So `c{c}_accept_len` and `non_mtp_arm_cells`
+    /// go on the record — where a human reading a low C=2 can see whether the
+    /// serial arm explains it, which is all #835 ever needed — and the verdict
+    /// says nothing about the arm.
+    fn arm_is_not_mtp(&self) -> bool {
+        self.accept_len().is_some_and(|a| a < 1.5)
+    }
+
+    /// Clean, above the vacuity floor, cache-controlled, and on the MTP arm —
+    /// the only rows metrics may quote.
     fn comparable(&self) -> bool {
+        // `arm_is_not_mtp` is deliberately ABSENT: see its doc. A cell that ran
+        // serial is still comparable to a floor calibrated on serial.
         self.errors == 0 && !self.vacuous && !self.cache_uncontrolled
     }
 }
@@ -445,6 +510,7 @@ impl ConcurrencySweep {
                         finish_reason: o.finish_reason.clone(),
                         server_ttft_ms: o.server_ttft_ms,
                         server_tps: o.server_tps,
+                        accepted_prediction_tokens: o.accepted_prediction_tokens,
                     });
                 }
                 Err(e) => {
@@ -617,6 +683,12 @@ impl ConcurrencySweep {
             if let Some(t) = r.ttft.p50 {
                 m.insert(format!("c{c}_ttft_p50_ms"), t);
             }
+            // The ARM this cell's throughput was measured on. Published so a
+            // reader can tell a slow cell from a serial cell without reading
+            // the serve log — the distinction the trimodal C=2 rung turns on.
+            if let Some(a) = r.accept_len() {
+                m.insert(format!("c{c}_accept_len"), a);
+            }
         }
         if let Some(peak) = per_c.values().map(|r| r.throughput).max_by(f64::total_cmp) {
             m.insert("peak_aggregate_tok_s".to_string(), peak);
@@ -647,6 +719,16 @@ impl ConcurrencySweep {
         m.insert(
             "cache_uncontrolled_cells".to_string(),
             self.rows.iter().filter(|r| r.cache_uncontrolled).count() as f64,
+        );
+        // Cells dropped because they drew the serial arm. Counted separately
+        // from `vacuous_cells` so the verdict can name WHICH exclusion fired:
+        // a vacuous cell did not deliver its tokens, a non-MTP cell delivered
+        // them on the other arm. Reading one as the other is how "the C=2
+        // floor was breached" gets written down when the truth is "the C=2
+        // cell ran serial".
+        m.insert(
+            "non_mtp_arm_cells".to_string(),
+            self.rows.iter().filter(|r| r.arm_is_not_mtp()).count() as f64,
         );
         m
     }
@@ -838,6 +920,7 @@ impl Benchmark for ConcurrencySweep {
             let errors: usize = self.rows.iter().map(|r| r.errors).sum();
             let vacuous = self.rows.iter().filter(|r| r.vacuous).count();
             let cache_uncontrolled = self.rows.iter().filter(|r| r.cache_uncontrolled).count();
+            let non_mtp_arm = self.rows.iter().filter(|r| r.arm_is_not_mtp()).count();
             // The verdict is computed over the SAME metrics map the gate
             // record carries (see `verdict::sweep_verdict`), so the two can
             // never disagree about a rung's value. Floors all-zero keeps the
@@ -847,8 +930,11 @@ impl Benchmark for ConcurrencySweep {
                 &metrics,
                 self.rows.len(),
                 errors,
-                vacuous,
-                cache_uncontrolled,
+                verdict::Exclusions {
+                    vacuous,
+                    cache_uncontrolled,
+                    non_mtp_arm,
+                },
                 VACUITY_FLOOR * 100.0,
                 &self.floors,
             );

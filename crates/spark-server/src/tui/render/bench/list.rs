@@ -93,10 +93,23 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         } else {
             theme::text2()
         };
-        let mut line = Line::from(vec![
-            marker,
-            Span::styled(format!(" {}", descriptor.name), name_style),
-        ]);
+        // A group MEMBER is drawn subordinate to its group: indented, and
+        // named as a shard. The list stays flat because `app.bench.selected` is
+        // an index into `registry::all()` and three other files share that
+        // model — collapsing would change navigation, not just presentation.
+        // What matters here is that a reader can tell eleven gates from eight
+        // quarters of two of them at a glance.
+        let member = atlas_plugin::gate::group::member_of(descriptor.id);
+        let label = match member {
+            None => format!(" {}", descriptor.name),
+            Some(g) => format!("   └ {} · shard of {}", descriptor.name, g.id),
+        };
+        let name_style = if member.is_some() && !selected {
+            theme::dim()
+        } else {
+            name_style
+        };
+        let mut line = Line::from(vec![marker, Span::styled(label, name_style)]);
         if selected {
             line = line.style(theme::selected());
         }

@@ -46,10 +46,19 @@ impl TransformerModel {
     }
 
     pub(super) fn is_mla_dispatch(&self) -> bool {
-        // MLA models have a kv_lora_rank > 0 (kv-compression dimension).
-        // Same detection as the existing prefill-vs-decode-detail check at
-        // line 2185 (`ctx.config.kv_lora_rank > 0`).
-        self.config.kv_lora_rank > 0
+        // The question this answers is "must chunked prefill run as ONE chunk", and the
+        // reason is the chunk-LOCAL MLA prefill at `qwen3_attention/prefill.rs`, which
+        // attends only over the current chunk's K/V.
+        //
+        // 🔴 `kv_lora_rank > 0` is a proxy for that kernel, and glm5_next breaks the proxy:
+        // it is MLA (kv_lora_rank 512) but never reaches that kernel — its layers prefill
+        // through `Glm5NextLayer::prefill`, a per-token walk that attends the whole paged
+        // prefix at each absolute position, so chunk boundaries are invisible to it.
+        // Answering `true` for GLM capped every prompt at `2 × --max-prefill-tokens`:
+        // `prefill_a_step` splits the FIRST chunk at the cap regardless, then this gate made
+        // the remainder one unsplit chunk, which the buffer arena refused above the cap.
+        // ANOMALIES A61.
+        crate::requires_single_chunk_prefill(&self.config.model_type, self.config.kv_lora_rank)
     }
 
     pub(super) fn decode_logits_fp32_dispatch(&self) -> bool {

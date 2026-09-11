@@ -17,6 +17,7 @@ fn pr(number: u64, paths: &[&str]) -> PrFacts {
         author: "someone".into(),
         draft: false,
         merged: false,
+        paths_unknown: false,
         changed_paths: paths.iter().map(|s| s.to_string()).collect(),
     }
 }
@@ -93,7 +94,10 @@ fn a_diff_reaching_outside_kernels_is_marked_whole_repo() {
 fn codeowners_are_resolved_from_the_changed_paths() {
     let root = repo_root();
     let v = &views(&root, &[pr(4, &["crates/spark-model/src/lib.rs"])])[0];
-    assert_eq!(v.owners, ["@SeedSource", "@rsafier", "@tbraun96"]);
+    assert_eq!(
+        v.owners,
+        ["@SeedSource", "@TheTom", "@rsafier", "@tbraun96"]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +258,7 @@ fn pr_titles_cannot_break_the_table() {
         author: "x".into(),
         draft: false,
         merged: false,
+        paths_unknown: false,
         changed_paths: vec![FLAGSHIP.to_string()],
     };
     let body = render(&root, &[hostile]);
@@ -263,7 +268,7 @@ fn pr_titles_cannot_break_the_table() {
         .expect("the row rendered");
     assert_eq!(
         row,
-        "| #9 evil \\| row injection | gb10 | 2 | @SeedSource @rsafier @tbraun96 |"
+        "| #9 evil \\| row injection | gb10 | 2 | @SeedSource @TheTom @rsafier @tbraun96 |"
     );
 }
 
@@ -279,7 +284,7 @@ fn a_draft_is_marked_as_one() {
         .to_string();
     assert_eq!(
         row,
-        "| #5 (draft) pr 5 | gb10 | 2 | @SeedSource @rsafier @tbraun96 |"
+        "| #5 (draft) pr 5 | gb10 | 2 | @SeedSource @TheTom @rsafier @tbraun96 |"
     );
 }
 
@@ -301,12 +306,13 @@ fn the_promotion_debt_section_is_always_rendered() {
         author: "someone".into(),
         draft: false,
         merged: false,
+        paths_unknown: false,
         changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
     }];
     let body = super::render(&root, &prs);
     assert!(
         body.contains(
-            "### Promotion-candidate debt\n\nThese gates are NOT required, so these PRs can merge without them. Each row is coverage this repository chose not to buy — recorded so the choice stays visible rather than becoming an assumption.\n\n| PR | merged? | title | gates that wanted to run |\n|---|---|---|---|\n| #1 | not yet | a scheduler change | cross-contamination |\n"
+            "### Promotion-candidate debt\n\nThese gates are NOT required, so these PRs can merge without them. Each row is coverage this repository chose not to buy — recorded so the choice stays visible rather than becoming an assumption.\n\n| PR | merged? | title | gates that wanted to run |\n|---|---|---|---|\n| #1 | not yet | a scheduler change | cross-contamination, kat-equality-gate |\n"
         ),
         "the unconditional debt section must retain its policy, schema, and row: {body}"
     );
@@ -329,6 +335,7 @@ fn debt_is_derived_from_the_prs_own_paths() {
             author: "a".into(),
             draft: false,
             merged: false,
+            paths_unknown: false,
             changed_paths: vec!["docs/adr/README.md".into()],
         },
         super::PrFacts {
@@ -337,14 +344,19 @@ fn debt_is_derived_from_the_prs_own_paths() {
             author: "b".into(),
             draft: false,
             merged: false,
+            paths_unknown: false,
             changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
         },
     ];
     let views = super::views(&root, &prs);
-    // The discrimination is real now that `cross-contamination` is a
-    // candidate: the docs PR owes nothing, the engine PR owes the candidate.
+    // The discrimination is real: the docs PR owes nothing, the engine PR
+    // owes BOTH candidates — a scheduler edit can cross-wire concurrent
+    // requests AND make a reply depend on what ran before it.
     assert_eq!(views[0].promotion_debt, Vec::<&str>::new());
-    assert_eq!(views[1].promotion_debt, vec!["cross-contamination"]);
+    assert_eq!(
+        views[1].promotion_debt,
+        vec!["cross-contamination", "kat-equality-gate"]
+    );
 }
 
 /// A merged debt and an open debt are different things: one is coverage already
@@ -365,6 +377,7 @@ fn the_debt_table_distinguishes_merged_from_open() {
             author: "a".into(),
             draft: false,
             merged: false,
+            paths_unknown: false,
             changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
         },
         super::PrFacts {
@@ -373,13 +386,14 @@ fn the_debt_table_distinguishes_merged_from_open() {
             author: "b".into(),
             draft: false,
             merged: true,
+            paths_unknown: false,
             changed_paths: vec!["crates/spark-server/src/scheduler/mod.rs".into()],
         },
     ];
     let body = super::render(&root, &prs);
     assert!(
         body.contains(
-            "| #1 | not yet | still open | cross-contamination |\n| #2 | **yes** | already landed | cross-contamination |\n"
+            "| #1 | not yet | still open | cross-contamination, kat-equality-gate |\n| #2 | **yes** | already landed | cross-contamination, kat-equality-gate |\n"
         ),
         "open warning and accrued merged debt must remain distinct: {body}"
     );

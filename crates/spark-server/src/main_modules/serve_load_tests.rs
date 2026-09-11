@@ -10,7 +10,7 @@ use super::*;
 /// every rate-limit bucket while looking fine.
 #[test]
 fn carried_state_is_the_same_allocation_not_an_equal_one() {
-    let first = Carried::from_env();
+    let first = Carried::from_env().expect("no ATLAS_* config is set in the test environment");
     let cloned = first.clone();
 
     assert!(
@@ -31,8 +31,8 @@ fn carried_state_is_the_same_allocation_not_an_equal_one() {
 /// `load_model` takes `Carried` rather than building its own.
 #[test]
 fn building_from_env_twice_would_lose_the_stores() {
-    let first = Carried::from_env();
-    let second = Carried::from_env();
+    let first = Carried::from_env().expect("no ATLAS_* config is set in the test environment");
+    let second = Carried::from_env().expect("no ATLAS_* config is set in the test environment");
     assert!(
         !std::sync::Arc::ptr_eq(&first.conversation_store, &second.conversation_store),
         "if this ever passes, from_env has become a singleton and the carried \
@@ -46,7 +46,7 @@ fn carried_uses_the_process_limiter_rather_than_minting_its_own() {
     // through the host's. If those are two instances, refunds credit buckets
     // the middleware never debited and the accounting silently drifts.
     let host = crate::main_modules::model_host::ModelHost::empty();
-    let carried = Carried::from_env();
+    let carried = Carried::from_env().expect("no ATLAS_* config is set in the test environment");
     let process = carried.rate_limiter.clone();
     host.set_process(carried);
     assert!(

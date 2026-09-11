@@ -142,7 +142,7 @@ pub fn step_verify_k3(
 ) {
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
-        a.finished = true;
+        super::lifecycle::fail_sequence(a, format!("sync_secondary: {e:#}"));
         return;
     }
 
@@ -154,13 +154,13 @@ pub fn step_verify_k3(
     let tokens_k3 = [a.last_token, drafts[0], drafts[1]];
     if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF3) {
         tracing::error!("EP broadcast verify_k3 cmd: {e:#}");
-        a.finished = true;
+        super::lifecycle::fail_sequence(a, format!("EP broadcast verify_k3 cmd: {e:#}"));
         return;
     }
     for &t in &tokens_k3 {
         if let Err(e) = model.ep_broadcast_cmd(t) {
             tracing::error!("EP broadcast verify_k3 token: {e:#}");
-            a.finished = true;
+            super::lifecycle::fail_sequence(a, format!("EP broadcast verify_k3 token: {e:#}"));
             return;
         }
     }
@@ -177,7 +177,7 @@ pub fn step_verify_k3(
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("decode_and_verify_fused (k3): {e:#}");
-                a.finished = true;
+                super::lifecycle::fail_sequence(a, format!("decode_and_verify_fused (k3): {e:#}"));
                 return;
             }
         }
@@ -186,7 +186,7 @@ pub fn step_verify_k3(
             Ok(r) => r.to_vec(),
             Err(e) => {
                 tracing::error!("decode_verify_graphed_k3: {e:#}");
-                a.finished = true;
+                super::lifecycle::fail_sequence(a, format!("decode_verify_graphed_k3: {e:#}"));
                 return;
             }
         }
@@ -299,7 +299,7 @@ pub fn step_verify_k3(
     // EP: always broadcast num_accepted to worker (prevents deadlock on EOS).
     if let Err(e) = model.ep_broadcast_cmd(num_accepted as u32) {
         tracing::error!("EP broadcast verify_k3 result: {e:#}");
-        a.finished = true;
+        super::lifecycle::fail_sequence(a, format!("EP broadcast verify_k3 result: {e:#}"));
         return;
     }
 
@@ -335,7 +335,10 @@ pub fn step_verify_k3(
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 3, 3) {
             // SSM state is no longer trustworthy — terminate, do not continue.
             tracing::error!("commit_accepted_prefix (K=3 accept-3): {e:#}");
-            a.finished = true;
+            super::lifecycle::fail_sequence(
+                a,
+                format!("commit_accepted_prefix (K=3 accept-3): {e:#}"),
+            );
             return;
         }
         if let Err(e) = model.save_hidden_for_mtp(2, 0) {
@@ -377,7 +380,10 @@ pub fn step_verify_k3(
         // (num_accepted=2 < k=3): rewind live h_state to intermediate[1].
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 2, 3) {
             tracing::error!("commit_accepted_prefix (K=3 accept-2): {e:#}");
-            a.finished = true;
+            super::lifecycle::fail_sequence(
+                a,
+                format!("commit_accepted_prefix (K=3 accept-2): {e:#}"),
+            );
             return;
         }
         emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
@@ -425,7 +431,10 @@ pub fn step_verify_k3(
         // (num_accepted=1 < k=3): rewind live h_state to intermediate[0].
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 3) {
             tracing::error!("commit_accepted_prefix (K=3 accept-1): {e:#}");
-            a.finished = true;
+            super::lifecycle::fail_sequence(
+                a,
+                format!("commit_accepted_prefix (K=3 accept-1): {e:#}"),
+            );
             return;
         }
         emit_token(a, v0, verify_lps.first().cloned(), sched);
