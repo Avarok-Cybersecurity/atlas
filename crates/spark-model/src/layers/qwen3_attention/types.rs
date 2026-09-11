@@ -200,6 +200,17 @@ pub struct Qwen3AttentionLayer {
     /// either handle retains the per-sequence scalar `w8a16_gemv` loop.
     pub(super) w8a16_gemv_batch4_strided_k: KernelHandle,
     pub(super) w8a16_gemv_batch16_strided_k: KernelHandle,
+    /// Tensor-core 16-row-M-tile GEMM (#927) and its strided sibling — the
+    /// `ATLAS_FFN_M16_TC` tier for the FP8 o_proj (contiguous) and multi-seq
+    /// Q/K/V (strided) projections at 5..=16 concurrent decode rows. Zero on a
+    /// shadow that lacks the entry points, which keeps the batched GEMVs.
+    pub(super) w8a16_gemm_m16_k: KernelHandle,
+    pub(super) w8a16_gemm_m16_strided_k: KernelHandle,
+    /// `ATLAS_FFN_M16_TC`, cached at construction (SSOT:
+    /// `layers::dense_ffn::m16_tc::m16_tc_enabled`). ONE lever A/Bs the FFN,
+    /// QKV and o_proj tiers together; a field, not a per-call env read, so the
+    /// route cannot vary across CUDA-graph replays.
+    pub(super) m16_tc: bool,
     pub(super) w8a16_gemm_k: KernelHandle,
     pub(super) w8a16_gemm_pipelined_k: KernelHandle,
     pub(super) w4a16_gemv_dual_k: KernelHandle,

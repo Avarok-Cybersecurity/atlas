@@ -31,6 +31,8 @@ mod dispatch_proj_rowwise;
 mod embeddings;
 #[path = "ops/fp8_gemv_batch.rs"]
 mod fp8_gemv_batch;
+// Tensor-core W8A16 decode GEMM with a 16-row M tile (#927), the ALU-bound
+// `w8a16_gemv_batch16`'s replacement at 5..=16 rows. Behind ATLAS_FFN_M16_TC.
 #[path = "ops/fp8_moe.rs"]
 mod fp8_moe;
 #[path = "ops/fp8_moe_batch_a.rs"]
@@ -55,6 +57,8 @@ mod gemm_dense_int8;
 mod gemm_fp4;
 #[path = "ops/model_stats.rs"]
 pub mod model_stats;
+#[path = "ops/w8a16_gemm_m16.rs"]
+mod w8a16_gemm_m16;
 pub use model_stats::ModelStats;
 
 #[path = "ops/gemm_fp8_prefill.rs"]
@@ -224,4 +228,5 @@ pub use ssm_gdn_snap::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;
+pub use w8a16_gemm_m16::*;
 pub use wide_prefill::*;

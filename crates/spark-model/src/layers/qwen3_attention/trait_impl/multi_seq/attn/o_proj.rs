@@ -213,6 +213,18 @@ impl Qwen3AttentionLayer {
                 && h % 128 == 0
                 && q_dim % 128 == 0;
             let wide = n > 4 && self.w8a16_gemv_batch16_k.0 != 0;
+            // #927 tensor-core tier, same 16-row group, `ATLAS_FFN_M16_TC` only:
+            // `w8a16_gemm_m16` replaces the batch16 GEMV's 16 scalar FFMA per
+            // weight byte with one m16n8k16 MMA lane-slot. It REASSOCIATES the
+            // K reduction (<= 2 BF16 ULP), which is why it is levered and off by
+            // default — SSOT + the H100 numbers: `layers::dense_ffn::m16_tc`.
+            // K here is `nq * hd`, and the kernel folds
+            // `block_scale[n_block * (K/128) + k/128]`, so it needs whole
+            // 128-wide scale blocks on BOTH axes.
+            let tc = wide
+                && self.m16_tc
+                && self.w8a16_gemm_m16_k.0 != 0
+                && (nq * hd).is_multiple_of(128);
             let batched = n > 1 && block_scaled && (self.w8a16_gemv_batch4_k.0 != 0 || wide);
             let (gemv, kernel, step) = if !batched {
                 (
@@ -220,6 +232,8 @@ impl Qwen3AttentionLayer {
                     self.w8a16_gemv_batch4_k,
                     1,
                 )
+            } else if tc {
+                (ops::w8a16_gemm_m16 as BatchGemv, self.w8a16_gemm_m16_k, 16)
             } else if wide {
                 (
                     ops::w8a16_gemv_batch16 as BatchGemv,
