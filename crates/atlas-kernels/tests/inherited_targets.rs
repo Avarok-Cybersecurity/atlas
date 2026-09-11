@@ -176,14 +176,19 @@ fn every_inherited_common_mirrors_every_gb10_common_file() {
 fn a_hopper_owned_kernel_overrides_gb10_without_editing_it() {
     let hopper = hw_dir("hopper").join("common");
     let gb10 = gb10_dir().join("common");
+    // An owned source is one of two things, and only the first is an
+    // OVERRIDE: a file whose stem gb10 also has. A file with a NEW stem —
+    // `gdn_decode_hopper.cu` (#927) — overrides nothing, so the three
+    // assertions below have no gb10 side to check and are answered by
+    // `a_hopper_owned_addition_brings_entry_points_gb10_does_not` instead.
     let sources: Vec<&str> = HOPPER_OWNED_COMMON
         .iter()
         .copied()
-        .filter(|n| n.ends_with(".cu"))
+        .filter(|n| n.ends_with(".cu") && gb10.join(n).exists())
         .collect();
     assert!(
         !sources.is_empty(),
-        "the owned list has no sources to check"
+        "the owned list has no gb10-overriding sources to check"
     );
 
     for name in sources {
@@ -223,6 +228,78 @@ fn a_hopper_owned_kernel_overrides_gb10_without_editing_it() {
             "kernels/b200/common/{name} stopped being a link to gb10; the \
              override leaked to a target with no receipt for it"
         );
+    }
+}
+
+/// The other half of the rule, for an owned source with a NEW stem.
+///
+/// `gdn_decode_hopper.cu` (#927) does not replace a gb10 file; it adds entry
+/// points beside them, because its gb10 namesake `gated_delta_rule.cu` is
+/// shadowed out of the build by the model directory's own copy and a
+/// same-stem override in `common/` would never be compiled.
+///
+/// That freedom is exactly what needs a guard. A new stem that re-declared an
+/// entry gb10 already declares would put two definitions of one kernel name in
+/// one target's module set, and a new stem whose bytes are a gb10 file's are a
+/// fork wearing a new name. Both are checked here; neither is visible to
+/// `mirror_faults`, which only knows the name is declared.
+#[test]
+fn a_hopper_owned_addition_brings_entry_points_gb10_does_not() {
+    let hopper = hw_dir("hopper").join("common");
+    let gb10 = gb10_dir().join("common");
+    let additions: Vec<&str> = HOPPER_OWNED_COMMON
+        .iter()
+        .copied()
+        .filter(|n| n.ends_with(".cu") && !gb10.join(n).exists())
+        .collect();
+
+    // Entry names and file hashes of everything gb10's common/ declares.
+    let entry = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter_map(|l| l.split_once("__global__ void "))
+            .filter_map(|(_, rest)| {
+                let name = rest.trim().split(['(', ' ']).next()?;
+                (!name.is_empty()).then(|| name.to_string())
+            })
+            .collect()
+    };
+    let mut gb10_entries = std::collections::BTreeSet::new();
+    let mut gb10_bodies = std::collections::BTreeSet::new();
+    for f in std::fs::read_dir(&gb10).expect("gb10 common").flatten() {
+        let path = f.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("cu") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("gb10 source");
+        gb10_entries.extend(entry(&text));
+        gb10_bodies.insert(text);
+    }
+
+    for name in additions {
+        let path = hopper.join(name);
+        assert!(
+            std::fs::read_link(&path).is_err(),
+            "kernels/hopper/common/{name} is declared owned and is still a symlink"
+        );
+        let text = std::fs::read_to_string(&path).expect("hopper source");
+        assert!(
+            !gb10_bodies.contains(&text),
+            "kernels/hopper/common/{name} is byte-identical to a gb10 common source — \
+             an undeclared fork under a new name, not a tuned addition"
+        );
+        let declared = entry(&text);
+        assert!(
+            !declared.is_empty(),
+            "kernels/hopper/common/{name} declares no entry point, so nothing can \
+             dispatch to it"
+        );
+        for e in declared {
+            assert!(
+                !gb10_entries.contains(&e),
+                "kernels/hopper/common/{name} re-declares `{e}`, which kernels/gb10/common \
+                 already defines: one target would compile two definitions of one kernel name"
+            );
+        }
     }
 }
 

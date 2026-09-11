@@ -139,6 +139,15 @@ pub struct Qwen3SsmLayer {
     gdn_f32_conv_norm_k: KernelHandle,
     gdn_f32_strided_k: KernelHandle,
     gdn_f32_strided_norm_k: KernelHandle,
+    /// Hopper twin of `gdn_f32_k` (`gdn_decode_hopper::gated_delta_rule_decode_f32_hopper`).
+    /// `KernelHandle(0)` on every hardware set but `kernels/hopper`, because the
+    /// source file exists only there — presence IS the target gate. See
+    /// `GDN-DECODE-ATTRIBUTION.md` (#927/#928).
+    gdn_f32_hopper_k: KernelHandle,
+    /// Hopper twin of `gdn_f32_strided_k`. Same presence rule, and it carries
+    /// the parent's SSM_STATE_MAX_NORM clamp, so it is a drop-in for the
+    /// batched arm that `ATLAS_GDN_FUSED_NORM` leaves unfused.
+    gdn_f32_strided_hopper_k: KernelHandle,
     /// Half-width register retention (k_dim==v_dim==128): retains the first 64 H
     /// columns so the update re-reads only the rest (2R+1W -> 1.5R+1W).
     gdn_f32_strided_norm_half_k: KernelHandle,
@@ -434,7 +443,7 @@ mod trait_prefill_recur;
 
 pub use gdn_flags::{
     GdnFlags, MAX_F16_TWIN_DFLASH_GAMMA, MAX_F16_TWIN_K, default_dflash_gamma,
-    gdn_fused_norm_enabled, ssm_batched_recurrent_enabled, ssm_h_dtype_bits,
+    gdn_fused_norm_enabled, gdn_hopper_enabled, ssm_batched_recurrent_enabled, ssm_h_dtype_bits,
     ssm_h_f16_pool_enabled, ssm_h_fp16_enabled, verify_exact_enabled,
 };
 

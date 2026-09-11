@@ -349,23 +349,53 @@ impl Qwen3SsmLayer {
                 })?;
             }
         } else {
-            ops::gdn_decode(
-                ctx.gpu,
-                gdn_kernel,
-                state.h_state,
-                q_conv,
-                k_conv,
-                v_conv,
-                gates,
-                beta_fp32,
-                gdn_out,
-                1,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                stream,
-            )?;
+            // #927: on Hopper the parent's grid is `nv` CTAs — 48 on this
+            // model — against 132 SMs, so 84 get no work. The twin tiles the
+            // head's columns across CTAs until the grid covers the device and
+            // is BIT-IDENTICAL per column (see GDN-DECODE-ATTRIBUTION.md).
+            // The handle is 0 on every non-hopper target, so this is inert
+            // there without an env read.
+            let hopper_gdn = use_f32_gdn
+                && self.gdn_f32_hopper_k.0 != 0
+                && crate::layers::qwen3_ssm::gdn_hopper_enabled()
+                && ops::gdn_hopper_dims_ok(kd as u32, vd as u32);
+            if hopper_gdn {
+                ops::gdn_decode_f32_hopper(
+                    ctx.gpu,
+                    self.gdn_f32_hopper_k,
+                    state.h_state,
+                    q_conv,
+                    k_conv,
+                    v_conv,
+                    gates,
+                    beta_fp32,
+                    gdn_out,
+                    1,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    stream,
+                )?;
+            } else {
+                ops::gdn_decode(
+                    ctx.gpu,
+                    gdn_kernel,
+                    state.h_state,
+                    q_conv,
+                    k_conv,
+                    v_conv,
+                    gates,
+                    beta_fp32,
+                    gdn_out,
+                    1,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    stream,
+                )?;
+            }
             if trace {
                 ctx.gpu.synchronize(stream).inspect_err(|_e| {
                     tracing::error!("CRASH at gdn_decode");

@@ -340,27 +340,61 @@ impl Qwen3SsmLayer {
                     );
                 }
                 let gdn_out = conv_out.offset(n * conv_dim as usize * 4);
-                ops::gdn_decode_f32_strided(
-                    ctx.gpu,
-                    self.gdn_f32_strided_k,
-                    h_state_base,
-                    conv_out,
-                    conv_out.offset(key_dim * 4),
-                    conv_out.offset(key_dim * 2 * 4),
-                    gates,
-                    beta_fp32,
-                    gdn_out,
-                    n as u32,
-                    nk as u32,
-                    nv as u32,
-                    kd as u32,
-                    vd as u32,
-                    conv_dim,
-                    conv_dim,
-                    gate_stride,
-                    value_dim as u32,
-                    stream,
-                )?;
+                // #927: the Hopper twin of this kernel. Same grid shape (the
+                // SSM_STATE_MAX_NORM clamp reduces across the whole head, so
+                // its columns cannot be split), same bits; what differs is the
+                // unroll depth, which is the in-flight-load lever on a kernel
+                // whose 57 us/layer at n=16 is 101 MB of compulsory state
+                // traffic. Handle is 0 off hopper. See
+                // GDN-DECODE-ATTRIBUTION.md (#927/#928).
+                let hopper_strided = self.gdn_f32_strided_hopper_k.0 != 0
+                    && crate::layers::qwen3_ssm::gdn_hopper_enabled()
+                    && ops::gdn_hopper_strided_dims_ok(kd as u32, vd as u32);
+                if hopper_strided {
+                    ops::gdn_decode_f32_strided_hopper(
+                        ctx.gpu,
+                        self.gdn_f32_strided_hopper_k,
+                        h_state_base,
+                        conv_out,
+                        conv_out.offset(key_dim * 4),
+                        conv_out.offset(key_dim * 2 * 4),
+                        gates,
+                        beta_fp32,
+                        gdn_out,
+                        n as u32,
+                        nk as u32,
+                        nv as u32,
+                        kd as u32,
+                        vd as u32,
+                        conv_dim,
+                        conv_dim,
+                        gate_stride,
+                        value_dim as u32,
+                        stream,
+                    )?;
+                } else {
+                    ops::gdn_decode_f32_strided(
+                        ctx.gpu,
+                        self.gdn_f32_strided_k,
+                        h_state_base,
+                        conv_out,
+                        conv_out.offset(key_dim * 4),
+                        conv_out.offset(key_dim * 2 * 4),
+                        gates,
+                        beta_fp32,
+                        gdn_out,
+                        n as u32,
+                        nk as u32,
+                        nv as u32,
+                        kd as u32,
+                        vd as u32,
+                        conv_dim,
+                        conv_dim,
+                        gate_stride,
+                        value_dim as u32,
+                        stream,
+                    )?;
+                }
                 detail_step!("recurrent_batched_gdn");
 
                 // ONE launch for all n sequences when the strided twin is

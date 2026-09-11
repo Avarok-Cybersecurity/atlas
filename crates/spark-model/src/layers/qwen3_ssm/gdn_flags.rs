@@ -210,6 +210,22 @@ pub fn ssm_batched_recurrent_enabled() -> bool {
     flags().batched_recurrent
 }
 
+/// Hopper GDN decode twins (#927/#928). ON wherever the kernels resolve,
+/// which is only `kernels/hopper` — every other target gets
+/// `KernelHandle(0)` and never reaches this check.
+///
+/// A KILL SWITCH, not a feature gate: `ATLAS_NO_GDN_HOPPER=1` puts the
+/// hopper target back on its gb10 parents, which is how the H100 A/B is run.
+/// `=1` and not presence, so `ATLAS_NO_GDN_HOPPER=0` does NOT disable the
+/// tier — the polarity trap this file exists to stop.
+///
+/// Read straight from the environment rather than [`GdnFlags`]: it has no CLI
+/// surface and is not coupled to the h-dtype/fused-norm trio.
+pub fn gdn_hopper_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_NO_GDN_HOPPER").ok().as_deref() != Some("1"))
+}
+
 /// `--exact-verify` given (and h-state is FP32): the MTP-verify pass runs
 /// the sequential-decode-exact chain. FALSE by default — without the flag the
 /// verify pass runs the WY/chunkwise arms and #435's spec-on/spec-off output

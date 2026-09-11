@@ -221,6 +221,10 @@ name = "gdn_strided_norm_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "native_gdn_decode_hopper_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_wy4_batched_microtest"
 required-features = ["cuda", "gpu-examples"]
 
