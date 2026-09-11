@@ -127,6 +127,19 @@ pub struct ModelLevers {
     /// contract over — so the call site is `levers.decode_split_silu ||
     /// self.lora.is_some()`.
     pub decode_split_silu: bool,
+    /// `ATLAS_FFN_DOWN_SPLITK` (presence, default OFF) — route the M=1 decode
+    /// down projection through `w8a16_gemv_splitk` + its combine instead of
+    /// the single-CTA-per-4-outputs `w8a16_gemv`.
+    ///
+    /// WHY it is opt-in: the split is the ONLY thing here that reassociates.
+    /// Each split's per-lane chain is a byte-identical run of the scalar
+    /// kernel's operands and the BF16 round still happens once, but the final
+    /// combine adds up to `SPLITK_MAX` FP32 partials that the scalar kernel
+    /// adds as one chain. Every batch oracle in tree compares against those
+    /// exact bits, so this ships OFF until an H100 receipt says the bandwidth
+    /// is worth the ULP. Plan, shapes and the nsys table: SSOT
+    /// `ops::w8a16_decode_gemv`.
+    pub ffn_down_splitk: bool,
     /// `ATLAS_BF16_TC_PREFILL` (presence) — BF16 tensor-core prefill GEMM.
     /// Read here only; the usable gate is derived at the call site AFTER
     /// v1/v2 selection, from the handle actually launched. Gating on v1's

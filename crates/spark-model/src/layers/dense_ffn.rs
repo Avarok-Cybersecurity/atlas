@@ -245,6 +245,19 @@ pub struct DenseFfnLayer {
     // on miss → fall back to the 3-launch w8a16_gemv path. Module = .cu file stem.
     w8a16_gemv_dual_k: KernelHandle,
     w8a16_gemv_silu_input_k: KernelHandle,
+    // Split-K M=1 decode GEMV (#928) for the short-N/long-K down projection,
+    // behind `ATLAS_FFN_DOWN_SPLITK`. KernelHandle(0) on a shadow that lacks
+    // the entry points -> `ops::w8a16_decode_gemv` falls back to the plain
+    // `w8a16_gemv`. WHY and the split plan: SSOT `ops::w8a16_decode_gemv`.
+    w8a16_gemv_splitk_k: KernelHandle,
+    w8a16_gemv_splitk_reduce_k: KernelHandle,
+    /// `[SPLITK_MAX, hidden]` FP32 partials for the split-K down GEMV,
+    /// allocated on the FIRST call that takes the arm — so a build with the
+    /// lever unset never pays the ~160 KB/layer. `get_or_init` makes the
+    /// (single-threaded-decode, so theoretical) race safe, and an allocation
+    /// failure parks `DevicePtr::NULL` here, which disarms the arm and puts
+    /// the token back on the plain kernel rather than failing it.
+    w8a16_splitk_partials: std::sync::OnceLock<DevicePtr>,
     // Fast transposed FP8 prefill GEMM (128x128 / 8-warp / two-level FP32 fold).
     // Preferred over w8a16_gemm when a transposed FP8 weight copy is present.
     // KernelHandle(0) → fall back to non-transposed w8a16_gemm.
@@ -421,6 +434,13 @@ impl DenseFfnLayer {
                 "w8a16_gemv_fused",
                 "w8a16_gemv_silu_input",
             ),
+            w8a16_gemv_splitk_k: super::try_kernel(gpu, "w8a16_gemv_splitk", "w8a16_gemv_splitk"),
+            w8a16_gemv_splitk_reduce_k: super::try_kernel(
+                gpu,
+                "w8a16_gemv_splitk",
+                "w8a16_gemv_splitk_reduce",
+            ),
+            w8a16_splitk_partials: std::sync::OnceLock::new(),
             w8a16_gemm_t_m128_k: super::try_kernel(gpu, "w8a16_gemm_t_m128", "w8a16_gemm_t_m128"),
             lora: None,
             q2_weights: None,
@@ -1002,17 +1022,47 @@ impl DenseFfnLayer {
             return Ok(output);
         }
 
-        // FP8 dispatch: prefer the fused FP8 dual-GEMV (gate+up in one launch) +
-        // SiLU-fused down GEMV, mirroring the NVFP4 path. Collapses gate+up+
-        // silu_mul+down (4 launches) to dual+silu (2). Falls back to the
-        // 3-launch per-projection `w8a16_gemv` path when the fused kernels or a
-        // non-SiLU activation make the fast path unavailable.
+        // FP8 dispatch: the fused FP8 dual-GEMV (gate+up in one launch) then the
+        // down projection, mirroring the NVFP4 path. Falls back to the 4-launch
+        // per-projection `w8a16_gemv` path when the fused kernels or a non-SiLU
+        // activation make the fast path unavailable.
+        //
+        // SPLIT SiLU+down (DEFAULT; kill-switch ATLAS_NO_DECODE_SPLIT_SILU) —
+        // #928. The NVFP4 arm below has staged `silu(gate)*up` once since the
+        // ncu receipt quoted there; the FP8 arm never got the same treatment
+        // and paid for it. `w8a16_gemv_silu_input` recomputes the SwiGLU PER
+        // OUTPUT, not per block: each of the N/4 CTAs gives every one of its 4
+        // outputs a 64-lane team that walks all of K, so the launch evaluates
+        // N*K = 5,120 x 17,408 = 89.1 M silu(gate)*up — 5,120x the 17,408 the
+        // token actually needs — and each one is an `__expf` plus a true FP32
+        // divide (`--fmad=false`, no `-use_fast_math`, so `g/(1+e^-g)` is the
+        // IEEE division sequence, not a reciprocal). nsys, 1xH100,
+        // Qwen/Qwen3.8-27B-FP8, 2026-09-11 round 7, C=1 step 21.891 ms: 64
+        // launches x 103.9 us = 6.65 ms/step = 30.4% of the step at 858 GB/s,
+        // against the `w8a16_gemv_dual` that reads the SAME 89.1 MB of weights
+        // per layer at 1,979 GB/s. Staging the activation once (one elementwise
+        // launch over K, microseconds, and CUDA graphs amortise the launch)
+        // leaves the down GEMV a pure weight-streaming kernel.
+        //
+        // NUMERICS, stated rather than implied: this is NOT bit-identical to
+        // the fused kernel. `moe_silu_mul` rounds `g*(1/(1+e^-g))*u` to BF16
+        // before the GEMV consumes it, where the fused kernel keeps
+        // `(g/(1+e^-g))*u` in FP32 all the way into the dot product — a BF16
+        // round plus a reciprocal-vs-divide difference on the activation. It
+        // IS the numerics prefill runs, and the same trade the NVFP4 arm has
+        // shipped by default; `ATLAS_NO_DECODE_SPLIT_SILU` restores the fused
+        // kernel bit-for-bit.
         if let Some(ref fp8w) = self.fp8_weights {
             let output = ctx.buffers.moe_output();
-            if self.activation == FfnActivation::SiLU
-                && self.w8a16_gemv_dual_k.0 != 0
-                && self.w8a16_gemv_silu_input_k.0 != 0
-            {
+            let arm = fp8_down::fp8_down_arm(
+                self.activation == FfnActivation::SiLU,
+                self.w8a16_gemv_dual_k.0 != 0,
+                self.w8a16_gemv_silu_input_k.0 != 0,
+                self.act_mul.0 != 0,
+                self.w8a16_gemv_k.0 != 0,
+                ctx.levers.decode_split_silu,
+            );
+            if arm != fp8_down::Fp8DownArm::PerProjection {
                 ops::w8a16_gemv_dual(
                     ctx.gpu,
                     self.w8a16_gemv_dual_k,
@@ -1027,18 +1077,43 @@ impl DenseFfnLayer {
                     h,
                     stream,
                 )?;
-                ops::w8a16_gemv_silu_input(
-                    ctx.gpu,
-                    self.w8a16_gemv_silu_input_k,
-                    gate_out,
-                    up_out,
-                    fp8w.down_proj.weight,
-                    fp8w.down_proj.row_scale,
-                    output,
-                    h,
-                    inter,
-                    stream,
-                )?;
+                if arm == fp8_down::Fp8DownArm::SplitSilu {
+                    ops::silu_mul(
+                        ctx.gpu,
+                        self.act_mul,
+                        gate_out,
+                        up_out,
+                        gate_out,
+                        inter,
+                        stream,
+                    )?;
+                    ops::w8a16_decode_gemv(
+                        ctx.gpu,
+                        self.w8a16_gemv_k,
+                        self.w8a16_splitk(ctx.gpu, h),
+                        ctx.levers.ffn_down_splitk,
+                        gate_out,
+                        fp8w.down_proj.weight,
+                        fp8w.down_proj.row_scale,
+                        output,
+                        h,
+                        inter,
+                        stream,
+                    )?;
+                } else {
+                    ops::w8a16_gemv_silu_input(
+                        ctx.gpu,
+                        self.w8a16_gemv_silu_input_k,
+                        gate_out,
+                        up_out,
+                        fp8w.down_proj.weight,
+                        fp8w.down_proj.row_scale,
+                        output,
+                        h,
+                        inter,
+                        stream,
+                    )?;
+                }
                 return Ok(output);
             }
             ops::w8a16_gemv(
@@ -1072,9 +1147,11 @@ impl DenseFfnLayer {
                 inter,
                 stream,
             )?;
-            ops::w8a16_gemv(
+            ops::w8a16_decode_gemv(
                 ctx.gpu,
                 self.w8a16_gemv_k,
+                self.w8a16_splitk(ctx.gpu, h),
+                ctx.levers.ffn_down_splitk,
                 gate_out,
                 fp8w.down_proj.weight,
                 fp8w.down_proj.row_scale,
@@ -2687,6 +2764,13 @@ impl DenseFfnLayer {
     }
 }
 
+/// The native-FP8 M=1 decode DOWN projection (#928) — the arm rule and the
+/// split-K scratch. A CHILD module, not a sibling: it reads this layer's
+/// private kernel handles, this file is already at the CI size cap, and the
+/// nsys attribution that motivates the arm needs room this file does not have.
+#[path = "dense_ffn_fp8_down.rs"]
+pub mod fp8_down;
+
 /// Native BF16/FP8 overlays take precedence over any NVFP4 fallback weights.
 /// Small batches must use the same format-aware dispatcher as prefill.
 fn native_small_batch_uses_prefill(has_bf16: bool, has_fp8: bool) -> bool {
@@ -2704,6 +2788,10 @@ mod native_batch_tests;
 #[cfg(test)]
 #[path = "dense_ffn_kernel_tests.rs"]
 mod kernel_tests;
+
+#[cfg(test)]
+#[path = "dense_ffn_fp8_down_tests.rs"]
+mod fp8_down_tests;
 
 #[cfg(test)]
 mod tests {
