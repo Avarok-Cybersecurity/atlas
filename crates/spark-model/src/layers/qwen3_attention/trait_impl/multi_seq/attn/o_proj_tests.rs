@@ -92,6 +92,8 @@ fn check_dispatch(
         levers: &levers,
         stats: &stats,
         attn_metadata: None,
+        // Multi-row o_proj under test never reads the decode scalars this flag guards.
+        decode_step: false,
         profile: false,
         comm: None,
         graph_capture: false,
