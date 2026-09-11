@@ -724,6 +724,7 @@ impl Qwen3AttentionLayer {
                 && crate::layers::fp8_calibration::dtype_runs_online_fp8_kv_calibration(kv_dtype)
             {
                 Some(Fp8KvCalibration::new(
+                    attn_layer_idx,
                     fp8_calibration_tokens,
                     config.fp8_kv_headroom,
                     gpu,
