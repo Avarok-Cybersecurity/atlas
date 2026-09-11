@@ -280,41 +280,119 @@ impl Qwen3SsmLayer {
             stream,
         )?;
         mark(&mut tk, &mut us_pre_f);
-        // ── The MoE FFN runs PER SEQUENCE, not over all R rows ──
+        // ── MoE: ONE token-major call at a PADDED width ──
         //
-        // 🔴 THE cost of this whole path, measured. `hc_ffn_dispatch` has fused
-        // arms only at 1 / 2 / 3 rows and falls to `Prefill` for anything else,
-        // and `Prefill` is the grouped GEMM, which streams ALL 512 experts'
-        // weights regardless of row count. At R=6 there is no fused arm, so one
-        // call cost 3793 us — 90% of a 4182 us layer, and 36 layers of it is
-        // 136 ms of the 150 ms the GDN layers took:
+        // History, all measured on this path:
+        //  * one call at R rows, unpadded: `hc_ffn_dispatch` has fused arms
+        //    only at 1/2/3 rows and falls to `Prefill` — the grouped GEMM that
+        //    streams ALL 512 experts regardless of row count. 3793 us, 90% of
+        //    a 4182 us layer.
+        //  * per SEQUENCE (ks[i]=3 -> fused K3): 14.99 -> 27.44 tok/s. But the
+        //    weight-heavy op then runs n times, which is what the control
+        //    already does — no amortisation, just less waste.
+        //  * one call at R=11 via `forward_token_major_decode`: 9492 us, WORSE
+        //    than 6541 for the per-sequence loop. 11 is a width that arm never
+        //    sees: `padded_batch_n` yields 2, 4, 8, 12, 16, 24 ... and the
+        //    decode path only ever hands it those.
         //
-        //   ple 13   hc_pre_attn 101   gdn_block 364   hc_post_attn 10
-        //   hc_pre_ffn 141   moe_ffn 3793   hc_post_ffn 8      (us, one layer)
-        //
-        // Each SEQUENCE has ks[i] rows — 3 on the usual MTP ladder — which is
-        // exactly the fused K3 arm. Two K3 calls read the experts twice; one
-        // Prefill call reads all 512 once but at grouped-GEMM cost, which the
-        // repo already records as the same at 1 row as at 28. This is the
-        // "spec verify must use the fused single/K2/K3 kernels" rule.
-        //
-        // Output staging: every arm writes `moe_output()` at rows [0, k), so a
-        // per-sequence call would overwrite the previous sequence's rows. Each
-        // result is copied out to `norm_output()` at its batch offset, and
-        // `hc_post` below consumes THAT. `norm_output` is free here: this body
-        // sends `hc_pre`'s collapse to `hidden`, never to `norm_output`.
-        //
-        // 🪤 The obvious next move — ONE R-row `forward_token_major_decode`,
-        // the arm the DECODE path uses, whose comment promises "exactly one EP
-        // all-reduce over all n rows" and "correct for every n regardless" —
-        // was TRIED AND IS SLOWER. MEASURED at rows=11: MoE 6541 us per
-        // sequence vs 9492 us for the single R-row call, and C=4 aggregate
-        // 27.44 -> 18.56 tok/s. Correct, just slower: the n-row token-major
-        // NVFP4 arm is built for the padded decode widths (1, 2, 4, 8, …) and
-        // does not like these ragged verify widths. Do not re-try it without a
-        // shape it was actually tuned for.
-        let stage = ctx.buffers.norm_output();
+        // So pad to the next `padded_batch_n` and call once. Pad rows compute
+        // garbage from whatever `hidden` holds above row R; only rows [0, R)
+        // are consumed below, exactly as the decode path relies on for its own
+        // padded batches, and VERIFY_ROW_CAP (96) keeps them in bounds.
+        // -- One-shot MoE cost-vs-rows sweep (ATLAS_MOE_ROW_SWEEP=1) --
+        // See the module note: at C=4 the control batches its sequences into
+        // ONE 4-row MoE call, so MTP pays cost(R rows) to earn tok_step
+        // tokens per sequence. This prints the curve that decides it.
         {
+            static SWEPT: std::sync::Once = std::sync::Once::new();
+            let on = {
+                static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *ON.get_or_init(|| std::env::var("ATLAS_MOE_ROW_SWEEP").as_deref() == Ok("1"))
+            };
+            if on && !self.ffn.is_none() {
+                let mut err: Option<anyhow::Error> = None;
+                SWEPT.call_once(|| {
+                    let run = || -> anyhow::Result<()> {
+                        for &w in &[1usize, 2, 3, 4, 6, 8, 12, 16, 24] {
+                            // Two arms per width where each is legal: the fused
+                            // ladder the verify uses today, and the token-major
+                            // decode kernel the padded arm uses.
+                            for arm in ["ladder", "token_major"] {
+                                if arm == "token_major" && w < 4 {
+                                    continue;
+                                }
+                                let call = || -> anyhow::Result<()> {
+                                    if arm == "ladder" {
+                                        self.hc_small_m_ffn(hidden, w, ctx, stream)
+                                    } else {
+                                        self.ffn.forward_token_major_decode(hidden, w, ctx, stream)
+                                    }
+                                };
+                                // Warm: first touch of a width pays plan setup.
+                                let mut ok = true;
+                                for _ in 0..3 {
+                                    if let Err(e) = call() {
+                                        tracing::info!(rows = w, arm, error = %e, "MoE row sweep: arm REFUSED");
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                                if !ok {
+                                    continue;
+                                }
+                                ctx.gpu.synchronize(stream)?;
+                                let t = std::time::Instant::now();
+                                const ITERS: usize = 20;
+                                for _ in 0..ITERS {
+                                    call()?;
+                                }
+                                ctx.gpu.synchronize(stream)?;
+                                let us = t.elapsed().as_micros() as f64 / ITERS as f64;
+                                tracing::info!(
+                                    rows = w,
+                                    arm,
+                                    us_per_call = us,
+                                    us_per_row = us / w as f64,
+                                    "MoE row sweep"
+                                );
+                            }
+                        }
+                        Ok(())
+                    };
+                    if let Err(e) = run() {
+                        err = Some(e);
+                    }
+                });
+                if let Some(e) = err {
+                    return Err(e);
+                }
+            }
+        }
+
+        let moe_padded = {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_HC_VERIFY_MOE_PADDED").as_deref() != Ok("0")
+            })
+        };
+        let moe_rows = if moe_padded && !self.ffn.is_none() && rows > 1 {
+            let padded = crate::traits::padded_batch_n(rows);
+            {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| {
+                    tracing::info!(rows, padded, "hc verify MoE: ONE token-major call, padded");
+                });
+            }
+            self.ffn
+                .forward_token_major_decode(hidden, padded, ctx, stream)?;
+            ctx.buffers.moe_output()
+        } else {
+            // Per-sequence fallback: ks[i] rows each, which lands on the fused
+            // K3 arm on the usual ladder. Every arm writes `moe_output()` at
+            // rows [0, k), so each result is staged into `norm_output()` at its
+            // batch offset; `norm_output` is free here because this body sends
+            // `hc_pre`'s collapse to `hidden`.
+            let stage = ctx.buffers.norm_output();
             let mut off = 0usize;
             for i in 0..n_seqs {
                 let k = ks[i];
@@ -327,16 +405,14 @@ impl Qwen3SsmLayer {
                 )?;
                 off += k;
             }
-        }
+            stage
+        };
         mark(&mut tk, &mut us_ffn);
         ops::hc_post_site(
             ctx.gpu,
             self.hc_post_k,
             hc,
-            // `stage`, not `moe_output()`: the per-sequence FFN above wrote
-            // each sequence's rows to moe_output[0, k) and copied them out to
-            // their batch offsets here.
-            stage,
+            moe_rows,
             streams,
             post,
             comb,

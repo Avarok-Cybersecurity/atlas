@@ -413,7 +413,68 @@ impl Qwen3SsmLayer {
                 FfnComponent::Moe(moe) => moe.forward_batched(rows, num_tokens, ctx, stream)?,
                 _ => anyhow::bail!("native EXL3 replay requires a MoE FFN"),
             },
-            HcFfnDispatch::Prefill => self.ffn.forward_prefill(rows, num_tokens, ctx, stream)?,
+            HcFfnDispatch::Prefill => {
+                // No fused arm at this width. Decompose into fused chunks
+                // rather than paying the grouped GEMM, which streams all 512
+                // experts regardless of row count. See the module note.
+                let chunked = {
+                    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    *ON.get_or_init(|| {
+                        std::env::var("ATLAS_HC_FFN_CHUNKED").as_deref() != Ok("0")
+                    })
+                };
+                if chunked && small_m && num_tokens > 3 {
+                    let h = ctx.config.hidden_size;
+                    let bf16 = 2usize;
+                    // Widths, seq-major: 3s then the 1-or-2 remainder.
+                    let mut widths: Vec<usize> = Vec::new();
+                    let mut left = num_tokens;
+                    while left > 0 {
+                        let w = left.min(3);
+                        widths.push(w);
+                        left -= w;
+                    }
+                    {
+                        static SAID: std::sync::Once = std::sync::Once::new();
+                        SAID.call_once(|| {
+                            tracing::info!(
+                                num_tokens,
+                                "hc small-M FFN: CHUNKED into fused arms instead of the \
+                                 grouped GEMM (ATLAS_HC_FFN_CHUNKED=0 restores it)"
+                            );
+                        });
+                    }
+                    // DESCENDING offsets: each chunk is copied to its place
+                    // before the next one overwrites moe_output[0, k).
+                    let mut off = num_tokens;
+                    for &w in widths.iter().rev() {
+                        off -= w;
+                        let src = rows.offset(off * h * bf16);
+                        match w {
+                            1 => {
+                                let out = self.ffn.forward(src, ctx, stream)?;
+                                anyhow::ensure!(
+                                    out == ctx.buffers.moe_output(),
+                                    "chunked small-M FFN: single-token MoE returned a \
+                                     buffer other than moe_output()"
+                                );
+                            }
+                            2 => self.ffn.forward_k2(src, ctx, stream)?,
+                            _ => self.ffn.forward_k3(src, ctx, stream)?,
+                        }
+                        if off > 0 {
+                            ctx.gpu.copy_d2d_async(
+                                ctx.buffers.moe_output(),
+                                ctx.buffers.moe_output().offset(off * h * bf16),
+                                w * h * bf16,
+                                stream,
+                            )?;
+                        }
+                    }
+                } else {
+                    self.ffn.forward_prefill(rows, num_tokens, ctx, stream)?;
+                }
+            }
         }
         Ok(())
     }
