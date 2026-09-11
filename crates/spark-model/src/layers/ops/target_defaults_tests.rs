@@ -37,6 +37,7 @@ const GB10: TargetDefaults = TargetDefaults {
     attn_m16_tc: false,
     lm_head_m16_tc: false,
     attn_ncol_gemv: false,
+    ffn_gateup_fused: false,
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]`.
@@ -58,6 +59,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     attn_m16_tc: true,
     lm_head_m16_tc: true,
     attn_ncol_gemv: false,
+    ffn_gateup_fused: true,
 };
 
 fn with(defaults: &TargetDefaults, env: &[(&str, &str)]) -> TargetLevers {
@@ -274,6 +276,7 @@ fn the_summary_line_names_every_lever_and_flags_the_environment() {
         "ssm_ba_gates_hopper=on",
         "decode_split_silu=on",
         "attn_decode_splitk=auto",
+        "ffn_gateup_fused=on",
     ] {
         assert!(line.contains(field), "missing `{field}` in:\n{line}");
     }
@@ -381,3 +384,8 @@ fn hopper_resolves_the_widened_head_band_from_its_declaration() {
     assert!(format_levers(&h).contains("lm_head_batchm_max=16"));
     assert!(!format_levers(&h).contains("lm_head_batchm_max=16 (env)"));
 }
+/// The `ffn_gateup_fused` row (#927) — its own file so each lever's
+/// declaration, override and reported spelling stay in one place, and so this
+/// one stays under the house 500-line cap.
+#[path = "target_defaults_gateup_tests.rs"]
+mod gateup;

@@ -182,6 +182,7 @@ pub struct TargetLevers {
     /// `w8a16_gemv_batch16_ncol{2,4}` on the decode attention projections
     /// (#927). No serving receipt on any target — off everywhere.
     pub attn_ncol_gemv: Resolved<bool>,
+    pub ffn_gateup_fused: Resolved<bool>,
 }
 
 /// The whole table, as a pure function of the baked declaration and a variable
@@ -291,6 +292,16 @@ pub fn resolve(
             var("ATLAS_ATTN_NCOL_GEMV").as_deref(),
             var("ATLAS_NO_ATTN_DECODE_BATCH").is_some(),
         ),
+        // DECLARATION plus `ATLAS_FFN_GATEUP_FUSED`, which is the A/B a Hopper
+        // round runs against the new default. `=0` kills the arm and returns
+        // the layer to two cuBLASLt calls; there is no positive spelling that
+        // arms it on a target whose tree lacks `silu_mul_strided.cu`, because
+        // the handle probe would then fail the boot audit closed.
+        ffn_gateup_fused: resolve_toggle(
+            defaults.ffn_gateup_fused,
+            var("ATLAS_FFN_GATEUP_FUSED").as_deref(),
+            false,
+        ),
     }
 }
 
@@ -340,7 +351,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
          ssm_ba_gates_hopper={ba_gates} decode_split_silu={silu} \
          attn_decode_splitk={splitk}{splitk_src} ffn_m16_tc={ffn_m16_tc} \
          attn_m16_tc={attn_m16_tc} lm_head_m16_tc={lm_head_m16_tc} \
-         attn_ncol_gemv={attn_ncol_gemv}",
+         attn_ncol_gemv={attn_ncol_gemv} ffn_gateup_fused={gateup}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
         // at boot against the driver. Printed on this line because the levers
@@ -359,6 +370,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         attn_m16_tc = onoff(l.attn_m16_tc),
         lm_head_m16_tc = onoff(l.lm_head_m16_tc),
         attn_ncol_gemv = onoff(l.attn_ncol_gemv),
+        gateup = onoff(l.ffn_gateup_fused),
     )
 }
 
