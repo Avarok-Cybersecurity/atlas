@@ -243,6 +243,17 @@ pub struct DenseFfnLayer {
     /// (#927). KernelHandle(0) on a shadow that lacks the entry point, which
     /// puts those widths back on the tile GEMMs. Rule: `batch16_decode.rs`.
     w8a16_gemv_batch16_k: KernelHandle,
+    /// Whether that tier is ARMED — `ATLAS_FFN_BATCH16=1`, latched once here
+    /// at construction. DEFAULT FALSE: the tier measured a net LOSS in serving
+    /// on H100 (-5.4% aggregate at C=16, +50 ms TTFT) and has never been
+    /// measured on GB10, where the handle resolves just the same. Receipt and
+    /// the full rule: `batch16_decode.rs`.
+    ///
+    /// A FIELD rather than a call into `ffn_batch16_enabled()` at dispatch
+    /// time, for two reasons: the route is then fixed before any CUDA-graph
+    /// capture, and the dispatch tests can pin BOTH polarities without a
+    /// process-global `OnceLock` that latches on whichever test runs first.
+    batch16_enabled: bool,
     w8a16_gemm_pipelined_k: KernelHandle,
     // Fused FP8 decode GEMVs (gate+up in one launch / silu+down in one launch),
     // mirroring the NVFP4 w4a16_gemv_dual / w4a16_gemv_silu_input. KernelHandle(0)
@@ -423,6 +434,7 @@ impl DenseFfnLayer {
             w8a16_gemm_k: super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemv_batch4_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch4"),
             w8a16_gemv_batch16_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch16"),
+            batch16_enabled: batch16_decode::ffn_batch16_enabled(),
             w8a16_gemm_pipelined_k: super::try_kernel(
                 gpu,
                 "w8a16_gemm_pipelined",
@@ -1960,16 +1972,19 @@ impl DenseFfnLayer {
         // 🔴 ARM ORDER IS THE DISPATCH RULE — decode rungs first, widest last:
         //
         //   1. m <= 4      w8a16_gemv_batch4        one weight pass, 4-row tier
-        //   2. m 5..=16    w8a16_gemv_batch16       one weight pass, 16-row tier
-        //   3. m 17..=32   w8a16_gemv_batch16 x2    contiguous row halves
+        //   2. m 5..=16    w8a16_gemv_batch16       OPT-IN, off by default
+        //   3. m 17..=32   w8a16_gemv_batch16 x2    OPT-IN, off by default
         //   4. W8A8 block-scaled prefill            (#917/#928)
         //   5. transposed / pipelined / base W8A16 tile GEMMs
         //
-        // Rungs 2-3 are #927: at m=5..16 this match used to fall straight to
-        // rung 5, whose tile GEMMs pad M to a 128-row MMA tile (5-12 TFLOP/s on
-        // these shapes). H100, 2026-09-11, Qwen3.8-27B-FP8: 44 ms/step at 4
-        // active rows vs 224 ms at 16, i.e. C=16 aggregate FELL 76 -> 62 tok/s
-        // when the batch cap went 4 -> 16. Rule, kill switch and the
+        // Rungs 2-3 are #927, and they are DISARMED unless `ATLAS_FFN_BATCH16=1`
+        // — so a stock serve runs rungs 1, 4, 5 exactly as it did before #927.
+        // The cliff they answer is real (the rung-5 tile GEMMs pad M to a
+        // 128-row MMA tile, 5-12 TFLOP/s on these shapes), but the tier as a
+        // whole lost the only end-to-end A/B it has: H100, 2026-09-11,
+        // Qwen3.8-27B-FP8, C=16 aggregate 121.4 ON -> 128.0 tok/s OFF, because
+        // it dispatches by row count and so catches a chunked prefill's tail
+        // chunk. It has never been measured on GB10. Receipt, opt-in and the
         // consequence for rung 4's lower edge: `dense_ffn_batch16_decode.rs`.
         if let Some(ref fp8w) = self.fp8_weights {
             // Resolved ONCE for the whole FFN, not per projection: gate, up and
@@ -1996,7 +2011,8 @@ impl DenseFfnLayer {
                         }
                         // 2-3. m 5..=16 (one launch) and 17..=32 (two halves).
                         // `Some(plan)` already encodes the handle and the
-                        // `ATLAS_FFN_NO_BATCH16` kill switch.
+                        // `ATLAS_FFN_BATCH16=1` opt-in, so this is `None` on a
+                        // stock serve and the match falls through to rung 4.
                         _ if batch16.is_some() => self.w8a16_batch16_proj(
                             ctx,
                             batch16.expect("guarded by is_some"),
@@ -2815,7 +2831,8 @@ pub mod w8a8_prefill;
 
 /// The 5..=32-row native-FP8 DECODE tier (#927) — same child-module reason as
 /// `w8a8_prefill` above: it reads this layer's private kernel handles, and the
-/// arm's rule, kill switch and WHY do not fit in this file's budget.
+/// arm's rule, its opt-in and the measurements that made it opt-in do not fit
+/// in this file's budget.
 #[path = "dense_ffn_batch16_decode.rs"]
 pub mod batch16_decode;
 

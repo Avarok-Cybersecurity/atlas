@@ -41,11 +41,52 @@
 //!
 //! 🪤 CONSEQUENCE, stated because it is a real boundary move: the W8A8 prefill
 //! arm's own rule (`dense_ffn_w8a8_prefill.rs`) starts at `m > 4`, so with
-//! rungs 2-3 ahead of it the W8A8 path now begins at **m > 32** in practice.
-//! That is the intent — 5..=32 are decode widths where one weight pass beats
-//! any MMA tile — but a prefill of 5..=32 tokens (a very short prompt, or the
-//! tail chunk of a chunked prefill) now takes the GEMV too. Set
-//! `ATLAS_FFN_NO_BATCH16` to restore the previous routing for those widths.
+//! rungs 2-3 ahead of it the W8A8 path begins at **m > 32** in practice. 5..=32
+//! are decode widths where one weight pass beats any MMA tile — but a prefill
+//! of 5..=32 tokens (a very short prompt, or the TAIL CHUNK of a chunked
+//! prefill) takes the GEMV too. That consequence is what the serving A/B below
+//! caught, and it is why this tier ships disarmed.
+//!
+//! 🔴 DEFAULT OFF — OPT-IN VIA `ATLAS_FFN_BATCH16=1`. The cliff above is
+//! real and this kernel is the right shape for it, but on the one target where
+//! the tier has been A/B'd end to end it is a net LOSS in serving. H100 round
+//! 5, 2026-09-11, Qwen/Qwen3.8-27B-FP8, single variable — same binary, same
+//! 16-way burst, the tier the only difference:
+//!
+//! | 1024x256, C=16      | tier ON  | tier OFF     |
+//! |---------------------|----------|--------------|
+//! | aggregate tok/s     | 121.4    | **128.0**    |
+//! | TPOT p50            | 107.4 ms | **102.0 ms** |
+//! | 28-token smoke TTFT | 150 ms   | **101 ms**   |
+//!
+//! Per-phase at n=16 (`ATLAS_MS_PROFILE=1`, so eager — read the ratios): with
+//! the tier OFF the step goes 86.80 -> 82.32 ms, `ssm` 63.31 -> 59.91 ms and
+//! `attn` 19.90 -> 18.82 ms (-5.2% to -5.4% each); `head` does not move. `ssm`
+//! per layer returns to 1248 us against a pre-#927 1252 us — the tier's cost
+//! is the whole of the regression it introduced, not part of it.
+//!
+//! WHY it loses although the kernel wins at 16 rows: it dispatches by ROW
+//! COUNT, not by phase, so a chunked prefill's tail chunk lands in the band —
+//! a 1193-token prompt splits `1168 + 25`, and the 25-row tail takes the GEMV.
+//! That is a FIXED ~35 ms TTFT cost per request (49 ms on the 28-token smoke),
+//! which no decode-rate gain at these widths pays back.
+//!
+//! 🚨 AND IT HAS NEVER BEEN MEASURED ON GB10. `w8a16_gemv_batch16` is an
+//! instantiation in `w8a16_gemv_batch4.cu`, so the handle resolves on every
+//! target that carries that module — GB10 included. A default-ON tier would
+//! ship an unmeasured routing change to the target this repo serves, on the
+//! strength of an H100 number that came out negative. Opt-in is the honest
+//! default until a GB10 A/B exists; if one wins there, the lever to flip is
+//! this file's, not the caller's.
+//!
+//! WHAT STAYS DEFAULT-ON, and why it is a different lever: the attention
+//! `o_proj` groups-of-16 arm, the QKV band widening and the SSM MTP-verify
+//! arms key off their OWN kernel handles and never read this switch. They were
+//! ON in BOTH arms of the A/B above, so none of the movement in that table is
+//! theirs to claim or to blame — including the `attn` phase's -5.4%, which
+//! moved while they were untouched. Each is bit-identical per row to the M=1
+//! `w8a16_gemv` it replaces, which is a numerics improvement that does not
+//! depend on the FFN result either way.
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
@@ -55,20 +96,22 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::Fp8Weight;
 
-/// `ATLAS_FFN_NO_BATCH16` kill switch: PRESENCE (any value, including empty)
-/// sends 5..=32 rows back to the pre-#927 arms.
+/// `ATLAS_FFN_BATCH16` opt-in: the value `1` — and only `1` — arms the
+/// 5..=32-row tier. Anything else, absence included, leaves those widths on
+/// the pre-#927 arms.
 ///
-/// Presence rather than `=1`, matching `ffn_w8a16_only` next door: this is an
-/// escape hatch an operator reaches for while a serve misbehaves, and
-/// `ATLAS_FFN_NO_BATCH16=0` meaning "batch16 is off" is a trap.
+/// VALUE rather than the house PRESENCE convention (`ffn_w8a16_only` next
+/// door) because the polarity is the other way round: for a switch that ARMS
+/// an arm, it is `ATLAS_FFN_BATCH16=0` meaning "on" that would be the trap.
+/// Same shape as `moe_grouped_decode_forced` in `layers/mod.rs`, the other
+/// lever in this crate that arms rather than disarms.
 ///
-/// `OnceLock`-cached: the selector runs per projection per layer per step and
-/// `std::env::var_os` walks the environment block on every call. Cached
-/// process-wide is also what keeps the route CONSTANT across CUDA-graph
-/// replays — a per-call read could change the captured launch set.
-pub fn ffn_no_batch16() -> bool {
-    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("ATLAS_FFN_NO_BATCH16").is_some())
+/// `OnceLock`-cached and read ONCE PER LAYER, into `DenseFfnLayer`'s
+/// `batch16_enabled`: the route must be CONSTANT across CUDA-graph replays,
+/// and `std::env::var` walks the environment block on every call.
+pub fn ffn_batch16_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_FFN_BATCH16").as_deref() == Ok("1"))
 }
 
 /// How the batch16 tier serves `m` rows, or `None` when it does not claim them.
@@ -83,14 +126,16 @@ pub(crate) enum Batch16Plan {
 }
 
 /// The whole batch16 selection rule, as a pure function of the row count, the
-/// handle's presence and the kill switch.
+/// handle's presence and the opt-in.
 ///
 /// Split out from the layer for the same reason `w8a8_prefill_selected` is:
 /// the CPU tests pin every rung without building a `ForwardContext`, and
-/// `disabled` is injected because a process-global `OnceLock` cannot be
-/// toggled per test.
-pub(crate) fn batch16_plan(m: u32, batch16_loaded: bool, disabled: bool) -> Option<Batch16Plan> {
-    if disabled || !batch16_loaded {
+/// `enabled` is injected because a process-global `OnceLock` cannot be toggled
+/// per test. `enabled` reads FIRST in the guard: it is the default-off gate,
+/// and a reader asking "what does a stock serve do at m=8" should meet it
+/// before anything about handles.
+pub(crate) fn batch16_plan(m: u32, batch16_loaded: bool, enabled: bool) -> Option<Batch16Plan> {
+    if !enabled || !batch16_loaded {
         return None;
     }
     match m {
@@ -105,9 +150,10 @@ pub(crate) fn batch16_plan(m: u32, batch16_loaded: bool, disabled: bool) -> Opti
 }
 
 impl DenseFfnLayer {
-    /// The plan for `m` rows on THIS layer — handle presence plus the switch.
+    /// The plan for `m` rows on THIS layer — handle presence plus the opt-in
+    /// the layer latched at construction.
     pub(crate) fn ffn_batch16_plan(&self, m: u32) -> Option<Batch16Plan> {
-        batch16_plan(m, self.w8a16_gemv_batch16_k.0 != 0, ffn_no_batch16())
+        batch16_plan(m, self.w8a16_gemv_batch16_k.0 != 0, self.batch16_enabled)
     }
 
     /// Run one dense-FFN projection through `w8a16_gemv_batch16`.
@@ -156,10 +202,11 @@ impl DenseFfnLayer {
     }
 
     /// Log-once latch for the batch16 decode tier, in the same `log:ffn_*`
-    /// shape the other dense-FFN route logs use. It is worth a line: this arm
-    /// is what a 5..=32-row TPOT report is measuring, and its absence at a
-    /// width that should have it is the first thing to check when the #927
-    /// cliff appears to be back.
+    /// shape the other dense-FFN route logs use. It earns its line for a
+    /// reason the default-on version did not have: this arm now runs only
+    /// because an operator asked for it, and a serve quoting a 5..=32-row TPOT
+    /// number should be able to prove from its own log which side of the A/B
+    /// it ran.
     fn log_batch16_decode_route(&self, ctx: &ForwardContext, plan: Batch16Plan) {
         if ctx.stats.once("log:ffn_batch16_decode") {
             let how = match plan {
@@ -169,7 +216,9 @@ impl DenseFfnLayer {
             tracing::info!(
                 "[atlas] dense FFN decode: native FP8 w8a16_gemv_batch16 ({how}) \
                  for 5..=32 rows — one weight pass, bit-identical per row to the \
-                 M=1 w8a16_gemv. ATLAS_FFN_NO_BATCH16 restores the tile GEMMs (#927)."
+                 M=1 w8a16_gemv. ARMED BY ATLAS_FFN_BATCH16=1, off by default: it \
+                 measured -5.4% aggregate and +50 ms TTFT on H100, and has never \
+                 been measured on GB10 (#927)."
             );
         }
     }

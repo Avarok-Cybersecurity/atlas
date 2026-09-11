@@ -209,6 +209,11 @@ fn run_batched_verify(
 /// (grid ceil(N/4)) instead of `w8a16_gemm_pipelined`'s M-padded MMA tile
 /// (grid [ceil(N/32), ceil(M/128)]). Same weights, same M/N/K — and each row
 /// is now bit-identical to the M=1 decode GEMV rather than reassociated.
+///
+/// This is the SSM MTP-VERIFY arm, keyed on the SSM layer's own handle. It is
+/// NOT behind `ATLAS_FFN_BATCH16` — that opt-in governs only the dense-FFN
+/// tier, which is the one the H100 A/B measured as a loss. This arm was on in
+/// both halves of that A/B.
 #[test]
 fn native_fp8_gdn_batched_verify_r7_dispatches_batch16_gemv() {
     let config = ModelConfig::qwen3_next_80b_nvfp4();
