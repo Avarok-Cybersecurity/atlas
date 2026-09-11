@@ -45,6 +45,33 @@ fn bf16_batch_gemv_from_value(value: Option<&str>) -> bool {
     value != Some("0")
 }
 
+/// The BF16 decode head's batched-GEMV band, for THIS head only.
+///
+/// 🔴 Read `layers/ops/gemm_quant.rs` before touching the DEFAULT. That
+/// constant is the FROZEN band, and it is frozen for a reason that still
+/// holds: the MTP row dispatch (`layers/mtp_head/row_dispatch.rs`), the
+/// verify-`k` workspace sizing (`weight_loader/glm5_next_load.rs`) and this
+/// head all read it, the band's upper edge decides whether a width lands on
+/// the batched GEMV or on a REASSOCIATING tile GEMM, and the A/B behind the
+/// number measured the GEMV NEGATIVE above 8 on GB10 (-14.4% at C=16, commits
+/// 84d5b763c / 78d276832).
+///
+/// ★ THE DEFAULT IS NO LONGER A LITERAL. It is the compiled target's
+/// (`kernels/<hw>/HARDWARE.toml` `[defaults] lm_head_batchm_max`), so a target
+/// that has measured a different edge declares it beside its arch facts
+/// instead of exporting `ATLAS_LM_HEAD_BATCHM_MAX` from a launch script —
+/// which is the arrangement the 2026-09-11 maintainer review called
+/// "discipline rather than structure". Every target in the tree declares the
+/// frozen 8 today, so this site's behaviour is unchanged. The variable still
+/// overrides, and it is PER-SITE: it moves THIS head and nothing else.
+///
+/// Resolution, clamping and caching are `ops::target_defaults::resolve_batchm_max`
+/// and `resolved()`; `OnceLock`-cached there because the route must be
+/// CONSTANT across CUDA-graph replays.
+fn lm_head_batchm_max() -> u32 {
+    ops::target_defaults::resolved().lm_head_batchm_max.value
+}
+
 fn lmhead_batch_gemv_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
@@ -63,23 +90,22 @@ fn project_bf16_lm_head(
     output: DevicePtr,
     [m, n, k]: [u32; 3],
     batch_enabled: bool,
+    batchm_max: u32,
     stream: u64,
 ) -> Result<()> {
     // The existing kernel shares one BF16 weight read across up to eight rows.
     // Its uint4 loads require each input/weight row to remain 16-byte aligned.
     //
-    // 🔴 `DENSE_GEMV_BATCHM_DECODE_MAX_M`, NOT the kernel's `MAX_M`. The GEMV
+    // 🔴 `batchm_max` is the DECODE band, NOT the kernel's `MAX_M`. The GEMV
     // tier was widened to 16 for PREFILL only; this is a decode head, and the
     // band's upper edge is what decides whether a width lands on the batched
     // GEMV or the reassociating tile GEMM — i.e. which bits a decode of that
     // width produces. When `MAX_M` was 8 the two names were the same number
     // and this site read the right one by accident; they are not the same
-    // number any more. See `layers/ops/gemm_quant.rs` for the frozen band.
-    if batch_enabled
-        && batch_gemv.0 != 0
-        && (1..=ops::DENSE_GEMV_BATCHM_DECODE_MAX_M).contains(&m)
-        && k.is_multiple_of(8)
-    {
+    // number any more. See `layers/ops/gemm_quant.rs` for the frozen band and
+    // `lm_head_batchm_max` above for the per-target declaration that sets it
+    // (every target declares the frozen 8 today).
+    if batch_enabled && batch_gemv.0 != 0 && (1..=batchm_max).contains(&m) && k.is_multiple_of(8) {
         ops::dense_gemv_batchm(gpu, batch_gemv, input, weight, output, m, n, k, n, stream)
     } else {
         ops::dense_gemm(gpu, fallback, input, weight, output, m, n, k, stream)
@@ -210,6 +236,7 @@ impl TransformerModel {
                 logits,
                 [padded_n as u32, v as u32, h as u32],
                 lmhead_batch_gemv_enabled(),
+                lm_head_batchm_max(),
                 stream,
             )?;
         }
