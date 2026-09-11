@@ -239,3 +239,19 @@ if mfast is ported."""
 # HARDWARE.toml disables it with ATLAS_NO_WARP_BLOCKSCALE_MMA; FP8 cells
 # use the W8/BF16 path. Re-harvest all lookup results on real Hopper hardware.
 w4a4_gemm = "Hopper sm_90a: mma with block scale is unsupported; the hardware guard excludes this optional NVFP4 entry point."
+
+# Vendor MMQ symbols otherwise resolve to NO_DEVICE_CODE trap bodies.
+[expected_absent.nvfp4_mmq]
+atlas_nvfp4_mmq128_nc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+atlas_nvfp4_mmq128_wc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+atlas_nvfp4_mmq16_nc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+atlas_nvfp4_mmq16_wc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+atlas_nvfp4_mmq32_nc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+atlas_nvfp4_mmq32_wc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+atlas_nvfp4_mmq64_nc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+atlas_nvfp4_mmq64_wc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+atlas_nvfp4_quantize_bf16 = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+atlas_nvfp4_repack = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+atlas_nvfp4_scale_bf16 = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+atlas_nvfp4_silu_mul_scaled = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+atlas_nvfp4_silu_mul_quant = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
