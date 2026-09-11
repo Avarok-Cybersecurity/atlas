@@ -219,7 +219,7 @@ impl Qwen3AttentionLayer {
             ops::cutlass_nvfp4_proj_from_fp8(ctx, normed, fp8w, out, n, out_dim, h, stream)?;
         } else if force_w8a8
             && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
-            && self.per_token_group_quant_fp8_k.0 != 0
+            && self.per_token_group_quant_fp8_k.available()
             && self.fp8_gemm_t_blockscaled_k.0 != 0
         {
             let m = n as usize;

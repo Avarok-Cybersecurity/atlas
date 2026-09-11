@@ -6,7 +6,7 @@
 //! failure names the clause.
 
 use super::{cache_skip_qkv_cublas_selected, cache_skip_qkv_extents};
-use crate::layers::ops::cublas_fp8_m_pad;
+use crate::layers::ops::{self, cublas_fp8_m_pad};
 use crate::weight_map::WeightQuantFormat;
 use spark_runtime::gpu::{DevicePtr, KernelHandle};
 
@@ -17,7 +17,12 @@ const H: u32 = 5120;
 const Q_N: u32 = 12288;
 const KV_N: u32 = 1024;
 const M: u32 = 1168;
-const QUANT_K: KernelHandle = KernelHandle(0xBEEF);
+/// The shared-kernel-only quantizer pair every non-Hopper target resolves;
+/// the Hopper twin changes the launch grid, never this selector.
+const QUANT_K: ops::Fp8ActQuant = ops::Fp8ActQuant {
+    shared: KernelHandle(0xBEEF),
+    hopper: KernelHandle(0),
+};
 const KMAJOR_K: KernelHandle = KernelHandle(0xC0DE);
 const KMAJOR_BUF: DevicePtr = DevicePtr(0x1000);
 const BLK: Option<WeightQuantFormat> = Some(WeightQuantFormat::Fp8BlockScaled);
@@ -50,7 +55,7 @@ fn selected(
     qkvz_cap: usize,
     act_cap: usize,
     act_scale_cap: usize,
-    quant_k: KernelHandle,
+    quant_k: ops::Fp8ActQuant,
     kmajor_k: KernelHandle,
     kmajor_buf: DevicePtr,
     kmajor_cap: usize,
@@ -313,7 +318,7 @@ fn the_old_kv_sizing_is_refused_for_a_ragged_m() {
 #[test]
 fn missing_handles_fall_back() {
     let (q, kv, a, s) = caps(M);
-    let case = |quant: KernelHandle, kmajor: KernelHandle, buf: DevicePtr| {
+    let case = |quant: ops::Fp8ActQuant, kmajor: KernelHandle, buf: DevicePtr| {
         selected(
             true,
             true,
@@ -334,7 +339,10 @@ fn missing_handles_fall_back() {
         )
     };
     assert!(case(QUANT_K, KMAJOR_K, KMAJOR_BUF));
-    assert!(!case(KernelHandle(0), KMAJOR_K, KMAJOR_BUF), "quantizer");
+    assert!(
+        !case(ops::Fp8ActQuant::default(), KMAJOR_K, KMAJOR_BUF),
+        "quantizer"
+    );
     if crate::layers::ops::cublas_scale_layout_kmajor() {
         assert!(!case(QUANT_K, KernelHandle(0), KMAJOR_BUF), "kmajor kernel");
         assert!(!case(QUANT_K, KMAJOR_K, DevicePtr(0)), "kmajor scratch");

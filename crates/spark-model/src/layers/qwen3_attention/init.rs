@@ -188,11 +188,11 @@ impl Qwen3AttentionLayer {
                 "w8a16_gemm_t_m128",
                 "w8a16_gemm_t_m128",
             ),
-            per_token_group_quant_fp8_k: super::super::try_kernel(
-                gpu,
-                "per_token_group_quant_fp8",
-                "per_token_group_quant_fp8",
-            ),
+            // `Fp8ActQuant` probes the shared quantizer AND the Hopper
+            // twin, which only `kernels/hopper` ships, and carries both
+            // handles so a launcher can never pair one kernel's entry point
+            // with the other's grid. Every target still has the shared one.
+            per_token_group_quant_fp8_k: crate::layers::ops::Fp8ActQuant::resolve(gpu),
             fp8_gemm_t_blockscaled_k: super::super::try_kernel(
                 gpu,
                 "fp8_gemm_t_blockscaled",

@@ -147,7 +147,7 @@ pub struct Qwen3AttentionLayer {
     // miss → fall back to w8a16_gemm_t.
     pub(super) w8a16_gemm_t_m128_k: KernelHandle,
     // W8A8 + FP32 epilogue (vLLM-equivalent) — gated by ATLAS_FP8_W8A8=1.
-    pub(super) per_token_group_quant_fp8_k: KernelHandle,
+    pub(super) per_token_group_quant_fp8_k: crate::layers::ops::Fp8ActQuant,
     pub(super) fp8_gemm_t_blockscaled_k: KernelHandle,
     /// `fp8_act_scale_to_kmajor` — rewrites the quantizer's `[M, K/128]`
     /// VEC128 activation scales into the `[K/128, ceil16(M)]` layout cuBLASLt

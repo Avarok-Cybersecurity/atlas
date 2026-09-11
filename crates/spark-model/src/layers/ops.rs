@@ -38,6 +38,8 @@ pub mod target_defaults;
 mod dispatch_proj_rowwise;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
+#[path = "ops/fp8_act_quant.rs"]
+mod fp8_act_quant;
 #[path = "ops/fp8_gemv_batch.rs"]
 mod fp8_gemv_batch;
 #[path = "ops/fp8_moe.rs"]
@@ -183,6 +185,7 @@ pub use dispatch_proj::*;
 pub use dispatch_proj_decode::*;
 pub use dispatch_proj_rowwise::*;
 pub use embeddings::*;
+pub use fp8_act_quant::*;
 pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;
 pub use fp8_moe_batch_a::*;

@@ -91,3 +91,45 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = true
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+
+# ── Kernels this target OVERRIDES instead of inheriting ────────────────────
+#
+# Every other entry in `kernels/hopper/common/` is a relative symlink into
+# `kernels/gb10/common/`, which is what makes gb10 the oracle for this tree
+# (`crates/atlas-kernels/tests/inherited_targets.rs`). The files listed here
+# are REAL FILES: sources that exist for HOPPER PERFORMANCE and are not used
+# on GB10, so gb10's tree does not carry them at all and gb10's build does not
+# compile them.
+#
+# Maintainer rule, 2026-09-11 (tbraun96): "symlinks are fine provided the
+# pointed-to gb10 file is not edited when iterating on Hopper; Hopper-tuned
+# kernels must be real files under kernels/hopper/". A declaration rather than
+# "any regular file is fine": an UNDECLARED regular file in a mirror is a
+# silent fork of a shared kernel, which is the defect the mirror check exists
+# to catch, and the two cases are indistinguishable without this list.
+#
+# A declared entry is one of two SHAPES, checked differently and both checked:
+# an OVERRIDE replaces a gb10 namesake and must leave gb10's file alone; an
+# ADDITION carries a new stem and new entry points and must not be a gb10
+# source under a new name. Hopper declares exactly one file today, and it is
+# an addition:
+#
+#   fp8_act_quant_hopper.cu  The per-token / per-128-K-group FP8 E4M3
+#                            ACTIVATION quantizer that feeds every W8A8
+#                            projection (#928). An ADDITION rather than an
+#                            override even though the parent
+#                            `per_token_group_quant_fp8.cu` is a
+#                            SINGLE-entry-point file that a same-stem override
+#                            would fork nothing of: the shared kernel then
+#                            would not be in the Hopper image at all, and the
+#                            gate for this one is BYTE EQUALITY against it on
+#                            device. A new stem keeps BOTH compiled, which is
+#                            what lets `native_fp8_act_quant_hopper_microtest`
+#                            compare them in one process at
+#                            M in {16,17,25,1168,4576} x K in {5120,6144,17408}.
+#                            gb10 is untouched and keeps launching its own.
+#                            Numbers: `FP8-ACT-QUANT-ATTRIBUTION.md`.
+[kernels]
+overrides = [
+  "fp8_act_quant_hopper.cu",
+]

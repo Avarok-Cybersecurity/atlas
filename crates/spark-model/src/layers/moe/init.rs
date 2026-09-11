@@ -220,11 +220,7 @@ impl MoeLayer {
                 "moe_w8a8_grouped_gemm",
                 "moe_w8a8_grouped_gemm_pm4",
             ),
-            per_token_group_quant_fp8_k: super::super::try_kernel(
-                gpu,
-                "per_token_group_quant_fp8",
-                "per_token_group_quant_fp8",
-            ),
+            per_token_group_quant_fp8_k: ops::Fp8ActQuant::resolve(gpu),
             // Fused silu_mul + per-token-group quant. Same module as
             // moe_silu_mul, so a model that shadows moe_silu_mul.cu without
             // this entry point gets handle 0 → unfused fallback.

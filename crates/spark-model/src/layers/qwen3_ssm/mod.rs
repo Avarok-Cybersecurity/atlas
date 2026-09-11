@@ -376,7 +376,7 @@ pub struct Qwen3SsmLayer {
     // FP32 scale; `fp8_gemm_t_blockscaled` consumes both with FP8 MMA and
     // applies a_scale × b_scale in the FP32 epilogue. Gated behind
     // `ATLAS_FP8_W8A8=1` for staged rollout.
-    per_token_group_quant_fp8_k: KernelHandle,
+    per_token_group_quant_fp8_k: ops::Fp8ActQuant,
     fp8_gemm_t_blockscaled_k: KernelHandle,
     /// `fp8_act_scale_to_kmajor` — rewrites the quantizer's `[M, K/128]`
     /// VEC128 activation scales into the `[K/128, ceil16(M)]` layout cuBLASLt

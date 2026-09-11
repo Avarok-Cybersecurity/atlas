@@ -270,7 +270,7 @@ pub struct DenseFfnLayer {
     // already resolves, so no model shadow needs a new kernel; KernelHandle(0)
     // on a shadow that lacks them -> the W8A16 branches still run.
     // Dispatch rule + rationale live in `dense_ffn_w8a8_prefill.rs` (SSOT).
-    per_token_group_quant_fp8_k: KernelHandle,
+    per_token_group_quant_fp8_k: ops::Fp8ActQuant,
     fp8_gemm_t_blockscaled_k: KernelHandle,
     // VEC128 activation-scale layout adapter for the cuBLASLt arm of the pair
     // above: cuBLASLt reads those scales with the TOKEN index contiguous, the
@@ -453,11 +453,7 @@ impl DenseFfnLayer {
                 "w8a16_gemv_silu_input",
             ),
             w8a16_gemm_t_m128_k: super::try_kernel(gpu, "w8a16_gemm_t_m128", "w8a16_gemm_t_m128"),
-            per_token_group_quant_fp8_k: super::try_kernel(
-                gpu,
-                "per_token_group_quant_fp8",
-                "per_token_group_quant_fp8",
-            ),
+            per_token_group_quant_fp8_k: ops::Fp8ActQuant::resolve(gpu),
             fp8_gemm_t_blockscaled_k: super::try_kernel(
                 gpu,
                 "fp8_gemm_t_blockscaled",

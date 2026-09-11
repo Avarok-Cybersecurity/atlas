@@ -6,7 +6,7 @@
 //! job (`examples/native_fp8_prefill_proj_w8a8_microtest.rs`).
 
 use super::out_proj_cublas_selected;
-use crate::layers::ops::cublas_fp8_m_pad;
+use crate::layers::ops::{self, cublas_fp8_m_pad};
 use crate::weight_map::WeightQuantFormat;
 use spark_runtime::gpu::{DevicePtr, KernelHandle};
 
@@ -17,7 +17,12 @@ const K: u32 = 6144;
 /// Chunk 0 of the 1193-token trace prompt (chunk 1 is the 25-token tail, which
 /// the `m > 4` clause still admits).
 const M: u32 = 1168;
-const QUANT_K: KernelHandle = KernelHandle(0xBEEF);
+/// The shared-kernel-only quantizer pair every non-Hopper target resolves;
+/// the Hopper twin changes the launch grid, never this selector.
+const QUANT_K: ops::Fp8ActQuant = ops::Fp8ActQuant {
+    shared: KernelHandle(0xBEEF),
+    hopper: KernelHandle(0),
+};
 const KMAJOR_K: KernelHandle = KernelHandle(0xC0DE);
 const KMAJOR_BUF: DevicePtr = DevicePtr(0x1000);
 
@@ -50,7 +55,7 @@ fn selected(
     out_capacity: usize,
     act_capacity: usize,
     act_scale_capacity: usize,
-    quant_k: KernelHandle,
+    quant_k: ops::Fp8ActQuant,
     kmajor_k: KernelHandle,
     kmajor_buf: DevicePtr,
     kmajor_capacity: usize,
@@ -273,7 +278,7 @@ fn an_unpadded_output_buffer_is_refused_when_m_is_not_a_multiple_of_16() {
 
 #[test]
 fn missing_handles_fall_back() {
-    let case = |quant: KernelHandle, kmajor: KernelHandle, buf: DevicePtr| {
+    let case = |quant: ops::Fp8ActQuant, kmajor: KernelHandle, buf: DevicePtr| {
         selected(
             true,
             true,
@@ -292,7 +297,10 @@ fn missing_handles_fall_back() {
         )
     };
     assert!(case(QUANT_K, KMAJOR_K, KMAJOR_BUF));
-    assert!(!case(KernelHandle(0), KMAJOR_K, KMAJOR_BUF), "quantizer");
+    assert!(
+        !case(ops::Fp8ActQuant::default(), KMAJOR_K, KMAJOR_BUF),
+        "quantizer"
+    );
     // The k-major clauses only bite in the default layout; guard the assert on
     // it so `ATLAS_CUBLAS_SCALE_LAYOUT=rowmajor` in the environment does not
     // turn this into a spurious failure.

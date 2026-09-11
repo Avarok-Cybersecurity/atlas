@@ -108,7 +108,7 @@ pub(super) fn out_proj_cublas_selected(
     out_capacity_bytes: usize,
     act_capacity_bytes: usize,
     act_scale_capacity_bytes: usize,
-    quant_k: KernelHandle,
+    quant_k: ops::Fp8ActQuant,
     scale_kmajor_k: KernelHandle,
     scale_kmajor_buf: DevicePtr,
     scale_kmajor_capacity_bytes: usize,
@@ -129,7 +129,7 @@ pub(super) fn out_proj_cublas_selected(
         && m_pad * (n as usize) * 2 <= out_capacity_bytes
         && m_pad * (k as usize) <= act_capacity_bytes
         && m_pad * kg * 4 <= act_scale_capacity_bytes
-        && quant_k.0 != 0
+        && quant_k.available()
         && (kmajor_ready || !ops::cublas_scale_layout_kmajor())
 }
 
