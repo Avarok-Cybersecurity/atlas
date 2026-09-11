@@ -323,14 +323,34 @@ fn ffn_output_buffers_hold_the_padded_m_the_cublas_gemm_writes() {
 #[test]
 fn activation_scratch_holds_the_widest_ffn_projection() {
     // gate/up contract over K=hidden, down over K=intermediate; ONE scratch
-    // pair serves both, so it must be sized for the wider of the two. The
-    // scale extent is the `[M, K/128]` FP32 layout `per_token_group_quant_fp8`
-    // writes and `fp8_gemm_act_weight_t_blkscaled` reads as its VEC128 B-scale
-    // — same element order, which is why no transpose adapter is needed.
+    // set serves both, so it must be sized for the wider of the two.
+    //
+    // THREE buffers, not two: `ffn_act_scale` holds the `[M, K/128]` FP32
+    // layout `per_token_group_quant_fp8` writes (K-group contiguous — what the
+    // in-tree `fp8_gemm_t_blockscaled` indexes), and `ffn_act_scale_kmajor`
+    // holds the `[K/128, ceil16(M)]` transpose `fp8_gemm_act_weight_t_blkscaled`
+    // needs, because cuBLASLt reads a VEC128 B-scale tensor with the TOKEN
+    // index contiguous. Feeding it the first layout is what the 2026-09-11 H100
+    // run measured at rel_rms 7.7e-2 against the kernel on identical FP8 bytes.
     let max_batch_tokens = 1193_usize;
     let h = harness(0, max_batch_tokens);
     let kmax = H.max(INTER) as usize;
     let padded = cublas_fp8_m_pad(max_batch_tokens as u32) as usize;
     assert!(h.buffers.ffn_act_a_bytes() >= padded * kmax);
     assert!(h.buffers.ffn_act_scale_bytes() >= padded * (kmax / 128) * 4);
+    assert!(h.buffers.ffn_act_scale_kmajor_bytes() >= padded * (kmax / 128) * 4);
+}
+
+#[test]
+fn cublas_arm_requires_a_multiple_of_four_weight_scale_column_stride() {
+    // cuBLASLt's BLK128x128 factors are K-major with "the stride between the
+    // consecutive columns ... a multiple of 4" (cuBLAS "Scaling factors
+    // layouts"), and Atlas hands over the checkpoint's `[N/128, K/128]` grid
+    // as-is — so K/128 must be a multiple of 4, i.e. K % 512 == 0. Both FFN
+    // contraction dims satisfy it; the gate exists for the ones that would not.
+    use spark_runtime::cublaslt::scale_layout::blk128x128_stride_ok;
+    assert!(blk128x128_stride_ok(H as usize));
+    assert!(blk128x128_stride_ok(INTER as usize));
+    assert!(!blk128x128_stride_ok(128 * 3));
+    assert!(!blk128x128_stride_ok(128 * 6));
 }

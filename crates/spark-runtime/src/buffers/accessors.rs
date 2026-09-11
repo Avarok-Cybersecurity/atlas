@@ -122,6 +122,16 @@ impl BufferArena {
     pub fn ffn_act_scale_bytes(&self) -> usize {
         self.sizes.ffn_act_scale
     }
+    /// Transposed (`[K/128, ceil16(M)]`) dense-FFN activation scales — the
+    /// VEC128 B-scale layout the cuBLASLt block-scaled FP8 GEMM documents.
+    /// NULL for MoE.
+    pub fn ffn_act_scale_kmajor(&self) -> DevicePtr {
+        self.ffn_act_scale_kmajor
+    }
+    /// Allocated byte size of `ffn_act_scale_kmajor` (bounds-check at call sites).
+    pub fn ffn_act_scale_kmajor_bytes(&self) -> usize {
+        self.sizes.ffn_act_scale_kmajor
+    }
     /// Persistent FP8 block-scaled activation scratch for prefill projections.
     /// Replaces a per-projection alloc/sync/free in the W8A8+FP32-epilogue path.
     pub fn fp8_act(&self) -> DevicePtr {

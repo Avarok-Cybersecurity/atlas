@@ -83,6 +83,12 @@ pub struct BufferSizes {
     pub ffn_act_q8: usize,
     pub ffn_act_a: usize,
     pub ffn_act_scale: usize,
+    /// `[K/128, ceil16(M)]` FP32 copy of `ffn_act_scale` in the layout cuBLASLt
+    /// documents for a VEC128 B operand (token index contiguous). Written by
+    /// `fp8_act_scale_to_kmajor` on every cuBLASLt block-scaled FFN GEMM; the
+    /// quantizer's own `[M, K/128]` output stays in `ffn_act_scale` because the
+    /// in-tree kernel reads that order. 0 for MoE models, like its siblings.
+    pub ffn_act_scale_kmajor: usize,
     /// FP8 block-scaled activation scratch for prefill projections (qkv / o /
     /// ssm-qkvz). Persistent so the W8A8+FP32-epilogue path stops doing a
     /// per-projection cuMemAlloc + cuStreamSynchronize + cuMemFree. 1 byte/elem.
@@ -373,22 +379,29 @@ impl BufferSizes {
         // Sized for the largest projection K = max(hidden, intermediate); the
         // dense_ffn prefill paths pass `h.max(inter)` to the requant kernels.
         // 0 for MoE (num_experts>0) — those never take the dense_ffn MMQ path.
-        let (ffn_act_q8, ffn_act_a, ffn_act_scale) = if config.num_experts == 0 {
-            let kmax = h.max(config.intermediate_size);
-            let kpad = kmax.div_ceil(256) * 256;
-            // Row extent padded to 16 for the same reason `k_max` above is: the
-            // W8A8 dense-FFN prefill (#917/#928) hands cuBLASLt `ceil16(M)`, and
-            // the matmul READS the phantom activation rows (they are zeroed, but
-            // they are read). `m_pad` also covers every unpadded consumer.
-            let m_pad = m.div_ceil(16) * 16;
-            (
-                m * kpad * 4 + (1 << 20), // q8_1_mmq: m*kpad*4 + 1MB (matches q8_1_scratch_bytes)
-                m_pad * kmax,             // int8 a_i8 [m,K] ≥ NVFP4 packed [m,K/2] ≥ fp8 [m,K]
-                m_pad * (kmax / 32) * 4,  // int8 a_scale [m,K/32]*4 ≥ fp8 [m,K/128]*4
-            )
-        } else {
-            (0, 0, 0)
-        };
+        let (ffn_act_q8, ffn_act_a, ffn_act_scale, ffn_act_scale_kmajor) =
+            if config.num_experts == 0 {
+                let kmax = h.max(config.intermediate_size);
+                let kpad = kmax.div_ceil(256) * 256;
+                // Row extent padded to 16 for the same reason `k_max` above is:
+                // the W8A8 dense-FFN prefill (#917/#928) hands cuBLASLt
+                // `ceil16(M)`, and the matmul READS the phantom activation rows
+                // (they are zeroed, but they are read). `m_pad` also covers
+                // every unpadded consumer.
+                let m_pad = m.div_ceil(16) * 16;
+                (
+                    m * kpad * 4 + (1 << 20), // q8_1_mmq: m*kpad*4 + 1MB (matches q8_1_scratch_bytes)
+                    m_pad * kmax,             // int8 a_i8 [m,K] ≥ NVFP4 packed [m,K/2] ≥ fp8 [m,K]
+                    m_pad * (kmax / 32) * 4,  // int8 a_scale [m,K/32]*4 ≥ fp8 [m,K/128]*4
+                    // Transposed VEC128 activation scales for the cuBLASLt arm:
+                    // one f32 per (128-of-K group, padded token). Same element
+                    // count as the fp8 use of `ffn_act_scale`, a quarter of the
+                    // int8 one — ~0.65 MB at max_batch_tokens=1193, K=17408.
+                    m_pad * (kmax / 128) * 4,
+                )
+            } else {
+                (0, 0, 0, 0)
+            };
 
         Self {
             hidden_states: m * h * residual_elem,
@@ -534,6 +547,7 @@ impl BufferSizes {
             ffn_act_q8,
             ffn_act_a,
             ffn_act_scale,
+            ffn_act_scale_kmajor,
             fp8_act,
             fp8_act_scale,
             lora_xa,
@@ -578,6 +592,7 @@ impl BufferSizes {
             + self.ffn_act_q8
             + self.ffn_act_a
             + self.ffn_act_scale
+            + self.ffn_act_scale_kmajor
             + self.fp8_act
             + self.fp8_act_scale
             + self.lora_xa

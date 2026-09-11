@@ -257,6 +257,12 @@ pub struct DenseFfnLayer {
     // Dispatch rule + rationale live in `dense_ffn_w8a8_prefill.rs` (SSOT).
     per_token_group_quant_fp8_k: KernelHandle,
     fp8_gemm_t_blockscaled_k: KernelHandle,
+    // VEC128 activation-scale layout adapter for the cuBLASLt arm of the pair
+    // above: cuBLASLt reads those scales with the TOKEN index contiguous, the
+    // quantizer writes them K-group-contiguous. KernelHandle(0) -> the cuBLASLt
+    // arm is not selectable and the in-tree GEMM runs (SSOT for the rule:
+    // `dense_ffn_w8a8_prefill.rs::w8a8_gemm`).
+    fp8_act_scale_kmajor_k: KernelHandle,
     /// v0 LoRA overlay for gate/up/down. `set_lora_weights` REJECTS layers
     /// where `fp8_weights`, `bf16_weights` or `q2_weights` are installed (v0
     /// supports the NVFP4 dispatch path only — those branches early-return
@@ -439,6 +445,11 @@ impl DenseFfnLayer {
                 gpu,
                 "fp8_gemm_t_blockscaled",
                 "fp8_gemm_t_blockscaled",
+            ),
+            fp8_act_scale_kmajor_k: super::try_kernel(
+                gpu,
+                "fp8_scale_transpose",
+                "fp8_act_scale_to_kmajor",
             ),
             lora: None,
             q2_weights: None,
