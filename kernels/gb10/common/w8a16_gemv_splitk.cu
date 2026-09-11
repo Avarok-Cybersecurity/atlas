@@ -29,6 +29,14 @@
 //   grid  256 -> 1.9 CTAs/SM -> under-occupied outright; there are never
 //                enough warps resident to cover an HBM round trip (861 GB/s)
 //
+// The 8 CTAs/SM is ptxas-pinned, not estimated: `nvcc -cubin -Xptxas -v
+// -arch=sm_90a --fmad=false` (CUDA 13.0, 2026-09-11) reports 32 registers,
+// 1,056 B smem and 0 spills for BOTH `w8a16_gemv` and this kernel, and
+// 32 x 256 x 8 = 65,536 is exactly the SM register file. So the split buys
+// CTAs at no occupancy cost. (`w8a16_gemv_silu_input` needs 53 registers =
+// 13,568/CTA = only 4 CTAs/SM, which is a second reason the fused SwiGLU
+// variant is slow and a reason to stage the activation instead.)
+//
 // Split-K restores the CTA count without touching the per-lane work: at
 // splits=4 the FFN down projection (N=5120, K=17408) launches 5,120 CTAs and
 // each lane walks 5 chunk iterations instead of 17 — the same per-lane profile
