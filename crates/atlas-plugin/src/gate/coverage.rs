@@ -305,6 +305,18 @@ pub const TEST_ONLY_RUST_MODULES: &[TestOnlyRustModule] = &[
         name: "concurrency_tests",
         declared_path: Some("concurrency_tests.rs"),
     },
+    // The run-verdict half of `concurrency.rs`'s tests, split out of
+    // `concurrency_tests.rs` for the file-size cap. It pins the committed
+    // concurrency floors BY VALUE deliberately, so every floor ratchet edits
+    // it — and without this entry that edit lands on `crates/`, invalidates
+    // every record, and buys a ~4.5 GPU-hour campaign to re-certify a change
+    // that cannot reach a release build. #997 paid exactly that.
+    TestOnlyRustModule {
+        path: "crates/atlas-plugin/src/benchmarks/concurrency_verdict_tests.rs",
+        parent: "crates/atlas-plugin/src/benchmarks/concurrency.rs",
+        name: "concurrency_verdict_tests",
+        declared_path: Some("concurrency_verdict_tests.rs"),
+    },
 ];
 
 fn is_test_only_rust_module(path: &str) -> bool {
