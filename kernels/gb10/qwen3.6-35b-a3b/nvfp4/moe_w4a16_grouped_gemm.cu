@@ -1718,8 +1718,9 @@ extern "C" __global__ void moe_fp8_grouped_gemm_ptrtable_t(
 //           tcgen05, not the warp-level mma.sync form.
 //           ptxas: Instruction 'mma with block scale' not supported
 //
-// (measured 2026-09-05, CUDA 13.0.88 — receipts in
-// docs/campaigns/hopper-atlas-vs-vllm-2026-09/receipts/. Neither
+// (measured 2026-09-05, CUDA 13.0.88 — reproduce either with
+// `scripts/hopper_ptx_gate.sh --hw <hopper|b200> --model qwen3.6-35b-a3b
+// --strict` after dropping the hardware define; see #899. Neither
 // architecture is a superset of the other, so this is one define, not an
 // arch comparison.)
 //
