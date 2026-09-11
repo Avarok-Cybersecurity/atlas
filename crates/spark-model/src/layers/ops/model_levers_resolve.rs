@@ -73,6 +73,7 @@ pub(super) fn from_values(
         mtp_debug_norms: opt_in(value("ATLAS_MTP_DEBUG_NORMS").as_deref()),
         draft_conf_tau,
         decode_split_silu: !present("ATLAS_NO_DECODE_SPLIT_SILU"),
+        ffn_down_splitk: present("ATLAS_FFN_DOWN_SPLITK"),
         bf16_tc_prefill: present("ATLAS_BF16_TC_PREFILL"),
         fp8_m64_prefill: present("ATLAS_FP8_M64_PREFILL"),
         int8_prefill: present("ATLAS_INT8_PREFILL"),

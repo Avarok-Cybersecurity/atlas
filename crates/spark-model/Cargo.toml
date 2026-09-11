@@ -306,3 +306,7 @@ required-features = ["cuda", "gpu-examples"]
 [[example]]
 name = "native_fp8_attn_decode_batch_microtest"
 required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_ffn_down_gemv_microtest"
+required-features = ["cuda", "gpu-examples"]

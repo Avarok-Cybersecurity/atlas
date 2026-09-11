@@ -63,6 +63,11 @@ mod w8a16_gemm_m16;
 // for the attention decode projections. Behind ATLAS_ATTN_NCOL_GEMV.
 #[path = "ops/w8a16_gemv_ncol.rs"]
 mod w8a16_gemv_ncol;
+// Split-K M=1 decode GEMV for the short-N/long-K shapes (#928), behind
+// ATLAS_FFN_DOWN_SPLITK. SSOT for the split plan and the wave-quantisation
+// argument that motivates it.
+#[path = "ops/w8a16_decode_gemv.rs"]
+pub mod w8a16_decode_gemv;
 pub use model_stats::ModelStats;
 
 #[path = "ops/gemm_fp8_prefill.rs"]
@@ -232,6 +237,10 @@ pub use ssm_gdn_snap::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;
+pub use w8a16_decode_gemv::{
+    SPLITK_MAX, SPLITK_TARGET_BLOCKS, SplitKGemv, SplitKPlan, splitk_partial_bytes, splitk_plan,
+    w8a16_decode_gemv, w8a16_gemv_splitk, w8a16_gemv_splitk_reduce,
+};
 pub use w8a16_gemm_m16::*;
 pub use w8a16_gemv_ncol::*;
 pub use wide_prefill::*;

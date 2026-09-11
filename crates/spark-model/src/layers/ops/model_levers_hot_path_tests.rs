@@ -15,7 +15,7 @@
 
 use super::*;
 
-/// ★ THE DENSE-FFN ELEVEN ARE ALL PRESENCE-GATED, AND SIX OF THEM ARE `NO_`
+/// ★ THE DENSE-FFN TWELVE ARE ALL PRESENCE-GATED, AND SIX OF THEM ARE `NO_`
 /// OR `DISABLE_` VARIABLES WHOSE FIELD STORES THE OPPOSITE OF THEIR NAME.
 ///
 /// Presence, not value: `=0` neither enables an opt-in nor re-enables an
@@ -40,9 +40,13 @@ fn the_dense_ffn_levers_are_presence_gated_and_their_polarities_hold() {
         "down stays on the NVFP4 hybrid by default"
     );
     assert!(!d.fp4_prefill);
+    assert!(
+        !d.ffn_down_splitk,
+        "split-K down GEMV ships OFF: it reassociates the final combine"
+    );
 
     // Every opt-in arms on presence alone, including `=0`.
-    let armed: [(&str, fn(&ModelLevers) -> bool); 7] = [
+    let armed: [(&str, fn(&ModelLevers) -> bool); 8] = [
         ("ATLAS_BF16_TC_PREFILL", |l| l.bf16_tc_prefill),
         ("ATLAS_FP8_M64_PREFILL", |l| l.fp8_m64_prefill),
         ("ATLAS_INT8_PREFILL", |l| l.int8_prefill),
@@ -50,6 +54,7 @@ fn the_dense_ffn_levers_are_presence_gated_and_their_polarities_hold() {
         ("ATLAS_FFN_MMQ", |l| l.ffn_mmq),
         ("ATLAS_FFN_MMQ_DOWN_Q4K", |l| l.ffn_mmq_down_q4k),
         ("ATLAS_FP4_PREFILL", |l| l.fp4_prefill),
+        ("ATLAS_FFN_DOWN_SPLITK", |l| l.ffn_down_splitk),
     ];
     for (name, read) in armed {
         assert!(read(&resolve(&[(name, "1")])), "{name} did not arm");
