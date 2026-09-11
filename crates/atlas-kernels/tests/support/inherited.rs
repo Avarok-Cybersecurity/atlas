@@ -40,6 +40,39 @@ pub struct Inherited {
     pub blockscale_rejection: &'static str,
 }
 
+impl Inherited {
+    /// The `common/` entries this target OWNS rather than inherits — read
+    /// from its own `HARDWARE.toml` `[kernels] overrides`, never from a list
+    /// kept here.
+    ///
+    /// A METHOD, not a field, and that is the whole point. The declaration
+    /// would otherwise arrive twice — once as `[kernels] overrides` in the
+    /// TOML that `scripts/check_kernel_shadows.py` and the build read, once as
+    /// a Rust constant these tests read — and two spellings of "which kernels
+    /// does this target own" is exactly how a file comes to be declared in one
+    /// and forgotten in the other. The TOML wins because it is the one the
+    /// non-Rust consumers can read.
+    ///
+    /// Two SHAPES live in the one list, distinguished by whether the oracle
+    /// has the same name:
+    ///
+    /// * an OVERRIDE replaces a gb10 namesake — same entry points, this
+    ///   hardware's instruction selection, and gb10's own file left untouched
+    ///   because other targets compile it;
+    /// * an ADDITION has a stem gb10 does not have at all, and must bring
+    ///   entry points gb10 does not declare (otherwise one target would
+    ///   compile two definitions of one kernel name).
+    ///
+    /// EMPTY for every target in this tree today — hopper and b200 inherit
+    /// everything. The mechanism is here so that a PR adding a tuned kernel
+    /// declares it in the file the build, the shadow checker and these tests
+    /// all read, instead of dropping a regular file into a mirror where
+    /// nothing can tell it from a silent fork.
+    pub fn owned(&self) -> std::collections::BTreeSet<String> {
+        kernel_overrides(self.hw)
+    }
+}
+
 /// The five P0 models shared by the Hopper/B200 campaign.
 pub const P0_MODELS: &[&str] = &[
     "deepseek-v4-flash",
@@ -101,6 +134,33 @@ pub fn hw_dir(hw: &str) -> PathBuf {
 
 pub fn gb10_dir() -> PathBuf {
     kernels_root().join("gb10")
+}
+
+/// `[kernels] overrides` from `kernels/<hw>/HARDWARE.toml` — the file names in
+/// this target's `common/` that are NOT inherited from gb10.
+///
+/// The SSOT for "which kernels does this target tune for itself", read by the
+/// mirror check here, counted by `build_summary::count_declared_overrides` for
+/// the build line, and reported by `scripts/check_kernel_shadows.py`. Empty
+/// (and absent from the file) for a target that inherits everything, which is
+/// every target today.
+pub fn kernel_overrides(hw: &str) -> std::collections::BTreeSet<String> {
+    hardware_toml(hw)
+        .get("kernels")
+        .and_then(|k| k.get("overrides"))
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .map(|v| {
+                    v.as_str()
+                        .unwrap_or_else(|| {
+                            panic!("kernels/{hw}: [kernels] overrides entries must be strings")
+                        })
+                        .to_string()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn hardware_toml(hw: &str) -> toml::Value {
