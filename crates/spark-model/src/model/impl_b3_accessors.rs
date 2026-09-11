@@ -40,6 +40,52 @@ impl TransformerModel {
             tracing::info!("DFlash: replacing existing MTP proposer with BlockDiffusionDraftHead");
         }
         self.proposer = Some(proposer);
+        self.alloc_batched_verify_buffers();
+    }
+
+    /// Allocate the batched-verify staging buffers if a LATE proposer install
+    /// left them NULL.
+    ///
+    /// `TransformerModel::new` allocates `verify_hidden_stash` and
+    /// `verify_wy_tables` only when a proposer is passed to the CONSTRUCTOR.
+    /// qwen4_exp MTP, GLM-5.3 and DFlash all install theirs afterwards through
+    /// `set_dflash_proposer`, so both stayed NULL — and `can_batch_verify`
+    /// self-gates on `!verify_hidden_stash.is_null()`.
+    ///
+    /// 🪤 The symptom is not an error. The batched verify silently declines
+    /// and every sequence takes the per-sequence loop, which returns the SAME
+    /// answers — so known-answer probes pass at any concurrency and the only
+    /// trace is that speculation does not amortise across sequences. MEASURED
+    /// here: with the highway batched verify enabled and this allocation
+    /// missing, C=2 probes were 4/4 and the path's own one-shot ACTIVE log
+    /// never printed.
+    ///
+    /// Idempotent: re-installing a proposer keeps the existing buffers, whose
+    /// addresses must stay fixed for CUDA-graph stability.
+    fn alloc_batched_verify_buffers(&mut self) {
+        if self.verify_hidden_stash.is_null() {
+            match self
+                .gpu
+                .alloc(crate::layer::VERIFY_WY_TABLE_SEQS * self.config.hidden_size * 2)
+            {
+                Ok(buf) => self.verify_hidden_stash = buf,
+                // Never fail the install: without the stash the batched verify
+                // simply keeps declining, which is the pre-existing behaviour.
+                Err(e) => tracing::warn!("batched-verify hidden stash alloc failed: {e:#}"),
+            }
+        }
+        if self.verify_wy_tables.is_null() && self.config.num_ssm_layers() > 0 {
+            let bytes = self.config.num_ssm_layers() * crate::layer::VERIFY_WY_LAYER_STRIDE_BYTES;
+            match self.gpu.alloc(bytes) {
+                Ok(buf) => {
+                    if let Err(e) = self.gpu.memset(buf, 0, bytes) {
+                        tracing::warn!("batched-verify WY table memset failed: {e:#}");
+                    }
+                    self.verify_wy_tables = buf;
+                }
+                Err(e) => tracing::warn!("batched-verify WY table alloc failed: {e:#}"),
+            }
+        }
     }
 
     /// Take ownership of a loaded qwen4_exp MTP draft module.
@@ -141,6 +187,10 @@ impl TransformerModel {
                  output quality as unproven until the agentic battery runs."
             );
             self.proposer = Some(head.clone());
+            // Late install, same as DFlash's — see `alloc_batched_verify_buffers`.
+            // Without this the batched verify declines SILENTLY on a NULL
+            // stash and speculation never amortises across sequences.
+            self.alloc_batched_verify_buffers();
         }
         self.qwen4_exp_mtp_head = Some(head);
         self.qwen4_exp_mtp_state = shadow_state;

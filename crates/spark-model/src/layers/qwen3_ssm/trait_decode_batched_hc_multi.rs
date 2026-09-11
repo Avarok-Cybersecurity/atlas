@@ -98,6 +98,24 @@ impl Qwen3SsmLayer {
              gate-f32 norm, which the highway path replaces. Unset it."
         );
 
+        // Provable engagement, once per process. Without this the arm is
+        // selected by a silent `&&` chain upstream
+        // (`can_batch_verify_dispatch`), and a decline is indistinguishable
+        // from a pass: the per-sequence verify produces the SAME answers, so
+        // known-answer probes go 4/4 either way and the only visible
+        // difference is throughput — which is exactly how a fast path that
+        // fails closed gets recorded as a working one.
+        {
+            static ON: std::sync::Once = std::sync::Once::new();
+            ON.call_once(|| {
+                tracing::info!(
+                    "mHC cross-sequence batched verify ACTIVE: {n_seqs} seqs, \
+                     ks={ks:?} ({rows} rows) in one highway pass \
+                     (ATLAS_HC_BATCH_VERIFY=1; unset restores the per-seq verify)"
+                );
+            });
+        }
+
         let streams = ctx
             .buffers
             .hc_streams()

@@ -264,8 +264,26 @@ impl TransformerModel {
         // EXL3-native head / MoE experts launch cooperatively — never
         // capturable; without this term every batched-verify capture step
         // would trip the arms' graph_capture ensures mid-serve.
-        let graphs_on =
-            super::verify_e2::verify_graphs_enabled() && !k4_diag && !self.exl3_graph_veto();
+        // mHC highway models veto capture on this path for the same KIND of
+        // reason: the highway body injects PLE ROW BY ROW
+        // (`trait_decode_batched_hc_multi.rs`), reading each row's host token
+        // id, and PLE refuses an un-prestaged forward inside a capturing
+        // stream — "PLE: un-prestaged forward inside CUDA graph capture".
+        //
+        // 🪤 It does not fail cleanly. The refusal aborts the sweep mid-capture,
+        // which leaves the capture open and poisons the context: every later
+        // `free_sequence` memset and prefill then dies with status 901, so the
+        // SERVER degrades, not just the request. MEASURED at C=2 on
+        // qwen3.8-flash-next: two 500s and two empty replies, with 900/901
+        // cascading behind them.
+        //
+        // The row-by-row injection is not negotiable — it is what gives a
+        // partial accept a per-row snapshot to rewind onto — so the capture is
+        // what gives way. GB10 measured graphs as speed-neutral here anyway.
+        let graphs_on = super::verify_e2::verify_graphs_enabled()
+            && !k4_diag
+            && !self.exl3_graph_veto()
+            && self.config.hc_mult == 0;
         let graph_key = if graphs_on {
             self.verify_batched_graph_key(&*seqs, ks, wy_tables_base.is_null())
         } else {
@@ -504,7 +522,18 @@ impl TransformerModel {
                 graph_capture: capture,
                 gdn_exact_replay: false,
                 token_ids: None,
-                host_token_ids: None,
+                // The R verify rows, flat and seq-major — row `off[i] + j` is
+                // sequence i's token j, which is exactly the indexing the
+                // highway's per-row PLE loop uses
+                // (`trait_decode_batched_hc_multi.rs`).
+                //
+                // Residual models never needed this: PLE is a highway layer,
+                // so the generic batched verify left it None and nothing
+                // noticed. The highway body REFUSES without it rather than
+                // injecting the wrong token, so on an hc model the whole
+                // batched verify failed with "PLE needs host_token_ids
+                // threaded" and poisoned the context behind it.
+                host_token_ids: Some(tokens),
                 routed_lora_layers: None,
                 midchunk_capture: None,
             };
