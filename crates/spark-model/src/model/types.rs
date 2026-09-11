@@ -296,6 +296,13 @@ pub struct TransformerModel {
     /// layers never pays for it. See `collect_aux_states`.
     pub(super) aux_staging: super::pinned_host_staging::PinnedHostStaging,
     pub(super) verify_hidden_stash: DevicePtr,
+    /// Absolute forward rows `verify_hidden_stash` slots were filled from.
+    ///
+    /// The qwen4_exp proposer reads the accepted target's HIGHWAY row rather
+    /// than a copied hidden, and finds that row through `last_mtp_hidden_idx`.
+    /// The stash slot index is NOT that row, so the row has to be carried
+    /// beside the stash for the restore to publish it.
+    pub(super) verify_stash_rows: std::sync::Mutex<Vec<usize>>,
     /// ATLAS_MTP_CATCHUP: circular per-position final-hidden ring captured
     /// during serial-decode stretches (BF16 rows, slot = position % ring
     /// len). Feeds the drafter catch-up on the next propose. NULL when the

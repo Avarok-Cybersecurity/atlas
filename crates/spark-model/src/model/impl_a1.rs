@@ -829,6 +829,7 @@ impl TransformerModel {
             decode_aux_ring: Default::default(),
             aux_staging: Default::default(),
             verify_hidden_stash,
+            verify_stash_rows: std::sync::Mutex::new(Vec::new()),
             mtp_catchup_ring,
             mtp_catchup_meta: parking_lot::Mutex::new((0, 0)),
             mtp_prefill_hidden,

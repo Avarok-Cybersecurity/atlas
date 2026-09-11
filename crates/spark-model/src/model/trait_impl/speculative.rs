@@ -325,6 +325,15 @@ impl TransformerModel {
             let dst = self.verify_hidden_stash.offset(i * h * bf16);
             self.gpu.copy_d2d_async(src, dst, h * bf16, stream)?;
         }
+        // Keep the ABSOLUTE rows beside the stash: the qwen4_exp proposer
+        // reads the accepted target's highway row (`impl_b3.rs`), and the slot
+        // index is not that row. Without this the restore below cannot publish
+        // a correct `last_mtp_hidden_idx` and every sequence drafts from
+        // whichever row the global happens to hold.
+        *self
+            .verify_stash_rows
+            .lock()
+            .map_err(|_| anyhow::anyhow!("verify stash rows poisoned"))? = rows.to_vec();
         Ok(())
     }
 
@@ -351,6 +360,20 @@ impl TransformerModel {
         let src = self.verify_hidden_stash.offset(idx * h * bf16);
         self.gpu
             .copy_d2d_async(src, self.mtp_hidden_save, h * bf16, stream)?;
+        // Publish the row this restore corresponds to, exactly as
+        // `save_hidden_for_mtp_dispatch` does for the single-sequence path.
+        // The qwen4_exp proposer reads the target HIGHWAY row at this index;
+        // leaving it stale makes every sequence in a batched step draft from
+        // another sequence's row (measured: draft match 0.24 vs 0.86).
+        if let Some(&row) = self
+            .verify_stash_rows
+            .lock()
+            .map_err(|_| anyhow::anyhow!("verify stash rows poisoned"))?
+            .get(idx)
+        {
+            self.last_mtp_hidden_idx
+                .store(row, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(())
     }
 
