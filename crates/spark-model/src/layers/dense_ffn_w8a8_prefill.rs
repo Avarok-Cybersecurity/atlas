@@ -23,6 +23,10 @@
 //!   * cuBLASLt `fp8_gemm_act_weight_t_blkscaled` (weight as A with
 //!     BLK128x128 scales, activation as B with VEC128 scales — the DeepSeek
 //!     block-FP8 scheme), when `ATLAS_CUBLAS_GEMM=1`. The Hopper fast path.
+//!     Its VEC128 scales go through `fp8_act_scale_to_kmajor` first: cuBLASLt
+//!     documents that operand's scales with the TOKEN index contiguous, which
+//!     is the transpose of what the quantizer writes (see
+//!     `spark_runtime::cublaslt::scale_layout`).
 //!   * `ops::fp8_gemm_t_blockscaled`, the in-tree kernel, otherwise.
 //!
 //! Both consume the SAME quantized activation and the same FP32 epilogue, so
@@ -190,11 +194,41 @@ impl DenseFfnLayer {
         k: u32,
         stream: u64,
     ) -> Result<()> {
-        let padded_out_bytes = ops::cublas_fp8_m_pad(m) as usize * n as usize * 2;
-        let cublas = ctx.dispatch.cublas_gemm && padded_out_bytes <= out_capacity_bytes;
+        let m_pad = ops::cublas_fp8_m_pad(m) as usize;
+        let padded_out_bytes = m_pad * n as usize * 2;
+        // Every clause the cuBLASLt arm needs beyond the shared W8A8 gate:
+        //
+        // * output room for the phantom rows the padded M writes;
+        // * the VEC128 scale-layout adapter — kernel AND its scratch. cuBLASLt
+        //   reads the activation scales token-contiguous, so without the
+        //   transpose the GEMM is fast and WRONG (H100 2026-09-11: 1140 TFLOP/s
+        //   at rel_rms 7.7e-2 vs this same in-tree kernel). Falling back is the
+        //   only safe answer when either is missing;
+        // * `k % 512 == 0` — the BLK128x128 weight scales are handed over as
+        //   the checkpoint's `[N/128, K/128]` grid, and cuBLASLt requires that
+        //   tensor's column stride (K/128) to be a multiple of 4.
+        let scale_layout_ready = ctx.buffers.ffn_act_scale_kmajor().0 != 0
+            && self.fp8_act_scale_kmajor_k.0 != 0
+            && ctx.buffers.ffn_act_scale_kmajor_bytes() >= m_pad * (k as usize / 128) * 4;
+        let cublas = ctx.dispatch.cublas_gemm
+            && padded_out_bytes <= out_capacity_bytes
+            && spark_runtime::cublaslt::scale_layout::blk128x128_stride_ok(k as usize)
+            && (scale_layout_ready || !ops::cublas_scale_layout_kmajor());
         self.log_w8a8_prefill_route(ctx, cublas);
         if cublas {
-            return ops::cublas_fp8_proj_prequant(ctx.gpu, a_fp8, a_scale, w, out, m, n, k, stream);
+            return ops::cublas_fp8_proj_prequant(
+                ctx.gpu,
+                self.fp8_act_scale_kmajor_k,
+                a_fp8,
+                a_scale,
+                ctx.buffers.ffn_act_scale_kmajor(),
+                w,
+                out,
+                m,
+                n,
+                k,
+                stream,
+            );
         }
         ops::fp8_gemm_t_blockscaled(
             ctx.gpu,

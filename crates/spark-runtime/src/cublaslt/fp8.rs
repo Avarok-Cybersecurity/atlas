@@ -144,8 +144,24 @@ pub fn fp8_gemm_act_weight_t_rowwise(
 
 /// Native FP8 (E4M3) `out[M,N] = act[M,K] @ weight[N,K]ᵀ` → BF16, with the
 /// weight per-128×128-block FP32-scaled (matches Atlas's `Fp8Weight.row_scale`
-/// layout exactly) and the activation cast at unit scale (post-RMSNorm acts sit
-/// in fp8's range). ~1.8× the bf16 path (152 vs 85 TFLOPS on GB10).
+/// layout exactly) and the activation per-[token,128-of-K] FP32-scaled.
+/// ~1.8× the bf16 path (152 vs 85 TFLOPS on GB10).
+///
+/// ⚠ SCALE-TENSOR LAYOUTS — the two operands do NOT agree, and getting this
+/// wrong is silent (see [`super::scale_layout`] for the doc quotes, the H100
+/// measurement that caught it, and the index math):
+///
+/// * `weight_block_scale` (A, BLK128x128_32F) is K-major, `L4 × ⌈N/128⌉` —
+///   the checkpoint's row-major `[N/128, K/128]` grid as-is, valid while
+///   `⌈K/128⌉` is a multiple of 4 (`scale_layout::blk128x128_stride_ok`).
+/// * `act_scale` (B, VEC128_32F) is N-major, `M × ⌈K/128⌉` with the TOKEN
+///   index contiguous — i.e. `[K/128, M]`, the TRANSPOSE of what
+///   `per_token_group_quant_fp8` writes. Callers adapt it with the
+///   `fp8_act_scale_to_kmajor` kernel; passing the quantizer's buffer straight
+///   through permutes the scales and costs ~8% relative RMS at M≈1200.
+///
+/// `m` must already include the caller's pad (the docs require the matmul's M
+/// and N to be multiples of 4), and `act_fp8`/`act_scale` must cover it.
 #[allow(clippy::too_many_arguments)]
 pub fn fp8_gemm_act_weight_t_blkscaled(
     act_fp8: u64,

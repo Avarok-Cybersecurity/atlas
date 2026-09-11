@@ -27,11 +27,21 @@
 //! Cosine is the robust metric (~0.9997 at that error). `ATLAS_W8A8_REL_RMS_GATE`
 //! overrides the bound for a measurement run; the value used is always printed.
 //!
+//! SCALE LAYOUT — `ATLAS_CUBLAS_SCALE_LAYOUT=kmajor|rowmajor` (default
+//! `kmajor`). cuBLASLt reads the VEC128 activation scales with the TOKEN index
+//! contiguous, the transpose of the `[M, K/128]` the quantizer writes; the
+//! `rowmajor` setting feeds the untransposed buffer, which is the reading that
+//! measured rel_rms 7.7e-2 / ~33 000 BF16 ULP on H100 on 2026-09-11. It is kept
+//! so both readings can be shown on one box, and it is EXPECTED TO FAIL.
+//!
 //! Run (H100):
 //!   cargo run --release -p spark-model --features cuda,gpu-examples \
 //!     --example native_fp8_ffn_w8a8_microtest
 //!   ATLAS_CUBLAS_GEMM=1 cargo run --release -p spark-model \
 //!     --features cuda,gpu-examples --example native_fp8_ffn_w8a8_microtest
+//!   ATLAS_CUBLAS_GEMM=1 ATLAS_CUBLAS_SCALE_LAYOUT=rowmajor cargo run --release \
+//!     -p spark-model --features cuda,gpu-examples \
+//!     --example native_fp8_ffn_w8a8_microtest
 
 use anyhow::{Result, bail};
 use half::bf16;
@@ -61,6 +71,21 @@ const ITERS: u32 = 10;
 const WARMUP: u32 = 3;
 const COSINE_GATE: f64 = 0.999;
 const REL_RMS_GATE: f64 = 0.02;
+/// cuBLASLt-vs-kernel gates. These two implementations consume the SAME FP8
+/// bytes and the SAME FP32 scales; the only licensed difference is the ORDER of
+/// the FP32 accumulation (tile/split-K shape), which for a K=5120..17408 dot
+/// product of E4M3 terms perturbs the FP32 sum by a few parts in 1e7 — far
+/// below one BF16 ULP (2^-8 relative) on almost every element, and never more
+/// than one rounding step on the few that straddle a BF16 boundary. So: at most
+/// 2 ULP (one step either way), cosine to 5 nines, relative RMS 1e-3 — two
+/// orders of magnitude tighter than the E4M3 quantization floor the W8A16
+/// comparison sits on, which is what makes these gates a LAYOUT test rather
+/// than a precision test. `unequal_bf16` is reported, not gated: a legal
+/// accumulation-order difference can move a large fraction of elements by one
+/// ULP without anything being wrong.
+const CUBLAS_ULP_GATE: i32 = 2;
+const CUBLAS_COSINE_GATE: f64 = 0.99999;
+const CUBLAS_REL_RMS_GATE: f64 = 1e-3;
 
 struct Rng(u64);
 impl Rng {
@@ -196,18 +221,28 @@ fn main() -> Result<()> {
     let w8a16_k = gpu.kernel("w8a16_gemm_pipelined", "w8a16_gemm_pipelined")?;
     let quant_k = gpu.kernel("per_token_group_quant_fp8", "per_token_group_quant_fp8")?;
     let w8a8_k = gpu.kernel("fp8_gemm_t_blockscaled", "fp8_gemm_t_blockscaled")?;
+    let scale_kmajor_k = gpu.kernel("fp8_scale_transpose", "fp8_act_scale_to_kmajor")?;
     let want_cublas = std::env::var("ATLAS_CUBLAS_GEMM").as_deref() == Ok("1");
+    let kmajor = ops::cublas_scale_layout_kmajor();
     let rel_rms_gate = std::env::var("ATLAS_W8A8_REL_RMS_GATE")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(REL_RMS_GATE);
 
     println!(
-        "dense-FFN W8A8 microtest — H={H} INTER={INTER}  cuBLASLt={}  gates: cosine>={COSINE_GATE} rel_rms<={rel_rms_gate}",
+        "dense-FFN W8A8 microtest — H={H} INTER={INTER}  cuBLASLt={}  \
+         scale_layout={}  gates: cosine>={COSINE_GATE} rel_rms<={rel_rms_gate}  \
+         cuBLASLt-vs-kernel: max_ulp<={CUBLAS_ULP_GATE} cosine>={CUBLAS_COSINE_GATE} \
+         rel_rms<={CUBLAS_REL_RMS_GATE}",
         if want_cublas {
             "on (ATLAS_CUBLAS_GEMM=1)"
         } else {
             "off"
+        },
+        if kmajor {
+            "kmajor [K/128,M_pad] (documented)"
+        } else {
+            "rowmajor [M,K/128] (pre-fix control, expected to FAIL)"
         }
     );
 
@@ -228,6 +263,9 @@ fn main() -> Result<()> {
     let act = upload(&gpu, &act_host)?;
     let a_fp8 = gpu.alloc(max_m_pad * max_k)?;
     let a_scale = gpu.alloc(max_m_pad * (max_k / BLOCK) * 4)?;
+    // `[K/128, ceil16(M)]` transposed scales for the cuBLASLt arm — the layout
+    // adapter's destination, same element count as `a_scale`.
+    let a_scale_kmajor = gpu.alloc(max_m_pad * (max_k / BLOCK) * 4)?;
     let out_ref = gpu.alloc(max_m_pad * max_n * 2)?;
     let out_w8a8 = gpu.alloc(max_m_pad * max_n * 2)?;
     let out_cublas = gpu.alloc(max_m_pad * max_n * 2)?;
@@ -330,7 +368,17 @@ fn main() -> Result<()> {
             if want_cublas {
                 let cublas = || {
                     ops::cublas_fp8_proj_prequant(
-                        &gpu, a_fp8, a_scale, &fp8w, out_cublas, mu, nu, ku, stream,
+                        &gpu,
+                        scale_kmajor_k,
+                        a_fp8,
+                        a_scale,
+                        a_scale_kmajor,
+                        &fp8w,
+                        out_cublas,
+                        mu,
+                        nu,
+                        ku,
+                        stream,
                     )
                 };
                 cublas()?;
@@ -359,12 +407,25 @@ fn main() -> Result<()> {
                 );
                 // Same quantized inputs and the same FP32 epilogue: a real
                 // disagreement here is a layout bug (scale order, transpose),
-                // not precision. A few BF16 ULP of tile-order rounding is fine.
-                if d.max_ulp > 4 {
+                // not precision — see the gate constants for why the bounds are
+                // where they are.
+                if d.max_ulp > CUBLAS_ULP_GATE {
                     failures.push(format!(
-                        "{} M={m}: cuBLASLt vs kernel max_ulp={} (> 4) — check the \
-                         VEC128 act-scale / BLK128x128 weight-scale layouts",
+                        "{} M={m}: cuBLASLt vs kernel max_ulp={} (> {CUBLAS_ULP_GATE}) — check \
+                         the VEC128 act-scale / BLK128x128 weight-scale layouts",
                         shape.label, d.max_ulp
+                    ));
+                }
+                if !(d.cosine >= CUBLAS_COSINE_GATE) || !d.cosine.is_finite() {
+                    failures.push(format!(
+                        "{} M={m}: cuBLASLt vs kernel cosine {:.9} < {CUBLAS_COSINE_GATE}",
+                        shape.label, d.cosine
+                    ));
+                }
+                if !(d.rel_rms <= CUBLAS_REL_RMS_GATE) || !d.rel_rms.is_finite() {
+                    failures.push(format!(
+                        "{} M={m}: cuBLASLt vs kernel rel_rms {:.2e} > {CUBLAS_REL_RMS_GATE:.0e}",
+                        shape.label, d.rel_rms
                     ));
                 }
                 if !(r.cosine >= COSINE_GATE) {
@@ -379,7 +440,15 @@ fn main() -> Result<()> {
         gpu.free(scale).ok();
     }
 
-    for p in [act, a_fp8, a_scale, out_ref, out_w8a8, out_cublas] {
+    for p in [
+        act,
+        a_fp8,
+        a_scale,
+        a_scale_kmajor,
+        out_ref,
+        out_w8a8,
+        out_cublas,
+    ] {
         gpu.free(p).ok();
     }
     if failures.is_empty() {

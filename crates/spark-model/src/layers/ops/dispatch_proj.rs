@@ -8,21 +8,82 @@
 
 use super::*;
 
+/// `ATLAS_CUBLAS_SCALE_LAYOUT` — which VEC128 activation-scale layout the
+/// cuBLASLt block-scaled arm feeds the library.
+///
+/// * `kmajor` (DEFAULT) — `[K/128, ceil16(M)]`, tokens contiguous. What the
+///   cuBLAS manual's "Scaling factors layouts" specifies for the B operand
+///   ("N-major for B with shape N x L"); see
+///   `spark_runtime::cublaslt::scale_layout` for the full quotes.
+/// * `rowmajor` — the quantizer's `[M, K/128]` handed over untransposed, i.e.
+///   the pre-fix reading. KEPT ONLY as a measurement control: it is what the
+///   2026-09-11 H100 run measured at rel_rms 7.7e-2 / cosine 0.996 vs the
+///   in-tree kernel, and an operator comparing the two arms on one box should
+///   not have to check out an old commit to reproduce it.
+///
+/// `OnceLock`-cached for the same reason `ffn_w8a16_only()` is: the selector
+/// runs per projection per layer per prefill and `env::var_os` walks the
+/// environment block every call.
+pub fn cublas_scale_layout_kmajor() -> bool {
+    static KMAJOR: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *KMAJOR.get_or_init(|| {
+        !matches!(
+            std::env::var("ATLAS_CUBLAS_SCALE_LAYOUT").as_deref(),
+            Ok("rowmajor")
+        )
+    })
+}
+
+/// Rewrite the quantizer's row-major `[M, K/128]` FP32 activation scales into
+/// the `[K/128, M_pad]` cuBLASLt documents for a VEC128 B operand, zero-filling
+/// the `M..M_pad` pad rows.
+///
+/// The index math is pinned on the CPU by
+/// `spark_runtime::cublaslt::scale_layout` (SSOT, with the doc quotes); this is
+/// only its launcher. The quantizer's own output is left in place — the
+/// in-tree `fp8_gemm_t_blockscaled` still reads it directly.
+pub fn fp8_act_scale_to_kmajor(
+    gpu: &dyn spark_runtime::gpu::GpuBackend,
+    kernel: spark_runtime::gpu::KernelHandle,
+    a_scale: spark_runtime::gpu::DevicePtr,
+    a_scale_kmajor: spark_runtime::gpu::DevicePtr,
+    m: u32,
+    m_pad: u32,
+    k: u32,
+    stream: u64,
+) -> anyhow::Result<()> {
+    use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
+    let l = k / 128;
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(m_pad, 256), l, 1])
+        .block([256, 1, 1])
+        .arg_ptr(a_scale)
+        .arg_ptr(a_scale_kmajor)
+        .arg_u32(m)
+        .arg_u32(m_pad)
+        .arg_u32(l)
+        .launch(stream)
+}
+
 /// Route a projection through native-FP8 cuBLASLt block-scaled matmul: quantize
-/// the activation to FP8 + per-[token,128-of-K] VEC128 scales (the existing
-/// `per_token_group_quant_fp8` kernel), feed the FP8 weight + its per-128×128
-/// block scales directly (zero dequant, zero extra weight memory). Both operands
+/// the activation to FP8 + per-[token,128-of-K] scales (the existing
+/// `per_token_group_quant_fp8` kernel), adapt those scales to the layout
+/// cuBLASLt documents, then feed the FP8 weight + its per-128×128 block scales
+/// directly (zero dequant, zero extra weight memory). Both operands
 /// 128-block-scaled (cuBLASLt requires it). ~1.8× the bf16 path (152 vs 85 TF).
 ///
-/// `act_fp8_scratch`/`act_scale_scratch` must hold the padded extents (the
-/// `buffers.fp8_act`/`fp8_act_scale` arena buffers, sized for max_batch_tokens).
+/// `act_fp8_scratch`/`act_scale_scratch`/`act_scale_kmajor_scratch` must hold
+/// the padded extents (the `buffers.fp8_act`/`fp8_act_scale` arena buffers,
+/// sized for max_batch_tokens).
 #[allow(clippy::too_many_arguments)]
 pub fn cublas_fp8_proj(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
     ptg_quant_k: spark_runtime::gpu::KernelHandle,
+    scale_kmajor_k: spark_runtime::gpu::KernelHandle,
     act_bf16: spark_runtime::gpu::DevicePtr,
     act_fp8_scratch: spark_runtime::gpu::DevicePtr,
     act_scale_scratch: spark_runtime::gpu::DevicePtr,
+    act_scale_kmajor_scratch: spark_runtime::gpu::DevicePtr,
     fp8w: &crate::weight_map::Fp8Weight,
     out: spark_runtime::gpu::DevicePtr,
     m: u32,
@@ -43,8 +104,10 @@ pub fn cublas_fp8_proj(
     )?;
     cublas_fp8_proj_prequant(
         gpu,
+        scale_kmajor_k,
         act_fp8_scratch,
         act_scale_scratch,
+        act_scale_kmajor_scratch,
         fp8w,
         out,
         m,
@@ -62,21 +125,32 @@ pub fn cublas_fp8_proj(
 /// per-token quant twice per layer. The FFN quantizes once and calls this for
 /// both, then quantizes the post-SiLU intermediate once for `down`.
 ///
+/// ⚠ SCALE LAYOUT. cuBLASLt reads the VEC128 B-scale tensor with the TOKEN
+/// index contiguous (`[K/128, ceil16(M)]`), not the `[M, K/128]` the quantizer
+/// writes — cuBLAS "Scaling factors layouts", and the reason this helper needs
+/// `act_scale_kmajor` at all. Handing the quantizer's buffer over directly is
+/// what the 2026-09-11 H100 run measured at rel_rms 7.7e-2 / ~33 000 BF16 ULP
+/// against the in-tree kernel on identical FP8 bytes; `ATLAS_CUBLAS_SCALE_LAYOUT
+/// =rowmajor` reproduces that reading deliberately.
+///
 /// ⚠ PADDED-M EXTENTS. cuBLASLt is handed `ceil16(M)`, so:
 ///
 /// * `out` must hold `ceil16(M) * N` BF16 elements — the phantom rows are
 ///   WRITTEN (well-defined: their activation scales are zeroed below).
-/// * `act_fp8` must hold `ceil16(M) * K` bytes and `act_scale`
-///   `ceil16(M) * (K/128)` f32 — the phantom rows are READ.
+/// * `act_fp8` must hold `ceil16(M) * K` bytes, `act_scale`
+///   `M * (K/128)` f32 and `act_scale_kmajor` `ceil16(M) * (K/128)` f32 — the
+///   phantom rows are READ.
 ///
 /// The arena sizes that headroom in; see the sizing notes in
-/// `spark_runtime::buffers::sizes` (`fp8_act`, `ffn_act_a`, `expert_gate_out`,
-/// `moe_output`).
+/// `spark_runtime::buffers::sizes` (`fp8_act`, `ffn_act_a`, `ffn_act_scale`,
+/// `ffn_act_scale_kmajor`, `expert_gate_out`, `moe_output`).
 #[allow(clippy::too_many_arguments)]
 pub fn cublas_fp8_proj_prequant(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
+    scale_kmajor_k: spark_runtime::gpu::KernelHandle,
     act_fp8: spark_runtime::gpu::DevicePtr,
     act_scale: spark_runtime::gpu::DevicePtr,
+    act_scale_kmajor: spark_runtime::gpu::DevicePtr,
     fp8w: &crate::weight_map::Fp8Weight,
     out: spark_runtime::gpu::DevicePtr,
     m: u32,
@@ -85,35 +159,60 @@ pub fn cublas_fp8_proj_prequant(
     stream: u64,
 ) -> anyhow::Result<()> {
     // cuBLASLt requires the scale-tensor M extent to be a multiple of 4; pad to
-    // 16 (TC-friendly) and zero the padding scale rows so the phantom output
-    // columns (ignored by the caller) are well-defined.
+    // 16 (TC-friendly) and zero the padding so the phantom output columns
+    // (ignored by the caller) are well-defined.
     let m_pad = cublas_fp8_m_pad(m);
+    let kg = (k / 128) as usize;
     if m_pad > m {
-        let pad_rows = (m_pad - m) as usize;
-        // Scales: `[M, K/128]` FP32, row-major — the exact layout
-        // `per_token_group_quant_fp8` writes and cuBLASLt reads as the VEC128
-        // B-scale, so the pad rows are a contiguous tail.
-        let kg = (k / 128) as usize;
-        gpu.memset_async(
-            act_scale.offset(m as usize * kg * 4),
-            0,
-            pad_rows * kg * 4,
-            stream,
-        )?;
-        // Activation bytes too: a zero scale kills the phantom rows'
-        // CONTRIBUTION, but the FP8 dot product still runs over whatever bytes
-        // are there and `NaN * 0.0` is `NaN`. Same reasoning (and same fix) as
-        // the row-wise sibling in `dispatch_proj_rowwise.rs`.
+        // A zero scale kills the phantom rows' CONTRIBUTION, but the FP8 dot
+        // product still runs over whatever bytes are there and `NaN * 0.0` is
+        // `NaN`. Same reasoning (and same fix) as the row-wise sibling in
+        // `dispatch_proj_rowwise.rs`.
         gpu.memset_async(
             act_fp8.offset(m as usize * k as usize),
             0,
-            pad_rows * k as usize,
+            (m_pad - m) as usize * k as usize,
             stream,
         )?;
     }
+    let b_scale = if cublas_scale_layout_kmajor() {
+        if scale_kmajor_k.0 == 0 || act_scale_kmajor.0 == 0 {
+            anyhow::bail!(
+                "cuBLASLt block-scaled FP8 needs the fp8_act_scale_to_kmajor adapter \
+                 (kernel={:#x}, scratch={:#x}) — see cublas_scale_layout_kmajor()",
+                scale_kmajor_k.0,
+                act_scale_kmajor.0
+            );
+        }
+        // Writes every [K/128, m_pad] slot, pad rows included, so no separate
+        // memset of the scale pad is needed.
+        fp8_act_scale_to_kmajor(
+            gpu,
+            scale_kmajor_k,
+            act_scale,
+            act_scale_kmajor,
+            m,
+            m_pad,
+            k,
+            stream,
+        )?;
+        act_scale_kmajor
+    } else {
+        // Measurement control only (`ATLAS_CUBLAS_SCALE_LAYOUT=rowmajor`): the
+        // pad rows are a contiguous tail in THIS layout, so zero them here.
+        if m_pad > m {
+            gpu.memset_async(
+                act_scale.offset(m as usize * kg * 4),
+                0,
+                (m_pad - m) as usize * kg * 4,
+                stream,
+            )?;
+        }
+        act_scale
+    };
     spark_runtime::cublaslt::fp8_gemm_act_weight_t_blkscaled(
         act_fp8.0,
-        act_scale.0,
+        b_scale.0,
         fp8w.weight.0,
         fp8w.row_scale.0,
         out.0,
