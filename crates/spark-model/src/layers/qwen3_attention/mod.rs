@@ -19,6 +19,12 @@
 // because `init` caches its lever on the layer and BOTH multi-seq call sites
 // (QKV strided, o_proj contiguous) read the one rule.
 mod attn_ncol_gemv;
+// The `ATLAS_ATTN_M16_TC` route lines (#927, H100 round 9 cell W) — `pub(crate)`
+// because both multi-seq call sites that need them
+// (`trait_impl::multi_seq::qkv_fp8_batch`, `trait_impl::multi_seq::attn::o_proj`)
+// reach it via the full crate path, the same way `dense_ffn_m16_tc`'s route
+// log is reached from outside its own file.
+pub(crate) mod attn_m16_tc_route;
 mod decode;
 // V4: `pub(crate)` so the DeepSeek-V4 weight loader (`weight_loader::deepseek_v4`)
 // and the V4 attention submodules can call `helpers::yarn_rope_mscale`. Non-V4

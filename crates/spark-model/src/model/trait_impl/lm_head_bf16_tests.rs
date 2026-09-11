@@ -4,7 +4,8 @@
 
 use super::{
     LmHeadM16Tc, batchm_max_from_value, bf16_batch_gemv_from_value, lm_head_m16_tc_route,
-    m16_tc_enabled_from_presence, m16_tc_n_tile_from_value, project_bf16_lm_head,
+    m16_tc_enabled_from_presence, m16_tc_head_route_message, m16_tc_n_tile_from_value,
+    project_bf16_lm_head,
 };
 use crate::layers::ops;
 use crate::weight_map::DenseWeight;
@@ -341,4 +342,60 @@ fn tc_head_wins_the_band_over_the_widened_gemv() {
     expect_tc_launch(16, 5120, tc(true, 32), M16TC_K, 32);
     // …and the GEMV still serves the same width once the lever is off.
     run_band(16, 5120, true, true, 16, true);
+}
+
+// ── The route line's TEXT (H100 round 9: the "<= 2 BF16 ULP" claim was wrong) ──
+//
+// `log_m16_tc_head_route` itself latches on a process-global `std::sync::Once`
+// (see its doc comment) rather than a per-model `ModelStats`, so calling IT
+// directly from a test would only ever fire once across this whole test
+// binary — order-dependent and not what these tests want to pin. Testing the
+// extracted `m16_tc_head_route_message` pure function sidesteps that: it has
+// no latch, so every test gets an independent read of the wording.
+
+#[test]
+fn the_route_message_no_longer_claims_a_bare_two_ulp_bound() {
+    let msg = m16_tc_head_route_message(32, 32);
+    // The round-7 claim this replaces (verbatim, so a future edit cannot
+    // silently reintroduce it under different wording).
+    assert!(
+        !msg.contains("(<= 2 BF16 ULP)"),
+        "round 9 measured up to 100 ordinal ULP; a bare 2-ULP parenthetical \
+         is the bug this test guards against: {msg}"
+    );
+}
+
+#[test]
+fn the_route_message_states_the_real_budget_and_cites_the_receipt() {
+    let msg = m16_tc_head_route_message(32, 32);
+    assert!(
+        msg.contains("within_m16_tc_budget"),
+        "must point at the actual contract function, not a bare bound"
+    );
+    assert!(
+        msg.contains("2 ordinal BF16 ULP") && msg.contains("accumulation floor"),
+        "must state both halves of the real budget: 2 ULP OR the accumulation floor"
+    );
+    assert!(
+        msg.contains("100 ordinal ULP"),
+        "must cite the round-9 receipt that motivated the fix"
+    );
+    assert!(
+        msg.contains("4.9e-6..2.6e-4"),
+        "must cite where the over-budget elements sat relative to the row RMS"
+    );
+}
+
+#[test]
+fn the_route_message_still_names_the_lever_kernel_band_and_off_switch() {
+    // Fixing the ULP claim must not have dropped any of the pre-existing
+    // content a boot-log reader relies on.
+    let msg = m16_tc_head_route_message(64, 64);
+    assert!(msg.contains("ATLAS_LM_HEAD_M16_TC"));
+    assert!(msg.contains("dense_gemm_m16_bf16"));
+    assert!(msg.contains("N_TILE=64 (asked 64)"));
+    assert!(msg.contains("5..=16 rows"));
+    assert!(msg.contains("dense_gemv_bf16_batchm"));
+    assert!(msg.contains("REASSOCIATED"));
+    assert!(msg.contains("Unset it to restore the bit-exact tier (#927/#928)"));
 }

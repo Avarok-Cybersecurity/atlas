@@ -1135,6 +1135,11 @@ impl DenseFfnLayer {
                 self.w8a16_gemv_k.0 != 0,
                 ctx.levers.decode_split_silu,
             );
+            // #928 route line, H100 round 9: neither arm of this decision
+            // used to log anything, so an operator could not tell a
+            // split-SiLU server (default, +1.79x on `down`, NOT bit-identical
+            // to the fused kernel) from a fused one from the boot log alone.
+            fp8_down::log_fp8_down_route(ctx.stats, arm);
             if arm != fp8_down::Fp8DownArm::PerProjection {
                 ops::w8a16_gemv_dual(
                     ctx.gpu,
@@ -1435,6 +1440,9 @@ impl DenseFfnLayer {
             && self.w4a16_gemv.0 != 0
             && (ctx.levers.decode_split_silu || self.lora.is_some());
         if split_silu {
+            // #928 / H100 round 9 route line — the W4A16 twin of the FP8 arm's
+            // `fp8_down::log_fp8_down_route`; see `w4a16_down_route.rs`.
+            w4a16_down_route::log_w4a16_down_split_silu_route(ctx.stats);
             self.apply_lora_gate_up(ctx, input, gate_out, up_out, 1, stream)?;
             ops::silu_mul(
                 ctx.gpu,
@@ -1469,6 +1477,12 @@ impl DenseFfnLayer {
         match self.activation {
             FfnActivation::SiLU => {
                 // Fused SiLU(gate)*up + down_proj: [1, inter] → [1, H]
+                // The "other branch" of the split-SiLU route line: reached
+                // only when `split_silu` above was false — either
+                // ATLAS_NO_DECODE_SPLIT_SILU restored this kernel, or the
+                // layer lacks the `act_mul`/`w4a16_gemv` handles the split
+                // path needs. Either way the log now says which one is live.
+                w4a16_down_route::log_w4a16_down_fused_silu_route(ctx.stats);
                 if use_silu_sw {
                     ops::w4a16_gemv_silu_input_sw(
                         ctx.gpu,
@@ -3003,6 +3017,12 @@ pub mod m16_tc;
 /// room this file does not have.
 #[path = "dense_ffn_fp8_down.rs"]
 pub mod fp8_down;
+
+/// The split-SiLU-down route line for the W4A16/NVFP4 weight format (H100
+/// round 9) — the FP8 twin of `fp8_down`'s. Same reason as the four modules
+/// above: this file is already the crate's largest.
+#[path = "dense_ffn_w4a16_down_route.rs"]
+pub(crate) mod w4a16_down_route;
 
 /// Native BF16/FP8 overlays take precedence over any NVFP4 fallback weights.
 /// Small batches must use the same format-aware dispatcher as prefill.

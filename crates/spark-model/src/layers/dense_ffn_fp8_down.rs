@@ -109,6 +109,56 @@ pub(crate) fn fp8_down_arm(
     }
 }
 
+/// `ctx.stats.once` key for the split-SiLU default arm ([`Fp8DownArm::SplitSilu`]).
+pub(crate) const FP8_DOWN_SPLIT_SILU_KEY: &str = "log:ffn_down_split_silu";
+/// `ctx.stats.once` key for the fused-kernel arm ([`Fp8DownArm::FusedSilu`]),
+/// i.e. what `ATLAS_NO_DECODE_SPLIT_SILU` restores.
+pub(crate) const FP8_DOWN_FUSED_SILU_KEY: &str = "log:ffn_down_fused_silu";
+
+/// The split-SiLU default's line (H100 round 9, #928). Names the default, the
+/// kill switch, the receipt (1.79x on the down projection alone), and states
+/// the numerics are NOT bit-identical to the kernel it replaces — the
+/// operator complaint this module exists to close: "There is no route line
+/// for the split-SiLU default. The FFN decode path changed representation and
+/// got 1.79x faster, and the boot log says nothing about it ... That is a
+/// reporting gap on a default that changes numerics."
+pub(crate) const FP8_DOWN_SPLIT_SILU_MSG: &str = "\
+[atlas] dense FFN decode down: split-SiLU + w8a16_gemv (default; \
+ATLAS_NO_DECODE_SPLIT_SILU restores the fused kernel). H100 round 9: 1.79x \
+on the down projection (843 -> 1513 GB/s, native_fp8_ffn_down_gemv_microtest). \
+NOT bit-identical to the fused w8a16_gemv_silu_input kernel it replaces: the \
+SwiGLU product is materialised in BF16 rather than kept in the FP32 \
+accumulator (unequal=2130 max_abs=0.5 max_ulp=31195 vs the fused kernel).";
+
+/// The other branch's line — the actual operator complaint fixed here: the
+/// log must ALWAYS say which `down` path is live, not just when the (numerics
+/// changing) default is taken.
+pub(crate) const FP8_DOWN_FUSED_SILU_MSG: &str = "\
+[atlas] dense FFN decode down: fused w8a16_gemv_silu_input \
+(ATLAS_NO_DECODE_SPLIT_SILU set — restores the pre-#928 numerics bit-for-bit, \
+off the split-SiLU + w8a16_gemv default). Unset it for the 1.79x down-\
+projection win (843 -> 1513 GB/s, H100 round 9).";
+
+/// Log-once latch for which `down` arm THIS call took. `PerProjection` is not
+/// governed by `ATLAS_NO_DECODE_SPLIT_SILU` (it is the no-fused-kernels-
+/// available fallback, same regardless of the lever), so it gets no line —
+/// nothing to disambiguate for an operator there.
+pub(crate) fn log_fp8_down_route(stats: &crate::layers::ops::ModelStats, arm: Fp8DownArm) {
+    match arm {
+        Fp8DownArm::SplitSilu => {
+            if stats.once(FP8_DOWN_SPLIT_SILU_KEY) {
+                tracing::info!("{FP8_DOWN_SPLIT_SILU_MSG}");
+            }
+        }
+        Fp8DownArm::FusedSilu => {
+            if stats.once(FP8_DOWN_FUSED_SILU_KEY) {
+                tracing::info!("{FP8_DOWN_FUSED_SILU_MSG}");
+            }
+        }
+        Fp8DownArm::PerProjection => {}
+    }
+}
+
 impl DenseFfnLayer {
     /// Split-K handles plus the `[SPLITK_MAX, n]` FP32 partial scratch for the
     /// decode down projection, allocated on the first call that asks for it.
