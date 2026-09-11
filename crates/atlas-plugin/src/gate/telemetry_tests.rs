@@ -312,7 +312,7 @@ fn the_promotion_debt_section_is_always_rendered() {
     let body = super::render(&root, &prs);
     assert!(
         body.contains(
-            "### Promotion-candidate debt\n\nThese gates are NOT required, so these PRs can merge without them. Each row is coverage this repository chose not to buy — recorded so the choice stays visible rather than becoming an assumption.\n\n| PR | merged? | title | gates that wanted to run |\n|---|---|---|---|\n| #1 | not yet | a scheduler change | cross-contamination, kat-equality-gate |\n"
+            "### Promotion-candidate debt\n\nThese gates are NOT required, so these PRs can merge without them. Each row is coverage this repository chose not to buy — recorded so the choice stays visible rather than becoming an assumption.\n\n| PR | merged? | title | gates that wanted to run |\n|---|---|---|---|\n| #1 | not yet | a scheduler change | cross-contamination |\n"
         ),
         "the unconditional debt section must retain its policy, schema, and row: {body}"
     );
@@ -353,10 +353,7 @@ fn debt_is_derived_from_the_prs_own_paths() {
     // owes BOTH candidates — a scheduler edit can cross-wire concurrent
     // requests AND make a reply depend on what ran before it.
     assert_eq!(views[0].promotion_debt, Vec::<&str>::new());
-    assert_eq!(
-        views[1].promotion_debt,
-        vec!["cross-contamination", "kat-equality-gate"]
-    );
+    assert_eq!(views[1].promotion_debt, vec!["cross-contamination"]);
 }
 
 /// A merged debt and an open debt are different things: one is coverage already
@@ -393,7 +390,7 @@ fn the_debt_table_distinguishes_merged_from_open() {
     let body = super::render(&root, &prs);
     assert!(
         body.contains(
-            "| #1 | not yet | still open | cross-contamination, kat-equality-gate |\n| #2 | **yes** | already landed | cross-contamination, kat-equality-gate |\n"
+            "| #1 | not yet | still open | cross-contamination |\n| #2 | **yes** | already landed | cross-contamination |\n"
         ),
         "open warning and accrued merged debt must remain distinct: {body}"
     );

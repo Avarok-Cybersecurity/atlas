@@ -58,10 +58,21 @@
 //! reproduce the serial run they stand in for. Do not read a passing group as
 //! evidence that sharding is transparent; that is a separate claim needing its
 //! own measurement, and #936 records it failing by 12 of 995 while the score
-//! cleared its floor by 0.04 and ran 0.76 low. Closing it means removing the
-//! cross-request state for KAT runs — `ssm_cache_slots = "0"` as a serve
-//! override is the first-class knob — and re-cutting the floors, which were cut
-//! with the cache on.
+//! cleared its floor by 0.04 and ran 0.76 low.
+//!
+//! **CLOSED 2026-09-10 (#981), and by a different knob than this note first
+//! predicted.** The shipped mechanism is `--hermetic`, not `ssm_cache_slots =
+//! "0"`: the latter closes the SSM snapshot producer only, and measured 4 of
+//! 995 — better, not zero. The residual channel was the radix KV prefix cache,
+//! which has no session key at all. `--hermetic` closes both and gates every
+//! snapshot entry by session, and reaches **0 of 995** — whole draw against its
+//! own four shards, byte-exact per `sample_id`, reproduced on two boxes against
+//! a base arm of 12 of 995 at the same commit.
+//!
+//! The floors did NOT need re-cutting, which this note also predicted wrongly.
+//! Equality does cost score — the whole leg reads 84.22 / 84.12 open and
+//! 83.92 / 84.22 closed — but both clear the committed bars, so the bars stand
+//! and the regime change is carried by the UI's like-for-like band instead.
 
 /// Do the members' recorded shard identities form the partition the group
 /// claims to be?
