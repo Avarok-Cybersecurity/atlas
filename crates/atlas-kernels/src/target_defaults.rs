@@ -56,7 +56,10 @@ pub struct TargetDefaults {
     /// below spark-model in the dependency graph.
     pub cublas_gemm_scope: &'static str,
     /// `w8a16_gemv_batch16` serves the 5..=32-row native-FP8 dense-FFN decode
-    /// widths (`dense_ffn_batch16_decode.rs`).
+    /// widths (`dense_ffn_batch16_decode.rs`). FALSE on every target: on H100
+    /// the cuBLASLt FFN arm owns those same widths and beat it (-5.4%
+    /// aggregate, +50 ms TTFT), and on GB10 the kernel is not in the set at
+    /// all. `ATLAS_FFN_BATCH16=1` is the opt-in.
     pub ffn_batch16_tier: bool,
     /// `w8a16_gemm_m16` serves those same widths on TENSOR CORES instead
     /// (`dense_ffn_m16_tc.rs`). Reassociates the K reduction.

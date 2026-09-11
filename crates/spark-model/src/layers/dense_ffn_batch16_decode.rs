@@ -50,10 +50,12 @@
 //! 🪤 CONSEQUENCE, stated because it is a real boundary move: the W8A8 prefill
 //! arm's own rule (`dense_ffn_w8a8_prefill.rs`) starts at `m > 4`, so with
 //! rungs 2-3 ahead of it the W8A8 path now begins at **m > 32** in practice.
-//! That is the intent — 5..=32 are decode widths where one weight pass beats
+//! That was the intent — 5..=32 are decode widths where one weight pass beats
 //! any MMA tile — but a prefill of 5..=32 tokens (a very short prompt, or the
-//! tail chunk of a chunked prefill) now takes the GEMV too. Set
-//! `ATLAS_FFN_NO_BATCH16` to restore the previous routing for those widths.
+//! tail chunk of a chunked prefill) would take the GEMV too. ⚠️ It DOES NOT
+//! TODAY: every target declares `[defaults] ffn_batch16_tier = false`, so the
+//! boundary is unmoved unless an operator sets `ATLAS_FFN_BATCH16=1`. The
+//! consequence is recorded because it is what arming the tier costs.
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
@@ -72,9 +74,17 @@ use crate::weight_map::Fp8Weight;
 /// there, H100 because the cuBLASLt FFN arm that `[defaults]
 /// cublas_gemm_scope = "ffn,ssm,attn"` arms owns these same widths and beat it.
 ///
-/// `ATLAS_FFN_NO_BATCH16` keeps its PRESENCE semantics as the kill switch, and
 /// `ATLAS_FFN_BATCH16` is the opt-IN an operator A/Bs a target's declaration
-/// with. See `layers::ops::target_defaults` for the whole grammar.
+/// with; it takes the full grammar, so `=1`, `=on` and `=true` all arm it.
+///
+/// `ATLAS_FFN_NO_BATCH16` keeps its PRESENCE semantics as the kill switch and
+/// is still read, but with every target declaring the tier OFF it can only
+/// change the outcome when something ALSO set `ATLAS_FFN_BATCH16` — where it
+/// wins, which is the rule for every `ATLAS_NO_*` switch. It is accepted
+/// silently rather than warned about: the H100 round-9 recipe sets it, the
+/// campaign ledgers record serves that ran with it, and a warning would
+/// retroactively read as "that serve was misconfigured". See
+/// `layers::ops::target_defaults` for the whole grammar.
 pub fn ffn_batch16_tier() -> bool {
     crate::layers::ops::target_defaults::resolved()
         .ffn_batch16_tier
@@ -180,7 +190,10 @@ impl DenseFfnLayer {
             tracing::info!(
                 "[atlas] dense FFN decode: native FP8 w8a16_gemv_batch16 ({how}) \
                  for 5..=32 rows — one weight pass, bit-identical per row to the \
-                 M=1 w8a16_gemv. ATLAS_FFN_NO_BATCH16 restores the tile GEMMs (#927)."
+                 M=1 w8a16_gemv. ARMED BY ATLAS_FFN_BATCH16=1; off by default on \
+                 every target. On H100 it measured -5.4% aggregate and +50 ms TTFT \
+                 against the cuBLASLt FFN arm that owns these same widths, and it \
+                 has never been measured on GB10 (#927)."
             );
         }
     }

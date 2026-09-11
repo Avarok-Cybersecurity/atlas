@@ -91,3 +91,33 @@ pub(super) fn cublas_ssm_kernel(gpu: &dyn GpuBackend, func: &str) -> KernelHandl
         KernelHandle(0)
     }
 }
+
+/// The tensor-core GDN chunked-PREFILL spine's handle
+/// (`gated_delta_rule_chunk_delta_h_tcfuse_x2`), GATED on the same bit that
+/// launches it — `[defaults] gdn_prefill_tc`, with `ATLAS_GDN_PREFILL_TC`
+/// overriding (`layers::ops::target_defaults`).
+///
+/// A probe that runs unconditionally asks the kernel audit about a module no
+/// target enables, which is how a lever nobody set comes to be the reason a
+/// boot failed. Off yields `KernelHandle(0)`, and `ops::gdn_tc_spine_reject`
+/// then answers "not requested" — which is what it would have answered anyway.
+///
+/// The `_x2` entry (two bf16 limbs of S_c in Phase A) is the one the lever
+/// ships: the single-limb `..._tcfuse` entry is in the image for the oracle's
+/// A/B, but its measured deviation on the FP32 state is ~2.0e-3, over the
+/// 1e-3 contract. Both entries are ABI-, grid-, block- and smem-identical, so
+/// nothing downstream changes with the choice.
+pub(super) fn gdn_prefill_tc_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
+    if !crate::layers::ops::target_defaults::resolved()
+        .gdn_prefill_tc
+        .value
+    {
+        return KernelHandle(0);
+    }
+    crate::layers::try_kernel(
+        gpu,
+        "gated_delta_rule_chunk_tc",
+        "gated_delta_rule_chunk_delta_h_tcfuse_x2",
+    )
+}
+

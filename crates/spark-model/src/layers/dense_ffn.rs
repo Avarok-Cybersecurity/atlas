@@ -2186,7 +2186,9 @@ impl DenseFfnLayer {
                         )?,
                         // 4-5. m 5..=16 (one launch) and 17..=32 (two halves).
                         // `Some(plan)` already encodes the handle and the
-                        // `ATLAS_FFN_NO_BATCH16` kill switch.
+                        // target's `[defaults] ffn_batch16_tier` declaration,
+                        // which is false everywhere until `ATLAS_FFN_BATCH16`
+                        // arms it — so this arm is unreachable on a stock serve.
                         _ if batch16.is_some() => self.w8a16_batch16_proj(
                             ctx,
                             batch16.expect("guarded by is_some"),

@@ -97,16 +97,18 @@ fn batch16_declines_when_the_kernel_is_absent() {
     }
 }
 
-/// `ATLAS_FFN_NO_BATCH16` — injected, not read from the environment: the real
+/// A DISARMED tier — `[defaults] ffn_batch16_tier = false`, which is what
+/// every target in tree declares, or `ATLAS_FFN_NO_BATCH16` on top of an
+/// `ATLAS_FFN_BATCH16=1`. Injected, not read from the environment: the real
 /// accessor is a process-global `OnceLock` and a test that set the variable
 /// would leak into every other test in this binary.
 #[test]
-fn batch16_kill_switch_restores_the_previous_routing() {
+fn a_disarmed_tier_restores_the_previous_routing() {
     for m in [5, 8, 16, 17, 32] {
         assert_eq!(
             batch16_plan(m, true, true),
             None,
-            "m={m} with the switch set"
+            "m={m} with the tier disarmed"
         );
     }
 }
@@ -286,3 +288,36 @@ fn without_the_batch16_handle_the_cliff_widths_fall_back_as_before() {
         });
     }
 }
+
+/// THE STOCK SERVE, end to end. Every target declares `[defaults]
+/// ffn_batch16_tier = false`, so with the handle LOADED and nothing in the
+/// environment the 5..=32 widths must still reach the tile GEMM.
+///
+/// The other dispatch tests above arm the tier, because what they grade is the
+/// route an armed tier takes. That leaves the default route graded only at the
+/// declaration level — and a declaration nothing dispatches on is how a lever
+/// comes to be reported off while the kernel runs anyway. This is the join.
+#[test]
+fn a_stock_serve_keeps_the_pre_927_routing_at_every_cliff_width() {
+    for m in [5, 8, 16, 17, 32] {
+        run(m, Expect::Tile, |layer| {
+            assert_ne!(
+                layer.w8a16_gemv_batch16_k,
+                KernelHandle(0),
+                "the handle must be LOADED — otherwise this passes for the \
+                 wrong reason and says nothing about the declaration"
+            );
+            layer.batch16_tier = false;
+        });
+    }
+}
+
+/// …and the batch4 rung below the tier is untouched by it, in both polarities.
+#[test]
+fn the_batch4_rung_is_untouched_by_the_tier() {
+    for m in [1, 4] {
+        run(m, Expect::One(BATCH4_K, m), |layer| layer.batch16_tier = false);
+        run(m, Expect::One(BATCH4_K, m), |_| {});
+    }
+}
+

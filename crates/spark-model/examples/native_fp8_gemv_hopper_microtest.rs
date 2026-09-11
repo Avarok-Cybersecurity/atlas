@@ -208,7 +208,11 @@ fn host_gemv(n: u32, k: u32, weight: &[u8], scale: &[f32], act: &[u16]) -> Vec<u
             }
             *sum = v[0];
         }
-        out.extend_from_slice(&half::bf16::from_f32(warp_sum[0] + warp_sum[1]).to_bits().to_le_bytes());
+        out.extend_from_slice(
+            &half::bf16::from_f32(warp_sum[0] + warp_sum[1])
+                .to_bits()
+                .to_le_bytes(),
+        );
     }
     out
 }

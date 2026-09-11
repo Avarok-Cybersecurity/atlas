@@ -144,6 +144,14 @@ fn hopper_resolves_the_round_nine_recipe_from_an_empty_environment() {
 /// Hopper-tuned, `kernels/hopper/common`), so the tier's handle was 0 and
 /// `batch16_plan` declined at every width. Declaring it off states in the
 /// target file what the kernel set already enforced.
+///
+/// HOPPER declares it off for a MEASURED reason, independently reached by
+/// #988: the cuBLASLt FFN arm that `cublas_gemm_scope = "ffn,ssm,attn"` arms
+/// owns these same 5..=32 widths and beat the tier there (-5.4% aggregate,
+/// +50 ms TTFT). The two branches agree on the outcome; the grammar differs,
+/// because #988 hardcoded `== Ok("1")` while this reads the shared toggle
+/// grammar, so `=on` and `=true` also arm it here and `ATLAS_FFN_NO_BATCH16`
+/// still outranks a positive rather than being deleted.
 #[test]
 fn gb10_with_an_empty_environment_is_todays_behaviour() {
     let l = empty(&GB10);
