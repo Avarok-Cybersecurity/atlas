@@ -128,8 +128,15 @@ impl Qwen3AttentionLayer {
         // tried and FAILED for large prefill chunks — numerically off + ~7x
         // slower (the kernel's batch dim is not compatible with the co-dispatch
         // stacking at large seq_len). So batched chunk-0 still uses paged.
+        // SSOT with `check_kernel_batched_eligible`'s `allow_chunk_zero` and
+        // with `prefill_attention_paged_attn_batched`'s own guard — all three
+        // read `ops::prefill_batched_chunk_zero_allowed()`. This line used to
+        // read `prefill_batched_first_chunk_enabled()` alone, so
+        // `--prefill-varlen-batch` admitted a fresh-prompt wave here and then
+        // bailed mid-forward with Phase A already committed (#927 cell E:
+        // sixteen HTTP 200s, zero tokens, at C=16).
         let allow_batched_first_chunk =
-            batched_meta.is_some() && crate::layers::ops::prefill_batched_first_chunk_enabled();
+            batched_meta.is_some() && crate::layers::ops::prefill_batched_chunk_zero_allowed();
         if batched_meta.is_some() && seq_len_start == 0 && !allow_batched_first_chunk {
             anyhow::bail!(
                 "prefill_inner: batched mode requires seq_len_start > 0 (paged path); \
@@ -671,6 +678,11 @@ impl Qwen3AttentionLayer {
             qsa.prefill_ingest(st, normed, num_tokens, seq_len_start, ctx.gpu, stream)?;
         }
 
+        // NOT relaxed alongside `prefill_inner`'s chunk-zero guard: the mHC
+        // path is DeepSeek-V4 (MLA, `kv_lora_rank > 0`), which
+        // `check_kernel_batched_eligible` rejects wholesale via `config_is_mla`
+        // before any stream is touched. So this is unreachable from the batched
+        // dispatcher and stays a hard failure rather than a fallback invitation.
         if batched_meta.is_some() && seq_len_start == 0 {
             anyhow::bail!(
                 "prefill_inner_hc: batched mode requires seq_len_start > 0; \

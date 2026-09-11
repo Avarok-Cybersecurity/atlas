@@ -116,6 +116,52 @@ mod tests {
     }
 
     #[test]
+    fn the_h100_c16_burst_packs_six_prompts_per_prefill_step() {
+        // The #927 receipt, exactly: sixteen 1193-token prompts arriving
+        // together against `--max-prefill-tokens 8192`. Measured behaviour
+        // before this work was 32 prefill chunks for 32 requests — one prompt
+        // per step, 220.8 ms each, budget never binding (2048 and 24576 both
+        // changed nothing, ±0.4%). Six fit: 6 x 1193 = 7158 <= 8192, and a
+        // seventh would be 8351.
+        //
+        // The tail pre-split in `run_batched_prefill_step` makes each prompt's
+        // HEAD 1168 tokens (one KV block below the last boundary under 1193),
+        // so seven heads is 8176 — still inside the budget. Both geometries
+        // are pinned here because the planner sees whichever one the caller
+        // built, and "how many prompts per step" is the whole claim.
+        let whole: Vec<WaveGeom> = (0..16).map(|_| g(0, 1193, true)).collect();
+        let waves = plan_prefill_waves(&whole, true, 8192);
+        assert_eq!(waves.len(), 3, "16 prompts / 6 per wave = 3 waves");
+        assert_eq!(waves[0].len(), 6);
+        assert_eq!(waves[1].len(), 6);
+        assert_eq!(waves[2].len(), 4);
+
+        let heads: Vec<WaveGeom> = (0..16).map(|_| g(0, 1168, false)).collect();
+        let waves = plan_prefill_waves(&heads, true, 8192);
+        assert_eq!(waves[0].len(), 7, "1168-token heads pack 7 per step");
+
+        // And the 25-token tails all share `chunk_start == 1168`, so the
+        // planner puts every one of them in a SINGLE forward — against 32
+        // standalone 25-token passes measured at 29.26 ms each (1170 µs/token,
+        // 11.7% of prefill GPU time for 2.1% of the tokens).
+        let tails: Vec<WaveGeom> = (0..16).map(|_| g(1168, 25, true)).collect();
+        let waves = plan_prefill_waves(&tails, true, 8192);
+        assert_eq!(waves, vec![(0..16).collect::<Vec<_>>()]);
+    }
+
+    #[test]
+    fn flag_off_still_admits_every_prompt_in_one_call() {
+        // Control for the test above: with VARLEN off the planner must not
+        // start splitting anything — the model-side dispatcher is what refuses
+        // the batch, and it needs to see the same one-call shape it always did.
+        let whole: Vec<WaveGeom> = (0..16).map(|_| g(0, 1193, true)).collect();
+        assert_eq!(
+            plan_prefill_waves(&whole, false, 8192),
+            vec![(0..16).collect::<Vec<_>>()],
+        );
+    }
+
+    #[test]
     fn budget_cap_is_exact_not_off_by_one() {
         // 1024 + 1024 == cap exactly ⇒ same wave; +1 more opens a new one.
         let geoms = [g(0, 1024, true), g(0, 1024, true), g(0, 1, true)];

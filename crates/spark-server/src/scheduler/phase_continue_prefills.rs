@@ -20,7 +20,11 @@
 //!  - `run_batched_mixed`   — Q12 Phase 5 batched mixed (decode+prefill) step.
 //!  - `prefill_waves`       — pure wave planner for `run_batched_prefill`
 //!                            (VARLEN budget capping + geometry grouping).
+//!  - `prefill_fallback`    — per-stream re-run of a DECLINED wave, plus the
+//!                            advance/sample bookkeeping both paths share.
 
+#[path = "phase_continue_prefills/prefill_fallback.rs"]
+mod prefill_fallback;
 #[path = "phase_continue_prefills/prefill_waves.rs"]
 mod prefill_waves;
 #[path = "phase_continue_prefills/run_batched_mixed.rs"]

@@ -134,7 +134,7 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     tracing::info!(
         "kernel flags: ssm_h_dtype={} gdn_fused_norm={} ssm_batched_recurrent={} \
          exact_verify={} ssm_tail_midchunk={} mtp_gate={} ssm_rollback_mode={:?} \
-         ssm_decode_ring_slots={} prefill_varlen_batch={}",
+         ssm_decode_ring_slots={} prefill_varlen_batch={} prefill_chunk_zero_batch={}",
         if gdn.h_f16 { "f16" } else { "f32" },
         gdn.fused_norm,
         gdn.batched_recurrent,
@@ -156,6 +156,13 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
         },
         // RESOLVED, not the raw argument — may come from the environment.
         spark_model::layers::ops::prefill_varlen_enabled(),
+        // The chunk-zero admission decision itself, printed beside the lever
+        // that sets it. Four call sites read this predicate; when they
+        // disagreed, `--prefill-varlen-batch` admitted a wave of fresh prompts
+        // and then refused it mid-forward, failing all sixteen requests at
+        // C=16 with an HTTP 200 and no body (#927 cell E). A boot line that
+        // names the resolved decision is what makes that arguable from a log.
+        spark_model::layers::ops::prefill_batched_chunk_zero_allowed(),
     );
 }
 
