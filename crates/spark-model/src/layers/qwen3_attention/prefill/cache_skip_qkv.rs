@@ -207,6 +207,10 @@ impl Qwen3AttentionLayer {
         // cost the SSM QKVZ arm ~10.3 GiB and killed a 28-token H100 prefill
         // (#917 round 3). It mattered again because the 5..16-row decode
         // recipe arms `ATLAS_CUBLAS_GEMM=ffn,ssm,attn`.
+        // `alloc_tests.rs` drives this chain on a mock backend with the `attn`
+        // family armed and fails if it allocates at all, on the FIRST call —
+        // the dequant was cached by weight pointer, so a first-vs-second
+        // comparison alone would pass it.
         //
         // THE cuBLASLt W8A8 ARM (#928). It used to be absent here — unlike
         // `paged_oproj.rs` — because this path writes q/k/v into back-to-back
