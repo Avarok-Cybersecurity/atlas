@@ -387,9 +387,14 @@ fn every_model_nvfp4_dir_mirrors_gb10() {
                 assert!(!hw_dir(t.hw).join(model).join("nvfp4").exists());
                 continue;
             }
+            // No overrides here, deliberately: `[kernels] overrides` names
+            // files in `common/`, which every model on the target shares. A
+            // per-MODEL fork would be the shadow-drift class, and the rule
+            // that the model dirs are a pure symlink mirror is unchanged.
             let faults = mirror_faults(
                 &hw_dir(t.hw).join(model).join("nvfp4"),
                 &gb10_dir().join(model).join("nvfp4"),
+                &std::collections::BTreeSet::new(),
             );
             assert!(
                 faults.is_empty(),
