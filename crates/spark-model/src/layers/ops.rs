@@ -28,6 +28,11 @@ mod dispatch_proj;
 // (#927), a sibling of dispatch_proj.rs so neither file crosses the cap.
 #[path = "ops/dispatch_proj_decode.rs"]
 mod dispatch_proj_decode;
+// The compiled target's serving defaults (`kernels/<hw>/HARDWARE.toml`
+// `[defaults]`, baked into atlas_kernels), resolved BEFORE the environment.
+// SSOT for every lever that differs between one target and another.
+#[path = "ops/target_defaults.rs"]
+pub mod target_defaults;
 // Row-wise FP8 routing, split out when it took dispatch_proj.rs over the cap.
 #[path = "ops/dispatch_proj_rowwise.rs"]
 mod dispatch_proj_rowwise;
