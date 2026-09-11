@@ -40,6 +40,7 @@ pub(crate) struct Defaults {
     pub gdn_decode_hopper: bool,
     pub gdn_prefill_tc: bool,
     pub ssm_ba_gates_hopper: bool,
+    pub ffn_gateup_fused: bool,
     pub decode_split_silu: bool,
     pub ssm_decode_ring_slots: String,
     pub w8a8_prefill_max_m_widening: u32,
@@ -73,6 +74,7 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         gdn_decode_hopper: false,
         gdn_prefill_tc: false,
         ssm_ba_gates_hopper: false,
+        ffn_gateup_fused: false,
         decode_split_silu: true,
         ssm_decode_ring_slots: "auto".to_string(),
         // No cap. Absence is the correct declaration for every arch on which
@@ -197,6 +199,7 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             "gdn_decode_hopper" => out.gdn_decode_hopper = boolean(key, value),
             "gdn_prefill_tc" => out.gdn_prefill_tc = boolean(key, value),
             "ssm_ba_gates_hopper" => out.ssm_ba_gates_hopper = boolean(key, value),
+            "ffn_gateup_fused" => out.ffn_gateup_fused = boolean(key, value),
             "decode_split_silu" => out.decode_split_silu = boolean(key, value),
             "ssm_decode_ring_slots" => out.ssm_decode_ring_slots = string(key, value),
             "attn_decode_splitk" => out.attn_decode_splitk = string(key, value),
@@ -235,6 +238,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   gdn_decode_hopper: {gdn_decode},\n\
          \x20   gdn_prefill_tc: {gdn_tc},\n\
          \x20   ssm_ba_gates_hopper: {ba_gates},\n\
+         \x20   ffn_gateup_fused: {gateup_fused},\n\
          \x20   decode_split_silu: {split_silu},\n\
          \x20   ssm_decode_ring_slots: \"{ring}\",\n\
          \x20   w8a8_prefill_max_m_widening: {w8a8_wide},\n\
@@ -253,6 +257,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
         gdn_decode = d.gdn_decode_hopper,
         gdn_tc = d.gdn_prefill_tc,
         ba_gates = d.ssm_ba_gates_hopper,
+        gateup_fused = d.ffn_gateup_fused,
         split_silu = d.decode_split_silu,
         ring = d.ssm_decode_ring_slots,
         w8a8_wide = d.w8a8_prefill_max_m_widening,

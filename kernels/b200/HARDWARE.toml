@@ -67,6 +67,12 @@ ssm_batched_recurrent = false
 gdn_decode_hopper = false
 gdn_prefill_tc = false
 ssm_ba_gates_hopper = false
+# The fused dense-FFN gate+up decode GEMM (#927). OFF for want of a receipt,
+# like every other row here — B200 must not inherit a Hopper recipe by
+# resemblance. The arm's strided-SiLU consumer is Hopper-owned and is NOT
+# symlinked into this tree, so the row is inert here exactly as
+# `gdn_decode_hopper` is. See `kernels/hopper/HARDWARE.toml`.
+ffn_gateup_fused = false
 decode_split_silu = true
 ssm_decode_ring_slots = "auto"
 # Upper M for the W8A8 block-scaled dense-FFN prefill (#917). NO CAP here:

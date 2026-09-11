@@ -91,6 +91,16 @@ gdn_prefill_tc = false
 # much better fit for a 48-SM part than for a 132-SM H100, and there is no GB10
 # A/B. See `kernels/hopper/HARDWARE.toml` and `SSM-BA-GATES-ATTRIBUTION.md`.
 ssm_ba_gates_hopper = false
+# The fused dense-FFN gate+up decode GEMM (#927). OFF: the arm is a cuBLASLt
+# call-shape change on the W8A8 block-scaled path, and GB10 declares
+# `cublas_gemm_scope = "off"`, so it has neither a receipt nor the arm the
+# receipt was taken on. GB10 also does not compile the arm's strided-SiLU
+# consumer (`silu_mul_strided.cu` is Hopper-owned), so the row is INERT here
+# and is declared only so the lever list is one list — the same disposition as
+# `gdn_decode_hopper` and `ssm_ba_gates_hopper` above. A GB10 receipt moves the
+# source down and this row with it.
+# See `kernels/hopper/HARDWARE.toml` and `FFN-GATEUP-FUSION-ATTRIBUTION.md`.
+ffn_gateup_fused = false
 # Paged-decode attention split-K. `legacy` is the rule GB10 has always run —
 # `num_splits = sm_count / (num_q_heads * split_ref_seqs(num_seqs, max batch))`
 # — restated, not changed. Hopper's `auto` fills 132 SMs at the single-stream

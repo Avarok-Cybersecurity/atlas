@@ -121,6 +121,25 @@ pub struct TargetDefaults {
     /// `ATLAS_SSM_BA_GATES_HOPPER=0` is the A/B. Numbers:
     /// `SSM-BA-GATES-ATTRIBUTION.md`.
     pub ssm_ba_gates_hopper: bool,
+    /// The dense FFN's gate and up projections run as ONE block-scaled FP8
+    /// GEMM at `N = 2 * intermediate` on the 5..=16-row decode band, instead of
+    /// two at `N = intermediate` (`layers/dense_ffn_gateup_fused.rs`).
+    ///
+    /// TRUE on hopper, false elsewhere. The two GEMMs read the same weight
+    /// bytes either way, so this is not a traffic claim — it is a per-launch
+    /// one. nsys, 1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8 @ `3717cb05e`, round
+    /// 13 cell V (`h100-r13-attribution.md` SS C.2-C.4): at n=16 the pair is
+    /// 128 graph nodes, 5 730.5 us = 44.77 us/node for 89.1 MB of weights =
+    /// **1 991 GB/s, 59.4% of HBM**, while `down` (same bytes, one launch,
+    /// K=17408 N=5120) reaches 71.4% and SSM `in_proj_qkvz` (N=16384) 73.2%.
+    /// One launch of twice the N halves the per-launch fixed cost and doubles
+    /// the tile count per wave; at an 80% target that is **1 476 us of a
+    /// 19.887 ms step (7.4%)**.
+    ///
+    /// gb10 and b200 declare FALSE — no receipt on either, and b200 must not
+    /// inherit a Hopper recipe by resemblance. `ATLAS_FFN_GATEUP_FUSED=0` is
+    /// the A/B. Numbers: `FFN-GATEUP-FUSION-ATTRIBUTION.md`.
+    pub ffn_gateup_fused: bool,
     /// Split SiLU+down on the decode path (`ModelLevers::decode_split_silu`).
     pub decode_split_silu: bool,
     /// `auto` — size the decode-rollback ring from free memory at preflight
