@@ -7,23 +7,23 @@
 //! 103.9 us = 6.65 ms/step = 30.4% of the step at **858 GB/s**, while
 //! `w8a16_gemv_dual` (gate+up, N=17408x2 K=5120, grid 4352) moves the SAME
 //! 89.1 MB of FP8 weights per layer at **1,979 GB/s** and `w8a16_gemv` on
-//! N=16384 K=5120 (grid 4096) at 1,852. The attention k/v projections
-//! (N=1024 K=5120, grid 256) sit at 861 GB/s. Diagnosis, both causes and the
-//! split plan: `layers::dense_ffn::fp8_down` and `layers::ops::w8a16_decode_gemv`.
+//! N=16384 K=5120 (grid 4096) at 1,852. Diagnosis and the arm rule:
+//! `layers::dense_ffn::fp8_down`.
 //!
 //! WHAT THIS PINS.
-//!  * **Bit-identity, as a hard `unequal=0`**: `w8a16_gemv_splitk` launched
-//!    with `splits=1` must produce the SAME BF16 BYTES as `w8a16_gemv`. The
-//!    split kernel's per-lane chains are byte-identical runs of the scalar
-//!    kernel's operands and the BF16 round still happens once, in the combine
-//!    — so at one split there is nothing left to differ, and anything but 0 is
-//!    a bug in the bounds, the partial layout or the reduce.
-//!  * **The documented deltas** at `splits>1` (FP32 reassociation of at most
-//!    `SPLITK_MAX` addends) and for the split-SiLU default vs the fused kernel
+//!  * **Bit-identity, as a hard `unequal=0`**: production stages the SwiGLU
+//!    IN PLACE — `ops::silu_mul(gate_out, up_out, gate_out)` — so `gate` and
+//!    `output` are the same buffer on a kernel whose parameters are both
+//!    `__restrict__`. `moe_silu_mul` is one thread per element, reading its
+//!    own index before writing it, so that aliasing must produce the same
+//!    BYTES as staging into a separate buffer, and the down GEMV that
+//!    consumes it must too. Anything but 0 means the default decode arm is
+//!    reading a value it already overwrote.
+//!  * **The documented delta** for the split-SiLU default vs the fused kernel
 //!    (a BF16 round of the activation plus reciprocal-vs-divide), reported as
 //!    max abs and max BF16 ULP rather than asserted to zero.
-//!  * **The timings** the two changes exist for: old vs new, at the real
-//!    shapes, sync'd `Instant` over 20 reps, us and GB/s of FP8 weight bytes.
+//!  * **The timings** the change exists for: old vs new, at the real shape,
+//!    sync'd `Instant` over 20 reps, us and GB/s of FP8 weight bytes.
 //!
 //! TIMING METHOD: `synchronize` + host `Instant` over `REPS`, the house
 //! pattern (`examples/native_fp8_ffn_batch16_microtest.rs`). `GpuBackend`
@@ -36,15 +36,13 @@
 use anyhow::{Result, ensure};
 use half::bf16;
 use spark_model::layers::ops;
-use spark_model::layers::ops::w8a16_decode_gemv::{GEMV_K_PER_CHUNK, GEMV_LANES_PER_OUT};
 use spark_runtime::cuda_backend::AtlasCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use std::time::Instant;
 
-/// Qwen3.8-27B: hidden 5120, intermediate 17408, 4 kv heads x head_dim 256.
+/// Qwen3.8-27B: hidden 5120, intermediate 17408.
 const H: u32 = 5120;
 const INTER: u32 = 17408;
-const KV_N: u32 = 1024;
 const GUARD: usize = 64;
 const REPS: u32 = 20;
 const WARMUP: u32 = 3;
@@ -116,21 +114,10 @@ fn compare(expected: &[u8], actual: &[u8]) -> (usize, f32, u32) {
     (unequal, max_abs, max_ulp)
 }
 
-/// The split-K plan that reproduces the scalar kernel exactly: ONE split
-/// covering every chunk iteration. This is the oracle configuration.
-fn single_split(k: u32) -> ops::SplitKPlan {
-    ops::SplitKPlan {
-        splits: 1,
-        iters_per_split: (k / GEMV_K_PER_CHUNK).div_ceil(GEMV_LANES_PER_OUT),
-    }
-}
-
 struct Kernels {
     gemv: KernelHandle,
     silu_input: KernelHandle,
     silu_mul: KernelHandle,
-    splitk: KernelHandle,
-    reduce: KernelHandle,
 }
 
 /// One projection's device-side inputs, allocated once and reused by every route.
@@ -140,15 +127,17 @@ struct Case {
     k: u32,
     weight: DevicePtr,
     scale: DevicePtr,
-    /// `[K]` BF16 — the gate vector for the FFN case, the plain activation for k/v.
+    /// `[K]` BF16 gate vector, and the host bytes it was uploaded from — the
+    /// in-place gate needs restoring before every rep that overwrites it.
     gate: DevicePtr,
-    /// `[K]` BF16 up vector. Built for every case; the k/v routes ignore it
-    /// (there is no SwiGLU on a projection input).
+    gate_host: Vec<u8>,
+    /// `[K]` BF16 up vector.
     up: DevicePtr,
-    /// `[K]` BF16 staging buffer for `silu(gate)*up`.
+    /// `[K]` BF16 staging buffer for `silu(gate)*up`, written out-of-place.
     act: DevicePtr,
-    /// `[SPLITK_MAX, N]` FP32 split-K partials.
-    partials: DevicePtr,
+    /// `[K]` BF16 scratch that plays the production `gate_out`: the SwiGLU is
+    /// staged over it IN PLACE, exactly as `DenseFfnLayer::forward` does.
+    inplace: DevicePtr,
 }
 
 impl Case {
@@ -179,10 +168,17 @@ impl Case {
             weight: upload(gpu, &weights)?,
             scale: upload(gpu, &scales)?,
             gate: upload(gpu, &gate)?,
+            gate_host: gate,
             up: upload(gpu, &up)?,
             act: upload(gpu, &vec![0_u8; kk * 2])?,
-            partials: upload(gpu, &vec![0_u8; ops::splitk_partial_bytes(n)])?,
+            inplace: upload(gpu, &vec![0_u8; kk * 2])?,
         })
+    }
+
+    /// Restore the production-shaped `gate_out` scratch, which the in-place
+    /// route destroys.
+    fn reload_inplace(&self, gpu: &dyn GpuBackend) -> Result<()> {
+        gpu.copy_h2d(&self.gate_host, self.inplace)
     }
 }
 
@@ -225,73 +221,46 @@ impl Out {
     }
 }
 
-/// `silu_mul` + the plain scalar GEMV — the #928 default arm.
-fn split_silu_route(gpu: &dyn GpuBackend, kern: &Kernels, c: &Case, out: DevicePtr) -> Result<()> {
+/// `silu_mul` into a separate buffer, then the plain scalar GEMV.
+fn staged_route(gpu: &dyn GpuBackend, kern: &Kernels, c: &Case, out: DevicePtr) -> Result<()> {
     ops::silu_mul(gpu, kern.silu_mul, c.gate, c.up, c.act, c.k, 0)?;
     ops::w8a16_gemv(gpu, kern.gemv, c.act, c.weight, c.scale, out, c.n, c.k, 0)
 }
 
-/// `silu_mul` + the split-K GEMV pair — the `ATLAS_FFN_DOWN_SPLITK` arm.
-fn split_silu_splitk_route(
-    gpu: &dyn GpuBackend,
-    kern: &Kernels,
-    c: &Case,
-    out: DevicePtr,
-    plan: ops::SplitKPlan,
-) -> Result<()> {
-    ops::silu_mul(gpu, kern.silu_mul, c.gate, c.up, c.act, c.k, 0)?;
-    splitk_route(gpu, kern, c, c.act, out, plan)
-}
-
-/// The split-K GEMV pair over an already-staged activation.
-fn splitk_route(
-    gpu: &dyn GpuBackend,
-    kern: &Kernels,
-    c: &Case,
-    input: DevicePtr,
-    out: DevicePtr,
-    plan: ops::SplitKPlan,
-) -> Result<()> {
-    ops::w8a16_gemv_splitk(
-        gpu,
-        kern.splitk,
-        input,
-        c.weight,
-        c.scale,
-        c.partials,
-        c.n,
-        c.k,
-        plan,
-        0,
-    )?;
-    ops::w8a16_gemv_splitk_reduce(gpu, kern.reduce, c.partials, out, c.n, plan.splits, 0)
-}
-
-/// splits=1 must reproduce `w8a16_gemv`'s bytes exactly. Returns the failure count.
-fn bit_identity_gate(gpu: &dyn GpuBackend, kern: &Kernels, c: &Case) -> Result<usize> {
-    let (base, split) = (Out::new(gpu, c.n)?, Out::new(gpu, c.n)?);
-    base.reset(gpu)?;
-    split.reset(gpu)?;
+/// The PRODUCTION arm: `silu_mul` staged IN PLACE over `gate_out`, then the
+/// plain scalar GEMV over that same buffer.
+fn inplace_route(gpu: &dyn GpuBackend, kern: &Kernels, c: &Case, out: DevicePtr) -> Result<()> {
+    c.reload_inplace(gpu)?;
+    ops::silu_mul(gpu, kern.silu_mul, c.inplace, c.up, c.inplace, c.k, 0)?;
     ops::w8a16_gemv(
-        gpu,
-        kern.gemv,
-        c.gate,
-        c.weight,
-        c.scale,
-        base.ptr(),
-        c.n,
-        c.k,
-        0,
-    )?;
-    splitk_route(gpu, kern, c, c.gate, split.ptr(), single_split(c.k))?;
+        gpu, kern.gemv, c.inplace, c.weight, c.scale, out, c.n, c.k, 0,
+    )
+}
+
+/// The in-place SwiGLU staging production runs must be byte-identical to the
+/// out-of-place one. Returns the failure count.
+fn bit_identity_gate(gpu: &dyn GpuBackend, kern: &Kernels, c: &Case) -> Result<usize> {
+    let (staged, inplace) = (Out::new(gpu, c.n)?, Out::new(gpu, c.n)?);
+    staged.reset(gpu)?;
+    inplace.reset(gpu)?;
+    staged_route(gpu, kern, c, staged.ptr())?;
+    inplace_route(gpu, kern, c, inplace.ptr())?;
     gpu.synchronize(0)?;
-    let (unequal, max_abs, _) = compare(&base.read(gpu)?, &split.read(gpu)?);
-    let verdict = if unequal == 0 { "PASS" } else { "FAIL" };
+    // The staged activation itself, then the projection that consumed it.
+    let mut act_host = vec![0_u8; c.k as usize * 2];
+    let mut inplace_host = vec![0_u8; c.k as usize * 2];
+    gpu.copy_d2h(c.act, &mut act_host)?;
+    gpu.copy_d2h(c.inplace, &mut inplace_host)?;
+    let (act_unequal, ..) = compare(&act_host, &inplace_host);
+    let (unequal, max_abs, _) = compare(&staged.read(gpu)?, &inplace.read(gpu)?);
+    let failed = act_unequal != 0 || unequal != 0;
+    let verdict = if failed { "FAIL" } else { "PASS" };
     println!(
-        "  [{verdict}] {:<8} splits=1 vs w8a16_gemv: unequal={unequal} max_abs={max_abs:.9}",
+        "  [{verdict}] {:<8} in-place vs out-of-place SwiGLU staging: \
+         activation unequal={act_unequal}, down unequal={unequal} max_abs={max_abs:.9}",
         c.name
     );
-    Ok(usize::from(unequal != 0))
+    Ok(usize::from(failed))
 }
 
 fn main() -> Result<()> {
@@ -300,40 +269,25 @@ fn main() -> Result<()> {
         gemv: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
         silu_input: gpu.kernel("w8a16_gemv_fused", "w8a16_gemv_silu_input")?,
         silu_mul: gpu.kernel("moe_silu_mul", "moe_silu_mul")?,
-        splitk: gpu.kernel("w8a16_gemv_splitk", "w8a16_gemv_splitk")?,
-        reduce: gpu.kernel("w8a16_gemv_splitk", "w8a16_gemv_splitk_reduce")?,
     };
     let mut rng = Rng(0x0928_2026_5a5a_0001);
     let mut failures = 0_usize;
 
     let down = Case::build(&gpu, &mut rng, "down", H, INTER)?;
-    let kv = Case::build(&gpu, &mut rng, "k/v", KV_N, 5120)?;
 
-    // ── 1. Bit-identity: splits=1 IS the scalar kernel ──
-    println!("== split-K structural oracle (splits=1, hard unequal=0) ==");
-    for c in [&down, &kv] {
-        failures += bit_identity_gate(&gpu, &kern, c)?;
-    }
+    // ── 1. Bit-identity: the production in-place staging IS the staged route ──
+    println!("== split-SiLU structural oracle (in-place staging, hard unequal=0) ==");
+    failures += bit_identity_gate(&gpu, &kern, &down)?;
 
-    // ── 2. Down projection: the three arms, numerics then time ──
+    // ── 2. Down projection: the two arms, numerics then time ──
     println!(
         "\n== down N={H} K={INTER} (grid {}, 89.1 MB FP8/layer) ==",
         H.div_ceil(4)
     );
-    let plan = ops::splitk_plan(H, INTER);
-    println!(
-        "   plan: splits={} iters_per_split={} -> grid.z {} x grid.x {} = {} CTAs",
-        plan.splits,
-        plan.iters_per_split,
-        plan.splits,
-        H.div_ceil(4),
-        plan.splits * H.div_ceil(4)
-    );
 
     let fused = Out::new(&gpu, H)?;
     let staged = Out::new(&gpu, H)?;
-    let split = Out::new(&gpu, H)?;
-    for o in [&fused, &staged, &split] {
+    for o in [&fused, &staged] {
         o.reset(&gpu)?;
     }
     ops::w8a16_gemv_silu_input(
@@ -348,19 +302,15 @@ fn main() -> Result<()> {
         INTER,
         0,
     )?;
-    split_silu_route(&gpu, &kern, &down, staged.ptr())?;
-    split_silu_splitk_route(&gpu, &kern, &down, split.ptr(), plan)?;
+    staged_route(&gpu, &kern, &down, staged.ptr())?;
     gpu.synchronize(0)?;
-    let (fused_b, staged_b, split_b) = (fused.read(&gpu)?, staged.read(&gpu)?, split.read(&gpu)?);
+    let (fused_b, staged_b) = (fused.read(&gpu)?, staged.read(&gpu)?);
 
     // Documented, NOT asserted to zero: `moe_silu_mul` rounds the activation
     // to BF16 and uses g*(1/(1+e^-g))*u where the fused kernel keeps
     // (g/(1+e^-g))*u in FP32 straight into the dot product.
     let (u1, a1, ulp1) = compare(&fused_b, &staged_b);
     println!("   split-SiLU vs fused silu_input: unequal={u1} max_abs={a1:.6} max_ulp={ulp1}");
-    // Reassociation of `splits` FP32 partials, and nothing else.
-    let (u2, a2, ulp2) = compare(&staged_b, &split_b);
-    println!("   split-K   vs split-SiLU scalar: unequal={u2} max_abs={a2:.6} max_ulp={ulp2}");
 
     let t_fused = time_us(&gpu, || {
         ops::w8a16_gemv_silu_input(
@@ -376,10 +326,7 @@ fn main() -> Result<()> {
             0,
         )
     })?;
-    let t_staged = time_us(&gpu, || split_silu_route(&gpu, &kern, &down, staged.ptr()))?;
-    let t_split = time_us(&gpu, || {
-        split_silu_splitk_route(&gpu, &kern, &down, split.ptr(), plan)
-    })?;
+    let t_staged = time_us(&gpu, || staged_route(&gpu, &kern, &down, staged.ptr()))?;
     println!(
         "   OLD fused silu_input         {t_fused:8.1} us  {:7.0} GB/s  (nsys: 103.9 us / 858 GB/s)",
         gbs(H, INTER, t_fused)
@@ -390,82 +337,19 @@ fn main() -> Result<()> {
         t_fused / t_staged
     );
     println!(
-        "   NEW + ATLAS_FFN_DOWN_SPLITK  {t_split:8.1} us  {:7.0} GB/s  {:.2}x",
-        gbs(H, INTER, t_split),
-        t_fused / t_split
-    );
-    println!(
-        "   target >= 1,700 GB/s (~52 us): staged {} splitk {}",
+        "   target >= 1,700 GB/s (~52 us): staged {}",
         if gbs(H, INTER, t_staged) >= 1700.0 {
-            "MET"
-        } else {
-            "miss"
-        },
-        if gbs(H, INTER, t_split) >= 1700.0 {
             "MET"
         } else {
             "miss"
         }
     );
 
-    // ── 3. Attention k/v: grid 256 is the other starved shape ──
-    println!("\n== k/v N={KV_N} K=5120 (grid {}) ==", KV_N.div_ceil(4));
-    let kv_plan = ops::splitk_plan(KV_N, 5120);
-    println!(
-        "   plan: splits={} iters_per_split={} -> {} CTAs",
-        kv_plan.splits,
-        kv_plan.iters_per_split,
-        kv_plan.splits * KV_N.div_ceil(4)
-    );
-    let kv_base = Out::new(&gpu, KV_N)?;
-    let kv_split = Out::new(&gpu, KV_N)?;
-    kv_base.reset(&gpu)?;
-    kv_split.reset(&gpu)?;
-    ops::w8a16_gemv(
-        &gpu,
-        kern.gemv,
-        kv.gate,
-        kv.weight,
-        kv.scale,
-        kv_base.ptr(),
-        KV_N,
-        5120,
-        0,
-    )?;
-    splitk_route(&gpu, &kern, &kv, kv.gate, kv_split.ptr(), kv_plan)?;
-    gpu.synchronize(0)?;
-    let (u3, a3, ulp3) = compare(&kv_base.read(&gpu)?, &kv_split.read(&gpu)?);
-    println!("   split-K vs w8a16_gemv: unequal={u3} max_abs={a3:.6} max_ulp={ulp3}");
-    let t_kv = time_us(&gpu, || {
-        ops::w8a16_gemv(
-            &gpu,
-            kern.gemv,
-            kv.gate,
-            kv.weight,
-            kv.scale,
-            kv_base.ptr(),
-            KV_N,
-            5120,
-            0,
-        )
-    })?;
-    let t_kv_split = time_us(&gpu, || {
-        splitk_route(&gpu, &kern, &kv, kv.gate, kv_split.ptr(), kv_plan)
-    })?;
-    println!(
-        "   OLD w8a16_gemv               {t_kv:8.1} us  {:7.0} GB/s  (nsys: 861 GB/s)",
-        gbs(KV_N, 5120, t_kv)
-    );
-    println!(
-        "   NEW split-K                  {t_kv_split:8.1} us  {:7.0} GB/s  {:.2}x  (target >= 1,500 GB/s)",
-        gbs(KV_N, 5120, t_kv_split),
-        t_kv / t_kv_split
-    );
-
     ensure!(
         failures == 0,
-        "{failures} bit-identity gate(s) failed: split-K at splits=1 is not the scalar kernel"
+        "{failures} bit-identity gate(s) failed: the in-place SwiGLU staging the \
+         decode arm runs is not the out-of-place one"
     );
-    println!("\nALL PASS: w8a16_gemv_splitk at splits=1 is byte-identical to w8a16_gemv");
+    println!("\nALL PASS: the in-place SwiGLU staging is byte-identical to the staged route");
     Ok(())
 }

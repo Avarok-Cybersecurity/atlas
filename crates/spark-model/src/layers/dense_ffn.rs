@@ -245,19 +245,6 @@ pub struct DenseFfnLayer {
     // on miss → fall back to the 3-launch w8a16_gemv path. Module = .cu file stem.
     w8a16_gemv_dual_k: KernelHandle,
     w8a16_gemv_silu_input_k: KernelHandle,
-    // Split-K M=1 decode GEMV (#928) for the short-N/long-K down projection,
-    // behind `ATLAS_FFN_DOWN_SPLITK`. KernelHandle(0) on a shadow that lacks
-    // the entry points -> `ops::w8a16_decode_gemv` falls back to the plain
-    // `w8a16_gemv`. WHY and the split plan: SSOT `ops::w8a16_decode_gemv`.
-    w8a16_gemv_splitk_k: KernelHandle,
-    w8a16_gemv_splitk_reduce_k: KernelHandle,
-    /// `[SPLITK_MAX, hidden]` FP32 partials for the split-K down GEMV,
-    /// allocated on the FIRST call that takes the arm — so a build with the
-    /// lever unset never pays the ~160 KB/layer. `get_or_init` makes the
-    /// (single-threaded-decode, so theoretical) race safe, and an allocation
-    /// failure parks `DevicePtr::NULL` here, which disarms the arm and puts
-    /// the token back on the plain kernel rather than failing it.
-    w8a16_splitk_partials: std::sync::OnceLock<DevicePtr>,
     // Fast transposed FP8 prefill GEMM (128x128 / 8-warp / two-level FP32 fold).
     // Preferred over w8a16_gemm when a transposed FP8 weight copy is present.
     // KernelHandle(0) → fall back to non-transposed w8a16_gemm.
@@ -434,13 +421,6 @@ impl DenseFfnLayer {
                 "w8a16_gemv_fused",
                 "w8a16_gemv_silu_input",
             ),
-            w8a16_gemv_splitk_k: super::try_kernel(gpu, "w8a16_gemv_splitk", "w8a16_gemv_splitk"),
-            w8a16_gemv_splitk_reduce_k: super::try_kernel(
-                gpu,
-                "w8a16_gemv_splitk",
-                "w8a16_gemv_splitk_reduce",
-            ),
-            w8a16_splitk_partials: std::sync::OnceLock::new(),
             w8a16_gemm_t_m128_k: super::try_kernel(gpu, "w8a16_gemm_t_m128", "w8a16_gemm_t_m128"),
             lora: None,
             q2_weights: None,
@@ -1087,11 +1067,9 @@ impl DenseFfnLayer {
                         inter,
                         stream,
                     )?;
-                    ops::w8a16_decode_gemv(
+                    ops::w8a16_gemv(
                         ctx.gpu,
                         self.w8a16_gemv_k,
-                        self.w8a16_splitk(ctx.gpu, h, ctx.levers.ffn_down_splitk),
-                        ctx.levers.ffn_down_splitk,
                         gate_out,
                         fp8w.down_proj.weight,
                         fp8w.down_proj.row_scale,
@@ -1147,11 +1125,9 @@ impl DenseFfnLayer {
                 inter,
                 stream,
             )?;
-            ops::w8a16_decode_gemv(
+            ops::w8a16_gemv(
                 ctx.gpu,
                 self.w8a16_gemv_k,
-                self.w8a16_splitk(ctx.gpu, h, ctx.levers.ffn_down_splitk),
-                ctx.levers.ffn_down_splitk,
                 gate_out,
                 fp8w.down_proj.weight,
                 fp8w.down_proj.row_scale,
@@ -2764,9 +2740,8 @@ impl DenseFfnLayer {
     }
 }
 
-/// The native-FP8 M=1 decode DOWN projection (#928) — the arm rule and the
-/// split-K scratch. A CHILD module, not a sibling: it reads this layer's
-/// private kernel handles, this file is already at the CI size cap, and the
+/// The native-FP8 M=1 decode DOWN projection (#928) — the arm rule. A CHILD
+/// module, not a sibling: this file is already at the CI size cap, and the
 /// nsys attribution that motivates the arm needs room this file does not have.
 #[path = "dense_ffn_fp8_down.rs"]
 pub mod fp8_down;
