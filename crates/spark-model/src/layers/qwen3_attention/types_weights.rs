@@ -230,6 +230,9 @@ pub struct HcWeights {
 /// Which of the four attention projections get an FP8 `[K, N]` transposed twin
 /// built by [`Qwen3AttentionLayer::transpose_fp8_for_prefill`].
 ///
+/// [`Qwen3AttentionLayer::transpose_fp8_for_prefill`]:
+///     super::Qwen3AttentionLayer::transpose_fp8_for_prefill
+///
 /// WHY per projection and not one flag (#915): the four are reached by
 /// DIFFERENT prefill chains and only two of them are W8A8-gated.
 ///
