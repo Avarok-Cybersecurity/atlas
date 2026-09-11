@@ -234,7 +234,18 @@ impl BufferSizes {
 
         // Batched expert output buffers for MoE (or dense FFN).
         // Sized for max(K=3 verify, prefill chunk) × top_k experts.
-        let k_max = m.max(3); // prefill chunk or K=3 verify, whichever larger
+        //
+        // The row extent is rounded UP to a multiple of 16 because the FP8
+        // block-scaled cuBLASLt GEMM (`ops::cublas_fp8_proj*`, used by the
+        // W8A8 dense-FFN prefill added for #917/#928) cannot be handed a raw
+        // M: cuBLASLt rejects a scale-tensor M extent that is not a multiple
+        // of 4, so the helper pads M to 16 and the matmul writes those phantom
+        // rows into the output. Without the pad here, a prefill chunk that is
+        // exactly `max_batch_tokens` would write up to 15 rows PAST
+        // `expert_gate_out` — straight into the neighbouring arena buffer.
+        // Costs <= 15 * intermediate * 2 B per buffer (~0.5 MB on a 27B), which
+        // is cheaper than a second output allocation or a per-call bounce.
+        let k_max = m.max(3).div_ceil(16) * 16; // prefill chunk or K=3 verify, +cuBLASLt M-pad
         let expert_inter = if config.num_experts > 0 {
             let routed = config.num_experts_per_tok * config.moe_intermediate_size;
             k_max * routed.max(config.intermediate_size)
@@ -288,8 +299,10 @@ impl BufferSizes {
         // Mamba-2 out_proj contracts over d_inner (may exceed hidden), and its
         // prefill input is FP8-precast into this buffer.
         let max_proj_k = h.max(q_heads * hd).max(mamba2_d_inner);
-        let fp8_act = m * max_proj_k;
-        let fp8_act_scale = m * max_proj_k.div_ceil(128) * 4;
+        // Padded to 16 rows: `ops::cublas_fp8_proj` hands cuBLASLt `ceil16(M)`
+        // and the matmul reads those phantom activation/scale rows.
+        let fp8_act = m.div_ceil(16) * 16 * max_proj_k;
+        let fp8_act_scale = m.div_ceil(16) * 16 * max_proj_k.div_ceil(128) * 4;
         // LoRA scratch — only when an adapter is configured (adapter_max_rank
         // set programmatically pre-build). Widest target n_out =
         // max(hidden, intermediate, q_proj): covers k/v, o/down (hidden),
@@ -363,10 +376,15 @@ impl BufferSizes {
         let (ffn_act_q8, ffn_act_a, ffn_act_scale) = if config.num_experts == 0 {
             let kmax = h.max(config.intermediate_size);
             let kpad = kmax.div_ceil(256) * 256;
+            // Row extent padded to 16 for the same reason `k_max` above is: the
+            // W8A8 dense-FFN prefill (#917/#928) hands cuBLASLt `ceil16(M)`, and
+            // the matmul READS the phantom activation rows (they are zeroed, but
+            // they are read). `m_pad` also covers every unpadded consumer.
+            let m_pad = m.div_ceil(16) * 16;
             (
                 m * kpad * 4 + (1 << 20), // q8_1_mmq: m*kpad*4 + 1MB (matches q8_1_scratch_bytes)
-                m * kmax,                 // int8 a_i8 [m,K] ≥ NVFP4 packed [m,K/2]
-                m * (kmax / 32) * 4,      // int8 a_scale [m,K/32]*4 ≥ NVFP4 scale [m,K/16]
+                m_pad * kmax,             // int8 a_i8 [m,K] ≥ NVFP4 packed [m,K/2] ≥ fp8 [m,K]
+                m_pad * (kmax / 32) * 4,  // int8 a_scale [m,K/32]*4 ≥ fp8 [m,K/128]*4
             )
         } else {
             (0, 0, 0)
@@ -404,7 +422,9 @@ impl BufferSizes {
             } else {
                 256
             },
-            moe_output: m * h * bf16,
+            // Same cuBLASLt FP8 M-pad headroom as `k_max` above: the dense-FFN
+            // down projection writes its [M, hidden] result here.
+            moe_output: m.div_ceil(16) * 16 * h * bf16,
             logits: logits_tokens * config.vocab_size * bf16, // BF16 from LM head kernel
             // SSM buffers are also reused by attention prefill/multi-seq as scratch:
             //   ssm_qkvz: K+V contiguous storage in prefill [M, 2*kv_dim]
