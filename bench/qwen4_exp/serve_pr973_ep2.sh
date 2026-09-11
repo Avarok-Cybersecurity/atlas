@@ -164,11 +164,39 @@ export ATLAS_EP_PROTOCOL="${ATLAS_EP_PROTOCOL:-v2}"
 #                               would batch while the worker waited per
 #                               sequence — an NCCL spin, not a wrong answer.
 #
-# Verified 4/4 at C=2 on ONE node (known-answer probes, byte-identical to
-# solo). At EP=2 it is NEW: read `can_batch_verify: first evaluation` for the
-# conjunct-by-conjunct verdict and the path's own
-# `mHC cross-sequence batched verify ACTIVE` line for engagement. Set both to 0
-# to fall back to the proven per-sequence verify.
+# MEASURED AT EP=2, C=4, DRAFTS=2, 32K, util 0.58 -- aggregate decode, median
+# of 5 reps, counting tokens robustly (see below):
+#
+#     MTP off (control)                 49.0 tok/s   C=1 25.3
+#     batched verify, BEFORE the fix    28.2         p1 0.19  tok_step 1.30
+#     batched verify, after the fix     56.1         p1 0.83  tok_step 2.4
+#
+# Known-answer probes 4/4 solo and 4/4 concurrent on the fixed arm.
+#
+# THE FIX (commit "the batched verify's proposer read the wrong highway row"):
+# the qwen4_exp proposer reads the accepted target's HIGHWAY row, indexed by
+# the global `last_mtp_hidden_idx`, and the batched verify's stash restore
+# never wrote that global -- so every sequence drafted from sequence 0's row.
+# Output stayed byte-identical the whole time, because a bad draft is simply
+# REJECTED and the verify emits the target's own token. The known-answer gate
+# passed throughout while speculation did almost no work. If you are judging
+# this arm, read the ACCEPT COUNTERS (`mtp_accept_debug`), not the output and
+# not the throughput: p1 near 0.85 is healthy, p1 near 0.2 means the drafts are
+# being thrown away.
+#
+# 🪤 MEASURE TOKENS, NOT `completion_tokens`. At max_tokens 400 with
+# reasoning_effort low a request can spend its whole budget inside <think> and
+# return EMPTY content with completion_tokens=0, while 400 tokens of decode
+# work actually happened. A driver that sums that field silently drops a
+# quarter of the tokens out of a C=4 aggregate. That artifact is where the
+# "41.19 control" figure came from -- the honest control is 49.0.
+#
+# Set both gates to 0 to fall back to the per-sequence verify, but note that
+# ATLAS_HC_BATCH_VERIFY=0 does NOT merely disable cross-sequence batching: it
+# gates highway models out of `supports_verify_layout` entirely, so MTP loses
+# its benefit even at C=1 (measured 27.8 tok/s against 41.6 with it on).
+# Read `can_batch_verify: first evaluation` for the conjunct-by-conjunct
+# verdict and `mHC cross-sequence batched verify ACTIVE` for engagement.
 export ATLAS_HC_BATCH_VERIFY="${ATLAS_HC_BATCH_VERIFY:-1}"
 export ATLAS_MTP_EP_BATCH_VERIFY="${ATLAS_MTP_EP_BATCH_VERIFY:-1}"
 
