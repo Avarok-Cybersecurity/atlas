@@ -61,10 +61,24 @@ fn native_fp8_qkv_batches_two_to_four_rows_on_batch4() {
     }
 }
 
+/// #927: the band read 2..=8 against a stale comment claiming the padded_n
+/// ladder was [2,4,8]. It has had rungs 12 and 16 since the C=[1,2,4,8,16]
+/// concurrency work, so those two widths were dropping to the per-sequence
+/// scalar loop — 3n launches and n full weight passes per layer per step.
 #[test]
-fn native_fp8_qkv_batches_five_to_eight_rows_on_batch16() {
-    for rows in [5, 6, 8] {
+fn native_fp8_qkv_batches_five_to_sixteen_rows_on_batch16() {
+    for rows in [5, 6, 8, 12, 16] {
         check_dispatch(&Case::new(rows), Expect::Batched(BATCH16_K));
+    }
+}
+
+/// 17+ is above the kernel's MAX_M, which CLAMPS rather than erroring — rows
+/// 16.. would simply never be written. The band's upper edge is that template
+/// bound, so the padded_n rungs above 16 must stay on the scalar loop.
+#[test]
+fn native_fp8_qkv_declines_rows_above_the_kernel_max_m() {
+    for rows in [17, 24] {
+        check_dispatch(&Case::new(rows), Expect::Scalar);
     }
 }
 

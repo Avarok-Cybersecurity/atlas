@@ -13,9 +13,76 @@ use spark_runtime::gpu::mock::{MockArg, MockGpuBackend};
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 use spark_runtime::kv_cache::KvCacheDtype;
 
+/// Which tier the FP8 o_proj is expected to take, and the row stride the group
+/// loop must walk with. `Scalar` is one `w8a16_gemv` launch per row.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Tier {
+    Scalar,
+    Batch4,
+    Batch16,
+}
+
+impl Tier {
+    fn step(self) -> usize {
+        match self {
+            Tier::Scalar => 1,
+            Tier::Batch4 => 4,
+            Tier::Batch16 => 16,
+        }
+    }
+
+    fn kernel(self) -> u64 {
+        match self {
+            Tier::Scalar => SCALAR_K,
+            Tier::Batch4 => BATCH4_K,
+            Tier::Batch16 => BATCH16_K,
+        }
+    }
+}
+
+const SCALAR_K: u64 = 0xF081;
+const BATCH4_K: u64 = 0xF084;
+const BATCH16_K: u64 = 0xF08C;
+
 #[test]
 fn native_fp8_attention_o_projection_batches_four_real_rows() {
-    check_dispatch(4, 128, true, WeightQuantFormat::Fp8BlockScaled, true);
+    check_dispatch(
+        4,
+        128,
+        true,
+        WeightQuantFormat::Fp8BlockScaled,
+        Tier::Batch4,
+    );
+}
+
+/// #927: 5..=16 concurrent decode rows used to walk the o_proj weight in
+/// ceil(n/4) batch4 groups — FOUR full weight passes at n=16. The MAX_M=16
+/// twin does it in one, and is bit-identical per row (same template, same K
+/// order, same reduction tree).
+#[test]
+fn native_fp8_attention_o_projection_batches_up_to_sixteen_rows_in_one_pass() {
+    for rows in [5, 8, 12, 16] {
+        check_dispatch(
+            rows,
+            128,
+            true,
+            WeightQuantFormat::Fp8BlockScaled,
+            Tier::Batch16,
+        );
+    }
+}
+
+/// Above the kernel's MAX_M the loop still walks — in 16-row groups now, not
+/// 4-row ones (n=20 is 2 launches, was 5).
+#[test]
+fn native_fp8_attention_o_projection_walks_wider_batches_in_sixteen_row_groups() {
+    check_dispatch(
+        20,
+        128,
+        true,
+        WeightQuantFormat::Fp8BlockScaled,
+        Tier::Batch16,
+    );
 }
 
 fn check_dispatch(
@@ -23,7 +90,20 @@ fn check_dispatch(
     width: usize,
     available: bool,
     format: WeightQuantFormat,
-    batched: bool,
+    tier: Tier,
+) {
+    check_dispatch_with(rows, width, available, available, format, tier)
+}
+
+/// `wide` is the presence of the MAX_M=16 handle, separate from `available`
+/// (the MAX_M=4 one), so the "shadow lacks the new kernel" case is reachable.
+fn check_dispatch_with(
+    rows: usize,
+    width: usize,
+    available: bool,
+    wide: bool,
+    format: WeightQuantFormat,
+    tier: Tier,
 ) {
     let gpu = MockGpuBackend::new();
     let mut config = ModelConfig::qwen3_next_80b_nvfp4();
@@ -68,8 +148,9 @@ fn check_dispatch(
         &config,
     )
     .unwrap();
-    layer.w8a16_gemv_k = KernelHandle(0xF081);
-    layer.w8a16_gemv_batch4_k = KernelHandle(if available { 0xF084 } else { 0 });
+    layer.w8a16_gemv_k = KernelHandle(SCALAR_K);
+    layer.w8a16_gemv_batch4_k = KernelHandle(if available { BATCH4_K } else { 0 });
+    layer.w8a16_gemv_batch16_k = KernelHandle(if wide { BATCH16_K } else { 0 });
     let fp8 = Fp8Weight {
         weight: gpu.alloc(128 * 128).unwrap(),
         row_scale: gpu.alloc(4).unwrap(),
@@ -121,11 +202,11 @@ fn check_dispatch(
         .iter()
         .filter(|l| l.args.contains(&MockArg::Buffer(fp8.weight)))
         .collect();
-    let step = if batched { 4 } else { 1 };
+    let step = tier.step();
     assert_eq!(
         launches.len(),
         rows.div_ceil(step),
-        "production O-projection dispatch"
+        "production O-projection dispatch (tier {tier:?}, rows {rows})"
     );
     assert_eq!(
         gpu.alloc_count(),
@@ -134,7 +215,7 @@ fn check_dispatch(
     );
     for (group, launch) in launches.iter().enumerate() {
         let row = group * step;
-        assert_eq!(launch.func, if batched { 0xF084 } else { 0xF081 });
+        assert_eq!(launch.func, tier.kernel());
         assert_eq!(
             launch.args[0],
             MockArg::Buffer(buffers.attn_output().offset(row * width * 2))
@@ -145,10 +226,10 @@ fn check_dispatch(
             launch.args[3],
             MockArg::Buffer(output.offset(row * width * 2))
         );
-        if batched {
+        if tier != Tier::Scalar {
             assert_eq!(
                 launch.args[4],
-                MockArg::Bytes(((rows - row).min(4) as u32).to_ne_bytes().to_vec())
+                MockArg::Bytes(((rows - row).min(step) as u32).to_ne_bytes().to_vec())
             );
         }
     }
@@ -156,15 +237,49 @@ fn check_dispatch(
 
 #[test]
 fn native_fp8_attention_o_projection_chunks_preserve_offsets() {
-    for rows in [2, 5, 16] {
-        check_dispatch(rows, 128, true, WeightQuantFormat::Fp8BlockScaled, true);
+    check_dispatch(
+        2,
+        128,
+        true,
+        WeightQuantFormat::Fp8BlockScaled,
+        Tier::Batch4,
+    );
+    for rows in [5, 16] {
+        check_dispatch(
+            rows,
+            128,
+            true,
+            WeightQuantFormat::Fp8BlockScaled,
+            Tier::Batch16,
+        );
     }
 }
 
 #[test]
 fn native_fp8_attention_o_projection_retains_scalar_fallbacks() {
-    check_dispatch(1, 128, true, WeightQuantFormat::Fp8BlockScaled, false);
-    check_dispatch(4, 128, false, WeightQuantFormat::Fp8BlockScaled, false);
-    check_dispatch(4, 64, true, WeightQuantFormat::Fp8BlockScaled, false);
-    check_dispatch(4, 128, true, WeightQuantFormat::Fp8PerRow, false);
+    let bs = WeightQuantFormat::Fp8BlockScaled;
+    check_dispatch(1, 128, true, bs, Tier::Scalar);
+    check_dispatch(4, 128, false, bs, Tier::Scalar);
+    check_dispatch(4, 64, true, bs, Tier::Scalar);
+    check_dispatch(4, 128, true, WeightQuantFormat::Fp8PerRow, Tier::Scalar);
+    // Per-row scales and unaligned dims disqualify the WIDE tier too — the
+    // `block_scaled` guard is shared, not duplicated per rung.
+    check_dispatch(8, 64, true, bs, Tier::Scalar);
+    check_dispatch(8, 128, true, WeightQuantFormat::Fp8PerRow, Tier::Scalar);
+}
+
+/// A shadow without the MAX_M=16 entry point keeps the pre-#927 grouping
+/// instead of falling off the batched tier entirely.
+#[test]
+fn native_fp8_attention_o_projection_without_batch16_keeps_four_row_groups() {
+    for rows in [8, 16] {
+        check_dispatch_with(
+            rows,
+            128,
+            true,
+            false,
+            WeightQuantFormat::Fp8BlockScaled,
+            Tier::Batch4,
+        );
+    }
 }

@@ -58,13 +58,23 @@ impl Qwen3AttentionLayer {
     /// than read here so tests can drive both arms without racing the
     /// process-global `OnceLock` in [`fp8_batchm_enabled`].
     ///
-    /// GRAPH-CAPTURE: `c.n` is the ctx n, which IS `padded_n` (decode_a2.rs
-    /// pads to [2,4,8] and keys the graph cache on it), so branching on it
-    /// bakes exactly the value the graph is keyed by — the same contract the
-    /// n==2 / n==3 NVFP4 branches rely on. Never branch on the unpadded
-    /// `seqs.len()` here.
+    /// GRAPH-CAPTURE: `c.n` is the ctx n, which IS `padded_n` (the ladder in
+    /// `traits::model::padded_batch_n`, which the graph cache is keyed by), so
+    /// branching on it bakes exactly the value the graph is keyed by — the
+    /// same contract the n==2 / n==3 NVFP4 branches rely on. Never branch on
+    /// the unpadded `seqs.len()` here.
+    ///
+    /// The band is 2..=16, the MAX_M of `w8a16_gemv_batch16_strided`. It read
+    /// 2..=8 when this module landed, against a comment that the ladder was
+    /// [2,4,8]; the ladder has had rungs 12 and 16 since the C=[1,2,4,8,16]
+    /// concurrency work, so padded_n 12 and 16 were dropping back to the
+    /// per-sequence scalar `w8a16_gemv` loop — 3n launches and n full weight
+    /// passes per attention layer per step, which is the #927 cliff on the
+    /// projection side. 17+ still falls through: the kernel's MAX_M is 16 and
+    /// it CLAMPS rather than erroring, so the band's upper edge is the
+    /// template bound and not a tuning choice.
     pub(super) fn ms_qkv_batchm_fp8_selected(&self, c: &MultiSeqCtx<'_>, enabled: bool) -> bool {
-        if !enabled || !(2..=8).contains(&c.n) {
+        if !enabled || !(2..=16).contains(&c.n) {
             return false;
         }
         if self.w8a16_gemv_batch4_strided_k.0 == 0 || self.w8a16_gemv_batch16_strided_k.0 == 0 {
@@ -146,7 +156,7 @@ impl Qwen3AttentionLayer {
         let kv_dim = nkv * hd;
         let kv_bytes = kv_dim as usize * bf16;
 
-        // batch4 for n<=4, batch16 for 5..=8 — one launch either way; the only
+        // batch4 for n<=4, batch16 for 5..=16 — one launch either way; the only
         // difference is the kernel's compile-time register-array bound (and so
         // the MAX_M the wrapper enforces).
         let (launch, kernel): (StridedBatchGemv, KernelHandle) = if n <= 4 {

@@ -213,13 +213,13 @@ impl Qwen3SsmLayer {
         // C>1 decode step. `.0 == 0` → fall back to the base kernel.
         let w8a16_pipe = self.w8a16_gemm_pipelined_k.0 != 0;
         // Weight-streaming block-scaled GEMV for batched decode: avoids the
-        // pipelined kernel's M->128 MMA pad (issue-bound). batch4 (M<=4) for the
-        // common path, batch16 (M<=16) for high-concurrency C=8/16. Bit-identical
-        // per row to w8a16_gemv. Disable with ATLAS_SSM_GEMV_BATCH4=0.
-        let gemv_batch_k = if n <= 4 {
-            self.w8a16_gemv_batch4_k
+        // pipelined kernel's M->128 MMA pad. batch4 (M<=4) common path, batch16
+        // (M<=16) for C=8/16; bit-identical per row to w8a16_gemv, disabled by
+        // ATLAS_SSM_GEMV_BATCH4=0. Wrapper pairs with handle: batch4 caps at 4.
+        let (gemv_batch, gemv_batch_k): (ops::ContiguousBatchGemv, KernelHandle) = if n <= 4 {
+            (ops::w8a16_gemv_batch4, self.w8a16_gemv_batch4_k)
         } else {
-            self.w8a16_gemv_batch16_k
+            (ops::w8a16_gemv_batch16, self.w8a16_gemv_batch16_k)
         };
         let use_batch4 = gemv_batch_k.0 != 0
             && n <= 16
@@ -237,7 +237,7 @@ impl Qwen3SsmLayer {
         };
         if let Some(ref fp8) = self.qkvz_fp8w {
             if use_batch4 {
-                ops::w8a16_gemv_batch4(
+                gemv_batch(
                     ctx.gpu,
                     gemv_batch_k,
                     normed_base,
@@ -370,7 +370,7 @@ impl Qwen3SsmLayer {
         // FP8 (w8a16) when the decode overlay is installed, else BF16 dense.
         if let Some(ref fp8) = self.out_proj_fp8w {
             if use_batch4 {
-                ops::w8a16_gemv_batch4(
+                gemv_batch(
                     ctx.gpu,
                     gemv_batch_k,
                     normed_out_base,
