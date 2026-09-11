@@ -226,3 +226,50 @@ pub struct HcWeights {
     /// final norm and the checkpoint ships no `model.norm.weight`.
     pub is_last_model_layer: bool,
 }
+
+/// Which of the four attention projections get an FP8 `[K, N]` transposed twin
+/// built by [`Qwen3AttentionLayer::transpose_fp8_for_prefill`].
+///
+/// WHY per projection and not one flag (#915): the four are reached by
+/// DIFFERENT prefill chains and only two of them are W8A8-gated.
+///
+/// * **K and V** are read by `prefill/cache_skip_qkv.rs:218` / `:235`, whose
+///   dispatch chain has **no W8A8 arm at all** — and `cache_skip` is the
+///   first-chunk path (`trait_impl/prefill_inner.rs:138`, `seq_len_start == 0`)
+///   taken by every request. Their twins are never dead.
+/// * **Q** on that chain is behind `ATLAS_ATTN_PREFILL_Q_T=1`
+///   (`cache_skip_qkv.rs:142`); otherwise it is reached only after the W8A8
+///   arm in `prefill/paged_qkv.rs:220` declines.
+/// * **O** is routed to `prefill/paged_oproj.rs` from both chains, so it is
+///   reached only after the W8A8 arm at `paged_oproj.rs:94` declines.
+///
+/// On 1xH100 (Qwen3.8-27B-FP8) the four cost 100 MiB/layer x 16 layers =
+/// 1,600 MB — the `weight_map/quantized.rs:643` ledger row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fp8TwinSet {
+    pub q: bool,
+    pub k: bool,
+    pub v: bool,
+    pub o: bool,
+}
+
+impl Fp8TwinSet {
+    pub const NONE: Self = Self {
+        q: false,
+        k: false,
+        v: false,
+        o: false,
+    };
+    /// Every twin — what a loader that has not opted into the #915 plan asks
+    /// for, i.e. the pre-#915 behaviour.
+    pub const ALL: Self = Self {
+        q: true,
+        k: true,
+        v: true,
+        o: true,
+    };
+
+    pub fn any(self) -> bool {
+        self.q || self.k || self.v || self.o
+    }
+}
