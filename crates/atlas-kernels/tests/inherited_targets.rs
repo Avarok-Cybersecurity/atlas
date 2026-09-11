@@ -254,10 +254,20 @@ fn a_hopper_owned_addition_brings_entry_points_gb10_does_not() {
         .collect();
 
     // Entry names and file hashes of everything gb10's common/ declares.
+    // `__launch_bounds__` SITS BETWEEN `void` AND THE NAME, and taking the
+    // first token blind reported the attribute as the entry point. Every gb10
+    // kernel that carries launch bounds then contributed the SAME fake name, so
+    // the collision check below fired on `__launch_bounds__` for any addition
+    // that used them — and was blind to the real names it exists to protect.
     let entry = |text: &str| -> Vec<String> {
         text.lines()
             .filter_map(|l| l.split_once("__global__ void "))
             .filter_map(|(_, rest)| {
+                let rest = rest.trim_start();
+                let rest = match rest.strip_prefix("__launch_bounds__") {
+                    Some(r) => r.split_once(')').map(|(_, t)| t).unwrap_or(r),
+                    None => rest,
+                };
                 let name = rest.trim().split(['(', ' ']).next()?;
                 (!name.is_empty()).then(|| name.to_string())
             })

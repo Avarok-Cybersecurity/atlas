@@ -30,7 +30,6 @@
 //!       --example native_gdn_prefill_remnants_microtest
 
 use anyhow::{Result, bail};
-use half::bf16;
 use spark_runtime::cuda_backend::AtlasCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
@@ -38,8 +37,8 @@ use spark_runtime::kernel_args::KernelLaunch;
 #[path = "common/gdn_remnants.rs"]
 mod gdn_remnants;
 use gdn_remnants::{
-    C, Case, KD, NK, NV, REF_HEADS, VD, alloc_guarded, dn_bf16, dn_f32, gen_case, guard_intact,
-    metrics, ref_fwd_o, ref_wu, report, take, up_bf16, up_f32,
+    C, Case, KD, NK, NV, VD, alloc_guarded, dn_bf16, dn_f32, gen_case, guard_intact, metrics,
+    ref_fwd_o, ref_wu, report, take, up_bf16, up_f32,
 };
 
 const SMEM_WU: u32 = (C * KD * 2 + C * C * 4 + C * 4) as u32;
