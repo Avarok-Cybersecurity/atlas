@@ -201,6 +201,15 @@ impl Qwen3AttentionLayer {
                 super::types_weights::W8A8_PREFILL_KERNELS[1].0,
                 super::types_weights::W8A8_PREFILL_KERNELS[1].1,
             ),
+            // Same optional adapter the SSM layer loads (`init.rs`): absent on
+            // a shadow that has no `fp8_scale_transpose` module, which makes
+            // the cuBLASLt W8A8 arms decline rather than hand the library the
+            // wrong scale order.
+            fp8_act_scale_kmajor_k: super::super::try_kernel(
+                gpu,
+                "fp8_scale_transpose",
+                "fp8_act_scale_to_kmajor",
+            ),
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
             rms_norm_w_k: if crate::ships_vanilla_norm_weights(config) {
                 gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?

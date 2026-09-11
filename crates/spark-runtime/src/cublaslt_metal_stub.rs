@@ -57,3 +57,19 @@ pub fn fp8_gemm_act_weight_t_blkscaled(
 ) -> Result<()> {
     unreachable!("cublaslt::fp8_gemm_act_weight_t_blkscaled is cuda-only (not built for metal)")
 }
+
+#[allow(clippy::too_many_arguments)]
+pub fn fp8_gemm_act_weight_t_blkscaled_ldc(
+    _act_fp8: u64,
+    _act_scale: u64,
+    _weight_fp8: u64,
+    _weight_block_scale: u64,
+    _out: u64,
+    _m: u32,
+    _n: u32,
+    _k: u32,
+    _ldc: u32,
+    _stream: u64,
+) -> Result<()> {
+    unreachable!("cublaslt::fp8_gemm_act_weight_t_blkscaled_ldc is cuda-only (not built for metal)")
+}
