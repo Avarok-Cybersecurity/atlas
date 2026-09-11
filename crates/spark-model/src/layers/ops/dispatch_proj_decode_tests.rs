@@ -29,7 +29,7 @@ fn scratch() -> DecodeW8a8Scratch {
         act_scale_bytes: 1 << 20,
         act_scale_kmajor: DevicePtr(0x3000),
         act_scale_kmajor_bytes: 1 << 20,
-        quant_k: KernelHandle(0xA1),
+        quant_k: Fp8ActQuant::shared_only(KernelHandle(0xA1)),
         scale_kmajor_k: KernelHandle(0xA2),
     }
 }
@@ -262,7 +262,7 @@ fn the_activation_scratch_is_checked_at_the_padded_row_count() {
 fn a_missing_scale_layout_adapter_drops_the_arm() {
     let plan = ssm_qkvz(16);
     let mutate: [(&str, fn(&mut DecodeW8a8Scratch)); 5] = [
-        ("no quantizer", |s| s.quant_k = KernelHandle(0)),
+        ("no quantizer", |s| s.quant_k = Fp8ActQuant::default()),
         ("no fp8 scratch", |s| s.act_fp8 = DevicePtr(0)),
         ("no scale scratch", |s| s.act_scale = DevicePtr(0)),
         ("no kmajor kernel", |s| s.scale_kmajor_k = KernelHandle(0)),

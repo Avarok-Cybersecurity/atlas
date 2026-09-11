@@ -172,7 +172,8 @@ fn harness(armed: bool) -> Harness {
         &gpu,
     )
     .unwrap();
-    layer.per_token_group_quant_fp8_k = KernelHandle(0xA8A);
+    layer.per_token_group_quant_fp8_k =
+        crate::layers::ops::Fp8ActQuant::shared_only(KernelHandle(0xA8A));
     layer.fp8_gemm_t_blockscaled_k = KernelHandle(0xA88);
     // The cuBLASLt arm is unreachable from a mock backend (it is an FFI call),
     // so zero the k-major adapter and let `w8a8_gemm` take the in-tree kernel.

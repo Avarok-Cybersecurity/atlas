@@ -120,7 +120,7 @@ fn native_fp8_attention_layer(gpu: &MockGpuBackend, config: &ModelConfig) -> Qwe
     layer.k_fp8 = None;
     layer.v_fp8 = None;
     layer.o_fp8 = None;
-    layer.per_token_group_quant_fp8_k = QUANT_K;
+    layer.per_token_group_quant_fp8_k = crate::layers::ops::Fp8ActQuant::shared_only(QUANT_K);
     layer.fp8_gemm_t_blockscaled_k = BLOCKSCALED_K;
     layer.w8a16_gemm_pipelined_k = W8A16_PIPELINED_K;
     // See the module header: no k-major adapter -> the in-tree kernel, which a
