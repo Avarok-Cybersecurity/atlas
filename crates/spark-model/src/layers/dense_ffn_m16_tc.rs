@@ -166,29 +166,27 @@ pub struct M16TcLevers {
     pub ffn_n_tile: u32,
 }
 
-/// The grammar, as a pure function of the three variables' PRESENCE plus the
+/// The grammar, as a pure function of the two RESOLVED family toggles plus the
 /// N-tile string — so the rule is testable without touching the process
 /// environment.
 ///
-/// Presence rather than `=1` everywhere (the N tile aside, which needs a
-/// value): it keeps every A/B recipe a bare `VAR=1` prefix with no "=0 means
-/// on" trap, the same contract `ATLAS_FFN_NO_BATCH16` uses next door. All three
-/// default OFF, which is the opposite polarity to that kill switch and
-/// deliberately so: it is an operator's escape hatch from a shipped default,
-/// these are opt-ins to a route that trades #927's bit-exactness for bandwidth.
+/// `ffn` and `attn` arrive already resolved by
+/// `layers::ops::target_defaults`: the compiled target declares each
+/// (`kernels/hopper` says `attn_m16_tc = true` on round 6's -21.7% and
+/// `ffn_m16_tc = false` on its +13.7%; `kernels/gb10` says false for both,
+/// because these kernels are not in GB10's set), and the environment overrides
+/// it. `ATLAS_M16_TC` remains the round-6 umbrella that arms both, and it is
+/// folded in by the resolver rather than here, because an umbrella that could
+/// also DISARM a target's declaration would make the recipe depend on export
+/// order.
 ///
 /// An unrecognised `ATLAS_FFN_M16_TC_NTILE` falls back to 32 rather than
 /// failing the boot: the tile is a perf A/B knob, and the route log says which
 /// one actually ran.
-pub(crate) fn resolve_m16_tc_levers(
-    ffn: bool,
-    attn: bool,
-    umbrella: bool,
-    n_tile: Option<&str>,
-) -> M16TcLevers {
+pub(crate) fn resolve_m16_tc_levers(ffn: bool, attn: bool, n_tile: Option<&str>) -> M16TcLevers {
     M16TcLevers {
-        ffn: ffn || umbrella,
-        attn: attn || umbrella,
+        ffn,
+        attn,
         ffn_n_tile: match n_tile {
             Some("64") => ops::W8A16_GEMM_M16_N_TILE_WIDE,
             _ => ops::W8A16_GEMM_M16_N_TILE,
@@ -198,17 +196,17 @@ pub(crate) fn resolve_m16_tc_levers(
 
 /// The resolved levers for this process.
 ///
-/// `OnceLock`-cached for the same reason the batch16 switch is: the selector
+/// `OnceLock`-cached for the same reason the batch16 tier is: the selector
 /// runs per projection per layer per step, and a per-call `var_os` could change
 /// the captured launch set across CUDA-graph replays.
 pub fn m16_tc_levers() -> M16TcLevers {
     static ON: std::sync::OnceLock<M16TcLevers> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
+        let levers = ops::target_defaults::resolved();
         let n_tile = std::env::var("ATLAS_FFN_M16_TC_NTILE").ok();
         resolve_m16_tc_levers(
-            std::env::var_os("ATLAS_FFN_M16_TC").is_some(),
-            std::env::var_os("ATLAS_ATTN_M16_TC").is_some(),
-            std::env::var_os("ATLAS_M16_TC").is_some(),
+            levers.ffn_m16_tc.value,
+            levers.attn_m16_tc.value,
             n_tile.as_deref(),
         )
     })

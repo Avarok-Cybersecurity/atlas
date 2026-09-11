@@ -475,11 +475,20 @@ impl Qwen3SsmLayer {
                 "fp8_gemm_t_blockscaled",
                 "fp8_gemm_t_blockscaled",
             ),
-            fp8_act_scale_kmajor_k: super::super::try_kernel(
-                gpu,
-                "fp8_scale_transpose",
-                "fp8_act_scale_to_kmajor",
-            ),
+            // Probed only under a cuBLASLt SSM scope — `fp8_scale_transpose.cu`
+            // is Hopper-tuned and absent from GB10's kernel set, and the boot
+            // audit fails closed on an unresolved lookup nothing declared. The
+            // condition mirrors the one the dispatch launches under
+            // (`ctx.dispatch.cublas.ssm`, prefill_w8a8.rs).
+            fp8_act_scale_kmajor_k: if crate::layers::ops::target_defaults::resolved()
+                .cublas
+                .value
+                .ssm
+            {
+                super::super::try_kernel(gpu, "fp8_scale_transpose", "fp8_act_scale_to_kmajor")
+            } else {
+                spark_runtime::gpu::KernelHandle(0)
+            },
         })
     }
 

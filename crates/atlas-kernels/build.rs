@@ -142,8 +142,38 @@ struct DflashRaw {
     target_layer_ids: Vec<usize>,
 }
 
+/// Write `OUT_DIR/target_defaults.rs` for the hardware tree this build
+/// selected, and return the generated source so the caller can fold it into
+/// the recompile hash.
+///
+/// Called on BOTH paths — the skip stub and the real build. The constant is
+/// CONFIGURATION read by spark-model's resolvers, not a kernel blob, and every
+/// CPU gate in the repo runs under `ATLAS_SKIP_BUILD=1`: emitting it only on
+/// the compiling path would leave `TARGET_DEFAULTS` unresolvable in exactly
+/// the builds that test it.
+fn emit_target_defaults(out_dir: &std::path::Path, workspace_root: &std::path::Path) -> String {
+    let hw = env::var("ATLAS_TARGET_HW").unwrap_or_else(|_| build_diagnose::DEFAULT_HW.into());
+    let kernels_root = workspace_root.join("kernels");
+    let path = kernels_root.join(&hw).join("HARDWARE.toml");
+    if path.exists() {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    let generated = build_defaults::literal(&build_defaults::read_defaults(&kernels_root, &hw));
+    let dest = out_dir.join("target_defaults.rs");
+    std::fs::write(&dest, &generated)
+        .unwrap_or_else(|e| panic!("Failed to write {}: {e}", dest.display()));
+    generated
+}
+
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    // Two levels up from `crates/atlas-kernels`. Resolved before the skip
+    // branch because `emit_target_defaults` runs on both paths.
+    let workspace_root_owned = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("crates/atlas-kernels is two levels below the workspace root")
+        .to_path_buf();
 
     println!("cargo:rerun-if-env-changed=ATLAS_SKIP_BUILD");
     // Without these the cargo cache short-circuits when only the target
@@ -178,9 +208,13 @@ fn main() {
             pub fn metallib_modules() -> Vec<(&'static str, &'static [u8])> { Vec::new() }\n\
             pub fn all_ptx_sets() -> Vec<TargetPtxSet> { Vec::new() }\n";
         std::fs::write(out_dir.join("target_ptx.rs"), stub).expect("write skip stub target_ptx.rs");
+        let defaults = emit_target_defaults(&out_dir, &workspace_root_owned);
+        // The defaults are `include!`d like target_ptx.rs, so cargo does not
+        // track them either — fold them into the same recompile hash or an
+        // edited HARDWARE.toml `[defaults]` leaves a stale constant embedded.
         println!(
             "cargo:rustc-env=ATLAS_KERNEL_SET_HASH={}",
-            content_hash(stub)
+            content_hash(&format!("{stub}{defaults}"))
         );
         println!("cargo:rustc-env=ATLAS_PTX_DIR={}", out_dir.display());
         // No compiler ran, so this binary can attest to nothing. Emitted
@@ -193,6 +227,7 @@ fn main() {
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let target_defaults = emit_target_defaults(&out_dir, workspace_root);
 
     // ── Resolve targets (supports wildcards) ──
     let targets = resolve_targets(workspace_root);
@@ -549,9 +584,11 @@ fn main() {
     // module set (the 2026-06-04 98-vs-99 / dropped-pipelined-GEMM bug). The
     // content hash is surfaced as a rustc-env that lib.rs references via env!;
     // a changed hash invalidates the crate's fingerprint → fresh rebuild.
+    // `target_defaults.rs` is `include!`d the same way and is just as untracked,
+    // so it joins the hash: editing a `[defaults]` row must rebuild the lib.
     println!(
         "cargo:rustc-env=ATLAS_KERNEL_SET_HASH={}",
-        content_hash(&generated)
+        content_hash(&format!("{generated}{target_defaults}"))
     );
     println!("cargo:rustc-env=ATLAS_PTX_DIR={}", out_dir.display());
 
@@ -1407,6 +1444,12 @@ mod build_arch;
 // file as `build_arch.rs`: `tests/kernel_build_flags.rs` compiles it directly.
 #[path = "build_flags.rs"]
 mod build_flags;
+
+// The per-target SERVING defaults (`[defaults]` in HARDWARE.toml). Same reason
+// for its own file: `tests/target_defaults.rs` compiles it against the real
+// kernels/ tree.
+#[path = "build_defaults.rs"]
+mod build_defaults;
 
 #[path = "build_codegen.rs"]
 mod build_codegen;

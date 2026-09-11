@@ -88,22 +88,29 @@ impl NcolWidth {
     }
 }
 
-/// `ATLAS_ATTN_NCOL_GEMV`: PRESENCE (any value, including empty) opts the
-/// attention projections into the tier. `ATLAS_NO_ATTN_DECODE_BATCH`
-/// (presence) wins over it and forces the tier off — the operator escape hatch
-/// that stays meaningful if this ever becomes the default.
+/// Whether the N-column-blocked tier claims the decode attention projections
+/// on THIS target.
 ///
-/// Presence rather than `=1` for both, matching `ATLAS_FFN_M16_TC` and
-/// `ATLAS_FFN_NO_BATCH16` next door: `ATLAS_ATTN_NCOL_GEMV=0` meaning "on" is
-/// a trap, and so is `ATLAS_NO_..._=0` meaning "off".
+/// The compiled target declares it (`kernels/<hw>/HARDWARE.toml` `[defaults]
+/// attn_ncol_gemv`) and `ATLAS_ATTN_NCOL_GEMV` overrides. BOTH current targets
+/// declare it OFF: `w8a16_gemv_ncol.cu` is Hopper-tuned and is not in GB10's
+/// kernel set, and on H100 the microtest exists but the serving A/B does not —
+/// a default is a claim about a measurement.
 ///
-/// `OnceLock`-cached for the reason every hot-path lever here is: the selector
-/// runs per projection per layer per step, and a per-call `var_os` could change
-/// the captured launch set across CUDA-graph replays.
+/// `ATLAS_NO_ATTN_DECODE_BATCH` (PRESENCE, unchanged) wins over both and forces
+/// the tier off: the operator escape hatch that has to stay meaningful once a
+/// target can declare the tier on.
+///
+/// Resolution and caching are `layers::ops::target_defaults::resolved`, which
+/// is `OnceLock`-backed for the reason every hot-path lever here is: the
+/// selector runs per projection per layer per step, and a per-call `var_os`
+/// could change the captured launch set across CUDA-graph replays.
 pub fn ncol_gemv_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        std::env::var_os("ATLAS_ATTN_NCOL_GEMV").is_some()
+        crate::layers::ops::target_defaults::resolved()
+            .attn_ncol_gemv
+            .value
             && std::env::var_os("ATLAS_NO_ATTN_DECODE_BATCH").is_none()
     })
 }

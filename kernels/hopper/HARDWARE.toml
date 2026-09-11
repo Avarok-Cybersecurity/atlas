@@ -32,3 +32,54 @@ memory_gb = 80
 # model, which tests/inherited_targets.rs forbids.
 [build]
 extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
+
+# ── Serving defaults for this target ───────────────────────────────────────
+#
+# SSOT for the per-target serving levers, baked into `atlas_kernels` by
+# build.rs (`build_defaults.rs`) as `atlas_kernels::TARGET_DEFAULTS` and read
+# by every resolver in spark-model BEFORE the environment.
+#
+# WHY IT IS HERE. Maintainer review, 2026-09-11 (tbraun96): "Every Hopper/GB10
+# divergence is expressed as an env lever set by an H100 recipe living outside
+# this repo — not as arch-selected code. 'No interference' rests on discipline
+# rather than structure." Every value below WAS a line in that external recipe.
+# The recipe is now the target's own declaration, so an H100 serve with NO
+# environment set reproduces the round-9 best configuration, and a GB10 serve
+# cannot be reached by it — the two tables are separate files.
+#
+# The environment still overrides any of these; the serve log's
+# `target defaults (hopper): …` line marks which values came from it.
+[defaults]
+# H100 round 3/9: the cuBLASLt arms win on all three projection families.
+# SCOPED, not a global boolean — `ATLAS_CUBLAS_GEMM=1` once armed the SSM arm
+# by accident and materialised ~10.3 GiB of unledgered BF16 dequant
+# (dispatch_config::CublasScope). `head` is parsed but has no consumer.
+cublas_gemm_scope = "ffn,ssm,attn"
+# `w8a16_gemv_batch16`: with `cublas_gemm_scope` arming the FFN's W8A8 arm at
+# these same 5..=32 widths, the batch16 tier is a measured LOSS on H100 — the
+# recipe that produced round 9 sets `ATLAS_FFN_NO_BATCH16`.
+ffn_batch16_tier = false
+# `w8a16_gemm_m16` on the dense-FFN arm: round 6 A/B, +13.7% on the SSM-layer
+# FFN step at bs16 (544 CTAs against a 528-CTA residency). Off; the ATTENTION
+# tiers below are the half of that lever that wins.
+ffn_m16_tc = false
+# `w8a16_gemm_m16{,_strided}` on QKV and o_proj: round 6 A/B, -21.7% on the
+# attention phase at bs16. Net +5.3% on the serve once split from the FFN arm.
+attn_m16_tc = true
+# `w8a16_gemv_batch16_ncol{2,4}`: no H100 serving receipt yet — the microtest
+# exists, the A/B does not. Stays off until it does.
+attn_ncol_gemv = false
+# `dense_gemm_m16_bf16` on the BF16 decode head: +4% on the serve.
+lm_head_m16_tc = true
+# The BF16 decode head's batched-GEMV band. 16, not GB10's frozen 8: on H100
+# the TILE GEMM is what loses at decode widths (#927 — 224 ms/step at 16
+# active rows), which is the opposite of the GB10 measurement that froze 8.
+# Clamped at the kernel's compile-time row bound by the resolver.
+lm_head_batchm_max = 16
+# One strided recurrent launch per batch on the GDN decode path: +6% on the
+# serve, and md5-identical output to the per-sequence launches.
+ssm_batched_recurrent = true
+# Split SiLU+down on the decode path — shipped ON everywhere since #928.
+decode_split_silu = true
+# `auto` = size the decode-rollback ring from free memory at preflight (#915).
+ssm_decode_ring_slots = "auto"

@@ -462,8 +462,26 @@ impl DenseFfnLayer {
             w8a16_gemm_k: super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemv_batch4_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch4"),
             w8a16_gemv_batch16_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch16"),
-            w8a16_gemm_m16_k: super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16"),
-            w8a16_gemm_m16_n64_k: super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16_n64"),
+            // ★ PROBED ONLY WHEN THE TIER IS ARMED. `w8a16_gemm_m16.cu` is a
+            // HOPPER-TUNED source (`kernels/hopper/common`, a real file
+            // overriding the gb10 mirror) and is not compiled for GB10 at all.
+            // An unconditional `try_kernel` records a FAILED lookup, and the
+            // boot audit (`kernel_audit::classify_failures`) fails CLOSED on
+            // every unresolved lookup nothing declared — so probing for a
+            // kernel this target never builds would refuse the boot. Gating
+            // the lookup on the resolved lever is the fix `ptx_set.rs`
+            // prescribes for exactly this ("gate it on config so it is never
+            // issued"), and it is the same shape as `q2_0_mmq_nc_k` below.
+            w8a16_gemm_m16_k: if m16_tc::m16_tc_levers().ffn {
+                super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16")
+            } else {
+                KernelHandle(0)
+            },
+            w8a16_gemm_m16_n64_k: if m16_tc::m16_tc_levers().ffn {
+                super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16_n64")
+            } else {
+                KernelHandle(0)
+            },
             m16_tc: m16_tc::m16_tc_levers().ffn,
             m16_tc_n_tile: m16_tc::m16_tc_levers().ffn_n_tile,
             w8a16_gemm_pipelined_k: super::try_kernel(
@@ -495,11 +513,15 @@ impl DenseFfnLayer {
                 "fp8_gemm_t_blockscaled",
                 "fp8_gemm_t_blockscaled",
             ),
-            fp8_act_scale_kmajor_k: super::try_kernel(
-                gpu,
-                "fp8_scale_transpose",
-                "fp8_act_scale_to_kmajor",
-            ),
+            // Reached only under a cuBLASLt FFN scope, and `fp8_scale_transpose.cu`
+            // is Hopper-tuned (not in GB10's kernel set). Same boot-audit rule
+            // as the M16 probes above: gate the LOOKUP on the same condition
+            // the dispatch gates the LAUNCH on (`ctx.dispatch.cublas.ffn`).
+            fp8_act_scale_kmajor_k: if super::ops::target_defaults::resolved().cublas.value.ffn {
+                super::try_kernel(gpu, "fp8_scale_transpose", "fp8_act_scale_to_kmajor")
+            } else {
+                KernelHandle(0)
+            },
             lora: None,
             q2_weights: None,
             // Winner of the decode-GEMV bench: candidate B (vectorized code loads

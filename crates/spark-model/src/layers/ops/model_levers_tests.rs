@@ -27,6 +27,9 @@ fn resolve(values: &[(&str, &str)]) -> ModelLevers {
         0,
         crate::model::drafter_context::DrafterContext::BOTH,
         0.0,
+        // `kernels/<hw>/HARDWARE.toml` `[defaults] decode_split_silu` — every
+        // target in tree declares it ON, which is the shipped default.
+        true,
     )
 }
 
@@ -205,6 +208,7 @@ fn externally_resolved_shadow_and_drafter_values_are_carried() {
         7,
         crate::model::drafter_context::DrafterContext::OFF,
         0.42,
+        true,
     );
     assert_eq!(d.shadow_topk, 7);
     assert_eq!(

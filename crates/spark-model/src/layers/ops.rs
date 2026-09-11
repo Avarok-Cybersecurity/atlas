@@ -20,6 +20,11 @@ mod dispatch_config;
 #[cfg(test)]
 #[path = "ops/dispatch_config_routing_tests.rs"]
 mod dispatch_config_routing_tests;
+// The compiled target's serving defaults (`kernels/<hw>/HARDWARE.toml`
+// `[defaults]`, baked into atlas_kernels), resolved BEFORE the environment.
+// SSOT for every lever that differs between GB10 and Hopper.
+#[path = "ops/target_defaults.rs"]
+pub mod target_defaults;
 #[path = "ops/dispatch_helpers.rs"]
 mod dispatch_helpers;
 #[path = "ops/dispatch_proj.rs"]
@@ -191,6 +196,7 @@ pub use activations::*;
 pub use dense_gemm_m16_bf16::*;
 pub use derived_weights::{Derivation, DerivedWeights};
 pub use dispatch_config::{CublasScope, GemmDispatch, parse_cublas_scope};
+pub use target_defaults::{Resolved, Source, TargetLevers};
 pub use dispatch_helpers::*;
 pub use dispatch_proj::*;
 pub use dispatch_proj_decode::*;

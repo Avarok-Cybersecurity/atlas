@@ -136,15 +136,28 @@ impl TransformerModel {
             .unwrap_or(spark_runtime::gpu::KernelHandle(0));
         // Tensor-core BF16 head arm (#927/#928). Optional: older kernel sets
         // have neither entry point, and a 0 handle is exactly how
-        // `lm_head_m16_tc_route` declines. Loaded unconditionally — a handle is
-        // cheap and `ATLAS_LM_HEAD_M16_TC` decides whether it is ever launched.
-        let lm_head_m16_tc_kernel =
-            crate::layers::try_kernel(gpu.as_ref(), "dense_gemm_m16_bf16", "dense_gemm_m16_bf16");
-        let lm_head_m16_tc_n64_kernel = crate::layers::try_kernel(
-            gpu.as_ref(),
-            "dense_gemm_m16_bf16",
-            "dense_gemm_m16_bf16_n64",
-        );
+        // `lm_head_m16_tc_route` declines.
+        //
+        // ★ PROBED ONLY WHEN THE ARM IS ARMED. It was loaded unconditionally on
+        // the grounds that "a handle is cheap", which stopped being true when
+        // `dense_gemm_m16_bf16.cu` became a HOPPER-TUNED source
+        // (`kernels/hopper/common`) that GB10 does not compile: the boot audit
+        // (`kernel_audit::classify_failures`) fails CLOSED on every unresolved
+        // lookup nothing declared, so the probe itself would refuse a GB10
+        // boot. The target declares the arm (`[defaults] lm_head_m16_tc`) and
+        // `ATLAS_LM_HEAD_M16_TC` overrides.
+        let lm_head_m16_tc_on = crate::layers::ops::target_defaults::resolved()
+            .lm_head_m16_tc
+            .value;
+        let head_probe = |func: &str| {
+            if lm_head_m16_tc_on {
+                crate::layers::try_kernel(gpu.as_ref(), "dense_gemm_m16_bf16", func)
+            } else {
+                spark_runtime::gpu::KernelHandle(0)
+            }
+        };
+        let lm_head_m16_tc_kernel = head_probe("dense_gemm_m16_bf16");
+        let lm_head_m16_tc_n64_kernel = head_probe("dense_gemm_m16_bf16_n64");
         let argmax_kernel = gpu.kernel("argmax", "argmax_bf16")?;
         let argmax_batch_kernel = gpu
             .kernel("argmax", "argmax_bf16_batch")

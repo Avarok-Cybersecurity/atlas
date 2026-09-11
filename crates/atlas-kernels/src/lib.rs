@@ -36,6 +36,18 @@ pub use behavior_defaults::{
     DEFAULT_EFFORT_CAPPED_AT_CEILING, DEFAULT_MAX_INTER_TOOL_PROSE, DEFAULT_MAX_THINKING_BUDGET,
 };
 
+// The compiled target's SERVING defaults, baked from
+// `kernels/<hw>/HARDWARE.toml` `[defaults]`. The type is hand-written; the
+// `TARGET_DEFAULTS` const below it is generated.
+mod target_defaults;
+pub use target_defaults::TargetDefaults;
+
+// Auto-generated: `pub const TARGET_DEFAULTS: TargetDefaults`, from the
+// `[defaults]` table of the ONE `kernels/<hw>` tree this binary compiled.
+// Emitted on the `ATLAS_SKIP_BUILD` path too — it is configuration, not a
+// kernel blob, and every CPU gate runs under that flag.
+include!(concat!(env!("OUT_DIR"), "/target_defaults.rs"));
+
 // Auto-generated: per-target PTX constants, ptx_modules() function,
 // and all_ptx_sets() for multi-target builds.
 // NOTE: cargo does NOT track this build-script-generated include! as a

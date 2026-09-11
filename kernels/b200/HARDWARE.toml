@@ -32,3 +32,30 @@ memory_gb = 180
 # model, which tests/inherited_targets.rs forbids.
 [build]
 extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
+
+# ── Serving defaults for this target ───────────────────────────────────────
+#
+# Same mechanism as kernels/hopper and kernels/gb10 (see either file, and
+# `crates/atlas-kernels/build_defaults.rs`): the per-target serving levers,
+# baked into `atlas_kernels::TARGET_DEFAULTS` and read before the environment.
+#
+# ★ EVERY VALUE HERE IS THE CONSERVATIVE ONE, and deliberately NOT Hopper's.
+# B200 has no serving receipt of any kind — nothing in this repo has run on
+# one. Copying Hopper's recipe across because both cards are datacentre parts
+# is the reasoning this whole table exists to replace: a default is a claim
+# about a measurement, and there is no B200 measurement. The Hopper-tuned
+# kernels ARE compiled for this target (kernels/b200/common symlinks them from
+# kernels/hopper/common), so an operator can A/B any row below with the
+# documented environment override and the serve log will say the value came
+# from the environment. When a receipt lands, it changes THIS file.
+[defaults]
+cublas_gemm_scope = "off"
+ffn_batch16_tier = false
+ffn_m16_tc = false
+attn_m16_tc = false
+attn_ncol_gemv = false
+lm_head_m16_tc = false
+lm_head_batchm_max = 8
+ssm_batched_recurrent = false
+decode_split_silu = true
+ssm_decode_ring_slots = "auto"

@@ -6,3 +6,49 @@ compute_capability = "12.1"
 memory_bandwidth_gbps = 273
 memory_type = "LPDDR5X"
 memory_gb = 120
+
+# ── Serving defaults for this target ───────────────────────────────────────
+#
+# SSOT for the per-target serving levers, baked into `atlas_kernels` by
+# build.rs (`build_defaults.rs`) as `atlas_kernels::TARGET_DEFAULTS` and read
+# by every resolver in spark-model BEFORE the environment.
+#
+# WHY IT IS HERE. Maintainer review, 2026-09-11 (tbraun96): "There is no arch
+# separation at all. H100 builds compile GB10's kernel tree. Every Hopper/GB10
+# divergence is expressed as an env lever set by an H100 recipe living outside
+# this repo — not as arch-selected code. 'No interference' rests on discipline
+# rather than structure." A default that lives in a launch script is not a
+# property of the target; one that lives beside the target's arch and memory
+# facts is. The environment stays available as an EXPLICIT operator override,
+# and the serve log says which values came from it.
+#
+# GB10's values are TODAY'S HARDCODED DEFAULTS, unchanged, and
+# `crates/atlas-kernels/tests/target_defaults.rs` asserts exactly that: a GB10
+# serve with no environment set behaves as it did before this table existed.
+[defaults]
+# cuBLASLt is not the GB10 path — the hand-written mma.sync projection GEMMs
+# are. `off` is the empty family set (grammar: dispatch_config::CublasScope).
+cublas_gemm_scope = "off"
+# `w8a16_gemv_batch16` (5..=32-row native-FP8 dense-FFN decode). Unmeasured on
+# GB10 and NOT in main's kernel set at all, so off keeps main's routing.
+ffn_batch16_tier = false
+# The `w8a16_gemm_m16` tensor-core tiers and the BF16 head's
+# `dense_gemm_m16_bf16` tier. Those kernels are Hopper-tuned and are not
+# compiled for GB10 (kernels/hopper/common), so these must stay false here.
+ffn_m16_tc = false
+attn_m16_tc = false
+lm_head_m16_tc = false
+# `w8a16_gemv_batch16_ncol{2,4}` decode attention projections — also
+# Hopper-only sources, no GB10 receipt.
+attn_ncol_gemv = false
+# The BF16 decode head's batched-GEMV band. 8 is the FROZEN band: the A/B
+# behind it measured the GEMV NEGATIVE above 8 on GB10 (-14.4% at C=16,
+# commits 84d5b763c / 78d276832).
+lm_head_batchm_max = 8
+# One strided recurrent launch per batch on the GDN decode path. No GB10
+# receipt; unchanged from main.
+ssm_batched_recurrent = false
+# Split SiLU+down on the decode path — shipped ON everywhere since #928.
+decode_split_silu = true
+# `auto` = size the decode-rollback ring from free memory at preflight (#915).
+ssm_decode_ring_slots = "auto"

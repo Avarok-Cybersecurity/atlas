@@ -63,20 +63,28 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::Fp8Weight;
 
-/// `ATLAS_FFN_NO_BATCH16` kill switch: PRESENCE (any value, including empty)
-/// sends 5..=32 rows back to the pre-#927 arms.
+/// Whether the batch16 tier claims 5..=32 rows on THIS target.
 ///
-/// Presence rather than `=1`, matching `ffn_w8a16_only` next door: this is an
-/// escape hatch an operator reaches for while a serve misbehaves, and
-/// `ATLAS_FFN_NO_BATCH16=0` meaning "batch16 is off" is a trap.
+/// The compiled target declares it (`kernels/<hw>/HARDWARE.toml`
+/// `[defaults] ffn_batch16_tier`); the environment overrides it. Both current
+/// targets declare it OFF — GB10 because the kernel is not in its set at all
+/// (it is Hopper-tuned, `kernels/hopper/common`) and nothing has measured it
+/// there, H100 because the cuBLASLt FFN arm that `[defaults]
+/// cublas_gemm_scope = "ffn,ssm,attn"` arms owns these same widths and beat it.
 ///
-/// `OnceLock`-cached: the selector runs per projection per layer per step and
-/// `std::env::var_os` walks the environment block on every call. Cached
-/// process-wide is also what keeps the route CONSTANT across CUDA-graph
-/// replays — a per-call read could change the captured launch set.
+/// `ATLAS_FFN_NO_BATCH16` keeps its PRESENCE semantics as the kill switch, and
+/// `ATLAS_FFN_BATCH16` is the opt-IN an operator A/Bs a target's declaration
+/// with. See `layers::ops::target_defaults` for the whole grammar.
+pub fn ffn_batch16_tier() -> bool {
+    crate::layers::ops::target_defaults::resolved()
+        .ffn_batch16_tier
+        .value
+}
+
+/// Legacy spelling of `!`[`ffn_batch16_tier`], kept for the call sites and
+/// tests that read the tier as a kill switch.
 pub fn ffn_no_batch16() -> bool {
-    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("ATLAS_FFN_NO_BATCH16").is_some())
+    !ffn_batch16_tier()
 }
 
 /// How the batch16 tier serves `m` rows, or `None` when it does not claim them.

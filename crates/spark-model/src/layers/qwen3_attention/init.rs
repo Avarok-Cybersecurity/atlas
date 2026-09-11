@@ -11,6 +11,19 @@ use spark_runtime::kv_cache::KvCacheDtype;
 // function pointer: coercing a `#[track_caller]` fn to a pointer inserts a shim
 // and the audit would name the shim instead of the dispatch site below.
 use super::init_arch_gates::{ArchProbes, gated as gate};
+
+/// Look up one `w8a16_gemv_ncol` entry point, but only when the N-column tier
+/// is armed for this target.
+///
+/// The four handles differ by NAME alone, so one helper keeps the guard — and
+/// the reason for it — in a single place rather than four.
+fn ncol_probe(gpu: &dyn GpuBackend, func: &str) -> KernelHandle {
+    if super::attn_ncol_gemv::ncol_gemv_enabled() {
+        crate::layers::try_kernel(gpu, "w8a16_gemv_ncol", func)
+    } else {
+        KernelHandle(0)
+    }
+}
 use super::types::{HeadGateActivation, Qwen3AttentionLayer};
 use crate::layers::FfnComponent;
 use crate::layers::fp8_calibration::Fp8KvCalibration;
@@ -201,15 +214,23 @@ impl Qwen3AttentionLayer {
                 super::types_weights::W8A8_PREFILL_KERNELS[1].0,
                 super::types_weights::W8A8_PREFILL_KERNELS[1].1,
             ),
-            // Same optional adapter the SSM layer loads (`init.rs`): absent on
-            // a shadow that has no `fp8_scale_transpose` module, which makes
-            // the cuBLASLt W8A8 arms decline rather than hand the library the
-            // wrong scale order.
-            fp8_act_scale_kmajor_k: super::super::try_kernel(
-                gpu,
-                "fp8_scale_transpose",
-                "fp8_act_scale_to_kmajor",
-            ),
+            // The same optional adapter the SSM layer loads (`qwen3_ssm/init.rs`),
+            // and probed under the same condition: `fp8_scale_transpose.cu` is
+            // a HOPPER-TUNED source (`kernels/hopper/common`) that GB10 does
+            // not compile, the arms that use it only run under a cuBLASLt
+            // attention scope (`ctx.dispatch.cublas.attn`), and the boot audit
+            // fails CLOSED on an unresolved lookup nothing declared. A 0 handle
+            // still makes the W8A8 arms decline rather than hand the library
+            // the wrong scale order.
+            fp8_act_scale_kmajor_k: if crate::layers::ops::target_defaults::resolved()
+                .cublas
+                .value
+                .attn
+            {
+                super::super::try_kernel(gpu, "fp8_scale_transpose", "fp8_act_scale_to_kmajor")
+            } else {
+                KernelHandle(0)
+            },
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
             rms_norm_w_k: if crate::ships_vanilla_norm_weights(config) {
                 gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?
@@ -267,33 +288,31 @@ impl Qwen3AttentionLayer {
                 "w8a16_gemv_batch4",
                 "w8a16_gemv_batch16_strided",
             ),
-            w8a16_gemm_m16_k: super::super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16"),
-            w8a16_gemm_m16_strided_k: super::super::try_kernel(
-                gpu,
-                "w8a16_gemm_m16",
-                "w8a16_gemm_m16_strided",
-            ),
+            // ★ PROBED ONLY WHEN THE TIER IS ARMED — `w8a16_gemm_m16.cu` is
+            // Hopper-tuned (`kernels/hopper/common`) and is not compiled for
+            // GB10, where an unconditional lookup would fail the boot audit.
+            // See the identical guard in `dense_ffn.rs`.
+            w8a16_gemm_m16_k: if crate::layers::dense_ffn::m16_tc::m16_tc_levers().attn {
+                super::super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16")
+            } else {
+                KernelHandle(0)
+            },
+            w8a16_gemm_m16_strided_k: if crate::layers::dense_ffn::m16_tc::m16_tc_levers().attn {
+                super::super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16_strided")
+            } else {
+                KernelHandle(0)
+            },
             m16_tc: crate::layers::dense_ffn::m16_tc::m16_tc_levers().attn,
-            w8a16_gemv_ncol2_k: super::super::try_kernel(
-                gpu,
-                "w8a16_gemv_ncol",
-                "w8a16_gemv_batch16_ncol2",
-            ),
-            w8a16_gemv_ncol4_k: super::super::try_kernel(
-                gpu,
-                "w8a16_gemv_ncol",
-                "w8a16_gemv_batch16_ncol4",
-            ),
-            w8a16_gemv_ncol2_strided_k: super::super::try_kernel(
-                gpu,
-                "w8a16_gemv_ncol",
-                "w8a16_gemv_batch16_ncol2_strided",
-            ),
-            w8a16_gemv_ncol4_strided_k: super::super::try_kernel(
-                gpu,
-                "w8a16_gemv_ncol",
-                "w8a16_gemv_batch16_ncol4_strided",
-            ),
+            // ★ PROBED ONLY WHEN THE TIER IS ARMED, for the reason the M16
+            // probes above are: `w8a16_gemv_ncol.cu` is Hopper-tuned and is not
+            // in GB10's kernel set, and the boot audit fails closed on an
+            // unresolved lookup nothing declared. `ncol_plan` already declines
+            // on a 0 handle, so a target that arms the tier without carrying
+            // the entry point still routes correctly.
+            w8a16_gemv_ncol2_k: ncol_probe(gpu, "w8a16_gemv_batch16_ncol2"),
+            w8a16_gemv_ncol4_k: ncol_probe(gpu, "w8a16_gemv_batch16_ncol4"),
+            w8a16_gemv_ncol2_strided_k: ncol_probe(gpu, "w8a16_gemv_batch16_ncol2_strided"),
+            w8a16_gemv_ncol4_strided_k: ncol_probe(gpu, "w8a16_gemv_batch16_ncol4_strided"),
             attn_ncol: super::attn_ncol_gemv::ncol_gemv_enabled()
                 .then(super::attn_ncol_gemv::ncol_gemv_width),
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
