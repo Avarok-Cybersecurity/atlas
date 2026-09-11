@@ -249,6 +249,14 @@ pub struct DenseFfnLayer {
     // Preferred over w8a16_gemm when a transposed FP8 weight copy is present.
     // KernelHandle(0) → fall back to non-transposed w8a16_gemm.
     w8a16_gemm_t_m128_k: KernelHandle,
+    // W8A8 block-scaled prefill pair (#917/#928): per-token 1x128 FP8
+    // activation quant + the FP8xFP8 GEMM with both scale sets folded in an
+    // FP32 epilogue. Same two entry points the attention Q/K/V/O prefill
+    // already resolves, so no model shadow needs a new kernel; KernelHandle(0)
+    // on a shadow that lacks them -> the W8A16 branches still run.
+    // Dispatch rule + rationale live in `dense_ffn_w8a8_prefill.rs` (SSOT).
+    per_token_group_quant_fp8_k: KernelHandle,
+    fp8_gemm_t_blockscaled_k: KernelHandle,
     /// v0 LoRA overlay for gate/up/down. `set_lora_weights` REJECTS layers
     /// where `fp8_weights`, `bf16_weights` or `q2_weights` are installed (v0
     /// supports the NVFP4 dispatch path only — those branches early-return
@@ -422,6 +430,16 @@ impl DenseFfnLayer {
                 "w8a16_gemv_silu_input",
             ),
             w8a16_gemm_t_m128_k: super::try_kernel(gpu, "w8a16_gemm_t_m128", "w8a16_gemm_t_m128"),
+            per_token_group_quant_fp8_k: super::try_kernel(
+                gpu,
+                "per_token_group_quant_fp8",
+                "per_token_group_quant_fp8",
+            ),
+            fp8_gemm_t_blockscaled_k: super::try_kernel(
+                gpu,
+                "fp8_gemm_t_blockscaled",
+                "fp8_gemm_t_blockscaled",
+            ),
             lora: None,
             q2_weights: None,
             // Winner of the decode-GEMV bench: candidate B (vectorized code loads
@@ -1935,7 +1953,7 @@ impl DenseFfnLayer {
         // Every fallback retains the original E4M3 bytes and FP32 block scales.
         if let Some(ref fp8w) = self.fp8_weights {
             macro_rules! w8_gemm {
-                ($w:expr, $wt:expr, $in:expr, $out:expr, $n:expr, $k:expr) => {
+                ($w:expr, $wt:expr, $in:expr, $out:expr, $n:expr, $k:expr, $a8:expr, $cap:expr) => {
                     match $wt {
                         _ if (1..=4).contains(&m) && self.w8a16_gemv_batch4_k.0 != 0 => {
                             ops::w8a16_gemv_batch4(
@@ -1950,6 +1968,14 @@ impl DenseFfnLayer {
                                 $k,
                                 stream,
                             )?
+                        }
+                        // W8A8 block-scaled (#917/#928) — ahead of the W8A16
+                        // arms below, which run the BF16 MMA at ~12 TFLOP/s on
+                        // these shapes. `$a8` is `Some` exactly when
+                        // `prefill_w8a8_selected` held for this projection.
+                        _ if $a8.is_some() => {
+                            let (a_fp8, a_scale) = $a8.expect("guarded by is_some");
+                            self.w8a8_gemm(ctx, a_fp8, a_scale, &$w, $out, $cap, m, $n, $k, stream)?
                         }
                         Some(wt) if self.w8a16_gemm_t_m128_k.0 != 0 => {
                             let wt: Fp8WeightTransposed = wt;
@@ -1996,8 +2022,35 @@ impl DenseFfnLayer {
             let gate_t: Option<Fp8WeightTransposed> = None;
             let up_t: Option<Fp8WeightTransposed> = None;
             let down_t: Option<Fp8WeightTransposed> = None;
-            w8_gemm!(fp8w.gate_proj, gate_t, input, gate_out, inter, h);
-            w8_gemm!(fp8w.up_proj, up_t, input, up_out, inter, h);
+            // W8A8 activation quant (#917/#928), ONCE per shared input: gate and
+            // up both read `input`, so quantizing per projection would pay the
+            // per-token E4M3 cast twice per layer for identical bytes. down
+            // quantizes separately because its input is the post-SiLU product.
+            // `None` => that projection keeps today's W8A16 dispatch.
+            // Selection rule + WHY: `dense_ffn_w8a8_prefill.rs` (SSOT).
+            let gate_up_w8a8 = self.prefill_w8a8_selected(ctx, m, inter, h, &fp8w.gate_proj)
+                && self.prefill_w8a8_selected(ctx, m, inter, h, &fp8w.up_proj);
+            let down_w8a8 = self.prefill_w8a8_selected(ctx, m, h, inter, &fp8w.down_proj);
+            if !gate_up_w8a8 && !down_w8a8 {
+                self.log_w8a16_prefill_route(ctx);
+            }
+            let gu_a8 = if gate_up_w8a8 {
+                Some(self.w8a8_quant_act(ctx, input, m, h, stream)?)
+            } else {
+                None
+            };
+            let gu_cap = ctx.buffers.expert_gate_out_bytes();
+            w8_gemm!(
+                fp8w.gate_proj,
+                gate_t,
+                input,
+                gate_out,
+                inter,
+                h,
+                gu_a8,
+                gu_cap
+            );
+            w8_gemm!(fp8w.up_proj, up_t, input, up_out, inter, h, gu_a8, gu_cap);
             ops::silu_mul(
                 ctx.gpu,
                 self.act_mul,
@@ -2008,7 +2061,25 @@ impl DenseFfnLayer {
                 stream,
             )?;
             let output = ctx.buffers.moe_output();
-            w8_gemm!(fp8w.down_proj, down_t, gate_out, output, h, inter);
+            // `gate_out` (the SiLU product) is fully written by the launch above
+            // and re-read here; the quant lands in the SAME scratch the gate/up
+            // quant used, which is safe because every launch is on `stream`.
+            let down_a8 = if down_w8a8 {
+                Some(self.w8a8_quant_act(ctx, gate_out, m, inter, stream)?)
+            } else {
+                None
+            };
+            let down_cap = ctx.buffers.moe_output_bytes();
+            w8_gemm!(
+                fp8w.down_proj,
+                down_t,
+                gate_out,
+                output,
+                h,
+                inter,
+                down_a8,
+                down_cap
+            );
             return Ok(());
         }
 
@@ -2686,6 +2757,12 @@ impl DenseFfnLayer {
         self.forward_prefill(input, num_tokens, ctx, stream)
     }
 }
+
+/// W8A8 block-scaled prefill branch (#917/#928). A CHILD module, not a
+/// sibling: it adds `impl DenseFfnLayer` methods that read this layer's
+/// private kernel handles, and this file is already at the CI size cap.
+#[path = "dense_ffn_w8a8_prefill.rs"]
+pub mod w8a8_prefill;
 
 /// Native BF16/FP8 overlays take precedence over any NVFP4 fallback weights.
 /// Small batches must use the same format-aware dispatcher as prefill.

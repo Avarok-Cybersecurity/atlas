@@ -81,6 +81,17 @@ impl BufferArena {
     pub fn expert_up_out(&self) -> DevicePtr {
         self.expert_up_out
     }
+    /// Allocated byte size of `expert_gate_out` / `expert_up_out` (identical by
+    /// construction). Debug bounds-check for GEMM paths that write PADDED M
+    /// rows — the FP8 block-scaled cuBLASLt matmul rounds M up to 16.
+    pub fn expert_gate_out_bytes(&self) -> usize {
+        debug_assert_eq!(self.sizes.expert_gate_out, self.sizes.expert_up_out);
+        self.sizes.expert_gate_out
+    }
+    /// Allocated byte size of `moe_output` (same padded-M debug check).
+    pub fn moe_output_bytes(&self) -> usize {
+        self.sizes.moe_output
+    }
     /// Batched expert down projection output.
     pub fn expert_down_out(&self) -> DevicePtr {
         self.expert_down_out
@@ -102,6 +113,14 @@ impl BufferArena {
     /// Shared dense-FFN int8/NVFP4 activation-scale scratch. NULL for MoE.
     pub fn ffn_act_scale(&self) -> DevicePtr {
         self.ffn_act_scale
+    }
+    /// Allocated byte size of `ffn_act_a` (debug bounds-check at call sites).
+    pub fn ffn_act_a_bytes(&self) -> usize {
+        self.sizes.ffn_act_a
+    }
+    /// Allocated byte size of `ffn_act_scale` (debug bounds-check at call sites).
+    pub fn ffn_act_scale_bytes(&self) -> usize {
+        self.sizes.ffn_act_scale
     }
     /// Persistent FP8 block-scaled activation scratch for prefill projections.
     /// Replaces a per-projection alloc/sync/free in the W8A8+FP32-epilogue path.
