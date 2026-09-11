@@ -206,10 +206,13 @@ pub struct Qwen3AttentionLayer {
     /// shadow that lacks the entry points, which keeps the batched GEMVs.
     pub(super) w8a16_gemm_m16_k: KernelHandle,
     pub(super) w8a16_gemm_m16_strided_k: KernelHandle,
-    /// `ATLAS_FFN_M16_TC`, cached at construction (SSOT:
-    /// `layers::dense_ffn::m16_tc::m16_tc_enabled`). ONE lever A/Bs the FFN,
-    /// QKV and o_proj tiers together; a field, not a per-call env read, so the
-    /// route cannot vary across CUDA-graph replays.
+    /// `ATLAS_ATTN_M16_TC` (or the `ATLAS_M16_TC` umbrella), cached at
+    /// construction (SSOT: `layers::dense_ffn::m16_tc::m16_tc_levers`). This
+    /// lever A/Bs the QKV and o_proj tiers ONLY; the dense FFN arm has its own
+    /// (`ATLAS_FFN_M16_TC`), because round 6 on 1xH100 measured the two moving
+    /// in opposite directions — attention −21.7%, FFN +13.7%, net +5.2% — and a
+    /// single lever could ship only both or neither. A field, not a per-call env
+    /// read, so the route cannot vary across CUDA-graph replays.
     pub(super) m16_tc: bool,
     /// N-column-blocked W8A16 GEMVs (#927) — the BIT-EXACT sibling of
     /// `w8a16_gemv_batch16`, contiguous (o_proj) and strided (multi-seq Q/K/V)

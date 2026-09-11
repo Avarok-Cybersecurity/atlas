@@ -14,6 +14,7 @@ use super::{M16TcPlan, m16_tc_plan};
 use crate::layer::{ForwardContext, MoeLoraRoute};
 use crate::layers::dense_ffn::{DenseFfnLayer, DenseFfnWeights};
 use crate::layers::ops::{DerivedWeights, GemmDispatch, ModelLevers, ModelStats};
+use crate::layers::ops::{W8A16_GEMM_M16_N_TILE, W8A16_GEMM_M16_N_TILE_WIDE};
 use crate::weight_map::{Fp8Weight, QuantizedWeight, WeightQuantFormat};
 use atlas_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
@@ -25,6 +26,8 @@ use spark_runtime::gpu::{GpuBackend, KernelHandle};
 const BATCH4_K: u64 = 0xB004;
 const BATCH16_K: u64 = 0xB016;
 const M16TC_K: u64 = 0x167C;
+/// The `N_TILE=64` twin (`ATLAS_FFN_M16_TC_NTILE=64`).
+const M16TC_N64_K: u64 = 0x1640;
 /// Hidden/intermediate width for the mock layer. 128 is the smallest value that
 /// is a whole 128-wide FP8 scale block, which is what the tier's K guard wants.
 const WIDTH: u32 = 128;
@@ -136,6 +139,13 @@ enum Expect {
 }
 
 fn run(m: u32, expect: Expect, configure: impl FnOnce(&mut DenseFfnLayer)) {
+    run_tiled(m, expect, W8A16_GEMM_M16_N_TILE, configure);
+}
+
+/// `tile` is the CTA N width the tensor-core arm is expected to launch with —
+/// the only thing `ATLAS_FFN_M16_TC_NTILE` changes, and therefore the only
+/// thing worth asserting about it.
+fn run_tiled(m: u32, expect: Expect, tile: u32, configure: impl FnOnce(&mut DenseFfnLayer)) {
     let gpu = MockGpuBackend::new();
     let mut config = ModelConfig::qwen3_next_80b_nvfp4();
     config.hidden_size = WIDTH as usize;
@@ -163,6 +173,7 @@ fn run(m: u32, expect: Expect, configure: impl FnOnce(&mut DenseFfnLayer)) {
     layer.w8a16_gemv_batch4_k = KernelHandle(BATCH4_K);
     layer.w8a16_gemv_batch16_k = KernelHandle(BATCH16_K);
     layer.w8a16_gemm_m16_k = KernelHandle(M16TC_K);
+    layer.w8a16_gemm_m16_n64_k = KernelHandle(M16TC_N64_K);
     layer.act_mul = KernelHandle(0xAC7);
     let fp8 = Fp8Weight {
         weight: gpu.alloc(128 * 128).unwrap(),
@@ -225,9 +236,9 @@ fn run(m: u32, expect: Expect, configure: impl FnOnce(&mut DenseFfnLayer)) {
                     launch.args[4],
                     MockArg::Bytes(want_m.to_ne_bytes().to_vec())
                 );
-                if handle == M16TC_K {
-                    // ceil(N/32) CTAs of 128 threads — NOT the GEMV geometry.
-                    assert_eq!(launch.grid, [WIDTH.div_ceil(32), 1, 1]);
+                if handle == M16TC_K || handle == M16TC_N64_K {
+                    // ceil(N/tile) CTAs of 128 threads — NOT the GEMV geometry.
+                    assert_eq!(launch.grid, [WIDTH.div_ceil(tile), 1, 1]);
                     assert_eq!(launch.block, [128, 1, 1]);
                 }
             }
@@ -239,12 +250,43 @@ fn run(m: u32, expect: Expect, configure: impl FnOnce(&mut DenseFfnLayer)) {
                     MockArg::Bytes(want.to_ne_bytes().to_vec()),
                     "m={m}: half {i} row count"
                 );
-                if handle == M16TC_K {
-                    assert_eq!(launch.grid, [WIDTH.div_ceil(32), 1, 1]);
+                if handle == M16TC_K || handle == M16TC_N64_K {
+                    assert_eq!(launch.grid, [WIDTH.div_ceil(tile), 1, 1]);
                     assert_eq!(launch.block, [128, 1, 1]);
+                }
+                // THE OFFSET the round-6 `gate/up M=32` cell was suspected of
+                // (it was not — `dense_ffn_m16_tc_m32_tests.rs`): the second
+                // half must start `first` rows into BOTH the activation buffer
+                // (pitch K) and the output (pitch N). Asserted relative to the
+                // first half's pointers, which is the whole invariant.
+                if i % 2 == 1 {
+                    // This mock layer is square (hidden = intermediate = WIDTH),
+                    // so both pitches are WIDTH BF16 elements.
+                    let rows = first as usize * WIDTH as usize * 2;
+                    let lo = projections[i - 1];
+                    assert_eq!(
+                        launch.args[0],
+                        shifted(&lo.args[0], rows),
+                        "m={m}: second half reads the wrong activation rows"
+                    );
+                    assert_eq!(
+                        launch.args[3],
+                        shifted(&lo.args[3], rows),
+                        "m={m}: second half writes the wrong output rows"
+                    );
                 }
             }
         }
+    }
+}
+
+/// A launch argument's buffer, advanced by `bytes` — so a halves assertion can
+/// be written against the first half's pointer rather than a base the test
+/// would have to reconstruct.
+fn shifted(arg: &MockArg, bytes: usize) -> MockArg {
+    match arg {
+        MockArg::Buffer(p) => MockArg::Buffer(p.offset(bytes)),
+        other => panic!("expected a buffer argument, got {other:?}"),
     }
 }
 
@@ -314,4 +356,53 @@ fn the_tier_takes_precedence_over_the_batch16_rung() {
         };
         run(m, expect, lever_on);
     }
+}
+
+/// `ATLAS_FFN_M16_TC_NTILE=64` is a pure geometry swap: same arm, same rungs,
+/// same row counts and offsets, half the CTAs.
+#[test]
+fn the_wide_tile_halves_the_cta_count_on_both_rungs() {
+    let wide = |layer: &mut DenseFfnLayer| {
+        lever_on(layer);
+        layer.m16_tc_n_tile = W8A16_GEMM_M16_N_TILE_WIDE;
+    };
+    for m in [5, 8, 16] {
+        run_tiled(
+            m,
+            Expect::One(M16TC_N64_K, m),
+            W8A16_GEMM_M16_N_TILE_WIDE,
+            wide,
+        );
+    }
+    run_tiled(
+        32,
+        Expect::Halves(M16TC_N64_K, 16, 16),
+        W8A16_GEMM_M16_N_TILE_WIDE,
+        wide,
+    );
+}
+
+/// A shadow without the wide entry point keeps the 32-wide kernel AND its
+/// geometry — it must not launch a zero handle or a 64-wide grid.
+#[test]
+fn the_wide_tile_falls_back_to_the_default_arm_without_its_entry_point() {
+    run_tiled(
+        16,
+        Expect::One(M16TC_K, 16),
+        W8A16_GEMM_M16_N_TILE,
+        |layer| {
+            lever_on(layer);
+            layer.m16_tc_n_tile = W8A16_GEMM_M16_N_TILE_WIDE;
+            layer.w8a16_gemm_m16_n64_k = KernelHandle(0);
+        },
+    );
+}
+
+/// The tile lever is inert on its own: without `ATLAS_FFN_M16_TC` the arm is
+/// not reached at all, so 5..=32 stay on the bit-exact batch16 tier.
+#[test]
+fn the_wide_tile_does_not_turn_the_tier_on_by_itself() {
+    run(16, Expect::One(BATCH16_K, 16), |layer| {
+        layer.m16_tc_n_tile = W8A16_GEMM_M16_N_TILE_WIDE;
+    });
 }

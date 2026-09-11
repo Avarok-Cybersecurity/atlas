@@ -26,6 +26,8 @@ const BATCH4_K: u64 = 0xF084;
 const BATCH16_K: u64 = 0xF08C;
 const NCOL2_K: u64 = 0xF0C2;
 const NCOL4_K: u64 = 0xF0C4;
+/// The tensor-core strided tier (`ATLAS_ATTN_M16_TC`).
+const M16TC_STRIDED_K: u64 = 0xF08E;
 const WIDTH: usize = 128;
 
 /// What the tier under test is expected to emit for one projection.
@@ -48,6 +50,12 @@ struct Case {
     ncol: Option<NcolWidth>,
     /// Whether the shadow carries the `_ncol*_strided` entry points.
     ncol_handles: bool,
+    /// `ATLAS_ATTN_M16_TC` as the layer caches it — a field for the same reason
+    /// `ncol` is one: the production accessor is a process-global `OnceLock`.
+    /// Round 6 split this from `ATLAS_FFN_M16_TC`, which no longer reaches here.
+    m16_tc: bool,
+    /// Whether the shadow carries `w8a16_gemm_m16_strided`.
+    m16_tc_handles: bool,
 }
 
 impl Case {
@@ -60,6 +68,16 @@ impl Case {
             enabled: true,
             ncol: None,
             ncol_handles: true,
+            m16_tc: false,
+            m16_tc_handles: true,
+        }
+    }
+
+    /// The same case with the tensor-core tier opted in.
+    fn m16_tc(rows: usize) -> Self {
+        Self {
+            m16_tc: true,
+            ..Self::new(rows)
         }
     }
 
@@ -260,6 +278,12 @@ fn run_phase(case: &Case, expect: Option<Expect>) -> usize {
     layer.w8a16_gemv_ncol2_strided_k = KernelHandle(if case.ncol_handles { NCOL2_K } else { 0 });
     layer.w8a16_gemv_ncol4_strided_k = KernelHandle(if case.ncol_handles { NCOL4_K } else { 0 });
     layer.attn_ncol = case.ncol;
+    layer.m16_tc = case.m16_tc;
+    layer.w8a16_gemm_m16_strided_k = KernelHandle(if case.m16_tc_handles {
+        M16TC_STRIDED_K
+    } else {
+        0
+    });
     layer.deinterleave_qg_k = KernelHandle(0xF0D1);
 
     let q_dim = (config.num_attention_heads * config.head_dim) as u32;
@@ -402,4 +426,65 @@ fn run_phase(case: &Case, expect: Option<Expect>) -> usize {
 
 fn u32_arg(v: u32) -> MockArg {
     MockArg::Bytes(v.to_ne_bytes().to_vec())
+}
+
+/// ROUND 6's SPLIT. `ATLAS_ATTN_M16_TC` turns THIS tier on — the one that
+/// measured −21.7% on the H100 — and it takes exactly the band
+/// `w8a16_gemv_batch16_strided` owns: one strided launch per projection, same
+/// argument layout, a different kernel.
+#[test]
+fn native_fp8_qkv_attn_m16_tc_takes_the_batch16_band() {
+    for rows in [5, 8, 12, 16] {
+        check_dispatch(&Case::m16_tc(rows), Expect::Batched(M16TC_STRIDED_K));
+    }
+}
+
+/// The tensor-core tier sits AHEAD of the bit-exact N-column tier: an operator
+/// who sets `ATLAS_ATTN_M16_TC` is asking for the MMA route explicitly.
+#[test]
+fn native_fp8_qkv_attn_m16_tc_outranks_the_ncol_tier() {
+    let mut case = Case::m16_tc(16);
+    case.ncol = Some(NcolWidth::Four);
+    check_dispatch(&case, Expect::Batched(M16TC_STRIDED_K));
+}
+
+/// Below the band `w8a16_gemv_batch4_strided` still owns the rows — the tier's
+/// MAX_M is 16 and its lower edge is where the ALU wall starts, neither of
+/// which the lever moves.
+#[test]
+fn native_fp8_qkv_attn_m16_tc_leaves_small_batches_on_batch4() {
+    for rows in [2, 3, 4] {
+        check_dispatch(&Case::m16_tc(rows), Expect::Batched(BATCH4_K));
+    }
+}
+
+/// A shadow without `w8a16_gemm_m16_strided` keeps the batch16 GEMV rather than
+/// launching a zero handle.
+#[test]
+fn native_fp8_qkv_attn_m16_tc_declines_without_its_entry_point() {
+    let mut case = Case::m16_tc(16);
+    case.m16_tc_handles = false;
+    check_dispatch(&case, Expect::Batched(BATCH16_K));
+}
+
+/// ...and with the lever unset the tier is invisible, which is the default.
+#[test]
+fn native_fp8_qkv_without_the_attn_lever_stays_on_batch16() {
+    for rows in [5, 16] {
+        check_dispatch(&Case::new(rows), Expect::Batched(BATCH16_K));
+    }
+}
+
+/// The tier is a pure kernel swap, so the phase still costs the same number of
+/// launches at 16 rows as at 2 — the per-row-loop pin, on this route too.
+#[test]
+fn native_fp8_qkv_attn_m16_tc_phase_launch_count_is_row_independent() {
+    let baseline = qkv_phase_launches(&Case::new(2));
+    for rows in [4, 8, 12, 16] {
+        assert_eq!(
+            qkv_phase_launches(&Case::m16_tc(rows)),
+            baseline,
+            "tensor-core route, rows={rows}"
+        );
+    }
 }

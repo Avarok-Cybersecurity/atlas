@@ -33,10 +33,17 @@ use anyhow::{Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
-/// N columns one CTA owns. SSOT for the launch geometry AND for the dispatch
-/// rule's "does this shape have enough CTAs" reasoning, so the two cannot
-/// drift: the kernel's `M16_N_TILE` must equal this.
+/// N columns one CTA owns on the DEFAULT instantiation. SSOT for the launch
+/// geometry AND for the dispatch rule's "does this shape have enough CTAs"
+/// reasoning, so the two cannot drift: the kernel's `M16_N_TILE` must equal
+/// this.
 pub const W8A16_GEMM_M16_N_TILE: u32 = 32;
+
+/// The wide instantiation's N tile (`w8a16_gemm_m16_n64`, kernel
+/// `M16_N_TILE_WIDE`) — opt-in via `ATLAS_FFN_M16_TC_NTILE=64`. Halves the CTA
+/// count for a given N and doubles the reuse of each staged A fragment. WHY it
+/// exists and what it is meant to settle: `dense_ffn_m16_tc.rs`.
+pub const W8A16_GEMM_M16_N_TILE_WIDE: u32 = 64;
 
 /// The shared shape of [`w8a16_gemm_m16`], so a caller that picks between it
 /// and `w8a16_gemv_batch16` can hold one function pointer.
@@ -82,8 +89,79 @@ pub fn w8a16_gemm_m16(
         k.is_multiple_of(128),
         "w8a16_gemm_m16: K={k} not a multiple of 128 (block-scale granularity)"
     );
+    launch_contiguous(
+        gpu,
+        kernel,
+        W8A16_GEMM_M16_N_TILE,
+        input,
+        weight,
+        block_scale,
+        output,
+        m,
+        n,
+        k,
+        stream,
+    )
+}
+
+/// `N_TILE=64` twin of [`w8a16_gemm_m16`] — identical arguments and identical
+/// per-output arithmetic, `ceil(N/64)` CTAs instead of `ceil(N/32)`. Same
+/// signature, so a caller holds ONE [`ContiguousM16Gemm`] pointer and the tile
+/// is a dispatch choice, not a code path.
+#[allow(clippy::too_many_arguments)]
+pub fn w8a16_gemm_m16_n64(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    weight: DevicePtr,
+    block_scale: DevicePtr,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    ensure!(
+        (1..=16).contains(&m),
+        "w8a16_gemm_m16_n64: m={m} outside 1..=16 (kernel M tile)"
+    );
+    ensure!(
+        k.is_multiple_of(128),
+        "w8a16_gemm_m16_n64: K={k} not a multiple of 128 (block-scale granularity)"
+    );
+    launch_contiguous(
+        gpu,
+        kernel,
+        W8A16_GEMM_M16_N_TILE_WIDE,
+        input,
+        weight,
+        block_scale,
+        output,
+        m,
+        n,
+        k,
+        stream,
+    )
+}
+
+/// The launch both contiguous instantiations share — only the CTA width
+/// differs, and it is the ONE thing a reader has to check to tell them apart.
+#[allow(clippy::too_many_arguments)]
+fn launch_contiguous(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    n_tile: u32,
+    input: DevicePtr,
+    weight: DevicePtr,
+    block_scale: DevicePtr,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, W8A16_GEMM_M16_N_TILE), 1, 1])
+        .grid([div_ceil(n, n_tile), 1, 1])
         .block([128, 1, 1])
         .arg_ptr(input)
         .arg_ptr(weight)

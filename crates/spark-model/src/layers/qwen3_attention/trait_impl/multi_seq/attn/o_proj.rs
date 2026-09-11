@@ -213,7 +213,10 @@ impl Qwen3AttentionLayer {
                 && h % 128 == 0
                 && q_dim % 128 == 0;
             let wide = n > 4 && self.w8a16_gemv_batch16_k.0 != 0;
-            // #927 tensor-core tier, same 16-row group, `ATLAS_FFN_M16_TC` only:
+            // #927 tensor-core tier, same 16-row group, `ATLAS_ATTN_M16_TC`
+            // (or the `ATLAS_M16_TC` umbrella) only — NOT the FFN's lever; the
+            // two split in round 6 because the H100 measured this tier -21.7%
+            // and the FFN arm +13.7% in one serve:
             // `w8a16_gemm_m16` replaces the batch16 GEMV's 16 scalar FFMA per
             // weight byte with one m16n8k16 MMA lane-slot. It REASSOCIATES the
             // K reduction (<= 2 BF16 ULP), which is why it is levered and off by

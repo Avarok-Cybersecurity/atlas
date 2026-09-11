@@ -248,11 +248,21 @@ pub struct DenseFfnLayer {
     /// is set. KernelHandle(0) on a shadow that lacks the entry point, which
     /// leaves the ladder exactly as #927 shipped it. Rule: `dense_ffn_m16_tc.rs`.
     w8a16_gemm_m16_k: KernelHandle,
-    /// `ATLAS_FFN_M16_TC`, cached at construction. A FIELD rather than a
-    /// per-call accessor for two reasons: the selector runs per projection per
-    /// layer per step, and the dispatch tests drive both arms without racing
-    /// the process-global `OnceLock` the env read lives in.
+    /// The `N_TILE=64` twin (`ATLAS_FFN_M16_TC_NTILE=64`). KernelHandle(0) on a
+    /// shadow built before the wide arm existed, which silently keeps the
+    /// 32-wide kernel. Rule: `m16_tc::m16_tc_kernel`.
+    w8a16_gemm_m16_n64_k: KernelHandle,
+    /// `ATLAS_FFN_M16_TC` (or the `ATLAS_M16_TC` umbrella), cached at
+    /// construction. Since round 6 this lever reaches ONLY the FFN arm — the
+    /// attention tiers have their own, because the H100 measured them moving in
+    /// opposite directions. A FIELD rather than a per-call accessor for two
+    /// reasons: the selector runs per projection per layer per step, and the
+    /// dispatch tests drive both arms without racing the process-global
+    /// `OnceLock` the env read lives in. Grammar: `dense_ffn_m16_tc.rs`.
     m16_tc: bool,
+    /// The CTA N width this layer asks for, 32 or 64. Same field-not-accessor
+    /// reasoning as `m16_tc`.
+    m16_tc_n_tile: u32,
     w8a16_gemm_pipelined_k: KernelHandle,
     // Fused FP8 decode GEMVs (gate+up in one launch / silu+down in one launch),
     // mirroring the NVFP4 w4a16_gemv_dual / w4a16_gemv_silu_input. KernelHandle(0)
@@ -440,7 +450,9 @@ impl DenseFfnLayer {
             w8a16_gemv_batch4_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch4"),
             w8a16_gemv_batch16_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch16"),
             w8a16_gemm_m16_k: super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16"),
-            m16_tc: m16_tc::m16_tc_enabled(),
+            w8a16_gemm_m16_n64_k: super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16_n64"),
+            m16_tc: m16_tc::m16_tc_levers().ffn,
+            m16_tc_n_tile: m16_tc::m16_tc_levers().ffn_n_tile,
             w8a16_gemm_pipelined_k: super::try_kernel(
                 gpu,
                 "w8a16_gemm_pipelined",
@@ -2008,6 +2020,10 @@ impl DenseFfnLayer {
         //   1. m <= 4      w8a16_gemv_batch4        one weight pass, 4-row tier
         //   2. m 5..=16    w8a16_gemm_m16           MMA, ATLAS_FFN_M16_TC only
         //   3. m 17..=32   w8a16_gemm_m16 x2        MMA, ATLAS_FFN_M16_TC only
+        //      (ATLAS_FFN_M16_TC reaches THIS arm only; the attention tiers
+        //       take ATLAS_ATTN_M16_TC, and ATLAS_M16_TC is both. Round 6
+        //       measured them moving in opposite directions: attention -21.7%,
+        //       this arm +13.7%. WHY: `dense_ffn_m16_tc.rs`.)
         //   4. m 5..=16    w8a16_gemv_batch16       one weight pass, 16-row tier
         //   5. m 17..=32   w8a16_gemv_batch16 x2    contiguous row halves
         //   6. W8A8 block-scaled prefill            (#917/#928)

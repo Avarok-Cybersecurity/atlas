@@ -53,32 +53,163 @@
 //! `batch16_decode.rs` does: the FFN activations and outputs are contiguous
 //! `[m, k]` / `[m, n]`, so a half is a plain byte offset, and two weight passes
 //! still beat one M-padded MMA tile at these widths.
+//!
+//! ── THE LEVER IS SPLIT PER PROJECTION FAMILY (round 6) ─────────────────────
+//! Round 6's serving A/B on 1xH100 (2026-09-11, bs16, `ATLAS_MS_PROFILE`) with
+//! the single old lever turned the WHOLE route on at once and measured two
+//! opposite results in one number:
+//!
+//! | phase | tier | Δ step time |
+//! |---|---|---|
+//! | attention | QKV + o_proj (`w8a16_gemm_m16{,_strided}`) | **−21.7%** |
+//! | SSM layers | dense FFN arm (`w8a16_gemm_m16`) | **+13.7%** |
+//! | net | | **+5.2%** |
+//!
+//! One lever could only ship both or neither, so the win was unbuyable. The
+//! grammar is now three presence-based variables, all default OFF:
+//!
+//! | variable | turns on |
+//! |---|---|
+//! | `ATLAS_ATTN_M16_TC` | the QKV and o_proj tiers |
+//! | `ATLAS_FFN_M16_TC` | the dense-FFN arm (rungs 2-3 above) |
+//! | `ATLAS_M16_TC` | BOTH — the umbrella, i.e. round 6's behaviour |
+//!
+//! ⚠ `ATLAS_FFN_M16_TC=1` MEANS SOMETHING NARROWER THAN IT DID IN ROUND 6.
+//! Before this commit it was the only lever and it reached all three tiers;
+//! round 6's serve J and its +5.2% were measured with it. The recipe that
+//! reproduces round 6 is now `ATLAS_M16_TC=1`. The recipe that buys the
+//! attention win WITHOUT the FFN loss — the point of the split — is
+//! `ATLAS_ATTN_M16_TC=1` alone.
+//!
+//! ── WHY THE FFN ARM LOSES WHERE THE ATTENTION TIERS WIN (HYPOTHESIS) ───────
+//! Same kernel, same M, same weight format; the one thing that differs is N,
+//! and therefore the grid:
+//!
+//! | tier | N | CTAs at `N_TILE=32` |
+//! |---|---|---|
+//! | o_proj | 5120 | 160 |
+//! | QKV (K, V) | 1024 | 32 |
+//! | QKV (Q) | 6144 | 192 |
+//! | **dense FFN gate/up** | **17408** | **544** |
+//! | dense FFN down | 5120 | 160 |
+//!
+//! The kernel is 4 warps at 19,456 B of smem under `__launch_bounds__(128, 4)`,
+//! so an H100 SM holds 4 CTAs and the machine holds 132 × 4 = **528**. Every
+//! attention tier fits inside one partial wave and runs at full occupancy from
+//! the first instruction. gate/up at 544 is **one full wave plus a 16-CTA
+//! tail**: 3% of the work costs a second wave's worth of launch, prologue and
+//! HBM-latency ramp, none of which is overlapped with anything, because by then
+//! 116 SMs are idle. That is the leading explanation for a tier that beats
+//! `w8a16_gemv_batch16` 3.71× in the microtest (which times ONE shape in
+//! isolation, with no tail to pay) and still loses 13.7% in the serve.
+//!
+//! A second, non-exclusive explanation: at `N_TILE=32` each 16-row A tile is
+//! read by twice as many CTAs as at 64, and gate/up's 89 MB weight evicts A
+//! from a 50 MB L2 between passes, so the "A stays L2-resident" claim in the
+//! kernel header — which holds comfortably at N=1024 — may not hold at
+//! N=17408.
+//!
+//! Both hypotheses predict the same fix, which is why `ATLAS_FFN_M16_TC_NTILE`
+//! exists: `=64` selects `w8a16_gemm_m16_n64`, taking gate/up to 272 CTAs
+//! (inside one wave) and doubling A reuse. Default stays 32 — the tile with the
+//! receipt. NEITHER hypothesis has been measured; the A/B that settles it is
+//! `ATLAS_FFN_M16_TC=1 ATLAS_FFN_M16_TC_NTILE=64` against
+//! `ATLAS_FFN_M16_TC=1` on the same serve.
+//!
+//! ── THE ROUND-6 M=32 RED CELL WAS THE ORACLE, NOT THE SPLIT ────────────────
+//! Round 6's microtest reported `gate/up M=32` at `max_ulp 28`, 5 of 557,056
+//! elements over the 2-ULP budget, `sign_flips 0`, `rel_rms 4.2e-5`, while
+//! `down M=32` and every M ≤ 16 cell was green. It was read as a possible
+//! row/pitch defect in the two-halves rung. It is not: a host simulation of the
+//! exact geometry (`dense_ffn_m16_tc_m32_tests.rs`) reproduces the signature —
+//! 5 over-budget elements, none in rows 0..15 — with NO offset arithmetic at
+//! all. Every one of them is an output that cancelled to |ref| between 5.7e-6
+//! and 1.6e-4 against a reference RMS of 39.1, i.e. to ~1e-7..4e-6 of the
+//! matrix scale, where one FP32 accumulation rounding spans hundreds of ordinal
+//! BF16 ULP. M=32 trips it and M=16 does not because M=32 samples twice the
+//! outputs; gate/up trips it and down does not because gate/up has 3.4× the
+//! columns. The fix is in the oracle's comparison (a mixed absolute/relative
+//! criterion), not here — see `examples/native_fp8_ffn_m16_tc_microtest.rs`.
 
 use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
+
+/// The tier's NUMERICS CONTRACT — the one comparison the GPU oracle
+/// (`examples/native_fp8_ffn_m16_tc_microtest.rs`) and the host simulation both
+/// evaluate, so a receipt and a unit test cannot be grading different things.
+#[path = "dense_ffn_m16_tc_oracle.rs"]
+pub mod oracle;
+
+pub use oracle::{M16_TC_ACC_FLOOR, M16_TC_MAX_ULP, bf16_ord, within_m16_tc_budget};
 
 use super::DenseFfnLayer;
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::Fp8Weight;
+use spark_runtime::gpu::KernelHandle;
 
-/// `ATLAS_FFN_M16_TC`: PRESENCE (any value, including empty) turns the
-/// tensor-core tier ON. SSOT for the lever across ALL of its call sites — the
-/// dense FFN here, plus the multi-seq FP8 QKV tier (`qkv_fp8_batch.rs`) and the
-/// FP8 o_proj tier (`attn/o_proj.rs`), which read it through this function so
-/// one `ATLAS_FFN_M16_TC=1` A/Bs the whole route rather than three. Default OFF — the opposite polarity to
-/// `ATLAS_FFN_NO_BATCH16` next door, and deliberately so: that one is an
-/// operator's escape hatch from a shipped default, this one is an opt-in to a
-/// route that trades the bit-exactness of #927 for bandwidth, and it stays off
-/// until an H100 receipt says it wins. Presence rather than `=1` keeps the A/B
-/// recipe a single `ATLAS_FFN_M16_TC=1` prefix with no "=0 means on" trap.
+/// Which projection families the tensor-core tier serves, and at what CTA
+/// width. SSOT for the whole lever grammar; every call site resolves it ONCE at
+/// construction into a field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct M16TcLevers {
+    /// The dense-FFN arm (`ATLAS_FFN_M16_TC`).
+    pub ffn: bool,
+    /// The multi-seq FP8 QKV tier and the FP8 o_proj tier
+    /// (`ATLAS_ATTN_M16_TC`).
+    pub attn: bool,
+    /// CTA N width for the FFN arm: 32 (default) or 64
+    /// (`ATLAS_FFN_M16_TC_NTILE=64`). Attention always runs 32 — the wide tile
+    /// has no strided twin and its N is already CTA-starved.
+    pub ffn_n_tile: u32,
+}
+
+/// The grammar, as a pure function of the three variables' PRESENCE plus the
+/// N-tile string — so the rule is testable without touching the process
+/// environment.
+///
+/// Presence rather than `=1` everywhere (the N tile aside, which needs a
+/// value): it keeps every A/B recipe a bare `VAR=1` prefix with no "=0 means
+/// on" trap, the same contract `ATLAS_FFN_NO_BATCH16` uses next door. All three
+/// default OFF, which is the opposite polarity to that kill switch and
+/// deliberately so: it is an operator's escape hatch from a shipped default,
+/// these are opt-ins to a route that trades #927's bit-exactness for bandwidth.
+///
+/// An unrecognised `ATLAS_FFN_M16_TC_NTILE` falls back to 32 rather than
+/// failing the boot: the tile is a perf A/B knob, and the route log says which
+/// one actually ran.
+pub(crate) fn resolve_m16_tc_levers(
+    ffn: bool,
+    attn: bool,
+    umbrella: bool,
+    n_tile: Option<&str>,
+) -> M16TcLevers {
+    M16TcLevers {
+        ffn: ffn || umbrella,
+        attn: attn || umbrella,
+        ffn_n_tile: match n_tile {
+            Some("64") => ops::W8A16_GEMM_M16_N_TILE_WIDE,
+            _ => ops::W8A16_GEMM_M16_N_TILE,
+        },
+    }
+}
+
+/// The resolved levers for this process.
 ///
 /// `OnceLock`-cached for the same reason the batch16 switch is: the selector
 /// runs per projection per layer per step, and a per-call `var_os` could change
 /// the captured launch set across CUDA-graph replays.
-pub fn m16_tc_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_FFN_M16_TC").is_some())
+pub fn m16_tc_levers() -> M16TcLevers {
+    static ON: std::sync::OnceLock<M16TcLevers> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let n_tile = std::env::var("ATLAS_FFN_M16_TC_NTILE").ok();
+        resolve_m16_tc_levers(
+            std::env::var_os("ATLAS_FFN_M16_TC").is_some(),
+            std::env::var_os("ATLAS_ATTN_M16_TC").is_some(),
+            std::env::var_os("ATLAS_M16_TC").is_some(),
+            n_tile.as_deref(),
+        )
+    })
 }
 
 /// How the tensor-core tier serves `m` rows, or `None` when it does not claim
@@ -117,6 +248,29 @@ pub(crate) fn m16_tc_plan(m: u32, k: u32, loaded: bool, enabled: bool) -> Option
     }
 }
 
+/// Which contiguous instantiation the FFN arm launches, given the requested
+/// tile and which entry points this shadow actually carries.
+///
+/// A shadow built before the wide arm existed has no `w8a16_gemm_m16_n64`, so
+/// `ATLAS_FFN_M16_TC_NTILE=64` must fall back to the 32-wide kernel rather than
+/// launch a zero handle. The fallback is silent by design — the route log names
+/// the tile that ran.
+pub(crate) fn m16_tc_kernel(
+    n_tile: u32,
+    narrow: KernelHandle,
+    wide: KernelHandle,
+) -> (ops::ContiguousM16Gemm, KernelHandle, u32) {
+    if n_tile == ops::W8A16_GEMM_M16_N_TILE_WIDE && wide.0 != 0 {
+        (
+            ops::w8a16_gemm_m16_n64,
+            wide,
+            ops::W8A16_GEMM_M16_N_TILE_WIDE,
+        )
+    } else {
+        (ops::w8a16_gemm_m16, narrow, ops::W8A16_GEMM_M16_N_TILE)
+    }
+}
+
 impl DenseFfnLayer {
     /// The plan for `m` rows at reduction depth `k` on THIS layer — handle
     /// presence plus the lever.
@@ -143,12 +297,17 @@ impl DenseFfnLayer {
         k: u32,
         stream: u64,
     ) -> Result<()> {
-        self.log_m16_tc_route(ctx, plan);
+        let (gemm, kernel, n_tile) = m16_tc_kernel(
+            self.m16_tc_n_tile,
+            self.w8a16_gemm_m16_k,
+            self.w8a16_gemm_m16_n64_k,
+        );
+        self.log_m16_tc_route(ctx, plan, n_tile);
         const BF16: usize = 2;
         let launch = |rows: u32, first: u32| {
-            ops::w8a16_gemm_m16(
+            gemm(
                 ctx.gpu,
-                self.w8a16_gemm_m16_k,
+                kernel,
                 input.offset(first as usize * k as usize * BF16),
                 w.weight,
                 w.row_scale,
@@ -172,22 +331,37 @@ impl DenseFfnLayer {
     /// logs use. It is worth a line because this arm is the one that is NOT
     /// bit-identical to the M=1 decode path: a TPOT report or a parity
     /// complaint at 5..=32 rows needs to say which of the two tiers ran.
-    fn log_m16_tc_route(&self, ctx: &ForwardContext, plan: M16TcPlan) {
+    fn log_m16_tc_route(&self, ctx: &ForwardContext, plan: M16TcPlan, n_tile: u32) {
         if ctx.stats.once("log:ffn_m16_tc_decode") {
             let how = match plan {
                 M16TcPlan::Single => "one launch",
                 M16TcPlan::Halves { .. } => "two launches on contiguous row halves",
             };
+            let asked = self.m16_tc_n_tile;
             tracing::info!(
                 "[atlas] dense FFN decode: ATLAS_FFN_M16_TC — tensor-core w8a16_gemm_m16 \
-                 ({how}) for 5..=32 rows, ahead of w8a16_gemv_batch16. One weight pass, \
-                 m16n8k16 MMA, so outputs are REASSOCIATED vs the scalar w8a16_gemv \
-                 (<= 2 BF16 ULP), unlike the batch16 tier. Unset the lever to restore it (#927)."
+                 N_TILE={n_tile} (asked {asked}) ({how}) for 5..=32 rows, ahead of \
+                 w8a16_gemv_batch16. One weight pass, m16n8k16 MMA, so outputs are \
+                 REASSOCIATED vs the scalar w8a16_gemv (<= 2 BF16 ULP), unlike the batch16 \
+                 tier. This lever no longer reaches the attention tiers — that is \
+                 ATLAS_ATTN_M16_TC, and ATLAS_M16_TC is both. Unset it to restore the \
+                 bit-exact tier (#927)."
             );
         }
     }
 }
 
 #[cfg(test)]
+#[path = "dense_ffn_m16_tc_lever_tests.rs"]
+mod lever_tests;
+
+#[cfg(test)]
 #[path = "dense_ffn_m16_tc_tests.rs"]
 mod tests;
+
+/// The host simulation that settles round 6's `gate/up M=32` red cell: it
+/// reproduces the two-halves geometry and the oracle's comparison on the CPU,
+/// with no GPU and no offset arithmetic to get wrong.
+#[cfg(test)]
+#[path = "dense_ffn_m16_tc_m32_tests.rs"]
+mod m32_tests;
