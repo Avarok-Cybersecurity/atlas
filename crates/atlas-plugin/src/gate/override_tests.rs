@@ -310,13 +310,17 @@ fn a_multi_gpu_run_records_its_width_and_replays_its_topology_flags() {
     overrides.insert("tp_size".to_string(), "2".to_string());
     overrides.insert("ep_size".to_string(), "2".to_string());
     overrides.insert("world_size".to_string(), "2".to_string());
+    // The regime reaches the gate record THROUGH the run record — `from_run`
+    // derives it rather than taking it alongside, so the two records cannot
+    // disagree about what was measured.
+    let mut record = run_record(BTreeMap::new(), Verdict::pass("ok"));
+    record.serve_overrides = overrides.clone();
     let mut gate = GateRecord::from_run(
-        &run_record(BTreeMap::new(), Verdict::pass("ok")),
+        &record,
         hw(),
         SHA.into(),
         Vec::new(),
         Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".to_string()),
-        overrides.clone(),
     )
     .unwrap();
     gate.hardware = crate::hardware::Hardware {
