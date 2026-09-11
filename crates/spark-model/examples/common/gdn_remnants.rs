@@ -310,6 +310,123 @@ pub fn selfcheck_take() {
     }
 }
 
+/// THE KNOWN_BAD CONTROL, as one function of an arm's output and its f64
+/// reference: perturb ONE reference element and report `(perturbed, clean)`
+/// `max_abs`. The caller refuses the run unless `perturbed > clean`.
+///
+/// # Why the injection is priced in the clean extreme
+///
+/// H100 round 14 (`h100-round14-report.md`, §2.1 and anomaly 1). The control
+/// added `0.1 * rms(reference)` to element 0 and required `max_abs` — a maximum
+/// over `T * VD` elements — to move. Clean `max_abs` grows with T (1.895e-3 at
+/// T=256, 7.668e-3 at T=1193, **2.774e-2** at T=4593) because a larger tensor
+/// holds a larger extreme, while `0.1 * rms` does not keep pace. At T=4593 the
+/// injection was already smaller than the worst element that was there anyway,
+/// `max` could not change, and the example exited 1 with every numerics gate
+/// green. It is arch-independent: it fails the same way on GB10, at a large
+/// enough T.
+///
+/// So the injection is scaled to the clean extreme AND lands on the element
+/// that holds it, pointing away from the arm's value. The perturbed deviation
+/// there is `|d_j| + 3 * max_abs_clean + 0.1 * rms`, which exceeds
+/// `max_abs_clean` by construction at every T and on every arch. The `rms`
+/// term is a floor for a bit-exact arm, whose extreme is 0 and where a purely
+/// multiplicative injection would be 0 too.
+pub fn known_bad_probe(actual: &[f32], reference: &[f64]) -> (f64, f64) {
+    assert_eq!(
+        actual.len(),
+        reference.len(),
+        "the KNOWN_BAD control scores an arm against ITS OWN reference; unequal \
+         lengths mean `metrics` silently truncated one of the two and the \
+         control would be measuring a prefix",
+    );
+    assert!(
+        !reference.is_empty(),
+        "an empty reference cannot be perturbed"
+    );
+    let (clean, _) = metrics(actual, reference);
+    // The element that HOLDS the clean extreme, and the signed deviation there.
+    let (mut j, mut dj) = (0usize, 0.0f64);
+    for (i, (x, y)) in actual.iter().zip(reference.iter()).enumerate() {
+        let d = *x as f64 - y;
+        if d.abs() > dj.abs() {
+            (j, dj) = (i, d);
+        }
+    }
+    let rms = (reference.iter().map(|x| x * x).sum::<f64>() / reference.len() as f64).sqrt();
+    let mag = 3.0 * clean + 0.1 * rms;
+    assert!(
+        mag > 0.0,
+        "an all-zero reference against a bit-exact arm leaves nothing to \
+         perturb, and a control that cannot trip is not a control",
+    );
+    let mut bad = reference.to_vec();
+    // AWAY from the arm's value, so the deviation at j adds rather than cancels.
+    bad[j] -= mag * if dj < 0.0 { -1.0 } else { 1.0 };
+    let (perturbed, _) = metrics(actual, &bad);
+    (perturbed, clean)
+}
+
+/// Synthetic `(reference, actual)` at the example's own `O` geometry whose
+/// clean `max_abs` is `clean_max`, held by ONE element that is deliberately not
+/// element 0 — finding it is half of what [`known_bad_probe`] fixes.
+///
+/// The reference is drawn on [-0.35, 0.35] so `0.1 * rms` lands at ~2.0e-2,
+/// between round 14's T=1193 and T=4593 extremes: that is what reproduces the
+/// receipt's own trip pattern below.
+fn known_bad_fixture(t: usize, clean_max: f64) -> (Vec<f64>, Vec<f32>) {
+    let n = t * REF_HEADS * VD;
+    let mut r = Lcg(0x4B4E_4F57 ^ (t as u64));
+    let reference: Vec<f64> = (0..n).map(|_| r.r(-0.35, 0.35)).collect();
+    // f64 -> f32 alone deviates by ~2e-8 here, orders under every extreme
+    // below, so the extreme is the one planted.
+    let mut actual: Vec<f32> = reference.iter().map(|x| *x as f32).collect();
+    let ex = n / 2 + 7;
+    actual[ex] = (reference[ex] + clean_max) as f32;
+    (reference, actual)
+}
+
+/// [`known_bad_probe`] run on synthetic data at the three T the example walks
+/// and at the clean extremes round 14 MEASURED there — from `main`, before the
+/// device is touched, for the same reason [`selfcheck_take`] is: the standing
+/// gate is `cargo test -p spark-model --lib`, which never reaches an
+/// `examples/` target, so a unit test alone would be a check the gates do not
+/// run. The unit test below calls this same function, so the two cannot
+/// disagree.
+///
+/// Both directions are pinned. The shipped rule must TRIP at all three T, and
+/// round 14's rule (`reference[0] += 0.1 * rms`) must be shown NOT to at the
+/// largest — the defect itself, kept executable so it cannot come back unseen.
+pub fn selfcheck_known_bad() {
+    for (t, clean_max) in [(256usize, 1.895e-3f64), (1193, 7.668e-3), (4593, 2.774e-2)] {
+        let (reference, actual) = known_bad_fixture(t, clean_max);
+        let (perturbed, clean) = known_bad_probe(&actual, &reference);
+        assert!(
+            (clean / clean_max - 1.0).abs() < 1e-4,
+            "T={t}: the fixture must hold round 14's clean extreme {clean_max:.3e}, \
+             got {clean:.3e}",
+        );
+        assert!(
+            perturbed > clean,
+            "T={t}: the KNOWN_BAD control must trip against a clean extreme of \
+             {clean:.3e}, got {perturbed:.3e} — round 14's failure, at T=4593",
+        );
+        // Round 14's rule, spelled out, on the same fixture: it trips only
+        // while `0.1 * rms` still exceeds the extreme already present.
+        let rms = (reference.iter().map(|x| x * x).sum::<f64>() / reference.len() as f64).sqrt();
+        let mut old = reference.clone();
+        old[0] += 0.1 * rms;
+        let (old_perturbed, _) = metrics(&actual, &old);
+        assert_eq!(
+            old_perturbed > clean,
+            t != 4593,
+            "T={t}: round 14's `0.1 * rms` injection ({:.3e}) against a clean \
+             extreme of {clean:.3e} — the scaling defect this replaces",
+            0.1 * rms,
+        );
+    }
+}
+
 pub fn report(tag: &str, a: &[f32], r: &[f64]) -> f64 {
     let (mx, rel) = metrics(a, r);
     println!("    {tag:<22} max_abs={mx:.6e}  rel_rms={rel:.4e}");
@@ -319,6 +436,13 @@ pub fn report(tag: &str, a: &[f32], r: &[f64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The KNOWN_BAD control, at the three T and the three clean extremes round
+    /// 14 measured. Mirrors [`selfcheck_known_bad`]; see its docs.
+    #[test]
+    fn the_known_bad_control_trips_at_every_t() {
+        selfcheck_known_bad();
+    }
 
     /// The example's own geometry, gathered and value-checked. Mirrors
     /// [`selfcheck_take`]; see its docs for why the self-check exists too.
