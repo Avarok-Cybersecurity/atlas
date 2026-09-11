@@ -1688,7 +1688,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
     /// `norm.weight` are aliased or conditionally aliased depending on their
     /// on-disk dtype, and every attention / FFN tensor is bound zero-copy.
     /// Only the four names below are freed, and only for layers where
-    /// [`gdn_fp8_arm_selected`] says that arm actually ran.
+    /// `gdn_fp8_arm_selected` (private to this module) says that arm actually ran.
     fn prune_after_load(
         &self,
         store: &mut WeightStore,
