@@ -26,6 +26,29 @@ use crate::cli;
 /// number in `$?` is never silently wrong.
 const MAX_EXIT_CODE: usize = 255;
 
+/// Refuse a device this build's PTX cannot run on, BEFORE the backend exists.
+///
+/// Constructing the backend loads every PTX module, and a driver-side arch
+/// rejection names neither the arch nor the GPU. The compiled arch is only
+/// knowable at the call site, because `AtlasCudaBackend::new` takes module
+/// blobs — but WHICH arch string to judge is `preflight_arch`'s decision and
+/// not the caller's: `ptx_set.target.arch` is the base SM with the feature
+/// suffix stripped, and judging that would wave `sm_90a` kernels onto a
+/// CC 10.0 device.
+#[cfg(feature = "cuda")]
+pub(crate) fn gate_device_arch(
+    checking: bool,
+    ptx_set: &atlas_kernels::TargetPtxSet,
+    gpu_ordinal: usize,
+) -> Result<()> {
+    use spark_runtime::cuda_backend::arch_preflight;
+    gate_arch_preflight(
+        checking,
+        ptx_set,
+        arch_preflight::preflight_device_arch(gpu_ordinal, arch_preflight::preflight_arch(ptx_set)),
+    )
+}
+
 /// Retain the preflight error while reporting an early `--check-kernels` refusal.
 /// No kernel-audit count is available before the backend has been constructed.
 #[cfg(feature = "cuda")]
