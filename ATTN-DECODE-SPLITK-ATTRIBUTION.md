@@ -84,20 +84,91 @@ ceil(q_len/BR), 1)`, so splitting its KV range needs a new kernel and a
 BR-row-wise reduce, not a launch-geometry change. Left for its own lever — the
 9.1 ms it is worth at T=4593 is unclaimed.
 
-## What round 14 must measure
-1. **`4096x512` C=1 TPOT 16.86 → ≈13.1 ms** (vLLM 12.45) — 3.72 ms/step × 512
-   ≈ 1.9 s of a 9.11 s e2e. The prediction this lever rests on.
-2. **`4096x512` C=16 TPOT 31.31 → ≈27.9**, aggregate 405.9 → ≈453 tok/s;
-   `1024x256` C=1 TPOT 14.16 → ≈13.2, C=16 25.38 → ≈24.4.
-3. **Determinism 8/8 × 3** (`r13_cell.sh … DET=1`) and coherency 4/4 — the
-   split count moved, so the pin's invariant must still hold end to end.
-4. **The A/B**: `ATLAS_ATTN_DECODE_SPLITK=0` is the pre-#928 geometry on the
-   same binary; `=2/4/6` walks the curve. nsys must show
-   `paged_decode_attn_splitk_fp8_hopper` at `grid=(24,11,1)` plus its reduce,
-   and its GB/s against the 42.9 above. The boot line must read
-   `attn_decode_splitk=auto` with no environment, and no SM-count warning.
+## What round 15 measured (1xH100 80GB HBM3, tip `8a6f50b61`, cells A15/S0/S4/S6)
+
+**Landed, C=1.** `ATLAS_ATTN_DECODE_SPLITK=0` (S0) against `auto` (A15), same
+binary, one variable:
+
+| rung | S0 (1 split) | **A15 (11, `auto`)** | Δ | rep spread |
+|---|---:|---:|---:|---|
+| `4096x512` C=1 tok/s | 56.46 | **68.54** | **+21.4%** | 0.02–0.03% |
+| `4096x512` C=1 TPOT | 16.79 ms | **13.66 ms** | **−18.6%** | — |
+| `1024x256` C=1 tok/s | 68.19 | **71.53** | **+4.9%** | 0.02–0.04% |
+| `1024x256` C=1 TPOT | 14.09 ms | **13.40 ms** | −4.9% | — |
+| C=1 TTFT, both shapes | 489.2 / 160.7 | 489.7 / 160.5 | ±0.1% | — |
+
+The C=1 gains are 500–900× their rung's rep spread. TTFT is untouched, as it
+must be — this is a decode kernel. The curve, C=1 only:
+
+| splits | `1024x256` tok/s | TPOT | `4096x512` tok/s | TPOT |
+|---|---:|---:|---:|---:|
+| 1 (S0) | 68.19 | 14.09 | 56.46 | 16.79 |
+| 4 (S4) | 71.22 | 13.47 | 65.58 | 14.31 |
+| 6 (S6) | 71.67 | 13.38 | 67.20 | 13.95 |
+| **11 (`auto`)** | **71.53** | **13.40** | **68.54** | **13.66** |
+
+Monotone in splits on the long shape, saturating by 4–6 on the short. The
+policy's own choice is the best measured point on the long shape and ties with
+6 on the short. Nothing here argues for pinning a smaller count.
+
+**Geometry receipt (nsys, cell A15N, C=1, 4593/512, 510 decode steps).**
+`paged_decode_attn_splitk_fp8_hopper` at **`grid=(24,11,1)`**, block (256,1,1),
+12 launches/step, **32.70 µs/launch = 303.7 GB/s** against round 13's
+`(24,1,1)` **231.51 µs = 42.9 GB/s** — **7.08×** — with the BF16 twin at
+35.01 µs (7.24×) and the two reduces at `(24,1,1)`, 6.4 µs each. 24 q heads ×
+11 splits = 264 CTAs on 132 SMs = the policy's 2.0 waves. The attention pair
+went from 22.7% of the step to **4.38%**, and the median step 16.692 → 14.455 ms.
+
+**REFUTED: the C=16 half, and the microtest already said so.** This doc
+predicted long C=16 aggregate 405.9 → ≈453 tok/s and TPOT 31.31 → ≈27.9.
+Measured: **401.28 and 31.56** — a null inside a 2% rep spread — and the SHORT
+C=16 is a real **−1.6%** (522.15 → 513.86, 7–9× its rep spread).
+
+`native_attn_decode_splitk_hopper_microtest` measured the cause before the
+ladder ran, at n=16 (FP8 KV, ms / GB/s):
+
+| L | splits=0 | 4 | best ÷ splits0 |
+|---:|---:|---:|---:|
+| 1335 | **0.086 / 507.3** | 0.095 | **0.90× — a loss** |
+| 4847 | 0.280 / 566.4 | **0.270 / 588.8** | 1.04× |
+| 16384 | 0.904 / 594.1 | **0.846 / 634.7** | 1.07× |
+
+**At n=16 the non-split kernel is already at 15–31% of HBM** (507–1025 GB/s)
+against 1.3–2.3% at n=1, so there is nothing for split-K to recover; splits buy
+**0–7%**, and at L=1335 eleven of them cost more reduce than they save. The
+policy cannot back off there: it is a pure function of `(sm_count,
+num_q_heads)` **by design**, because co-batch invariance is what keeps the
+determinism pin (`tasks/determinism_investigation.md`), and a rule that read
+the co-batched count would give one sequence a different reduction tree alone
+than beside fifteen others. **Co-batch invariance forecloses a C=16 win.** That
+is a deliberate trade, not an oversight, and this lever should not be sold on
+C=16.
+
+**The determinism question the split raised is answered.** All seven coherency
+exchanges are md5-identical across split counts 1, 4, 6 and 11, with the BA
+twin on and off and varlen on and off, and identical to round 14's D14 and
+round 13's T1; determinism is 8/8 × 3 and byte-identical to two prior rounds.
+The microtest's worst cross-split `rel_rms` over 90 arms is **9.417e-5** with
+`cos ≥ 0.999999996` — far below what an argmax over a 248 077-entry vocabulary
+would need to flip.
+
+**Two observability defects round 15 had to use nsys to work around, now
+closed.** There was no dispatch-side line naming the chosen split count at all
+— the kernel-selection table proves the entry RESOLVED, not that eleven splits
+reached the launch — so `splitk_dispatch::route_line` now emits, once per KV
+dtype on that arm's first decode dispatch:
+
+```
+paged decode attention: paged_decode_attn_splitk_fp8_hopper num_splits=11 sm_count=132 policy=auto (ATLAS_ATTN_DECODE_SPLITK)
+```
+
+And `ATLAS_ATTN_DECODE_SPLITK=0` boots as `attn_decode_splitk=1 (env)`: the
+resolver prints the RESOLVED count and `0`/`off` is one split. That is correct
+and is now stated in `kernels/hopper/HARDWARE.toml`'s own comment; the route
+line above names the kernel that then ran, which is the unambiguous receipt.
 
 Microtest: `native_attn_decode_splitk_hopper_microtest` — `num_splits ∈
-{1,2,4,6}` × `L ∈ {1335, 4847, 16384}` × `n ∈ {1,4,16}`, FP8 and BF16 KV; row 0
+{0,1,2,4,6}` × `L ∈ {1335, 4847, 16384}` × `n ∈ {1,4,16}`, FP8 and BF16 KV; row 0
 byte-identical between n=1 and n=16 (an equality), split counts graded against
 the non-split kernel at `rel_rms ≤ 2e-3` with a KNOWN_BAD control that fires.
+90 arms, all green, round 15.
