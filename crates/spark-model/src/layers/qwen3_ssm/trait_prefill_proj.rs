@@ -55,8 +55,9 @@ impl Qwen3SsmLayer {
             Some("1")
         );
         // PER-ROW FP8 straight from a mixed-precision checkpoint
-        // (`ATLAS_FP8_ROWWISE=1`), dequantised ONCE to BF16 and multiplied by
-        // cuBLASLt. Ahead of every arm below because it is the only one that
+        // (`ATLAS_FP8_ROWWISE=1`), dequantised ONCE to BF16 — into the
+        // LEDGERED `BufferSizes::ssm_rowwise_w_bf16` slab, see
+        // `rowwise_bf16.rs` (#917) — and multiplied by cuBLASLt. Ahead of every arm below because it is the only one that
         // never re-quantises: FP8 E4M3 is exactly representable in BF16, so
         // the checkpoint's precision survives, where the default path
         // dequantises to BF16 and then throws half of it away again by
@@ -90,11 +91,15 @@ impl Qwen3SsmLayer {
                     );
                 }
             }
-            ops::cublas_bf16_proj(
-                ctx.gpu,
-                ctx.derived,
+            // The BF16 weight comes from the LEDGERED slab, dequantised once
+            // per layer (`rowwise_bf16.rs`); this arm allocates nothing. It
+            // used to come from `ops::cublas_bf16_proj`'s by-pointer cache of
+            // `gpu.alloc`s — 167772160 B per layer with no `BufferSizes`
+            // entry, the #917 H100 OOM at layer 36.
+            let w_bf16 = self.rowwise_qkvz_bf16(ctx, fp8w, stream)?;
+            ops::cublas_bf16_proj_dense(
                 normed,
-                fp8w,
+                w_bf16,
                 proj_dst,
                 k,
                 qkvz_size as u32,

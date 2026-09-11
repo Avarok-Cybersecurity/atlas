@@ -11,14 +11,19 @@ use atlas_core::config::ModelConfig;
 
 mod accessors;
 pub mod decode_meta;
+mod rowwise_slab;
 mod sizes;
 mod sizes_q12;
 mod sizes_q2;
+mod sizes_rowwise;
 pub use decode_meta::{DECODE_META_MAX_ROWS, DECODE_META_MIN_ROWS, DecodeMetaLayout};
 pub use sizes::BufferSizes;
 pub use sizes_q2::q2_dequant_scratch_bytes;
 pub use sizes_q12::{
     Q12_SIZING_STREAMS, q12_batched_scratch_bytes, q12_batched_scratch_bytes_varlen,
+};
+pub use sizes_rowwise::{
+    ssm_rowwise_w_bf16_bytes, ssm_rowwise_w_bf16_bytes_for, ssm_rowwise_w_bf16_layer_bytes,
 };
 
 /// Pre-allocated GPU buffers for a single forward pass.
@@ -134,6 +139,15 @@ pub struct BufferArena {
     /// (`ATLAS_GGUF_NATIVE_Q2_MMQ`). Shared by every kept-packed projection;
     /// each seam quantizes its activation here then runs the packed MMQ GEMM.
     q2_act_q8: DevicePtr,
+    /// Row-wise FP8 GDN prefill BF16-weight slab (`ATLAS_FP8_ROWWISE`). One
+    /// allocation for EVERY GDN layer's dequanted `in_proj_qkvz` + `out_proj`;
+    /// `take_ssm_rowwise_w_bf16` bump-carves a layer's slice on its first
+    /// prefill. NULL unless the lever is armed. See `sizes_rowwise.rs` for the
+    /// #917 receipt this replaces.
+    ssm_rowwise_w_bf16: DevicePtr,
+    /// Bytes already carved out of `ssm_rowwise_w_bf16`. Bump-only: a slice
+    /// lives as long as the arena does, exactly like the weight it holds.
+    ssm_rowwise_w_bf16_used: std::sync::atomic::AtomicUsize,
     /// Maximum batch tokens this arena was sized for.
     max_batch_tokens: usize,
     /// Derived batched-decode metadata layout (rows = max(32, serve
@@ -154,7 +168,6 @@ impl BufferArena {
         max_batch_size: usize,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
-        let decode_meta = DecodeMetaLayout::for_max_batch_size(max_batch_size);
         let sizes = BufferSizes::from_config(
             config,
             max_batch_tokens,
@@ -162,6 +175,24 @@ impl BufferArena {
             kv_block_size,
             max_batch_size,
         );
+        Self::from_sizes(config, sizes, max_batch_tokens, max_batch_size, gpu)
+    }
+
+    /// [`BufferArena::new`] with the ledger handed in instead of derived.
+    ///
+    /// `BufferSizes::from_config` reads the process environment for the
+    /// env-gated entries (`q2_*`, `ssm_rowwise_w_bf16`), and `set_var` is
+    /// process-global and unsafe — so a test that wants one of those arms
+    /// ARMED builds the sizes by hand and comes in here rather than racing
+    /// every other test in the binary. Production still goes through `new`.
+    pub fn from_sizes(
+        config: &ModelConfig,
+        sizes: BufferSizes,
+        max_batch_tokens: usize,
+        max_batch_size: usize,
+        gpu: &dyn GpuBackend,
+    ) -> Result<Self> {
+        let decode_meta = DecodeMetaLayout::for_max_batch_size(max_batch_size);
 
         let hidden_states = gpu.alloc(sizes.hidden_states)?;
         let residual = gpu.alloc(sizes.residual)?;
@@ -266,6 +297,12 @@ impl BufferArena {
         } else {
             DevicePtr::NULL
         };
+        // Row-wise GDN prefill BF16 weights. 0 → NULL unless ATLAS_FP8_ROWWISE.
+        let ssm_rowwise_w_bf16 = if sizes.ssm_rowwise_w_bf16 > 0 {
+            gpu.alloc(sizes.ssm_rowwise_w_bf16)?
+        } else {
+            DevicePtr::NULL
+        };
 
         tracing::info!(
             "Buffer arena: {} tokens × {:.1} MB total (attn_out={:.1}MB, ssm_deint={:.1}MB, kv_lora_rank={})",
@@ -320,6 +357,8 @@ impl BufferArena {
             lora_hact,
             lora_seq_slot,
             q2_act_q8,
+            ssm_rowwise_w_bf16,
+            ssm_rowwise_w_bf16_used: std::sync::atomic::AtomicUsize::new(0),
             max_batch_tokens,
             decode_meta,
             sizes,
@@ -390,6 +429,9 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
             lora_seq_slot,
             q2_dequant_scratch,
             q2_act_q8,
+            ssm_rowwise_w_bf16,
+            // A cursor into the slab above, not an allocation.
+            ssm_rowwise_w_bf16_used: _,
         } = self;
         // Every pointer, then NULL it: `release` must be idempotent because a
         // `Drop` backstop may call it again, and `free` already no-ops on NULL.
@@ -437,6 +479,7 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
             *lora_seq_slot,
             *q2_dequant_scratch,
             *q2_act_q8,
+            *ssm_rowwise_w_bf16,
         ];
         let mut first_error = None;
         for ptr in owned {
@@ -489,6 +532,7 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
         *lora_seq_slot = DevicePtr::NULL;
         *q2_dequant_scratch = DevicePtr::NULL;
         *q2_act_q8 = DevicePtr::NULL;
+        *ssm_rowwise_w_bf16 = DevicePtr::NULL;
         match first_error {
             Some(e) => Err(e),
             None => Ok(()),
