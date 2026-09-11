@@ -210,7 +210,7 @@ impl DenseFfnLayer {
         let scale_layout_ready = ctx.buffers.ffn_act_scale_kmajor().0 != 0
             && self.fp8_act_scale_kmajor_k.0 != 0
             && ctx.buffers.ffn_act_scale_kmajor_bytes() >= m_pad * (k as usize / 128) * 4;
-        let cublas = ctx.dispatch.cublas_gemm
+        let cublas = ctx.dispatch.cublas.ffn
             && padded_out_bytes <= out_capacity_bytes
             && spark_runtime::cublaslt::scale_layout::blk128x128_stride_ok(k as usize)
             && (scale_layout_ready || !ops::cublas_scale_layout_kmajor());

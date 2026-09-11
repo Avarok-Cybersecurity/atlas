@@ -39,12 +39,23 @@ impl BufferArena {
     pub fn ssm_qkvz(&self) -> DevicePtr {
         self.ssm_qkvz
     }
+    /// Allocated byte size of `ssm_qkvz` — the QKVZ projection's destination on
+    /// an INTERLEAVED model. Bounds-check for the cuBLASLt arm, which writes
+    /// `ceil16(M)` rows (see `sizes.rs`).
+    pub fn ssm_qkvz_bytes(&self) -> usize {
+        self.sizes.ssm_qkvz
+    }
     pub fn ssm_ba(&self) -> DevicePtr {
         self.ssm_ba
     }
     /// Sequential [Q|K|V|Z] after deinterleaving.
     pub fn ssm_deinterleaved(&self) -> DevicePtr {
         self.ssm_deinterleaved
+    }
+    /// Allocated byte size of `ssm_deinterleaved` — the QKVZ projection's
+    /// destination on a SEQUENTIAL model. Same padded-M bounds check.
+    pub fn ssm_deinterleaved_bytes(&self) -> usize {
+        self.sizes.ssm_deinterleaved
     }
     /// FP32 [gate, beta] for GDN (num_v_heads * 2 floats).
     pub fn ssm_gates(&self) -> DevicePtr {
@@ -144,6 +155,16 @@ impl BufferArena {
     /// Persistent per-128-block FP32 scales paired with `fp8_act`.
     pub fn fp8_act_scale(&self) -> DevicePtr {
         self.fp8_act_scale
+    }
+    /// Transposed (`[K/128, ceil16(M)]`) copy of `fp8_act_scale` — the VEC128
+    /// B-scale layout the cuBLASLt block-scaled FP8 GEMM documents. The
+    /// prefill-projection sibling of `ffn_act_scale_kmajor`.
+    pub fn fp8_act_scale_kmajor(&self) -> DevicePtr {
+        self.fp8_act_scale_kmajor
+    }
+    /// Allocated byte size of `fp8_act_scale_kmajor` (bounds-check at call sites).
+    pub fn fp8_act_scale_kmajor_bytes(&self) -> usize {
+        self.sizes.fp8_act_scale_kmajor
     }
     /// Persistent BF16 transient-dequant scratch for native keep-packed Q2_0
     /// prefill. Reused per projection: dequant into it, GEMM reads it (same

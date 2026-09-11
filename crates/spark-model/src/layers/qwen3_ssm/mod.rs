@@ -371,6 +371,12 @@ pub struct Qwen3SsmLayer {
     // `ATLAS_FP8_W8A8=1` for staged rollout.
     per_token_group_quant_fp8_k: KernelHandle,
     fp8_gemm_t_blockscaled_k: KernelHandle,
+    /// `fp8_act_scale_to_kmajor` — rewrites the quantizer's `[M, K/128]`
+    /// VEC128 activation scales into the `[K/128, ceil16(M)]` layout cuBLASLt
+    /// documents. 0 when the module is absent, which makes the cuBLASLt QKVZ
+    /// arm decline (see `prefill_w8a8.rs`); the in-tree kernel reads the
+    /// quantizer's own order and needs no adapter.
+    fp8_act_scale_kmajor_k: KernelHandle,
 }
 
 // Kernel-selection helpers moved to `kernel_select.rs` (≤500 LoC split).
@@ -383,6 +389,7 @@ mod init_fp8;
 mod init_q2;
 mod kernel_select;
 mod lora;
+mod prefill_w8a8;
 mod ssm_forward;
 pub(crate) mod ssm_h_fp16;
 mod trait_decode;
@@ -413,6 +420,9 @@ pub use gdn_flags::{
 
 // ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──
 
+#[cfg(test)]
+#[path = "prefill_alloc_tests.rs"]
+mod prefill_alloc_tests;
 #[cfg(test)]
 mod tests;
 
