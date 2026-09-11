@@ -13,6 +13,17 @@ use super::*;
 /// 8-stage [`crate::scheduler::logit_processors`] pipeline can run on
 /// each verify-position's logits — the fix for MTP-emitted tokens
 /// bypassing all pre-sample masks. See `verify_pipeline_helper`.
+/// DIAGNOSTIC: admit a SINGLE sequence to the batched verify body.
+///
+/// The n>=2 floor below is an economics bound, not a correctness one: batching
+/// one sequence saves nothing. Lowering it isolates whether the batched body's
+/// acceptance collapse is a cross-sequence defect or a within-sequence one,
+/// which no amount of reading the row arithmetic has settled.
+fn batch_verify_min1() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("ATLAS_MTP_BATCH_VERIFY_MIN1").is_ok())
+}
+
 pub fn step_mtp(
     model: &dyn Model,
     active: &mut [ActiveSeq],
@@ -460,7 +471,7 @@ pub fn step_mtp(
             .record(crate::scheduler::mtp_timing::Phase::StepOuter, t_step_outer);
         return;
     }
-    if verify_idxs.len() >= 2
+    if verify_idxs.len() >= if batch_verify_min1() { 1 } else { 2 }
         && spark_model::speculative::mtp_multi_seq_mode()
         && !dflash_verify_raw_argmax
         && !batch_verify_disabled()
@@ -518,7 +529,9 @@ pub fn step_mtp(
     for (lo, hi) in mtp_dcut::chunk_ranges(&ks) {
         let chunk = &batchable_idxs[lo..hi];
         let chunk_ks = &ks[lo..hi];
-        if chunk.len() >= 2 && model.can_batch_verify(chunk_ks) {
+        if chunk.len() >= if batch_verify_min1() { 1 } else { 2 }
+            && model.can_batch_verify(chunk_ks)
+        {
             // Collect disjoint &mut refs — the iterator walk requires ASCENDING
             // indices, so sort a copy of the chunk before walking and restore
             // the batch order (with each sequence's k) immediately after.

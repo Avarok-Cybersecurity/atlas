@@ -181,6 +181,50 @@ pub(super) fn step_verify_k4_batched(
         verdicts.push((v, num_accepted, verify_lps));
     }
 
+    // ── ATLAS_MTP_DRAFT_DIAG: fingerprint the draft misses (see module note) ──
+    {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let on = *ON.get_or_init(|| std::env::var("ATLAS_MTP_DRAFT_DIAG").is_ok());
+        if on {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static STEPS: AtomicUsize = AtomicUsize::new(0);
+            let step = STEPS.fetch_add(1, Ordering::Relaxed);
+            if step < 40 {
+                let (mut own, mut off1, mut cross, mut tot) = (0usize, 0usize, 0usize, 0usize);
+                for i in 0..n {
+                    let v = &verdicts[i].0;
+                    let d = &drafts_per_seq[i];
+                    for (j, &dj) in d.iter().enumerate() {
+                        tot += 1;
+                        if v.get(j) == Some(&dj) {
+                            own += 1;
+                        }
+                        if v.get(j + 1) == Some(&dj) {
+                            off1 += 1;
+                        }
+                        for (q, other) in verdicts.iter().enumerate() {
+                            if q != i && other.0.get(j) == Some(&dj) {
+                                cross += 1;
+                                break;
+                            }
+                        }
+                    }
+                }
+                tracing::info!(
+                    step,
+                    n,
+                    tot,
+                    own,
+                    off_by_1 = off1,
+                    cross,
+                    drafts0 = ?drafts_per_seq.iter().map(|d| d.first().copied().unwrap_or(0)).collect::<Vec<_>>(),
+                    targets0 = ?verdicts.iter().map(|v| v.0.first().copied().unwrap_or(0)).collect::<Vec<_>>(),
+                    "MTP draft diag"
+                );
+            }
+        }
+    }
+
     // ── EP: publish the verdicts before any of them is applied ──
     //
     // The worker ran the same batched forward and is now blocked reading one
@@ -238,7 +282,11 @@ pub(super) fn step_verify_k4_batched(
             verify_lps,
             ks[i] - 1,
             num_accepted,
-            K4Hidden::DeferPropose,
+            if inline_propose() {
+                K4Hidden::Stash(i)
+            } else {
+                K4Hidden::DeferPropose
+            },
             verify_us,
         );
     }
@@ -260,6 +308,15 @@ pub(super) fn step_verify_k4_batched(
     let pending: Vec<usize> = (0..n)
         .filter(|&i| !batch[i].finished && batch[i].pending_drafts.is_empty())
         .collect();
+    // Inline propose already filled `pending_drafts` in the verdict loop, so
+    // the filter above leaves nothing for Phase 4 -- asserted, not assumed,
+    // because a silent double-propose would read as a drafter-state bug.
+    if inline_propose() && !pending.is_empty() {
+        tracing::warn!(
+            n_pending = pending.len(),
+            "ATLAS_MTP_INLINE_PROPOSE: sequences still lack drafts after the inline propose"
+        );
+    }
     if pending.is_empty() {
         // `_step_timer` records StepTotal on drop — no explicit `step_done`
         // here: the pre-existing pair (guard + explicit call) double-counted
@@ -369,6 +426,14 @@ pub(super) fn step_verify_k4_batched(
 /// Kill switch `ATLAS_NO_MTP_BATCH_PROPOSE` — PRESENCE check (`=0` is NOT
 /// off): forces the per-seq propose fallback inside the batched verify step,
 /// for A/B attribution of the propose-batching sub-lever.
+/// DIAGNOSTIC: propose inline per sequence from its stash slot, instead of
+/// deferring every propose to the batched Phase 4. See the module note on
+/// `ATLAS_MTP_INLINE_PROPOSE`.
+fn inline_propose() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("ATLAS_MTP_INLINE_PROPOSE").is_ok())
+}
+
 fn batch_propose_disabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| std::env::var("ATLAS_NO_MTP_BATCH_PROPOSE").is_ok())
