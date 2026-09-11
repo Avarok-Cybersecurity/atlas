@@ -481,7 +481,17 @@ fn main() {
         // `target/<profile>/build/atlas-kernels-*/output` (H100 rounds 11 and
         // 13). Text formatted by `build_summary::summary`, which
         // `tests/build_summary.rs` grades.
-        let n_overrides = find_cu_files(&target.model_kernel_dir, source_ext).len();
+        // TWO counts, honestly named (H100 round 15 §1.2 / anomaly 1). The
+        // first is the per-model/quant directory's own `.cu` count — what this
+        // line has always printed, mislabelled as the overrides list. The
+        // second IS that list: `kernels/<hw>/HARDWARE.toml` `[kernels]
+        // overrides`, the declaration `scripts/check_kernel_shadows.py` and
+        // `tests/support/inherited.rs` read. They are different numbers (14 vs
+        // 11 in round 14, 14 vs 15 in round 15) and only the second answers
+        // "did my override land".
+        let n_model_dir = find_cu_files(&target.model_kernel_dir, source_ext).len();
+        let n_overrides =
+            build_summary::count_declared_overrides(&workspace_root.join("kernels"), &target.hw);
         println!(
             "cargo:warning={}",
             build_summary::summary(
@@ -489,6 +499,7 @@ fn main() {
                 &target.hw,
                 &target.model,
                 &target.quant,
+                n_model_dir,
                 n_overrides,
             )
         );
