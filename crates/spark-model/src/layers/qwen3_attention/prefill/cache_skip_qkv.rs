@@ -52,6 +52,18 @@ impl Qwen3AttentionLayer {
             };
         }
 
+        // ONE decision for all three projections, then ONE activation
+        // quantization they share — see `prefill_qkv_w8a8.rs` for why it is
+        // all-or-none (k's phantom rows land in v's region and are covered by
+        // v's own write, which only holds if both take the same arm in this
+        // order) and for the nsys receipt that made it worth doing (#917/#928:
+        // q_proj 16 x 2029.2 µs + k/v 32 x 375.4 µs = 44.5 ms of a 368.3 ms
+        // 1193-token prefill, all of it W8A16).
+        let w8a8 = self.cache_skip_qkv_w8a8_selected(ctx, n, q_proj_dim as u32, nkv * hd, h);
+        self.log_cache_skip_qkv_route(ctx, w8a8);
+        if w8a8 {
+            self.cache_skip_qkv_w8a8_quant(ctx, normed, n, h, stream)?;
+        }
         let qg_out = ctx.buffers.qkv_output();
         let t0 = std::time::Instant::now();
         self.cache_skip_one_proj(
@@ -62,6 +74,7 @@ impl Qwen3AttentionLayer {
             n,
             q_proj_dim as u32,
             h,
+            w8a8,
             ctx,
             stream,
         )?;
@@ -85,6 +98,7 @@ impl Qwen3AttentionLayer {
             n,
             nkv * hd,
             h,
+            w8a8,
             ctx,
             stream,
         )?;
@@ -108,6 +122,7 @@ impl Qwen3AttentionLayer {
             n,
             nkv * hd,
             h,
+            w8a8,
             ctx,
             stream,
         )?;
@@ -134,6 +149,7 @@ impl Qwen3AttentionLayer {
         n: u32,
         out_dim: u32,
         h: u32,
+        w8a8: bool,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -192,15 +208,17 @@ impl Qwen3AttentionLayer {
         // (#917 round 3). It mattered again because the 5..16-row decode
         // recipe arms `ATLAS_CUBLAS_GEMM=ffn,ssm,attn`.
         //
-        // Unlike `paged_oproj.rs`, there is no cuBLASLt W8A8 arm to put in its
-        // place HERE: the cache-skip path writes q/k/v into three back-to-back
-        // regions of one buffer (`q_contiguous`, then `+ n*q_dim`, then
-        // `+ n*kv_dim`), and cuBLASLt writes `ceil16(M)` rows — with a prefill
-        // token count that is not a multiple of 16 the pad would cross into the
-        // NEXT projection's region. Giving this path the cuBLASLt arm needs
-        // per-region capacity accounting it does not have today, so it keeps
-        // the transposed W8A16 kernels below, which are byte-identical to what
-        // an un-armed serve already runs.
+        // THE cuBLASLt W8A8 ARM (#928). It used to be absent here — unlike
+        // `paged_oproj.rs` — because this path writes q/k/v into back-to-back
+        // regions of two arena buffers and cuBLASLt writes `ceil16(M)` rows, so
+        // `k`'s pad crosses into `v`'s region. `prefill_qkv_w8a8.rs` now does
+        // the per-region capacity accounting that was missing, and shows why
+        // the k->v overlap is benign (v is written after k, and its real rows
+        // cover k's pad whenever `m >= 16`, which the selector requires). The
+        // decision and the single shared activation quantization are made once
+        // per chain by the caller; `w8a8` is that decision.
+        } else if w8a8 && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8()) {
+            self.cache_skip_qkv_w8a8_gemm(ctx, fp8w, out, n, out_dim, h, stream)?;
         } else if let Some(fp8t) = fp8w_t
             && use_t_pipelined
             && self.w8a16_gemm_t_pipelined_k.0 != 0
