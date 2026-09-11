@@ -93,7 +93,9 @@ pub(super) fn cublas_ssm_kernel(gpu: &dyn GpuBackend, func: &str) -> KernelHandl
 }
 
 /// The tensor-core GDN chunked-PREFILL spine's handle
-/// (`gated_delta_rule_chunk_delta_h_tcfuse_x2`), GATED on the same bit that
+/// ([`ops::GDN_TC_SPINE_ENTRY`](crate::layers::ops::GDN_TC_SPINE_ENTRY) —
+/// the SAME constant the serve's route line prints, so the log cannot name a
+/// kernel other than the one bound here), GATED on the same bit that
 /// launches it — `[defaults] gdn_prefill_tc`, with `ATLAS_GDN_PREFILL_TC`
 /// overriding (`layers::ops::target_defaults`).
 ///
@@ -116,8 +118,8 @@ pub(super) fn gdn_prefill_tc_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
     }
     crate::layers::try_kernel(
         gpu,
-        "gated_delta_rule_chunk_tc",
-        "gated_delta_rule_chunk_delta_h_tcfuse_x2",
+        crate::layers::ops::GDN_TC_SPINE_MODULE,
+        crate::layers::ops::GDN_TC_SPINE_ENTRY,
     )
 }
 
