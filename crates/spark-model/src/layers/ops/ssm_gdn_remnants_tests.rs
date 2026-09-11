@@ -274,7 +274,42 @@ fn the_lever_is_off_until_asked_for() {
     assert_eq!(
         gdn_hopper_remnant_reject(false, false, true, 128, 128, 64),
         Some("not requested"),
-        "ATLAS_GDN_PREFILL_TC must default OFF — the parents stay the default"
+        "the TC prefill family must default OFF — the parents stay the default"
+    );
+}
+
+/// The twins read the SPINE'S lever, not a second one of their own.
+///
+/// This is the bit the launcher hands `gdn_hopper_remnants`, taken here the
+/// same way `gdn_prefill_fla` takes it. It pins two things that a fresh
+/// `std::env::var("ATLAS_GDN_PREFILL_TC").is_ok()` at this layer would break,
+/// and which nothing else in the suite would notice:
+///
+///  * `ATLAS_GDN_PREFILL_TC=0` is an explicit OFF under the 2026-09-11
+///    grammar. A presence check would read it as ON and run a prefill whose
+///    twins were enabled and whose state spine was not — neither leg of the
+///    A/B the variable exists for;
+///  * the COMPILED TARGET's `[defaults] gdn_prefill_tc` is what applies when
+///    the variable is absent, so a target that one day declares it true gets
+///    the whole family, with no launch script to remember.
+///
+/// The assertion is the declared default of every target shipped today
+/// (`kernels/*/HARDWARE.toml`), which `atlas-kernels`' own
+/// `target_defaults.rs` pins against the TOML; what is under test HERE is that
+/// the remnants are wired to THAT value.
+#[test]
+fn the_twins_read_the_spines_resolved_lever() {
+    let spine = crate::layers::ops::target_defaults::resolved()
+        .gdn_prefill_tc
+        .value;
+    assert!(
+        !spine,
+        "no target declares [defaults] gdn_prefill_tc true yet; if one now does,          this test should assert the twins follow it rather than be deleted"
+    );
+    assert_eq!(
+        gdn_hopper_remnant_reject(spine, false, true, 128, 128, 64),
+        Some("not requested"),
+        "the twins must follow the spine's resolved lever, not a lever of their own"
     );
 }
 
