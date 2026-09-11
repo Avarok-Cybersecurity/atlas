@@ -80,6 +80,15 @@ gdn_decode_hopper = false
 # Hopper speedup does not transfer by argument, and this row does not move
 # until a GB10 A/B says so.
 gdn_prefill_tc = false
+# CTAs per value head in the tensor-core prefill spine (#928). 1 = the unsplit
+# parent; the value-split twin is `kernels/hopper` source this tree does not
+# carry, so the row is inert here and declared for the reason every other
+# hopper-only row is — an absent lever and a deliberate 1 must not look alike.
+# The split was tried HERE, in `gated_delta_rule_chunk_tc.cu`'s 2026-06-25
+# V-split verdict: bit-parity 18/18 and 0.71x/0.65x/0.34x at VTILES=2/4/8, on a
+# 48-SM part where nv=48 CTAs already fill the device. That is the measurement
+# this row restates.
+gdn_spine_vsplit = 1
 # The Hopper BA-gates twin (#928). OFF, and INERT here: the kernel lives in
 # `kernels/hopper/common/ssm_ba_gates_hopper.cu`, which GB10's tree does not
 # carry and GB10's build does not compile, so the probe returns

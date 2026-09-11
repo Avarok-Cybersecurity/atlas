@@ -66,6 +66,11 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = false
 gdn_decode_hopper = false
 gdn_prefill_tc = false
+# CTAs per value head in the tensor-core prefill spine (#928). 1, for want of a
+# receipt, exactly as for every other Hopper row here. The twin is not even
+# symlinked into this tree, so the row is inert; it is declared rather than
+# omitted because absence would read as agreement with a baseline nobody chose.
+gdn_spine_vsplit = 1
 ssm_ba_gates_hopper = false
 decode_split_silu = true
 ssm_decode_ring_slots = "auto"

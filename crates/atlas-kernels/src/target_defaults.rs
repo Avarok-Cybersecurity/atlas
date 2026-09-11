@@ -102,6 +102,28 @@ pub struct TargetDefaults {
     /// It is here so the probe that loads it is GATED on the same bit that
     /// launches it, like every other kernel in this table.
     pub gdn_prefill_tc: bool,
+    /// How many CTAs share ONE value head's recurrent state in the tensor-core
+    /// GDN prefill spine: `1` (the unsplit `..._tcfuse_x2`), `2` or `4`
+    /// (`gated_delta_rule_chunk_delta_h_vsplit{2,4}_hopper`,
+    /// `kernels/hopper/common/gdn_chunk_delta_h_vsplit_hopper.cu`).
+    ///
+    /// `1` ON EVERY TARGET. The twin is BIT-IDENTICAL to the parent by
+    /// construction — neither phase of the recurrence contracts over the value
+    /// dimension, so a column-block split needs no cross-CTA reduction and
+    /// reassociates nothing — but it is not a free null: it re-reads the
+    /// k-space operands `W` and `K` once per split (1.335x total traffic at
+    /// 2-way, 2.005x at 4-way), and the parent's own in-file V-split verdict
+    /// measured 0.71x/0.65x/0.34x on GB10, a 48-SM part where `nv=48` CTAs
+    /// already fill the device. On H100 that geometry is 48 CTAs on 132 SMs
+    /// (36%) for 11.32% of a 4593-token prefill at 1.4% of BF16 peak and 9.7%
+    /// of HBM — bound by neither roofline (nsys round 13 cell T1N). This row is
+    /// the lever that measures it; `ATLAS_GDN_SPINE_VSPLIT=2|4` is the A/B, and
+    /// the row moves when round 16 produces a serving receipt. Numbers:
+    /// `GDN-PREFILL-ATTRIBUTION.md`.
+    ///
+    /// Meaningless without [`Self::gdn_prefill_tc`], and the launcher says so
+    /// rather than silently doing nothing.
+    pub gdn_spine_vsplit: u32,
     /// `dense_gemm_ba_gates_prefill_hopper` serves the SSM BA projection +
     /// GDN gate transforms with ONE CTA per token
     /// (`layers/ops/ssm_ba_gates_hopper.rs`), in place of its gb10 parent's

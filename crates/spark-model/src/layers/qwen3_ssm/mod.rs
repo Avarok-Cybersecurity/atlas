@@ -234,6 +234,16 @@ pub struct Qwen3SsmLayer {
     /// `try_kernel` => 0 on images without it, and the launcher additionally
     /// refuses any head/chunk that differs from the compile-time tile.
     gdn_prefill_fla_chunk_delta_h_tcfuse_k: KernelHandle,
+    /// VALUE-SPLIT twin of that spine, for the split `[defaults]
+    /// gdn_spine_vsplit` resolved to — `gated_delta_rule_chunk_delta_h_vsplit2
+    /// _hopper` or `..._vsplit4_hopper`, `kernels/hopper` only, so `try_kernel`
+    /// => 0 everywhere else and at the shipped split of 1. Same 21-arg ABI and
+    /// block 256 as the parent; only `grid.y` (`batch * split`) and the shared-
+    /// memory footprint differ. It splits the recurrent state's VALUE columns
+    /// across CTAs — 48 CTAs become 96 or 192 on a 132-SM H100 — which neither
+    /// phase of the recurrence contracts over, so there is no cross-CTA
+    /// reduction and the output is bit-identical (`GDN-PREFILL-ATTRIBUTION.md`).
+    gdn_prefill_fla_chunk_delta_h_vsplit_k: KernelHandle,
     /// Warp-dense fused GDN state spine (`gated_delta_rule_chunk_delta_h_vtile`).
     /// 512 threads = 16 warps/CTA against ksplit's 8, with the SAME grid (one CTA
     /// per head) so `W`/`K` global loads are not duplicated — an ncu profile put

@@ -195,6 +195,7 @@ pub struct TargetLevers {
     pub ssm_batched_recurrent: Resolved<bool>,
     pub gdn_decode_hopper: Resolved<bool>,
     pub gdn_prefill_tc: Resolved<bool>,
+    pub gdn_spine_vsplit: Resolved<u32>,
     pub ssm_ba_gates_hopper: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
     pub ssm_decode_ring_slots: Resolved<Option<usize>>,
@@ -313,6 +314,21 @@ pub fn resolve(
             var("ATLAS_GDN_PREFILL_TC").as_deref(),
             false,
         ),
+        // CTAs per value head in the tensor-core prefill spine (#928). The
+        // RULE is `ops::resolve_spine_vsplit`, beside the guards that consume
+        // it and the entry names it maps to — the shape `attn_decode_splitk`
+        // takes. This table is the only thing that REPORTS it.
+        gdn_spine_vsplit: {
+            let (split, from_env) = super::resolve_spine_vsplit(
+                defaults.gdn_spine_vsplit,
+                var("ATLAS_GDN_SPINE_VSPLIT").as_deref(),
+            );
+            if from_env {
+                Resolved::env(split)
+            } else {
+                Resolved::target(split)
+            }
+        },
         // The Hopper BA-gates twin (#928). Hopper declares it ON; the twin is
         // BIT-IDENTICAL to its gb10 parent by construction, so unlike every
         // other Hopper-owned row this one carries no accuracy question and no
@@ -424,6 +440,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
          attn_ncol_gemv={ncol} lm_head_m16_tc={head_m16} \
          lm_head_batchm_max={batchm}{batchm_src} ssm_batched_recurrent={recurrent} \
          gdn_decode_hopper={gdn_decode} gdn_prefill_tc={gdn_tc} \
+         gdn_spine_vsplit={gdn_vsplit}{gdn_vsplit_src} \
          ssm_ba_gates_hopper={ba_gates} decode_split_silu={silu} \
          ssm_decode_ring_slots={ring}{ring_src} \
          w8a8_prefill_max_m={w8a8_wide}/{w8a8_narrow}{w8a8_src} \
@@ -440,6 +457,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
         recurrent = onoff(l.ssm_batched_recurrent),
         gdn_decode = onoff(l.gdn_decode_hopper),
         gdn_tc = onoff(l.gdn_prefill_tc),
+        gdn_vsplit = l.gdn_spine_vsplit.value,
+        gdn_vsplit_src = l.gdn_spine_vsplit.source.tag(),
         ba_gates = onoff(l.ssm_ba_gates_hopper),
         silu = onoff(l.decode_split_silu),
         ring = match l.ssm_decode_ring_slots.value {

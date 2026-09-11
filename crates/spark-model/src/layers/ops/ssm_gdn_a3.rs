@@ -15,58 +15,6 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight}
 
 use super::*;
 
-/// The tensor-core spine's compile-time tile: `K_DIM == V_DIM` in
-/// `kernels/gb10/common/gated_delta_rule_chunk_tc.cu`.
-pub(crate) const GDN_TC_DIM: u32 = 128;
-/// That kernel's `CHUNK`.
-pub(crate) const GDN_TC_CHUNK: u32 = 64;
-/// SSOT mirror of `TCF_SMEM` in the same file:
-///   St[128][136] + Wp[64][136] + Up[64][136] + ducT[128][72] + dec[65] f32
-///   = 34816 + 17408 + 17408 + 18432 + 260 = 88 324 B.
-/// The padded 136/72 row strides are what make the MMA fragment reads
-/// bank-conflict-free; under-sizing this reads a tile out of bounds, so the
-/// launcher and the kernel must not be able to disagree about it.
-pub(crate) const GDN_TC_SMEM: u32 = GDN_TC_DIM * 136 * 2
-    + 2 * (GDN_TC_CHUNK * 136 * 2)
-    + GDN_TC_DIM * 72 * 2
-    + (GDN_TC_CHUNK + 1) * 4;
-
-/// Why the `ATLAS_GDN_PREFILL_TC` spine is NOT running — `None` means it is.
-///
-/// Pure so the grammar is testable without a GPU or the process environment.
-/// NAME THE GUARD THAT REJECTED: a perf path that asks to be enabled and
-/// silently is not measures as "no effect" (PR #296 shipped exactly that, an
-/// ldmatrix GEMM that fell back with no error while both gates stayed green).
-///
-/// The tile guards are not defensive padding. The kernel's descriptors, smem
-/// layout and fragment maps are all compile-time 128/128/64, and its K staging
-/// reads 16 bytes at a time, so a narrower head or an odd `qk_stride` would
-/// load the wrong columns or fault rather than run slowly.
-pub(crate) fn gdn_tc_spine_reject(
-    requested: bool,
-    kernel_present: bool,
-    k_dim: u32,
-    v_dim: u32,
-    chunk: u32,
-    qk_stride: u32,
-) -> Option<&'static str> {
-    if !requested {
-        Some("not requested")
-    } else if !kernel_present {
-        Some("kernel absent from this image")
-    } else if k_dim != GDN_TC_DIM || v_dim != GDN_TC_DIM || chunk != GDN_TC_CHUNK {
-        Some("head/chunk differs from the compile-time tile (K_DIM=V_DIM=128, CHUNK=64)")
-    } else if !qk_stride.is_multiple_of(8) {
-        Some("qk_stride is not a multiple of 8 (the K staging uses 16-byte vector loads)")
-    } else {
-        None
-    }
-}
-
-#[cfg(test)]
-#[path = "ssm_gdn_tc_tests.rs"]
-mod ssm_gdn_tc_tests;
-
 /// FLA multi-kernel chunked GDN prefill (`ATLAS_GDN_FLA=1`).
 ///
 /// Three sequential launches on `stream` (CPU-serialized → no GPU sync needed):
@@ -98,6 +46,13 @@ pub fn gdn_prefill_fla(
     // spine; grid [nv, batch] and block 256 are unchanged, only the smem
     // footprint differs. KernelHandle(0) = absent from this image.
     k_chunk_delta_h_tcfuse: KernelHandle,
+    // VALUE-SPLIT twin of that spine (`gdn_chunk_delta_h_vsplit_hopper.cu`,
+    // kernels/hopper only), behind `[defaults] gdn_spine_vsplit`. `init_kernels`
+    // binds the entry for the RESOLVED split, so this one handle is the 2-way or
+    // the 4-way kernel and never both, and the launcher reads the same resolved
+    // value for grid.y and smem. Drop-in ABI == `..._tcfuse_x2`, block 256
+    // unchanged. KernelHandle(0) = absent, i.e. every target but Hopper.
+    k_chunk_delta_h_vsplit: KernelHandle,
     k_chunk_delta_h_fused: KernelHandle,
     k_chunk_delta_h_tma: KernelHandle,
     k_chunk_fwd_o: KernelHandle,
@@ -318,12 +273,55 @@ pub fn gdn_prefill_fla(
         tracing::warn!("ATLAS_GDN_PREFILL_TC set but the tensor-core spine is NOT running: {why}");
     }
     let tc_ok = tc_reject.is_none();
+    // ── The VALUE-SPLIT arm of that same spine (`[defaults] gdn_spine_vsplit`)
+    //
+    // WHY, in one receipt (derivation in GDN-PREFILL-ATTRIBUTION.md): nsys round
+    // 13 cell T1N puts `..._tcfuse_x2` at 52 060.3 us = 11.32% of the 4593-token
+    // H100 prefill, 13.64 TFLOP/s (1.4% of BF16 peak) and 327 GB/s (9.7% of HBM)
+    // — bound by NEITHER roofline — while already matching the isolated kernel's
+    // own ceiling (1.0625 vs the microtest's 1.0553 ms). The only axis left is
+    // the grid: `[nv=48, batch=1]` is 48 CTAs on 132 SMs, 36% of the machine.
+    // Neither phase contracts over the value dimension, so splitting it across
+    // CTAs needs no cross-CTA reduction and reassociates nothing.
+    //
+    // OFF ON EVERY TARGET. Bit-identity answers the accuracy question, not the
+    // speed one: each split re-reads W and K (1.335x traffic at 2-way, 2.005x at
+    // 4-way), and the parent's in-file V-split verdict measured a LOSS on GB10's
+    // 48-SM part, where 48 CTAs already fill the device. A default is a claim
+    // about a measurement; round 16 runs `ATLAS_GDN_SPINE_VSPLIT=2` / `=4`.
+    let vsplit = super::target_defaults::resolved().gdn_spine_vsplit.value;
+    let vpick = gdn_spine_vsplit_pick(
+        vsplit,
+        tc_ok,
+        k_chunk_delta_h_vsplit.0 != 0,
+        num_v_heads,
+        batch_size,
+    );
+    // NAME THE GUARD THAT REJECTED, like every other lever on this page.
+    if vsplit > 1
+        && let Some(why) = vpick.reject
+    {
+        tracing::warn!(
+            "gdn_spine_vsplit={vsplit} set but the value-split spine is NOT running: {why}"
+        );
+    }
+    let vsplit_entry = gdn_spine_vsplit_entry(vpick.split).filter(|_| vpick.reject.is_none());
     if tc_ok {
-        // `ssm_gdn_tc_route`: built from the SAME constant `init_kernels`
-        // binds the handle with (round 12 caught this line naming the family).
+        // `ssm_gdn_tc_route`: both lines are built from the SAME constants
+        // `init_kernels` binds the handles with (round 12 caught this line
+        // naming the family), and exactly one of them is printed.
         tracing::info!(
             "{}",
-            gdn_tc_spine_route_line(num_v_heads, batch_size, smem_tcfuse)
+            match vsplit_entry {
+                Some(entry) => gdn_vsplit_spine_route_line(
+                    entry,
+                    num_v_heads,
+                    vpick.grid_y,
+                    vpick.split,
+                    vpick.smem,
+                ),
+                None => gdn_tc_spine_route_line(num_v_heads, batch_size, smem_tcfuse),
+            }
         );
     }
     // ── TMA path (ATLAS_GDN_TMA=1) ───────────────────────────────────────────
@@ -419,7 +417,9 @@ pub fn gdn_prefill_fla(
     // Kernel 2 (non-TMA). Both paths write s_out/uc_out and fall through to
     // kernel 3, which is identical either way.
     if !tma_ok {
-        let (k_cdh, cdh_grid_y, cdh_smem, cdh_block) = if tc_ok {
+        let (k_cdh, cdh_grid_y, cdh_smem, cdh_block) = if vsplit_entry.is_some() {
+            (k_chunk_delta_h_vsplit, vpick.grid_y, vpick.smem, 256u32)
+        } else if tc_ok {
             (k_chunk_delta_h_tcfuse, batch_size, smem_tcfuse, 256u32)
         } else if use_fused {
             (k_chunk_delta_h_fused, batch_size, smem_fused, fused_block)

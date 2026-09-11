@@ -191,6 +191,51 @@ fn a_hopper_owned_addition_brings_entry_points_gb10_does_not() {
     }
 }
 
+/// The VALUE-SPLIT prefill spine, pinned by name (#928).
+///
+/// The generic addition rule above proves the file declares entries gb10 does
+/// not. This pins the two that matter, because the ONE thing a reader of the
+/// serve log has to be able to trust about this lever is that the split it
+/// names is the kernel that launched — `ops::gdn_spine_vsplit_entry` maps the
+/// resolved split to these strings, `qwen3_ssm::init_kernels` binds the handle
+/// with them, and the route line prints them. A rename on the CUDA side that
+/// this test did not catch would leave all three resolving to a handle of 0 and
+/// the launcher silently on the unsplit parent, which is the PR #296 shape.
+///
+/// It is also where the 2- and 4-way arms are declared to EXIST: the lever's
+/// grammar (`ops::GDN_SPINE_VSPLIT_VALUES`) accepts exactly those two, and a
+/// split with no compiled entry behind it is the one failure the lever cannot
+/// report at runtime.
+#[test]
+fn the_value_split_spine_declares_both_of_its_entry_points() {
+    let path = hw_dir("hopper")
+        .join("common")
+        .join("gdn_chunk_delta_h_vsplit_hopper.cu");
+    assert!(
+        kernel_overrides("hopper")
+            .iter()
+            .any(|n| n == "gdn_chunk_delta_h_vsplit_hopper.cu"),
+        "the value-split spine must be DECLARED in [kernels] overrides — an \
+         undeclared regular file in the mirror is indistinguishable from a \
+         silent fork of a shared kernel"
+    );
+    let entries = entry_points(&path);
+    for want in [
+        "gated_delta_rule_chunk_delta_h_vsplit2_hopper",
+        "gated_delta_rule_chunk_delta_h_vsplit4_hopper",
+    ] {
+        assert!(
+            entries.contains(want),
+            "{want} is not among the entry points scraped from \
+             gdn_chunk_delta_h_vsplit_hopper.cu: {entries:?}"
+        );
+    }
+    // ...and nothing else. A third entry would be a split the lever cannot
+    // name, i.e. a kernel compiled into every Hopper image that nothing can
+    // dispatch to.
+    assert_eq!(entries.len(), 2, "{entries:?}");
+}
+
 /// B200 reaches every source IT declares by relative symlink into Hopper's
 /// copy, rather than by carrying a second regular file with the same bytes —
 /// which is the cross-target duplicate `scripts/check_kernel_shadows.py` RULE2
