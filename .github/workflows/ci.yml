@@ -429,6 +429,66 @@ jobs:
       # violation. Stdlib-only; the runner's system python3 suffices.
       - run: python3 scripts/check_kernel_shadows.py
 
+  cross-hardware-reach:
+    name: cross-hardware kernel reach (CHKI)
+    runs-on: >-
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history: the check reads file bytes at HEAD (symlink
+          # resolution, lexical include walk) and needs the base to diff.
+          fetch-depth: 0
+      # Which hardware compiles the bytes this diff changed? `taxon::hardware_of`
+      # is a path prefix and cannot see that kernels/strix/common/*.cu are 105
+      # symlinks into kernels/gb10/common/, so a gb10 edit reads as gb10-only
+      # while hipcc compiles it verbatim. d584c0c50 was caught ONLY because a
+      # release compile leg failed; a performance-only leak has no leg at all.
+      #
+      # FAIL-CLOSED, unlike classify-diff.sh: that script decides what to SKIP
+      # and must fail open; this decides a VERDICT. rc 2 (cannot see inputs) is
+      # as red as rc 1, the same doctrine as campaign-guard.sh's exit 2. The
+      # script runs RED/GREEN self-fixtures first and refuses to scan if any
+      # rule cannot fire.
+      #
+      # Passing honestly costs one trailer pair, written after running
+      # /oracle_pre_commit_cross_hardware_check. Stdlib python3, no GPU, no cargo.
+      - name: Cross-hardware reach of changed kernel paths
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          # Through the environment, never interpolated into the script text:
+          # the body is attacker-controlled on a fork PR and is read only for a
+          # `Hardware:` / `CHKI-Verdict:` trailer.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          case "${GITHUB_EVENT_NAME}" in
+            pull_request)
+              git fetch --no-tags origin "${PR_BASE_REF}"
+              python3 scripts/check_cross_hardware.py --base "origin/${PR_BASE_REF}" \
+                      --head "${PR_HEAD_SHA}" --merge-base ;;
+            merge_group)
+              python3 scripts/check_cross_hardware.py --base "${MG_BASE_SHA}" --head "${MG_HEAD_SHA}" ;;
+            push)
+              base="${PUSH_BEFORE}"
+              case "$base" in 0000000000000000000000000000000000000000|"") base="${GITHUB_SHA}~1" ;; esac
+              python3 scripts/check_cross_hardware.py --base "$base" --head "${GITHUB_SHA}" ;;
+            *)
+              # No diff to attribute; the self-fixtures and the consumer index
+              # still run, so a tree that cannot be indexed fails here too.
+              python3 scripts/check_cross_hardware.py --paths ;;
+          esac
+
   bench-threshold-prose:
     name: BENCH.toml threshold prose
     runs-on: ubuntu-latest
@@ -749,11 +809,12 @@ jobs:
           needs.license-headers.result == 'success' &&
           needs.typos.result == 'success' &&
           needs.kernel-structure.result == 'success' &&
+          needs.cross-hardware-reach.result == 'success' &&
           (needs.clippy.result == 'success' || needs.clippy.result == 'skipped') &&
           (needs.test.result == 'success' || needs.test.result == 'skipped') &&
           (needs.test-macos-metal.result == 'success' || needs.test-macos-metal.result == 'skipped') &&
           needs.stamp.outputs.stamped != 'false' }}
-    needs: [changes, stamp, fmt, clippy, license-headers, typos, kernel-structure, test, test-macos-metal]
+    needs: [changes, stamp, fmt, clippy, license-headers, typos, kernel-structure, cross-hardware-reach, test, test-macos-metal]
     uses: ./.github/workflows/release-build.yml
     with:
       version: 0.0.0-pr${{ github.event.number || 'queue' }}
