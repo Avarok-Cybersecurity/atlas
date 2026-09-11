@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use super::super::types::PrefillInProgress;
 use super::prefill_fallback::{advance_and_sample, run_wave_per_stream};
-use super::prefill_waves::{WaveGeom, plan_prefill_waves};
+use super::prefill_waves::{WaveGeom, plan_prefill_waves, plan_stream_chunk};
 
 pub(super) fn run_batched_prefill_step(
     model: &dyn Model,
@@ -79,58 +79,41 @@ pub(super) fn run_batched_prefill_step(
         let (chunk_len, is_last) = if let Some((cl, il)) = shared_geom {
             (cl, il)
         } else {
-            let remaining = p.prompt_tokens.len() - p.chunk_offset;
             // Same MLA correctness gate as `run_standard_chunk_loop` — MLA
             // models lack a paged-MLA prefill kernel so multi-chunk prefill
             // silently corrupts attention. Force single-chunk for MLA.
             let effective_max = if model.is_mla() {
-                remaining
+                p.prompt_tokens.len() - p.chunk_offset
             } else {
                 max_prefill_tokens
             };
-            let mut chunk_len = remaining.min(effective_max);
-            let mut is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
-            // TAIL PRE-SPLIT (VARLEN only). `prefill_chunk_dispatch` splits a
-            // model's FINAL prefill chunk once, one KV block below the last
-            // block boundary under the prompt, to land an SSM tail checkpoint
-            // a later turn's block-floored prefix match can actually use. The
-            // batched path does not split, so handing it the whole prompt as
-            // one `is_last` chunk would give a co-admitted stream a DIFFERENT
-            // forward shape than the per-stream path gives the same prompt —
-            // and BF16 accumulation is not associative, so at temperature 0
-            // that is a different answer for the same request (the reason the
-            // model-side split is unconditional in the first place).
+            // TAIL PRE-SPLIT (VARLEN only) + WY4 alignment live in
+            // `prefill_waves::plan_stream_chunk` — the SSOT, so a test can
+            // replay a stream's WHOLE chunk sequence and prove the batched
+            // path hands it the same geometry the per-stream path does
+            // (#1002; BF16 accumulation is not associative, so a shape that
+            // depends on who you batched with is a different answer to the
+            // same request at temperature 0).
             //
-            // Asking the model where it would cut and cutting there keeps the
-            // geometry identical per sequence, AND it is what lets the tails
-            // batch: every member of a co-arriving burst of equal-length
-            // prompts gets the same `chunk_start` for its tail, so the wave
-            // planner groups all N tails into ONE forward. #927 measured the
-            // standalone alternative at 29.3 ms for 25 tokens — 1 170 µs/token,
-            // 11.7% of prefill GPU time for 2.1% of the tokens.
-            //
-            // The condition mirrors `prefill_chunk_dispatch`'s own
-            // (`cut > chunk_start && cut < total`, on a last chunk) exactly,
-            // plus the requirement that the cut lie inside THIS chunk — a
-            // prompt longer than the budget reaches its final chunk at a
-            // nonzero offset and splits there just the same.
-            if varlen
-                && is_last
-                && let Some(cut) = model.prefill_tail_cut(&p.prompt_tokens)
-                && cut > p.chunk_offset
-                && cut < p.prompt_tokens.len()
-                && cut <= p.chunk_offset + chunk_len
-            {
-                chunk_len = cut - p.chunk_offset;
-                is_last = false;
-            }
-            // Align intermediate chunks to GDN WY4 boundary (4 tokens). The
-            // tail cut is a multiple of the KV block size, which is itself a
-            // multiple of 4 on every shipped config, so this is a no-op there.
-            if !is_last && chunk_len >= 4 {
-                chunk_len = (chunk_len / 4) * 4;
-            }
-            (chunk_len, is_last)
+            // Asking the model where it would cut and cutting there is also
+            // what lets the tails batch: every member of a co-arriving burst
+            // of equal-length prompts gets the same `chunk_start` for its
+            // tail, so the wave planner groups all N tails into ONE forward.
+            // #927 measured the standalone alternative at 29.3 ms for 25
+            // tokens — 1 170 us/token, 11.7% of prefill GPU time for 2.1% of
+            // the tokens.
+            let tail_cut = if varlen {
+                model.prefill_tail_cut(&p.prompt_tokens)
+            } else {
+                None
+            };
+            plan_stream_chunk(
+                p.chunk_offset,
+                p.prompt_tokens.len(),
+                effective_max,
+                tail_cut,
+                varlen,
+            )
         };
         chunk_lens.push(chunk_len);
         is_last_flags.push(is_last);

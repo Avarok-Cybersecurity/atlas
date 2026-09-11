@@ -333,6 +333,21 @@ pub struct InferenceResponse {
     /// i+1. Empty unless requested. The handler prepends the null entry
     /// for the first prompt token (no preceding context).
     pub prompt_logprobs: Vec<TokenLogprobs>,
+    /// The server-side guard that ended this response, if any
+    /// (`ActiveSeq::guard_stop` — e.g. `"fuzzy_repetition"`). The blocking
+    /// twin of `StreamEvent::Done.guard_stop`, and the source of the
+    /// `stop_reason` extension field on the wire.
+    ///
+    /// `finish_reason` flattens every non-timeout guard to `"length"` on
+    /// purpose (`scheduler::lifecycle::guard_stop_wire_reason` carries the
+    /// measured rationale), which left a NON-STREAMING client unable to tell
+    /// a degeneration cut from a budget stop at all. Round 13 cell V is the
+    /// receipt and it was measured on exactly this surface: the 16-way probe
+    /// ran `stream=false` and 6/16 responses came back cut at 49 tokens by
+    /// the content-loop watchdog, every one of them labelled
+    /// `finish_reason: "length"` on a request that asked for 256
+    /// (#927 / #1000 / #1002).
+    pub guard_stop: Option<&'static str>,
 }
 
 /// Events sent during streaming generation.

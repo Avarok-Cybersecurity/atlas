@@ -26,6 +26,8 @@ mod handle_done;
 mod handle_error;
 mod handle_token;
 mod state;
+#[cfg(test)]
+mod stop_reason_tests;
 mod strip;
 mod token_ids;
 mod tool_handlers;

@@ -53,8 +53,16 @@ use super::*;
 /// documented risk (see `ir::FINISH_REASON_TIMEOUT`). The guard's NAME
 /// reaches diagnostics via `StreamEvent::Done.guard_stop` and the --dump
 /// body; the right home for it on the wire is an extension FIELD (unknown
-/// fields are ignored by every SDK, cf. vLLM's `stop_reason`), which is
-/// follow-up work, not a reason to keep lying in the enum.
+/// fields are ignored by every SDK, cf. vLLM's `stop_reason`), not the enum.
+///
+/// ★ That extension field now SHIPS (#1002): `stop_reason` rides the
+/// terminal streaming chunk and the blocking choice beside this
+/// `finish_reason`, skipped entirely when no guard fired, so a normal
+/// response serialises byte-identically to before. The mapping above is
+/// unchanged — round 13 cell V is why it needed a companion at all: 6/16
+/// probe responses cut at 49 tokens by the content-loop watchdog, every one
+/// reporting `"length"` on a request that asked for 256, with nothing on the
+/// wire to say a guard had fired.
 fn guard_stop_wire_reason(guard: &'static str) -> &'static str {
     match guard {
         // Defensive: the deadline guard is intercepted before the
@@ -191,6 +199,11 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq, max_seq_len: usize)
                         reasoning_tokens: a.thinking_tokens,
                         cached_prompt_tokens: a.cached_prompt_tokens,
                         accepted_prediction_tokens: a.mtp_acct.accepted_total() as usize,
+                        // The guard NAME, beside the flattened wire reason —
+                        // the blocking twin of the streaming Done frame's
+                        // `guard_stop`. Reaches the client as the
+                        // `stop_reason` extension field (#1002).
+                        guard_stop: a.guard_stop,
                         prompt_logprobs: std::mem::take(&mut a.seq.prompt_logprobs)
                             .into_iter()
                             .map(|p| crate::api::TokenLogprobs {
@@ -294,7 +307,23 @@ pub fn swap_out_sequence(
     let mut a = active.swap_remove(victim_idx);
 
     // Compact the swapped-in sequence (same logic as retire path).
-    if victim_idx < active.len() && active[victim_idx].seq.slot_idx != victim_idx {
+    //
+    // `a.seq.slot_idx == victim_idx` is the ownership-TRANSFER precondition,
+    // and it is load-bearing (#1002). `compact_sequence` calls
+    // `ssm_pool.claim_specific(target)` and IGNORES a false return, so
+    // migrating onto a slot the victim does not own silently double-owns it —
+    // and with `--prefill-varlen-batch` the active vec is routinely
+    // non-contiguous because the streams parked in `prefilling` hold the low
+    // slots. Round 13 cell V is the receipt: a survivor migrated onto a
+    // prefilling stream's slot, the two shared one GDN h_state, and the
+    // later double release poisoned the pool free list for the rest of the
+    // serve. When the premise does not hold, skip the compaction (and the
+    // detach that pairs with it): non-contiguous slots cost the batched-GDN
+    // fast path, shared recurrent state costs correctness.
+    if victim_idx < active.len()
+        && active[victim_idx].seq.slot_idx != victim_idx
+        && a.seq.slot_idx == victim_idx
+    {
         // NOT `?`. `a` is already OUT of `active` — this function holds the
         // only handle to it — so an early return here is the one owner
         // dropping the request, and the drop is silent twice over: the sink
