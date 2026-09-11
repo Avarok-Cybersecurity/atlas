@@ -383,41 +383,9 @@ fn rollback_mode_parses_and_rejects() {
     assert!(SsmRollbackMode::from_str("").is_err());
 }
 
-#[test]
-fn decode_ring_decision_matrix() {
-    let decide = |layers, spec, override_value, watchdogs| {
-        let decision = decode_rollback_ring_slots_with(layers, spec, override_value, watchdogs);
-        (decision.slots, decision.skip_reason)
-    };
-    let ring = atlas_kernels::DECODE_ROLLBACK_RING_SLOTS;
-
-    for value in ["1", "true", " TRUE "] {
-        assert!(
-            watchdogs_disabled_from_value(Some(value)),
-            "value={value:?}"
-        );
-    }
-    for value in [None, Some(""), Some("0"), Some("false"), Some("yes")] {
-        assert!(!watchdogs_disabled_from_value(value), "value={value:?}");
-    }
-
-    assert_eq!(decide(0, false, Some("1"), false), (0, None));
-    assert_eq!(decide(48, true, Some("1"), true), (ring, None));
-    assert_eq!(decide(48, false, Some("0"), false), (0, None));
-    assert_eq!(
-        decide(48, true, None, false),
-        (0, Some("speculative decode active"))
-    );
-    assert_eq!(
-        decide(48, false, None, true),
-        (0, Some("watchdogs disabled"))
-    );
-    assert_eq!(
-        decide(48, true, Some("invalid"), true),
-        (0, Some("speculative decode active"))
-    );
-    assert_eq!(decide(48, false, None, false), (ring, None));
-}
+// The decode-rollback ring's depth decision, its publication cell and the
+// #915 auto-fit are tested in `ssm_reserve/decode_ring_tests.rs`, next to the
+// module that owns them.
 
 // ─────────────────── Marconi snapshot-slot gate (2026-08-31) ───────────────────
 //
