@@ -170,6 +170,117 @@ where
     smallest.saturating_add(second) <= wave_token_cap
 }
 
+/// The waves this tick actually DISPATCHES — all of them with the flag off,
+/// only the FIRST under VARLEN.
+///
+/// # Why one wave per tick (#1002, H100 round 15 §3.7)
+///
+/// Waves used to run back-to-back inside one tick. Promotion is a PHASE — a
+/// stream's first token reaches its client in `promote_completed_prefills`,
+/// after `continue_in_progress_prefills` returns — and decode runs later still,
+/// in the tick's own decode step. So a stream that finished in wave 1 waited
+/// for waves 2 and 3 before anyone heard from it, and every TTFT in the burst
+/// landed on the slowest one. Measured on the SHORT shape, where the deferral
+/// predicate correctly says batching pays: sixteen 1193-token prompts,
+/// `16 streams -> 3 wave(s)`, **TTFT p50 1 359.4 -> 4 141.2 ms (p50 = p99) and
+/// aggregate 513.86 -> 427.53 tok/s (-16.8%)** against the same-binary control,
+/// even though TPOT IMPROVED 25.90 -> 21.28 ms. The batching works; the
+/// scheduling of it did not.
+///
+/// Capping at one wave per tick is the fix the tick structure supports: wave 1
+/// runs, its finished streams are promoted at the end of THIS tick, decode
+/// interleaves from the next one, and the streams that did not fit re-plan next
+/// tick — where they batch among themselves, because the planner is re-run from
+/// the live geometry every tick. The alternative (promote inside the wave loop)
+/// buys nothing: `promote_completed_prefills` removes from `prefilling`, which
+/// invalidates the wave indices, and decode still would not run until the
+/// prefill phase returned.
+///
+/// FAIRNESS is unchanged in kind, not degraded: wave 1 always contains stream
+/// 0, because the planner is first-fit in FIFO order, so the head of the queue
+/// advances one chunk every tick — exactly the guarantee the single-stream
+/// `prefilling.first_mut()` path gives — and it now carries everyone who fits
+/// with it. Flag OFF is one wave holding every stream, so this returns it
+/// whole and the dispatch is byte-identical to the pre-wave scheduler.
+pub(super) fn waves_this_tick(planned: Vec<Vec<usize>>, varlen: bool) -> Vec<Vec<usize>> {
+    if !varlen {
+        return planned;
+    }
+    planned.into_iter().take(1).collect()
+}
+
+/// Why this tick's admission did — or did not — defer chunk-0 so it could
+/// batch. `defer` is the verdict; `reason` is the ONE input that decided it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::scheduler) struct VarlenAdmission {
+    pub defer: bool,
+    pub reason: &'static str,
+}
+
+/// The deferral verdict, as a pure function of the tick's own inputs.
+///
+/// # Why this is a function, and why it logs its reason every burst
+///
+/// H100 round 15 anomaly 8: varlen engaged in two of four otherwise identical
+/// short-shape bursts (427 tok/s) and not the other two (514 tok/s, i.e. the
+/// no-lever numbers), which is a 17.52% rep spread that is not measurement
+/// noise. The planner itself is deterministic — [`plan_prefill_waves`] is a
+/// pure function of the geometries — so the variation is upstream, in WHICH
+/// tick a burst's requests are admitted on: `active` must be empty and two
+/// chunk-0s must be co-admitted, and a burst whose first request has already
+/// been promoted to decode by the time the rest arrive fails the first test.
+/// That is a property of arrival timing against the scheduler's tick period,
+/// not something the planner can make deterministic; it is INHERENT. So the
+/// reason is logged per burst instead, and a run's engagement becomes readable
+/// from its serve log rather than inferred from its throughput.
+///
+/// `chunk_zero_heads` is the same upper-bounded head list `varlen_defer_pays`
+/// grades (`phase_start_prefills::varlen_chunk_zero_heads`).
+pub(in crate::scheduler) fn varlen_admission(
+    varlen_on: bool,
+    chunked: bool,
+    is_ep: bool,
+    active: usize,
+    new_reqs: usize,
+    prefilling_in_flight: usize,
+    chunk_zero_heads: &[usize],
+    wave_token_cap: usize,
+) -> VarlenAdmission {
+    let no = |reason| VarlenAdmission {
+        defer: false,
+        reason,
+    };
+    if !varlen_on {
+        return no("lever off (--prefill-varlen-batch)");
+    }
+    if !chunked {
+        return no("chunked prefill disabled");
+    }
+    if is_ep {
+        return no("expert-parallel: no batched prefill path");
+    }
+    if active > 0 {
+        // THE round-15 engagement variable. Deferring here would park
+        // slot-owning streams while decode runs, which is the configuration
+        // #1002's slot-aliasing fix was written for.
+        return no("decode already active this tick (arrival timing)");
+    }
+    if new_reqs < 2 && prefilling_in_flight == 0 {
+        return no("nothing to batch with (one arrival, nothing in flight)");
+    }
+    if !varlen_defer_pays(chunk_zero_heads.iter().copied(), wave_token_cap) {
+        return no("no two chunk-0s fit one wave");
+    }
+    VarlenAdmission {
+        defer: true,
+        reason: "two smallest chunk-0s share a wave",
+    }
+}
+
 #[cfg(test)]
 #[path = "prefill_waves_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "prefill_waves_tick_tests.rs"]
+mod tick_tests;

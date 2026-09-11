@@ -98,24 +98,49 @@ pub(super) fn start_new_requests(
     // cannot disagree about the budget.
     let wave_token_cap = max_prefill_tokens.min(max_batch_tokens).max(1);
     let varlen_on = spark_model::layers::ops::prefill_varlen_enabled();
-    let varlen_eligible = chunked
-        && !model.is_ep()
-        && active.is_empty()
-        && (new_reqs.len() >= 2 || !prefilling.is_empty())
-        && varlen_on;
-    let varlen_pays = varlen_eligible
-        && super::phase_continue_prefills::varlen_defer_pays(
-            varlen_chunk_zero_heads(&new_reqs, prefilling, max_prefill_tokens),
-            wave_token_cap,
+    let heads = varlen_chunk_zero_heads(&new_reqs, prefilling, max_prefill_tokens);
+    // The verdict AND the one input that decided it, from the pure rule beside
+    // the wave planner so the two cannot disagree about the budget (#1002).
+    let admission = super::phase_continue_prefills::varlen_admission(
+        varlen_on,
+        chunked,
+        model.is_ep(),
+        active.len(),
+        new_reqs.len(),
+        prefilling.len(),
+        &heads,
+        wave_token_cap,
+    );
+    if varlen_on && chunked {
+        // ONE line per burst, always — H100 round 15 anomaly 8 found engagement
+        // varying two-of-four across identical bursts (427 vs 514 tok/s, a
+        // 17.52% rep spread) with nothing in the log to say which was which.
+        // The planner is deterministic; the ADMISSION is not — it reads how
+        // many requests landed in THIS tick and whether decode is already
+        // running, which is inherent to arrival timing. Reported, not pinned.
+        let mut two = heads.clone();
+        two.sort_unstable();
+        two.truncate(2);
+        tracing::info!(
+            "Varlen prefill admission: defer={} reason=\"{}\" new_reqs={} prefilling={} \
+             active={} smallest_chunk0={two:?} cap={wave_token_cap}",
+            admission.defer,
+            admission.reason,
+            new_reqs.len(),
+            prefilling.len(),
+            active.len(),
         );
-    if varlen_eligible && !varlen_pays {
+    }
+    if !admission.defer && admission.reason == "no two chunk-0s fit one wave" {
+        // The round-13 long shape, verbatim: `4593` pre-splits to `4576 + 17`
+        // and `2 x 4576 = 9152 > 8192`. Campaign logs grep this exact string.
         tracing::info!(
             "Varlen prefill: deferral SKIPPED for {} co-admitted request(s) — no two chunk-0s \
              fit one wave (cap {wave_token_cap}); running inline chunk-0 per request",
             new_reqs.len(),
         );
     }
-    let want_varlen_defer = varlen_pays;
+    let want_varlen_defer = admission.defer;
     // Always-mixed chunk-0 fuse: when decodes are active and ATLAS_HOLO_ALWAYS_MIXED
     // is on, DEFER a new request's chunk-0 (admit it to `prefilling` with
     // chunk_offset=0, skip the inline blocking prefill) so it runs this SAME tick
