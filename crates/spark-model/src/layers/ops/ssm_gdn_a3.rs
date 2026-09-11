@@ -250,7 +250,7 @@ pub fn gdn_prefill_fla(
         Some("1") if !pipe => 512u32, // SPLIT=4 build
         _ => 256u32,                  // SPLIT=2 build (default, and the pipe build)
     };
-    // ── TENSOR-CORE spine (ATLAS_GDN_PREFILL_TC=<anything>, default OFF) ─────
+    // ── TENSOR-CORE spine (`[defaults] gdn_prefill_tc`, false everywhere) ────
     //
     // WHY, in one receipt (full derivation in GDN-PREFILL-ATTRIBUTION.md): on
     // 1xH100 / Qwen3.8-27B-FP8, nsys round 9 (2026-09-11) put
@@ -273,9 +273,16 @@ pub fn gdn_prefill_fla(
     // (see the SPLIT=4 note in ssm_gdn_a3's kernel-2 comment), so promotion needs
     // the ssm-poisoning tripwire, not a cosine.
     //
+    // The enable bit comes from the COMPILED TARGET's `[defaults] gdn_prefill_tc`
+    // with `ATLAS_GDN_PREFILL_TC` overriding, the same rung as every other
+    // lever (`layers::ops::target_defaults`). Every target declares it false, so
+    // this is opt-in everywhere today; the row exists so the reason is written
+    // down beside the arch it applies to, and so `init.rs` can gate the PROBE on
+    // the same bit that launches the kernel.
+    //
     // NAME THE GUARD THAT REJECTED — a perf path that asks to be enabled and
     // silently is not measures as "no effect" (PR #296 shipped exactly that).
-    let tc_requested = std::env::var("ATLAS_GDN_PREFILL_TC").is_ok();
+    let tc_requested = super::target_defaults::resolved().gdn_prefill_tc.value;
     let smem_tcfuse = GDN_TC_SMEM;
     let tc_reject = gdn_tc_spine_reject(
         tc_requested,

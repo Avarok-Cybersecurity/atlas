@@ -37,6 +37,7 @@ pub(crate) struct Defaults {
     pub lm_head_m16_tc: bool,
     pub lm_head_batchm_max: u32,
     pub ssm_batched_recurrent: bool,
+    pub gdn_prefill_tc: bool,
     pub decode_split_silu: bool,
     pub ssm_decode_ring_slots: String,
 }
@@ -64,6 +65,7 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         // agree (`target_defaults_tests::the_baseline_band_is_the_frozen_one`).
         lm_head_batchm_max: 8,
         ssm_batched_recurrent: false,
+        gdn_prefill_tc: false,
         decode_split_silu: true,
         ssm_decode_ring_slots: "auto".to_string(),
     }
@@ -112,6 +114,7 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
                 });
             }
             "ssm_batched_recurrent" => out.ssm_batched_recurrent = boolean(key, value),
+            "gdn_prefill_tc" => out.gdn_prefill_tc = boolean(key, value),
             "decode_split_silu" => out.decode_split_silu = boolean(key, value),
             "ssm_decode_ring_slots" => out.ssm_decode_ring_slots = string(key, value),
             other => panic!(
@@ -146,6 +149,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   lm_head_m16_tc: {lm_head_m16},\n\
          \x20   lm_head_batchm_max: {batchm},\n\
          \x20   ssm_batched_recurrent: {batched_recurrent},\n\
+         \x20   gdn_prefill_tc: {gdn_tc},\n\
          \x20   decode_split_silu: {split_silu},\n\
          \x20   ssm_decode_ring_slots: \"{ring}\",\n\
          }};\n",
@@ -158,6 +162,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
         lm_head_m16 = d.lm_head_m16_tc,
         batchm = d.lm_head_batchm_max,
         batched_recurrent = d.ssm_batched_recurrent,
+        gdn_tc = d.gdn_prefill_tc,
         split_silu = d.decode_split_silu,
         ring = d.ssm_decode_ring_slots,
     )

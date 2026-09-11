@@ -24,7 +24,17 @@
 
 #[path = "support/inherited.rs"]
 mod inherited;
+// THE resolver `build.rs` and `kernel_shadow_detector.rs` use. A `__global__
+// void ` grep is NOT a substitute: `dense_gemm_m16_bf16.cu` spells its two
+// entries `extern "C" __global__` on one line and `void <name>(` on the next,
+// and twenty-one `common/*.cu` files declare theirs only through macros. A
+// scan that misses them reports "declares nothing", which is how this file
+// first went red.
+#[path = "../build_shadow.rs"]
+#[allow(dead_code)] // only `entry_points` is this binary's question
+mod build_shadow;
 
+use build_shadow::entry_points;
 use inherited::{gb10_dir, hw_dir, kernel_overrides};
 
 use std::path::PathBuf;
@@ -141,16 +151,7 @@ fn a_hopper_owned_addition_brings_entry_points_gb10_does_not() {
         "kernels/hopper/HARDWARE.toml [kernels] overrides has no additions to check"
     );
 
-    // Entry names and file hashes of everything gb10's common/ declares.
-    let entry = |text: &str| -> Vec<String> {
-        text.lines()
-            .filter_map(|l| l.split_once("__global__ void "))
-            .filter_map(|(_, rest)| {
-                let name = rest.trim().split(['(', ' ']).next()?;
-                (!name.is_empty()).then(|| name.to_string())
-            })
-            .collect()
-    };
+    // Entry names and file bodies of everything gb10's common/ declares.
     let mut gb10_entries = std::collections::BTreeSet::new();
     let mut gb10_bodies = std::collections::BTreeSet::new();
     for f in std::fs::read_dir(&gb10).expect("gb10 common").flatten() {
@@ -158,9 +159,8 @@ fn a_hopper_owned_addition_brings_entry_points_gb10_does_not() {
         if path.extension().and_then(|e| e.to_str()) != Some("cu") {
             continue;
         }
-        let text = std::fs::read_to_string(&path).expect("gb10 source");
-        gb10_entries.extend(entry(&text));
-        gb10_bodies.insert(text);
+        gb10_entries.extend(entry_points(&path));
+        gb10_bodies.insert(std::fs::read_to_string(&path).expect("gb10 source"));
     }
 
     for name in additions {
@@ -175,15 +175,15 @@ fn a_hopper_owned_addition_brings_entry_points_gb10_does_not() {
             "kernels/hopper/common/{name} is byte-identical to a gb10 common source — \
              an undeclared fork under a new name, not a tuned addition"
         );
-        let declared = entry(&text);
+        let entries = entry_points(&path);
         assert!(
-            !declared.is_empty(),
+            !entries.is_empty(),
             "kernels/hopper/common/{name} declares no entry point, so nothing can \
              dispatch to it"
         );
-        for e in declared {
+        for e in &entries {
             assert!(
-                !gb10_entries.contains(&e),
+                !gb10_entries.contains(e),
                 "kernels/hopper/common/{name} re-declares `{e}`, which kernels/gb10/common \
                  already defines: one target would compile two definitions of one kernel name"
             );

@@ -33,6 +33,7 @@ const GB10: TargetDefaults = TargetDefaults {
     lm_head_m16_tc: false,
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: false,
+    gdn_prefill_tc: false,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
 };
@@ -48,6 +49,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     lm_head_m16_tc: true,
     lm_head_batchm_max: 16,
     ssm_batched_recurrent: true,
+    gdn_prefill_tc: false,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
 };
@@ -133,6 +135,7 @@ fn hopper_resolves_the_round_nine_recipe_from_an_empty_environment() {
 /// | `lm_head_m16_tc` | `var_os(..).is_some()` → false |
 /// | `lm_head_batchm_max` | `DENSE_GEMV_BATCHM_DECODE_MAX_M` = 8 |
 /// | `ssm_batched_recurrent` | `ATLAS_SSM_BATCHED_RECURRENT == "1"` → false |
+/// | `gdn_prefill_tc` | `ATLAS_GDN_PREFILL_TC` present → false |
 /// | `decode_split_silu` | on unless `ATLAS_NO_DECODE_SPLIT_SILU` |
 /// | `ssm_decode_ring_slots` | `auto` |
 ///
@@ -156,6 +159,11 @@ fn gb10_with_an_empty_environment_is_todays_behaviour() {
          on GB10 (-14.4% at C=16)"
     );
     assert!(!l.ssm_batched_recurrent.value);
+    assert!(
+        !l.gdn_prefill_tc.value,
+        "the scalar GDN prefill spine stays the default: the tensor-core arm \
+         reassociates the k-reduction and has no accuracy receipt"
+    );
     assert!(l.decode_split_silu.value);
     assert_eq!(l.ssm_decode_ring_slots.value, None);
 }
@@ -184,6 +192,7 @@ fn the_environment_overrides_every_toggle_in_both_directions() {
             ("ATLAS_ATTN_M16_TC", "0"),
             ("ATLAS_LM_HEAD_M16_TC", "false"),
             ("ATLAS_SSM_BATCHED_RECURRENT", "off"),
+            ("ATLAS_GDN_PREFILL_TC", "0"),
             ("ATLAS_CUBLAS_GEMM", "off"),
             ("ATLAS_LM_HEAD_BATCHM_MAX", "8"),
         ],
@@ -191,6 +200,9 @@ fn the_environment_overrides_every_toggle_in_both_directions() {
     assert_eq!(off.attn_m16_tc, Resolved::env(false));
     assert_eq!(off.lm_head_m16_tc, Resolved::env(false));
     assert_eq!(off.ssm_batched_recurrent, Resolved::env(false));
+    // ⚠️ the polarity change, on the one lever that had no `=0` spelling
+    // before: `ATLAS_GDN_PREFILL_TC=0` was PRESENCE, i.e. ON.
+    assert_eq!(off.gdn_prefill_tc, Resolved::env(false));
     assert_eq!(off.cublas, Resolved::env(CublasScope::OFF));
     assert_eq!(off.lm_head_batchm_max, Resolved::env(8));
 
@@ -202,6 +214,7 @@ fn the_environment_overrides_every_toggle_in_both_directions() {
             ("ATLAS_ATTN_M16_TC", "1"),
             ("ATLAS_LM_HEAD_M16_TC", "1"),
             ("ATLAS_SSM_BATCHED_RECURRENT", "1"),
+            ("ATLAS_GDN_PREFILL_TC", "1"),
             ("ATLAS_ATTN_NCOL_GEMV", "1"),
             ("ATLAS_FFN_BATCH16", "1"),
             ("ATLAS_CUBLAS_GEMM", "ffn"),
@@ -211,6 +224,7 @@ fn the_environment_overrides_every_toggle_in_both_directions() {
     assert_eq!(on.attn_m16_tc, Resolved::env(true));
     assert_eq!(on.lm_head_m16_tc, Resolved::env(true));
     assert_eq!(on.ssm_batched_recurrent, Resolved::env(true));
+    assert_eq!(on.gdn_prefill_tc, Resolved::env(true));
     assert_eq!(on.attn_ncol_gemv, Resolved::env(true));
     assert_eq!(on.ffn_batch16_tier, Resolved::env(true));
     assert_eq!(
@@ -362,6 +376,7 @@ fn the_serve_line_names_every_lever_and_marks_the_environment_ones() {
         "lm_head_m16_tc=on",
         "lm_head_batchm_max=16",
         "ssm_batched_recurrent=on",
+        "gdn_prefill_tc=off",
         "decode_split_silu=on",
         "ssm_decode_ring_slots=auto",
     ] {

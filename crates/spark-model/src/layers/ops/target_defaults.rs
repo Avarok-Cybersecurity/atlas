@@ -174,6 +174,7 @@ pub struct TargetLevers {
     pub lm_head_m16_tc: Resolved<bool>,
     pub lm_head_batchm_max: Resolved<u32>,
     pub ssm_batched_recurrent: Resolved<bool>,
+    pub gdn_prefill_tc: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
     pub ssm_decode_ring_slots: Resolved<Option<usize>>,
 }
@@ -250,6 +251,15 @@ pub fn resolve(
             var("ATLAS_SSM_BATCHED_RECURRENT").as_deref(),
             false,
         ),
+        // ⚠️ `ATLAS_GDN_PREFILL_TC` was PRESENCE-gated and is now grammar-gated
+        // like its neighbours, so `=0` turns it OFF instead of on. Everything
+        // that ever set it set it to `1`; the A/B recipes in
+        // `GDN-PREFILL-ATTRIBUTION.md` are unaffected.
+        gdn_prefill_tc: resolve_toggle(
+            defaults.gdn_prefill_tc,
+            var("ATLAS_GDN_PREFILL_TC").as_deref(),
+            false,
+        ),
         decode_split_silu: resolve_toggle(defaults.decode_split_silu, None, split_silu_off),
         // DECLARATION ONLY — never an environment read. `ATLAS_SSM_DECODE_RING`
         // has its own grammar (`1` = the full depth, `0` = no ring) and its own
@@ -323,7 +333,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
          ffn_batch16_tier={batch16} ffn_m16_tc={ffn_m16} attn_m16_tc={attn_m16} \
          attn_ncol_gemv={ncol} lm_head_m16_tc={head_m16} \
          lm_head_batchm_max={batchm}{batchm_src} ssm_batched_recurrent={recurrent} \
-         decode_split_silu={silu} ssm_decode_ring_slots={ring}{ring_src}",
+         gdn_prefill_tc={gdn_tc} decode_split_silu={silu} \
+         ssm_decode_ring_slots={ring}{ring_src}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         cublas_src = l.cublas.source.tag(),
         batch16 = onoff(l.ffn_batch16_tier),
@@ -334,6 +345,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         batchm = l.lm_head_batchm_max.value,
         batchm_src = l.lm_head_batchm_max.source.tag(),
         recurrent = onoff(l.ssm_batched_recurrent),
+        gdn_tc = onoff(l.gdn_prefill_tc),
         silu = onoff(l.decode_split_silu),
         ring = match l.ssm_decode_ring_slots.value {
             Some(n) => n.to_string(),

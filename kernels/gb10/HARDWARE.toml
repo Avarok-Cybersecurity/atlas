@@ -48,6 +48,14 @@ lm_head_batchm_max = 8
 # One strided recurrent launch per batch on the GDN decode path. No GB10
 # receipt; unchanged from main.
 ssm_batched_recurrent = false
+# The tensor-core GDN chunked-PREFILL spine (#928). The kernel is SHARED —
+# `common/gated_delta_rule_chunk_tc.cu`, validated here on GB10 — and stays
+# shared; this row is the gate on the probe that loads it, not a claim about
+# where it lives. OFF because the arm reassociates the k-reduction into the MMA
+# tree, and this kernel's standing lesson is that a spine change can read
+# cos=1.0000 and still cost 1.4 BFCL points: promotion needs the ssm-poisoning
+# tripwire. `ATLAS_GDN_PREFILL_TC=1` is how the A/B is run.
+gdn_prefill_tc = false
 # Split SiLU+down on the decode path — shipped ON everywhere since #928.
 decode_split_silu = true
 # `auto` = size the decode-rollback ring from free memory at preflight (#915).

@@ -79,6 +79,13 @@ lm_head_batchm_max = 16
 # One strided recurrent launch per batch on the GDN decode path: +6% on the
 # serve, and md5-identical output to the per-sequence launches.
 ssm_batched_recurrent = true
+# The tensor-core GDN chunked-PREFILL spine (#928). OFF: round 9 put the scalar
+# spine at 26.6%/32.3% of a 1193/4593-token H100 prefill, so the upside is real,
+# but the arm reassociates the k-reduction into the MMA tree and has no accuracy
+# receipt yet. The kernel is shared (`kernels/gb10/common/
+# gated_delta_rule_chunk_tc.cu`, validated on GB10) and is NOT relocated here.
+# `ATLAS_GDN_PREFILL_TC=1` runs the A/B.
+gdn_prefill_tc = false
 # Split SiLU+down on the decode path — shipped ON everywhere since #928.
 decode_split_silu = true
 # `auto` = size the decode-rollback ring from free memory at preflight (#915).
