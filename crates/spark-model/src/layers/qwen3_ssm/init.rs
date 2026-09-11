@@ -255,6 +255,19 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_fla",
                 "gated_delta_rule_recompute_wu",
             ),
+            // Hopper-only twins (#928). `try_kernel` and not `kernel`: the
+            // modules exist only under kernels/hopper, so on gb10/b200/strix
+            // the lookup must MISS quietly, exactly as the GDN decode twins do.
+            gdn_prefill_fla_recompute_wu_hopper_k: super::super::try_kernel(
+                gpu,
+                "gdn_recompute_wu_hopper",
+                "gated_delta_rule_recompute_wu_hopper",
+            ),
+            gdn_prefill_fla_chunk_fwd_o_hopper_k: super::super::try_kernel(
+                gpu,
+                "gdn_fwd_o_hopper",
+                "gated_delta_rule_chunk_fwd_o_hopper",
+            ),
             gdn_prefill_fla_chunk_delta_h_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule_fla",

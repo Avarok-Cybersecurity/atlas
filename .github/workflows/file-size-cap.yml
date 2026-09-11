@@ -141,6 +141,19 @@ jobs:
             # constructor. Splitting fragments the kernel-loading
             # sequence which is read top-to-bottom alongside `types.rs`.
             "crates/spark-model/src/layers/qwen3_attention/init.rs"
+            # 532 LoC — Qwen3 SSM layer kernel-handle bootstrap, the GDN twin of
+            # the attention entry above and allow-listed for the same reason:
+            # it is one struct literal of `gpu.kernel` / `try_kernel` lookups
+            # read top-to-bottom against `mod.rs`'s field list, and a struct
+            # literal cannot be split across files at all. It crossed 500 on
+            # this branch BEFORE this change — 494 -> 505 with the tensor-core
+            # prefill spine (#928, 3664d311d) and 505 -> 519 with the Hopper GDN
+            # decode twins (#927, 552197680) — and #928's prefill remnant twins
+            # add the two lookups that take it to 532. Clean split (a
+            # `GdnKernels` sub-struct built by a sibling fn) tracked as
+            # follow-up; it moves the field list too, so it is not a
+            # mid-campaign change.
+            "crates/spark-model/src/layers/qwen3_ssm/init.rs"
             # 552 LoC — Qwen3 attention decode dispatcher. TQ+ ships 9 asym
             # KvCacheDtype variants (bf16k_/fp8k_/turbo*k_*); each takes a
             # dedicated arm in the decode-kernel match expression. The fp8k_ +

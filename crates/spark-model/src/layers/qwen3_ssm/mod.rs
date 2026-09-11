@@ -199,6 +199,20 @@ pub struct Qwen3SsmLayer {
     /// chunk_delta_h_ksplit (k-split occupancy) → chunk_fwd_o. 1.75x vs wy4 @16k,
     /// token-equal (cos=1.0 vs scalar). Three handles; all must be non-null.
     gdn_prefill_fla_recompute_wu_k: KernelHandle,
+    /// Hopper twins of the two SCALAR REMNANTS of the FLA prefill (#928):
+    /// `gdn_recompute_wu_hopper.cu`'s blocked triangular solve on tensor cores
+    /// and `gdn_fwd_o_hopper.cu`'s masked `tril(kq).uc` square. They live only
+    /// under `kernels/hopper`, so `try_kernel` gives 0 everywhere else and the
+    /// launcher then runs the unchanged parents. Selected by the family lever
+    /// `ATLAS_GDN_PREFILL_TC`; `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` pins them
+    /// off while keeping the tensor-core state spine, which is the A/B that
+    /// separates the three kernels. The nsys receipt that motivates them is in
+    /// `GDN-PREFILL-ATTRIBUTION.md`: 5.5% and 4.0% of a 1193-token H100
+    /// prefill, both with their big matmuls already on `mma.sync` and their
+    /// remainder — a triangular product on 128 of 512 threads, and two forward
+    /// substitutions worth 79-85% of their kernel — still scalar.
+    gdn_prefill_fla_recompute_wu_hopper_k: KernelHandle,
+    gdn_prefill_fla_chunk_fwd_o_hopper_k: KernelHandle,
     gdn_prefill_fla_chunk_delta_h_k: KernelHandle,
     /// Tensor-core / DV-block-split variant of the FLA chunk_delta_h spine
     /// (`gated_delta_rule_chunk_delta_h_tc_vblock`). Loaded by default but not

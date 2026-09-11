@@ -1,0 +1,236 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! Fixture, guarded allocation and f64 references shared by
+//! `native_gdn_prefill_remnants_microtest` (#928).
+//!
+//! Split out of that example only because Atlas caps a Rust source at 500 LoC;
+//! it is one oracle, and nothing else includes this file. Lives under
+//! `examples/common/` so cargo does not pick it up as an example target of its
+//! own — `examples/*.rs` is auto-discovered, `examples/common/*.rs` is not.
+
+use anyhow::Result;
+use half::bf16;
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
+
+pub const KD: usize = 128;
+pub const VD: usize = 128;
+pub const NK: usize = 16;
+pub const NV: usize = 48;
+pub const C: usize = 64;
+/// Heads the f64 reference recomputes. Every chunk and head is independent
+/// here, so 2 of 48 is a complete check of the math at 1/24 of the CPU cost.
+pub const REF_HEADS: usize = 2;
+/// Sentinel tail on every kernel output, in bytes.
+pub const GUARD: usize = 512;
+pub const GUARD_BYTE: u8 = 0xA5;
+
+pub struct Lcg(pub u64);
+impl Lcg {
+    pub fn f(&mut self) -> f64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+    }
+    pub fn r(&mut self, lo: f64, hi: f64) -> f64 {
+        lo + (hi - lo) * self.f()
+    }
+}
+
+pub fn up_bf16(g: &dyn GpuBackend, d: &[bf16]) -> Result<DevicePtr> {
+    let b: Vec<u8> = d.iter().flat_map(|x| x.to_bits().to_le_bytes()).collect();
+    let p = g.alloc(b.len())?;
+    g.copy_h2d(&b, p)?;
+    Ok(p)
+}
+pub fn up_f32(g: &dyn GpuBackend, d: &[f32]) -> Result<DevicePtr> {
+    let b: Vec<u8> = d.iter().flat_map(|x| x.to_le_bytes()).collect();
+    let p = g.alloc(b.len())?;
+    g.copy_h2d(&b, p)?;
+    Ok(p)
+}
+/// An output buffer with a sentinel tail. The kernels below write from C
+/// fragments, not from `for i < ce` loops, so "did it stay inside the tensor"
+/// is a live question and not a formality.
+pub fn alloc_guarded(g: &dyn GpuBackend, bytes: usize) -> Result<DevicePtr> {
+    let p = g.alloc(bytes + GUARD)?;
+    g.copy_h2d(&vec![GUARD_BYTE; bytes + GUARD], p)?;
+    Ok(p)
+}
+pub fn guard_intact(g: &dyn GpuBackend, p: DevicePtr, bytes: usize) -> Result<bool> {
+    let mut tail = vec![0u8; GUARD];
+    g.copy_d2h(DevicePtr(p.0 + bytes as u64), &mut tail)?;
+    Ok(tail.iter().all(|b| *b == GUARD_BYTE))
+}
+pub fn dn_bf16(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Result<Vec<f32>> {
+    let mut b = vec![0u8; n * 2];
+    g.copy_d2h(p, &mut b)?;
+    Ok(b.chunks_exact(2)
+        .map(|c| bf16::from_bits(u16::from_le_bytes([c[0], c[1]])).to_f32())
+        .collect())
+}
+pub fn dn_f32(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Result<Vec<f32>> {
+    let mut b = vec![0u8; n * 4];
+    g.copy_d2h(p, &mut b)?;
+    Ok(b.chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect())
+}
+/// max_abs, rel_rms = ||a-r||/||r||. Reference in f64.
+pub fn metrics(a: &[f32], r: &[f64]) -> (f64, f64) {
+    let (mut mx, mut se, mut sr) = (0.0f64, 0.0f64, 0.0f64);
+    for (x, y) in a.iter().zip(r.iter()) {
+        let d = (*x as f64 - y).abs();
+        mx = mx.max(d);
+        se += d * d;
+        sr += y * y;
+    }
+    (mx, if sr > 0.0 { (se / sr).sqrt() } else { 0.0 })
+}
+
+pub struct Case {
+    pub t: usize,
+    pub nt: usize,
+    pub query: Vec<bf16>,
+    pub key: Vec<bf16>,
+    pub val: Vec<bf16>,
+    pub gate: Vec<f32>,
+    pub beta: Vec<f32>,
+    pub h0: Vec<f32>,
+}
+
+/// The sibling GDN microtests' fixture recipe: fixed LCG, gates in
+/// [0.80, 0.999], beta in [0, 1].
+pub fn gen_case(t: usize) -> Case {
+    let mut r = Lcg(0x9D8E_2026 ^ (t as u64));
+    let bf = |r: &mut Lcg| bf16::from_f64(r.r(-0.5, 0.5));
+    Case {
+        t,
+        nt: t.div_ceil(C),
+        query: (0..t * NK * KD).map(|_| bf(&mut r)).collect(),
+        key: (0..t * NK * KD).map(|_| bf(&mut r)).collect(),
+        val: (0..t * NV * VD).map(|_| bf(&mut r)).collect(),
+        gate: (0..t * NV).map(|_| r.r(0.80, 0.999) as f32).collect(),
+        beta: (0..t * NV).map(|_| r.r(0.0, 1.0) as f32).collect(),
+        h0: (0..NV * KD * VD).map(|_| r.r(-0.1, 0.1) as f32).collect(),
+    }
+}
+
+/// f64 reference for the WY pass on heads [0, REF_HEADS): gc scan, Gram, L,
+/// then plain forward substitution. Laid out in the kernels' index order.
+pub fn ref_wu(c: &Case) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let hr = NV / NK;
+    let (mut w, mut u, mut gc) = (
+        vec![0.0; c.nt * REF_HEADS * C * KD],
+        vec![0.0; c.nt * REF_HEADS * C * VD],
+        vec![0.0; c.nt * REF_HEADS * C],
+    );
+    for vh in 0..REF_HEADS {
+        let kh = vh / hr;
+        for ch in 0..c.nt {
+            let (cs, rb) = (ch * C, ch * REF_HEADS + vh);
+            let ce = (c.t - cs).min(C);
+            let mut g = vec![0.0f64; C];
+            let mut a = 0.0f64;
+            for (i, gi) in g.iter_mut().enumerate().take(ce) {
+                a += (c.gate[(cs + i) * NV + vh] as f64).max(1e-30).ln();
+                *gi = a;
+                gc[rb * C + i] = a;
+            }
+            let kv = |i: usize, d: usize| c.key[(cs + i) * NK * KD + kh * KD + d].to_f64();
+            let mut l = vec![0.0f64; C * C];
+            for i in 0..ce {
+                for j in 0..i {
+                    let gram: f64 = (0..KD).map(|d| kv(i, d) * kv(j, d)).sum();
+                    l[i * C + j] = c.beta[(cs + i) * NV + vh] as f64 * (g[i] - g[j]).exp() * gram;
+                }
+            }
+            for (n, (out, cols)) in [(0usize, VD), (1, KD)].iter().enumerate() {
+                let _ = out;
+                for col in 0..*cols {
+                    for i in 0..ce {
+                        let b = c.beta[(cs + i) * NV + vh] as f64;
+                        let mut s = if n == 0 {
+                            b * c.val[(cs + i) * NV * VD + vh * VD + col].to_f64()
+                        } else {
+                            b * g[i].exp() * kv(i, col)
+                        };
+                        for j in 0..i {
+                            s -= l[i * C + j]
+                                * if n == 0 {
+                                    u[rb * C * VD + j * VD + col]
+                                } else {
+                                    w[rb * C * KD + j * KD + col]
+                                };
+                        }
+                        if n == 0 {
+                            u[rb * C * VD + i * VD + col] = s;
+                        } else {
+                            w[rb * C * KD + i * KD + col] = s;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (w, u, gc)
+}
+
+/// f64 reference for the output pass, given the spine's own `S_c` and `uc`
+/// (bf16 on both arms, so they are inputs here, not things being scored).
+pub fn ref_fwd_o(c: &Case, sc: &[f32], uc: &[f32], gc: &[f32]) -> Vec<f64> {
+    let hr = NV / NK;
+    let inv = 1.0 / (KD as f64).sqrt();
+    let mut o = vec![0.0f64; c.t * REF_HEADS * VD];
+    for vh in 0..REF_HEADS {
+        let kh = vh / hr;
+        for ch in 0..c.nt {
+            let (cs, base) = (ch * C, ch * NV + vh);
+            let ce = (c.t - cs).min(C);
+            let g = |i: usize| gc[base * C + i] as f64;
+            let qk = |i: usize, l: usize| -> f64 {
+                (0..KD)
+                    .map(|d| {
+                        c.query[(cs + i) * NK * KD + kh * KD + d].to_f64()
+                            * c.key[(cs + l) * NK * KD + kh * KD + d].to_f64()
+                    })
+                    .sum()
+            };
+            for i in 0..ce {
+                let kqi: Vec<f64> = (0..=i).map(|l| (g(i) - g(l)).exp() * qk(i, l)).collect();
+                for v in 0..VD {
+                    let mut s: f64 = (0..KD)
+                        .map(|d| {
+                            c.query[(cs + i) * NK * KD + kh * KD + d].to_f64()
+                                * sc[base * KD * VD + d * VD + v] as f64
+                        })
+                        .sum();
+                    s *= g(i).exp();
+                    for (l, kq) in kqi.iter().enumerate() {
+                        s += kq * uc[base * C * VD + l * VD + v] as f64;
+                    }
+                    o[((cs + i) * REF_HEADS + vh) * VD + v] = s * inv;
+                }
+            }
+        }
+    }
+    o
+}
+
+/// Gather the reference heads out of a full-NV output laid out [row][NV][per].
+pub fn take(full: &[f32], rows: usize, per: usize) -> Vec<f32> {
+    let mut out = Vec::with_capacity(rows * REF_HEADS * per);
+    for r in 0..rows {
+        for vh in 0..REF_HEADS {
+            let b = (r * NV + vh) * per;
+            out.extend_from_slice(&full[b..b + per]);
+        }
+    }
+    out
+}
+
+pub fn report(tag: &str, a: &[f32], r: &[f64]) -> f64 {
+    let (mx, rel) = metrics(a, r);
+    println!("    {tag:<22} max_abs={mx:.6e}  rel_rms={rel:.4e}");
+    rel
+}

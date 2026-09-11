@@ -85,8 +85,25 @@ pub const HOPPER_MODELS: &[&str] = &[
 /// matters by the model dir's own copy, so a same-stem file in `common/` would
 /// never be compiled — the twins carry new entry names and a launcher tier
 /// instead. Reasoning and numbers: `GDN-DECODE-ATTRIBUTION.md`.
+///
+/// `gdn_fwd_o_hopper.cu` and `gdn_recompute_wu_hopper.cu` are the two scalar
+/// remnants of the chunked PREFILL (#928), and they take the same new-stem
+/// shape for a different reason. Their parents live in
+/// `common/gated_delta_rule_fla.cu`, which NO model directory shadows — so a
+/// same-stem override there WOULD be compiled — but that file is 2105 lines
+/// and declares fourteen entry points, of which these twins replace two. A
+/// whole-file override is whole-file: it would fork the other twelve, and the
+/// shadow-drift failure class in `build.rs` is exactly what happens next.
+/// New stems with new entry names fork nothing; the launcher picks between a
+/// parent and a twin by kernel presence. `gdn_prefill_hopper.cuh` is their
+/// shared operand machinery and has no gb10 counterpart by design, the same
+/// shape `w8a16_gemv_hopper.cuh` takes. Reasoning and numbers:
+/// `GDN-PREFILL-ATTRIBUTION.md`.
 pub const HOPPER_OWNED_COMMON: &[&str] = &[
     "gdn_decode_hopper.cu",
+    "gdn_fwd_o_hopper.cu",
+    "gdn_prefill_hopper.cuh",
+    "gdn_recompute_wu_hopper.cu",
     "w8a16_gemv.cu",
     "w8a16_gemv_fused.cu",
     "w8a16_gemv_hopper.cuh",
