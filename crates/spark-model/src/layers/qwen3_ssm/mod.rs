@@ -190,6 +190,17 @@ pub struct Qwen3SsmLayer {
     /// isolation first. `allow(dead_code)` until the launch site reads it.
     #[allow(dead_code)]
     gdn_prefill_fla_chunk_delta_h_tc_vblock_k: KernelHandle,
+    /// TENSOR-CORE chunked-prefill state spine
+    /// (`gated_delta_rule_chunk_tc::gated_delta_rule_chunk_delta_h_tcfuse`),
+    /// behind `ATLAS_GDN_PREFILL_TC` (presence, default OFF). Both per-chunk
+    /// products run on `mma.sync.m16n8k16` with bf16 operands and an f32
+    /// accumulator that IS the recurrent state; `h` stays f32 in memory. The
+    /// nsys receipt that motivates it is in `GDN-PREFILL-ATTRIBUTION.md`
+    /// (#928): the shipped scalar spine is 26.6%/32.3% of the 1193/4593-token
+    /// H100 prefill at 3.7 TFLOP/s, i.e. latency-bound at 4.5% warp residency.
+    /// `try_kernel` => 0 on images without it, and the launcher additionally
+    /// refuses any head/chunk that differs from the compile-time tile.
+    gdn_prefill_fla_chunk_delta_h_tcfuse_k: KernelHandle,
     /// Warp-dense fused GDN state spine (`gated_delta_rule_chunk_delta_h_vtile`).
     /// 512 threads = 16 warps/CTA against ksplit's 8, with the SAME grid (one CTA
     /// per head) so `W`/`K` global loads are not duplicated — an ncu profile put
