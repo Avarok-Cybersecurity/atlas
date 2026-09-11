@@ -439,19 +439,27 @@ fn main() {
         if let Some(ref common) = target.common_kernel_dir {
             println!("cargo:rerun-if-changed={}", common.display());
         }
-        let n_overrides = find_cu_files(&target.model_kernel_dir, source_ext).len();
+        // TWO counts, honestly named. The first is the per-model/quant
+        // directory's own `.cu` count — what this line has always printed,
+        // mislabelled as the overrides list. The second IS that list:
+        // `kernels/<hw>/HARDWARE.toml` `[kernels] overrides`, the declaration
+        // `scripts/check_kernel_shadows.py` and `tests/support/inherited.rs`
+        // read. They are different numbers, and only the second answers "did
+        // my override land". Text formatted by `build_summary::summary`, which
+        // `tests/build_summary.rs` grades.
+        let n_model_dir = find_cu_files(&target.model_kernel_dir, source_ext).len();
+        let n_overrides =
+            build_summary::count_declared_overrides(&workspace_root.join("kernels"), &target.hw);
         println!(
-            "cargo:warning=atlas-kernels: compiled {} kernels for target {} ({}, {}, {}){}",
-            cu_files.len(),
-            idx,
-            target.hw,
-            target.model,
-            target.quant,
-            if n_overrides > 0 {
-                format!(" ({n_overrides} model-specific overrides)")
-            } else {
-                String::new()
-            },
+            "cargo:warning={}",
+            build_summary::summary(
+                cu_files.len(),
+                &target.hw,
+                &target.model,
+                &target.quant,
+                n_model_dir,
+                n_overrides,
+            )
         );
     }
 
@@ -1407,6 +1415,11 @@ mod build_arch;
 // file as `build_arch.rs`: `tests/kernel_build_flags.rs` compiles it directly.
 #[path = "build_flags.rs"]
 mod build_flags;
+
+// The one summary line a build prints per kernel target. Same reason for its
+// own file: `tests/build_summary.rs` compiles it directly.
+#[path = "build_summary.rs"]
+mod build_summary;
 
 #[path = "build_codegen.rs"]
 mod build_codegen;
