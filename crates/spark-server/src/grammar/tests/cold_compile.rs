@@ -131,7 +131,20 @@ fn await_snapshot(dir: &std::path::Path) -> Option<u64> {
     while Instant::now() < deadline {
         if let Ok(entries) = std::fs::read_dir(dir.join(".atlas-grammar-cache")) {
             for entry in entries.filter_map(Result::ok) {
-                if entry.file_name().to_string_lossy().starts_with("masks-") {
+                // `.bin` is load-bearing, not decoration. `save_to_file`
+                // writes atomically as tmp + fsync + rename, and its temp
+                // name is `path.with_extension("tmp<pid>")` — i.e.
+                // `masks-<fp>.tmp12345`, which ALSO starts with "masks-".
+                // Waiting on the prefix alone returns while the writer is
+                // still filling the temp file, so "process 2" opens a
+                // `masks-<fp>.bin` that does not exist yet, recomputes every
+                // mask, and the test reads cold==warm. That is this test
+                // failing roughly half the time, and it is the wait
+                // predicate that is wrong — the persistence it checks is
+                // correct and genuinely atomic.
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with("masks-") && name.ends_with(".bin") {
                     let len = entry.metadata().ok()?.len();
                     if len > 0 {
                         return Some(len);
