@@ -218,7 +218,28 @@ pub fn ref_fwd_o(c: &Case, sc: &[f32], uc: &[f32], gc: &[f32]) -> Vec<f64> {
 }
 
 /// Gather the reference heads out of a full-NV output laid out [row][NV][per].
+///
+/// `rows` is the OUTER dimension ONLY — the chunk count for `W`/`U`/`gc`, the
+/// token count for `O`. This function applies `NV` itself, so a caller that
+/// pre-multiplies (`nt * NV`, `t * NV`) applies it twice and walks off the end.
+/// That is not hypothetical: it is exactly how
+/// `native_gdn_prefill_remnants_microtest` panicked on its first-ever hardware
+/// run (H100 round 13, 2026-09-11) — `take(&w, c.nt * NV, C * KD)` at T=256
+/// indexed element 1 581 056 of a 1 572 864-element `W`, 0.06 s in, before the
+/// first comparison. The length check below turns that class of slip into a
+/// named failure at the call site instead of a slice-range panic 200 lines away,
+/// and [`selfcheck_take`] runs it on every invocation of the example.
 pub fn take(full: &[f32], rows: usize, per: usize) -> Vec<f32> {
+    assert_eq!(
+        full.len(),
+        rows * NV * per,
+        "take(rows={rows}, per={per}) gathers {REF_HEADS} of NV={NV} heads out \
+         of a [rows][NV][per] buffer and therefore wants {} elements, but was \
+         handed {}. `rows` is the OUTER dimension only — pass `c.nt` (or `t`), \
+         never `c.nt * NV`: NV is applied here",
+        rows * NV * per,
+        full.len(),
+    );
     let mut out = Vec::with_capacity(rows * REF_HEADS * per);
     for r in 0..rows {
         for vh in 0..REF_HEADS {
@@ -229,8 +250,104 @@ pub fn take(full: &[f32], rows: usize, per: usize) -> Vec<f32> {
     out
 }
 
+/// Every `take` the example performs, at the example's OWN geometry — run from
+/// `main` before a single byte is allocated on the device.
+///
+/// It is a self-check and not only a `#[cfg(test)]` module because an
+/// `examples/` target in this workspace has no test harness: `cargo test -p
+/// spark-model` never compiles this file, so a unit test here alone would be
+/// documentation that nothing executes. The unit tests below exist as well and
+/// call this same function, so the two cannot describe different geometries.
+///
+/// Two halves. The GATHER is value-checked at T=256 — the shape round 13 died
+/// on — with every element stamped by the `(row, head, offset)` it belongs to,
+/// so a wrong-but-in-bounds `rows` is named rather than merely surviving. The
+/// LENGTH relation is then checked at all three T against the buffer
+/// expressions `main` actually allocates, which costs nothing and is what makes
+/// "the exact geometry" true for T=4593 as well.
+pub fn selfcheck_take() {
+    // (what, rows, per) exactly as the example calls `take`: W, U and gc are
+    // keyed by CHUNK, O by TOKEN. Nothing here pre-multiplies by NV.
+    let shapes = |t: usize| {
+        let nt = t.div_ceil(C);
+        [
+            ("W", nt, C * KD),
+            ("U", nt, C * VD),
+            ("gc", nt, C),
+            ("O", t, VD),
+        ]
+    };
+
+    for (what, rows, per) in shapes(256) {
+        let full: Vec<f32> = (0..rows * NV * per).map(|i| i as f32).collect();
+        let got = take(&full, rows, per);
+        assert_eq!(got.len(), rows * REF_HEADS * per, "{what}: gathered length");
+        for r in 0..rows {
+            for vh in 0..REF_HEADS {
+                for (e, x) in got[(r * REF_HEADS + vh) * per..][..per].iter().enumerate() {
+                    assert_eq!(
+                        *x,
+                        ((r * NV + vh) * per + e) as f32,
+                        "{what}: row {r} head {vh} element {e} came from the wrong stride",
+                    );
+                }
+            }
+        }
+    }
+
+    for &t in &[256usize, 1193, 4593] {
+        let nt = t.div_ceil(C);
+        // The four buffer lengths `main` allocates, spelled independently here.
+        let (wb, ub, gcb, outs) = (nt * NV * C * KD, nt * NV * C * VD, nt * NV * C, t * NV * VD);
+        for ((what, rows, per), len) in shapes(t).into_iter().zip([wb, ub, gcb, outs]) {
+            assert_eq!(
+                rows * NV * per,
+                len,
+                "T={t} {what}: take's (rows, per) must describe the buffer main \
+                 allocates",
+            );
+        }
+    }
+}
+
 pub fn report(tag: &str, a: &[f32], r: &[f64]) -> f64 {
     let (mx, rel) = metrics(a, r);
     println!("    {tag:<22} max_abs={mx:.6e}  rel_rms={rel:.4e}");
     rel
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The example's own geometry, gathered and value-checked. Mirrors
+    /// [`selfcheck_take`]; see its docs for why the self-check exists too.
+    #[test]
+    fn take_gathers_the_example_geometry() {
+        selfcheck_take();
+    }
+
+    /// THE REGRESSION. `rows = nt * NV` is the argument round 13 passed; it must
+    /// be refused BY NAME rather than read off the end of the buffer.
+    #[test]
+    #[should_panic(expected = "`rows` is the OUTER dimension only")]
+    fn a_pre_multiplied_rows_is_refused() {
+        let (t, per) = (256usize, C * KD);
+        let nt = t.div_ceil(C);
+        let full = vec![0.0f32; nt * NV * per];
+        let _ = take(&full, nt * NV, per);
+    }
+
+    /// …and the two numbers in round 13's panic are this geometry, so the
+    /// diagnosis in `GDN-PREFILL-ATTRIBUTION.md` cannot drift from the code:
+    /// `W` at T=256 is nt*NV*C*KD = 4*48*64*128 = 1 572 864 elements, and the
+    /// doubled-NV walk's first out-of-range read is `b + per` at r = nt,
+    /// vh = 0 — (4*48)*8192 + 8192 = 1 581 056.
+    #[test]
+    fn the_round_thirteen_panic_indices_are_this_geometry() {
+        let (t, per) = (256usize, C * KD);
+        let nt = t.div_ceil(C);
+        assert_eq!(nt * NV * per, 1_572_864);
+        assert_eq!((nt * NV) * per + per, 1_581_056);
+    }
 }
