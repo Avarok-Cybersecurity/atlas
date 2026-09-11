@@ -8,7 +8,9 @@ use atlas_core::config::ModelConfig;
 
 use crate::cli;
 
+mod decode_ring;
 mod per_sequence_state;
+mod refusal;
 mod ssm_h_fp16;
 use {per_sequence_state::per_sequence_reserve, ssm_h_fp16::ssm_h_fp16_preconditions};
 
@@ -156,35 +158,6 @@ pub(crate) fn preflight_reserve(
         args.max_batch_size,
     )
     .total_bytes();
-    // SSM snapshot pool = Marconi prefix-cache region + Phase-C
-    // decode-rollback ring. The decode ring is sized per active
-    // sequence (ring slots × `max_batch_size`) and only allocated for SSM
-    // models. SSOT: `spark_model::ssm_reserve::decode_rollback_ring_slots`
-    // makes the SAME decision (same env vars, same constant) the runtime
-    // allocation in `TransformerModel::new` makes — including the skip under
-    // `--speculative`/`--dflash` (the ring's save/rollback path only runs on
-    // plain decode; the spec path rolls back through the verify snapshot).
-    // Reserving the ring unconditionally while the runtime skipped it
-    // stranded ~38 GB at bs32 on the 27B (75.2 GB SSM reserve vs an 85.2 GB
-    // budget at util 0.70) and capped the native batch at ~20.
-    // `use_speculative` here MUST mirror what `build_model` passes:
-    // `args.speculative || args.dflash`.
-    // Kill switch: `ATLAS_SSM_RESERVE_RING_FULL` present ⇒ restore the old
-    // unconditional reservation (accounting-only, safe over-reserve;
-    // presence-style — `=0` is NOT "off").
-    let decode_ring_slots = if std::env::var("ATLAS_SSM_RESERVE_RING_FULL").is_ok() {
-        if config.num_ssm_layers() > 0 {
-            atlas_kernels::DECODE_ROLLBACK_RING_SLOTS
-        } else {
-            0
-        }
-    } else {
-        spark_model::ssm_reserve::decode_rollback_ring_slots(
-            config.num_ssm_layers(),
-            args.speculative || args.dflash,
-        )
-        .slots
-    };
     // Marconi snapshot region. SSOT:
     // `spark_model::ssm_reserve::marconi_snapshot_slots` makes the SAME
     // decision (same env var, same predicate) the runtime allocation in
@@ -212,9 +185,12 @@ pub(crate) fn preflight_reserve(
                 / (1024 * 1024),
         );
     }
-    let ssm_snapshot_bytes = (marconi.slots + decode_ring_slots * args.max_batch_size)
-        * config.num_ssm_layers()
-        * (h_state_bytes + conv_state_bytes);
+    // The per-sequence SSM state blob — `num_ssm_layers x (h + conv)`, 151.5
+    // MiB on the 27B. Both snapshot regions are whole multiples of it:
+    // Marconi reserves one per cache slot, the decode ring one per active
+    // sequence per ring slot.
+    let per_seq_blob = config.num_ssm_layers() * (h_state_bytes + conv_state_bytes);
+    let marconi_bytes = marconi.slots * per_seq_blob;
     // Same predicate as the pool term: DFlash IS a speculative serve and
     // pays the same graph/JIT/scratch overheads the 4 GB headroom exists for.
     let cuda_headroom: usize = if spec_on_pool {
@@ -234,59 +210,60 @@ pub(crate) fn preflight_reserve(
             0
         }
     };
-    let inference_reserve: usize = ssm_pool_bytes
+    // Everything the reserve needs that does NOT scale with ring depth. The
+    // ring is separated out because it is the only term preflight is allowed
+    // to shrink (#915): rollback depth degrades gracefully, the batch and the
+    // pools it sizes do not.
+    let fixed_reserve: usize = ssm_pool_bytes
         + ssm_h_stage_bytes
         + ssm_replay_ring
-        + ssm_snapshot_bytes
+        + marconi_bytes
         + gdn_two_phase_bytes
         + cuda_headroom
         + per_sequence_reserve(args, config);
+    // Phase-C decode-rollback ring: the depth the flags/env ask for, then the
+    // largest depth that actually fits alongside everything above. Both steps
+    // are SSOT'd in `decode_ring` (which publishes the fitted depth so
+    // `TransformerModel::new` allocates exactly what was reserved).
+    let ring_requested = decode_ring::requested_slots(args, config);
+    let ring_slot_bytes = decode_ring::slot_bytes(args, per_seq_blob);
+    let fit = decode_ring::autofit(
+        args,
+        ring_requested,
+        ring_slot_bytes,
+        per_seq_blob,
+        fixed_reserve + buffer_arena_bytes,
+        free_mem,
+    );
+    if let Some(warning) = &fit.warning {
+        tracing::warn!("SSM decode-rollback ring auto-fit — {}", warning);
+    }
+    let ssm_snapshot_bytes = marconi_bytes + fit.slots * ring_slot_bytes;
+    let inference_reserve: usize = fixed_reserve + fit.slots * ring_slot_bytes;
     let total_reserve = inference_reserve + buffer_arena_bytes;
     if total_reserve > free_mem {
-        let need_gb = total_reserve as f64 / (1024.0 * 1024.0 * 1024.0);
-        let free_gb = free_mem as f64 / (1024.0 * 1024.0 * 1024.0);
-        let fixed = ssm_pool_bytes + ssm_h_stage_bytes + ssm_snapshot_bytes + cuda_headroom;
-        let budget_for_seq_term = free_mem.saturating_sub(fixed) / 2;
-        let per_tok_bytes = {
-            let key_dim = config.linear_num_key_heads * config.linear_key_head_dim;
-            let value_dim = config.linear_num_value_heads * config.linear_value_head_dim;
-            let nv = config.linear_num_value_heads;
-            let conv_dim = key_dim * 2 + value_dim;
-            if conv_dim > 0 && config.num_ssm_layers() > 0 {
-                (conv_dim * 2) + (nv * 2 * 4) + (value_dim * 2) + (value_dim * 2)
-            } else {
-                0
-            }
-        };
-        let suggested = budget_for_seq_term
-            .checked_div(per_tok_bytes)
-            .map(|q| q.max(2048))
-            .unwrap_or(0);
-        let hint = if suggested > 0 && suggested < args.max_seq_len {
-            format!(
-                " Try --max-seq-len {} (or lower --max-batch-size / --num-drafts).",
-                suggested
-            )
-        } else if args.max_batch_size > 1 {
-            " Reduce --max-batch-size.".to_string()
-        } else {
-            " Use a smaller model or a GPU with more memory.".to_string()
-        };
-        anyhow::bail!(
-            "Preflight failed: inference buffers alone need {:.2} GB but only {:.2} GB is free on the GPU \
-             (before weights load). SSM pool + GDN chunked prefill scales with --max-seq-len={} × --max-batch-size={}.{}",
-            need_gb,
-            free_gb,
-            args.max_seq_len,
-            args.max_batch_size,
-            hint,
-        );
+        return Err(refusal::reserve_refusal(
+            args,
+            config,
+            refusal::Refusal {
+                total_reserve,
+                free_mem,
+                seq_len_independent: ssm_pool_bytes
+                    + ssm_h_stage_bytes
+                    + ssm_snapshot_bytes
+                    + cuda_headroom,
+                ring_requested,
+                ring_slots: fit.slots,
+                per_seq_blob,
+            },
+        ));
     }
     tracing::info!(
-        "Preflight reserve: inference={} MB, buffer_arena={} MB (pre-load free: {:.1} GB)",
+        "Preflight reserve: inference={} MB, buffer_arena={} MB (pre-load free: {:.1} GB); {}",
         inference_reserve / (1024 * 1024),
         buffer_arena_bytes / (1024 * 1024),
         free_mem as f64 / (1024.0 * 1024.0 * 1024.0),
+        decode_ring::formula(fit.slots, args.max_batch_size, per_seq_blob),
     );
     // Q09: per-component breakdown so future MTP/spec-decode reserve
     // jumps are diagnosable from the log alone. Each line is dropped at
