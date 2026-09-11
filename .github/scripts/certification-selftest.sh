@@ -1491,7 +1491,14 @@ want_rc_msg 1 "is missing hardware tree(s)" \
 
 # ...and it still catches the violation it exists for: a shadow byte-identical
 # to the common file it overrides is a dead override.
+# Every tree in HW_SOURCE_EXT, because the check REFUSES a kernels/ root it
+# cannot fully scan (that is the control two blocks up). `hopper` and `b200`
+# joined that list in this PR; the RULE3 fixture below was written with them
+# and this older one was not, so it stopped reaching RULE1 at all and failed
+# on "is missing hardware tree(s)" instead — an assertion that still went red,
+# for the wrong reason.
 mkdir -p "$TMP/ks/live/gb10/common" "$TMP/ks/live/gb10/m1/q" \
+         "$TMP/ks/live/hopper/common" "$TMP/ks/live/b200/common" \
          "$TMP/ks/live/metal" "$TMP/ks/live/strix" "$TMP/ks/live/strix-hip"
 printf '__global__ void k() {}\n' > "$TMP/ks/live/gb10/common/k.cu"
 cp "$TMP/ks/live/gb10/common/k.cu" "$TMP/ks/live/gb10/m1/q/k.cu"
