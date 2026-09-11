@@ -27,7 +27,10 @@
 //! **Round-6 receipt** (`h100-round6-report.md`; serve I, Qwen3.8-27B-FP8,
 //! `ATLAS_DENSE_FP8=1`, `--lm-head-dtype bf16`, tp 1): the loader's own
 //! summary line reported **derived 4.24 GB** on top of a 28.75 GB checkpoint.
-//! Reproduced here from `kernels/hopper/qwen3.8-27b/MODEL.toml`'s shapes:
+//! Reproduced here from `kernels/gb10/qwen3.8-27b/MODEL.toml`'s shapes, plus
+//! the GDN head geometry, which no MODEL.toml carries and which
+//! `ModelConfig` therefore reads from the checkpoint's own `config.json`
+//! (16x128 key heads, 48x128 value heads):
 //!
 //! | term | per layer | layers | total |
 //! |---|---|---|---|

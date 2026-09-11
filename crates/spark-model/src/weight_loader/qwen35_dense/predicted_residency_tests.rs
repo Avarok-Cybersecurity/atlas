@@ -2,11 +2,14 @@
 
 //! Exact-integer pins for the pre-load derived-residency prediction (#915).
 //!
-//! The fixture is `kernels/hopper/qwen3.8-27b/MODEL.toml` — the shapes of the
-//! checkpoint the H100 rounds actually served — and the number the prediction
-//! is judged against is the loader's OWN summary line from round 6
-//! (`h100-round6-report.md`, serve I): `native FP8 dense residency: weights
-//! 28.75 GB, derived 4.24 GB`.
+//! The shapes are `kernels/gb10/qwen3.8-27b/MODEL.toml`'s — that is the only
+//! MODEL.toml for this checkpoint on `main`, and its architecture block is
+//! target-independent: the Hopper copy that the H100 rounds ran under repeats
+//! those fields verbatim and adds nothing but `expected_absent` entries. So
+//! the fixture is the checkpoint the H100 rounds served, cited at a path that
+//! exists in this tree. The number the prediction is judged against is the
+//! loader's OWN summary line from round 6 (`h100-round6-report.md`, serve I):
+//! `native FP8 dense residency: weights 28.75 GB, derived 4.24 GB`.
 //!
 //! No GPU, no checkpoint, no environment: `Fp8RouteInputs` is built by hand so
 //! the decision table is pinned rather than the machine the test runs on.
@@ -16,10 +19,15 @@ use atlas_core::config::{LayerType, ModelConfig, QuantizationConfig};
 
 use crate::layers::ops::GemmDispatch;
 
-/// `Qwen/Qwen3.8-27B-FP8` as `kernels/hopper/qwen3.8-27b/MODEL.toml` declares
-/// it: 64 layers on a 4-cycle (16 full attention, 48 GDN), hidden 5120,
-/// head_dim 256, 24 q heads, 4 kv heads, output-gated attention, GDN
-/// 16x128 key heads and 48x128 value heads.
+/// `Qwen/Qwen3.8-27B-FP8` at the shapes `kernels/gb10/qwen3.8-27b/MODEL.toml`
+/// declares: 64 layers on a 4-cycle (16 full attention, 48 GDN), hidden 5120,
+/// head_dim 256, 24 q heads, 4 kv heads, output-gated attention.
+///
+/// The GDN head geometry below — 16x128 key heads, 48x128 value heads — is
+/// NOT from that file. No MODEL.toml carries the linear-attention head
+/// fields; `ModelConfig` reads them from the checkpoint's `config.json`, and
+/// they are reproduced here because the 83,886,080-byte fused `[QKV|Z]` term
+/// is arithmetic over them.
 fn qwen38_27b() -> ModelConfig {
     let mut c = ModelConfig::qwen3_next_80b_nvfp4();
     c.model_type = "qwen3_5".to_string();
