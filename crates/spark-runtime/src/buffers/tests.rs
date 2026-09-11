@@ -43,13 +43,17 @@ fn test_buffer_sizes_qwen3() {
     assert_eq!(sizes.gate_logits, 1024);
     // logits: 1 * 151936 * 2 = 303872
     assert_eq!(sizes.logits, 303872);
-    // ssm_qkvz: 1 * 12288 * 2 = 24576
-    // Q(16*128) + K(16*128) + V(32*128) + Z(32*128) = 12288
-    assert_eq!(sizes.ssm_qkvz, 24576);
+    // ssm_qkvz: ceil16(1) * 12288 * 2 = 393216
+    // Q(16*128) + K(16*128) + V(32*128) + Z(32*128) = 12288, and the row
+    // extent is the cuBLASLt M-pad: the SSM QKVZ cuBLASLt arm hands the
+    // library ceil16(M) and WRITES the phantom rows (#917, 2026-09-11). The
+    // 16x here is an artifact of sizing at M=1; at a real prefill arena the
+    // pad is <= 15 rows out of thousands.
+    assert_eq!(sizes.ssm_qkvz, 393216);
     // ssm_ba: max(1 * 64 * 2, 256) = 256 (minimum allocation)
     assert_eq!(sizes.ssm_ba, 256);
-    // ssm_deinterleaved: same as ssm_qkvz = 24576
-    assert_eq!(sizes.ssm_deinterleaved, 24576);
+    // ssm_deinterleaved: same as ssm_qkvz, same M-pad = 393216
+    assert_eq!(sizes.ssm_deinterleaved, 393216);
     // ssm_gates: 1 * 32 * 2 * 4 = 256 (FP32 gate + beta, scaled by M)
     assert_eq!(sizes.ssm_gates, 256);
 }
