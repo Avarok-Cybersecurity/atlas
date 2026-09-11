@@ -5,13 +5,30 @@
 //! the shared `multi_seq` ancestry.
 
 use anyhow::Result;
-use spark_runtime::gpu::DevicePtr;
+use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 use super::super::ctx::MultiSeqCtx;
 use crate::layers::ops;
 use crate::layers::qwen3_attention::HeadGateActivation;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 use crate::weight_map::WeightQuantFormat;
+
+/// The shared shape of `ops::w8a16_gemv_batch{4,16}` (contiguous A and C), so
+/// the MAX_M choice in the FP8 o_proj tier is one branch instead of two
+/// duplicated call sites — the same pattern `qkv_fp8_batch.rs` uses for the
+/// `_strided` pair.
+type BatchGemv = fn(
+    &dyn GpuBackend,
+    KernelHandle,
+    DevicePtr,
+    DevicePtr,
+    DevicePtr,
+    DevicePtr,
+    u32,
+    u32,
+    u32,
+    u64,
+) -> Result<()>;
 
 impl Qwen3AttentionLayer {
     /// Phase 6: gate multiply (when gated) + O projection. Writes to
@@ -180,26 +197,54 @@ impl Qwen3AttentionLayer {
             }
         } else if let Some(o_fp8) = self.o_weight.as_ref().and_then(|w| w.as_fp8()) {
             // Both matrices are contiguous. Share each block-scaled weight
-            // pass across up to four rows without staging or requantization.
-            // Keep the scalar route for single-row decode and older bundles.
-            let batched = n > 1
-                && self.w8a16_gemv_batch4_k.0 != 0
-                && o_fp8.scale_format == WeightQuantFormat::Fp8BlockScaled
+            // pass across as many rows as one kernel instantiation covers,
+            // without staging or requantization. Keep the scalar route for
+            // single-row decode and older bundles.
+            //
+            // #927: `step` used to be a flat 4, so 5..=16 concurrent decode
+            // rows read the o_proj weight ceil(n/4) times — 4 full passes at
+            // n=16. `w8a16_gemv_batch16` is the MAX_M=16 instantiation of the
+            // SAME template (identical K order and per-row reduction tree, so
+            // bit-identical per row to both `w8a16_gemv_batch4` and the scalar
+            // `w8a16_gemv`), which makes that ONE pass. Rows stay contiguous
+            // either way, so the group loop below is unchanged apart from its
+            // stride — n > 16 still walks in 16-row groups.
+            let block_scaled = o_fp8.scale_format == WeightQuantFormat::Fp8BlockScaled
                 && h % 128 == 0
                 && q_dim % 128 == 0;
-            let step = if batched { 4 } else { 1 };
+            let wide = n > 4 && self.w8a16_gemv_batch16_k.0 != 0;
+            let batched = n > 1 && block_scaled && (self.w8a16_gemv_batch4_k.0 != 0 || wide);
+            let (gemv, kernel, step) = if !batched {
+                (
+                    ops::w8a16_gemv_batch4 as BatchGemv,
+                    self.w8a16_gemv_batch4_k,
+                    1,
+                )
+            } else if wide {
+                (
+                    ops::w8a16_gemv_batch16 as BatchGemv,
+                    self.w8a16_gemv_batch16_k,
+                    16,
+                )
+            } else {
+                (
+                    ops::w8a16_gemv_batch4 as BatchGemv,
+                    self.w8a16_gemv_batch4_k,
+                    4,
+                )
+            };
             for i in (0..n).step_by(step) {
                 let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
                 let o_out_i = o_out.offset(i * h * bf16);
                 if batched {
-                    ops::w8a16_gemv_batch4(
+                    gemv(
                         fwd.gpu,
-                        self.w8a16_gemv_batch4_k,
+                        kernel,
                         attn_out_i,
                         o_fp8.weight,
                         o_fp8.row_scale,
                         o_out_i,
-                        (n - i).min(4) as u32,
+                        (n - i).min(step) as u32,
                         h as u32,
                         nq * hd,
                         stream,
