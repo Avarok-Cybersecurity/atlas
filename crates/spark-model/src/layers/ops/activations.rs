@@ -36,6 +36,45 @@ pub fn silu_mul(
         .launch(stream)
 }
 
+/// [`silu_mul`] over ROW-STRIDED operands — the consumer of the fused
+/// dense-FFN gate+up projection (#927).
+///
+/// `gate` and `up` are two column halves of ONE `[rows, in_stride]` BF16
+/// matrix (`up = gate.offset(cols * 2)`, `in_stride = 2 * cols`), which is
+/// what a single cuBLASLt call at `N = 2 * intermediate` produces; `output` is
+/// the contiguous `[rows, cols]` the down projection reads. Passing
+/// `in_stride == out_stride == cols` reproduces [`silu_mul`] exactly.
+///
+/// Kernel: `silu_mul_strided(gate, up, output, rows, cols, in_stride,
+/// out_stride)`, grid `(ceil(cols/256), rows, 1)` block `(256,1,1)` — a 2-D
+/// grid so no thread divides to recover its row. Rule:
+/// `layers/dense_ffn_gateup_fused.rs`.
+#[allow(clippy::too_many_arguments)]
+pub fn silu_mul_strided(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gate: DevicePtr,
+    up: DevicePtr,
+    output: DevicePtr,
+    rows: u32,
+    cols: u32,
+    in_stride: u32,
+    out_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(cols, 256), rows, 1])
+        .block([256, 1, 1])
+        .arg_ptr(gate)
+        .arg_ptr(up)
+        .arg_ptr(output)
+        .arg_u32(rows)
+        .arg_u32(cols)
+        .arg_u32(in_stride)
+        .arg_u32(out_stride)
+        .launch(stream)
+}
+
 /// Fused SiLU·mul + per-token-group(128) FP8-E4M3 quantization — replaces the
 /// `silu_mul` → `per_token_group_quant_fp8` pair on the W8A8 prefill down-path
 /// without materializing the BF16 intermediate. Bit-identical to the pair

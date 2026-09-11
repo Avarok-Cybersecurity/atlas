@@ -196,6 +196,7 @@ pub struct TargetLevers {
     pub gdn_decode_hopper: Resolved<bool>,
     pub gdn_prefill_tc: Resolved<bool>,
     pub ssm_ba_gates_hopper: Resolved<bool>,
+    pub ffn_gateup_fused: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
     pub ssm_decode_ring_slots: Resolved<Option<usize>>,
     pub w8a8_prefill_max_m_widening: Resolved<u32>,
@@ -323,6 +324,19 @@ pub fn resolve(
             var("ATLAS_SSM_BA_GATES_HOPPER").as_deref(),
             false,
         ),
+        // The fused dense-FFN gate+up decode GEMM (#927). Hopper declares it
+        // ON; the arm is the SAME cuBLASLt block-scaled FP8 op on the same K
+        // with N split into independent output columns, so it carries a bit
+        // claim rather than a tolerance — pinned by
+        // `native_fp8_ffn_gateup_fused_microtest`. No `ATLAS_NO_*` legacy
+        // spelling: the lever is new, so `ATLAS_FFN_GATEUP_FUSED=0` under the
+        // 2026-09-11 grammar is the whole A/B and there is no older script for
+        // a presence rule to keep faith with.
+        ffn_gateup_fused: resolve_toggle(
+            defaults.ffn_gateup_fused,
+            var("ATLAS_FFN_GATEUP_FUSED").as_deref(),
+            false,
+        ),
         decode_split_silu: resolve_toggle(defaults.decode_split_silu, None, split_silu_off),
         // DECLARATION ONLY — never an environment read. `ATLAS_SSM_DECODE_RING`
         // has its own grammar (`1` = the full depth, `0` = no ring) and its own
@@ -424,7 +438,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
          attn_ncol_gemv={ncol} lm_head_m16_tc={head_m16} \
          lm_head_batchm_max={batchm}{batchm_src} ssm_batched_recurrent={recurrent} \
          gdn_decode_hopper={gdn_decode} gdn_prefill_tc={gdn_tc} \
-         ssm_ba_gates_hopper={ba_gates} decode_split_silu={silu} \
+         ssm_ba_gates_hopper={ba_gates} ffn_gateup_fused={gateup} \
+         decode_split_silu={silu} \
          ssm_decode_ring_slots={ring}{ring_src} \
          w8a8_prefill_max_m={w8a8_wide}/{w8a8_narrow}{w8a8_src} \
          attn_decode_splitk={splitk}{splitk_src}",
@@ -441,6 +456,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         gdn_decode = onoff(l.gdn_decode_hopper),
         gdn_tc = onoff(l.gdn_prefill_tc),
         ba_gates = onoff(l.ssm_ba_gates_hopper),
+        gateup = onoff(l.ffn_gateup_fused),
         silu = onoff(l.decode_split_silu),
         ring = match l.ssm_decode_ring_slots.value {
             Some(n) => n.to_string(),

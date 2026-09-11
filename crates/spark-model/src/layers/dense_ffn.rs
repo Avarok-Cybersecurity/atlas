@@ -296,6 +296,24 @@ pub struct DenseFfnLayer {
     // arm is not selectable and the in-tree GEMM runs (SSOT for the rule:
     // `dense_ffn_w8a8_prefill.rs::w8a8_gemm`).
     fp8_act_scale_kmajor_k: KernelHandle,
+    /// The FUSED `[2*inter, hidden]` block-scaled FP8 gate+up weight (#927),
+    /// installed by `set_fp8_gate_up_fused`. `gate_proj` and `up_proj` above
+    /// are VIEWS inside it whenever it is `Some`, so every un-fused rung reads
+    /// the same bytes and no arm needs a second copy. `None` on every route
+    /// that did not build it — the arm is optional at runtime, not assumed.
+    fp8_gate_up_fused: Option<Fp8Weight>,
+    /// Whether the compiled target ARMS the fused arm (`[defaults]
+    /// ffn_gateup_fused`, overridable with `ATLAS_FFN_GATEUP_FUSED`), cached at
+    /// construction for the two reasons `batch16_tier` is: the selector runs
+    /// per layer per step, and the dispatch tests drive both polarities without
+    /// racing the process-global `OnceLock`.
+    gateup_fused: bool,
+    /// The strided SiLU·mul that reads the fused `[m, 2*inter]` output.
+    /// `silu_mul_strided.cu` is a HOPPER-OWNED source (`[kernels] overrides`),
+    /// so KernelHandle(0) on every other target — and the probe is GATED on the
+    /// resolved lever, like `w8a16_gemm_m16_k`, because an unresolved lookup
+    /// nothing declared fails the boot audit CLOSED.
+    silu_mul_strided_k: KernelHandle,
     /// v0 LoRA overlay for gate/up/down. `set_lora_weights` REJECTS layers
     /// where `fp8_weights`, `bf16_weights` or `q2_weights` are installed (v0
     /// supports the NVFP4 dispatch path only — those branches early-return
@@ -372,6 +390,11 @@ impl DenseFfnLayer {
             FfnActivation::SiLU => gpu.kernel("moe_silu_mul", "moe_silu_mul")?,
             FfnActivation::GeLU => gpu.kernel("gelu", "gelu_mul")?,
         };
+        // Resolved ONCE for the layer: it gates both the kernel probe below
+        // and the per-step selector, and those two must never disagree —
+        // a probe skipped while the selector says yes is a NULL launch.
+        // Rule: `dense_ffn_gateup_fused.rs`.
+        let gateup_fused = gateup_fused::ffn_gateup_fused();
         // BF16 path kernels — optional (only loaded if available; gemma4
         // is the only consumer today). `try_kernel` returns
         // `KernelHandle(0)` on miss so we don't break NVFP4-only models
@@ -505,6 +528,18 @@ impl DenseFfnLayer {
             // the dispatch gates the LAUNCH on (`ctx.dispatch.cublas.ffn`).
             fp8_act_scale_kmajor_k: if super::ops::target_defaults::resolved().cublas.value.ffn {
                 super::try_kernel(gpu, "fp8_scale_transpose", "fp8_act_scale_to_kmajor")
+            } else {
+                KernelHandle(0)
+            },
+            fp8_gate_up_fused: None,
+            gateup_fused,
+            // ★ PROBED ONLY WHEN THE ARM IS ARMED, for the reason
+            // `w8a16_gemm_m16_k` above is: an unresolved lookup nothing
+            // declared fails the boot audit CLOSED, and `silu_mul_strided.cu`
+            // is HOPPER-OWNED — no other hardware tree carries it. Gating the
+            // lookup on the resolved lever is the fix `ptx_set.rs` prescribes.
+            silu_mul_strided_k: if gateup_fused {
+                super::try_kernel(gpu, "silu_mul_strided", "silu_mul_strided")
             } else {
                 KernelHandle(0)
             },
@@ -788,6 +823,27 @@ impl DenseFfnLayer {
             up_proj: up,
             down_proj: down,
         });
+    }
+
+    /// Install the FUSED `[2*inter, hidden]` block-scaled FP8 gate+up weight
+    /// (#927), enabling the one-GEMM decode arm.
+    ///
+    /// 🪤 CONTRACT, and the loader is the only caller: `gate` and `up` as
+    /// passed to [`Self::set_fp8_weights`] must ALREADY be views inside
+    /// `fused` (`gate.weight == fused.weight`, `up.weight ==
+    /// fused.weight + inter*hidden`, and the same for the scale grid). Passing
+    /// a fused weight built from DIFFERENT bytes than the two projections
+    /// would make the fused and un-fused rungs of one layer disagree, silently,
+    /// at whichever `m` moved the dispatch between them. Rule and residency
+    /// argument: `dense_ffn_gateup_fused.rs`.
+    pub fn set_fp8_gate_up_fused(&mut self, fused: Fp8Weight) {
+        debug_assert!(
+            self.fp8_weights
+                .as_ref()
+                .is_some_and(|w| w.gate_proj.weight == fused.weight),
+            "the fused gate+up weight must be the buffer gate_proj is a view into"
+        );
+        self.fp8_gate_up_fused = Some(fused);
     }
 
     /// Install the startup-static LoRA FFN overlay (gate/up/down deltas).
@@ -2281,26 +2337,40 @@ impl DenseFfnLayer {
                 None
             };
             let gu_cap = ctx.buffers.expert_gate_out_bytes();
-            w8_gemm!(
-                fp8w.gate_proj,
-                gate_t,
-                input,
-                gate_out,
-                inter,
-                h,
-                gu_a8,
-                gu_cap
-            );
-            w8_gemm!(fp8w.up_proj, up_t, input, up_out, inter, h, gu_a8, gu_cap);
-            ops::silu_mul(
-                ctx.gpu,
-                self.act_mul,
-                gate_out,
-                up_out,
-                gate_out,
-                m * inter,
-                stream,
-            )?;
+            // FUSED gate+up (#927): ONE cuBLASLt W8A8 GEMM at N=2*inter, then
+            // the strided SiLU straight out of its `[m, 2*inter]` rows. It sits
+            // HERE, ahead of the two `w8_gemm!` calls, because it is the SAME
+            // W8A8 arm those calls would take (`gate_up_w8a8` is a clause of
+            // its rule) with the two N's concatenated — not a new rung of the
+            // ladder. Declines to the pair below at every width, target and
+            // checkpoint it does not claim. Rule and the round-13 receipt:
+            // `dense_ffn_gateup_fused.rs` (SSOT).
+            if let Some((a_fp8, a_scale)) = gu_a8
+                && let Some(fused) = self.gateup_fused_plan(ctx, m, inter, gate_up_w8a8)
+            {
+                self.w8a8_gate_up_fused(ctx, a_fp8, a_scale, fused, gate_out, m, inter, h, stream)?;
+            } else {
+                w8_gemm!(
+                    fp8w.gate_proj,
+                    gate_t,
+                    input,
+                    gate_out,
+                    inter,
+                    h,
+                    gu_a8,
+                    gu_cap
+                );
+                w8_gemm!(fp8w.up_proj, up_t, input, up_out, inter, h, gu_a8, gu_cap);
+                ops::silu_mul(
+                    ctx.gpu,
+                    self.act_mul,
+                    gate_out,
+                    up_out,
+                    gate_out,
+                    m * inter,
+                    stream,
+                )?;
+            }
             let output = ctx.buffers.moe_output();
             // `gate_out` (the SiLU product) is fully written by the launch above
             // and re-read here; the quant lands in the SAME scratch the gate/up
@@ -3010,6 +3080,13 @@ pub mod w8a8_prefill;
 /// arm's rule, kill switch and WHY do not fit in this file's budget.
 #[path = "dense_ffn_batch16_decode.rs"]
 pub mod batch16_decode;
+
+/// The FUSED gate+up DECODE GEMM (`ffn_gateup_fused`, #927) — same
+/// child-module reason as the two above: it reads this layer's private kernel
+/// handles, and the round-13 receipt, the layout decision and the
+/// residency-neutrality argument need room this file does not have.
+#[path = "dense_ffn_gateup_fused.rs"]
+pub mod gateup_fused;
 
 /// The TENSOR-CORE 5..=32-row decode tier (`ATLAS_FFN_M16_TC`, #927) — same
 /// child-module reason as the two above: it reads this layer's private kernel

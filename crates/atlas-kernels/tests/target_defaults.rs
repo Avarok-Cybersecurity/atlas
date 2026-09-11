@@ -93,6 +93,18 @@ fn hopper_declares_the_round_nine_recipe() {
          is on because it cannot change output and off it re-reads every \
          activation row 96 times (`SSM-BA-GATES-ATTRIBUTION.md`)"
     );
+    // The row round 14 adds (#927). Like `ssm_ba_gates_hopper` above it is on
+    // without an accuracy receipt, and for a stronger reason: splitting N
+    // produces INDEPENDENT output columns over the same K, so the fused GEMM
+    // cannot change a bit. The cost it attacks is nsys round 13's 5 730.5 us of
+    // gate+up GEMM per n=16 step at 59.4% of HBM, beside the same arm's `down`
+    // at 71.4% for the same bytes in one launch instead of two.
+    assert!(
+        d.ffn_gateup_fused,
+        "the fused gate+up decode GEMM is Hopper's default: it is a per-launch \
+         saving on the cuBLASLt W8A8 arm this target arms, worth 1 476 us of a \
+         19.887 ms step (`FFN-GATEUP-FUSION-ATTRIBUTION.md`)"
+    );
     assert_eq!(d.ssm_decode_ring_slots, "auto");
     // The row round 13's attribution added (#928). `auto` is the split count
     // that fills 132 SMs at the single-stream shape; `legacy` is what was
@@ -206,6 +218,12 @@ fn b200_declares_the_conservative_table_not_hoppers() {
         "the BA-gates twin is Hopper-only source; B200's common/ does not link \
          it, so the row is inert here and must read false"
     );
+    assert!(
+        !d.ffn_gateup_fused && declared("hopper").ffn_gateup_fused,
+        "the fused gate+up decode GEMM is ON for Hopper on a Hopper receipt \
+         (round 13 nsys) and OFF here for want of one — B200 also declares \
+         `cublas_gemm_scope = \"off\"`, so the arm it changes is not even armed"
+    );
     assert_eq!(
         d.attn_decode_splitk, "legacy",
         "B200 has 148 SMs and would benefit by the same argument — which is an \
@@ -248,6 +266,9 @@ fn a_hopper_only_lever_is_still_declared_by_every_table() {
             // #928. The BA-gates twin is the third hopper-only boolean, and
             // gb10 and b200 declare the row false rather than omitting it.
             "ssm_ba_gates_hopper",
+            // #927. The fourth hopper-only boolean. gb10 and b200 declare it
+            // false rather than omitting it, for the same reason.
+            "ffn_gateup_fused",
             // #917. GB10 caps, hopper and b200 declare u32::MAX. The row is
             // mandatory everywhere for the same reason as the two above: an
             // absent cap and a deliberate no-cap must not look identical.
@@ -341,6 +362,7 @@ fn the_generated_constant_names_every_field() {
         "gdn_decode_hopper: false",
         "gdn_prefill_tc: true",
         "ssm_ba_gates_hopper: true",
+        "ffn_gateup_fused: true",
         "decode_split_silu: true",
         "ssm_decode_ring_slots: \"auto\"",
     ] {
@@ -372,6 +394,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.gdn_decode_hopper, declared.gdn_decode_hopper);
     assert_eq!(baked.gdn_prefill_tc, declared.gdn_prefill_tc);
     assert_eq!(baked.ssm_ba_gates_hopper, declared.ssm_ba_gates_hopper);
+    assert_eq!(baked.ffn_gateup_fused, declared.ffn_gateup_fused);
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
     assert_eq!(baked.ssm_decode_ring_slots, declared.ssm_decode_ring_slots);
 }

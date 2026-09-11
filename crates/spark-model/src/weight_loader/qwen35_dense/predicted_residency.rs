@@ -76,6 +76,16 @@ pub struct PredictedDerived {
     /// block-scale grid and the interleaved `in_proj_ba`, summed over
     /// linear-attention layers.
     pub ssm_fp8_concat: u64,
+    /// The fused `[2*inter, hidden]` dense-FFN gate+up weight and its
+    /// block-scale grid (#927), summed over dense-FFN layers — 0 when the
+    /// target does not arm the arm.
+    pub ffn_gateup_fused: u64,
+    /// The checkpoint bytes `prune_after_load` gives BACK because the fusion
+    /// consumed them: `mlp.gate_proj.weight` + `mlp.up_proj.weight` over the
+    /// same layers. EQUAL to [`Self::ffn_gateup_fused`] minus the scale grids,
+    /// by construction — the fused weight IS those two tensors copied side by
+    /// side — which is why the fusion nets out of [`Self::total`] below.
+    pub ffn_gateup_pruned: u64,
     /// Which twin families the prediction expects, for the log line.
     pub twins: TwinsBuilt,
     /// The twin set the attention term was priced at.
@@ -83,8 +93,23 @@ pub struct PredictedDerived {
 }
 
 impl PredictedDerived {
+    /// Derived bytes ABOVE the on-disk checkpoint count, which is what
+    /// `headroom.rs` adds to `weights` to build the post-load yardstick.
+    ///
+    /// The gate+up fusion appears as a DIFFERENCE and not as a term: the
+    /// caller's `weights` is the checkpoint's on-disk size, which still counts
+    /// `gate_proj.weight` and `up_proj.weight` — and the loader releases both
+    /// once the fused copy exists. Adding the fused weight without subtracting
+    /// what it replaces would over-state pre-KV by **11.4 GB** on Qwen3.8-27B
+    /// and silently shrink — or refuse — the decode-rollback ring this
+    /// yardstick exists to fit. The two terms are equal by construction, so
+    /// the difference is exactly zero and every prediction taken before #927
+    /// is unchanged; both are carried so that is legible rather than asserted
+    /// (`the_gateup_fusion_is_residency_neutral`).
     pub fn total(&self) -> u64 {
-        self.attn_fp8_twins + self.ssm_fp8_concat
+        self.attn_fp8_twins
+            + self.ssm_fp8_concat
+            + self.ffn_gateup_fused.saturating_sub(self.ffn_gateup_pruned)
     }
 }
 
@@ -138,6 +163,11 @@ pub struct Fp8RouteInputs {
     pub w8a8_prefill_kernels: bool,
     /// The environment-resolved dispatch route the loader itself reads.
     pub route: RouteEnv,
+    /// `[defaults] ffn_gateup_fused`, resolved through the SAME function the
+    /// dispatch site and the loader call — the fused gate+up weight is built
+    /// only when the compiled target (or `ATLAS_FFN_GATEUP_FUSED`) arms the arm
+    /// that reads it (#927).
+    pub ffn_gateup_fused: bool,
 }
 
 impl Fp8RouteInputs {
@@ -158,6 +188,7 @@ impl Fp8RouteInputs {
             gdn_fp8: std::env::var_os("ATLAS_NO_GDN_FP8").is_none(),
             w8a8_prefill_kernels,
             route: RouteEnv::from_env(),
+            ffn_gateup_fused: crate::layers::dense_ffn::gateup_fused::ffn_gateup_fused(),
         }
     }
 }
@@ -234,14 +265,49 @@ pub fn predicted_derived_bytes(
         0
     };
 
+    // The fused dense-FFN gate+up weight (#927). Every clause of
+    // `qwen35_dense::ffn_gateup_fused_selected` that is knowable before the
+    // checkpoint loads: the arm is armed, the model is dense, and both extents
+    // are whole 128-blocks. The store-dependent clause (`proj_is_native_fp8`)
+    // is already carried by the `declared_variant` gate above.
+    // Same fallback order as `qwen35_dense::ffn_inter`: `moe_intermediate_size`
+    // is the per-EXPERT width and is unset on dense Qwen3.6/3.8-*-FP8, while
+    // `intermediate_size` is unset on the older MoE-style configs. Reading only
+    // one of them would make the prediction and the loader disagree on which
+    // models fuse.
+    let inter = if config.intermediate_size > 0 {
+        config.intermediate_size
+    } else {
+        config.moe_intermediate_size
+    };
+    let ffn_layers = config.num_hidden_layers as u64;
+    let fused_here = route.ffn_gateup_fused
+        && config.num_experts == 0
+        && inter > 0
+        && inter.is_multiple_of(128)
+        && hidden.is_multiple_of(128);
+    let (ffn_gateup_fused, ffn_gateup_pruned) = if fused_here {
+        // The WEIGHT term on both sides: the fused buffer is the two
+        // `[inter, hidden]` store tensors copied side by side, and
+        // `prune_after_load` releases exactly those two. The scale grid is
+        // deliberately absent from both — see the field docs.
+        let (w, _scales) = fp8_residency::ffn_gateup_fused_parts(hidden, inter);
+        (ffn_layers * w as u64, ffn_layers * w as u64)
+    } else {
+        (0, 0)
+    };
+
     DerivedBytesEstimate::NativeFp8Dense(PredictedDerived {
         attn_fp8_twins,
         ssm_fp8_concat,
+        ffn_gateup_fused,
+        ffn_gateup_pruned,
         twins: TwinsBuilt {
             ffn_nvfp4: false,
             attn_nvfp4: false,
             attn_fp8: plan.attn_fp8_twins.any() && attn_layers > 0,
             ssm_fp8_concat: ssm_fp8_concat > 0,
+            ffn_gateup_fused: ffn_gateup_fused > 0,
         },
         attn_twin_set: plan.attn_fp8_twins,
     })
