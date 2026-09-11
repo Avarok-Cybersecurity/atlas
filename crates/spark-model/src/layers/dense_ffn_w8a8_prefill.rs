@@ -65,16 +65,17 @@ pub fn ffn_w8a16_only() -> bool {
 /// reason — a process-global `OnceLock` cannot be toggled per test).
 ///
 /// Clauses, each load-bearing:
-///   * `m > 4`   — M<=4 stays on the batch4 GEMV, which streams each weight
-///                 once and beats any MMA tile at those shapes.
-///   * `fp8_blockscaled_prefill` — the `ATLAS_FP8_SINGLE_SCALE` kill switch
-///                 that already governs the attention W8A8 path.
-///   * `Fp8BlockScaled` — a per-ROW scale is a different `row_scale` layout;
-///                 the block-scaled GEMM would read it as `[N/128, K/128]`.
-///   * `k % 128 == 0` — the activation quantizer emits one scale per 128-wide
-///                 K group and the GEMM folds per K-block.
-///   * `n % 128 == 0` — the weight scale grid is `[N/128, K/128]`.
-///   * both handles loaded — a model shadow may not carry either entry point.
+///
+/// * `m > 4` — M<=4 stays on the batch4 GEMV, which streams each weight once
+///   and beats any MMA tile at those shapes.
+/// * `fp8_blockscaled_prefill` — the `ATLAS_FP8_SINGLE_SCALE` kill switch that
+///   already governs the attention W8A8 path.
+/// * `Fp8BlockScaled` — a per-ROW scale is a different `row_scale` layout; the
+///   block-scaled GEMM would read it as `[N/128, K/128]`.
+/// * `k % 128 == 0` — the activation quantizer emits one scale per 128-wide K
+///   group and the GEMM folds per K-block.
+/// * `n % 128 == 0` — the weight scale grid is `[N/128, K/128]`.
+/// * both handles loaded — a model shadow may not carry either entry point.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn w8a8_prefill_selected(
     m: u32,
