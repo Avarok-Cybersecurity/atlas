@@ -12,7 +12,9 @@ is the point: two harnesses measuring two engines is not an A/B):
   * reps per rung recorded individually (raw series), never only the mean
   * temperature 0, seed 42, token-matched via a forcing suffix + max_tokens cap
   * chat_template_kwargs.enable_thinking=false on BOTH engines
-  * per-request nonce so enable_prefix_caching cannot serve a repeat from cache
+  * per-request nonce, based at a RANDOM per-process value, so
+    enable_prefix_caching cannot serve a repeat from cache — not within a run
+    and not across two runs against the same server (see make_prompt)
   * completion_tokens/prompt_tokens read from the usage frame, not counted deltas
     (Atlas batches a short reply into ONE SSE delta)
 """
@@ -22,11 +24,19 @@ import asyncio
 import hashlib
 import json
 import os
+import random
 import statistics
 import sys
 import time
 
-import aiohttp
+# OPTIONAL on purpose: `--check-shapes` grades prompt construction and needs no
+# server, so it must run on a box (or a CI runner) that has no HTTP client
+# installed. Every measurement path still refuses to start without it — see the
+# guard in main().
+try:
+    import aiohttp
+except ImportError:  # pragma: no cover - exercised by the --check-shapes gate
+    aiohttp = None
 
 # ── pinned constants (recipe: benchmark.prompt / benchmark.sampling) ──
 #
@@ -64,18 +74,72 @@ REQUEST_TIMEOUT_S = 900
 
 PROMPT_MODE = os.environ.get("W55_PROMPT_MODE", "essay")
 
+# ── the per-request nonce ────────────────────────────────────────────────────
+#
+# ★ THE LADDER IS FROZEN. Its prompts are compared across rounds, so the nonce
+# must not change the PROMPT TOKEN LENGTH: it is a FIXED-WIDTH field, exactly
+# NONCE_WIDTH digits, and every nonce is taken modulo NONCE_MODULUS so it can
+# never widen. `--check-shapes` asserts that property rather than trusting it.
+#
+# ★ THE BUG THIS FIXES (H100 rounds 10-12, `h100-round12-report.md` stage 5a).
+# The counter used to start at 0 in every new python process, so a pre-window
+# WARMUP invocation and a later PHASE-A invocation against the SAME server sent
+# byte-identical prompts and `--enable-prefix-caching true` did its job: round
+# 12's phase-A capture reported `ttft_p50_ms: 37.18` against a cold 184 ms, and
+# its prefill table is a cached prefill plus a decode step. Round 10's phase-A
+# TTFT of 49 ms is the same defect, uncaught at the time.
+#
+# It never touched a LADDER measurement: a ladder invocation runs its warmup and
+# all its reps in ONE process, where the counter keeps advancing and no two
+# prompts repeat. What it broke is every measurement whose warmup was a
+# SEPARATE invocation — which is exactly what the nsys captures did.
+#
+# Basing the counter at a random per-process value closes both: within a run the
+# counter still advances, and two runs no longer start at the same place.
+NONCE_WIDTH = 6
+NONCE_MODULUS = 10**NONCE_WIDTH
+
 _seq = 0
+_nonce_base = 0
+
+
+def default_nonce_base() -> int:
+    """A per-process base no other process is likely to have used.
+
+    `SystemRandom` rather than pid+clock arithmetic: a pid is 5 digits on Linux
+    and recycles, and two ladder invocations started in the same second from a
+    script would sit close together. The chosen base is printed and written to
+    the run JSON (`nonce_base`), so a receipt records exactly which prompts a
+    run sent even though the value is random.
+    """
+    return random.SystemRandom().randrange(NONCE_MODULUS)
+
+
+def set_nonce_base(base: int) -> int:
+    """Pin the base and restart the counter. Returns the base actually used."""
+    global _nonce_base, _seq
+    _nonce_base = base % NONCE_MODULUS
+    _seq = 0
+    return _nonce_base
 
 
 def make_prompt(isl_tokens: int) -> str:
     """Word-for-word the shape of atlas-plugin's `stats::make_prompt`: the chat
     template contributes ~12 tokens, the rest is `needed` filler words, and the
-    nonce prefix forces a prefix-cache MISS so every request does real prefill."""
+    nonce prefix forces a prefix-cache MISS so every request does real prefill.
+
+    The nonce is `(base + n) % NONCE_MODULUS` rendered at NONCE_WIDTH digits, so
+    the prompt's CHARACTER length — and, for a digit-splitting tokenizer such as
+    Qwen's, its TOKEN length — does not depend on the base. `--check-shapes`
+    is the assertion."""
     global _seq
     _seq += 1
+    nonce = (_nonce_base + _seq) % NONCE_MODULUS
     needed = max(1, isl_tokens - 12)
     words = FILLER.split()
-    out = f"[req {_seq:06d}] " + " ".join(words[i % len(words)] for i in range(needed))
+    out = f"[req {nonce:0{NONCE_WIDTH}d}] " + " ".join(
+        words[i % len(words)] for i in range(needed)
+    )
     return out + (SUFFIX_COUNT if PROMPT_MODE == "count" else SUFFIX_ESSAY)
 
 
@@ -200,22 +264,146 @@ async def run_rep(session, url, model, conc, isl, osl):
     }
 
 
+def load_tokenizer(path):
+    """A Qwen tokenizer from a LOCAL path, or None.
+
+    Never downloads: this runs on benchmark boxes that are offline by policy and
+    inside CI. `None` is a legitimate answer — `check_shapes` then grades the
+    character-length and digit-width invariant, which is the property the token
+    count actually rests on for a digit-splitting tokenizer.
+    """
+    if not path:
+        return None
+    try:
+        from transformers import AutoTokenizer
+    except ImportError:
+        return None
+    try:
+        return AutoTokenizer.from_pretrained(path, local_files_only=True)
+    except Exception:  # missing files, wrong dir, unsupported revision
+        return None
+
+
+def check_shapes(isl, tokenizer_path):
+    """`--check-shapes`: the nonce base must not change the prompt's SHAPE.
+
+    The ladder is frozen for cross-round comparability, so a per-process nonce
+    base is only admissible if a prompt built at base A tokenises to the same
+    length as the same prompt built at base B. Three assertions, in the order
+    they bite:
+
+      1. the nonce field is exactly NONCE_WIDTH digits at every base, including
+         the ones that would otherwise widen it (0 and NONCE_MODULUS - 1);
+      2. two bases give byte-equal prompts outside that field, and equal
+         character length;
+      3. with a Qwen tokenizer present, equal TOKEN counts — the property (1)
+         and (2) are a proxy for.
+
+    Also asserts the bug is gone: two DIFFERENT bases must not produce the same
+    first prompt, which is what the pre-window warmup and phase A used to do.
+    """
+    failures = []
+    # Distinct MOD NONCE_MODULUS — bases that differ by a whole modulus alias
+    # to the same nonce by construction, which assertion (4) states separately.
+    bases = [0, 1, 42, 770_001, NONCE_MODULUS - 1]
+    prompts = {}
+    for base in bases:
+        used = set_nonce_base(base)
+        prompts[base] = make_prompt(isl)
+        field = prompts[base][len("[req "):len("[req ") + NONCE_WIDTH]
+        if not (len(field) == NONCE_WIDTH and field.isdigit()):
+            failures.append(f"base {base} (used {used}): nonce field {field!r} is not "
+                            f"{NONCE_WIDTH} digits")
+        if prompts[base][len("[req ") + NONCE_WIDTH:len("[req ") + NONCE_WIDTH + 2] != "] ":
+            failures.append(f"base {base}: nonce field is not closed by '] '")
+
+    ref = prompts[bases[0]]
+    head = len("[req ") + NONCE_WIDTH
+    for base, prompt in prompts.items():
+        if len(prompt) != len(ref):
+            failures.append(f"base {base}: prompt is {len(prompt)} chars, base "
+                            f"{bases[0]} is {len(ref)} — the ladder is not frozen")
+        if prompt[:len("[req ")] != ref[:len("[req ")] or prompt[head:] != ref[head:]:
+            failures.append(f"base {base}: prompt differs outside the nonce field")
+
+    distinct = {p[:head] for p in prompts.values()}
+    if len(distinct) != len(prompts):
+        failures.append(f"two bases produced the same nonce: {sorted(distinct)} — the "
+                        "prefix-cache collision this flag exists to prevent")
+
+    # (4) the base is normalised into the field, and the counter restarts with
+    # it, so an out-of-range --nonce-base narrows rather than widening the field.
+    if set_nonce_base(NONCE_MODULUS + 7) != 7:
+        failures.append("set_nonce_base does not reduce modulo NONCE_MODULUS")
+    if make_prompt(isl)[:head] != f"[req {8:0{NONCE_WIDTH}d}]"[:head]:
+        failures.append("set_nonce_base did not restart the per-process counter")
+
+    tok = load_tokenizer(tokenizer_path)
+    if tok is None:
+        token_note = ("SKIPPED (no local tokenizer; pass --tokenizer <dir> or set "
+                      "W55_TOKENIZER). The character-length and digit-width "
+                      "assertions above are the standing invariant.")
+    else:
+        counts = {b: len(tok.encode(p)) for b, p in prompts.items()}
+        if len(set(counts.values())) != 1:
+            failures.append(f"token counts differ across nonce bases: {counts}")
+        token_note = f"PASS ({sorted(set(counts.values()))[0]} tokens at every base)"
+
+    print(f"# check-shapes isl={isl} width={NONCE_WIDTH} bases={bases}")
+    print(f"#   prompt chars     : {len(ref)}")
+    print(f"#   nonce fields     : {sorted(distinct)}")
+    print(f"#   token-count check: {token_note}")
+    for f in failures:
+        print(f"FAIL: {f}")
+    print("# check-shapes OK" if not failures else f"# check-shapes FAILED ({len(failures)})")
+    return 0 if not failures else 1
+
+
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", required=True)
-    ap.add_argument("--model", required=True)
-    ap.add_argument("--label", required=True)
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--concs", required=True)
-    ap.add_argument("--reps", type=int, required=True)
-    ap.add_argument("--isl", type=int, required=True)
-    ap.add_argument("--osl", type=int, required=True)
-    ap.add_argument("--warmup", type=int, required=True)
+    # NOT `required=True`, because --check-shapes needs none of them; the
+    # explicit check below keeps the file's rule that no measurement knob is
+    # ever defaulted silently.
+    ap.add_argument("--url")
+    ap.add_argument("--model")
+    ap.add_argument("--label")
+    ap.add_argument("--out")
+    ap.add_argument("--concs")
+    ap.add_argument("--reps", type=int)
+    ap.add_argument("--isl", type=int)
+    ap.add_argument("--osl", type=int)
+    ap.add_argument("--warmup", type=int)
     ap.add_argument("--enable-thinking", action="store_true",
                     help="send chat_template_kwargs.enable_thinking=true (default false)")
+    ap.add_argument("--nonce-base", type=int, default=None,
+                    help="per-process prompt-nonce base (default: random). Pin it only "
+                         "to reproduce a specific run's prompts; two runs against one "
+                         "server must NOT share a base or the second hits the prefix "
+                         "cache. Recorded as `nonce_base` in the output JSON.")
+    ap.add_argument("--check-shapes", action="store_true",
+                    help="self-test: assert the nonce base changes no prompt's token "
+                         "count, then exit. Needs no server.")
+    ap.add_argument("--tokenizer", default=os.environ.get("W55_TOKENIZER"),
+                    help="local tokenizer dir for --check-shapes (offline only)")
     a = ap.parse_args()
+
+    if a.check_shapes:
+        return check_shapes(a.isl if a.isl else 1024, a.tokenizer)
+
+    if aiohttp is None:
+        ap.error("aiohttp is required to drive a ladder (only --check-shapes runs without it)")
+
+    missing = [f"--{n.replace('_', '-')}" for n in
+               ("url", "model", "label", "out", "concs", "reps", "isl", "osl", "warmup")
+               if getattr(a, n) is None]
+    if missing:
+        ap.error("missing required argument(s): " + ", ".join(missing))
+
     global ENABLE_THINKING
     ENABLE_THINKING = bool(a.enable_thinking)
+    nonce_base = set_nonce_base(
+        a.nonce_base if a.nonce_base is not None else default_nonce_base()
+    )
 
     concs = [int(x) for x in a.concs.split(",") if x.strip()]
     chat = a.url.rstrip("/") + "/v1/chat/completions"
@@ -227,11 +415,19 @@ async def main():
         "isl": a.isl, "osl": a.osl, "reps": a.reps, "warmup": a.warmup,
         "temperature": TEMPERATURE, "seed": SEED,
         "chat_template_kwargs": {"enable_thinking": ENABLE_THINKING},
+        # Which prompts this run sent. Random per process unless --nonce-base
+        # pinned it; recorded so a receipt can say so, and so two runs against
+        # one server can be shown not to have shared a prefix-cache entry.
+        "nonce_base": nonce_base,
+        "nonce_base_pinned": a.nonce_base is not None,
+        "nonce_width": NONCE_WIDTH,
         "driver_sha256": me,
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "rungs": [],
     }
     print(f"# driver sha256 {me}", flush=True)
+    print(f"# nonce base {nonce_base:0{NONCE_WIDTH}d} "
+          f"({'pinned' if a.nonce_base is not None else 'random'})", flush=True)
 
     conn = aiohttp.TCPConnector(limit=0, force_close=True)
     async with aiohttp.ClientSession(connector=conn) as session:

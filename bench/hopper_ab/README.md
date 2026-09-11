@@ -12,7 +12,11 @@ numbers already exist and are reused verbatim:
   `chat_template_kwargs.enable_thinking` selected by `--enable-thinking`
   (default false), temp 0, seed 42), the
   per-request nonce that defeats prefix caching, and the output JSON schema
-  everything downstream reads.
+  everything downstream reads. The nonce is based at a RANDOM per-process value
+  (`--nonce-base` pins it, `nonce_base` in the output JSON records it), so two
+  invocations against one server cannot send the same prompt; it is a
+  fixed-width field, and `--check-shapes` asserts that the base changes no
+  prompt's token count.
 - **[`bench/phaseA_c_sweep.sh`](../phaseA_c_sweep.sh)** — the serve → health →
   bench → teardown orchestration, its skip-if-results-exist resumability, and
   its "Fairness notes" block. That block is the model for what a leg must write
@@ -130,4 +134,4 @@ What the thresholds miss: a loop whose period is longer than the reply (a 200-to
 
 The comparator requires matching valid `reps`, `warmup` and client `driver_sha256` as well as the original parity fields. Equal throughput is TIE; missing rungs appear as NO-PAIR on either side. Request errors, missing or short per-request usage, incomplete reps, invalid metrics and more than 10% rate spread remain visible as INVALID with reasons and no ratio. INVALID/NO-PAIR reports exit 0 because report generation succeeded; callers must inspect verdicts. Header/schema mismatches exit 2. Old tiny fixtures without request usage are no longer evidence of valid rungs.
 
-Bare ladder JSON cannot establish model revision, hardware, server speculation, cache state or prompt-mode parity. Its latency columns are means of per-rep percentiles, not pooled request percentiles. Its first saved rep follows the discarded warmup. Its nominal ISL is word-based, and its nonce restarts across separate invocations. See the schema-gaps section of https://github.com/Avarok-Cybersecurity/atlas/issues/899 (comment 3) before producing a campaign receipt. The ladder measurement code was not changed.
+Bare ladder JSON cannot establish model revision, hardware, server speculation, cache state or prompt-mode parity. Its latency columns are means of per-rep percentiles, not pooled request percentiles. Its first saved rep follows the discarded warmup. Its nominal ISL is word-based. Its nonce used to restart at zero in every process, so any measurement whose warmup was a SEPARATE invocation served its first request from the prefix cache — that is fixed (random per-process base, recorded as `nonce_base`), and receipts produced before the fix are unaffected only where warmup and reps shared one process, which is every ladder run and no nsys phase-A capture. See the schema-gaps section of https://github.com/Avarok-Cybersecurity/atlas/issues/899 (comment 3) before producing a campaign receipt. The ladder measurement code was not changed by this driver; the nonce fix above is the one later exception, and it moves `driver_sha256` — the comparator requires both legs of an A/B to carry the same one, so re-run both legs rather than pairing a pre-fix leg with a post-fix one.

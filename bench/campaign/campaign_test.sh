@@ -111,6 +111,14 @@ ok() { asserts=$((asserts + 1)); echo "  ok [$1] $2"; }
 have() { grep -Fq -- "$2" <<<"$1"; }
 
 # A nested refusal must remain nonzero after the dry-run finalizer.
+# The ladder client this directory USES and does not own: its per-request nonce
+# is what keeps --enable-prefix-caching from serving a repeat, and the base is
+# now per-process. The ladder is frozen for cross-round comparability, so the
+# base must change no prompt's token count -- which is the one property a
+# random base could quietly break. Wired here because nothing else runs it.
+python3 "$ROOT/bench/ladder38/harness_w55_conc_ladder.py" --check-shapes \
+  || fail ladder "ladder nonce base changed a prompt's shape"
+ok ladder "ladder nonce base is fixed-width and leaves the prompt shape frozen"
 python3 "$HERE/dryrun_failure_test.py" || fail dryrun "renderer failure regression"
 ok dryrun "3 dry-run exit regressions passed (both engines, refusal before boot)"
 python3 "$HERE/admission_test.py" || fail admission "preflight admission regression"
