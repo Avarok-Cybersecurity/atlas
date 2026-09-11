@@ -78,7 +78,7 @@ pub fn fp8_act_scale_to_kmajor(
 #[allow(clippy::too_many_arguments)]
 pub fn cublas_fp8_proj(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
-    ptg_quant_k: spark_runtime::gpu::KernelHandle,
+    ptg_quant_k: Fp8ActQuant,
     scale_kmajor_k: spark_runtime::gpu::KernelHandle,
     act_bf16: spark_runtime::gpu::DevicePtr,
     act_fp8_scratch: spark_runtime::gpu::DevicePtr,

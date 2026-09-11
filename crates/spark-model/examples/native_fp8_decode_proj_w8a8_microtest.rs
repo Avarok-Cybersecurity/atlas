@@ -106,7 +106,7 @@ impl Proj {
 struct Kernels {
     batch16: KernelHandle,
     batch16_strided: KernelHandle,
-    quant: KernelHandle,
+    quant: ops::Fp8ActQuant,
     kmajor: KernelHandle,
 }
 
@@ -248,7 +248,7 @@ fn main() -> Result<()> {
     let k = Kernels {
         batch16: gpu.kernel("w8a16_gemv_batch4", "w8a16_gemv_batch16")?,
         batch16_strided: gpu.kernel("w8a16_gemv_batch4", "w8a16_gemv_batch16_strided")?,
-        quant: gpu.kernel("per_token_group_quant_fp8", "per_token_group_quant_fp8")?,
+        quant: ops::Fp8ActQuant::resolve(&gpu),
         kmajor: gpu.kernel("fp8_scale_transpose", "fp8_act_scale_to_kmajor")?,
     };
     let gate: f64 = std::env::var("ATLAS_W8A8_REL_RMS_GATE")

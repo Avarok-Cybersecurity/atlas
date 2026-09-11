@@ -348,7 +348,7 @@ impl Qwen3AttentionLayer {
     /// `prefill/paged_oproj.rs:94`). The loader asks this to decide whether the
     /// Q and O FP8 prefill twins are reachable at all (#915).
     pub fn has_w8a8_prefill_kernels(&self) -> bool {
-        self.per_token_group_quant_fp8_k.0 != 0 && self.fp8_gemm_t_blockscaled_k.0 != 0
+        self.per_token_group_quant_fp8_k.available() && self.fp8_gemm_t_blockscaled_k.0 != 0
     }
 
     /// Transpose FP8 weights for fast prefill (`w8a16_gemm_t`: coalesced
