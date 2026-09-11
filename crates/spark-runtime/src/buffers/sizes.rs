@@ -315,7 +315,15 @@ impl BufferSizes {
         // q_heads*head_dim (o_proj). 1 byte/elem fp8 + one f32 per 128-block.
         // Mamba-2 out_proj contracts over d_inner (may exceed hidden), and its
         // prefill input is FP8-precast into this buffer.
-        let max_proj_k = h.max(q_heads * hd).max(mamba2_d_inner);
+        // ...and the GDN `out_proj`, which contracts over `value_dim`. It
+        // happens to equal `q_heads * hd` on Qwen3.8-27B (6144), so naming it
+        // changes no allocation there — but the W8A8 cuBLASLt arm added in
+        // #928 quantizes into this buffer, and a model whose value_dim is the
+        // widest contract would otherwise size it short and silently fall back.
+        let max_proj_k = h
+            .max(q_heads * hd)
+            .max(mamba2_d_inner)
+            .max(config.linear_num_value_heads * config.linear_value_head_dim);
         // Padded to 16 rows: `ops::cublas_fp8_proj` hands cuBLASLt `ceil16(M)`
         // and the matmul reads those phantom activation/scale rows.
         let fp8_act = m_pad * max_proj_k;
@@ -422,7 +430,12 @@ impl BufferSizes {
             hidden_states: m * h * residual_elem,
             residual: m * h * residual_elem,
             norm_output: m * max_dim * bf16,
-            qkv_output: m * qkv_dim * bf16,
+            // `m_pad`, not `m`: the cache-skip Q/K/V prefill's cuBLASLt arm
+            // WRITES `ceil16(M)` rows of `q_proj` here (readers still touch
+            // only the real M). Same headroom `ssm_qkvz` and `moe_output`
+            // already carry, and the reason is the same one (#928). ~0.4 MB on
+            // a 27B.
+            qkv_output: m_pad * qkv_dim * bf16,
             attn_output: (m * config.num_attention_heads * config.head_dim * bf16)
                 .max(m * mamba2_d_inner * bf16)
                 // MLA absorbed: attention output is [M, nq, mla_cache_dim=kv_lora+rope]
@@ -466,7 +479,11 @@ impl BufferSizes {
             // to 15 rows into the NEXT arena buffer. ~0.4 MB on a 27B.
             ssm_qkvz: (m_pad * config.ssm_qkvz_size() * bf16)
                 .max(m * config.mamba2_in_proj_size() * bf16)
-                .max(m * 2 * kv_heads * hd * bf16)
+                // `k` at row 0 and `v` at row `m`, each `ceil16(M)` rows
+                // tall on the cuBLASLt arm: the furthest byte is
+                // `(m + m_pad) * kv_dim` (#928, `prefill_qkv_w8a8.rs`). Was
+                // `m * 2 * kv_dim`, which this is never smaller than.
+                .max((m + m_pad) * kv_heads * hd * bf16)
                 .max(m * config.shared_expert_intermediate_size * bf16) // MoE shared up scratch
                 .max(256),
             ssm_ba: (m * config.ssm_ba_size() * bf16)

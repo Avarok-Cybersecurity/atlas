@@ -397,6 +397,7 @@ mod init_fp8;
 mod init_q2;
 mod kernel_select;
 mod lora;
+mod prefill_out_w8a8;
 mod prefill_w8a8;
 mod ssm_forward;
 pub(crate) mod ssm_h_fp16;
