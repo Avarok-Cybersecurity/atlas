@@ -167,6 +167,24 @@ fn dense_fp8_enabled() -> bool {
     std::env::var("ATLAS_DENSE_FP8").as_deref() == Ok("1")
 }
 
+/// Whether the native block-scaled FP8 GDN arm runs for this SSM layer.
+///
+/// ONE predicate, called by `load_layers` and by `prune_after_load`: the
+/// second frees the store tensors the first copied into the fused `[QKV|Z]`
+/// weight, and a drift between the two is a use-after-free with no
+/// diagnostic. The keep-packed Q2 arm `continue`s ahead of this one, so it is
+/// part of the condition (#915).
+fn gdn_fp8_arm_selected(store: &WeightStore, la: &str, tp_size: usize) -> bool {
+    let q2 = tp_size.max(1) == 1
+        && std::env::var_os("ATLAS_NO_Q2_GDN").is_none()
+        && proj_q2_group(store, &format!("{la}.in_proj_qkv")).is_some()
+        && proj_q2_group(store, &format!("{la}.in_proj_z")).is_some();
+    !q2 && std::env::var_os("ATLAS_NO_GDN_FP8").is_none()
+        && proj_is_fp8_any_scale(store, &format!("{la}.in_proj_qkv"))
+        && proj_is_fp8_any_scale(store, &format!("{la}.in_proj_z"))
+        && proj_is_fp8_any_scale(store, &format!("{la}.out_proj"))
+}
+
 /// The dense-FFN width. `moe_intermediate_size` is the PER-EXPERT width and is
 /// unset (=0) on dense Qwen3.6/3.8-*-FP8, so reading it first would size a
 /// 0-byte allocation; `intermediate_size` is unset on the older MoE-style
@@ -1104,11 +1122,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // Internal opt-out for the FP8-vs-NVFP4 GDN A/B + KL-drift
                     // gate (not a user choice; mirrors the `ATLAS_NO_*` debug
                     // levers). Default engages native FP8.
-                    if std::env::var_os("ATLAS_NO_GDN_FP8").is_none()
-                        && proj_is_fp8_any_scale(store, &format!("{la}.in_proj_qkv"))
-                        && proj_is_fp8_any_scale(store, &format!("{la}.in_proj_z"))
-                        && proj_is_fp8_any_scale(store, &format!("{la}.out_proj"))
-                    {
+                    if gdn_fp8_arm_selected(store, &la, config.tp_world_size) {
                         let in_proj_a = dense(store, &format!("{la}.in_proj_a.weight"))?;
                         let in_proj_b = dense(store, &format!("{la}.in_proj_b.weight"))?;
                         let conv1d = dense(store, &format!("{la}.conv1d.weight"))?;
@@ -1656,6 +1670,72 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         }
 
         Ok(layers)
+    }
+
+    /// Drop the SSM source tensors the native-FP8 GDN arm copied and no longer
+    /// reads (#915).
+    ///
+    /// That arm builds a fused `[QKV|Z]` FP8 weight by device-to-device
+    /// appending `in_proj_qkv` and `in_proj_z` (`concat_fp8_block_scaled`), and
+    /// builds `in_proj_ba` by a D2H -> host interleave -> H2D round trip
+    /// (`interleave_ba`). All four store originals are dead the moment
+    /// `load_layers` returns — 80 MiB + ~1 MB per SSM layer, ~3.9 GB across the
+    /// 48 GDN layers of Qwen3.8-27B-FP8, which is what the fused copy costs.
+    /// Keeping both is the duplicate that came straight out of the KV budget.
+    ///
+    /// 🪤 Narrow on purpose. `out_proj.weight` IS `out_proj_fp8w.weight`
+    /// (zero-copy from the store), `conv1d`, `A_log`, `dt_bias` and
+    /// `norm.weight` are aliased or conditionally aliased depending on their
+    /// on-disk dtype, and every attention / FFN tensor is bound zero-copy.
+    /// Only the four names below are freed, and only for layers where
+    /// [`gdn_fp8_arm_selected`] says that arm actually ran.
+    fn prune_after_load(
+        &self,
+        store: &mut WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<()> {
+        // Same resolution `load_layers` uses: an explicit `layer_types` list
+        // wins over the computed pattern, and pruning must be decided from the
+        // list that actually selected the arms.
+        let layer_types = if config.layer_types.is_empty() {
+            (0..config.num_hidden_layers)
+                .map(|i| config.layer_type(i))
+                .collect::<Vec<_>>()
+        } else {
+            config.layer_types.clone()
+        };
+        let mut doomed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (i, lt) in layer_types.iter().enumerate() {
+            if *lt != LayerType::LinearAttention {
+                continue;
+            }
+            let la = format!("{}.linear_attn", config.layer_prefix(i));
+            if !gdn_fp8_arm_selected(store, &la, config.tp_world_size) {
+                continue;
+            }
+            for leaf in [
+                "in_proj_qkv.weight",
+                "in_proj_qkv.weight_scale_inv",
+                "in_proj_qkv.weight_scale",
+                "in_proj_z.weight",
+                "in_proj_z.weight_scale_inv",
+                "in_proj_z.weight_scale",
+                "in_proj_a.weight",
+                "in_proj_b.weight",
+            ] {
+                doomed.insert(format!("{la}.{leaf}"));
+            }
+        }
+        if doomed.is_empty() {
+            return Ok(());
+        }
+        let (count, bytes) = store.free_matching(gpu, |name| doomed.contains(name))?;
+        tracing::info!(
+            "native FP8 GDN: released {count} store tensors ({:.2} GB) consumed by the fused              [QKV|Z] concat and the BA interleave; out_proj/conv1d/A_log/dt_bias/norm kept              (still aliased)",
+            bytes as f64 / 1e9,
+        );
+        Ok(())
     }
 
     fn load_embedding(
