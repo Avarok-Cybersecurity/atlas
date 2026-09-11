@@ -137,6 +137,10 @@ name = "native_gdn_chunk_prefill_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "native_gdn_prefill_remnants_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "w4a16_lmhead_716_repro"
 required-features = ["cuda", "gpu-examples"]
 

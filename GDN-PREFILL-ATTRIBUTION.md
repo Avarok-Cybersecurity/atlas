@@ -126,3 +126,103 @@ toward 132 — the in-file GB10 verdict (2026-06-25, `gdn_cdh_vblock_microtest`:
 0.71×/0.65×/0.34× at VTILES=2/4/8, bit-parity 18/18) says this *loses* while the
 kernel is latency-bound, worth re-testing now the MMA rewrite changed that bound;
 (d) `tril(kq)·uc` in `chunk_fwd_o` on tensor cores, at most 0.53/3.68 of 6.2 %.
+
+---
+
+# The two remnants, attributed — and the Hopper twins (#928, 2026-09-11)
+
+Same trace, same geometry (`nk=16`, `nv=48`, `kd=vd=128`, `CHUNK=64`; 912 CTAs
+at T=1193, 3456 at T=4593; 96 launches each). The section above named
+`chunk_fwd_o`'s `tril(kq)·uc` and `recompute_wu`'s forward substitutions as
+what is left once the spine moved to tensor cores. Here is what they cost.
+
+## `chunk_fwd_o` — 3.678 MFLOP per (chunk, head), 14.5% of it scalar
+
+| term | shape | MAC | unit | threads |
+|---|---|---:|---|---|
+| `q·kᵀ` | M=64 N=64 K=128 | 524 288 | `mma.sync` | 128 of 512 |
+| `q·S_cᵀ` | M=64 N=128 K=128 | 1 048 576 | `mma.sync` | 128 of 512 |
+| `tril(kq)·uc` | Σ_i (i+1) × 128 = 2080×128 | 266 240 | **scalar f32** | 128 of 512 |
+
+`mma_gram` hardwires M=64 across four warps and is fenced to `tid < 128`; the
+triangular loop is fenced to `tid < v_dim`, also 128. **Twelve of sixteen warps
+issue no arithmetic at all** — they stage 96.5 KB of shared memory and idle.
+Bytes per CTA: 82 176 R (`q` 16 384, `k` 16 384, `uc` 16 384, `S_c` 32 768,
+`gc` 256) + 16 384 W = 98 560, i.e. 89.9 MB per launch and **427 GB/s of
+H100's 3.35 TB/s (12.7%)** at 16.0 TFLOP/s (1.6% of bf16 tensor-core peak,
+24% of FP32 FMA peak — the ratio that says the scalar term sets the rate).
+
+What is serial: the inner `for l <= i` is a DEPENDENT f32 FMA chain, 2080 FMAs
+per thread with two shared-memory operands each (`kq` broadcast, `ucb` 2-way
+conflicted at a 64-element bf16 stride). At a 4-cycle FMA latency that is a
+~8 300-cycle floor per CTA against 209.8 µs / 6.9 waves ≈ 53 300 cycles — an
+ESTIMATE, not a measurement; the only measured decomposition of this kernel is
+the nsys total.
+
+Occupancy is the second half of the finding and it IS measured: `ptxas
+-arch=sm_90a --fmad=false` gives the parent **104 registers at 512 threads**,
+so it runs **one CTA per SM** — 16 warps of 64 slots, 25% — because two would
+need 64 registers or fewer.
+
+## `recompute_wu` — 2.081 MFLOP per (chunk, head), 49.6% of it scalar
+
+| term | shape | MAC | unit | threads |
+|---|---|---:|---|---|
+| `K·Kᵀ` | M=N=64 K=128 | 524 288 | `mma.sync` | 128 of 256 |
+| `(I+L)U = βV` | 2016 × 128 | 258 048 | **scalar f32** | 128 of 256 |
+| `(I+L)W = βe^{gc}K` | 2016 × 128 | 258 048 | **scalar f32** | 128 of 256 |
+
+Bytes per CTA: 33 280 R (`k` 16 384, `v` 16 384, `gate` 256, `beta` 256) +
+33 024 W (`W` 16 384, `U` 16 384, `gc` 256) = 66 304 → 60.5 MB per launch,
+**390 GB/s (11.6% of HBM)** at 12.2 TFLOP/s. (The table above records 32 896 W;
+the sum of the three writes is 33 024 and the 0.4% difference changes no ratio.)
+
+Half the arithmetic, 79–85% of the time — that split is MEASURED, by the
+in-file solve-removed probe of 2026-08-22 (prologue 14.3/16.4/20.5 µs against
+68.9/96.6/140.8 µs total at nt=1/16/64). What is serial: one thread per
+right-hand-side column walking 64 rows, and `acc[64]` indexed by a runtime row,
+which ptxas puts in LOCAL memory — **512 bytes of stack frame at sm_90a**. The
+right-looking block of 16 already cut that traffic ~6-8x (1.95–2.28x measured);
+what remains is the shape, not the blocking. 87 registers at 256 threads =
+2 CTAs/SM = 512 threads/SM, the same 25% warp residency as `fwd_o`.
+
+## The twins
+
+`kernels/hopper/common/gdn_fwd_o_hopper.cu` and `..._recompute_wu_hopper.cu`,
+new stems (not same-stem overrides: the parents share a 2105-line file with
+twelve other entry points), selected by `ATLAS_GDN_PREFILL_TC` where the image
+carries them, pinned off by `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1`.
+
+* `fwd_o`: every product re-tiled 4 m-tiles × 4 n-quarters so all 16 warps
+  compute; `kq` masked, decayed and split to two bf16 limbs in the C fragment
+  where it is produced; the triangular term run as a masked
+  [64×64]×[64×128] MMA (0.524 M MAC against the triangle's 0.266 M — 2× the
+  arithmetic, no dependent chain); `q·S_cᵀ` kept in the f32 accumulator instead
+  of a bf16 round-trip. 97 536 B of smem (under the parent's 98 816, because the
+  `kq` lo limb aliases the dead `sk`) and **64 registers, 0 spill**, so
+  `__launch_bounds__(512, 2)` is free and resident CTAs double.
+* `wu`: blocked triangular solve — `X_j ← T_jj·B_j`, then `B_i ← B_i − L_ij·X_j`
+  for i > j — both on `mma.sync`, 16 columns per warp so each holds its [64×16]
+  panel in one C fragment and the solve is warp-local (`__syncwarp`, never
+  `__syncthreads`). 328 k MAC per solve against the triangle's 258 k (1.27×).
+  `T_jj = (I+L_jj)^{-1}` is built once per (chunk, head) by the parent's own
+  exact f32 forward substitution — 4 × 680 MAC, 0.4% of the kernel — and shared
+  by both solves. `K·Kᵀ` and the `L` build fuse (the Gram is symmetric, so the
+  element the parent re-read from a 16 KB f32 buffer is the fragment's own).
+  79 104 B of smem, **114 registers and 0 bytes of stack frame** against the
+  parent's 512. `(512, 2)` was tried and rejected: it fits 64 registers only by
+  spilling 84 bytes, which is the same defect under a different name.
+
+Both also replace the parents' 128/64-element operand strides with padded
+136/72/24, because the parents' put all eight `grp` rows of every fragment read
+on one bank group.
+
+**What is NOT established.** No H100 has run either twin. Everything above about
+them is a compile-time receipt (`ptxas -v` at sm_90a, CUDA 13.0, `--fmad=false`,
+cross-compiled on gx10-a309 2026-09-11) plus host simulation of the index maps
+and of the limb arithmetic against an f64 reference
+(`crates/spark-model/src/layers/ops/ssm_gdn_remnants*_tests.rs`). No speedup is
+claimed, predicted or implied. `native_gdn_prefill_remnants_microtest` is the
+oracle that produces the runtime numbers and the numerics verdict; it SKIPS on
+every image but `kernels/hopper`, and the promotion bar is the one the spine
+already carries — the ssm-poisoning tripwire, not a cosine.

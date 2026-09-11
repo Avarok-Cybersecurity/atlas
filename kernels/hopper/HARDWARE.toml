@@ -84,7 +84,13 @@ ssm_batched_recurrent = true
 # but the arm reassociates the k-reduction into the MMA tree and has no accuracy
 # receipt yet. The kernel is shared (`kernels/gb10/common/
 # gated_delta_rule_chunk_tc.cu`, validated on GB10) and is NOT relocated here.
-# `ATLAS_GDN_PREFILL_TC=1` runs the A/B.
+# `ATLAS_GDN_PREFILL_TC=1` runs the A/B, and `=0` turns the family off.
+#
+# It is a FAMILY lever: it also selects the two Hopper prefill remnant twins
+# declared below (`gdn_recompute_wu_hopper.cu`, `gdn_fwd_o_hopper.cu`), because
+# the three kernels are one pipeline. `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` is
+# the one-variable A/B that keeps the spine and pins those two to their
+# parents; it is the ONLY way to run them apart.
 gdn_prefill_tc = false
 # Split SiLU+down on the decode path — shipped ON everywhere since #928.
 decode_split_silu = true
@@ -153,6 +159,28 @@ ssm_decode_ring_slots = "auto"
 #                            names and a launcher tier instead. Numbers:
 #                            `GDN-DECODE-ATTRIBUTION.md`.
 #
+#   gdn_recompute_wu_hopper.cu  The two SCALAR REMNANTS of the chunked PREFILL
+#   gdn_fwd_o_hopper.cu         (#928) on tensor cores: `wu`'s two forward
+#                            substitutions and `fwd_o`'s triangular
+#                            `tril(kq).uc`. ADDITIONS, like the decode twin
+#                            above, but for the opposite reason — their
+#                            parents live in `common/gated_delta_rule_fla.cu`,
+#                            which NO model directory shadows, so a same-stem
+#                            override there WOULD compile. It is 2105 lines
+#                            declaring fourteen entry points, of which these
+#                            replace two: a whole-file override is whole-file
+#                            and would fork the other twelve, which is the
+#                            shadow-drift class `build.rs` reports. New stems
+#                            with new entry names fork nothing, and the
+#                            launcher picks parent or twin by kernel presence
+#                            under `[defaults] gdn_prefill_tc`. Reached only
+#                            under that row. Numbers:
+#                            `GDN-PREFILL-ATTRIBUTION.md`.
+#   gdn_prefill_hopper.cuh   Their shared operand machinery — padded smem
+#                            strides and the MMA fragment maps both twins
+#                            read. No gb10 counterpart by design, the same
+#                            shape `w8a16_gemv_hopper.cuh` takes.
+#
 # The two shapes are checked differently and both are checked: an override must
 # be tuned and must leave gb10's file alone; an addition must declare entry
 # points gb10 does not and must not be a gb10 source under a new name. See
@@ -162,6 +190,9 @@ overrides = [
   "dense_gemm_m16_bf16.cu",
   "fp8_scale_transpose.cu",
   "gdn_decode_hopper.cu",
+  "gdn_fwd_o_hopper.cu",
+  "gdn_prefill_hopper.cuh",
+  "gdn_recompute_wu_hopper.cu",
   "w8a16_gemm_m16.cu",
   "w8a16_gemv.cu",
   "w8a16_gemv_fused.cu",

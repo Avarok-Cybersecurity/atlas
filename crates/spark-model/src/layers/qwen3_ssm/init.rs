@@ -156,20 +156,8 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule",
                 "gated_delta_rule_decode_f32_strided_norm",
             ),
-            // Hopper-only twins. `try_kernel` and not `kernel` because the
-            // module exists only under kernels/hopper: on gb10/b200/strix the
-            // lookup must MISS quietly, exactly as `lib_tests.rs`'s
-            // exact-verify pins prescribe for a target-scoped kernel.
-            gdn_f32_hopper_k: super::super::try_kernel(
-                gpu,
-                "gdn_decode_hopper",
-                "gated_delta_rule_decode_f32_hopper",
-            ),
-            gdn_f32_strided_hopper_k: super::super::try_kernel(
-                gpu,
-                "gdn_decode_hopper",
-                "gated_delta_rule_decode_f32_strided_hopper",
-            ),
+            gdn_f32_hopper_k: init_kernels::decode_hopper_k(gpu),
+            gdn_f32_strided_hopper_k: init_kernels::decode_hopper_strided_k(gpu),
             gdn_f32_strided_norm_half_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule",
@@ -255,6 +243,8 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_fla",
                 "gated_delta_rule_recompute_wu",
             ),
+            gdn_prefill_fla_recompute_wu_hopper_k: init_kernels::prefill_wu_hopper_k(gpu),
+            gdn_prefill_fla_chunk_fwd_o_hopper_k: init_kernels::prefill_fwd_o_hopper_k(gpu),
             gdn_prefill_fla_chunk_delta_h_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule_fla",

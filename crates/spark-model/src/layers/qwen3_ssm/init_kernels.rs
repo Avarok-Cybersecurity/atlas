@@ -120,3 +120,60 @@ pub(super) fn gdn_prefill_tc_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
         "gated_delta_rule_chunk_delta_h_tcfuse_x2",
     )
 }
+
+// ── The four HOPPER-ONLY twin probes, one function each ───────────────────
+//
+// `try_kernel` and not `kernel` in all four: these modules exist only under
+// `kernels/hopper` (declared in that target's `[kernels] overrides`), so on
+// gb10/b200/strix the lookup must MISS quietly and leave the launcher on the
+// parent kernel — exactly as `lib_tests.rs`'s exact-verify pins prescribe for
+// a target-scoped kernel. A handle of 0 IS the "not on this target" answer;
+// nothing downstream needs a second way to ask.
+//
+// One named function per handle rather than one helper taking two strings:
+// the module/entry pair is the whole content of the probe, and a call site
+// that passes them as arguments has simply moved the thing being reviewed
+// back into `init.rs`. They live here for the 500-LoC cap, beside
+// `gdn_prefill_tc_kernel`, which is the same shape for the third kernel of
+// the same prefill family.
+
+/// GDN decode recurrence, unstrided (#927).
+pub(super) fn decode_hopper_k(gpu: &dyn GpuBackend) -> KernelHandle {
+    crate::layers::try_kernel(
+        gpu,
+        "gdn_decode_hopper",
+        "gated_delta_rule_decode_f32_hopper",
+    )
+}
+
+/// GDN decode recurrence, one strided launch per batch (#927).
+pub(super) fn decode_hopper_strided_k(gpu: &dyn GpuBackend) -> KernelHandle {
+    crate::layers::try_kernel(
+        gpu,
+        "gdn_decode_hopper",
+        "gated_delta_rule_decode_f32_strided_hopper",
+    )
+}
+
+/// Prefill kernel 1's twin: the two forward substitutions on tensor cores
+/// (#928). Selected by `[defaults] gdn_prefill_tc`, the same family lever as
+/// [`gdn_prefill_tc_kernel`] above; unlike the spine, the probe is NOT gated on
+/// it, because `gated_delta_rule_fla`'s parent is always loaded and a twin that
+/// is merely absent costs nothing to have looked for.
+pub(super) fn prefill_wu_hopper_k(gpu: &dyn GpuBackend) -> KernelHandle {
+    crate::layers::try_kernel(
+        gpu,
+        "gdn_recompute_wu_hopper",
+        "gated_delta_rule_recompute_wu_hopper",
+    )
+}
+
+/// Prefill kernel 3's twin: the masked `tril(kq).uc` square on tensor cores
+/// (#928). Same family lever and the same reasoning as the `wu` twin above.
+pub(super) fn prefill_fwd_o_hopper_k(gpu: &dyn GpuBackend) -> KernelHandle {
+    crate::layers::try_kernel(
+        gpu,
+        "gdn_fwd_o_hopper",
+        "gated_delta_rule_chunk_fwd_o_hopper",
+    )
+}
