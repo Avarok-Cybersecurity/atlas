@@ -111,6 +111,16 @@ decode_split_silu = true
 # the policy then launches is named once per KV dtype on the decode route
 # line (`splitk_dispatch::route_line`).
 #
+# ⚠️ `0` AND `off` RESOLVE TO ONE SPLIT, and the boot line reports the RESOLVED
+# count, not the raw spelling — so `ATLAS_ATTN_DECODE_SPLITK=0` prints
+# `attn_decode_splitk=1 (env)`. That is honest (one split IS no split-K, and
+# the dispatch then routes to the non-split entry rather than running the
+# split-K kernel at one split, which measures 15% SLOWER) but it surprised
+# H100 round 15's operator, who expected `=0` echoed back. The kernel that
+# actually ran is named on the dispatch-side route line
+# (`paged decode attention: … num_splits=1 … policy=1`), which is the receipt
+# to read; `splitk_dispatch::route_line` is its one formatter.
+#
 # EVIDENCE. nsys on 1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8, round 13 cell
 # T1N: `paged_decode_attn_fp8` at C=1 is `grid=(24,1,1)`, 231.51 us/launch for
 # 9.93 MB of KV = 42.9 GB/s = 1.28% of HBM; with the BF16-KV sibling the pair

@@ -22,6 +22,9 @@ mod run_paged_decode;
 // NVFP4, FP8 and BF16 arms — and that file is already on the repository's
 // file-size allow list.
 mod splitk_dispatch;
+#[cfg(test)]
+#[path = "decode/splitk_route_tests.rs"]
+mod splitk_route_tests;
 mod write_kv_cache;
 
 impl Qwen3AttentionLayer {

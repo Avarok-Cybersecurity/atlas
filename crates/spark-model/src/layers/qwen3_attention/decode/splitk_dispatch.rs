@@ -114,6 +114,77 @@ pub(super) fn trace_splits(layer_idx: usize, num_seqs: u32, num_q_heads: u32, nu
     }
 }
 
+/// The kernel entry names the route line reports, as nsys spells them.
+///
+/// Strings, not handles: the line exists so a SERVE LOG answers "which decode
+/// attention kernel ran, at what split count" without an nsys capture, and a
+/// `KernelHandle` is an opaque index. Round 15 had to read `grid=(24,11,1)`
+/// out of a trace to prove the policy's 11 splits reached the launch — the
+/// kernel-selection table only proves the entry RESOLVED (#928).
+pub(super) const ROUTE_SPLITK_FP8: &str = "paged_decode_attn_splitk_fp8_hopper";
+pub(super) const ROUTE_SPLITK_BF16: &str = "paged_decode_attn_splitk_bf16_hopper";
+pub(super) const ROUTE_SPLITK_GB10_FP8: &str = "paged_decode_attn_splitk_fp8";
+pub(super) const ROUTE_SPLITK_NVFP4: &str = "paged_decode_attn_splitk_nvfp4";
+pub(super) const ROUTE_NONSPLIT_FP8: &str = "paged_decode_attn_fp8";
+pub(super) const ROUTE_NONSPLIT_BF16: &str = "paged_decode_attn";
+pub(super) const ROUTE_NONSPLIT_NVFP4: &str = "paged_decode_attn_nvfp4";
+
+/// THE dispatch-side route line, as text.
+///
+/// ```text
+/// paged decode attention: paged_decode_attn_splitk_fp8_hopper num_splits=11 \
+///   sm_count=132 policy=auto (ATLAS_ATTN_DECODE_SPLITK)
+/// ```
+///
+/// `num_splits` is the count the launch actually passes, `policy` is the
+/// resolved policy's own spelling ([`attn_splitk::SplitkPolicy::label`], the
+/// same string the boot line prints) and `sm_count` is the compiled target's.
+/// One formatter, graded by `splitk_route_tests`, so the line cannot drift
+/// from the boot line's rendering of the same lever.
+///
+/// ⚠️ The two CAN differ legitimately and the pair is the receipt: the boot
+/// line reports the POLICY (`auto`, or the resolved count for a pin), this one
+/// reports what that policy computed for THIS launch's head count. Under
+/// `auto` on Hopper they read `policy=auto` and `num_splits=11`.
+pub(super) fn route_line(
+    kernel: &str,
+    num_splits: u32,
+    policy: attn_splitk::SplitkPolicy,
+) -> String {
+    format!(
+        "paged decode attention: {kernel} num_splits={num_splits} sm_count={} policy={} \
+         (ATLAS_ATTN_DECODE_SPLITK)",
+        atlas_kernels::TARGET_SM_COUNT,
+        policy.label(),
+    )
+}
+
+/// Which once-flag a route line belongs to. One per KV dtype: the three arms
+/// dispatch independently (Qwen3.8-27B runs FP8 KV on 44 layers and BF16 on the
+/// 4 `--kv-high-precision-layers auto` ones), so a shared flag would report
+/// whichever arm a step happened to reach first — the defect this whole change
+/// answers, one module over in `ssm_ba_gates_hopper` (#928).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RouteArm {
+    Fp8,
+    Bf16,
+    Nvfp4,
+}
+
+/// Say the route line ONCE per KV dtype, on that arm's first decode dispatch.
+pub(super) fn log_decode_route(arm: RouteArm, kernel: &str, num_splits: u32) {
+    static SAID: [std::sync::Once; 3] = [const { std::sync::Once::new() }; 3];
+    let idx = match arm {
+        RouteArm::Fp8 => 0,
+        RouteArm::Bf16 => 1,
+        RouteArm::Nvfp4 => 2,
+    };
+    SAID[idx].call_once(|| {
+        let policy = ops::target_defaults::resolved().attn_decode_splitk.value;
+        tracing::info!("{}", route_line(kernel, num_splits, policy));
+    });
+}
+
 /// Which FP8 split-K pair to launch.
 ///
 /// The Hopper twins (`kernels/hopper/common/paged_decode_fp8_splitk_hopper.cu`)
@@ -126,6 +197,10 @@ pub(super) fn trace_splits(layer_idx: usize, num_seqs: u32, num_q_heads: u32, nu
 pub(super) struct SplitkPair {
     pub splitk: KernelHandle,
     pub reduce: KernelHandle,
+    /// The split kernel's entry name, for the route line — decided HERE, where
+    /// the Hopper-vs-gb10 choice is made, so a log can never name the twin on a
+    /// build that resolved the gb10 pair.
+    pub name: &'static str,
 }
 
 impl Qwen3AttentionLayer {
@@ -136,11 +211,16 @@ impl Qwen3AttentionLayer {
                 self.paged_decode_reduce_hopper_k,
             )
         {
-            return Some(SplitkPair { splitk, reduce });
+            return Some(SplitkPair {
+                splitk,
+                reduce,
+                name: ROUTE_SPLITK_FP8,
+            });
         }
         Some(SplitkPair {
             splitk: self.paged_decode_splitk_k?,
             reduce: self.paged_decode_reduce_k?,
+            name: ROUTE_SPLITK_GB10_FP8,
         })
     }
 
@@ -157,6 +237,7 @@ impl Qwen3AttentionLayer {
         Some(SplitkPair {
             splitk: self.paged_decode_splitk_bf16_hopper_k?,
             reduce: self.paged_decode_reduce_bf16_hopper_k?,
+            name: ROUTE_SPLITK_BF16,
         })
     }
 

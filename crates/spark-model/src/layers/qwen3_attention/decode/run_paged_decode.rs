@@ -144,6 +144,11 @@ impl Qwen3AttentionLayer {
                     splitk_dispatch::num_splits(num_q_heads, head_dim, num_seqs, max_decode_seqs);
 
                 if splitk_dispatch::splits_are_worth_it(num_splits) {
+                    splitk_dispatch::log_decode_route(
+                        splitk_dispatch::RouteArm::Nvfp4,
+                        splitk_dispatch::ROUTE_SPLITK_NVFP4,
+                        num_splits,
+                    );
                     let splitk_k = self
                         .paged_decode_splitk_k
                         .expect("split-K kernel required for NVFP4");
@@ -185,6 +190,11 @@ impl Qwen3AttentionLayer {
                         stream,
                     )
                 } else {
+                    splitk_dispatch::log_decode_route(
+                        splitk_dispatch::RouteArm::Nvfp4,
+                        splitk_dispatch::ROUTE_NONSPLIT_NVFP4,
+                        num_splits,
+                    );
                     ops::paged_decode_attn_nvfp4(
                         gpu,
                         self.paged_decode_k,
@@ -548,6 +558,11 @@ impl Qwen3AttentionLayer {
                     splitk_dispatch::splits_are_worth_it(num_splits),
                     bf16_splitk,
                 ) {
+                    splitk_dispatch::log_decode_route(
+                        splitk_dispatch::RouteArm::Bf16,
+                        pair.name,
+                        num_splits,
+                    );
                     return self.launch_splitk_bf16(
                         gpu,
                         &pair,
@@ -573,6 +588,11 @@ impl Qwen3AttentionLayer {
                         stream,
                     );
                 }
+                splitk_dispatch::log_decode_route(
+                    splitk_dispatch::RouteArm::Bf16,
+                    splitk_dispatch::ROUTE_NONSPLIT_BF16,
+                    num_splits,
+                );
                 // Use HDIM=512 kernel for Gemma-4 full-attention layers (head_dim > 256)
                 let kernel = if head_dim > 256 && self.paged_decode_512_k.0 != 0 {
                     self.paged_decode_512_k
@@ -633,6 +653,11 @@ impl Qwen3AttentionLayer {
                     splitk_dispatch::splits_are_worth_it(num_splits),
                     self.fp8_splitk_pair(head_dim),
                 ) {
+                    splitk_dispatch::log_decode_route(
+                        splitk_dispatch::RouteArm::Fp8,
+                        pair.name,
+                        num_splits,
+                    );
                     self.launch_splitk_fp8(
                         gpu,
                         &pair,
@@ -650,6 +675,11 @@ impl Qwen3AttentionLayer {
                         stream,
                     )
                 } else {
+                    splitk_dispatch::log_decode_route(
+                        splitk_dispatch::RouteArm::Fp8,
+                        splitk_dispatch::ROUTE_NONSPLIT_FP8,
+                        num_splits,
+                    );
                     // Use HDIM=512 kernel for Gemma-4 full-attention layers
                     let fp8_kernel = if head_dim > 256 && self.paged_decode_512_k.0 != 0 {
                         self.paged_decode_512_k
