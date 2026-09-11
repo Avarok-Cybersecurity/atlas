@@ -292,7 +292,13 @@ pub fn declared() -> &'static atlas_kernels::TargetDefaults {
 /// the same code: a log that formats its own idea of the table is how a dead
 /// lever stays invisible for a campaign (`serve_flags.rs`'s own lesson).
 pub fn summary_line() -> String {
-    let l = resolved();
+    format_levers(resolved())
+}
+
+/// [`summary_line`] over a table the caller already has — pure, so the line can
+/// be graded for ANY target from a CPU test without touching the process
+/// environment or sealing the `OnceLock`.
+pub fn format_levers(l: &TargetLevers) -> String {
     let onoff =
         |r: Resolved<bool>| format!("{}{}", if r.value { "on" } else { "off" }, r.source.tag());
     let c = l.cublas.value;
