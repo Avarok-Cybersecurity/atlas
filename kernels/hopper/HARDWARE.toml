@@ -8,6 +8,17 @@ vendor = "nvidia"
 # sm_100/sm_120 devices — this target is Hopper-only by design.
 arch = "sm_90a"
 compute_capability = "9.0"
+# Streaming multiprocessors. H100 SXM5/PCIe and H200 SXM5 are all GH100 with
+# 132 SMs enabled; the H100 NVL card is 132 too. CROSS-CHECKED at boot against
+# `CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT` — a serve on a part with a
+# different count logs a warning naming both numbers rather than silently
+# sizing a grid for the wrong machine (`arch_preflight::check_sm_count`).
+#
+# The defect it guards: `atlas_core::device::sm121::NUM_SMS = 48`, the GB10
+# constant, compiled into an H100 build, where a grid sized from it ran 24 CTAs
+# on 132 SMs for a whole campaign. A one-line boot warning naming both numbers
+# is what would have caught it in round 1.
+sm_count = 132
 # H100 SXM5 80 GB HBM3: 3350 GB/s. H200 SXM5 141 GB HBM3e: 4800 GB/s.
 # Sized to the smaller SKU; the runtime reads real free memory via
 # cuMemGetInfo, this is documentation + roofline input only.
@@ -33,3 +44,50 @@ memory_gb = 80
 # model, which tests/inherited_targets.rs forbids.
 [build]
 extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
+
+# ── Serving defaults for this target ───────────────────────────────────────
+#
+# SSOT for the per-target serving levers, baked into `atlas_kernels` by
+# build.rs (`build_defaults.rs`) as `atlas_kernels::TARGET_DEFAULTS` and read
+# by every resolver in spark-model BEFORE the environment.
+#
+# WHY IT IS HERE. Maintainer review, 2026-09-11 (tbraun96): "There is no arch
+# separation at all. H100 builds compile GB10's kernel tree. Every Hopper/GB10
+# divergence is expressed as an env lever set by an H100 recipe living outside
+# this repo — not as arch-selected code. 'No interference' rests on discipline
+# rather than structure." A default that lives in a launch script is not a
+# property of the target; one that lives beside the target's arch and memory
+# facts is. The environment stays available as an EXPLICIT operator override,
+# and the serve log says which values came from it.
+#
+# EVERY target with a `[defaults]` table declares EVERY row, even where the
+# value agrees with the baseline: an absent key falls through to
+# `build_defaults::baseline`, which is correct behaviour and terrible
+# documentation — a reader of this file would have to know the baseline to
+# know what this target serves with, which is the "recipe lives somewhere
+# else" problem the table replaces.
+#
+# Every value below WAS a line in that external recipe. The recipe is now the
+# target's own declaration, so an H100 serve with NO environment set
+# reproduces the measured configuration (round 14: the `h100-defaults`
+# profile and the explicit-env profile agreed to within 0.37% aggregate, with
+# md5-identical coherency output on 7/7 prompts).
+[defaults]
+# The BF16 decode head's batched-GEMV band. 8 — GB10's frozen band, held here
+# ON PURPOSE and not the 16 an H100 recipe used to export.
+#
+# 🔴 That 16 was measured with the tensor-core head arm (`dense_gemm_m16_bf16`,
+# #927) ALSO on, where the TC arm serves 5..=16 and the band is very nearly
+# inert. With the TC arm absent — it is a Hopper-owned kernel and is not in
+# this PR — a 16 here would move widths 9..=16 off the reassociating tile GEMM
+# onto the batched GEMV in a configuration nobody has measured. The row moves
+# to 16 in the commit that lands the arm it was measured beside; a default is
+# a claim about a measurement.
+lm_head_batchm_max = 8
+# One strided recurrent launch per batch on the GDN decode path: +6% on the
+# serve, and md5-identical output to the per-sequence launches. This is the
+# row that used to be `ATLAS_SSM_BATCHED_RECURRENT=1` in a launch script
+# outside this repository.
+ssm_batched_recurrent = true
+# Split SiLU+down on the decode path — shipped ON everywhere.
+decode_split_silu = true
