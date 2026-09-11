@@ -49,6 +49,7 @@ pub(crate) use types::HeadGateActivation;
 pub use types::Qwen3AttentionLayer;
 pub use types_weights::{
     CompressorWeights, Fp8TwinSet, HcHeadWeights, HcLowRank, HcSiteWeights, HcWeights, MlaWeights,
+    W8A8_PREFILL_KERNELS, w8a8_prefill_kernels_loaded,
 };
 
 /// Startup fail-fast for `--kv-cache-dtype`: resolve every kernel handle the

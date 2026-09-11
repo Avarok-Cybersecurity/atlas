@@ -12,6 +12,11 @@
 use super::*;
 use clap::Parser as _;
 
+/// These cases pin the PRE-LOAD arm — the behaviour every route without a
+/// predictable post-load residency still takes. The post-load arm (#915
+/// second pass) has its own file, `headroom_tests.rs`.
+const PRE_LOAD: Yardstick = Yardstick::PreLoadFree("no residency prediction in this test");
+
 /// 48 GDN layers x (h 48*128*128*4 + conv (16*128*2 + 48*128)*4*4) =
 /// 158,859,264 B = exactly 151.5 MiB.
 const PER_SEQ_BLOB: usize = 48 * ((48 * 128 * 128 * 4) + ((16 * 128 * 2 + 48 * 128) * 4 * 4));
@@ -52,7 +57,16 @@ fn the_915_boot_shrinks_to_the_largest_fitting_depth_instead_of_refusing() {
     assert_eq!(slot, 32 * PER_SEQ_BLOB);
     let free = (14.1 * 1024.0 * 1024.0 * 1024.0) as usize;
 
-    let fit = autofit(&args, 8, slot, PER_SEQ_BLOB, RESERVE_WITHOUT_RING, free);
+    let fit = fit_ring(
+        &args,
+        8,
+        slot,
+        PER_SEQ_BLOB,
+        RESERVE_WITHOUT_RING,
+        free,
+        &PRE_LOAD,
+        false,
+    );
     assert_eq!(fit.slots, 1, "8 -> 4 -> 2 -> 1 is the first rung that fits");
     assert!(
         RESERVE_WITHOUT_RING + fit.slots * slot <= free,
@@ -66,6 +80,10 @@ fn the_915_boot_shrinks_to_the_largest_fitting_depth_instead_of_refusing() {
     );
     assert!(warning.contains("(was 37.88 GB)"), "{warning}");
     assert!(warning.contains("reserve 11.61 of 14.10 GB"), "{warning}");
+    assert!(
+        warning.contains("Sized from pre-load free memory"),
+        "the WARN must name the yardstick it used: {warning}"
+    );
     assert!(warning.contains("#915"), "{warning}");
     assert!(
         warning.contains("--ssm-decode-ring-slots"),
@@ -81,9 +99,24 @@ fn a_reserve_that_fits_is_not_touched() {
     let args = args();
     let slot = slot_bytes(&args, PER_SEQ_BLOB);
     let free = 64 * 1024 * 1024 * 1024;
-    let fit = autofit(&args, 8, slot, PER_SEQ_BLOB, RESERVE_WITHOUT_RING, free);
+    let fit = fit_ring(
+        &args,
+        8,
+        slot,
+        PER_SEQ_BLOB,
+        RESERVE_WITHOUT_RING,
+        free,
+        &PRE_LOAD,
+        false,
+    );
     assert_eq!(fit.slots, 8);
     assert!(fit.warning.is_none());
+    // Silent is not the same as absent: the decision is logged either way.
+    assert!(
+        fit.decision.contains("pre-load free memory"),
+        "{}",
+        fit.decision
+    );
 }
 
 /// Nothing to shrink is not a shrink: a ringless serve (`--speculative`,
@@ -93,18 +126,20 @@ fn a_reserve_that_fits_is_not_touched() {
 fn a_ringless_serve_is_left_to_the_refusal() {
     let args = args();
     let free = RESERVE_WITHOUT_RING / 2;
-    let fit = autofit(
+    let fit = fit_ring(
         &args,
         0,
         slot_bytes(&args, PER_SEQ_BLOB),
         PER_SEQ_BLOB,
         RESERVE_WITHOUT_RING,
         free,
+        &PRE_LOAD,
+        false,
     );
     assert_eq!(fit.slots, 0);
     assert!(fit.warning.is_none());
     // Same when the model has no SSM state at all: a zero-byte depth unit.
-    let fit = autofit(&args, 8, 0, 0, RESERVE_WITHOUT_RING, free);
+    let fit = fit_ring(&args, 8, 0, 0, RESERVE_WITHOUT_RING, free, &PRE_LOAD, false);
     assert_eq!(fit.slots, 8);
     assert!(fit.warning.is_none());
 }
@@ -117,13 +152,15 @@ fn a_ringless_serve_is_left_to_the_refusal() {
 fn an_unfittable_reserve_keeps_the_requested_depth_for_the_refusal() {
     let args = args();
     let slot = slot_bytes(&args, PER_SEQ_BLOB);
-    let fit = autofit(
+    let fit = fit_ring(
         &args,
         8,
         slot,
         PER_SEQ_BLOB,
         RESERVE_WITHOUT_RING,
         RESERVE_WITHOUT_RING - 1,
+        &PRE_LOAD,
+        false,
     );
     assert_eq!(fit.slots, 8, "the refusal must quote what was asked for");
     assert!(fit.warning.is_none());
