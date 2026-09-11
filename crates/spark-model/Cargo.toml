@@ -279,3 +279,11 @@ required-features = ["cuda", "gpu-examples"]
 [[example]]
 name = "w4a16_qg_batch_bitparity_microtest"
 required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+# Grades the Hopper paged-decode split-K twins on hardware: byte-equality of a
+# row decoded alone vs beside fifteen others (the determinism pin), and a
+# tolerance against the shipped non-split kernel across split counts, because
+# splitting re-brackets a non-associative online-softmax merge.
+name = "native_attn_decode_splitk_hopper_microtest"
+required-features = ["cuda", "gpu-examples"]
