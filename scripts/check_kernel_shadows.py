@@ -18,6 +18,25 @@ that mechanism against the two defects that silently corrupt a build:
     is a relative symlink to one canonical file (see
     kernels/gb10/holo-3.1-4b/nvfp4/).
 
+  RULE 3 (undeclared common/ override): a REGULAR file in an INHERITING
+    target's `common/` -- kernels/hopper and kernels/b200, whose entries are
+    otherwise relative symlinks into kernels/gb10/common -- that the target's
+    HARDWARE.toml does not list in `[kernels] overrides`.
+
+    Maintainer rule, 2026-09-11 (tbraun96): "symlinks are fine provided the
+    pointed-to gb10 file is not edited when iterating on Hopper; Hopper-tuned
+    kernels must be real files under kernels/hopper/." A real file there is
+    therefore CORRECT and expected -- but only when it is declared. An
+    undeclared one is indistinguishable from a silent fork of a shared kernel,
+    which is the defect this whole script exists to catch, and a fork of
+    common/ is worse than a fork of a model shadow: it diverges for every
+    model on the target at once. A declared override that has VANISHED is the
+    mirror-image fault and is reported too.
+
+    This script reports every target's override list on a clean run, so the
+    answer to "which kernels does this target tune for itself" is one command
+    and not a `find`.
+
 Unique shadows (no matching regular file elsewhere) are valid. Symlinks are
 valid regardless of what they point to (they are the sharing mechanism).
 
@@ -41,6 +60,7 @@ Usage: scripts/check_kernel_shadows.py [kernels_root]
 import hashlib
 import os
 import sys
+import tomllib
 from collections import defaultdict
 from pathlib import Path
 
@@ -54,6 +74,73 @@ HW_SOURCE_EXT = {
     "strix": "cu",
     "strix-hip": "cu",
 }
+
+
+# Hardware trees whose `common/` MIRRORS another tree's: {mirror: origin}.
+# They compile the origin's kernels through relative symlinks, so a regular
+# file in their common/ is an override and must be declared. SSOT shared with
+# crates/atlas-kernels/tests/support/inherited.rs `INHERITED`; adding a target
+# means adding it in both, which is the moment to decide what it inherits.
+MIRRORED_COMMON = {
+    "b200": "gb10",
+    "hopper": "gb10",
+}
+
+
+def declared_overrides(hw_dir: Path) -> set[str]:
+    """`[kernels] overrides` from one HARDWARE.toml, as file names."""
+    path = hw_dir / "HARDWARE.toml"
+    if not path.is_file():
+        return set()
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+    return set(data.get("kernels", {}).get("overrides", []))
+
+
+def check_common_overrides(hw_name: str, hw_dir: Path) -> tuple[list[str], list[str]]:
+    """RULE 3 for one mirrored tree. Returns (violations, override names)."""
+    common = hw_dir / "common"
+    if not common.is_dir():
+        return ([f"RULE3 {hw_name}: no common/ directory to check"], [])
+    declared = declared_overrides(hw_dir)
+    violations = []
+    real = {f.name for f in sorted(common.iterdir()) if not f.is_symlink() and f.is_file()}
+    for undeclared in sorted(real - declared):
+        violations.append(
+            f"RULE3 {hw_name}: common/{undeclared} is a regular file but is not "
+            f"listed in kernels/{hw_name}/HARDWARE.toml [kernels] overrides. A "
+            f"real file here is how a target owns a tuned kernel -- declare it, "
+            f"or make it a relative symlink into the tree it inherits."
+        )
+    reported = []
+    for name in sorted(declared):
+        path = common / name
+        # `exists()` follows symlinks, so this catches both "deleted" and
+        # "declared but dangling" -- a link whose target was renamed away is
+        # invisible to `ls` and to git, and surfaces first as an nvcc error.
+        if not path.exists():
+            violations.append(
+                f"RULE3 {hw_name}: common/{name} is declared in [kernels] "
+                f"overrides but is missing or does not resolve"
+            )
+            continue
+        # How the target HOLDS it is the interesting half: a real file means
+        # this target owns and tunes the source, a symlink means it shares
+        # another target's tuning. Both are legitimate; conflating them in the
+        # report would hide which tree an edit lands in.
+        #
+        # And whether the ORIGIN has the same name is the other half. A
+        # declared name the origin also carries REPLACES it (the origin keeps
+        # its own file, untouched, for the targets that inherit it); a name the
+        # origin does not have is an ADDITION. Saying which is what tells a
+        # reader whether editing the origin's file would reach this target.
+        origin_has = (hw_dir.parent / MIRRORED_COMMON[hw_name] / "common" / name).exists()
+        shape = "replaces" if origin_has else "adds"
+        if path.is_symlink():
+            reported.append(f"{name} ({shape}) -> {os.readlink(path)}")
+        else:
+            reported.append(f"{name} ({shape}, own source)")
+    return (violations, reported)
 
 
 def content_hash(path: Path) -> str:
@@ -135,9 +222,14 @@ def main() -> int:
         return 1
 
     violations = []
+    overrides_by_hw: dict[str, list[str]] = {}
     for hw_name, ext in sorted(HW_SOURCE_EXT.items()):
         hw_dir = kernels_root / hw_name
         violations.extend(check_hw(hw_name, hw_dir, ext))
+        if hw_name in MIRRORED_COMMON:
+            hw_violations, overrides = check_common_overrides(hw_name, hw_dir)
+            violations.extend(hw_violations)
+            overrides_by_hw[hw_name] = overrides
 
     if violations:
         print(f"kernel shadow structure: {len(violations)} violation(s)")
@@ -149,6 +241,22 @@ def main() -> int:
         "kernel shadow structure: OK "
         f"({len(HW_SOURCE_EXT)} hardware trees scanned: {', '.join(sorted(HW_SOURCE_EXT))})"
     )
+    # Which kernels each inheriting target owns, on a clean run. The point of
+    # declaring overrides is that this question has an answer; printing it is
+    # what makes the answer reachable without reading the tree.
+    for hw_name in sorted(overrides_by_hw):
+        overrides = overrides_by_hw[hw_name]
+        origin = MIRRORED_COMMON[hw_name]
+        if overrides:
+            print(
+                f"  {hw_name}/common declares {len(overrides)} override(s) of "
+                f"{origin}/common — `replaces` = {origin} has the same name and "
+                f"keeps its own copy, `adds` = {origin} does not have it at all:"
+            )
+            for entry in overrides:
+                print(f"      {entry}")
+        else:
+            print(f"  {hw_name}/common inherits every kernel from {origin}/common")
     return 0
 
 
