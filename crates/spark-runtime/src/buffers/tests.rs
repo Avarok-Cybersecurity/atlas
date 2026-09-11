@@ -11,8 +11,15 @@ fn mixed_dense_moe_sizes_for_widest_ffn() {
     cfg.moe_intermediate_size = 1_024;
 
     let sizes = BufferSizes::from_config(&cfg, 4, 4096, 16, 32);
-    assert_eq!(sizes.expert_gate_out, 4 * 12_288 * 2);
-    assert_eq!(sizes.expert_up_out, 4 * 12_288 * 2);
+    // The DENSE intermediate (12288) is wider than the routed one
+    // (top_k 10 x moe_intermediate 1024 = 10240), and it is the dense width
+    // these buffers must hold. Rows are `max_batch_tokens` rounded up to 16 —
+    // the cuBLASLt FP8 M-pad headroom the W8A8 dense-FFN prefill writes into
+    // (#917/#928); see the sizing note on `k_max` in `sizes.rs`.
+    let rows = 4_usize.div_ceil(16) * 16;
+    assert!(cfg.intermediate_size > cfg.num_experts_per_tok * cfg.moe_intermediate_size);
+    assert_eq!(sizes.expert_gate_out, rows * 12_288 * 2);
+    assert_eq!(sizes.expert_up_out, rows * 12_288 * 2);
 }
 use crate::gpu::mock::MockGpuBackend;
 use std::collections::HashSet;
