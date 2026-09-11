@@ -260,6 +260,10 @@ fn the_blocked_solve_matches_the_parent_within_the_bf16_storage_floor() {
         let want = reference_solve(&ch);
         let par = rel_rms(&parent_solve(&ch), &want);
         let twin = rel_rms(&twin_solve(&ch), &want);
+        // Printed, not just asserted: `cargo test -- --nocapture` is where the
+        // error budget of this algorithm is READ, and a gate that only says
+        // PASS cannot be compared against the H100 microtest when it lands.
+        println!("wu solve seed {seed:#x}: parent {par:.4e}  blocked twin {twin:.4e}");
         // The parent's own deviation IS the bf16 storage floor of this output:
         // it accumulates in f32 and only the store rounds. The twin is required
         // to land on that floor, with the same 1.25x headroom the tensor-core
@@ -328,6 +332,7 @@ fn a_single_bf16_limb_does_not_meet_the_contract() {
     }
     let one: Vec<f32> = x.iter().map(|v| bf(*v)).collect();
     let got = rel_rms(&one, &want);
+    println!("wu solve, ONE bf16 limb: {got:.4e} against the parent's {par:.4e}");
     assert!(
         got > 1.25 * par,
         "one bf16 limb measured {got:e} against the parent's {par:e}; if a \
@@ -368,6 +373,7 @@ fn the_masked_triangular_product_matches_the_parent() {
 
     let rp = rel_rms(&par, &want);
     let rt = rel_rms(&twin, &want);
+    println!("fwd_o tril: parent {rp:.4e}  masked-square twin {rt:.4e}");
     assert!(
         rt <= 1.25 * rp,
         "masked square rel_rms {rt:e} against the parent's {rp:e}"
