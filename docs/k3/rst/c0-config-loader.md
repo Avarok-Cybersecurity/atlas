@@ -37,7 +37,7 @@ BUGS
 `inference-optimization/Kimi-K3-0.40B` `linear_attn_config` has no `gate_lower_bound`. Parser defaults -5.0. Recorded so C1 does not treat the default as "read from the twin JSON".
 
 #ISSUE
-spark-model kimi_k3 unit tests cannot run on this Mac. Do not call C0 green on those until a Linux/`ATLAS_SKIP_BUILD` runner shows them.
+spark-model kimi_k3 unit tests cannot run on this Mac (`posix_fallocate`). Closed on spark2 Linux 2026-09-12: **9 passed** (`cargo test -p spark-model --lib kimi_k3`).
 
 STOP
-Charter complete for parse + map + known-bads on atlas-core. Residual: Linux dry-run execution; no real 57MB index in git (by design).
+Charter complete. Official parse + 96-shard map + known-bads (dropped text_config, missing class, 95 shards). Residual: no 57MB index in git (by design). C0 **green**.

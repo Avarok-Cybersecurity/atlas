@@ -14,9 +14,9 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | S0 — harness / fabric / C0 |
+| Phase | S1 — graph / C1 goldens (C0 green) |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
-| Last session | 2026-09-11 |
+| Last session | 2026-09-12 |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
 | Official weights downloaded in lab | **no** |
 | Rental booked | **no** |
@@ -31,7 +31,7 @@ Sheets so far: `docs/k3/rst/s0-fabric-nccl.md`, `s0-5090-sm121.md`, `s0-atlas-se
 
 S7 (rental soak) is forbidden until every box is green. Each box also needs its RST sheet.
 
-- [ ] C0 config / factory / weight-name map dry-run (no shard download)
+- [x] C0 config / factory / weight-name map dry-run (no shard download) — spark2 Linux 9/9 `kimi_k3` + atlas-core parse tests
 - [ ] C1 `Kimi-K3-0.40B` greedy 128 tok × 8 prompts, exact vs HF
 - [ ] C2 prefill-then-decode vs full-prefill logits (atol/rtol in test file)
 - [ ] C3 prefix-cache hit == no-cache decode
@@ -91,7 +91,7 @@ _None yet. Record them here so they are not retried on rented silicon._
 
 | Future PR | Slice | Gate | Status |
 | --- | --- | --- | --- |
-| `feat/k3-config-loader` | MODEL.toml + config + safetensors map | C0 | not started |
+| `feat/k3-config-loader` | MODEL.toml + config + safetensors map | C0 | **in umbrella, C0 green** |
 | `feat/k3-kda` | KDA module + state | C4 | not started |
 | `feat/k3-mla-gated` | gated MLA + NoPE | C1/C4 | not started |
 | `feat/k3-attnres` | block residual mix | C5 | not started |
