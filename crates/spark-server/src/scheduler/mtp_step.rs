@@ -613,11 +613,15 @@ pub fn step_mtp(
         let supports_live_grammar =
             super::verify_mtp_wide::grammar::supported(a, dflash_verify_raw_argmax);
         let live_grammar = single_sequence && supports_live_grammar;
+        // The ladder's per-step count, not the serve's --num-drafts: the
+        // re-propose in `finish` and the lookup gate both draft at this
+        // width, and a serve launched with 7 drafts for the lookup pools
+        // must still run the head at the ladder's 2 on fresh text (#1060).
         let serial_num_drafts =
             if !single_sequence && supports_live_grammar && a.grammar_state.is_some() {
                 1
             } else {
-                num_drafts
+                ladder_nd
             };
         let mut drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
         // Confidences describe the taken drafts; clearing here is the single
