@@ -501,6 +501,7 @@ impl TransformerModel {
     /// - 0xFFFFFFF0: prefill start → chunk_len, chunk_start, full_len, then full_len tokens
     /// - 0xFFFFFFF1: alloc slot (frees any prior occupant first, then re-allocates)
     /// - 0xFFFFFFF2/3/4: verify K=2/3/4 → K tokens, then accept/num_accepted
+    /// - 0xFFFFFFF7: verify K=N → k, then k tokens, then num_accepted
     /// - 0xFFFFFFFF: shutdown (seq_id is ignored; applies to the whole worker)
     pub(super) fn ep_worker_step_impl(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
         // 🔴 The RECEIVE is the only fatal half. If it fails the link to the head is gone
@@ -732,6 +733,44 @@ impl TransformerModel {
                 }
                 // Aux carries AFTER the rewind — see the K=2 arm.
                 self.commit_verify_aux_rows(seq, num_accepted as usize + 1, stream)?;
+            }
+            crate::speculative::EP_CMD_VERIFY_KN => {
+                // Width-generic verify. `k` arrives FIRST so this loop and the
+                // head's send loop are driven by the same word — neither rank
+                // can guess the count wrong, which is the only way a new EP
+                // path deadlocks. Everything after is the K=4 arm with the
+                // width lifted out.
+                let k = self.ep_broadcast_u32(0)? as usize;
+                anyhow::ensure!(
+                    (2..=64).contains(&k),
+                    "EP verify K=N: implausible width {k} off the wire"
+                );
+                let mut toks = Vec::with_capacity(k);
+                for _ in 0..k {
+                    toks.push(self.ep_broadcast_u32(0)?);
+                }
+                self.sync_secondary()?;
+                self.decode_verify_graphed_kn(&toks, seq, stream)?;
+                let num_accepted = self.ep_broadcast_u32(0)? as usize;
+                self.trim_proposer_state(seq, num_accepted, 0)?;
+                // K=4 rewinds by (K-1) - num_accepted and checkpoints at full
+                // accept; that is this, with K no longer a literal. The pool
+                // must be sized for k-1 intermediates
+                // (`ssm_reserve::mtp_pool_draft_width`), and both ranks size
+                // from the same inputs, so a width the head can send is a
+                // width this rank can verify.
+                let rewind = (k - 1).saturating_sub(num_accepted);
+                if rewind == 0 {
+                    self.start_checkpoint_async(seq)?;
+                } else {
+                    seq.seq_len -= rewind;
+                    for _ in 0..rewind {
+                        seq.tokens.pop();
+                    }
+                    self.start_rollback_and_checkpoint_async(seq, num_accepted + 1)?;
+                }
+                // Aux carries AFTER the rewind — see the K=2 arm.
+                self.commit_verify_aux_rows(seq, num_accepted + 1, stream)?;
             }
             EP_CMD_CACHE_SEQ => {
                 // Sequence retirement. Run the SAME bookkeeping the head runs

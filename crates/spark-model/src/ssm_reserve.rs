@@ -96,6 +96,72 @@ pub struct DecodeRingDecision {
 /// cheaper diet (row-budget-sized intermediates rather than slot-major)
 /// would recover ~9 GB and still not reach 0.70; the reserve, not the
 /// speculation regime, is what makes the low-util single config impossible.
+/// Verify width the MTP intermediate pools must cover — the MTP head's own
+/// draft count, OR the lookup-draft width when that is wider.
+///
+/// The pools are sized `num_drafts + 1` intermediates because the head is
+/// normally the only thing that drafts. Lookup drafts (#1026) break that: a
+/// lookup hit proposes at `ATLAS_LOOKUP_WIDTH` (default 7) while the head
+/// keeps drafting `num_drafts`, which is the whole point — fresh generation
+/// never pays for the wide step. But `verify_draft_capacity` reports
+/// `num_intermediates - 1`, and `lookup_gate` clamps the proposed width to it,
+/// so pools sized from the head silently cap the lookup width at the head's:
+/// at `--num-drafts 2` a width-7 lookup is clamped to 2 and the wide path is
+/// unreachable. Sizing here instead of widening the head keeps the head narrow
+/// (a wider head is a 26% C=1 LOSS on this model — DRAFTS=3, measured) while
+/// letting a lookup step go wide.
+///
+/// THREE call sites must agree, exactly as for [`mtp_state_slots`]:
+/// `preflight_reserve`, `SsmStatePool::new`'s `num_intermediates`, and
+/// anything reading `verify_draft_capacity`. This is MEMORY: every extra
+/// intermediate is one more H+conv blob per covered slot per layer, so
+/// `ATLAS_LOOKUP_WIDTH` is the knob to turn down if a boot gets tight.
+///
+/// Widening this makes `num_intermediates != num_drafts + 1`, which flips
+/// `SsmStatePool::new`'s `uniform_h` and gives EVERY covered slot full width
+/// instead of the per-slot tiering. That is required, not incidental: the
+/// tiering assumes a slot's index bounds the width it can verify, and a lookup
+/// step can land on any slot.
+/// ★ Widen only to a width the verify can ACTUALLY run — measured, because
+/// getting this wrong is a regression, not a no-op.
+///
+/// Under EP `verify_kn_step` used to fall back to `step_verify_k4` with
+/// `&drafts[..3]`, so a width-7 proposal was verified 4 rows wide and four
+/// drafts were discarded every fire. Proposing wide and verifying narrow is
+/// WORSE than proposing narrow — copy task, TP=2 x EP=2, one binary:
+///   pools 3 / width 2   61.88 tok/s
+///   pools 4 / width 3   61.20 tok/s   (1474 fires, all width 3)
+///   pools 8 / width 7   53.31 tok/s   (1106 fires, all width 7)
+///   lookup off          55.28 tok/s
+/// at 866 / 1150 / 2286 MB of pools and 1.32M / 1.30M / 1.22M KV tokens. Note
+/// widths 2 and 3 are FLAT: under the old cap every path verified at K=4, so
+/// pool width alone bought nothing. `EP_CMD_VERIFY_KN` is what makes the
+/// widening pay.
+pub fn mtp_pool_draft_width(num_drafts: usize, ep: bool) -> usize {
+    // Mirrors `SchedLevers`: lookup drafts are on unless explicitly zeroed and
+    // the width defaults to 7. Read from the environment rather than plumbed
+    // because the pools are built before the scheduler exists.
+    let lookup_on = !matches!(
+        std::env::var("ATLAS_LOOKUP_DRAFTS").as_deref(),
+        Ok("0") | Ok("false")
+    );
+    if !lookup_on {
+        return num_drafts;
+    }
+    let width = std::env::var("ATLAS_LOOKUP_WIDTH")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(7);
+    // EP used to verify at most K=4 (3 drafts) however wide the proposal was,
+    // so sizing past that cost memory, KV and throughput for nothing. The
+    // width-generic worker command (`EP_CMD_VERIFY_KN`) lifts that, so the
+    // full width is now reachable on both topologies. `ep` is kept in the
+    // signature because it is the axis that would cap this again if the
+    // command were ever unavailable.
+    let _ = ep;
+    num_drafts.max(width)
+}
+
 pub fn mtp_state_slots(max_batch_size: usize) -> usize {
     mtp_state_slots_with(
         max_batch_size,

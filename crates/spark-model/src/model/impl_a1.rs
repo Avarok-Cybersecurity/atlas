@@ -253,7 +253,24 @@ impl TransformerModel {
             // if a future path asks for more.
             dflash_kgamma
         } else {
-            num_drafts + 1
+            // NOT `num_drafts + 1`: a lookup-draft step (#1026) proposes at
+            // ATLAS_LOOKUP_WIDTH while the head keeps drafting `num_drafts`,
+            // and `verify_draft_capacity` (= this minus one) is what
+            // `lookup_gate` clamps that proposal to. Sizing from the head
+            // alone silently caps a width-7 lookup at the head's 2. SSOT with
+            // preflight: `ssm_reserve::mtp_pool_draft_width`.
+            let w = crate::ssm_reserve::mtp_pool_draft_width(
+                num_drafts,
+                comm.as_ref().is_some_and(|c| c.world_size() > 1),
+            );
+            if w > num_drafts {
+                tracing::info!(
+                    num_drafts,
+                    pool_width = w,
+                    "MTP verify pools widened for lookup drafts (head still drafts {num_drafts})"
+                );
+            }
+            w + 1
         };
         let ssm_pool = std::sync::Arc::new(SsmStatePool::new(
             &config,
