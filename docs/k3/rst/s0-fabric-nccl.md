@@ -42,8 +42,8 @@ TEST NOTES
 - 2026-09-03 prior (not this campaign's C7): 1 MiB 6.060 GB/s. Do not treat either number as a K3 kernel result.
 
 BUGS
-#ISSUE
-Unpinned / Down-HCA mutant not re-run this session. Next fabric session: launch the same binary with `NCCL_IB_HCA=rocep1s0f0` (Down) and expect failure, not a quiet Socket fallback that still prints numbers.
+#BUG
+`NCCL_IB_HCA=rocep1s0f0` (Down) does **not** fail. It silently uses `NET/Socket`. 1 MiB all-reduce **1.265 GB/s** vs pinned RoCE **8.635 GB/s**. Logs still print `Connected all rings`. A bake-off that forgets the pin will look "healthy" and be ~7× slow. 2026-09-12: `docs/k3/logs/nccl-downhca-rank0-2026-09-12.log`.
 
 STOP
-Charter complete for "does RoCE NCCL work with the documented pin". Residual risk parked as #ISSUE.
+Charter complete including the known-bad. Pin is mandatory. Socket fallback is not RoCE.
