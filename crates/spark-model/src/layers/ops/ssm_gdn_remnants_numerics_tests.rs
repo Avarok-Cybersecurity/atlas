@@ -83,9 +83,9 @@ fn mma_pass(
         for j in 0..n {
             let mut s = acc[i * n + j];
             for t in 0..k {
-                let (ah, alo) = limbs(a[i * k + t]);
-                let (bh, blo) = limbs(b[t * n + j]);
-                s += if al { alo } else { ah } * if bl { blo } else { bh };
+                let (a_hi, a_lo) = limbs(a[i * k + t]);
+                let (b_hi, b_lo) = limbs(b[t * n + j]);
+                s += if al { a_lo } else { a_hi } * if bl { b_lo } else { b_hi };
             }
             acc[i * n + j] = s;
         }
