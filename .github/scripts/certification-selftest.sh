@@ -503,6 +503,33 @@ if [ -s "$TMP/alias.sh" ]; then
   # ever passed, any diff could skip certification by breaking classify-diff.
   want_rc 1 "control: a broken classifier (empty web_only) stays red" \
     env RESULT=skipped WEB_ONLY= STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+
+  # ── ONE CAMPAIGN PER STACK (2026-09-12) ───────────────────────────────────
+  # A stack LAYER skips certification because the top carries it: merging a
+  # registered stack's top lands every layer below it in one operation, so the
+  # tree reaching `main` is the top's tree. These rows are the whole safety
+  # argument for that skip, so each failure mode gets its own control.
+  want_rc 0 "alias: a stack layer passes on a deliberate skip" \
+    env RESULT=skipped WEB_ONLY=false STAMPED=true EXPEDITED=false IS_STACK_LAYER=true bash "$TMP/alias.sh"
+  # A layer's OWN stamp is not what releases the stack's certification, so an
+  # unstamped layer must still pass -- otherwise a 26-layer stack needs 26
+  # stamps and one forgotten comment wedges the whole thing.
+  want_rc 0 "alias: an UNSTAMPED stack layer still passes" \
+    env RESULT=skipped WEB_ONLY=false STAMPED=false EXPEDITED=false IS_STACK_LAYER=true bash "$TMP/alias.sh"
+  # THE TOP ALWAYS CERTIFIES. `is_stack_layer` is false for a PR with nothing
+  # above it, and that PR is the one whose merge lands the stack. If this ever
+  # passed, a whole stack could merge with no records at all.
+  want_rc 1 "control: the TOP of a stack (not a layer) stays red on a skip" \
+    env RESULT=skipped WEB_ONLY=false STAMPED=true EXPEDITED=false IS_STACK_LAYER=false bash "$TMP/alias.sh"
+  # A BROKEN classifier leaves it EMPTY. Same shape and same reason as the
+  # empty-web_only control above: fail closed, or breaking the classifier
+  # becomes a way to skip certification.
+  want_rc 1 "control: an empty is_stack_layer stays red" \
+    env RESULT=skipped WEB_ONLY=false STAMPED=true EXPEDITED=false IS_STACK_LAYER= bash "$TMP/alias.sh"
+  # Being a layer excuses a SKIP, never a FAILURE. A layer whose certification
+  # ran and said no is still no.
+  want_rc 1 "control: a stack layer does not excuse a FAILED certification" \
+    env RESULT=failure WEB_ONLY=false STAMPED=true EXPEDITED=false IS_STACK_LAYER=true bash "$TMP/alias.sh"
 else
   bad "could not extract the alias shell from ci.yml"
 fi
@@ -2426,6 +2453,39 @@ want_rc_msg 1 "same commit" "control: head == base is refused" \
 want_rc 2 "control: called with no arguments it refuses, it does not pass" \
   bash .github/scripts/assert-stack-layer-differs.sh
 
+echo "== one campaign per stack is WIRED =="
+# ★ The alias rows above prove a layer's SKIP is translated into a pass. They
+# cannot prove the certification job actually skips for a layer -- that lives
+# in `pr-benchmark-gate`'s own `if:`, and deleting it would silently restore
+# one campaign per layer (~120 GPU-hours for a 26-layer stack) with every
+# selftest row still green. So assert the condition structurally, and prove the
+# assertion itself can fail.
+assert_stack_skip_wired() {
+  python3 - "$1" <<'PYW'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+cond = " ".join((d["jobs"]["pr-benchmark-gate"].get("if") or "").split())
+need = "needs.changes.outputs.is_stack_layer != 'true'"
+if need not in cond:
+    print("pr-benchmark-gate's if: does not carry " + repr(need), file=sys.stderr)
+    print("  got: " + cond, file=sys.stderr)
+    raise SystemExit(1)
+# An EQUALITY here would be a hole: the classifier fails open, so an empty
+# output must RUN the gate. Only the negative test is acceptable.
+if "is_stack_layer ==" in cond:
+    print("the layer test must be `!= 'true'`, never an equality", file=sys.stderr)
+    raise SystemExit(1)
+PYW
+}
+want_rc 0 "the benchmark gate skips stack layers (one campaign per stack)" \
+  assert_stack_skip_wired .github/workflows/ci.yml
+mkdir -p "$TMP/sw"
+printf 'jobs:\n  pr-benchmark-gate:\n    if: notacondition\n' > "$TMP/sw/ci.yml"
+want_rc 1 "control: dropping the layer test from the gate is caught" \
+  assert_stack_skip_wired "$TMP/sw/ci.yml"
+printf "jobs:\n  pr-benchmark-gate:\n    if: needs.changes.outputs.is_stack_layer == 'false'\n" > "$TMP/sw/eq.yml"
+want_rc 1 "control: an EQUALITY layer test is caught (it fails the wrong way)" \
+  assert_stack_skip_wired "$TMP/sw/eq.yml"
 echo "== job outputs are exported =="
 # The guard that would have caught `is_stack_layer` being computed, logged and
 # never exported -- which told every lower stack layer it was not one and made
