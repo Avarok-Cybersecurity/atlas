@@ -181,31 +181,36 @@ impl DraftProposer for Qwen4ExpMtpHead {
         let mut streams: Vec<DevicePtr> = target_hiddens.to_vec();
         let mut toks: Vec<u32> = last_tokens.to_vec();
         let mut drafts: Vec<Vec<u32>> = vec![Vec::with_capacity(num_drafts); n];
+        let _ = streams_bytes;
         for j in 0..num_drafts {
+            // Combine every sequence into its own arena highway row.
             for i in 0..n {
-                let st = states[i]
-                    .as_any_mut()
-                    .downcast_mut::<Qwen4ExpMtpProposerState>()
-                    .ok_or_else(|| anyhow::anyhow!("qwen4_exp MTP: wrong proposer state type"))?;
-                let h_out = self.batch_h_out_row(i, h);
-                self.draft_hidden(
-                    toks[i],
-                    streams[i],
-                    positions[i] + j,
-                    &mut st.inner,
-                    h_out,
-                    ctx,
-                    stream,
-                )?;
+                self.draft_combine(toks[i], streams[i], self.arena_streams_row(i, hc, h), ctx, stream)?;
+            }
+            // ONE body forward over all n rows.
+            {
+                let mut inners: Vec<&mut crate::layers::qwen4_exp_mtp::Qwen4ExpMtpState> =
+                    Vec::with_capacity(n);
+                for st in states.iter_mut() {
+                    let st = st
+                        .as_any_mut()
+                        .downcast_mut::<Qwen4ExpMtpProposerState>()
+                        .ok_or_else(|| anyhow::anyhow!("qwen4_exp MTP: wrong proposer state type"))?;
+                    inners.push(&mut st.inner);
+                }
+                let pos_j: Vec<usize> = positions.iter().map(|&p| p + j).collect();
+                self.draft_bodies_batched(&mut inners, &pos_j, ctx, stream)?;
                 // Count completed body forwards, as `propose` does, so a later
                 // rewind unwinds exactly these rows.
-                st.inner.last_num_drafted += 1;
-                // Park this sequence's output highway: the arena is T=1 and
-                // the next sequence's body overwrites it.
-                let parked = self.batch_streams_row(i, hc, h);
-                ctx.gpu
-                    .copy_d2d_async(self.draft_streams(), parked, streams_bytes, stream)?;
-                streams[i] = parked;
+                for st in inners.iter_mut() {
+                    st.last_num_drafted += 1;
+                }
+            }
+            // Collapse each row into its staged draft hidden; the next draft
+            // reads this sequence's highway straight from its arena row.
+            for i in 0..n {
+                self.draft_collapse_row(i, self.batch_h_out_row(i, h), ctx, stream)?;
+                streams[i] = self.arena_streams_row(i, hc, h);
             }
             // ONE LM head over all n staged rows, ONE argmax, ONE D2H.
             let new = self.draft_tokens_batched(n, ctx, stream)?;
@@ -220,8 +225,8 @@ impl DraftProposer for Qwen4ExpMtpHead {
                 tracing::info!(
                     n_seqs = n,
                     num_drafts,
-                    "qwen4_exp MTP: propose BATCHED across sequences — one LM-head pass per \
-                     draft position (ATLAS_NO_MTP_BATCH_PROPOSE restores per-sequence)"
+                    "qwen4_exp MTP: propose BATCHED across sequences — one body forward and one \
+                     LM-head pass per draft position (ATLAS_NO_MTP_BATCH_PROPOSE restores per-sequence)"
                 );
             });
         }

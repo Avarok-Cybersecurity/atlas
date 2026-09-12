@@ -149,9 +149,6 @@ struct MtpBuffers {
     /// BF16 draft hiddens, one row per sequence, so n bodies can run before
     /// one LM head scores them all.
     batch_h_out: DevicePtr,
-    /// `[batch_cap, hc_mult * hidden]` FP32 — each sequence's draft highway,
-    /// parked before the next sequence's body overwrites the T=1 arena.
-    batch_streams: DevicePtr,
     /// `[batch_cap, vocab]` BF16 draft logits, private to the draft.
     batch_logits: DevicePtr,
     /// `[batch_cap]` u32 argmax results — ONE D2H for the whole batch.
@@ -172,6 +169,9 @@ pub struct Qwen4ExpMtpHead {
     /// cannot reach anything the target owns.
     arena: spark_runtime::buffers::BufferArena,
     buf: MtpBuffers,
+    /// Rows the private arena carries (= sequences one batched propose can
+    /// run). `max_sequences` capped at `BATCH_CAP`.
+    batch_cap: usize,
     /// Batched LM-head GEMV tiers (4..8 rows) for `draft_tokens_batched`.
     w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers,
     /// Batched argmax over `[n, vocab]` draft logits. 0-handle = unbatched only.
@@ -325,11 +325,18 @@ impl Qwen4ExpMtpHead {
         // token-scaled buffer at one row; `max_seq_len` still sizes the scratch
         // block-table region, and kv_block_size must match this head's own pool.
         let free_before = gpu.free_memory().unwrap_or(0);
-        let arena = spark_runtime::buffers::BufferArena::new(config, 1, max_seq_len, 16, 1, gpu)?;
+        // Rows 1..cap exist for the batched propose; row 0 is what the
+        // per-sequence path always used. See `draft_bodies_batched`.
+        let batch_cap = max_sequences.clamp(1, BATCH_CAP);
+        let arena = spark_runtime::buffers::BufferArena::new(
+            config, batch_cap, max_seq_len, 16, batch_cap, gpu,
+        )?;
         let free_after = gpu.free_memory().unwrap_or(0);
         tracing::info!(
-            "qwen4_exp MTP head: private T=1 buffer arena costs {:.3} GB. The draft \
-             runs entirely inside it, so it cannot reach the target's buffers.",
+            "qwen4_exp MTP head: private {}-row buffer arena costs {:.3} GB (rows 1.. serve \
+             the batched propose; row 0 is the per-sequence path). The draft runs entirely \
+             inside it, so it cannot reach the target's buffers.",
+            batch_cap,
             (free_before.saturating_sub(free_after)) as f64 / 1e9,
         );
 
@@ -338,6 +345,7 @@ impl Qwen4ExpMtpHead {
             embed_tokens,
             kv_cache: Mutex::new(kv_cache),
             arena,
+            batch_cap,
             w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers::resolve(gpu),
             argmax_batch_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch"),
             buf: MtpBuffers {
@@ -356,7 +364,6 @@ impl Qwen4ExpMtpHead {
                 per_stream: gpu.alloc(hc * h * 2)?,
                 head_scratch: gpu.alloc((hc * h + config.hc_lowrank.max(1)) * 4)?,
                 batch_h_out: gpu.alloc(BATCH_CAP * row)?,
-                batch_streams: gpu.alloc(BATCH_CAP * streams_bytes)?,
                 batch_logits: gpu.alloc(BATCH_CAP * config.vocab_size * 2)?,
                 batch_tok: gpu.alloc(BATCH_CAP * 4)?,
                 logits_stash: gpu.alloc(config.vocab_size * 2)?,
@@ -457,7 +464,7 @@ impl Qwen4ExpMtpHead {
     }
 
     pub fn batch_cap(&self) -> usize {
-        BATCH_CAP
+        self.batch_cap
     }
 
     /// Staged draft-hidden row `i` — pass as `draft_hidden`'s `h_out`.
@@ -465,9 +472,10 @@ impl Qwen4ExpMtpHead {
         self.buf.batch_h_out.offset(i * hidden * 2)
     }
 
-    /// Parked draft-highway row `i` (FP32, `hc_mult * hidden` per row).
-    pub fn batch_streams_row(&self, i: usize, hc_mult: usize, hidden: usize) -> DevicePtr {
-        self.buf.batch_streams.offset(i * hc_mult * hidden * 4)
+    /// Arena highway row `i` (FP32, `hc_mult * hidden` per row): the batched
+    /// body's input for sequence i, and its output after the body ran.
+    pub fn arena_streams_row(&self, i: usize, hc_mult: usize, hidden: usize) -> DevicePtr {
+        self.arena.hc_streams().offset(i * hc_mult * hidden * 4)
     }
 
     /// Score `n` staged draft hiddens with ONE LM-head pass and ONE batched
@@ -635,13 +643,17 @@ impl Qwen4ExpMtpHead {
     /// head. `target_streams` is the target's four-stream highway for the
     /// position that just produced `last_token`.
     #[allow(clippy::too_many_arguments)]
-    pub fn draft_hidden(
+    /// Steps 1-2 of a draft: embedding branch, hidden branch, and the
+    /// combine that writes the body's INPUT highway to `streams_out`.
+    ///
+    /// Snapshots `target_streams` into private scratch first, so `streams_out`
+    /// may alias it (chained drafts read the arena row they then overwrite).
+    /// Shared by the per-sequence path (row 0) and the batched path (row i).
+    pub fn draft_combine(
         &self,
         last_token: u32,
         target_streams: DevicePtr,
-        position: usize,
-        state: &mut Qwen4ExpMtpState,
-        h_out: DevicePtr,
+        streams_out: DevicePtr,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -649,48 +661,7 @@ impl Qwen4ExpMtpHead {
         let hc = ctx.config.hc_mult.max(1) as u32;
         let eps = ctx.config.rms_norm_eps as f32;
         let row = h as usize * 2;
-
-        // The body reads its highway through the private arena. Snapshot the
-        // input before the combiner writes that arena: chained drafts read
-        // from the same arena, so input and output can alias. Highway elements
-        // are FP32, even though collapsed hidden rows are BF16.
         let hc_bytes = hc as usize * h as usize * 4;
-
-        // ── DIAGNOSTIC (ATLAS_QWEN4EXP_MTP_DIFF=1) ──
-        // The bisect proved the BODY forward dirties state the target still
-        // needs, but not WHICH buffer. Rather than keep guessing, fingerprint
-        // the shared buffers either side of the call and name the ones that
-        // changed. Taken BEFORE the combiner runs, so the baseline is the
-        // TARGET's state — an earlier version sampled it after the combiner had
-        // already written hc_streams, which made hc_streams a false positive.
-        let diff = std::env::var("ATLAS_QWEN4EXP_MTP_DIFF").as_deref() == Ok("1");
-        let probes: Vec<(&str, DevicePtr, usize)> = if diff {
-            ctx.gpu.synchronize(stream).ok();
-            vec![
-                ("hc_streams", ctx.buffers.hc_streams(), hc_bytes.min(4096)),
-                ("hc_post", ctx.buffers.hc_post(), 256),
-                ("hc_comb", ctx.buffers.hc_comb(), 256),
-                ("hc_lowrank_scratch", ctx.buffers.hc_lowrank_scratch(), 4096),
-                ("hidden_states", ctx.buffers.hidden_states(), row),
-                ("residual", ctx.buffers.residual(), row),
-                ("norm_output", ctx.buffers.norm_output(), row),
-                (
-                    "scratch@target_meta",
-                    ctx.buffers.scratch().offset(32768),
-                    4096,
-                ),
-            ]
-        } else {
-            Vec::new()
-        };
-        let before: Vec<u64> = probes
-            .iter()
-            .map(|(_, p, n)| crate::speculative::hidden_fingerprint(ctx.gpu, *p, *n / 2))
-            .collect();
-
-        // The draft's highway lives in the DRAFT's arena, not the target's.
-        // Nothing below writes a buffer the target owns.
-        let body_streams = self.arena.hc_streams();
         ctx.gpu
             .copy_d2d_async(target_streams, self.buf.streams, hc_bytes, stream)?;
 
@@ -761,11 +732,243 @@ impl Qwen4ExpMtpHead {
             self.combine_k,
             self.buf.per_stream,
             self.buf.embed_proj,
-            body_streams,
+            streams_out,
             h,
             hc,
             stream,
         )?;
+
+        Ok(())
+    }
+
+    /// Collapse arena highway row `i` into `h_out` (one row) — step 4 of a
+    /// draft, addressed by row for the batched path.
+    pub fn draft_collapse_row(
+        &self,
+        i: usize,
+        h_out: DevicePtr,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let h = ctx.config.hidden_size as u32;
+        let hc = ctx.config.hc_mult.max(1) as u32;
+        let eps = ctx.config.rms_norm_eps as f32;
+        let head = self
+            .module
+            .hc_head
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("qwen4_exp MTP: module has no hc_head"))?;
+        let lowrank = head.lowrank.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("qwen4_exp MTP: hc_head is not low-rank; this model's is")
+        })?;
+        ops::hc_head_lowrank(
+            ctx.gpu,
+            self.hc_head_k,
+            self.arena_streams_row(i, hc as usize, h as usize),
+            lowrank,
+            h_out,
+            self.buf.head_scratch,
+            1,
+            h,
+            hc,
+            eps,
+            stream,
+        )
+    }
+
+    /// Step 3 of a draft for `n` sequences at once: the module body over arena
+    /// rows 0..n via `decode_multi_seq`, each row against that sequence's own
+    /// private KV and draft state.
+    ///
+    /// The n-sequence attention metadata is drafter-local, in the drafter
+    /// arena's scratch, laid out by the arena's derived `decode_meta()` —
+    /// positions u32[R] @0, slots i64[R] @8R, seq_lens i32[R] @16R, block
+    /// table i32[R x max_blocks] @24R — exactly the layout the target's
+    /// batched decode uploads, so the attention kernels read what they
+    /// expect. `num_seqs = n`, no padding rows.
+    ///
+    /// Advances every state's `seq_len` by one, as `draft_hidden` does.
+    pub fn draft_bodies_batched(
+        &self,
+        states: &mut [&mut Qwen4ExpMtpState],
+        positions: &[usize],
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let n = states.len();
+        anyhow::ensure!(
+            n >= 1 && n <= self.batch_cap && positions.len() == n,
+            "draft_bodies_batched: n={n} (cap {}), {} positions",
+            self.batch_cap,
+            positions.len()
+        );
+        let mut kv_cache = self.kv_cache.lock().expect("mtp kv cache poisoned");
+        let bs = kv_cache.block_size();
+        for st in states.iter_mut() {
+            let blocks_needed = (st.seq_len / bs) + 1;
+            while st.block_table.len() < blocks_needed {
+                st.block_table.push(kv_cache.alloc_block()?);
+            }
+        }
+
+        // ── n-sequence attention metadata, in the DRAFTER arena's scratch ──
+        let lay = self.arena.decode_meta();
+        anyhow::ensure!(
+            n <= lay.rows(),
+            "draft_bodies_batched: n={n} exceeds the arena's {}-row metadata layout",
+            lay.rows()
+        );
+        let max_blocks = states
+            .iter()
+            .map(|st| st.block_table.len())
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        const META_OFF: usize = 32768;
+        let need = META_OFF + lay.meta_bytes(max_blocks);
+        anyhow::ensure!(
+            need <= self.arena.scratch_bytes(),
+            "draft_bodies_batched: metadata needs {need} B of arena scratch, have {}",
+            self.arena.scratch_bytes()
+        );
+        let rows = lay.rows();
+        let mut positions_u32: Vec<u32> = vec![0; rows];
+        let mut slots: Vec<i64> = vec![0; rows];
+        let mut seq_lens_i32: Vec<i32> = vec![1; rows];
+        let mut bt_flat: Vec<i32> = vec![0; rows * max_blocks];
+        for (i, st) in states.iter().enumerate() {
+            let pos = st.seq_len;
+            positions_u32[i] = positions[i] as u32;
+            let block_idx = st.block_table[pos / bs];
+            slots[i] = (block_idx as i64) * (bs as i64) + ((pos % bs) as i64);
+            seq_lens_i32[i] = (pos + 1) as i32;
+            for (j, &b) in st.block_table.iter().take(max_blocks).enumerate() {
+                bt_flat[i * max_blocks + j] = b as i32;
+            }
+        }
+        let base = self.arena.scratch().offset(META_OFF);
+        let to_bytes_u32 = |v: &[u32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        let to_bytes_i64 = |v: &[i64]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        let to_bytes_i32 = |v: &[i32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        ctx.gpu
+            .copy_h2d_async(&to_bytes_u32(&positions_u32), base, stream)?;
+        ctx.gpu
+            .copy_h2d_async(&to_bytes_i64(&slots), base.offset(lay.slots_off()), stream)?;
+        ctx.gpu.copy_h2d_async(
+            &to_bytes_i32(&seq_lens_i32),
+            base.offset(lay.seq_lens_off()),
+            stream,
+        )?;
+        ctx.gpu.copy_h2d_async(
+            &to_bytes_i32(&bt_flat),
+            base.offset(lay.block_table_off()),
+            stream,
+        )?;
+        let meta = crate::layer::AttnMetadataDev {
+            positions: base,
+            positions_h: base,
+            positions_w: base,
+            slot: base.offset(lay.slots_off()),
+            seq_len: base.offset(lay.seq_lens_off()),
+            block_table: base.offset(lay.block_table_off()),
+            max_blocks_per_seq: max_blocks as u32,
+            num_seqs: n as u32,
+            seq_slot: DevicePtr(0),
+            moe_row_adapter: DevicePtr::NULL,
+        };
+        let mtp_ctx = ForwardContext {
+            hc_row_offset: 0,
+            attn_metadata: Some(meta),
+            // Rank-0 only, no EP collective — same as the per-sequence body.
+            comm: None,
+            graph_capture: false,
+            host_token_ids: None,
+            routed_lora_layers: None,
+            midchunk_capture: None,
+            moe_lora_route: crate::layer::MoeLoraRoute::Skip,
+            buffers: &self.arena,
+            ..*ctx
+        };
+
+        let seq_lens: Vec<usize> = states.iter().map(|st| st.seq_len).collect();
+        let block_tables: Vec<Vec<u32>> = states.iter().map(|st| st.block_table.clone()).collect();
+        let mut refs: Vec<&mut (dyn LayerState + 'static)> =
+            states.iter_mut().map(|st| st.body_state.as_mut()).collect();
+        self.module.body.decode_multi_seq(
+            self.arena.hidden_states(),
+            self.arena.residual(),
+            n,
+            &mut refs,
+            &mut kv_cache,
+            &seq_lens,
+            &block_tables,
+            &mtp_ctx,
+            stream,
+        )?;
+        drop(kv_cache);
+        for st in states.iter_mut() {
+            st.seq_len += 1;
+        }
+        Ok(())
+    }
+
+    pub fn draft_hidden(
+        &self,
+        last_token: u32,
+        target_streams: DevicePtr,
+        position: usize,
+        state: &mut Qwen4ExpMtpState,
+        h_out: DevicePtr,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let h = ctx.config.hidden_size as u32;
+        let hc = ctx.config.hc_mult.max(1) as u32;
+        let eps = ctx.config.rms_norm_eps as f32;
+        let row = h as usize * 2;
+
+        // The body reads its highway through the private arena. Snapshot the
+        // input before the combiner writes that arena: chained drafts read
+        // from the same arena, so input and output can alias. Highway elements
+        // are FP32, even though collapsed hidden rows are BF16.
+        let hc_bytes = hc as usize * h as usize * 4;
+
+        // ── DIAGNOSTIC (ATLAS_QWEN4EXP_MTP_DIFF=1) ──
+        // The bisect proved the BODY forward dirties state the target still
+        // needs, but not WHICH buffer. Rather than keep guessing, fingerprint
+        // the shared buffers either side of the call and name the ones that
+        // changed. Taken BEFORE the combiner runs, so the baseline is the
+        // TARGET's state — an earlier version sampled it after the combiner had
+        // already written hc_streams, which made hc_streams a false positive.
+        let diff = std::env::var("ATLAS_QWEN4EXP_MTP_DIFF").as_deref() == Ok("1");
+        let probes: Vec<(&str, DevicePtr, usize)> = if diff {
+            ctx.gpu.synchronize(stream).ok();
+            vec![
+                ("hc_streams", ctx.buffers.hc_streams(), hc_bytes.min(4096)),
+                ("hc_post", ctx.buffers.hc_post(), 256),
+                ("hc_comb", ctx.buffers.hc_comb(), 256),
+                ("hc_lowrank_scratch", ctx.buffers.hc_lowrank_scratch(), 4096),
+                ("hidden_states", ctx.buffers.hidden_states(), row),
+                ("residual", ctx.buffers.residual(), row),
+                ("norm_output", ctx.buffers.norm_output(), row),
+                (
+                    "scratch@target_meta",
+                    ctx.buffers.scratch().offset(32768),
+                    4096,
+                ),
+            ]
+        } else {
+            Vec::new()
+        };
+        let before: Vec<u64> = probes
+            .iter()
+            .map(|(_, p, n)| crate::speculative::hidden_fingerprint(ctx.gpu, *p, *n / 2))
+            .collect();
+
+        // The draft's highway lives in the DRAFT's arena, not the target's.
+        // Nothing below writes a buffer the target owns.
+        let body_streams = self.arena.hc_streams();
+        self.draft_combine(last_token, target_streams, body_streams, ctx, stream)?;
 
         // No save/restore of target buffers: the draft runs in its own arena.
         // ── 3. Body decode against the module's OWN cache ──

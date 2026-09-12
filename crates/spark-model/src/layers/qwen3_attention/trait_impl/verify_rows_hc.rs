@@ -664,9 +664,27 @@ impl Qwen3AttentionLayer {
             num_seqs: k as u32,
             ..row_metas[0]
         };
+        // ── Phase timing (ATLAS_HC_VERIFY_STAGE_TIMING=1), see module note ──
+        let core_timing = {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1")
+            })
+        };
+        let mut ct = std::time::Instant::now();
+        let (mut c1, mut c2, mut c3, mut c4) = (0u128, 0u128, 0u128, 0u128);
+        let cphase = |t: &mut std::time::Instant, acc: &mut u128| {
+            if core_timing {
+                let _ = ctx.gpu.synchronize(stream);
+                *acc += t.elapsed().as_micros();
+                *t = std::time::Instant::now();
+            }
+        };
+
         self.ms_phase_qkv(&c)?;
         self.ms_phase_rope(&c, meta_k)?;
         self.ms_phase_cache_write(&c, kv_cache, meta_k)?;
+        cphase(&mut ct, &mut c1);
 
         let attn_out = ctx.buffers.attn_output();
         let q_row = c.q_dim as usize * c.bf16;
@@ -703,6 +721,7 @@ impl Qwen3AttentionLayer {
                 );
             }
         }
+        cphase(&mut ct, &mut c2);
         if self.qsa.is_some() {
             for t in 0..k {
                 let mut states: [&mut (dyn LayerState + 'static); 1] = [&mut *state];
@@ -715,7 +734,25 @@ impl Qwen3AttentionLayer {
                 )?;
             }
         }
+        cphase(&mut ct, &mut c3);
         let o_out = self.ms_phase_o_proj(&c, attn_out)?;
+        cphase(&mut ct, &mut c4);
+        if core_timing {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static CALLS: AtomicUsize = AtomicUsize::new(0);
+            let call = CALLS.fetch_add(1, Ordering::Relaxed);
+            if call % 1024 == 0 && call > 0 {
+                tracing::info!(
+                    call,
+                    rows = k,
+                    c1_proj_us = c1 as u64,
+                    c2_paged_us = c2 as u64,
+                    c3_qsa_us = c3 as u64,
+                    c4_oproj_us = c4 as u64,
+                    "attention core phase split (ONE sequence, synced per phase)"
+                );
+            }
+        }
         Ok(Some(o_out))
     }
 
