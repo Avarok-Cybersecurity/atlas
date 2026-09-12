@@ -3,6 +3,7 @@
 //! Exercise the BF16 projection used by both ordinary and mixed decode.
 
 use super::{bf16_batch_gemv_from_value, project_bf16_lm_head};
+use crate::layers::ops;
 use crate::weight_map::DenseWeight;
 use spark_runtime::gpu::mock::{MockArg, MockGpuBackend};
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
@@ -118,6 +119,68 @@ fn opt_out_missing_kernel_and_wide_head_keep_scalar_fallback() {
     run_case(4, 130, true, true, false);
     for m in [9, 16] {
         run_case(m, 128, true, true, false);
+    }
+}
+
+/// The band a target that declares the frozen 8 serves with. Widths 9..=16
+/// keep the reassociating tile GEMM they have always used there, so those
+/// targets' bits are untouched unless an operator asks.
+#[test]
+fn lm_head_band_defaults_to_the_frozen_decode_edge() {
+    assert_eq!(
+        ops::target_defaults::resolve_batchm_max(ops::DENSE_GEMV_BATCHM_DECODE_MAX_M, None).value,
+        ops::DENSE_GEMV_BATCHM_DECODE_MAX_M
+    );
+    for m in [9, 12, 16] {
+        run_case(m, 128, true, true, false);
+    }
+}
+
+/// Hopper's declaration, and the environment spelling of it. 9..=16 move onto
+/// the batched GEMV; 17 is still outside the kernel's compile-time row bound
+/// and must not.
+#[test]
+fn lm_head_band_widened_to_sixteen_claims_nine_through_sixteen() {
+    assert_eq!(ops::target_defaults::resolve_batchm_max(16, None).value, 16);
+    assert_eq!(
+        ops::target_defaults::resolve_batchm_max(ops::DENSE_GEMV_BATCHM_DECODE_MAX_M, Some("16"))
+            .value,
+        16
+    );
+    for m in [1, 8, 9, 12, 16] {
+        run_case_band(m, 128, true, true, 16, true);
+    }
+    run_case_band(17, 128, true, true, 16, false);
+}
+
+/// A band above the kernel's `MAX_M` is CLAMPED, not honoured — whether it
+/// came from a target's declaration or from the environment: the kernel
+/// refuses wider launches, and an Err every decode step is worse than
+/// ignoring the excess. Junk and 0 keep the target's value; the band is not a
+/// switch, so there is no "off".
+#[test]
+fn lm_head_band_lever_is_clamped_and_defaults_on_junk() {
+    assert_eq!(
+        ops::target_defaults::resolve_batchm_max(ops::DENSE_GEMV_BATCHM_DECODE_MAX_M, Some("64"))
+            .value,
+        ops::DENSE_GEMV_BATCHM_MAX_M
+    );
+    assert_eq!(
+        ops::target_defaults::resolve_batchm_max(64, None).value,
+        ops::DENSE_GEMV_BATCHM_MAX_M
+    );
+    assert_eq!(
+        ops::target_defaults::resolve_batchm_max(ops::DENSE_GEMV_BATCHM_DECODE_MAX_M, Some(" 12 "))
+            .value,
+        12
+    );
+    for value in [Some("0"), Some(""), Some("sixteen"), Some("-4"), None] {
+        assert_eq!(
+            ops::target_defaults::resolve_batchm_max(ops::DENSE_GEMV_BATCHM_DECODE_MAX_M, value)
+                .value,
+            ops::DENSE_GEMV_BATCHM_DECODE_MAX_M,
+            "value {value:?} must keep the target's declaration"
+        );
     }
 }
 

@@ -41,19 +41,79 @@ pub fn cublas_fp8_proj(
         k,
         stream,
     )?;
+    cublas_fp8_proj_prequant(
+        gpu,
+        act_fp8_scratch,
+        act_scale_scratch,
+        fp8w,
+        out,
+        m,
+        n,
+        k,
+        stream,
+    )
+}
+
+/// [`cublas_fp8_proj`] for an activation that is ALREADY quantized — the
+/// caller ran `per_token_group_quant_fp8` itself.
+///
+/// WHY the split (#917/#928): the dense FFN's gate and up projections consume
+/// the SAME `[M, K]` input, so quantizing inside the GEMM helper would pay the
+/// per-token quant twice per layer. The FFN quantizes once and calls this for
+/// both, then quantizes the post-SiLU intermediate once for `down`.
+///
+/// ⚠ PADDED-M EXTENTS. cuBLASLt is handed `ceil16(M)`, so:
+///
+/// * `out` must hold `ceil16(M) * N` BF16 elements — the phantom rows are
+///   WRITTEN (well-defined: their activation scales are zeroed below).
+/// * `act_fp8` must hold `ceil16(M) * K` bytes and `act_scale`
+///   `ceil16(M) * (K/128)` f32 — the phantom rows are READ.
+///
+/// The arena sizes that headroom in; see the sizing notes in
+/// `spark_runtime::buffers::sizes` (`fp8_act`, `ffn_act_a`, `expert_gate_out`,
+/// `moe_output`).
+#[allow(clippy::too_many_arguments)]
+pub fn cublas_fp8_proj_prequant(
+    gpu: &dyn spark_runtime::gpu::GpuBackend,
+    act_fp8: spark_runtime::gpu::DevicePtr,
+    act_scale: spark_runtime::gpu::DevicePtr,
+    fp8w: &crate::weight_map::Fp8Weight,
+    out: spark_runtime::gpu::DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> anyhow::Result<()> {
     // cuBLASLt requires the scale-tensor M extent to be a multiple of 4; pad to
     // 16 (TC-friendly) and zero the padding scale rows so the phantom output
     // columns (ignored by the caller) are well-defined.
-    let m_pad = m.div_ceil(16) * 16;
+    let m_pad = cublas_fp8_m_pad(m);
     if m_pad > m {
+        let pad_rows = (m_pad - m) as usize;
+        // Scales: `[M, K/128]` FP32, row-major — the exact layout
+        // `per_token_group_quant_fp8` writes and cuBLASLt reads as the VEC128
+        // B-scale, so the pad rows are a contiguous tail.
         let kg = (k / 128) as usize;
-        let pad_off = m as usize * kg * 4;
-        let pad_bytes = (m_pad - m) as usize * kg * 4;
-        gpu.memset_async(act_scale_scratch.offset(pad_off), 0, pad_bytes, stream)?;
+        gpu.memset_async(
+            act_scale.offset(m as usize * kg * 4),
+            0,
+            pad_rows * kg * 4,
+            stream,
+        )?;
+        // Activation bytes too: a zero scale kills the phantom rows'
+        // CONTRIBUTION, but the FP8 dot product still runs over whatever bytes
+        // are there and `NaN * 0.0` is `NaN`. Same reasoning (and same fix) as
+        // the row-wise sibling in `dispatch_proj_rowwise.rs`.
+        gpu.memset_async(
+            act_fp8.offset(m as usize * k as usize),
+            0,
+            pad_rows * k as usize,
+            stream,
+        )?;
     }
     spark_runtime::cublaslt::fp8_gemm_act_weight_t_blkscaled(
-        act_fp8_scratch.0,
-        act_scale_scratch.0,
+        act_fp8.0,
+        act_scale.0,
         fp8w.weight.0,
         fp8w.row_scale.0,
         out.0,
@@ -62,6 +122,12 @@ pub fn cublas_fp8_proj(
         k,
         stream,
     )
+}
+
+/// The M extent [`cublas_fp8_proj_prequant`] actually hands cuBLASLt. SSOT for
+/// the callers that must bounds-check their output buffer against it.
+pub fn cublas_fp8_m_pad(m: u32) -> u32 {
+    m.div_ceil(16) * 16
 }
 
 /// Dequantize a block-scaled FP8 weight `[N,K]` → BF16 on-GPU once, cached by the
