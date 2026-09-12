@@ -369,14 +369,6 @@ impl TransformerModel {
                 0
             };
             seq.marconi_skip_to = skip_tokens;
-            // #919: report what was REUSED, not what the lookup matched. The
-            // SSM-without-snapshot and exact-leaf-bypass arms above leave
-            // `matched > 0` with `skip_tokens == 0` — a full prefill.
-            seq.reused_prefix_tokens = crate::model::trait_impl::prefix_reuse::reused_prefix_tokens(
-                matched,
-                skip_tokens,
-                skip,
-            );
             seq.prefix_lookup_skip = skip;
             seq.prefix_lookup_applied = true;
             Ok((skip_tokens, skip))

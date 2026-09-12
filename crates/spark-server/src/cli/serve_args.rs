@@ -906,15 +906,10 @@ pub struct ServeArgs {
     pub profile: bool,
 
     /// Number of warmup tokens for online FP8 KV cache scale calibration.
-    /// Tracks max |K| and max |V| over the first N observed tokens — ACROSS
-    /// requests, so a readiness probe counts toward the window but can never
-    /// close it on its own (#919) — then computes per-tensor scales as
-    /// amax*headroom/448 (mapping the observed range to FP8 E4M3 [-448, 448]).
-    /// The window's own KV is held in BF16 and requantized at the freeze, so
-    /// the write scale always equals the read scale; N is clamped to 4096 to
-    /// bound that staging. 1 = freeze on the first observe (the pre-#919
-    /// behaviour). 0 = disabled (use static scales from checkpoint, or
-    /// uncalibrated 1.0).
+    /// During the first N tokens, tracks max |K| and max |V| values across
+    /// all attention layers. After N tokens, computes per-tensor scales as
+    /// max/448 (mapping the observed range to FP8 E4M3 [-448, 448]).
+    /// 0 = disabled (use static scales from checkpoint, or uncalibrated 1.0).
     /// Only applies when --kv-cache-dtype is fp8.
     /// Precedence (highest wins): this flag → MODEL.toml
     /// `[behavior].fp8_kv_calibration_tokens` → 0. An explicit value always
@@ -923,11 +918,12 @@ pub struct ServeArgs {
     #[arg(long)]
     pub fp8_kv_calibration_tokens: Option<usize>,
 
-    /// Headroom multiplier applied to the accumulated absmax when the online
-    /// FP8 KV scale freezes. The calibration window only sees the first
-    /// `--fp8-kv-calibration-tokens` tokens, so the frozen scale covers
-    /// headroom× their max — later tokens whose magnitude grows don't clip, at
-    /// a cost of <1 bit of precision. Must be ≥ 1.0 (below 1.0 guarantees clipping;
+    /// Headroom multiplier applied to the first-observe absmax when the online
+    /// FP8 KV scale freezes (calibration freezes on the FIRST observe so the
+    /// write scale always equals the read scale). The first observe sees only
+    /// the first prefill chunk, so the frozen scale covers headroom× its
+    /// observed max — later tokens whose magnitude grows don't clip, at a cost
+    /// of <1 bit of precision. Must be ≥ 1.0 (below 1.0 guarantees clipping;
     /// rejected at startup). Replaces `ATLAS_FP8_KV_HEADROOM`.
     #[arg(long, default_value_t = 2.0)]
     pub fp8_kv_headroom: f32,

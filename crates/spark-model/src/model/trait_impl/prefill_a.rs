@@ -233,14 +233,6 @@ impl TransformerModel {
             }
         };
 
-        // #919: `cached_tokens` counts reused KV, not matched-then-discarded KV.
-        // The SSM-without-snapshot arm above has already zeroed `kv_write_start`.
-        seq.reused_prefix_tokens = crate::model::trait_impl::prefix_reuse::reused_prefix_tokens(
-            prefix_match.matched_tokens,
-            kv_write_start,
-            marconi_skip,
-        );
-
         // Determine tokens to actually process
         let (proc_tokens, proc_count, seq_len_start) = if marconi_skip && kv_write_start >= n {
             // Exact match: entire prompt cached with SSM snapshot.
