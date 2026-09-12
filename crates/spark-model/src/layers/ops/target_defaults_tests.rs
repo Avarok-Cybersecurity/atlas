@@ -48,7 +48,7 @@ const GB10: TargetDefaults = TargetDefaults {
 /// at the frozen 8 — see `atlas-kernels/tests/target_defaults.rs`.
 const HOPPER: TargetDefaults = TargetDefaults {
     hw: "hopper",
-    lm_head_batchm_max: 8,
+    lm_head_batchm_max: 16,
     ssm_batched_recurrent: true,
     gdn_prefill_tc: true,
     ssm_ba_gates_hopper: true,
@@ -113,7 +113,7 @@ fn hopper_resolves_its_recipe_from_an_empty_environment() {
         "round 14: the BA-gates twin is bit-identical to its parent, so it is \
          on without an accuracy receipt and its worst case is a null"
     );
-    assert_eq!(l.lm_head_batchm_max.value, 8);
+    assert_eq!(l.lm_head_batchm_max.value, 16);
     assert_eq!(l.hw, "hopper");
 }
 
@@ -488,4 +488,16 @@ fn the_attention_decode_batch_kill_switch_outranks_the_row() {
         assert!(!l.attn_ncol_gemv.value, "{env:?}");
         assert!(l.attn_ncol_gemv.from_env(), "{env:?}");
     }
+}
+
+/// Hopper's widened band, resolved from the declaration alone — the last line
+/// of the external H100 recipe to become structural.
+#[test]
+fn hopper_resolves_the_widened_head_band_from_its_declaration() {
+    let h = empty(&HOPPER);
+    assert_eq!(h.lm_head_batchm_max.value, 16);
+    assert!(!h.lm_head_batchm_max.from_env());
+    assert_eq!(empty(&GB10).lm_head_batchm_max.value, BASELINE_BATCHM_MAX);
+    assert!(format_levers(&h).contains("lm_head_batchm_max=16"));
+    assert!(!format_levers(&h).contains("lm_head_batchm_max=16 (env)"));
 }
