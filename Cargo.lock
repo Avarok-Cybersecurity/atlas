@@ -133,6 +133,8 @@ version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "cudarc",
+ "memmap2",
+ "safetensors",
  "serde",
  "serde_json",
  "thiserror",

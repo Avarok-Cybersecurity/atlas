@@ -104,40 +104,17 @@ pub(crate) fn dequant_nvfp4_e8m0_to_bf16(
         num_groups > 0 && total.is_multiple_of(num_groups),
         "{prefix}: weight elems {total} not divisible by E8M0 scale groups {num_groups}"
     );
-    let block = total / num_groups;
-
     let mut packed = vec![0u8; packed_bytes];
     let mut scales = vec![0u8; num_groups]; // FP8 E8M0, 1 byte each
     gpu.copy_d2h(packed_ptr, &mut packed)?;
     gpu.copy_d2h(scale_t.ptr, &mut scales)?;
 
-    let e2m1_table: [f32; 16] = [
-        0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
-    ];
-    // Row-major weight [n,k] and scale [n, k/block] → scale group `g` covers
-    // weight flat indices `g*block .. (g+1)*block` (same nibble convention as
-    // dequant_nvfp4_to_bf16: even flat index = low nibble).
-    let mut bf16_out = vec![0u16; total];
-    for group in 0..num_groups {
-        let block_scale = fp8_e8m0_to_f32(scales[group]);
-        for elem in 0..block {
-            let flat_idx = group * block + elem;
-            let byte_idx = flat_idx / 2;
-            let nibble = if flat_idx.is_multiple_of(2) {
-                packed[byte_idx] & 0x0F
-            } else {
-                (packed[byte_idx] >> 4) & 0x0F
-            };
-            bf16_out[flat_idx] = f32_to_bf16(e2m1_table[nibble as usize] * block_scale);
-        }
-    }
+    // Host loop lives in atlas-core (`mxfp4_e8m0`) so K3 and DSV4 share one stack.
+    let bf16_out = atlas_core::mxfp4_e8m0::dequant_nvfp4_e8m0_to_bf16(&packed, &scales, n, k)?;
 
     let buf = gpu.alloc(total * 2)?;
-    // SAFETY: `bf16_out` is `vec![0u16; total]`, so `bf16_out.len() == total` and
-    // every element is initialised (zeroed at construction, then overwritten by the
-    // `group`/`elem` dequant loop above). `total * 2 == bf16_out.len() *
-    // size_of::<u16>()`, so the span is exactly the Vec's buffer. Shared borrow
-    // only; `buf` was allocated at `total * 2` bytes so the H2D destination matches.
+    // SAFETY: `bf16_out.len() == n*k`; `total * 2 == len * size_of::<u16>()`.
+    // `buf` was allocated at `total * 2` bytes so the H2D destination matches.
     let bf16_bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(bf16_out.as_ptr() as *const u8, total * 2) };
     gpu.copy_h2d(bf16_bytes, buf)?;
@@ -154,32 +131,8 @@ pub(crate) fn dequant_nvfp4_e8m0_to_bf16(
 /// every call site in this module is unchanged.
 pub(super) use atlas_core::numeric::{FP8_E4M3_LUT, f32_to_bf16, fp8_e4m3_to_f32};
 
-/// FP8 E8M0 → f32 lookup table (256 entries).
-///
-/// E8M0 format: unsigned 8-bit exponent, 0 mantissa, bias=127.
-/// Value = 2^(exp - 127). exp=0 → 0, exp=255 → NaN (stored as 0.0).
-const FP8_E8M0_LUT: [f32; 256] = {
-    let mut table = [0.0f32; 256];
-    let mut i: u32 = 0;
-    while i < 256 {
-        let exp = i as u8;
-        table[i as usize] = if exp == 0 {
-            0.0f32
-        } else if exp == 255 {
-            0.0f32 // NaN weight-scales should not appear in practice
-        } else {
-            f32::from_bits((exp as u32) << 23)
-        };
-        i += 1;
-    }
-    table
-};
-
-/// Convert FP8 E8M0 byte to f32 via LUT (branchless, single array lookup).
-#[inline(always)]
-pub(super) fn fp8_e8m0_to_f32(bits: u8) -> f32 {
-    FP8_E8M0_LUT[bits as usize]
-}
+/// E8M0 decode SSOT is `atlas_core::mxfp4_e8m0` (K3 + DSV4 share it).
+pub(super) use atlas_core::mxfp4_e8m0::fp8_e8m0_to_f32;
 
 /// Load dense FFN weights (gate_proj, up_proj, down_proj) as NVFP4.
 ///

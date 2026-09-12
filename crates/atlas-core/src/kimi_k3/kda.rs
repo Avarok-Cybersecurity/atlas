@@ -1,0 +1,367 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! Kimi K3 KDA CPU reference — a new backend, not GDN / Mamba-2.
+//!
+//! Production geometry: `head_dim=128`, `short_conv_kernel_size=4`,
+//! `use_full_rank_gate=true`, `gate_lower_bound=Some(-5)`. Decay stays low-rank
+//! `f_a`/`f_b`; the **output** gate is full-rank `g_proj` (unlike GLM-5.3's
+//! `g_a`/`g_b`). The 0.40B twin omits `gate_lower_bound`; HF then runs FLA's
+//! unbounded `-exp(A_log)*softplus` path (`None` here).
+//!
+//! Recurrence (decode, prenorm q/k):
+//! ```text
+//! S <- S * diag(exp(g_t))     // decay on KEY axis, per channel
+//! delta <- (v_t - S^T k_t) * sigmoid(beta_t)
+//! S <- S + k_t ⊗ delta
+//! o_t <- S^T q_t / sqrt(d)
+//! ```
+//!
+//! Conv state is `[channels, kernel]` (FLA `ShortConvolution` cache `W=kernel`).
+//! Slot 0 is shifted out. `beta` is a raw logit; the step applies `sigmoid`.
+
+#![allow(clippy::needless_range_loop)]
+
+use super::situ::sigmoid;
+
+/// KDA geometry. Tiny dims are legal for CPU tests; production is 128/4.
+#[derive(Clone, Copy, Debug)]
+pub struct KdaConfig {
+    pub heads: usize,
+    pub head_dim: usize,
+    pub conv_kernel: usize,
+    /// Production JSON is `-5`. `None` is the FLA default (twin omits the key).
+    pub gate_lower_bound: Option<f32>,
+    pub use_full_rank_gate: bool,
+}
+
+impl KdaConfig {
+    /// Official K3 KDA. Twin matches except head/heads and omitted `gate_lower_bound`.
+    pub fn production() -> Self {
+        Self {
+            heads: 96,
+            head_dim: 128,
+            conv_kernel: 4,
+            gate_lower_bound: Some(-5.0),
+            use_full_rank_gate: true,
+        }
+    }
+
+    pub fn qkv_dim(&self) -> usize {
+        self.heads * self.head_dim
+    }
+
+    pub fn conv_dim(&self) -> usize {
+        3 * self.qkv_dim()
+    }
+
+    pub fn recurrent_elems(&self) -> usize {
+        self.heads * self.head_dim * self.head_dim
+    }
+
+    pub fn conv_elems(&self) -> usize {
+        self.conv_dim() * self.conv_kernel
+    }
+}
+
+/// Per-sequence KDA state. Both buffers are FP32, read-modify-write.
+#[derive(Clone, Debug)]
+pub struct KdaState {
+    /// `[conv_dim, conv_kernel]` FP32.
+    pub conv: Vec<f32>,
+    /// `[heads, head_dim, head_dim]` FP32, K-major.
+    pub recurrent: Vec<f32>,
+}
+
+impl KdaState {
+    pub fn new(cfg: &KdaConfig) -> Self {
+        Self {
+            conv: vec![0.0; cfg.conv_elems()],
+            recurrent: vec![0.0; cfg.recurrent_elems()],
+        }
+    }
+}
+
+/// Causal depthwise conv + SiLU. Shifts Atlas-width state left, writes `x`
+/// into the last slot, then `y[c] = silu(dot(w[c], state[c]))`.
+pub fn conv_update(
+    state: &mut [f32],
+    x: &[f32],
+    w: &[f32],
+    channels: usize,
+    kernel: usize,
+) -> Vec<f32> {
+    assert_eq!(x.len(), channels);
+    assert_eq!(state.len(), channels * kernel);
+    assert_eq!(w.len(), channels * kernel);
+    let mut y = vec![0.0f32; channels];
+    for c in 0..channels {
+        let row = c * kernel;
+        for k in 0..kernel - 1 {
+            state[row + k] = state[row + k + 1];
+        }
+        state[row + kernel - 1] = x[c];
+        let mut acc = 0.0f32;
+        for k in 0..kernel {
+            acc += w[row + k] * state[row + k];
+        }
+        y[c] = acc * sigmoid(acc); // SiLU
+    }
+    y
+}
+
+/// Stable `log(1+exp(x))`.
+fn softplus(x: f32) -> f32 {
+    let ax = x.abs();
+    x.max(0.0) + (-ax).exp().ln_1p()
+}
+
+/// KDA forget-gate in log space (FLA `use_gate_in_kernel`).
+///
+/// * `Some(lb)`: `lb * sigmoid(exp(A_log) * (z + dt_bias))` (production `-5`)
+/// * `None`: `-exp(A_log) * softplus(z + dt_bias)` (0.40B twin / FLA default)
+pub fn bounded_gate(
+    z: &[f32],
+    dt_bias: &[f32],
+    a_log: &[f32],
+    heads: usize,
+    head_dim: usize,
+    lower_bound: Option<f32>,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; heads * head_dim];
+    for h in 0..heads {
+        let decay = a_log[h].exp();
+        for d in 0..head_dim {
+            let ch = h * head_dim + d;
+            let x = z[ch] + dt_bias[ch];
+            out[ch] = match lower_bound {
+                Some(lb) => lb * sigmoid(decay * x),
+                None => -decay * softplus(x),
+            };
+        }
+    }
+    out
+}
+
+fn l2norm_rows(x: &[f32], d: usize, eps: f32) -> Vec<f32> {
+    let mut out = vec![0.0f32; x.len()];
+    for (row_in, row_out) in x.chunks_exact(d).zip(out.chunks_exact_mut(d)) {
+        let inv = 1.0 / (row_in.iter().map(|v| v * v).sum::<f32>() + eps).sqrt();
+        for (o, i) in row_out.iter_mut().zip(row_in) {
+            *o = i * inv;
+        }
+    }
+    out
+}
+
+/// One-token KDA core. `qkv` is post-conv `[3 * qkv_dim]` (q|k|v).
+/// Updates `state.recurrent` in place. q/k are L2-normalised here.
+pub fn kda_recurrent_step(
+    qkv: &[f32],
+    gate: &[f32],
+    beta: &[f32],
+    cfg: &KdaConfig,
+    recurrent: &mut [f32],
+) -> Vec<f32> {
+    let (h_n, d) = (cfg.heads, cfg.head_dim);
+    let qkv_dim = h_n * d;
+    let q = l2norm_rows(&qkv[..qkv_dim], d, 1e-6);
+    let k = l2norm_rows(&qkv[qkv_dim..2 * qkv_dim], d, 1e-6);
+    let v = &qkv[2 * qkv_dim..3 * qkv_dim];
+    let scale = 1.0 / (d as f32).sqrt();
+    let mut out = vec![0.0f32; qkv_dim];
+    let mut delta = vec![0.0f32; d];
+    for h in 0..h_n {
+        let base = h * d;
+        let s = &mut recurrent[h * d * d..(h + 1) * d * d];
+        for kd in 0..d {
+            let decay = gate[base + kd].exp();
+            for vd in 0..d {
+                s[kd * d + vd] *= decay;
+            }
+        }
+        let b = sigmoid(beta[h]);
+        for vd in 0..d {
+            let mut kv = 0.0f32;
+            for kd in 0..d {
+                kv += s[kd * d + vd] * k[base + kd];
+            }
+            delta[vd] = (v[base + vd] - kv) * b;
+        }
+        for kd in 0..d {
+            let kk = k[base + kd];
+            for vd in 0..d {
+                s[kd * d + vd] += kk * delta[vd];
+            }
+        }
+        for vd in 0..d {
+            let mut acc = 0.0f32;
+            for kd in 0..d {
+                acc += s[kd * d + vd] * q[base + kd] * scale;
+            }
+            out[base + vd] = acc;
+        }
+    }
+    out
+}
+
+/// Full-rank output gate: `sigmoid(g) ⊙ RMSNorm(core)` per head.
+pub fn full_rank_output_gate(core: &[f32], g: &[f32], head_dim: usize, eps: f32) -> Vec<f32> {
+    assert_eq!(core.len(), g.len());
+    let mut out = vec![0.0f32; core.len()];
+    for (row_c, (row_g, row_o)) in core
+        .chunks_exact(head_dim)
+        .zip(g.chunks_exact(head_dim).zip(out.chunks_exact_mut(head_dim)))
+    {
+        let mean_sq = row_c.iter().map(|v| v * v).sum::<f32>() / head_dim as f32;
+        let inv = 1.0 / (mean_sq + eps).sqrt();
+        for i in 0..head_dim {
+            row_o[i] = sigmoid(row_g[i]) * row_c[i] * inv;
+        }
+    }
+    out
+}
+
+/// One decode token: conv update then recurrent step.
+pub fn kda_decode_token(
+    x_qkv: &[f32],
+    conv_w: &[f32],
+    gate: &[f32],
+    beta: &[f32],
+    cfg: &KdaConfig,
+    state: &mut KdaState,
+) -> Vec<f32> {
+    let conv_out = conv_update(
+        &mut state.conv,
+        x_qkv,
+        conv_w,
+        cfg.conv_dim(),
+        cfg.conv_kernel,
+    );
+    kda_recurrent_step(&conv_out, gate, beta, cfg, &mut state.recurrent)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tiny() -> KdaConfig {
+        KdaConfig {
+            heads: 1,
+            head_dim: 2,
+            conv_kernel: 4,
+            gate_lower_bound: Some(-5.0),
+            use_full_rank_gate: true,
+        }
+    }
+
+    #[test]
+    fn production_geometry() {
+        let p = KdaConfig::production();
+        assert_eq!(p.head_dim, 128);
+        assert_eq!(p.conv_kernel, 4);
+        assert!(p.use_full_rank_gate);
+        assert_eq!(p.gate_lower_bound, Some(-5.0));
+    }
+
+    #[test]
+    fn omitted_lower_bound_is_neg_exp_a_softplus() {
+        let z = [0.5f32, -0.25];
+        let dt = [0.1, 0.0];
+        let a_log = [0.0f32]; // exp(A_log) = 1
+        let g = bounded_gate(&z, &dt, &a_log, 1, 2, None);
+        let sp = |x: f32| x.max(0.0) + (-x.abs()).exp().ln_1p();
+        assert!((g[0] - (-sp(0.6))).abs() < 1e-6);
+        assert!((g[1] - (-sp(-0.25))).abs() < 1e-6);
+        let g5 = bounded_gate(&z, &dt, &a_log, 1, 2, Some(-5.0));
+        assert!(
+            (g5[0] - g[0]).abs() > 0.1,
+            "safe-gate -5 must diverge from unbounded FLA default"
+        );
+    }
+
+    #[test]
+    fn conv_kernel_4_state_advances() {
+        let cfg = tiny();
+        let ch = cfg.conv_dim(); // 6
+        let k = cfg.conv_kernel;
+        let mut state = vec![0.0f32; ch * k];
+        let w = vec![1.0f32; ch * k];
+        for t in 0..4u32 {
+            let x = vec![(t + 1) as f32; ch];
+            let _y = conv_update(&mut state, &x, &w, ch, k);
+            // Last slot is the current sample.
+            for c in 0..ch {
+                assert_eq!(state[c * k + (k - 1)], x[c], "t={t} last slot");
+            }
+        }
+        // After 4 distinct tokens the window holds 1,2,3,4 (oldest → newest).
+        for c in 0..ch {
+            let row = &state[c * k..(c + 1) * k];
+            assert_eq!(row, &[1.0, 2.0, 3.0, 4.0]);
+        }
+    }
+
+    #[test]
+    fn prefix_hit_wrong_slot_diverges() {
+        // C4 seed: restore the conv/recurrent state from the wrong slot
+        // after a prefix hit, and the next decode must move.
+        let cfg = tiny();
+        let ch = cfg.conv_dim();
+        let mut correct = KdaState::new(&cfg);
+        let conv_w = vec![0.25f32; cfg.conv_elems()];
+        let gate = bounded_gate(
+            &[0.1, -0.2],
+            &[0.0, 0.0],
+            &[-1.0],
+            cfg.heads,
+            cfg.head_dim,
+            cfg.gate_lower_bound,
+        );
+        let beta = [0.5f32];
+        let mut snapshots = Vec::new();
+        for t in 0..2u32 {
+            let x = vec![(t + 1) as f32 * 0.1; ch];
+            let _ = kda_decode_token(&x, &conv_w, &gate, &beta, &cfg, &mut correct);
+            snapshots.push(correct.clone());
+        }
+        // Sequential token 3 from the real prefix (after two tokens).
+        let x3 = vec![0.4f32; ch];
+        let y_seq = kda_decode_token(&x3, &conv_w, &gate, &beta, &cfg, &mut correct);
+        // Prefix hit: restore snapshot after token 2, decode the same x3.
+        let mut from_prefix = snapshots[1].clone();
+        let y_hit = kda_decode_token(&x3, &conv_w, &gate, &beta, &cfg, &mut from_prefix);
+        assert_eq!(y_hit, y_seq, "correct slot must match sequential decode");
+        assert_eq!(from_prefix.conv, correct.conv);
+        // Wrong slot: restore snapshot after token 1 (prefix-hit then wrong state).
+        let mut wrong = snapshots[0].clone();
+        let y_wrong = kda_decode_token(&x3, &conv_w, &gate, &beta, &cfg, &mut wrong);
+        let err: f32 = y_hit
+            .iter()
+            .zip(&y_wrong)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(
+            err > 1e-4,
+            "wrong-slot restore must diverge (max abs {err}), hit={y_hit:?} wrong={y_wrong:?}"
+        );
+    }
+
+    #[test]
+    fn beta_zero_is_sigmoid_half_not_zero() {
+        // HF fused_recurrent_kda: use_beta_sigmoid_in_kernel=True.
+        // Raw beta=0 must still write a delta (sigmoid(0)=0.5), not skip.
+        let cfg = tiny();
+        let qkv = [1.0f32, 0.0, 1.0, 0.0, 1.0, 0.5];
+        let gate = [-1.0f32, -1.0];
+        let mut rec_zero = vec![0.0f32; cfg.recurrent_elems()];
+        let mut rec_raw = rec_zero.clone();
+        let o_sig = kda_recurrent_step(&qkv, &gate, &[0.0], &cfg, &mut rec_zero);
+        let o_raw_one = kda_recurrent_step(&qkv, &gate, &[20.0], &cfg, &mut rec_raw);
+        let err: f32 = o_sig.iter().map(|v| v.abs()).fold(0.0, f32::max);
+        assert!(
+            err > 1e-6,
+            "sigmoid(0)=0.5 must update the state, got {o_sig:?}"
+        );
+        assert_ne!(o_sig, o_raw_one, "saturated beta must differ from beta=0");
+    }
+}
