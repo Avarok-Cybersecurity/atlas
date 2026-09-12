@@ -51,6 +51,9 @@ pub(super) fn finish(
     ctx: &LogitsContext,
 ) {
     let k = drafts.len() + 1;
+    // Lookup drafts (#974) wrote no drafter rows: the trim below is skipped
+    // for them, and the index is scored on what the verify accepted.
+    let from_lookup = std::mem::take(&mut seq.pending_drafts_lookup);
     let vocab = model.vocab_size();
     // Borrow the run's staging buffer instead of allocating. `vec![0; ...]`
     // here was a fresh 1.49 MB (K=3, vocab 151936) allocation AND zero-fill on
@@ -114,7 +117,9 @@ pub(super) fn finish(
     if !super::verify_k2_step::commit_verify_aux_or_finish(model, seq, na + 1, k) {
         return;
     }
-    if let Err(e) = model.trim_proposer_state(&mut seq.seq, na, 0) {
+    if from_lookup {
+        sched.lookup.borrow_mut().record(drafts.len(), na);
+    } else if let Err(e) = model.trim_proposer_state(&mut seq.seq, na, 0) {
         tracing::error!("trim_proposer_state(K={k}): {e:#}");
         seq.finished = true;
         return;
@@ -130,6 +135,9 @@ pub(super) fn finish(
     if let Err(e) = model.save_hidden_for_mtp(na, 0) {
         tracing::error!("save_hidden_for_mtp({na}): {e:#}");
         seq.finished = true;
+        return;
+    }
+    if super::lookup_gate::take_lookup_drafts(seq, sched, num_drafts, false, model.is_ep()) {
         return;
     }
     let grammar_mask = super::mtp_grammar_mask_for(seq);

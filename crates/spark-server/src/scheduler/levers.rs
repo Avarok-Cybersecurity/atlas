@@ -66,6 +66,21 @@ pub struct SchedLevers {
     /// `ATLAS_DFLASH_RESUME_GUARD=N` (default 0 = off): keep the first N
     /// post-`</think>` tokens on plain serial decode.
     pub dflash_resume_guard: u32,
+    /// Lookup drafts into the wide verify (#974): when the sequence's own
+    /// history matches the tokens just generated, the continuation is the
+    /// draft and the MTP propose is skipped for that step. Ships ON;
+    /// `ATLAS_LOOKUP_DRAFTS=0` restores the MTP head on every step.
+    pub lookup_drafts: bool,
+    /// Match length the lookup index is keyed on (`ATLAS_LOOKUP_MIN_MATCH`,
+    /// default 8). Shorter matches never fire. Measured 2026-09-12 on
+    /// Qwen3.8-Flash-Next: at 4 the index fires on fresh code and prose
+    /// (`self.`, `return`, `):` repeat every few lines), the verify rejects
+    /// the drafts, accept counts drop and every stream moves; at 8 all three
+    /// standard cells are byte-identical to the base at base tok/s.
+    pub lookup_min_match: usize,
+    /// Longest backward match the lookup ranks by (`ATLAS_LOOKUP_MAX_MATCH`,
+    /// default 16).
+    pub lookup_max_match: usize,
     /// `ATLAS_MTP_SHADOW_TOPK` — the verify side of the drafter top-k probe.
     /// Parsed by `spark_model::speculative::shadow_topk`, the SSOT.
     pub shadow_topk: usize,
@@ -214,6 +229,9 @@ impl SchedLevers {
             dflash_adaptive_min: num("ATLAS_DFLASH_ADAPTIVE_MIN", 2.0),
             dflash_adaptive_reprobe: num("ATLAS_DFLASH_ADAPTIVE_REPROBE", 256),
             dflash_resume_guard: num("ATLAS_DFLASH_RESUME_GUARD", 0),
+            lookup_drafts: on_unless_zero("ATLAS_LOOKUP_DRAFTS"),
+            lookup_min_match: num("ATLAS_LOOKUP_MIN_MATCH", 8),
+            lookup_max_match: num("ATLAS_LOOKUP_MAX_MATCH", 16),
             shadow_topk: spark_model::speculative::shadow_topk(),
 
             // Reuses the tested parsers in `helpers` rather than re-deriving
@@ -260,6 +278,9 @@ impl SchedLevers {
             dflash_adaptive_min: 2.0,
             dflash_adaptive_reprobe: 256,
             dflash_resume_guard: 0,
+            lookup_drafts: true,
+            lookup_min_match: 8,
+            lookup_max_match: 16,
             shadow_topk: 0,
             disable_watchdogs: false,
             eos_suppressed_by_thinking: false,
