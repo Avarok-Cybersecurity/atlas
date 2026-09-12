@@ -69,6 +69,11 @@ lm_head_batchm_max = 8
 # One strided recurrent launch per batch on the GDN decode path. Hopper
 # declares this ON on a Hopper receipt; B200 has none, so it stays off.
 ssm_batched_recurrent = false
+# The tensor-core GDN chunked-PREFILL spine (#928). OFF, and INERT: the kernel
+# is Hopper's (`kernels/hopper/common/gated_delta_rule_chunk_tc.cu`) and B200's
+# build does not compile it. Declared because the lever list is one list. B200
+# has no serving receipt of any kind, so it does not inherit a Hopper recipe by
+# resemblance.
 gdn_prefill_tc = false
 ssm_ba_gates_hopper = false
 # Split SiLU+down on the decode path — shipped ON everywhere.

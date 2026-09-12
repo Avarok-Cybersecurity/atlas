@@ -16,7 +16,7 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight}
 use super::*;
 
 /// The tensor-core spine's compile-time tile: `K_DIM == V_DIM` in
-/// `kernels/gb10/common/gated_delta_rule_chunk_tc.cu`.
+/// `kernels/hopper/common/gated_delta_rule_chunk_tc.cu`.
 pub(crate) const GDN_TC_DIM: u32 = 128;
 /// That kernel's `CHUNK`.
 pub(crate) const GDN_TC_CHUNK: u32 = 64;

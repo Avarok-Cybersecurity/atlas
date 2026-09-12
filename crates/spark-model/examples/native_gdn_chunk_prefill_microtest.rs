@@ -39,7 +39,7 @@ const C: usize = 64;
 /// per head, so 2 of 48 is a complete check of the math at 1/24 of the CPU cost
 /// (the full set is ~14.5 GFLOP of f64 at T=4593).
 const REF_HEADS: usize = 2;
-/// SSOT mirror of `TCF_SMEM` in kernels/gb10/common/gated_delta_rule_chunk_tc.cu.
+/// SSOT mirror of `TCF_SMEM` in kernels/hopper/common/gated_delta_rule_chunk_tc.cu.
 const TCF_SMEM: u32 = (VD * 136 * 2 + 2 * (C * 136 * 2) + VD * 72 * 2 + (C + 1) * 4) as u32;
 /// The shipped fused spine's footprint (W + K + U single-buffered + decay row).
 const VFUSED_SMEM: u32 = (C * KD * 2 + C * KD * 2 + C * VD * 2 + (C + 1) * 4) as u32;
@@ -376,14 +376,29 @@ fn main() -> Result<()> {
         "gated_delta_rule_fla",
         "gated_delta_rule_chunk_delta_h_vfused",
     )?;
-    let k_new = g.kernel(
-        "gated_delta_rule_chunk_tc",
-        "gated_delta_rule_chunk_delta_h_tcfuse",
-    )?;
-    let k_x2 = g.kernel(
-        "gated_delta_rule_chunk_tc",
-        "gated_delta_rule_chunk_delta_h_tcfuse_x2",
-    )?;
+    // The spine is declared in `kernels/hopper`'s `[kernels] overrides`, so it
+    // is absent from every other image and this oracle SKIPS there rather than
+    // failing. It was developed and validated on GB10 and is arch-neutral; it
+    // sits in the Hopper tree only because rule S1 refuses new cross-hardware
+    // symlinks (`kernels/hopper/HARDWARE.toml`). A GB10 receipt moves the file
+    // back down and this skip stops firing there.
+    let (Ok(k_new), Ok(k_x2)) = (
+        g.kernel(
+            "gated_delta_rule_chunk_tc",
+            "gated_delta_rule_chunk_delta_h_tcfuse",
+        ),
+        g.kernel(
+            "gated_delta_rule_chunk_tc",
+            "gated_delta_rule_chunk_delta_h_tcfuse_x2",
+        ),
+    ) else {
+        println!(
+            "SKIPPED: the tensor-core GDN prefill spine is not in this image. It \
+             is declared under kernels/hopper (sm_90a); build with that hardware \
+             set to run this oracle."
+        );
+        return Ok(());
+    };
 
     println!("=== GDN chunked-prefill spine: scalar vfused vs tensor-core tcfuse (#928) ===");
     println!(

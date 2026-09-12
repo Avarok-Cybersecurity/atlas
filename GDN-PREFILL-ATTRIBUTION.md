@@ -85,8 +85,9 @@ document ran it as `=1` and is unaffected. On Hopper `=0` is now the arm that
 CHANGES anything: the family is the declared default there, and `=0` is the
 whole-family kill switch — spine and both remnant twins, because the twins read
 the same resolved bit. The kernel stays where it is —
-`kernels/gb10/common/gated_delta_rule_chunk_tc.cu`, shared and validated on
-GB10; the declaration gates the PROBE that loads it as well as the launch, so a
+`kernels/hopper/common/gated_delta_rule_chunk_tc.cu` — developed and validated
+on GB10 and arch-neutral, but declared in the Hopper tree because
+`check_cross_hardware.py` rule S1 refuses new cross-hardware symlinks; the declaration gates the PROBE that loads it as well as the launch, so a
 target with the lever off does not ask the kernel audit about a module nothing
 can reach.
 
