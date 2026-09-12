@@ -45,4 +45,11 @@ TEST NOTES (EOS)
 C1 protocol: exact match **through first EOS inclusive**, max_new=128 as a cap. Re-run all 8 prompts on spark2.
 
 STOP
-Waiting on spark2 8-prompt until-EOS. Do not check C2–C7 until that is green.
+spark2 until-EOS (d11d50d, 250s): **prompts 0–3 OK**, **prompt 4 FAIL at first generated token**.
+Prompt 4 `"Once upon a time in a small village,"`:
+- ours `60063` `' flies'`
+- HF `996` `' but'`
+HF CUDA last-pos top-2: **996=10.75, 60063=10.3125** (gap 0.44). Close race. Prompts 5–7 not run (old fail-fast).
+
+STOP
+C1 **not green**. 4/8 until-EOS. Next: chunk_kda vs fused_recurrent HF path; do not skip to C7.

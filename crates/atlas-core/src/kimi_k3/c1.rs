@@ -120,23 +120,40 @@ fn c1_greedy_vs_hf_goldens_skip_if_missing() {
         eprintln!("skip C1 engine: no K3_TWIN weights (synthetic cannot match HF ids)");
         return;
     };
+    let mut fails = Vec::new();
     for (i, row) in rows.iter().enumerate() {
         let split = row.tokens.len() - max_new;
         let prompt = &row.tokens[..split];
         let want = until_first_eos(&row.tokens);
-        assert!(
-            want.last() == Some(&TWIN_EOS),
-            "C1 prompt {i}: golden never hits EOS; post-EOS 128-cap is not the oracle"
-        );
+        if want.last() != Some(&TWIN_EOS) {
+            fails.push(format!("prompt {i}: golden never hits EOS"));
+            continue;
+        }
         let n_new = want.len() - split;
         let got = greedy_decode(&engine, prompt, n_new, Ablation::default());
         let got = until_first_eos(&got);
-        assert_eq!(
-            got, want,
-            "C1 prompt {i} ({}) mismatch through first EOS (not post-EOS 128-cap)",
-            row.prompt
-        );
+        if got == want {
+            eprintln!("C1 prompt {i} OK through EOS ({} new)", n_new);
+            continue;
+        }
+        let fork = got
+            .iter()
+            .zip(want.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or(got.len().min(want.len()));
+        fails.push(format!(
+            "prompt {i} ({:?}) fork@{fork} ours={:?} hf={:?}",
+            row.prompt,
+            got.get(fork),
+            want.get(fork)
+        ));
     }
+    assert!(
+        fails.is_empty(),
+        "C1 until-EOS failures ({}/8):\n{}",
+        fails.len(),
+        fails.join("\n")
+    );
 }
 
 #[test]
