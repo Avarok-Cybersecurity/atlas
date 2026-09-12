@@ -260,3 +260,70 @@ fn an_unreadable_zone_is_dropped_rather_than_read_as_zero() {
     );
     assert!(thermal_zone(Some("acpitz"), "").is_none());
 }
+
+// ── `nvidia-smi -L` (device count) ──
+
+/// Captured shapes of `nvidia-smi -L`, as string literals rather than files:
+/// the multi-GPU boxes the Hopper A/B needs are not on hand to capture from,
+/// and the format is one documented line per device.
+const L_ONE_GPU: &str = "GPU 0: NVIDIA GB10 (UUID: GPU-6f0b7c21-1f2e-4a55-9c31-3d7a90b41e08)\n";
+
+const L_TWO_GPUS: &str = "\
+GPU 0: NVIDIA H100 80GB HBM3 (UUID: GPU-2f1cbb90-7e58-4a11-8f2b-1c9d0e5a7742)
+GPU 1: NVIDIA H100 80GB HBM3 (UUID: GPU-9a44e1d7-3b60-4c8e-a0f5-52e7c81d6b39)
+";
+
+const L_EIGHT_GPUS: &str = "\
+GPU 0: NVIDIA H200 (UUID: GPU-0a11e4c2-1000-4000-8000-000000000000)
+GPU 1: NVIDIA H200 (UUID: GPU-0a11e4c2-1000-4000-8000-000000000001)
+GPU 2: NVIDIA H200 (UUID: GPU-0a11e4c2-1000-4000-8000-000000000002)
+GPU 3: NVIDIA H200 (UUID: GPU-0a11e4c2-1000-4000-8000-000000000003)
+GPU 4: NVIDIA H200 (UUID: GPU-0a11e4c2-1000-4000-8000-000000000004)
+GPU 5: NVIDIA H200 (UUID: GPU-0a11e4c2-1000-4000-8000-000000000005)
+GPU 6: NVIDIA H200 (UUID: GPU-0a11e4c2-1000-4000-8000-000000000006)
+GPU 7: NVIDIA H200 (UUID: GPU-0a11e4c2-1000-4000-8000-000000000007)
+";
+
+/// Oracle: the `nvidia-smi -L` format itself — one line per device.
+///
+/// The three cases are the three topologies the Hopper A/B runs: a single
+/// card, a 2-way tensor-parallel pair, and a full 8-way node. Without this the
+/// record cannot tell them apart, and three runs of the same recipe at
+/// different widths read as one number measured three times.
+#[test]
+fn one_line_per_device_is_the_device_count() {
+    assert_eq!(gpu_count(L_ONE_GPU), Some(1));
+    assert_eq!(gpu_count(L_TWO_GPUS), Some(2));
+    assert_eq!(gpu_count(L_EIGHT_GPUS), Some(8));
+}
+
+/// ★ Oracle: nvidia-smi's MIG output, where each GPU line is followed by
+/// indented `MIG` device lines. Counting every line — or every line CONTAINING
+/// "GPU" — turns a two-card box into an eight-way one, and the record would
+/// then describe a topology that never existed.
+#[test]
+fn mig_partitions_are_not_counted_as_gpus() {
+    let text = "\
+GPU 0: NVIDIA H100 80GB HBM3 (UUID: GPU-2f1cbb90-7e58-4a11-8f2b-1c9d0e5a7742)
+  MIG 1g.10gb     Device  0: (UUID: MIG-1f0a2b3c-0000-0000-0000-000000000000)
+  MIG 1g.10gb     Device  1: (UUID: MIG-1f0a2b3c-0000-0000-0000-000000000001)
+GPU 1: NVIDIA H100 80GB HBM3 (UUID: GPU-9a44e1d7-3b60-4c8e-a0f5-52e7c81d6b39)
+  MIG 1g.10gb     Device  0: (UUID: MIG-2f0a2b3c-0000-0000-0000-000000000000)
+";
+    assert_eq!(gpu_count(text), Some(2));
+}
+
+/// Oracle: this module's stated contract — "a parser that cannot read a number
+/// must not invent one". No tool, no permission, an error on stderr: all of
+/// them answer nothing, and `Some(1)` would claim a single-GPU topology for a
+/// run that may have used eight.
+#[test]
+fn an_unreadable_answer_is_none_not_one() {
+    for text in [
+        "",
+        "   \n\n",
+        "Failed to initialize NVML: Driver/library version mismatch\n",
+    ] {
+        assert_eq!(gpu_count(text), None, "{text:?}");
+    }
+}

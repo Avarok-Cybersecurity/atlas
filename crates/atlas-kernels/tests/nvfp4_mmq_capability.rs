@@ -54,17 +54,28 @@ fn every_mmq_export_is_inside_the_vendor_capability_guard() {
 }
 
 #[test]
-fn gb10_dense_targets_keep_every_supported_mmq_export() {
+fn hopper_audit_explains_every_removed_export_and_gb10_keeps_them() {
     let functions = exports(&source());
     assert_eq!(functions.len(), 13);
-    // GB10 is SM 12.1: BLACKWELL_MMA_AVAILABLE is defined, so every entry
-    // point above compiles to real device code and none of them may be
-    // declared absent. A target whose arch does not define the predicate
-    // records each exclusion under `expected_absent.nvfp4_mmq` instead.
-    for model in ["qwen3.6-27b", "qwen3.8-27b"] {
-        let path = root().join("gb10").join(model).join("MODEL.toml");
-        let doc: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let absent = doc.get("expected_absent").and_then(|t| t.get("nvfp4_mmq"));
-        assert!(absent.is_none(), "GB10 must retain the supported MMQ path");
+    for hw in ["hopper", "gb10"] {
+        for model in ["qwen3.6-27b", "qwen3.8-27b"] {
+            let path = root().join(hw).join(model).join("MODEL.toml");
+            let doc: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let absent = doc.get("expected_absent").and_then(|t| t.get("nvfp4_mmq"));
+            if hw == "gb10" {
+                assert!(absent.is_none(), "GB10 must retain the supported MMQ path");
+                continue;
+            }
+            let absent = absent
+                .and_then(toml::Value::as_table)
+                .expect("all excluded MMQ entry points need reasons in the real Hopper audit");
+            assert_eq!(absent.len(), functions.len());
+            for name in &functions {
+                let reason = absent[name].as_str().unwrap();
+                assert!(reason.contains("BLACKWELL_MMA_AVAILABLE"));
+                assert!(reason.contains("W4A16"));
+            }
+        }
     }
 }

@@ -1,0 +1,1 @@
+../../gb10/common/relu_squared.cu

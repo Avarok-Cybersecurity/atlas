@@ -1,0 +1,86 @@
+[hardware]
+name = "b200"
+vendor = "nvidia"
+# B200 / GB200 SXM — SM 10.0 (datacenter Blackwell). `sm_100a` exposes
+# tcgen05 / TMA / native NVFP4 (cvt e2m1x2, mma kind::mxf4nvf4); the shared
+# gb10-derived kernels compile as plain sm_100 code today. Arch-specific PTX
+# is NOT forward-compatible: B300 / GB300 are SM 10.3 (`sm_103a`) and need
+# their own target. Consumer/GB10 Blackwell (sm_120/sm_121) lacks tcgen05.
+arch = "sm_100a"
+compute_capability = "10.0"
+# Streaming multiprocessors. B200 SXM is GB100 with 148 SMs enabled.
+# Cross-checked at boot against the driver's own count, as on every target.
+sm_count = 148
+# B200 SXM 180 GB HBM3e: ~8000 GB/s. Documentation + roofline input only;
+# the runtime reads real free memory via cuMemGetInfo.
+memory_bandwidth_gbps = 8000
+memory_type = "HBM3e"
+memory_gb = 180
+
+# Flags added to EVERY kernel compiled for this hardware, under
+# common/KERNEL.toml's and the model's (build_flags::merge_extra_flags).
+#
+# ATLAS_NO_WARP_BLOCKSCALE_MMA compiles out the W4A4 path in
+# qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu. Datacentre Blackwell DOES
+# have NVFP4, but issues block-scaled MMA through tcgen05; the warp-level
+# `mma.sync ... .kind::mxf4nvf4.block_scale` is a consumer/GB10 Blackwell
+# (sm_120/sm_121) instruction — ptxas: "Instruction 'mma with block scale'
+# not supported on .target 'sm_100a'" (measured 2026-09-05, CUDA 13.0.88;
+# reproduce with `scripts/hopper_ptx_gate.sh --hw b200 --model
+# qwen3.6-35b-a3b --strict` after dropping this flag — see #899).
+# A tcgen05 rewrite of that kernel would lift this; nothing here does that.
+#
+# A hardware-level define, not a per-model one, because it is a fact about
+# the ISA and because every KERNEL.toml under this tree is a symlink into
+# kernels/gb10 — saying it per model would fork a shared file once per
+# model, which tests/inherited_targets.rs forbids.
+[build]
+extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
+
+# ── Serving defaults for this target ───────────────────────────────────────
+#
+# SSOT for the per-target serving levers, baked into `atlas_kernels` by
+# build.rs (`build_defaults.rs`) as `atlas_kernels::TARGET_DEFAULTS` and read
+# by every resolver in spark-model BEFORE the environment.
+#
+# WHY IT IS HERE. Maintainer review, 2026-09-11 (tbraun96): "There is no arch
+# separation at all. H100 builds compile GB10's kernel tree. Every Hopper/GB10
+# divergence is expressed as an env lever set by an H100 recipe living outside
+# this repo — not as arch-selected code. 'No interference' rests on discipline
+# rather than structure." A default that lives in a launch script is not a
+# property of the target; one that lives beside the target's arch and memory
+# facts is. The environment stays available as an EXPLICIT operator override,
+# and the serve log says which values came from it.
+#
+# EVERY target with a `[defaults]` table declares EVERY row, even where the
+# value agrees with the baseline: an absent key falls through to
+# `build_defaults::baseline`, which is correct behaviour and terrible
+# documentation — a reader of this file would have to know the baseline to
+# know what this target serves with, which is the "recipe lives somewhere
+# else" problem the table replaces.
+#
+# B200 has NO serving receipt of any kind, so it declares the conservative
+# table and NOT Hopper's. Copying a recipe across because both cards are
+# datacentre parts is exactly the reasoning this mechanism replaces.
+[defaults]
+# The BF16 decode head's batched-GEMV band — the frozen 8, for want of a B200
+# A/B.
+lm_head_batchm_max = 8
+# One strided recurrent launch per batch on the GDN decode path. Hopper
+# declares this ON on a Hopper receipt; B200 has none, so it stays off.
+ssm_batched_recurrent = false
+# Split SiLU+down on the decode path — shipped ON everywhere.
+decode_split_silu = true
+# Upper M for the W8A8 block-scaled dense-FFN prefill (#917). NO CAP here:
+# 4294967295 is u32::MAX, which is `build_defaults::baseline`'s value and the
+# way this table spells "every M takes the W8A8 arm". B200 has NO receipt
+# either way. It keeps the baseline: a cap is a measurement, and copying
+# GB10's because both are Blackwell is the reasoning this table replaces. The
+# row is here to be filled in when someone measures it.
+#
+# Declared explicitly rather than left to the baseline: a row present in one
+# target's table and missing from another's is how a lever comes to mean two
+# things in one repository.
+w8a8_prefill_max_m_widening = 4294967295
+w8a8_prefill_max_m_narrowing = 4294967295
+

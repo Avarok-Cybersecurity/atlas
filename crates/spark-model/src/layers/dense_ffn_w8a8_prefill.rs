@@ -3,6 +3,45 @@
 //! W8A8 block-scaled dense-FFN PREFILL — the gate/up/down GEMM arm that the
 //! native-FP8 dispatch in `dense_ffn.rs` reaches ahead of its W8A16 branches.
 //!
+//! # Reachability — read this before measuring anything here
+//!
+//! This whole module is **opt-in and unreached by default**. It runs only when
+//! the dense FFN holds block-scaled FP8 weights, and
+//! `qwen35_dense.rs::load_layers` installs those only when
+//!
+//! ```text
+//! dense_fp8_enabled() && tp_world_size == 1
+//!     && variant == Nvfp4Variant::Fp8Dequanted
+//!     && proj_is_native_fp8(gate_proj)
+//! ```
+//!
+//! and `dense_fp8_enabled()` is `ATLAS_DENSE_FP8 == "1"`. `git grep
+//! ATLAS_DENSE_FP8` returns ONE hit — its own reader. No CI job, no
+//! `BENCH.toml` entry and no gate sets it, so no certification record on any
+//! branch has ever exercised this code. Without it `self.fp8_weights` is
+//! `None`, `forward_prefill_inner` never reaches the selection below, and
+//! NEITHER of the two route log lines is emitted. Three served A/B attempts
+//! were spent discovering that, each reading as "the lever did not arm".
+//!
+//! It is off by default because on GB10 native dense FP8 LOSES to the NVFP4
+//! autoquant fallback, and not narrowly. Same box, same binary, same
+//! byte-identical 949-token prompt, `Qwen3.6-27B-FP8`, TTFT median of 5
+//! (spark-256a, 2026-09-11):
+//!
+//! ```text
+//! default (NVFP4)                       1437.2 ms   1.00x
+//! ATLAS_DENSE_FP8=1, W8A16 (capped)     2555.8 ms   1.78x slower
+//! ATLAS_DENSE_FP8=1, W8A8  (no cap)     3343.3 ms   2.33x slower
+//! ```
+//!
+//! So the ceiling below is worth 23.4% *within* the dense-FP8 path, and the
+//! dense-FP8 path is still the slower choice on this arch. GB10's FP8 W8A16
+//! kernels are simply less tuned than its NVFP4 W4A16 ones (unfused
+//! per-projection GEMV, non-transposed prefill GEMM); closing that is kernel
+//! work, not loader wiring. On H100 the trade is the other way round, which is
+//! why the ceiling is per-arch data in `kernels/<hw>/HARDWARE.toml` and not a
+//! constant here.
+//!
 //! WHY (#917 / #928). On a native-FP8 checkpoint the dense FFN's prefill GEMMs
 //! ran `w8a16_gemm_pipelined`: BF16 activations against E4M3 weights, so the
 //! MMA is the BF16 tensor-core path and the FP8 bytes are pure memory savings.
@@ -59,6 +98,28 @@ pub fn ffn_w8a16_only() -> bool {
     *ONLY.get_or_init(|| std::env::var_os("ATLAS_FFN_W8A16_ONLY").is_some())
 }
 
+/// The ceiling that applies to a projection of shape `[n, k]`.
+///
+/// `n > k` is the WIDENING case (gate/up: N=17408, K=5120 on Qwen3.8-27B);
+/// `n <= k` the NARROWING one (down: N=5120, K=17408). Two rows and not one
+/// because the measured crossover differs by about 6x between the two shapes —
+/// M~64-128 widening against M~384-512 narrowing.
+///
+/// Read from [`ops::target_defaults::resolved`] rather than carried on
+/// `GemmDispatch`: that resolution is `OnceLock`-cached precisely so it can be
+/// read per projection per layer per step, and it is where the other
+/// target-declared levers already live. `ffn_w8a16_only` above is the same
+/// shape of process-global, which is why `w8a8_prefill_selected` takes the
+/// ceiling as an ARGUMENT — a `OnceLock` cannot be toggled per test.
+pub(crate) fn max_m_for(n: u32, k: u32) -> u32 {
+    let levers = ops::target_defaults::resolved();
+    if n > k {
+        levers.w8a8_prefill_max_m_widening.value
+    } else {
+        levers.w8a8_prefill_max_m_narrowing.value
+    }
+}
+
 /// The whole W8A8 selection rule, as a pure function of shape + format +
 /// handles. Split out from the layer method so the CPU tests can pin every
 /// clause without a `ForwardContext` (`w8a16_only` is injected for the same
@@ -75,6 +136,12 @@ pub fn ffn_w8a16_only() -> bool {
 /// * `k % 128 == 0` — the activation quantizer emits one scale per 128-wide K
 ///   group and the GEMM folds per K-block.
 /// * `n % 128 == 0` — the weight scale grid is `[N/128, K/128]`.
+/// * `m <= max_m` — the per-arch upper bound. W8A8 beats W8A16 only while the
+///   per-token activation quantization and its FP32 scale epilogue are small
+///   against the GEMM; past that the quantization is the bill and W8A16's
+///   larger MMA wins. Where that crosses is a property of the arch, so it is
+///   declared in `kernels/<hw>/HARDWARE.toml` `[defaults]` rather than being a
+///   constant here. `u32::MAX` (the baseline) is no cap.
 /// * both handles loaded — a model shadow may not carry either entry point.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn w8a8_prefill_selected(
@@ -86,9 +153,11 @@ pub(crate) fn w8a8_prefill_selected(
     quant_k: KernelHandle,
     gemm_k: KernelHandle,
     w8a16_only: bool,
+    max_m: u32,
 ) -> bool {
     !w8a16_only
         && m > 4
+        && m <= max_m
         && fp8_blockscaled_prefill
         && scale_format == WeightQuantFormat::Fp8BlockScaled
         && k.is_multiple_of(128)
@@ -123,6 +192,7 @@ impl DenseFfnLayer {
             self.per_token_group_quant_fp8_k,
             self.fp8_gemm_t_blockscaled_k,
             ffn_w8a16_only(),
+            max_m_for(n, k),
         ) && ctx.buffers.ffn_act_a().0 != 0
             && ctx.buffers.ffn_act_scale().0 != 0
     }

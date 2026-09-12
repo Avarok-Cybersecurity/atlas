@@ -1491,7 +1491,10 @@ want_rc_msg 1 "is missing hardware tree(s)" \
 
 # ...and it still catches the violation it exists for: a shadow byte-identical
 # to the common file it overrides is a dead override.
+# Every tree in HW_SOURCE_EXT must exist or the check refuses for THAT reason
+# instead — which would make this control pass on the wrong error.
 mkdir -p "$TMP/ks/live/gb10/common" "$TMP/ks/live/gb10/m1/q" \
+         "$TMP/ks/live/b200" "$TMP/ks/live/hopper" \
          "$TMP/ks/live/metal" "$TMP/ks/live/strix" "$TMP/ks/live/strix-hip"
 printf '__global__ void k() {}\n' > "$TMP/ks/live/gb10/common/k.cu"
 cp "$TMP/ks/live/gb10/common/k.cu" "$TMP/ks/live/gb10/m1/q/k.cu"

@@ -1,0 +1,106 @@
+[hardware]
+name = "hopper"
+vendor = "nvidia"
+# H100 SXM5 / H200 SXM5 — both SM 9.0. `sm_90a` enables the arch-specific
+# Hopper feature set (wgmma/TMA/setmaxnreg) for kernels that opt in; the
+# shared gb10-derived kernels below use none of it yet and compile as
+# plain sm_90 code. PTX built for sm_90a is NOT forward-compatible with
+# sm_100/sm_120 devices — this target is Hopper-only by design.
+arch = "sm_90a"
+compute_capability = "9.0"
+# Streaming multiprocessors. H100 SXM5/PCIe and H200 SXM5 are all GH100 with
+# 132 SMs enabled; the H100 NVL card is 132 too. CROSS-CHECKED at boot against
+# `CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT` — a serve on a part with a
+# different count logs a warning naming both numbers rather than silently
+# sizing a grid for the wrong machine (`arch_preflight::check_sm_count`).
+#
+# The defect it guards: `atlas_core::device::sm121::NUM_SMS = 48`, the GB10
+# constant, compiled into an H100 build, where a grid sized from it ran 24 CTAs
+# on 132 SMs for a whole campaign. A one-line boot warning naming both numbers
+# is what would have caught it in round 1.
+sm_count = 132
+# H100 SXM5 80 GB HBM3: 3350 GB/s. H200 SXM5 141 GB HBM3e: 4800 GB/s.
+# Sized to the smaller SKU; the runtime reads real free memory via
+# cuMemGetInfo, this is documentation + roofline input only.
+memory_bandwidth_gbps = 3350
+memory_type = "HBM3"
+memory_gb = 80
+
+# Flags added to EVERY kernel compiled for this hardware, under
+# common/KERNEL.toml's and the model's (build_flags::merge_extra_flags).
+#
+# ATLAS_NO_WARP_BLOCKSCALE_MMA compiles out the W4A4 path in
+# qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu. Hopper has no NVFP4
+# datapath, so `cvt.rn.satfinite.e2m1x2.f32` and the warp-level
+# `mma.sync ... .kind::mxf4nvf4.block_scale` do not exist here — ptxas:
+# "Instruction 'cvt with .e2m1x2' not supported on .target 'sm_90a'"
+# (measured 2026-09-05, CUDA 13.0.88; reproduce with
+# `scripts/hopper_ptx_gate.sh --hw hopper --model qwen3.6-35b-a3b --strict`
+# after dropping this flag — see #899).
+#
+# A hardware-level define, not a per-model one, because it is a fact about
+# the ISA and because every KERNEL.toml under this tree is a symlink into
+# kernels/gb10 — saying it per model would fork a shared file once per
+# model, which tests/inherited_targets.rs forbids.
+[build]
+extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
+
+# ── Serving defaults for this target ───────────────────────────────────────
+#
+# SSOT for the per-target serving levers, baked into `atlas_kernels` by
+# build.rs (`build_defaults.rs`) as `atlas_kernels::TARGET_DEFAULTS` and read
+# by every resolver in spark-model BEFORE the environment.
+#
+# WHY IT IS HERE. Maintainer review, 2026-09-11 (tbraun96): "There is no arch
+# separation at all. H100 builds compile GB10's kernel tree. Every Hopper/GB10
+# divergence is expressed as an env lever set by an H100 recipe living outside
+# this repo — not as arch-selected code. 'No interference' rests on discipline
+# rather than structure." A default that lives in a launch script is not a
+# property of the target; one that lives beside the target's arch and memory
+# facts is. The environment stays available as an EXPLICIT operator override,
+# and the serve log says which values came from it.
+#
+# EVERY target with a `[defaults]` table declares EVERY row, even where the
+# value agrees with the baseline: an absent key falls through to
+# `build_defaults::baseline`, which is correct behaviour and terrible
+# documentation — a reader of this file would have to know the baseline to
+# know what this target serves with, which is the "recipe lives somewhere
+# else" problem the table replaces.
+#
+# Every value below WAS a line in that external recipe. The recipe is now the
+# target's own declaration, so an H100 serve with NO environment set
+# reproduces the measured configuration (round 14: the `h100-defaults`
+# profile and the explicit-env profile agreed to within 0.37% aggregate, with
+# md5-identical coherency output on 7/7 prompts).
+[defaults]
+# The BF16 decode head's batched-GEMV band. 8 — GB10's frozen band, held here
+# ON PURPOSE and not the 16 an H100 recipe used to export.
+#
+# 🔴 That 16 was measured with the tensor-core head arm (`dense_gemm_m16_bf16`,
+# #927) ALSO on, where the TC arm serves 5..=16 and the band is very nearly
+# inert. With the TC arm absent — it is a Hopper-owned kernel and is not in
+# this PR — a 16 here would move widths 9..=16 off the reassociating tile GEMM
+# onto the batched GEMV in a configuration nobody has measured. The row moves
+# to 16 in the commit that lands the arm it was measured beside; a default is
+# a claim about a measurement.
+lm_head_batchm_max = 8
+# One strided recurrent launch per batch on the GDN decode path: +6% on the
+# serve, and md5-identical output to the per-sequence launches. This is the
+# row that used to be `ATLAS_SSM_BATCHED_RECURRENT=1` in a launch script
+# outside this repository.
+ssm_batched_recurrent = true
+# Split SiLU+down on the decode path — shipped ON everywhere.
+decode_split_silu = true
+# Upper M for the W8A8 block-scaled dense-FFN prefill (#917). NO CAP here:
+# 4294967295 is u32::MAX, which is `build_defaults::baseline`'s value and the
+# way this table spells "every M takes the W8A8 arm". H100 measures W8A8 at
+# 2.0-3.1x over W8A16 at every M tried (M=64 and M=1193, gate/up and down,
+# 2026-09-11) — the opposite of GB10, where the same arm is a measured 23.4%
+# TTFT regression above the crossover.
+#
+# Declared explicitly rather than left to the baseline: a row present in one
+# target's table and missing from another's is how a lever comes to mean two
+# things in one repository.
+w8a8_prefill_max_m_widening = 4294967295
+w8a8_prefill_max_m_narrowing = 4294967295
+
