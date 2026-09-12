@@ -133,6 +133,29 @@ impl Qwen3SsmLayer {
                 value_dim as u32,
                 stream,
             )
+        // W8A8 block-scaled cuBLASLt — 96 of the 112 `w8a16_gemm_pipelined`
+        // launches in the round-9 H100 prefill trace (68.1 ms of its 100.6 ms
+        // at 1193 tokens) were THIS projection, once per GDN layer per chunk,
+        // and nothing in `ATLAS_CUBLAS_GEMM` could reach it. See
+        // `prefill_out_w8a8.rs` for the full receipt and the clause list.
+        // Ahead of the `ATLAS_FP8_W8A8` arm below because both compute the same
+        // W8A8 arithmetic and this one is the faster implementation of it; the
+        // env lever alone (without `ssm` in `ATLAS_CUBLAS_GEMM`) still picks
+        // the in-tree kernel.
+        } else if let Some(ref fp8w) = self.out_proj_fp8w
+            && self.prefill_out_proj_w8a8_selected(ctx, k, h as u32, value_dim as u32, fp8w)
+        {
+            self.log_out_proj_prefill_route(ctx, true);
+            self.prefill_out_proj_w8a8_cublas(
+                ctx,
+                normed_out_buf,
+                fp8w,
+                out_proj_buf,
+                k,
+                h as u32,
+                value_dim as u32,
+                stream,
+            )
         } else if force_w8a8
             && let Some(ref fp8w) = self.out_proj_fp8w
             && self.per_token_group_quant_fp8_k.0 != 0
@@ -174,6 +197,10 @@ impl Qwen3SsmLayer {
         } else if let Some(ref fp8w) = self.out_proj_fp8w
             && self.w8a16_gemm_pipelined_k.0 != 0
         {
+            // The 100.6 ms / 27.31% kernel of the round-9 H100 prefill trace,
+            // 96 of whose 112 launches were this line. The counterpart log says
+            // so out loud, so "no W8A8 line" is never read as "log lost".
+            self.log_out_proj_prefill_route(ctx, false);
             ops::w8a16_gemm_pipelined(
                 ctx.gpu,
                 self.w8a16_gemm_pipelined_k,

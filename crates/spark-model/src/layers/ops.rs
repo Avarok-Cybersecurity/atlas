@@ -17,10 +17,17 @@ mod activations;
 mod derived_weights;
 #[path = "ops/dispatch_config.rs"]
 mod dispatch_config;
+#[cfg(test)]
+#[path = "ops/dispatch_config_routing_tests.rs"]
+mod dispatch_config_routing_tests;
 #[path = "ops/dispatch_helpers.rs"]
 mod dispatch_helpers;
 #[path = "ops/dispatch_proj.rs"]
 mod dispatch_proj;
+// W8A8 block-scaled cuBLASLt routing for the 5..16-row DECODE projections
+// (#927), a sibling of dispatch_proj.rs so neither file crosses the cap.
+#[path = "ops/dispatch_proj_decode.rs"]
+mod dispatch_proj_decode;
 // The compiled target's serving defaults (`kernels/<hw>/HARDWARE.toml`
 // `[defaults]`, baked into atlas_kernels), resolved BEFORE the environment.
 // SSOT for every lever that differs between one target and another.
@@ -114,6 +121,10 @@ pub mod moe_lora_grouped;
 mod moe_prefill;
 #[path = "ops/norm.rs"]
 mod norm;
+// The gated-RMS-norm launch-count pin (#927): 48 per step, not 768.
+#[cfg(test)]
+#[path = "ops/norm_gated_rms_strided_tests.rs"]
+mod norm_gated_rms_strided_tests;
 mod nvfp4_mmq;
 #[path = "ops/ple.rs"]
 mod ple;
@@ -166,9 +177,10 @@ mod wide_prefill;
 
 pub use activations::*;
 pub use derived_weights::{Derivation, DerivedWeights};
-pub use dispatch_config::GemmDispatch;
+pub use dispatch_config::{CublasScope, GemmDispatch, parse_cublas_scope};
 pub use dispatch_helpers::*;
 pub use dispatch_proj::*;
+pub use dispatch_proj_decode::*;
 pub use dispatch_proj_rowwise::*;
 pub use embeddings::*;
 pub use fp8_gemv_batch::*;

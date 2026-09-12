@@ -106,10 +106,15 @@ pub struct BufferArena {
     ffn_act_q8: DevicePtr,
     ffn_act_a: DevicePtr,
     ffn_act_scale: DevicePtr,
+    /// `[K/128, ceil16(M)]` transposed copy of `ffn_act_scale` — the VEC128
+    /// B-scale layout cuBLASLt documents (token index contiguous). NULL for MoE.
+    ffn_act_scale_kmajor: DevicePtr,
     /// Persistent FP8 block-scaled activation scratch for prefill projections.
     fp8_act: DevicePtr,
     /// Persistent per-128-block FP32 scales paired with `fp8_act`.
     fp8_act_scale: DevicePtr,
+    /// `[K/128, ceil16(M)]` transpose of `fp8_act_scale` (cuBLASLt VEC128).
+    fp8_act_scale_kmajor: DevicePtr,
     /// Persistent BF16 transient-dequant scratch for native keep-packed Q2_0
     /// prefill. Reused per projection — replaces a per-matmul alloc/sync/free.
     q2_dequant_scratch: DevicePtr,
@@ -219,8 +224,14 @@ impl BufferArena {
         } else {
             DevicePtr::NULL
         };
+        let ffn_act_scale_kmajor = if sizes.ffn_act_scale_kmajor > 0 {
+            gpu.alloc(sizes.ffn_act_scale_kmajor)?
+        } else {
+            DevicePtr::NULL
+        };
         let fp8_act = gpu.alloc(sizes.fp8_act)?;
         let fp8_act_scale = gpu.alloc(sizes.fp8_act_scale)?;
+        let fp8_act_scale_kmajor = gpu.alloc(sizes.fp8_act_scale_kmajor)?;
         // Q2_0 prefill dequant scratch. 0 → NULL unless ATLAS_GGUF_NATIVE_Q2.
         let q2_dequant_scratch = if sizes.q2_dequant_scratch > 0 {
             gpu.alloc(sizes.q2_dequant_scratch)?
@@ -299,8 +310,10 @@ impl BufferArena {
             ffn_act_q8,
             ffn_act_a,
             ffn_act_scale,
+            ffn_act_scale_kmajor,
             fp8_act,
             fp8_act_scale,
+            fp8_act_scale_kmajor,
             q2_dequant_scratch,
             lora_xa,
             lora_delta,
@@ -367,8 +380,10 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
             ffn_act_q8,
             ffn_act_a,
             ffn_act_scale,
+            ffn_act_scale_kmajor,
             fp8_act,
             fp8_act_scale,
+            fp8_act_scale_kmajor,
             lora_xa,
             lora_delta,
             lora_hact,
@@ -412,8 +427,10 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
             *ffn_act_q8,
             *ffn_act_a,
             *ffn_act_scale,
+            *ffn_act_scale_kmajor,
             *fp8_act,
             *fp8_act_scale,
+            *fp8_act_scale_kmajor,
             *lora_xa,
             *lora_delta,
             *lora_hact,
@@ -462,8 +479,10 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
         *ffn_act_q8 = DevicePtr::NULL;
         *ffn_act_a = DevicePtr::NULL;
         *ffn_act_scale = DevicePtr::NULL;
+        *ffn_act_scale_kmajor = DevicePtr::NULL;
         *fp8_act = DevicePtr::NULL;
         *fp8_act_scale = DevicePtr::NULL;
+        *fp8_act_scale_kmajor = DevicePtr::NULL;
         *lora_xa = DevicePtr::NULL;
         *lora_delta = DevicePtr::NULL;
         *lora_hact = DevicePtr::NULL;
