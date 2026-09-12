@@ -147,20 +147,33 @@ ROLLBACK="${ROLLBACK:-snapshot}"
 # must stay above this. Still quote prefill numbers as (chunk, cap).
 PREFILL_CHUNK="${PREFILL_CHUNK:-8192}"
 
-# MOE_CUTLASS=1 — single-launch CUTLASS grouped NVFP4 MoE for prefill (gate/up
-# and down, ATLAS_HOLO_MOE_GROUPED_CUTLASS + ATLAS_HOLO_MOE_GROUPED_DOWN).
-# Opt-in, NOT the default, because it is a precision trade, not a free win:
-# the CUTLASS SM120 blockscaled GEMM quantises the BF16 activations to NVFP4
-# on the fly (W4A4; crates/spark-runtime/src/cutlass/gemm.rs), where the
-# default ptrtable kernel keeps them BF16 (W4A16). Measured, same binary,
-# TP=2 x EP=2, gate/up only: cold 8K prefill 787 -> 1052 tok/s (+34%; 1134
-# with PREFILL_CHUNK=8192), but the drafter's acceptance drops p1 0.85 -> 0.83
-# / tok_step 2.56 -> 2.43 with the drafter unchanged — the verify logits
-# moved — and C=1 decode reads 53.7 -> 51.7 for exactly that reason. It also
-# costs ~3.6 GB/rank of SFB tables pre-KV. Greedy open-ended output differs
-# from the W4A16 path (not corrupt; divergent). Turn it on when prefill
-# throughput matters more than matching the BF16-activation numerics.
-MOE_CUTLASS="${MOE_CUTLASS:-0}"
+# MOE_CUTLASS — single-launch CUTLASS grouped NVFP4 MoE for prefill. ON by
+# default; set MOE_CUTLASS=0 to fall back to the ptrtable kernels.
+#
+# ⚠ BOTH gates or neither. ATLAS_HOLO_MOE_GROUPED_CUTLASS alone moves only
+# gate/up and leaves down on the ptrtable kernel, and that HALF-config is the
+# one that costs quality: measured on one binary, TP=2 x EP=2, chunk 8192,
+#   gate/up only : prefill 1134   C=1 51.44   p1 0.828-0.833  tok_step 2.43
+#   both gates   : prefill 1363   C=1 53.58   p1 0.859        tok_step 2.56
+# i.e. adding the down gate takes prefill a further +20% AND gives back the
+# acceptance and decode the half-config lost. The earlier reading of that
+# -4% decode as W4A4 activation quantisation was WRONG — CUTLASS does quantise
+# activations to NVFP4 where the ptrtable kernel keeps them BF16, but with the
+# whole FFN on one path the drafter's acceptance is baseline. The mechanism of
+# the mixed-path loss is NOT understood; do not ship gate/up alone.
+#
+# Full arm vs the W4A16 default, same binary, TP=2 x EP=2, 128K x 4, chunk 8192:
+#   cold prefill 8K / 11K   880 / 854  ->  1363 / 1307   (+55% / +53%)
+#   decode C=1 / C=4        53.01 / 67.55  ->  53.58 / 69.30
+#   known-answer            4/4 + 4/4  ->  4/4 + 4/4
+#   agentic (3 iters)       -          ->  PASS 3/3 + 3/3, 7.15 s/turn, 0 errors
+#   max KV tokens           1.64M      ->  1.32M   (4 x 256K needs 1.05M)
+# The cost is ~3.6 GB/rank of SFB tables pre-KV (51.9 -> 57.1 GB), which is
+# where the KV budget goes. Output is NOT bit-identical to the ptrtable path:
+# deterministic answers match, open-ended greedy text diverges (clean, not
+# corrupt). Set MOE_CUTLASS=0 when you need to match BF16-activation numerics
+# or want the extra KV headroom.
+MOE_CUTLASS="${MOE_CUTLASS:-1}"
 if [ "$MOE_CUTLASS" = "1" ]; then
   export ATLAS_HOLO_MOE_GROUPED_CUTLASS=1 ATLAS_HOLO_MOE_GROUPED_DOWN=1
   export ATLAS_CUTLASS_WORKSPACE_MB="${ATLAS_CUTLASS_WORKSPACE_MB:-512}"
