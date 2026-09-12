@@ -34,7 +34,7 @@ S7 (rental soak) is forbidden until every box is green. Each box also needs its 
 **Order is the list. Do not start C(n+1) until C(n) is checked.** Synthetic-only tests do not check a box. Twin means `K3_TWIN` + 0.40B BF16 on spark2.
 
 - [x] C0 config / factory / weight-name map dry-run (no shard download) — spark2 Linux `kimi_k3` + atlas-core parse + known-bads
-- [ ] C1 `Kimi-K3-0.40B` greedy, max_new=128, **exact vs HF through first `[EOS]` (163585)** × 8 prompts. Post-EOS tokens are not an oracle (HF loops `[EOS]`). first-8 already matched. spark2 8-prompt until-EOS in flight. `docs/k3/rst/c1-engine.md`
+- [ ] C1 `Kimi-K3-0.40B` greedy through first `[EOS]` × 8. **7/8 first-token exact.** p4 is a 0.18-logit flip (`flies` vs HF `but`; same top-3). **8/8 teacher-forced-first then EOS exact.** Greedy until-EOS p0–p3 exact. Checkbox stays open until p4 greedy first-token matches. `docs/k3/rst/c1-engine.md`
 - [ ] C2 prefill-then-decode vs full-prefill logits on the **C1 twin** (`c2_prefill_decode_logits_match_full_prefill_twin`)
 - [ ] C3 prefix-cache hit == no-cache decode on the **C1 twin** (`c3_prefix_cache_hit_matches_nocache_twin`)
 - [ ] C4 MLA KV + KDA state after prefix hit on the **C1 twin** (`c4_hybrid_state_prefix_hit_matches_cold_prefill_twin`)
