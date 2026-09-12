@@ -79,6 +79,7 @@ jobs:
       # false` in the same run. `assert-job-outputs-exported.py` now fails CI
       # on any consumer without a matching export.
       is_stack_layer: ${{ steps.stack.outputs.is_stack_layer }}
+      is_stack_upper_layer: ${{ steps.stack.outputs.is_stack_upper_layer }}
       builds_binaries: ${{ steps.classify.outputs.builds_binaries }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -118,6 +119,8 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -uo pipefail
           layer=false
@@ -132,6 +135,43 @@ jobs:
             fi
           fi
           echo "is_stack_layer=$layer" >> "$GITHUB_OUTPUT"
+
+          # ── IS THIS AN UPPER LAYER OF A STACK? ────────────────────────────
+          #
+          # Maintainer decision, 2026-09-12 (tbraun96): "once you form a stack,
+          # start merging everything down into the base of the stack. Once you
+          # hit the base (i.e. a single mega PR), THAT'S the one that needs a
+          # seal and stamp, NOT the items above it. The point of a stack is to
+          # preserve the history of PRs and to allow a clear downwards
+          # squash/merge path into the stack's base."
+          #
+          # So the PR that lands on the default branch is the stack's BASE, and
+          # it is the only one that has to prove anything. Every PR above it
+          # merges DOWNWARD into the layer beneath it and never reaches the
+          # default branch at all.
+          #
+          # `is_stack_layer` above answers the OPPOSITE question -- it is true
+          # when something is stacked ABOVE this PR, which is true of the base.
+          # Using it to skip certification would exempt the one PR that must
+          # certify and burden the ones that never merge to main. Keep it (the
+          # release matrix legitimately wants "does anything depend on me?"),
+          # but do not confuse the two.
+          #
+          # The discriminator is the BASE: a PR whose base is not the default
+          # branch is an upper layer.
+          upper=false
+          if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] \
+             && [ -n "${PR_BASE_REF:-}" ] && [ -n "${DEFAULT_BRANCH:-}" ] \
+             && [ "${PR_BASE_REF}" != "${DEFAULT_BRANCH}" ]; then
+            upper=true
+            echo "base is '$PR_BASE_REF', not '$DEFAULT_BRANCH' — this is an upper layer"
+          fi
+          # FAIL CLOSED, like every other classifier here: a missing base ref, a
+          # missing default branch, or a non-pull_request event all leave this
+          # false, which CERTIFIES. An extra campaign is recoverable; an
+          # uncertified merge to the default branch is not.
+          echo "is_stack_upper_layer=$upper" >> "$GITHUB_OUTPUT"
+          echo "is_stack_upper_layer=$upper"
           echo "is_stack_layer=$layer"
 
 
@@ -168,6 +208,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PR: ${{ github.event.pull_request.number }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -uo pipefail
           # Only a pull_request can be un-stamped. A merge_group entry reached
@@ -175,6 +217,28 @@ jobs:
           if [ "$EVENT" != "pull_request" ]; then
             echo "stamped=true" >>"$GITHUB_OUTPUT"
             echo "$EVENT is not a pull request — the lane runs."
+            exit 0
+          fi
+          # AN UPPER LAYER OF A STACK is never held. Its base is another PR's
+          # head branch, so it cannot reach the default branch — it merges
+          # DOWNWARD into the layer beneath it, and the stack's BASE is the one
+          # PR that gets stamped. Maintainer decision 2026-09-12: "that is the
+          # one that needs a seal and stamp, NOT the items above it."
+          #
+          # This is not just courtesy. `release-matrix` is gated on
+          # `stamped != 'false'`, and its `dry-run summary` is a REQUIRED
+          # context — so holding an upper layer for want of a stamp leaves a
+          # required check that is never CREATED, which reads as permanently
+          # pending rather than as a refusal. A 26-layer stack would need 26
+          # stamp comments purely to emit 26 summaries.
+          #
+          # Both variables must be present and DIFFER; an empty base ref or
+          # default branch falls through and is still held.
+          if [ -n "${PR_BASE_REF:-}" ] && [ -n "${DEFAULT_BRANCH:-}" ] \
+             && [ "$PR_BASE_REF" != "$DEFAULT_BRANCH" ]; then
+            echo "stamped=true" >>"$GITHUB_OUTPUT"
+            echo "base is '$PR_BASE_REF', not '$DEFAULT_BRANCH' — an upper stack \
+          layer is never held; the stack's base carries the stamp."
             exit 0
           fi
           # A Stamp is a check run, so it is bound to the ONE commit it was
@@ -250,12 +314,29 @@ jobs:
           PR_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUM: ${{ github.event.pull_request.number }}
           MQ_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -uo pipefail
           # A push to main has already landed and a dispatch has no diff to
           # vouch for; neither carries a PR, so there is nothing to seal.
           if [ "$EVENT" != "pull_request" ] && [ "$EVENT" != "merge_group" ]; then
             echo "$EVENT carries no pull request — nothing to seal."
+            exit 0
+          fi
+          # AN UPPER LAYER OF A STACK. Its base is another PR's head branch, so
+          # merging it lands nothing on the default branch — it merges DOWNWARD
+          # into the layer beneath it, and the accumulated history is vouched
+          # for once, at the stack's BASE. Maintainer decision 2026-09-12: "that
+          # is the one that needs a seal and stamp, NOT the items above it."
+          #
+          # Both variables must be present and must DIFFER. An empty base ref or
+          # an empty default branch falls through and still demands a seal, so a
+          # broken event payload cannot buy a PR out of being vouched for.
+          if [ "$EVENT" = "pull_request" ] && [ -n "${PR_BASE_REF:-}" ] \
+             && [ -n "${DEFAULT_BRANCH:-}" ] && [ "$PR_BASE_REF" != "$DEFAULT_BRANCH" ]; then
+            echo "base is '$PR_BASE_REF', not '$DEFAULT_BRANCH' — an upper stack layer \
+          merges downward and is sealed at the stack's base."
             exit 0
           fi
           sha="$PR_SHA"; num="$PR_NUM"
@@ -1444,44 +1525,49 @@ jobs:
     if: >-
       ${{ !cancelled() && needs.changes.outputs.web_only != 'true'
           && needs.stamp.outputs.stamped != 'false'
-          && needs.changes.outputs.is_stack_layer != 'true' }}
-    # ── `is_stack_layer != 'true'`: ONE CAMPAIGN PER STACK ────────────────────
+          && needs.changes.outputs.is_stack_upper_layer != 'true' }}
+    # ── ONE CAMPAIGN PER STACK, AT THE BASE ──────────────────────────────────
     #
-    # Maintainer decision, 2026-09-12 (tbraun96): "Just because multiple PRs in
-    # a stack affect the perf path does not mean to treat each one separately;
-    # no. Instead, we stack everything and run one certification gate to keep
-    # things fast."
+    # Maintainer decision, 2026-09-12 (tbraun96): "once you form a stack, start
+    # merging everything down into the base of the stack. Once you hit the base
+    # (i.e. a single mega PR), THAT'S the one that needs a seal and stamp, NOT
+    # the items above it. The point of a stack is to preserve the history of PRs
+    # and to allow a clear downwards squash/merge path into the stack's base."
     #
-    # Before this line, a stack of N layers each touching PERF_PATHS owed N
-    # campaigns, because the gate judges every layer against `main` rather than
-    # against its own base, and a record pinned to the TOP's tree does not cover
-    # a lower layer's tree. Twenty-four layers at ~5 GPU-hours is ~120 GPU-hours
-    # for one merge, which is why the practice had been to compose instead — and
-    # composing loses per-PR review, authorship and the ability to drop one
-    # constituent.
+    # So a stack pays for ONE certification, at its BASE. Before this, a stack
+    # of N layers each touching PERF_PATHS owed N campaigns — twenty-four layers
+    # at ~5 GPU-hours is ~120 GPU-hours for one merge, which is why the practice
+    # had been to compose into one aggregation branch instead. Composing loses
+    # per-PR review, authorship and the ability to drop one constituent.
     #
-    # WHY SKIPPING A LAYER IS SOUND, and not a hole in branch protection:
+    # ★ THE DISCRIMINATOR IS THE BASE REF, NOT `is_stack_layer`. #1022 shipped
+    # this test against `is_stack_layer` and had it exactly BACKWARDS.
+    # `is_stack_layer` is true when something is stacked ABOVE a PR — which is
+    # true of the stack's base, the one PR that must certify — and false for the
+    # topmost layer, which never merges to the default branch at all. Measured
+    # on stack #1025: #1023 (base `main`) was skipped and passed; #1024 (base
+    # `stack/mega-01-ci-body`) was forced to certify. Both wrong.
     #
-    #   * `is_stack_layer` is true only when the event is `pull_request`, the
-    #     head branch is in THIS repo, and `gh pr list --base <HEAD_REF>` finds
-    #     an OPEN pr above it. So it is true only while something above this PR
-    #     will carry it in.
-    #   * Merging a registered stack's top lands every layer below it in one
-    #     operation, so the tree that reaches `main` is the TOP's tree — which
-    #     is the tree the top's records were measured at.
-    #   * The `merge_group` certification below still runs on the MERGED tree,
-    #     so the thing actually landing is still gated.
-    #   * The moment a layer stops having an open PR above it — the stack is
-    #     broken up, or it becomes the top — this flips false and it certifies
-    #     on its own. A layer can never merge alone on someone else's records.
+    # WHY SKIPPING AN UPPER LAYER IS SOUND, and not a hole in branch protection:
+    #
+    #   * An upper layer's base is another PR's head branch, so merging it lands
+    #     nothing on the default branch. Branch protection guards the default
+    #     branch; a PR that cannot reach it has nothing to prove to it.
+    #   * The stack's BASE has base == default branch, so it is never exempt. It
+    #     is the single PR whose merge lands the whole accumulated history, and
+    #     it certifies that tree.
+    #   * The `merge_group` certification below still runs on the MERGED tree.
+    #   * The moment an upper layer is retargeted at the default branch — the
+    #     stack is broken up, or it becomes the base — this flips false and it
+    #     certifies on its own. No PR can reach the default branch unproven.
     #
     # `!= 'true'` and not `== 'false'` for the same reason as the two tests
-    # beside it: the classifier fails OPEN, so an empty or errored output must
+    # beside it: the classifier fails CLOSED, so an empty or errored output must
     # RUN the certification rather than wave it through.
     #
-    # `.github/scripts/certification-selftest.sh` carries four controls for
-    # this: the top never skips, a fork head never skips, an errored signal
-    # runs the gate, and a genuine layer does skip.
+    # `.github/scripts/certification-selftest.sh` carries the controls: the
+    # BASE never skips, an errored signal runs the gate, a genuine upper layer
+    # does skip, and a skip never excuses a FAILURE.
     #
     # `!= 'false'`, not `== 'true'`: the stamp job fails OPEN, so an empty output
     # must run the lane rather than hold it. Same shape and same reason as the
@@ -1688,7 +1774,7 @@ jobs:
           WEB_ONLY: ${{ needs.changes.outputs.web_only }}
           STAMPED: ${{ needs.stamp.outputs.stamped }}
           EXPEDITED: ${{ needs.stamp.outputs.expedited }}
-          IS_STACK_LAYER: ${{ needs.changes.outputs.is_stack_layer }}
+          IS_STACK_UPPER_LAYER: ${{ needs.changes.outputs.is_stack_upper_layer }}
         run: |
           echo "PR Benchmark Certifications => ${RESULT} (web_only=${WEB_ONLY:-unknown})"
           if [ "${RESULT}" = "success" ]; then exit 0; fi
@@ -1712,26 +1798,26 @@ jobs:
             echo "web-only diff: no record's measured inputs were touched — pass."
             exit 0
           fi
-          # THE SECOND SKIP THAT IS A PASS: this PR is a LAYER of a stack, so
-          # the certification it needs is the one at the stack's TOP. Merging a
-          # registered stack's top lands every layer below it in one operation,
-          # so the tree that reaches `main` is the top's tree, and that is the
-          # tree the top's records were measured at.
+          # THE SECOND SKIP THAT IS A PASS: this PR is an UPPER LAYER of a
+          # stack. Its base is another PR's head branch, so merging it lands
+          # nothing on the default branch — it merges DOWNWARD into the layer
+          # beneath it. The certification that matters is the one at the stack's
+          # BASE, which is the single PR whose merge lands the accumulated
+          # history on the default branch.
           #
-          # Positive on IS_STACK_LAYER on purpose, exactly like WEB_ONLY above:
-          # a skip caused by a broken classifier leaves it EMPTY and falls
-          # through to red. And the classifier itself is narrow — it requires a
-          # `pull_request` event, a head branch IN THIS REPO, and an OPEN pr
-          # whose base is this PR's head. So this branch can only fire while
-          # something above this PR will carry it in; the moment that stops
-          # being true the layer certifies on its own.
+          # Positive on IS_STACK_UPPER_LAYER on purpose, exactly like WEB_ONLY
+          # above: a skip caused by a broken classifier leaves it EMPTY and
+          # falls through to red.
           #
-          # Placed ABOVE the stamp hold deliberately: a layer's own /stamp is
-          # not what releases the stack's certification, and holding a layer red
-          # for want of a stamp it does not need is how a 26-layer stack becomes
-          # unmergeable.
-          if [ "${RESULT}" = "skipped" ] && [ "${IS_STACK_LAYER}" = "true" ]; then
-            echo "stack layer: certification is carried by the top of this stack — pass."
+          # ★ NOT `IS_STACK_LAYER`. #1022 used that and had it backwards — it is
+          # true for the stack's BASE (something is stacked above it) and false
+          # for the topmost layer. The base is the one PR that must certify.
+          #
+          # Placed ABOVE the stamp hold deliberately: an upper layer needs no
+          # /stamp of its own, and holding it red for want of one is how a
+          # 26-layer stack becomes unmergeable.
+          if [ "${RESULT}" = "skipped" ] && [ "${IS_STACK_UPPER_LAYER}" = "true" ]; then
+            echo "upper layer of a stack: certification is carried by the stack's BASE — pass."
             exit 0
           fi
           # HELD, not failed. Certification never ran because nobody has released
