@@ -10,13 +10,13 @@
 //! Recurrence (decode, prenorm q/k):
 //! ```text
 //! S <- S * diag(exp(g_t))     // decay on KEY axis, per channel
-//! delta <- (v_t - S^T k_t) * beta_t
+//! delta <- (v_t - S^T k_t) * sigmoid(beta_t)
 //! S <- S + k_t ⊗ delta
 //! o_t <- S^T q_t / sqrt(d)
 //! ```
 //!
-//! Conv state is Atlas-width: `[channels, kernel]` (one slot wider than HF's
-//! `kernel-1`). Slot 0 is shifted out.
+//! Conv state is `[channels, kernel]` (FLA `ShortConvolution` cache `W=kernel`).
+//! Slot 0 is shifted out. `beta` is a raw logit; the step applies `sigmoid`.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -164,7 +164,7 @@ pub fn kda_recurrent_step(
                 s[kd * d + vd] *= decay;
             }
         }
-        let b = beta[h];
+        let b = sigmoid(beta[h]);
         for vd in 0..d {
             let mut kv = 0.0f32;
             for kd in 0..d {
@@ -313,5 +313,24 @@ mod tests {
             err > 1e-4,
             "wrong-slot restore must diverge (max abs {err}), hit={y_hit:?} wrong={y_wrong:?}"
         );
+    }
+
+    #[test]
+    fn beta_zero_is_sigmoid_half_not_zero() {
+        // HF fused_recurrent_kda: use_beta_sigmoid_in_kernel=True.
+        // Raw beta=0 must still write a delta (sigmoid(0)=0.5), not skip.
+        let cfg = tiny();
+        let qkv = [1.0f32, 0.0, 1.0, 0.0, 1.0, 0.5];
+        let gate = [-1.0f32, -1.0];
+        let mut rec_zero = vec![0.0f32; cfg.recurrent_elems()];
+        let mut rec_raw = rec_zero.clone();
+        let o_sig = kda_recurrent_step(&qkv, &gate, &[0.0], &cfg, &mut rec_zero);
+        let o_raw_one = kda_recurrent_step(&qkv, &gate, &[20.0], &cfg, &mut rec_raw);
+        let err: f32 = o_sig.iter().map(|v| v.abs()).fold(0.0, f32::max);
+        assert!(
+            err > 1e-6,
+            "sigmoid(0)=0.5 must update the state, got {o_sig:?}"
+        );
+        assert_ne!(o_sig, o_raw_one, "saturated beta must differ from beta=0");
     }
 }

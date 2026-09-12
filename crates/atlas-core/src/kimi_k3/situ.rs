@@ -18,7 +18,7 @@ pub fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
-/// SiLU: `x * sigmoid(x)`. Used by KDA short-conv and the decay down-proj.
+/// SiLU: `x * sigmoid(x)`. Used by KDA short-conv. Decay `f_a` is a plain linear.
 #[inline]
 pub fn silu(x: f32) -> f32 {
     x * sigmoid(x)

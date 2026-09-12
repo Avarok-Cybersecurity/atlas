@@ -11,14 +11,18 @@ use super::kda::{KdaConfig, KdaState, bounded_gate, kda_decode_token};
 use super::latent_moe::latent_moe_forward;
 use super::mla::{MlaConfig, apply_output_gate, maybe_rope, sdpa_one};
 use super::ops::{embed_token, matvec};
-use super::situ::{sigmoid, silu, situ_glu_vec};
+use super::situ::{sigmoid, situ_glu_vec};
 
 /// Intra-block AttnRes stream (completed blocks + running partial).
+///
+/// Matches HF `KimiDecoderLayer._forward_attn_residual`: mix the incoming
+/// prefix with already-archived blocks, then at `layer_idx % block_size == 0`
+/// archive that incoming prefix and reset the intra-block sum. Layer 0
+/// therefore archives the embedding as its own source, not `embed + mixer`.
 #[derive(Clone, Debug)]
 pub struct AttnResStream {
     pub completed: Vec<Vec<f32>>,
     pub partial: Vec<f32>,
-    layers_in_block: usize,
     block_size: usize,
 }
 
@@ -27,12 +31,13 @@ impl AttnResStream {
         Self {
             completed: Vec::new(),
             partial: vec![0.0; hidden],
-            layers_in_block: 0,
             block_size: block_size.max(1),
         }
     }
 
     fn sources(&self) -> Vec<Vec<f32>> {
+        // sources[0] is the skip (current prefix). Mix=0 must return this,
+        // not the first archived block.
         let mut s = vec![self.partial.clone()];
         s.extend(self.completed.iter().cloned());
         s
@@ -48,12 +53,10 @@ impl AttnResStream {
         }
     }
 
-    fn end_layer(&mut self) {
-        self.layers_in_block += 1;
-        if self.layers_in_block >= self.block_size {
+    fn archive_incoming_at_block_start(&mut self, layer_idx: usize) {
+        if layer_idx % self.block_size == 0 {
             self.completed.push(self.partial.clone());
             self.partial.fill(0.0);
-            self.layers_in_block = 0;
         }
     }
 }
@@ -101,6 +104,8 @@ fn forward_layer(
     let eps = model.eps;
     let mix = ablation.attnres_mix;
     let h = stream.mix(&layer.attn_res_proj, &layer.attn_res_norm, eps, mix);
+    // Archive the *incoming* prefix (HF), not the post-mixer partial.
+    stream.archive_incoming_at_block_start(layer.spec.index);
     let x = rms_norm(&h, &layer.input_norm, eps);
     let mix_out = match &layer.mixer {
         MixerW::Kda(w) => {
@@ -120,7 +125,6 @@ fn forward_layer(
         MlpW::Moe(w) => moe_mlp(w, &x, model, ablation.force_expert),
     };
     stream.add(&mlp_out);
-    stream.end_layer();
 }
 
 fn kda_mixer(
@@ -137,8 +141,8 @@ fn kda_mixer(
     let mut qkv = q;
     qkv.extend_from_slice(&k);
     qkv.extend_from_slice(&v);
+    // HF: g = f_b_proj(f_a_proj(x)) — two linears, no SiLU on the bottleneck.
     let fa = matvec(&w.f_a, x, cfg.head_dim, x.len());
-    let fa: Vec<f32> = fa.iter().copied().map(silu).collect();
     let z = matvec(&w.f_b, &fa, qdim, cfg.head_dim);
     let gate = bounded_gate(
         &z,
@@ -261,4 +265,31 @@ fn moe_mlp(w: &MoeWeights, x: &[f32], model: &K3CpuModel, force: Option<usize>) 
         x, &w.down, &w.up, &w.norm, &logits, &w.bias, &w.experts, shared_ref, &model.moe, model.eps,
     );
     y
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attnres_archives_incoming_at_block_start() {
+        let mut s = AttnResStream::new(2, 4);
+        s.partial = vec![1.0, 2.0];
+        s.archive_incoming_at_block_start(0);
+        assert_eq!(s.completed, vec![vec![1.0, 2.0]]);
+        assert_eq!(s.partial, vec![0.0, 0.0]);
+        s.add(&[0.5, 0.25]);
+        assert_eq!(s.partial, vec![0.5, 0.25]);
+        assert_eq!(
+            s.completed[0],
+            vec![1.0, 2.0],
+            "archive is embed, not embed+mixer"
+        );
+        s.archive_incoming_at_block_start(1);
+        assert_eq!(s.completed.len(), 1, "non-boundary layer must not archive");
+        s.archive_incoming_at_block_start(4);
+        assert_eq!(s.completed.len(), 2);
+        assert_eq!(s.completed[1], vec![0.5, 0.25]);
+        assert_eq!(s.partial, vec![0.0, 0.0]);
+    }
 }

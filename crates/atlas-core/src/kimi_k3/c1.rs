@@ -2,9 +2,17 @@
 
 //! C1: greedy tokens vs HF goldens + RST known-bad mutants.
 
+use super::cache::HybridCache;
+use super::cpu_forward::{forward_token, logits};
 use super::cpu_weights::{Ablation, K3CpuModel};
 use super::greedy::greedy_decode;
+use super::ops::argmax;
 use serde::Deserialize;
+
+/// Golden prompt 0 first generated id. 387 is the *second* generated token
+/// (the first mismatch in the C1 FAIL log).
+const HF_PROMPT0_FIRST: u32 = 1459;
+const HF_PROMPT0_SECOND: u32 = 387;
 
 const GOLDEN_REL: &str = "../../docs/k3/goldens/kimi-k3-0.40b-greedy.json";
 
@@ -171,6 +179,72 @@ fn rst_mutant_fails_golden_compare() {
     assert_ne!(
         mix0, row.tokens,
         "planted AttnRes mix=0 must fail the golden compare"
+    );
+}
+
+fn topk_logits(logits: &[f32], k: usize) -> Vec<(u32, f32)> {
+    let mut idx: Vec<usize> = (0..logits.len()).collect();
+    idx.sort_by(|&a, &b| {
+        logits[b]
+            .partial_cmp(&logits[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
+    });
+    idx.truncate(k);
+    idx.into_iter().map(|i| (i as u32, logits[i])).collect()
+}
+
+/// One prefill of prompt 0; dump last-position top-8 vs HF first generated id.
+#[test]
+fn c1_prompt0_first_token_top8() {
+    let Some((_model, max_new, rows)) = load_goldens() else {
+        return;
+    };
+    let Some(engine) = twin_engine() else {
+        eprintln!("skip C1 first-token dump: no K3_TWIN");
+        return;
+    };
+    let row = &rows[0];
+    let split = row.tokens.len() - max_new;
+    let prompt = &row.tokens[..split];
+    assert_eq!(prompt.last().copied(), Some(11));
+    assert_eq!(row.tokens[split], HF_PROMPT0_FIRST);
+    assert_eq!(row.tokens[split + 1], HF_PROMPT0_SECOND);
+    let mut cache = HybridCache::from_graph(&engine.graph, &engine.kda);
+    let mut h = Vec::new();
+    for (pos, &tok) in prompt.iter().enumerate() {
+        h = forward_token(&engine, tok, pos, &mut cache, Ablation::default());
+    }
+    let lg = logits(&engine, &h);
+    let top = topk_logits(&lg, 8);
+    let pred = argmax(&lg);
+    eprintln!(
+        "C1 prompt0 last-pos argmax={pred} (HF first {HF_PROMPT0_FIRST}, second {HF_PROMPT0_SECOND}); top-8={top:?}"
+    );
+    assert_eq!(
+        pred, HF_PROMPT0_FIRST,
+        "first generated token {pred} != HF {HF_PROMPT0_FIRST}; top-8={top:?}"
+    );
+}
+
+#[test]
+fn c1_prompt0_first_eight_generated() {
+    let Some((_model, max_new, rows)) = load_goldens() else {
+        return;
+    };
+    let Some(engine) = twin_engine() else {
+        eprintln!("skip C1 first-8: no K3_TWIN");
+        return;
+    };
+    let row = &rows[0];
+    let split = row.tokens.len() - max_new;
+    let prompt = &row.tokens[..split];
+    let got = greedy_decode(&engine, prompt, 8, Ablation::default());
+    let want = &row.tokens[..split + 8];
+    eprintln!("C1 prompt0 first-8 got={:?} want={want:?}", &got[split..]);
+    assert_eq!(
+        got, want,
+        "C1 prompt 0 first 8 generated tokens (not claiming full 128)"
     );
 }
 

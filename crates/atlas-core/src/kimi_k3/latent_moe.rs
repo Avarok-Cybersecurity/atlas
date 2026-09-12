@@ -3,12 +3,10 @@
 //! Stable LatentMoE CPU reference.
 //!
 //! ```text
-//! latent = down_proj(h)                 // hidden → moe_latent
-//! latent = RMSNorm(latent)              // if latent_moe_use_norm
-//! scores = sigmoid(router(h) + bias)    // noaux_tc
-//! top-k, optional renormalize
+//! latent = down_proj(h)                 // hidden → moe_latent (no pre-norm)
+//! scores = sigmoid(router(h)); top-k on scores+bias  // noaux_tc
 //! y = Σ w_i expert_i(latent)            // SiTU-GLU experts
-//! y = RMSNorm(y); y = up_proj(y)
+//! y = RMSNorm(y) if latent_moe_use_norm; y = up_proj(y)
 //! out = y + shared_experts(h)           // shared stay full-width
 //! ```
 
@@ -48,20 +46,17 @@ impl LatentMoeConfig {
     }
 }
 
-/// Sigmoid + correction-bias scores, then top-k (stable: higher score, then lower id).
+/// noaux_tc: sigmoid(logits) for mix weights; `scores + bias` only ranks.
 pub fn sigmoid_topk(logits: &[f32], bias: &[f32], k: usize) -> (Vec<usize>, Vec<f32>) {
     assert_eq!(logits.len(), bias.len());
     let n = logits.len();
     let k = k.min(n);
-    let scores: Vec<f32> = logits
-        .iter()
-        .zip(bias)
-        .map(|(l, b)| sigmoid(l + b))
-        .collect();
+    let scores: Vec<f32> = logits.iter().map(|l| sigmoid(*l)).collect();
     let mut idx: Vec<usize> = (0..n).collect();
     idx.sort_by(|&a, &b| {
-        scores[b]
-            .partial_cmp(&scores[a])
+        let ca = scores[a] + bias[a];
+        let cb = scores[b] + bias[b];
+        cb.partial_cmp(&ca)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.cmp(&b))
     });
@@ -121,10 +116,7 @@ pub fn latent_moe_forward(
     cfg: &LatentMoeConfig,
     eps: f32,
 ) -> (Vec<f32>, Vec<usize>) {
-    let mut latent = matvec(down, h, cfg.latent, cfg.hidden);
-    if cfg.use_norm {
-        latent = rms_norm(&latent, norm_w, eps);
-    }
+    let latent = matvec(down, h, cfg.latent, cfg.hidden);
     let (ids, weights) = sigmoid_topk(logits, bias, cfg.top_k);
     let mut mixed = vec![0.0f32; cfg.latent];
     for (&id, &w) in ids.iter().zip(&weights) {
@@ -167,6 +159,19 @@ mod tests {
         assert_eq!(ids, vec![1, 3]);
         assert!((w[0] + w[1] - 1.0).abs() < 1e-6);
         assert!(w[0] > w[1]);
+    }
+
+    #[test]
+    fn noaux_tc_bias_ranks_not_weighted() {
+        // HF: scores = sigmoid(logits); top-k on scores+bias; mix uses scores.
+        let logits = [0.0f32, 0.0, 0.0];
+        let bias = [0.0, 5.0, 4.0];
+        let (ids, w) = sigmoid_topk(&logits, &bias, 2);
+        assert_eq!(ids, vec![1, 2]);
+        assert!(
+            (w[0] - w[1]).abs() < 1e-5,
+            "equal logits must keep equal mix weights, got {w:?}"
+        );
     }
 
     #[test]

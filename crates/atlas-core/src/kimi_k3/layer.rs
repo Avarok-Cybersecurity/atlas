@@ -9,7 +9,7 @@
 //! h = AttnRes(blocks, partial, mlp_res_*)
 //! mlp_out = dense SiTU-GLU | LatentMoE (on RMSNorm(h))
 //! partial += mlp_out
-//! at block boundary: push partial, reset
+//! at layer_idx % block_size == 0: archive incoming prefix, reset partial
 //! ```
 
 use crate::config::{LayerType, ModelConfig};
