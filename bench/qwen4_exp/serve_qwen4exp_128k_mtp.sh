@@ -179,6 +179,32 @@ if [ "$MOE_CUTLASS" = "1" ]; then
   export ATLAS_CUTLASS_WORKSPACE_MB="${ATLAS_CUTLASS_WORKSPACE_MB:-512}"
 fi
 
+# QSA_SKIP_DENSE — skip the dense paged attention for any prefill chunk lying
+# entirely past the QSA inert bound (2051), because stage 2 overwrites every
+# one of those rows anyway. The kernel comment calls this "exactly the
+# O(chunk x prefix) term that makes long prefill quadratic", and the measurement
+# agrees: it does not speed the curve up so much as FLATTEN it.
+#
+# MEASURED, TP=2 x EP=2, chunk 8192, cold unique prompts (longctx.py):
+#           skip=1   off    gain
+#   32K      1351    1220   +10.7%
+#   64K      1347    1099   +22.6%
+#   100K     1323     980   +35.0%     TTFT 75.7s vs 102.2s
+# 516 "skipped dense paged attention" lines with it on, 0 with it off.
+#
+# Correctness: a wrong skip leaves attn_out UNINITIALISED, and short prompts
+# CANNOT test it (one chunk at seq_len_start=0 never arms the skip — so
+# known_answer.py passes either way and proves nothing). Probed instead with a
+# needle buried at depth 0.35 and 0.75 of a 30K prompt, inside the skipped
+# region: 2/2 recalled with the skip on, same as off.
+#
+# ⚠ SINGLE-STREAM ONLY. The guard requires batched_meta.is_none(), so
+# co-dispatched prefills at concurrency do not take this path; the win is for
+# one long prompt at a time. Chunk 0 never skips either (seq_len_start=0), so
+# an 8K prompt is one chunk and sees nothing — this is invisible below ~16K.
+QSA_SKIP_DENSE="${QSA_SKIP_DENSE:-1}"
+[ "$QSA_SKIP_DENSE" = "1" ] && export ATLAS_QSA_SKIP_DENSE=1
+
 # 🪤 util RESERVES its whole fraction of TOTAL box memory up front, and the KV
 # pool then expands to fill whatever the weights leave over. 0.65 is the
 # measured-comfortable point for the 128K x 4 shape at EP=2; 0.58 is the 32K
