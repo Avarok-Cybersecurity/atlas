@@ -37,4 +37,13 @@ One JSON object per line. Script: `bench_openai.py` (S0 deliverable; not in this
 
 ## Results
 
-_None yet. First JSONL is S0 exit: one already-shipping Atlas MoE vs vLLM on spark1+spark2._
+S0 think-off (2026-09-11), **not certified**, not a K3 kernel number. Sibling Qwen3.8-27B NVFP4 trees. Atlas `--dangerously-allow-unresolved-kernel-lookups`. vLLM `--attention-backend TRITON_ATTN --enforce-eager`.
+
+`docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl`
+
+| engine | host | isl/osl | C | e2e p50 ms | tok/s (osl/e2e) | sample |
+| --- | --- | --- | --- | --- | --- | --- |
+| atlas | spark1 | 128/32 | 1 | 2032 | 15.7 | `ping` + 1..8 |
+| vllm | spark2 | 128/32 | 1 | 2579 | 12.4 | `ping` + 1..8 |
+
+Without `enable_thinking=false`, vLLM emits a think preamble and the row is not comparable. Default FlashInfer `plan()` 19 vs 20 args — see RST sheet.

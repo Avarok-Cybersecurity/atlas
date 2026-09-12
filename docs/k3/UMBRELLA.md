@@ -17,6 +17,7 @@ Closes #
 | Phase | S0 — harness / fabric / C0 |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
 | Last session | 2026-09-11 |
+| S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
 | Official weights downloaded in lab | **no** |
 | Rental booked | **no** |
 

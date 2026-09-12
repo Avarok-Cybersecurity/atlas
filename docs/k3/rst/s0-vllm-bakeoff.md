@@ -37,5 +37,10 @@ FlashInfer `plan()` 19 vs 20 args on this GB10 image + Qwen3.8 NVFP4. Env knobs 
 #ISSUE
 `GET /v1/models` 200 is a lying health check once EngineCore has died.
 
+TEST NOTES (cont.)
+- CLI `--attention-backend TRITON_ATTN` is the knob that actually stuck (`Using AttentionBackendEnum.TRITON_ATTN backend`). Env vars did not.
+- Greedy with `chat_template_kwargs.enable_thinking=false`: both engines emit `ping` + `1..8`. Without it, vLLM thinks aloud (`We need to respond to user...`) and the JSONL is not comparable.
+- Think-off C=1 ISL128/OSL32 e2e (non-stream, not certified): Atlas ~15.7 tok/s, vLLM ~12.4 tok/s. Sibling NVFP4 trees, not byte-identical. Atlas hopper-lookup-allow. `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl`.
+
 STOP
-Not charter-complete for a two-engine JSONL. Atlas-only smoke landed. vLLM still an invalid comparable until TRITON_ATTN (or a different image) produces a greedy 200.
+Charter complete enough for S0 "one shipped Atlas MoE and one vLLM produce a comparison JSONL". Residual: FlashInfer broken on this image; env backend knobs lie; `/v1/models` 200 is not a serve oracle; weights not identical.

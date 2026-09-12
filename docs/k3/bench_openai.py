@@ -22,6 +22,8 @@ def chat(url: str, model: str, prompt: str, max_tokens: int, timeout: float) -> 
             "temperature": 0,
             "max_tokens": max_tokens,
             "stream": False,
+            # S0: match Atlas --disable-thinking. Without this, vLLM Qwen3.8 emits a think preamble.
+            "chat_template_kwargs": {"enable_thinking": False},
         }
     ).encode()
     req = urllib.request.Request(
