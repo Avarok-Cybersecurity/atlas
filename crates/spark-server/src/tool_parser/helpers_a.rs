@@ -348,3 +348,40 @@ fn append_repaired_member(out: &mut String, member: &str, first: &mut bool) -> b
     out.push_str(&val_quoted);
     true
 }
+
+/// Normalize a model-emitted function name to the client-visible tool name.
+///
+/// This keeps existing parser salvage behaviour (`Bash=Bash` -> `Bash`,
+/// `name="Write"` -> `Write`) and adds namespace stripping for colon-prefixed
+/// names (`namespace:tool` -> `tool`). Dot characters are preserved because
+/// some callers use them in actual tool names; only `:` is treated as the
+/// namespace delimiter.
+pub(super) fn normalize_tool_name(raw: &str) -> String {
+    let mut name = raw.trim().trim_matches('"').trim_matches('\'').to_string();
+
+    if name.starts_with("name=") || name.starts_with("name =") {
+        name = name
+            .trim_start_matches("name")
+            .trim_start_matches('=')
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
+    }
+
+    if let Some(eq_pos) = name.find('=') {
+        name = name[..eq_pos].trim().to_string();
+    }
+
+    if let Some(colon) = name.rfind(':') {
+        let head = &name[..colon];
+        let tail = &name[colon + 1..];
+        let head_is_namespace =
+            !head.is_empty() && head.chars().all(is_tool_name_or_namespace_char);
+        if head_is_namespace && is_tool_name_component(tail) {
+            name = tail.to_string();
+        }
+    }
+
+    name
+}
