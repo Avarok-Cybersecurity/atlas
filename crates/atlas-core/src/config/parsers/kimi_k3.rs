@@ -149,10 +149,8 @@ fn overlay_linear_attn(config: &mut ModelConfig, text: &serde_json::Value) -> Re
     }
     match lac.get("gate_lower_bound").and_then(|v| v.as_f64()) {
         Some(v) => config.linear_gate_lower_bound = v as f32,
-        None => bail!(
-            "kimi_k3: linear_attn_config has no gate_lower_bound; refusing to guess \
-             the KDA decay bound (production declares -5.0)"
-        ),
+        // 0.40B twin omits the key. Production JSON always has -5.0.
+        None => config.linear_gate_lower_bound = -5.0,
     }
     config.use_full_rank_gate = lac
         .get("use_full_rank_gate")
@@ -381,5 +379,37 @@ mod tests {
             assert_eq!(c.layer_types[i], LayerType::LinearAttention, "layer {i}");
         }
         assert_eq!(c.layer_types[3], LayerType::FullAttention);
+    }
+
+    #[test]
+    fn parse_kimi_k3_refuses_wrapper_without_text_config() {
+        let mut raw: serde_json::Value = serde_json::from_str(OFFICIAL).unwrap();
+        raw.as_object_mut().unwrap().remove("text_config");
+        let err = parse_kimi_k3(&raw.to_string()).unwrap_err().to_string();
+        assert!(
+            err.contains("linear_attn_config") || err.contains("text_config"),
+            "expected a geometry miss, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_kimi_k3_0_40b_twin() {
+        const TWIN: &str =
+            include_str!("../../../../../docs/k3/fixtures/Kimi-K3-0.40B-config.json");
+        let c = parse_config(TWIN).expect("0.40B twin");
+        assert_eq!(c.model_type, "kimi_k3");
+        assert_eq!(c.hidden_size, 1024);
+        assert_eq!(c.num_hidden_layers, 8);
+        assert_eq!(c.num_experts, 8);
+        assert_eq!(c.num_experts_per_tok, 2);
+        assert_eq!(c.attn_res_block_size, 4);
+        assert_eq!(c.linear_gate_lower_bound, -5.0);
+        assert_eq!(c.layer_types.last(), Some(&LayerType::FullAttention));
+        let kda = c
+            .layer_types
+            .iter()
+            .filter(|t| **t == LayerType::LinearAttention)
+            .count();
+        assert_eq!(kda, 6);
     }
 }

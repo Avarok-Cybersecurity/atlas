@@ -101,6 +101,17 @@ pub fn dry_run_weight_map(
     })
 }
 
+/// Official moonshotai/Kimi-K3 is 96 shards. Twin maps are not.
+pub fn require_shard_count(report: &KimiK3DryRun, n: usize) -> Result<()> {
+    if report.shards.len() != n {
+        bail!(
+            "K3 weight map expected {n} shards, got {}",
+            report.shards.len()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::classes::example_key;
@@ -173,5 +184,16 @@ mod tests {
         let index = serde_json::json!({ "weight_map": map });
         let report = dry_run_index_json(&index.to_string(), true).unwrap();
         assert_eq!(report.shards.len(), 96);
+        require_shard_count(&report, 96).unwrap();
+    }
+
+    #[test]
+    fn kimi_k3_weight_map_dry_run_refuses_95_shards() {
+        let mut map = synthetic_96_shard_map();
+        map.retain(|_, shard| !shard.contains("00096"));
+        let report = dry_run_weight_map(&map, true).expect("text classes still present");
+        let err = require_shard_count(&report, 96).unwrap_err().to_string();
+        assert!(err.contains("expected 96 shards"), "{err}");
+        assert!(err.contains("got 95"), "{err}");
     }
 }
