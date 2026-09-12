@@ -37,13 +37,13 @@ S7 (rental soak) is forbidden until every box is green.
 
 ## Lab hosts
 
-Named in the PRD. IPs / RoCE iface / `NCCL_IB_HCA` live in `docs/k3/LAB.md` (filled 2026-09-11 from live probes).
+Named in the PRD. Iface / `NCCL_IB_HCA` live in `docs/k3/LAB.md`. **Do not put lab IPs in this PR.**
 
 | Host | Role |
 | --- | --- |
-| spark1 (`192.168.50.125`) | head / rank 0 / `:8888` / NCCL master |
-| spark2 (`192.168.50.36`) | worker / rank 1 |
-| train / 5090 (`192.168.50.122`) | correctness GPU only; SM120 launch test still pending in LAB.md |
+| spark1 | head / rank 0 / `:8888` / NCCL master |
+| spark2 | worker / rank 1 |
+| train / 5090 | correctness GPU only; SM120 launch test **failed** (see LAB.md) — PyTorch/shape-debug only |
 
 Constraint: spark1+spark2 ≈ 240 GB UMA. Official `moonshotai/Kimi-K3` MXFP4 ≈ 1.561 TB. Two Sparks cannot load official K3.
 

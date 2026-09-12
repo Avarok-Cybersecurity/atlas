@@ -1,17 +1,17 @@
-[rank1] connecting to 192.168.100.10:34567 ...
+[rank1] connecting to <spark1-roce>:34567 ...
 [rank1] got unique id from rank0
 spark2:60272:60272 [0] NCCL INFO ncclOsDlopen(libnccl-env.so) failed: libnccl-env.so: cannot open shared object file: No such file or directory
 spark2:60272:60272 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
 spark2:60272:60272 [0] NCCL INFO cudaDriverVersion 13000
 spark2:60272:60272 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to enp1s0f1np1
-spark2:60272:60272 [0] NCCL INFO Bootstrap: Using enp1s0f1np1:192.168.100.11<0>
+spark2:60272:60272 [0] NCCL INFO Bootstrap: Using enp1s0f1np1:<spark2-roce><0>
 spark2:60272:60272 [0] NCCL INFO NCCL version 2.30.4+cuda13.2
 spark2:60272:60272 [0] NCCL INFO NCCL git version HEAD 747384637
 spark2:60272:60272 [0] NCCL INFO ncclOsDlopen(libnccl-net.so) failed: libnccl-net.so: cannot open shared object file: No such file or directory
 spark2:60272:60272 [0] NCCL INFO NET/Plugin: Could not find: libnccl-net.so
 spark2:60272:60272 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to enp1s0f1np1
 spark2:60272:60272 [0] NCCL INFO NCCL_IB_HCA set to rocep1s0f1
-spark2:60272:60272 [0] NCCL INFO NET/IB : Using [0]rocep1s0f1:1/RoCE [RO]; OOB enp1s0f1np1:192.168.100.11<0>
+spark2:60272:60272 [0] NCCL INFO NET/IB : Using [0]rocep1s0f1:1/RoCE [RO]; OOB enp1s0f1np1:<spark2-roce><0>
 spark2:60272:60272 [0] NCCL INFO Initialized NET plugin IB
 spark2:60272:60272 [0] NCCL INFO Assigned NET plugin IB to comm
 spark2:60272:60272 [0] NCCL INFO ncclOsDlopen(libnccl-gin.so) failed: libnccl-gin.so: cannot open shared object file: No such file or directory

@@ -8,9 +8,9 @@ Pin the rental vLLM K3 image the week you book. Lab vLLM on Sparks reuses the ex
 
 | engine | host | URL |
 | --- | --- | --- |
-| Atlas | spark1 | `http://192.168.50.125:8888/v1` |
-| Atlas worker | spark2 | `http://192.168.50.36:8889/v1` (not the client endpoint) |
-| vLLM (lab proxy) | spark1 | TBD on S0 bake-off stand-up |
+| Atlas | spark1 | `http://spark1:8888/v1` (bind `0.0.0.0`; address not in git) |
+| Atlas worker | spark2 | `http://spark2:8889/v1` (not the client endpoint) |
+| vLLM (lab proxy) | spark2 | `http://spark2:8000/v1` |
 
 ## Fixed protocol
 

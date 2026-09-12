@@ -4,25 +4,22 @@ Filled 2026-09-11 from the live boxes. Do not copy IPs or iface names from other
 
 ## Hosts
 
-| hostname | IP | role | API | notes |
-| --- | --- | --- | --- | --- |
-| spark1 | 192.168.50.125 (enP7s7 Ethernet) | head / rank 0 | :8888 | NCCL master-addr. Wi-Fi 192.168.50.80 (`wlP9s9`). Tailscale 100.110.52.54. User `pidtom`. GB10 SM121, 121 GiB UMA. |
-| spark2 | 192.168.50.36 (enP7s7 Ethernet) | worker / rank 1 | :8889 | No public client API. Wi-Fi 192.168.50.23. User `pidtom`. Same class box. |
-| train (5090 workstation) | 192.168.50.122 | correctness GPU | local | Windows host + WSL Ubuntu (`tturn`). RTX 5090 SM120, 32607 MiB. SSH `train.local`. |
+Numeric IPs stay **out of git**. They live in the private lab notebook, not this PR.
 
-SSH from the Mac:
+| hostname | role | API | notes |
+| --- | --- | --- | --- |
+| spark1 | head / rank 0 | :8888 | NCCL master-addr. GB10 SM121, 121 GiB UMA. Mgmt Ethernet `enP7s7`; Wi-Fi `wlP9s9` (do not pin NCCL here). |
+| spark2 | worker / rank 1 | :8889 | No public client API. Same class box. |
+| train (5090 workstation) | correctness GPU | local | Windows host + WSL. RTX 5090 SM120, 32607 MiB. SSH host alias `train.local`. |
 
-```
-Host gx10 spark spark1   # 192.168.50.125 pidtom
-Host spark2              # 192.168.50.36  pidtom
-```
+SSH aliases (no addresses in-tree): `spark1` / `spark` / `gx10`, `spark2`, `train.local`.
 
-Passwordless SSH spark1 ↔ spark2: **yes** (verified 2026-09-11: `ssh spark1` → `spark2`; `ssh spark2` → `spark1`).
+Passwordless SSH spark1 ↔ spark2: **yes** (verified 2026-09-11).
 
 ## Fabric
 
 - QSFP cable: spark1 `enp1s0f1np1` ↔ spark2 `enp1s0f1np1` (primary RoCE rail)
-- Second rail also Up (unused for NCCL pin): spark1 `enP2p1s0f1np1` = 192.168.101.10, spark2 `enP2p1s0f1np1` = 192.168.101.11
+- Second rail also Up (unused for NCCL pin): `enP2p1s0f1np1` on both (addresses not in git)
 
 `ibdev2netdev` (spark1), 2026-09-11:
 
@@ -37,8 +34,8 @@ roceP2p1s0f1 port 1 ==> enP2p1s0f1np1 (Up)
 
 - Up RoCE iface (pin `NCCL_SOCKET_IFNAME`): **`enp1s0f1np1`**
 - `NCCL_IB_HCA` pin: **`rocep1s0f1`**
-- RoCE IPs: spark1 `192.168.100.10/24`, spark2 `192.168.100.11/24`
-- ICMP over RoCE (2026-09-11): spark1→spark2 rtt 0.8–1.4 ms; spark2→spark1 rtt 0.4–1.1 ms; 0% loss
+- RoCE addressing: private lab notebook only (do not commit)
+- ICMP over RoCE (2026-09-11): spark1↔spark2 0% loss, sub-2 ms rtt
 - NCCL 2-rank all-reduce **re-run 2026-09-11** (this campaign): `docs/k3/logs/nccl-2rank-*-2026-09-11.log`
   - Transport: `NET/IB` RoCE, `Connected all rings, use ring PXN 0 GDR 0`
   - 16 KiB: 30.39 µs, 0.539 GB/s
@@ -64,12 +61,12 @@ NCCL_ALGO=Ring
 Dual-node launcher pattern:
 
 ```bash
-HEAD_IP=192.168.50.125 WORKER_IP=192.168.50.36 \
+HEAD_IP=<spark1-mgmt> WORKER_IP=<spark2-mgmt> \
   NCCL_SOCKET_IFNAME=enp1s0f1np1 NCCL_IB_HCA=rocep1s0f1 \
   bash scripts/start-ep2.sh <already-shipping-Atlas-MoE>
 ```
 
-Use Ethernet mgmt IPs for SSH/HTTP. Use `192.168.100.10` as NCCL master-addr if the runtime binds the RoCE iface; do not mix mgmt and RoCE in the same pin.
+Use mgmt addresses for SSH/HTTP. If the runtime binds the RoCE iface, NCCL master-addr is the RoCE address of spark1 — do not mix mgmt and RoCE in the same pin. Addresses are not in this tree.
 
 Prove the fabric with a shipped Atlas MoE before any K3 dummy TP.
 
