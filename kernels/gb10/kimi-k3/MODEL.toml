@@ -1,0 +1,55 @@
+# K3-WIP S0: skeleton only. Do not serve official moonshotai/Kimi-K3 from this target yet.
+# K3-DECISION: KDA is a new backend, not a GDN/Mamba reuse.
+# Official MXFP4 is ~1.561 TB; lab twins are inference-optimization/Kimi-K3-0.40B (C1)
+# and cneuralnetwork/smol-kimi-k3 (shape only).
+#
+# 🔴 THE MATCHER is [[model_types]]. Dimension keys below are documentation.
+# S1 will add the matcher + factory arm behind model_type = "kimi_k3".
+
+[model]
+name = "kimi-k3"
+hf_id = "inference-optimization/Kimi-K3-0.40B"
+params = "0.40B"
+active_params = "0.06B"
+architecture = "KDA + gated MLA + AttnRes + Stable LatentMoE"
+# Production (rental only): moonshotai/Kimi-K3, ~2.8T, 93 layers, 896 routed / top-16.
+
+layers_total = 8
+# Twin keeps 3:1 KDA:MLA (layers 0-2 KDA, 3 MLA, 4-6 KDA, 7 MLA). Prod is 69 KDA + 24 MLA.
+layer_pattern = "3 KDA then 1 gated MLA, repeating; last layer is always global MLA"
+first_k_dense_replace = 1
+
+hidden_dim = 7168
+# Twin may shrink hidden/heads. Prod: 7168 hidden, 96 heads.
+
+# ── gated NoPE MLA (prod) ──
+q_heads = 96
+q_lora_rank = 1536
+kv_lora_rank = 512
+qk_nope_head_dim = 128
+qk_rope_head_dim = 64
+v_head_dim = 128
+mla_use_nope = true
+mla_use_output_gate = true
+
+# ── KDA ──
+linear_num_heads = 96
+linear_head_dim = 128
+linear_conv_kernel = 4
+use_full_rank_gate = true
+gate_lower_bound = -5.0
+
+# ── AttnRes ──
+attn_res_block_size = 12
+
+# ── Stable LatentMoE (prod) ──
+moe_experts = 896
+moe_topk = 16
+shared_experts = 2
+routed_expert_hidden_size = 3584
+moe_intermediate = 3072
+
+# ── SiTU-GLU ──
+hidden_act = "situ"
+activation_situ_beta = 4.0
+activation_situ_linear_beta = 25.0
