@@ -84,4 +84,22 @@ fn c5_zero_mix_weights_diverges_from_recorded() {
     );
 }
 
+#[test]
+fn c5_twin_mix0_is_skip_and_diverges_from_mix1() {
+    let Some(model) = super::cpu_load::twin_from_env() else {
+        eprintln!("skip C5 twin: no K3_TWIN");
+        return;
+    };
+    let h = model.graph.hidden;
+    let skip = vec![1.0f32; h];
+    let block = vec![-1.0f32; h];
+    let query = vec![0.25f32; h];
+    let norm = vec![1.0f32; h];
+    let sources = [skip.clone(), block];
+    let mix0 = attnres_mix(&sources, &query, &norm, EPS, 0.0);
+    let mix1 = attnres_mix(&sources, &query, &norm, EPS, 1.0);
+    assert_eq!(mix0, skip, "twin mix=0 is skip");
+    assert_ne!(mix0, mix1, "RST: twin mix=0 vs mix=1");
+}
+
 // TODO: GPU C5 — AttnRes kernel vs this frozen residual fixture (same atol).

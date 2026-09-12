@@ -96,4 +96,27 @@ fn c6_force_expert_zero_diverges() {
     );
 }
 
+#[test]
+fn c6_twin_force_expert_zero_diverges() {
+    let Some(model) = super::cpu_load::twin_from_env() else {
+        eprintln!("skip C6 twin: no K3_TWIN");
+        return;
+    };
+    let w = first_moe(&model);
+    let h = vec![1.0f32; model.graph.hidden];
+    let n = model.moe.n_routed;
+    let logits: Vec<f32> = (0..n).map(|i| if i == 1 { 4.0 } else { 0.0 }).collect();
+    let (clean, ids) = latent_moe_forward(
+        &h, &w.down, &w.up, &w.norm, &logits, &w.bias, &w.experts, None, &model.moe, EPS,
+    );
+    assert!(!ids.is_empty());
+    let forced: Vec<f32> = (0..n).map(|i| if i == 0 { 8.0 } else { 0.0 }).collect();
+    let (out, forced_ids) = latent_moe_forward(
+        &h, &w.down, &w.up, &w.norm, &forced, &w.bias, &w.experts, None, &model.moe, EPS,
+    );
+    assert_eq!(forced_ids[0], 0);
+    assert_ne!(forced_ids, ids);
+    assert_ne!(out, clean, "RST: twin force expert 0 changes mix");
+}
+
 // TODO: GPU C6 — fused LatentMoE vs this frozen-gate fixture (same ids + atol).

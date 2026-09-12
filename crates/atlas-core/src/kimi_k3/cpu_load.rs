@@ -63,6 +63,25 @@ impl K3CpuModel {
     }
 }
 
+/// C1–C6 spark2 runs. Missing `K3_TWIN` skips. A present dir that fails to load panics.
+#[cfg(test)]
+pub(super) fn twin_from_env() -> Option<K3CpuModel> {
+    match std::env::var("K3_TWIN") {
+        Ok(p) => {
+            let path = Path::new(&p);
+            if !path.exists() {
+                eprintln!("skip twin: K3_TWIN={p} does not exist");
+                return None;
+            }
+            Some(
+                K3CpuModel::from_pretrained(path)
+                    .unwrap_or_else(|e| panic!("K3_TWIN={p} load failed: {e:#}")),
+            )
+        }
+        _ => None,
+    }
+}
+
 fn is_vision(name: &str) -> bool {
     name.starts_with("vision_tower.") || name.starts_with("mm_projector.")
 }

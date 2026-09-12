@@ -135,4 +135,17 @@ fn c3_stomp_mla_kv_changes_tokens() {
     );
 }
 
+#[test]
+fn c3_prefix_cache_hit_matches_nocache_twin() {
+    let Some(model) = super::cpu_load::twin_from_env() else {
+        eprintln!("skip C3 twin: no K3_TWIN");
+        return;
+    };
+    assert_c3(
+        &model,
+        &[18805, 308, 799, 5624, 12524, 318, 57195, 11],
+        "twin",
+    );
+}
+
 // TODO: GPU C3 — paged prefix-cache restore (KDA conv/recurrent + MLA KV) vs cold prefill.

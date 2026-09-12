@@ -155,6 +155,20 @@ fn c4_hybrid_state_prefix_hit_matches_cold_prefill_small() {
 }
 
 #[test]
+fn c4_hybrid_state_prefix_hit_matches_cold_prefill_twin() {
+    let Some(model) = super::cpu_load::twin_from_env() else {
+        eprintln!("skip C4 twin: no K3_TWIN");
+        return;
+    };
+    assert_c4(
+        &model,
+        &[18805, 308, 799, 5624, 12524, 318, 57195, 11],
+        1459,
+        "twin",
+    );
+}
+
+#[test]
 fn c4_wrong_kda_conv_slot_after_prefix_hit_diverges() {
     let model = K3CpuModel::synthetic_tiny();
     let prefix = [1u32, 2, 3, 4];

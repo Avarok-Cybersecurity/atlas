@@ -113,4 +113,18 @@ fn c2_skip_layer_on_decode_path_diverges() {
     );
 }
 
+#[test]
+fn c2_prefill_decode_logits_match_full_prefill_twin() {
+    let Some(model) = super::cpu_load::twin_from_env() else {
+        eprintln!("skip C2 twin: no K3_TWIN");
+        return;
+    };
+    // Golden prompt 0 ids (through the comma). Twin C2, not synthetic.
+    assert_c2(
+        &model,
+        &[18805, 308, 799, 5624, 12524, 318, 57195, 11],
+        "twin",
+    );
+}
+
 // TODO: GPU C2 — same last-position check on KDA/MLA kernels + paged hybrid cache.
