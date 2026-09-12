@@ -36,6 +36,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     lm_head_batchm_max: 16,
     ssm_batched_recurrent: true,
     gdn_decode_hopper: false,
+    gdn_decode_strided_hopper: true,
     gdn_prefill_tc: true,
     ssm_ba_gates_hopper: true,
     ffn_gateup_fused: true,
@@ -228,4 +229,74 @@ fn an_illegal_shape_never_selects_the_twin() {
         128,
         64
     ));
+}
+
+// ── the SECOND lever: `gdn_decode_strided_hopper` (#927) ──────────────────
+//
+// A different row governing a different kernel, so it needs its own three
+// answers. The one thing the two rows SHARE is the `ATLAS_NO_GDN_HOPPER` kill
+// switch, and that sharing is the property most worth pinning: an operator who
+// disarms "the Hopper GDN decode twins" must disarm both, or a bisect that
+// thought it had turned them off is measuring one of them.
+
+/// Hopper declares it ON, and an empty environment leaves it there.
+#[test]
+fn the_strided_smem_lever_is_on_by_declaration() {
+    let l = with(&[]);
+    assert!(l.gdn_decode_strided_hopper.value);
+    assert_eq!(l.gdn_decode_strided_hopper.source, Source::Target);
+    // …and it is INDEPENDENT of the column-tiled row, which is off.
+    assert!(!l.gdn_decode_hopper.value);
+}
+
+/// `ATLAS_GDN_DECODE_STRIDED_HOPPER=0` is the one-variable A/B, and it moves
+/// only this row.
+#[test]
+fn the_strided_smem_lever_has_its_own_env_spelling() {
+    let l = with(&[("ATLAS_GDN_DECODE_STRIDED_HOPPER", "0")]);
+    assert!(!l.gdn_decode_strided_hopper.value);
+    assert!(l.gdn_decode_strided_hopper.from_env());
+    assert!(!l.gdn_decode_hopper.value, "the other row must not move");
+
+    let l = with(&[("ATLAS_GDN_DECODE_HOPPER", "1")]);
+    assert!(l.gdn_decode_hopper.value);
+    assert!(
+        l.gdn_decode_strided_hopper.value && !l.gdn_decode_strided_hopper.from_env(),
+        "arming the column-tiled twin must not re-arm this one from the env"
+    );
+}
+
+/// THE SHARED KILL SWITCH. `ATLAS_NO_GDN_HOPPER=1` outranks the positive lever
+/// on BOTH rows, including its own `=1`-and-not-presence spelling.
+#[test]
+fn the_legacy_kill_switch_disarms_both_decode_twins() {
+    let l = with(&[("ATLAS_NO_GDN_HOPPER", "1")]);
+    assert!(!l.gdn_decode_hopper.value);
+    assert!(!l.gdn_decode_strided_hopper.value);
+    assert!(l.gdn_decode_strided_hopper.from_env());
+
+    // …and it beats the positive lever on both, in either order.
+    let l = with(&[
+        ("ATLAS_GDN_DECODE_STRIDED_HOPPER", "1"),
+        ("ATLAS_NO_GDN_HOPPER", "1"),
+    ]);
+    assert!(!l.gdn_decode_strided_hopper.value);
+
+    // `=0` is NOT presence — the legacy spelling is preserved for this row too.
+    let l = with(&[("ATLAS_NO_GDN_HOPPER", "0")]);
+    assert!(l.gdn_decode_strided_hopper.value);
+}
+
+/// The serve line carries the new row beside the old one, so a reader can tell
+/// which of the two twins a serve ran.
+#[test]
+fn the_serve_line_distinguishes_the_two_decode_twins() {
+    let line = format_levers(&with(&[]));
+    assert!(line.contains("gdn_decode_hopper=off"), "{line}");
+    assert!(line.contains("gdn_decode_strided_hopper=on"), "{line}");
+    let line = format_levers(&with(&[("ATLAS_NO_GDN_HOPPER", "1")]));
+    assert!(
+        line.contains("gdn_decode_strided_hopper=off (env)"),
+        "{line}"
+    );
 }

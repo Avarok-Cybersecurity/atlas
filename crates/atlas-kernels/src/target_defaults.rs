@@ -92,6 +92,28 @@ pub struct TargetDefaults {
     /// the positive lever, and the legacy `ATLAS_NO_GDN_HOPPER=1` kill switch
     /// still outranks it.
     pub gdn_decode_hopper: bool,
+    /// `gated_delta_rule_decode_f32_strided_hopper_smem` serves the BATCHED
+    /// GDN decode recurrence (`layers/ops/ssm_gdn_strided_hopper.rs`), in
+    /// place of its gb10 parent, at n >= 4.
+    ///
+    /// TRUE on hopper, false elsewhere. A DIFFERENT lever from
+    /// `gdn_decode_hopper` above and a different kernel: that one
+    /// re-partitions state COLUMNS to fill a 132-SM device at n=1 and lost;
+    /// this one keeps the parent's partition exactly — it has to, because the
+    /// `kd` reduction is a serial f32 chain — and reads the state ONCE for 96
+    /// of its 128 rows instead of twice. nsys round 13 cell V prices the
+    /// parent at 2 748.9 us = 13.82% of a 19.887 ms n=16 step, 57.27 us per
+    /// launch, issuing 150.99 MB where 100.66 MB is compulsory
+    /// (`GDN-DECODE-ATTRIBUTION.md`, "Round 17").
+    ///
+    /// On without a serving receipt because it cannot change a bit of output
+    /// (`native_gdn_decode_hopper_microtest` asserts byte equality, not a
+    /// tolerance) and because its occupancy is the parent's — six resident
+    /// CTAs per SM at 80 registers and 37 904 B of smem, against the 5.82 the
+    /// n=16 grid supplies. `ATLAS_GDN_DECODE_STRIDED_HOPPER=0` is the
+    /// one-variable A/B; `ATLAS_NO_GDN_HOPPER=1` outranks it, the same kill
+    /// switch that outranks `gdn_decode_hopper`.
+    pub gdn_decode_strided_hopper: bool,
     /// `gated_delta_rule_chunk_delta_h_tcfuse_x2` serves the GDN chunked
     /// PREFILL state spine on tensor cores (`layers/ops/ssm_gdn_a3.rs`).
     ///

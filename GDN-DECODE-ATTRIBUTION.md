@@ -165,3 +165,228 @@ is per-target and a smaller-SM Hopper part may well take the other side.
 `ATLAS_NO_GDN_HOPPER=1`, the spelling cell F was run with, still forces off and
 outranks the positive. Numerics were never the question: 12/12 bit-identical
 means the choice is free in both directions.
+## Round 17 — the n>=4 strided twin: read the state once, not twice
+
+The round-12 answer above closed one question and opened another. The
+column-tiled twin lost because **there was nothing left to fill**: at n=16 the
+parent's grid is already 768 CTAs on 132 SMs. That verdict says nothing about
+the OTHER axis, and round 13's decode trace priced it.
+
+### The cost
+
+nsys `--cuda-graph-trace=node`, 1xH100 80GB HBM3, `Qwen/Qwen3.8-27B-FP8` @
+`3717cb05e`, round 13 cell V, median n=16 decode step **19.887 ms busy**, 1 619
+graph nodes, one graph launch per step (`h100-r13-attribution.md` SS C.1–C.4):
+
+| | value |
+|---|---|
+| `gated_delta_rule_decode_f32_strided*` | **48 nodes, 2 748.9 µs = 13.82 % of the step** |
+| per launch | **57.27 µs** |
+| live f32 state per launch, `n·nv·kd·vd·4 B` | 50.33 MB |
+| COMPULSORY traffic, `2·n·nv·vd·kd·4 B` | 100.66 MB → **1 758 GB/s = 52.5 % of HBM** |
+| ISSUED traffic (the parent reads the state TWICE) | 150.99 MB → **2 637 GB/s = 78.7 % of HBM** |
+
+It is the third largest item in the step, behind only the two cuBLASLt FFN
+arms. **The 52.5 % is not slack — it is a second read.** The parent walks the
+state once to form `hk_dot = (Hᵀk)` and again to apply
+`H ← g·H + k ⊗ v_new` while forming `q_dot = (H_newᵀq)`, because `v_new`
+depends on the whole of the first pass.
+
+### What the kernel does
+
+`kernels/hopper/common/gdn_decode_strided_hopper.cu`, entry
+`gated_delta_rule_decode_f32_strided_hopper_smem`. Each (sequence, head) tile
+is 128 × 128 f32 = 64 KB, and its rows are split three ways:
+
+| rows | where they live between the passes | global reads |
+|---|---|---|
+| `[0, 72)` | staged in SHARED MEMORY on pass 1, `float4` (LDG.128, 512 B/warp) | 1 |
+| `[72, 96)` | RETAINED IN REGISTERS across both passes | 1 |
+| `[96, 128)` | re-read from global on pass 2, as the parent does for all 128 | 2 |
+
+**2.25 reads-equivalents + 1 write against the parent's 2 + 1 — 25 % less state
+traffic.** The 32 re-read rows are 16 KB/tile = 12.6 MB across the launch,
+re-read within microseconds and comfortably inside 50 MB of L2, so they are the
+ones L2 plausibly serves; the 96 the kernel keeps are the ones it plausibly
+does not, because the whole live state is 50.33 MB against an H100's 50 MB of
+L2 and all 768 CTAs are resident at once.
+
+### The ordering argument — why this is the ONLY shape that can be bit-identical
+
+The parent's per-element reduction over `kd` is a **serial f32 chain owned by
+one thread**. For state column `i`:
+
+```
+acc = 0;
+for (j = 0; j < 128; j += 4)
+    acc = acc + (((h[j]*k[j] + h[j+1]*k[j+1]) + h[j+2]*k[j+2]) + h[j+3]*k[j+3]);
+```
+
+f32 addition is not associative. Any re-partition of `j` across threads — a
+warp-shuffle butterfly, a split into partial sums, a reduction tree of any
+shape — re-brackets that sum and changes the answer. So the only bit-identical
+partition is the parent's own: **one thread per state column, walking every
+`j` itself**. That is why this kernel keeps `grid = (nv, n)`, `block = (128,1,1)`
+and `tid` = column; why it does *not* tile columns the way
+`gdn_decode_hopper.cu` does; and why there is no shuffle anywhere in the two
+dot products. The only cross-thread reduction present is the
+`SSM_STATE_MAX_NORM` clamp, which the parent also does across the whole head
+and which is reproduced shuffle for shuffle.
+
+Given that mapping, bit-identity is a **storage** argument and nothing else:
+
+* every float pass 2 consumes is the exact float pass 1 loaded from `H` at the
+  same index — an f32 round trip through shared memory or a register is the
+  identity, and each thread touches only its own `tid` column of `smem_h`;
+* `j` is visited in ascending order in both passes, in groups of four, with the
+  expression text copied character for character from the parent — including
+  the group shape and the sequential `hk_dot +=` / `q_dot +=` / `norm_acc +=`
+  chains. The three row segments are three spellings of one loop body;
+  splitting a loop at a constant bound does not re-bracket the accumulator,
+  because the accumulator is carried across the split;
+* the write set and the write ADDRESSES are the parent's, element for element;
+* the file compiles under `--fmad=false` (`kernels/gb10/common/KERNEL.toml`,
+  and the model's own KERNEL.toml sets it too), so no FMA-contraction freedom
+  is left for a schedule change to exercise.
+
+`ops::gdn_strided_smem_row_home` and `ops::gdn_strided_smem_elem` mirror the
+row map and the address map on the host, and
+`ssm_gdn_strided_hopper_tests.rs` asserts the three segments partition
+`[0,128)` exactly once, in ascending order, on multiples of four.
+
+### The ptxas receipt — sm_90a, CUDA 13.0.88, `--fmad=false`, `--Werror all-warnings`
+
+```
+ptxas info : Function properties for gated_delta_rule_decode_f32_strided_hopper_smem
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info : Used 80 registers, used 1 barriers, 37904 bytes smem
+```
+
+On a GH100 SM (65 536 registers, 233 472 B of shared memory) that is
+`min(65536/(80·128), 233472/37904)` = `min(6, 6)` = **6 resident CTAs/SM = 24
+warps/SM**, and 6 × 132 = 792 slots for the n=16 grid's 768 CTAs — **one wave**,
+which is what the parent gets too (40 registers, 1 040 B of smem; its own
+ceiling is 12 CTAs/SM but the grid caps it at 5.82). The split is the shipped
+point of this sweep, all rows 0-spill except the last:
+
+| smem rows / reg rows | registers | smem B | CTAs/SM | traffic units |
+|---|---|---|---|---|
+| *(parent)* | 40 | 1 040 | 5.82 *(grid-limited)* | 3.000 |
+| 72 / 16 | 66 | 37 904 | 6 | 2.313 |
+| **72 / 24 — SHIPPED** | **80** | **37 904** | **6** | **2.250** |
+| 72 / 32 | 96 | 37 904 | 5 | 2.188 |
+| 80 / 24 | 72 | 42 000 | 5 | 2.188 |
+| 80 / 48 *(no re-read)* | 128 | 42 000 | 4 | 2.000 |
+| 64 / 64 *(no re-read)* | **255, 68 B spill** | 33 808 | 2 | 2.000 |
+
+The last row reproduces, from the other direction, the loss already on file:
+full-width register retention spills (`gated_delta_rule_decode_f32_strided_norm_half`,
+−11.6 % e2e), turning the retained columns into LOCAL memory — the traffic the
+lever was removing. All-shared is the other end: 64 KB/CTA is past the 48 KB
+static limit and caps residency at 3 CTAs/SM. **A twin that halves the traffic
+and also halves the residency has made a trade, not a fix — that is exactly how
+the n=1 twin became a 0.83×.** 72/24/32 is the lowest-traffic point that keeps
+the parent's wave structure.
+
+### The lever and the width guard
+
+`kernels/hopper/HARDWARE.toml` `[defaults] gdn_decode_strided_hopper = true`;
+`gb10` and `b200` declare it `false` (and do not carry the source — it is not
+symlinked into b200). A **new row** rather than a third value on
+`gdn_decode_hopper`, because the two rows are opposite claims about different
+kernels — column re-partition for the n=1 underfill (OFF, measured loss) versus
+state traffic for the n≥4 batched arm (ON) — and one row governing both is what
+`gdn_prefill_tc`'s family lever had to grow an `ATLAS_NO_*_REMNANTS` escape
+hatch for. `ATLAS_GDN_DECODE_STRIDED_HOPPER=0` is the one-variable A/B;
+`ATLAS_NO_GDN_HOPPER=1` still outranks it, deliberately shared with the other
+row so an operator disarming "the Hopper GDN decode twins" disarms all of them.
+
+The boot line carries it (`target defaults (hopper): … gdn_decode_hopper=off
+gdn_decode_strided_hopper=on(target) …`) and the dispatch prints one route line
+per process naming the entry it launched:
+
+```
+GDN state decode: gated_delta_rule_decode_f32_strided_hopper_smem ([defaults]
+gdn_decode_strided_hopper; f32 state read once for 96 of 128 rows, 72 staged in
+smem + 24 retained in registers) grid=[48,16] block=128 smem=37904B ctas=768
+sm_count=132 ctas_per_sm<=6
+```
+
+**The width guard** (`ops::gdn_decode_strided_smem_accept`) takes the twin only
+when `n ≥ 4` **and** `nv·n ≥ sm_count`. One CTA per (sequence, head) means the
+grid IS `nv·n`, so the row count is the occupancy; at this model's `nv = 48`,
+n=4 is 192 CTAs on 132 SMs — the first width at which every SM gets one. At
+n=1 the grid is 48 CTAs and the problem is underfill, not traffic, which is the
+other twin's job and which round 12 says it does not manage either. So **the
+n=1 path stays on the parent**, and the C=1 ladder cells are untouched by this
+change.
+
+### The gate
+
+`native_gdn_decode_hopper_microtest` runs the new kernel as a **third arm** at
+strided × `n ∈ {1,4,16}` × `hs ∈ {0.05, 20}` — 6 legs, all compared against the
+gb10 parent with `state_diff == 0` and `out_diff == 0`, a hard count and not a
+tolerance, with guard bytes around every written buffer. The kernel is exercised
+at n=1 as well, where the LAUNCHER declines it, because a gate that only ran it
+where the launcher runs it could not tell "declined" from "broken". A
+**KNOWN_BAD control** runs first: the parent against itself with one f32 of the
+second state perturbed by one ULP, required to report a non-zero `state_diff` —
+without it, a `diff` that returned `(0, 0.0)` unconditionally would make every
+assertion vacuous and the suite would print `ALL LEGS BIT-IDENTICAL` just as
+loudly.
+
+### ⚠️ The prediction is a BAND, and here is why
+
+Round 13's nsys is the receipt for the COST. The SAVING depends on how much of
+the parent's second read L2 already serves, and **no trace in this campaign
+measures that**. GB10 has a receipt for the same idea and it is NEGATIVE —
+`gated_delta_rule_decode_f32_strided_norm_smem` stages the same way behind
+`ATLAS_GDN_SMEM_STAGE` and measured +0.5 %/−0.5 % at C=128 on dgx2, inside the
+boot band, "because the re-read is CTA-local and is served by L2". That is a
+48-SM part with a different L2 and a different working set; it is why this is a
+separate Hopper file and not a change to the shared parent, and it is also why
+the row below is stated as a range. All of it is arithmetic on the measured
+57.27 µs/launch and the 25 % traffic cut:
+
+Let `η` be the fraction of the parent's second read that L2 already serves.
+The parent's HBM traffic is then `3 − η` units of the 50.33 MB state (read,
+re-read, write); this kernel's is `2.25 − 0.25η` (it still re-reads its own 32
+rows). Holding the achieved GB/s equal — both kernels are one thread per
+column walking one tile — the twin's launch is `(2.25 − 0.25η)/(3 − η)` of the
+measured 57.27 µs:
+
+| `η` — parent's second read served by L2 | parent HBM | twin/launch | saving/launch | saving/step (48 layers) |
+|---|---|---|---|---|
+| 0 — entirely missing | 150.99 MB | 42.95 µs | **−14.3 µs** | **−687 µs (−3.5 %)** |
+| 0.5 — half served | 125.83 MB | 48.68 µs | −8.6 µs | −412 µs (−2.1 %) |
+| 1 — entirely served | 100.66 MB | 57.27 µs | 0 | instruction-side only |
+
+The round-13 lever table's **“945 µs/step at an 80 %-of-HBM target”** is the
+CEILING of that band (it prices the kernel against a roofline computed on
+compulsory bytes), not a prediction. Round 17's nsys picks the point.
+
+### Round-17 cells to fill
+
+Predicted, at the top of the band (second read entirely missing) and with the
+n=1 path unchanged by construction:
+
+| cell | now (round 13/16) | predicted | mechanism |
+|---|---|---|---|
+| n=16 decode step, GPU busy | 19.887 ms | **≈ 19.20 ms** | −687 µs on the GDN decode launch |
+| `gated_delta_rule_decode_f32_strided*` | 2 748.9 µs (13.82 %) | **≈ 2 062 µs (≈ 10.7 %)** | 3.00 → 2.25 traffic units |
+| `1024x256` C=16 TPOT | 25.9 ms | **≈ 25.2 ms** | one GDN decode launch per SSM layer per step |
+| `4096x512` C=16 TPOT | 31.6 ms | **≈ 30.9 ms** | same, and context-independent — the state is fixed-size |
+| `1024x256` / `4096x512` C=1 | unchanged | **unchanged** | the width guard keeps n=1 on the parent |
+| microtest, 6 new legs | — | `state_diff=0 out_diff=0` | bit-identity is a contract, not a measurement |
+
+The brief this work was scoped from predicted **−0.9 ms/step** and TPOT
+25.9 → 25.0 / 31.6 → 30.7. That is the 945 µs ceiling of the round-13 lever
+table — the whole distance from 52.5 % to an 80 %-of-HBM target — and it is
+reachable only if the parent's second read misses entirely AND the twin's own
+re-read is free. The −687 µs above is the same `η = 0` case priced on the
+traffic this kernel actually issues, which is the number to hold it to.
+
+The A/B is one variable: `ATLAS_GDN_DECODE_STRIDED_HOPPER=0` against the
+default, same binary, same seed. If the null arrives instead, the row goes to
+`false` with the GB10 note beside it and the kernel stays compiled, exactly as
+`gdn_decode_hopper` did.

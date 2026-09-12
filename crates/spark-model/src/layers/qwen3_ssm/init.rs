@@ -166,6 +166,7 @@ impl Qwen3SsmLayer {
             ),
             gdn_f32_hopper_k: init_kernels::decode_hopper_k(gpu),
             gdn_f32_strided_hopper_k: init_kernels::decode_hopper_strided_k(gpu),
+            gdn_f32_strided_hopper_smem_k: init_kernels::decode_hopper_strided_smem_k(gpu),
             gdn_f32_strided_norm_half_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule",

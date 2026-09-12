@@ -291,11 +291,28 @@ pub fn gdn_decode_f32_auto(
 }
 
 /// [`gdn_decode_f32_auto`] for the batched decode path's strided launch.
+///
+/// THREE arms, not two, and they are ordered by receipt. `twin_smem` is the
+/// ONE-READ twin (#927, `ops::ssm_gdn_strided_hopper`): it keeps the parent's
+/// (thread -> column) partition exactly and reads the f32 state once for 96 of
+/// its 128 rows, which is a claim about TRAFFIC and is on by default for
+/// `n >= 4`. `twin` is the COLUMN-TILED twin (round 12): it re-partitions
+/// columns to fill a 132-SM device at n=1, which is a claim about OCCUPANCY,
+/// and is off on a measured loss. They are tried in that order because at the
+/// shape where both could run — a wide batch — the traffic claim is the one
+/// with a cost receipt behind it, and because the column-tiled twin's own
+/// nsys number at n=16 is a null (+0.19%).
+///
+/// The route line is emitted ONCE PER PROCESS, naming the entry that was
+/// launched and the grid it was launched with, because a lever nobody can see
+/// engage is how a campaign spends a round measuring the arm it thought it had
+/// turned off (`ssm_gdn_tc_route`'s lesson, twice).
 #[allow(clippy::too_many_arguments)]
 pub fn gdn_decode_f32_strided_auto(
     gpu: &dyn GpuBackend,
     parent: KernelHandle,
     twin: KernelHandle,
+    twin_smem: KernelHandle,
     h_state: DevicePtr,
     query: DevicePtr,
     key: DevicePtr,
@@ -314,6 +331,52 @@ pub fn gdn_decode_f32_strided_auto(
     out_stride: u32,
     stream: u64,
 ) -> Result<()> {
+    let sm_count = gdn_hopper_sm_count(gpu);
+    let smem_arm = super::gdn_decode_strided_smem_selected(
+        twin_smem,
+        batch_size,
+        num_v_heads,
+        k_dim,
+        v_dim,
+        sm_count,
+    );
+    {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            tracing::info!(
+                "{}",
+                super::gdn_decode_strided_smem_route_line(
+                    smem_arm,
+                    num_v_heads,
+                    batch_size,
+                    sm_count
+                )
+            );
+        });
+    }
+    if smem_arm {
+        return super::gdn_decode_f32_strided_hopper_smem(
+            gpu,
+            twin_smem,
+            h_state,
+            query,
+            key,
+            value,
+            gate,
+            beta,
+            output,
+            batch_size,
+            num_k_heads,
+            num_v_heads,
+            k_dim,
+            v_dim,
+            qk_stride,
+            v_stride,
+            gb_stride,
+            out_stride,
+            stream,
+        );
+    }
     if gdn_decode_strided_hopper_selected(twin, k_dim, v_dim) {
         return gdn_decode_f32_strided_hopper(
             gpu,

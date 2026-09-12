@@ -341,20 +341,24 @@ impl Qwen3SsmLayer {
                     );
                 }
                 let gdn_out = conv_out.offset(n * conv_dim as usize * 4);
-                // #927's Hopper twin of this kernel, or the gb10 parent —
-                // same grid shape (the SSM_STATE_MAX_NORM clamp reduces across
-                // the whole head, so its columns cannot be split), same bits,
-                // different unroll depth. The lever, the handle and the
-                // dimension contract are one decision in
-                // `ops::gdn_decode_f32_strided_auto`; the twin is DEFAULT OFF
-                // since H100 round 12 measured this strided leg at +0.19% —
-                // a null — over 48 launches at n=16, and its unstrided sibling
-                // at +6.8% (`ops::gdn_decode_hopper_enabled`,
-                // GDN-DECODE-ATTRIBUTION.md).
+                // Three arms, one decision, all of it in
+                // `ops::gdn_decode_f32_strided_auto`: the gb10 parent, #927's
+                // COLUMN-TILED Hopper twin (default OFF — round 12 measured
+                // this strided leg at +0.19%, a null, over 48 launches at
+                // n=16, and its unstrided sibling at +6.8%), and #927's
+                // ONE-READ Hopper twin (default ON for n >= 4). All three keep
+                // the same grid shape and the same bits: the
+                // SSM_STATE_MAX_NORM clamp reduces across the whole head, so
+                // its columns cannot be split, and the per-column `kd`
+                // reduction is a serial f32 chain, so its rows cannot be
+                // either. What the third arm changes is how many times the
+                // state is READ — 2 748.9 us = 13.82% of the n=16 step goes
+                // through this launch (`GDN-DECODE-ATTRIBUTION.md`).
                 ops::gdn_decode_f32_strided_auto(
                     ctx.gpu,
                     self.gdn_f32_strided_k,
                     self.gdn_f32_strided_hopper_k,
+                    self.gdn_f32_strided_hopper_smem_k,
                     h_state_base,
                     conv_out,
                     conv_out.offset(key_dim * 4),

@@ -74,6 +74,22 @@ fn hopper_declares_the_round_nine_recipe() {
          0.83x at contiguous n=1, +6.8% per C=1 nsys step, -0.4% on the serve \
          A/B. The kernel stays in [kernels] overrides; only the default moved"
     );
+    // The row round 17 adds (#927) — a DIFFERENT kernel from the one above,
+    // under its own lever, making the opposite kind of claim. That one
+    // re-partitions state COLUMNS for the n=1 underfill and lost; this one
+    // keeps the parent's partition (it must — the per-column `kd` reduction is
+    // a serial f32 chain) and reads the f32 state once for 96 of its 128 rows.
+    // On without a serving receipt for the same reason `ssm_ba_gates_hopper`
+    // is: it cannot change a bit of output, and ptxas puts six of its CTAs on
+    // an SM against the 5.82 the n=16 grid supplies, so its worst case is a
+    // null. The cost it attacks is nsys round 13's 2 748.9 us = 13.82% of a
+    // 19.887 ms n=16 step at 57.27 us/launch.
+    assert!(
+        d.gdn_decode_strided_hopper,
+        "the one-read strided GDN decode twin is Hopper's default for n >= 4: \
+         bit-identical to its parent, same occupancy, 25% less state traffic \
+         (`GDN-DECODE-ATTRIBUTION.md`, \"Round 17\")"
+    );
     // The one row round 13 ADDED to the recipe, and the largest measured win of
     // the campaign: cell T1 against cell A on the same binary, C=1 TTFT
     // 269.1 -> 162.4 ms and 889.3 -> 491.5 ms, C=16 aggregate +21.5%/+31.4%,
@@ -262,6 +278,13 @@ fn a_hopper_only_lever_is_still_declared_by_every_table() {
             .unwrap_or_else(|e| panic!("kernels/{hw}/HARDWARE.toml: {e}"));
         for lever in [
             "gdn_decode_hopper",
+            // #927. The one-read strided twin, the fifth hopper-only boolean.
+            // gb10 and b200 declare it false rather than omitting it: gb10
+            // has a NEGATIVE receipt for the same idea in its own tree
+            // (`gated_delta_rule_decode_f32_strided_norm_smem` behind
+            // `ATLAS_GDN_SMEM_STAGE`, +0.5%/-0.5% at C=128), which is exactly
+            // the kind of thing an absent row would hide.
+            "gdn_decode_strided_hopper",
             "gdn_prefill_tc",
             // #928. The BA-gates twin is the third hopper-only boolean, and
             // gb10 and b200 declare the row false rather than omitting it.
@@ -282,6 +305,11 @@ fn a_hopper_only_lever_is_still_declared_by_every_table() {
             );
         }
         assert!(!declared(hw).gdn_decode_hopper, "no target ships them on");
+        assert_eq!(
+            declared(hw).gdn_decode_strided_hopper,
+            hw == "hopper",
+            "only hopper ships the one-read strided twin on"
+        );
     }
 }
 
@@ -360,6 +388,7 @@ fn the_generated_constant_names_every_field() {
         "lm_head_batchm_max: 16",
         "ssm_batched_recurrent: true",
         "gdn_decode_hopper: false",
+        "gdn_decode_strided_hopper: true",
         "gdn_prefill_tc: true",
         "ssm_ba_gates_hopper: true",
         "ffn_gateup_fused: true",
@@ -392,6 +421,10 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.lm_head_batchm_max, declared.lm_head_batchm_max);
     assert_eq!(baked.ssm_batched_recurrent, declared.ssm_batched_recurrent);
     assert_eq!(baked.gdn_decode_hopper, declared.gdn_decode_hopper);
+    assert_eq!(
+        baked.gdn_decode_strided_hopper,
+        declared.gdn_decode_strided_hopper
+    );
     assert_eq!(baked.gdn_prefill_tc, declared.gdn_prefill_tc);
     assert_eq!(baked.ssm_ba_gates_hopper, declared.ssm_ba_gates_hopper);
     assert_eq!(baked.ffn_gateup_fused, declared.ffn_gateup_fused);
