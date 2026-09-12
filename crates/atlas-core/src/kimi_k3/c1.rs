@@ -125,7 +125,7 @@ fn rst_attnres_mix0_or_force_expert0_diverges() {
         16,
         Ablation {
             attnres_mix: 0.0,
-            force_expert: None,
+            ..Ablation::default()
         },
     );
     let exp0 = greedy_decode(
@@ -133,8 +133,8 @@ fn rst_attnres_mix0_or_force_expert0_diverges() {
         &prompt,
         16,
         Ablation {
-            attnres_mix: 1.0,
             force_expert: Some(0),
+            ..Ablation::default()
         },
     );
     assert_ne!(
@@ -165,7 +165,7 @@ fn rst_mutant_fails_golden_compare() {
         max_new,
         Ablation {
             attnres_mix: 0.0,
-            force_expert: None,
+            ..Ablation::default()
         },
     );
     assert_ne!(

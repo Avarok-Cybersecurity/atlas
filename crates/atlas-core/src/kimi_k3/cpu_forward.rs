@@ -71,6 +71,9 @@ pub fn forward_token(
     let mut stream = AttnResStream::new(model.graph.hidden, model.graph.attn_res_block_size);
     stream.partial.clone_from(&embed);
     for layer in &model.layers {
+        if ablation.skip_layer == Some(layer.spec.index) {
+            continue;
+        }
         forward_layer(model, layer, pos, cache, &mut stream, ablation);
     }
     let h = stream.mix(

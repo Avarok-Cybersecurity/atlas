@@ -32,3 +32,7 @@ pub use situ::{situ_glu, situ_glu_vec, softcap};
 
 #[cfg(test)]
 mod c1;
+#[cfg(test)]
+mod c2;
+#[cfg(test)]
+mod c3;

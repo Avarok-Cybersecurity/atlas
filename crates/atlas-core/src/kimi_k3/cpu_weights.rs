@@ -8,11 +8,13 @@ use super::layer::{K3Graph, K3LayerSpec, MixerKind, MlpKind};
 use super::mla::MlaConfig;
 use super::ops::{fill, ident, ones};
 
-/// C1 ablation levers. Mix=0 and force-expert-0 are the known-bads.
+/// Graph mutants. Mix=0 / force-expert-0 are C1; skip-layer is C2.
 #[derive(Clone, Copy, Debug)]
 pub struct Ablation {
     pub attnres_mix: f32,
     pub force_expert: Option<usize>,
+    /// Skip this layer index in `forward_token` (C2 known-bad).
+    pub skip_layer: Option<usize>,
 }
 
 impl Default for Ablation {
@@ -20,6 +22,7 @@ impl Default for Ablation {
         Self {
             attnres_mix: 1.0,
             force_expert: None,
+            skip_layer: None,
         }
     }
 }
@@ -149,6 +152,42 @@ impl K3CpuModel {
             renormalize: true,
         };
         Self::build(graph, kda, mla, moe, 4, 8, 1e-5, 10_000.0)
+    }
+
+    /// Same 8-layer twin pattern, slightly wider. Still cheap on CPU.
+    pub fn synthetic_small() -> Self {
+        let hidden = 8;
+        let graph = twin_pattern_graph(hidden);
+        let kda = KdaConfig {
+            heads: 2,
+            head_dim: 4,
+            conv_kernel: 4,
+            gate_lower_bound: -5.0,
+            use_full_rank_gate: true,
+        };
+        let mla = MlaConfig {
+            heads: 2,
+            qk_nope_head_dim: 4,
+            qk_rope_head_dim: 2,
+            v_head_dim: 4,
+            q_lora_rank: 8,
+            kv_lora_rank: 4,
+            mla_use_nope: true,
+            mla_use_output_gate: true,
+        };
+        let moe = LatentMoeConfig {
+            hidden,
+            latent: 8,
+            expert_hidden: 8,
+            n_routed: 2,
+            top_k: 1,
+            n_shared: 1,
+            situ_beta: 4.0,
+            situ_linear_beta: 25.0,
+            use_norm: true,
+            renormalize: true,
+        };
+        Self::build(graph, kda, mla, moe, 8, 16, 1e-5, 10_000.0)
     }
 }
 
