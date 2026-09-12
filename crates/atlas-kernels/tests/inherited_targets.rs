@@ -7,13 +7,25 @@
 //! Same posture as `target_resolution.rs`: `src/*_tests.rs` prove the rules on
 //! fixtures, these prove the DATA that is actually checked in.
 //!
-//! Neither target ships a kernel of its own. Every source they compile is a
-//! relative symlink into `kernels/gb10`, which makes `gb10` the ORACLE for
-//! this whole file: an inherited kernel set is correct exactly when it is
-//! gb10's kernel set, reachable. A symlink that dangles, or a gb10 file that
-//! gained no counterpart, is a kernel that silently vanishes from that
-//! hardware's build — the shadow-drift failure class documented in `build.rs`,
-//! arriving through a different door.
+//! Neither target ships a kernel of its own today. Every source they compile
+//! is a relative symlink into `kernels/gb10`, which makes `gb10` the ORACLE
+//! for this whole file: an inherited kernel set is correct exactly when it is
+//! gb10's kernel set, reachable, plus whatever the target DECLARES it owns. A
+//! symlink that dangles, a gb10 file that gained no counterpart, or a fork
+//! nobody declared is a kernel that silently vanishes from — or silently
+//! diverges in — that hardware's build: the shadow-drift failure class
+//! documented in `build.rs`, arriving through a different door.
+//!
+//! The exception is DECLARED, per target, in `HARDWARE.toml` `[kernels]
+//! overrides` — the SSOT, read here through
+//! [`inherited::Inherited::owned`] and by
+//! `scripts/check_kernel_shadows.py`. Maintainer rule, 2026-09-11 (tbraun96):
+//! "symlinks are fine provided the pointed-to gb10 file is not edited when
+//! iterating on Hopper; Hopper-tuned kernels must be real files under
+//! `kernels/hopper/`." Declared rather than merely tolerated, because an
+//! UNDECLARED regular file in a mirror is a silent fork of a shared kernel and
+//! nothing on disk tells the two apart. Both lists are EMPTY on this tip; the
+//! mechanism is what a tuned-kernel PR declares into.
 //!
 //! `cargo test` runs GPU-free with `ATLAS_SKIP_BUILD=1`, where `build.rs`
 //! returns before target resolution ever happens, so without this file nothing
@@ -123,6 +135,41 @@ fn every_inherited_hardware_toml_carries_the_same_key_set_as_gb10() {
 
 // ── (b) common/ — inherited from gb10 by relative symlink ──
 
+/// Every declaring target states the SAME `[defaults]` levers, even where the
+/// value agrees with gb10's.
+///
+/// An absent key falls through to `build_defaults::baseline`, which is
+/// correct behaviour and terrible documentation: a reader of
+/// `kernels/hopper/HARDWARE.toml` would have to know the baseline to know what
+/// H100 serves with, which is the "recipe lives somewhere else" problem that
+/// table replaces. The VALUES are asserted in `tests/target_defaults.rs`; what
+/// is asserted here is that the three files are answerable side by side.
+#[test]
+fn every_inherited_hardware_toml_declares_the_same_serving_levers_as_gb10() {
+    let gb10_path = gb10_dir().join("HARDWARE.toml");
+    let gb10: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&gb10_path).expect("gb10 HARDWARE.toml"))
+            .expect("valid TOML");
+    let levers = |v: &toml::Value| -> std::collections::BTreeSet<String> {
+        v.get("defaults")
+            .and_then(|d| d.as_table())
+            .expect("[defaults] table")
+            .keys()
+            .cloned()
+            .collect()
+    };
+    for t in INHERITED {
+        assert_eq!(
+            levers(&hardware_toml(t.hw)),
+            levers(&gb10),
+            "kernels/{}/HARDWARE.toml [defaults] must state every lever \
+             explicitly, so the file answers 'what does this target serve \
+             with' on its own",
+            t.hw
+        );
+    }
+}
+
 /// ORACLE: `kernels/gb10/common`. Each inherited `common/` is that directory,
 /// reachable — all 181 entries (171 `.cu`, 9 `.cuh` headers the `.cu` files
 /// `#include`, and `KERNEL.toml`, which `build.rs` merges as the base layer of
@@ -134,7 +181,11 @@ fn every_inherited_hardware_toml_carries_the_same_key_set_as_gb10() {
 #[test]
 fn every_inherited_common_mirrors_every_gb10_common_file() {
     for t in INHERITED {
-        let faults = mirror_faults(&hw_dir(t.hw).join("common"), &gb10_dir().join("common"));
+        let faults = mirror_faults(
+            &hw_dir(t.hw).join("common"),
+            &gb10_dir().join("common"),
+            &t.owned(),
+        );
         assert!(
             faults.is_empty(),
             "kernels/{}/common has drifted from kernels/gb10/common:\n  {}",
@@ -287,6 +338,12 @@ fn every_model_nvfp4_dir_mirrors_gb10() {
             let faults = mirror_faults(
                 &hw_dir(t.hw).join(model).join("nvfp4"),
                 &gb10_dir().join(model).join("nvfp4"),
+                // Per-model quant dirs own nothing, deliberately: `[kernels]
+                // overrides` names files in `common/`, which every model on the
+                // target shares. A per-MODEL fork would be the shadow-drift
+                // class, and the rule that the model dirs are a pure symlink
+                // mirror is unchanged.
+                &std::collections::BTreeSet::new(),
             );
             assert!(
                 faults.is_empty(),

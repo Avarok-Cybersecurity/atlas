@@ -54,7 +54,17 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
             h_f16,
             h_f16_pool,
             fused_norm: args.gdn_fused_norm.unwrap_or(false),
-            batched_recurrent: args.ssm_batched_recurrent.unwrap_or(false),
+            // ★ NOT `unwrap_or(false)`. `set_from_cli` publishes all three GDN
+            // selections at once, so `--ssm-h-dtype f16` alone used to clear a
+            // batched recurrence the operator never mentioned. With the
+            // compiled target declaring it (`kernels/hopper` says ON, +6% and
+            // md5-identical), a `false` here would silently un-declare the
+            // target's own default on every serve that names any GDN flag.
+            batched_recurrent: args.ssm_batched_recurrent.unwrap_or(
+                spark_model::layers::ops::target_defaults::resolved()
+                    .ssm_batched_recurrent
+                    .value,
+            ),
             exact_verify: args.exact_verify.unwrap_or(false),
         };
         let in_force = spark_model::layers::qwen3_ssm::gdn_flags::set_from_cli(flags);
@@ -112,6 +122,14 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     // may now come from the environment, and a log that echoes what was asked
     // for rather than what is in force is exactly how a dead knob stays
     // invisible for a campaign.
+    // ONE line naming every per-target serving default, its resolved value and
+    // whether the environment overrode it. The deliverable of the 2026-09-11
+    // maintainer review: a reader of a serve log can now tell which
+    // configuration produced a number without also having the launch script.
+    tracing::info!(
+        "{}",
+        spark_model::layers::ops::target_defaults::summary_line()
+    );
     let gdn = spark_model::layers::qwen3_ssm::gdn_flags::flags();
     tracing::info!(
         "kernel flags: ssm_h_dtype={} gdn_fused_norm={} ssm_batched_recurrent={} \
