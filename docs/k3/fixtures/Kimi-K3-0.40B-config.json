@@ -1,0 +1,154 @@
+{
+  "architectures": [
+    "KimiK3ForConditionalGeneration"
+  ],
+  "dtype": "float32",
+  "ignore_index": -100,
+  "media_placeholder_token_id": 163605,
+  "model_type": "kimi_k3",
+  "pad_token_id": 0,
+  "text_config": {
+    "_name_or_path": "",
+    "activation_situ_beta": 4.0,
+    "activation_situ_linear_beta": 25.0,
+    "architectures": null,
+    "attn_res_block_size": 4,
+    "bos_token_id": 1,
+    "chunk_size_feed_forward": 0,
+    "dtype": null,
+    "eos_token_id": 2,
+    "first_k_dense_replace": 1,
+    "head_dim": 74,
+    "hidden_act": "situ",
+    "hidden_size": 1024,
+    "id2label": {
+      "0": "LABEL_0",
+      "1": "LABEL_1"
+    },
+    "initializer_range": 0.02,
+    "intermediate_size": 2048,
+    "is_encoder_decoder": false,
+    "kv_lora_rank": 128,
+    "label2id": {
+      "LABEL_0": 0,
+      "LABEL_1": 1
+    },
+    "latent_moe_use_norm": true,
+    "linear_attn_config": {
+      "full_attn_layers": [
+        4,
+        8
+      ],
+      "head_dim": 32,
+      "kda_layers": [
+        1,
+        2,
+        3,
+        5,
+        6,
+        7
+      ],
+      "num_heads": 8,
+      "short_conv_kernel_size": 4,
+      "use_full_rank_gate": true
+    },
+    "max_position_embeddings": 4096,
+    "mla_use_nope": true,
+    "mla_use_output_gate": true,
+    "model_type": "kimi_linear",
+    "moe_intermediate_size": 256,
+    "moe_layer_freq": 1,
+    "moe_renormalize": true,
+    "moe_router_activation_func": "sigmoid",
+    "num_attention_heads": 8,
+    "num_expert_group": 1,
+    "num_experts": 8,
+    "num_experts_per_token": 2,
+    "num_hidden_layers": 8,
+    "num_key_value_heads": 8,
+    "num_nextn_predict_layers": 0,
+    "num_shared_experts": 1,
+    "output_attentions": false,
+    "output_hidden_states": false,
+    "pad_token_id": 0,
+    "problem_type": null,
+    "q_lora_rank": 256,
+    "qk_nope_head_dim": 64,
+    "qk_rope_head_dim": 32,
+    "return_dict": true,
+    "rms_norm_eps": 1e-05,
+    "rope_parameters": {
+      "rope_theta": 10000.0,
+      "rope_type": "default"
+    },
+    "rope_theta": 10000.0,
+    "routed_expert_hidden_size": 512,
+    "routed_scaling_factor": 1.0,
+    "tie_word_embeddings": false,
+    "topk_group": 1,
+    "topk_method": "noaux_tc",
+    "use_cache": true,
+    "use_grouped_topk": true,
+    "v_head_dim": 64,
+    "vocab_size": 163840,
+    "auto_map": {
+      "AutoConfig": "configuration_kimi_k3.KimiLinearConfig",
+      "AutoModel": "modeling_kimi_linear.KimiLinearModel",
+      "AutoModelForCausalLM": "modeling_kimi_linear.KimiLinearForCausalLM"
+    }
+  },
+  "transformers_version": "5.15.0.dev0",
+  "use_cache": false,
+  "vision_config": {
+    "_name_or_path": "",
+    "activation_func": "gelu_pytorch_tanh",
+    "architectures": null,
+    "attn_bias": false,
+    "chunk_size_feed_forward": 0,
+    "dtype": null,
+    "id2label": {
+      "0": "LABEL_0",
+      "1": "LABEL_1"
+    },
+    "init_pos_emb_height": 64,
+    "init_pos_emb_time": 4,
+    "init_pos_emb_width": 64,
+    "is_encoder_decoder": false,
+    "label2id": {
+      "LABEL_0": 0,
+      "LABEL_1": 1
+    },
+    "linear_bias": false,
+    "merge_kernel_size": [
+      2,
+      2
+    ],
+    "merge_type": "sd2_tpool",
+    "mlp_type": "mlp2",
+    "mm_hidden_size": 256,
+    "mm_projector_type": "patchmergerv2",
+    "model_type": "",
+    "norm_type": "rmsnorm",
+    "output_attentions": false,
+    "output_hidden_states": false,
+    "patch_embed_proj_bias": false,
+    "patch_size": 14,
+    "pos_emb_interpolation_mode": "bilinear",
+    "pos_emb_type": "divided_fixed",
+    "problem_type": null,
+    "projector_hidden_act": "gelu",
+    "projector_ln_eps": 1e-05,
+    "qkv_hidden_size": 1536,
+    "return_dict": true,
+    "text_hidden_size": 1024,
+    "vt_hidden_size": 256,
+    "vt_intermediate_size": 512,
+    "vt_num_attention_heads": 4,
+    "vt_num_hidden_layers": 2
+  },
+  "auto_map": {
+    "AutoConfig": "configuration_kimi_k3.KimiK3Config",
+    "AutoModel": "modeling_kimi_k3.KimiK3ForConditionalGeneration",
+    "AutoModelForCausalLM": "modeling_kimi_k3.KimiK3ForConditionalGeneration"
+  }
+}

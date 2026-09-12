@@ -39,7 +39,12 @@ roceP2p1s0f1 port 1 ==> enP2p1s0f1np1 (Up)
 - `NCCL_IB_HCA` pin: **`rocep1s0f1`**
 - RoCE IPs: spark1 `192.168.100.10/24`, spark2 `192.168.100.11/24`
 - ICMP over RoCE (2026-09-11): spark1→spark2 rtt 0.8–1.4 ms; spark2→spark1 rtt 0.4–1.1 ms; 0% loss
-- NCCL all_gather log: prior proof 2026-09-03 (`nccl_2rank_bench` still on spark1 at `/home/pidtom/nccl_2rank_bench`, RoCE NET/IB, 16 KiB all-reduce 25.28 µs). Re-run on P0 bake-off day; do not treat that log as this campaign's C7 evidence.
+- NCCL 2-rank all-reduce **re-run 2026-09-11** (this campaign): `docs/k3/logs/nccl-2rank-*-2026-09-11.log`
+  - Transport: `NET/IB` RoCE, `Connected all rings, use ring PXN 0 GDR 0`
+  - 16 KiB: 30.39 µs, 0.539 GB/s
+  - 64 KiB: 35.86 µs, 1.827 GB/s
+  - 1 MiB: 121.43 µs, **8.635 GB/s**
+  - 2026-09-03 prior (not C7): 16 KiB 25.28 µs / 1 MiB 6.060 GB/s
 
 K3-LAB: `scripts/start-ep2.sh` still documents `enp1s0f0np0`. That iface is Down on these boxes. Unpinned NCCL will pick a dead HCA. Pin the Up twin.
 
@@ -80,10 +85,18 @@ Reclaimable later (not touched): spark1 `gguf/vision-exp` 88G + `gguf/vision-mxf
 
 ## 5090 SM121 launch test (S1 hour 1)
 
-- Date: not run yet (S0 day 0)
-- Command: TBD — launch one Atlas GB10 SM121 cubin/PTX on the 5090 (`sm_120`)
-- Result: **untested**. 5090 is SM120; Sparks are SM121.
-- Consequence: until this passes, 5090 is PyTorch / shape-debug only. All GPU kernel milestones stay on spark1/spark2.
+- Date: 2026-09-11
+- Host: train WSL, nvcc 13.0.88 (`/home/tturn/cuda/bin/nvcc`), device `sm_120`
+- Source: trivial `__global__ void k()`
+- Command:
+  - cubin: `nvcc -arch=sm_121` → run
+  - PTX: `nvcc -gencode=arch=compute_121,code=compute_121` → run
+  - control: `nvcc -arch=sm_120` → run
+- Result: **CANNOT** launch Atlas-class SM121 images on the 5090.
+  - `sm_121` cubin: `launch: no kernel image is available for execution on the device`
+  - `compute_121` PTX: same `no kernel image` (no JIT to sm_120)
+  - `sm_120` cubin control: `launch: no error` / `sync: no error`
+- Consequence: **5090 is PyTorch-and-shape-debug only.** All GPU kernel milestones stay on spark1/spark2. Do not plan `kernels/rtx5090` for this PRD.
 
 ## Constraint
 

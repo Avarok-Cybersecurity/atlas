@@ -1,0 +1,67 @@
+[rank1] connecting to 192.168.100.10:34567 ...
+[rank1] got unique id from rank0
+spark2:60272:60272 [0] NCCL INFO ncclOsDlopen(libnccl-env.so) failed: libnccl-env.so: cannot open shared object file: No such file or directory
+spark2:60272:60272 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+spark2:60272:60272 [0] NCCL INFO cudaDriverVersion 13000
+spark2:60272:60272 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to enp1s0f1np1
+spark2:60272:60272 [0] NCCL INFO Bootstrap: Using enp1s0f1np1:192.168.100.11<0>
+spark2:60272:60272 [0] NCCL INFO NCCL version 2.30.4+cuda13.2
+spark2:60272:60272 [0] NCCL INFO NCCL git version HEAD 747384637
+spark2:60272:60272 [0] NCCL INFO ncclOsDlopen(libnccl-net.so) failed: libnccl-net.so: cannot open shared object file: No such file or directory
+spark2:60272:60272 [0] NCCL INFO NET/Plugin: Could not find: libnccl-net.so
+spark2:60272:60272 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to enp1s0f1np1
+spark2:60272:60272 [0] NCCL INFO NCCL_IB_HCA set to rocep1s0f1
+spark2:60272:60272 [0] NCCL INFO NET/IB : Using [0]rocep1s0f1:1/RoCE [RO]; OOB enp1s0f1np1:192.168.100.11<0>
+spark2:60272:60272 [0] NCCL INFO Initialized NET plugin IB
+spark2:60272:60272 [0] NCCL INFO Assigned NET plugin IB to comm
+spark2:60272:60272 [0] NCCL INFO ncclOsDlopen(libnccl-gin.so) failed: libnccl-gin.so: cannot open shared object file: No such file or directory
+spark2:60272:60272 [0] NCCL INFO GIN/Plugin: Could not find: libnccl-gin.so
+spark2:60272:60272 [0] NCCL INFO Assigned GIN plugin GIN_IB_GDAKI to comm
+spark2:60272:60272 [0] NCCL INFO Assigned RMA plugin GIN_IB_PROXY to comm
+spark2:60272:60272 [0] NCCL INFO Using network IB
+spark2:60272:60272 [0] NCCL INFO Loaded NVML from libnvidia-ml.so.1
+spark2:60272:60272 [0] NCCL INFO NCCL_DMABUF_ENABLE set by environment to 0.
+spark2:60272:60272 [0] NCCL INFO [Rank 1] ncclCommInitRank comm 0xc09182cc8c60 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0x9cb47e54c68c76cc - Init START
+spark2:60272:60272 [0] NCCL INFO RAS client listening socket at 127.0.0.1<28028>
+spark2:60272:60272 [0] NCCL INFO Bootstrap timings total 0.003840 (create 0.000034, send 0.000856, recv 0.001087, ring 0.000742, delay 0.000000)
+spark2:60272:60272 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-19).
+spark2:60272:60272 [0] NCCL INFO NCCL_NVLS_ENABLE set by environment to 0.
+spark2:60272:60272 [0] NCCL INFO Rank 1: 1 Net devices
+spark2:60272:60272 [0] NCCL INFO Rank 1: 0 CollNet devices
+spark2:60272:60272 [0] NCCL INFO comm 0xc09182cc8c60 rank 1 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+spark2:60272:60272 [0] NCCL INFO Trees [0] -1/-1/-1->1->0 [1] -1/-1/-1->1->0 [2] -1/-1/-1->1->0 [3] -1/-1/-1->1->0 [4] 0/-1/-1->1->-1 [5] 0/-1/-1->1->-1 [6] 0/-1/-1->1->-1 [7] 0/-1/-1->1->-1
+spark2:60272:60272 [0] NCCL INFO P2P Chunksize set to 262144
+spark2:60272:60272 [0] NCCL INFO Tuning P2P operations with maxP2pPeers = 2
+spark2:60272:60272 [0] NCCL INFO ncclOsDlopen(libnccl-profiler.so) failed: libnccl-profiler.so: cannot open shared object file: No such file or directory
+spark2:60272:60272 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so
+spark2:60272:60272 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+spark2:60272:60280 [0] NCCL INFO [Proxy Service] Device 0 CPU core 3
+spark2:60272:60281 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 18
+spark2:60272:60272 [0] NCCL INFO ncclOsDlopen(libnccl-tuner.so) failed: libnccl-tuner.so: cannot open shared object file: No such file or directory
+spark2:60272:60272 [0] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so
+spark2:60272:60272 [0] NCCL INFO NCCL_PROTO set by environment to Simple
+spark2:60272:60272 [0] NCCL INFO NCCL_ALGO set by environment to Ring
+spark2:60272:60272 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+spark2:60272:60272 [0] NCCL INFO 8 coll channels, 8 collnet channels, 0 nvls channels, 8 p2p channels, 1 p2p channels per peer
+spark2:60272:60272 [0] NCCL INFO Symmetric memory is not supported. cuMemEnable 1, globalGinSupport 0, globalNicFused 0 cuMemGdrSupport 0
+spark2:60272:[rank1] NCCL comm initialized
+60272 [0] NCCL INFO ncclCommInitRank comm 0xc09182cc8c60 rank 1 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0x9cb47e54c68c76cc - Init COMPLETE
+spark2:60272:60272 [0] NCCL INFO Init timings - ncclCommInitRank: rank 1 nranks 2 total 0.25 (kernels 0.17, alloc 0.06, bootstrap 0.00, allgathers 0.00, topo 0.00, graphs 0.00, connections 0.00, rest 0.00)
+spark2:60272:60282 [0] NCCL INFO [Proxy Progress] Device 0 CPU core 3
+spark2:60272:60272 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 02/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 03/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 04/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 05/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 06/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 07/0 : 0[0] -> 1[0] [receive] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [send] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [send] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 02/0 : 1[0] -> 0[0] [send] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 03/0 : 1[0] -> 0[0] [send] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 04/0 : 1[0] -> 0[0] [send] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 05/0 : 1[0] -> 0[0] [send] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 06/0 : 1[0] -> 0[0] [send] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Channel 07/0 : 1[0] -> 0[0] [send] via NET/IB/0
+spark2:60272:60272 [0] NCCL INFO Connected all rings, use ring PXN 0 GDR 0

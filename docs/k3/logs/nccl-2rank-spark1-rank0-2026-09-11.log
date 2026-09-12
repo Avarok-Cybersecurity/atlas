@@ -1,0 +1,89 @@
+[rank0] listening on 192.168.100.10:34567, waiting for peer...
+[rank0] peer connected
+spark1:2818884:2818884 [0] NCCL INFO ncclOsDlopen(libnccl-env.so) failed: libnccl-env.so: cannot open shared object file: No such file or directory
+spark1:2818884:2818884 [0] NCCL INFO ENV/Plugin: Could not find: libnccl-env.so
+spark1:2818884:2818884 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to enp1s0f1np1
+spark1:2818884:2818884 [0] NCCL INFO Bootstrap: Using enp1s0f1np1:192.168.100.10<0>
+spark1:2818884:2818884 [0] NCCL INFO cudaDriverVersion 13000
+spark1:2818884:2818884 [0] NCCL INFO NCCL version 2.30.4+cuda13.2
+spark1:2818884:2818884 [0] NCCL INFO NCCL git version HEAD 747384637
+spark1:2818884:2818884 [0] NCCL INFO ncclOsDlopen(libnccl-net.so) failed: libnccl-net.so: cannot open shared object file: No such file or directory
+spark1:2818884:2818884 [0] NCCL INFO NET/Plugin: Could not find: libnccl-net.so
+spark1:2818884:2818884 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to enp1s0f1np1
+spark1:2818884:2818884 [0] NCCL INFO NCCL_IB_HCA set to rocep1s0f1
+spark1:2818884:2818884 [0] NCCL INFO NET/IB : Using [0]rocep1s0f1:1/RoCE [RO]; OOB enp1s0f1np1:192.168.100.10<0>
+spark1:2818884:2818884 [0] NCCL INFO Initialized NET plugin IB
+spark1:2818884:2818884 [0] NCCL INFO Assigned NET plugin IB to comm
+spark1:2818884:2818884 [0] NCCL INFO ncclOsDlopen(libnccl-gin.so) failed: libnccl-gin.so: cannot open shared object file: No such file or directory
+spark1:2818884:2818884 [0] NCCL INFO GIN/Plugin: Could not find: libnccl-gin.so
+spark1:2818884:2818884 [0] NCCL INFO Assigned GIN plugin GIN_IB_GDAKI to comm
+spark1:2818884:2818884 [0] NCCL INFO Assigned RMA plugin GIN_IB_PROXY to comm
+spark1:2818884:2818884 [0] NCCL INFO Using network IB
+spark1:2818884:2818884 [0] NCCL INFO Loaded NVML from libnvidia-ml.so.1
+spark1:2818884:2818884 [0] NCCL INFO NCCL_DMABUF_ENABLE set by environment to 0.
+spark1:2818884:2818884 [0] NCCL INFO [Rank 0] ncclCommInitRank comm 0xc6b2869ff170 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0x9cb47e54c68c76cc - Init START
+spark1:2818884:2818884 [0] NCCL INFO RAS client listening socket at 127.0.0.1<28028>
+spark1:2818884:2818884 [0] NCCL INFO Bootstrap timings total 0.123825 (create 0.000032, send 0.000119, recv 0.120686, ring 0.000608, delay 0.000000)
+spark1:2818884:2818884 [0] NCCL INFO ncclTopoGetCpuAffinity: Affinity for GPU 0 is empty, ignoring. (GPU affinity =  ; CPU affinity = 0-19).
+spark1:2818884:2818884 [0] NCCL INFO NCCL_NVLS_ENABLE set by environment to 0.
+spark1:2818884:2818884 [0] NCCL INFO Rank 0: 1 Net devices
+spark1:2818884:2818884 [0] NCCL INFO Rank 0: 0 CollNet devices
+spark1:2818884:2818884 [0] NCCL INFO Local Net device counts across ranks: min 1 max 1
+spark1:2818884:2818884 [0] NCCL INFO Local CollNet device counts across ranks: min 0 max 0
+spark1:2818884:2818884 [0] NCCL INFO comm 0xc6b2869ff170 rank 0 nRanks 2 nNodes 2 localRanks 1 localRank 0 MNNVL 0
+spark1:2818884:2818884 [0] NCCL INFO Channel 00/08 : 0 1
+spark1:2818884:2818884 [0] NCCL INFO Channel 01/08 : 0 1
+spark1:2818884:2818884 [0] NCCL INFO Channel 02/08 : 0 1
+spark1:2818884:2818884 [0] NCCL INFO Channel 03/08 : 0 1
+spark1:2818884:2818884 [0] NCCL INFO Channel 04/08 : 0 1
+spark1:2818884:2818884 [0] NCCL INFO Channel 05/08 : 0 1
+spark1:2818884:2818884 [0] NCCL INFO Channel 06/08 : 0 1
+spark1:2818884:2818884 [0] NCCL INFO Channel 07/08 : 0 1
+spark1:2818884:2818884 [0] NCCL INFO Trees [0] 1/-1/-1->0->-1 [1] 1/-1/-1->0->-1 [2] 1/-1/-1->0->-1 [3] 1/-1/-1->0->-1 [4] -1/-1/-1->0->1 [5] -1/-1/-1->0->1 [6] -1/-1/-1->0->1 [7] -1/-1/-1->0->1
+spark1:2818884:2818884 [0] NCCL INFO P2P Chunksize set to 262144
+spark1:2818884:2818884 [0] NCCL INFO Tuning P2P operations with maxP2pPeers = 2
+spark1:2818884:2818884 [0] NCCL INFO ncclOsDlopen(libnccl-profiler.so) failed: libnccl-profiler.so: cannot open shared object file: No such file or directory
+spark1:2818884:2818884 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so
+spark1:2818884:2818884 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0 isAllCudaP2p 1
+spark1:2818884:2820340 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 19
+spark1:2818884:2820[rank0] NCCL comm initialized
+339 [0] NCCL INFO [Proxy Service] Device 0 CPU core 8
+spark1:2818884:2818884 [0] NCCL INFO ncclOsDlopen(libnccl-tuner.so) failed: libnccl-tuner.so: cannot open shared object file: No such file or directory
+spark1:2818884:2818884 [0] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so
+spark1:2818884:2818884 [0] NCCL INFO NCCL_PROTO set by environment to Simple
+spark1:2818884:2818884 [0] NCCL INFO NCCL_ALGO set by environment to Ring
+spark1:2818884:2818884 [0] NCCL INFO Enabled NCCL Func/Proto/Algo Matrix:
+     Function |       LL     LL128    Simple   |          Tree           Ring  CollNetDirect   CollNetChain           NVLS       NVLSTree            PAT  
+    Broadcast |        0         0         1   |             0              1              0              0              0              0              0  
+       Reduce |        0         0         1   |             0              1              0              0              0              0              0  
+    AllGather |        0         0         1   |             0              1              0              0              0              0              0  
+ReduceScatter |        0         0         1   |             0              1              0              0              0              0              0  
+    AllReduce |        0         0         1   |             0              1              0              0              0              0              0  
+
+spark1:2818884:2818884 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+spark1:2818884:2818884 [0] NCCL INFO 8 coll channels, 8 collnet channels, 0 nvls channels, 8 p2p channels, 1 p2p channels per peer
+spark1:2818884:2818884 [0] NCCL INFO Symmetric memory is not supported. cuMemEnable 1, globalGinSupport 0, globalNicFused 0 cuMemGdrSupport 0
+spark1:2818884:2818884 [0] NCCL INFO CC Off, workFifoBytes 1048576
+spark1:2818884:2818884 [0] NCCL INFO ncclCommInitRank comm 0xc6b2869ff170 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId f01000 commId 0x9cb47e54c68c76cc - Init COMPLETE
+spark1:2818884:2818884 [0] NCCL INFO Init timings - ncclCommInitRank: rank 0 nranks 2 total 0.37 (kernels 0.19, alloc 0.04, bootstrap 0.12, allgathers 0.00, topo 0.01, graphs 0.00, connections 0.00, rest 0.00)
+spark1:2818884:2818884 [0] NCCL INFO Channel 00/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 01/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 02/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 03/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 04/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+spark1:2818884:2820341 [0] NCCL INFO [Proxy Progress] Device 0 CPU core 7
+spark1:2818884:2818884 [0] NCCL INFO Channel 05/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 06/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 07/0 : 1[0] -> 0[0] [receive] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[0] [send] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[0] [send] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 02/0 : 0[0] -> 1[0] [send] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 03/0 : 0[0] -> 1[0] [send] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 04/0 : 0[0] -> 1[0] [send] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 05/0 : 0[0] -> 1[0] [send] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 06/0 : 0[0] -> 1[0] [send] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Channel 07/0 : 0[0] -> 1[0] [send] via NET/IB/0
+spark1:2818884:2818884 [0] NCCL INFO Connected all rings, use ring PXN 0 GDR 0
+size=   16384 bytes  time=     30.39 us  algbw=  0.539 GB/s  busbw=  0.539 GB/s
+size=   65536 bytes  time=     35.86 us  algbw=  1.827 GB/s  busbw=  1.827 GB/s
+size= 1048576 bytes  time=    121.43 us  algbw=  8.635 GB/s  busbw=  8.635 GB/s
