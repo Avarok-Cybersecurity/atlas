@@ -343,3 +343,136 @@ pub fn moe_weighted_sum_blend_batch3(
 }
 
 // ── MoE prefill (N-token batch) ──────────────────────────────────
+
+// provenance-id: 526f6e616c6420522e205374657369616b
+// N-row decode MoE (the K-row verify arm, #1060): the batch3 launches with the
+// row count as an argument. Grid y = num_tokens * (top_k + 1).
+
+#[allow(clippy::too_many_arguments)]
+pub fn moe_expert_gate_up_shared_batchn(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr, // [n, H] BF16
+    gate_packed_ptrs: DevicePtr,
+    gate_scale_ptrs: DevicePtr,
+    gate_scale2_vals: DevicePtr,
+    gate_out: DevicePtr, // [n*top_k, inter] BF16
+    up_packed_ptrs: DevicePtr,
+    up_scale_ptrs: DevicePtr,
+    up_scale2_vals: DevicePtr,
+    up_out: DevicePtr,         // [n*top_k, inter] BF16
+    expert_indices: DevicePtr, // [n*top_k] u32
+    sh_gate: &QuantizedWeight,
+    sh_gate_out: DevicePtr, // [n, inter] BF16
+    sh_up: &QuantizedWeight,
+    sh_up_out: DevicePtr, // [n, inter] BF16
+    n: u32,
+    k: u32,
+    top_k: u32,
+    num_tokens: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 8), num_tokens * (top_k + 1), 2])
+        .block([128, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(gate_packed_ptrs)
+        .arg_ptr(gate_scale_ptrs)
+        .arg_ptr(gate_scale2_vals)
+        .arg_ptr(gate_out)
+        .arg_ptr(up_packed_ptrs)
+        .arg_ptr(up_scale_ptrs)
+        .arg_ptr(up_scale2_vals)
+        .arg_ptr(up_out)
+        .arg_ptr(expert_indices)
+        .arg_ptr(sh_gate.weight)
+        .arg_ptr(sh_gate.weight_scale)
+        .arg_f32(sh_gate.weight_scale_2)
+        .arg_ptr(sh_gate_out)
+        .arg_ptr(sh_up.weight)
+        .arg_ptr(sh_up.weight_scale)
+        .arg_f32(sh_up.weight_scale_2)
+        .arg_ptr(sh_up_out)
+        .arg_u32(n)
+        .arg_u32(k)
+        .arg_u32(top_k)
+        .arg_u32(num_tokens)
+        .launch(stream)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn moe_expert_silu_down_shared_batchn(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gate_out: DevicePtr,
+    up_out: DevicePtr,
+    packed_ptrs: DevicePtr,
+    scale_ptrs: DevicePtr,
+    scale2_vals: DevicePtr,
+    output: DevicePtr,         // [n*top_k, H] BF16
+    expert_indices: DevicePtr, // [n*top_k] u32
+    sh_gate_in: DevicePtr,     // [n, inter] BF16
+    sh_up_in: DevicePtr,       // [n, inter] BF16
+    sh_down: &QuantizedWeight,
+    sh_down_out: DevicePtr, // [n, H] BF16
+    n: u32,
+    k: u32,
+    top_k: u32,
+    num_tokens: u32,
+    stream: u64,
+) -> Result<()> {
+    let smem_bytes = (k as usize * std::mem::size_of::<f32>()) as u32;
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 8), num_tokens * (top_k + 1), 1])
+        .block([128, 1, 1])
+        .shared_mem(smem_bytes)
+        .arg_ptr(gate_out)
+        .arg_ptr(up_out)
+        .arg_ptr(packed_ptrs)
+        .arg_ptr(scale_ptrs)
+        .arg_ptr(scale2_vals)
+        .arg_ptr(output)
+        .arg_ptr(expert_indices)
+        .arg_ptr(sh_gate_in)
+        .arg_ptr(sh_up_in)
+        .arg_ptr(sh_down.weight)
+        .arg_ptr(sh_down.weight_scale)
+        .arg_f32(sh_down.weight_scale_2)
+        .arg_ptr(sh_down_out)
+        .arg_u32(n)
+        .arg_u32(k)
+        .arg_u32(top_k)
+        .arg_u32(num_tokens)
+        .launch(stream)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn moe_weighted_sum_blend_batchn(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    output: DevicePtr,         // [n, hidden] BF16
+    expert_out: DevicePtr,     // [n*top_k, hidden] BF16
+    expert_weights: DevicePtr, // [n*top_k] f32
+    shared_out: DevicePtr,     // [n, hidden] BF16
+    input: DevicePtr,          // [n, K] BF16
+    gate_weight: DevicePtr,    // [1, K] BF16 (shared)
+    hidden: u32,
+    top_k: u32,
+    k: u32,
+    num_tokens: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(hidden, 256), num_tokens, 1])
+        .block([256, 1, 1])
+        .arg_ptr(output)
+        .arg_ptr(expert_out)
+        .arg_ptr(expert_weights)
+        .arg_ptr(shared_out)
+        .arg_ptr(input)
+        .arg_ptr(gate_weight)
+        .arg_u32(hidden)
+        .arg_u32(top_k)
+        .arg_u32(k)
+        .launch(stream)
+}

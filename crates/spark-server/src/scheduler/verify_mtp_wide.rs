@@ -51,6 +51,9 @@ pub(super) fn finish(
     ctx: &LogitsContext,
 ) {
     let k = drafts.len() + 1;
+    // Lookup drafts (#974) wrote no drafter rows: the trim below is skipped
+    // for them, and the index is scored on what the verify accepted.
+    let from_lookup = std::mem::take(&mut seq.pending_drafts_lookup);
     let vocab = model.vocab_size();
     // Borrow the run's staging buffer instead of allocating. `vec![0; ...]`
     // here was a fresh 1.49 MB (K=3, vocab 151936) allocation AND zero-fill on
@@ -114,15 +117,19 @@ pub(super) fn finish(
     if !super::verify_k2_step::commit_verify_aux_or_finish(model, seq, na + 1, k) {
         return;
     }
-    if let Err(e) = model.trim_proposer_state(&mut seq.seq, na, 0) {
+    if from_lookup {
+        sched.lookup.borrow_mut().record(drafts.len(), na);
+    } else if let Err(e) = model.trim_proposer_state(&mut seq.seq, na, 0) {
         tracing::error!("trim_proposer_state(K={k}): {e:#}");
         seq.finished = true;
         return;
     }
     match k {
         3 => super::verify_k3_step::k3_record_outcome(sched, na, seq.seq.seq_len),
-        4 => super::verify_k4_step::stats::k4_record_outcome(sched, na, seq.seq.seq_len),
-        _ => unreachable!("wide MTP only dispatches K=3/4"),
+        // K=4 and every wider row count (the K=N step, #1060) share the K=4
+        // outcome bucket: the ladder's stats are keyed by step shape, and the
+        // wide shape is the same shape at more rows.
+        _ => super::verify_k4_step::stats::k4_record_outcome(sched, na, seq.seq.seq_len),
     }
     if seq.finished {
         return;
@@ -130,6 +137,10 @@ pub(super) fn finish(
     if let Err(e) = model.save_hidden_for_mtp(na, 0) {
         tracing::error!("save_hidden_for_mtp({na}): {e:#}");
         seq.finished = true;
+        return;
+    }
+    let capacity = model.mtp_slot_draft_capacity(seq.seq.slot_idx);
+    if super::lookup_gate::take_lookup_drafts(seq, sched, num_drafts, capacity, false, model.is_ep()) {
         return;
     }
     let grammar_mask = super::mtp_grammar_mask_for(seq);

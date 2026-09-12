@@ -27,6 +27,7 @@ pub fn step_mtp(
     // GAP. One Instant::now() when disarmed, same cost note as StepTimer.
     let t_step_outer = std::time::Instant::now();
     let single_sequence = active.len() == 1;
+    sched.lookup.borrow_mut().set_single_sequence(single_sequence);
     let mut bootstrap_idxs: Vec<usize> = Vec::new();
     let mut verify_idxs: Vec<usize> = Vec::new();
     for (i, a) in active.iter().enumerate() {
@@ -295,7 +296,19 @@ pub fn step_mtp(
         // Adaptive speculation: a suspended seq skips proposing entirely and
         // stays on this serial bootstrap path until the re-probe fires.
         // (`will_propose` is the single spec_allowed evaluation above.)
-        if will_propose {
+        // Lookup first (#974): a hit fills the drafts and the head sits out.
+        if will_propose
+            && super::lookup_gate::take_lookup_drafts(
+                a,
+                sched,
+                effective_num_drafts,
+                model.mtp_slot_draft_capacity(a.seq.slot_idx),
+                dflash_verify_raw_argmax,
+                model.is_ep(),
+            )
+        {
+            tracing::debug!("lookup bootstrap: tok={tok} → drafts={:?}", a.pending_drafts);
+        } else if will_propose {
             match model.run_mtp_propose_multi(
                 tok,
                 a.seq.seq_len,
@@ -623,6 +636,20 @@ pub fn step_mtp(
         // K=4 cleanly, so γ-block verify routes through `step_verify_dflash`.
         // MTP keeps using the existing graphed paths; this dispatch is purely
         // additive.
+        if drafts.len() >= 4 && !dflash_verify_raw_argmax {
+            // MTP-shaped wide verify at K = drafts + 1 rows (lookup drafts at
+            // ATLAS_LOOKUP_WIDTH, or an MTP head drafting past 3): the K=N
+            // step, not the DFlash γ-block verify.
+            super::verify_kn_step::step_verify_kn(
+                model,
+                a,
+                sched,
+                &drafts,
+                serial_num_drafts,
+                verify_ctx,
+            );
+            continue;
+        }
         if drafts.len() >= 4 {
             step_verify_dflash(
                 model,
