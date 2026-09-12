@@ -59,10 +59,54 @@ bash scripts/check-license-headers.sh
 
 # 4. Typos
 typos  # crate-ci/typos — install once, `cargo install typos-cli`
+
+# 5. Cross-hardware kernel reach — ONLY if the diff touches kernels/.
+#    kernels/<hw>/ looks like one tree per hardware and is not: strix is 7 real
+#    files and 105 symlinks into kernels/gb10/common/. A gb10 edit therefore
+#    changes what AMD compiles, and the CI job `cross-hardware kernel reach
+#    (CHKI, advisory)` will say so. ADVISORY since 2026-09-11 — AMD is
+#    second-tier support, so a red does not block a merge. It is still the only
+#    thing that sees this class of reach: read it, do not skip it.
+python3 scripts/check_cross_hardware.py --base origin/main --worktree
 ```
 
 A real build + test cycle requires a CUDA-capable host; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### If the diff touches a perf path
+
+`crates`, `kernels`, `Cargo.*`, `vendor`, `jinja-templates`, `rust-toolchain.toml`,
+`3rdparty_patches` — the gate's `PERF_PATHS` — mean the PR owes a benchmark certification
+campaign of **~4.5–5 GPU-hours**, and campaigns have been wasted. Before spending one, and
+again before reading `stamp status` / `seal status`, committing `.benchmarks/` records, or
+commenting `/stamp` or `/seal`:
+
+```
+/oracle_certification_state_check pre --pr <N>     # then: begin → during → post → release
+```
+
+It is a blocking oracle (`.claude/agents/oracle_cert.md`) running fourteen litmus tests —
+clean perf tree, frozen sha, binary built from it, `spark doctor`, stray shard dirs, hermetic
+pins, BFCL scorer imports, box free, `campaign-guard.sh`, other PRs mid-certification, top of
+stack, stamp/seal job sequencing, one `git_sha` across added records, one Speed-class signer —
+and holding the gitignored lockfile `.oracle_should_begin_cert` for the life of the campaign.
+Overrides exist for what it cannot see and are recorded in the lockfile; quote them in the PR.
+
+★ **A red `stamp status` or `seal status` is not a failure until it is dated.** Those jobs
+freeze their outputs for the life of a CI run, so a mark minted *after* they ran leaves them
+red until a FULL `gh run rerun <id>` — `--failed` cannot work, because they *succeeded* while
+emitting `false`. The oracle's T12 does the dating; do not do it by eye.
+
+For a `kernels/` change that reaches a second hardware, run
+`/oracle_pre_commit_cross_hardware_check` before pushing: it chooses the remedy (benign,
+parameterize in `kernels/<hw>/HARDWARE.toml` **with a reader added in the same change**, or a
+separate kernel with **no symlink**) and writes the `Hardware:` and `CHKI-Verdict:` trailers.
+
+The CI job is **advisory** (AMD second-tier), so those trailers are no longer enforced at merge
+— which makes running the oracle a judgement you make rather than one CI makes for you. The
+reach it reports is real either way: a `kernels/gb10/common/` edit is compiled verbatim by
+hipcc through 105 symlinks, and `d584c0c50` was caught only because a release compile leg
+happened to fail.
 
 ## Adding a new model
 

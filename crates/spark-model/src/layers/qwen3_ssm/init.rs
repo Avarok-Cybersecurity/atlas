@@ -46,6 +46,8 @@ impl Qwen3SsmLayer {
             out_proj_fp8w: None,
             qkvz_fp8w_rowwise: None,
             out_proj_fp8w_rowwise: None,
+            qkvz_rowwise_bf16: std::sync::atomic::AtomicU64::new(0),
+            out_proj_rowwise_bf16: std::sync::atomic::AtomicU64::new(0),
             qkvz_q2: None,
             q2_0_gemv_k: super::super::try_kernel(gpu, "q2_0_gemv_vec", "q2_0_gemv_vec"),
             dequant_q2_0_gn_k: super::super::try_kernel(
@@ -82,6 +84,14 @@ impl Qwen3SsmLayer {
                 )
             } else {
                 super::super::try_kernel(gpu, "norm", "gated_rms_norm_f32_input")
+            },
+            // Only the SiLU (non-sigmoid) family has a strided twin today; a
+            // `gdn_norm_sigmoid` model gets KernelHandle(0) and keeps the
+            // per-sequence loop, which is correct, just launch-heavy.
+            gated_rms_norm_f32_strided_k: if config.gdn_norm_sigmoid {
+                KernelHandle(0)
+            } else {
+                super::super::try_kernel(gpu, "norm", "gated_rms_norm_f32_input_strided")
             },
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             dense_gemv_batch2_k: gpu.kernel("dense_gemv_bf16_batch2", "dense_gemv_bf16_batch2")?,
@@ -466,6 +476,11 @@ impl Qwen3SsmLayer {
                 gpu,
                 "fp8_gemm_t_blockscaled",
                 "fp8_gemm_t_blockscaled",
+            ),
+            fp8_act_scale_kmajor_k: super::super::try_kernel(
+                gpu,
+                "fp8_scale_transpose",
+                "fp8_act_scale_to_kmajor",
             ),
         })
     }

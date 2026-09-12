@@ -412,7 +412,7 @@ pub(super) fn default_chatml_template(supports_thinking: bool) -> String {
 
 /// Convert Python Jinja2 syntax to minijinja-compatible syntax.
 /// Handles: slice reversal, string methods, etc.
-pub(super) fn convert_python_jinja_to_minijinja(template: &str) -> String {
+pub(crate) fn convert_python_jinja_to_minijinja(template: &str) -> String {
     let mut t = template.to_string();
 
     // messages[::-1] → messages | reverse
