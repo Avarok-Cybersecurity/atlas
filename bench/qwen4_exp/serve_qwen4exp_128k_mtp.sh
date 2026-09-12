@@ -308,8 +308,24 @@ export ATLAS_LOOKUP_EP="${ATLAS_LOOKUP_EP:-1}"
 # noise this battery usually carries. Width 3 is also cheaper: verify pools
 # 1150 MB vs 2286, KV 1.30M vs 1.22M tokens.
 #
+# ⚠ RE-MEASURED on #1060's 7f1a82035 (cherry-picked): that commit drafts the
+# serial steps at the ladder's per-step count, so widening the pools no longer
+# makes the HEAD re-propose 7 on fresh text — which is what the 13.43 s/turn
+# actually was (a head at 7, i.e. DRAFTS=7 in disguise), not lookup matches
+# paying wide verifies. On the fix, width 7 gives s/turn 7.31 and keeps the
+# copy win (74.65), so the SPEED objection to width 7 is gone.
+#
+# It still is not the default, for a different reason: that run produced the
+# first agentic FAILURE of the campaign — 2/3 webserver_ok, run 2 burning 26
+# turns and never writing Cargo.toml (5/6 steps), against 3/3 on every other
+# config measured. Anchors 0/0, Marconi 40/40, 0 errors, so it is task
+# adherence, not corruption or the wire. Spec width changes which tokens are
+# SAMPLED (model-card sampling, temp > 0), so trajectories differ by
+# construction and n=3 cannot separate bad luck from a real quality cost.
+#
 # Set ATLAS_LOOKUP_WIDTH=7 for copy-heavy serving (long verbatim reproduction,
-# diff replay, transcript echo), where it is worth +22% over width 3.
+# diff replay, transcript echo), where it is worth +22% over width 3 — but not
+# for agentic use until that 2/3 is explained or fails to reproduce.
 export ATLAS_LOOKUP_WIDTH="${ATLAS_LOOKUP_WIDTH:-3}"
 
 # ── The #972 gates. Per-process OnceLocks with no cross-rank agreement, so if
