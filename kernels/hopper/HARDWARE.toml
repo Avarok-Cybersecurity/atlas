@@ -149,13 +149,21 @@ gdn_prefill_tc = true
 # times instead of 96; SASS on sm_90a puts the launch at ~1.8x fewer
 # instructions for the same bits.
 #
-# ⚠️ NO SERVING RECEIPT YET. Round 13's nsys is the receipt for the COST; the
-# saving is a round-14 deliverable, and `SSM-BA-GATES-ATTRIBUTION.md` states the
-# prediction as arithmetic (instruction-issue counts) rather than as a measured
-# number, because the kernel is issue-bound and not bandwidth-bound: the
-# attribution doc's roofline "60% of HBM" target does not apply to it. Turned ON
-# rather than left off because the arm cannot change a bit of output and its
-# worst case is a null; `ATLAS_SSM_BA_GATES_HOPPER=0` is the one-variable A/B
+# THE SERVING RECEIPT. Round 15 (1xH100 80GB HBM3, tip `8a6f50b61`) ran cell B0
+# (`ATLAS_SSM_BA_GATES_HOPPER=0`) against cell A15 (auto) on one binary, one
+# variable: C=1 TTFT 498.2 -> 489.7 ms on 4096x512 (-8.5 ms) and 162.7 -> 160.5
+# on 1024x256 (-2.2 ms), both inside the range round 14 predicted from
+# instruction-issue counts (-7.9, band -6.0..-9.7, and -2.1). TPOT is identical
+# to the hundredth of a millisecond on both shapes — the token-count guard
+# keeping decode on the parent, exactly as designed. Two independent methods
+# price the kernel itself within 0.35%: nsys 372.86 us per M=4576 launch, the
+# microtest 371.56 us against the parent's 545.20 there and 555 in round 13's
+# live trace, i.e. 0.67x; over 48 launches that is 8.74 ms against the 8.5 ms
+# serve delta. Byte equality holds at every M (`out_diff=0`, `max_abs=0.000e0`,
+# the one-ulp KNOWN_BAD control refused), and A15/B0 are md5-identical on all
+# seven coherency exchanges. The roofline "60% of HBM" target in earlier notes
+# does NOT apply to this kernel: it is issue-bound, so the honest figure is
+# ~8 ms rather than ~26. `ATLAS_SSM_BA_GATES_HOPPER=0` is the one-variable A/B
 # that pins the parent.
 #
 # The launcher declines the twin below `2 * SM count` tokens and keeps the

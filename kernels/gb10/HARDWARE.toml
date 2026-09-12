@@ -69,8 +69,9 @@ gdn_prefill_tc = false
 # carry and GB10's build does not compile, so the probe returns
 # `KernelHandle(0)` and the launcher stays on the gb10 parent
 # `ssm_preprocess::dense_gemm_ba_gates_prefill` whatever this row says.
-# Declared anyway, for the same reason `gdn_decode_hopper` is: the lever list is
-# one list. The twin is bit-identical to that parent, so a GB10 receipt could
+# Declared anyway, for the same reason every other row here is: the lever list
+# is one list, and a row present in one target's table and missing from
+# another's is how a lever comes to mean two things in one repository. The twin is bit-identical to that parent, so a GB10 receipt could
 # move this row on speed alone — but the parent's 24-CTAs-per-token grid is a
 # much better fit for a 48-SM part than for a 132-SM H100, and there is no GB10
 # A/B. See `kernels/hopper/HARDWARE.toml` and `SSM-BA-GATES-ATTRIBUTION.md`.
