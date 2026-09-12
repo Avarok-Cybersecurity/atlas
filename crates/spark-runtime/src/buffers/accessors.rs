@@ -15,8 +15,21 @@ impl BufferArena {
     pub fn norm_output(&self) -> DevicePtr {
         self.norm_output
     }
+    /// Allocated byte size of `norm_output`. Bounds-check for the attention
+    /// prefill o_proj's cuBLASLt arm, which writes `ceil16(M)` rows — and a
+    /// prefill token count is not a multiple of 16 (#927).
+    pub fn norm_output_bytes(&self) -> usize {
+        self.sizes.norm_output
+    }
     pub fn qkv_output(&self) -> DevicePtr {
         self.qkv_output
+    }
+    /// Allocated byte size of `qkv_output`. Bounds-check for the multi-seq
+    /// decode W8A8 arm, which writes `ceil16(M)` rows at a `per_seq_qkv` row
+    /// pitch — the padded rows land in slots the step does not use, which is
+    /// in-bounds only while the buffer holds them (#927).
+    pub fn qkv_output_bytes(&self) -> usize {
+        self.sizes.qkv_output
     }
     pub fn attn_output(&self) -> DevicePtr {
         self.attn_output

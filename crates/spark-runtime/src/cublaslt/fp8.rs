@@ -162,6 +162,9 @@ pub fn fp8_gemm_act_weight_t_rowwise(
 ///
 /// `m` must already include the caller's pad (the docs require the matmul's M
 /// and N to be multiples of 4), and `act_fp8`/`act_scale` must cover it.
+///
+/// The output is CONTIGUOUS `[M, N]`; [`fp8_gemm_act_weight_t_blkscaled_ldc`]
+/// is the same GEMM with a caller-chosen output row pitch.
 #[allow(clippy::too_many_arguments)]
 pub fn fp8_gemm_act_weight_t_blkscaled(
     act_fp8: u64,
@@ -174,6 +177,58 @@ pub fn fp8_gemm_act_weight_t_blkscaled(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    fp8_gemm_act_weight_t_blkscaled_ldc(
+        act_fp8,
+        act_scale,
+        weight_fp8,
+        weight_block_scale,
+        out,
+        m,
+        n,
+        k,
+        n,
+        stream,
+    )
+}
+
+/// [`fp8_gemm_act_weight_t_blkscaled`] with an explicit output ROW PITCH.
+///
+/// WHY (#927, the 5..16-row decode projections). cuBLASLt's D operand is a
+/// column-major `[N, M]` layout with leading dimension `ldc`, which is exactly
+/// a row-major `[M, N]` whose rows are `ldc` BF16 elements apart — so one
+/// parameter is the whole difference between a contiguous `[M, N]` output and
+/// writing straight into a strided slot. The multi-seq decode QKV buffer is
+/// `[n, per_seq_qkv]` with Q at 0, K at `q_proj_bytes` and V after it, so
+/// `ldc = per_seq_qkv / 2` puts each row's `n` outputs in its own sequence's
+/// slot with the gaps left alone — the same thing the `_strided` GEMV entry
+/// points do, without a staging buffer or a scatter kernel.
+///
+/// ⚠ WRITE EXTENT. The library writes `n` elements of EACH of the `m` columns,
+/// i.e. the last byte touched is at element `(m - 1) * ldc + n`. `m` here is
+/// the caller's PADDED row count, so the phantom rows are written too; callers
+/// must bound that extent against their buffer — see
+/// `spark_model::layers::ops::strided_out_extent_elems`, which is the SSOT for
+/// the arithmetic and is unit-tested on the CPU.
+///
+/// `ldc >= n` is required by the library (a leading dimension shorter than the
+/// column is rejected); it is checked here so the failure names itself instead
+/// of arriving as a cuBLAS status code.
+#[allow(clippy::too_many_arguments)]
+pub fn fp8_gemm_act_weight_t_blkscaled_ldc(
+    act_fp8: u64,
+    act_scale: u64,
+    weight_fp8: u64,
+    weight_block_scale: u64,
+    out: u64,
+    m: u32,
+    n: u32,
+    k: u32,
+    ldc: u32,
+    stream: u64,
+) -> Result<()> {
+    if ldc < n {
+        bail!("cuBLASLt fp8: output row pitch ldc={ldc} is shorter than N={n}");
+    }
     let ctx = ctx()?;
     unsafe {
         let mut desc: cublasLtMatmulDesc_t = std::ptr::null_mut();
@@ -230,7 +285,7 @@ pub fn fp8_gemm_act_weight_t_blkscaled(
             "LayoutB",
         )?;
         chk(
-            cublasLtMatrixLayoutCreate(&mut ld_, CUDA_R_16BF, n as u64, m as u64, n as i64),
+            cublasLtMatrixLayoutCreate(&mut ld_, CUDA_R_16BF, n as u64, m as u64, ldc as i64),
             "LayoutD",
         )?;
         let mut pref: cublasLtMatmulPreference_t = std::ptr::null_mut();
