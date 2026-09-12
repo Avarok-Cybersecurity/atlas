@@ -64,3 +64,6 @@ attn_m16_tc = false
 # the kernel is not in this target's tree, and the arm is a token-visible
 # numerics seam that must not arrive by inheritance.
 lm_head_m16_tc = false
+# `w8a16_gemv_batch16_ncol{2,4}` on the decode attention projections (#927).
+# OFF: no receipt, and the kernel is not in this target's tree.
+attn_ncol_gemv = false

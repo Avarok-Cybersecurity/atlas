@@ -153,6 +153,7 @@ fn every_declaring_target_states_every_lever() {
             "ffn_m16_tc",
             "attn_m16_tc",
             "lm_head_m16_tc",
+            "attn_ncol_gemv",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),

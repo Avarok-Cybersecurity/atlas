@@ -101,11 +101,17 @@ impl NcolWidth {
 /// runs per projection per layer per step, and a per-call `var_os` could change
 /// the captured launch set across CUDA-graph replays.
 pub fn ncol_gemv_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var_os("ATLAS_ATTN_NCOL_GEMV").is_some()
-            && std::env::var_os("ATLAS_NO_ATTN_DECODE_BATCH").is_none()
-    })
+    // ★ THE TARGET'S DECLARATION, environment second. `attn_ncol_gemv` is a
+    // `[defaults]` row and is FALSE on every target, including hopper, because
+    // no target has a serving A/B for it. `ATLAS_ATTN_NCOL_GEMV` is how that
+    // A/B gets run; `ATLAS_NO_ATTN_DECODE_BATCH` still outranks both. The
+    // resolver owns all three (`ops::target_defaults::resolve`) and caches the
+    // result, for the reason every hot-path lever here was cached: the
+    // selector runs per projection per layer per step, and a per-call `var_os`
+    // could change the captured launch set across CUDA-graph replays.
+    crate::layers::ops::target_defaults::resolved()
+        .attn_ncol_gemv
+        .value
 }
 
 /// `ATLAS_ATTN_NCOL_WIDTH=4` picks the 4-column instantiation; anything else

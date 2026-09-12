@@ -33,6 +33,7 @@ const GB10: TargetDefaults = TargetDefaults {
     ffn_m16_tc: false,
     attn_m16_tc: false,
     lm_head_m16_tc: false,
+    attn_ncol_gemv: false,
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]`.
@@ -49,6 +50,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     ffn_m16_tc: false,
     attn_m16_tc: true,
     lm_head_m16_tc: true,
+    attn_ncol_gemv: false,
 };
 
 fn with(defaults: &TargetDefaults, env: &[(&str, &str)]) -> TargetLevers {
@@ -334,4 +336,36 @@ fn hopper_arms_the_tensor_core_head_and_the_umbrella_does_not() {
     );
     let off = with(&HOPPER, &[("ATLAS_LM_HEAD_M16_TC", "0")]);
     assert!(!off.lm_head_m16_tc.value && off.lm_head_m16_tc.from_env());
+}
+
+/// The N-column GEMV row is OFF on every target, and the row says why: no
+/// serving A/B exists for it anywhere. `ATLAS_ATTN_NCOL_GEMV` runs that A/B.
+#[test]
+fn the_ncol_gemv_row_is_off_everywhere_and_armable() {
+    assert!(!empty(&HOPPER).attn_ncol_gemv.value);
+    assert!(!empty(&GB10).attn_ncol_gemv.value);
+    let on = with(&HOPPER, &[("ATLAS_ATTN_NCOL_GEMV", "1")]);
+    assert!(on.attn_ncol_gemv.value && on.attn_ncol_gemv.from_env());
+}
+
+/// The pre-existing family kill switch OUTRANKS both the declaration and the
+/// positive variable — a switch that turns a family off must not be silently
+/// narrowed by a new row underneath it.
+#[test]
+fn the_attention_decode_batch_kill_switch_outranks_the_row() {
+    let armed = TargetDefaults {
+        attn_ncol_gemv: true,
+        ..HOPPER
+    };
+    for env in [
+        vec![("ATLAS_NO_ATTN_DECODE_BATCH", "1")],
+        vec![
+            ("ATLAS_NO_ATTN_DECODE_BATCH", "1"),
+            ("ATLAS_ATTN_NCOL_GEMV", "1"),
+        ],
+    ] {
+        let l = with(&armed, &env);
+        assert!(!l.attn_ncol_gemv.value, "{env:?}");
+        assert!(l.attn_ncol_gemv.from_env(), "{env:?}");
+    }
 }

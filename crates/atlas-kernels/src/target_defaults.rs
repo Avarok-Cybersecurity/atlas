@@ -111,4 +111,13 @@ pub struct TargetDefaults {
     /// near-tie argmax can flip. It is ON here on a measured serve receipt, not
     /// on a microtest.
     pub lm_head_m16_tc: bool,
+    /// `w8a16_gemv_batch16_ncol{2,4}` on the decode attention projections
+    /// (`layers/qwen3_attention/attn_ncol_gemv.rs`).
+    ///
+    /// FALSE everywhere, INCLUDING hopper, and the reason is stated rather
+    /// than implied: there is no serving A/B for it on any target. The
+    /// microtest exists; the receipt does not. The row is here so the kernel
+    /// has a declared way to be turned on for the measurement that would earn
+    /// it, not because it has been shown to pay.
+    pub attn_ncol_gemv: bool,
 }

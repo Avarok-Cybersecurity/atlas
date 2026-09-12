@@ -82,6 +82,9 @@ attn_m16_tc = false
 # `dense_gemm_m16_bf16` on the BF16 decode head (#927). OFF: no B200 receipt,
 # and this target does not carry the kernel.
 lm_head_m16_tc = false
+# `w8a16_gemv_batch16_ncol{2,4}` on the decode attention projections (#927).
+# OFF: no receipt, and the kernel is not in this target's tree.
+attn_ncol_gemv = false
 
 # ── Kernels this target does NOT reach ────────────────────────────────────
 #

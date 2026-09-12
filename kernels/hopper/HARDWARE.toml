@@ -125,6 +125,15 @@ attn_m16_tc = true
 # 0.08% difference against a 0.11-0.17% spread) even though the microtest
 # prefers n64 by 2-4%, so 32 ships and the route line says which ran.
 lm_head_m16_tc = true
+# `w8a16_gemv_batch16_ncol{2,4}` on the decode attention projections (#927).
+# OFF, and the only row in this table with NO receipt in either direction: the
+# microtest exists, the serving A/B does not. It is declared so the kernel has
+# a documented way to be turned on for the measurement that would earn it --
+# `ATLAS_ATTN_NCOL_GEMV=1` -- not because it has been shown to pay.
+#
+# `ATLAS_NO_ATTN_DECODE_BATCH` still turns the whole batched attention-decode
+# family off and OUTRANKS this row.
+attn_ncol_gemv = false
 
 # ── Kernels this target OWNS instead of inheriting ─────────────────────────
 #
