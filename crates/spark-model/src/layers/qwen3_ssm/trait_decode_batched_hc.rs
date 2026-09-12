@@ -345,6 +345,11 @@ impl Qwen3SsmLayer {
     /// `ATLAS_QWEN4EXP_HC_SMALL_M_FFN=0` restores the grouped-GEMM path for an
     /// A/B. Shared by `prefill_inner_hc` and `decode_batched_inner_hc` so the
     /// two verify bodies cannot drift apart on the FFN.
+    /// Widest row count the small-M FFN may decompose into fused 1/2/3-row
+    /// arms. Above this it takes the grouped GEMM. See the comment at the
+    /// use site for the measured curve that sets it.
+    const HC_FFN_CHUNK_MAX_ROWS: usize = 32;
+
     pub(super) fn hc_small_m_ffn(
         &self,
         rows: DevicePtr,
@@ -423,7 +428,28 @@ impl Qwen3SsmLayer {
                         std::env::var("ATLAS_HC_FFN_CHUNKED").as_deref() != Ok("0")
                     })
                 };
-                if chunked && small_m && num_tokens > 3 {
+                // ★ CAPPED at verify widths. This decomposition was measured
+                // (73cb95b43) against the grouped GEMM at 1..24 rows, where the
+                // fused ladder is ~105 us/row and the grouped GEMM streams all
+                // 512 experts for a fixed ~0.5-2 ms regardless of row count —
+                // so at verify widths the ladder wins (DRAFTS=3 C=1 15.24 ->
+                // 28.10). But `hc_small_m_ffn` is ALSO the entry the hc PREFILL
+                // path calls with its whole chunk, and ~105 us/row FLAT at 2052
+                // rows is ~215 ms per GDN layer against the grouped GEMM's
+                // 27 ms at that width. Every profiled prefill chunk on this
+                // model showed the one-shot "CHUNKED into fused arms" line at
+                // num_tokens=2052, and ~150 ms per GDN layer that no phase
+                // timer could attribute — 684 fused launches + 684 D2D copies
+                // per layer per chunk, x36 layers = most of every 7.3 s chunk.
+                // Prefill 8K/11K was 231-261/267 tok/s with it; see the commit
+                // that added this cap for the number without it.
+                //
+                // The cap is a ROW COUNT because that is the axis the curve was
+                // measured on: nothing narrower than the widest batched verify
+                // (11 rows at C=4 K=2, ~15 at K=3, VERIFY_ROW_CAP is 96) should
+                // change, and no prefill chunk (hundreds to thousands of rows)
+                // should ever land here. 32 sits in the gap with room both ways.
+                if chunked && small_m && num_tokens > 3 && num_tokens <= Self::HC_FFN_CHUNK_MAX_ROWS {
                     let h = ctx.config.hidden_size;
                     let bf16 = 2usize;
                     // Widths, seq-major: 3s then the 1-or-2 remainder.
