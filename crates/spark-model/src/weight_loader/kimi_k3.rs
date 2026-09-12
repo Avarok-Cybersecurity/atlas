@@ -17,7 +17,7 @@ use crate::weight_map::DenseWeight;
 mod classes;
 mod dry_run;
 
-pub use dry_run::{KimiK3DryRun, dry_run_index_json, dry_run_weight_map, require_shard_count};
+pub use dry_run::{KimiK3DryRun, dry_run_index_json, dry_run_weight_map};
 
 pub struct KimiK3WeightLoader;
 
