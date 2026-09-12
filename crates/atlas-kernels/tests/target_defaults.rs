@@ -72,17 +72,15 @@ fn hopper_declares_what_an_h100_serve_runs_with() {
         d.lm_head_m16_tc,
         "round 9 cell Y: +4.09% C=16 aggregate on the BF16 decode head"
     );
-    // ★ NOT 16. The 16 an H100 recipe exported was measured with the
-    // tensor-core head arm (`dense_gemm_m16_bf16`, #927) also on, where that
-    // arm serves 5..=16 and this band is very nearly inert. The arm is not in
-    // this kernel set, so 16 here would be an unmeasured configuration; the
-    // row moves with the commit that lands the arm. A default is a claim
-    // about a measurement.
-    assert_eq!(
+    // ★ 16, and the arm it was measured beside is in this kernel set — see
+    // `lm_head_m16_tc` above. The pair is the measurement: with the TC arm on,
+    // the band decides only the widths that arm declines. A default is a claim
+    // about a measurement, and this one is round 9 cell Y's.
+    assert_eq!(d.lm_head_batchm_max, 16);
+    assert_ne!(
         d.lm_head_batchm_max,
         baseline("hopper").lm_head_batchm_max,
-        "the band holds at the frozen 8 until the arm it was measured beside \
-         lands"
+        "hopper's band is its own; gb10's frozen 8 stays the baseline"
     );
 }
 
@@ -280,7 +278,7 @@ fn the_generated_constant_names_every_field() {
     assert!(generated.contains("pub const TARGET_DEFAULTS: TargetDefaults = TargetDefaults {"));
     for field in [
         "hw: \"hopper\"",
-        "lm_head_batchm_max: 8",
+        "lm_head_batchm_max: 16",
         "ssm_batched_recurrent: true",
         "decode_split_silu: true",
     ] {

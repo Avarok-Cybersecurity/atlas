@@ -73,17 +73,26 @@ extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
 # profile and the explicit-env profile agreed to within 0.37% aggregate, with
 # md5-identical coherency output on 7/7 prompts).
 [defaults]
-# The BF16 decode head's batched-GEMV band. 8 — GB10's frozen band, held here
-# ON PURPOSE and not the 16 an H100 recipe used to export.
+# The BF16 decode head's batched-GEMV band. 16, not GB10's frozen 8 — and this
+# row moved to 16 in the commit that landed `dense_gemm_m16_bf16.cu`, which is
+# the arm it was measured beside.
 #
-# 🔴 That 16 was measured with the tensor-core head arm (`dense_gemm_m16_bf16`,
-# #927) ALSO on, where the TC arm serves 5..=16 and the band is very nearly
-# inert. With the TC arm absent — it is a Hopper-owned kernel and is not in
-# this PR — a 16 here would move widths 9..=16 off the reassociating tile GEMM
-# onto the batched GEMV in a configuration nobody has measured. The row moves
-# to 16 in the commit that lands the arm it was measured beside; a default is
-# a claim about a measurement.
-lm_head_batchm_max = 8
+# 🔴 THE PAIR IS THE MEASUREMENT. The H100 recipe's 16 was always measured with
+# `lm_head_m16_tc` also on, where the tensor-core arm serves 5..=16 ahead of
+# the GEMV and this band is very nearly inert — it decides only the widths the
+# TC arm declines (a K that is not a whole 64-wide pipeline step, or a kernel
+# set without the entry point). Declaring 16 while the arm was absent would
+# have moved widths 9..=16 off the reassociating tile GEMM onto the batched
+# GEMV in a configuration nobody has measured; declaring it now reproduces
+# round 9 cell Y.
+#
+# WHY 16 AND NOT GB10's 8, mechanically: on H100 it is the TILE GEMM that loses
+# at decode widths (#927 — 224 ms/step at 16 active rows), which is the
+# opposite of the GB10 A/B that froze 8 there (-14.4% at C=16, commits
+# 84d5b763c / 78d276832). The resolver clamps whatever is declared to
+# `DENSE_GEMV_BATCHM_MAX_M`, the kernel's compile-time row bound, so a wider
+# declaration cannot launch a kernel that would refuse it.
+lm_head_batchm_max = 16
 # One strided recurrent launch per batch on the GDN decode path: +6% on the
 # serve, and md5-identical output to the per-sequence launches. This is the
 # row that used to be `ATLAS_SSM_BATCHED_RECURRENT=1` in a launch script

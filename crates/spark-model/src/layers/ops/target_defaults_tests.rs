@@ -44,7 +44,7 @@ const GB10: TargetDefaults = TargetDefaults {
 /// `atlas-kernels/tests/target_defaults.rs`.
 const HOPPER: TargetDefaults = TargetDefaults {
     hw: "hopper",
-    lm_head_batchm_max: 8,
+    lm_head_batchm_max: 16,
     ssm_batched_recurrent: true,
     decode_split_silu: true,
     ffn_m16_tc: false,
@@ -89,7 +89,7 @@ fn hopper_resolves_its_recipe_from_an_empty_environment() {
          nobody typed"
     );
     assert!(l.decode_split_silu.value);
-    assert_eq!(l.lm_head_batchm_max.value, 8);
+    assert_eq!(l.lm_head_batchm_max.value, 16);
     assert_eq!(l.hw, "hopper");
 }
 
@@ -368,4 +368,16 @@ fn the_attention_decode_batch_kill_switch_outranks_the_row() {
         assert!(!l.attn_ncol_gemv.value, "{env:?}");
         assert!(l.attn_ncol_gemv.from_env(), "{env:?}");
     }
+}
+
+/// Hopper's widened band, resolved from the declaration alone — the last line
+/// of the external H100 recipe to become structural.
+#[test]
+fn hopper_resolves_the_widened_head_band_from_its_declaration() {
+    let h = empty(&HOPPER);
+    assert_eq!(h.lm_head_batchm_max.value, 16);
+    assert!(!h.lm_head_batchm_max.from_env());
+    assert_eq!(empty(&GB10).lm_head_batchm_max.value, BASELINE_BATCHM_MAX);
+    assert!(format_levers(&h).contains("lm_head_batchm_max=16"));
+    assert!(!format_levers(&h).contains("lm_head_batchm_max=16 (env)"));
 }
