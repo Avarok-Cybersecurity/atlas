@@ -334,6 +334,12 @@ test = true
 [[example]]
 name = "native_fp8_ffn_gateup_fused_microtest"
 required-features = ["cuda", "gpu-examples"]
+# The KNOWN_BAD controls are host-testable and now ARE host-tested: round 16's
+# "one row" control zeroed a cuBLASLt pad row, so it was a no-op at every M
+# below the pad width and the example failed on a green kernel (#927, §2.2).
+# The tests live in `examples/common/gateup_fused_controls.rs`, which the
+# example pulls in with `#[path]` — same seam as `native_fp8_bf16_compare.rs`.
+test = true
 
 [[example]]
 name = "native_fp8_qkv_batch_microtest"
