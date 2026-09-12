@@ -730,6 +730,36 @@ pub struct ModelConfig {
     /// `*lora_rank` collision (`config.rs:182-207`).
     #[serde(default)]
     pub adapter_max_rank: usize,
+
+    // ── Kimi K3 (KDA + gated MLA + AttnRes + Stable LatentMoE) ──
+    /// AttnRes residual-mix block size (`attn_res_block_size`). 0 = no AttnRes.
+    #[serde(default)]
+    pub attn_res_block_size: usize,
+    /// KDA full-rank output gate (`linear_attn_config.use_full_rank_gate`).
+    #[serde(default)]
+    pub use_full_rank_gate: bool,
+    /// MLA NoPE (`mla_use_nope`). K3 keeps a RoPE section (`qk_rope_head_dim=64`)
+    /// and still sets this; it is not GLM's `qk_rope_head_dim == 0` NoPE.
+    #[serde(default)]
+    pub mla_use_nope: bool,
+    /// MLA output gate (`mla_use_output_gate`) — `self_attn.g_proj` on every mixer.
+    #[serde(default)]
+    pub mla_use_output_gate: bool,
+    /// LatentMoE RMS after the routed down-project (`latent_moe_use_norm`).
+    #[serde(default)]
+    pub latent_moe_use_norm: bool,
+    /// HF `hidden_act` (K3 production: `situ`). Empty = family default.
+    #[serde(default)]
+    pub hidden_act: String,
+    /// SiTU-GLU β (`activation_situ_beta`). 0.0 = unused.
+    #[serde(default)]
+    pub activation_situ_beta: f32,
+    /// SiTU-GLU linear β (`activation_situ_linear_beta`). 0.0 = unused.
+    #[serde(default)]
+    pub activation_situ_linear_beta: f32,
+    /// Shared-expert count (`num_shared_experts` / `n_shared_experts`).
+    #[serde(default)]
+    pub n_shared_experts: usize,
 }
 
 /// Advertised weight-quantization layout, as declared in the HF
@@ -869,8 +899,8 @@ pub use parsers::{
     parse_quantization_config,
 };
 pub(crate) use parsers::{
-    parse_deepseek_v4, parse_gemma4_params, parse_glm5_next, parse_laguna, parse_longcat_ngram,
-    parse_minimax_m2, parse_qwen4_exp, parse_step3p7, parse_vision_config,
+    parse_deepseek_v4, parse_gemma4_params, parse_glm5_next, parse_kimi_k3, parse_laguna,
+    parse_longcat_ngram, parse_minimax_m2, parse_qwen4_exp, parse_step3p7, parse_vision_config,
 };
 
 pub(crate) fn finalize_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {

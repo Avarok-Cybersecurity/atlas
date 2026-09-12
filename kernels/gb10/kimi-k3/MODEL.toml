@@ -4,7 +4,7 @@
 # and cneuralnetwork/smol-kimi-k3 (shape only).
 #
 # 🔴 THE MATCHER is [[model_types]]. Dimension keys below are documentation.
-# S1 will add the matcher + factory arm behind model_type = "kimi_k3".
+# Two rows so production (7168) never swallows the 0.40B twin (1024).
 
 [model]
 name = "kimi-k3"
@@ -53,3 +53,13 @@ moe_intermediate = 3072
 hidden_act = "situ"
 activation_situ_beta = 4.0
 activation_situ_linear_beta = 25.0
+
+# Production moonshotai/Kimi-K3. Parser canonicalises inner `kimi_linear` to this.
+[[model_types]]
+model_type = "kimi_k3"
+hidden_size = 7168
+
+# Twin inference-optimization/Kimi-K3-0.40B (C1). Separate matcher until S1.
+[[model_types]]
+model_type = "kimi_k3"
+hidden_size = 1024

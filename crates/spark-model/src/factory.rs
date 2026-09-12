@@ -15,9 +15,9 @@ use crate::weight_loader::LongcatWeightLoader;
 use crate::weight_loader::Qwen4ExpWeightLoader;
 use crate::weight_loader::{
     DeepSeekV4WeightLoader, DflashConfig, Gemma4WeightLoader, Glm5NextWeightLoader,
-    LagunaWeightLoader, MinimaxM2WeightLoader, ModelWeightLoader, NemotronHWeightLoader,
-    NllbWeightLoader, Qwen3VLWeightLoader, Qwen3WeightLoader, Qwen35DenseWeightLoader,
-    Qwen35WeightLoader, Step3p7WeightLoader,
+    KimiK3WeightLoader, LagunaWeightLoader, MinimaxM2WeightLoader, ModelWeightLoader,
+    NemotronHWeightLoader, NllbWeightLoader, Qwen3VLWeightLoader, Qwen3WeightLoader,
+    Qwen35DenseWeightLoader, Qwen35WeightLoader, Step3p7WeightLoader,
 };
 
 /// DFlash speculative-decoding build arguments. `None` for non-DFlash runs;
@@ -121,9 +121,11 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         // 288-expert sigmoid-routed MoE + mHC. `glm5_next_text` is the inner `model_type`;
         // the parser canonicalises both onto `glm5_next`.
         "glm5_next" | "glm5_next_text" => Ok(Box::new(Glm5NextWeightLoader)),
+        // K3-WIP S0: dry-run + factory registration. `load` bails until S1.
+        "kimi_k3" | "kimi_linear" => Ok(Box::new(KimiK3WeightLoader)),
         _ => bail!(
             "Unsupported model type: '{}' (normalized: '{}'). \
-             Supported: qwen3_next, glm5_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, nemotron_h_puzzle, gemma4, mistral, minimax_m2, step3p7, laguna, deepseek_v4, qwen4_exp, m2m_100",
+             Supported: qwen3_next, glm5_next, kimi_k3, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, nemotron_h_puzzle, gemma4, mistral, minimax_m2, step3p7, laguna, deepseek_v4, qwen4_exp, m2m_100",
             config.model_type,
             normalized,
         ),
@@ -209,6 +211,8 @@ mod tests {
             "step3p7",
             "laguna",
             "deepseek_v4",
+            "kimi_k3",
+            "kimi_linear",
             // Normalization accepts case, hyphens, and dots before dispatch.
             "QWEN3-NEXT",
             "nemotron.h.puzzle",
