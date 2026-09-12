@@ -114,6 +114,12 @@ pub(super) enum GdnStates<'a, 'b> {
     },
 }
 
+/// `ATLAS_HC_OPROJ_CHUNKED=0` sends out_proj at M>8 back to the tile GEMM.
+fn oproj_chunked() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_HC_OPROJ_CHUNKED").as_deref() != Ok("0"))
+}
+
 impl Qwen3SsmLayer {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_batched_inner(
@@ -296,6 +302,26 @@ impl Qwen3SsmLayer {
         let bf16 = 2usize; // bytes per BF16
         let fp32 = 4usize; // bytes per FP32
 
+        // ── Phase timing (ATLAS_HC_VERIFY_STAGE_TIMING=1) ──
+        // See the module note: `gdn_block` is seven phases with different
+        // floors, and the 2.4x gap has to be located before it can be closed.
+        let phase_timing = {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1")
+            })
+        };
+        let mut pt = std::time::Instant::now();
+        let (mut p1, mut p23, mut p4, mut p567, mut p8, mut p9) =
+            (0u128, 0u128, 0u128, 0u128, 0u128, 0u128);
+        let phase = |t: &mut std::time::Instant, acc: &mut u128| {
+            if phase_timing {
+                let _ = ctx.gpu.synchronize(stream);
+                *acc += t.elapsed().as_micros();
+                *t = std::time::Instant::now();
+            }
+        };
+
         // Whether THIS pass must run its rows as sequential decode rows —
         // SSOT for the projections, the conv+GDN arm and the phase-8 norm
         // skip. Resolved once: it is a pure function of process flags and the
@@ -314,6 +340,7 @@ impl Qwen3SsmLayer {
         let d_conv = ctx.config.linear_conv_kernel_dim;
         let qkvz_size = ctx.config.ssm_qkvz_size(); // 12288
 
+        phase(&mut pt, &mut p1);
         // ── 2+3. QKVZ projection (+ deinterleave if needed) ──
         // For sequential_qkvz (Qwen3.5): write directly to deinterleaved buffer.
         // For interleaved (80B): write to qkvz_out, then deinterleave per token.
@@ -746,6 +773,7 @@ impl Qwen3SsmLayer {
 
         k4_diag_checkpoint(ctx, "2+3:qkvz_proj+deinterleave", stream)?;
 
+        phase(&mut pt, &mut p23);
         // ── 4. BA projection + GDN gates per token ──
         // BA output: ssm_ba buffer; gates: ssm_gates buffer [K, nv*2] FP32
         // Layout per token: [gate(nv), beta(nv)] → stride = 2*nv FP32 elements.
@@ -851,6 +879,7 @@ impl Qwen3SsmLayer {
 
         k4_diag_checkpoint(ctx, "4:ba_proj+gates", stream)?;
 
+        phase(&mut pt, &mut p4);
         // ── 5-7. Conv1d + L2 norm + GDN per token (with intermediate checkpoints) ──
         // Reuse ssm_qkvz buffer for conv output (safe: deinterleave is done)
         let conv_out_buf = ctx.buffers.ssm_qkvz();
@@ -1027,6 +1056,7 @@ impl Qwen3SsmLayer {
 
         k4_diag_checkpoint(ctx, "5-7:conv1d+l2norm+gdn_wy", stream)?;
 
+        phase(&mut pt, &mut p567);
         // ── 8. Gated RMS norm per token (Z gate at [Q|K|V] offset) ──
         let normed_out_buf = conv_out_buf;
         let z_offset = key_dim * 2 + value_dim; // == conv_dim
@@ -1102,6 +1132,7 @@ impl Qwen3SsmLayer {
 
         k4_diag_checkpoint(ctx, "8:gated_rms_norm", stream)?;
 
+        phase(&mut pt, &mut p8);
         // ── 9. Output projection → [K, H] ──
         let out_proj_buf = ctx.buffers.moe_output(); // [K, H] BF16
         if let Some(ref g) = self.exl3_gdn {
@@ -1177,6 +1208,52 @@ impl Qwen3SsmLayer {
                         stream,
                     )?;
                 }
+            }
+        } else if num_tokens > 8
+            && !self.ssm.out_proj.weight.is_null()
+            && self.w4a16_batchm_kernel(8).0 != 0
+            && oproj_chunked()
+        {
+            // M > 8: no batched-GEMV tier covers it (`W4A16_BATCHM_WIDTHS`
+            // tops out at 8), so the tile GEMM below would take it at
+            // ~30-40 GB/s on a 7.9 MB weight. Chunk onto the GEMV instead:
+            // re-reading the weight per chunk is cheap at this size, and the
+            // arm sustains ~136 GB/s. See the module note.
+            //
+            // Projection rows are INDEPENDENT — each is its own GEMV against
+            // the shared weight — so the split is arithmetically identical to
+            // one call, with no ordering constraint.
+            let mut off = 0usize;
+            while off < num_tokens {
+                let take = (num_tokens - off).min(8);
+                let kh = self.w4a16_batchm_kernel(take);
+                anyhow::ensure!(
+                    kh.0 != 0,
+                    "out_proj chunk of {take} rows has no batchm tier (widths {:?})",
+                    crate::layers::w4a16_gemv_tiers::W4A16_BATCHM_WIDTHS
+                );
+                ops::w4a16_gemv_batchm(
+                    ctx.gpu,
+                    kh,
+                    normed_out_buf.offset(off * value_dim * bf16),
+                    &self.ssm.out_proj,
+                    out_proj_buf.offset(off * h * bf16),
+                    take as u32,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+                off += take;
+            }
+            {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| {
+                    tracing::info!(
+                        rows = num_tokens,
+                        "out_proj: CHUNKED onto the batched GEMV (ATLAS_HC_OPROJ_CHUNKED=0 \
+                         restores the tile GEMM)"
+                    );
+                });
             }
         } else if (4..=8).contains(&num_tokens)
             && !self.ssm.out_proj.weight.is_null()
@@ -1385,6 +1462,27 @@ impl Qwen3SsmLayer {
 
         k4_diag_checkpoint(ctx, "9:out_proj", stream)?;
 
+        phase(&mut pt, &mut p9);
+        if phase_timing {
+            // Periodic, not one-shot: a cold sample misreports the
+            // weight-reading phases by an order of magnitude.
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static CALLS: AtomicUsize = AtomicUsize::new(0);
+            let call = CALLS.fetch_add(1, Ordering::Relaxed);
+            if call % 1024 == 0 && call > 0 {
+                tracing::info!(
+                    call,
+                    rows = num_tokens,
+                    p1_norm_us = p1 as u64,
+                    p23_qkvz_us = p23 as u64,
+                    p4_gates_us = p4 as u64,
+                    p567_convgdn_us = p567 as u64,
+                    p8_norm_us = p8 as u64,
+                    p9_oproj_us = p9 as u64,
+                    "gdn_block phase split (ONE layer, synced per phase)"
+                );
+            }
+        }
         Ok(out_proj_buf)
     }
 }
