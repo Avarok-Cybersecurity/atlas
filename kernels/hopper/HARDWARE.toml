@@ -313,6 +313,19 @@ attn_decode_splitk = "auto"
 #                            parent or twin by kernel presence under
 #                            `[defaults] ssm_ba_gates_hopper` plus a token-count
 #                            guard. Numbers: `SSM-BA-GATES-ATTRIBUTION.md`.
+#
+#   w8a16_gemv.cu            The W8A16 M=1 decode GEMV. On an H100 this family
+#   w8a16_gemv_fused.cu      is 71% of the C=1 decode step (nsys, 1xH100,
+#                            Qwen/Qwen3.8-27B-FP8, 2026-09-11 round 10) and the
+#                            gb10 kernels are LSU-bound on the E4M3 LUT gather
+#                            rather than bandwidth-bound. These two REPLACE
+#                            their gb10 namesakes: same entry points, same
+#                            arithmetic in the same order, different dequant
+#                            instruction. gb10 keeps its own file untouched —
+#                            gb10, b200, strix and strix-hip all compile it.
+#   w8a16_gemv_hopper.cuh    The shared inner loop of those two, and the SSOT
+#                            for the bit-identity argument. No gb10
+#                            counterpart by design: nothing else includes it.
 [kernels]
 overrides = [
   "gated_delta_rule_chunk_tc.cu",
@@ -323,4 +336,7 @@ overrides = [
   "paged_decode_fp8_splitk_hopper.cu",
   "paged_decode_splitk_hopper.cuh",
   "ssm_ba_gates_hopper.cu",
+  "w8a16_gemv.cu",
+  "w8a16_gemv_fused.cu",
+  "w8a16_gemv_hopper.cuh",
 ]

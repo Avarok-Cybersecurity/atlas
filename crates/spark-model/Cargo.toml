@@ -329,3 +329,7 @@ required-features = ["cuda", "gpu-examples"]
 # splitting re-brackets a non-associative online-softmax merge.
 name = "native_attn_decode_splitk_hopper_microtest"
 required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_gemv_hopper_microtest"
+required-features = ["cuda", "gpu-examples"]
