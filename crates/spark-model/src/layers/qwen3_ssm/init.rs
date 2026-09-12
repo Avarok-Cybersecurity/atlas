@@ -467,6 +467,11 @@ impl Qwen3SsmLayer {
                 "fp8_gemm_t_blockscaled",
                 "fp8_gemm_t_blockscaled",
             ),
+            fp8_act_scale_kmajor_k: super::super::try_kernel(
+                gpu,
+                "fp8_scale_transpose",
+                "fp8_act_scale_to_kmajor",
+            ),
         })
     }
 

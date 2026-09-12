@@ -15,8 +15,10 @@
 //!     difference is vLLM's dynamic W8A8 arithmetic and a deliberate precision
 //!     trade, not a defect.
 //!   * cuBLASLt vs the W8A8 kernel — same quantized inputs, same FP32
-//!     epilogue, so these should be near bit-identical; the max BF16 ULP
-//!     distance is printed so "near" is a number and not an adjective.
+//!     epilogue, so the only licensed difference is FP32 accumulation ORDER.
+//!     Accepted per element at one BF16 rounding step (see
+//!     `CUBLAS_SMALL_MAGNITUDE`); `over_1ulp`, `sign_flips`, `unequal_bf16` and
+//!     the ordinal `max_ulp` are all printed so "close" is a number.
 //!   * TFLOP/s for each path (CUDA events, 10 iterations after warm-up).
 //!
 //! NUMERICS FLOOR — read before judging a marginal `rel_rms`. E4M3 carries 3
@@ -27,11 +29,21 @@
 //! Cosine is the robust metric (~0.9997 at that error). `ATLAS_W8A8_REL_RMS_GATE`
 //! overrides the bound for a measurement run; the value used is always printed.
 //!
+//! SCALE LAYOUT — `ATLAS_CUBLAS_SCALE_LAYOUT=kmajor|rowmajor` (default
+//! `kmajor`). cuBLASLt reads the VEC128 activation scales with the TOKEN index
+//! contiguous, the transpose of the `[M, K/128]` the quantizer writes; the
+//! `rowmajor` setting feeds the untransposed buffer, which is the reading that
+//! measured rel_rms 7.7e-2 / ~33 000 BF16 ULP on H100 on 2026-09-11. It is kept
+//! so both readings can be shown on one box, and it is EXPECTED TO FAIL.
+//!
 //! Run (H100):
 //!   cargo run --release -p spark-model --features cuda,gpu-examples \
 //!     --example native_fp8_ffn_w8a8_microtest
 //!   ATLAS_CUBLAS_GEMM=1 cargo run --release -p spark-model \
 //!     --features cuda,gpu-examples --example native_fp8_ffn_w8a8_microtest
+//!   ATLAS_CUBLAS_GEMM=1 ATLAS_CUBLAS_SCALE_LAYOUT=rowmajor cargo run --release \
+//!     -p spark-model --features cuda,gpu-examples \
+//!     --example native_fp8_ffn_w8a8_microtest
 
 use anyhow::{Result, bail};
 use half::bf16;
@@ -39,6 +51,12 @@ use spark_model::layers::ops;
 use spark_model::weight_map::{Fp8Weight, WeightQuantFormat};
 use spark_runtime::cuda_backend::AtlasCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
+
+#[path = "common/native_fp8_bf16_compare.rs"]
+pub(crate) mod native_fp8_bf16_compare;
+use native_fp8_bf16_compare::{
+    CUBLAS_COSINE_GATE, CUBLAS_REL_RMS_GATE, CUBLAS_SMALL_MAGNITUDE, compare,
+};
 
 // CUDA driver event API — kernel-only timing. Wall-clock `Instant` carries a
 // ~0.3 ms per-launch host floor that swamps the signal on these shapes.
@@ -87,56 +105,6 @@ fn download_bf16(gpu: &dyn GpuBackend, ptr: DevicePtr, elems: usize) -> Result<V
         .chunks_exact(2)
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect())
-}
-
-fn to_f64(bits: &[u16]) -> Vec<f64> {
-    bits.iter()
-        .map(|b| bf16::from_bits(*b).to_f32() as f64)
-        .collect()
-}
-
-/// BF16 bits → a monotonically ordered integer, so `|ord(a) - ord(b)|` is the
-/// ULP distance (the standard sign-magnitude → two's-complement remap).
-fn ord(bits: u16) -> i32 {
-    if bits & 0x8000 != 0 {
-        -((bits & 0x7fff) as i32)
-    } else {
-        bits as i32
-    }
-}
-
-struct Compare {
-    max_abs: f64,
-    cosine: f64,
-    rel_rms: f64,
-    max_ulp: i32,
-    unequal: usize,
-}
-
-fn compare(a_bits: &[u16], b_bits: &[u16]) -> Compare {
-    let (a, b) = (to_f64(a_bits), to_f64(b_bits));
-    let (mut dot, mut na, mut nb, mut max_abs, mut sq_diff, mut sq_ref) =
-        (0.0, 0.0, 0.0, 0.0_f64, 0.0, 0.0);
-    for (x, y) in a.iter().zip(&b) {
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
-        max_abs = max_abs.max((x - y).abs());
-        sq_diff += (x - y) * (x - y);
-        sq_ref += y * y;
-    }
-    Compare {
-        max_abs,
-        cosine: dot / (na.sqrt() * nb.sqrt()),
-        rel_rms: (sq_diff / sq_ref.max(f64::MIN_POSITIVE)).sqrt(),
-        max_ulp: a_bits
-            .iter()
-            .zip(b_bits)
-            .map(|(x, y)| (ord(*x) - ord(*y)).abs())
-            .max()
-            .unwrap_or(0),
-        unequal: a_bits.iter().zip(b_bits).filter(|(x, y)| x != y).count(),
-    }
 }
 
 /// GPU time per iteration for `launch`, in seconds (CUDA events, no host sync
@@ -196,18 +164,29 @@ fn main() -> Result<()> {
     let w8a16_k = gpu.kernel("w8a16_gemm_pipelined", "w8a16_gemm_pipelined")?;
     let quant_k = gpu.kernel("per_token_group_quant_fp8", "per_token_group_quant_fp8")?;
     let w8a8_k = gpu.kernel("fp8_gemm_t_blockscaled", "fp8_gemm_t_blockscaled")?;
+    let scale_kmajor_k = gpu.kernel("fp8_scale_transpose", "fp8_act_scale_to_kmajor")?;
     let want_cublas = std::env::var("ATLAS_CUBLAS_GEMM").as_deref() == Ok("1");
+    let kmajor = ops::cublas_scale_layout_kmajor();
     let rel_rms_gate = std::env::var("ATLAS_W8A8_REL_RMS_GATE")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(REL_RMS_GATE);
 
     println!(
-        "dense-FFN W8A8 microtest — H={H} INTER={INTER}  cuBLASLt={}  gates: cosine>={COSINE_GATE} rel_rms<={rel_rms_gate}",
+        "dense-FFN W8A8 microtest — H={H} INTER={INTER}  cuBLASLt={}  \
+         scale_layout={}  gates: cosine>={COSINE_GATE} rel_rms<={rel_rms_gate}  \
+         cuBLASLt-vs-kernel: over_1ulp==0 (small-value escape \
+         |v|<{CUBLAS_SMALL_MAGNITUDE}) cosine>={CUBLAS_COSINE_GATE} \
+         rel_rms<={CUBLAS_REL_RMS_GATE}",
         if want_cublas {
             "on (ATLAS_CUBLAS_GEMM=1)"
         } else {
             "off"
+        },
+        if kmajor {
+            "kmajor [K/128,M_pad] (documented)"
+        } else {
+            "rowmajor [M,K/128] (pre-fix control, expected to FAIL)"
         }
     );
 
@@ -228,6 +207,9 @@ fn main() -> Result<()> {
     let act = upload(&gpu, &act_host)?;
     let a_fp8 = gpu.alloc(max_m_pad * max_k)?;
     let a_scale = gpu.alloc(max_m_pad * (max_k / BLOCK) * 4)?;
+    // `[K/128, ceil16(M)]` transposed scales for the cuBLASLt arm — the layout
+    // adapter's destination, same element count as `a_scale`.
+    let a_scale_kmajor = gpu.alloc(max_m_pad * (max_k / BLOCK) * 4)?;
     let out_ref = gpu.alloc(max_m_pad * max_n * 2)?;
     let out_w8a8 = gpu.alloc(max_m_pad * max_n * 2)?;
     let out_cublas = gpu.alloc(max_m_pad * max_n * 2)?;
@@ -330,7 +312,17 @@ fn main() -> Result<()> {
             if want_cublas {
                 let cublas = || {
                     ops::cublas_fp8_proj_prequant(
-                        &gpu, a_fp8, a_scale, &fp8w, out_cublas, mu, nu, ku, stream,
+                        &gpu,
+                        scale_kmajor_k,
+                        a_fp8,
+                        a_scale,
+                        a_scale_kmajor,
+                        &fp8w,
+                        out_cublas,
+                        mu,
+                        nu,
+                        ku,
+                        stream,
                     )
                 };
                 cublas()?;
@@ -341,14 +333,17 @@ fn main() -> Result<()> {
                 let r = compare(&cub_bits, &ref_bits);
                 println!(
                     "  cuBLASLt  : {:>8.3} ms  {:>7.2} TFLOP/s  ({:.2}x vs W8A16, {:.2}x vs kernel)\n    \
-                     vs kernel: unequal_bf16={}/{} max_ulp={} max_abs={:.6} cosine={:.9} rel_rms={:.2e}\n    \
+                     vs kernel: over_1ulp={}/{} sign_flips={} unequal_bf16={} max_ulp={} \
+                     max_abs={:.6} cosine={:.9} rel_rms={:.2e}\n    \
                      vs W8A16 : max_abs={:.6} cosine={:.6} rel_rms={:.4}",
                     t_cub * 1e3,
                     tflops(m, n, k, t_cub),
                     t_w8a16 / t_cub,
                     t_w8a8 / t_cub,
-                    d.unequal,
+                    d.over_bound,
                     m * n,
+                    d.sign_flips,
+                    d.unequal,
                     d.max_ulp,
                     d.max_abs,
                     d.cosine,
@@ -359,12 +354,28 @@ fn main() -> Result<()> {
                 );
                 // Same quantized inputs and the same FP32 epilogue: a real
                 // disagreement here is a layout bug (scale order, transpose),
-                // not precision. A few BF16 ULP of tile-order rounding is fine.
-                if d.max_ulp > 4 {
+                // not precision — see the gate constants for why the bounds are
+                // where they are.
+                if d.over_bound > 0 {
                     failures.push(format!(
-                        "{} M={m}: cuBLASLt vs kernel max_ulp={} (> 4) — check the \
-                         VEC128 act-scale / BLK128x128 weight-scale layouts",
-                        shape.label, d.max_ulp
+                        "{} M={m}: cuBLASLt vs kernel {} of {} elements outside one BF16 ULP \
+                         (small-value escape |v|<{CUBLAS_SMALL_MAGNITUDE}) — check the VEC128 \
+                         act-scale / BLK128x128 weight-scale layouts",
+                        shape.label,
+                        d.over_bound,
+                        m * n
+                    ));
+                }
+                if !(d.cosine >= CUBLAS_COSINE_GATE) || !d.cosine.is_finite() {
+                    failures.push(format!(
+                        "{} M={m}: cuBLASLt vs kernel cosine {:.9} < {CUBLAS_COSINE_GATE}",
+                        shape.label, d.cosine
+                    ));
+                }
+                if !(d.rel_rms <= CUBLAS_REL_RMS_GATE) || !d.rel_rms.is_finite() {
+                    failures.push(format!(
+                        "{} M={m}: cuBLASLt vs kernel rel_rms {:.2e} > {CUBLAS_REL_RMS_GATE:.0e}",
+                        shape.label, d.rel_rms
                     ));
                 }
                 if !(r.cosine >= COSINE_GATE) {
@@ -379,11 +390,19 @@ fn main() -> Result<()> {
         gpu.free(scale).ok();
     }
 
-    for p in [act, a_fp8, a_scale, out_ref, out_w8a8, out_cublas] {
+    for p in [
+        act,
+        a_fp8,
+        a_scale,
+        a_scale_kmajor,
+        out_ref,
+        out_w8a8,
+        out_cublas,
+    ] {
         gpu.free(p).ok();
     }
     if failures.is_empty() {
-        println!("RESULT: PASS (all shapes within cosine/rel_rms/ULP gates)");
+        println!("RESULT: PASS (all shapes within cosine/rel_rms/one-BF16-ULP gates)");
         Ok(())
     } else {
         for f in &failures {

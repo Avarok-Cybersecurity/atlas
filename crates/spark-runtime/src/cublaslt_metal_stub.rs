@@ -11,6 +11,13 @@
 
 use anyhow::Result;
 
+// The scale-factor LAYOUT rules are pure index math with no cuBLASLt symbols in
+// them, so the metal build shares the REAL module instead of stubbing it — the
+// spark-model dispatch gate names it unconditionally, and a stub would be a
+// second, silently diverging copy of the layout contract.
+#[path = "cublaslt/scale_layout.rs"]
+pub mod scale_layout;
+
 pub fn bf16_gemm_act_weight_t(
     _act: u64,
     _weight: u64,
