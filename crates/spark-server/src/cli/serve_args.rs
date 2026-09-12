@@ -246,6 +246,36 @@ pub struct ServeArgs {
     #[arg(long, default_value = "snapshot")]
     pub ssm_rollback_mode: String,
 
+    /// Phase-C SSM decode-rollback ring depth: `auto` (default) or an
+    /// explicit slot count in `0..=8`.
+    ///
+    /// The ring retains boundary SSM-state snapshots so a watchdog re-steer
+    /// can rewind the recurrent state; its cost is `depth x
+    /// --max-batch-size x the per-sequence SSM state blob`, which on the 27B
+    /// (151.5 MiB/seq) at the default depth 8 and `--max-batch-size 32` is
+    /// 37.88 GiB — the whole reason an 80 GB H100 refused the hopper recipe
+    /// (#915, rental H100 2026-09-05: inference reserve 45,823 MiB against a
+    /// 71.3 GiB budget carrying 57.2 GiB of weights).
+    ///
+    /// `auto` keeps the depth at 8 (or the existing skips — the ring is
+    /// unreachable under `--speculative`/`--dflash` and with watchdogs off)
+    /// and lets preflight SHRINK it down `8, 4, 2, 1, 0` until the reserve
+    /// fits, logging the formula at WARN. Depth degrades gracefully: fewer
+    /// retained boundaries means fewer reachable re-steer anchors, and a
+    /// sequence that finds none hard-stops instead of re-steering — never a
+    /// partial SSM rewind.
+    ///
+    /// An explicit `N` pins the depth on BOTH sides (reserve and allocation)
+    /// and disables the fit: a serve that does not fit at `N` is REFUSED with
+    /// the formula, rather than booted at a depth the recipe does not record.
+    /// `0` disables the ring outright; 8 is the wired default and the
+    /// arithmetic ceiling.
+    ///
+    /// Legacy: `ATLAS_SSM_DECODE_RING=1|0` still means depth 8 and 0. It is
+    /// only consulted when this flag is `auto` — absent is not a value.
+    #[arg(long, default_value = "auto", value_name = "AUTO_OR_N")]
+    pub ssm_decode_ring_slots: String,
+
     /// Fused GDN output-norm kernel on the decode path (default: off).
     ///
     /// Required by `--ssm-h-dtype f16`: the FP16 h-state twins live on the
