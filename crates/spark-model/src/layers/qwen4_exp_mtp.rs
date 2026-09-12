@@ -145,6 +145,17 @@ struct MtpBuffers {
     /// about to sample from. The target's logits are parked here first and put
     /// back afterwards, so the draft cannot change what the model emits.
     logits_stash: DevicePtr,
+    /// Batched propose (see `draft_tokens_batched`): `[batch_cap, hidden]`
+    /// BF16 draft hiddens, one row per sequence, so n bodies can run before
+    /// one LM head scores them all.
+    batch_h_out: DevicePtr,
+    /// `[batch_cap, hc_mult * hidden]` FP32 — each sequence's draft highway,
+    /// parked before the next sequence's body overwrites the T=1 arena.
+    batch_streams: DevicePtr,
+    /// `[batch_cap, vocab]` BF16 draft logits, private to the draft.
+    batch_logits: DevicePtr,
+    /// `[batch_cap]` u32 argmax results — ONE D2H for the whole batch.
+    batch_tok: DevicePtr,
 }
 
 pub struct Qwen4ExpMtpHead {
@@ -161,6 +172,10 @@ pub struct Qwen4ExpMtpHead {
     /// cannot reach anything the target owns.
     arena: spark_runtime::buffers::BufferArena,
     buf: MtpBuffers,
+    /// Batched LM-head GEMV tiers (4..8 rows) for `draft_tokens_batched`.
+    w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers,
+    /// Batched argmax over `[n, vocab]` draft logits. 0-handle = unbatched only.
+    argmax_batch_k: KernelHandle,
     rms_norm_k: KernelHandle,
     dense_gemv_k: KernelHandle,
     hc_head_k: KernelHandle,
@@ -239,6 +254,10 @@ pub fn shadow_stage() -> ShadowStage {
         },
     )
 }
+
+/// Sequences one batched propose can score in a single LM-head pass. Sized
+/// for the C<=16 shapes this model serves; the scheduler chunks wider batches.
+pub(crate) const BATCH_CAP: usize = 16;
 
 impl Qwen4ExpMtpHead {
     // `pub(crate)`: the signature now names `Exl3LmHead`, which is a
@@ -319,6 +338,8 @@ impl Qwen4ExpMtpHead {
             embed_tokens,
             kv_cache: Mutex::new(kv_cache),
             arena,
+            w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers::resolve(gpu),
+            argmax_batch_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch"),
             buf: MtpBuffers {
                 streams: gpu.alloc(streams_bytes)?,
                 normed_streams: gpu.alloc(streams_bytes)?,
@@ -334,6 +355,10 @@ impl Qwen4ExpMtpHead {
                 // writes past the end of the allocation. Measured, not guessed.
                 per_stream: gpu.alloc(hc * h * 2)?,
                 head_scratch: gpu.alloc((hc * h + config.hc_lowrank.max(1)) * 4)?,
+                batch_h_out: gpu.alloc(BATCH_CAP * row)?,
+                batch_streams: gpu.alloc(BATCH_CAP * streams_bytes)?,
+                batch_logits: gpu.alloc(BATCH_CAP * config.vocab_size * 2)?,
+                batch_tok: gpu.alloc(BATCH_CAP * 4)?,
                 logits_stash: gpu.alloc(config.vocab_size * 2)?,
             },
             // Atlas's offset-from-1 rms_norm, NOT V4's `rms_norm_vanilla`:
@@ -418,6 +443,86 @@ impl Qwen4ExpMtpHead {
     /// the body's own state, not the target's.
     pub fn draft_streams(&self) -> DevicePtr {
         self.arena.hc_streams()
+    }
+
+    /// Whether `draft_tokens_batched` can run: an NVFP4 head to batch over
+    /// (the EXL3 trellis head is scored one row at a time by its own
+    /// `project_draft` and is not batched here), the batchm GEMV family, and
+    /// the batched argmax kernel.
+    pub fn batch_ready(&self) -> bool {
+        self.lm_head_exl3.is_none()
+            && self.lm_head_nvfp4.is_some()
+            && self.w4a16_batchm.has_base()
+            && self.argmax_batch_k.0 != 0
+    }
+
+    pub fn batch_cap(&self) -> usize {
+        BATCH_CAP
+    }
+
+    /// Staged draft-hidden row `i` — pass as `draft_hidden`'s `h_out`.
+    pub fn batch_h_out_row(&self, i: usize, hidden: usize) -> DevicePtr {
+        self.buf.batch_h_out.offset(i * hidden * 2)
+    }
+
+    /// Parked draft-highway row `i` (FP32, `hc_mult * hidden` per row).
+    pub fn batch_streams_row(&self, i: usize, hc_mult: usize, hidden: usize) -> DevicePtr {
+        self.buf.batch_streams.offset(i * hc_mult * hidden * 4)
+    }
+
+    /// Score `n` staged draft hiddens with ONE LM-head pass and ONE batched
+    /// argmax, returning their token ids from a single D2H.
+    ///
+    /// The per-sequence `draft_token` streams the full-vocab NVFP4 head
+    /// (~318 MB at this vocab) and drains the queue once PER DRAFT; at C=4,
+    /// DRAFTS=2 that is 8 head reads and 8 drains a step for a weight that is
+    /// the same for every sequence. Chunked at the batchm family's width.
+    pub fn draft_tokens_batched(
+        &self,
+        n: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        anyhow::ensure!(n >= 1 && n <= BATCH_CAP, "draft_tokens_batched: n={n} (cap {BATCH_CAP})");
+        let vocab = ctx.config.vocab_size;
+        let h = ctx.config.hidden_size;
+        let w = self.lm_head_nvfp4.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("draft_tokens_batched: no NVFP4 lm_head (EXL3 head is not batched)")
+        })?;
+        let mut off = 0usize;
+        while off < n {
+            let take = (n - off).min(8);
+            let k = self.w4a16_batchm.kernel(take as u32);
+            anyhow::ensure!(k.0 != 0, "draft_tokens_batched: no batchm tier for {take} rows");
+            ops::w4a16_gemv_batchm(
+                ctx.gpu,
+                k,
+                self.buf.batch_h_out.offset(off * h * 2),
+                w,
+                self.buf.batch_logits.offset(off * vocab * 2),
+                take as u32,
+                vocab as u32,
+                h as u32,
+                stream,
+            )?;
+            off += take;
+        }
+        ops::argmax_bf16_batch(
+            ctx.gpu,
+            self.argmax_batch_k,
+            self.buf.batch_logits,
+            self.buf.batch_tok,
+            vocab as u32,
+            n as u32,
+            vocab as u32,
+            stream,
+        )?;
+        let mut b = vec![0u8; n * 4];
+        ctx.gpu.copy_d2h(self.buf.batch_tok, &mut b)?;
+        Ok(b
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect())
     }
 
     /// Turn the draft's final hidden into a token id, entirely inside the
