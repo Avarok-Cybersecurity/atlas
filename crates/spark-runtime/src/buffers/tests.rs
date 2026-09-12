@@ -294,3 +294,89 @@ fn test_buffer_sizes_decode_meta_widening() {
     let max_blocks = 4096 / 16 + 1;
     assert!(s192.scratch >= 32768 + 24 * 192 + 192 * max_blocks * 4);
 }
+
+// ── Row-wise FP8 GDN prefill BF16-weight slab (#917) ──────────────────────
+//
+// H100, 2026-09-11, `Qwen/Qwen3.8-27B-FP8`: the `ATLAS_FP8_ROWWISE` GDN arms
+// dequantised their per-row FP8 weights to BF16 through a `gpu.alloc` memoised
+// by weight pointer — `167772160` B per layer with NO entry here, so
+// `--gpu-memory-utilization` could not see it and a 28-token prefill died at
+// layer 36 with `cuMemAlloc_v2 failed: status 2`. These pin the entry that
+// replaced it: present IFF the lever is armed, and exact at the 27B geometry.
+//
+// The lever is passed in rather than set: `set_var` is process-global and
+// unsafe, and would race every other test in this binary.
+
+/// `Qwen/Qwen3.8-27B-FP8` at the shapes `kernels/gb10/qwen3.8-27b/MODEL.toml`
+/// declares (hidden 5120, 64 layers on a 4-cycle → 48 GDN), plus the GDN head
+/// geometry `ModelConfig` reads from the checkpoint's own `config.json`
+/// (16x128 key heads, 48x128 value heads). Same fixture as
+/// `weight_loader::qwen35_dense::predicted_residency_tests::qwen38_27b`.
+fn qwen38_27b() -> ModelConfig {
+    use atlas_core::config::LayerType;
+    let mut c = ModelConfig::qwen3_next_80b_nvfp4();
+    c.hidden_size = 5120;
+    c.num_hidden_layers = 64;
+    c.linear_num_key_heads = 16;
+    c.linear_key_head_dim = 128;
+    c.linear_num_value_heads = 48;
+    c.linear_value_head_dim = 128;
+    c.full_attention_interval = 4;
+    c.layer_types = (0..64)
+        .map(|i| {
+            if (i + 1) % 4 == 0 {
+                LayerType::FullAttention
+            } else {
+                LayerType::LinearAttention
+            }
+        })
+        .collect();
+    c
+}
+
+#[test]
+fn rowwise_bf16_slab_is_sized_only_when_the_lever_is_armed() {
+    let cfg = qwen38_27b();
+    assert_eq!(
+        ssm_rowwise_w_bf16_bytes_for(&cfg, false),
+        0,
+        "an unarmed ATLAS_FP8_ROWWISE must leave the default recipe's ledger \
+         byte-identical — the arena allocates NULL for a 0-byte entry"
+    );
+
+    // in_proj_qkvz: (16*128 q + 16*128 k + 48*128 v + 48*128 z) = 16384 rows
+    // x 5120 hidden x 2 B = 167772160 — the exact per-layer figure the H100
+    // OOM receipt names. out_proj: [5120, 48*128] x 2 B = 62914560.
+    assert_eq!(cfg.ssm_qkvz_size(), 16_384);
+    let qkvz = 16_384 * 5_120 * 2;
+    let out_proj = 5_120 * (48 * 128) * 2;
+    assert_eq!(qkvz, 167_772_160);
+    assert_eq!(ssm_rowwise_w_bf16_layer_bytes(&cfg), qkvz + out_proj);
+    assert_eq!(cfg.num_ssm_layers(), 48);
+    assert_eq!(
+        ssm_rowwise_w_bf16_bytes_for(&cfg, true),
+        48 * (qkvz + out_proj),
+        "48 GDN layers x (in_proj_qkvz + out_proj) — 10.31 GiB, which is what \
+         the preflight ring fitter now prices instead of discovering at \
+         layer 36"
+    );
+}
+
+/// The entry has to reach `total_bytes()`, because THAT is what preflight's
+/// `headroom::post_load_yardstick` takes as its `arena` term. A field the
+/// sum forgets is exactly as invisible as the `gpu.alloc` it replaced.
+#[test]
+fn rowwise_bf16_slab_is_counted_in_total_bytes() {
+    let cfg = qwen38_27b();
+    let mut sizes = BufferSizes::from_config(&cfg, 64, 4096, 16, 32);
+    // Zeroed first, not assumed zero: `from_config` reads the ambient
+    // environment, and a runner that happens to export ATLAS_FP8_ROWWISE=1
+    // must not turn this into an assertion about nothing.
+    sizes.ssm_rowwise_w_bf16 = 0;
+    let before = sizes.total_bytes();
+    // A SENTINEL, not the real slab size. This test is about the sum, and
+    // reading the sizing function here would let a sizing bug that returns 0
+    // make it vacuously true — which is exactly how a term goes missing.
+    sizes.ssm_rowwise_w_bf16 = 4096;
+    assert_eq!(sizes.total_bytes(), before + 4096);
+}

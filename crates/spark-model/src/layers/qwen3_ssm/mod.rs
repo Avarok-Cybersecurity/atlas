@@ -80,6 +80,17 @@ pub struct Qwen3SsmLayer {
     /// decode keeps the NVFP4 copy.
     qkvz_fp8w_rowwise: Option<Fp8Weight>,
     out_proj_fp8w_rowwise: Option<Fp8Weight>,
+    /// This layer's slice of the LEDGERED row-wise BF16-weight slab
+    /// (`BufferSizes::ssm_rowwise_w_bf16`), or 0 before the first prefill
+    /// through the matching arm carves and fills it. See `rowwise_bf16.rs`
+    /// for the #917 receipt that moved these bytes out of a by-pointer cache
+    /// of `gpu.alloc`s and into the arena.
+    ///
+    /// Per LAYER rather than per weight pointer, because that is what the
+    /// lifetime is: the slab is the arena's, and the arena outlives every
+    /// prefill this layer runs.
+    qkvz_rowwise_bf16: std::sync::atomic::AtomicU64,
+    out_proj_rowwise_bf16: std::sync::atomic::AtomicU64,
     /// Tier-1c keep-packed ternary Q2_0 fused in_proj_qkvz (`ATLAS_GGUF_NATIVE_Q2`).
     /// [Q|K|V|Z] rows byte-concatenated from packed `in_proj_qkv` (V-region
     /// row-permuted) + `in_proj_z` (row-permuted) at load, so the 2-bit weight is
@@ -399,6 +410,7 @@ mod kernel_select;
 mod lora;
 mod prefill_out_w8a8;
 mod prefill_w8a8;
+mod rowwise_bf16;
 mod ssm_forward;
 pub(crate) mod ssm_h_fp16;
 mod trait_decode;
@@ -432,6 +444,9 @@ pub use gdn_flags::{
 #[cfg(test)]
 #[path = "prefill_alloc_tests.rs"]
 mod prefill_alloc_tests;
+#[cfg(test)]
+#[path = "rowwise_alloc_tests.rs"]
+mod rowwise_alloc_tests;
 #[cfg(test)]
 mod tests;
 
