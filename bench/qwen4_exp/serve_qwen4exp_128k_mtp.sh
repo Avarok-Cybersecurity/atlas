@@ -293,6 +293,24 @@ export ATLAS_MTP_EP_BATCH_VERIFY="${ATLAS_MTP_EP_BATCH_VERIFY:-1}"
 # the worker ranks know only the K=3/K=4 commands — so this is the +10% rung of
 # #1026's table, not the +46% one. The rest needs a width-generic EP command.
 export ATLAS_LOOKUP_EP="${ATLAS_LOOKUP_EP:-1}"
+# ── Lookup WIDTH. 3, not the lever's default 7, and the gap is workload-shaped.
+# A lookup step proposes `width` drafts and verifies width+1 rows. On text that
+# repeats verbatim the continuation is nearly always right and wide pays; on
+# agentic text the match is often only PARTIALLY right, and a 7-draft proposal
+# that lands 2 still pays a full 8-row verify and rolls back 5.
+#
+# MEASURED, TP=2 x EP=2, same binary, with the width-generic EP verify command:
+#              copy task      agentic s/turn (3 iters, all 3/3 + 3/3)
+#   width 3      61.20              7.00      46 turns / 325 s
+#   width 7      74.77             13.43      41 turns / 554 s
+#   lookup off   55.28              9.45  (HEAD run, for scale)
+# Width 3 ran MORE turns in LESS wall, so the s/turn gap is not the turn-count
+# noise this battery usually carries. Width 3 is also cheaper: verify pools
+# 1150 MB vs 2286, KV 1.30M vs 1.22M tokens.
+#
+# Set ATLAS_LOOKUP_WIDTH=7 for copy-heavy serving (long verbatim reproduction,
+# diff replay, transcript echo), where it is worth +22% over width 3.
+export ATLAS_LOOKUP_WIDTH="${ATLAS_LOOKUP_WIDTH:-3}"
 
 # ── The #972 gates. Per-process OnceLocks with no cross-rank agreement, so if
 # the two sides disagree the head and worker take different arms with
