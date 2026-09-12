@@ -492,7 +492,48 @@ osl = "320"
 # be re-cut much tighter. Stated here so nobody reads C=8 as well-guarded.
 
 [benchmarks.metrics.c1_aggregate_tok_s]
-min = 17.5
+# ★ RATCHETED 2026-09-11, 17.5 -> 20.4 (effective 20.1 after noise 0.3). This
+# rung is cut ALONE, which the block above says the ladder is not — "every rung
+# cut together". The exception is deliberate and the reason is that only this
+# rung's instrument moved:
+#
+#     C=1  pre-#968  n=47  18.2-20.1      post-#968  n=14  21.2-21.3
+#
+# f9fd8ca43 ("mtp-carry: give the store ticket its own dispenser — sharing the
+# capture counter cost 24% of C=2 decode", #968) stepped the single-stream
+# rungs and left the batched ones where they were. decode-floor records the
+# same step on the same day. Cutting the whole ladder from one post-step
+# calibration would move seven rungs whose LEVEL did not change, on three reps
+# fewer than the 2026-08-30 cut used.
+#
+# The set behind 20.4 — ten consecutive gate runs on this same instrument,
+# dgx2 (spark-43fa), plus the four post-step records already committed:
+#
+#     21.2 21.2 21.2 21.2 21.2 21.2 21.2 21.2 21.3 21.2
+#     n=10  mean 21.21  sigma 0.030  range 21.2-21.3
+#
+# mean - max(3*sigma, 5%) is 20.15, the 5% arm governing exactly as it does for
+# the top four rungs; 20.4/0.3 lands there while leaving `noise` untouched so
+# the ratchet is visible in the bound rather than hidden in the allowance.
+#
+# ★ WHY THE OTHER SEVEN RUNGS ARE NOT CUT HERE, measured rather than assumed,
+# from the same ten runs:
+#
+#   C2   mean 29.75 sigma 1.470 — trimodal; run 10 of this very set read 25.5
+#        after nine in 29.9-31.3. The formula bar (25.34) clears that by 0.6%.
+#        The floor belongs in the gap between modes, where it already is.
+#   C4   mean 49.56 sigma 1.495 — formula bar 45.07 against a current-regime
+#        minimum of 45.4. 0.7% is not a margin.
+#   C8   mean 63.05 sigma 1.609 — the block above defers this rung explicitly
+#        until atlas#812 is root-caused, and nothing here root-caused it.
+#   C16  mean 89.95 sigma 0.206 — looks tight in a fresh set, but its own
+#        history dips to 82.4 with NO regime change, so the formula bar (85.45)
+#        would have failed a run that was healthy. This is the rung that proves
+#        a ten-run set is not a substitute for reading the history.
+#   C32/C64/C128  all clear their formula bars by ~4.5%, but each has only
+#        n=11 committed history and none stepped. ~2.5 tok/s of tightening is
+#        not worth spending that thin a record on; re-cut them with the ladder.
+min = 20.4
 noise = 0.3
 
 [benchmarks.metrics.c2_aggregate_tok_s]
@@ -680,7 +721,32 @@ isls = "512"
 osl = "200"
 
 [benchmarks.metrics.c1_aggregate_tok_s]
-min = 20.0
+# ★ RATCHETED 2026-09-11, 20.0 -> 23.7 (effective 22.75 after noise 0.95),
+# alongside the plain ladder's C=1 rung and for the same reason: this rung's
+# LEVEL moved and the floor did not follow, so 30% of the measured throughput
+# was unguarded.
+#
+#     pre-step   n=7   21.72-23.46
+#     post-step  n=4   24.77-24.86   (committed records)
+#
+# The set behind 23.7 is twelve fresh gate runs on the current instrument,
+# SIX ON EACH BOX, because a one-box set is what this session already got
+# wrong once at this rung's plain-ladder sibling:
+#
+#     dgx1 (spark-256a)  n=6  24.4 24.6 24.6 24.8 24.7 24.7   mean 24.633
+#     dgx2 (spark-43fa)  n=6  25.0 24.8 24.9 24.9 24.8 24.9   mean 24.883
+#     combined           n=12 mean 24.758  sigma 0.161
+#
+# mean - max(3*sigma, 5%) is 23.52, the 5% arm governing. 23.7/0.95 lands at
+# 22.75, i.e. DELIBERATELY BELOW the formula: it keeps 6.8% under the WORST
+# observed run rather than sitting on the mean-derived bar, so a regression
+# has to be real to fail it.
+#
+# ★ What it now catches that 19.05 did not: a regression halving the step
+# lands near 23.3 and FAILS. At the superseded 19.05 a regression could have
+# undone the entire step -- back to the 21.7-23.5 pre-step band -- and still
+# passed, silently.
+min = 23.7
 noise = 0.95
 
 [benchmarks.metrics.c2_aggregate_tok_s]
