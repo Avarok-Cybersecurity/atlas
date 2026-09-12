@@ -1,11 +1,12 @@
 # WIP: Kimi K3 architecture bring-up (do not merge)
 
-Working log for Atlas K3. **Draft only. Do not `/stamp`, `/seal`, or squash-merge this PR.**
-Winning slices are extracted later into atomic certified PRs. See `docs/k3/PRD.md`.
+> **This PR is not expected to merge.** It is a historical working log. The branch will stay messy on purpose — dead-ends, WIP commits, lab comments, half-written modules — until we cut clean topic PRs *off of it*. Do not `/stamp`, `/seal`, squash-merge, or review it as a landing candidate. Reviewers: ignore mergeability; use the conversation as the notebook.
+
+Working log for Atlas K3. **Draft only.** Winning slices are extracted later into atomic certified PRs. See `docs/k3/PRD.md`.
 
 ## Summary
 
-Working log for Kimi K3 architecture bring-up on lab hardware (spark1 / spark2 / 5090). Not mergeable. Architecture is completed at home; rental silicon is a soak after C0–C7.
+Working log for Kimi K3 architecture bring-up on lab hardware (spark1 / spark2 / 5090). **Not a merge candidate. Expected to be historical and messy** until new PRs are opened from this branch. Architecture is completed at home; rental silicon is a soak after C0–C7.
 
 Closes #
 
@@ -68,7 +69,7 @@ Fabric pin (live): `NCCL_SOCKET_IFNAME=enp1s0f1np1` `NCCL_IB_HCA=rocep1s0f1`. `e
 - K3-DECISION: KDA is a new backend, not a GDN/Mamba reuse.
 - K3-DECISION: C1 token-exact reference is `inference-optimization/Kimi-K3-0.40B`. 49M is shape-only.
 - K3-DECISION: Reuse DeepSeek-V4 MXFP4 E8M0 path; do not invent a second stack.
-- K3-DECISION: Umbrella never merges. Extract `feat/k3-*` slices.
+- K3-DECISION: Umbrella never merges. It is historical and messy by design. Extract `feat/k3-*` slices; do not tidy this branch for landing.
 - K3-DECISION: GLM-5.3-Flash KDA geometry *matches* K3's `validate()` numbers (see the 2026-09-10 gap analysis) but that is not permission to copy GDN/Mamba kernels into `kernels/gb10/kimi-k3/`. Adapt only behind goldens.
 - K3-LAB: pin `enp1s0f1np1` / `rocep1s0f1`. Do not copy `start-ep2.sh`'s `enp1s0f0np0` comment.
 
@@ -115,10 +116,10 @@ Lab gates C0–C7. Workspace tests stay green via feature-flag / ignore on **new
 
 ## Notes for reviewers
 
-Do not `/stamp` or `/seal`. Use the conversation as the lab notebook. This PR is a working log; extract atomic certified PRs later.
+**Do not merge this PR.** Do not `/stamp` or `/seal`. Do not expect a clean history, a 500-LoC-clean tree, or a squash. This is a lab notebook that will accumulate messy commits until we open new PRs off of it. Use the conversation as the log. Extract atomic certified PRs later; those are the ones that land.
 
 ## Authorship / CLA
 
-AI-authored working log, per Atlas default. CLA will be checked on extracted topic PRs. **Will not `/stamp` or `/seal` this PR.**
+AI-authored working log, per Atlas default. CLA will be checked on extracted topic PRs. **Will not `/stamp` or `/seal` or merge this PR.**
 
 - [x] I have read and agree to the [Contributor License Agreement](../CLA.md).
