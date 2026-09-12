@@ -49,9 +49,19 @@ pub(super) fn take_lookup_drafts(
     // lookup step on rank 0 moved the Marconi prefix-cache anchors on both
     // ranks of a TP=2 x EP=2 build (Richard's bisect, 2026-09-12). Until
     // that is understood the gate stays single-rank.
+    // ATLAS_LOOKUP_EP=1 lifts the expert-parallelism refusal for measurement.
+    // The gate was closed citing a TP=2 x EP=2 bisect that saw prefix-cache
+    // anchor drift — but that bisect predates the stale-draft fix (drafts were
+    // one position behind, so every one was rejected), and the drift may have
+    // been a symptom of it rather than an independent EP problem. Opt-in, so
+    // the shipped behaviour is unchanged until the anchors are re-checked.
+    // NOTE even with this set, `verify_kn_step` still narrows to K=4 under EP
+    // (the worker ranks know only the K=3/K=4 commands), so the width is
+    // capped at 3 drafts here regardless of ATLAS_LOOKUP_WIDTH.
+    let ep_blocked = ep && std::env::var("ATLAS_LOOKUP_EP").as_deref() != Ok("1");
     if !sched.levers.lookup_drafts
         || dflash
-        || ep
+        || ep_blocked
         || seq.grammar_state.is_some()
         || !WIDE_WIDTHS.contains(&width)
     {

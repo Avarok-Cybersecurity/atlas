@@ -271,6 +271,29 @@ export ATLAS_EP_PROTOCOL="${ATLAS_EP_PROTOCOL:-v2}"
 export ATLAS_HC_BATCH_VERIFY="${ATLAS_HC_BATCH_VERIFY:-1}"
 export ATLAS_MTP_EP_BATCH_VERIFY="${ATLAS_MTP_EP_BATCH_VERIFY:-1}"
 
+# ── Lookup drafts under expert parallelism (#1026). ────────────────────────
+# `lookup_gate` refuses under EP, citing a TP=2 x EP=2 bisect from THIS branch
+# that saw prefix-cache anchor drift. That bisect predates the stale-draft root
+# cause (drafts were one position behind, so every draft was rejected), and the
+# drift looks to have been a symptom of it. Re-checked on the fixed stack:
+#
+#   copy task (the regime the arm is for)   61.88 vs 55.28 tok/s   +11.9%
+#   fresh-text decode C=1                   53.55 vs 53.24         unchanged
+#   agentic, 3 iters                        3/3 + 3/3, 0 errors
+#   ★ anchor disagreements                  0 on BOTH ranks
+#   ★ Marconi intermediate hits             35 on BOTH ranks
+#
+# The Marconi count is the point: the copy task logged ZERO warm restores, so
+# its clean anchors proved nothing. Agentic exercises the path, and the two
+# ranks land on the same hit count as well as zero disagreements.
+#
+# Set here rather than flipping the code default: the drift evidence was
+# qwen4_exp-specific and GLM should not inherit an unmeasured change.
+# ⚠ Width still caps at K=4 under EP — `verify_kn_step` narrows there because
+# the worker ranks know only the K=3/K=4 commands — so this is the +10% rung of
+# #1026's table, not the +46% one. The rest needs a width-generic EP command.
+export ATLAS_LOOKUP_EP="${ATLAS_LOOKUP_EP:-1}"
+
 # ── The #972 gates. Per-process OnceLocks with no cross-rank agreement, so if
 # the two sides disagree the head and worker take different arms with
 # different collective counts — an NCCL spin. Set explicitly on BOTH ranks.
