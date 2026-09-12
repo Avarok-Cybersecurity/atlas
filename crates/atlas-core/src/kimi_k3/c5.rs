@@ -91,9 +91,14 @@ fn c5_twin_mix0_is_skip_and_diverges_from_mix1() {
         return;
     };
     let h = model.graph.hidden;
-    let skip = vec![1.0f32; h];
-    let block = vec![-1.0f32; h];
-    let query = vec![0.25f32; h];
+    // One-hot skip vs one-hot block. Uniform query made softmax collapse to skip
+    // (dot 256 vs -256 at hidden=1024) so mix=1 == mix=0 — degenerate fixture.
+    let mut skip = vec![0.0f32; h];
+    let mut block = vec![0.0f32; h];
+    let mut query = vec![0.0f32; h];
+    skip[0] = 1.0;
+    block[1] = 1.0;
+    query[1] = 1.0;
     let norm = vec![1.0f32; h];
     let sources = [skip.clone(), block];
     let mix0 = attnres_mix(&sources, &query, &norm, EPS, 0.0);
