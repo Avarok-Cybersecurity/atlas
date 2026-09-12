@@ -413,12 +413,32 @@ impl Qwen3SsmLayer {
             return Ok(());
         }
         use super::hc_ffn_dispatch::{HcFfnDispatch, hc_ffn_dispatch};
+        let km_available = self.ffn.can_forward_km(num_tokens as u32);
+        {
+            // Engagement, once per width band. `can_forward_km() == false`
+            // routes 4..=8 rows to `Prefill` — the per-token expert loop over
+            // all 512 experts that made MTP-3 read 14.9 tok/s (#1060) — and
+            // that fallback is SILENT. A K=3 verify is 4 rows at C=1, so a
+            // DRAFTS=3 measurement is uninterpretable without knowing which
+            // arm ran.
+            static SAID: std::sync::Once = std::sync::Once::new();
+            if (4..=8).contains(&num_tokens) {
+                SAID.call_once(|| {
+                    tracing::info!(
+                        num_tokens,
+                        km_available,
+                        "hc small-M FFN at {num_tokens} rows: {}",
+                        if km_available { "Km batched arm" } else { "PREFILL FALLBACK (512-expert loop)" }
+                    );
+                });
+            }
+        }
         match hc_ffn_dispatch(
             num_tokens,
             small_m,
             ctx.gdn_exact_replay,
             self.ffn.exl3_native_moe(),
-            self.ffn.can_forward_km(num_tokens as u32),
+            km_available,
         ) {
             HcFfnDispatch::Single => {
                 let out = self.ffn.forward(rows, ctx, stream)?;
