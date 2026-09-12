@@ -31,9 +31,10 @@
 //! freezes on the amax of everything seen, itself included. The invariant is
 //! preserved by REWRITING the entries written inside the window — the window's
 //! BF16 K/V and slot mappings are staged aside and replayed through the
-//! existing `reshape_and_cache_fp8` kernel at the frozen scale (see
-//! [`staging`] for the full tradeoff). A readiness probe therefore counts
-//! toward the window and can never end it on its own.
+//! existing `reshape_and_cache_fp8` kernel at the frozen scale (see the
+//! private `staging` submodule of this module for the full tradeoff). A
+//! readiness probe therefore counts toward the window and can never end it on
+//! its own.
 //!
 //! Thread safety: uses `parking_lot::Mutex` for interior mutability. The lock
 //! is uncontended (single inference thread) so lock overhead is negligible.
@@ -178,10 +179,10 @@ impl Fp8KvCalibration {
 
     /// Get current scales. Returns (k_scale, v_scale).
     ///
-    /// Inside the window: [`PROVISIONAL_SCALE`], which every read during the
-    /// window also uses — consistent, just coarse. After the freeze: the
-    /// data-derived scale the whole window was requantized to (constant
-    /// thereafter).
+    /// Inside the window: `PROVISIONAL_SCALE` (private to this module), which
+    /// every read during the window also uses — consistent, just coarse. After
+    /// the freeze: the data-derived scale the whole window was requantized to
+    /// (constant thereafter).
     pub fn scales(&self) -> (f32, f32) {
         let inner = self.inner.lock();
         (inner.state.k_scale, inner.state.v_scale)
