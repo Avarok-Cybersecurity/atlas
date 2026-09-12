@@ -10,6 +10,7 @@ use std::ffi::c_void;
 
 mod bf16;
 mod nvfp4;
+mod sfb_parity;
 
 pub(super) const CUDA_MEMCPY_HOST_TO_DEVICE: i32 = 1;
 pub(super) const CUDA_MEMCPY_DEVICE_TO_HOST: i32 = 2;
