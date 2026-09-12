@@ -83,7 +83,7 @@ mod tests {
             heads: 8,
             head_dim: 32,
             conv_kernel: 4,
-            gate_lower_bound: -5.0,
+            gate_lower_bound: Some(-5.0),
             use_full_rank_gate: true,
         };
         let cache = HybridCache::from_graph(&g, &kda);

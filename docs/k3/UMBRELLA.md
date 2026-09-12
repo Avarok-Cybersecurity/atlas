@@ -14,7 +14,7 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | C0, C2–C7 green. **C1 open** (7/8 greedy first-token; p4 0.18-logit). |
+| Phase | C0, C2–C7 green. **C1 open** (7/8 greedy first-token; p4 0.18-logit). Twin-omit KDA gate now FLA unbounded (`None`), not guessed `-5`. |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
 | Last session | 2026-09-12 |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |

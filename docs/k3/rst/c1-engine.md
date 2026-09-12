@@ -54,3 +54,9 @@ HF CUDA last-pos top-2: **996=10.75, 60063=10.3125** (gap 0.44). Close race. Pro
 STOP
 C1 **not green**. First-token sweep 7/8 exact. Only p4 misses: ours 60063=11.01 vs HF 996=10.75 (we have 996 at 10.84). Top-3 set matches {996,60063,528}. HF chunk==recurrent. Margin 0.18. Teacher-force-first then EOS in flight.
 
+TEST NOTES (2026-09-12, gate formula)
+Twin JSON omits `gate_lower_bound`. HF modeling passes `lower_bound=None` → FLA
+`-exp(A_log)*softplus(z+dt_bias)`. CPU was guessing `-5 * sigmoid(exp(A_log)*z)`.
+Parser now leaves 0.0; `kda_from` maps 0.0 → `None`. Production JSON still `-5`.
+Spark2 re-run of `c1_all_prompts_first_generated_token` pending this commit.
+

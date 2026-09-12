@@ -149,8 +149,10 @@ fn overlay_linear_attn(config: &mut ModelConfig, text: &serde_json::Value) -> Re
     }
     match lac.get("gate_lower_bound").and_then(|v| v.as_f64()) {
         Some(v) => config.linear_gate_lower_bound = v as f32,
-        // 0.40B twin omits the key. Production JSON always has -5.0.
-        None => config.linear_gate_lower_bound = -5.0,
+        // Twin omits the key. HF fused_recurrent_kda then gets lower_bound=None
+        // (`-exp(A_log)*softplus`). Leave factory 0.0; kda_from maps that to None.
+        // Production JSON still supplies -5.0. Do not guess.
+        None => {}
     }
     config.use_full_rank_gate = lac
         .get("use_full_rank_gate")
@@ -403,7 +405,10 @@ mod tests {
         assert_eq!(c.num_experts, 8);
         assert_eq!(c.num_experts_per_tok, 2);
         assert_eq!(c.attn_res_block_size, 4);
-        assert_eq!(c.linear_gate_lower_bound, -5.0);
+        assert_eq!(
+            c.linear_gate_lower_bound, 0.0,
+            "twin omits gate_lower_bound; 0.0 means FLA unbounded, not -5"
+        );
         assert_eq!(c.layer_types.last(), Some(&LayerType::FullAttention));
         let kda = c
             .layer_types

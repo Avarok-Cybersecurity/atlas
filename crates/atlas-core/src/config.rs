@@ -341,6 +341,8 @@ pub struct ModelConfig {
     /// KDA forget-gate lower bound (`linear_attn_config.gate_lower_bound`). GLM-5.3 declares
     /// -5.0; it bounds the log-decay `kda_gate` produces, so a defaulted 0.0 would clamp the
     /// decay to a completely different range. Read by the `glm5_next` parser, never guessed.
+    /// K3 production JSON also supplies -5.0. The 0.40B twin omits the key: leave 0.0 and
+    /// map to FLA unbounded (`None`) in `kda_from`.
     #[serde(default)]
     pub linear_gate_lower_bound: f32,
     /// SwiGLU clamp bound (`swiglu_limit`). 0.0 = the model does not clamp.

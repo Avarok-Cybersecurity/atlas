@@ -28,13 +28,13 @@ TEST NOTES
 - Official parse: 93 layers, 69 KDA / 24 MLA, last layer MLA, 896 experts top-16, 2 shared, situ 4/25, attn_res 12, NoPE + output gate, full-rank gate, conv 4, q/kv lora 1536/512, weight_prefix `language_model`. Ran on this Mac: 5/5 atlas-core tests.
 - 1-based HF lists: layers 1–3 KDA, 4 MLA, 93 MLA → 0–2 / 3 / 92.
 - Canonicalise inner `kimi_linear` → `kimi_k3`. Dispatch does **not** alias glm5_next / deepseek_v3.
-- 0.40B twin fixture parses (hidden 1024, 8 layers, 6 KDA, last MLA). Twin omits `gate_lower_bound`; default **-5.0** so C1 can start. Production JSON still supplies the key.
+- 0.40B twin fixture parses (hidden 1024, 8 layers, 6 KDA, last MLA). Twin omits `gate_lower_bound`; parser leaves factory **0.0** and `kda_from` maps that to `None` (FLA unbounded `-exp(A_log)*softplus`). Production JSON still supplies **-5.0**.
 - Dry-run: 48 text classes match TSV; vision ignored under `language_model_only`. spark-model `--lib` does not compile on macOS (`posix_fallocate` / `O_DIRECT` in spark-storage — pre-existing). Those tests ride Linux CI.
 - `load_*` is WIP. C0 is parse + map, not a graph.
 
 BUGS
 #ISSUE
-`inference-optimization/Kimi-K3-0.40B` `linear_attn_config` has no `gate_lower_bound`. Parser defaults -5.0. Recorded so C1 does not treat the default as "read from the twin JSON".
+`inference-optimization/Kimi-K3-0.40B` `linear_attn_config` has no `gate_lower_bound`. Parser does **not** guess `-5.0`. HF `KimiDeltaAttention` then calls `fused_recurrent_kda(..., lower_bound=None)`. Guessing `-5` was a C1 close-race suspect (p4 0.18-logit).
 
 #ISSUE
 spark-model kimi_k3 unit tests cannot run on this Mac (`posix_fallocate`). Closed on spark2 Linux 2026-09-12: **9 passed** (`cargo test -p spark-model --lib kimi_k3`).

@@ -133,7 +133,7 @@ impl K3CpuModel {
             heads: 1,
             head_dim: 2,
             conv_kernel: 4,
-            gate_lower_bound: -5.0,
+            gate_lower_bound: Some(-5.0),
             use_full_rank_gate: true,
         };
         let mla = MlaConfig {
@@ -169,7 +169,7 @@ impl K3CpuModel {
             heads: 2,
             head_dim: 4,
             conv_kernel: 4,
-            gate_lower_bound: -5.0,
+            gate_lower_bound: Some(-5.0),
             use_full_rank_gate: true,
         };
         let mla = MlaConfig {
@@ -207,7 +207,7 @@ impl K3CpuModel {
             heads: 96,
             head_dim: 2,
             conv_kernel: 4,
-            gate_lower_bound: -5.0,
+            gate_lower_bound: Some(-5.0),
             use_full_rank_gate: true,
         };
         let mla = MlaConfig {

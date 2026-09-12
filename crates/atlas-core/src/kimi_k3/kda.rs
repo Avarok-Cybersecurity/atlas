@@ -3,9 +3,10 @@
 //! Kimi K3 KDA CPU reference — a new backend, not GDN / Mamba-2.
 //!
 //! Production geometry: `head_dim=128`, `short_conv_kernel_size=4`,
-//! `use_full_rank_gate=true`, `gate_lower_bound=-5`. Decay stays low-rank
+//! `use_full_rank_gate=true`, `gate_lower_bound=Some(-5)`. Decay stays low-rank
 //! `f_a`/`f_b`; the **output** gate is full-rank `g_proj` (unlike GLM-5.3's
-//! `g_a`/`g_b`).
+//! `g_a`/`g_b`). The 0.40B twin omits `gate_lower_bound`; HF then runs FLA's
+//! unbounded `-exp(A_log)*softplus` path (`None` here).
 //!
 //! Recurrence (decode, prenorm q/k):
 //! ```text
@@ -28,18 +29,19 @@ pub struct KdaConfig {
     pub heads: usize,
     pub head_dim: usize,
     pub conv_kernel: usize,
-    pub gate_lower_bound: f32,
+    /// Production JSON is `-5`. `None` is the FLA default (twin omits the key).
+    pub gate_lower_bound: Option<f32>,
     pub use_full_rank_gate: bool,
 }
 
 impl KdaConfig {
-    /// Official K3 KDA (and the 0.40B twin except head_dim/heads).
+    /// Official K3 KDA. Twin matches except head/heads and omitted `gate_lower_bound`.
     pub fn production() -> Self {
         Self {
             heads: 96,
             head_dim: 128,
             conv_kernel: 4,
-            gate_lower_bound: -5.0,
+            gate_lower_bound: Some(-5.0),
             use_full_rank_gate: true,
         }
     }
@@ -107,21 +109,34 @@ pub fn conv_update(
     y
 }
 
-/// Bounded K3 forget gate: `lower_bound * sigmoid(exp(a_log[h]) * (z + dt_bias))`.
+/// Stable `log(1+exp(x))`.
+fn softplus(x: f32) -> f32 {
+    let ax = x.abs();
+    x.max(0.0) + (-ax).exp().ln_1p()
+}
+
+/// KDA forget-gate in log space (FLA `use_gate_in_kernel`).
+///
+/// * `Some(lb)`: `lb * sigmoid(exp(A_log) * (z + dt_bias))` (production `-5`)
+/// * `None`: `-exp(A_log) * softplus(z + dt_bias)` (0.40B twin / FLA default)
 pub fn bounded_gate(
     z: &[f32],
     dt_bias: &[f32],
     a_log: &[f32],
     heads: usize,
     head_dim: usize,
-    lower_bound: f32,
+    lower_bound: Option<f32>,
 ) -> Vec<f32> {
     let mut out = vec![0.0f32; heads * head_dim];
     for h in 0..heads {
         let decay = a_log[h].exp();
         for d in 0..head_dim {
             let ch = h * head_dim + d;
-            out[ch] = lower_bound * sigmoid(decay * (z[ch] + dt_bias[ch]));
+            let x = z[ch] + dt_bias[ch];
+            out[ch] = match lower_bound {
+                Some(lb) => lb * sigmoid(decay * x),
+                None => -decay * softplus(x),
+            };
         }
     }
     out
@@ -234,7 +249,7 @@ mod tests {
             heads: 1,
             head_dim: 2,
             conv_kernel: 4,
-            gate_lower_bound: -5.0,
+            gate_lower_bound: Some(-5.0),
             use_full_rank_gate: true,
         }
     }
@@ -245,7 +260,23 @@ mod tests {
         assert_eq!(p.head_dim, 128);
         assert_eq!(p.conv_kernel, 4);
         assert!(p.use_full_rank_gate);
-        assert_eq!(p.gate_lower_bound, -5.0);
+        assert_eq!(p.gate_lower_bound, Some(-5.0));
+    }
+
+    #[test]
+    fn omitted_lower_bound_is_neg_exp_a_softplus() {
+        let z = [0.5f32, -0.25];
+        let dt = [0.1, 0.0];
+        let a_log = [0.0f32]; // exp(A_log) = 1
+        let g = bounded_gate(&z, &dt, &a_log, 1, 2, None);
+        let sp = |x: f32| x.max(0.0) + (-x.abs()).exp().ln_1p();
+        assert!((g[0] - (-sp(0.6))).abs() < 1e-6);
+        assert!((g[1] - (-sp(-0.25))).abs() < 1e-6);
+        let g5 = bounded_gate(&z, &dt, &a_log, 1, 2, Some(-5.0));
+        assert!(
+            (g5[0] - g[0]).abs() > 0.1,
+            "safe-gate -5 must diverge from unbounded FLA default"
+        );
     }
 
     #[test]

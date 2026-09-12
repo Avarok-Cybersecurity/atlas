@@ -29,7 +29,9 @@ pub(super) fn kda_from(c: &ModelConfig) -> KdaConfig {
         heads: c.linear_num_key_heads,
         head_dim: c.linear_key_head_dim,
         conv_kernel: c.linear_conv_kernel_dim.max(1),
-        gate_lower_bound: c.linear_gate_lower_bound,
+        // 0.0 is the factory default = JSON omitted. HF then passes
+        // lower_bound=None (unbounded `-exp(A_log)*softplus`). Do not guess -5.
+        gate_lower_bound: (c.linear_gate_lower_bound != 0.0).then_some(c.linear_gate_lower_bound),
         use_full_rank_gate: c.use_full_rank_gate,
     }
 }
