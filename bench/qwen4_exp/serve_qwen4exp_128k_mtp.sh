@@ -131,21 +131,40 @@ DRAFTS="${DRAFTS:-2}"
 # reconstructs a partial accept instead of storing per-token state snapshots.
 ROLLBACK="${ROLLBACK:-snapshot}"
 
-# 🪤 Prefill chunk size. This was pinned at 2048 — inherited from the 32K
-# PROFILING config and never revisited for 128K — while the flag's own help
-# documents 8192 as the default and records "halves chunk count vs 4096,
-# giving ~11% TTFT improvement at 32K with no decode regression on DGX Spark".
-# MEASURED HERE, 128K x 4 EP=2: 8192 is WORSE — cold prefill at 8.3K fell
-# 242.3 -> 217.3 tok/s, and decode was unchanged (C=1 49.8->48.7, C=2
-# 62.1->62.0, C=4 70.3->69.7, all within noise). That is the row-cap
-# interaction: a cap reasoned at one chunk size fires its overflow tier at
-# another. Default stays 2048 until the cap is measured alongside it.
-# At 2048 a 88K prompt is 43 chunks; the serve log steps 2048 tokens per
-# ~9.2 s, i.e. ~222 tok/s, and TTFT dominates everything decode-side at these
-# lengths. Interacts with the MoE row cap (see the exl3 row-cap note: a cap
-# reasoned at one chunk size fires its overflow tier at another), so quote
-# prefill numbers as (chunk, cap), never chunk alone.
-PREFILL_CHUNK="${PREFILL_CHUNK:-2048}"
+# Prefill chunk size. Was pinned at 2048 (inherited from the 32K profiling
+# config), and an early 128K x 4 EP=2 measurement found 8192 WORSE (cold
+# prefill 242 -> 217 tok/s). That result is explained and superseded: the hc
+# prefill path was feeding its whole chunk to hc_small_m_ffn, whose chunked
+# verify arm split it into 3-row fused MoE launches — 684 per GDN layer at
+# 2048, 2731 at 8192 — so a bigger chunk was strictly more of the leak. With
+# the arm capped at 64 rows (ATLAS_HC_FFN_CHUNK_MAX_ROWS) the chunk takes the
+# grouped GEMM and the flag's own help is right again. MEASURED on that binary,
+# TP=2 x EP=2, 128K x 4, same boot recipe otherwise, cold 8K prefill:
+#   2048: 787 tok/s   C=1 53.71   KV 1.79M tokens
+#   8192: 880 tok/s   C=1 53.54   KV 1.64M tokens   (0 errors)
+# The KV cost is the larger prefill scratch; 1.64M is 3x the 4 x 128K need and
+# clears 4 x 256K (1.05M). ATLAS_PLE_MAX_TOKENS (9000) bounds the CHUNK and
+# must stay above this. Still quote prefill numbers as (chunk, cap).
+PREFILL_CHUNK="${PREFILL_CHUNK:-8192}"
+
+# MOE_CUTLASS=1 — single-launch CUTLASS grouped NVFP4 MoE for prefill (gate/up
+# and down, ATLAS_HOLO_MOE_GROUPED_CUTLASS + ATLAS_HOLO_MOE_GROUPED_DOWN).
+# Opt-in, NOT the default, because it is a precision trade, not a free win:
+# the CUTLASS SM120 blockscaled GEMM quantises the BF16 activations to NVFP4
+# on the fly (W4A4; crates/spark-runtime/src/cutlass/gemm.rs), where the
+# default ptrtable kernel keeps them BF16 (W4A16). Measured, same binary,
+# TP=2 x EP=2, gate/up only: cold 8K prefill 787 -> 1052 tok/s (+34%; 1134
+# with PREFILL_CHUNK=8192), but the drafter's acceptance drops p1 0.85 -> 0.83
+# / tok_step 2.56 -> 2.43 with the drafter unchanged — the verify logits
+# moved — and C=1 decode reads 53.7 -> 51.7 for exactly that reason. It also
+# costs ~3.6 GB/rank of SFB tables pre-KV. Greedy open-ended output differs
+# from the W4A16 path (not corrupt; divergent). Turn it on when prefill
+# throughput matters more than matching the BF16-activation numerics.
+MOE_CUTLASS="${MOE_CUTLASS:-0}"
+if [ "$MOE_CUTLASS" = "1" ]; then
+  export ATLAS_HOLO_MOE_GROUPED_CUTLASS=1 ATLAS_HOLO_MOE_GROUPED_DOWN=1
+  export ATLAS_CUTLASS_WORKSPACE_MB="${ATLAS_CUTLASS_WORKSPACE_MB:-512}"
+fi
 
 # 🪤 util RESERVES its whole fraction of TOTAL box memory up front, and the KV
 # pool then expands to fill whatever the weights leave over. 0.65 is the
