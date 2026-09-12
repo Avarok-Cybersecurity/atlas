@@ -324,6 +324,49 @@ fn c1_all_prompts_first_generated_token() {
     );
 }
 
+/// When first-token is a close race, force HF's id and greedy the rest to EOS.
+#[test]
+fn c1_teacher_forced_first_then_eos() {
+    let Some((_model, max_new, rows)) = load_goldens() else {
+        return;
+    };
+    let Some(engine) = twin_engine() else {
+        eprintln!("skip C1 teacher-force: no K3_TWIN");
+        return;
+    };
+    let mut fails = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let split = row.tokens.len() - max_new;
+        let prompt = &row.tokens[..split];
+        let want = until_first_eos(&row.tokens);
+        let hf_first = row.tokens[split];
+        let mut seeded = prompt.to_vec();
+        seeded.push(hf_first);
+        let n_new = want.len().saturating_sub(seeded.len());
+        let got = greedy_decode(&engine, &seeded, n_new, Ablation::default());
+        let got = until_first_eos(&got);
+        if got == want {
+            eprintln!("C1 p{i} teacher-force first OK");
+            continue;
+        }
+        let fork = got
+            .iter()
+            .zip(want.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or(got.len().min(want.len()));
+        fails.push(format!(
+            "p{i} fork@{fork} ours={:?} hf={:?}",
+            got.get(fork),
+            want.get(fork)
+        ));
+    }
+    assert!(
+        fails.is_empty(),
+        "C1 teacher-forced-first until-EOS misses:\n{}",
+        fails.join("\n")
+    );
+}
+
 fn twin_engine() -> Option<K3CpuModel> {
     // 0.40B BF16 safetensors on spark1 (`K3_TWIN`). Missing path skips;
     // a present dir that fails to load fails the test.

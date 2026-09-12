@@ -52,4 +52,5 @@ Prompt 4 `"Once upon a time in a small village,"`:
 HF CUDA last-pos top-2: **996=10.75, 60063=10.3125** (gap 0.44). Close race. Prompts 5–7 not run (old fail-fast).
 
 STOP
-C1 **not green**. 4/8 until-EOS. Next: chunk_kda vs fused_recurrent HF path; do not skip to C7.
+C1 **not green**. First-token sweep 7/8 exact. Only p4 misses: ours 60063=11.01 vs HF 996=10.75 (we have 996 at 10.84). Top-3 set matches {996,60063,528}. HF chunk==recurrent. Margin 0.18. Teacher-force-first then EOS in flight.
+
