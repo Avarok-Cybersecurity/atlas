@@ -31,6 +31,7 @@ const GB10: TargetDefaults = TargetDefaults {
     ssm_batched_recurrent: false,
     decode_split_silu: true,
     ffn_m16_tc: false,
+    attn_m16_tc: false,
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]`.
@@ -45,6 +46,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     ssm_batched_recurrent: true,
     decode_split_silu: true,
     ffn_m16_tc: false,
+    attn_m16_tc: true,
 };
 
 fn with(defaults: &TargetDefaults, env: &[(&str, &str)]) -> TargetLevers {
@@ -285,4 +287,33 @@ fn the_serve_line_names_the_ffn_tensor_core_row() {
     assert!(
         format_levers(&with(&HOPPER, &[("ATLAS_FFN_M16_TC", "1")])).contains("ffn_m16_tc=on (env)")
     );
+}
+
+/// The attention half of the SAME kernel family goes the other way: round 9
+/// cell W measured +5.3% C=16 aggregate, so Hopper declares it ON and an H100
+/// serve with an empty environment runs it.
+#[test]
+fn hopper_arms_the_attention_tensor_core_tiers_by_declaration() {
+    let h = empty(&HOPPER);
+    assert!(h.attn_m16_tc.value && !h.attn_m16_tc.from_env());
+    assert!(!h.ffn_m16_tc.value, "the two rows are independent");
+    assert!(!empty(&GB10).attn_m16_tc.value);
+}
+
+/// `ATLAS_ATTN_M16_TC=0` is the one-variable A/B that pins the parent tiers,
+/// and it reports that it came from the environment.
+#[test]
+fn the_attention_tiers_are_disarmable_from_the_environment() {
+    let off = with(&HOPPER, &[("ATLAS_ATTN_M16_TC", "0")]);
+    assert!(!off.attn_m16_tc.value && off.attn_m16_tc.from_env());
+    assert!(format_levers(&off).contains("attn_m16_tc=off (env)"));
+}
+
+/// The umbrella arms this half too — and cannot disarm a declaration, which is
+/// why it is folded in here and not at the consumer.
+#[test]
+fn the_m16_umbrella_arms_both_halves() {
+    let both = with(&GB10, &[("ATLAS_M16_TC", "1")]);
+    assert!(both.ffn_m16_tc.value && both.attn_m16_tc.value);
+    assert!(both.ffn_m16_tc.from_env() && both.attn_m16_tc.from_env());
 }

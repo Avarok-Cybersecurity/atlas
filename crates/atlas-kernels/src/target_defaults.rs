@@ -88,4 +88,14 @@ pub struct TargetDefaults {
     /// The ATTENTION half of the same kernel wins (`attn_m16_tc`), which is why
     /// this is two rows and not one.
     pub ffn_m16_tc: bool,
+    /// The `w8a16_gemm_m16{,_strided}` tensor-core tiers on the decode Q/K/V
+    /// and o_proj projections (`layers/qwen3_attention/`).
+    ///
+    /// TRUE on hopper: H100 round 9 cell W against cell U, C=16 aggregate
+    /// 235.47 -> 247.85 (+5.26%) and TPOT 53.42 -> 50.01 ms (-6.38%) against a
+    /// 0.15% rep spread; long shape +4.12% / -5.40%. C=1 is 17.87 vs 17.89 ms,
+    /// a measured null, which is correct by construction — the tier is
+    /// restricted to 5..16 rows. Same kernel family as [`Self::ffn_m16_tc`],
+    /// opposite verdict, which is why they are two rows.
+    pub attn_m16_tc: bool,
 }

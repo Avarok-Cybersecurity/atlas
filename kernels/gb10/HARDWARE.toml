@@ -57,3 +57,6 @@ decode_split_silu = true
 # overrides`), so the handle resolves to 0 and the arm declines anyway.
 # Declared explicitly so this file answers what GB10 serves with on its own.
 ffn_m16_tc = false
+# `w8a16_gemm_m16{,_strided}` on the decode Q/K/V and o_proj (#927). OFF: no
+# GB10 receipt, and the kernel is not in this target's tree.
+attn_m16_tc = false

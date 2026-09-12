@@ -75,6 +75,10 @@ decode_split_silu = true
 # and this target does not carry the kernel. A Hopper row is not inherited by
 # resemblance (`tests/target_defaults.rs`).
 ffn_m16_tc = false
+# `w8a16_gemm_m16{,_strided}` on the decode Q/K/V and o_proj (#927). OFF: no
+# B200 receipt. Hopper measures +5.3% here, and a Hopper row is not inherited
+# by resemblance (`tests/target_defaults.rs`).
+attn_m16_tc = false
 
 # ── Kernels this target does NOT reach ────────────────────────────────────
 #

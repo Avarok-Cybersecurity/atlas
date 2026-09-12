@@ -100,6 +100,16 @@ decode_split_silu = true
 # is why this is two rows. `ATLAS_FFN_M16_TC=1` re-runs the A/B;
 # `ATLAS_M16_TC=1` arms both halves, i.e. exactly what round 6 measured.
 ffn_m16_tc = false
+# `w8a16_gemm_m16{,_strided}` on the decode Q/K/V and o_proj (#927). ON. H100
+# round 9, cell W against cell U on the same binary: C=16 aggregate 235.47 ->
+# 247.85 (+5.26%), TPOT 53.42 -> 50.01 ms (-6.38%), against a 0.15% rep
+# spread; long shape +4.12% / -5.40%. C=1 is 17.87 vs 17.89 ms -- a measured
+# null, correct by construction because the tier is 5..16 rows only.
+#
+# SAME KERNEL FAMILY as `ffn_m16_tc` above, opposite verdict, which is the
+# whole reason there are two rows. `ATLAS_ATTN_M16_TC=0` is the one-variable
+# A/B that pins the parent tiers.
+attn_m16_tc = true
 
 # ── Kernels this target OWNS instead of inheriting ─────────────────────────
 #
