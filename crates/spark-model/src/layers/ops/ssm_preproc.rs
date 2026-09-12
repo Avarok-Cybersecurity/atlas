@@ -302,7 +302,7 @@ pub fn dense_gemv_ba_gates(
 /// Grid: (ceil(N/4), M_tokens, 1)  Block: (256, 1, 1)
 ///
 /// `twin` is the Hopper one-CTA-per-token kernel (#928,
-/// [`super::ssm_ba_gates_hopper`]) or `KernelHandle(0)` on every other target.
+/// `ssm_ba_gates_hopper`) or `KernelHandle(0)` on every other target.
 /// The choice is made HERE, once, by [`ba_gates_pick`] — the two kernels take
 /// the same arguments and differ only in their grid, so the call sites do not
 /// branch and cannot disagree about the guards. The twin is BIT-IDENTICAL, so
