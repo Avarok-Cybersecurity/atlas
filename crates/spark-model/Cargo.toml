@@ -295,3 +295,7 @@ required-features = ["cuda", "gpu-examples"]
 [[example]]
 name = "native_fp8_qkv_batch_microtest"
 required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_gemv_hopper_microtest"
+required-features = ["cuda", "gpu-examples"]

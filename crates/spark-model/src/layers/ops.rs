@@ -161,6 +161,13 @@ mod ssm_preproc;
 #[path = "ops/ssm_ssd.rs"]
 mod ssm_ssd;
 pub mod token_overlay;
+/// HOST SIMULATION of the Hopper `w8a16_gemv` override's loop order against the
+/// gb10 kernel's, so a GPU-free `cargo test` still judges the one claim the
+/// device microtest cannot make cheaply: that the UNROLL-wide prefetch did not
+/// reorder the FP32 accumulation every batch oracle in the tree compares to.
+#[cfg(test)]
+#[path = "ops/w8a16_gemv_hopper_tests.rs"]
+mod w8a16_gemv_hopper_tests;
 #[path = "ops/wide_prefill.rs"]
 mod wide_prefill;
 
