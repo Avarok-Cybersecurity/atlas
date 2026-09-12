@@ -106,6 +106,11 @@ fn main() -> Result<()> {
     ops::gdn_prefill_fla(
         g,
         k_wu,
+        // The two Hopper prefill remnant twins (#928): 0 = absent, for the same
+        // reason as the spine handles below — this example diffs ONE spine
+        // against FlashInfer and must keep both legs on the gb10 parents.
+        spark_runtime::gpu::KernelHandle(0),
+        spark_runtime::gpu::KernelHandle(0),
         k_dh,
         spark_runtime::gpu::KernelHandle(0),
         // tcfuse handle: 0 = absent, same reason as the two below.
