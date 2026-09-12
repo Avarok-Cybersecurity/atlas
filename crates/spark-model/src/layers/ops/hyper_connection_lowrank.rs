@@ -25,7 +25,8 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
 use super::hyper_connection_lowrank_rows::{
-    hc_decode_rows_enabled, hc_decode_rows_shape_ok, hc_pre_rows,
+    HC_DEC_MAX_T, hc_decode_rows_enabled, hc_decode_rows_shape_ok, hc_pre_chunk_enabled,
+    hc_pre_rows,
 };
 use crate::layers::qwen3_attention::HcLowRank;
 
@@ -99,6 +100,51 @@ pub fn hc_pre_lowrank(
             /* inject */ true,
             stream,
         );
+    }
+    // T > 8 but still decode-shaped: CHUNK onto the decode-rows arm rather
+    // than fall to the GEMM decomposition. See the module note — same cliff
+    // as the two out_proj arms, same fix, and rows are independent.
+    if !scratch.is_null()
+        && hc_decode_rows_enabled()
+        && hc_pre_chunk_enabled()
+        && num_tokens > HC_DEC_MAX_T
+        && hc_decode_rows_shape_ok(HC_DEC_MAX_T, hidden_size, hc_mult, w.rank as u32)
+    {
+        {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                tracing::info!(
+                    num_tokens,
+                    chunk = HC_DEC_MAX_T,
+                    "hc_pre_lowrank arm: DECODE-ROWS CHUNKED (T > HC_DEC_MAX_T; \
+                     ATLAS_NO_HC_PRE_CHUNK restores the cuBLASLt GEMM)"
+                );
+            });
+        }
+        let h = hidden_size as usize;
+        let hc = hc_mult as usize;
+        let mut off = 0u32;
+        while off < num_tokens {
+            let take = (num_tokens - off).min(HC_DEC_MAX_T);
+            // A ragged tail below the contract's floor would refuse; the
+            // contract admits 1..=8, so every chunk is in range.
+            hc_pre_rows(
+                gpu,
+                streams.offset(off as usize * hc * h * 4),
+                w,
+                y_out.offset(off as usize * h * 2),
+                inj_out.offset(off as usize * hc * 4),
+                scratch,
+                take,
+                hidden_size,
+                hc_mult,
+                norm_eps,
+                /* inject */ true,
+                stream,
+            )?;
+            off += take;
+        }
+        return Ok(());
     }
     if num_tokens <= 64 && !scratch.is_null() {
         // Decode-shaped T: the GEMM decomposition with cuBLASLt for the

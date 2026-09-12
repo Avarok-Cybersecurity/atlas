@@ -18,6 +18,32 @@ use crate::layers::qwen3_attention::HcLowRank;
 /// `ATLAS_HC_DECODE_ROWS=0` restores the cuBLASLt arm (the A/B and rollback
 /// switch). The shape contract below falls back to the existing arms for
 /// anything it does not cover.
+/// `ATLAS_HC_PRE_CHUNK=1` — OPT-IN: chunk T > [`HC_DEC_MAX_T`] onto the
+/// decode-rows arm instead of the cuBLASLt GEMM decomposition.
+///
+/// DEFAULT OFF on a SPLIT result. Same binary, NVFP4 EP=2, 5 reps per arm:
+///
+///     C=1   51.88 chunked vs 49.21   +5.4%  (ranges do not overlap)
+///     C=2   62.13         vs 62.30   -0.3%
+///     C=4   64.62         vs 68.69   -5.9%
+///
+/// It helps C=1 and hurts C=4, and NEITHER theory for it survives the data.
+/// "Re-reading the ~13 MB low-rank weights per chunk costs more than the GEMM
+/// wastes" predicts damage scaling with chunk COUNT — but the verify's 11 rows
+/// (2 chunks) is where it hurts, while the 26-row path (4 chunks) is the only
+/// place it can be helping C=1, since a C=1 verify is 3 rows and never chunks
+/// at all. C=2 should then look like C=1 and does not.
+///
+/// A width threshold fitted to two contradictory points is a guess wearing a
+/// rule's clothes, so this ships off with the measurement recorded instead.
+/// What would actually settle it: identify the 26-row path (unaccounted work
+/// the hc engagement log named, `num_tokens=26`, present even at C=1), and
+/// time hc_pre per width directly rather than inferring from end-to-end.
+pub(crate) fn hc_pre_chunk_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_HC_PRE_CHUNK").as_deref() == Ok("1"))
+}
+
 pub(crate) fn hc_decode_rows_enabled() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("ATLAS_HC_DECODE_ROWS").as_deref() != Ok("0"))
