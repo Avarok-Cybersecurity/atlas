@@ -283,3 +283,122 @@ fn the_block_shape_matches_the_kernel() {
         "two warps per output is what makes the cross-warp sum a PAIR"
     );
 }
+
+// ── the route line's once-flags (H100 round 15 §3.2) ──
+
+/// Replay a serve's verdict order through the once-set and collect the lines it
+/// would actually say. One `bool` per slot — the CPU model of `ba_gates_log`'s
+/// `[Once; BA_GATES_LOG_SLOTS]`.
+fn replay(verdicts: &[(bool, BaGatesPick)]) -> Vec<BaGatesLogSlot> {
+    let mut said = [false; BA_GATES_LOG_SLOTS];
+    let mut lines = Vec::new();
+    for (requested, pick) in verdicts {
+        let Some(slot) = ba_gates_log_slot(pick, *requested) else {
+            continue;
+        };
+        let idx = match slot {
+            BaGatesLogSlot::Twin => BA_GATES_LOG_SLOTS - 1,
+            BaGatesLogSlot::Reject(i) => i,
+        };
+        if !said[idx] {
+            said[idx] = true;
+            lines.push(slot);
+        }
+    }
+    lines
+}
+
+/// THE round-15 defect. On five of six H100 serve cells the log carried
+/// `the Hopper twin is NOT running at M=27` and nothing else for the life of
+/// the process, while nsys showed `dense_gemm_ba_gates_prefill_hopper` running
+/// 48x per prefill: the smoke test's 27-token request tripped a `Once` that
+/// both branches shared. With a flag per branch the SAME call order says both
+/// lines, each once.
+#[test]
+fn the_smoke_tests_m27_can_no_longer_silence_the_twins_line() {
+    let twin = KernelHandle(1);
+    let parent = KernelHandle(2);
+    let pick = |m| ba_gates_pick(true, parent, twin, m, N, K, K, H100_SMS);
+
+    // Smoke test (M=27) first, then 48 prefill layers at M=1168 and 48 more at
+    // M=4576 — the A15 cell's order.
+    let mut order = vec![(true, pick(27))];
+    order.extend((0..48).map(|_| (true, pick(1168))));
+    order.extend((0..48).map(|_| (true, pick(4576))));
+
+    let too_few = BA_GATES_REJECTS
+        .iter()
+        .position(|r| *r == BA_GATES_TOO_FEW_TOKENS)
+        .expect("the floor is in the slot table");
+    assert_eq!(
+        replay(&order),
+        vec![BaGatesLogSlot::Reject(too_few), BaGatesLogSlot::Twin],
+        "both branches say their line exactly once, in arrival order"
+    );
+
+    // And the nsys leg's order (warmup prefill first) says the same two lines.
+    let mut reversed = vec![(true, pick(1168))];
+    reversed.push((true, pick(27)));
+    assert_eq!(
+        replay(&reversed),
+        vec![BaGatesLogSlot::Twin, BaGatesLogSlot::Reject(too_few)],
+    );
+}
+
+/// Every guard the reject function can return owns a DISTINCT slot, so no two
+/// refusals can silence each other either. Driven through `ba_gates_pick` so a
+/// new guard string that never reached [`BA_GATES_REJECTS`] fails here.
+#[test]
+fn every_reject_reason_has_its_own_log_slot() {
+    let twin = KernelHandle(1);
+    let parent = KernelHandle(2);
+    let m = 4576u32;
+    let reachable = [
+        ba_gates_pick(true, parent, KernelHandle(0), m, N, K, K, H100_SMS),
+        ba_gates_pick(true, parent, twin, m, 0, K, K, H100_SMS),
+        ba_gates_pick(true, parent, twin, m, N, 5124, 5124, H100_SMS),
+        ba_gates_pick(true, parent, twin, m, N, K, K - 8, H100_SMS),
+        ba_gates_pick(true, parent, twin, 27, N, K, K, H100_SMS),
+    ];
+    let mut slots: Vec<BaGatesLogSlot> = reachable
+        .iter()
+        .map(|p| {
+            ba_gates_log_slot(p, true).unwrap_or_else(|| {
+                panic!(
+                    "guard {:?} has no log slot — add it to BA_GATES_REJECTS",
+                    p.reject
+                )
+            })
+        })
+        .collect();
+    let before = slots.len();
+    slots.sort_by_key(|s| match s {
+        BaGatesLogSlot::Twin => usize::MAX,
+        BaGatesLogSlot::Reject(i) => *i,
+    });
+    slots.dedup();
+    assert_eq!(
+        slots.len(),
+        before,
+        "two guards share a once-flag: {slots:?}"
+    );
+    assert_eq!(BA_GATES_LOG_SLOTS, BA_GATES_REJECTS.len() + 1);
+}
+
+/// The lever being OFF is an answer, not a refusal: no line, on any target.
+/// Every non-Hopper build takes this branch on every launch.
+#[test]
+fn a_lever_that_was_never_requested_says_nothing() {
+    let pick = ba_gates_pick(
+        false,
+        KernelHandle(2),
+        KernelHandle(1),
+        4576,
+        N,
+        K,
+        K,
+        H100_SMS,
+    );
+    assert_eq!(pick.reject, Some("not requested"));
+    assert_eq!(ba_gates_log_slot(&pick, false), None);
+}
