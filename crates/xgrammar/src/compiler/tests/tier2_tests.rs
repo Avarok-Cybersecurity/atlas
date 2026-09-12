@@ -181,3 +181,49 @@ fn compile_top_k_masks_empty_vocab_warms_nothing() {
         .unwrap();
     assert_eq!(cg.compile_top_k_masks(5), 0);
 }
+
+#[test]
+fn parallel_prewarm_preserves_every_selected_mask() {
+    // One optimized grammar fixes FSM numbering; both compiles have fresh
+    // caches, so equality cannot pass by reusing the reference's masks.
+    let grammar = optimized("root ::= \"yes\" | \"no\" | \"abc\"\n");
+    let info = small_tokenizer();
+    let serial = compile_optimized_grammar(grammar.clone(), &info, 1, None);
+    let parallel = compile_optimized_grammar(grammar, &info, 4, None);
+    assert_eq!(
+        serial.compile_top_k_masks(512),
+        parallel.compile_top_k_masks(512)
+    );
+    assert_eq!(
+        *serial.inner().mask_cache.lock().unwrap(),
+        *parallel.inner().mask_cache.lock().unwrap(),
+        "parallel preparation changed a selected state or adaptive mask"
+    );
+}
+
+#[test]
+fn already_warm_masks_schedule_no_worker_jobs() {
+    let c = compiler(4);
+    let cg = c
+        .compile_grammar_from_ebnf("root ::= \"yes\" | \"no\"\n", "root")
+        .unwrap();
+    let selected_count = cg.compile_top_k_masks(512);
+    let selected: Vec<_> = cg
+        .inner()
+        .mask_cache
+        .lock()
+        .unwrap()
+        .keys()
+        .map(|state| (1, *state, state.rule_id == cg.grammar().root_rule_id()))
+        .collect();
+    assert!(!selected.is_empty());
+    assert!(
+        cg.uncached_masks(&selected).is_empty(),
+        "warm masks would still spawn worker jobs"
+    );
+    assert_eq!(
+        cg.compile_top_k_masks(512),
+        selected_count,
+        "selected count changed on a warm request"
+    );
+}
