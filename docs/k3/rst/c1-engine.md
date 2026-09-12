@@ -32,5 +32,12 @@ BUGS
 #BUG
 C1 **not green**. CPU KDA/MLA/AttnRes graph does not match HF even at the first generated token. Degenerate argmax loop after ~20 tokens. Do not call this a K3 decode.
 
+TEST NOTES (2026-09-12, after `e0aab722c`)
+spark2 `c1_prompt0_first_token_top8` + `c1_prompt0_first_eight_generated`: **PASS** (28.5 s).
+- last-pos argmax=**1459** matches HF first generated; 387 is second (top-8 includes 387 at rank 8).
+- first-8 generated `[1459, 387, 1495, 2189, 261, 56207, 1765, 413]` match goldens.
+
+Full 8×128 greedy still running (`c1_greedy_vs_hf_goldens_skip_if_missing`).
+
 STOP
-Charter complete for "does the CPU engine lock to HF". Answer: no. Next: first-token logit dump vs HF `language_model`, then KDA recurrence vs `fla.ops.kda`.
+First-token / first-8 charter **complete (green)**. Full 128-token C1 still open until spark2 finishes.
