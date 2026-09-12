@@ -688,6 +688,27 @@ pub trait Model: Send + Sync {
         stream: u64,
     ) -> Result<[u32; 4]>;
 
+    /// K=N verify for `tokens.len()` rows (1 verified + N-1 drafts), the
+    /// width-generic entry of the K-row verify (#1060). Returns one argmax
+    /// per row. Default: the K=3 and K=4 graphed paths; any other width is an
+    /// error unless the model overrides (the Flash-Next highway verify does).
+    fn decode_verify_graphed_kn(
+        &self,
+        tokens: &[u32],
+        seq: &mut SequenceState,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        match tokens.len() {
+            3 => Ok(self
+                .decode_verify_graphed_k3(&[tokens[0], tokens[1], tokens[2]], seq, stream)?
+                .to_vec()),
+            4 => Ok(self
+                .decode_verify_graphed_k4(&[tokens[0], tokens[1], tokens[2], tokens[3]], seq, stream)?
+                .to_vec()),
+            k => anyhow::bail!("decode_verify_graphed_kn: no verify path at K={k} rows on this model"),
+        }
+    }
+
     /// Whether [`Self::decode_verify_batched`] can run for `ks.len()`
     /// sequences at `ks[i]` verify rows each (one more than that sequence's
     /// draft count; the K-vs-batch ladder passes 2..=4, and D-Cut makes the

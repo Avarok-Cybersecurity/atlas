@@ -8,6 +8,9 @@ pub(super) enum HcFfnDispatch {
     K2,
     K3,
     NativeBatched,
+    /// Rows 4..=8 through the FFN's K=m arm (dense batched GEMV, or the MoE
+    /// batchn kernels of #1060) when the component reports it available.
+    Km,
     Prefill,
 }
 
@@ -16,6 +19,7 @@ pub(super) fn hc_ffn_dispatch(
     small_m: bool,
     exact_replay: bool,
     native_exl3: bool,
+    km_available: bool,
 ) -> HcFfnDispatch {
     match rows {
         1 if small_m => HcFfnDispatch::Single,
@@ -24,6 +28,7 @@ pub(super) fn hc_ffn_dispatch(
         // Four rows previously fell through to sorted-expert prefill,
         // bypassing the replay router and stable single-token split-K plan.
         4 if small_m && exact_replay && native_exl3 => HcFfnDispatch::NativeBatched,
+        4..=8 if small_m && km_available => HcFfnDispatch::Km,
         _ => HcFfnDispatch::Prefill,
     }
 }
@@ -35,7 +40,7 @@ mod tests {
     #[test]
     fn four_row_native_replay_uses_decode_experts() {
         assert_eq!(
-            hc_ffn_dispatch(4, true, true, true),
+            hc_ffn_dispatch(4, true, true, true, false),
             HcFfnDispatch::NativeBatched
         );
     }
@@ -46,7 +51,7 @@ mod tests {
             for replay in [false, true] {
                 for native in [false, true] {
                     assert_eq!(
-                        hc_ffn_dispatch(rows, false, replay, native),
+                        hc_ffn_dispatch(rows, false, replay, native, false),
                         HcFfnDispatch::Prefill
                     );
                     let old = match rows {
@@ -56,10 +61,25 @@ mod tests {
                         _ => HcFfnDispatch::Prefill,
                     };
                     if !(rows == 4 && replay && native) {
-                        assert_eq!(hc_ffn_dispatch(rows, true, replay, native), old);
+                        assert_eq!(hc_ffn_dispatch(rows, true, replay, native, false), old);
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn km_arm_takes_rows_four_to_eight_when_available() {
+        for rows in 4..=8 {
+            assert_eq!(hc_ffn_dispatch(rows, true, false, false, true), HcFfnDispatch::Km);
+            assert_eq!(hc_ffn_dispatch(rows, false, false, false, true), HcFfnDispatch::Prefill);
+        }
+        assert_eq!(hc_ffn_dispatch(9, true, false, false, true), HcFfnDispatch::Prefill);
+        assert_eq!(hc_ffn_dispatch(3, true, false, false, true), HcFfnDispatch::K3);
+        // Native EXL3 replay keeps its four-row arm ahead of Km.
+        assert_eq!(
+            hc_ffn_dispatch(4, true, true, true, true),
+            HcFfnDispatch::NativeBatched
+        );
     }
 }
