@@ -32,5 +32,10 @@ BUGS
 #ISSUE
 Umbrella C7 (spark1+spark2 == spark1 single-GPU tokens) stays open. Dual-node known-bad is still kill rank 1 mid-decode.
 
+TEST NOTES (spark1+spark2, 2026-09-12)
+`docs/k3/scripts/c7_dummy_tp2_nccl.py` in `dspark-vllm-gx10` `--network host`, RoCE pin `enp1s0f1np1` / `rocep1s0f1`.
+- Clean: `tp1 == tp2` greedy 8 after prompt `[1,2,3,4]` (`MATCH True`).
+- Known-bad `C7_DROP_RANK=1`: `tp2` diverged (`DROP True`).
+
 STOP
-In-process charter complete: TP=1 vs TP=2 tokens match and the rank-1 drop diverges. Spark1+spark2 parked.
+Dual-node dummy C7 **green**. Not a full K3 graph TP. Kill-rank-1-mid-decode still a follow-up, not required to check the dummy-token box.
