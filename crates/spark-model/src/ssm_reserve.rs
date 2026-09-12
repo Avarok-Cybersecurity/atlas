@@ -1,48 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! SSOT for the Phase-C decode-rollback ring depth.
+//! SSOT for the SSM/linear-attention GPU reserve terms.
 //!
-//! Two call sites MUST agree on this number or a serve either
-//! under-reserves (runtime CUDA alloc failure after weights load) or
-//! over-reserves (preflight refuses batch sizes the runtime could fund):
+//! Every term here is computed TWICE — once by `spark-server`'s
+//! `preflight_reserve` before the weights load, once by the allocating call
+//! site (`SsmStatePool::new`, `TransformerModel::new`) after — and the two
+//! MUST agree or a serve either under-reserves (runtime CUDA alloc failure)
+//! or over-reserves (preflight refuses a configuration the runtime could
+//! fund). Each function below is the one place that decision is made.
 //!
-//! * `spark-server` `preflight_reserve` — sizes the SSM-snapshot GPU
-//!   reservation before weights load;
-//! * `TransformerModel::new` (`impl_a1.rs`) — allocates the actual ring.
-//!
-//! The ring's ONLY writer (scheduler `snapshot_boundary_if_ssm`) and reader
-//! (content-loop `rollback_to_boundary`) live on the PLAIN decode path — the
-//! speculative path does its rejection rollback through the verify snapshot,
-//! never this ring. Under `--speculative` the ring is unreachable, and it is
-//! NOT cheap: 8 slots × max_batch × the full SSM blob (27B: 158.9 MB) is
-//! ~19 GB at batch 16 and ~38 GB at batch 32. Reserving it unconditionally
-//! while the runtime skipped it capped the native batch at ~20 on GB10
-//! (SSM reserve 75.2 GB vs an 85.2 GB budget at util 0.70).
-//!
-//! Env contract (read HERE and nowhere else):
-//!
-//! * `ATLAS_SSM_DECODE_RING=1` force-allocates the ring even under spec
-//!   (mixed workloads whose grammar-bound sequences fall to plain decode and
-//!   should keep loop re-steer); `=0` force-disables it even without spec.
-//! * `ATLAS_DISABLE_WATCHDOGS=1|true` (trimmed, case-insensitive — mirrors
-//!   spark-server's `parse_disable_watchdogs`): the ring's only reader can
-//!   never fire, so the ring is skipped.
+//! The Phase-C decode-rollback ring DEPTH — its publication cell, the
+//! `ATLAS_SSM_DECODE_RING` / `ATLAS_DISABLE_WATCHDOGS` contract and the #915
+//! auto-fit — lives in the `decode_ring` sibling module and is re-exported
+//! here, so every existing `ssm_reserve::decode_rollback_ring_slots` path is
+//! unchanged.
 
-/// Outcome of the ring-depth decision.
-///
-/// `skip_reason` is `Some` only for the IMPLICIT skip (speculative decode /
-/// watchdogs off) — never for an explicit `ATLAS_SSM_DECODE_RING=0`
-/// override — so the allocating call site can log the savings once.
-pub struct DecodeRingDecision {
-    pub slots: usize,
-    pub skip_reason: Option<&'static str>,
-}
+mod decode_ring;
+pub use decode_ring::{
+    DECODE_RING_FIT_LADDER, DecodeRingDecision, decode_rollback_ring_slots,
+    decode_rollback_ring_slots_with, fit_decode_ring_slots, parse_decode_ring_slots,
+    published_decode_ring_slots, set_decode_ring_slots, watchdogs_disabled_from_value,
+};
 
 /// Number of SSM-pool slots the MTP/DFlash VERIFY state pools (per-token
 /// intermediates + pre-verify checkpoints) must cover.
 ///
 /// Three call sites MUST agree on this number (same contract as the decode
-/// ring above):
+/// ring in `decode_ring`):
 ///
 /// * `spark-server` `preflight_reserve` — sizes the pre-load GPU reserve;
 /// * `SsmStatePool::new` — allocates the intermediate/checkpoint pools;
@@ -425,71 +409,6 @@ pub fn ssm_replay_ring_bytes(
     mtp_state_slots: usize,
 ) -> usize {
     mtp_state_slots * k_ceiling.saturating_sub(1) * num_ssm_layers * row_bytes
-}
-
-/// Decide the per-sequence decode-rollback ring depth.
-///
-/// `use_speculative` MUST be the same flag `factory::build_model` receives
-/// (`--speculative || --dflash` as plumbed by spark-server) at every call
-/// site, or preflight and allocation diverge.
-pub fn decode_rollback_ring_slots(
-    num_ssm_layers: usize,
-    use_speculative: bool,
-) -> DecodeRingDecision {
-    let watchdogs_value = std::env::var("ATLAS_DISABLE_WATCHDOGS").ok();
-    let watchdogs_disabled = watchdogs_disabled_from_value(watchdogs_value.as_deref());
-    let ring_override = std::env::var("ATLAS_SSM_DECODE_RING").ok();
-    decode_rollback_ring_slots_with(
-        num_ssm_layers,
-        use_speculative,
-        ring_override.as_deref(),
-        watchdogs_disabled,
-    )
-}
-
-fn watchdogs_disabled_from_value(value: Option<&str>) -> bool {
-    value
-        .map(|v| {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true"
-        })
-        .unwrap_or(false)
-}
-
-fn decode_rollback_ring_slots_with(
-    num_ssm_layers: usize,
-    use_speculative: bool,
-    ring_override: Option<&str>,
-    watchdogs_disabled: bool,
-) -> DecodeRingDecision {
-    if num_ssm_layers == 0 {
-        return DecodeRingDecision {
-            slots: 0,
-            skip_reason: None,
-        };
-    }
-    match ring_override {
-        Some("1") => DecodeRingDecision {
-            slots: atlas_kernels::DECODE_ROLLBACK_RING_SLOTS,
-            skip_reason: None,
-        },
-        Some("0") => DecodeRingDecision {
-            slots: 0,
-            skip_reason: None,
-        },
-        _ if use_speculative || watchdogs_disabled => DecodeRingDecision {
-            slots: 0,
-            skip_reason: Some(if use_speculative {
-                "speculative decode active"
-            } else {
-                "watchdogs disabled"
-            }),
-        },
-        _ => DecodeRingDecision {
-            slots: atlas_kernels::DECODE_ROLLBACK_RING_SLOTS,
-            skip_reason: None,
-        },
-    }
 }
 
 /// Outcome of the Marconi snapshot-slot decision.
