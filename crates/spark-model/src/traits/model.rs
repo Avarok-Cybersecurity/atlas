@@ -205,6 +205,33 @@ pub trait Model: Send + Sync {
         })
     }
 
+    /// Where this model would split the FINAL prefill chunk of `tokens` to
+    /// land an SSM tail checkpoint, if it would split it at all.
+    ///
+    /// `TransformerModel::prefill_chunk_dispatch` splits the last chunk once,
+    /// one KV block below the last block boundary under the prompt length, so
+    /// the snapshot it saves there is `<=` whatever a later turn's
+    /// block-floored prefix match lands on. The split is UNCONDITIONAL on
+    /// hybrid-SSM models with the prefix cache active, because making the
+    /// forward's shape depend on radix contents made cold and warm answers
+    /// differ at temperature 0 (BF16 accumulation is not associative).
+    ///
+    /// The scheduler needs the same cut to keep that invariant when it batches
+    /// fresh prompts: a wave member handed `is_last_chunk = true` over the
+    /// whole prompt would take a one-pass shape inside the batched path (which
+    /// does not split), while the per-stream path takes the two-pass shape.
+    /// Asking the model where it would cut lets the scheduler pre-split, so
+    /// batched and per-stream see identical per-sequence geometry — and the
+    /// short tails of a co-arriving burst share a `chunk_start` and batch into
+    /// ONE forward instead of N standalone 25-token passes (#927: 11.7% of
+    /// prefill GPU time for 2.1% of the tokens).
+    ///
+    /// Returns `None` when the model would not split (no SSM layers, no prefix
+    /// cache, prompt too short, vision pads, `ATLAS_NO_TAIL_SPLIT=1`).
+    fn prefill_tail_cut(&self, _tokens: &[u32]) -> Option<usize> {
+        None
+    }
+
     /// Process N concurrent prefill chunks in one forward pass (same weight
     /// load amortised across N streams). The default implementation falls
     /// back to a per-stream loop calling `prefill_chunk` — implementors that

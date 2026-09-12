@@ -56,6 +56,8 @@ mod prefill_a_step;
 mod prefill_a_step_params;
 mod prefill_b_step;
 #[cfg(test)]
+mod prefill_fallback_tests;
+#[cfg(test)]
 mod prefill_fifo_tests;
 mod repetition;
 mod rollback;
@@ -74,6 +76,8 @@ mod swap_out_tests;
 mod teardown;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod test_support_prefill;
 #[cfg(test)]
 mod think_skip_tests;
 mod types;
@@ -1020,7 +1024,16 @@ pub fn run(
         // on this same iteration. Placed here rather than in a decode step
         // because the MTP/speculative path does not run `process_decode_logits`.
         enforce_request_deadlines(&mut active);
-        retire_finished_sequences(&*model, &mut active, sched.limits.max_seq_len);
+        // Slots owned by streams still in `prefilling` are NOT the active
+        // set's to reuse — Phase 2 compaction must route around them (#1002,
+        // `mod_helpers::slot_targets`).
+        let reserved_slots = prefilling_reserved_slots(&prefilling);
+        retire_finished_sequences(
+            &*model,
+            &mut active,
+            &reserved_slots,
+            sched.limits.max_seq_len,
+        );
         sched.timing.record(mtp_timing::Phase::LoopRetire, t_loop);
 
         // ── Swap-in: resume swapped sequences when blocks free up ──

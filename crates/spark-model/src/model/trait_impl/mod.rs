@@ -188,6 +188,28 @@ impl Model for TransformerModel {
         Ok(out)
     }
 
+    /// Report the tail-checkpoint cut `prefill_chunk_dispatch` would apply to
+    /// this prompt's final chunk, so the scheduler can pre-split and keep the
+    /// batched and per-stream geometries identical (#927). The predicate and
+    /// the arithmetic are the dispatcher's own — see
+    /// `prefill_b::tail_split_cut`.
+    fn prefill_tail_cut(&self, tokens: &[u32]) -> Option<usize> {
+        if prefill_b::tail_split_disabled()
+            || self.config.num_ssm_layers() == 0
+            || !self.ssm_snapshots.is_enabled()
+            || !self.prefix_cache.is_active()
+            || self.tokens_have_vision_pad(tokens)
+        {
+            return None;
+        }
+        let bs = self.kv_cache.lock().block_size();
+        let total = tokens.len();
+        let cut = prefill_b::tail_split_cut(total, bs);
+        // `prefill_chunk_dispatch` splits only when `cut > chunk_start && cut <
+        // total`, and the scheduler only asks about a chunk starting at 0.
+        (cut > 0 && cut < total).then_some(cut)
+    }
+
     /// Q12 Phase 4b override. The concrete dispatcher routes ineligible
     /// batches to its sequential path before state mutation. Errors from an
     /// admitted kernel batch must propagate: retrying sequentially can

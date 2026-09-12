@@ -302,9 +302,18 @@ pub(super) fn enforce_request_deadlines(active: &mut [ActiveSeq]) {
 /// non-contiguous w.r.t. `slot_idx` — pre-allocated slots stay valid
 /// in place across the swap_remove, and the per-slot CUDA graph cache
 /// stays warm because the seq never moved.
+///
+/// `reserved_slots` carries the pool slots owned by sequences that are NOT in
+/// `active` — the streams parked in the scheduler's `prefilling` queue, which
+/// claim their slot at admission and hold it across every chunk. They are
+/// invisible to the survivor set, so Phase 2 has to be TOLD about them or it
+/// migrates a survivor onto a live stream's recurrent state (#1002; the
+/// module-level rationale and the round-13 receipt live in
+/// `mod_helpers::slot_targets`).
 pub(super) fn retire_finished_sequences(
     model: &dyn Model,
     active: &mut Vec<ActiveSeq>,
+    reserved_slots: &[usize],
     max_seq_len: usize,
 ) {
     if model.ep_protocol_v2() {
@@ -346,8 +355,27 @@ pub(super) fn retire_finished_sequences(
     }
 
     // Phase 2: compact survivors back into contiguous slots [0..n).
-    compact_survivors_into_range(model, &mut survivors);
+    compact_survivors_into_range(model, &mut survivors, reserved_slots);
     *active = survivors;
+}
+
+/// Pool slots owned by the streams still in the scheduler's `prefilling`
+/// queue. These are live owners that the active set knows nothing about, so
+/// slot compaction must treat them as untouchable — see
+/// `mod_helpers::slot_targets` for the failure they caused (#1002).
+pub(super) fn prefilling_reserved_slots(prefilling: &[PrefillInProgress]) -> Vec<usize> {
+    // The RAII guard is the authority on ownership (`slot_idx` can be the
+    // `usize::MAX` reuse sentinel, or stale after a migration). Fall back to
+    // `slot_idx` only for a sequence with no guard at all — the host-only /
+    // mock construction — and drop the sentinel.
+    prefilling
+        .iter()
+        .filter_map(|p| match p.seq.ssm_slot_idx() {
+            Some(idx) => Some(idx),
+            None if p.seq.slot_idx != usize::MAX => Some(p.seq.slot_idx),
+            None => None,
+        })
+        .collect()
 }
 
 /// Compact live sequences into contiguous SSM slots `[0..n)` (n = the slice
@@ -365,28 +393,38 @@ pub(super) fn retire_finished_sequences(
 /// slot) must already be released to the pool before this runs, so it is
 /// available as a target. Never call this under `ep_protocol_v2()` — v2
 /// keeps slots pinned in place (see `retire_finished_sequences`).
-pub(super) fn compact_survivors_into_range(model: &dyn Model, survivors: &mut [ActiveSeq]) {
-    let n = survivors.len();
-    let occupied: std::collections::HashSet<usize> =
-        survivors.iter().map(|a| a.seq.slot_idx).collect();
-    let mut free_targets: Vec<usize> = (0..n).filter(|s| !occupied.contains(s)).collect();
-    for a in survivors.iter_mut() {
-        if a.seq.slot_idx >= n {
-            match free_targets.pop() {
-                Some(target) => {
-                    if let Err(e) = model.compact_sequence(&mut a.seq, target) {
-                        tracing::error!("compact_sequence: {e:#}");
-                    }
-                }
-                None => tracing::error!(
-                    "compact_survivors_into_range: no free target for out-of-range \
-                     slot {} (n={n})",
-                    a.seq.slot_idx
-                ),
-            }
+///
+/// `reserved` lists slots owned by sequences OUTSIDE `survivors` (the
+/// `prefilling` queue). A slot on that list is never chosen as a target, and a
+/// survivor with no legal target keeps its own slot rather than colliding —
+/// the #1002 fix; `slot_targets` carries the round-13 receipt.
+pub(super) fn compact_survivors_into_range(
+    model: &dyn Model,
+    survivors: &mut [ActiveSeq],
+    reserved: &[usize],
+) {
+    let occupied: Vec<usize> = survivors.iter().map(|a| a.seq.slot_idx).collect();
+    let plan = slot_targets::plan_slot_compaction(&occupied, reserved);
+    let planned = plan.len();
+    for (i, target) in plan {
+        if let Err(e) = model.compact_sequence(&mut survivors[i].seq, target) {
+            tracing::error!("compact_sequence: {e:#}");
         }
+    }
+    // Not an error — a stalled migration is the SAFE outcome (see
+    // `slot_targets`) — but it costs the batched-GDN fast path, so say so once
+    // per tick at debug when it bites.
+    let out_of_range = occupied.iter().filter(|&&s| s >= occupied.len()).count();
+    let stalled = out_of_range.saturating_sub(planned);
+    if stalled > 0 {
+        tracing::debug!(
+            "compact_survivors_into_range: {stalled} survivor(s) kept an out-of-range slot \
+             (n={}, reserved={reserved:?}) — slots stay non-contiguous this tick",
+            occupied.len(),
+        );
     }
 }
 
 mod send;
+mod slot_targets;
 pub use send::*;
