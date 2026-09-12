@@ -33,6 +33,8 @@ mod dispatch_proj_rowwise;
 mod embeddings;
 #[path = "ops/fp8_gemv_batch.rs"]
 mod fp8_gemv_batch;
+// Tensor-core W8A16 decode GEMM with a 16-row M tile (#927), the ALU-bound
+// `w8a16_gemv_batch16`'s replacement at 5..=16 rows. Behind ATLAS_FFN_M16_TC.
 #[path = "ops/fp8_moe.rs"]
 mod fp8_moe;
 #[path = "ops/fp8_moe_batch_a.rs"]
@@ -49,6 +51,10 @@ pub mod gdn_flashinfer;
 #[cfg(not(unix))]
 #[path = "ops/gdn_flashinfer_absent.rs"]
 pub mod gdn_flashinfer;
+// Tensor-core BF16 decode GEMM with a 16-row M tile — the BF16 LM-head arm
+// (#927/#928). Behind ATLAS_LM_HEAD_M16_TC; SSOT for its launch geometry.
+#[path = "ops/dense_gemm_m16_bf16.rs"]
+mod dense_gemm_m16_bf16;
 #[path = "ops/gemm_dense.rs"]
 mod gemm_dense;
 #[path = "ops/gemm_dense_int8.rs"]
@@ -57,6 +63,12 @@ mod gemm_dense_int8;
 mod gemm_fp4;
 #[path = "ops/model_stats.rs"]
 pub mod model_stats;
+#[path = "ops/w8a16_gemm_m16.rs"]
+mod w8a16_gemm_m16;
+// The bit-exact N-column-blocked sibling of `w8a16_gemv_batch16` (#927),
+// for the attention decode projections. Behind ATLAS_ATTN_NCOL_GEMV.
+#[path = "ops/w8a16_gemv_ncol.rs"]
+mod w8a16_gemv_ncol;
 pub use model_stats::ModelStats;
 
 #[path = "ops/gemm_fp8_prefill.rs"]
@@ -161,10 +173,18 @@ mod ssm_preproc;
 #[path = "ops/ssm_ssd.rs"]
 mod ssm_ssd;
 pub mod token_overlay;
+/// HOST SIMULATION of the Hopper `w8a16_gemv` override's loop order against the
+/// gb10 kernel's, so a GPU-free `cargo test` still judges the one claim the
+/// device microtest cannot make cheaply: that the UNROLL-wide prefetch did not
+/// reorder the FP32 accumulation every batch oracle in the tree compares to.
+#[cfg(test)]
+#[path = "ops/w8a16_gemv_hopper_tests.rs"]
+mod w8a16_gemv_hopper_tests;
 #[path = "ops/wide_prefill.rs"]
 mod wide_prefill;
 
 pub use activations::*;
+pub use dense_gemm_m16_bf16::*;
 pub use derived_weights::{Derivation, DerivedWeights};
 pub use dispatch_config::GemmDispatch;
 pub use dispatch_helpers::*;
@@ -226,4 +246,6 @@ pub use ssm_gdn_snap::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;
+pub use w8a16_gemm_m16::*;
+pub use w8a16_gemv_ncol::*;
 pub use wide_prefill::*;

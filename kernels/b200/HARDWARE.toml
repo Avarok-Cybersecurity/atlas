@@ -71,3 +71,31 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = false
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+# `w8a16_gemm_m16` on the dense-FFN decode arm (#927). OFF: no B200 receipt,
+# and this target does not carry the kernel. A Hopper row is not inherited by
+# resemblance (`tests/target_defaults.rs`).
+ffn_m16_tc = false
+# `w8a16_gemm_m16{,_strided}` on the decode Q/K/V and o_proj (#927). OFF: no
+# B200 receipt. Hopper measures +5.3% here, and a Hopper row is not inherited
+# by resemblance (`tests/target_defaults.rs`).
+attn_m16_tc = false
+# `dense_gemm_m16_bf16` on the BF16 decode head (#927). OFF: no B200 receipt,
+# and this target does not carry the kernel.
+lm_head_m16_tc = false
+# `w8a16_gemv_batch16_ncol{2,4}` on the decode attention projections (#927).
+# OFF: no receipt, and the kernel is not in this target's tree.
+attn_ncol_gemv = false
+
+# ── Kernels this target does NOT reach ────────────────────────────────────
+#
+# No `[kernels] overrides`, deliberately. `kernels/hopper/common` holds three
+# sources that are not in `kernels/gb10/common` at all — `w8a16_gemm_m16.cu`,
+# `dense_gemm_m16_bf16.cu`, `w8a16_gemv_ncol.cu` (#927) — and B200 does not
+# reach them. They are ordinary datacentre MMA that this architecture could
+# compile, but each is reached only under a serving lever that an A/B has to
+# turn on, and B200 has no such receipt: linking them in would compile three
+# kernels nothing on this target can launch, and would add three cross-hardware
+# symlinks that `scripts/check_cross_hardware.py` rule S1 refuses outright.
+#
+# The day a B200 receipt exists, the fix is a `[kernels] overrides` list here
+# plus the mirror entries, in the same change as the measurement.

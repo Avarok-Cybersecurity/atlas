@@ -52,3 +52,18 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = false
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+# `w8a16_gemm_m16` on the dense-FFN decode arm (#927). OFF: the kernel is not
+# in this target's tree at all (`kernels/hopper/HARDWARE.toml [kernels]
+# overrides`), so the handle resolves to 0 and the arm declines anyway.
+# Declared explicitly so this file answers what GB10 serves with on its own.
+ffn_m16_tc = false
+# `w8a16_gemm_m16{,_strided}` on the decode Q/K/V and o_proj (#927). OFF: no
+# GB10 receipt, and the kernel is not in this target's tree.
+attn_m16_tc = false
+# `dense_gemm_m16_bf16` on the BF16 decode head (#927). OFF: no GB10 receipt,
+# the kernel is not in this target's tree, and the arm is a token-visible
+# numerics seam that must not arrive by inheritance.
+lm_head_m16_tc = false
+# `w8a16_gemv_batch16_ncol{2,4}` on the decode attention projections (#927).
+# OFF: no receipt, and the kernel is not in this target's tree.
+attn_ncol_gemv = false

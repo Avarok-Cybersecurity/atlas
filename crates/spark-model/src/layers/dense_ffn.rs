@@ -239,6 +239,41 @@ pub struct DenseFfnLayer {
     w8a16_gemv_k: KernelHandle,
     w8a16_gemm_k: KernelHandle,
     w8a16_gemv_batch4_k: KernelHandle,
+    /// MAX_M=16 sibling of `w8a16_gemv_batch4_k` — the 5..=32-row decode tier
+    /// (#927). KernelHandle(0) on a shadow that lacks the entry point, which
+    /// puts those widths back on the tile GEMMs. Rule: `batch16_decode.rs`.
+    w8a16_gemv_batch16_k: KernelHandle,
+    /// Whether that tier is ARMED — `ATLAS_FFN_BATCH16=1`, latched once here
+    /// at construction. DEFAULT FALSE: the tier measured a net LOSS in serving
+    /// on H100 (-5.4% aggregate at C=16, +50 ms TTFT) and has never been
+    /// measured on GB10, where the handle resolves just the same. Receipt and
+    /// the full rule: `batch16_decode.rs`.
+    ///
+    /// A FIELD rather than a call into `ffn_batch16_enabled()` at dispatch
+    /// time, for two reasons: the route is then fixed before any CUDA-graph
+    /// capture, and the dispatch tests can pin BOTH polarities without a
+    /// process-global `OnceLock` that latches on whichever test runs first.
+    batch16_enabled: bool,
+    /// Tensor-core 16-row-M-tile GEMM (#927) — the `ATLAS_FFN_M16_TC` tier
+    /// that sits AHEAD of `w8a16_gemv_batch16_k` at 5..=32 rows when the lever
+    /// is set. KernelHandle(0) on a shadow that lacks the entry point, which
+    /// leaves the ladder exactly as #927 shipped it. Rule: `dense_ffn_m16_tc.rs`.
+    w8a16_gemm_m16_k: KernelHandle,
+    /// The `N_TILE=64` twin (`ATLAS_FFN_M16_TC_NTILE=64`). KernelHandle(0) on a
+    /// shadow built before the wide arm existed, which silently keeps the
+    /// 32-wide kernel. Rule: `m16_tc::m16_tc_kernel`.
+    w8a16_gemm_m16_n64_k: KernelHandle,
+    /// `ATLAS_FFN_M16_TC` (or the `ATLAS_M16_TC` umbrella), cached at
+    /// construction. Since round 6 this lever reaches ONLY the FFN arm — the
+    /// attention tiers have their own, because the H100 measured them moving in
+    /// opposite directions. A FIELD rather than a per-call accessor for two
+    /// reasons: the selector runs per projection per layer per step, and the
+    /// dispatch tests drive both arms without racing the process-global
+    /// `OnceLock` the env read lives in. Grammar: `dense_ffn_m16_tc.rs`.
+    m16_tc: bool,
+    /// The CTA N width this layer asks for, 32 or 64. Same field-not-accessor
+    /// reasoning as `m16_tc`.
+    m16_tc_n_tile: u32,
     w8a16_gemm_pipelined_k: KernelHandle,
     // Fused FP8 decode GEMVs (gate+up in one launch / silu+down in one launch),
     // mirroring the NVFP4 w4a16_gemv_dual / w4a16_gemv_silu_input. KernelHandle(0)
@@ -249,6 +284,14 @@ pub struct DenseFfnLayer {
     // Preferred over w8a16_gemm when a transposed FP8 weight copy is present.
     // KernelHandle(0) → fall back to non-transposed w8a16_gemm.
     w8a16_gemm_t_m128_k: KernelHandle,
+    // W8A8 block-scaled prefill pair (#917/#928): per-token 1x128 FP8
+    // activation quant + the FP8xFP8 GEMM with both scale sets folded in an
+    // FP32 epilogue. Same two entry points the attention Q/K/V/O prefill
+    // already resolves, so no model shadow needs a new kernel; KernelHandle(0)
+    // on a shadow that lacks them -> the W8A16 branches still run.
+    // Dispatch rule + rationale live in `dense_ffn_w8a8_prefill.rs` (SSOT).
+    per_token_group_quant_fp8_k: KernelHandle,
+    fp8_gemm_t_blockscaled_k: KernelHandle,
     /// v0 LoRA overlay for gate/up/down. `set_lora_weights` REJECTS layers
     /// where `fp8_weights`, `bf16_weights` or `q2_weights` are installed (v0
     /// supports the NVFP4 dispatch path only — those branches early-return
@@ -410,6 +453,12 @@ impl DenseFfnLayer {
             w8a16_gemv_k: super::try_kernel(gpu, "w8a16_gemv", "w8a16_gemv"),
             w8a16_gemm_k: super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemv_batch4_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch4"),
+            w8a16_gemv_batch16_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch16"),
+            batch16_enabled: batch16_decode::ffn_batch16_enabled(),
+            w8a16_gemm_m16_k: super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16"),
+            w8a16_gemm_m16_n64_k: super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16_n64"),
+            m16_tc: m16_tc::m16_tc_levers().ffn,
+            m16_tc_n_tile: m16_tc::m16_tc_levers().ffn_n_tile,
             w8a16_gemm_pipelined_k: super::try_kernel(
                 gpu,
                 "w8a16_gemm_pipelined",
@@ -422,6 +471,16 @@ impl DenseFfnLayer {
                 "w8a16_gemv_silu_input",
             ),
             w8a16_gemm_t_m128_k: super::try_kernel(gpu, "w8a16_gemm_t_m128", "w8a16_gemm_t_m128"),
+            per_token_group_quant_fp8_k: super::try_kernel(
+                gpu,
+                "per_token_group_quant_fp8",
+                "per_token_group_quant_fp8",
+            ),
+            fp8_gemm_t_blockscaled_k: super::try_kernel(
+                gpu,
+                "fp8_gemm_t_blockscaled",
+                "fp8_gemm_t_blockscaled",
+            ),
             lora: None,
             q2_weights: None,
             // Winner of the decode-GEMV bench: candidate B (vectorized code loads
@@ -1930,13 +1989,55 @@ impl DenseFfnLayer {
         }
 
         // Native FP8: small batches stream each weight once via the existing
-        // M<=4 GEMV, avoiding padded MMA tiles. Larger prefills prefer a
+        // batched GEMVs, avoiding padded MMA tiles. Larger prefills prefer a
         // transposed copy when available, then the same-format pipelined GEMM.
         // Every fallback retains the original E4M3 bytes and FP32 block scales.
+        //
+        // 🔴 ARM ORDER IS THE DISPATCH RULE — decode rungs first, widest last:
+        //
+        //   1. m <= 4      w8a16_gemv_batch4        one weight pass, 4-row tier
+        //   2. m 5..=16    w8a16_gemm_m16           MMA, ATLAS_FFN_M16_TC only
+        //   3. m 17..=32   w8a16_gemm_m16 x2        MMA, ATLAS_FFN_M16_TC only
+        //      (ATLAS_FFN_M16_TC reaches THIS arm only; the attention tiers
+        //       take ATLAS_ATTN_M16_TC, and ATLAS_M16_TC is both. Round 6
+        //       measured them moving in opposite directions: attention -21.7%,
+        //       this arm +13.7%. WHY: `dense_ffn_m16_tc.rs`.)
+        //   4. m 5..=16    w8a16_gemv_batch16       OPT-IN, off by default
+        //   5. m 17..=32   w8a16_gemv_batch16 x2    OPT-IN, off by default
+        //   6. W8A8 block-scaled prefill            (#917/#928)
+        //   7. transposed / pipelined / base W8A16 tile GEMMs
+        //
+        // Rungs 2-3 are the TENSOR-CORE tier and are OFF unless
+        // `ATLAS_FFN_M16_TC` is set. `ATLAS_FFN_M16_TC` reaches THIS arm only;
+        // the attention tiers take `ATLAS_ATTN_M16_TC`, and `ATLAS_M16_TC` is
+        // both. They are the only arm here that does NOT reproduce the scalar
+        // `w8a16_gemv` bit-for-bit: an m16n8k16 MMA reassociates the K
+        // reduction (<= 2 BF16 ULP), which is the same reassociation the
+        // pre-#927 tile GEMMs had at these widths. WHY, the H100 numbers and
+        // the seam: `dense_ffn_m16_tc.rs`.
+        //
+        // Rungs 4-5 are #927, and they are DISARMED unless `ATLAS_FFN_BATCH16=1`
+        // — so a stock serve runs rungs 1, 6, 7 exactly as it did before #927.
+        // The cliff they answer is real (the rung-7 tile GEMMs pad M to a
+        // 128-row MMA tile, 5-12 TFLOP/s on these shapes), but the tier as a
+        // whole lost the only end-to-end A/B it has: H100, 2026-09-11,
+        // Qwen3.8-27B-FP8, C=16 aggregate 121.4 ON -> 128.0 tok/s OFF, because
+        // it dispatches by row count and so catches a chunked prefill's tail
+        // chunk. It has never been measured on GB10. Receipt, opt-in and the
+        // consequence for rung 6's lower edge: `dense_ffn_batch16_decode.rs`.
         if let Some(ref fp8w) = self.fp8_weights {
+            // Resolved ONCE for the whole FFN, not per projection: gate, up and
+            // down share `m`, so a per-arm call would re-run the same match
+            // three times and could not be read as one rule.
+            let batch16 = self.ffn_batch16_plan(m);
+            // Resolved per PROJECTION depth, not once: gate/up reduce over `h`
+            // and down over `inter`, and the tier declines a K that is not a
+            // whole number of 128-wide scale blocks.
+            let m16_tc = |k: u32| self.ffn_m16_tc_plan(m, k);
             macro_rules! w8_gemm {
-                ($w:expr, $wt:expr, $in:expr, $out:expr, $n:expr, $k:expr) => {
+                ($w:expr, $wt:expr, $in:expr, $out:expr, $n:expr, $k:expr, $a8:expr, $cap:expr) => {
                     match $wt {
+                        // 1. m <= 4.
                         _ if (1..=4).contains(&m) && self.w8a16_gemv_batch4_k.0 != 0 => {
                             ops::w8a16_gemv_batch4(
                                 ctx.gpu,
@@ -1951,6 +2052,47 @@ impl DenseFfnLayer {
                                 stream,
                             )?
                         }
+                        // 2-3. TENSOR-CORE tier, 5..=16 (one launch) and
+                        // 17..=32 (two halves). `Some(plan)` already encodes the
+                        // handle, the `ATLAS_FFN_M16_TC` lever (default OFF) and
+                        // the K % 128 guard, so this arm is inert until an
+                        // operator opts in. It REASSOCIATES — see the rule above.
+                        _ if m16_tc($k).is_some() => self.w8a16_m16_tc_proj(
+                            ctx,
+                            m16_tc($k).expect("guarded by is_some"),
+                            &$w,
+                            $in,
+                            $out,
+                            m,
+                            $n,
+                            $k,
+                            stream,
+                        )?,
+                        // 4-5. m 5..=16 (one launch) and 17..=32 (two halves).
+                        // `Some(plan)` already encodes the handle and the
+                        // `ATLAS_FFN_BATCH16=1` opt-in, so this is `None` on a
+                        // stock serve and the match falls through to rung 4.
+                        _ if batch16.is_some() => self.w8a16_batch16_proj(
+                            ctx,
+                            batch16.expect("guarded by is_some"),
+                            &$w,
+                            $in,
+                            $out,
+                            m,
+                            $n,
+                            $k,
+                            stream,
+                        )?,
+                        // 6. W8A8 block-scaled (#917/#928) — ahead of the W8A16
+                        // arms below, which run the BF16 MMA at ~12 TFLOP/s on
+                        // these shapes. `$a8` is `Some` exactly when
+                        // `prefill_w8a8_selected` held for this projection.
+                        _ if $a8.is_some() => {
+                            let (a_fp8, a_scale) = $a8.expect("guarded by is_some");
+                            self.w8a8_gemm(ctx, a_fp8, a_scale, &$w, $out, $cap, m, $n, $k, stream)?
+                        }
+                        // 7. Tile GEMMs — prefill widths (m > 32) and any
+                        // shape the rungs above declined.
                         Some(wt) if self.w8a16_gemm_t_m128_k.0 != 0 => {
                             let wt: Fp8WeightTransposed = wt;
                             ops::w8a16_gemm_n128_m128(
@@ -1996,8 +2138,47 @@ impl DenseFfnLayer {
             let gate_t: Option<Fp8WeightTransposed> = None;
             let up_t: Option<Fp8WeightTransposed> = None;
             let down_t: Option<Fp8WeightTransposed> = None;
-            w8_gemm!(fp8w.gate_proj, gate_t, input, gate_out, inter, h);
-            w8_gemm!(fp8w.up_proj, up_t, input, up_out, inter, h);
+            // W8A8 activation quant (#917/#928), ONCE per shared input: gate and
+            // up both read `input`, so quantizing per projection would pay the
+            // per-token E4M3 cast twice per layer for identical bytes. down
+            // quantizes separately because its input is the post-SiLU product.
+            // `None` => that projection keeps today's W8A16 dispatch.
+            // Selection rule + WHY: `dense_ffn_w8a8_prefill.rs` (SSOT).
+            //
+            // `batch16.is_none()` is part of the condition and not only of the
+            // match: rungs 2-3 sit AHEAD of the W8A8 arm, so at m=5..=32 the
+            // quantizer launch below would be dead work whose result no arm
+            // reads. This keeps the W8A8 lower edge honest at m > 32.
+            // `m16_tc` is checked at BOTH projection depths: gate/up reduce
+            // over `h` and down over `inter`, and either claiming the width
+            // makes the quantizer launch below dead work for that projection.
+            let w8a8_reachable =
+                batch16.is_none() && m16_tc(h).is_none() && m16_tc(inter).is_none();
+            let gate_up_w8a8 = w8a8_reachable
+                && self.prefill_w8a8_selected(ctx, m, inter, h, &fp8w.gate_proj)
+                && self.prefill_w8a8_selected(ctx, m, inter, h, &fp8w.up_proj);
+            let down_w8a8 =
+                w8a8_reachable && self.prefill_w8a8_selected(ctx, m, h, inter, &fp8w.down_proj);
+            if !gate_up_w8a8 && !down_w8a8 && w8a8_reachable {
+                self.log_w8a16_prefill_route(ctx);
+            }
+            let gu_a8 = if gate_up_w8a8 {
+                Some(self.w8a8_quant_act(ctx, input, m, h, stream)?)
+            } else {
+                None
+            };
+            let gu_cap = ctx.buffers.expert_gate_out_bytes();
+            w8_gemm!(
+                fp8w.gate_proj,
+                gate_t,
+                input,
+                gate_out,
+                inter,
+                h,
+                gu_a8,
+                gu_cap
+            );
+            w8_gemm!(fp8w.up_proj, up_t, input, up_out, inter, h, gu_a8, gu_cap);
             ops::silu_mul(
                 ctx.gpu,
                 self.act_mul,
@@ -2008,7 +2189,25 @@ impl DenseFfnLayer {
                 stream,
             )?;
             let output = ctx.buffers.moe_output();
-            w8_gemm!(fp8w.down_proj, down_t, gate_out, output, h, inter);
+            // `gate_out` (the SiLU product) is fully written by the launch above
+            // and re-read here; the quant lands in the SAME scratch the gate/up
+            // quant used, which is safe because every launch is on `stream`.
+            let down_a8 = if down_w8a8 {
+                Some(self.w8a8_quant_act(ctx, gate_out, m, inter, stream)?)
+            } else {
+                None
+            };
+            let down_cap = ctx.buffers.moe_output_bytes();
+            w8_gemm!(
+                fp8w.down_proj,
+                down_t,
+                gate_out,
+                output,
+                h,
+                inter,
+                down_a8,
+                down_cap
+            );
             return Ok(());
         }
 
@@ -2686,6 +2885,25 @@ impl DenseFfnLayer {
         self.forward_prefill(input, num_tokens, ctx, stream)
     }
 }
+
+/// W8A8 block-scaled prefill branch (#917/#928). A CHILD module, not a
+/// sibling: it adds `impl DenseFfnLayer` methods that read this layer's
+/// private kernel handles, and this file is already at the CI size cap.
+#[path = "dense_ffn_w8a8_prefill.rs"]
+pub mod w8a8_prefill;
+
+/// The 5..=32-row native-FP8 DECODE tier (#927) — same child-module reason as
+/// `w8a8_prefill` above: it reads this layer's private kernel handles, and the
+/// arm's rule, its opt-in and the measurements that made it opt-in do not fit
+/// in this file's budget.
+#[path = "dense_ffn_batch16_decode.rs"]
+pub mod batch16_decode;
+
+/// The TENSOR-CORE 5..=32-row decode tier (`ATLAS_FFN_M16_TC`, #927) — same
+/// child-module reason as the two above: it reads this layer's private kernel
+/// handles, and its rule, lever and the numerics seam it opens need room.
+#[path = "dense_ffn_m16_tc.rs"]
+pub mod m16_tc;
 
 /// Native BF16/FP8 overlays take precedence over any NVFP4 fallback weights.
 /// Small batches must use the same format-aware dispatcher as prefill.

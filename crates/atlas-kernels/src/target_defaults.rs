@@ -75,4 +75,49 @@ pub struct TargetDefaults {
     pub ssm_batched_recurrent: bool,
     /// Split SiLU+down on the decode path (`ModelLevers::decode_split_silu`).
     pub decode_split_silu: bool,
+    /// The `w8a16_gemm_m16` tensor-core tier on the DENSE-FFN decode arm
+    /// (`layers/dense_ffn_m16_tc.rs`), rungs 2-3 of the `w8_gemm!` ladder.
+    ///
+    /// FALSE on hopper, and it is the one row in this table whose receipt is a
+    /// LOSS. H100 round 6, serve J against serve I on the same binary: C=16
+    /// aggregate 228.02 -> 216.27 (-5.2%) on the short shape and 177.60 ->
+    /// 171.62 (-3.4%) on the long one, TPOT +5.7% / +4.3%, against deltas
+    /// 30-95x the rep-to-rep spread. The kernel is 3.4-3.7x faster than the
+    /// tier it replaces in the microtest and still costs the serve, because it
+    /// dispatches by ROW COUNT and so catches a chunked prefill's tail chunk.
+    /// The ATTENTION half of the same kernel wins (`attn_m16_tc`), which is why
+    /// this is two rows and not one.
+    pub ffn_m16_tc: bool,
+    /// The `w8a16_gemm_m16{,_strided}` tensor-core tiers on the decode Q/K/V
+    /// and o_proj projections (`layers/qwen3_attention/`).
+    ///
+    /// TRUE on hopper: H100 round 9 cell W against cell U, C=16 aggregate
+    /// 235.47 -> 247.85 (+5.26%) and TPOT 53.42 -> 50.01 ms (-6.38%) against a
+    /// 0.15% rep spread; long shape +4.12% / -5.40%. C=1 is 17.87 vs 17.89 ms,
+    /// a measured null, which is correct by construction — the tier is
+    /// restricted to 5..16 rows. Same kernel family as [`Self::ffn_m16_tc`],
+    /// opposite verdict, which is why they are two rows.
+    pub attn_m16_tc: bool,
+    /// The `dense_gemm_m16_bf16` tensor-core arm on the BF16 decode head
+    /// (`model/trait_impl/lm_head_batched.rs`), for 5..16 rows.
+    ///
+    /// TRUE on hopper: H100 round 9 cell Y against cell U, C=16 aggregate
+    /// 235.47 -> 245.10 (+4.09%), TPOT 53.42 -> 50.79 ms (-4.92%). The head is
+    /// ~7% of the step (round 12 nsys: 943.8 us, 4.31%), so this is most of
+    /// what is there to win at that site.
+    ///
+    /// 🔴 It REASSOCIATES the K reduction against `dense_gemv_bf16`, and at the
+    /// LM head that is a token-visible seam rather than a rounding detail — a
+    /// near-tie argmax can flip. It is ON here on a measured serve receipt, not
+    /// on a microtest.
+    pub lm_head_m16_tc: bool,
+    /// `w8a16_gemv_batch16_ncol{2,4}` on the decode attention projections
+    /// (`layers/qwen3_attention/attn_ncol_gemv.rs`).
+    ///
+    /// FALSE everywhere, INCLUDING hopper, and the reason is stated rather
+    /// than implied: there is no serving A/B for it on any target. The
+    /// microtest exists; the receipt does not. The row is here so the kernel
+    /// has a declared way to be turned on for the measurement that would earn
+    /// it, not because it has been shown to pay.
+    pub attn_ncol_gemv: bool,
 }

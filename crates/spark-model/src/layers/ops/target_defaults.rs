@@ -168,6 +168,15 @@ pub struct TargetLevers {
     pub lm_head_batchm_max: Resolved<u32>,
     pub ssm_batched_recurrent: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
+    /// The `w8a16_gemm_m16` tier on the dense-FFN decode arm (#927).
+    pub ffn_m16_tc: Resolved<bool>,
+    /// The `w8a16_gemm_m16` tiers on the decode Q/K/V and o_proj (#927).
+    pub attn_m16_tc: Resolved<bool>,
+    /// The `dense_gemm_m16_bf16` arm on the BF16 decode head (#927).
+    pub lm_head_m16_tc: Resolved<bool>,
+    /// `w8a16_gemv_batch16_ncol{2,4}` on the decode attention projections
+    /// (#927). No serving receipt on any target — off everywhere.
+    pub attn_ncol_gemv: Resolved<bool>,
 }
 
 /// The whole table, as a pure function of the baked declaration and a variable
@@ -202,6 +211,44 @@ pub fn resolve(
         // stays PRESENCE-gated and unchanged, so every script that predates
         // this file means what it meant.
         decode_split_silu: resolve_toggle(defaults.decode_split_silu, None, split_silu_off),
+        // Two rows for ONE kernel family, because round 6 measured the FFN
+        // arm and the attention arms moving in opposite directions on the same
+        // serve. `ATLAS_M16_TC` is the round-6 umbrella that arms both; it is
+        // folded in HERE rather than in the consumer so that an umbrella can
+        // never DISARM a target's declaration, which would make the recipe
+        // depend on export order.
+        ffn_m16_tc: resolve_toggle(
+            defaults.ffn_m16_tc,
+            var("ATLAS_FFN_M16_TC")
+                .or_else(|| var("ATLAS_M16_TC"))
+                .as_deref(),
+            false,
+        ),
+        attn_m16_tc: resolve_toggle(
+            defaults.attn_m16_tc,
+            var("ATLAS_ATTN_M16_TC")
+                .or_else(|| var("ATLAS_M16_TC"))
+                .as_deref(),
+            false,
+        ),
+        // NOT under `ATLAS_M16_TC`. The umbrella is round 6's, which predates
+        // this arm and never measured it; folding the head in would silently
+        // widen what an old recipe means. Its own variable, or the target's
+        // declaration.
+        lm_head_m16_tc: resolve_toggle(
+            defaults.lm_head_m16_tc,
+            var("ATLAS_LM_HEAD_M16_TC").as_deref(),
+            false,
+        ),
+        // `ATLAS_NO_ATTN_DECODE_BATCH` is the pre-existing kill switch for the
+        // whole batched attention-decode family, and it OUTRANKS both the
+        // declaration and the positive variable: a switch that turns a family
+        // off must not be silently narrowed by a new row underneath it.
+        attn_ncol_gemv: resolve_toggle(
+            defaults.attn_ncol_gemv,
+            var("ATLAS_ATTN_NCOL_GEMV").as_deref(),
+            var("ATLAS_NO_ATTN_DECODE_BATCH").is_some(),
+        ),
     }
 }
 
@@ -247,7 +294,9 @@ pub fn format_levers(l: &TargetLevers) -> String {
     format!(
         "target defaults ({hw}): sm_count={sms} \
          lm_head_batchm_max={batchm}{batchm_src} \
-         ssm_batched_recurrent={recurrent} decode_split_silu={silu}",
+         ssm_batched_recurrent={recurrent} decode_split_silu={silu} \
+         ffn_m16_tc={ffn_m16_tc} attn_m16_tc={attn_m16_tc} \
+         lm_head_m16_tc={lm_head_m16_tc} attn_ncol_gemv={attn_ncol_gemv}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
         // at boot against the driver. Printed on this line because the levers
@@ -258,6 +307,10 @@ pub fn format_levers(l: &TargetLevers) -> String {
         batchm_src = l.lm_head_batchm_max.source.tag(),
         recurrent = onoff(l.ssm_batched_recurrent),
         silu = onoff(l.decode_split_silu),
+        ffn_m16_tc = onoff(l.ffn_m16_tc),
+        attn_m16_tc = onoff(l.attn_m16_tc),
+        lm_head_m16_tc = onoff(l.lm_head_m16_tc),
+        attn_ncol_gemv = onoff(l.attn_ncol_gemv),
     )
 }
 

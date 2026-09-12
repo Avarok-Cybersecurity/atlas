@@ -27,6 +27,31 @@ behind specific subsystems — see the
   result. Previously only the result was stored, so a number could not be
   attributed to a configuration or reproduced. Pre-existing files still load.
 
+### Added
+- **Six Hopper-owned decode kernels under `kernels/hopper/common`**, declared in
+  that target's `[kernels] overrides`. Three REPLACE their GB10 namesakes — the
+  W8A16 M=1 decode GEMV family, which on an H100 is 71% of the single-stream
+  decode step and was LSU-bound on a shared-memory E4M3 LUT gather rather than
+  bandwidth-bound. The override decodes with `cvt.rn.f16x2.e4m3x2` and keeps
+  four chunk loads in flight: **C=1 TPOT 17.87 → 14.14 ms (−20.9%)** on
+  1×H100 80 GB with `Qwen/Qwen3.8-27B-FP8`, 1.66–2.05× per shape, 2,689 GB/s on
+  the fused gate+up — and **bit-identical**, `unequal=0` on all seven production
+  shapes. GB10's own sources are untouched and still compiled by gb10, b200,
+  strix and strix-hip.
+  Three are ADDITIONS with new stems: `w8a16_gemm_m16.cu`,
+  `dense_gemm_m16_bf16.cu` and `w8a16_gemv_ncol.cu`, the m16n8k16 tensor-core
+  tiers for 5..32-row decode. They are **not** in `kernels/gb10`, so a GB10
+  build does not compile a kernel it has no receipt for.
+
+### Changed
+- **Five `[defaults]` rows for those tiers, and they do not all say yes.**
+  `attn_m16_tc` and `lm_head_m16_tc` are ON for Hopper (+5.3% and +4.1% C=16
+  aggregate), `ffn_m16_tc` is OFF on a measured LOSS (−5.2%) from the same
+  kernel on a different projection family, and `attn_ncol_gemv` is OFF because
+  no serving A/B exists for it on any target. Hopper's `lm_head_batchm_max`
+  widens 8 → 16, in the same commit as the arm it was measured beside. Every
+  row is off (or the frozen baseline) on GB10 and B200, so neither target's
+  serve changes.
 ### Changed
 - **Serving defaults are now per-hardware-target and live in the repository.**
   `kernels/<hw>/HARDWARE.toml` gained a `[defaults]` table, baked into the

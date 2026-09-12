@@ -73,17 +73,26 @@ extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
 # profile and the explicit-env profile agreed to within 0.37% aggregate, with
 # md5-identical coherency output on 7/7 prompts).
 [defaults]
-# The BF16 decode head's batched-GEMV band. 8 — GB10's frozen band, held here
-# ON PURPOSE and not the 16 an H100 recipe used to export.
+# The BF16 decode head's batched-GEMV band. 16, not GB10's frozen 8 — and this
+# row moved to 16 in the commit that landed `dense_gemm_m16_bf16.cu`, which is
+# the arm it was measured beside.
 #
-# 🔴 That 16 was measured with the tensor-core head arm (`dense_gemm_m16_bf16`,
-# #927) ALSO on, where the TC arm serves 5..=16 and the band is very nearly
-# inert. With the TC arm absent — it is a Hopper-owned kernel and is not in
-# this PR — a 16 here would move widths 9..=16 off the reassociating tile GEMM
-# onto the batched GEMV in a configuration nobody has measured. The row moves
-# to 16 in the commit that lands the arm it was measured beside; a default is
-# a claim about a measurement.
-lm_head_batchm_max = 8
+# 🔴 THE PAIR IS THE MEASUREMENT. The H100 recipe's 16 was always measured with
+# `lm_head_m16_tc` also on, where the tensor-core arm serves 5..=16 ahead of
+# the GEMV and this band is very nearly inert — it decides only the widths the
+# TC arm declines (a K that is not a whole 64-wide pipeline step, or a kernel
+# set without the entry point). Declaring 16 while the arm was absent would
+# have moved widths 9..=16 off the reassociating tile GEMM onto the batched
+# GEMV in a configuration nobody has measured; declaring it now reproduces
+# round 9 cell Y.
+#
+# WHY 16 AND NOT GB10's 8, mechanically: on H100 it is the TILE GEMM that loses
+# at decode widths (#927 — 224 ms/step at 16 active rows), which is the
+# opposite of the GB10 A/B that froze 8 there (-14.4% at C=16, commits
+# 84d5b763c / 78d276832). The resolver clamps whatever is declared to
+# `DENSE_GEMV_BATCHM_MAX_M`, the kernel's compile-time row bound, so a wider
+# declaration cannot launch a kernel that would refuse it.
+lm_head_batchm_max = 16
 # One strided recurrent launch per batch on the GDN decode path: +6% on the
 # serve, and md5-identical output to the per-sequence launches. This is the
 # row that used to be `ATLAS_SSM_BATCHED_RECURRENT=1` in a launch script
@@ -91,3 +100,101 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = true
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+# `w8a16_gemm_m16` on the dense-FFN decode arm (#927). OFF, and the only row
+# in this table whose receipt is a LOSS. H100 round 6, serve J against serve I
+# on the same binary: C=16 aggregate 228.02 -> 216.27 (-5.2%) short and
+# 177.60 -> 171.62 (-3.4%) long, TPOT +5.7% / +4.3%, deltas 30-95x the
+# rep-to-rep spread. C=1 is a measured null (the tier is 5..=32 rows only).
+# The ATTENTION half of the same kernel WINS -- see `attn_m16_tc` below, which
+# is why this is two rows. `ATLAS_FFN_M16_TC=1` re-runs the A/B;
+# `ATLAS_M16_TC=1` arms both halves, i.e. exactly what round 6 measured.
+ffn_m16_tc = false
+# `w8a16_gemm_m16{,_strided}` on the decode Q/K/V and o_proj (#927). ON. H100
+# round 9, cell W against cell U on the same binary: C=16 aggregate 235.47 ->
+# 247.85 (+5.26%), TPOT 53.42 -> 50.01 ms (-6.38%), against a 0.15% rep
+# spread; long shape +4.12% / -5.40%. C=1 is 17.87 vs 17.89 ms -- a measured
+# null, correct by construction because the tier is 5..16 rows only.
+#
+# SAME KERNEL FAMILY as `ffn_m16_tc` above, opposite verdict, which is the
+# whole reason there are two rows. `ATLAS_ATTN_M16_TC=0` is the one-variable
+# A/B that pins the parent tiers.
+attn_m16_tc = true
+# `dense_gemm_m16_bf16` on the BF16 decode head (#927). ON. H100 round 9, cell
+# Y against cell U on the same binary: C=16 aggregate 235.47 -> 245.10
+# (+4.09%), TPOT 53.42 -> 50.79 ms (-4.92%). Round 12 nsys prices the head at
+# 943.8 us = 4.31% of the C=1 step, one launch, 16 rows.
+#
+# 🔴 It REASSOCIATES the K reduction against `dense_gemv_bf16`, and at the LM
+# head that is a TOKEN-VISIBLE seam -- a near-tie argmax can flip -- not a
+# rounding detail. It is on here on a measured SERVE receipt, not a microtest,
+# and `ATLAS_LM_HEAD_M16_TC=0` restores the bit-exact tier.
+#
+# `ATLAS_LM_HEAD_M16_TC_NTILE=64` is the width knob. Round 9 cell Y2 measured
+# it a NULL at serving scale (245.30 / 50.71 ms against Y's 245.10 / 50.79, a
+# 0.08% difference against a 0.11-0.17% spread) even though the microtest
+# prefers n64 by 2-4%, so 32 ships and the route line says which ran.
+lm_head_m16_tc = true
+# `w8a16_gemv_batch16_ncol{2,4}` on the decode attention projections (#927).
+# OFF, and the only row in this table with NO receipt in either direction: the
+# microtest exists, the serving A/B does not. It is declared so the kernel has
+# a documented way to be turned on for the measurement that would earn it --
+# `ATLAS_ATTN_NCOL_GEMV=1` -- not because it has been shown to pay.
+#
+# `ATLAS_NO_ATTN_DECODE_BATCH` still turns the whole batched attention-decode
+# family off and OUTRANKS this row.
+attn_ncol_gemv = false
+
+# ── Kernels this target OWNS instead of inheriting ─────────────────────────
+#
+# Every other entry in `kernels/hopper/common/` is a relative symlink into
+# `kernels/gb10/common/`, which is what makes gb10 the oracle for this tree
+# (`crates/atlas-kernels/tests/inherited_targets.rs`). The names below are
+# REAL FILES.
+#
+# Maintainer rule, 2026-09-11 (tbraun96): "symlinks are fine provided the
+# pointed-to gb10 file is not edited when iterating on Hopper; Hopper-tuned
+# kernels must be real files under kernels/hopper/". A DECLARATION rather than
+# "any regular file is fine": an undeclared regular file in a mirror is a
+# silent fork of a shared kernel, which is the defect the mirror check exists
+# to catch, and the two cases are indistinguishable without this list.
+#
+#   w8a16_gemv.cu            The W8A16 M=1 decode GEMV. On an H100 this family
+#   w8a16_gemv_fused.cu      is 71% of the C=1 decode step (nsys, 1xH100,
+#                            Qwen/Qwen3.8-27B-FP8, 2026-09-11 round 10) and the
+#                            gb10 kernels are LSU-bound on the E4M3 LUT gather
+#                            rather than bandwidth-bound. These two REPLACE
+#                            their gb10 namesakes: same entry points, same
+#                            arithmetic in the same order, different dequant
+#                            instruction. gb10 keeps its own file untouched —
+#                            gb10, b200, strix and strix-hip all compile it.
+#   w8a16_gemv_hopper.cuh    The shared inner loop of those two, and the SSOT
+#                            for the bit-identity argument. No gb10
+#                            counterpart by design: nothing else includes it.
+#
+# ── The three ADDITIONS: new stems, entry points gb10 does not declare ─────
+#
+#   dense_gemm_m16_bf16.cu   BF16 decode head, m16n8k16 M tile (#927). Reached
+#                            only under `[defaults] lm_head_m16_tc`.
+#   w8a16_gemm_m16.cu        Native-FP8 M16 tensor-core tiers for the dense
+#                            FFN and the decode QKV/o_proj (#927). Reached
+#                            only under `[defaults] ffn_m16_tc` / `attn_m16_tc`.
+#   w8a16_gemv_ncol.cu       N-column-blocked decode attention projections
+#                            (#927). Reached only under `[defaults]
+#                            attn_ncol_gemv`.
+#
+# These three exist for datacentre decode performance and are reached only
+# under a lever no GB10 serve sets, so they are NOT in `kernels/gb10/common` at
+# all: a GB10 build does not compile a kernel it has no receipt for, and an
+# edit "for Hopper" cannot land in GB10's kernel. Every consumer resolves them
+# through `try_kernel` and declines on a zero handle, and every probe is gated
+# on the same lever that would launch the kernel — so a target without them
+# boots rather than failing the kernel audit on a lookup nothing declared.
+[kernels]
+overrides = [
+  "dense_gemm_m16_bf16.cu",
+  "w8a16_gemm_m16.cu",
+  "w8a16_gemv.cu",
+  "w8a16_gemv_fused.cu",
+  "w8a16_gemv_hopper.cuh",
+  "w8a16_gemv_ncol.cu",
+]
