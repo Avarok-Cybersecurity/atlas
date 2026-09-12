@@ -67,6 +67,8 @@ mod tests {
 
     fn ctx_with(min_match: usize) -> SchedCtx {
         let mut levers = crate::scheduler::levers::SchedLevers::defaults();
+        // Opt-in on this branch; the tests exercise the armed path explicitly.
+        levers.lookup_drafts = true;
         levers.lookup_min_match = min_match;
         SchedCtx::new(
             crate::scheduler::vocab_masks::VocabMasks::default(),

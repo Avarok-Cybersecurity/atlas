@@ -273,7 +273,17 @@ impl SchedLevers {
             dflash_adaptive_min: num("ATLAS_DFLASH_ADAPTIVE_MIN", 2.0),
             dflash_adaptive_reprobe: num("ATLAS_DFLASH_ADAPTIVE_REPROBE", 256),
             dflash_resume_guard: num("ATLAS_DFLASH_RESUME_GUARD", 0),
-            lookup_drafts: on_unless_zero("ATLAS_LOOKUP_DRAFTS"),
+            // OPT-IN on this branch (upstream #1026 ships it default-ON).
+            // Measured on the merged TP=2 x EP=2 NVFP4 build, same binary:
+            //   default-on   C=1 32.18   C=4 35.78   (p1 0.81-0.88 — MTP healthy)
+            //   =0           see the bisect in the merge commit
+            //   pre-#1026    C=1 53.06   C=4 66.63
+            // and Marconi anchor disagreements 0 -> 2 on BOTH ranks with it on.
+            // The PR body says the gate is off at K=2; `WIDE_WIDTHS = 2..=3`
+            // says otherwise, so at DRAFTS=2 single-sequence it is LIVE. Until
+            // the per-step cost and the multi-rank drift are understood, the
+            // feature is reachable by asking for it, not by default.
+            lookup_drafts: opt_in("ATLAS_LOOKUP_DRAFTS"),
             lookup_min_match: num("ATLAS_LOOKUP_MIN_MATCH", 4),
             lookup_max_match: num("ATLAS_LOOKUP_MAX_MATCH", 16),
             shadow_topk: spark_model::speculative::shadow_topk(),
@@ -328,7 +338,7 @@ impl SchedLevers {
             dflash_adaptive_min: 2.0,
             dflash_adaptive_reprobe: 256,
             dflash_resume_guard: 0,
-            lookup_drafts: true,
+            lookup_drafts: false,
             lookup_min_match: 4,
             lookup_max_match: 16,
             shadow_topk: 0,
