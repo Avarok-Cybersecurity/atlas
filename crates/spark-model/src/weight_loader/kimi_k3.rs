@@ -138,22 +138,21 @@ mod tests {
             },
         )]));
         let loader = KimiK3WeightLoader;
-        let err = loader
-            .load_layers(&store, &config, &gpu, &[])
-            .unwrap_err()
-            .to_string();
+        let err = match loader.load_layers(&store, &config, &gpu, &[]) {
+            Ok(_) => panic!("packed MXFP4 must not bind layers"),
+            Err(e) => e.to_string(),
+        };
         assert!(err.contains("S5 MXFP4 not this slice"), "{err}");
-        let err = loader
-            .load_embedding(&store, &config, &gpu)
-            .unwrap_err()
-            .to_string();
+        let err = match loader.load_embedding(&store, &config, &gpu) {
+            Ok(_) => panic!("packed MXFP4 must not bind embed"),
+            Err(e) => e.to_string(),
+        };
         assert!(err.contains("S5 MXFP4 not this slice"), "{err}");
     }
 
     #[test]
     fn load_bf16_twin_binds_layers() {
-        const TWIN: &str =
-            include_str!("../../../../../docs/k3/fixtures/Kimi-K3-0.40B-config.json");
+        const TWIN: &str = include_str!("../../../../docs/k3/fixtures/Kimi-K3-0.40B-config.json");
         let config = parse_config(TWIN).expect("0.40B twin");
         let gpu = spark_runtime::gpu::mock::MockGpuBackend::new();
         let graph = atlas_core::kimi_k3::K3Graph::from_config(&config);
