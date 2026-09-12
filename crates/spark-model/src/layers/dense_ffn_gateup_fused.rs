@@ -69,7 +69,7 @@
 //!
 //! # Band
 //!
-//! 5..=[`GATEUP_FUSED_MAX_M`] rows.
+//! 5..=[`spark_runtime::buffers::GATEUP_FUSED_MAX_M`] rows.
 //!
 //! * **Below 5** rung 1 of `w8_gemm!` (`w8a16_gemv_batch4`) owns the width and
 //!   already makes ONE pass over each weight; there is no second launch to
