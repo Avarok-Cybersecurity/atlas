@@ -20,6 +20,7 @@
 pub mod engine;
 pub mod factory;
 pub mod forward;
+pub mod kimi_k3;
 pub mod layer;
 pub mod layers;
 pub mod lora;
