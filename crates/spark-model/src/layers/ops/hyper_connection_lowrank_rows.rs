@@ -23,9 +23,11 @@ use crate::layers::qwen3_attention::HcLowRank;
 ///
 /// DEFAULT OFF on a SPLIT result. Same binary, NVFP4 EP=2, 5 reps per arm:
 ///
-///     C=1   51.88 chunked vs 49.21   +5.4%  (ranges do not overlap)
-///     C=2   62.13         vs 62.30   -0.3%
-///     C=4   64.62         vs 68.69   -5.9%
+/// ```text
+/// C=1   51.88 chunked vs 49.21   +5.4%  (ranges do not overlap)
+/// C=2   62.13         vs 62.30   -0.3%
+/// C=4   64.62         vs 68.69   -5.9%
+/// ```
 ///
 /// It helps C=1 and hurts C=4, and NEITHER theory for it survives the data.
 /// "Re-reading the ~13 MB low-rank weights per chunk costs more than the GEMM

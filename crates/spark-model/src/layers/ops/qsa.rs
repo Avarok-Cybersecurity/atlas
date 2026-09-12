@@ -281,6 +281,81 @@ pub fn qsa_prefill_attn(
         .launch(stream)
 }
 
+/// Tensor-core `qsa_prefill_attn`: one CTA per QUERY ROW, all `nq` heads
+/// together, `mma.sync.m16n8k16` for both QK^T and PV.
+///
+/// Only valid where the kernel's compile-time tile matches the model:
+/// `hd == 256`, `nq <= 16`, and `nkv == 1` (every head then shares one KV
+/// row, which is what makes one CTA per row correct). [`qsa_prefill_attn_tc_ok`]
+/// is the gate; callers must fall back to [`qsa_prefill_attn`] when it is false.
+#[allow(clippy::too_many_arguments)]
+pub fn qsa_prefill_attn_tc(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    block_table: DevicePtr,
+    lists: DevicePtr,
+    attn_out: DevicePtr,
+    rows: u32,
+    first_pos: u32,
+    topk: u32,
+    ratio: u32,
+    block_size: u32,
+    nq: u32,
+    nkv: u32,
+    hd: u32,
+    inv_sqrt_d: f32,
+    stream: u64,
+) -> Result<()> {
+    debug_assert!(qsa_prefill_attn_tc_ok(nq, nkv, hd));
+    KernelLaunch::new(gpu, kernel)
+        .grid([rows, 1, 1])
+        .block([256, 1, 1])
+        .shared_mem(QSA_PA_TC_SMEM)
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(block_table)
+        .arg_ptr(lists)
+        .arg_ptr(attn_out)
+        .arg_u32(first_pos)
+        .arg_u32(topk)
+        .arg_u32(ratio)
+        .arg_u32(block_size)
+        .arg_u32(nq)
+        .arg_u32(nkv)
+        .arg_u32(hd)
+        .arg_f32(inv_sqrt_d)
+        .launch(stream)
+}
+
+/// Tile constants, mirroring `QSA_PATC_*` in `qsa_indexer.cu`.
+const QSA_PA_TC_TB: u32 = 64;
+const QSA_PA_TC_HD: u32 = 256;
+const QSA_PA_TC_M: u32 = 16;
+const QSA_PA_TC_PAD: u32 = 8;
+
+/// Dynamic shared memory the TC kernel carves up. Must equal the kernel's own
+/// layout exactly — sKT + sV + sQ + sP + sS + (m, l, corr) + token ids.
+///
+/// 85_952 B, against the sm_121 opt-in ceiling of
+/// [`super::ssm_ssd::MAX_DYNAMIC_SMEM`] (101_376); the 48 KB figure is the
+/// STATIC limit, which is why these arrays are dynamic.
+pub const QSA_PA_TC_SMEM: u32 = QSA_PA_TC_HD * (QSA_PA_TC_TB + QSA_PA_TC_PAD) * 2
+    + QSA_PA_TC_TB * (QSA_PA_TC_HD + QSA_PA_TC_PAD) * 2
+    + QSA_PA_TC_M * (QSA_PA_TC_HD + QSA_PA_TC_PAD) * 2
+    + QSA_PA_TC_M * (QSA_PA_TC_TB + QSA_PA_TC_PAD) * 2
+    + QSA_PA_TC_M * QSA_PA_TC_TB * 4
+    + 3 * QSA_PA_TC_M * 4
+    + QSA_PA_TC_TB * 4;
+
+/// Whether the TC prefill-attention kernel may be used for this geometry.
+pub fn qsa_prefill_attn_tc_ok(nq: u32, nkv: u32, hd: u32) -> bool {
+    hd == QSA_PA_TC_HD && nq <= QSA_PA_TC_M && nkv == 1
+}
+
 /// Device top-k for prefill selection: `scores [rows, stride]` -> `lists
 /// [rows, topk]` block ids.
 ///
