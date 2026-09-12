@@ -1,0 +1,1 @@
+../../gb10/common/gdn_verify_fused_k2.cu
