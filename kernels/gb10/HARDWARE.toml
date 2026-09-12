@@ -60,3 +60,7 @@ ffn_m16_tc = false
 # `w8a16_gemm_m16{,_strided}` on the decode Q/K/V and o_proj (#927). OFF: no
 # GB10 receipt, and the kernel is not in this target's tree.
 attn_m16_tc = false
+# `dense_gemm_m16_bf16` on the BF16 decode head (#927). OFF: no GB10 receipt,
+# the kernel is not in this target's tree, and the arm is a token-visible
+# numerics seam that must not arrive by inheritance.
+lm_head_m16_tc = false

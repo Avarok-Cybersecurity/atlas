@@ -34,6 +34,7 @@ pub(crate) struct Defaults {
     pub decode_split_silu: bool,
     pub ffn_m16_tc: bool,
     pub attn_m16_tc: bool,
+    pub lm_head_m16_tc: bool,
 }
 
 /// What a target that declares NO `[defaults]` table gets.
@@ -56,6 +57,7 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         decode_split_silu: true,
         ffn_m16_tc: false,
         attn_m16_tc: false,
+        lm_head_m16_tc: false,
     }
 }
 
@@ -151,6 +153,7 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             "decode_split_silu" => out.decode_split_silu = boolean(key, value),
             "ffn_m16_tc" => out.ffn_m16_tc = boolean(key, value),
             "attn_m16_tc" => out.attn_m16_tc = boolean(key, value),
+            "lm_head_m16_tc" => out.lm_head_m16_tc = boolean(key, value),
             other => panic!(
                 "kernels/{hw}/HARDWARE.toml: [defaults] has no key `{other}`. \
                  The lever list is the field list of `TargetDefaults` \
@@ -181,6 +184,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   decode_split_silu: {split_silu},\n\
          \x20   ffn_m16_tc: {ffn_m16_tc},\n\
          \x20   attn_m16_tc: {attn_m16_tc},\n\
+         \x20   lm_head_m16_tc: {lm_head_m16_tc},\n\
          }};\n",
         hw = d.hw,
         batchm = d.lm_head_batchm_max,
@@ -188,6 +192,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
         split_silu = d.decode_split_silu,
         ffn_m16_tc = d.ffn_m16_tc,
         attn_m16_tc = d.attn_m16_tc,
+        lm_head_m16_tc = d.lm_head_m16_tc,
     )
 }
 

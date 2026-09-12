@@ -91,18 +91,6 @@ pub(super) struct LmHeadM16Tc {
     pub n_tile: u32,
 }
 
-/// `ATLAS_LM_HEAD_M16_TC` — PRESENCE, default OFF.
-///
-/// Presence rather than `== "1"`, matching `ATLAS_FFN_M16_TC` /
-/// `ATLAS_ATTN_M16_TC` next door: every A/B recipe stays a bare `VAR=1` prefix
-/// with no "=0 means on" trap. Default OFF because this arm REASSOCIATES the K
-/// reduction against `dense_gemv_bf16` (see [`lm_head_m16_tc_route`]) and the
-/// LM head is the one layer where a near-tie argmax flip changes the emitted
-/// token — so it ships dark until an H100 receipt says it wins.
-fn m16_tc_enabled_from_presence(present: bool) -> bool {
-    present
-}
-
 /// `ATLAS_LM_HEAD_M16_TC_NTILE` — 32 (default) or 64. An unrecognised value
 /// falls back to 32 rather than failing the boot: the tile is a perf A/B knob,
 /// and the route log names the tile that actually ran.
@@ -122,7 +110,11 @@ fn lm_head_m16_tc_env() -> (bool, u32) {
     *ENV.get_or_init(|| {
         let n_tile = std::env::var("ATLAS_LM_HEAD_M16_TC_NTILE").ok();
         (
-            m16_tc_enabled_from_presence(std::env::var_os("ATLAS_LM_HEAD_M16_TC").is_some()),
+            // ★ THE TARGET'S DECLARATION, environment second. `lm_head_m16_tc`
+            // is a `[defaults]` row, so an H100 serve reproduces round 9 cell
+            // Y with an empty environment; `ATLAS_LM_HEAD_M16_TC=0` is the A/B
+            // that pins the bit-exact tier back.
+            ops::target_defaults::resolved().lm_head_m16_tc.value,
             m16_tc_n_tile_from_value(n_tile.as_deref()),
         )
     })

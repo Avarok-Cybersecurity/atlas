@@ -110,6 +110,21 @@ ffn_m16_tc = false
 # whole reason there are two rows. `ATLAS_ATTN_M16_TC=0` is the one-variable
 # A/B that pins the parent tiers.
 attn_m16_tc = true
+# `dense_gemm_m16_bf16` on the BF16 decode head (#927). ON. H100 round 9, cell
+# Y against cell U on the same binary: C=16 aggregate 235.47 -> 245.10
+# (+4.09%), TPOT 53.42 -> 50.79 ms (-4.92%). Round 12 nsys prices the head at
+# 943.8 us = 4.31% of the C=1 step, one launch, 16 rows.
+#
+# 🔴 It REASSOCIATES the K reduction against `dense_gemv_bf16`, and at the LM
+# head that is a TOKEN-VISIBLE seam -- a near-tie argmax can flip -- not a
+# rounding detail. It is on here on a measured SERVE receipt, not a microtest,
+# and `ATLAS_LM_HEAD_M16_TC=0` restores the bit-exact tier.
+#
+# `ATLAS_LM_HEAD_M16_TC_NTILE=64` is the width knob. Round 9 cell Y2 measured
+# it a NULL at serving scale (245.30 / 50.71 ms against Y's 245.10 / 50.79, a
+# 0.08% difference against a 0.11-0.17% spread) even though the microtest
+# prefers n64 by 2-4%, so 32 ships and the route line says which ran.
+lm_head_m16_tc = true
 
 # ── Kernels this target OWNS instead of inheriting ─────────────────────────
 #

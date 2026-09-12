@@ -32,6 +32,7 @@ const GB10: TargetDefaults = TargetDefaults {
     decode_split_silu: true,
     ffn_m16_tc: false,
     attn_m16_tc: false,
+    lm_head_m16_tc: false,
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]`.
@@ -47,6 +48,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     decode_split_silu: true,
     ffn_m16_tc: false,
     attn_m16_tc: true,
+    lm_head_m16_tc: true,
 };
 
 fn with(defaults: &TargetDefaults, env: &[(&str, &str)]) -> TargetLevers {
@@ -316,4 +318,20 @@ fn the_m16_umbrella_arms_both_halves() {
     let both = with(&GB10, &[("ATLAS_M16_TC", "1")]);
     assert!(both.ffn_m16_tc.value && both.attn_m16_tc.value);
     assert!(both.ffn_m16_tc.from_env() && both.attn_m16_tc.from_env());
+}
+
+/// The BF16 decode head's tensor-core arm: ON for Hopper on round 9 cell Y
+/// (+4.09% C=16 aggregate), and NOT reachable through the round-6 umbrella,
+/// which predates the arm and never measured it.
+#[test]
+fn hopper_arms_the_tensor_core_head_and_the_umbrella_does_not() {
+    assert!(empty(&HOPPER).lm_head_m16_tc.value);
+    assert!(!empty(&GB10).lm_head_m16_tc.value);
+    let umbrella = with(&GB10, &[("ATLAS_M16_TC", "1")]);
+    assert!(
+        !umbrella.lm_head_m16_tc.value,
+        "ATLAS_M16_TC is round 6's, and round 6 did not measure the head"
+    );
+    let off = with(&HOPPER, &[("ATLAS_LM_HEAD_M16_TC", "0")]);
+    assert!(!off.lm_head_m16_tc.value && off.lm_head_m16_tc.from_env());
 }

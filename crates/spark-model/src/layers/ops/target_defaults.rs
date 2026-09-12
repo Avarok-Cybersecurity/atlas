@@ -172,6 +172,8 @@ pub struct TargetLevers {
     pub ffn_m16_tc: Resolved<bool>,
     /// The `w8a16_gemm_m16` tiers on the decode Q/K/V and o_proj (#927).
     pub attn_m16_tc: Resolved<bool>,
+    /// The `dense_gemm_m16_bf16` arm on the BF16 decode head (#927).
+    pub lm_head_m16_tc: Resolved<bool>,
 }
 
 /// The whole table, as a pure function of the baked declaration and a variable
@@ -226,6 +228,15 @@ pub fn resolve(
                 .as_deref(),
             false,
         ),
+        // NOT under `ATLAS_M16_TC`. The umbrella is round 6's, which predates
+        // this arm and never measured it; folding the head in would silently
+        // widen what an old recipe means. Its own variable, or the target's
+        // declaration.
+        lm_head_m16_tc: resolve_toggle(
+            defaults.lm_head_m16_tc,
+            var("ATLAS_LM_HEAD_M16_TC").as_deref(),
+            false,
+        ),
     }
 }
 
@@ -272,7 +283,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
         "target defaults ({hw}): sm_count={sms} \
          lm_head_batchm_max={batchm}{batchm_src} \
          ssm_batched_recurrent={recurrent} decode_split_silu={silu} \
-         ffn_m16_tc={ffn_m16_tc} attn_m16_tc={attn_m16_tc}",
+         ffn_m16_tc={ffn_m16_tc} attn_m16_tc={attn_m16_tc} \
+         lm_head_m16_tc={lm_head_m16_tc}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
         // at boot against the driver. Printed on this line because the levers
@@ -285,6 +297,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         silu = onoff(l.decode_split_silu),
         ffn_m16_tc = onoff(l.ffn_m16_tc),
         attn_m16_tc = onoff(l.attn_m16_tc),
+        lm_head_m16_tc = onoff(l.lm_head_m16_tc),
     )
 }
 

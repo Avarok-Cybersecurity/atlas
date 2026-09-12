@@ -79,6 +79,9 @@ ffn_m16_tc = false
 # B200 receipt. Hopper measures +5.3% here, and a Hopper row is not inherited
 # by resemblance (`tests/target_defaults.rs`).
 attn_m16_tc = false
+# `dense_gemm_m16_bf16` on the BF16 decode head (#927). OFF: no B200 receipt,
+# and this target does not carry the kernel.
+lm_head_m16_tc = false
 
 # ── Kernels this target does NOT reach ────────────────────────────────────
 #

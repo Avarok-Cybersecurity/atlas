@@ -98,4 +98,17 @@ pub struct TargetDefaults {
     /// restricted to 5..16 rows. Same kernel family as [`Self::ffn_m16_tc`],
     /// opposite verdict, which is why they are two rows.
     pub attn_m16_tc: bool,
+    /// The `dense_gemm_m16_bf16` tensor-core arm on the BF16 decode head
+    /// (`model/trait_impl/lm_head_batched.rs`), for 5..16 rows.
+    ///
+    /// TRUE on hopper: H100 round 9 cell Y against cell U, C=16 aggregate
+    /// 235.47 -> 245.10 (+4.09%), TPOT 53.42 -> 50.79 ms (-4.92%). The head is
+    /// ~7% of the step (round 12 nsys: 943.8 us, 4.31%), so this is most of
+    /// what is there to win at that site.
+    ///
+    /// 🔴 It REASSOCIATES the K reduction against `dense_gemv_bf16`, and at the
+    /// LM head that is a token-visible seam rather than a rounding detail — a
+    /// near-tie argmax can flip. It is ON here on a measured serve receipt, not
+    /// on a microtest.
+    pub lm_head_m16_tc: bool,
 }
