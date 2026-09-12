@@ -45,7 +45,10 @@ def main() -> None:
             ids = tok(prompt, return_tensors="pt")
             ids = {k: v.to(device) for k, v in ids.items()}
             out = lm.generate(
-                **ids, max_new_tokens=MAX_NEW, do_sample=False
+                **ids,
+                max_new_tokens=MAX_NEW,
+                do_sample=False,
+                eos_token_id=tok.eos_token_id,
             )
             rows.append(
                 {

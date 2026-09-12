@@ -39,5 +39,10 @@ spark2 `c1_prompt0_first_token_top8` + `c1_prompt0_first_eight_generated`: **PAS
 
 Full 8×128 greedy (`c1_greedy_vs_hf_goldens_skip_if_missing`) **FAIL** at index 54 (46 generated tokens). Shared prefix through `..., 19392, 13, 163585` then ours `39058` vs HF `163585` (HF double-emits 163585 and loops Bee Movie). Ours does not collapse to 261/667 anymore.
 
+TEST NOTES (EOS)
+163585 is `[EOS]`. Every golden hits EOS inside the 128 cap (gen index 9–45). The previous 128-token FAIL was the token *after* the first EOS (HF emits a second `[EOS]` and loops; we emit `Prepare`). That is not a greedy oracle.
+
+C1 protocol: exact match **through first EOS inclusive**, max_new=128 as a cap. Re-run all 8 prompts on spark2.
+
 STOP
-First-8 green. **46 generated tokens match HF** then FP32 CPU vs BF16 CUDA / KDA sketch drift. Full 128×8 C1 stays red. Do not /stamp.
+Waiting on spark2 8-prompt until-EOS. Do not check C2–C7 until that is green.

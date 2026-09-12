@@ -13,6 +13,16 @@ use serde::Deserialize;
 /// (the first mismatch in the C1 FAIL log).
 const HF_PROMPT0_FIRST: u32 = 1459;
 const HF_PROMPT0_SECOND: u32 = 387;
+/// Twin tokenizer `eos_token_id`. Greedy stops here. Tokens after the first
+/// EOS in the 128-cap goldens are not an oracle (HF then loops `[EOS]`).
+const TWIN_EOS: u32 = 163585;
+
+fn until_first_eos(ids: &[u32]) -> &[u32] {
+    match ids.iter().position(|&t| t == TWIN_EOS) {
+        Some(i) => &ids[..=i],
+        None => ids,
+    }
+}
 
 const GOLDEN_REL: &str = "../../docs/k3/goldens/kimi-k3-0.40b-greedy.json";
 
@@ -113,10 +123,17 @@ fn c1_greedy_vs_hf_goldens_skip_if_missing() {
     for (i, row) in rows.iter().enumerate() {
         let split = row.tokens.len() - max_new;
         let prompt = &row.tokens[..split];
-        let got = greedy_decode(&engine, prompt, max_new, Ablation::default());
+        let want = until_first_eos(&row.tokens);
+        assert!(
+            want.last() == Some(&TWIN_EOS),
+            "C1 prompt {i}: golden never hits EOS; post-EOS 128-cap is not the oracle"
+        );
+        let n_new = want.len() - split;
+        let got = greedy_decode(&engine, prompt, n_new, Ablation::default());
+        let got = until_first_eos(&got);
         assert_eq!(
-            got, row.tokens,
-            "C1 prompt {i} ({}) token mismatch",
+            got, want,
+            "C1 prompt {i} ({}) mismatch through first EOS (not post-EOS 128-cap)",
             row.prompt
         );
     }
