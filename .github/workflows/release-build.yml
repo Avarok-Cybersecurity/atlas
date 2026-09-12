@@ -278,6 +278,7 @@ jobs:
 
       - name: Install CUDA toolkit (linux)
         if: startsWith(matrix.toolchain, 'cuda') && matrix.os == 'linux'
+        timeout-minutes: 15  # normally ~1 min; a deadline so a stalled download cannot hold the merge queue
         run: |
           set -euo pipefail
           # Installed straight from NVIDIA's apt repo rather than via the
@@ -316,6 +317,7 @@ jobs:
 
       - name: Install CUDA toolkit (windows)
         if: startsWith(matrix.toolchain, 'cuda') && matrix.os == 'windows'
+        timeout-minutes: 30  # normally ~7 min; a deadline so a stalled download cannot hold the merge queue
         shell: pwsh
         run: |
           # NVIDIA's own silent network installer. The cuda-toolkit action has
@@ -403,11 +405,18 @@ jobs:
 
       - name: Install NCCL
         if: contains(matrix.toolchain, 'nccl')
+        timeout-minutes: 10  # normally ~1 min
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends libnccl2 libnccl-dev
 
       - name: Install SCALE toolchain (AMD)
         if: matrix.toolchain == 'scale'
+        # The 1.4 GB tarball download hung a merge-queue run for 50+ minutes
+        # on 2026-09-12 (#1024): curl had no deadline and the job's only limit
+        # was the 6-hour default, so the queue sat behind a dead TCP
+        # connection. A stalled required check is a blocked merge queue; fail
+        # fast so the entry can be retried.
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           # ATLAS_TARGET_MODEL/QUANT are REQUIRED, not optional: atlas-kernels
@@ -421,7 +430,11 @@ jobs:
           # build-essential -> cuda.h needs <cstddef>; libnuma -> libhsakmt.
           sudo apt-get install -y --no-install-recommends build-essential libnuma1 libnuma-dev
           mkdir -p "$HOME/scale" && cd "$HOME/scale"
-          curl -L --fail --retry 3 -o scale.tar.xz \
+          # --speed-limit/--speed-time: abort a stalled transfer (< 512 KiB/s
+          # for 60 s) instead of waiting for the job timeout; --retry-all-errors
+          # so that abort (curl 28) is retried like any other transient error.
+          curl -L --fail --retry 3 --retry-all-errors --connect-timeout 30 \
+            --max-time 900 --speed-limit 524288 --speed-time 60 -o scale.tar.xz \
             https://pkgs.scale-lang.com/tar/scale-1.7.1-amd64.tar.xz
           tar -xf scale.tar.xz && rm -f scale.tar.xz
           SCALE_HOME="$HOME/scale/scale-1.7.1-Linux"
