@@ -255,6 +255,35 @@ impl Qwen3AttentionLayer {
                 "w8a16_gemv_batch4",
                 "w8a16_gemv_batch16_strided",
             ),
+            w8a16_gemm_m16_k: super::super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16"),
+            w8a16_gemm_m16_strided_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemm_m16",
+                "w8a16_gemm_m16_strided",
+            ),
+            m16_tc: crate::layers::dense_ffn::m16_tc::m16_tc_levers().attn,
+            w8a16_gemv_ncol2_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol2",
+            ),
+            w8a16_gemv_ncol4_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol4",
+            ),
+            w8a16_gemv_ncol2_strided_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol2_strided",
+            ),
+            w8a16_gemv_ncol4_strided_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol4_strided",
+            ),
+            attn_ncol: super::attn_ncol_gemv::ncol_gemv_enabled()
+                .then(super::attn_ncol_gemv::ncol_gemv_width),
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemm_pipelined_k: super::super::try_kernel(
                 gpu,

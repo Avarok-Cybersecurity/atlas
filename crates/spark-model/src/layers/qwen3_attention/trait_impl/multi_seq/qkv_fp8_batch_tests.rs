@@ -10,6 +10,7 @@
 use super::super::ctx::MultiSeqCtx;
 use crate::layer::{ForwardContext, MoeLoraRoute};
 use crate::layers::ops::{DerivedWeights, GemmDispatch, ModelLevers, ModelStats};
+use crate::layers::qwen3_attention::attn_ncol_gemv::NcolWidth;
 use crate::layers::{FfnComponent, qwen3_attention::Qwen3AttentionLayer};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, Fp8Weight, QuantWeight, QuantizedWeight, WeightQuantFormat,
@@ -23,6 +24,10 @@ use spark_runtime::kv_cache::KvCacheDtype;
 const SCALAR_K: u64 = 0xF081;
 const BATCH4_K: u64 = 0xF084;
 const BATCH16_K: u64 = 0xF08C;
+const NCOL2_K: u64 = 0xF0C2;
+const NCOL4_K: u64 = 0xF0C4;
+/// The tensor-core strided tier (`ATLAS_ATTN_M16_TC`).
+const M16TC_STRIDED_K: u64 = 0xF08E;
 const WIDTH: usize = 128;
 
 /// What the tier under test is expected to emit for one projection.
@@ -40,6 +45,17 @@ struct Case {
     handles: bool,
     format: WeightQuantFormat,
     enabled: bool,
+    /// `ATLAS_ATTN_NCOL_GEMV` as the layer caches it — injected as a field so
+    /// the test drives the rule and not the process-global `OnceLock`.
+    ncol: Option<NcolWidth>,
+    /// Whether the shadow carries the `_ncol*_strided` entry points.
+    ncol_handles: bool,
+    /// `ATLAS_ATTN_M16_TC` as the layer caches it — a field for the same reason
+    /// `ncol` is one: the production accessor is a process-global `OnceLock`.
+    /// Round 6 split this from `ATLAS_FFN_M16_TC`, which no longer reaches here.
+    m16_tc: bool,
+    /// Whether the shadow carries `w8a16_gemm_m16_strided`.
+    m16_tc_handles: bool,
 }
 
 impl Case {
@@ -50,6 +66,26 @@ impl Case {
             handles: true,
             format: WeightQuantFormat::Fp8BlockScaled,
             enabled: true,
+            ncol: None,
+            ncol_handles: true,
+            m16_tc: false,
+            m16_tc_handles: true,
+        }
+    }
+
+    /// The same case with the tensor-core tier opted in.
+    fn m16_tc(rows: usize) -> Self {
+        Self {
+            m16_tc: true,
+            ..Self::new(rows)
+        }
+    }
+
+    /// The same case with the N-column tier opted in at `width`.
+    fn ncol(rows: usize, width: NcolWidth) -> Self {
+        Self {
+            ncol: Some(width),
+            ..Self::new(rows)
         }
     }
 }
@@ -118,7 +154,80 @@ fn native_fp8_qkv_kill_switch_deselects_the_tier() {
     check_dispatch(&case, Expect::Scalar);
 }
 
+/// The N-column tier takes exactly the band `w8a16_gemv_batch16` owns, and is
+/// a pure kernel swap: still ONE strided launch per projection, still the same
+/// argument layout (the assertions in `check_dispatch` are shared).
+#[test]
+fn native_fp8_qkv_ncol_tier_takes_the_batch16_band() {
+    for rows in [5, 8, 12, 16] {
+        check_dispatch(&Case::ncol(rows, NcolWidth::Two), Expect::Batched(NCOL2_K));
+        check_dispatch(&Case::ncol(rows, NcolWidth::Four), Expect::Batched(NCOL4_K));
+    }
+}
+
+/// Below the band the ALU wall the tier attacks is not there yet
+/// (`w8a16_gemv_batch4` pays ~10 ops per weight byte at m<=4), so the lever
+/// must not move those widths.
+#[test]
+fn native_fp8_qkv_ncol_leaves_small_batches_on_batch4() {
+    for rows in [2, 3, 4] {
+        check_dispatch(&Case::ncol(rows, NcolWidth::Two), Expect::Batched(BATCH4_K));
+    }
+}
+
+/// A shadow without the `_ncol*` entry points keeps the batch16 GEMV rather
+/// than falling off the batched tier.
+#[test]
+fn native_fp8_qkv_ncol_declines_without_its_entry_points() {
+    let mut case = Case::ncol(16, NcolWidth::Two);
+    case.ncol_handles = false;
+    check_dispatch(&case, Expect::Batched(BATCH16_K));
+}
+
+/// The kill switch reaches the layer as `attn_ncol: None` (SSOT:
+/// `attn_ncol_gemv::ncol_gemv_enabled`, where `ATLAS_NO_ATTN_DECODE_BATCH`
+/// wins over `ATLAS_ATTN_NCOL_GEMV`).
+#[test]
+fn native_fp8_qkv_ncol_off_keeps_batch16() {
+    check_dispatch(&Case::new(16), Expect::Batched(BATCH16_K));
+}
+
+/// THE per-row-loop pin. The whole Q/K/V phase — projections, the gated
+/// deinterleave and the q/k norms — must cost the SAME number of launches at
+/// 16 rows as at 2, on both the batch16 and the N-column route. A reintroduced
+/// per-sequence loop anywhere in the phase moves this number (it was 3n + 2n
+/// before the strided tiers landed).
+#[test]
+fn native_fp8_qkv_phase_launch_count_is_row_independent() {
+    let baseline = qkv_phase_launches(&Case::new(2));
+    for rows in [4, 8, 12, 16] {
+        assert_eq!(
+            qkv_phase_launches(&Case::new(rows)),
+            baseline,
+            "batch16 route, rows={rows}"
+        );
+        assert_eq!(
+            qkv_phase_launches(&Case::ncol(rows, NcolWidth::Two)),
+            baseline,
+            "N-column route, rows={rows}"
+        );
+    }
+}
+
 fn check_dispatch(case: &Case, expect: Expect) {
+    run_phase(case, Some(expect));
+}
+
+/// Launches the whole `ms_phase_qkv` costs for this case, with no expectation
+/// on which kernel served the projections.
+fn qkv_phase_launches(case: &Case) -> usize {
+    run_phase(case, None)
+}
+
+/// Drives `ms_phase_qkv` on the mock backend. Returns the phase's launch count;
+/// `expect` (when given) also pins the tier and the per-projection argument
+/// layout.
+fn run_phase(case: &Case, expect: Option<Expect>) -> usize {
     let gpu = MockGpuBackend::new();
     let width = case.width;
     let mut config = ModelConfig::qwen3_next_80b_nvfp4();
@@ -166,6 +275,15 @@ fn check_dispatch(case: &Case, expect: Expect) {
     layer.w8a16_gemv_k = KernelHandle(SCALAR_K);
     layer.w8a16_gemv_batch4_strided_k = KernelHandle(if case.handles { BATCH4_K } else { 0 });
     layer.w8a16_gemv_batch16_strided_k = KernelHandle(if case.handles { BATCH16_K } else { 0 });
+    layer.w8a16_gemv_ncol2_strided_k = KernelHandle(if case.ncol_handles { NCOL2_K } else { 0 });
+    layer.w8a16_gemv_ncol4_strided_k = KernelHandle(if case.ncol_handles { NCOL4_K } else { 0 });
+    layer.attn_ncol = case.ncol;
+    layer.m16_tc = case.m16_tc;
+    layer.w8a16_gemm_m16_strided_k = KernelHandle(if case.m16_tc_handles {
+        M16TC_STRIDED_K
+    } else {
+        0
+    });
     layer.deinterleave_qg_k = KernelHandle(0xF0D1);
 
     let q_dim = (config.num_attention_heads * config.head_dim) as u32;
@@ -219,15 +337,17 @@ fn check_dispatch(case: &Case, expect: Expect) {
         0,
     );
 
-    assert_eq!(
-        layer.ms_qkv_batchm_fp8_selected(&c, case.enabled),
-        expect != Expect::Scalar,
-        "tier selection for rows={} width={} handles={} enabled={}",
-        case.rows,
-        case.width,
-        case.handles,
-        case.enabled
-    );
+    if let Some(expect) = expect {
+        assert_eq!(
+            layer.ms_qkv_batchm_fp8_selected(&c, case.enabled),
+            expect != Expect::Scalar,
+            "tier selection for rows={} width={} handles={} enabled={}",
+            case.rows,
+            case.width,
+            case.handles,
+            case.enabled
+        );
+    }
 
     if !case.enabled {
         // The kill switch is checked above, on the selection predicate. The
@@ -235,7 +355,7 @@ fn check_dispatch(case: &Case, expect: Expect) {
         // the env var, which a single test in a shared process cannot flip
         // without racing every other test — so stop here rather than assert a
         // launch pattern this process cannot produce.
-        return;
+        return 0;
     }
 
     let first = gpu.launch_count();
@@ -261,6 +381,9 @@ fn check_dispatch(case: &Case, expect: Expect) {
             kv_dim,
         ),
     ];
+    let Some(expect) = expect else {
+        return all.len() - first;
+    };
     for (weight, out_off, n_out) in projections {
         let w = weight.as_fp8().unwrap();
         let launches: Vec<_> = all[first..]
@@ -298,8 +421,70 @@ fn check_dispatch(case: &Case, expect: Expect) {
             }
         }
     }
+    all.len() - first
 }
 
 fn u32_arg(v: u32) -> MockArg {
     MockArg::Bytes(v.to_ne_bytes().to_vec())
+}
+
+/// ROUND 6's SPLIT. `ATLAS_ATTN_M16_TC` turns THIS tier on — the one that
+/// measured −21.7% on the H100 — and it takes exactly the band
+/// `w8a16_gemv_batch16_strided` owns: one strided launch per projection, same
+/// argument layout, a different kernel.
+#[test]
+fn native_fp8_qkv_attn_m16_tc_takes_the_batch16_band() {
+    for rows in [5, 8, 12, 16] {
+        check_dispatch(&Case::m16_tc(rows), Expect::Batched(M16TC_STRIDED_K));
+    }
+}
+
+/// The tensor-core tier sits AHEAD of the bit-exact N-column tier: an operator
+/// who sets `ATLAS_ATTN_M16_TC` is asking for the MMA route explicitly.
+#[test]
+fn native_fp8_qkv_attn_m16_tc_outranks_the_ncol_tier() {
+    let mut case = Case::m16_tc(16);
+    case.ncol = Some(NcolWidth::Four);
+    check_dispatch(&case, Expect::Batched(M16TC_STRIDED_K));
+}
+
+/// Below the band `w8a16_gemv_batch4_strided` still owns the rows — the tier's
+/// MAX_M is 16 and its lower edge is where the ALU wall starts, neither of
+/// which the lever moves.
+#[test]
+fn native_fp8_qkv_attn_m16_tc_leaves_small_batches_on_batch4() {
+    for rows in [2, 3, 4] {
+        check_dispatch(&Case::m16_tc(rows), Expect::Batched(BATCH4_K));
+    }
+}
+
+/// A shadow without `w8a16_gemm_m16_strided` keeps the batch16 GEMV rather than
+/// launching a zero handle.
+#[test]
+fn native_fp8_qkv_attn_m16_tc_declines_without_its_entry_point() {
+    let mut case = Case::m16_tc(16);
+    case.m16_tc_handles = false;
+    check_dispatch(&case, Expect::Batched(BATCH16_K));
+}
+
+/// ...and with the lever unset the tier is invisible, which is the default.
+#[test]
+fn native_fp8_qkv_without_the_attn_lever_stays_on_batch16() {
+    for rows in [5, 16] {
+        check_dispatch(&Case::new(rows), Expect::Batched(BATCH16_K));
+    }
+}
+
+/// The tier is a pure kernel swap, so the phase still costs the same number of
+/// launches at 16 rows as at 2 — the per-row-loop pin, on this route too.
+#[test]
+fn native_fp8_qkv_attn_m16_tc_phase_launch_count_is_row_independent() {
+    let baseline = qkv_phase_launches(&Case::new(2));
+    for rows in [4, 8, 12, 16] {
+        assert_eq!(
+            qkv_phase_launches(&Case::m16_tc(rows)),
+            baseline,
+            "tensor-core route, rows={rows}"
+        );
+    }
 }

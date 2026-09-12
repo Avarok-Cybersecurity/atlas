@@ -3,6 +3,7 @@
 use super::super::super::ctx::MultiSeqCtx;
 use crate::layer::{ForwardContext, MoeLoraRoute};
 use crate::layers::ops::{DerivedWeights, GemmDispatch, ModelLevers, ModelStats};
+use crate::layers::qwen3_attention::attn_ncol_gemv::NcolWidth;
 use crate::layers::{FfnComponent, qwen3_attention::Qwen3AttentionLayer};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, Fp8Weight, QuantWeight, QuantizedWeight, WeightQuantFormat,
@@ -20,6 +21,13 @@ enum Tier {
     Scalar,
     Batch4,
     Batch16,
+    /// The bit-exact N-column-blocked rung (#927) — same 16-row group as
+    /// `Batch16`, so only the kernel differs.
+    Ncol2,
+    Ncol4,
+    /// The tensor-core rung (`ATLAS_ATTN_M16_TC`, #927) — same 16-row group as
+    /// `Batch16`, an m16n8k16 MMA instead of 16 scalar FFMA per weight byte.
+    M16Tc,
 }
 
 impl Tier {
@@ -27,7 +35,7 @@ impl Tier {
         match self {
             Tier::Scalar => 1,
             Tier::Batch4 => 4,
-            Tier::Batch16 => 16,
+            Tier::Batch16 | Tier::Ncol2 | Tier::Ncol4 | Tier::M16Tc => 16,
         }
     }
 
@@ -36,6 +44,9 @@ impl Tier {
             Tier::Scalar => SCALAR_K,
             Tier::Batch4 => BATCH4_K,
             Tier::Batch16 => BATCH16_K,
+            Tier::Ncol2 => NCOL2_K,
+            Tier::Ncol4 => NCOL4_K,
+            Tier::M16Tc => M16TC_K,
         }
     }
 }
@@ -43,6 +54,10 @@ impl Tier {
 const SCALAR_K: u64 = 0xF081;
 const BATCH4_K: u64 = 0xF084;
 const BATCH16_K: u64 = 0xF08C;
+const NCOL2_K: u64 = 0xF0C2;
+const NCOL4_K: u64 = 0xF0C4;
+/// The tensor-core contiguous tier (`ATLAS_ATTN_M16_TC`).
+const M16TC_K: u64 = 0xF08E;
 
 #[test]
 fn native_fp8_attention_o_projection_batches_four_real_rows() {
@@ -92,11 +107,49 @@ fn check_dispatch(
     format: WeightQuantFormat,
     tier: Tier,
 ) {
-    check_dispatch_with(rows, width, available, available, format, tier)
+    check_dispatch_with(rows, width, available, available, format, tier, None, None)
+}
+
+/// `check_dispatch` with the N-column tier opted in — injected as the layer
+/// field the lever resolves to, so the test drives the rule and not the
+/// process-global `OnceLock`.
+fn check_dispatch_ncol(rows: usize, tier: Tier, ncol: NcolWidth) {
+    check_dispatch_with(
+        rows,
+        128,
+        true,
+        true,
+        WeightQuantFormat::Fp8BlockScaled,
+        tier,
+        Some(ncol),
+        None,
+    )
+}
+
+/// `check_dispatch` with the tensor-core tier opted in — injected as the layer
+/// field `ATLAS_ATTN_M16_TC` resolves to, for the same `OnceLock` reason.
+/// `handle` is whether the shadow carries `w8a16_gemm_m16`, which is the other
+/// half of the tier's predicate and a separate failure mode from the lever.
+fn check_dispatch_m16_tc(rows: usize, tier: Tier, handle: bool) {
+    check_dispatch_with(
+        rows,
+        128,
+        true,
+        true,
+        WeightQuantFormat::Fp8BlockScaled,
+        tier,
+        None,
+        Some(handle),
+    )
 }
 
 /// `wide` is the presence of the MAX_M=16 handle, separate from `available`
-/// (the MAX_M=4 one), so the "shadow lacks the new kernel" case is reachable.
+/// (the MAX_M=4 one), so the "shadow lacks the new kernel" case is reachable;
+/// `m16_tc` is `None` when `ATLAS_ATTN_M16_TC` is unset and `Some(handle)` when
+/// it is, where `handle` is the presence of `w8a16_gemm_m16` on the shadow —
+/// the lever and the entry point are separate failure modes and both are
+/// exercised below.
+#[allow(clippy::too_many_arguments)]
 fn check_dispatch_with(
     rows: usize,
     width: usize,
@@ -104,6 +157,8 @@ fn check_dispatch_with(
     wide: bool,
     format: WeightQuantFormat,
     tier: Tier,
+    ncol: Option<NcolWidth>,
+    m16_tc: Option<bool>,
 ) {
     let gpu = MockGpuBackend::new();
     let mut config = ModelConfig::qwen3_next_80b_nvfp4();
@@ -151,6 +206,11 @@ fn check_dispatch_with(
     layer.w8a16_gemv_k = KernelHandle(SCALAR_K);
     layer.w8a16_gemv_batch4_k = KernelHandle(if available { BATCH4_K } else { 0 });
     layer.w8a16_gemv_batch16_k = KernelHandle(if wide { BATCH16_K } else { 0 });
+    layer.w8a16_gemv_ncol2_k = KernelHandle(NCOL2_K);
+    layer.w8a16_gemv_ncol4_k = KernelHandle(NCOL4_K);
+    layer.attn_ncol = ncol;
+    layer.m16_tc = m16_tc.is_some();
+    layer.w8a16_gemm_m16_k = KernelHandle(if m16_tc == Some(true) { M16TC_K } else { 0 });
     let fp8 = Fp8Weight {
         weight: gpu.alloc(128 * 128).unwrap(),
         row_scale: gpu.alloc(4).unwrap(),
@@ -281,6 +341,83 @@ fn native_fp8_attention_o_projection_without_batch16_keeps_four_row_groups() {
             false,
             WeightQuantFormat::Fp8BlockScaled,
             Tier::Batch4,
+            None,
+            None,
         );
     }
+}
+
+/// The N-column tier serves the o_proj across the band `w8a16_gemv_batch16`
+/// owns, in the same ONE 16-row group — a kernel swap, not a launch-count
+/// change, and bit-exact per row (oracle:
+/// `examples/native_fp8_attn_decode_batch_microtest`).
+#[test]
+fn native_fp8_attention_o_projection_takes_the_ncol_tier() {
+    for rows in [5, 8, 12, 16] {
+        check_dispatch_ncol(rows, Tier::Ncol2, NcolWidth::Two);
+        check_dispatch_ncol(rows, Tier::Ncol4, NcolWidth::Four);
+    }
+}
+
+/// m <= 4 keeps `w8a16_gemv_batch4`: the ALU wall the tier attacks is
+/// proportional to M and that kernel is already near the bandwidth floor.
+#[test]
+fn native_fp8_attention_o_projection_ncol_leaves_small_batches_alone() {
+    for rows in [1, 2, 4] {
+        let tier = if rows == 1 {
+            Tier::Scalar
+        } else {
+            Tier::Batch4
+        };
+        check_dispatch_ncol(rows, tier, NcolWidth::Two);
+    }
+}
+
+/// Above MAX_M the group loop still walks in 16-row groups on the batch16
+/// GEMV — the tier declines rather than clamping rows away.
+#[test]
+fn native_fp8_attention_o_projection_ncol_declines_above_max_m() {
+    check_dispatch_ncol(20, Tier::Batch16, NcolWidth::Two);
+}
+
+/// ROUND 6's SPLIT, o_proj side. `ATLAS_ATTN_M16_TC` moves 5..=16 rows onto the
+/// MMA — the tier that measured −21.7% on the H100 — keeping the 16-row group.
+#[test]
+fn native_fp8_o_projection_attn_m16_tc_takes_the_sixteen_row_group() {
+    for rows in [5, 8, 12, 16] {
+        check_dispatch_m16_tc(rows, Tier::M16Tc, true);
+    }
+}
+
+/// Above MAX_M the loop still walks in 16-row groups — the lever changes which
+/// kernel serves a group, never how wide a group is.
+#[test]
+fn native_fp8_o_projection_attn_m16_tc_walks_wider_batches_in_sixteen_row_groups() {
+    check_dispatch_m16_tc(20, Tier::M16Tc, true);
+}
+
+/// 1..=4 rows keep `w8a16_gemv_batch4`: the tier's lower edge is the `wide`
+/// predicate, which the lever does not move.
+#[test]
+fn native_fp8_o_projection_attn_m16_tc_leaves_small_batches_on_batch4() {
+    check_dispatch_m16_tc(4, Tier::Batch4, true);
+}
+
+/// A shadow without `w8a16_gemm_m16` keeps the bit-exact batch16 rung rather
+/// than launching a zero handle — even with the lever set.
+#[test]
+fn native_fp8_o_projection_attn_m16_tc_declines_without_its_entry_point() {
+    check_dispatch_m16_tc(16, Tier::Batch16, false);
+}
+
+/// ...and with the lever unset the default is untouched.
+#[test]
+fn native_fp8_o_projection_without_the_attn_lever_stays_on_batch16() {
+    check_dispatch(
+        16,
+        128,
+        true,
+        WeightQuantFormat::Fp8BlockScaled,
+        Tier::Batch16,
+    );
 }

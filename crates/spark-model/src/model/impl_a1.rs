@@ -134,6 +134,17 @@ impl TransformerModel {
         let dense_gemv_batchm_kernel = gpu
             .kernel("dense_gemv_bf16_batchm", "dense_gemv_bf16_batchm")
             .unwrap_or(spark_runtime::gpu::KernelHandle(0));
+        // Tensor-core BF16 head arm (#927/#928). Optional: older kernel sets
+        // have neither entry point, and a 0 handle is exactly how
+        // `lm_head_m16_tc_route` declines. Loaded unconditionally — a handle is
+        // cheap and `ATLAS_LM_HEAD_M16_TC` decides whether it is ever launched.
+        let lm_head_m16_tc_kernel =
+            crate::layers::try_kernel(gpu.as_ref(), "dense_gemm_m16_bf16", "dense_gemm_m16_bf16");
+        let lm_head_m16_tc_n64_kernel = crate::layers::try_kernel(
+            gpu.as_ref(),
+            "dense_gemm_m16_bf16",
+            "dense_gemm_m16_bf16_n64",
+        );
         let argmax_kernel = gpu.kernel("argmax", "argmax_bf16")?;
         let argmax_batch_kernel = gpu
             .kernel("argmax", "argmax_bf16_batch")
@@ -878,6 +889,8 @@ impl TransformerModel {
             dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,
             dense_gemv_batchm_kernel,
+            lm_head_m16_tc_kernel,
+            lm_head_m16_tc_n64_kernel,
             argmax_kernel,
             argmax_batch_kernel,
             argmax_logits_kernel,

@@ -71,3 +71,17 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = false
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+
+# ── Kernels this target does NOT reach ────────────────────────────────────
+#
+# No `[kernels] overrides`, deliberately. `kernels/hopper/common` holds three
+# sources that are not in `kernels/gb10/common` at all — `w8a16_gemm_m16.cu`,
+# `dense_gemm_m16_bf16.cu`, `w8a16_gemv_ncol.cu` (#927) — and B200 does not
+# reach them. They are ordinary datacentre MMA that this architecture could
+# compile, but each is reached only under a serving lever that an A/B has to
+# turn on, and B200 has no such receipt: linking them in would compile three
+# kernels nothing on this target can launch, and would add three cross-hardware
+# symlinks that `scripts/check_cross_hardware.py` rule S1 refuses outright.
+#
+# The day a B200 receipt exists, the fix is a `[kernels] overrides` list here
+# plus the mirror entries, in the same change as the measurement.

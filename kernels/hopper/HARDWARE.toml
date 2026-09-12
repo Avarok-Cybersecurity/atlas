@@ -118,9 +118,31 @@ decode_split_silu = true
 #   w8a16_gemv_hopper.cuh    The shared inner loop of those two, and the SSOT
 #                            for the bit-identity argument. No gb10
 #                            counterpart by design: nothing else includes it.
+#
+# ── The three ADDITIONS: new stems, entry points gb10 does not declare ─────
+#
+#   dense_gemm_m16_bf16.cu   BF16 decode head, m16n8k16 M tile (#927). Reached
+#                            only under `[defaults] lm_head_m16_tc`.
+#   w8a16_gemm_m16.cu        Native-FP8 M16 tensor-core tiers for the dense
+#                            FFN and the decode QKV/o_proj (#927). Reached
+#                            only under `[defaults] ffn_m16_tc` / `attn_m16_tc`.
+#   w8a16_gemv_ncol.cu       N-column-blocked decode attention projections
+#                            (#927). Reached only under `[defaults]
+#                            attn_ncol_gemv`.
+#
+# These three exist for datacentre decode performance and are reached only
+# under a lever no GB10 serve sets, so they are NOT in `kernels/gb10/common` at
+# all: a GB10 build does not compile a kernel it has no receipt for, and an
+# edit "for Hopper" cannot land in GB10's kernel. Every consumer resolves them
+# through `try_kernel` and declines on a zero handle, and every probe is gated
+# on the same lever that would launch the kernel — so a target without them
+# boots rather than failing the kernel audit on a lookup nothing declared.
 [kernels]
 overrides = [
+  "dense_gemm_m16_bf16.cu",
+  "w8a16_gemm_m16.cu",
   "w8a16_gemv.cu",
   "w8a16_gemv_fused.cu",
   "w8a16_gemv_hopper.cuh",
+  "w8a16_gemv_ncol.cu",
 ]

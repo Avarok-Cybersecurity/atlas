@@ -159,11 +159,37 @@ impl Qwen3AttentionLayer {
         // batch4 for n<=4, batch16 for 5..=16 — one launch either way; the only
         // difference is the kernel's compile-time register-array bound (and so
         // the MAX_M the wrapper enforces).
+        //
+        // 5..=16 ALSO has a tensor-core tier (#927): `w8a16_gemm_m16_strided`
+        // is the same one-weight-pass shape but replaces the batch16 GEMV's 16
+        // scalar FFMA per weight byte with one m16n8k16 MMA lane-slot, which is
+        // what the H100 measured as the difference between 342 GB/s and the
+        // HBM3 roofline (SSOT + numbers: `layers::dense_ffn::m16_tc`). It
+        // REASSOCIATES the K reduction, so it is behind `ATLAS_ATTN_M16_TC`
+        // (or the `ATLAS_M16_TC` umbrella) and off by default; `h % 128 == 0`
+        // is already guaranteed by `dims_ok` in the selector, and the row pitch
+        // guard by `strides_ok`. That lever is SEPARATE from the FFN's since
+        // round 6: this tier measured -21.7% on the H100 in the same serve
+        // where the FFN arm measured +13.7%.
+        let tc = self.m16_tc && self.w8a16_gemm_m16_strided_k.0 != 0 && h.is_multiple_of(128);
         let (launch, kernel): (StridedBatchGemv, KernelHandle) = if n <= 4 {
             (
                 ops::w8a16_gemv_batch4_strided,
                 self.w8a16_gemv_batch4_strided_k,
             )
+        } else if tc {
+            crate::layers::qwen3_attention::attn_m16_tc_route::log_qkv_m16_tc_route(fwd.stats);
+            (ops::w8a16_gemm_m16_strided, self.w8a16_gemm_m16_strided_k)
+        } else if let Some(route) = self.ncol_strided_route(n) {
+            // N-COLUMN-BLOCKED, BIT-EXACT (#927, `attn_ncol_gemv.rs`). Same
+            // one-weight-pass shape as the batch16 GEMV below and the same
+            // per-row reduction order — one thread just owns N_COLS adjacent
+            // output columns, so the 32 `uint4` activation loads and 256
+            // BF16->FP32 converts it pays per 16 weight bytes amortise over
+            // N_COLS of them. BELOW the `tc` arm on purpose: an operator who
+            // sets `ATLAS_FFN_M16_TC` is asking for the MMA route explicitly,
+            // and that lever reaches the FFN too.
+            route
         } else {
             (
                 ops::w8a16_gemv_batch16_strided,

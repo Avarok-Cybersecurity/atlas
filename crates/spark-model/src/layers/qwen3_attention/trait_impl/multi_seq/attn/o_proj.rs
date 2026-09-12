@@ -213,6 +213,21 @@ impl Qwen3AttentionLayer {
                 && h % 128 == 0
                 && q_dim % 128 == 0;
             let wide = n > 4 && self.w8a16_gemv_batch16_k.0 != 0;
+            // #927 tensor-core tier, same 16-row group, `ATLAS_ATTN_M16_TC`
+            // (or the `ATLAS_M16_TC` umbrella) only — NOT the FFN's lever; the
+            // two split in round 6 because the H100 measured this tier -21.7%
+            // and the FFN arm +13.7% in one serve:
+            // `w8a16_gemm_m16` replaces the batch16 GEMV's 16 scalar FFMA per
+            // weight byte with one m16n8k16 MMA lane-slot. It REASSOCIATES the
+            // K reduction (<= 2 BF16 ULP), which is why it is levered and off by
+            // default — SSOT + the H100 numbers: `layers::dense_ffn::m16_tc`.
+            // K here is `nq * hd`, and the kernel folds
+            // `block_scale[n_block * (K/128) + k/128]`, so it needs whole
+            // 128-wide scale blocks on BOTH axes.
+            let tc = wide
+                && self.m16_tc
+                && self.w8a16_gemm_m16_k.0 != 0
+                && (nq * hd).is_multiple_of(128);
             let batched = n > 1 && block_scaled && (self.w8a16_gemv_batch4_k.0 != 0 || wide);
             let (gemv, kernel, step) = if !batched {
                 (
@@ -220,6 +235,21 @@ impl Qwen3AttentionLayer {
                     self.w8a16_gemv_batch4_k,
                     1,
                 )
+            } else if tc {
+                crate::layers::qwen3_attention::attn_m16_tc_route::log_o_proj_m16_tc_route(
+                    fwd.stats,
+                );
+                (ops::w8a16_gemm_m16 as BatchGemv, self.w8a16_gemm_m16_k, 16)
+            } else if let Some((gemv, kernel)) = self.ncol_contiguous_route(n) {
+                // N-COLUMN-BLOCKED, BIT-EXACT (#927, `attn_ncol_gemv.rs`): the
+                // batch16 GEMV's one weight pass and its exact per-row
+                // reduction order, with the activation loads and BF16->FP32
+                // converts amortised over N_COLS adjacent output columns. Same
+                // 16-row group, so `step` is unchanged. Reachable only past the
+                // `!batched` arm, so `block_scaled` — which this kernel needs
+                // for the same `block_scale[(n/128) * (K/128) + k/128]` fold as
+                // every rung of this family — already holds.
+                (gemv as BatchGemv, kernel, 16)
             } else if wide {
                 (
                     ops::w8a16_gemv_batch16 as BatchGemv,
