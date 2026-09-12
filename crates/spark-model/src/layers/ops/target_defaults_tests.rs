@@ -42,6 +42,7 @@ const GB10: TargetDefaults = TargetDefaults {
     gdn_decode_hopper: false,
     gdn_prefill_tc: false,
     ssm_ba_gates_hopper: false,
+    fp8_act_quant_hopper: false,
     ffn_gateup_fused: false,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
@@ -66,6 +67,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     gdn_decode_hopper: false,
     gdn_prefill_tc: true,
     ssm_ba_gates_hopper: true,
+    fp8_act_quant_hopper: true,
     ffn_gateup_fused: true,
     decode_split_silu: true,
     ssm_decode_ring_slots: "auto",
@@ -473,14 +475,16 @@ fn the_serve_line_names_every_lever_and_marks_the_environment_ones() {
     assert!(line.contains("attn_decode_splitk=legacy"), "{line}");
 }
 
-/// The `attn_decode_splitk` row (#928). A child module so it shares the
-/// fixtures above instead of copying them.
-#[path = "target_defaults_splitk_tests.rs"]
-mod splitk;
-
-/// The `ffn_gateup_fused` row (#927). Same seam and the same reason.
+// The per-lever seams — `attn_decode_splitk` (#928), `ffn_gateup_fused` (#927)
+// and `fp8_act_quant_hopper` (#928, round 16). Child modules, not siblings, so
+// each row's declaration, override and reported spelling sit together and
+// share the fixtures above instead of copying them.
+#[path = "target_defaults_actquant_tests.rs"]
+mod actquant;
 #[path = "target_defaults_gateup_tests.rs"]
 mod gateup;
+#[path = "target_defaults_splitk_tests.rs"]
+mod splitk;
 
 /// A target that names no hardware (a build that read no HARDWARE.toml) still
 /// produces a readable line rather than `target defaults (): …`.

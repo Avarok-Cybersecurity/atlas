@@ -105,6 +105,19 @@ fn hopper_declares_the_round_nine_recipe() {
          saving on the cuBLASLt W8A8 arm this target arms, worth 1 476 us of a \
          19.887 ms step (`FFN-GATEUP-FUSION-ATTRIBUTION.md`)"
     );
+    // The row round 16 adds (#928). ON, and for the same kind of reason as
+    // `ssm_ba_gates_hopper`: the twin is bit-identical, so the row is a speed
+    // claim only. It is the first row whose arm ALSO carries a width floor —
+    // measured 3.30-3.59x at M in {1168, 4576} and 0.76x-0.95x at M in
+    // {16, 17, 25} for K in {5120, 6144} — so `true` here arms a kernel that
+    // still declines its own launch below `2 * sm_count` CTAs.
+    assert!(
+        d.fp8_act_quant_hopper,
+        "the FP8 activation-quant twin is Hopper's default: 3.30-3.59x and \
+         63.7-68.4% of HBM at prefill widths against the parent's 18.6-19.1%, \
+         bit-identical, with the decode-width loss handled by the CTA floor \
+         rather than by this row (`FP8-ACT-QUANT-ATTRIBUTION.md`)"
+    );
     assert_eq!(d.ssm_decode_ring_slots, "auto");
     // The row round 13's attribution added (#928). `auto` is the split count
     // that fills 132 SMs at the single-stream shape; `legacy` is what was
@@ -219,6 +232,13 @@ fn b200_declares_the_conservative_table_not_hoppers() {
          it, so the row is inert here and must read false"
     );
     assert!(
+        !d.fp8_act_quant_hopper && declared("hopper").fp8_act_quant_hopper,
+        "the FP8 activation-quant twin is Hopper-only source; B200's common/ \
+         does not link it, so the row is inert here and must read false — and \
+         its floor is `2 * sm_count` CTAs, which on 148 SMs is a threshold \
+         nobody has measured"
+    );
+    assert!(
         !d.ffn_gateup_fused && declared("hopper").ffn_gateup_fused,
         "the fused gate+up decode GEMM is ON for Hopper on a Hopper receipt \
          (round 13 nsys) and OFF here for want of one — B200 also declares \
@@ -269,6 +289,9 @@ fn a_hopper_only_lever_is_still_declared_by_every_table() {
             // #927. The fourth hopper-only boolean. gb10 and b200 declare it
             // false rather than omitting it, for the same reason.
             "ffn_gateup_fused",
+            // #928, round 16. The fifth, and the one whose arm also carries a
+            // width floor — the row says WHETHER, the floor says WHERE.
+            "fp8_act_quant_hopper",
             // #917. GB10 caps, hopper and b200 declare u32::MAX. The row is
             // mandatory everywhere for the same reason as the two above: an
             // absent cap and a deliberate no-cap must not look identical.
@@ -362,6 +385,7 @@ fn the_generated_constant_names_every_field() {
         "gdn_decode_hopper: false",
         "gdn_prefill_tc: true",
         "ssm_ba_gates_hopper: true",
+        "fp8_act_quant_hopper: true",
         "ffn_gateup_fused: true",
         "decode_split_silu: true",
         "ssm_decode_ring_slots: \"auto\"",
@@ -394,6 +418,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.gdn_decode_hopper, declared.gdn_decode_hopper);
     assert_eq!(baked.gdn_prefill_tc, declared.gdn_prefill_tc);
     assert_eq!(baked.ssm_ba_gates_hopper, declared.ssm_ba_gates_hopper);
+    assert_eq!(baked.fp8_act_quant_hopper, declared.fp8_act_quant_hopper);
     assert_eq!(baked.ffn_gateup_fused, declared.ffn_gateup_fused);
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
     assert_eq!(baked.ssm_decode_ring_slots, declared.ssm_decode_ring_slots);

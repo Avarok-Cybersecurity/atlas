@@ -121,6 +121,29 @@ pub struct TargetDefaults {
     /// `ATLAS_SSM_BA_GATES_HOPPER=0` is the A/B. Numbers:
     /// `SSM-BA-GATES-ATTRIBUTION.md`.
     pub ssm_ba_gates_hopper: bool,
+    /// `per_token_group_quant_fp8_hopper` serves the per-token FP8 activation
+    /// quantizer with 16 threads per 128-element K-group and **8 groups per
+    /// CTA** (`layers/ops/fp8_act_quant.rs`), in place of its gb10 parent's
+    /// one CTA per group.
+    ///
+    /// TRUE on hopper, false elsewhere. The twin is BIT-IDENTICAL to the
+    /// parent — same `amax / 448.0f`, same `1e-12f` floor, same per-element
+    /// `div.rn.f32`, same saturating E4M3 convert; only the reduction tree
+    /// moves — so the row is purely a speed claim, and it is a claim with a
+    /// WIDTH. `native_fp8_act_quant_hopper_microtest`, 1xH100 80GB HBM3,
+    /// round 16: **3.30-3.59x at M in {1168, 4576}** (63.7-68.4% of HBM
+    /// against the parent's 18.6-19.1%) and **0.76x-0.95x at M in {16, 17, 25}
+    /// for K in {5120, 6144}** — 8 groups per CTA is 8x fewer CTAs, and at
+    /// those M the parent's grid is already under one wave on 132 SMs.
+    ///
+    /// So the row arms a kernel that is also behind a CTA-count floor
+    /// (`layers/ops/fp8_act_quant_floor.rs`): the twin takes a launch only
+    /// when its own grid clears `2 * sm_count` CTAs. `kernels/gb10` and
+    /// `kernels/b200` do not carry the source, so the row is INERT there and
+    /// declared only because the lever list is one list.
+    /// `ATLAS_FP8_ACT_QUANT_HOPPER=0` is the A/B. Numbers:
+    /// `FP8-ACT-QUANT-ATTRIBUTION.md`.
+    pub fp8_act_quant_hopper: bool,
     /// The dense FFN's gate and up projections run as ONE block-scaled FP8
     /// GEMM at `N = 2 * intermediate` on the 5..=16-row decode band, instead of
     /// two at `N = intermediate` (`layers/dense_ffn_gateup_fused.rs`).
