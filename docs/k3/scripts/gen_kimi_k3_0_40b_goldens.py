@@ -31,15 +31,19 @@ PROMPTS = [
 
 def main() -> None:
     tok = AutoTokenizer.from_pretrained(ROOT, trust_remote_code=True)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    print("device", device, "dtype", dtype, flush=True)
     model = AutoModelForCausalLM.from_pretrained(
-        ROOT, trust_remote_code=True, torch_dtype=torch.float32
-    )
+        ROOT, trust_remote_code=True, torch_dtype=dtype
+    ).to(device)
     model.eval()
     rows = []
     with torch.no_grad():
         for i, prompt in enumerate(PROMPTS):
             lm = getattr(model, "language_model", model)
             ids = tok(prompt, return_tensors="pt")
+            ids = {k: v.to(device) for k, v in ids.items()}
             out = lm.generate(
                 **ids, max_new_tokens=MAX_NEW, do_sample=False
             )
