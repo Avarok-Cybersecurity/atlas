@@ -435,9 +435,16 @@ impl Qwen3SsmLayer {
         )?;
         mark(&mut tk, &mut us_post_f);
         if stage_timing {
-            static SAID: std::sync::Once = std::sync::Once::new();
-            SAID.call_once(|| {
+            // PERIODIC, not one-shot: a `Once` here only ever sampled the
+            // first call of the process, which is cold (kernel load + plan
+            // setup) and misreports the FFN by ~20x. Every 1024th call is
+            // ~21 steps at 48 layers — past warmup, and still resampling.
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static CALLS: AtomicUsize = AtomicUsize::new(0);
+            let call = CALLS.fetch_add(1, Ordering::Relaxed);
+            if call % 1024 == 0 && call > 0 {
                 tracing::info!(
+                    call,
                     rows,
                     ple_us = us_ple as u64,
                     hc_pre_attn_us = us_pre_a as u64,
@@ -448,7 +455,7 @@ impl Qwen3SsmLayer {
                     hc_post_ffn_us = us_post_f as u64,
                     "hc multi-seq GDN body stage split (ONE layer, synced per stage)"
                 );
-            });
+            }
         }
         Ok(())
     }
