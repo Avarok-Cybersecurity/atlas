@@ -36,3 +36,9 @@ mod c1;
 mod c2;
 #[cfg(test)]
 mod c3;
+#[cfg(test)]
+mod c4;
+#[cfg(test)]
+mod c5;
+#[cfg(test)]
+mod c6;
