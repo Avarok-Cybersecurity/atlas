@@ -158,6 +158,17 @@ struct MtpBuffers {
 pub struct Qwen4ExpMtpHead {
     module: Qwen4ExpMtpModule,
     embed_tokens: DenseWeight,
+    /// ★ THE DRAFTER'S OWN CONFIG — full pre-shard head counts, tp_world_size 1.
+    ///
+    /// The drafter is REPLICATED across TP ranks: every rank runs the whole
+    /// draft locally, which is why its `ForwardContext` carries `comm: None`.
+    /// But that context is built with `..*ctx`, so it used to inherit the
+    /// TARGET's config — and under TP=2 `topology.rs` has already halved
+    /// `num_attention_heads` there. The drafter then computed 12-head attention
+    /// over its own 24-head weights: no error, no crash, correct-looking text
+    /// (rejected drafts still emit the target's token), and acceptance falling
+    /// from p1 0.83 to 0.42 while propose kept costing full price.
+    cfg: atlas_core::config::ModelConfig,
     kv_cache: Mutex<PagedKvCache>,
     /// ★ THE DRAFT'S OWN BUFFER ARENA — isolation by CONSTRUCTION.
     ///
@@ -340,9 +351,26 @@ impl Qwen4ExpMtpHead {
             (free_before.saturating_sub(free_after)) as f64 / 1e9,
         );
 
+        // Full pre-shard view for the replicated drafter. Correct whichever
+        // config the caller hands us: an already-full one (tp_world_size == 1)
+        // clones unchanged, a TP-divided one is multiplied back up.
+        let cfg = {
+            let mut c = config.clone();
+            let tp = config.tp_world_size.max(1);
+            if tp > 1 {
+                c.num_attention_heads *= tp;
+                c.num_key_value_heads *= tp;
+                c.linear_num_key_heads *= tp;
+                c.linear_num_value_heads *= tp;
+                c.tp_world_size = 1;
+                c.tp_rank = 0;
+            }
+            c
+        };
         Ok(Self {
             module,
             embed_tokens,
+            cfg,
             kv_cache: Mutex::new(kv_cache),
             arena,
             batch_cap,
@@ -910,6 +938,10 @@ impl Qwen4ExpMtpHead {
             attn_metadata: Some(meta),
             // Rank-0 only, no EP collective — same as the per-sequence body.
             comm: None,
+            // NOT the target's config: see `Qwen4ExpMtpHead::cfg`. Under TP the
+            // target's head counts are per-rank; the drafter is replicated and
+            // must read its own full-width geometry.
+            config: &self.cfg,
             graph_capture: false,
             host_token_ids: None,
             routed_lora_layers: None,
@@ -1041,6 +1073,9 @@ impl Qwen4ExpMtpHead {
             // The draft body must not issue an EP all-reduce: it is rank-0 only
             // and `ensure_loadable` refuses ep_world_size > 1 outright.
             comm: None,
+            // Full-width drafter geometry, not the target's per-rank counts.
+            // See `Qwen4ExpMtpHead::cfg`.
+            config: &self.cfg,
             // Host-built metadata + H2D uploads are illegal under capture.
             graph_capture: false,
             host_token_ids: None,

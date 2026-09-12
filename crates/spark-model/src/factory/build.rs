@@ -372,9 +372,34 @@ pub fn build_model(
         && (use_speculative || std::env::var("ATLAS_QWEN4EXP_MTP").as_deref() == Ok("1"))
         && mtp_tensors_present
     {
+        // The MTP drafter is REPLICATED across TP ranks — it is small, and
+        // sharding it would put collectives inside the one path whose entire
+        // purpose is to be cheaper than a target pass. But `topology.rs` has
+        // already divided the model-wide head counts by tp_size, so handing
+        // `config` straight to the audit makes every drafter attention tensor
+        // read as DOUBLE the expected width (`q_rows = 2 * heads * head_dim`
+        // computed at 12 heads against a checkpoint written at 24), the audit
+        // fails, and — before the `?` below — the failure was swallowed into
+        // `None` and the server booted with speculation silently OFF.
+        //
+        // Restore the full pre-shard counts for the drafter's view. Index
+        // (QSA) heads are deliberately untouched: topology.rs never divides
+        // them either, because indexer_kv_heads=1 cannot shard.
+        let mtp_config = if config.tp_world_size > 1 {
+            let mut c = config.clone();
+            c.num_attention_heads *= config.tp_world_size;
+            c.num_key_value_heads *= config.tp_world_size;
+            c.linear_num_key_heads *= config.tp_world_size;
+            c.linear_num_value_heads *= config.tp_world_size;
+            c.tp_world_size = 1;
+            c.tp_rank = 0;
+            std::borrow::Cow::Owned(c)
+        } else {
+            std::borrow::Cow::Borrowed(&config)
+        };
         match crate::weight_loader::qwen4_exp::load_qwen4_exp_mtp_module(
             &store,
-            &config,
+            &mtp_config,
             gpu.as_ref(),
         ) {
             Ok(Some(m)) => {
@@ -389,6 +414,19 @@ pub fn build_model(
                 None
             }
             Err(e) => {
+                // FAIL LOUD when speculation was actually asked for. This used
+                // to log and continue, which is how a TP=2 boot measured a
+                // clean, plausible, entirely wrong -31% decode "cost of TP":
+                // the drafter had failed its shape audit and the server served
+                // correct tokens, one per step, through every gate.
+                if use_speculative {
+                    anyhow::bail!(
+                        "qwen4_exp MTP module load FAILED and speculation was requested \
+                         (--speculative / ATLAS_QWEN4EXP_MTP_VERIFY): {e:#}. Refusing to \
+                         boot into a silently non-speculative server. Unset the \
+                         speculation flags to serve without MTP deliberately."
+                    );
+                }
                 tracing::error!("qwen4_exp MTP module load FAILED: {e:#}");
                 None
             }

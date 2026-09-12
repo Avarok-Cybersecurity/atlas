@@ -13,7 +13,29 @@
 # layers, x4 seqs) plus the MTP drafter's own 1-layer KV. One GB10 cannot do
 # it: the weights alone are 85.6 GB of a 92.4 GB budget at util 0.76. EP=2
 # halves the 512 routed experts per rank, and that is where the room comes
-# from. EP-ONLY and not by choice — the qwen4_exp loader REFUSES --tp-size > 1.
+# from. TP_SIZE=2 ADDS tensor parallelism on top (world=tp=ep=2, overlapping
+# groups on the same 2 ranks) and is FASTER — measured 2026-09-12, same binary:
+#
+#              EP-only (TP=1)   TP=2 x EP=2
+#     C=1          49.21           53.32     +8.4%
+#     C=2          62.30           64.69     +3.8%
+#     KV tokens    639 K          1.55 M     2.4x
+#
+# Getting there needed three fixes, each of which produced CORRECT-LOOKING
+# output while being wrong, so none of them showed up as a failure:
+#   1. `Qwen4ExpWeightLoader::supports_tp()` was false, reasoned as "mHC would
+#      need the stream buffer sharded". Wrong premise — the mHC highway is this
+#      model's RESIDUAL STREAM and replicates under Megatron TP.
+#   2. The MTP shape audit read the TP-DIVIDED head counts, failed, and the old
+#      code logged the error and booted on with speculation SILENTLY OFF. That
+#      is what an early "TP costs -31% decode" measurement actually was.
+#   3. The drafter's ForwardContext inherited the target's per-rank config via
+#      `..*ctx`, so it ran 12-head attention over its own 24-head weights:
+#      p1 0.83 -> 0.42, tok_step 2.0 -> 1.48, output still fluent and correct.
+#
+# So: judge a TP boot on `TP-local head counts`, `MTP module loaded and
+# audited`, AND the p1/tok_step counters. Throughput alone cannot see any of
+# the three.
 #
 # ── ROLLBACK=replay: WORKS, COSTS ~11% DECODE, SAVES 864 MB ────────────────
 # `--ssm-rollback-mode replay` is now wired (it used to refuse every
@@ -202,7 +224,7 @@ exec "$BIN" serve \
   --model-from-path "$MODEL_DIR" \
   --model-name qwen4exp-nvfp4 --kernel-target qwen3.8-flash-next \
   --rank "$RANK" --world-size 2 \
-  --tp-size 1 --ep-size 2 \
+  --tp-size "${TP_SIZE:-1}" --ep-size 2 \
   --master-addr "$MASTER" --master-port 29500 \
   --bind "$BIND" --port "$PORT" \
   --max-seq-len "$MAX_SEQ_LEN" \
