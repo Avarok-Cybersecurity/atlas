@@ -282,6 +282,48 @@ fn c1_prompt0_first_eight_generated() {
     );
 }
 
+/// Prefill-only: first generated id vs golden, all 8 prompts. Faster than until-EOS.
+#[test]
+fn c1_all_prompts_first_generated_token() {
+    let Some((_model, max_new, rows)) = load_goldens() else {
+        return;
+    };
+    let Some(engine) = twin_engine() else {
+        eprintln!("skip C1 first-token sweep: no K3_TWIN");
+        return;
+    };
+    let mut fails = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let split = row.tokens.len() - max_new;
+        let prompt = &row.tokens[..split];
+        let want = row.tokens[split];
+        let mut cache = HybridCache::from_graph(&engine.graph, &engine.kda);
+        let mut h = Vec::new();
+        for (pos, &tok) in prompt.iter().enumerate() {
+            h = forward_token(&engine, tok, pos, &mut cache, Ablation::default());
+        }
+        let lg = logits(&engine, &h);
+        let pred = argmax(&lg);
+        let top = topk_logits(&lg, 4);
+        let margin = top[0].1 - top[1].1;
+        eprintln!(
+            "C1 p{i} first gen pred={pred} want={want} margin={margin:.3} top4={top:?} {:?}",
+            row.prompt
+        );
+        if pred != want {
+            fails.push(format!(
+                "p{i} pred={pred} want={want} margin={margin:.3} top4={top:?}"
+            ));
+        }
+    }
+    assert!(
+        fails.is_empty(),
+        "C1 first-token misses ({}/8):\n{}",
+        fails.len(),
+        fails.join("\n")
+    );
+}
+
 fn twin_engine() -> Option<K3CpuModel> {
     // 0.40B BF16 safetensors on spark1 (`K3_TWIN`). Missing path skips;
     // a present dir that fails to load fails the test.
