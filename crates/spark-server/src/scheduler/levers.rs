@@ -81,6 +81,11 @@ pub struct SchedLevers {
     /// Longest backward match the lookup ranks by (`ATLAS_LOOKUP_MAX_MATCH`,
     /// default 16).
     pub lookup_max_match: usize,
+    /// Drafts a lookup hit proposes when the index has them
+    /// (`ATLAS_LOOKUP_WIDTH`, default 7 = K=8 rows, the widest the K-row MoE
+    /// arm serves on Qwen3.8-Flash-Next). The MTP head keeps its own width;
+    /// a value below the head's width lets the head's width stand.
+    pub lookup_width: usize,
     /// `ATLAS_MTP_SHADOW_TOPK` — the verify side of the drafter top-k probe.
     /// Parsed by `spark_model::speculative::shadow_topk`, the SSOT.
     pub shadow_topk: usize,
@@ -232,6 +237,7 @@ impl SchedLevers {
             lookup_drafts: on_unless_zero("ATLAS_LOOKUP_DRAFTS"),
             lookup_min_match: num("ATLAS_LOOKUP_MIN_MATCH", 8),
             lookup_max_match: num("ATLAS_LOOKUP_MAX_MATCH", 16),
+            lookup_width: num("ATLAS_LOOKUP_WIDTH", 7),
             shadow_topk: spark_model::speculative::shadow_topk(),
 
             // Reuses the tested parsers in `helpers` rather than re-deriving
@@ -281,6 +287,7 @@ impl SchedLevers {
             lookup_drafts: true,
             lookup_min_match: 8,
             lookup_max_match: 16,
+            lookup_width: 7,
             shadow_topk: 0,
             disable_watchdogs: false,
             eos_suppressed_by_thinking: false,

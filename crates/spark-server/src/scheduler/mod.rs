@@ -83,6 +83,7 @@ mod verify_k4_batch_step;
 mod verify_k4_step;
 mod verify_k4_verdict;
 mod verify_ledger;
+mod verify_kn_step;
 mod verify_mtp_wide;
 mod verify_pipeline_helper;
 pub mod vocab_masks;

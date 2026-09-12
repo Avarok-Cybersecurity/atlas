@@ -24,8 +24,9 @@
 use super::sched_ctx::SchedCtx;
 use super::types::ActiveSeq;
 
-/// Widths the wide verify dispatches: K=3 and K=4 rows.
-const WIDE_WIDTHS: std::ops::RangeInclusive<usize> = 2..=3;
+/// Draft widths the wide verify takes: K=3 rows up to K=16 rows (the K=N
+/// step; the MoE arm on Qwen3.8-Flash-Next serves K=8 today).
+const WIDE_WIDTHS: std::ops::RangeInclusive<usize> = 2..=15;
 
 /// Try the lookup index for `width` drafts. `true` means `pending_drafts` is
 /// set and the caller skips the MTP propose this step.
@@ -36,6 +37,10 @@ pub(super) fn take_lookup_drafts(
     dflash: bool,
     ep: bool,
 ) -> bool {
+    // A lookup hit proposes at the lookup width when that is wider than the
+    // head's width: the wide step runs only on the steps the index already
+    // has the tokens for, so fresh generation never pays for it.
+    let width = width.max(sched.levers.lookup_width);
     // Off under expert parallelism: the drafter runs on rank 0 only, and a
     // lookup step on rank 0 moved the Marconi prefix-cache anchors on both
     // ranks of a TP=2 x EP=2 build (Richard's bisect, 2026-09-12). Until
@@ -76,6 +81,7 @@ mod tests {
     fn ctx_with(min_match: usize) -> SchedCtx {
         let mut levers = crate::scheduler::levers::SchedLevers::defaults();
         levers.lookup_min_match = min_match;
+        levers.lookup_width = 7;
         SchedCtx::new(
             crate::scheduler::vocab_masks::VocabMasks::default(),
             std::sync::Arc::new(levers),
@@ -98,6 +104,20 @@ mod tests {
         sched.lookup.borrow_mut().set_single_sequence(true);
         let mut a = seq_with(&[1, 2, 3, 4, 5, 9, 1, 2]);
         a.last_token = 3;
+        // Lookup width 7 exceeds the history here (two tokens follow the
+        // match), so the hit needs the width the head would draft at.
+        assert!(!take_lookup_drafts(&mut a, &sched, 2, false, false));
+        let mut levers = crate::scheduler::levers::SchedLevers::defaults();
+        levers.lookup_min_match = 3;
+        levers.lookup_width = 2;
+        let sched = SchedCtx::new(
+            crate::scheduler::vocab_masks::VocabMasks::default(),
+            std::sync::Arc::new(levers),
+            std::sync::Arc::new(crate::scheduler::snapshot::SnapshotCell::default()),
+            crate::scheduler::limits::SchedLimits::NONE,
+            crate::scheduler::helpers::WatchdogParams::default(),
+        );
+        sched.lookup.borrow_mut().set_single_sequence(true);
         assert!(take_lookup_drafts(&mut a, &sched, 2, false, false));
         assert_eq!(a.pending_drafts, vec![4, 5]);
         assert!(a.pending_drafts_lookup);
@@ -114,7 +134,7 @@ mod tests {
         sched.lookup.borrow_mut().set_single_sequence(true);
         assert!(!take_lookup_drafts(&mut a, &sched, 2, true, false), "dflash");
         assert!(!take_lookup_drafts(&mut a, &sched, 1, false, false), "K=2 lane");
-        assert!(!take_lookup_drafts(&mut a, &sched, 4, false, false), "past the wide verify");
+        assert!(!take_lookup_drafts(&mut a, &sched, 16, false, false), "past the wide verify");
         assert!(!take_lookup_drafts(&mut a, &sched, 2, false, true), "expert parallel");
         assert!(a.pending_drafts.is_empty() && !a.pending_drafts_lookup);
     }
@@ -124,6 +144,7 @@ mod tests {
         let mut levers = crate::scheduler::levers::SchedLevers::defaults();
         levers.lookup_drafts = false;
         levers.lookup_min_match = 3;
+        levers.lookup_width = 2;
         let sched = SchedCtx::new(
             crate::scheduler::vocab_masks::VocabMasks::default(),
             std::sync::Arc::new(levers),

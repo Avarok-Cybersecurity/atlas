@@ -126,8 +126,10 @@ pub(super) fn finish(
     }
     match k {
         3 => super::verify_k3_step::k3_record_outcome(sched, na, seq.seq.seq_len),
-        4 => super::verify_k4_step::stats::k4_record_outcome(sched, na, seq.seq.seq_len),
-        _ => unreachable!("wide MTP only dispatches K=3/4"),
+        // K=4 and every wider row count (the K=N step, #1060) share the K=4
+        // outcome bucket: the ladder's stats are keyed by step shape, and the
+        // wide shape is the same shape at more rows.
+        _ => super::verify_k4_step::stats::k4_record_outcome(sched, na, seq.seq.seq_len),
     }
     if seq.finished {
         return;
