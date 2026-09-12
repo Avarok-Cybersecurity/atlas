@@ -418,6 +418,7 @@ impl Qwen3SsmLayer {
             small_m,
             ctx.gdn_exact_replay,
             self.ffn.exl3_native_moe(),
+            self.ffn.can_forward_km(num_tokens as u32),
         ) {
             HcFfnDispatch::Single => {
                 let out = self.ffn.forward(rows, ctx, stream)?;
@@ -429,6 +430,10 @@ impl Qwen3SsmLayer {
             }
             HcFfnDispatch::K2 => self.ffn.forward_k2(rows, ctx, stream)?,
             HcFfnDispatch::K3 => self.ffn.forward_k3(rows, ctx, stream)?,
+            HcFfnDispatch::Km => {
+                let ran = self.ffn.try_forward_km(rows, num_tokens as u32, ctx, stream)?;
+                anyhow::ensure!(ran, "K=m FFN arm reported available and then declined");
+            }
             HcFfnDispatch::NativeBatched => match &self.ffn {
                 FfnComponent::Moe(moe) => moe.forward_batched(rows, num_tokens, ctx, stream)?,
                 _ => anyhow::bail!("native EXL3 replay requires a MoE FFN"),

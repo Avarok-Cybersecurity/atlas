@@ -417,7 +417,11 @@ impl FfnComponent {
     /// false). Lets callers gate branch entry BEFORE computing the pre-FFN
     /// norm, so there is no half-done fallthrough to `forward_prefill`.
     pub fn can_forward_km(&self, m: u32) -> bool {
-        matches!(self, Self::Dense(d) if d.can_forward_km(m))
+        match self {
+            Self::Dense(d) => d.can_forward_km(m),
+            Self::Moe(moe) => moe.can_forward_km(m),
+            Self::None => false,
+        }
     }
 
     /// K=m (m=4..8) verify FFN via batched GEMV (dense only). Returns
@@ -433,6 +437,10 @@ impl FfnComponent {
         match self {
             Self::Dense(d) if d.can_forward_km(m) => {
                 d.forward_km(input, m, ctx, stream)?;
+                Ok(true)
+            }
+            Self::Moe(moe) if moe.can_forward_km(m) => {
+                moe.forward_km(input, m, ctx, stream)?;
                 Ok(true)
             }
             _ => Ok(false),

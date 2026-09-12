@@ -313,7 +313,9 @@ pub fn step_mtp(
                 a,
                 sched,
                 effective_num_drafts,
+                model.mtp_slot_draft_capacity(a.seq.slot_idx),
                 dflash_verify_raw_argmax,
+                model.is_ep(),
             )
         {
             tracing::debug!("lookup bootstrap: tok={tok} → drafts={:?}", a.pending_drafts);
@@ -647,6 +649,20 @@ pub fn step_mtp(
         // K=4 cleanly, so γ-block verify routes through `step_verify_dflash`.
         // MTP keeps using the existing graphed paths; this dispatch is purely
         // additive.
+        if drafts.len() >= 4 && !dflash_verify_raw_argmax {
+            // MTP-shaped wide verify at K = drafts + 1 rows (lookup drafts at
+            // ATLAS_LOOKUP_WIDTH, or an MTP head drafting past 3): the K=N
+            // step, not the DFlash γ-block verify.
+            super::verify_kn_step::step_verify_kn(
+                model,
+                a,
+                sched,
+                &drafts,
+                serial_num_drafts,
+                verify_ctx,
+            );
+            continue;
+        }
         if drafts.len() >= 4 {
             step_verify_dflash(
                 model,

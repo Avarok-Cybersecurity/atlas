@@ -487,6 +487,37 @@ impl Model for TransformerModel {
         }
         self.decode_verify_graphed_k4_dispatch(tokens, seq, _stream)
     }
+    fn decode_verify_graphed_kn(
+        &self,
+        tokens: &[u32],
+        seq: &mut SequenceState,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        self.ssm_pool.require_verify_rollback_supported()?;
+        if self.verify_needs_hc_path() {
+            let v = self.decode_verify_hc(tokens, seq, stream)?;
+            anyhow::ensure!(
+                v.len() == tokens.len(),
+                "verify_hc returned {} rows, want {}",
+                v.len(),
+                tokens.len()
+            );
+            return Ok(v);
+        }
+        match tokens.len() {
+            3 => Ok(self
+                .decode_verify_graphed_k3_dispatch(&[tokens[0], tokens[1], tokens[2]], seq, stream)?
+                .to_vec()),
+            4 => Ok(self
+                .decode_verify_graphed_k4_dispatch(
+                    &[tokens[0], tokens[1], tokens[2], tokens[3]],
+                    seq,
+                    stream,
+                )?
+                .to_vec()),
+            k => anyhow::bail!("decode_verify_graphed_kn: no verify path at K={k} rows on this model"),
+        }
+    }
     fn can_batch_verify(&self, ks: &[usize]) -> bool {
         self.can_batch_verify_dispatch(ks)
     }

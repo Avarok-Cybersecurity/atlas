@@ -108,11 +108,20 @@ pub struct SchedLevers {
     /// `ATLAS_LOOKUP_DRAFTS=0` restores the MTP head on every step.
     pub lookup_drafts: bool,
     /// Match length the lookup index is keyed on (`ATLAS_LOOKUP_MIN_MATCH`,
-    /// default 4). Shorter matches never fire.
+    /// default 8). Shorter matches never fire. Measured 2026-09-12 on
+    /// Qwen3.8-Flash-Next: at 4 the index fires on fresh code and prose
+    /// (`self.`, `return`, `):` repeat every few lines), the verify rejects
+    /// the drafts, accept counts drop and every stream moves; at 8 all three
+    /// standard cells are byte-identical to the base at base tok/s.
     pub lookup_min_match: usize,
     /// Longest backward match the lookup ranks by (`ATLAS_LOOKUP_MAX_MATCH`,
     /// default 16).
     pub lookup_max_match: usize,
+    /// Drafts a lookup hit proposes when the index has them
+    /// (`ATLAS_LOOKUP_WIDTH`, default 7 = K=8 rows, the widest the K-row MoE
+    /// arm serves on Qwen3.8-Flash-Next). The MTP head keeps its own width;
+    /// a value below the head's width lets the head's width stand.
+    pub lookup_width: usize,
     /// `ATLAS_MTP_SHADOW_TOPK` — the verify side of the drafter top-k probe.
     /// Parsed by `spark_model::speculative::shadow_topk`, the SSOT.
     pub shadow_topk: usize,
@@ -273,19 +282,21 @@ impl SchedLevers {
             dflash_adaptive_min: num("ATLAS_DFLASH_ADAPTIVE_MIN", 2.0),
             dflash_adaptive_reprobe: num("ATLAS_DFLASH_ADAPTIVE_REPROBE", 256),
             dflash_resume_guard: num("ATLAS_DFLASH_RESUME_GUARD", 0),
-            // OPT-IN on this branch (upstream #1026 ships it default-ON).
-            // Measured on the merged TP=2 x EP=2 NVFP4 build, same binary:
-            //   default-on   C=1 32.18   C=4 35.78   (p1 0.81-0.88 — MTP healthy)
-            //   =0           see the bisect in the merge commit
-            //   pre-#1026    C=1 53.06   C=4 66.63
-            // and Marconi anchor disagreements 0 -> 2 on BOTH ranks with it on.
-            // The PR body says the gate is off at K=2; `WIDE_WIDTHS = 2..=3`
-            // says otherwise, so at DRAFTS=2 single-sequence it is LIVE. Until
-            // the per-step cost and the multi-rank drift are understood, the
-            // feature is reachable by asking for it, not by default.
-            lookup_drafts: opt_in("ATLAS_LOOKUP_DRAFTS"),
-            lookup_min_match: num("ATLAS_LOOKUP_MIN_MATCH", 4),
+            // Default ON upstream (#1026). The -40% C=1 / -46% C=4 this
+            // branch bisected was the STALE-DRAFT bug — drafts were one
+            // position behind, so every one was rejected — fixed upstream in
+            // 917ea4859, together with min_match 4 firing on fresh text
+            // (raised to 8). `lookup_gate` now ALSO stays off under expert
+            // parallelism, which is what this branch's production config runs
+            // (TP=2 x EP=2), so the arm is inert here either way. Measured
+            // before those fixes, same binary:
+            //   default-on   C=1 32.18  C=4 35.78  (p1 0.81-0.88, MTP healthy)
+            //   pre-#1026    C=1 53.06  C=4 66.63
+            // and Marconi anchor disagreements 0 -> 2 on BOTH ranks.
+            lookup_drafts: on_unless_zero("ATLAS_LOOKUP_DRAFTS"),
+            lookup_min_match: num("ATLAS_LOOKUP_MIN_MATCH", 8),
             lookup_max_match: num("ATLAS_LOOKUP_MAX_MATCH", 16),
+            lookup_width: num("ATLAS_LOOKUP_WIDTH", 7),
             shadow_topk: spark_model::speculative::shadow_topk(),
 
             // Reuses the tested parsers in `helpers` rather than re-deriving
@@ -338,9 +349,10 @@ impl SchedLevers {
             dflash_adaptive_min: 2.0,
             dflash_adaptive_reprobe: 256,
             dflash_resume_guard: 0,
-            lookup_drafts: false,
-            lookup_min_match: 4,
+            lookup_drafts: true,
+            lookup_min_match: 8,
             lookup_max_match: 16,
+            lookup_width: 7,
             shadow_topk: 0,
             disable_watchdogs: false,
             eos_suppressed_by_thinking: false,
