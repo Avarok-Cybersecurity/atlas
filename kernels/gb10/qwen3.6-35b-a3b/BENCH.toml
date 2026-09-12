@@ -449,15 +449,46 @@ max = 0.0
 # restored from anchors 992-1152). The floor of 1 is a DEFINITION, not a
 # measurement: it distinguishes "the restore path ran" from "prefix caching
 # was off and the gate replayed against a cold engine" — the configuration
-# under which this gate once returned a green PASS proving nothing. Ratchet
-# toward the observed anchor scale (~992 on this checkpoint) after the first
-# recorded run that carries this metric; do not guess a higher floor before
-# then.
+# under which this gate once returned a green PASS proving nothing.
+#
+# ★ RATCHETED 2026-09-11, 1.0 -> 900.0, discharging this comment's own
+# instruction to "ratchet toward the observed anchor scale after the first
+# recorded run that carries this metric". That condition was met 54 runs ago:
+# EVERY passing record carrying the metric reads exactly 1026.0 — 54 of 54,
+# zero variance, across four weeks and three checkpoint-config generations.
+# The floor of 900.0 sits ~12% under that invariant, which is margin for a
+# different anchor scale rather than for noise; there is no noise to cover.
+#
+# The one record that does not read 1026 is 2026-08-15-d4c00509b7, which reads
+# 0 — a FAIL whose reference round never ran (rounds 0). That is the vacuity
+# case this bound exists for, and it confirms the bound catches it. What 1.0
+# could not catch is the case in between: a server caching a handful of tokens
+# rather than a real anchor would have passed a floor of 1 while proving as
+# little as the cold engine did.
 [benchmarks.metrics.min_cached_prompt_tokens]
-min = 1.0
+min = 900.0
 
 [benchmarks.metrics.sum_wall_s]
-max = 1200.0
+# The blowup detector, not a perf gate. The ceiling of 200.0 replaces 1200.0
+# as of 2026-09-11, discharging the entry note's "generous pending the first
+# recorded run; ratchet after measurement, never to the best".
+#
+# Measured on THIS entry's pinned instrument (disable_thinking = "true",
+# ssm_cache_slots = "256"): 54 passing records spanning 75.8 to 114.4 s, in
+# three levels — ~110-114 (2026-08-15 to 08-23), ~82-85 (08-23 onward) and
+# 75.8-76.6 on 09-08, the same f9fd8ca43 step the decode floor records. 200.0
+# is 1.75x the worst of them, so it is not drawn near the best.
+#
+# ★ Three older records read 306.8 / 320.8 / 321.4 and are NOT the basis: they
+# predate the disable_thinking pin, so they measured thinking-on generation —
+# roughly 3x the work — and check_record would refuse them against this
+# baseline in any case. A ceiling drawn to cover them would have to be 400+,
+# which is a ceiling for an instrument this entry no longer serves.
+#
+# What 200.0 is sized to catch: one round hanging to the 300 s request timeout
+# takes the sum past 300 on its own, and a uniform 50% slowdown lands near 170.
+# Both fail. The superseded 1200.0 caught neither, and nothing said so.
+max = 200.0
 
 # --- vision-fidelity -------------------------------------------------------
 # Vision models only. This gate is declared on the three targets that ship a
