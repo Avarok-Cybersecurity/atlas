@@ -209,8 +209,7 @@ pub fn m16_tc_levers() -> M16TcLevers {
             // not here: an umbrella that could also DISARM a declaration would
             // make the recipe depend on export order.
             ops::target_defaults::resolved().ffn_m16_tc.value,
-            std::env::var_os("ATLAS_ATTN_M16_TC").is_some()
-                || std::env::var_os("ATLAS_M16_TC").is_some(),
+            ops::target_defaults::resolved().attn_m16_tc.value,
             n_tile.as_deref(),
         )
     })

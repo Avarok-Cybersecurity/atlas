@@ -65,6 +65,16 @@ fn hopper_declares_what_an_h100_serve_runs_with() {
         d.attn_decode_splitk, "auto",
         "H100 serves paged-decode attention with the occupancy-filling split          count; `legacy` is the rule that gave it 24 CTAs on 132 SMs"
     );
+    assert!(
+        d.attn_m16_tc,
+        "round 9 cell W: +5.26% C=16 aggregate, -6.38% TPOT, against a 0.15% \
+         rep spread"
+    );
+    assert!(
+        !d.ffn_m16_tc,
+        "the same kernel family on the dense-FFN arm measured -5.2% (round 6 \
+         cell J); one kernel, two rows, two verdicts"
+    );
     // ★ NOT 16. The 16 an H100 recipe exported was measured with the
     // tensor-core head arm (`dense_gemm_m16_bf16`, #927) also on, where that
     // arm serves 5..=16 and this band is very nearly inert. The arm is not in
@@ -177,6 +187,7 @@ fn every_declaring_target_states_every_lever() {
             "decode_split_silu",
             "attn_decode_splitk",
             "ffn_m16_tc",
+            "attn_m16_tc",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
