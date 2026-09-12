@@ -23,6 +23,75 @@ pub fn matvec(w: &[f32], x: &[f32], out: usize, inn: usize) -> Vec<f32> {
     y
 }
 
+/// Column-parallel `y = W x` (Megatron `o_proj`). `W` is `[out, inn]`.
+///
+/// `world == 1` is the unsplit GEMV. `world == 2` splits columns across two
+/// in-process ranks and allreduces (sum) the hidden. `drop_rank` zeros that
+/// shard (C7 known-bad: drop rank 1).
+pub fn matvec_column_tp(
+    w: &[f32],
+    x: &[f32],
+    out: usize,
+    inn: usize,
+    world: usize,
+    drop_rank: Option<usize>,
+) -> Vec<f32> {
+    match world {
+        1 => {
+            assert!(
+                drop_rank.is_none(),
+                "C7 drop_rank requires TP=2, got {drop_rank:?}"
+            );
+            matvec(w, x, out, inn)
+        }
+        2 => matvec_column_tp2(w, x, out, inn, drop_rank),
+        other => panic!("C7 dummy implements TP=1/2, got {other}"),
+    }
+}
+
+/// Two-rank in-process column split + sum. Sequential ranks; the add is the
+/// allreduce. Identity `W` is f32 bit-exact vs [`matvec`].
+fn matvec_column_tp2(
+    w: &[f32],
+    x: &[f32],
+    out: usize,
+    inn: usize,
+    drop_rank: Option<usize>,
+) -> Vec<f32> {
+    assert_eq!(w.len(), out * inn, "TP=2 weight {} vs {out}x{inn}", w.len());
+    assert_eq!(x.len(), inn);
+    assert!(
+        inn.is_multiple_of(2),
+        "TP=2 o_proj inner dim must be even, got {inn}"
+    );
+    let half = inn / 2;
+    let shard = |rank: usize| -> Vec<f32> {
+        if drop_rank == Some(rank) {
+            return vec![0.0f32; out];
+        }
+        let start = rank * half;
+        let mut y = vec![0.0f32; out];
+        for o in 0..out {
+            let row = &w[o * inn + start..o * inn + start + half];
+            let xr = &x[start..start + half];
+            let mut acc = 0.0f32;
+            for i in 0..half {
+                acc += row[i] * xr[i];
+            }
+            y[o] = acc;
+        }
+        y
+    };
+    // In-process ranks (thread), then sum. Sequential join is the reduce.
+    std::thread::scope(|s| {
+        let t0 = s.spawn(|| shard(0));
+        let t1 = s.spawn(|| shard(1));
+        let y0 = t0.join().expect("C7 rank 0");
+        let y1 = t1.join().expect("C7 rank 1");
+        y0.iter().zip(y1).map(|(a, b)| a + b).collect()
+    })
+}
+
 /// Token embedding gather: `embed[token, :]`.
 pub fn embed_token(table: &[f32], token: u32, hidden: usize, vocab: usize) -> Vec<f32> {
     let t = token as usize;

@@ -8,13 +8,18 @@ use super::layer::{K3Graph, K3LayerSpec, MixerKind, MlpKind};
 use super::mla::MlaConfig;
 use super::ops::{fill, ident, ones};
 
-/// Graph mutants. Mix=0 / force-expert-0 are C1; skip-layer is C2.
+/// Graph mutants. Mix=0 / force-expert-0 are C1; skip-layer is C2;
+/// `o_proj` TP is C7.
 #[derive(Clone, Copy, Debug)]
 pub struct Ablation {
     pub attnres_mix: f32,
     pub force_expert: Option<usize>,
     /// Skip this layer index in `forward_token` (C2 known-bad).
     pub skip_layer: Option<usize>,
+    /// Column-parallel `o_proj` world size. 1 = unsplit, 2 = in-process TP.
+    pub o_proj_tp: usize,
+    /// Zero this TP rank's `o_proj` shard (C7 known-bad). Requires `o_proj_tp=2`.
+    pub drop_o_proj_rank: Option<usize>,
 }
 
 impl Default for Ablation {
@@ -23,6 +28,8 @@ impl Default for Ablation {
             attnres_mix: 1.0,
             force_expert: None,
             skip_layer: None,
+            o_proj_tp: 1,
+            drop_o_proj_rank: None,
         }
     }
 }
@@ -189,6 +196,54 @@ impl K3CpuModel {
         };
         Self::build(graph, kda, mla, moe, 8, 16, 1e-5, 10_000.0)
     }
+
+    /// Production **width**, dummy depth: hidden=7168, heads=96, 2 layers
+    /// (KDA + MLA), vocab=256, 8 routed experts. Head/lora dims stay tiny so
+    /// the CPU test is fast. Not 93 layers / 1.56 TB.
+    pub fn synthetic_prod_width_dummy() -> Self {
+        let hidden = 7168;
+        let graph = prod_width_dummy_graph(hidden);
+        let kda = KdaConfig {
+            heads: 96,
+            head_dim: 2,
+            conv_kernel: 4,
+            gate_lower_bound: -5.0,
+            use_full_rank_gate: true,
+        };
+        let mla = MlaConfig {
+            heads: 96,
+            qk_nope_head_dim: 2,
+            qk_rope_head_dim: 2,
+            v_head_dim: 2,
+            q_lora_rank: 8,
+            kv_lora_rank: 4,
+            mla_use_nope: true,
+            mla_use_output_gate: true,
+        };
+        let moe = LatentMoeConfig {
+            hidden,
+            latent: 64,
+            expert_hidden: 64,
+            n_routed: 8,
+            top_k: 2,
+            n_shared: 1,
+            situ_beta: 4.0,
+            situ_linear_beta: 25.0,
+            use_norm: true,
+            renormalize: true,
+        };
+        let mut model = Self::build(graph, kda, mla, moe, 64, 256, 1e-5, 10_000.0);
+        // ident o_proj is rank-1-empty at this width (inn << hidden). Fill so
+        // both TP column shards contribute to every hidden dim.
+        for (i, layer) in model.layers.iter_mut().enumerate() {
+            let seed = 200 + i as u32;
+            match &mut layer.mixer {
+                MixerW::Kda(w) => w.o_proj = fill(w.o_proj.len(), seed, 0.05),
+                MixerW::Mla(w) => w.o_proj = fill(w.o_proj.len(), seed + 1, 0.05),
+            }
+        }
+        model
+    }
 }
 
 fn twin_pattern_graph(hidden: usize) -> K3Graph {
@@ -219,6 +274,31 @@ fn twin_pattern_graph(hidden: usize) -> K3Graph {
         layers,
         hidden,
         attn_res_block_size: 4,
+        situ_beta: 4.0,
+        situ_linear_beta: 25.0,
+        use_full_rank_gate: true,
+        mla_use_nope: true,
+        mla_use_output_gate: true,
+    }
+}
+
+fn prod_width_dummy_graph(hidden: usize) -> K3Graph {
+    let layers = vec![
+        K3LayerSpec {
+            index: 0,
+            mixer: MixerKind::Kda,
+            mlp: MlpKind::Dense,
+        },
+        K3LayerSpec {
+            index: 1,
+            mixer: MixerKind::Mla,
+            mlp: MlpKind::LatentMoe,
+        },
+    ];
+    K3Graph {
+        layers,
+        hidden,
+        attn_res_block_size: 12,
         situ_beta: 4.0,
         situ_linear_beta: 25.0,
         use_full_rank_gate: true,

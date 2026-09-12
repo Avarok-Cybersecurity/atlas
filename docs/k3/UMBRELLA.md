@@ -14,7 +14,7 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | C2–C6 **twin green**. C1 7/8 greedy (p4 0.18-logit). C7 dummy TP=2 next. |
+| Phase | C2–C6 **twin green**. C1 7/8 greedy (p4 0.18-logit). C7 in-process dummy TP=2 (spark1+spark2 still open). |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
 | Last session | 2026-09-12 |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
@@ -40,7 +40,7 @@ S7 (rental soak) is forbidden until every box is green. Each box also needs its 
 - [x] C4 MLA KV + KDA state after prefix hit on the **C1 twin** (`c4_hybrid_state_prefix_hit_matches_cold_prefill_twin`, spark2 18.6s)
 - [x] C5 AttnRes fixture + twin mix=0 vs mix=1 (`c5_twin_mix0_is_skip_and_diverges_from_mix1`, spark2 14.4s, one-hot fixture)
 - [x] C6 LatentMoE frozen-gate mix + twin force-expert-0 (`c6_twin_force_expert_zero_diverges`, spark2 14.4s)
-- [ ] C7 production-width dummy TP=2 on spark1+spark2 == spark1 single-GPU tokens — **last**
+- [ ] C7 production-width dummy TP=2 on spark1+spark2 == spark1 single-GPU tokens — **last** (in-process CPU `kimi_k3::c7` is not this box)
 
 49M `smol-kimi-k3` is shape-only. It does not satisfy C1.
 

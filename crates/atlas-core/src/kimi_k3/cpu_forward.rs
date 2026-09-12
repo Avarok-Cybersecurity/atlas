@@ -10,7 +10,7 @@ use super::cpu_weights::{
 use super::kda::{KdaConfig, KdaState, bounded_gate, kda_decode_token};
 use super::latent_moe::latent_moe_forward;
 use super::mla::{MlaConfig, apply_output_gate, maybe_rope, sdpa_one};
-use super::ops::{embed_token, matvec};
+use super::ops::{embed_token, matvec, matvec_column_tp};
 use super::situ::{sigmoid, situ_glu_vec};
 
 /// Intra-block AttnRes stream (completed blocks + running partial).
@@ -110,11 +110,11 @@ fn forward_layer(
     let mix_out = match &layer.mixer {
         MixerW::Kda(w) => {
             let state = cache.kda_mut(layer.spec.index).expect("KDA cache slot");
-            kda_mixer(w, &x, &model.kda, state, eps)
+            kda_mixer(w, &x, &model.kda, state, eps, ablation)
         }
         MixerW::Mla(w) => {
             let kv = cache.mla_mut(layer.spec.index).expect("MLA cache slot");
-            mla_mixer(w, &x, &model.mla, kv, pos, model.rope_theta, eps)
+            mla_mixer(w, &x, &model.mla, kv, pos, model.rope_theta, eps, ablation)
         }
     };
     stream.add(&mix_out);
@@ -127,12 +127,24 @@ fn forward_layer(
     stream.add(&mlp_out);
 }
 
+fn apply_o_proj(w: &[f32], x: &[f32], out: usize, inn: usize, ablation: Ablation) -> Vec<f32> {
+    matvec_column_tp(
+        w,
+        x,
+        out,
+        inn,
+        ablation.o_proj_tp,
+        ablation.drop_o_proj_rank,
+    )
+}
+
 fn kda_mixer(
     w: &KdaWeights,
     x: &[f32],
     cfg: &KdaConfig,
     state: &mut KdaState,
     eps: f32,
+    ablation: Ablation,
 ) -> Vec<f32> {
     let qdim = cfg.qkv_dim();
     let q = matvec(&w.q_proj, x, qdim, x.len());
@@ -156,7 +168,7 @@ fn kda_mixer(
     let g = matvec(&w.g_proj, x, qdim, x.len());
     let core = kda_decode_token(&qkv, &w.conv, &gate, &beta, cfg, state);
     let gated = gated_o_norm(&core, &g, &w.o_norm, cfg.head_dim, eps);
-    matvec(&w.o_proj, &gated, x.len(), qdim)
+    apply_o_proj(&w.o_proj, &gated, x.len(), qdim, ablation)
 }
 
 fn gated_o_norm(core: &[f32], g: &[f32], o_norm: &[f32], head_dim: usize, eps: f32) -> Vec<f32> {
@@ -174,6 +186,7 @@ fn gated_o_norm(core: &[f32], g: &[f32], o_norm: &[f32], head_dim: usize, eps: f
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mla_mixer(
     w: &MlaWeights,
     x: &[f32],
@@ -182,6 +195,7 @@ fn mla_mixer(
     pos: usize,
     theta: f32,
     eps: f32,
+    ablation: Ablation,
 ) -> Vec<f32> {
     let qk = cfg.qk_head_dim();
     let qa = matvec(&w.q_a, x, cfg.q_lora_rank, x.len());
@@ -215,7 +229,13 @@ fn mla_mixer(
     let g = matvec(&w.g_proj, x, cfg.heads * cfg.v_head_dim, x.len());
     let attn = sdpa_one(&q, &kv.k, &kv.v, kv.seq_len, cfg.heads, qk, cfg.v_head_dim);
     let attn = apply_output_gate(&attn, &g, cfg.mla_use_output_gate);
-    matvec(&w.o_proj, &attn, x.len(), cfg.heads * cfg.v_head_dim)
+    apply_o_proj(
+        &w.o_proj,
+        &attn,
+        x.len(),
+        cfg.heads * cfg.v_head_dim,
+        ablation,
+    )
 }
 
 fn pack_mla_kv(kvb: &[f32], k_pe: &[f32], cfg: &MlaConfig) -> (Vec<f32>, Vec<f32>) {
