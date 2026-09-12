@@ -149,6 +149,40 @@ fn concat_fp8_block_scaled(
     })
 }
 
+/// Concatenate THREE block-scaled FP8 weights along rows (dim 0) — the fused
+/// attention `[q|k|v]` decode weight (#927). Two applications of
+/// [`concat_fp8_block_scaled`]'s rule in one allocation, so the intermediate
+/// `[q|k]` buffer is never built.
+///
+/// Requires `n_q % 128 == 0` and `n_k % 128 == 0` so BOTH scale-grid seams
+/// fall on a block boundary; `attn_qkv_fused::qkv_fused_shape_ok` is the
+/// predicate the caller checks that with.
+fn concat3_fp8_block_scaled(
+    parts: [&Fp8Weight; 3],
+    k: usize,
+    gpu: &dyn GpuBackend,
+) -> Result<Fp8Weight> {
+    let kb = k.div_ceil(128);
+    let w_bytes = |w: &Fp8Weight| w.n as usize * k;
+    let s_bytes = |w: &Fp8Weight| (w.n as usize).div_ceil(128) * kb * 4;
+    let weight = gpu.alloc(parts.iter().copied().map(w_bytes).sum())?;
+    let row_scale = gpu.alloc(parts.iter().copied().map(s_bytes).sum())?;
+    let (mut wo, mut so) = (0usize, 0usize);
+    for p in parts {
+        gpu.copy_d2d(p.weight, weight.offset(wo), w_bytes(p))?;
+        gpu.copy_d2d(p.row_scale, row_scale.offset(so), s_bytes(p))?;
+        wo += w_bytes(p);
+        so += s_bytes(p);
+    }
+    Ok(Fp8Weight {
+        weight,
+        row_scale,
+        n: parts.iter().map(|p| p.n).sum(),
+        k: k as u32,
+        scale_format: crate::weight_map::WeightQuantFormat::Fp8BlockScaled,
+    })
+}
+
 /// Opt-in gate for native dense-FP8 attention + FFN dispatch (Qwythos / dense
 /// Ornith-FP8). Default OFF.
 ///
@@ -256,6 +290,79 @@ fn ffn_gateup_fused_selected(
         && hidden.is_multiple_of(128)
         && on_disk("gate_proj")
         && on_disk("up_proj")
+}
+
+/// The attention Q/K/V widths this config declares, as the loader, the prune
+/// predicate and the residency prediction all need them: `(q_proj_dim,
+/// kv_dim)`, with `q_proj_dim` already doubled for the gated `[Q|gate]`
+/// layout.
+///
+/// One function because `attn_qkv_fused_selected` below and
+/// `predicted_residency` both price the fused concat from these, and a drift
+/// between them is a prediction that disagrees with what loads.
+pub fn attn_qkv_widths(config: &ModelConfig) -> (usize, usize) {
+    let (nh, hd) = (config.num_attention_heads, config.head_dim);
+    (
+        nh * hd * if config.attn_gated { 2 } else { 1 },
+        config.num_key_value_heads * hd,
+    )
+}
+
+/// Whether the native-FP8 attention overlay runs for THIS layer.
+///
+/// Hoisted out of `load_layers` for the reason `ffn_fp8_arm_selected` was:
+/// `prune_after_load` needs the same answer, and a prune predicate that has
+/// drifted from the load predicate frees a store tensor a layer still aliases.
+fn attn_fp8_arm_selected(
+    store: &WeightStore,
+    config: &ModelConfig,
+    variant: Nvfp4Variant,
+    p: &str,
+) -> bool {
+    dense_fp8_enabled()
+        && config.tp_world_size.max(1) == 1
+        && matches!(variant, Nvfp4Variant::Fp8Dequanted)
+        && proj_is_native_fp8(store, &format!("{p}.q_proj"))
+}
+
+/// Whether THIS attention layer's q/k/v are fused into one
+/// `[q_proj_dim + 2*kv_dim, hidden]` block-scaled FP8 weight (#927).
+///
+/// Beyond the FP8 overlay itself: the target must arm the arm (`[defaults]
+/// attn_qkv_fused`), the three extents must be whole 128-blocks
+/// (`concat3_fp8_block_scaled` appends the `[N/128, K/128]` grids, which is
+/// only the fused grid when both seams fall on a block boundary), and the
+/// three tensors must be ON DISK at exactly the widths the config declares —
+/// because the view offsets, the ledger terms and the prediction are all
+/// computed from the config, so a checkpoint that disagrees must DECLINE
+/// rather than be concatenated at the wrong stride.
+///
+/// The SECOND caller is `prune_after_load`, which releases exactly the store
+/// tensors this returned true for. Rule:
+/// `layers/qwen3_attention/attn_qkv_fused.rs`.
+fn attn_qkv_fused_selected(
+    store: &WeightStore,
+    config: &ModelConfig,
+    variant: Nvfp4Variant,
+    p: &str,
+) -> bool {
+    let hidden = config.hidden_size;
+    let (q_proj_dim, kv_dim) = attn_qkv_widths(config);
+    let on_disk = |name: &str, n: usize| {
+        store
+            .get(&format!("{p}.{name}.weight"))
+            .is_ok_and(|w| w.shape == [n, hidden])
+    };
+    attn_fp8_arm_selected(store, config, variant, p)
+        && crate::layers::qwen3_attention::attn_qkv_fused::attn_qkv_fused()
+        && crate::layers::qwen3_attention::attn_qkv_fused::qkv_fused_shape_ok(
+            q_proj_dim as u32,
+            kv_dim as u32,
+            hidden as u32,
+        )
+        && on_disk("q_proj", q_proj_dim)
+        && on_disk("k_proj", kv_dim)
+        && on_disk("v_proj", kv_dim)
 }
 
 // `pub` (re-exported from `weight_loader/mod.rs`): the pre-load residency
@@ -685,10 +792,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // immediately orphaned — `set_fp8_weights` OVERWRITES
                     // `q/k/v/o_weight`, so on this route the NVFP4 q/k/v/o were
                     // unreachable the moment they were installed.
-                    let attn_fp8 = dense_fp8_enabled()
-                        && config.tp_world_size.max(1) == 1
-                        && matches!(variant, Nvfp4Variant::Fp8Dequanted)
-                        && proj_is_native_fp8(store, &format!("{p}.q_proj"));
+                    let attn_fp8 = attn_fp8_arm_selected(store, config, variant, &p);
                     let attn_nvfp4 = route_env.attn_nvfp4(attn_fp8);
                     let (attn, q_nvfp4, k_nvfp4, v_nvfp4) = match variant {
                         Nvfp4Variant::CompressedTensors => {
@@ -1047,13 +1151,76 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             );
                             Ok(w)
                         };
-                        let [q_fp8, k_fp8, v_fp8, o_fp8] = load_qkvo_tp(config, load_fp8_proj)?;
+                        let [mut q_fp8, mut k_fp8, mut v_fp8, o_fp8] =
+                            load_qkvo_tp(config, load_fp8_proj)?;
+                        // FUSED [q|k|v] decode weight (#927). ONE
+                        // `[q_proj_dim + 2*kv_dim, hidden]` E4M3 buffer and ONE
+                        // appended FP32 scale grid, with q/k/v re-pointed at
+                        // VIEWS inside them — so the fused decode GEMM, every
+                        // GEMV tier and the prefill transposes all read the
+                        // SAME bytes and none of them needs a second copy.
+                        //
+                        // RESIDENCY IS NET ZERO, and that is the design
+                        // constraint: a second copy is 73.4 MB x 16
+                        // full-attention layers = 1.17 GB.
+                        // `prune_after_load` releases the three source store
+                        // tensors this copied, exactly as the dense-FFN
+                        // gate+up fusion and the SSM `[QKV|Z]` concat do, and
+                        // `predicted_residency` prices the pair as a
+                        // difference so the preflight ring fit is unmoved.
+                        let qkv_fused = if attn_qkv_fused_selected(store, config, variant, &p) {
+                            let fused = concat3_fp8_block_scaled(
+                                [&q_fp8, &k_fp8, &v_fp8],
+                                config.hidden_size,
+                                gpu,
+                            )?;
+                            let (q_proj_dim, kv_dim) = attn_qkv_widths(config);
+                            let (w_bytes, s_bytes) = fp8_residency::attn_qkv_fused_parts(
+                                config.hidden_size,
+                                q_proj_dim,
+                                kv_dim,
+                            );
+                            // The concat COPIED all three widened grids, so
+                            // the per-projection allocations are dead. They
+                            // were adopted in `load_fp8_proj`; disown before
+                            // freeing, or teardown frees them a second time.
+                            let d = store.derived();
+                            let kb = config.hidden_size.div_ceil(128);
+                            let grid = |n: usize| n.div_ceil(128) * kb * 4;
+                            for w in [&q_fp8, &k_fp8, &v_fp8] {
+                                d.disown(w.row_scale);
+                                gpu.free(w.row_scale)?;
+                            }
+                            residency.free(grid(q_proj_dim) + 2 * grid(kv_dim));
+                            // The views. Q is the fused buffer's head, K
+                            // starts one `[q_proj_dim, hidden]` block in and
+                            // V one `[kv_dim, hidden]` block after that; the
+                            // scale grids meet at the same boundaries
+                            // because both widths are whole 128-blocks, a
+                            // clause of the selector above.
+                            let h = config.hidden_size;
+                            q_fp8.weight = fused.weight;
+                            q_fp8.row_scale = fused.row_scale;
+                            k_fp8.weight = fused.weight.offset(q_proj_dim * h);
+                            k_fp8.row_scale = fused.row_scale.offset(grid(q_proj_dim));
+                            v_fp8.weight = fused.weight.offset((q_proj_dim + kv_dim) * h);
+                            v_fp8.row_scale =
+                                fused.row_scale.offset(grid(q_proj_dim) + grid(kv_dim));
+                            d.adopt("attn qkv fp8 concat", fused.weight, w_bytes);
+                            d.adopt("attn qkv fp8 block scale", fused.row_scale, s_bytes);
+                            residency.keep(w_bytes + s_bytes);
+                            residency.twins.attn_qkv_fused = true;
+                            Some(fused)
+                        } else {
+                            None
+                        };
                         attn_layer.set_fp8_weights(
                             Some(q_fp8),
                             Some(k_fp8),
                             Some(v_fp8),
                             Some(o_fp8),
                         );
+                        attn_layer.set_fp8_qkv_fused(qkv_fused);
                         // #915: build only the twins a selected kernel reads,
                         // and hand each to the store so teardown RELEASES it.
                         // K/V are NOT optional — `prefill/cache_skip_qkv.rs` has
@@ -1842,6 +2009,22 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                 }
             }
         }
+        // The attention q/k/v fusion (#927), same construction and the same
+        // SAME-PREDICATE rule: the fused buffer holds the bytes and
+        // `q/k/v_weight` are VIEWS inside it, so nothing aliases these store
+        // tensors any more. `o_proj` is NOT pruned — it is still bound
+        // zero-copy.
+        for i in 0..layer_types.len() {
+            let p = format!("{}.self_attn", config.layer_prefix(i));
+            if !attn_qkv_fused_selected(store, config, variant, &p) {
+                continue;
+            }
+            for proj in ["q_proj", "k_proj", "v_proj"] {
+                for leaf in ["weight", "weight_scale_inv", "weight_scale"] {
+                    doomed.insert(format!("{p}.{proj}.{leaf}"));
+                }
+            }
+        }
         for (i, lt) in layer_types.iter().enumerate() {
             if *lt != LayerType::LinearAttention {
                 continue;
@@ -1868,7 +2051,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         }
         let (count, bytes) = store.free_matching(gpu, |name| doomed.contains(name))?;
         tracing::info!(
-            "native FP8: released {count} store tensors ({:.2} GB) consumed by the fused              [QKV|Z] SSM concat, the BA interleave and the dense-FFN gate+up fusion;              out_proj/conv1d/A_log/dt_bias/norm/down_proj kept (still aliased)",
+            "native FP8: released {count} store tensors ({:.2} GB) consumed by the fused              [QKV|Z] SSM concat, the BA interleave, the dense-FFN gate+up fusion and the              attention q/k/v fusion; out_proj/o_proj/conv1d/A_log/dt_bias/norm/down_proj              kept (still aliased)",
             bytes as f64 / 1e9,
         );
         Ok(())

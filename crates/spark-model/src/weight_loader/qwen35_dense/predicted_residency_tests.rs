@@ -85,6 +85,7 @@ fn round6_route() -> Fp8RouteInputs {
             attn_prefill_q_t: false,
         },
         ffn_gateup_fused: false,
+        attn_qkv_fused: false,
     }
 }
 
@@ -182,6 +183,71 @@ fn the_gateup_fusion_is_residency_neutral() {
     );
     assert!(p.twins.ffn_gateup_fused, "but the log still names it");
     assert!(!base.twins.ffn_gateup_fused);
+}
+
+/// THE RESIDENCY CONSTRAINT for the attention fusion (#927), as an equation.
+/// The fused `[14336, 5120]` weight is 73.4 MB x 16 full-attention layers =
+/// 1.17 GB, and it is spent ONLY because the same 1.17 GB comes back off the
+/// checkpoint at `prune_after_load`. The prediction feeds `headroom.rs`, whose
+/// `weights` term is the on-disk size and therefore still counts the three
+/// tensors the loader released, so the two must cancel EXACTLY — otherwise an
+/// H100 serve quietly picks a smaller decode-rollback ring, or is refused with
+/// `No memory left for KV cache`, and nothing says why.
+#[test]
+fn the_qkv_fusion_is_residency_neutral() {
+    let mut route = round6_route();
+    route.attn_qkv_fused = true;
+    let p = predicted(&route);
+    let base = predicted(&round6_route());
+
+    // Qwen3.8-27B: (12288 + 2 x 1024) x 5120 = 73,400,320 B per layer, over
+    // the 16 FULL-attention layers (not all 64 — the other 48 are GDN).
+    assert_eq!(p.attn_qkv_fused, 16 * 73_400_320);
+    assert_eq!(p.attn_qkv_fused, 1_174_405_120, "1.17 GB, as briefed");
+    assert_eq!(
+        p.attn_qkv_fused, p.attn_qkv_pruned,
+        "the fused weight IS the three store tensors copied side by side"
+    );
+    assert_eq!(
+        p.total(),
+        base.total(),
+        "arming the fusion must not move the preflight yardstick by one byte"
+    );
+    assert!(p.twins.attn_qkv_fused, "but the log still names it");
+    assert!(!base.twins.attn_qkv_fused);
+}
+
+/// The two fusions are priced independently and BOTH net to zero — the state
+/// an H100 serve actually boots in once round 17 lands.
+#[test]
+fn both_fusions_together_still_move_nothing() {
+    let mut route = round6_route();
+    route.attn_qkv_fused = true;
+    route.ffn_gateup_fused = true;
+    let p = predicted(&route);
+    assert_eq!(p.total(), predicted(&round6_route()).total());
+    assert!(p.twins.attn_qkv_fused && p.twins.ffn_gateup_fused);
+    assert!(p.twins.describe().contains("attn-qkv-fp8"));
+}
+
+/// A head geometry whose Q or K/V width is not a whole number of 128-blocks is
+/// NOT priced for the attention fusion, because the loader will not build it:
+/// the concat appends the `[N/128, K/128]` scale grids, and that is only the
+/// fused grid when BOTH seams fall on a block boundary.
+#[test]
+fn a_kv_width_that_is_not_a_whole_block_grid_is_never_priced() {
+    let mut c = qwen38_27b();
+    // 4 kv heads x 100 = 400, not a multiple of 128.
+    c.head_dim = 100;
+    let mut route = round6_route();
+    route.attn_qkv_fused = true;
+    let p = match predicted_derived_bytes(&c, &route) {
+        DerivedBytesEstimate::NativeFp8Dense(p) => p,
+        DerivedBytesEstimate::Unavailable(why) => panic!("expected a prediction, got: {why}"),
+    };
+    assert_eq!(p.attn_qkv_fused, 0);
+    assert_eq!(p.attn_qkv_pruned, 0);
+    assert!(!p.twins.attn_qkv_fused);
 }
 
 /// An `intermediate_size` that is not a whole number of 128-blocks is NOT

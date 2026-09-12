@@ -131,6 +131,13 @@ pub struct Qwen3AttentionLayer {
     /// when the three projections share one `weight_scale_2` — the GEMM applies
     /// a single scale2 per launch. `None` => the three separate GEMMs run.
     pub(super) qkv_nvfp4_t: Option<QuantizedWeight>,
+    /// Fused `[q|k|v]` block-scaled FP8 DECODE weight (`N = q_proj_dim +
+    /// 2*kv_dim`), built by the loader when `[defaults] attn_qkv_fused` arms
+    /// the arm (#927). `q_weight`/`k_weight`/`v_weight` are VIEWS inside this
+    /// buffer, so the un-fused tiers keep reading the same bytes and the
+    /// fusion costs no resident memory. `None` => the three separate decode
+    /// GEMMs run. Rule + receipt: `trait_impl/multi_seq/qkv_fused.rs`.
+    pub(super) qkv_fp8_fused: Option<crate::weight_map::Fp8Weight>,
     pub(super) q_nvfp4_t: Option<QuantizedWeight>,
     pub(super) k_nvfp4_t: Option<QuantizedWeight>,
     pub(super) v_nvfp4_t: Option<QuantizedWeight>,
@@ -220,6 +227,12 @@ pub struct Qwen3AttentionLayer {
     /// single lever could ship only both or neither. A field, not a per-call env
     /// read, so the route cannot vary across CUDA-graph replays.
     pub(super) m16_tc: bool,
+    /// `[defaults] attn_qkv_fused` (overridable with `ATLAS_ATTN_QKV_FUSED`),
+    /// cached at construction for the same CUDA-graph-replay reason as
+    /// `m16_tc`: a per-step environment read could route two replays of one
+    /// captured graph differently. SSOT for the value:
+    /// `trait_impl::multi_seq::qkv_fused::attn_qkv_fused`.
+    pub(super) attn_qkv_fused: bool,
     /// N-column-blocked W8A16 GEMVs (#927) — the BIT-EXACT sibling of
     /// `w8a16_gemv_batch16`, contiguous (o_proj) and strided (multi-seq Q/K/V)
     /// at 5..=16 rows. Zero on a shadow without the entry points, which keeps

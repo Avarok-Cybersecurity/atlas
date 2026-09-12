@@ -16,7 +16,7 @@ use crate::layers::ops::{
     strided_out_extent_elems,
 };
 use crate::weight_map::WeightQuantFormat;
-use spark_runtime::gpu::{DevicePtr, KernelHandle};
+use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 /// Qwen3.8-27B attention: hidden 5120, 24 q-heads / 4 kv-heads, head_dim 256,
 /// output gate on. So `q_proj` is the interleaved `[Q|gate]` at 12288, k/v are
@@ -215,4 +215,266 @@ fn one_element_short_for_v_declines_the_whole_group() {
     let v_base = (Q_N + KV_N) as usize * 2;
     assert!(all_selected("attn", 16, false, v_base + v_extent));
     assert!(!all_selected("attn", 16, false, v_base + v_extent - 2));
+}
+
+// ───────────── the FUSED [q|k|v] arm, on the layer (#927) ─────────────
+
+/// A decode-shaped layer at the round-13 attention widths, with the fused arm
+/// armed (or not) by INJECTION — the production accessor is a process-global
+/// `OnceLock` a CPU test cannot toggle.
+struct FusedHarness {
+    gpu: spark_runtime::gpu::mock::MockGpuBackend,
+    layer: Qwen3AttentionLayer,
+    buffers: spark_runtime::buffers::BufferArena,
+    config: atlas_core::config::ModelConfig,
+}
+
+fn fused_harness(armed: bool, installed: bool) -> FusedHarness {
+    use crate::weight_map::{
+        AttentionWeights, DenseWeight, Fp8Weight, QuantWeight, QuantizedWeight,
+    };
+    use spark_runtime::gpu::mock::MockGpuBackend;
+    use spark_runtime::kv_cache::KvCacheDtype;
+
+    let gpu = MockGpuBackend::new();
+    let mut config = atlas_core::config::ModelConfig::qwen3_next_80b_nvfp4();
+    config.hidden_size = H as usize;
+    config.num_attention_heads = 24;
+    config.num_key_value_heads = 4;
+    config.head_dim = 256;
+    config.attn_gated = true;
+    config.intermediate_size = 128;
+    config.moe_intermediate_size = 128;
+    config.num_experts = 1;
+    config.num_experts_per_tok = 1;
+    config.vocab_size = 128;
+    let buffers = spark_runtime::buffers::BufferArena::new(&config, SLOTS, 4096, 16, 16, &gpu)
+        .expect("decode arena");
+    let dense = DenseWeight {
+        weight: gpu.alloc(4096).unwrap(),
+    };
+    let attn = AttentionWeights {
+        q_proj: dense,
+        k_proj: dense,
+        v_proj: dense,
+        o_proj: QuantizedWeight::null(),
+        q_norm: dense,
+        k_norm: dense,
+        q_norm_full: None,
+        k_norm_full: None,
+        k_scale: 1.0,
+        v_scale: 1.0,
+    };
+    let mut layer = Qwen3AttentionLayer::new(
+        dense,
+        attn,
+        dense,
+        crate::layers::FfnComponent::None,
+        0,
+        None,
+        None,
+        None,
+        &gpu,
+        KvCacheDtype::Bf16,
+        0,
+        &config,
+    )
+    .expect("attention layer");
+    layer.attn_qkv_fused = armed;
+    // The W8A8 arm's own preconditions, installed directly: the process-global
+    // kernel lookup a CPU test cannot run, and the K-major activation-scale
+    // adapter without which every cuBLASLt W8A8 arm declines.
+    layer.per_token_group_quant_fp8_k = ops::Fp8ActQuant::shared_only(KernelHandle(0xA8A));
+    layer.fp8_act_scale_kmajor_k = KernelHandle(0xA8B);
+    // ONE fused allocation, with q/k/v as VIEWS inside it — the loader's
+    // contract, reproduced so the plan is built against the same aliasing the
+    // production path has.
+    let fused_w = gpu.alloc(PER_SEQ_QKV as usize * H as usize).unwrap();
+    let kb = H as usize / 128;
+    let fused_s = gpu.alloc((PER_SEQ_QKV as usize / 128) * kb * 4).unwrap();
+    let view = |off_n: u32, n: u32| Fp8Weight {
+        weight: fused_w.offset(off_n as usize * H as usize),
+        row_scale: fused_s.offset((off_n as usize / 128) * kb * 4),
+        n,
+        k: H,
+        scale_format: WeightQuantFormat::Fp8BlockScaled,
+    };
+    layer.q_weight = Some(QuantWeight::Fp8(view(0, Q_N)));
+    layer.k_weight = Some(QuantWeight::Fp8(view(Q_N, KV_N)));
+    layer.v_weight = Some(QuantWeight::Fp8(view(Q_N + KV_N, KV_N)));
+    if installed {
+        layer.qkv_fp8_fused = Some(Fp8Weight {
+            weight: fused_w,
+            row_scale: fused_s,
+            n: PER_SEQ_QKV,
+            k: H,
+            scale_format: WeightQuantFormat::Fp8BlockScaled,
+        });
+    }
+    FusedHarness {
+        gpu,
+        layer,
+        buffers,
+        config,
+    }
+}
+
+/// Runs `f` with a `MultiSeqCtx` at `rows` decode rows.
+fn with_ctx<R>(h: &FusedHarness, rows: usize, f: impl FnOnce(&MultiSeqCtx<'_>) -> R) -> R {
+    use crate::layer::MoeLoraRoute;
+    use crate::layers::ops::{DerivedWeights, GemmDispatch, ModelLevers, ModelStats};
+
+    // `ATLAS_CUBLAS_GEMM=attn` as the serve resolves it: the family bit is
+    // what arms the three-GEMM W8A8 arm this one rides on.
+    let mut dispatch = GemmDispatch::defaults();
+    dispatch.cublas.attn = true;
+    let (derived, levers, stats) = (
+        DerivedWeights::new(),
+        ModelLevers::defaults(),
+        ModelStats::new(),
+    );
+    let fwd = ForwardContext {
+        buffers: &h.buffers,
+        hc_row_offset: 0,
+        gpu: &h.gpu,
+        config: &h.config,
+        dispatch: &dispatch,
+        derived: &derived,
+        levers: &levers,
+        stats: &stats,
+        attn_metadata: None,
+        decode_step: true,
+        profile: false,
+        comm: None,
+        graph_capture: false,
+        gdn_exact_replay: false,
+        token_ids: None,
+        host_token_ids: None,
+        routed_lora_layers: None,
+        midchunk_capture: None,
+        moe_lora_route: MoeLoraRoute::Fold,
+    };
+    let c = MultiSeqCtx::new(
+        &h.layer,
+        &fwd,
+        h.buffers.hidden_states(),
+        h.buffers.residual(),
+        rows,
+        16,
+        0,
+    );
+    f(&c)
+}
+
+/// The arm is planned at the decode widths and nowhere else, read off the
+/// LAYER rather than the pure rule — so the wiring to the installed weight,
+/// the cached lever and `per_seq_qkv` is pinned too.
+#[test]
+fn the_layer_plans_the_fused_arm_only_inside_the_band() {
+    let h = fused_harness(true, true);
+    for rows in [5usize, 8, 16] {
+        assert!(with_ctx(&h, rows, |c| h
+            .layer
+            .qkv_fused_plan(c, KV_N, true)
+            .is_some()));
+    }
+    for rows in [1usize, 4, 17, 24] {
+        assert!(with_ctx(&h, rows, |c| h
+            .layer
+            .qkv_fused_plan(c, KV_N, true)
+            .is_none()));
+    }
+    // Lever down, and weight absent: both keep the three-GEMM arm.
+    for (armed, installed) in [(false, true), (true, false)] {
+        let off = fused_harness(armed, installed);
+        for rows in [5usize, 8, 16] {
+            assert!(with_ctx(&off, rows, |c| off
+                .layer
+                .qkv_fused_plan(c, KV_N, true)
+                .is_none()));
+        }
+    }
+}
+
+/// THE PLAN IS THE SLOT LAYOUT. One GEMM of `fused_n` columns at the slot
+/// pitch, whose padded write extent is exactly the whole `qkv_output` — the
+/// same bytes the three separate plans cover between them, which is what makes
+/// the consumers' offsets unchanged.
+#[test]
+fn the_fused_plan_writes_the_slot_layout_at_the_slot_pitch() {
+    let h = fused_harness(true, true);
+    with_ctx(&h, 16, |c| {
+        let (w, plan) = h.layer.qkv_fused_plan(c, KV_N, true).expect("armed at 16");
+        assert_eq!(plan.n, PER_SEQ_QKV, "q_proj_dim + 2*kv_dim");
+        assert_eq!(plan.ldc, PER_SEQ_QKV, "ldc == n: the rows are contiguous");
+        assert_eq!(plan.k, H);
+        assert_eq!(w.n, PER_SEQ_QKV, "the fused weight spans all three");
+        assert_eq!(
+            plan.write_extent_bytes(),
+            SLOTS * PER_SEQ_QKV as usize * 2,
+            "the padded extent is the whole 16-slot buffer"
+        );
+        // V's plan — the tightest of the three — ends at the same byte.
+        let three = h
+            .layer
+            .qkv_decode_w8a8_plans(c, KV_N, h.buffers.qkv_output_bytes());
+        let (v_off, v_plan) = &three[2];
+        assert_eq!(
+            v_off + v_plan.write_extent_bytes(),
+            plan.write_extent_bytes()
+        );
+    });
+}
+
+/// A `qkv_output` one BF16 element short of the padded fused extent must
+/// DECLINE, for the reason the three-GEMM arm's own bound exists: cuBLASLt
+/// writes `ceil16(m)` rows whatever `m` is, and too small is a cross-buffer
+/// write.
+#[test]
+fn a_qkv_buffer_short_of_the_padded_fused_extent_declines() {
+    let full = SLOTS * PER_SEQ_QKV as usize * 2;
+    let plan = |cap: usize| DecodeW8a8Plan::strided(16, PER_SEQ_QKV, H, PER_SEQ_QKV, cap);
+    assert!(decode_w8a8_selected(
+        true,
+        false,
+        &plan(full),
+        WeightQuantFormat::Fp8BlockScaled,
+        &scratch()
+    ));
+    assert!(!decode_w8a8_selected(
+        true,
+        false,
+        &plan(full - 2),
+        WeightQuantFormat::Fp8BlockScaled,
+        &scratch()
+    ));
+}
+
+/// THE ALLOCATION CONTRACT. Taken BEFORE the first call and not between two: a
+/// per-call `cuMemAlloc` inside a CUDA-graph capture is not a leak, it is a
+/// capture failure. The fused arm's operands are the arena's `qkv_output`, the
+/// shared W8A8 scratch and a weight VIEW — nothing else exists to allocate.
+#[test]
+fn planning_the_fused_arm_allocates_nothing() {
+    let h = fused_harness(true, true);
+    let (allocs, bytes) = (h.gpu.live_alloc_count(), h.gpu.live_bytes());
+    for _ in 0..3 {
+        with_ctx(&h, 16, |c| {
+            let (w, plan) = h.layer.qkv_fused_plan(c, KV_N, true).expect("armed");
+            // The output is the arena buffer itself, and the weight is a view
+            // into the one fused allocation the loader made.
+            assert_eq!(c.qkv_buf, h.buffers.qkv_output());
+            assert_eq!(plan.out_capacity_bytes, h.buffers.qkv_output_bytes());
+            // Q is the fused buffer's head, so the fused weight and the q
+            // VIEW share a pointer — the "no second copy" claim, stated.
+            let q = h.layer.q_weight.as_ref().and_then(|w| w.as_fp8()).unwrap();
+            assert_eq!(w.weight, q.weight);
+            assert_eq!(w.row_scale, q.row_scale);
+        });
+    }
+    assert_eq!(
+        (h.gpu.live_alloc_count(), h.gpu.live_bytes()),
+        (allocs, bytes),
+        "the fused q/k/v arm must allocate nothing per call"
+    );
 }

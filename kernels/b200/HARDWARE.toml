@@ -73,6 +73,10 @@ ssm_ba_gates_hopper = false
 # symlinked into this tree, so the row is inert here exactly as
 # `gdn_decode_hopper` is. See `kernels/hopper/HARDWARE.toml`.
 ffn_gateup_fused = false
+# The fused attention Q/K/V decode GEMM (#927). OFF for want of a receipt,
+# like every other row here — B200 must not inherit a Hopper recipe by
+# resemblance. See `kernels/hopper/HARDWARE.toml`.
+attn_qkv_fused = false
 decode_split_silu = true
 ssm_decode_ring_slots = "auto"
 # Upper M for the W8A8 block-scaled dense-FFN prefill (#917). NO CAP here:

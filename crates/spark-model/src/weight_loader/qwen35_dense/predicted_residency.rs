@@ -86,6 +86,16 @@ pub struct PredictedDerived {
     /// by construction — the fused weight IS those two tensors copied side by
     /// side — which is why the fusion nets out of [`Self::total`] below.
     pub ffn_gateup_pruned: u64,
+    /// The fused `[q_proj_dim + 2*kv_dim, hidden]` attention decode weight and
+    /// its block-scale grid (#927), summed over FULL-attention layers — 0 when
+    /// the target does not arm the arm.
+    pub attn_qkv_fused: u64,
+    /// The checkpoint bytes `prune_after_load` gives BACK because that fusion
+    /// consumed them: `self_attn.{q,k,v}_proj.weight` over the same layers.
+    /// EQUAL to [`Self::attn_qkv_fused`] minus the scale grids, by
+    /// construction — the fused weight IS those three tensors copied side by
+    /// side — which is why it nets out of [`Self::total`] below.
+    pub attn_qkv_pruned: u64,
     /// Which twin families the prediction expects, for the log line.
     pub twins: TwinsBuilt,
     /// The twin set the attention term was priced at.
@@ -110,6 +120,7 @@ impl PredictedDerived {
         self.attn_fp8_twins
             + self.ssm_fp8_concat
             + self.ffn_gateup_fused.saturating_sub(self.ffn_gateup_pruned)
+            + self.attn_qkv_fused.saturating_sub(self.attn_qkv_pruned)
     }
 }
 
@@ -168,6 +179,11 @@ pub struct Fp8RouteInputs {
     /// only when the compiled target (or `ATLAS_FFN_GATEUP_FUSED`) arms the arm
     /// that reads it (#927).
     pub ffn_gateup_fused: bool,
+    /// `[defaults] attn_qkv_fused`, resolved through the SAME function the
+    /// dispatch site, the layer constructor and the loader call — the fused
+    /// `[q|k|v]` weight is built only when the compiled target (or
+    /// `ATLAS_ATTN_QKV_FUSED`) arms the arm that reads it (#927).
+    pub attn_qkv_fused: bool,
 }
 
 impl Fp8RouteInputs {
@@ -189,6 +205,7 @@ impl Fp8RouteInputs {
             w8a8_prefill_kernels,
             route: RouteEnv::from_env(),
             ffn_gateup_fused: crate::layers::dense_ffn::gateup_fused::ffn_gateup_fused(),
+            attn_qkv_fused: crate::layers::qwen3_attention::attn_qkv_fused::attn_qkv_fused(),
         }
     }
 }
@@ -297,17 +314,46 @@ pub fn predicted_derived_bytes(
         (0, 0)
     };
 
+    // The fused attention `[q|k|v]` decode weight (#927). Every clause of
+    // `qwen35_dense::attn_qkv_fused_selected` that is knowable before the
+    // checkpoint loads: the arm is armed and the three extents are whole
+    // 128-blocks. The store-dependent clauses (`proj_is_native_fp8`, the
+    // on-disk shapes) are carried by the `declared_variant` gate above, the
+    // same division the gate+up term makes.
+    let (q_proj_dim, kv_dim) = crate::weight_loader::qwen35_dense::attn_qkv_widths(config);
+    let qkv_fused_here = route.attn_qkv_fused
+        && attn_layers > 0
+        && crate::layers::qwen3_attention::attn_qkv_fused::qkv_fused_shape_ok(
+            q_proj_dim as u32,
+            kv_dim as u32,
+            hidden as u32,
+        );
+    let (attn_qkv_fused, attn_qkv_pruned) = if qkv_fused_here {
+        // The WEIGHT term on both sides: the fused buffer is the three store
+        // tensors copied side by side, and `prune_after_load` releases exactly
+        // those three. The scale grid is deliberately absent from both — the
+        // three per-projection grids it replaces are DERIVED bytes the loader
+        // frees at the concat, so neither side of this difference moves.
+        let (w, _scales) = fp8_residency::attn_qkv_fused_parts(hidden, q_proj_dim, kv_dim);
+        (attn_layers * w as u64, attn_layers * w as u64)
+    } else {
+        (0, 0)
+    };
+
     DerivedBytesEstimate::NativeFp8Dense(PredictedDerived {
         attn_fp8_twins,
         ssm_fp8_concat,
         ffn_gateup_fused,
         ffn_gateup_pruned,
+        attn_qkv_fused,
+        attn_qkv_pruned,
         twins: TwinsBuilt {
             ffn_nvfp4: false,
             attn_nvfp4: false,
             attn_fp8: plan.attn_fp8_twins.any() && attn_layers > 0,
             ssm_fp8_concat: ssm_fp8_concat > 0,
             ffn_gateup_fused: ffn_gateup_fused > 0,
+            attn_qkv_fused: attn_qkv_fused > 0,
         },
         attn_twin_set: plan.attn_fp8_twins,
     })

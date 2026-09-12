@@ -23,6 +23,21 @@ use super::sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 /// disagree.
 pub const GATEUP_FUSED_MAX_M: usize = 16;
 
+/// The widest `M` the FUSED attention Q/K/V decode GEMM serves (#927), and
+/// therefore the row extent `qkv_output` must already hold for that arm.
+///
+/// 16, and the SAME reasoning as [`GATEUP_FUSED_MAX_M`]: the fused Q/K/V arm
+/// is a per-LAUNCH saving on a weight-bandwidth-bound GEMM, and above the
+/// decode band the same projections are compute-bound, where a launch costs
+/// nothing measurable. 16 is also the widest decode graph H100 round 13
+/// captured.
+///
+/// No buffer of its own: the fused `[m, q_proj_dim + 2*kv_dim]` output IS
+/// `qkv_output`'s existing per-sequence `[Q|K|V]` slot layout, byte for byte
+/// (`qkv_dim` below is that same width). Declared here so the dispatch band
+/// and the arena that has to hold it are one arithmetic.
+pub const ATTN_QKV_FUSED_MAX_M: usize = 16;
+
 /// Byte sizes of each buffer, derived from ModelConfig.
 #[derive(Debug, Clone)]
 pub struct BufferSizes {

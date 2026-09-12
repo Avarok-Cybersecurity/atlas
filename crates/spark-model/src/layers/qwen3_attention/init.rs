@@ -185,6 +185,7 @@ impl Qwen3AttentionLayer {
             ),
             hc_head_k: gate(probes.hyper_connection, gpu, "hyper_connection", "hc_head"),
             qkv_nvfp4_t: None,
+            qkv_fp8_fused: None,
             q_nvfp4_t: None,
             k_nvfp4_t: None,
             v_nvfp4_t: None,
@@ -307,6 +308,8 @@ impl Qwen3AttentionLayer {
                 KernelHandle(0)
             },
             m16_tc: crate::layers::dense_ffn::m16_tc::m16_tc_levers().attn,
+            // Resolved ONCE here, never per step: see the field docs.
+            attn_qkv_fused: crate::layers::qwen3_attention::attn_qkv_fused::attn_qkv_fused(),
             // ★ PROBED ONLY WHEN THE TIER IS ARMED, for the reason the M16
             // probes above are: `w8a16_gemv_ncol.cu` is Hopper-tuned and is not
             // in GB10's kernel set, and the boot audit fails closed on an
