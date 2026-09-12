@@ -85,6 +85,10 @@ mod ssm_gdn_tc_tests;
 pub fn gdn_prefill_fla(
     gpu: &dyn GpuBackend,
     k_recompute_wu: KernelHandle,
+    // Hopper twins of kernels 1 and 3 (#928), KernelHandle(0) off that target.
+    // Selection grammar and footprints: ops::ssm_gdn_hopper_prefill.
+    k_recompute_wu_hopper: KernelHandle,
+    k_chunk_fwd_o_hopper: KernelHandle,
     k_chunk_delta_h: KernelHandle,
     // wmma + DV-block-split spine (gated_delta_rule_chunk_delta_h_tc_vblock). When
     // non-zero AND ATLAS_GDN_TC_VBLOCK=1, replaces the scalar ksplit spine (drop-in
@@ -159,11 +163,30 @@ pub fn gdn_prefill_fla(
         };
     }
 
-    // Kernel 1: recompute_wu.
-    KernelLaunch::new(gpu, k_recompute_wu)
+    // The TC prefill FAMILY lever, resolved ONCE for the three kernels it picks:
+    // the twins here and the state spine below. `[defaults] gdn_prefill_tc`,
+    // `ATLAS_GDN_PREFILL_TC` overriding — a VALUE, not a presence check, so `=0`
+    // turns the family off. `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` is the A/B that
+    // keeps the spine and pins these two to their parents.
+    let tc_requested = super::target_defaults::resolved().gdn_prefill_tc.value;
+    let (wu, fo) = gdn_hopper_remnants(
+        tc_requested,
+        k_recompute_wu,
+        smem_wu,
+        k_chunk_fwd_o,
+        smem_fo,
+        k_recompute_wu_hopper,
+        k_chunk_fwd_o_hopper,
+        kd,
+        vd,
+        C,
+    );
+
+    // Kernel 1: recompute_wu, or its Hopper twin.
+    KernelLaunch::new(gpu, wu.kernel)
         .grid([num_chunks, num_v_heads, batch_size])
-        .block([256, 1, 1])
-        .shared_mem(smem_wu)
+        .block([wu.block, 1, 1])
+        .shared_mem(wu.smem)
         .arg_ptr(key)
         .arg_ptr(value)
         .arg_ptr(gate)
@@ -282,7 +305,6 @@ pub fn gdn_prefill_fla(
     //
     // NAME THE GUARD THAT REJECTED — a perf path that asks to be enabled and
     // silently is not measures as "no effect" (PR #296 shipped exactly that).
-    let tc_requested = super::target_defaults::resolved().gdn_prefill_tc.value;
     let smem_tcfuse = GDN_TC_SMEM;
     let tc_reject = gdn_tc_spine_reject(
         tc_requested,
@@ -440,11 +462,11 @@ pub fn gdn_prefill_fla(
         prof!("gdn_fla_chunk_delta_h", &mut t0);
     }
 
-    // Kernel 3: chunk_fwd_o.
-    KernelLaunch::new(gpu, k_chunk_fwd_o)
+    // Kernel 3: chunk_fwd_o, or its Hopper twin.
+    KernelLaunch::new(gpu, fo.kernel)
         .grid([num_chunks, num_v_heads, batch_size])
-        .block([512, 1, 1])
-        .shared_mem(smem_fo)
+        .block([fo.block, 1, 1])
+        .shared_mem(fo.smem)
         .arg_ptr(query)
         .arg_ptr(key)
         .arg_ptr(gate)

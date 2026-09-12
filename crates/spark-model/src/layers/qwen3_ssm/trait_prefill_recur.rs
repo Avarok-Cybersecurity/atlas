@@ -219,6 +219,8 @@ impl Qwen3SsmLayer {
             ops::gdn_prefill_fla(
                 ctx.gpu,
                 self.gdn_prefill_fla_recompute_wu_k,
+                self.gdn_prefill_fla_recompute_wu_hopper_k,
+                self.gdn_prefill_fla_chunk_fwd_o_hopper_k,
                 self.gdn_prefill_fla_chunk_delta_h_k,
                 self.gdn_prefill_fla_chunk_delta_h_tc_vblock_k,
                 self.gdn_prefill_fla_chunk_delta_h_tcfuse_k,

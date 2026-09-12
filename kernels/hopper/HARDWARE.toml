@@ -175,8 +175,33 @@ attn_decode_splitk = "auto"
 #                            declares `attn_decode_splitk = "legacy"` for want
 #                            of a receipt, so the kernels would be compiled and
 #                            never reached.
+#
+#   gdn_recompute_wu_hopper.cu  The two SCALAR REMNANTS of the chunked PREFILL
+#   gdn_fwd_o_hopper.cu         (#928) on tensor cores: `wu`'s two forward
+#                            substitutions and `fwd_o`'s triangular
+#                            `tril(kq).uc`. ADDITIONS rather than overrides
+#                            because their parents live in
+#                            `common/gated_delta_rule_fla.cu`, which NO model
+#                            directory shadows, so a same-stem override there
+#                            WOULD compile. That file is 2105 lines declaring
+#                            fourteen entry points, of which these replace two:
+#                            a whole-file override is whole-file and would fork
+#                            the other twelve, which is the shadow-drift class
+#                            `build.rs` reports. New stems with new entry names
+#                            fork nothing, and the launcher picks parent or twin
+#                            by kernel presence under `[defaults]
+#                            gdn_prefill_tc`. Reached only under that row.
+#                            Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
+#   gdn_prefill_hopper.cuh   Their shared operand machinery — the padded smem
+#                            strides and the MMA fragment maps both twins read.
+#                            No gb10 counterpart by design: it is the shared
+#                            inner loop of the two `.cu` additions above and
+#                            nothing else includes it.
 [kernels]
 overrides = [
+  "gdn_fwd_o_hopper.cu",
+  "gdn_prefill_hopper.cuh",
+  "gdn_recompute_wu_hopper.cu",
   "paged_decode_bf16_splitk_hopper.cu",
   "paged_decode_fp8_splitk_hopper.cu",
   "paged_decode_splitk_hopper.cuh",
