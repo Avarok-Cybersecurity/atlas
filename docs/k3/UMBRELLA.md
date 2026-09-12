@@ -32,7 +32,7 @@ Sheets so far: `docs/k3/rst/s0-fabric-nccl.md`, `s0-5090-sm121.md`, `s0-atlas-se
 S7 (rental soak) is forbidden until every box is green. Each box also needs its RST sheet.
 
 - [x] C0 config / factory / weight-name map dry-run (no shard download) — spark2 Linux 9/9 `kimi_k3` + atlas-core parse tests
-- [ ] C1 `Kimi-K3-0.40B` greedy 128 tok × 8 prompts, exact vs HF — **FAIL 2026-09-12**: prompt ids match, first generated token diverges (`13` vs `387`); CPU decode collapses to 261/667. See `docs/k3/rst/c1-engine.md`
+- [ ] C1 `Kimi-K3-0.40B` greedy 128 tok × 8 prompts, exact vs HF — first-8 **green**; **46 generated tokens match** then diverge (ours `39058` vs HF `163585` at index 54). Full 128 still red. `docs/k3/rst/c1-engine.md`
 - [ ] C2 prefill-then-decode vs full-prefill logits (atol/rtol in test file)
 - [ ] C3 prefix-cache hit == no-cache decode
 - [ ] C4 MLA KV and KDA state advance on the same positions (incl. after prefix hit)

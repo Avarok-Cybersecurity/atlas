@@ -37,7 +37,7 @@ spark2 `c1_prompt0_first_token_top8` + `c1_prompt0_first_eight_generated`: **PAS
 - last-pos argmax=**1459** matches HF first generated; 387 is second (top-8 includes 387 at rank 8).
 - first-8 generated `[1459, 387, 1495, 2189, 261, 56207, 1765, 413]` match goldens.
 
-Full 8×128 greedy still running (`c1_greedy_vs_hf_goldens_skip_if_missing`).
+Full 8×128 greedy (`c1_greedy_vs_hf_goldens_skip_if_missing`) **FAIL** at index 54 (46 generated tokens). Shared prefix through `..., 19392, 13, 163585` then ours `39058` vs HF `163585` (HF double-emits 163585 and loops Bee Movie). Ours does not collapse to 261/667 anymore.
 
 STOP
-First-token / first-8 charter **complete (green)**. Full 128-token C1 still open until spark2 finishes.
+First-8 green. **46 generated tokens match HF** then FP32 CPU vs BF16 CUDA / KDA sketch drift. Full 128×8 C1 stays red. Do not /stamp.
