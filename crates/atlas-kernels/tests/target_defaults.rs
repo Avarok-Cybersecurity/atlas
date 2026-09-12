@@ -219,9 +219,9 @@ fn absent_keys_fall_through_to_the_baseline() {
 /// review objected to. It is also what makes the four-places-one-commit
 /// contract enforceable rather than merely asked for.
 #[test]
-#[should_panic(expected = "has no key `ssm_batched_recurent`")]
+#[should_panic(expected = "has no key `ssm_batched_recurrent_misspelt`")]
 fn an_unknown_lever_name_fails_the_build() {
-    let toml: toml::Value = "[defaults]\nssm_batched_recurent = true\n".parse().unwrap();
+    let toml: toml::Value = "[defaults]\nssm_batched_recurrent_misspelt = true\n".parse().unwrap();
     let _ = parse_defaults("fictional", &toml);
 }
 
