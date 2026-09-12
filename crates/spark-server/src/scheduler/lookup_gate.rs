@@ -34,13 +34,17 @@ pub(super) fn take_lookup_drafts(
     seq: &mut ActiveSeq,
     sched: &SchedCtx,
     width: usize,
+    capacity: usize,
     dflash: bool,
     ep: bool,
 ) -> bool {
     // A lookup hit proposes at the lookup width when that is wider than the
     // head's width: the wide step runs only on the steps the index already
     // has the tokens for, so fresh generation never pays for it.
-    let width = width.max(sched.levers.lookup_width);
+    // Clamped to the slot's verify draft capacity exactly as the head's
+    // propose is (`mtp_slot_draft_capacity`): rows past the SSM verify pool
+    // are not rows, and a draft count above it ends the sequence on garbage.
+    let width = width.max(sched.levers.lookup_width).min(capacity);
     // Off under expert parallelism: the drafter runs on rank 0 only, and a
     // lookup step on rank 0 moved the Marconi prefix-cache anchors on both
     // ranks of a TP=2 x EP=2 build (Richard's bisect, 2026-09-12). Until
@@ -106,7 +110,7 @@ mod tests {
         a.last_token = 3;
         // Lookup width 7 exceeds the history here (two tokens follow the
         // match), so the hit needs the width the head would draft at.
-        assert!(!take_lookup_drafts(&mut a, &sched, 2, false, false));
+        assert!(!take_lookup_drafts(&mut a, &sched, 2, usize::MAX, false, false));
         let mut levers = crate::scheduler::levers::SchedLevers::defaults();
         levers.lookup_min_match = 3;
         levers.lookup_width = 2;
@@ -118,7 +122,7 @@ mod tests {
             crate::scheduler::helpers::WatchdogParams::default(),
         );
         sched.lookup.borrow_mut().set_single_sequence(true);
-        assert!(take_lookup_drafts(&mut a, &sched, 2, false, false));
+        assert!(take_lookup_drafts(&mut a, &sched, 2, usize::MAX, false, false));
         assert_eq!(a.pending_drafts, vec![4, 5]);
         assert!(a.pending_drafts_lookup);
         assert!(a.pending_draft_conf.is_empty());
@@ -130,12 +134,12 @@ mod tests {
         let t = [1, 2, 3, 4, 5, 9, 1, 2];
         let mut a = seq_with(&t);
         a.last_token = 3;
-        assert!(!take_lookup_drafts(&mut a, &sched, 2, false, false), "not armed single");
+        assert!(!take_lookup_drafts(&mut a, &sched, 2, usize::MAX, false, false), "not armed single");
         sched.lookup.borrow_mut().set_single_sequence(true);
-        assert!(!take_lookup_drafts(&mut a, &sched, 2, true, false), "dflash");
-        assert!(!take_lookup_drafts(&mut a, &sched, 1, false, false), "K=2 lane");
-        assert!(!take_lookup_drafts(&mut a, &sched, 16, false, false), "past the wide verify");
-        assert!(!take_lookup_drafts(&mut a, &sched, 2, false, true), "expert parallel");
+        assert!(!take_lookup_drafts(&mut a, &sched, 2, usize::MAX, true, false), "dflash");
+        assert!(!take_lookup_drafts(&mut a, &sched, 1, usize::MAX, false, false), "K=2 lane");
+        assert!(!take_lookup_drafts(&mut a, &sched, 16, usize::MAX, false, false), "past the wide verify");
+        assert!(!take_lookup_drafts(&mut a, &sched, 2, usize::MAX, false, true), "expert parallel");
         assert!(a.pending_drafts.is_empty() && !a.pending_drafts_lookup);
     }
 
@@ -155,6 +159,21 @@ mod tests {
         sched.lookup.borrow_mut().set_single_sequence(true);
         let mut a = seq_with(&[1, 2, 3, 4, 5, 9, 1, 2]);
         a.last_token = 3;
-        assert!(!take_lookup_drafts(&mut a, &sched, 2, false, false));
+        assert!(!take_lookup_drafts(&mut a, &sched, 2, usize::MAX, false, false));
+    }
+
+    #[test]
+    fn the_slot_capacity_clamps_the_lookup_width() {
+        let sched = ctx_with(3); // lookup width 7
+        sched.lookup.borrow_mut().set_single_sequence(true);
+        // Nine tokens of continuation exist; capacity 3 caps the draft count.
+        let mut a = seq_with(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 1, 2]);
+        a.last_token = 3;
+        assert!(take_lookup_drafts(&mut a, &sched, 2, 3, false, false));
+        assert_eq!(a.pending_drafts, vec![4, 5, 6]);
+        // Capacity below the K=3 lane means no lookup step at all.
+        let mut b = seq_with(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 1, 2]);
+        b.last_token = 3;
+        assert!(!take_lookup_drafts(&mut b, &sched, 2, 1, false, false));
     }
 }

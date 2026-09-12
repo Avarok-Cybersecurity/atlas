@@ -302,6 +302,7 @@ pub fn step_mtp(
                 a,
                 sched,
                 effective_num_drafts,
+                model.mtp_slot_draft_capacity(a.seq.slot_idx),
                 dflash_verify_raw_argmax,
                 model.is_ep(),
             )
