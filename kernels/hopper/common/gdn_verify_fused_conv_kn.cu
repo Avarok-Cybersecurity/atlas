@@ -1,0 +1,1 @@
+../../gb10/common/gdn_verify_fused_conv_kn.cu

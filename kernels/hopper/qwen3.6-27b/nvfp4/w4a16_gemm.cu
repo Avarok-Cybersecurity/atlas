@@ -1,0 +1,1 @@
+../../../gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu

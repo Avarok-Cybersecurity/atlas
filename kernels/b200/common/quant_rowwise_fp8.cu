@@ -1,0 +1,1 @@
+../../gb10/common/quant_rowwise_fp8.cu

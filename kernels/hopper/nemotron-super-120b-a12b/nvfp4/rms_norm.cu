@@ -1,0 +1,1 @@
+../../../gb10/nemotron-super-120b-a12b/nvfp4/rms_norm.cu
