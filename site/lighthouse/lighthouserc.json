@@ -4,6 +4,7 @@
       "staticDistDir": "./site/build",
       "url": [
         "http://localhost/index.html",
+        "http://localhost/engine.html",
         "http://localhost/control.html"
       ],
       "numberOfRuns": 3,
@@ -15,7 +16,7 @@
     "assert": {
       "assertMatrix": [
         {
-          "matchingUrlPattern": ".*/index\\.html$",
+          "matchingUrlPattern": ".*/(index|engine)\\.html$",
           "assertions": {
             "categories:performance": [
               "error",

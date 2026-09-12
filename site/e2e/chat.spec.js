@@ -81,7 +81,7 @@ const opfsFiles = (page) =>
 
 test.describe('nav trigger', () => {
   test('is present with dialog aria wiring', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/engine.html');
     if (isMobile(page)) {
       await expect(page.locator('.nav-links .nav-chat-btn')).toBeHidden();
       const toggle = page.locator('.nav-toggle');
@@ -112,7 +112,7 @@ test.describe('modal shell', () => {
     context
   }) => {
     await routeCorpus(context);
-    await page.goto('/');
+    await page.goto('/engine.html');
     const dialog = await openChat(page);
 
     await expect(dialog).toHaveAttribute('aria-modal', 'true');
@@ -141,7 +141,7 @@ test.describe('modal shell', () => {
 
   test('close button and backdrop click both close', async ({ page, context }) => {
     await routeCorpus(context);
-    await page.goto('/');
+    await page.goto('/engine.html');
     let dialog = await openChat(page);
     await dialog.locator('.cc-close').click();
     await expect(dialog).toBeHidden();
@@ -162,7 +162,7 @@ test.describe('modal shell', () => {
 
 test('no corpus or manifest request before the modal opens', async ({ page, context }) => {
   const hits = await routeCorpus(context);
-  await page.goto('/');
+  await page.goto('/engine.html');
   if (!isMobile(page)) {
     // Hovering warms the lazy chunk + wasm, which must NOT touch the corpus.
     await page.locator('.nav-links .nav-chat-btn').hover();
@@ -187,7 +187,7 @@ test('first open walks download with MB progress to ready with fixture stats', a
   const hits = await routeCorpus(context);
   const slow = await routeSlowCorpus(context, hits, { chunkSize: 512, delayMs: 60 });
   try {
-    await page.goto('/');
+    await page.goto('/engine.html');
     // Record every status-line change so sub-second phases are still assertable.
     await page.evaluate(() => {
       window.__statusLog = [];
@@ -225,7 +225,7 @@ test('second open serves the corpus from OPFS with only a manifest request', asy
   context
 }) => {
   const hits = await routeCorpus(context);
-  await page.goto('/');
+  await page.goto('/engine.html');
   await openChat(page);
   await waitReady(page);
   expect(hits).toEqual({ meta: 1, gz: 1 });
@@ -257,7 +257,7 @@ test('manifest failure falls back to the cached corpus with the offline badge', 
   context
 }) => {
   const hits = await routeCorpus(context);
-  await page.goto('/');
+  await page.goto('/engine.html');
   await openChat(page);
   await waitReady(page);
 
@@ -283,7 +283,7 @@ test('a manifest whose commit_sha is not a string is refused, not coerced', asyn
   context
 }) => {
   const hits = await routeCorpus(context);
-  await page.goto('/');
+  await page.goto('/engine.html');
   await openChat(page);
   await waitReady(page);
 
@@ -314,7 +314,7 @@ test('closing mid-download aborts cleanly and leaves no partial corpus', async (
   const hits = await routeCorpus(context);
   const slow = await routeSlowCorpus(context, hits, { chunkSize: 256, delayMs: 100 });
   try {
-    await page.goto('/');
+    await page.goto('/engine.html');
     const dialog = await openChat(page);
     await expect(statusText(page)).toContainText('downloading corpus');
     await page.keyboard.press('Escape');
@@ -344,7 +344,7 @@ test('asking is gated on an OpenRouter key that persists across visits', async (
   context
 }) => {
   await routeCorpus(context);
-  await page.goto('/');
+  await page.goto('/engine.html');
   await openChat(page);
   await waitReady(page);
 
@@ -394,7 +394,7 @@ test('mocked round-trip prints prompt, receipt, markdown, and real source links'
   await routeCorpus(context);
   await routeOpenRouter(context, ANSWER);
   await withKey(page);
-  await page.goto('/');
+  await page.goto('/engine.html');
   await openChat(page);
   await waitReady(page);
 
@@ -461,7 +461,7 @@ test.describe('error states', () => {
     await context.route(CORPUS_GZ_URL, (route) =>
       route.fulfill({ status: 404, headers: JSON_HEADERS, body: 'not found' })
     );
-    await page.goto('/');
+    await page.goto('/engine.html');
     await openChat(page);
 
     const card = page.locator('.cc-error[role="alert"]');
@@ -479,7 +479,7 @@ test.describe('error states', () => {
     const attempts = [];
     await context.route(OR_EMBEDDINGS, http429Handler({ log: attempts }));
     await withKey(page);
-    await page.goto('/');
+    await page.goto('/engine.html');
     await openChat(page);
     await waitReady(page);
     await page.evaluate(() => window.__atlasChatSetRetryBaseMs(1));
@@ -498,7 +498,7 @@ test.describe('error states', () => {
     await context.route(OR_RERANK, rerankHandler());
     await context.route(OR_CHAT, ok200ErrorBodyHandler({ log: attempts }));
     await withKey(page);
-    await page.goto('/');
+    await page.goto('/engine.html');
     await openChat(page);
     await waitReady(page);
     await page.evaluate(() => window.__atlasChatSetRetryBaseMs(1));
@@ -514,7 +514,7 @@ test.describe('error states', () => {
     await routeCorpus(context);
     await context.route(OR_EMBEDDINGS, embeddingsHandler({ dim: 16 }));
     await withKey(page);
-    await page.goto('/');
+    await page.goto('/engine.html');
     await openChat(page);
     await waitReady(page);
 
@@ -563,7 +563,7 @@ test.describe('error states', () => {
       });
     });
     await withKey(page);
-    await page.goto('/');
+    await page.goto('/engine.html');
     await openChat(page);
     await waitReady(page);
 
@@ -581,7 +581,7 @@ test.describe('error states', () => {
 test('the modal is a full-bleed sheet on a phone', async ({ page, context }) => {
   test.skip(!isMobile(page), 'mobile project only');
   await routeCorpus(context);
-  await page.goto('/');
+  await page.goto('/engine.html');
   const dialog = await openChat(page);
 
   const viewport = page.viewportSize();

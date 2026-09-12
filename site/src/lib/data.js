@@ -126,11 +126,11 @@ export const announcement = {
 // --- nav (SSOT for both the desktop bar and the mobile drawer) ---------------
 export const nav = {
   links: [
-    { text: 'Verified', href: '/#verified' },
-    { text: 'News', href: '/#news' },
-    { text: 'Hardware', href: '/#hardware' },
-    { text: 'Models', href: '/#models' },
-    { text: 'Start Atlas', href: '/#run' },
+    { text: 'Verified', href: '/engine.html#verified' },
+    { text: 'News', href: '/engine.html#news' },
+    { text: 'Hardware', href: '/engine.html#hardware' },
+    { text: 'Models', href: '/engine.html#models' },
+    { text: 'Start Atlas', href: '/engine.html#run' },
     // `.html`, not `/control`. adapter-static writes this route to
     // control.html, and the deploy target serves files literally: no extension
     // guessing, and no directory index outside the document root. /control is

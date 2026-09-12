@@ -14,7 +14,7 @@
  * survive the build to be worth anything.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 const siteDir = process.argv[2] ?? 'site/build';
 const blogDir = process.argv[3] ?? 'blog/build';
@@ -26,11 +26,18 @@ const walk = (dir) =>
     return statSync(p).isDirectory() ? walk(p) : p.endsWith('.html') ? [p] : [];
   });
 
-const siteIds = new Set();
+// Fragments belong to a document. An id on engine.html cannot make /#verified
+// work, even though both files ship in the same site artifact.
+const sitePages = new Map();
+let idCount = 0;
 for (const f of walk(siteDir)) {
-  for (const m of readFileSync(f, 'utf8').matchAll(/\sid="([^"]+)"/g)) siteIds.add(m[1]);
+  const ids = new Set([...readFileSync(f, 'utf8').matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
+  const path = `/${relative(siteDir, f).split(sep).join('/')}`;
+  sitePages.set(path, ids);
+  if (path === '/index.html') sitePages.set('/', ids);
+  idCount += ids.size;
 }
-if (siteIds.size === 0) {
+if (idCount === 0) {
   console.error(`No ids found under ${siteDir} — wrong directory, or the site did not build.`);
   process.exit(1);
 }
@@ -38,13 +45,29 @@ if (siteIds.size === 0) {
 let bad = 0, checked = 0;
 for (const f of walk(blogDir)) {
   const html = readFileSync(f, 'utf8');
-  for (const m of html.matchAll(new RegExp(`href="${MAIN}/?#([^"]+)"`, 'g'))) {
+  for (const m of html.matchAll(/\shref="([^"]+)"/g)) {
+    let url;
+    try {
+      url = new URL(m[1]);
+    } catch {
+      continue; // Relative URLs belong to the blog, not the marketing site.
+    }
+    if (url.origin !== MAIN || url.hash.length < 2) continue;
     checked++;
-    if (!siteIds.has(m[1])) {
-      console.error(`  MISSING  ${f}: links to ${MAIN}/#${m[1]}, which is not an id on the marketing site`);
+    // Match the literal deployed filename. The origin does not rewrite
+    // extensionless /engine to /engine.html.
+    const ids = sitePages.get(url.pathname);
+    let fragment = url.hash.slice(1);
+    try {
+      fragment = decodeURIComponent(fragment);
+    } catch {
+      // A malformed escape cannot name a decoded id; retain it for the check.
+    }
+    if (!ids?.has(fragment)) {
+      console.error(`  MISSING  ${f}: links to ${m[1]}, which is not an id on ${url.pathname}`);
       bad++;
     } else {
-      console.log(`  ok       #${m[1]}`);
+      console.log(`  ok       ${url.pathname}#${fragment}`);
     }
   }
 }
@@ -52,7 +75,7 @@ for (const f of walk(blogDir)) {
 if (checked === 0) {
   // Not a pass. If the footer stops emitting cross-links this check silently
   // stops checking, which is how a guard becomes decorative.
-  console.error(`No ${MAIN}/#fragment links found in ${blogDir}. Expected at least one.`);
+  console.error(`No ${MAIN} fragment links found in ${blogDir}. Expected at least one.`);
   process.exit(1);
 }
 if (bad) {
