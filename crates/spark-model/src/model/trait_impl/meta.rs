@@ -369,6 +369,7 @@ impl TransformerModel {
             mtp_store_gen: store_gen,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
+            reused_prefix_tokens: 0,
             cached_prefix_blocks: 0,
             prefix_ref_tokens: Vec::new(),
             prefix_lookup_applied: false,

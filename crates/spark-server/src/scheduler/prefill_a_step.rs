@@ -83,6 +83,9 @@ pub fn start_chunked_prefill(
     let req_prompt_logprobs = req.prompt_logprobs();
     let req_timeout_at = req.timeout_at();
     let grammar_spec = req.take_grammar_spec();
+    // Scheduler-service TTFT includes grammar compilation and mask warmup.
+    // HTTP handling/queue time precedes this clock; decode_start stays unchanged.
+    let request_start = Instant::now();
     let mut grammar_state = compile_grammar_state(grammar_engine, &grammar_spec, eos_tokens);
     let (prompt_tokens, max_tokens, mut sink, image_pixels, temperature, cancel_flag) = match req {
         InferenceRequest::Streaming {
@@ -118,7 +121,6 @@ pub fn start_chunked_prefill(
         ),
     };
 
-    let request_start = Instant::now();
     let total = prompt_tokens.len();
     let chunk_len = total.min(max_prefill_tokens);
     let is_last = chunk_len >= total;
@@ -189,7 +191,7 @@ pub fn start_chunked_prefill(
             req_require_tool_call && grammar_state.is_none() && tool_call_start_token.is_some();
         let tool_request = grammar_state.is_some() || use_legacy_tool_call;
         let now = Instant::now();
-        let cached_prompt_tok = seq.cached_prefix_tokens as u32;
+        let cached_prompt_tok = seq.reused_prefix_tokens as u32;
         let mut a = ActiveSeq {
             seq,
             session_hash: req_session_hash,
@@ -527,7 +529,7 @@ pub fn start_chunked_prefill(
         let tool_request = grammar_state.is_some() || use_legacy_tool_call;
 
         let now = Instant::now();
-        let cached_prompt_tok = seq.cached_prefix_tokens as u32;
+        let cached_prompt_tok = seq.reused_prefix_tokens as u32;
         if !spontaneous_think && (eos_tokens.contains(&first) || max_tokens <= 1) {
             let mut a = ActiveSeq {
                 seq,

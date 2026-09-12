@@ -80,6 +80,17 @@ pub struct Qwen3SsmLayer {
     /// decode keeps the NVFP4 copy.
     qkvz_fp8w_rowwise: Option<Fp8Weight>,
     out_proj_fp8w_rowwise: Option<Fp8Weight>,
+    /// This layer's slice of the LEDGERED row-wise BF16-weight slab
+    /// (`BufferSizes::ssm_rowwise_w_bf16`), or 0 before the first prefill
+    /// through the matching arm carves and fills it. See `rowwise_bf16.rs`
+    /// for the #917 receipt that moved these bytes out of a by-pointer cache
+    /// of `gpu.alloc`s and into the arena.
+    ///
+    /// Per LAYER rather than per weight pointer, because that is what the
+    /// lifetime is: the slab is the arena's, and the arena outlives every
+    /// prefill this layer runs.
+    qkvz_rowwise_bf16: std::sync::atomic::AtomicU64,
+    out_proj_rowwise_bf16: std::sync::atomic::AtomicU64,
     /// Tier-1c keep-packed ternary Q2_0 fused in_proj_qkvz (`ATLAS_GGUF_NATIVE_Q2`).
     /// [Q|K|V|Z] rows byte-concatenated from packed `in_proj_qkv` (V-region
     /// row-permuted) + `in_proj_z` (row-permuted) at load, so the 2-bit weight is
@@ -108,6 +119,13 @@ pub struct Qwen3SsmLayer {
     rms_norm_residual_k: KernelHandle,
     gated_rms_norm_k: KernelHandle,
     gated_rms_norm_f32_k: KernelHandle,
+    /// `gated_rms_norm_f32_input_strided` — the SAME per-(sequence, head) math
+    /// as `gated_rms_norm_f32_k`, with `blockIdx.y` walking the sequences, so
+    /// a batched decode step spends ONE launch per layer instead of one per
+    /// row. 0 when absent (notably on a `gdn_norm_sigmoid` model, which has no
+    /// strided sigmoid twin), which keeps the per-seq loop. #927: the H100
+    /// batch-16 trace showed the per-seq loop at 768 launches / 1.61 ms.
+    gated_rms_norm_f32_strided_k: KernelHandle,
     dense_gemv_k: KernelHandle,
     /// K=2 verify: batched (M=2) BF16 GDN in_proj_qkvz — one weight pass for
     /// both verify tokens instead of two M=1 `dense_gemv` reads.
@@ -383,13 +401,16 @@ pub struct Qwen3SsmLayer {
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod debug;
+mod decode_w8a8_proj;
 pub mod gdn_flags;
 mod init;
 mod init_fp8;
 mod init_q2;
 mod kernel_select;
 mod lora;
+mod prefill_out_w8a8;
 mod prefill_w8a8;
+mod rowwise_bf16;
 mod ssm_forward;
 pub(crate) mod ssm_h_fp16;
 mod trait_decode;
@@ -423,6 +444,9 @@ pub use gdn_flags::{
 #[cfg(test)]
 #[path = "prefill_alloc_tests.rs"]
 mod prefill_alloc_tests;
+#[cfg(test)]
+#[path = "rowwise_alloc_tests.rs"]
+mod rowwise_alloc_tests;
 #[cfg(test)]
 mod tests;
 
