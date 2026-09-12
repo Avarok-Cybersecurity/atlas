@@ -430,12 +430,30 @@ jobs:
           # build-essential -> cuda.h needs <cstddef>; libnuma -> libhsakmt.
           sudo apt-get install -y --no-install-recommends build-essential libnuma1 libnuma-dev
           mkdir -p "$HOME/scale" && cd "$HOME/scale"
-          # --speed-limit/--speed-time: abort a stalled transfer (< 512 KiB/s
-          # for 60 s) instead of waiting for the job timeout; --retry-all-errors
-          # so that abort (curl 28) is retried like any other transient error.
-          curl -L --fail --retry 3 --retry-all-errors --connect-timeout 30 \
-            --max-time 900 --speed-limit 524288 --speed-time 60 -o scale.tar.xz \
-            https://pkgs.scale-lang.com/tar/scale-1.7.1-amd64.tar.xz
+          # pkgs.scale-lang.com sustains < 512 KiB/s from GitHub-hosted runners
+          # (2026-09-12: four consecutive stalls on #1064, ~1 h for 1.4 GB), so
+          # the primary source is a mirror of the same tarball on this repo's
+          # `toolchain-scale-1.7.1` release, served from the runners' own cloud.
+          # Upstream stays as the fallback. Whichever host answers, the bytes
+          # must match the pinned sha256 — the mirror is convenience, not trust.
+          # --speed-limit/--speed-time abort a stalled transfer instead of
+          # waiting for the job timeout; --retry-all-errors retries that abort.
+          expected_sha256=060a3627725f60005a69e209b332d7847fd7c03eb9518be7055ddc003c73a2be
+          fetched=0
+          for url in \
+            https://github.com/${{ github.repository }}/releases/download/toolchain-scale-1.7.1/scale-1.7.1-amd64.tar.xz \
+            https://pkgs.scale-lang.com/tar/scale-1.7.1-amd64.tar.xz; do
+            echo "fetching $url"
+            if curl -L --fail --retry 3 --retry-all-errors --connect-timeout 30 \
+                 --max-time 900 --speed-limit 524288 --speed-time 60 \
+                 -o scale.tar.xz "$url"; then fetched=1; break; fi
+            rm -f scale.tar.xz
+          done
+          [ "$fetched" = 1 ] || { echo "::error::SCALE tarball: every source failed"; exit 1; }
+          echo "$expected_sha256  scale.tar.xz" | sha256sum -c - || {
+            echo "::error::SCALE tarball sha256 mismatch — refusing to build with an unverified toolchain"
+            exit 1
+          }
           tar -xf scale.tar.xz && rm -f scale.tar.xz
           SCALE_HOME="$HOME/scale/scale-1.7.1-Linux"
           arch='${{ matrix.scale_arch }}'
