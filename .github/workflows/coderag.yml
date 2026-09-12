@@ -79,7 +79,7 @@ jobs:
         # not a red main that blocks unrelated work. Every downstream step is
         # gated on this one's outcome and the job concludes green either way.
         continue-on-error: true
-        uses: Avarok-Cybersecurity/AutoRepoRAG@f35cc9788aab8cd863d6af24a368d4a2fa37be93 # v0.1.1
+        uses: Avarok-Cybersecurity/AutoRepoRAG@7b74c743c9d2b0fe2775ee1a62715eca15e98799 # v1.0.0
         with:
           collection: atlas-coderag
           # output-name is a basename: the action writes <name>.jsonl,
