@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn kimi_k3_weight_map_dry_run_refuses_95_shards() {
         let mut map = synthetic_96_shard_map();
-        map.retain(|_, shard| !shard.contains("00096"));
+        map.retain(|_, shard| !shard.starts_with("model-00096-of-"));
         let report = dry_run_weight_map(&map, true).expect("text classes still present");
         let err = require_shard_count(&report, 96).unwrap_err().to_string();
         assert!(err.contains("expected 96 shards"), "{err}");
