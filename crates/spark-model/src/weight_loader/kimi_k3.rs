@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Kimi K3 weight loader — C1: BF16 0.40B twin bind; MXFP4 packed is S5.
+//! Kimi K3 weight loader — C1: BF16 0.40B twin bind.
+//! MXFP4 GPU bind is not this slice (`refuse_mxfp4`). CPU unpack reuses DSV4 E8M0.
 
 use anyhow::{Result, bail};
 use atlas_core::config::ModelConfig;
@@ -15,6 +16,7 @@ use crate::weight_map::DenseWeight;
 mod bf16;
 mod classes;
 mod dry_run;
+mod mxfp4;
 
 pub use dry_run::{KimiK3DryRun, dry_run_index_json, dry_run_weight_map};
 
@@ -26,7 +28,8 @@ impl KimiK3WeightLoader {
     }
 }
 
-/// Packed expert MXFP4 is a later slice. Twin C1 is unpacked `.weight`.
+/// GPU loader still refuses packed experts. Host unpack is atlas-core + `K3_ALLOW_MXFP4=1`.
+/// TODO(S5 GPU): `quantized_k3_mxfp4_e8m0` → DSV4 `moe_w4a16_grouped_gemm_ptrtable_e8m0`.
 pub fn refuse_mxfp4(store: &WeightStore) -> Result<()> {
     if store.names().any(|n| n.contains("weight_packed")) {
         bail!("S5 MXFP4 not this slice");

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Load unpacked BF16/F32 K3 safetensors into [`K3CpuModel`]. Packed MXFP4 is S5.
+//! Load unpacked BF16/F32 K3 safetensors into [`K3CpuModel`].
+//! Packed MXFP4 (`weight_packed`) is refused unless `K3_ALLOW_MXFP4=1`, which
+//! unpacks via the DSV4 E8M0 host path (`crate::mxfp4_e8m0`).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -99,9 +101,11 @@ fn take_tensor(store: &mut HashMap<String, Vec<f32>>, key: &str) -> Result<Vec<f
 
 fn load_dir(dir: &Path) -> Result<HashMap<String, Vec<f32>>> {
     let mut out = HashMap::new();
+    let mut packed = super::mxfp4::PackedSink::default();
     for path in shard_files(dir)? {
-        ingest_shard(&path, &mut out)?;
+        ingest_shard(&path, &mut out, &mut packed)?;
     }
+    packed.finish(&mut out)?;
     if out.is_empty() {
         bail!("no language-model tensors in {}", dir.display());
     }
@@ -147,22 +151,24 @@ fn shard_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(found)
 }
 
-fn ingest_shard(path: &Path, out: &mut HashMap<String, Vec<f32>>) -> Result<()> {
+fn ingest_shard(
+    path: &Path,
+    out: &mut HashMap<String, Vec<f32>>,
+    packed: &mut super::mxfp4::PackedSink,
+) -> Result<()> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     // SAFETY: read-only mapping of an immutable checkpoint shard.
     let mmap = unsafe { Mmap::map(&file) }.with_context(|| format!("mmap {}", path.display()))?;
     let st = SafeTensors::deserialize(&mmap)
         .with_context(|| format!("safetensors {}", path.display()))?;
     for name in st.names() {
-        if name.contains("weight_packed") {
-            bail!("S5 MXFP4 not this slice ({name})");
-        }
-    }
-    for name in st.names() {
         if is_vision(name) {
             continue;
         }
         let t = st.tensor(name)?;
+        if packed.take(name, t.dtype(), t.shape(), t.data())? {
+            continue;
+        }
         let data = to_f32(name, t.dtype(), t.data())?;
         if out.insert(name.to_string(), data).is_some() {
             bail!("duplicate tensor {name} in {}", path.display());

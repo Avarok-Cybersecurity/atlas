@@ -17,6 +17,7 @@ pub mod kda;
 pub mod latent_moe;
 pub mod layer;
 pub mod mla;
+pub mod mxfp4;
 pub mod ops;
 pub mod situ;
 

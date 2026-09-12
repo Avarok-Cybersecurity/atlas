@@ -1,0 +1,14 @@
+# K3 official MXFP4 experts reuse DeepSeek-V4 E8M0 unpack — do not copy GDN/Mamba.
+#
+# Host SSOT: crates/atlas-core/src/mxfp4_e8m0.rs
+#   dequant_nvfp4_e8m0_to_f32 / dequant_nvfp4_e8m0_to_bf16
+# GPU lander: spark_model::weight_map::quantized_mxfp4_e8m0
+#   K3 names: .weight_packed + .weight_scale  →  DSV4 .weight + .scale
+# GPU GEMM (later slice, do not copy into this dir):
+#   kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu
+#   moe_w4a16_grouped_gemm_ptrtable_e8m0
+#
+# Empty .cu is forbidden. No kernels in this slice.
+
+[build]
+# No extra nvcc flags.
