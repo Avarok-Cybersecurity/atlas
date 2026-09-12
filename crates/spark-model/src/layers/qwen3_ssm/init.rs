@@ -233,19 +233,8 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_fla",
                 "gated_delta_rule_recompute_wu",
             ),
-            // Hopper-only twins (#928). `try_kernel` and not `kernel`: the
-            // modules exist only under kernels/hopper, so on gb10/b200/strix
-            // the lookup must MISS quietly, exactly as the GDN decode twins do.
-            gdn_prefill_fla_recompute_wu_hopper_k: super::super::try_kernel(
-                gpu,
-                "gdn_recompute_wu_hopper",
-                "gated_delta_rule_recompute_wu_hopper",
-            ),
-            gdn_prefill_fla_chunk_fwd_o_hopper_k: super::super::try_kernel(
-                gpu,
-                "gdn_fwd_o_hopper",
-                "gated_delta_rule_chunk_fwd_o_hopper",
-            ),
+            gdn_prefill_fla_recompute_wu_hopper_k: init_kernels::prefill_wu_hopper_k(gpu),
+            gdn_prefill_fla_chunk_fwd_o_hopper_k: init_kernels::prefill_fwd_o_hopper_k(gpu),
             gdn_prefill_fla_chunk_delta_h_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule_fla",
@@ -256,31 +245,7 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_fla",
                 "gated_delta_rule_chunk_delta_h_tc_vblock",
             ),
-            // The `_x2` entry (two bf16 limbs of S_c in Phase A) is the one
-            // the lever ships: the single-limb `..._tcfuse` entry is in the
-            // image for the oracle's A/B, but its measured deviation on the
-            // FP32 state is ~2.0e-3, over the 1e-3 contract. Both entries are
-            // ABI-, grid-, block- and smem-identical, so nothing downstream
-            // changes with the choice — see ops::gdn_tc_spine_reject.
-            //
-            // GATED on the same bit that launches it (`[defaults]
-            // gdn_prefill_tc`, `ATLAS_GDN_PREFILL_TC`): a probe that runs
-            // unconditionally asks the kernel audit about a module no target
-            // enables, which is how a lever nobody set came to be the reason a
-            // boot failed. Off -> handle 0 -> `gdn_tc_spine_reject` answers
-            // "not requested", which is what it would have answered anyway.
-            gdn_prefill_fla_chunk_delta_h_tcfuse_k: if crate::layers::ops::target_defaults::resolved()
-                .gdn_prefill_tc
-                .value
-            {
-                super::super::try_kernel(
-                    gpu,
-                    "gated_delta_rule_chunk_tc",
-                    "gated_delta_rule_chunk_delta_h_tcfuse_x2",
-                )
-            } else {
-                KernelHandle(0)
-            },
+            gdn_prefill_fla_chunk_delta_h_tcfuse_k: init_kernels::gdn_prefill_tc_kernel(gpu),
             // ONE handle for the fused GDN state spine. DEFAULT is `..._vfused`
             // (SPLIT=2 / 256 threads): 2.01x over ksplit and 12/12 byte-identical on
             // the ssm-poisoning tripwire. `ATLAS_GDN_VTILE=1` swaps in the SPLIT=4 /
