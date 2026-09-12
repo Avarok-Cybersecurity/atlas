@@ -295,10 +295,19 @@ impl Qwen3SsmLayer {
         //    sees: `padded_batch_n` yields 2, 4, 8, 12, 16, 24 ... and the
         //    decode path only ever hands it those.
         //
-        // So pad to the next `padded_batch_n` and call once. Pad rows compute
-        // garbage from whatever `hidden` holds above row R; only rows [0, R)
-        // are consumed below, exactly as the decode path relies on for its own
-        // padded batches, and VERIFY_ROW_CAP (96) keeps them in bounds.
+        //  * one call at a PADDED width, which is what this arm does. It was
+        //    the default on the strength of R=12 (1163 us against the
+        //    per-sequence loop's 1216) and that was a MISTAKE: end-to-end it
+        //    costs 15.4% at C=2 (48.90 -> 56.42 tok/s with it off) and buys
+        //    nothing at C=4 (56.65 -> 58.35, ranges overlapping). The reason
+        //    is `padded_batch_n`, which has no 6 — a C=2 verify is R=6 and
+        //    pads to 8, where token-major measures 1151 us against 608 for
+        //    two fused K3 calls. NOW OPT-IN (`ATLAS_HC_VERIFY_MOE_PADDED=1`).
+        //
+        // Pad rows compute garbage from whatever `hidden` holds above row R;
+        // only rows [0, R) are consumed below, exactly as the decode path
+        // relies on for its own padded batches, and VERIFY_ROW_CAP (96) keeps
+        // them in bounds.
         // -- One-shot MoE cost-vs-rows sweep (ATLAS_MOE_ROW_SWEEP=1) --
         // See the module note: at C=4 the control batches its sequences into
         // ONE 4-row MoE call, so MTP pays cost(R rows) to earn tok_step
@@ -369,10 +378,13 @@ impl Qwen3SsmLayer {
             }
         }
 
+        // OPT-IN (`=1`). Default OFF: measured a 15.4% LOSS at C=2 and nothing
+        // at C=4 — see the module note. `padded_batch_n` has no 6, so a C=2
+        // verify (R=6) pads to 8, the arm's worst width.
         let moe_padded = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *ON.get_or_init(|| {
-                std::env::var("ATLAS_HC_VERIFY_MOE_PADDED").as_deref() != Ok("0")
+                std::env::var("ATLAS_HC_VERIFY_MOE_PADDED").as_deref() == Ok("1")
             })
         };
         let moe_rows = if moe_padded && !self.ffn.is_none() && rows > 1 {
