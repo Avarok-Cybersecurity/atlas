@@ -5,6 +5,7 @@
 //! Split into phase modules under the `_inner` delegation pattern:
 //! - `ctx`  — `MultiSeqCtx` shared scalars + buffer pointers
 //! - `qkv`  — phase 2: per-token Q/K/V projections (batch3/batch2/seq)
+//! - `qkv_fp8_batch` — phase 2 tier: batched native-FP8 Q/K/V (n in 2..=8)
 //! - `attn` — phases 3-6: RoPE → cache write → paged decode → O proj
 //! - `ffn`  — phase 7: residual + post-norm + MoE/dense FFN
 //!
@@ -26,6 +27,7 @@ mod ffn;
 mod mla;
 mod mla_gemv;
 mod qkv;
+mod qkv_fp8_batch;
 
 impl Qwen3AttentionLayer {
     #[allow(clippy::too_many_arguments)]
