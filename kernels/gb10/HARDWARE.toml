@@ -52,3 +52,10 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = false
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+# Paged-decode attention split-K. `legacy` is the rule GB10 has always run —
+# `num_splits = sm_count / (num_q_heads * split_ref_seqs(num_seqs, max batch))`
+# — restated, not changed. Hopper's `auto` fills 132 SMs at the single-stream
+# shape; a 48-SM GB10 is the part that rule was written for and there is no
+# GB10 A/B, so this row does not move until there is one.
+# `ATLAS_ATTN_DECODE_SPLITK=auto` is how that A/B is run.
+attn_decode_splitk = "legacy"
