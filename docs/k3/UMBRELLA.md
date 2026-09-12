@@ -14,7 +14,7 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | **C1 in flight** (until-EOS vs HF). C2–C7 blocked on C1. C0 green. |
+| Phase | C2–C6 **twin green**. C1 7/8 greedy (p4 0.18-logit). C7 dummy TP=2 next. |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
 | Last session | 2026-09-12 |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
@@ -38,7 +38,7 @@ S7 (rental soak) is forbidden until every box is green. Each box also needs its 
 - [x] C2 prefill-then-decode vs full-prefill logits on the **C1 twin** (`c2_prefill_decode_logits_match_full_prefill_twin`, spark2 24.5s)
 - [x] C3 prefix-cache hit == no-cache decode on the **C1 twin** (`c3_prefix_cache_hit_matches_nocache_twin`, spark2 42s)
 - [x] C4 MLA KV + KDA state after prefix hit on the **C1 twin** (`c4_hybrid_state_prefix_hit_matches_cold_prefill_twin`, spark2 18.6s)
-- [ ] C5 AttnRes fixture (tiny recorded mix=1 green) + twin mix=0 vs mix=1 — twin fixture was degenerate (uniform query); fix in flight
+- [x] C5 AttnRes fixture + twin mix=0 vs mix=1 (`c5_twin_mix0_is_skip_and_diverges_from_mix1`, spark2 14.4s, one-hot fixture)
 - [x] C6 LatentMoE frozen-gate mix + twin force-expert-0 (`c6_twin_force_expert_zero_diverges`, spark2 14.4s)
 - [ ] C7 production-width dummy TP=2 on spark1+spark2 == spark1 single-GPU tokens — **last**
 
