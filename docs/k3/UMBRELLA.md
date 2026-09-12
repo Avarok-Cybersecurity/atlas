@@ -14,7 +14,7 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | C2–C6 **twin green**. C1 7/8 greedy (p4 0.18-logit). C7 in-process dummy TP=2 (spark1+spark2 still open). |
+| Phase | C0, C2–C7 green. **C1 open** (7/8 greedy first-token; p4 0.18-logit). |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
 | Last session | 2026-09-12 |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
