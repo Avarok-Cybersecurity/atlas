@@ -175,12 +175,19 @@ fn rst_mutant_fails_golden_compare() {
 }
 
 fn twin_engine() -> Option<K3CpuModel> {
-    // Real 0.40B safetensors live on spark1 (`K3_TWIN`). Mac unit tests use
-    // synthetic weights; HF token-exact compare is skipped without them.
+    // 0.40B BF16 safetensors on spark1 (`K3_TWIN`). Missing path skips;
+    // a present dir that fails to load fails the test.
     match std::env::var("K3_TWIN") {
-        Ok(p) if std::path::Path::new(&p).exists() => {
-            eprintln!("K3_TWIN={p} present but BF16 safetensors→K3CpuModel not this slice");
-            None
+        Ok(p) => {
+            let path = std::path::Path::new(&p);
+            if !path.exists() {
+                eprintln!("skip C1 engine: K3_TWIN={p} does not exist");
+                return None;
+            }
+            Some(
+                K3CpuModel::from_pretrained(path)
+                    .unwrap_or_else(|e| panic!("K3_TWIN={p} load failed: {e:#}")),
+            )
         }
         _ => None,
     }

@@ -8,7 +8,9 @@
 
 pub mod attnres;
 pub mod cache;
+mod cpu_bind;
 pub mod cpu_forward;
+mod cpu_load;
 pub mod cpu_weights;
 pub mod greedy;
 pub mod kda;
