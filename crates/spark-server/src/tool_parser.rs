@@ -54,43 +54,6 @@ fn is_normalized_tool_name(name: &str) -> bool {
     !name.is_empty() && !name.contains(':')
 }
 
-/// Normalize a model-emitted function name to the client-visible tool name.
-///
-/// This keeps existing parser salvage behaviour (`Bash=Bash` -> `Bash`,
-/// `name="Write"` -> `Write`) and adds namespace stripping for colon-prefixed
-/// names (`namespace:tool` -> `tool`). Dot characters are preserved because
-/// some callers use them in actual tool names; only `:` is treated as the
-/// namespace delimiter.
-fn normalize_tool_name(raw: &str) -> String {
-    let mut name = raw.trim().trim_matches('"').trim_matches('\'').to_string();
-
-    if name.starts_with("name=") || name.starts_with("name =") {
-        name = name
-            .trim_start_matches("name")
-            .trim_start_matches('=')
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'')
-            .to_string();
-    }
-
-    if let Some(eq_pos) = name.find('=') {
-        name = name[..eq_pos].trim().to_string();
-    }
-
-    if let Some(colon) = name.rfind(':') {
-        let head = &name[..colon];
-        let tail = &name[colon + 1..];
-        let head_is_namespace =
-            !head.is_empty() && head.chars().all(is_tool_name_or_namespace_char);
-        if head_is_namespace && is_tool_name_component(tail) {
-            name = tail.to_string();
-        }
-    }
-
-    name
-}
-
 // ── Request types (from OpenAI-compatible clients) ──
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -495,6 +458,7 @@ pub use bare_json::*;
 pub use deepseek_v4_dsml::*;
 pub use gemma4::*;
 use helpers_a::*;
+pub(crate) use helpers_b::append_tool_choice_instruction;
 use helpers_b::*;
 pub use hermes::*;
 pub use minimax_xml::*;
