@@ -686,6 +686,7 @@ impl TransformerModel {
                     // and both highway sites still run once over all R rows,
                     // which is where the amortisation is.
                     attn_idx += 1;
+                    let ffn_batched = eligibility::hc_attn_ffn_batched();
                     for i in 0..n {
                         let base_seq_len = seqs[i].seq_len;
                         // ── Align the QSA marks to this sequence's position
@@ -804,20 +805,92 @@ impl TransformerModel {
                             "hc batched verify: attention layer {layer_idx} has no K-row \
                              highway body (hc/ffn missing)"
                         );
-                        attn.decode_verify_rows_hc(
-                            hidden.offset(off[i] * h * bf16),
-                            ks[i],
-                            seq.layer_states[layer_idx].as_mut(),
-                            &mut kv_cache,
-                            &row_metas,
-                            &row_seq_lens,
-                            &tokens[off[i]..off[i] + ks[i]],
-                            &mut seq.block_table,
-                            &mut seq.disk_block_ids,
-                            &mut seq.disk_last_offloaded_per_layer,
-                            &seq_ctx,
-                            stream,
-                        )?;
+                        if ffn_batched {
+                            // Attention sublayer only; the FFN sublayer runs
+                            // ONCE over every sequence after this loop.
+                            attn.decode_verify_rows_hc_attn_only(
+                                hidden.offset(off[i] * h * bf16),
+                                ks[i],
+                                seq.layer_states[layer_idx].as_mut(),
+                                &mut kv_cache,
+                                &row_metas,
+                                &row_seq_lens,
+                                &tokens[off[i]..off[i] + ks[i]],
+                                &mut seq.block_table,
+                                &mut seq.disk_block_ids,
+                                &mut seq.disk_last_offloaded_per_layer,
+                                &seq_ctx,
+                                stream,
+                            )?;
+                        } else {
+                            attn.decode_verify_rows_hc(
+                                hidden.offset(off[i] * h * bf16),
+                                ks[i],
+                                seq.layer_states[layer_idx].as_mut(),
+                                &mut kv_cache,
+                                &row_metas,
+                                &row_seq_lens,
+                                &tokens[off[i]..off[i] + ks[i]],
+                                &mut seq.block_table,
+                                &mut seq.disk_block_ids,
+                                &mut seq.disk_last_offloaded_per_layer,
+                                &seq_ctx,
+                                stream,
+                            )?;
+                        }
+                    }
+                    if ffn_batched {
+                        // ── FFN sublayer ONCE over all R rows ──
+                        // The attention CORE had to run per sequence (distinct
+                        // KV, positions, block tables). The FFN sublayer is
+                        // row-wise and sequence-independent, and every
+                        // sequence's rows are contiguous on the highway, so one
+                        // call at T=R is the same arithmetic as n calls at T=k
+                        // — minus n-1 copies of the highway bracket. The SSM
+                        // layers already work this way.
+                        let ffn_ctx = ForwardContext {
+                            buffers: &self.buffers,
+                            hc_row_offset: 0,
+                            gpu: self.gpu.as_ref(),
+                            config: &self.config,
+                            dispatch: &self.dispatch,
+                            derived: &self.derived,
+                            levers: &self.levers,
+                            stats: &self.stats,
+                            attn_metadata: None,
+                            profile: false,
+                            comm: self.comm_ref(),
+                            graph_capture: false,
+                            gdn_exact_replay: false,
+                            token_ids: None,
+                            host_token_ids: Some(&tokens[..r_total]),
+                            routed_lora_layers: None,
+                            midchunk_capture: None,
+                            moe_lora_route: self.decode_moe_route(),
+                        };
+                        let attn = layer
+                            .as_any()
+                            .and_then(|a| {
+                                a.downcast_ref::<crate::layers::qwen3_attention::Qwen3AttentionLayer>()
+                            })
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "hc batched verify: attention layer {layer_idx} is not a \
+                                     Qwen3AttentionLayer"
+                                )
+                            })?;
+                        attn.decode_verify_ffn_rows_hc(hidden, &ks, &ffn_ctx, stream)?;
+                        {
+                            static SAID: std::sync::Once = std::sync::Once::new();
+                            SAID.call_once(|| {
+                                tracing::info!(
+                                    n_seqs = n,
+                                    rows = r_total,
+                                    "hc batched verify: attention FFN sublayer BATCHED across \
+                                     sequences (ATLAS_HC_ATTN_FFN_BATCHED=0 restores per-sequence)"
+                                );
+                            });
+                        }
                     }
                 } else if layer_type == LayerType::FullAttention {
                     let mut refs: Vec<&mut (dyn LayerState + 'static)> = attn_dummy_states

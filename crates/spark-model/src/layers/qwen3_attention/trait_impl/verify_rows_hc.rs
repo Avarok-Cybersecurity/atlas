@@ -80,6 +80,243 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        self.decode_verify_rows_hc_inner(
+            hidden,
+            k,
+            state,
+            kv_cache,
+            row_metas,
+            row_seq_lens,
+            tokens,
+            block_table,
+            disk_block_ids,
+            disk_last_offloaded_per_layer,
+            ctx,
+            stream,
+            true,
+        )
+    }
+
+    /// The attention sublayer ONLY — identical to [`Self::decode_verify_rows_hc`]
+    /// up to and including the attention `hc_post`, then returns. Pair with
+    /// [`Self::decode_verify_ffn_rows_hc`] once over the whole batch. See the
+    /// module note: the FFN sublayer is row-wise and sequence-independent, so
+    /// running it per sequence paid the highway bracket n times.
+    pub fn decode_verify_rows_hc_attn_only(
+        &self,
+        hidden: DevicePtr,
+        k: usize,
+        state: &mut (dyn LayerState + 'static),
+        kv_cache: &mut PagedKvCache,
+        row_metas: &[AttnMetadataDev],
+        row_seq_lens: &[usize],
+        tokens: &[u32],
+        block_table: &mut Vec<u32>,
+        disk_block_ids: &mut Vec<u32>,
+        disk_last_offloaded_per_layer: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.decode_verify_rows_hc_inner(
+            hidden,
+            k,
+            state,
+            kv_cache,
+            row_metas,
+            row_seq_lens,
+            tokens,
+            block_table,
+            disk_block_ids,
+            disk_last_offloaded_per_layer,
+            ctx,
+            stream,
+            false,
+        )
+    }
+
+    /// The FFN sublayer of the highway attention block, ONCE over all
+    /// `ks.iter().sum()` rows at highway base 0: hc_pre at T=R, block-input
+    /// norm, the FFN per sequence (each fused arm writes `moe_output()[0, k)`,
+    /// staged into `norm_output` at its batch offset), hc_post at T=R, and the
+    /// head site on the last model layer.
+    ///
+    /// `hidden` is the BASE hidden buffer (all R rows), not a per-sequence
+    /// offset — this call covers every sequence. `ctx.hc_row_offset` must be 0
+    /// for the same reason.
+    pub fn decode_verify_ffn_rows_hc(
+        &self,
+        hidden: DevicePtr,
+        ks: &[usize],
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            ctx.hc_row_offset == 0,
+            "decode_verify_ffn_rows_hc covers every sequence and runs at highway base 0, \
+             got hc_row_offset={}",
+            ctx.hc_row_offset
+        );
+        let h = ctx.config.hidden_size;
+        let eps = ctx.config.rms_norm_eps as f32;
+        let bf16 = 2usize;
+        let rows: usize = ks.iter().sum();
+        anyhow::ensure!(rows >= 1, "decode_verify_ffn_rows_hc: empty batch");
+        let n = rows as u32;
+        let hc = self
+            .hc
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("decode_verify_ffn_rows_hc on a layer without mHC"))?;
+        let hc_streams = ctx.buffers.hc_streams();
+        let post = ctx.buffers.hc_post();
+        let comb = ctx.buffers.hc_comb();
+        // Staging for the per-sequence FFN outputs — free here because the
+        // block-input norm below is applied IN PLACE on `hidden` rather than
+        // into `norm_output` as the per-sequence body does.
+        let stage = ctx.buffers.norm_output();
+
+        let timing = {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1")
+            })
+        };
+        let t0 = std::time::Instant::now();
+
+        // ── hc_pre (ffn) at T=R, collapse into `hidden` ──
+        ops::hc_pre_site(
+            ctx.gpu,
+            self.hc_pre_k,
+            hc_streams,
+            &hc.ffn,
+            hc,
+            hidden,
+            post,
+            comb,
+            ctx.buffers.hc_lowrank_scratch(),
+            n,
+            h as u32,
+            eps,
+            stream,
+        )?;
+        if ops::HcVariant::of(hc).applies_block_input_norm() {
+            // In place: same input==output use the post-FFN norm below relies on.
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                hidden,
+                &self.post_attn_norm,
+                hidden,
+                n,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        }
+
+        // ── FFN per sequence (the fused K-row arms), staged at batch offsets ──
+        // The MoE cannot amortise across rows — top-10-of-512 routing means
+        // different rows light different experts and it is already at ~86% of
+        // peak DRAM — so per sequence is the right width. What this call
+        // saves is the bracket around it, not the FFN itself.
+        let mut off = 0usize;
+        for &k in ks {
+            self.verify_rows_ffn(hidden.offset(off * h * bf16), k, ctx, stream)?;
+            ctx.gpu.copy_d2d_async(
+                ctx.buffers.moe_output(),
+                stage.offset(off * h * bf16),
+                k * h * bf16,
+                stream,
+            )?;
+            off += k;
+        }
+        let ffn_out = stage;
+        if let Some(ref post_norm) = self.post_ffn_out_norm {
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                ffn_out,
+                post_norm,
+                ffn_out,
+                n,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        }
+        if let Some(scalar) = self.layer_scalar {
+            self.apply_layer_scalar(ctx.gpu, ffn_out, rows * h, scalar, stream)?;
+        }
+        ops::hc_post_site(
+            ctx.gpu,
+            self.hc_post_k,
+            hc,
+            ffn_out,
+            hc_streams,
+            post,
+            comb,
+            hc_streams,
+            n,
+            h as u32,
+            stream,
+        )?;
+
+        if hc.is_last_model_layer
+            && let Some(ref head) = hc.head
+        {
+            ops::hc_head_site(
+                ctx.gpu,
+                self.hc_head_k,
+                hc_streams,
+                head,
+                hc,
+                hidden,
+                ctx.buffers.hc_lowrank_scratch(),
+                n,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        } else if hc.is_last_model_layer {
+            tracing::warn!(
+                "V4-verify-ffn-rows L{}: hc_head SKIPPED (no head weights)",
+                self.attn_layer_idx
+            );
+        }
+
+        if timing {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static CALLS: AtomicUsize = AtomicUsize::new(0);
+            let call = CALLS.fetch_add(1, Ordering::Relaxed);
+            if call % 1024 == 0 && call > 0 {
+                let _ = ctx.gpu.synchronize(stream);
+                tracing::info!(
+                    call,
+                    rows,
+                    n_seqs = ks.len(),
+                    ffn_sublayer_us = t0.elapsed().as_micros() as u64,
+                    "attention hc verify FFN sublayer, BATCHED across sequences (ONE layer)"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn decode_verify_rows_hc_inner(
+        &self,
+        hidden: DevicePtr,
+        k: usize,
+        state: &mut (dyn LayerState + 'static),
+        kv_cache: &mut PagedKvCache,
+        row_metas: &[AttnMetadataDev],
+        row_seq_lens: &[usize],
+        tokens: &[u32],
+        block_table: &mut Vec<u32>,
+        disk_block_ids: &mut Vec<u32>,
+        disk_last_offloaded_per_layer: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+        run_ffn: bool,
+    ) -> Result<()> {
         anyhow::ensure!(
             k >= 1 && row_metas.len() == k && row_seq_lens.len() == k && tokens.len() == k,
             "decode_verify_rows_hc: k={k} but {} metas / {} seq_lens / {} tokens",
@@ -267,6 +504,11 @@ impl Qwen3AttentionLayer {
         )?;
 
         aphase(&mut at, &mut a2);
+        if !run_ffn {
+            // The caller runs the FFN sublayer once over the whole batch
+            // (`decode_verify_ffn_rows_hc`); this sequence's rows are done.
+            return Ok(());
+        }
         // ── FFN sublayer: hc_pre at T=K, K-row FFN, hc_post at T=K ──
         ops::hc_pre_site(
             ctx.gpu,
