@@ -20,9 +20,15 @@ Closes #
 | Official weights downloaded in lab | **no** |
 | Rental booked | **no** |
 
+## RST (required each phase)
+
+Rapid Software Testing. Contract: `docs/k3/RST.md`. **A C-gate or S-rung is not green without a session sheet** that names the oracle and a known-bad the instrument actually failed. Checks are not the testing. Run independent charters in parallel when they do not share a GPU.
+
+Sheets so far: `docs/k3/rst/s0-fabric-nccl.md`, `s0-5090-sm121.md`, `s0-atlas-serve.md`.
+
 ## Rental gate
 
-S7 (rental soak) is forbidden until every box is green.
+S7 (rental soak) is forbidden until every box is green. Each box also needs its RST sheet.
 
 - [ ] C0 config / factory / weight-name map dry-run (no shard download)
 - [ ] C1 `Kimi-K3-0.40B` greedy 128 tok × 8 prompts, exact vs HF
@@ -57,6 +63,8 @@ Fabric pin (live): `NCCL_SOCKET_IFNAME=enp1s0f1np1` `NCCL_IB_HCA=rocep1s0f1`. `e
 | `docs/k3/UMBRELLA.md` | This file / PR body |
 | `docs/k3/LAB.md` | Host inventory, NIC pins, NCCL proof |
 | `docs/k3/BAKEOFF.md` | Harness schema |
+| `docs/k3/RST.md` | Per-phase RST contract (charter / oracle / known-bad) |
+| `docs/k3/rst/` | Session sheets. No C-gate is green without one |
 | `docs/k3/RENTAL.md` | Filled only after C0–C7 |
 | `kernels/gb10/kimi-k3/MODEL.toml` | Target skeleton |
 | `kernels/gb10/kimi-k3/bf16/` | Twin + dummy (empty in this commit) |
@@ -72,6 +80,7 @@ Fabric pin (live): `NCCL_SOCKET_IFNAME=enp1s0f1np1` `NCCL_IB_HCA=rocep1s0f1`. `e
 - K3-DECISION: Umbrella never merges. It is historical and messy by design. Extract `feat/k3-*` slices; do not tidy this branch for landing.
 - K3-DECISION: GLM-5.3-Flash KDA geometry *matches* K3's `validate()` numbers (see the 2026-09-10 gap analysis) but that is not permission to copy GDN/Mamba kernels into `kernels/gb10/kimi-k3/`. Adapt only behind goldens.
 - K3-LAB: pin `enp1s0f1np1` / `rocep1s0f1`. Do not copy `start-ep2.sh`'s `enp1s0f0np0` comment.
+- K3-DECISION: RST session sheet per phase. Known-bad before a clean result. Parallel charters when GPUs do not contend.
 
 ## Dead-ends
 

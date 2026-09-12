@@ -24,6 +24,8 @@ Two Sparks together are ~240 GB unified. Official `moonshotai/Kimi-K3` MXFP4 is 
 
 Work is tracked as **one draft umbrella PR** on Atlas (`wip/k3-bringup`). That PR is a working log. It is never `/stamp`’d, `/seal`’d, or squash-merged as-is. Winning slices are extracted later into atomic certified PRs.
 
+**RST (Rapid Software Testing) is required at every S-rung and C-gate.** See `docs/k3/RST.md`. A green checkbox without a session sheet (charter, named oracle, known-bad that the instrument actually failed) is a check, not a test. Independent charters run in parallel when they do not share a GPU.
+
 ---
 
 ## 1. Problem
