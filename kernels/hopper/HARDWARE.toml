@@ -107,8 +107,9 @@ ssm_batched_recurrent = true
 #     shipped `_x2` arm reproduces the scalar spine's `uc`/`S_c` to four digits
 #     (rel_rms 1.6721e-3 on both at T=4593), holds the f32 state at 3.9e-6 with
 #     `cosine=1.000000000`, drift BOUNDED, KNOWN_BAD refused at all three T.
-# The kernel is still SHARED (`kernels/gb10/common/gated_delta_rule_chunk_tc.cu`,
-# validated on GB10) and is NOT relocated here — only the default moved.
+# The kernel was developed and validated on GB10 and is arch-neutral; it is
+# declared in this target's `[kernels] overrides` rather than in the shared tree
+# only because rule S1 refuses new cross-hardware symlinks. See that entry.
 # `ATLAS_GDN_PREFILL_TC=0` turns the whole family off, which is how the A/B is
 # re-run now that the positive arm is the default.
 #
@@ -191,6 +192,32 @@ decode_split_silu = true
 #
 # Every entry below is an ADDITION.
 #
+#   gated_delta_rule_chunk_tc.cu  The tensor-core GDN chunked-PREFILL state
+#                            spine (#928) — `chunk_delta_h_tcfuse_x2`, the
+#                            k-reduction moved into the MMA tree. An ADDITION:
+#                            its parent `chunk_delta_h_vfused` lives in
+#                            `common/gated_delta_rule_fla.cu` beside thirteen
+#                            other entry points, so a same-stem override would
+#                            fork all of them.
+#
+#                            DEVELOPED AND VALIDATED ON GB10, and it is
+#                            arch-neutral — no `__CUDA_ARCH__` arm and one MMA
+#                            shape, `m16n8k16 f32.bf16.bf16.f32`, which is
+#                            sm_80+. It lives HERE rather than in
+#                            `kernels/gb10/common` only because this repository
+#                            refuses to create a new cross-hardware symlink
+#                            (`check_cross_hardware.py` rule S1): a file in the
+#                            gb10 tree is mirrored into hopper and b200 by
+#                            `every_inherited_common_mirrors_every_gb10_common_file`,
+#                            and new SHARING is a decision that must be made
+#                            deliberately rather than inherited from a mirror.
+#                            The consequence is stated plainly: GB10 no longer
+#                            compiles this kernel, so its `gdn_prefill_tc` row
+#                            is inert and `native_gdn_chunk_prefill_microtest`
+#                            skips on a GB10 image. A GB10 receipt moves the
+#                            file down and adds the two mirror links in one
+#                            commit. Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
+#
 #   gdn_recompute_wu_hopper.cu  The two SCALAR REMNANTS of the chunked PREFILL
 #   gdn_fwd_o_hopper.cu         (#928) on tensor cores: `wu`'s two forward
 #                            substitutions and `fwd_o`'s triangular
@@ -227,6 +254,7 @@ decode_split_silu = true
 #                            guard. Numbers: `SSM-BA-GATES-ATTRIBUTION.md`.
 [kernels]
 overrides = [
+  "gated_delta_rule_chunk_tc.cu",
   "gdn_fwd_o_hopper.cu",
   "gdn_prefill_hopper.cuh",
   "gdn_recompute_wu_hopper.cu",

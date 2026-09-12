@@ -1,1 +1,0 @@
-../../gb10/common/gated_delta_rule_chunk_tc.cu

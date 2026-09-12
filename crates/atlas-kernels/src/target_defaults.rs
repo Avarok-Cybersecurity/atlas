@@ -76,10 +76,12 @@ pub struct TargetDefaults {
     /// `gated_delta_rule_chunk_delta_h_tcfuse_x2` serves the GDN chunked
     /// PREFILL state spine on tensor cores (`layers/ops/ssm_gdn_a3.rs`).
     ///
-    /// FALSE on every target, deliberately. The kernel is shared — it lives in
-    /// `kernels/gb10/common/gated_delta_rule_chunk_tc.cu` and is validated on
-    /// GB10 — and the arm reassociates the k-reduction into the MMA tree, so
-    /// promotion needs the ssm-poisoning tripwire rather than a cosine (#928).
+    /// FALSE on every target here, deliberately. The kernel lives in
+    /// `kernels/hopper/common/gated_delta_rule_chunk_tc.cu` — developed and
+    /// validated on GB10, arch-neutral, but declared in the Hopper tree because
+    /// rule S1 refuses new cross-hardware symlinks — and the arm reassociates
+    /// the k-reduction into the MMA tree, so promotion needs the ssm-poisoning
+    /// tripwire rather than a cosine (#928).
     /// It is here so the probe that loads it is GATED on the same bit that
     /// launches it, like every other kernel in this table.
     pub gdn_prefill_tc: bool,
