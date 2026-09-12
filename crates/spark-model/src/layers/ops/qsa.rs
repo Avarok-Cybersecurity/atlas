@@ -336,7 +336,7 @@ const QSA_PA_TC_TB: u32 = 64;
 const QSA_PA_TC_HD: u32 = 256;
 const QSA_PA_TC_M: u32 = 16;
 const QSA_PA_TC_QPAD: u32 = 8;
-const QSA_PA_TC_KPAD: u32 = 4;
+const QSA_PA_TC_KPAD: u32 = 2;   // bank-conflict-free K^T store; see qsa_indexer.cu
 const QSA_PA_TC_VPAD: u32 = 4;
 const QSA_PA_TC_PPAD: u32 = 8;
 

@@ -889,7 +889,16 @@ extern "C" __global__ __launch_bounds__(QSA_EXPAND_THREADS) void qsa_expand_sel(
 #define QSA_PATC_HD 256         // head_dim (checked at the call site)
 #define QSA_PATC_M 16           // mma M — nq padded to 16
 #define QSA_PATC_QPAD 8         // sQ row pad: kills an 8-way A-fragment conflict
-#define QSA_PATC_KPAD 4         // sKV-as-K^T row pad
+// sKV-as-K^T row pad. 2, not 4, and the reason is the STORE, not the size.
+// The gather reads k_cache coalesced but writes sKV[d*KT_ROW + j], striding by
+// KT_ROW across consecutive d. Bank = (d*(TB+KPAD) + j)/2 mod 32, so the pad
+// decides the stride in banks:
+//   KPAD 4 -> 68 elems -> d*34 mod 32 = d*2 -> banks 0,2,..30: 32 lanes into
+//             16 banks, a 2-way conflict on every K store of every tile;
+//   KPAD 2 -> 66 elems -> d*33 mod 32 = d   -> 32 lanes into 32 banks, none.
+// It is also 1024 B smaller. (sQ keeps pad 8 for the same class of reason on
+// its A-fragment read; V is stored row-contiguous and does not care.)
+#define QSA_PATC_KPAD 2
 #define QSA_PATC_VPAD 4         // sKV-as-V row pad
 #define QSA_PATC_PPAD 8
 extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(

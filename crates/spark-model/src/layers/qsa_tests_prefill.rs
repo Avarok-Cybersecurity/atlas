@@ -306,8 +306,10 @@ fn qsa_prefill_attn_matches_cpu() {
 /// occupancy (one CTA per SM measured +4.4% against a 23.4% profile share).
 #[test]
 fn tc_prefill_attn_smem_is_two_ctas_per_sm() {
-    // hd 256, TB 64, M 16, pads 8/4/4/8 — see QSA_PATC_* in qsa_indexer.cu.
-    assert_eq!(ops::QSA_PA_TC_SMEM, 50_112, "shared-memory layout drifted");
+    // hd 256, TB 64, M 16, pads 8/2/4/8 — see QSA_PATC_* in qsa_indexer.cu.
+    // KPAD is 2 so the K^T store hits 32 distinct banks; 4 gave a 2-way
+    // conflict on every K store and cost 1024 B more.
+    assert_eq!(ops::QSA_PA_TC_SMEM, 49_088, "shared-memory layout drifted");
     assert!(
         ops::QSA_PA_TC_SMEM <= ops::MAX_DYNAMIC_SMEM,
         "past the sm_121 opt-in ceiling"
