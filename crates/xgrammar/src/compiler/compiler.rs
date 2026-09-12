@@ -15,6 +15,7 @@ use crate::tokenizer::TokenizerInfo;
 use super::compile::compile_optimized_grammar;
 use super::compiled_grammar::CompiledGrammar;
 use super::grammar_cache::{GrammarCache, UNLIMITED_BYTES};
+use super::mask_snapshot::{self, SnapshotError, SnapshotIdentity};
 use super::rule_cache::{RuleLevelCache, UNLIMITED_SIZE};
 
 /// An error produced while compiling a grammar, schema or tag.
@@ -277,5 +278,57 @@ impl GrammarCompiler {
     /// The tokenizer this compiler is bound to.
     pub fn tokenizer_info(&self) -> &TokenizerInfo {
         &self.tokenizer_info
+    }
+
+    /// The identity an on-disk mask snapshot must match to be usable
+    /// with this compiler (#918).
+    pub fn snapshot_identity(&self) -> SnapshotIdentity {
+        SnapshotIdentity {
+            tokenizer_fingerprint: self.tokenizer_info.fingerprint(),
+            vocab_size: self.tokenizer_info.vocab_size(),
+        }
+    }
+
+    /// Seed the cross-grammar [`RuleLevelCache`] from a snapshot written
+    /// by an earlier process (#918).
+    ///
+    /// Returns the number of masks imported. `0` means a miss — no file,
+    /// a snapshot from a different tokenizer or build, or a corrupt one —
+    /// and the compiler simply computes as before. A compiler constructed
+    /// with `cache_enabled == false` has no rule cache and always
+    /// returns `0`.
+    pub fn load_mask_snapshot(&self, path: &std::path::Path) -> Result<usize, SnapshotError> {
+        let Some(cache) = &self.rule_cache else {
+            return Ok(0);
+        };
+        mask_snapshot::load_from_file(cache, self.snapshot_identity(), path)
+    }
+
+    /// Persist the cross-grammar [`RuleLevelCache`] so the NEXT process
+    /// starts warm (#918). Returns the number of masks written; at most
+    /// `max_entries`, most-recently-used first.
+    pub fn save_mask_snapshot(
+        &self,
+        path: &std::path::Path,
+        max_entries: usize,
+    ) -> Result<usize, SnapshotError> {
+        let Some(cache) = &self.rule_cache else {
+            return Ok(0);
+        };
+        mask_snapshot::save_to_file(cache, self.snapshot_identity(), path, max_entries)
+    }
+
+    /// The cross-grammar rule-level cache itself, when caching is on.
+    /// Exposed for the #918 snapshot tests and for callers that want to
+    /// share one cache across compilers.
+    pub fn rule_cache(&self) -> Option<&RuleLevelCache> {
+        self.rule_cache.as_ref()
+    }
+
+    /// Entries currently held by the cross-grammar rule-level cache —
+    /// `0` when caching is disabled. Used by the #918 tests and by the
+    /// serve path's warm-up logging.
+    pub fn rule_cache_len(&self) -> usize {
+        self.rule_cache.as_ref().map_or(0, |c| c.len())
     }
 }

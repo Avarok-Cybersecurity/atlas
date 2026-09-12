@@ -132,6 +132,47 @@ impl GrammarCompiler {
         self.inner.cache_size_bytes()
     }
 
+    /// Seed the cross-grammar rule-level mask cache from a snapshot a
+    /// previous process wrote (#918). Returns masks imported; `0` is a
+    /// miss (absent / stale / corrupt file), never an error.
+    pub fn load_mask_snapshot(&self, path: &std::path::Path) -> Result<usize, String> {
+        self.inner
+            .load_mask_snapshot(path)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Persist the cross-grammar rule-level mask cache so the next
+    /// process starts warm (#918). Returns masks written.
+    pub fn save_mask_snapshot(
+        &self,
+        path: &std::path::Path,
+        max_entries: usize,
+    ) -> Result<usize, String> {
+        self.inner
+            .save_mask_snapshot(path, max_entries)
+            .map_err(|e| e.to_string())
+    }
+
+    /// A CLONE of the cross-grammar rule-level cache handle (`Arc`
+    /// inside — this shares the cache, it does not copy it).
+    ///
+    /// #918: lets a caller hand the cache to a background thread that
+    /// persists it, without holding the compiler (which is `!Sync`).
+    pub fn rule_cache_handle(&self) -> Option<crate::compiler::RuleLevelCache> {
+        self.inner.rule_cache().cloned()
+    }
+
+    /// The identity an on-disk mask snapshot must match to be usable
+    /// with this compiler's tokenizer (#918).
+    pub fn snapshot_identity(&self) -> crate::compiler::SnapshotIdentity {
+        self.inner.snapshot_identity()
+    }
+
+    /// Number of masks held by the cross-grammar rule-level cache.
+    pub fn rule_cache_len(&self) -> usize {
+        self.inner.rule_cache_len()
+    }
+
     /// The configured cache memory limit (`-1` = unlimited). Port of
     /// the vendored `GrammarCompiler::cache_limit_bytes`.
     pub fn cache_limit_bytes(&self) -> i64 {
