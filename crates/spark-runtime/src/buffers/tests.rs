@@ -11,8 +11,15 @@ fn mixed_dense_moe_sizes_for_widest_ffn() {
     cfg.moe_intermediate_size = 1_024;
 
     let sizes = BufferSizes::from_config(&cfg, 4, 4096, 16, 32);
-    assert_eq!(sizes.expert_gate_out, 4 * 12_288 * 2);
-    assert_eq!(sizes.expert_up_out, 4 * 12_288 * 2);
+    // The DENSE intermediate (12288) is wider than the routed one
+    // (top_k 10 x moe_intermediate 1024 = 10240), and it is the dense width
+    // these buffers must hold. Rows are `max_batch_tokens` rounded up to 16 —
+    // the cuBLASLt FP8 M-pad headroom the W8A8 dense-FFN prefill writes into
+    // (#917/#928); see the sizing note on `k_max` in `sizes.rs`.
+    let rows = 4_usize.div_ceil(16) * 16;
+    assert!(cfg.intermediate_size > cfg.num_experts_per_tok * cfg.moe_intermediate_size);
+    assert_eq!(sizes.expert_gate_out, rows * 12_288 * 2);
+    assert_eq!(sizes.expert_up_out, rows * 12_288 * 2);
 }
 use crate::gpu::mock::MockGpuBackend;
 use std::collections::HashSet;
@@ -36,13 +43,17 @@ fn test_buffer_sizes_qwen3() {
     assert_eq!(sizes.gate_logits, 1024);
     // logits: 1 * 151936 * 2 = 303872
     assert_eq!(sizes.logits, 303872);
-    // ssm_qkvz: 1 * 12288 * 2 = 24576
-    // Q(16*128) + K(16*128) + V(32*128) + Z(32*128) = 12288
-    assert_eq!(sizes.ssm_qkvz, 24576);
+    // ssm_qkvz: ceil16(1) * 12288 * 2 = 393216
+    // Q(16*128) + K(16*128) + V(32*128) + Z(32*128) = 12288, and the row
+    // extent is the cuBLASLt M-pad: the SSM QKVZ cuBLASLt arm hands the
+    // library ceil16(M) and WRITES the phantom rows (#917, 2026-09-11). The
+    // 16x here is an artifact of sizing at M=1; at a real prefill arena the
+    // pad is <= 15 rows out of thousands.
+    assert_eq!(sizes.ssm_qkvz, 393216);
     // ssm_ba: max(1 * 64 * 2, 256) = 256 (minimum allocation)
     assert_eq!(sizes.ssm_ba, 256);
-    // ssm_deinterleaved: same as ssm_qkvz = 24576
-    assert_eq!(sizes.ssm_deinterleaved, 24576);
+    // ssm_deinterleaved: same as ssm_qkvz, same M-pad = 393216
+    assert_eq!(sizes.ssm_deinterleaved, 393216);
     // ssm_gates: 1 * 32 * 2 * 4 = 256 (FP32 gate + beta, scaled by M)
     assert_eq!(sizes.ssm_gates, 256);
 }
@@ -120,8 +131,18 @@ fn test_buffer_arena_alloc() {
         ("ffn_act_q8", arena.ffn_act_q8(), sizes.ffn_act_q8),
         ("ffn_act_a", arena.ffn_act_a(), sizes.ffn_act_a),
         ("ffn_act_scale", arena.ffn_act_scale(), sizes.ffn_act_scale),
+        (
+            "ffn_act_scale_kmajor",
+            arena.ffn_act_scale_kmajor(),
+            sizes.ffn_act_scale_kmajor,
+        ),
         ("fp8_act", arena.fp8_act(), sizes.fp8_act),
         ("fp8_act_scale", arena.fp8_act_scale(), sizes.fp8_act_scale),
+        (
+            "fp8_act_scale_kmajor",
+            arena.fp8_act_scale_kmajor(),
+            sizes.fp8_act_scale_kmajor,
+        ),
         (
             "q2_dequant_scratch",
             arena.q2_dequant_scratch(),

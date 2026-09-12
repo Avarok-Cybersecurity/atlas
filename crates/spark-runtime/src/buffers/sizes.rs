@@ -83,12 +83,24 @@ pub struct BufferSizes {
     pub ffn_act_q8: usize,
     pub ffn_act_a: usize,
     pub ffn_act_scale: usize,
+    /// `[K/128, ceil16(M)]` FP32 copy of `ffn_act_scale` in the layout cuBLASLt
+    /// documents for a VEC128 B operand (token index contiguous). Written by
+    /// `fp8_act_scale_to_kmajor` on every cuBLASLt block-scaled FFN GEMM; the
+    /// quantizer's own `[M, K/128]` output stays in `ffn_act_scale` because the
+    /// in-tree kernel reads that order. 0 for MoE models, like its siblings.
+    pub ffn_act_scale_kmajor: usize,
     /// FP8 block-scaled activation scratch for prefill projections (qkv / o /
     /// ssm-qkvz). Persistent so the W8A8+FP32-epilogue path stops doing a
     /// per-projection cuMemAlloc + cuStreamSynchronize + cuMemFree. 1 byte/elem.
     pub fp8_act: usize,
     /// Per-128-block FP32 scales paired with `fp8_act` (one f32 per 128 elems).
     pub fp8_act_scale: usize,
+    /// `[K/128, ceil16(M)]` FP32 transpose of `fp8_act_scale` — the VEC128
+    /// B-scale layout cuBLASLt documents (token index contiguous). The
+    /// prefill-projection sibling of `ffn_act_scale_kmajor`, allocated for
+    /// every model rather than dense-only because the SSM `in_proj_qkvz`
+    /// cuBLASLt arm consumes it. Same element count as `fp8_act_scale`.
+    pub fp8_act_scale_kmajor: usize,
     /// LoRA shrink output `xa = x@Aᵀ`: [m, adapter_max_rank] BF16.
     /// 0 (→ NULL alloc) when no adapter is configured (adapter_max_rank == 0).
     pub lora_xa: usize,
@@ -234,7 +246,23 @@ impl BufferSizes {
 
         // Batched expert output buffers for MoE (or dense FFN).
         // Sized for max(K=3 verify, prefill chunk) × top_k experts.
-        let k_max = m.max(3); // prefill chunk or K=3 verify, whichever larger
+        //
+        // The row extent is rounded UP to a multiple of 16 because the FP8
+        // block-scaled cuBLASLt GEMM (`ops::cublas_fp8_proj*`, used by the
+        // W8A8 dense-FFN prefill added for #917/#928) cannot be handed a raw
+        // M: cuBLASLt rejects a scale-tensor M extent that is not a multiple
+        // of 4, so the helper pads M to 16 and the matmul writes those phantom
+        // rows into the output. Without the pad here, a prefill chunk that is
+        // exactly `max_batch_tokens` would write up to 15 rows PAST
+        // `expert_gate_out` — straight into the neighbouring arena buffer.
+        // Costs <= 15 * intermediate * 2 B per buffer (~0.5 MB on a 27B), which
+        // is cheaper than a second output allocation or a per-call bounce.
+        // The row extent every buffer a cuBLASLt block-scaled FP8 GEMM touches
+        // must be sized for. `ops::cublas_fp8_proj_prequant` hands the library
+        // `ceil16(M)`: the phantom activation/scale rows are READ and the
+        // phantom output rows are WRITTEN. SSOT for the pads below.
+        let m_pad = m.div_ceil(16) * 16;
+        let k_max = m.max(3).div_ceil(16) * 16; // prefill chunk or K=3 verify, +cuBLASLt M-pad
         let expert_inter = if config.num_experts > 0 {
             let routed = config.num_experts_per_tok * config.moe_intermediate_size;
             k_max * routed.max(config.intermediate_size)
@@ -288,8 +316,15 @@ impl BufferSizes {
         // Mamba-2 out_proj contracts over d_inner (may exceed hidden), and its
         // prefill input is FP8-precast into this buffer.
         let max_proj_k = h.max(q_heads * hd).max(mamba2_d_inner);
-        let fp8_act = m * max_proj_k;
-        let fp8_act_scale = m * max_proj_k.div_ceil(128) * 4;
+        // Padded to 16 rows: `ops::cublas_fp8_proj` hands cuBLASLt `ceil16(M)`
+        // and the matmul reads those phantom activation/scale rows.
+        let fp8_act = m_pad * max_proj_k;
+        let fp8_act_scale = m_pad * max_proj_k.div_ceil(128) * 4;
+        // The cuBLASLt arm reads the SAME scales transposed, so both layouts are
+        // live at once and cannot share a buffer. ~0.2 MB at m=2048, K=5120 —
+        // against the 167772160 B/layer off-ledger BF16 weight dequant it
+        // replaces (#917 H100 receipt, 2026-09-11).
+        let fp8_act_scale_kmajor = fp8_act_scale;
         // LoRA scratch — only when an adapter is configured (adapter_max_rank
         // set programmatically pre-build). Widest target n_out =
         // max(hidden, intermediate, q_proj): covers k/v, o/down (hidden),
@@ -360,17 +395,28 @@ impl BufferSizes {
         // Sized for the largest projection K = max(hidden, intermediate); the
         // dense_ffn prefill paths pass `h.max(inter)` to the requant kernels.
         // 0 for MoE (num_experts>0) — those never take the dense_ffn MMQ path.
-        let (ffn_act_q8, ffn_act_a, ffn_act_scale) = if config.num_experts == 0 {
-            let kmax = h.max(config.intermediate_size);
-            let kpad = kmax.div_ceil(256) * 256;
-            (
-                m * kpad * 4 + (1 << 20), // q8_1_mmq: m*kpad*4 + 1MB (matches q8_1_scratch_bytes)
-                m * kmax,                 // int8 a_i8 [m,K] ≥ NVFP4 packed [m,K/2]
-                m * (kmax / 32) * 4,      // int8 a_scale [m,K/32]*4 ≥ NVFP4 scale [m,K/16]
-            )
-        } else {
-            (0, 0, 0)
-        };
+        let (ffn_act_q8, ffn_act_a, ffn_act_scale, ffn_act_scale_kmajor) =
+            if config.num_experts == 0 {
+                let kmax = h.max(config.intermediate_size);
+                let kpad = kmax.div_ceil(256) * 256;
+                // `m_pad` (above) is the cuBLASLt row extent: the W8A8
+                // dense-FFN prefill (#917/#928) hands cuBLASLt `ceil16(M)` and
+                // the matmul READS the phantom activation rows (they are
+                // zeroed, but they are read). It also covers every unpadded
+                // consumer of this scratch.
+                (
+                    m * kpad * 4 + (1 << 20), // q8_1_mmq: m*kpad*4 + 1MB (matches q8_1_scratch_bytes)
+                    m_pad * kmax,             // int8 a_i8 [m,K] ≥ NVFP4 packed [m,K/2] ≥ fp8 [m,K]
+                    m_pad * (kmax / 32) * 4,  // int8 a_scale [m,K/32]*4 ≥ fp8 [m,K/128]*4
+                    // Transposed VEC128 activation scales for the cuBLASLt arm:
+                    // one f32 per (128-of-K group, padded token). Same element
+                    // count as the fp8 use of `ffn_act_scale`, a quarter of the
+                    // int8 one — ~0.65 MB at max_batch_tokens=1193, K=17408.
+                    m_pad * (kmax / 128) * 4,
+                )
+            } else {
+                (0, 0, 0, 0)
+            };
 
         Self {
             hidden_states: m * h * residual_elem,
@@ -404,7 +450,9 @@ impl BufferSizes {
             } else {
                 256
             },
-            moe_output: m * h * bf16,
+            // Same cuBLASLt FP8 M-pad headroom as `k_max` above: the dense-FFN
+            // down projection writes its [M, hidden] result here.
+            moe_output: m.div_ceil(16) * 16 * h * bf16,
             logits: logits_tokens * config.vocab_size * bf16, // BF16 from LM head kernel
             // SSM buffers are also reused by attention prefill/multi-seq as scratch:
             //   ssm_qkvz: K+V contiguous storage in prefill [M, 2*kv_dim]
@@ -412,7 +460,11 @@ impl BufferSizes {
             //   ssm_deinterleaved: Q contiguous copy [M, nq*hd]
             //                      Mamba-2 conv1d output [M, d_xBC]
             // Use max across all uses with minimum 256 to avoid 0-byte alloc.
-            ssm_qkvz: (m * config.ssm_qkvz_size() * bf16)
+            // `m_pad`, not `m`: the SSM `in_proj_qkvz` cuBLASLt arm WRITES
+            // `ceil16(M)` output rows here (readers still touch only the real
+            // M). Without it a chunk exactly `max_batch_tokens` wide spills up
+            // to 15 rows into the NEXT arena buffer. ~0.4 MB on a 27B.
+            ssm_qkvz: (m_pad * config.ssm_qkvz_size() * bf16)
                 .max(m * config.mamba2_in_proj_size() * bf16)
                 .max(m * 2 * kv_heads * hd * bf16)
                 .max(m * config.shared_expert_intermediate_size * bf16) // MoE shared up scratch
@@ -430,7 +482,9 @@ impl BufferSizes {
                     0
                 })
                 .max(256),
-            ssm_deinterleaved: (m * config.ssm_qkvz_size() * bf16)
+            // Same cuBLASLt M-pad as `ssm_qkvz`: on a `sequential_qkvz` model
+            // THIS is the projection's destination buffer.
+            ssm_deinterleaved: (m_pad * config.ssm_qkvz_size() * bf16)
                 .max(m * config.mamba2_d_xbc() * bf16)
                 .max(m * q_heads * hd * bf16)
                 // MLA absorbed: Q_absorbed buffer is [M, nq, mla_cache_dim=kv_lora+rope]
@@ -514,8 +568,10 @@ impl BufferSizes {
             ffn_act_q8,
             ffn_act_a,
             ffn_act_scale,
+            ffn_act_scale_kmajor,
             fp8_act,
             fp8_act_scale,
+            fp8_act_scale_kmajor,
             lora_xa,
             lora_delta,
             lora_hact,
@@ -558,8 +614,10 @@ impl BufferSizes {
             + self.ffn_act_q8
             + self.ffn_act_a
             + self.ffn_act_scale
+            + self.ffn_act_scale_kmajor
             + self.fp8_act
             + self.fp8_act_scale
+            + self.fp8_act_scale_kmajor
             + self.lora_xa
             + self.lora_delta
             + self.lora_hact

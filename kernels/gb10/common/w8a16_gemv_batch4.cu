@@ -14,9 +14,13 @@
 // same weight bytes, no tensor cores, no M padding.
 //
 // Per-row accumulation order is IDENTICAL to `w8a16_gemv`, so the output is
-// bit-identical to running `w8a16_gemv` M times (verify with a cos>=0.9999
-// microtest). A:[M,K] BF16, B:[N,K] FP8 E4M3, block_scale:[N/128,K/128] FP32,
+// bit-identical to running `w8a16_gemv` M times (verified with exact BF16
+// output comparison). A:[M,K] BF16, B:[N,K] FP8 E4M3, block_scale:[N/128,K/128] FP32,
 // C:[M,N] BF16. Grid: (ceil(N/4), 1, 1)  Block: (256, 1, 1).
+//
+// Entry points: `w8a16_gemv_batch4` / `w8a16_gemv_batch16` (contiguous A and C)
+// and their `_strided` siblings at the bottom of this file, which take the A
+// and C row pitches in elements instead of assuming K and N.
 
 #include <cuda_bf16.h>
 
@@ -98,15 +102,27 @@ __device__ __constant__ float E4M3_LUT_B4[256] = {
 // instantiation serves all n in [1, MAX_M]. MAX_M=4 is the optimal common path
 // (n<=4); MAX_M=16 covers high-concurrency decode (n=5..16) without falling
 // back to the M-padded MMA.
+//
+// `a_row_stride` / `c_row_stride` are the row pitches of A and C in ELEMENTS.
+// The contiguous entry points pass K and N, which is what the body did
+// literally before the strides existed, so their PTX is unchanged. The strided
+// entry points let a caller read rows out of, and write rows into, a larger
+// interleaved buffer without staging a contiguous copy — the multi-seq decode
+// QKV buffer is [n, per_seq_qkv] with Q/K/V at fixed offsets inside each row,
+// so `c_row_stride = per_seq_qkv` targets one projection in place.
+// A must stay 16B-aligned per row (a_row_stride % 8 == 0 for BF16): the
+// activation loads below are uint4.
 template <int MAX_M>
 __device__ __forceinline__ void w8a16_gemv_batchm_impl(
-    const __nv_bfloat16* __restrict__ A,    // [M, K] BF16
+    const __nv_bfloat16* __restrict__ A,    // [M, a_row_stride] BF16, K used
     const unsigned char* __restrict__ B,     // [N, K] FP8 E4M3
     const float* __restrict__ block_scale,   // [N/128, K/128] FP32
-    __nv_bfloat16* __restrict__ C,           // [M, N] BF16
+    __nv_bfloat16* __restrict__ C,           // [M, c_row_stride] BF16, N used
     unsigned int M,
     unsigned int N,
-    unsigned int K
+    unsigned int K,
+    unsigned int a_row_stride,
+    unsigned int c_row_stride
 ) {
     const unsigned int threads_per_out = BLOCK_SIZE / N_PER_BLOCK;  // 64
     const unsigned int local_out = threadIdx.x / threads_per_out;
@@ -151,7 +167,7 @@ __device__ __forceinline__ void w8a16_gemv_batchm_impl(
         #pragma unroll
         for (int t = 0; t < MAX_M; t++) {
             if ((unsigned int)t >= M) continue;
-            const __nv_bfloat16* At = A + (unsigned long long)t * K;
+            const __nv_bfloat16* At = A + (unsigned long long)t * a_row_stride;
             uint4 a_lo = ((const uint4*)At)[k16 * 2];
             uint4 a_hi = ((const uint4*)At)[k16 * 2 + 1];
             const unsigned int ar[8] = {a_lo.x, a_lo.y, a_lo.z, a_lo.w,
@@ -161,8 +177,9 @@ __device__ __forceinline__ void w8a16_gemv_batchm_impl(
                 __nv_bfloat16 lo, hi;
                 *(unsigned short*)&lo = (unsigned short)(ar[j] & 0xFFFF);
                 *(unsigned short*)&hi = (unsigned short)(ar[j] >> 16);
-                acc[t] += __bfloat162float(lo) * wf[j * 2]
-                        + __bfloat162float(hi) * wf[j * 2 + 1];
+                // Match scalar rounding: never sum a pair before the accumulator.
+                acc[t] += __bfloat162float(lo) * wf[j * 2];
+                acc[t] += __bfloat162float(hi) * wf[j * 2 + 1];
             }
         }
     }
@@ -187,7 +204,7 @@ __device__ __forceinline__ void w8a16_gemv_batchm_impl(
         for (int t = 0; t < MAX_M; t++) {
             if ((unsigned int)t >= M) continue;
             float r = smem[t][local_out * 2] + smem[t][local_out * 2 + 1];
-            C[(unsigned long long)t * N + n] = __float2bfloat16(r);
+            C[(unsigned long long)t * c_row_stride + n] = __float2bfloat16(r);
         }
     }
 }
@@ -202,7 +219,7 @@ extern "C" __global__ void w8a16_gemv_batch4(
     unsigned int N,
     unsigned int K
 ) {
-    w8a16_gemv_batchm_impl<4>(A, B, block_scale, C, M, N, K);
+    w8a16_gemv_batchm_impl<4>(A, B, block_scale, C, M, N, K, K, N);
 }
 
 // M<=16 (high-concurrency decode, n=5..16). Same weight-streaming pass; one
@@ -217,5 +234,49 @@ extern "C" __global__ void w8a16_gemv_batch16(
     unsigned int N,
     unsigned int K
 ) {
-    w8a16_gemv_batchm_impl<16>(A, B, block_scale, C, M, N, K);
+    w8a16_gemv_batchm_impl<16>(A, B, block_scale, C, M, N, K, K, N);
+}
+
+// ── Strided siblings ───────────────────────────────────────────────────────
+// Identical math and identical accumulation order to the two entry points
+// above; only the row pitches of A and C are caller-supplied. Added for the
+// multi-seq decode Q/K/V projections (O13): the concurrent-decode QKV buffer
+// is strided by `per_seq_qkv` (14336 BF16 elements on Qwen3.8-27B) with Q at
+// offset 0, K after Q and V after K, so the contiguous `[M, N]` writer above
+// could not serve it and the FP8 attention projections fell back to three
+// scalar `w8a16_gemv` launches PER ROW. These write each projection straight
+// into its slot for all M rows in ONE launch.
+//
+// Separate symbols on purpose: the contiguous entry points are load-bearing
+// for the SSM QKVZ / out_proj and o_proj callers and stay byte-for-byte as
+// they were.
+
+// M<=4 strided (2..=4 concurrent decode rows).
+extern "C" __global__ void w8a16_gemv_batch4_strided(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B,
+    const float* __restrict__ block_scale,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K,
+    unsigned int a_row_stride,
+    unsigned int c_row_stride
+) {
+    w8a16_gemv_batchm_impl<4>(A, B, block_scale, C, M, N, K, a_row_stride, c_row_stride);
+}
+
+// M<=16 strided (5..=16 concurrent decode rows).
+extern "C" __global__ void w8a16_gemv_batch16_strided(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B,
+    const float* __restrict__ block_scale,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M,
+    unsigned int N,
+    unsigned int K,
+    unsigned int a_row_stride,
+    unsigned int c_row_stride
+) {
+    w8a16_gemv_batchm_impl<16>(A, B, block_scale, C, M, N, K, a_row_stride, c_row_stride);
 }

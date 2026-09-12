@@ -184,21 +184,23 @@ impl Qwen3AttentionLayer {
         {
             ops::log_cutlass_nvfp4_route(ctx.gpu, label, n, out_dim, h);
             ops::cutlass_nvfp4_proj_from_fp8(ctx, normed, fp8w, out, n, out_dim, h, stream)?;
-        } else if ctx.dispatch.cublas_gemm
-            && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
-        {
-            // cuBLASLt BF16 (3x the hand-written mma.sync GEMM on GB10).
-            ops::cublas_bf16_proj(
-                ctx.gpu,
-                ctx.derived,
-                normed,
-                fp8w,
-                out,
-                n,
-                out_dim,
-                h,
-                stream,
-            )?;
+        // NO cuBLASLt-BF16 ARM HERE ANY MORE (#927). `ctx.dispatch.cublas.attn`
+        // used to route this projection to `ops::cublas_bf16_proj`, which
+        // DEQUANTIZES the FP8 weight to BF16 and caches the copy outside the
+        // buffer ledger — 2 B per weight element, the same class of leak that
+        // cost the SSM QKVZ arm ~10.3 GiB and killed a 28-token H100 prefill
+        // (#917 round 3). It mattered again because the 5..16-row decode
+        // recipe arms `ATLAS_CUBLAS_GEMM=ffn,ssm,attn`.
+        //
+        // Unlike `paged_oproj.rs`, there is no cuBLASLt W8A8 arm to put in its
+        // place HERE: the cache-skip path writes q/k/v into three back-to-back
+        // regions of one buffer (`q_contiguous`, then `+ n*q_dim`, then
+        // `+ n*kv_dim`), and cuBLASLt writes `ceil16(M)` rows — with a prefill
+        // token count that is not a multiple of 16 the pad would cross into the
+        // NEXT projection's region. Giving this path the cuBLASLt arm needs
+        // per-region capacity accounting it does not have today, so it keeps
+        // the transposed W8A16 kernels below, which are byte-identical to what
+        // an un-armed serve already runs.
         } else if let Some(fp8t) = fp8w_t
             && use_t_pipelined
             && self.w8a16_gemm_t_pipelined_k.0 != 0
@@ -348,7 +350,7 @@ impl Qwen3AttentionLayer {
             .map_err(|e| {
                 anyhow::anyhow!("{label} w4a16_gemm failed: m={n} n={out_dim} k={h}: {e}")
             })?;
-        } else if ctx.dispatch.cublas_gemm && n > 1 {
+        } else if ctx.dispatch.cublas.attn && n > 1 {
             // Native-BF16 checkpoints (Laguna) never produce an Fp8Weight, so the
             // cuBLAS arm above is unreachable for them; route the dense weight
             // straight to cuBLASLt, which is ~3x the hand-written mma.sync GEMM.
