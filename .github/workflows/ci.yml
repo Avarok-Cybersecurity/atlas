@@ -1443,7 +1443,46 @@ jobs:
     # through.
     if: >-
       ${{ !cancelled() && needs.changes.outputs.web_only != 'true'
-          && needs.stamp.outputs.stamped != 'false' }}
+          && needs.stamp.outputs.stamped != 'false'
+          && needs.changes.outputs.is_stack_layer != 'true' }}
+    # ── `is_stack_layer != 'true'`: ONE CAMPAIGN PER STACK ────────────────────
+    #
+    # Maintainer decision, 2026-09-12 (tbraun96): "Just because multiple PRs in
+    # a stack affect the perf path does not mean to treat each one separately;
+    # no. Instead, we stack everything and run one certification gate to keep
+    # things fast."
+    #
+    # Before this line, a stack of N layers each touching PERF_PATHS owed N
+    # campaigns, because the gate judges every layer against `main` rather than
+    # against its own base, and a record pinned to the TOP's tree does not cover
+    # a lower layer's tree. Twenty-four layers at ~5 GPU-hours is ~120 GPU-hours
+    # for one merge, which is why the practice had been to compose instead — and
+    # composing loses per-PR review, authorship and the ability to drop one
+    # constituent.
+    #
+    # WHY SKIPPING A LAYER IS SOUND, and not a hole in branch protection:
+    #
+    #   * `is_stack_layer` is true only when the event is `pull_request`, the
+    #     head branch is in THIS repo, and `gh pr list --base <HEAD_REF>` finds
+    #     an OPEN pr above it. So it is true only while something above this PR
+    #     will carry it in.
+    #   * Merging a registered stack's top lands every layer below it in one
+    #     operation, so the tree that reaches `main` is the TOP's tree — which
+    #     is the tree the top's records were measured at.
+    #   * The `merge_group` certification below still runs on the MERGED tree,
+    #     so the thing actually landing is still gated.
+    #   * The moment a layer stops having an open PR above it — the stack is
+    #     broken up, or it becomes the top — this flips false and it certifies
+    #     on its own. A layer can never merge alone on someone else's records.
+    #
+    # `!= 'true'` and not `== 'false'` for the same reason as the two tests
+    # beside it: the classifier fails OPEN, so an empty or errored output must
+    # RUN the certification rather than wave it through.
+    #
+    # `.github/scripts/certification-selftest.sh` carries four controls for
+    # this: the top never skips, a fork head never skips, an errored signal
+    # runs the gate, and a genuine layer does skip.
+    #
     # `!= 'false'`, not `== 'true'`: the stamp job fails OPEN, so an empty output
     # must run the lane rather than hold it. Same shape and same reason as the
     # `web_only` test beside it — five workflows here carry the lesson that a
@@ -1649,6 +1688,7 @@ jobs:
           WEB_ONLY: ${{ needs.changes.outputs.web_only }}
           STAMPED: ${{ needs.stamp.outputs.stamped }}
           EXPEDITED: ${{ needs.stamp.outputs.expedited }}
+          IS_STACK_LAYER: ${{ needs.changes.outputs.is_stack_layer }}
         run: |
           echo "PR Benchmark Certifications => ${RESULT} (web_only=${WEB_ONLY:-unknown})"
           if [ "${RESULT}" = "success" ]; then exit 0; fi
@@ -1670,6 +1710,28 @@ jobs:
           # branch cannot become a hole in branch protection.
           if [ "${RESULT}" = "skipped" ] && [ "${WEB_ONLY}" = "true" ]; then
             echo "web-only diff: no record's measured inputs were touched — pass."
+            exit 0
+          fi
+          # THE SECOND SKIP THAT IS A PASS: this PR is a LAYER of a stack, so
+          # the certification it needs is the one at the stack's TOP. Merging a
+          # registered stack's top lands every layer below it in one operation,
+          # so the tree that reaches `main` is the top's tree, and that is the
+          # tree the top's records were measured at.
+          #
+          # Positive on IS_STACK_LAYER on purpose, exactly like WEB_ONLY above:
+          # a skip caused by a broken classifier leaves it EMPTY and falls
+          # through to red. And the classifier itself is narrow — it requires a
+          # `pull_request` event, a head branch IN THIS REPO, and an OPEN pr
+          # whose base is this PR's head. So this branch can only fire while
+          # something above this PR will carry it in; the moment that stops
+          # being true the layer certifies on its own.
+          #
+          # Placed ABOVE the stamp hold deliberately: a layer's own /stamp is
+          # not what releases the stack's certification, and holding a layer red
+          # for want of a stamp it does not need is how a 26-layer stack becomes
+          # unmergeable.
+          if [ "${RESULT}" = "skipped" ] && [ "${IS_STACK_LAYER}" = "true" ]; then
+            echo "stack layer: certification is carried by the top of this stack — pass."
             exit 0
           fi
           # HELD, not failed. Certification never ran because nobody has released
