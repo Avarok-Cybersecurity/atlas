@@ -257,6 +257,7 @@ fn test_seq(
         grammar_state: None,
         pending_drafts: Vec::new(),
         pending_draft_conf: Vec::new(),
+        pending_drafts_lookup: false,
         last_token_time: now,
         request_start: now,
         decode_start: now,

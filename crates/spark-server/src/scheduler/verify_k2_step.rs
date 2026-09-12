@@ -454,8 +454,14 @@ pub(super) fn commit_verify_aux_or_finish(
     match model.commit_verify_aux(&mut a.seq, num_accepted, k) {
         Ok(_) => true,
         Err(e) => {
-            tracing::error!("commit_verify_aux({num_accepted}/{k}): {e:#}");
-            a.finished = true;
+            // Route through `fail_sequence`, not a bare `finished = true`: the
+            // bare form retires the sequence with NO error set, so the caller
+            // receives HTTP 200 over a generation that did not finish — the
+            // silent-truncation shape `lifecycle_tests` scans these steps for.
+            // This helper is shared by the K2/K3/K4 steps, so one arm covers all.
+            let msg = format!("commit_verify_aux({num_accepted}/{k}): {e:#}");
+            tracing::error!("{msg}");
+            super::lifecycle::fail_sequence(a, msg);
             false
         }
     }

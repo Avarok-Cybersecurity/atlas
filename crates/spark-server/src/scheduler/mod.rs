@@ -40,6 +40,7 @@ pub use mod_helpers::capture_runtime_handle;
 pub mod dumps;
 pub mod levers;
 pub mod limits;
+mod lookup_gate;
 mod mtp_accept_debug;
 mod mtp_bootstrap_step;
 mod mtp_dcut;

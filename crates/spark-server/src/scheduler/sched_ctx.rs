@@ -74,6 +74,9 @@ pub struct SchedCtx {
     /// with; putting the seam in the right place now is cheaper than moving it
     /// once something depends on it.
     pub rom_head: Option<std::sync::Arc<dyn crate::scheduler::rollback::RomHead>>,
+    /// Lookup-draft index for this run (#974). One sequence at a time, like
+    /// every speculative path here; `RefCell` for the same reason `scratch` is.
+    pub lookup: std::cell::RefCell<crate::lookup_drafts::LookupDrafter>,
 }
 
 impl SchedCtx {
@@ -89,6 +92,10 @@ impl SchedCtx {
             snapshot,
             dumps: crate::scheduler::dumps::RunDumps::from_env(),
             scratch: DecodeScratch::default(),
+            lookup: std::cell::RefCell::new(crate::lookup_drafts::LookupDrafter::new(
+                levers.lookup_min_match,
+                levers.lookup_max_match,
+            )),
             levers,
             limits,
             watchdog,
