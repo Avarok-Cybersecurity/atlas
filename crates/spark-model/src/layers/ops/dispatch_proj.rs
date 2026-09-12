@@ -229,34 +229,38 @@ pub fn cublas_fp8_m_pad(m: u32) -> u32 {
     m.div_ceil(16) * 16
 }
 
-/// Dequantize a block-scaled FP8 weight `[N,K]` → BF16 on-GPU once, cached by the
-/// FP8 weight pointer (weights are immutable after load). 128×128 blocks + FP32
-/// scales (the holo layout). Backs [`cublas_bf16_proj`].
-fn dequant_fp8_bf16_cached(
+/// Dequantize a block-scaled OR per-row FP8 weight `[N,K]` → BF16 into a
+/// CALLER-OWNED buffer of `n*k*2` bytes. Allocates nothing.
+///
+/// The kernel reads `scale[(n / block_n) * sk + (k / block_k)]`, so the SAME
+/// kernel serves both layouts — the block geometry is what selects between
+/// them, not a second kernel:
+///
+///   block-scaled   block_n = block_k = 128, sk = K/128
+///   PER-ROW        block_n = 1, block_k = K, sk = 1
+///                  -> offset = n * 1 + 0 = n, one multiplier per row
+///
+/// That per-row case is what a mixed-precision compressed-tensors checkpoint
+/// ships, and dequantising it is lossless: every FP8 E4M3 value is exactly
+/// representable in BF16, so this is the fold's no-double-quant path even
+/// though the GEMM downstream is BF16.
+///
+/// SSOT for every FP8→BF16 weight expansion in this file. It takes a
+/// destination rather than producing one because the #917 H100 receipt
+/// (2026-09-11, `Qwen/Qwen3.8-27B-FP8`) was a `gpu.alloc` hidden in here:
+/// `167772160` B per GDN layer with no `BufferSizes` entry, invisible to
+/// `--gpu-memory-utilization`, which killed a 28-token prefill at layer 36
+/// with `cuMemAlloc_v2 failed: status 2`. Who owns the bytes is now the
+/// caller's decision, and the row-wise GDN arms answer it with the ledgered
+/// `buffers.take_ssm_rowwise_w_bf16` slab.
+pub fn dequant_fp8_bf16_into(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
-    derived: &super::DerivedWeights,
     fp8w: &crate::weight_map::Fp8Weight,
+    dst: spark_runtime::gpu::DevicePtr,
     stream: u64,
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<()> {
     use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
-    let cache_key = fp8w.weight.0;
-    if let Some(hit) = derived.get_ptr(super::Derivation::Bf16, cache_key) {
-        return Ok(hit);
-    }
     let (n, kk) = (fp8w.n, fp8w.k);
-    let out = gpu.alloc(n as usize * kk as usize * 2)?; // BF16 [N,K]
-    // The kernel reads `scale[(n / block_n) * sk + (k / block_k)]`, so the
-    // SAME kernel serves both layouts — the block geometry is what selects
-    // between them, not a second kernel:
-    //
-    //   block-scaled   block_n = block_k = 128, sk = K/128
-    //   PER-ROW        block_n = 1, block_k = K, sk = 1
-    //                  -> offset = n * 1 + 0 = n, one multiplier per row
-    //
-    // That per-row case is what a mixed-precision compressed-tensors
-    // checkpoint ships, and dequantising it here is lossless: every FP8 E4M3
-    // value is exactly representable in BF16, so this is the fold's
-    // no-double-quant path even though the GEMM downstream is BF16.
     let per_row = fp8w.scale_format == crate::weight_map::WeightQuantFormat::Fp8PerRow;
     let (block_n, block_k, sk) = if per_row {
         (1u32, kk, 1u32)
@@ -272,71 +276,70 @@ fn dequant_fp8_bf16_cached(
         .block([64, 4, 1])
         .arg_ptr(fp8w.weight)
         .arg_ptr(fp8w.row_scale)
-        .arg_ptr(out)
+        .arg_ptr(dst)
         .arg_u32(n)
         .arg_u32(kk)
         .arg_u32(block_n)
         .arg_u32(block_k)
         .arg_u32(sk)
         .arg_u32(1) // scale_is_fp32
-        .launch(stream)?;
+        .launch(stream)
+}
+
+/// BF16 bytes [`dequant_fp8_bf16_into`] writes for `fp8w`.
+pub fn dequant_fp8_bf16_bytes(fp8w: &crate::weight_map::Fp8Weight) -> usize {
+    fp8w.n as usize * fp8w.k as usize * 2
+}
+
+/// [`dequant_fp8_bf16_into`] into a FRESH allocation, memoised by FP8 weight
+/// pointer (weights are immutable after load).
+///
+/// ⚠ OFF-LEDGER. The allocation has no `spark_runtime::buffers::sizes::BufferSizes`
+/// entry, so `--gpu-memory-utilization` cannot see it — the #917 defect named
+/// on [`dequant_fp8_bf16_into`]. The last caller is [`cutlass_bf16_proj`], a
+/// benchmark-only reference path that a shipping recipe cannot reach; the GDN
+/// row-wise arms moved to the ledgered slab in
+/// `qwen3_ssm/rowwise_bf16.rs`. Do NOT add callers — take a ledgered
+/// destination and call [`dequant_fp8_bf16_into`] instead.
+fn dequant_fp8_bf16_cached(
+    gpu: &dyn spark_runtime::gpu::GpuBackend,
+    derived: &super::DerivedWeights,
+    fp8w: &crate::weight_map::Fp8Weight,
+    stream: u64,
+) -> anyhow::Result<u64> {
+    let cache_key = fp8w.weight.0;
+    if let Some(hit) = derived.get_ptr(super::Derivation::Bf16, cache_key) {
+        return Ok(hit);
+    }
+    let out = gpu.alloc(dequant_fp8_bf16_bytes(fp8w))?; // BF16 [N,K]
+    dequant_fp8_bf16_into(gpu, fp8w, out, stream)?;
     derived.insert_ptr(super::Derivation::Bf16, cache_key, out.0);
     Ok(out.0)
 }
 
+/// [`dequant_fp8_bf16_into`] into a FRESH allocation the caller FREES — the
+/// NVFP4 packer's transient, which never outlives the pack.
 fn dequant_fp8_bf16_uncached(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
     fp8w: &crate::weight_map::Fp8Weight,
     stream: u64,
 ) -> anyhow::Result<spark_runtime::gpu::DevicePtr> {
-    use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
-    let (n, kk) = (fp8w.n, fp8w.k);
-    let out = gpu.alloc(n as usize * kk as usize * 2)?;
-    let block = 128u32;
-    let sk = kk / block;
-    let kernel = gpu.kernel(
-        "dequant_fp8_blockscaled_bf16",
-        "dequant_fp8_blockscaled_bf16",
-    )?;
-    KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(kk, 64), div_ceil(n, 4), 1])
-        .block([64, 4, 1])
-        .arg_ptr(fp8w.weight)
-        .arg_ptr(fp8w.row_scale)
-        .arg_ptr(out)
-        .arg_u32(n)
-        .arg_u32(kk)
-        .arg_u32(block)
-        .arg_u32(block)
-        .arg_u32(sk)
-        .arg_u32(1)
-        .launch(stream)?;
+    let out = gpu.alloc(dequant_fp8_bf16_bytes(fp8w))?;
+    dequant_fp8_bf16_into(gpu, fp8w, out, stream)?;
     Ok(out)
 }
 
-/// Route a projection `out[M,N] = act[M,K] @ weightᵀ` through cuBLASLt BF16.
-/// The FP8 weight is dequantized to BF16 once (cached); W16A16 here is strictly
-/// more accurate than the blockscaled W8A8 path it replaces.
-#[allow(clippy::too_many_arguments)]
-pub fn cublas_bf16_proj(
-    gpu: &dyn spark_runtime::gpu::GpuBackend,
-    derived: &super::DerivedWeights,
-    act: spark_runtime::gpu::DevicePtr,
-    fp8w: &crate::weight_map::Fp8Weight,
-    out: spark_runtime::gpu::DevicePtr,
-    m: u32,
-    n: u32,
-    k: u32,
-    stream: u64,
-) -> anyhow::Result<()> {
-    let w_bf16 = dequant_fp8_bf16_cached(gpu, derived, fp8w, stream)?;
-    spark_runtime::cublaslt::bf16_gemm_act_weight_t(act.0, w_bf16, out.0, m, n, k, stream)
-}
-
 /// Route a projection `out[M,N] = act[M,K] @ weightᵀ` through cuBLASLt BF16 for
-/// a weight that is already native BF16 `[N,K]` (no dequant step). Used by
-/// models whose attention/shared-expert weights ship unquantized (e.g. Laguna),
-/// which can never satisfy the `as_fp8()` gate of [`cublas_bf16_proj`].
+/// a weight that is already BF16 `[N,K]`. Two kinds of caller: models whose
+/// attention/shared-expert weights ship unquantized (e.g. Laguna), and the
+/// row-wise GDN prefill arms, which hand it the ledgered BF16 dequant
+/// `qwen3_ssm/rowwise_bf16.rs` writes once per layer.
+///
+/// There is deliberately NO `cublas_bf16_proj` beside it any more — the
+/// dequant-and-cache variant that used to own the FP8→BF16 expansion is the
+/// #917 off-ledger allocation (see [`dequant_fp8_bf16_into`]). Splitting
+/// "who owns the BF16 bytes" from "multiply them" is what keeps the ledger
+/// honest: this function cannot allocate.
 pub fn cublas_bf16_proj_dense(
     act: spark_runtime::gpu::DevicePtr,
     weight_bf16: spark_runtime::gpu::DevicePtr,

@@ -303,3 +303,9 @@ required-features = ["cuda", "gpu-examples"]
 [[example]]
 name = "native_fp8_decode_proj_w8a8_microtest"
 required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+# The PREFILL sibling: the SSM out_proj and cache-skip Q/K/V shapes that round 9
+# left on W8A16 (#917/#928). Selector clauses are CPU-tested next to each site.
+name = "native_fp8_prefill_proj_w8a8_microtest"
+required-features = ["cuda", "gpu-examples"]

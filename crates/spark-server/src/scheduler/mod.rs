@@ -57,6 +57,8 @@ mod prefill_a_step_params;
 mod prefill_b_step;
 #[cfg(test)]
 mod prefill_fifo_tests;
+#[cfg(test)]
+mod prefill_timing_tests;
 mod repetition;
 mod rollback;
 mod sample_step;
