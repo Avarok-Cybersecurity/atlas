@@ -239,17 +239,19 @@ fn every_padded_address_stays_inside_its_buffer() {
             + C * 4
     );
     assert_eq!(GDN_WU_HOPPER_SMEM, 79_104);
-    // `fwd_o`'s `kq` lo limb aliases the dead `sk`; that is only sound while it
-    // fits, and it is why the twin's footprint is under the parent's 98 816 B.
-    assert!(
-        C * SC * 2 <= C * SW * 2,
-        "the kq lo limb does not fit in sk"
-    );
-    assert!(GDN_FWD_O_HOPPER_SMEM < 98_816);
-    // Two CTAs of `fwd_o` must fit H100's 228 KB of shared memory, which is the
-    // whole point of its `__launch_bounds__(512, 2)`.
-    assert!(2 * GDN_FWD_O_HOPPER_SMEM <= 228 * 1024);
 }
+
+/// `fwd_o`'s `kq` lo limb ALIASES the dead `sk`; that is only sound while it
+/// fits, and it is why the twin's footprint is under the parent's 98 816 B.
+/// Two CTAs must also fit H100's 228 KB, which is the whole point of that
+/// kernel's `__launch_bounds__(512, 2)`. Compile-time, because all three are
+/// properties of constants rather than of any run.
+const _: () = assert!(
+    C * SC * 2 <= C * SW * 2,
+    "the kq lo limb does not fit in sk"
+);
+const _: () = assert!(GDN_FWD_O_HOPPER_SMEM < 98_816);
+const _: () = assert!(2 * GDN_FWD_O_HOPPER_SMEM <= 228 * 1024);
 
 // ── 3. the lever grammar ───────────────────────────────────────────────────
 
