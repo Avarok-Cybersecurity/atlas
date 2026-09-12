@@ -61,4 +61,5 @@ Run **independent charters in parallel** when they do not contend for the same G
 | `docs/k3/rst/s0-atlas-serve.md` | done 2026-09-11 |
 | `docs/k3/rst/s0-vllm-bakeoff.md` | done 2026-09-11 (TRITON_ATTN, think-off JSONL) |
 | `docs/k3/rst/c0-config-loader.md` | **green** 2026-09-12 spark2 9/9 |
-| `docs/k3/rst/s1-graph.md` | in flight |
+| `docs/k3/rst/s1-graph.md` | CPU graph 2026-09-12 |
+| `docs/k3/rst/c1-cpu-forward.md` | in flight (goldens + twin weights still missing) |

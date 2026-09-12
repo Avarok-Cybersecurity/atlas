@@ -59,6 +59,15 @@ impl HybridCache {
     }
 }
 
+impl MlaKv {
+    /// Append one token's packed K/V (`[H, dq]` / `[H, dv]`).
+    pub fn append(&mut self, k: &[f32], v: &[f32]) {
+        self.k.extend_from_slice(k);
+        self.v.extend_from_slice(v);
+        self.seq_len += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

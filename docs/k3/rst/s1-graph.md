@@ -21,8 +21,8 @@ Known-bad (instrument failed first, then green):
 #NOTES
 - Graph from official parser: 0.40B → 6 KDA + last MLA (layers 0–2 KDA, 3 MLA, 4–6 KDA, 7 MLA); layer 0 dense. Official 93 / 69 KDA / 24 MLA.
 - KDA is a new CPU backend (full-rank `g_proj`, bound −5, conv 4, head_dim 128). No `.cu` under `kernels/gb10/kimi-k3`.
-- Loader `load_layers` still bails K3-WIP. Numeric refs in `atlas-core` (Mac) and re-exported from `spark-model/src/kimi_k3/`.
-- Observed 2026-09-12 workstation: 22 passed, 1 ignored (C1 engine), 0 failed.
+- Loader BF16 twin bind is C1 (`docs/k3/rst/c1-cpu-forward.md`). Numeric refs in `atlas-core` (Mac) and re-exported from `spark-model/src/kimi_k3/`.
+- Observed 2026-09-12 workstation (S1): 22 passed, 1 ignored (C1 engine), 0 failed.
 
 #BUGS
 #N/A this slice (CPU graph only). C1 token-exact is blocked on missing `docs/k3/goldens/kimi-k3-0.40b-greedy.json` and a bound forward.

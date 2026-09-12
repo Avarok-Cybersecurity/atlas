@@ -7,6 +7,7 @@
 //! in `atlas_core::kimi_k3` so Mac unit tests compile without spark-storage.
 
 pub mod attnres;
+pub mod bound;
 pub mod cache;
 pub mod kda;
 pub mod latent_moe;
@@ -15,7 +16,8 @@ pub mod mla;
 pub mod situ;
 
 pub use atlas_core::kimi_k3::{
-    HybridCache, K3Graph, K3LayerSpec, KdaConfig, KdaState, LatentMoeConfig, MixerKind, MlaConfig,
-    MlpKind, attnres_blend, attnres_softmax_mix, gated_mla_attend, kda_decode_token,
-    latent_moe_forward, sigmoid_topk, situ_glu, situ_glu_vec, softcap,
+    Ablation, HybridCache, K3CpuModel, K3Graph, K3LayerSpec, KdaConfig, KdaState, LatentMoeConfig,
+    MixerKind, MlaConfig, MlpKind, attnres_blend, attnres_softmax_mix, gated_mla_attend,
+    greedy_decode, kda_decode_token, latent_moe_forward, sigmoid_topk, situ_glu, situ_glu_vec,
+    softcap,
 };

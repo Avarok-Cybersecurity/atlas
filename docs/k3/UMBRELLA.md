@@ -14,7 +14,7 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | S1 — graph / C1 goldens (C0 green) |
+| Phase | S1 CPU graph in-tree; C1 bind + HF goldens in flight (C0 green) |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
 | Last session | 2026-09-12 |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |

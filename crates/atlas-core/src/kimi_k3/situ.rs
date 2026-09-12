@@ -18,6 +18,12 @@ pub fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
+/// SiLU: `x * sigmoid(x)`. Used by KDA short-conv and the decay down-proj.
+#[inline]
+pub fn silu(x: f32) -> f32 {
+    x * sigmoid(x)
+}
+
 /// Smooth cap. `beta` must be finite and non-zero.
 #[inline]
 pub fn softcap(x: f32, beta: f32) -> f32 {

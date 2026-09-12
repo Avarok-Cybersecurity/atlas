@@ -107,6 +107,50 @@ pub fn sdpa(
     out
 }
 
+/// Decode SDPA: one query `[H, dq]` against cached K/V of length `t`.
+pub fn sdpa_one(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    t: usize,
+    heads: usize,
+    dq: usize,
+    dv: usize,
+) -> Vec<f32> {
+    assert_eq!(q.len(), heads * dq);
+    assert_eq!(k.len(), t * heads * dq);
+    assert_eq!(v.len(), t * heads * dv);
+    let scale = 1.0 / (dq as f32).sqrt();
+    let mut out = vec![0.0f32; heads * dv];
+    for h in 0..heads {
+        let qrow = &q[h * dq..(h + 1) * dq];
+        let mut scores = vec![0.0f32; t];
+        let mut m = f32::NEG_INFINITY;
+        for kj in 0..t {
+            let krow = &k[(kj * heads + h) * dq..(kj * heads + h) * dq + dq];
+            let s: f32 = qrow.iter().zip(krow).map(|(a, b)| a * b).sum::<f32>() * scale;
+            scores[kj] = s;
+            if s > m {
+                m = s;
+            }
+        }
+        let mut z = 0.0f32;
+        for s in &mut scores {
+            *s = (*s - m).exp();
+            z += *s;
+        }
+        let orow = &mut out[h * dv..(h + 1) * dv];
+        for kj in 0..t {
+            let a = scores[kj] / z;
+            let vrow = &v[(kj * heads + h) * dv..(kj * heads + h) * dv + dv];
+            for d in 0..dv {
+                orow[d] += a * vrow[d];
+            }
+        }
+    }
+    out
+}
+
 /// Apply `sigmoid(g) ⊙ attn` when the output gate is on; otherwise identity.
 pub fn apply_output_gate(attn: &[f32], g: &[f32], enabled: bool) -> Vec<f32> {
     if !enabled {

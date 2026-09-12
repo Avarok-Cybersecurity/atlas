@@ -2,6 +2,6 @@
 
 //! One decoder layer: mixer (KDA|MLA) + MLP (dense|LatentMoE) + AttnRes.
 //!
-//! GPU `TransformerLayer` bind stays bailed in `KimiK3WeightLoader` until C1.
+//! BF16 twin bind is C1; GPU decode still bails (CPU greedy is atlas-core).
 
 pub use atlas_core::kimi_k3::layer::*;

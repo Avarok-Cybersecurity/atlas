@@ -121,7 +121,7 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         // 288-expert sigmoid-routed MoE + mHC. `glm5_next_text` is the inner `model_type`;
         // the parser canonicalises both onto `glm5_next`.
         "glm5_next" | "glm5_next_text" => Ok(Box::new(Glm5NextWeightLoader)),
-        // K3-WIP S0: dry-run + factory registration. `load` bails until S1.
+        // K3 C1: BF16 0.40B twin bind. Packed MXFP4 still bails (S5).
         "kimi_k3" | "kimi_linear" => Ok(Box::new(KimiK3WeightLoader)),
         _ => bail!(
             "Unsupported model type: '{}' (normalized: '{}'). \
