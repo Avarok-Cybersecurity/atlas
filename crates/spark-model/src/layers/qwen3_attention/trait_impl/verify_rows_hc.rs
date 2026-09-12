@@ -126,6 +126,25 @@ impl Qwen3AttentionLayer {
             )?;
         }
 
+        // ── Phase timing (ATLAS_HC_VERIFY_STAGE_TIMING=1) ──
+        // See the module note: attention layers cost MORE per layer than SSM
+        // layers and the residual after the FFN is ~40x the projection floor.
+        let phase_timing = {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| {
+                std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1")
+            })
+        };
+        let mut at = std::time::Instant::now();
+        let (mut a1, mut a2, mut a3) = (0u128, 0u128, 0u128);
+        let aphase = |t: &mut std::time::Instant, acc: &mut u128| {
+            if phase_timing {
+                let _ = ctx.gpu.synchronize(stream);
+                *acc += t.elapsed().as_micros();
+                *t = std::time::Instant::now();
+            }
+        };
+
         // ── Attention sublayer: hc_pre at T=K ──
         ops::hc_pre_site(
             ctx.gpu,
@@ -158,6 +177,7 @@ impl Qwen3AttentionLayer {
             ctx.gpu.copy_d2d_async(hidden, normed, k * h * 2, stream)?;
         }
 
+        aphase(&mut at, &mut a1);
         // ── Attention core ──
         // Batched arm (projections at T=K, paged decode per row) when the
         // shape allows; otherwise per row, unchanged: `attention_forward`
@@ -246,6 +266,7 @@ impl Qwen3AttentionLayer {
             stream,
         )?;
 
+        aphase(&mut at, &mut a2);
         // ── FFN sublayer: hc_pre at T=K, K-row FFN, hc_post at T=K ──
         ops::hc_pre_site(
             ctx.gpu,
@@ -330,6 +351,22 @@ impl Qwen3AttentionLayer {
                 "V4-verify-rows L{}: hc_head SKIPPED (no head weights)",
                 self.attn_layer_idx
             );
+        }
+        aphase(&mut at, &mut a3);
+        if phase_timing {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static CALLS: AtomicUsize = AtomicUsize::new(0);
+            let call = CALLS.fetch_add(1, Ordering::Relaxed);
+            if call % 1024 == 0 && call > 0 {
+                tracing::info!(
+                    call,
+                    rows = k,
+                    a1_hc_pre_us = a1 as u64,
+                    a2_core_us = a2 as u64,
+                    a3_ffn_us = a3 as u64,
+                    "attention hc verify phase split (ONE layer, synced per phase)"
+                );
+            }
         }
         Ok(())
     }
