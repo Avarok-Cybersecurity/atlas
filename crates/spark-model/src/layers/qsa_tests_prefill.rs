@@ -298,6 +298,28 @@ fn qsa_prefill_attn_matches_cpu() {
     assert!(worst_cos > 0.999, "attention kernel diverges: {worst_cos}");
 }
 
+/// The TC kernel carves its shared memory by hand from one `extern __shared__`
+/// block, and the launch passes a byte count computed on the Rust side. If the
+/// two ever disagree the kernel reads past its own arena — silently, since the
+/// allocation is whatever the launch asked for. Pin the number, and pin that
+/// two CTAs still fit an SM, because the whole point of aliasing K and V was
+/// occupancy (one CTA per SM measured +4.4% against a 23.4% profile share).
+#[test]
+fn tc_prefill_attn_smem_is_two_ctas_per_sm() {
+    // hd 256, TB 64, M 16, pads 8/4/4/8 — see QSA_PATC_* in qsa_indexer.cu.
+    assert_eq!(ops::QSA_PA_TC_SMEM, 50_112, "shared-memory layout drifted");
+    assert!(
+        ops::QSA_PA_TC_SMEM <= ops::MAX_DYNAMIC_SMEM,
+        "past the sm_121 opt-in ceiling"
+    );
+    // 102400 B per SM on GB10; two CTAs is the design point.
+    assert!(
+        2 * ops::QSA_PA_TC_SMEM <= 102_400,
+        "only one CTA per SM fits: {} B",
+        ops::QSA_PA_TC_SMEM
+    );
+}
+
 /// Stage 2B, tensor-core twin: `qsa_prefill_attn_tc` vs the same CPU
 /// reference, at the geometry it is gated to (hd 256, nq <= 16, nkv == 1 —
 /// a TP=2 rank of qwen4_exp). `topk * ratio` is deliberately larger than the

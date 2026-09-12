@@ -858,14 +858,29 @@ extern "C" __global__ __launch_bounds__(QSA_EXPAND_THREADS) void qsa_expand_sel(
 // d0+tid*2 (+8), B n = gid, B k = d0+tid*2 (+8), D[gid+8*part][tid*2+cc]
 // = acc[2*part+cc]).
 //
+// OCCUPANCY — why K and V SHARE one buffer. The first cut gave each its own
+// (sKT 36864 + sV 33792 + Q/P/S), 85952 B per CTA. The sm_121 opt-in ceiling
+// is 101376 B and an SM has 102400, so that is ONE CTA PER SM: 8 warps, no
+// second block to hide latency behind, where the scalar kernel's ~8 KB let
+// many CTAs stay resident. It measured +4.4% end-to-end against a 23.4%
+// profile share — the mma win was real and the occupancy loss ate most of it.
+// K and V are used in DISJOINT phases of a tile (K only for QK^T, V only for
+// PV), so they now alias one `sKV` buffer sized to the larger, and the tile
+// re-sequences to gather K, score, soften, gather V, accumulate. That costs
+// one extra __syncthreads and splits the gather in two — the same bytes read,
+// just later — and takes the CTA to 50112 B, which is TWO CTAs per SM.
+// Padding is chosen for bank behaviour, not just size: sQ keeps pad 8 because
+// its A-fragment reads stride by `gid` and a 256-element row makes all eight
+// gids land on one bank (an 8-way conflict); 264 elements spreads them.
+//
 // PRECISION. q, k and v are ALL bf16 in memory already, so the QK^T mma is
 // exact where the scalar path was (it widened the same bf16 to f32 and did
 // f32 FMAs; mma does bf16 inputs with an f32 accumulator). The one place
 // this loses ground is P: the scalar path keeps probabilities in f32, and
-// the PV mma needs them in bf16 (~8 mantissa bits). Attention weights are in
-// [0,1] and the result is renormalised by l, so the relative error is ~1e-3
-// — but if a parity run disagrees, split P the way the scorer splits q
-// (p_hi + p_lo, two mma into one accumulator) rather than reverting.
+// the PV mma needs them in bf16 (~8 mantissa bits). Measured against the same
+// CPU reference the scalar kernel is held to: worst cos 0.999997 vs the
+// scalar's 0.999998, so the hi/lo split `qsa_score_rows_tc` needs for q is
+// not needed here. If that ever changes, split P rather than reverting.
 // Softmax is order-invariant and rope is baked into cached K, so this equals
 // the reference mask, exactly as the scalar kernel's own comment claims.
 //
@@ -873,7 +888,10 @@ extern "C" __global__ __launch_bounds__(QSA_EXPAND_THREADS) void qsa_expand_sel(
 #define QSA_PATC_TB 64          // tokens per tile
 #define QSA_PATC_HD 256         // head_dim (checked at the call site)
 #define QSA_PATC_M 16           // mma M — nq padded to 16
-#define QSA_PATC_PAD 8
+#define QSA_PATC_QPAD 8         // sQ row pad: kills an 8-way A-fragment conflict
+#define QSA_PATC_KPAD 4         // sKV-as-K^T row pad
+#define QSA_PATC_VPAD 4         // sKV-as-V row pad
+#define QSA_PATC_PPAD 8
 extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
     const __nv_bfloat16* __restrict__ q,        // [rows, nq, hd] (roped)
     const __nv_bfloat16* __restrict__ k_cache,  // paged NHD
@@ -891,29 +909,24 @@ extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
     const float inv_sqrt_d
 ) {
     const int TB = QSA_PATC_TB, HD = QSA_PATC_HD, M = QSA_PATC_M;
-    // ── Dynamic shared memory. Static __shared__ is capped at 48 KB; this
-    // layout is ~84 KB and the GB10 (sm_121) opt-in ceiling is 101376 B
-    // (ops::ssm_ssd::MAX_DYNAMIC_SMEM). `qsa_pa_tc_smem()` on the Rust side
-    // computes the identical total — keep the two in step.
-    //   sKT  [hd][TB+PAD]  bf16   K transposed: B fragment wants [k=dim][n=token]
-    //   sV   [TB][hd+PAD]  bf16   V natural:    B fragment wants [k=token][n=dim]
-    //   sQ   [16][hd+PAD]  bf16   A fragment for QK^T, nq zero-padded to 16
-    //   sP   [16][TB+PAD]  bf16   A fragment for PV
-    //   sS   [16][TB]      f32    this tile's scores, before the online softmax
+    const int KT_ROW = TB + QSA_PATC_KPAD;   // sKV as K^T: [hd][TB+pad]
+    const int V_ROW  = HD + QSA_PATC_VPAD;   // sKV as V:   [TB][hd+pad]
+    const int Q_ROW  = HD + QSA_PATC_QPAD;
+    const int P_ROW  = TB + QSA_PATC_PPAD;
+    // Dynamic, not static: static __shared__ is capped at 49152 B. The Rust
+    // side's `QSA_PA_TC_SMEM` recomputes this same total from the same tile
+    // constants — keep the two in step.
     extern __shared__ unsigned char smem_raw[];
-    __nv_bfloat16* sKT_ = (__nv_bfloat16*)smem_raw;                       // HD*(TB+PAD)
-    __nv_bfloat16* sV_  = sKT_ + (size_t)HD * (TB + QSA_PATC_PAD);        // TB*(HD+PAD)
-    __nv_bfloat16* sQ_  = sV_  + (size_t)TB * (HD + QSA_PATC_PAD);        // M*(HD+PAD)
-    __nv_bfloat16* sP_  = sQ_  + (size_t)M  * (HD + QSA_PATC_PAD);        // M*(TB+PAD)
-    float* sS_    = (float*)(sP_ + (size_t)M * (TB + QSA_PATC_PAD));      // M*TB
-    float* sM     = sS_ + (size_t)M * TB;
-    float* sL     = sM + M;
-    float* sCorr  = sL + M;
+    __nv_bfloat16* sKV = (__nv_bfloat16*)smem_raw;          // K^T, then V
+    const size_t KV_ELEMS = (size_t)HD * KT_ROW > (size_t)TB * V_ROW
+                          ? (size_t)HD * KT_ROW : (size_t)TB * V_ROW;
+    __nv_bfloat16* sQ_ = sKV + KV_ELEMS;                    // M*(HD+QPAD)
+    __nv_bfloat16* sP_ = sQ_ + (size_t)M * Q_ROW;           // M*(TB+PPAD)
+    float* sS_   = (float*)(sP_ + (size_t)M * P_ROW);       // M*TB
+    float* sM    = sS_ + (size_t)M * TB;
+    float* sL    = sM + M;
+    float* sCorr = sL + M;
     unsigned int* sTok = (unsigned int*)(sCorr + M);
-    const int KT_ROW = TB + QSA_PATC_PAD;   // stride of sKT_ rows (dim-major)
-    const int V_ROW  = HD + QSA_PATC_PAD;   // stride of sV_ rows  (token-major)
-    const int Q_ROW  = HD + QSA_PATC_PAD;
-    const int P_ROW  = TB + QSA_PATC_PAD;
 
     const unsigned int r = blockIdx.x;
     const unsigned int tidx = threadIdx.x, NT = 256;
@@ -927,10 +940,12 @@ extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
     const unsigned int row_elems = nkv * hd;
     const unsigned long long page_stride = (unsigned long long)block_size * row_elems;
 
-    // Q tile: [nq, hd] for this row, zero-padded to 16 rows.
+    // Q tile: [nq, hd] for this row, zero-padded to 16 rows. Lives for the
+    // whole kernel; only K/V churn per tile.
     for (unsigned int i = tidx; i < (unsigned int)(M * HD); i += NT) {
         unsigned int h = i / HD, d = i % HD;
-        sQ_[(size_t)h * Q_ROW + d] = (h < nq) ? q[((size_t)r * nq + h) * hd + d] : __float2bfloat16(0.0f);
+        sQ_[(size_t)h * Q_ROW + d] =
+            (h < nq) ? q[((size_t)r * nq + h) * hd + d] : __float2bfloat16(0.0f);
     }
     for (unsigned int i = tidx; i < (unsigned int)M; i += NT) {
         sM[i] = -1e30f; sL[i] = 0.0f;
@@ -949,7 +964,7 @@ extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
     for (unsigned int t0 = 0; t0 < n_tok; t0 += TB) {
         const unsigned int n_this = min((unsigned int)TB, n_tok - t0);
 
-        // Resolve this tile's token ids exactly as the scalar kernel does.
+        // Token ids for this tile, resolved exactly as the scalar kernel does.
         for (unsigned int j = tidx; j < (unsigned int)TB; j += NT) {
             unsigned int t = t0 + j, tok = 0u;
             if (j < n_this) {
@@ -961,21 +976,19 @@ extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
         }
         __syncthreads();
 
-        // Gather K transposed and V natural. kvh is 0 (nkv == 1 is checked at
-        // the call site), so both heads' rows are the same addresses.
+        // ── Phase A: sKV holds K^T. kvh is 0 (nkv == 1 is gated at the call
+        // site), so every head shares these rows.
         for (unsigned int i = tidx; i < (unsigned int)(TB * HD); i += NT) {
             unsigned int j = i / HD, d = i % HD;
+            __nv_bfloat16 kv = __float2bfloat16(0.0f);
             if (j < n_this) {
                 unsigned int tok = sTok[j];
                 unsigned long long off =
                     (unsigned long long)(unsigned int)block_table[tok / block_size] * page_stride
                     + (unsigned long long)(tok % block_size) * row_elems;
-                sKT_[(size_t)d * KT_ROW + j] = k_cache[off + d];
-                sV_[(size_t)j * V_ROW + d] = v_cache[off + d];
-            } else {
-                sKT_[(size_t)d * KT_ROW + j] = __float2bfloat16(0.0f);
-                sV_[(size_t)j * V_ROW + d] = __float2bfloat16(0.0f);
+                kv = k_cache[off + d];
             }
+            sKV[(size_t)d * KT_ROW + j] = kv;
         }
         __syncthreads();
 
@@ -983,21 +996,19 @@ extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
         {
             float acc[4] = {0.f, 0.f, 0.f, 0.f};
             const unsigned short* sA = (const unsigned short*)sQ_;
-            const unsigned short* sB = (const unsigned short*)sKT_;
-            const int a_row = Q_ROW;
-            const int b_row = KT_ROW;
+            const unsigned short* sB = (const unsigned short*)sKV;
             const unsigned int nc = warp * 8 + gid;   // token column
 #pragma unroll
             for (int d0 = 0; d0 < HD; d0 += 16) {
                 unsigned int fr0 = gid, fr1 = gid + 8;
                 unsigned int fc0 = d0 + tid * 2, fc1 = fc0 + 8;
-                unsigned int a0 = ((unsigned int)sA[fr0*a_row+fc0+1]<<16) | (unsigned int)sA[fr0*a_row+fc0];
-                unsigned int a1 = ((unsigned int)sA[fr1*a_row+fc0+1]<<16) | (unsigned int)sA[fr1*a_row+fc0];
-                unsigned int a2 = ((unsigned int)sA[fr0*a_row+fc1+1]<<16) | (unsigned int)sA[fr0*a_row+fc1];
-                unsigned int a3 = ((unsigned int)sA[fr1*a_row+fc1+1]<<16) | (unsigned int)sA[fr1*a_row+fc1];
+                unsigned int a0 = ((unsigned int)sA[fr0*Q_ROW+fc0+1]<<16) | (unsigned int)sA[fr0*Q_ROW+fc0];
+                unsigned int a1 = ((unsigned int)sA[fr1*Q_ROW+fc0+1]<<16) | (unsigned int)sA[fr1*Q_ROW+fc0];
+                unsigned int a2 = ((unsigned int)sA[fr0*Q_ROW+fc1+1]<<16) | (unsigned int)sA[fr0*Q_ROW+fc1];
+                unsigned int a3 = ((unsigned int)sA[fr1*Q_ROW+fc1+1]<<16) | (unsigned int)sA[fr1*Q_ROW+fc1];
                 unsigned int k0 = d0 + tid * 2, k1 = k0 + 8;
-                unsigned int b0 = ((unsigned int)sB[(k0+1)*b_row+nc]<<16) | (unsigned int)sB[k0*b_row+nc];
-                unsigned int b1 = ((unsigned int)sB[(k1+1)*b_row+nc]<<16) | (unsigned int)sB[k1*b_row+nc];
+                unsigned int b0 = ((unsigned int)sB[(k0+1)*KT_ROW+nc]<<16) | (unsigned int)sB[k0*KT_ROW+nc];
+                unsigned int b1 = ((unsigned int)sB[(k1+1)*KT_ROW+nc]<<16) | (unsigned int)sB[k1*KT_ROW+nc];
                 asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
                     :"=f"(acc[0]),"=f"(acc[1]),"=f"(acc[2]),"=f"(acc[3])
                     :"r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1),
@@ -1011,16 +1022,18 @@ extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
                     unsigned int row = gid + part * 8;
                     unsigned int col = warp * 8 + tid * 2 + cc;
                     if (col < (unsigned int)TB)
-                        sS_[(size_t)row * TB + col] = (col < n_this) ? acc[2*part+cc] * inv_sqrt_d : -1e30f;
+                        sS_[(size_t)row * TB + col] =
+                            (col < n_this) ? acc[2*part+cc] * inv_sqrt_d : -1e30f;
                 }
             }
         }
         __syncthreads();
 
-        // Online softmax: one warp per two rows, reduce this tile's TB scores.
+        // Online softmax: one warp per two rows, over this tile's TB scores.
         for (unsigned int row = warp * 2; row < (unsigned int)M && row < warp * 2 + 2; row++) {
             float mx = -1e30f;
-            for (unsigned int c = lane; c < (unsigned int)TB; c += 32) mx = fmaxf(mx, sS_[(size_t)row * TB + c]);
+            for (unsigned int c = lane; c < (unsigned int)TB; c += 32)
+                mx = fmaxf(mx, sS_[(size_t)row * TB + c]);
 #pragma unroll
             for (int o2 = 16; o2 > 0; o2 >>= 1) mx = fmaxf(mx, __shfl_down_sync(0xFFFFFFFFu, mx, o2));
             mx = __shfl_sync(0xFFFFFFFFu, mx, 0);
@@ -1034,7 +1047,7 @@ extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
             }
 #pragma unroll
             for (int o2 = 16; o2 > 0; o2 >>= 1) sum += __shfl_down_sync(0xFFFFFFFFu, sum, o2);
-            sum = __shfl_sync(0xFFFFFFFFu, sum, 0);   // all lanes participate
+            sum = __shfl_sync(0xFFFFFFFFu, sum, 0);   // every lane must reach this
             if (lane == 0) {
                 const float corr = __expf(m_old - m_new);
                 sCorr[row] = corr;
@@ -1044,7 +1057,8 @@ extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
         }
         __syncthreads();
 
-        // Rescale the carried output, then O += P . V.
+        // Rescale the carried output while sKV is still K — the read of sCorr
+        // is the only thing phase B needs from phase A.
         {
             const float c0 = sCorr[gid], c1 = sCorr[gid + 8];
 #pragma unroll
@@ -1052,10 +1066,28 @@ extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
                 o[nt][0] *= c0; o[nt][1] *= c0;
                 o[nt][2] *= c1; o[nt][3] *= c1;
             }
+        }
+        __syncthreads();   // everyone is done reading K^T before V overwrites it
+
+        // ── Phase B: sKV now holds V, natural [token][dim].
+        for (unsigned int i = tidx; i < (unsigned int)(TB * HD); i += NT) {
+            unsigned int j = i / HD, d = i % HD;
+            __nv_bfloat16 vv = __float2bfloat16(0.0f);
+            if (j < n_this) {
+                unsigned int tok = sTok[j];
+                unsigned long long off =
+                    (unsigned long long)(unsigned int)block_table[tok / block_size] * page_stride
+                    + (unsigned long long)(tok % block_size) * row_elems;
+                vv = v_cache[off + d];
+            }
+            sKV[(size_t)j * V_ROW + d] = vv;
+        }
+        __syncthreads();
+
+        // O += P . V
+        {
             const unsigned short* sA = (const unsigned short*)sP_;
-            const unsigned short* sB = (const unsigned short*)sV_;
-            const int a_row = P_ROW;
-            const int b_row = V_ROW;
+            const unsigned short* sB = (const unsigned short*)sKV;
 #pragma unroll
             for (int nt = 0; nt < 4; nt++) {
                 const unsigned int nc = warp * 32 + nt * 8 + gid;   // output dim
@@ -1063,13 +1095,13 @@ extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
                 for (int k0 = 0; k0 < TB; k0 += 16) {
                     unsigned int fr0 = gid, fr1 = gid + 8;
                     unsigned int fc0 = k0 + tid * 2, fc1 = fc0 + 8;
-                    unsigned int a0 = ((unsigned int)sA[fr0*a_row+fc0+1]<<16) | (unsigned int)sA[fr0*a_row+fc0];
-                    unsigned int a1 = ((unsigned int)sA[fr1*a_row+fc0+1]<<16) | (unsigned int)sA[fr1*a_row+fc0];
-                    unsigned int a2 = ((unsigned int)sA[fr0*a_row+fc1+1]<<16) | (unsigned int)sA[fr0*a_row+fc1];
-                    unsigned int a3 = ((unsigned int)sA[fr1*a_row+fc1+1]<<16) | (unsigned int)sA[fr1*a_row+fc1];
+                    unsigned int a0 = ((unsigned int)sA[fr0*P_ROW+fc0+1]<<16) | (unsigned int)sA[fr0*P_ROW+fc0];
+                    unsigned int a1 = ((unsigned int)sA[fr1*P_ROW+fc0+1]<<16) | (unsigned int)sA[fr1*P_ROW+fc0];
+                    unsigned int a2 = ((unsigned int)sA[fr0*P_ROW+fc1+1]<<16) | (unsigned int)sA[fr0*P_ROW+fc1];
+                    unsigned int a3 = ((unsigned int)sA[fr1*P_ROW+fc1+1]<<16) | (unsigned int)sA[fr1*P_ROW+fc1];
                     unsigned int kk0 = k0 + tid * 2, kk1 = kk0 + 8;
-                    unsigned int b0 = ((unsigned int)sB[(kk0+1)*b_row+nc]<<16) | (unsigned int)sB[kk0*b_row+nc];
-                    unsigned int b1 = ((unsigned int)sB[(kk1+1)*b_row+nc]<<16) | (unsigned int)sB[kk1*b_row+nc];
+                    unsigned int b0 = ((unsigned int)sB[(kk0+1)*V_ROW+nc]<<16) | (unsigned int)sB[kk0*V_ROW+nc];
+                    unsigned int b1 = ((unsigned int)sB[(kk1+1)*V_ROW+nc]<<16) | (unsigned int)sB[kk1*V_ROW+nc];
                     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
                         :"=f"(o[nt][0]),"=f"(o[nt][1]),"=f"(o[nt][2]),"=f"(o[nt][3])
                         :"r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1),
@@ -1077,7 +1109,7 @@ extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
                 }
             }
         }
-        __syncthreads();
+        __syncthreads();   // V must survive until every warp's PV mma is done
     }
 
     // Epilogue: divide by l and write [nq, hd] for this row.

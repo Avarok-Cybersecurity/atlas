@@ -100,7 +100,17 @@ if [ "$WORLD" != "1" ]; then
   export NCCL_SOCKET_IFNAME=enp1s0f1np1 NCCL_NVLS_ENABLE=0 NCCL_PROTO=Simple
   export NCCL_CROSS_NIC=1 NCCL_IB_QPS_PER_CONNECTION=4 NCCL_IB_SPLIT_DATA_ON_QPS=1
   export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
-  TOPO_ARGS="--rank $RANK --world-size 2 --tp-size 1 --ep-size 2 --master-addr $MASTER --master-port 29501"
+  # TP_SIZE=2 gives TP=2 x EP=2 on the same two ranks (overlapping groups),
+  # the topology the NVFP4 launcher defaults to. Opt-in here because TP over
+  # EXL3-packed weights is unverified: `supports_tp()` lives in the qwen4_exp
+  # loader and is quantisation-independent, but the EXL3 arms doing the
+  # sharding are not the NVFP4 ones. Two things it buys if it holds —
+  # num_key_value_heads goes 2 -> 1 per rank, halving each rank's KV and also
+  # opening the tensor-core QSA prefill attention (`qsa_prefill_attn_tc_ok`
+  # requires nkv == 1); and the attention/GDN FLOPs halve. Fall back to
+  # TP_SIZE=1 (EP only) if the boot refuses.
+  TP_SIZE="${TP_SIZE:-1}"
+  TOPO_ARGS="--rank $RANK --world-size 2 --tp-size $TP_SIZE --ep-size 2 --master-addr $MASTER --master-port 29501"
 fi
 
 echo "EXL3 native $(basename "$CKPT")  world=$WORLD rank=$RANK host=$(hostname)"

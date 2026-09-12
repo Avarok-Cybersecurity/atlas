@@ -335,21 +335,31 @@ pub fn qsa_prefill_attn_tc(
 const QSA_PA_TC_TB: u32 = 64;
 const QSA_PA_TC_HD: u32 = 256;
 const QSA_PA_TC_M: u32 = 16;
-const QSA_PA_TC_PAD: u32 = 8;
+const QSA_PA_TC_QPAD: u32 = 8;
+const QSA_PA_TC_KPAD: u32 = 4;
+const QSA_PA_TC_VPAD: u32 = 4;
+const QSA_PA_TC_PPAD: u32 = 8;
 
 /// Dynamic shared memory the TC kernel carves up. Must equal the kernel's own
-/// layout exactly — sKT + sV + sQ + sP + sS + (m, l, corr) + token ids.
+/// layout exactly — one K/V buffer + Q + P + S + (m, l, corr) + token ids.
 ///
-/// 85_952 B, against the sm_121 opt-in ceiling of
-/// [`super::ssm_ssd::MAX_DYNAMIC_SMEM`] (101_376); the 48 KB figure is the
-/// STATIC limit, which is why these arrays are dynamic.
-pub const QSA_PA_TC_SMEM: u32 = QSA_PA_TC_HD * (QSA_PA_TC_TB + QSA_PA_TC_PAD) * 2
-    + QSA_PA_TC_TB * (QSA_PA_TC_HD + QSA_PA_TC_PAD) * 2
-    + QSA_PA_TC_M * (QSA_PA_TC_HD + QSA_PA_TC_PAD) * 2
-    + QSA_PA_TC_M * (QSA_PA_TC_TB + QSA_PA_TC_PAD) * 2
-    + QSA_PA_TC_M * QSA_PA_TC_TB * 4
-    + 3 * QSA_PA_TC_M * 4
-    + QSA_PA_TC_TB * 4;
+/// K and V ALIAS one buffer: they are used in disjoint phases of a tile, and
+/// giving each its own put the CTA at 85_952 B against an SM's 102_400, i.e.
+/// ONE CTA per SM with nothing to hide latency behind (that cut measured
+/// +4.4% end-to-end against a 23.4% profile share). Sharing brings it to
+/// 50_112 B = TWO CTAs per SM. The 49_152 figure is the STATIC limit, which
+/// is why these arrays are dynamic; the sm_121 opt-in ceiling is
+/// [`super::ssm_ssd::MAX_DYNAMIC_SMEM`] (101_376).
+pub const QSA_PA_TC_SMEM: u32 = {
+    let kt = QSA_PA_TC_HD * (QSA_PA_TC_TB + QSA_PA_TC_KPAD) * 2;
+    let v = QSA_PA_TC_TB * (QSA_PA_TC_HD + QSA_PA_TC_VPAD) * 2;
+    let kv = if kt > v { kt } else { v };
+    kv + QSA_PA_TC_M * (QSA_PA_TC_HD + QSA_PA_TC_QPAD) * 2
+       + QSA_PA_TC_M * (QSA_PA_TC_TB + QSA_PA_TC_PPAD) * 2
+       + QSA_PA_TC_M * QSA_PA_TC_TB * 4
+       + 3 * QSA_PA_TC_M * 4
+       + QSA_PA_TC_TB * 4
+};
 
 /// Whether the TC prefill-attention kernel may be used for this geometry.
 pub fn qsa_prefill_attn_tc_ok(nq: u32, nkv: u32, hd: u32) -> bool {
