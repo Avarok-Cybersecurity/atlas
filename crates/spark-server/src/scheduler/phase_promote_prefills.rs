@@ -93,7 +93,7 @@ pub(super) fn promote_completed_prefills(
         let use_legacy_tool_call =
             p.require_tool_call && p.grammar_state.is_none() && tool_call_start_token.is_some();
         let now = Instant::now();
-        let cached_prompt_tok = p.seq.cached_prefix_tokens as u32;
+        let cached_prompt_tok = p.seq.reused_prefix_tokens as u32;
         let immediate_finish =
             !spontaneous_think && (p.eos_tokens.contains(&first) || p.max_tokens <= 1);
 
@@ -249,3 +249,7 @@ fn build_active_seq_from_prefill(
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
     }
 }
+
+#[cfg(test)]
+#[path = "cached_tokens_tests.rs"]
+mod cached_tokens_tests;
