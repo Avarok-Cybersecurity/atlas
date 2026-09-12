@@ -200,10 +200,17 @@ pub fn m16_tc_levers() -> M16TcLevers {
     static ON: std::sync::OnceLock<M16TcLevers> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         let n_tile = std::env::var("ATLAS_FFN_M16_TC_NTILE").ok();
-        let umbrella = std::env::var_os("ATLAS_M16_TC").is_some();
         resolve_m16_tc_levers(
-            std::env::var_os("ATLAS_FFN_M16_TC").is_some() || umbrella,
-            std::env::var_os("ATLAS_ATTN_M16_TC").is_some() || umbrella,
+            // ★ THE TARGET'S DECLARATION, environment second. `ffn_m16_tc` is
+            // a `[defaults]` row (`kernels/<hw>/HARDWARE.toml`), so an H100
+            // serve reproduces round 6's verdict — the FFN arm OFF — with an
+            // empty environment, and `ATLAS_FFN_M16_TC` / `ATLAS_M16_TC`
+            // remain the A/B. Both variables are folded in by the resolver,
+            // not here: an umbrella that could also DISARM a declaration would
+            // make the recipe depend on export order.
+            ops::target_defaults::resolved().ffn_m16_tc.value,
+            std::env::var_os("ATLAS_ATTN_M16_TC").is_some()
+                || std::env::var_os("ATLAS_M16_TC").is_some(),
             n_tile.as_deref(),
         )
     })

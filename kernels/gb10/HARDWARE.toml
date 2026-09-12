@@ -92,3 +92,8 @@ decode_split_silu = true
 # GB10 A/B, so this row does not move until there is one.
 # `ATLAS_ATTN_DECODE_SPLITK=auto` is how that A/B is run.
 attn_decode_splitk = "legacy"
+# `w8a16_gemm_m16` on the dense-FFN decode arm (#927). OFF: the kernel is not
+# in this target's tree at all (`kernels/hopper/HARDWARE.toml [kernels]
+# overrides`), so the handle resolves to 0 and the arm declines anyway.
+# Declared explicitly so this file answers what GB10 serves with on its own.
+ffn_m16_tc = false

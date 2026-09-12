@@ -176,6 +176,7 @@ fn every_declaring_target_states_every_lever() {
             "ssm_ba_gates_hopper",
             "decode_split_silu",
             "attn_decode_splitk",
+            "ffn_m16_tc",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
