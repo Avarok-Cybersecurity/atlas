@@ -41,7 +41,15 @@ copies of the same shadow will drift apart. CI's `kernel-structure` job
 (`scripts/check_kernel_shadows.py`) rejects both; the sanctioned way to share one
 file between leaves is a relative symlink.
 
-The three `.toml` files are the only metadata the build system consumes. `HARDWARE.toml` tells `atlas-kernels/build.rs` which `ComputeTarget` impl to use (nvidia, amd, apple, intel) and what arch flag to pass the compiler. `MODEL.toml` is the per-model behavior SSOT — sampling presets, thinking budgets, tool-call parser defaults. `KERNEL.toml` overrides compiler flags and module names.
+The same job enforces the other direction for a target that INHERITS another's
+`common/` wholesale — `kernels/hopper` and `kernels/b200` are symlink mirrors of
+`kernels/gb10`. There, sharing is the default and divergence is the thing that
+has to be said out loud: a real file in the mirror is an override and must be
+listed in that target's `HARDWARE.toml` `[kernels] overrides`. Without the
+declaration an accidental copy and a deliberate tuning are the same bytes on
+disk, and editing what looks like "the Hopper kernel" would edit GB10's.
+
+The three `.toml` files are the only metadata the build system consumes. `HARDWARE.toml` tells `atlas-kernels/build.rs` which `ComputeTarget` impl to use (nvidia, amd, apple, intel), what arch flag to pass the compiler, and — in `[defaults]` — the SERVING levers this target runs with, baked into the binary as `atlas_kernels::TARGET_DEFAULTS` and read before the environment, so "what does an H100 serve with" is answered by a file in the repository rather than by a launch script outside it. `MODEL.toml` is the per-model behavior SSOT — sampling presets, thinking budgets, tool-call parser defaults. `KERNEL.toml` overrides compiler flags and module names.
 
 Adding a model or a hardware target is, at the file-system level, *creating a new directory*. No code elsewhere in the repository needs to move.
 

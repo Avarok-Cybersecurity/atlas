@@ -131,6 +131,13 @@ pub struct Qwen3AttentionLayer {
     /// when the three projections share one `weight_scale_2` — the GEMM applies
     /// a single scale2 per launch. `None` => the three separate GEMMs run.
     pub(super) qkv_nvfp4_t: Option<QuantizedWeight>,
+    /// Fused `[q|k|v]` block-scaled FP8 DECODE weight (`N = q_proj_dim +
+    /// 2*kv_dim`), built by the loader when `[defaults] attn_qkv_fused` arms
+    /// the arm (#927). `q_weight`/`k_weight`/`v_weight` are VIEWS inside this
+    /// buffer, so the un-fused tiers keep reading the same bytes and the
+    /// fusion costs no resident memory. `None` => the three separate decode
+    /// GEMMs run. Rule + receipt: `trait_impl/multi_seq/qkv_fused.rs`.
+    pub(super) qkv_fp8_fused: Option<crate::weight_map::Fp8Weight>,
     pub(super) q_nvfp4_t: Option<QuantizedWeight>,
     pub(super) k_nvfp4_t: Option<QuantizedWeight>,
     pub(super) v_nvfp4_t: Option<QuantizedWeight>,
@@ -147,8 +154,14 @@ pub struct Qwen3AttentionLayer {
     // miss → fall back to w8a16_gemm_t.
     pub(super) w8a16_gemm_t_m128_k: KernelHandle,
     // W8A8 + FP32 epilogue (vLLM-equivalent) — gated by ATLAS_FP8_W8A8=1.
-    pub(super) per_token_group_quant_fp8_k: KernelHandle,
+    pub(super) per_token_group_quant_fp8_k: crate::layers::ops::Fp8ActQuant,
     pub(super) fp8_gemm_t_blockscaled_k: KernelHandle,
+    /// `fp8_act_scale_to_kmajor` — rewrites the quantizer's `[M, K/128]`
+    /// VEC128 activation scales into the `[K/128, ceil16(M)]` layout cuBLASLt
+    /// documents. 0 when the module is absent, which makes every cuBLASLt W8A8
+    /// arm on this layer decline (#927); the in-tree kernel reads the
+    /// quantizer's own order and needs no adapter.
+    pub(super) fp8_act_scale_kmajor_k: KernelHandle,
     // Kernels — decode (GEMV M=1)
     /// Offset-from-1 `rms_norm` (`out = x * (1 + w) / rms`). Used ONLY for the
     /// unweighted normalize (`norm_unit_w()` is zero-filled, so `1 + 0 = 1`).
@@ -188,6 +201,50 @@ pub struct Qwen3AttentionLayer {
     /// Single-warp `w4a16_gemv_sw`. `KernelHandle(0)` on miss → base GEMV.
     pub(super) w4a16_gemv_sw_k: KernelHandle,
     pub(super) w8a16_gemv_k: KernelHandle,
+    /// Optional four-row block-scaled FP8 GEMV; zero retains scalar dispatch.
+    pub(super) w8a16_gemv_batch4_k: KernelHandle,
+    /// MAX_M=16 sibling (#927): the o_proj tier serves 5..=16 CONTIGUOUS rows
+    /// in one weight pass instead of ceil(n/4) batch4 launches. Zero → the
+    /// batch4 grouping, as before.
+    pub(super) w8a16_gemv_batch16_k: KernelHandle,
+    /// Strided siblings of the above (caller-supplied A/C row pitches) — the
+    /// multi-seq decode Q/K/V tier writes into the `per_seq_qkv`-strided QKV
+    /// buffer, which the contiguous `[M, N]` writers cannot address. Zero on
+    /// either handle retains the per-sequence scalar `w8a16_gemv` loop.
+    pub(super) w8a16_gemv_batch4_strided_k: KernelHandle,
+    pub(super) w8a16_gemv_batch16_strided_k: KernelHandle,
+    /// Tensor-core 16-row-M-tile GEMM (#927) and its strided sibling — the
+    /// `ATLAS_FFN_M16_TC` tier for the FP8 o_proj (contiguous) and multi-seq
+    /// Q/K/V (strided) projections at 5..=16 concurrent decode rows. Zero on a
+    /// shadow that lacks the entry points, which keeps the batched GEMVs.
+    pub(super) w8a16_gemm_m16_k: KernelHandle,
+    pub(super) w8a16_gemm_m16_strided_k: KernelHandle,
+    /// `ATLAS_ATTN_M16_TC` (or the `ATLAS_M16_TC` umbrella), cached at
+    /// construction (SSOT: `layers::dense_ffn::m16_tc::m16_tc_levers`). This
+    /// lever A/Bs the QKV and o_proj tiers ONLY; the dense FFN arm has its own
+    /// (`ATLAS_FFN_M16_TC`), because round 6 on 1xH100 measured the two moving
+    /// in opposite directions — attention −21.7%, FFN +13.7%, net +5.2% — and a
+    /// single lever could ship only both or neither. A field, not a per-call env
+    /// read, so the route cannot vary across CUDA-graph replays.
+    pub(super) m16_tc: bool,
+    /// `[defaults] attn_qkv_fused` (overridable with `ATLAS_ATTN_QKV_FUSED`),
+    /// cached at construction for the same CUDA-graph-replay reason as
+    /// `m16_tc`: a per-step environment read could route two replays of one
+    /// captured graph differently. SSOT for the value:
+    /// `trait_impl::multi_seq::qkv_fused::attn_qkv_fused`.
+    pub(super) attn_qkv_fused: bool,
+    /// N-column-blocked W8A16 GEMVs (#927) — the BIT-EXACT sibling of
+    /// `w8a16_gemv_batch16`, contiguous (o_proj) and strided (multi-seq Q/K/V)
+    /// at 5..=16 rows. Zero on a shadow without the entry points, which keeps
+    /// the batch16 GEMVs. Rule + WHY: `attn_ncol_gemv.rs`.
+    pub(super) w8a16_gemv_ncol2_k: KernelHandle,
+    pub(super) w8a16_gemv_ncol4_k: KernelHandle,
+    pub(super) w8a16_gemv_ncol2_strided_k: KernelHandle,
+    pub(super) w8a16_gemv_ncol4_strided_k: KernelHandle,
+    /// `ATLAS_ATTN_NCOL_GEMV` (+ `ATLAS_ATTN_NCOL_WIDTH`), resolved ONCE at
+    /// construction for the same graph-replay reason as `m16_tc`. `None` when
+    /// the lever is unset or `ATLAS_NO_ATTN_DECODE_BATCH` forces it off.
+    pub(super) attn_ncol: Option<super::attn_ncol_gemv::NcolWidth>,
     pub(super) w8a16_gemm_k: KernelHandle,
     pub(super) w8a16_gemm_pipelined_k: KernelHandle,
     pub(super) w4a16_gemv_dual_k: KernelHandle,
@@ -268,6 +325,18 @@ pub struct Qwen3AttentionLayer {
     pub(super) dense_gemm_tc_k: KernelHandle,
     pub(super) paged_decode_splitk_k: Option<KernelHandle>,
     pub(super) paged_decode_reduce_k: Option<KernelHandle>,
+    /// The Hopper paged-decode split-K twins (#928), when this build carries
+    /// them: `kernels/hopper/common/paged_decode_{fp8,bf16}_splitk_hopper.cu`.
+    ///
+    /// `None` on every target whose `common/` tree does not have the sources —
+    /// which is all of them but `hopper` — so the FP8 pair falls back to gb10's
+    /// and the BF16 pair to the single-CTA kernel, exactly as before. The FP8
+    /// twin restores the non-split kernel's batched inner loop; the BF16 twin
+    /// is split-K that BF16 KV never had.
+    pub(super) paged_decode_splitk_hopper_k: Option<KernelHandle>,
+    pub(super) paged_decode_reduce_hopper_k: Option<KernelHandle>,
+    pub(super) paged_decode_splitk_bf16_hopper_k: Option<KernelHandle>,
+    pub(super) paged_decode_reduce_bf16_hopper_k: Option<KernelHandle>,
     pub(super) residual_add_k: KernelHandle,
     pub(super) sigmoid_gate_mul_k: KernelHandle,
     pub(super) deinterleave_qg_k: KernelHandle,

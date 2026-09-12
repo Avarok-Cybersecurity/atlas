@@ -158,6 +158,16 @@ pub struct TransformerModel {
     /// at decode: reads the ~617 MB vocab weight once with coalesced uint4
     /// loads, vs the scalar dense_gemm_bf16 (16x16 FFMA, ~89 GB/s). 0 = absent.
     pub(super) dense_gemv_batchm_kernel: KernelHandle,
+    /// Tensor-core BF16 decode GEMM with a 16-row M tile
+    /// (`dense_gemm_m16_bf16`, #927/#928) — the 5..=16-row BF16 lm_head arm
+    /// behind `ATLAS_LM_HEAD_M16_TC`. 0 when the kernel set lacks it, which is
+    /// how a target without it declines silently. REASSOCIATES the K reduction
+    /// against `dense_gemv_bf16_batchm`; rule in
+    /// `trait_impl/lm_head_batched.rs::lm_head_m16_tc_route`.
+    pub(super) lm_head_m16_tc_kernel: KernelHandle,
+    /// `N_TILE=64` twin of the above (`ATLAS_LM_HEAD_M16_TC_NTILE=64`).
+    /// 0 when absent — a `=64` request then falls back to the 32-wide kernel.
+    pub(super) lm_head_m16_tc_n64_kernel: KernelHandle,
     pub(super) argmax_kernel: KernelHandle,
     /// Batched argmax (one block per row). 0 when the kernel set lacks it.
     pub(super) argmax_batch_kernel: KernelHandle,

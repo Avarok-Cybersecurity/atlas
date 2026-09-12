@@ -250,6 +250,33 @@ impl Qwen3SsmLayer {
                 h as u32,
                 stream,
             )?;
+        } else if (5..=16).contains(&num_tokens)
+            && self.w8a16_gemv_batch16_k.0 != 0
+            && let Some(ref fp8) = self.qkvz_fp8w
+        {
+            // #927, verify side. The arm below routes R = Σ ks > 4 through the
+            // W8A16 tile GEMMs, which pad M to a 128-row MMA tile — at R=8 that
+            // is 94% padding on a projection that is purely weight-bandwidth
+            // bound. `w8a16_gemv_batch16` is the MAX_M=16 instantiation of the
+            // same template as the `(2..=4)` arm's `w8a16_gemv_batch4`, so one
+            // weight pass serves all rows and each row is bit-identical to the
+            // scalar `w8a16_gemv` the M=1 decode runs. That is the direction
+            // that matters on a VERIFY path: the verify rows now reproduce the
+            // decode bits exactly instead of the reassociated tile-GEMM bits.
+            // Placed AFTER the NVFP4 `(5..=8)` arm on purpose, so a checkpoint
+            // carrying both formats keeps the format it picks today.
+            ops::w8a16_gemv_batch16(
+                ctx.gpu,
+                self.w8a16_gemv_batch16_k,
+                normed,
+                fp8.weight,
+                fp8.row_scale,
+                proj_dst,
+                k,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )?;
         } else if num_tokens > 4
             && (self.w8a16_gemm_pipelined_k.0 != 0 || self.w8a16_gemm_k.0 != 0)
             && let Some(ref fp8) = self.qkvz_fp8w
@@ -585,6 +612,7 @@ impl Qwen3SsmLayer {
             ops::dense_gemm_ba_gates_prefill(
                 ctx.gpu,
                 self.ba_gates_prefill_k,
+                self.ba_gates_prefill_hopper_k,
                 normed,
                 &self.ssm.in_proj_ba,
                 self.ssm.a_log.weight,
@@ -976,6 +1004,24 @@ impl Qwen3SsmLayer {
                 &self.ssm.out_proj,
                 out_proj_buf,
                 num_tokens as u32,
+                h as u32,
+                value_dim as u32,
+                stream,
+            )?;
+        } else if (5..=16).contains(&num_tokens)
+            && self.w8a16_gemv_batch16_k.0 != 0
+            && let Some(ref fp8) = self.out_proj_fp8w
+        {
+            // #927, out_proj twin of the QKVZ batch16 arm above — same reason,
+            // same bit-identity, same placement after the NVFP4 `(4..=8)` arm.
+            ops::w8a16_gemv_batch16(
+                ctx.gpu,
+                self.w8a16_gemv_batch16_k,
+                normed_out_buf,
+                fp8.weight,
+                fp8.row_scale,
+                out_proj_buf,
+                k,
                 h as u32,
                 value_dim as u32,
                 stream,

@@ -1,0 +1,1 @@
+../../hopper/common/w8a16_gemv_ncol.cu

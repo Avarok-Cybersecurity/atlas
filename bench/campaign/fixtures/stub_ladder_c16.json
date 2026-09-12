@@ -1,0 +1,162 @@
+{
+  "label": "atlas.nemotron-3-super-fp8.h200.lat.c16.specoff.thinkon",
+  "url": "http://127.0.0.1:8888",
+  "model": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+  "isl": 1024,
+  "osl": 256,
+  "reps": 3,
+  "warmup": 1,
+  "temperature": 0.0,
+  "seed": 42,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  },
+  "driver_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "started_utc": "2026-09-05T09:00:00Z",
+  "rungs": [
+    {
+      "concurrency": 16,
+      "reps": [
+        {
+          "wall_s": 3.46,
+          "completion_tokens": 4096,
+          "prompt_tokens": 16976,
+          "prompt_tokens_per_req": [
+            1061
+          ],
+          "tok_s": 1180.4,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 610.0,
+          "ttft_p99_ms": 940.0,
+          "tpot_p50_ms": 21.4,
+          "e2e_p50_s": 6.09,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "rep": 0,
+          "clock_sample_at_rep_start": "1980, 412.15"
+        },
+        {
+          "wall_s": 3.48,
+          "completion_tokens": 4096,
+          "prompt_tokens": 16976,
+          "prompt_tokens_per_req": [
+            1061
+          ],
+          "tok_s": 1186.4,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 612.0,
+          "ttft_p99_ms": 941.0,
+          "tpot_p50_ms": 21.5,
+          "e2e_p50_s": 6.1,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "rep": 1,
+          "clock_sample_at_rep_start": "1980, 412.15"
+        },
+        {
+          "wall_s": 3.5,
+          "completion_tokens": 4096,
+          "prompt_tokens": 16976,
+          "prompt_tokens_per_req": [
+            1061
+          ],
+          "tok_s": 1192.4,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 614.0,
+          "ttft_p99_ms": 942.0,
+          "tpot_p50_ms": 21.599999999999998,
+          "e2e_p50_s": 6.109999999999999,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "rep": 2,
+          "clock_sample_at_rep_start": "1980, 412.15"
+        }
+      ],
+      "tok_s_series": [
+        1180.4,
+        1186.4,
+        1192.4
+      ],
+      "tok_s_mean": 1186.4,
+      "tok_s_median": 1186.4,
+      "tok_s_spread_pct": 1.0114632501685772,
+      "wall_s_series": [
+        3.46,
+        3.48,
+        3.5
+      ],
+      "wall_s_mean": 3.48,
+      "completion_tokens_series": [
+        4096,
+        4096,
+        4096
+      ],
+      "completion_tokens_mean": 4096.0,
+      "errors_total": 0
+    }
+  ],
+  "finished_utc": "2026-09-05T09:02:00Z"
+}

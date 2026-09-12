@@ -1,0 +1,120 @@
+{
+  "_fixture": "Differs from atlas_tiny.json in exactly ONE axis, osl (256 vs 512). The shape of the mistake that actually happens: a leg re-run with one flag edited. compare.py must refuse it.",
+  "label": "vllm",
+  "url": "http://127.0.0.1:8888",
+  "model": "unsloth/Qwen3.8-27B-NVFP4",
+  "isl": 1024,
+  "osl": 512,
+  "reps": 2,
+  "warmup": 1,
+  "temperature": 0.0,
+  "seed": 42,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  },
+  "driver_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "started_utc": "2026-09-04T00:00:00Z",
+  "rungs": [
+    {
+      "concurrency": 1,
+      "reps": [
+        {
+          "rep": 0,
+          "tok_s": 20.0,
+          "ttft_p50_ms": 130.0,
+          "ttft_p99_ms": 180.0,
+          "tpot_p50_ms": 48.0,
+          "n_ok": 1,
+          "n_err": 0,
+          "completion_tokens_per_req": [
+            512
+          ]
+        },
+        {
+          "rep": 1,
+          "tok_s": 20.0,
+          "ttft_p50_ms": 130.0,
+          "ttft_p99_ms": 180.0,
+          "tpot_p50_ms": 48.0,
+          "n_ok": 1,
+          "n_err": 0,
+          "completion_tokens_per_req": [
+            512
+          ]
+        }
+      ],
+      "tok_s_series": [
+        20.0,
+        20.0
+      ],
+      "tok_s_mean": 20.0,
+      "errors_total": 0
+    },
+    {
+      "concurrency": 16,
+      "reps": [
+        {
+          "rep": 0,
+          "tok_s": 400.0,
+          "ttft_p50_ms": 260.0,
+          "ttft_p99_ms": 400.0,
+          "tpot_p50_ms": 34.0,
+          "n_ok": 16,
+          "n_err": 0,
+          "completion_tokens_per_req": [
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512
+          ]
+        },
+        {
+          "rep": 1,
+          "tok_s": 400.0,
+          "ttft_p50_ms": 260.0,
+          "ttft_p99_ms": 400.0,
+          "tpot_p50_ms": 34.0,
+          "n_ok": 16,
+          "n_err": 0,
+          "completion_tokens_per_req": [
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512
+          ]
+        }
+      ],
+      "tok_s_series": [
+        400.0,
+        400.0
+      ],
+      "tok_s_mean": 400.0,
+      "errors_total": 0
+    }
+  ],
+  "finished_utc": "2026-09-04T00:10:00Z"
+}

@@ -307,6 +307,33 @@ fn call_site_passes_the_real_last_token_and_eos() {
     assert_eq!(finish_and_recv(a, rx).finish_reason, "tool_calls");
 }
 
+/// The BLOCKING producer for the `stop_reason` extension field (#1002).
+///
+/// `finish_reason` flattens every non-timeout guard to `"length"` and that
+/// does not change (`guard_stop_wire_reason` carries the measured reason).
+/// The guard NAME therefore has to travel beside it, and the blocking sink is
+/// where round 13 measured the failure: the 16-way cell-V probe ran
+/// `stream=false` and came back with 6/16 responses cut at 49 tokens by the
+/// content-loop watchdog, every one labelled `"length"` on a request that
+/// asked for 256, with nothing else on the wire to read.
+#[test]
+fn the_blocking_response_carries_the_guard_name_beside_length() {
+    let (a, rx) = test_seq(vec![5, 6, 42], 3, Some("fuzzy_repetition"), 10);
+    let r = finish_and_recv(a, rx);
+    assert_eq!(r.finish_reason, "length", "the wire value must not move");
+    assert_eq!(
+        r.guard_stop,
+        Some("fuzzy_repetition"),
+        "the guard name must reach the blocking response, or the non-streaming \
+         surface cannot tell a quality cut from a budget stop"
+    );
+    // An ordinary stop carries nothing — the field is skipped on the wire.
+    let (a, rx) = test_seq(vec![5, 6, 151645], 3, None, 10);
+    let r = finish_and_recv(a, rx);
+    assert_eq!(r.finish_reason, "stop");
+    assert_eq!(r.guard_stop, None);
+}
+
 #[test]
 fn call_site_passes_the_real_guard() {
     // Timeout is the one guard with a distinct wire reason — proves

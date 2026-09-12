@@ -165,6 +165,10 @@ impl WeightTensor {
 /// All model weights loaded onto the GPU, keyed by HuggingFace name.
 pub struct WeightStore {
     weights: HashMap<String, WeightTensor>,
+    /// Buffers a loader derived from these tensors — fused concats, transposed
+    /// twins, requants. Owned here so teardown RELEASES them instead of the
+    /// backend sweep reclaiming them unowned (#736, #915); see `derived.rs`.
+    derived: DerivedStore,
     /// Tensors deliberately NOT uploaded, with where they live on disk.
     ///
     /// The n-gram embedding tables of the LongCat / Qwen3.8-Flash-Next family
@@ -196,6 +200,7 @@ impl WeightStore {
         Self {
             weights: HashMap::new(),
             deferred: HashMap::new(),
+            derived: DerivedStore::default(),
         }
     }
 
@@ -226,6 +231,7 @@ impl WeightStore {
         Self {
             weights,
             deferred: HashMap::new(),
+            derived: DerivedStore::default(),
         }
     }
 
@@ -297,6 +303,15 @@ impl WeightStore {
             count += 1;
         }
         Ok((count, bytes))
+    }
+
+    /// The owner for buffers a loader derives from these tensors.
+    ///
+    /// `&self` because `ModelWeightLoader::load_layers` takes `&WeightStore`;
+    /// the interior `Mutex` is the whole reason `DerivedStore` exists as a
+    /// type rather than a `Vec` field. See `weights/derived.rs`.
+    pub fn derived(&self) -> &DerivedStore {
+        &self.derived
     }
 
     /// Total bytes across all weight tensors on the GPU.
@@ -447,6 +462,8 @@ impl SafetensorsLoader {
 /// `embedders.2` must precede `embedders.10`; a plain lexicographic sort puts
 /// `10` first and silently mis-maps every table after the ninth.
 pub mod adapter;
+mod derived;
+pub use derived::DerivedStore;
 mod gguf;
 mod loader;
 pub mod mlx_int8;
@@ -483,7 +500,11 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
     }
 
     fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
-        let mut first_error = None;
+        // Derived buffers FIRST: they are re-encodings of the tensors below and
+        // nothing reads one after the other is gone, but freeing the source a
+        // derivation was built from while the derivation is still listed would
+        // make a later failure here impossible to attribute.
+        let mut first_error = self.derived.release(gpu).err();
         // `drain` rather than iterate: the map must not be left holding
         // pointers to memory that is gone, and it makes this idempotent.
         for (name, tensor) in self.weights.drain() {

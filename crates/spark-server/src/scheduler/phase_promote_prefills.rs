@@ -42,7 +42,27 @@ pub(super) fn promote_completed_prefills(
         // chunk forward pass; see `prefill_fifo_tests`.
         let mut p = prefilling.remove(idx);
         let Some(first) = maybe_token else {
-            // Error path: free the sequence.
+            // Error path: TELL THE CLIENT, then free the sequence.
+            //
+            // This used to drop `p.sink` on the floor. For a streaming request
+            // that is not a failure the caller can see: the SSE body was
+            // already committed with a 200 when the handler subscribed, so the
+            // channel closing produced a stream that ends after the role
+            // delta — no content, no `finish_reason`, no usage frame, and
+            // `err=0` at the client. Measured on H100 round 11 (#927) cell E:
+            // one batched-prefill wave refused mid-forward returned SIXTEEN
+            // HTTP 200s carrying zero tokens, on 3/3 reps, with nothing but a
+            // server-side ERROR line to say so. A blocking request fared no
+            // better — the dropped `oneshot` surfaces as the misleading
+            // "Inference cancelled".
+            //
+            // `send_error_to_sink` is the same helper `prefill_request` uses
+            // for a failure between taking the sink and building an
+            // `ActiveSeq`; this is that same window, one phase later.
+            super::lifecycle::send_error_to_sink(
+                &mut p.sink,
+                "prefill failed for this sequence (see server log)",
+            );
             let mut seq = p.seq;
             if let Err(e) = model.free_sequence(&mut seq) {
                 tracing::error!("phase_promote_prefills: free_sequence (error path): {e:#}");
@@ -93,7 +113,7 @@ pub(super) fn promote_completed_prefills(
         let use_legacy_tool_call =
             p.require_tool_call && p.grammar_state.is_none() && tool_call_start_token.is_some();
         let now = Instant::now();
-        let cached_prompt_tok = p.seq.cached_prefix_tokens as u32;
+        let cached_prompt_tok = p.seq.reused_prefix_tokens as u32;
         let immediate_finish =
             !spontaneous_think && (p.eos_tokens.contains(&first) || p.max_tokens <= 1);
 
@@ -249,3 +269,7 @@ fn build_active_seq_from_prefill(
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
     }
 }
+
+#[cfg(test)]
+#[path = "cached_tokens_tests.rs"]
+mod cached_tokens_tests;

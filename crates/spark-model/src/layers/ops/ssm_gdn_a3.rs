@@ -33,11 +33,26 @@ use super::*;
 pub fn gdn_prefill_fla(
     gpu: &dyn GpuBackend,
     k_recompute_wu: KernelHandle,
+    // Hopper twins of kernels 1 and 3 (#928); see ops::ssm_gdn_hopper_prefill.
+    k_recompute_wu_hopper: KernelHandle,
+    k_chunk_fwd_o_hopper: KernelHandle,
     k_chunk_delta_h: KernelHandle,
     // wmma + DV-block-split spine (gated_delta_rule_chunk_delta_h_tc_vblock). When
     // non-zero AND ATLAS_GDN_TC_VBLOCK=1, replaces the scalar ksplit spine (drop-in
     // ABI; grid y = batch·num_dv_blocks, smem 81KB vs 97KB). KernelHandle(0) = off.
     k_chunk_delta_h_tc_vblock: KernelHandle,
+    // TENSOR-CORE spine (gated_delta_rule_chunk_delta_h_tcfuse), behind
+    // ATLAS_GDN_PREFILL_TC (presence, default OFF). Drop-in ABI == the fused
+    // spine; grid [nv, batch] and block 256 are unchanged, only the smem
+    // footprint differs. KernelHandle(0) = absent from this image.
+    k_chunk_delta_h_tcfuse: KernelHandle,
+    // VALUE-SPLIT twin of that spine (`gdn_chunk_delta_h_vsplit_hopper.cu`,
+    // kernels/hopper only), behind `[defaults] gdn_spine_vsplit`. `init_kernels`
+    // binds the entry for the RESOLVED split, so this one handle is the 2-way or
+    // the 4-way kernel and never both, and the launcher reads the same resolved
+    // value for grid.y and smem. Drop-in ABI == `..._tcfuse_x2`, block 256
+    // unchanged. KernelHandle(0) = absent, i.e. every target but Hopper.
+    k_chunk_delta_h_vsplit: KernelHandle,
     k_chunk_delta_h_fused: KernelHandle,
     k_chunk_delta_h_tma: KernelHandle,
     k_chunk_fwd_o: KernelHandle,
@@ -102,11 +117,30 @@ pub fn gdn_prefill_fla(
         };
     }
 
-    // Kernel 1: recompute_wu.
-    KernelLaunch::new(gpu, k_recompute_wu)
+    // The TC prefill FAMILY lever, resolved ONCE for the three kernels it picks:
+    // the twins here and the state spine below. `[defaults] gdn_prefill_tc`,
+    // `ATLAS_GDN_PREFILL_TC` overriding — a VALUE, not a presence check, so `=0`
+    // turns the family off. `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` is the A/B that
+    // keeps the spine and pins these two to their parents.
+    let tc_requested = super::target_defaults::resolved().gdn_prefill_tc.value;
+    let (wu, fo) = gdn_hopper_remnants(
+        tc_requested,
+        k_recompute_wu,
+        smem_wu,
+        k_chunk_fwd_o,
+        smem_fo,
+        k_recompute_wu_hopper,
+        k_chunk_fwd_o_hopper,
+        kd,
+        vd,
+        C,
+    );
+
+    // Kernel 1: recompute_wu, or its Hopper twin.
+    KernelLaunch::new(gpu, wu.kernel)
         .grid([num_chunks, num_v_heads, batch_size])
-        .block([256, 1, 1])
-        .shared_mem(smem_wu)
+        .block([wu.block, 1, 1])
+        .shared_mem(wu.smem)
         .arg_ptr(key)
         .arg_ptr(value)
         .arg_ptr(gate)
@@ -193,6 +227,103 @@ pub fn gdn_prefill_fla(
         Some("1") if !pipe => 512u32, // SPLIT=4 build
         _ => 256u32,                  // SPLIT=2 build (default, and the pipe build)
     };
+    // ── TENSOR-CORE spine (`[defaults] gdn_prefill_tc`, false everywhere) ────
+    //
+    // WHY, in one receipt (full derivation in GDN-PREFILL-ATTRIBUTION.md): on
+    // 1xH100 / Qwen3.8-27B-FP8, nsys round 9 (2026-09-11) put
+    // `gated_delta_rule_chunk_delta_h_vfused` at 97.8 ms of a 368.3 ms
+    // 1193-token prefill (26.6%) and 376.1 ms of a 1163.5 ms 4593-token prefill
+    // (32.3%) across 96 launches — 3.75 / 3.70 TFLOP/s and 94 / 89 GB/s, i.e.
+    // 5.6% of FP32 peak, 2.7% of HBM and 0.38% of bf16 tensor-core peak with
+    // ZERO mma instructions issued. Its per-chunk cost is FLAT in T (53.6 us at
+    // 19 chunks, 54.4 us at 72) at ~95 000 cycles against a one-SM FP32 floor of
+    // 16 384, so it is latency-bound on the 64-deep dependent FMA chain, not
+    // bandwidth- or FLOP-bound. Its two siblings in the same file, whose big
+    // matmuls are already on mma.sync, run at 16-17 and 12-14.5 TFLOP/s.
+    //
+    // This arm puts BOTH per-chunk products on mma.sync.m16n8k16 (bf16 operands,
+    // f32 accumulate). The recurrent state never leaves the f32 accumulator and
+    // the decay math stays exact f32; S_c and duc are newly rounded to bf16 as
+    // MMA operands, and the k-reduction is reassociated into the MMA tree. That
+    // is why this is OPT-IN: the campaign's standing lesson on this exact kernel
+    // is that a spine change can read cos=1.0000 and still cost 1.4 BFCL points
+    // (see the SPLIT=4 note in ssm_gdn_a3's kernel-2 comment), so promotion needs
+    // the ssm-poisoning tripwire, not a cosine.
+    //
+    // The enable bit comes from the COMPILED TARGET's `[defaults] gdn_prefill_tc`
+    // with `ATLAS_GDN_PREFILL_TC` overriding, the same rung as every other
+    // lever (`layers::ops::target_defaults`). Every target declares it false, so
+    // this is opt-in everywhere today; the row exists so the reason is written
+    // down beside the arch it applies to, and so `init.rs` can gate the PROBE on
+    // the same bit that launches the kernel. It is resolved once at the top of
+    // this function because the two Hopper remnant twins read the SAME bit.
+    //
+    // NAME THE GUARD THAT REJECTED — a perf path that asks to be enabled and
+    // silently is not measures as "no effect" (PR #296 shipped exactly that).
+    let smem_tcfuse = GDN_TC_SMEM;
+    let tc_reject = gdn_tc_spine_reject(
+        tc_requested,
+        k_chunk_delta_h_tcfuse.0 != 0,
+        kd,
+        vd,
+        C,
+        qk_stride,
+    );
+    if tc_requested && let Some(why) = tc_reject {
+        tracing::warn!("ATLAS_GDN_PREFILL_TC set but the tensor-core spine is NOT running: {why}");
+    }
+    let tc_ok = tc_reject.is_none();
+    // ── The VALUE-SPLIT arm of that same spine (`[defaults] gdn_spine_vsplit`)
+    //
+    // WHY, in one receipt (derivation in GDN-PREFILL-ATTRIBUTION.md): nsys round
+    // 13 cell T1N puts `..._tcfuse_x2` at 52 060.3 us = 11.32% of the 4593-token
+    // H100 prefill, 13.64 TFLOP/s (1.4% of BF16 peak) and 327 GB/s (9.7% of HBM)
+    // — bound by NEITHER roofline — while already matching the isolated kernel's
+    // own ceiling (1.0625 vs the microtest's 1.0553 ms). The only axis left is
+    // the grid: `[nv=48, batch=1]` is 48 CTAs on 132 SMs, 36% of the machine.
+    // Neither phase contracts over the value dimension, so splitting it across
+    // CTAs needs no cross-CTA reduction and reassociates nothing.
+    //
+    // OFF ON EVERY TARGET. Bit-identity answers the accuracy question, not the
+    // speed one: each split re-reads W and K (1.335x traffic at 2-way, 2.005x at
+    // 4-way), and the parent's in-file V-split verdict measured a LOSS on GB10's
+    // 48-SM part, where 48 CTAs already fill the device. A default is a claim
+    // about a measurement; round 16 runs `ATLAS_GDN_SPINE_VSPLIT=2` / `=4`.
+    let vsplit = super::target_defaults::resolved().gdn_spine_vsplit.value;
+    let vpick = gdn_spine_vsplit_pick(
+        vsplit,
+        tc_ok,
+        k_chunk_delta_h_vsplit.0 != 0,
+        num_v_heads,
+        batch_size,
+    );
+    // NAME THE GUARD THAT REJECTED, like every other lever on this page.
+    if vsplit > 1
+        && let Some(why) = vpick.reject
+    {
+        tracing::warn!(
+            "gdn_spine_vsplit={vsplit} set but the value-split spine is NOT running: {why}"
+        );
+    }
+    let vsplit_entry = gdn_spine_vsplit_entry(vpick.split).filter(|_| vpick.reject.is_none());
+    if tc_ok {
+        // `ssm_gdn_tc_route`: both lines are built from the SAME constants
+        // `init_kernels` binds the handles with (round 12 caught this line
+        // naming the family), and exactly one of them is printed.
+        tracing::info!(
+            "{}",
+            match vsplit_entry {
+                Some(entry) => gdn_vsplit_spine_route_line(
+                    entry,
+                    num_v_heads,
+                    vpick.grid_y,
+                    vpick.split,
+                    vpick.smem,
+                ),
+                None => gdn_tc_spine_route_line(num_v_heads, batch_size, smem_tcfuse),
+            }
+        );
+    }
     // ── TMA path (ATLAS_GDN_TMA=1) ───────────────────────────────────────────
     // Every precondition is CHECKED, not assumed. The descriptors are encoded
     // from the compile-time tile (K_DIM/V_DIM = 128, CHUNK = 64), so a runtime
@@ -208,6 +339,11 @@ pub fn gdn_prefill_fla(
     // env set, fell back to `vfused`, and the two arms differed by noise.
     let tma_reject: Option<&str> = if !tma_requested {
         Some("not requested")
+    } else if tc_ok {
+        // Both levers are set: TMA yields, because ATLAS_GDN_PREFILL_TC is the
+        // one with a numerics contract to measure. Say so rather than silently
+        // running one of the two.
+        Some("ATLAS_GDN_PREFILL_TC is active and takes precedence")
     } else if k_chunk_delta_h_tma.0 == 0 {
         Some("kernel absent from this image")
     } else if is_varlen {
@@ -281,7 +417,11 @@ pub fn gdn_prefill_fla(
     // Kernel 2 (non-TMA). Both paths write s_out/uc_out and fall through to
     // kernel 3, which is identical either way.
     if !tma_ok {
-        let (k_cdh, cdh_grid_y, cdh_smem, cdh_block) = if use_fused {
+        let (k_cdh, cdh_grid_y, cdh_smem, cdh_block) = if vsplit_entry.is_some() {
+            (k_chunk_delta_h_vsplit, vpick.grid_y, vpick.smem, 256u32)
+        } else if tc_ok {
+            (k_chunk_delta_h_tcfuse, batch_size, smem_tcfuse, 256u32)
+        } else if use_fused {
             (k_chunk_delta_h_fused, batch_size, smem_fused, fused_block)
         } else if use_tcvb {
             (
@@ -322,11 +462,11 @@ pub fn gdn_prefill_fla(
         prof!("gdn_fla_chunk_delta_h", &mut t0);
     }
 
-    // Kernel 3: chunk_fwd_o.
-    KernelLaunch::new(gpu, k_chunk_fwd_o)
+    // Kernel 3: chunk_fwd_o, or its Hopper twin.
+    KernelLaunch::new(gpu, fo.kernel)
         .grid([num_chunks, num_v_heads, batch_size])
-        .block([512, 1, 1])
-        .shared_mem(smem_fo)
+        .block([fo.block, 1, 1])
+        .shared_mem(fo.smem)
         .arg_ptr(query)
         .arg_ptr(key)
         .arg_ptr(gate)

@@ -151,6 +151,7 @@ impl Qwen3SsmLayer {
             ops::dense_gemm_ba_gates_prefill(
                 ctx.gpu,
                 self.ba_gates_prefill_k,
+                self.ba_gates_prefill_hopper_k,
                 normed_base,
                 &self.ssm.in_proj_ba,
                 self.ssm.a_log.weight,
@@ -340,9 +341,24 @@ impl Qwen3SsmLayer {
                     );
                 }
                 let gdn_out = conv_out.offset(n * conv_dim as usize * 4);
-                ops::gdn_decode_f32_strided(
+                // Three arms, one decision, all of it in
+                // `ops::gdn_decode_f32_strided_auto`: the gb10 parent, #927's
+                // COLUMN-TILED Hopper twin (default OFF — round 12 measured
+                // this strided leg at +0.19%, a null, over 48 launches at
+                // n=16, and its unstrided sibling at +6.8%), and #927's
+                // ONE-READ Hopper twin (default ON for n >= 4). All three keep
+                // the same grid shape and the same bits: the
+                // SSM_STATE_MAX_NORM clamp reduces across the whole head, so
+                // its columns cannot be split, and the per-column `kd`
+                // reduction is a serial f32 chain, so its rows cannot be
+                // either. What the third arm changes is how many times the
+                // state is READ — 2 748.9 us = 13.82% of the n=16 step goes
+                // through this launch (`GDN-DECODE-ATTRIBUTION.md`).
+                ops::gdn_decode_f32_strided_auto(
                     ctx.gpu,
                     self.gdn_f32_strided_k,
+                    self.gdn_f32_strided_hopper_k,
+                    self.gdn_f32_strided_hopper_smem_k,
                     h_state_base,
                     conv_out,
                     conv_out.offset(key_dim * 4),
@@ -363,25 +379,54 @@ impl Qwen3SsmLayer {
                 )?;
                 detail_step!("recurrent_batched_gdn");
 
-                for i in 0..n {
-                    let deint_i = deinterleaved.offset(i * qkvz_size * bf16);
-                    let z_i = deint_i.offset((key_dim * 2 + value_dim) * bf16);
-                    let gdn_out_i = gdn_out.offset(i * value_dim * 4);
-                    let normed_out_i = normed_out_base.offset(i * value_dim * bf16);
-                    ops::gated_rms_norm(
+                // ONE launch for all n sequences when the strided twin is
+                // resident (#927). The H100 batch-16 trace put the per-seq
+                // loop below at **768** launches per step (48 SSM layers x 16
+                // rows) for 1.612 ms = 3.70% of the 43.595 ms step, at 2.1 us
+                // each — pure launch/tail overhead, and the only per-layer
+                // kernel in that step still scaling with the row count. The
+                // strided kernel is bit-identical per (sequence, head) row:
+                // same block per row, same reduction, same addresses.
+                let z_base = deinterleaved.offset((key_dim * 2 + value_dim) * bf16);
+                if self.gated_rms_norm_f32_strided_k.0 != 0 {
+                    ops::gated_rms_norm_strided(
                         ctx.gpu,
-                        self.gated_rms_norm_f32_k,
-                        gdn_out_i,
-                        z_i,
+                        self.gated_rms_norm_f32_strided_k,
+                        gdn_out,
+                        z_base,
                         &self.ssm.norm,
-                        normed_out_i,
+                        normed_out_base,
                         nv as u32,
+                        n as u32,
                         vd as u32,
                         vd as u32,
                         eps,
                         vd as u32,
+                        value_dim as u32, // gdn_out rows: [n, value_dim] f32
+                        qkvz_size as u32, // z rows: one deinterleaved QKVZ block
+                        value_dim as u32, // normed_out rows: [n, value_dim] bf16
                         stream,
                     )?;
+                } else {
+                    for i in 0..n {
+                        let z_i = z_base.offset(i * qkvz_size * bf16);
+                        let gdn_out_i = gdn_out.offset(i * value_dim * 4);
+                        let normed_out_i = normed_out_base.offset(i * value_dim * bf16);
+                        ops::gated_rms_norm(
+                            ctx.gpu,
+                            self.gated_rms_norm_f32_k,
+                            gdn_out_i,
+                            z_i,
+                            &self.ssm.norm,
+                            normed_out_i,
+                            nv as u32,
+                            vd as u32,
+                            vd as u32,
+                            eps,
+                            vd as u32,
+                            stream,
+                        )?;
+                    }
                 }
                 detail_step!("recurrent_batched_norm");
             }

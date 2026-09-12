@@ -422,13 +422,37 @@ pub(crate) fn load_model(
     } = serve_phases::resolve_topology(&args, &mut config)?;
 
     // ── Pre-load reserve preflight ──
+    //
+    // The four post-load inputs are resolved HERE because they are the
+    // caller's to know (#915 second pass): the device total and the loaded
+    // kernel set come from the backend initialised above, the checkpoint
+    // directory from `resolve_model_dir`, and the KV dtype from the SAME
+    // `resolve_kv_dtype_str` precedence the cache itself uses later in this
+    // function — so preflight's bytes-per-token and the pool's cannot differ.
+    // A `--kv-cache-dtype` that fails to parse is left to the cache's own
+    // error path; the fit falls back to pre-load free memory rather than
+    // failing the boot early with a second, worse-worded copy of it.
+    let (preflight_kv_dtype_str, _) = serve_phases::kv_cache::resolve_kv_dtype_str(
+        args.kv_cache_dtype.as_deref(),
+        ptx_set.behavior.default_kv_dtype,
+    );
+    let post_load_inputs = serve_phases::PostLoadInputs {
+        total_mem: gpu.total_memory().unwrap_or(0),
+        model_dir: &model_dir,
+        kv_dtype: preflight_kv_dtype_str
+            .parse()
+            .unwrap_or(spark_runtime::kv_cache::KvCacheDtype::Bf16),
+        w8a8_prefill_kernels: spark_model::layers::qwen3_attention::w8a8_prefill_kernels_loaded(
+            gpu.as_ref(),
+        ),
+    };
     let serve_phases::ReservePreflight {
         inference_reserve,
         buffer_arena_bytes,
         gdn_two_phase_bytes,
         ssm_prefill_chunk,
         max_batch_tokens_pre,
-    } = serve_phases::preflight_reserve(&args, &config, free_mem)?;
+    } = serve_phases::preflight_reserve(&args, &config, free_mem, &post_load_inputs)?;
     let total_reserve = inference_reserve + buffer_arena_bytes;
 
     // 2a-2. OOM watchdog: background async task that polls GPU memory every 2s.
@@ -844,6 +868,7 @@ pub(crate) fn load_model(
         &tokenizer,
         &mut eos_tokens,
         supports_thinking,
+        &model_dir,
     );
 
     // 7. Create scheduler channel + spawn scheduler

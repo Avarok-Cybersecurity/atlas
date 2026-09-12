@@ -80,6 +80,17 @@ pub struct Qwen3SsmLayer {
     /// decode keeps the NVFP4 copy.
     qkvz_fp8w_rowwise: Option<Fp8Weight>,
     out_proj_fp8w_rowwise: Option<Fp8Weight>,
+    /// This layer's slice of the LEDGERED row-wise BF16-weight slab
+    /// (`BufferSizes::ssm_rowwise_w_bf16`), or 0 before the first prefill
+    /// through the matching arm carves and fills it. See `rowwise_bf16.rs`
+    /// for the #917 receipt that moved these bytes out of a by-pointer cache
+    /// of `gpu.alloc`s and into the arena.
+    ///
+    /// Per LAYER rather than per weight pointer, because that is what the
+    /// lifetime is: the slab is the arena's, and the arena outlives every
+    /// prefill this layer runs.
+    qkvz_rowwise_bf16: std::sync::atomic::AtomicU64,
+    out_proj_rowwise_bf16: std::sync::atomic::AtomicU64,
     /// Tier-1c keep-packed ternary Q2_0 fused in_proj_qkvz (`ATLAS_GGUF_NATIVE_Q2`).
     /// [Q|K|V|Z] rows byte-concatenated from packed `in_proj_qkv` (V-region
     /// row-permuted) + `in_proj_z` (row-permuted) at load, so the 2-bit weight is
@@ -108,6 +119,13 @@ pub struct Qwen3SsmLayer {
     rms_norm_residual_k: KernelHandle,
     gated_rms_norm_k: KernelHandle,
     gated_rms_norm_f32_k: KernelHandle,
+    /// `gated_rms_norm_f32_input_strided` — the SAME per-(sequence, head) math
+    /// as `gated_rms_norm_f32_k`, with `blockIdx.y` walking the sequences, so
+    /// a batched decode step spends ONE launch per layer instead of one per
+    /// row. 0 when absent (notably on a `gdn_norm_sigmoid` model, which has no
+    /// strided sigmoid twin), which keeps the per-seq loop. #927: the H100
+    /// batch-16 trace showed the per-seq loop at 768 launches / 1.61 ms.
+    gated_rms_norm_f32_strided_k: KernelHandle,
     dense_gemv_k: KernelHandle,
     /// K=2 verify: batched (M=2) BF16 GDN in_proj_qkvz — one weight pass for
     /// both verify tokens instead of two M=1 `dense_gemv` reads.
@@ -132,6 +150,18 @@ pub struct Qwen3SsmLayer {
     gdn_f32_conv_norm_k: KernelHandle,
     gdn_f32_strided_k: KernelHandle,
     gdn_f32_strided_norm_k: KernelHandle,
+    /// Hopper twin of `gdn_f32_k` (`gdn_decode_hopper::gated_delta_rule_decode_f32_hopper`).
+    /// `KernelHandle(0)` on every hardware set but `kernels/hopper`, because the
+    /// source file exists only there — presence IS the target gate. See
+    /// `GDN-DECODE-ATTRIBUTION.md` (#927/#928).
+    gdn_f32_hopper_k: KernelHandle,
+    /// Hopper twin of `gdn_f32_strided_k`. Same presence rule, and it carries
+    /// the parent's SSM_STATE_MAX_NORM clamp, so it is a drop-in for the
+    /// batched arm that `ATLAS_GDN_FUSED_NORM` leaves unfused.
+    gdn_f32_strided_hopper_k: KernelHandle,
+    /// Hopper ONE-READ twin of `gdn_f32_strided_k` (#927): the parent's partition,
+    /// state read once for 96 of 128 rows, n >= 4. `ops::ssm_gdn_strided_hopper`.
+    gdn_f32_strided_hopper_smem_k: KernelHandle,
     /// Half-width register retention (k_dim==v_dim==128): retains the first 64 H
     /// columns so the update re-reads only the rest (2R+1W -> 1.5R+1W).
     gdn_f32_strided_norm_half_k: KernelHandle,
@@ -183,6 +213,21 @@ pub struct Qwen3SsmLayer {
     /// chunk_delta_h_ksplit (k-split occupancy) → chunk_fwd_o. 1.75x vs wy4 @16k,
     /// token-equal (cos=1.0 vs scalar). Three handles; all must be non-null.
     gdn_prefill_fla_recompute_wu_k: KernelHandle,
+    /// Hopper twins of the two SCALAR REMNANTS of the FLA prefill (#928):
+    /// `gdn_recompute_wu_hopper.cu`'s blocked triangular solve on tensor cores
+    /// and `gdn_fwd_o_hopper.cu`'s masked `tril(kq).uc` square. They live only
+    /// under `kernels/hopper`, so `try_kernel` gives 0 everywhere else and the
+    /// launcher then runs the unchanged parents. Selected by the family lever
+    /// `[defaults] gdn_prefill_tc` (`ATLAS_GDN_PREFILL_TC` overriding), which
+    /// Hopper ships ON since round 13; `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` pins them
+    /// off while keeping the tensor-core state spine, which is the A/B that
+    /// separates the three kernels. The nsys receipt that motivates them is in
+    /// `GDN-PREFILL-ATTRIBUTION.md`: 5.5% and 4.0% of a 1193-token H100
+    /// prefill, both with their big matmuls already on `mma.sync` and their
+    /// remainder — a triangular product on 128 of 512 threads, and two forward
+    /// substitutions worth 79-85% of their kernel — still scalar.
+    gdn_prefill_fla_recompute_wu_hopper_k: KernelHandle,
+    gdn_prefill_fla_chunk_fwd_o_hopper_k: KernelHandle,
     gdn_prefill_fla_chunk_delta_h_k: KernelHandle,
     /// Tensor-core / DV-block-split variant of the FLA chunk_delta_h spine
     /// (`gated_delta_rule_chunk_delta_h_tc_vblock`). Loaded by default but not
@@ -190,6 +235,29 @@ pub struct Qwen3SsmLayer {
     /// isolation first. `allow(dead_code)` until the launch site reads it.
     #[allow(dead_code)]
     gdn_prefill_fla_chunk_delta_h_tc_vblock_k: KernelHandle,
+    /// TENSOR-CORE chunked-prefill state spine
+    /// (`gated_delta_rule_chunk_tc::gated_delta_rule_chunk_delta_h_tcfuse`),
+    /// behind `[defaults] gdn_prefill_tc` — ON for `kernels/hopper` since round
+    /// 13, OFF elsewhere, with `ATLAS_GDN_PREFILL_TC` overriding either way.
+    /// Both per-chunk
+    /// products run on `mma.sync.m16n8k16` with bf16 operands and an f32
+    /// accumulator that IS the recurrent state; `h` stays f32 in memory. The
+    /// nsys receipt that motivates it is in `GDN-PREFILL-ATTRIBUTION.md`
+    /// (#928): the shipped scalar spine is 26.6%/32.3% of the 1193/4593-token
+    /// H100 prefill at 3.7 TFLOP/s, i.e. latency-bound at 4.5% warp residency.
+    /// `try_kernel` => 0 on images without it, and the launcher additionally
+    /// refuses any head/chunk that differs from the compile-time tile.
+    gdn_prefill_fla_chunk_delta_h_tcfuse_k: KernelHandle,
+    /// VALUE-SPLIT twin of that spine, for the split `[defaults]
+    /// gdn_spine_vsplit` resolved to — `gated_delta_rule_chunk_delta_h_vsplit2
+    /// _hopper` or `..._vsplit4_hopper`, `kernels/hopper` only, so `try_kernel`
+    /// => 0 everywhere else and at the shipped split of 1. Same 21-arg ABI and
+    /// block 256 as the parent; only `grid.y` (`batch * split`) and the shared-
+    /// memory footprint differ. It splits the recurrent state's VALUE columns
+    /// across CTAs — 48 CTAs become 96 or 192 on a 132-SM H100 — which neither
+    /// phase of the recurrence contracts over, so there is no cross-CTA
+    /// reduction and the output is bit-identical (`GDN-PREFILL-ATTRIBUTION.md`).
+    gdn_prefill_fla_chunk_delta_h_vsplit_k: KernelHandle,
     /// Warp-dense fused GDN state spine (`gated_delta_rule_chunk_delta_h_vtile`).
     /// 512 threads = 16 warps/CTA against ksplit's 8, with the SAME grid (one CTA
     /// per head) so `W`/`K` global loads are not duplicated — an ncu profile put
@@ -219,6 +287,12 @@ pub struct Qwen3SsmLayer {
     gdn_prefill_split4_batched_k: KernelHandle,
     compute_gdn_gates_k: KernelHandle,
     ba_gates_prefill_k: KernelHandle,
+    /// Hopper twin of `ba_gates_prefill_k`
+    /// (`ssm_ba_gates_hopper::dense_gemm_ba_gates_prefill_hopper`, #928): one
+    /// CTA per token instead of `ceil(N/4)`, bit-identical output. Null on
+    /// every target but hopper, and declined below the token-count floor —
+    /// `ops::ba_gates_pick` owns both rules.
+    ba_gates_prefill_hopper_k: KernelHandle,
     // Kernels — prefill (multi-token sequential)
     conv1d_prefill_k: KernelHandle,
     /// Token-parallel prefill conv1d (`causal_conv1d_update_prefill_tp`).
@@ -369,20 +443,30 @@ pub struct Qwen3SsmLayer {
     // FP32 scale; `fp8_gemm_t_blockscaled` consumes both with FP8 MMA and
     // applies a_scale × b_scale in the FP32 epilogue. Gated behind
     // `ATLAS_FP8_W8A8=1` for staged rollout.
-    per_token_group_quant_fp8_k: KernelHandle,
+    per_token_group_quant_fp8_k: ops::Fp8ActQuant,
     fp8_gemm_t_blockscaled_k: KernelHandle,
+    /// `fp8_act_scale_to_kmajor` — rewrites the quantizer's `[M, K/128]`
+    /// VEC128 activation scales into the `[K/128, ceil16(M)]` layout cuBLASLt
+    /// documents. 0 when the module is absent, which makes the cuBLASLt QKVZ
+    /// arm decline (see `prefill_w8a8.rs`); the in-tree kernel reads the
+    /// quantizer's own order and needs no adapter.
+    fp8_act_scale_kmajor_k: KernelHandle,
 }
 
 // Kernel-selection helpers moved to `kernel_select.rs` (≤500 LoC split).
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod debug;
+mod decode_w8a8_proj;
 pub mod gdn_flags;
 mod init;
 mod init_fp8;
 mod init_q2;
 mod kernel_select;
 mod lora;
+mod prefill_out_w8a8;
+mod prefill_w8a8;
+mod rowwise_bf16;
 mod ssm_forward;
 pub(crate) mod ssm_h_fp16;
 mod trait_decode;
@@ -413,6 +497,12 @@ pub use gdn_flags::{
 
 // ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──
 
+#[cfg(test)]
+#[path = "prefill_alloc_tests.rs"]
+mod prefill_alloc_tests;
+#[cfg(test)]
+#[path = "rowwise_alloc_tests.rs"]
+mod rowwise_alloc_tests;
 #[cfg(test)]
 mod tests;
 

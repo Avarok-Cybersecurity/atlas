@@ -1,0 +1,437 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! The `[defaults]` tables that are actually CHECKED IN, parsed with the real
+//! build-script parser.
+//!
+//! Companion to `spark-model`'s `target_defaults_tests`, and deliberately a
+//! different question. That file grades the RESOLVER against tables spelled
+//! out in Rust. This one grades the DATA: that `kernels/hopper/HARDWARE.toml`
+//! really declares the round-9 recipe, that `kernels/gb10/HARDWARE.toml`
+//! really declares today's behaviour, and that the file the build reads is the
+//! file a reviewer read.
+//!
+//! An integration test rather than a `#[cfg(test)]` module inside the build
+//! script, because cargo never runs a build script's own unit tests — the same
+//! reason `tests/kernel_build_flags.rs` and `tests/kernel_target_arch.rs`
+//! exist. It compiles `build_defaults.rs` directly, so there is no second
+//! parser to drift.
+
+#[path = "../build_defaults.rs"]
+mod build_defaults;
+
+use build_defaults::{
+    BASELINE_SM_COUNT, Defaults, baseline, parse_defaults, read_defaults, read_sm_count,
+    sm_count_literal,
+};
+
+use std::path::PathBuf;
+
+fn kernels_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("crates/atlas-kernels is two levels below the workspace root")
+        .join("kernels")
+}
+
+fn declared(hw: &str) -> Defaults {
+    read_defaults(&kernels_root(), hw)
+}
+
+// ── the data ──
+
+/// THE DELIVERABLE, as data. Every value here was a line in an H100 launch
+/// script outside this repository before the 2026-09-11 maintainer review
+/// ("every Hopper/GB10 divergence is expressed as an env lever set by an H100
+/// recipe living outside this repo"). An H100 serve with an empty environment
+/// resolves to exactly this.
+#[test]
+fn hopper_declares_the_round_nine_recipe() {
+    let d = declared("hopper");
+    assert_eq!(d.hw, "hopper");
+    assert_eq!(
+        d.cublas_gemm_scope, "ffn,ssm,attn",
+        "scoped, not `all`: `head` is parsed but has no dispatch consumer, and \
+         `ATLAS_CUBLAS_GEMM=1` arming every family is what cost 10.3 GiB of \
+         unledgered SSM dequant (dispatch_config::CublasScope)"
+    );
+    assert!(d.attn_m16_tc, "round 6: -21.7% on the attention phase");
+    assert!(d.lm_head_m16_tc, "+4% on the serve");
+    assert_eq!(d.lm_head_batchm_max, 16);
+    assert!(d.ssm_batched_recurrent, "+6%, md5-identical output");
+    assert!(d.decode_split_silu);
+    // The measured losses and the unmeasured tiers stay off. A default is a
+    // claim about a measurement.
+    assert!(!d.ffn_m16_tc, "round 6: +13.7% on the SSM-layer FFN");
+    assert!(
+        !d.ffn_batch16_tier,
+        "the cuBLASLt FFN arm owns these widths once `cublas_gemm_scope` arms it"
+    );
+    assert!(!d.attn_ncol_gemv, "no H100 serving receipt");
+    assert!(
+        !d.gdn_decode_hopper,
+        "round 12: the GDN decode twins are bit-identical and SLOWER here — \
+         0.83x at contiguous n=1, +6.8% per C=1 nsys step, -0.4% on the serve \
+         A/B. The kernel stays in [kernels] overrides; only the default moved"
+    );
+    // The row round 17 adds (#927) — a DIFFERENT kernel from the one above,
+    // under its own lever, making the opposite kind of claim. That one
+    // re-partitions state COLUMNS for the n=1 underfill and lost; this one
+    // keeps the parent's partition (it must — the per-column `kd` reduction is
+    // a serial f32 chain) and reads the f32 state once for 96 of its 128 rows.
+    // On without a serving receipt for the same reason `ssm_ba_gates_hopper`
+    // is: it cannot change a bit of output, and ptxas puts six of its CTAs on
+    // an SM against the 5.82 the n=16 grid supplies, so its worst case is a
+    // null. The cost it attacks is nsys round 13's 2 748.9 us = 13.82% of a
+    // 19.887 ms n=16 step at 57.27 us/launch.
+    assert!(
+        d.gdn_decode_strided_hopper,
+        "the one-read strided GDN decode twin is Hopper's default for n >= 4: \
+         bit-identical to its parent, same occupancy, 25% less state traffic \
+         (`GDN-DECODE-ATTRIBUTION.md`, \"Round 17\")"
+    );
+    // The one row round 13 ADDED to the recipe, and the largest measured win of
+    // the campaign: cell T1 against cell A on the same binary, C=1 TTFT
+    // 269.1 -> 162.4 ms and 889.3 -> 491.5 ms, C=16 aggregate +21.5%/+31.4%,
+    // coherency 4/4, determinism 8/8 x 3.
+    assert!(
+        d.gdn_prefill_tc,
+        "round 13: the tensor-core GDN prefill family is Hopper's default — \
+         -39.6%/-44.7% on C=1 TTFT, +21.5%/+31.4% on C=16 aggregate"
+    );
+    // The row round 14 adds. BIT-IDENTICAL to its parent by construction, so
+    // it is on without an accuracy receipt and its worst case is a null; the
+    // cost it attacks is nsys round 13's 26 881.8 us = 5.85% of the 4593-token
+    // prefill at 96 reads of every token's activation row, one per BA output.
+    assert!(
+        d.ssm_ba_gates_hopper,
+        "the BA-gates twin is bit-identical to its parent and Hopper-only; it \
+         is on because it cannot change output and off it re-reads every \
+         activation row 96 times (`SSM-BA-GATES-ATTRIBUTION.md`)"
+    );
+    // The row round 14 adds (#927). Like `ssm_ba_gates_hopper` above it is on
+    // without an accuracy receipt, and for a stronger reason: splitting N
+    // produces INDEPENDENT output columns over the same K, so the fused GEMM
+    // cannot change a bit. The cost it attacks is nsys round 13's 5 730.5 us of
+    // gate+up GEMM per n=16 step at 59.4% of HBM, beside the same arm's `down`
+    // at 71.4% for the same bytes in one launch instead of two.
+    assert!(
+        d.ffn_gateup_fused,
+        "the fused gate+up decode GEMM is Hopper's default: it is a per-launch \
+         saving on the cuBLASLt W8A8 arm this target arms, worth 1 476 us of a \
+         19.887 ms step (`FFN-GATEUP-FUSION-ATTRIBUTION.md`)"
+    );
+    // The row round 17 adds (#927), on the same argument as the gate+up row
+    // above: splitting N produces INDEPENDENT output columns over the same K,
+    // so the fused GEMM cannot change a bit. The cost it attacks is nsys round
+    // 13's k_proj+v_proj at 15.97 us/node = 328 GB/s = 9.8% of HBM, against
+    // q_proj's 65.3% on the same arm in the same step.
+    assert!(
+        d.attn_qkv_fused,
+        "the fused q/k/v decode GEMM is Hopper's default: it is a per-launch \
+         saving on the cuBLASLt W8A8 arm this target arms, worth 428 us of a \
+         19.887 ms step (`ATTN-QKV-FUSION-ATTRIBUTION.md`)"
+    );
+    // The row round 15 adds (#928), and the only Hopper row here with NO device
+    // receipt of any kind: 1 = the unsplit spine. The twin is bit-identical by
+    // construction (neither phase of the recurrence contracts over the value
+    // dimension), but bit-identity answers the accuracy question, not the speed
+    // one — each split re-reads the k-space W and K, and the same split was
+    // measured a LOSS on GB10's 48 SMs. Round 16 runs `ATLAS_GDN_SPINE_VSPLIT`.
+    assert_eq!(
+        d.gdn_spine_vsplit, 1,
+        "the value-split spine ships OFF: it has no serving receipt, and a \
+         default is a claim about a measurement"
+    );
+    // The row round 16 adds (#928). ON, and for the same kind of reason as
+    // `ssm_ba_gates_hopper`: the twin is bit-identical, so the row is a speed
+    // claim only. It is the first row whose arm ALSO carries a width floor —
+    // measured 3.30-3.59x at M in {1168, 4576} and 0.76x-0.95x at M in
+    // {16, 17, 25} for K in {5120, 6144} — so `true` here arms a kernel that
+    // still declines its own launch below `2 * sm_count` CTAs.
+    assert!(
+        d.fp8_act_quant_hopper,
+        "the FP8 activation-quant twin is Hopper's default: 3.30-3.59x and \
+         63.7-68.4% of HBM at prefill widths against the parent's 18.6-19.1%, \
+         bit-identical, with the decode-width loss handled by the CTA floor \
+         rather than by this row (`FP8-ACT-QUANT-ATTRIBUTION.md`)"
+    );
+    assert_eq!(d.ssm_decode_ring_slots, "auto");
+    // The row round 13's attribution added (#928). `auto` is the split count
+    // that fills 132 SMs at the single-stream shape; `legacy` is what was
+    // running, and what put 24 CTAs on this card.
+    assert_eq!(
+        d.attn_decode_splitk, "auto",
+        "round 13 nsys: paged_decode_attn_fp8 at C=1 is grid=(24,1,1), \
+         231.51 us/launch, 42.9 GB/s = 1.28% of HBM"
+    );
+}
+
+/// The constant the whole lever turns on, as data. 132 is the H100/H200 SXM5
+/// SM count; the defect was `atlas_core::device::sm121::NUM_SMS = 48` reaching
+/// the H100 attention dispatch, so this file asserting 132 is the fix's oracle.
+#[test]
+fn every_target_declares_the_sm_count_its_dispatch_reads() {
+    let root = kernels_root();
+    assert_eq!(
+        read_sm_count(&root, "hopper"),
+        132,
+        "H100/H200 SXM5 = GH100"
+    );
+    assert_eq!(read_sm_count(&root, "gb10"), 48, "DGX Spark GB10");
+    assert_eq!(read_sm_count(&root, "b200"), 148, "GB100, 148 SMs enabled");
+    // The non-CUDA trees say nothing and must therefore keep the frozen GB10
+    // value — a target that declares nothing is a target nothing changed for.
+    for hw in ["metal", "strix", "strix-hip"] {
+        assert_eq!(read_sm_count(&root, hw), BASELINE_SM_COUNT, "{hw}");
+    }
+    // A target the tree does not have at all falls back rather than panicking,
+    // because this runs on the ATLAS_SKIP_BUILD path too.
+    assert_eq!(read_sm_count(&root, "no-such-hw"), BASELINE_SM_COUNT);
+}
+
+/// The emitted constant is a `u32` const with the parsed value — the generated
+/// half of the same statement.
+#[test]
+fn the_sm_count_literal_is_a_compilable_const() {
+    let line = sm_count_literal(132);
+    assert!(
+        line.contains("pub const TARGET_SM_COUNT: u32 = 132;"),
+        "{line}"
+    );
+    assert!(line.contains("Auto-generated by build.rs"), "{line}");
+}
+
+/// GB10 restates the pre-#928 rule and does not take Hopper's.
+#[test]
+fn gb10_keeps_the_legacy_split_rule() {
+    assert_eq!(declared("gb10").attn_decode_splitk, "legacy");
+    assert_eq!(baseline("gb10").attn_decode_splitk, "legacy");
+}
+
+/// THE REGRESSION GATE, as data: `kernels/gb10` declares EXACTLY the baseline,
+/// i.e. the literals every resolver hardcoded before the table existed. A GB10
+/// serve with an empty environment is unchanged by this whole change, and the
+/// way to keep it that way is for this assertion to be an equality against
+/// [`baseline`] rather than a list somebody has to remember to update.
+#[test]
+fn gb10_declares_the_baseline_apart_from_the_measured_w8a8_ceiling() {
+    let d = declared("gb10");
+
+    // The one intended divergence, pinned by value so it cannot drift
+    // silently in either direction. gate/up is WIDENING (N=17408 > K=5120),
+    // down is NARROWING; the crossovers differ by ~6x, which is why there are
+    // two rows. Served receipt, spark-256a 2026-09-11, Qwen3.6-27B-FP8 M=949,
+    // n=5/leg, complete separation: W8A8 3343.3 ms vs W8A16 2560.4 ms.
+    assert_eq!(d.w8a8_prefill_max_m_widening, 64);
+    assert_eq!(d.w8a8_prefill_max_m_narrowing, 384);
+    assert_eq!(baseline("gb10").w8a8_prefill_max_m_widening, u32::MAX);
+    assert_eq!(baseline("gb10").w8a8_prefill_max_m_narrowing, u32::MAX);
+
+    // ...and EVERYTHING ELSE still restates the pre-existing hardcoded
+    // defaults. Asserted as an equality against `baseline` rather than a list
+    // somebody has to remember to update: normalising only the two fields
+    // above keeps a third divergence from slipping in unnoticed.
+    let normalised = Defaults {
+        w8a8_prefill_max_m_widening: u32::MAX,
+        w8a8_prefill_max_m_narrowing: u32::MAX,
+        ..d
+    };
+    assert_eq!(
+        normalised,
+        baseline("gb10"),
+        "apart from the W8A8 prefill ceiling, kernels/gb10/HARDWARE.toml \
+         [defaults] must restate the pre-existing hardcoded defaults and \
+         nothing else — it exists to SAY what GB10 serves with"
+    );
+}
+
+/// B200 has no serving receipt of any kind, so it declares the conservative
+/// table and NOT Hopper's. Copying a recipe across because both cards are
+/// datacentre parts is the reasoning this whole mechanism replaces.
+#[test]
+fn b200_declares_the_conservative_table_not_hoppers() {
+    let d = declared("b200");
+    assert_eq!(d, baseline("b200"));
+    assert_ne!(
+        d.cublas_gemm_scope,
+        declared("hopper").cublas_gemm_scope,
+        "B200 must not inherit Hopper's measured recipe by resemblance"
+    );
+    assert!(
+        !d.gdn_prefill_tc && declared("hopper").gdn_prefill_tc,
+        "the GDN prefill family is ON for Hopper on a Hopper receipt (round 13) \
+         and OFF here for want of one — the same rule, stated on the row that \
+         most recently moved"
+    );
+    assert_eq!(
+        d.gdn_spine_vsplit, 1,
+        "the value-split spine is Hopper-only source and unmeasured everywhere; \
+         B200 declares the unsplit parent for want of a receipt"
+    );
+    assert!(
+        !d.ssm_ba_gates_hopper && declared("hopper").ssm_ba_gates_hopper,
+        "the BA-gates twin is Hopper-only source; B200's common/ does not link \
+         it, so the row is inert here and must read false"
+    );
+    assert!(
+        !d.fp8_act_quant_hopper && declared("hopper").fp8_act_quant_hopper,
+        "the FP8 activation-quant twin is Hopper-only source; B200's common/ \
+         does not link it, so the row is inert here and must read false — and \
+         its floor is `2 * sm_count` CTAs, which on 148 SMs is a threshold \
+         nobody has measured"
+    );
+    assert!(
+        !d.ffn_gateup_fused && declared("hopper").ffn_gateup_fused,
+        "the fused gate+up decode GEMM is ON for Hopper on a Hopper receipt \
+         (round 13 nsys) and OFF here for want of one — B200 also declares \
+         `cublas_gemm_scope = \"off\"`, so the arm it changes is not even armed"
+    );
+    assert!(
+        !d.attn_qkv_fused && declared("hopper").attn_qkv_fused,
+        "the fused q/k/v decode GEMM is ON for Hopper on a Hopper receipt \
+         (round 13 nsys) and OFF here for want of one"
+    );
+    assert_eq!(
+        d.attn_decode_splitk, "legacy",
+        "B200 has 148 SMs and would benefit by the same argument — which is an \
+         argument, not a receipt. The split-K twins are not even symlinked into \
+         kernels/b200 (#928)"
+    );
+}
+
+/// The targets that declare NO `[defaults]` table are unaffected: they resolve
+/// to the baseline, which is what their resolvers did before. Named
+/// explicitly so adding a hardware tree makes someone decide.
+#[test]
+fn the_silent_targets_resolve_to_the_baseline() {
+    for hw in ["metal", "strix", "strix-hip"] {
+        assert_eq!(
+            declared(hw),
+            baseline(hw),
+            "kernels/{hw}/HARDWARE.toml declares no [defaults] and must be \
+             byte-for-byte unaffected"
+        );
+    }
+}
+
+/// A HOPPER-ONLY kernel's lever still gets a row in every table that declares
+/// one. `gdn_decode_hopper` is the second such row (`gdn_prefill_tc` was the
+/// first): the twins live only in `kernels/hopper/common`, gb10 never compiles
+/// them, and b200 does only because its `common/` symlinks Hopper's. A row
+/// present in one target's table and missing from another's is how a lever
+/// comes to mean two things in one repository — `parse_defaults` would read
+/// the absence as agreement with the baseline, silently, which is the exact
+/// failure this table was built to end.
+#[test]
+fn a_hopper_only_lever_is_still_declared_by_every_table() {
+    for hw in ["hopper", "gb10", "b200"] {
+        let raw = std::fs::read_to_string(kernels_root().join(hw).join("HARDWARE.toml"))
+            .unwrap_or_else(|e| panic!("kernels/{hw}/HARDWARE.toml: {e}"));
+        for lever in [
+            "gdn_decode_hopper",
+            // #927. The one-read strided twin, the fifth hopper-only boolean.
+            // gb10 and b200 declare it false rather than omitting it: gb10
+            // has a NEGATIVE receipt for the same idea in its own tree
+            // (`gated_delta_rule_decode_f32_strided_norm_smem` behind
+            // `ATLAS_GDN_SMEM_STAGE`, +0.5%/-0.5% at C=128), which is exactly
+            // the kind of thing an absent row would hide.
+            "gdn_decode_strided_hopper",
+            "gdn_prefill_tc",
+            // #928. The BA-gates twin is the third hopper-only boolean, and
+            // gb10 and b200 declare the row false rather than omitting it.
+            "ssm_ba_gates_hopper",
+            // #927. The fourth hopper-only boolean. gb10 and b200 declare it
+            // false rather than omitting it, for the same reason.
+            "ffn_gateup_fused",
+            // #927. The fifth hopper-only boolean, declared false by gb10 and
+            // b200 rather than omitted, for the same reason.
+            "attn_qkv_fused",
+            // #928. The sixth hopper-only row, and the first that is not a
+            // bool: gb10 and b200 declare `1` rather than omitting it, so an
+            // absent split and a deliberate unsplit spine cannot look alike.
+            "gdn_spine_vsplit",
+            // #928, round 16. Another hopper-only boolean, and the one whose
+            // arm also carries a width floor — the row says WHETHER, the
+            // floor says WHERE.
+            "fp8_act_quant_hopper",
+            // #917. GB10 caps, hopper and b200 declare u32::MAX. The row is
+            // mandatory everywhere for the same reason as the two above: an
+            // absent cap and a deliberate no-cap must not look identical.
+            "w8a8_prefill_max_m_widening",
+            "w8a8_prefill_max_m_narrowing",
+        ] {
+            assert!(
+                raw.contains(&format!("\n{lever} = ")),
+                "kernels/{hw}/HARDWARE.toml [defaults] must declare `{lever}` \
+                 explicitly, not inherit it from the baseline"
+            );
+        }
+        assert!(!declared(hw).gdn_decode_hopper, "no target ships them on");
+        assert_eq!(
+            declared(hw).gdn_decode_strided_hopper,
+            hw == "hopper",
+            "only hopper ships the one-read strided twin on"
+        );
+    }
+}
+
+// ── the parser ──
+
+/// A target declares only what it DIFFERS on; every absent key falls through
+/// to the baseline. Without this a new lever would silently change every
+/// target that had not been updated yet.
+#[test]
+fn absent_keys_fall_through_to_the_baseline() {
+    let toml: toml::Value = "[defaults]\nlm_head_batchm_max = 16\n".parse().unwrap();
+    let d = parse_defaults("fictional", &toml);
+    assert_eq!(d.lm_head_batchm_max, 16);
+    assert_eq!(
+        Defaults {
+            lm_head_batchm_max: baseline("fictional").lm_head_batchm_max,
+            ..d
+        },
+        baseline("fictional"),
+        "one declared key must move one field"
+    );
+}
+
+/// A MISTYPED lever name must fail the build, not read as agreement with the
+/// baseline. This is the failure mode a per-target default table cannot have:
+/// it would re-create, inside the fix, exactly the silent divergence the
+/// review objected to.
+#[test]
+#[should_panic(expected = "has no key `attn_m16_tcc`")]
+fn an_unknown_lever_name_fails_the_build() {
+    let toml: toml::Value = "[defaults]\nattn_m16_tcc = true\n".parse().unwrap();
+    let _ = parse_defaults("fictional", &toml);
+}
+
+/// …and so must a value of the wrong TYPE, naming the key.
+#[test]
+#[should_panic(expected = "[defaults] attn_m16_tc must be a bool")]
+fn a_mistyped_value_fails_the_build_naming_the_key() {
+    let toml: toml::Value = "[defaults]\nattn_m16_tc = \"yes\"\n".parse().unwrap();
+    let _ = parse_defaults("fictional", &toml);
+}
+
+/// A tree with no HARDWARE.toml at all resolves to the baseline rather than
+/// panicking: the generator runs on the `ATLAS_SKIP_BUILD` path, where
+/// `kernels/` may not be present (a vendored crate, a docs build). The normal
+/// build still panics on a bad HARDWARE.toml, in `resolve_targets`.
+#[test]
+fn a_missing_hardware_toml_resolves_to_the_baseline() {
+    let nowhere = kernels_root().join("no-such-hardware-tree-for-tests");
+    assert_eq!(
+        read_defaults(&nowhere, "gb10"),
+        baseline("gb10"),
+        "a missing tree must not fail a skip build"
+    );
+}
+
+/// The generated half — the emitted `const` and the constant this binary was
+/// baked with. A child module, not a sibling test binary: the #927/#928 merge
+/// carried this file past the 500-line cap and the two halves ask different
+/// questions of the same fixtures.
+#[path = "support/target_defaults_generated.rs"]
+mod generated;

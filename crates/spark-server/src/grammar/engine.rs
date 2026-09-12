@@ -21,6 +21,11 @@ use super::extract_ordered_vocab;
 pub struct GrammarEngine {
     pub(super) compiler: GrammarCompiler,
     vocab_size: usize,
+    /// #918: the on-disk token-mask snapshot this engine loads at
+    /// startup and re-writes as the cross-grammar cache grows. `None`
+    /// until [`Self::attach_mask_cache`] runs, and when persistence is
+    /// switched off. See [`super::mask_cache`].
+    pub(super) snapshot: Option<super::mask_cache::MaskSnapshot>,
 }
 
 // SAFETY: GrammarEngine is initialized on the main thread and moved to the
@@ -139,7 +144,10 @@ impl GrammarEngine {
 
     fn from_tokenizer_info(tokenizer_info: TokenizerInfo) -> Result<Self, GrammarError> {
         let vocab_size = tokenizer_info.vocab_size();
-        // Single compilation thread, cache enabled, no memory limit.
+        // Restore the historical serial default: four-worker native-tool
+        // preparation has not improved cold latency in the measured workload.
+        // The compiler still supports bounded parallel preparation for callers.
+        // Cache enabled with an explicit memory budget.
         // ★ NOT -1 (unlimited). `CacheKey::Schema` is keyed by the full tool
         // schema, so agentic traffic mints a distinct compiled grammar per
         // request; unbounded, that grew host RSS ~100 MB/min under BFCL and is
@@ -152,6 +160,7 @@ impl GrammarEngine {
         Ok(Self {
             compiler,
             vocab_size,
+            snapshot: None,
         })
     }
 

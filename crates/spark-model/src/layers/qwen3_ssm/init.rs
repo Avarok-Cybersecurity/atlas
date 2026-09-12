@@ -23,6 +23,13 @@ impl Qwen3SsmLayer {
         // conv_dim = Q_flat + K_flat + V_flat = 2*key_dim + value_dim = 8192
         let conv_dim = nk * kd * 2 + nv * vd;
 
+        // Resolved BEFORE the struct literal because two fields need it: the
+        // tensor-core spine's handle IS the bit that decides which spine the
+        // prefill launches, so the scalar spine's route line has to read it,
+        // and a field initializer cannot read a sibling field.
+        let gdn_tc_spine = gdn_prefill_tc_kernel(gpu);
+        let gdn_vsplit_spine = init_kernels::gdn_spine_vsplit_kernel(gpu);
+
         Ok(Self {
             // mHC is attached later by the loader, and only for models that
             // carry a hc_mult-wide residual highway. The handles are gated on
@@ -46,6 +53,8 @@ impl Qwen3SsmLayer {
             out_proj_fp8w: None,
             qkvz_fp8w_rowwise: None,
             out_proj_fp8w_rowwise: None,
+            qkvz_rowwise_bf16: std::sync::atomic::AtomicU64::new(0),
+            out_proj_rowwise_bf16: std::sync::atomic::AtomicU64::new(0),
             qkvz_q2: None,
             q2_0_gemv_k: super::super::try_kernel(gpu, "q2_0_gemv_vec", "q2_0_gemv_vec"),
             dequant_q2_0_gn_k: super::super::try_kernel(
@@ -82,6 +91,14 @@ impl Qwen3SsmLayer {
                 )
             } else {
                 super::super::try_kernel(gpu, "norm", "gated_rms_norm_f32_input")
+            },
+            // Only the SiLU (non-sigmoid) family has a strided twin today; a
+            // `gdn_norm_sigmoid` model gets KernelHandle(0) and keeps the
+            // per-sequence loop, which is correct, just launch-heavy.
+            gated_rms_norm_f32_strided_k: if config.gdn_norm_sigmoid {
+                KernelHandle(0)
+            } else {
+                super::super::try_kernel(gpu, "norm", "gated_rms_norm_f32_input_strided")
             },
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             dense_gemv_batch2_k: gpu.kernel("dense_gemv_bf16_batch2", "dense_gemv_bf16_batch2")?,
@@ -148,6 +165,9 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule",
                 "gated_delta_rule_decode_f32_strided_norm",
             ),
+            gdn_f32_hopper_k: init_kernels::decode_hopper_k(gpu),
+            gdn_f32_strided_hopper_k: init_kernels::decode_hopper_strided_k(gpu),
+            gdn_f32_strided_hopper_smem_k: init_kernels::decode_hopper_strided_smem_k(gpu),
             gdn_f32_strided_norm_half_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule",
@@ -233,6 +253,8 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_fla",
                 "gated_delta_rule_recompute_wu",
             ),
+            gdn_prefill_fla_recompute_wu_hopper_k: init_kernels::prefill_wu_hopper_k(gpu),
+            gdn_prefill_fla_chunk_fwd_o_hopper_k: init_kernels::prefill_fwd_o_hopper_k(gpu),
             gdn_prefill_fla_chunk_delta_h_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule_fla",
@@ -243,33 +265,15 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_fla",
                 "gated_delta_rule_chunk_delta_h_tc_vblock",
             ),
-            // ONE handle for the fused GDN state spine. DEFAULT is `..._vfused`
-            // (SPLIT=2 / 256 threads): 2.01x over ksplit and 12/12 byte-identical on
-            // the ssm-poisoning tripwire. `ATLAS_GDN_VTILE=1` swaps in the SPLIT=4 /
-            // 512-thread build, which is 2.15x but scores 1/12 there and fails two
-            // accuracy gates — kept reachable for whoever diagnoses it, never default.
-            // The two are ABI-identical apart from block size, which the launcher
-            // derives from the same env, so nothing else downstream changes.
-            gdn_prefill_fla_chunk_delta_h_fused_k: super::super::try_kernel(
+            gdn_prefill_fla_chunk_delta_h_tcfuse_k: gdn_tc_spine,
+            gdn_prefill_fla_chunk_delta_h_vsplit_k: gdn_vsplit_spine,
+            // ONE handle for the scalar fused GDN state spine, and the route
+            // line naming whichever spine the prefill will launch — see
+            // `init_kernels::fused_spine_kernel` for both.
+            gdn_prefill_fla_chunk_delta_h_fused_k: fused_spine_kernel(
                 gpu,
-                "gated_delta_rule_fla",
-                // Logged, not silent: which spine ran is the single most
-                // consequential fact about a GDN measurement, and a run record
-                // that cannot say which one it used cannot be compared to
-                // another. An A/B on this kernel is otherwise unfalsifiable —
-                // both arms produce a number either way.
-                {
-                    let name = match (
-                        std::env::var("ATLAS_GDN_PIPE").ok().as_deref(),
-                        std::env::var("ATLAS_GDN_VTILE").ok().as_deref(),
-                    ) {
-                        (Some("1"), _) => "gated_delta_rule_chunk_delta_h_pipe",
-                        (_, Some("1")) => "gated_delta_rule_chunk_delta_h_vtile",
-                        _ => "gated_delta_rule_chunk_delta_h_vfused",
-                    };
-                    tracing::info!("GDN state spine: {name}");
-                    name
-                },
+                gdn_tc_spine,
+                gdn_vsplit_spine,
             ),
             gdn_prefill_fla_chunk_delta_h_tma_k: super::super::try_kernel(
                 gpu,
@@ -309,6 +313,7 @@ impl Qwen3SsmLayer {
             ),
             compute_gdn_gates_k: gpu.kernel("ssm_preprocess", "compute_gdn_gates")?,
             ba_gates_prefill_k: gpu.kernel("ssm_preprocess", "dense_gemm_ba_gates_prefill")?,
+            ba_gates_prefill_hopper_k: init_kernels::ba_gates_hopper_k(gpu),
             conv1d_prefill_k: gpu.kernel("causal_conv1d", "causal_conv1d_update_prefill")?,
             conv1d_prefill_tp_k: super::super::try_kernel(
                 gpu,
@@ -457,16 +462,17 @@ impl Qwen3SsmLayer {
             w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers::resolve(gpu),
             w4a16_gemv_batch16_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch16"),
             w8a16_gemm_t_k: super::super::try_kernel(gpu, "w8a16_gemm_t", "w8a16_gemm_t"),
-            per_token_group_quant_fp8_k: super::super::try_kernel(
-                gpu,
-                "per_token_group_quant_fp8",
-                "per_token_group_quant_fp8",
-            ),
+            per_token_group_quant_fp8_k: ops::Fp8ActQuant::resolve(gpu),
             fp8_gemm_t_blockscaled_k: super::super::try_kernel(
                 gpu,
                 "fp8_gemm_t_blockscaled",
                 "fp8_gemm_t_blockscaled",
             ),
+            // Probed only under a cuBLASLt SSM scope (the condition the
+            // dispatch launches under, `prefill_w8a8.rs`): the source is
+            // Hopper-tuned and absent from GB10's kernel set, where the boot
+            // audit fails closed on an unresolved lookup nothing declared.
+            fp8_act_scale_kmajor_k: cublas_ssm_kernel(gpu, "fp8_act_scale_to_kmajor"),
         })
     }
 
@@ -475,7 +481,7 @@ impl Qwen3SsmLayer {
 
 #[path = "init_kernels.rs"]
 mod init_kernels;
-use init_kernels::hc_kernel;
+use init_kernels::{cublas_ssm_kernel, fused_spine_kernel, gdn_prefill_tc_kernel, hc_kernel};
 
 #[path = "init_sequential.rs"]
 mod init_sequential;

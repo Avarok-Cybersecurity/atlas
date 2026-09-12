@@ -1,0 +1,1 @@
+../../gb10/common/dense_gemv_fp8w_batch2.cu

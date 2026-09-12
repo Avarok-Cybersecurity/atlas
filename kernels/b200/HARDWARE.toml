@@ -1,0 +1,147 @@
+[hardware]
+name = "b200"
+vendor = "nvidia"
+# B200 / GB200 SXM — SM 10.0 (datacenter Blackwell). `sm_100a` exposes
+# tcgen05 / TMA / native NVFP4 (cvt e2m1x2, mma kind::mxf4nvf4); the shared
+# gb10-derived kernels compile as plain sm_100 code today. Arch-specific PTX
+# is NOT forward-compatible: B300 / GB300 are SM 10.3 (`sm_103a`) and need
+# their own target. Consumer/GB10 Blackwell (sm_120/sm_121) lacks tcgen05.
+arch = "sm_100a"
+compute_capability = "10.0"
+# Streaming multiprocessors. B200 / GB200 SXM report 148 through
+# `cudaDevAttrMultiProcessorCount` (GB100 ships 148 of the die's SMs enabled).
+# DOCUMENTATION plus roofline/grid-sizing input, like the bandwidth row — and
+# unlike the bandwidth row it is cross-checked at boot against the driver's own
+# count, which logs a warning naming both numbers if this is wrong. No B200 has
+# been booted in this campaign, so treat the boot line as the authority.
+sm_count = 148
+# B200 SXM 180 GB HBM3e: ~8000 GB/s. Documentation + roofline input only;
+# the runtime reads real free memory via cuMemGetInfo.
+memory_bandwidth_gbps = 8000
+memory_type = "HBM3e"
+memory_gb = 180
+
+# Flags added to EVERY kernel compiled for this hardware, under
+# common/KERNEL.toml's and the model's (build_flags::merge_extra_flags).
+#
+# ATLAS_NO_WARP_BLOCKSCALE_MMA compiles out the W4A4 path in
+# qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu. Datacentre Blackwell DOES
+# have NVFP4, but issues block-scaled MMA through tcgen05; the warp-level
+# `mma.sync ... .kind::mxf4nvf4.block_scale` is a consumer/GB10 Blackwell
+# (sm_120/sm_121) instruction — ptxas: "Instruction 'mma with block scale'
+# not supported on .target 'sm_100a'" (measured 2026-09-05, CUDA 13.0.88;
+# receipt under docs/campaigns/hopper-atlas-vs-vllm-2026-09/receipts/).
+# A tcgen05 rewrite of that kernel would lift this; nothing here does that.
+#
+# A hardware-level define, not a per-model one, because it is a fact about
+# the ISA and because every KERNEL.toml under this tree is a symlink into
+# kernels/gb10 — saying it per model would fork a shared file once per
+# model, which tests/inherited_targets.rs forbids.
+[build]
+extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
+
+# ── Serving defaults for this target ───────────────────────────────────────
+#
+# Same mechanism as kernels/hopper and kernels/gb10 (see either file, and
+# `crates/atlas-kernels/build_defaults.rs`): the per-target serving levers,
+# baked into `atlas_kernels::TARGET_DEFAULTS` and read before the environment.
+#
+# ★ EVERY VALUE HERE IS THE CONSERVATIVE ONE, and deliberately NOT Hopper's.
+# B200 has no serving receipt of any kind — nothing in this repo has run on
+# one. Copying Hopper's recipe across because both cards are datacentre parts
+# is the reasoning this whole table exists to replace: a default is a claim
+# about a measurement, and there is no B200 measurement. The Hopper-tuned
+# kernels ARE compiled for this target (kernels/b200/common symlinks them from
+# kernels/hopper/common), so an operator can A/B any row below with the
+# documented environment override and the serve log will say the value came
+# from the environment. When a receipt lands, it changes THIS file.
+[defaults]
+cublas_gemm_scope = "off"
+ffn_batch16_tier = false
+ffn_m16_tc = false
+attn_m16_tc = false
+attn_ncol_gemv = false
+lm_head_m16_tc = false
+lm_head_batchm_max = 8
+ssm_batched_recurrent = false
+gdn_decode_hopper = false
+# The Hopper ONE-READ strided GDN decode twin (#927). OFF for want of a
+# receipt, like every other row here, and INERT: unlike `gdn_decode_hopper.cu`
+# the new source is NOT symlinked into this tree, so the probe returns
+# `KernelHandle(0)` and the batched decode stays on the gb10 parent. The kernel
+# is sized for a GH100 SM — 72 of its 128 state rows in 37 904 B of shared
+# memory, six CTAs resident against a 132-SM device's 5.82-CTA grid at n=16 —
+# and a B200 has 148 SMs and a different smem budget, so `auto`-inheriting it
+# by resemblance is the reasoning this table replaces. See
+# `kernels/hopper/HARDWARE.toml` and `GDN-DECODE-ATTRIBUTION.md`.
+gdn_decode_strided_hopper = false
+gdn_prefill_tc = false
+# CTAs per value head in the tensor-core prefill spine (#928). 1, for want of a
+# receipt, exactly as for every other Hopper row here. The twin is not even
+# symlinked into this tree, so the row is inert; it is declared rather than
+# omitted because absence would read as agreement with a baseline nobody chose.
+gdn_spine_vsplit = 1
+ssm_ba_gates_hopper = false
+# The Hopper FP8 activation-quant twin (#928, round 16). OFF for want of a
+# receipt, like every other row here — B200 must not inherit a Hopper recipe by
+# resemblance. The source is Hopper-owned and is NOT symlinked into this tree,
+# so the row is inert exactly as `gdn_decode_hopper` is. The twin's width floor
+# is `2 * sm_count` CTAs, which on 148 SMs would be a different threshold than
+# the one that was measured. See `kernels/hopper/HARDWARE.toml`.
+fp8_act_quant_hopper = false
+# The fused dense-FFN gate+up decode GEMM (#927). OFF for want of a receipt,
+# like every other row here — B200 must not inherit a Hopper recipe by
+# resemblance. The arm's strided-SiLU consumer is Hopper-owned and is NOT
+# symlinked into this tree, so the row is inert here exactly as
+# `gdn_decode_hopper` is. See `kernels/hopper/HARDWARE.toml`.
+ffn_gateup_fused = false
+# The fused attention Q/K/V decode GEMM (#927). OFF for want of a receipt,
+# like every other row here — B200 must not inherit a Hopper recipe by
+# resemblance. See `kernels/hopper/HARDWARE.toml`.
+attn_qkv_fused = false
+decode_split_silu = true
+ssm_decode_ring_slots = "auto"
+# Upper M for the W8A8 block-scaled dense-FFN prefill (#917). NO CAP here:
+# 4294967295 is u32::MAX, which is `build_defaults::baseline`'s value and the
+# way this table spells "every M takes the W8A8 arm". B200 has NO receipt either way. It keeps the baseline for the same
+# reason it keeps the conservative cublas scope: a cap is a measurement, and
+# copying GB10's because both are Blackwell is the reasoning this table
+# replaces. The row is here to be filled in when someone measures it.
+#
+# Declared explicitly rather than left to the baseline for the reason
+# `gdn_decode_hopper` is: a row present in one target's table and missing from
+# another's is how a lever comes to mean two things in one repository.
+w8a8_prefill_max_m_widening = 4294967295
+w8a8_prefill_max_m_narrowing = 4294967295
+# Paged-decode attention split-K (#928). `legacy` — the pre-#928 rule — for
+# want of a receipt, like every other row here. B200's 148 SMs would make
+# Hopper's `auto` land on 13 splits by the same formula, which is an ARGUMENT;
+# the split-K twins are not even symlinked into this tree, so `auto` here would
+# resolve the gb10 FP8 pair and no BF16 pair at all.
+attn_decode_splitk = "legacy"
+
+# ── Kernels this target OVERRIDES instead of inheriting ────────────────────
+#
+# The same four Hopper-tuned sources as `kernels/hopper` — see that file for
+# what each one is and which `[defaults]` lever reaches it. They are NOT in
+# `kernels/gb10/common`, so they cannot be inherited from the oracle the rest
+# of this mirror points at.
+#
+# ★ SYMLINKS INTO `kernels/hopper/common`, NOT COPIES. They are ordinary
+# datacentre-GPU CUDA — m16n8k16 MMA, a scale transpose — with nothing sm_90a
+# about them, so B200 and Hopper want the same source, and a second regular
+# file with the same content is the cross-target duplicate
+# `scripts/check_kernel_shadows.py` RULE2 exists to forbid. If a B200 receipt
+# ever calls for a genuinely different kernel, the fix is a real file here and
+# a line in this comment saying what diverged and why.
+#
+# Compiling them costs nothing at serve time: every `[defaults]` lever that
+# reaches them is false on this target, so the probes are never issued. They
+# are built so an operator CAN A/B them with an environment override.
+[kernels]
+overrides = [
+  "dense_gemm_m16_bf16.cu",
+  "fp8_scale_transpose.cu",
+  "w8a16_gemm_m16.cu",
+  "w8a16_gemv_ncol.cu",
+]

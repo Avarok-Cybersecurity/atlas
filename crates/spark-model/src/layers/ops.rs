@@ -13,21 +13,44 @@
 
 #[path = "ops/activations.rs"]
 mod activations;
+#[cfg(test)]
+#[path = "ops/chunk_zero_ssot_tests.rs"]
+mod chunk_zero_ssot_tests;
 #[path = "ops/derived_weights.rs"]
 mod derived_weights;
 #[path = "ops/dispatch_config.rs"]
 mod dispatch_config;
+#[cfg(test)]
+#[path = "ops/dispatch_config_routing_tests.rs"]
+mod dispatch_config_routing_tests;
+// The compiled target's serving defaults (`kernels/<hw>/HARDWARE.toml`
+// `[defaults]`, baked into atlas_kernels), resolved BEFORE the environment.
+// SSOT for every lever that differs between GB10 and Hopper.
 #[path = "ops/dispatch_helpers.rs"]
 mod dispatch_helpers;
 #[path = "ops/dispatch_proj.rs"]
 mod dispatch_proj;
+#[path = "ops/target_defaults.rs"]
+pub mod target_defaults;
+// W8A8 block-scaled cuBLASLt routing for the 5..16-row DECODE projections
+// (#927), a sibling of dispatch_proj.rs so neither file crosses the cap.
+#[path = "ops/dispatch_proj_decode.rs"]
+mod dispatch_proj_decode;
 // Row-wise FP8 routing, split out when it took dispatch_proj.rs over the cap.
 #[path = "ops/dispatch_proj_rowwise.rs"]
 mod dispatch_proj_rowwise;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
+#[path = "ops/fp8_act_quant.rs"]
+mod fp8_act_quant;
+// WHEN the Hopper FP8 act-quant twin runs: the CTA floor, its lever and the
+// route line (#928, round-16 SS 2.1). A sibling so neither file crosses the cap.
+#[path = "ops/fp8_act_quant_floor.rs"]
+mod fp8_act_quant_floor;
 #[path = "ops/fp8_gemv_batch.rs"]
 mod fp8_gemv_batch;
+// Tensor-core W8A16 decode GEMM with a 16-row M tile (#927), the ALU-bound
+// `w8a16_gemv_batch16`'s replacement at 5..=16 rows. Behind ATLAS_FFN_M16_TC.
 #[path = "ops/fp8_moe.rs"]
 mod fp8_moe;
 #[path = "ops/fp8_moe_batch_a.rs"]
@@ -44,6 +67,10 @@ pub mod gdn_flashinfer;
 #[cfg(not(unix))]
 #[path = "ops/gdn_flashinfer_absent.rs"]
 pub mod gdn_flashinfer;
+// Tensor-core BF16 decode GEMM with a 16-row M tile — the BF16 LM-head arm
+// (#927/#928). Behind ATLAS_LM_HEAD_M16_TC; SSOT for its launch geometry.
+#[path = "ops/dense_gemm_m16_bf16.rs"]
+mod dense_gemm_m16_bf16;
 #[path = "ops/gemm_dense.rs"]
 mod gemm_dense;
 #[path = "ops/gemm_dense_int8.rs"]
@@ -52,6 +79,12 @@ mod gemm_dense_int8;
 mod gemm_fp4;
 #[path = "ops/model_stats.rs"]
 pub mod model_stats;
+#[path = "ops/w8a16_gemm_m16.rs"]
+mod w8a16_gemm_m16;
+// The bit-exact N-column-blocked sibling of `w8a16_gemv_batch16` (#927),
+// for the attention decode projections. Behind ATLAS_ATTN_NCOL_GEMV.
+#[path = "ops/w8a16_gemv_ncol.rs"]
+mod w8a16_gemv_ncol;
 pub use model_stats::ModelStats;
 
 #[path = "ops/gemm_fp8_prefill.rs"]
@@ -109,6 +142,10 @@ pub mod moe_lora_grouped;
 mod moe_prefill;
 #[path = "ops/norm.rs"]
 mod norm;
+// The gated-RMS-norm launch-count pin (#927): 48 per step, not 768.
+#[cfg(test)]
+#[path = "ops/norm_gated_rms_strided_tests.rs"]
+mod norm_gated_rms_strided_tests;
 mod nvfp4_mmq;
 #[path = "ops/ple.rs"]
 mod ple;
@@ -137,6 +174,8 @@ mod qsa;
 mod quant_dispatch;
 #[path = "ops/sampling.rs"]
 mod sampling;
+#[path = "ops/ssm_ba_gates_hopper.rs"]
+mod ssm_ba_gates_hopper;
 #[path = "ops/ssm_gdn_a.rs"]
 mod ssm_gdn_a;
 #[path = "ops/ssm_gdn_a2.rs"]
@@ -147,8 +186,18 @@ mod ssm_gdn_a3;
 mod ssm_gdn_b;
 #[path = "ops/ssm_gdn_batched.rs"]
 mod ssm_gdn_batched;
+#[path = "ops/ssm_gdn_hopper.rs"]
+mod ssm_gdn_hopper;
+#[path = "ops/ssm_gdn_hopper_prefill.rs"]
+mod ssm_gdn_hopper_prefill;
 #[path = "ops/ssm_gdn_snap.rs"]
 mod ssm_gdn_snap;
+#[path = "ops/ssm_gdn_spine_cfg.rs"]
+mod ssm_gdn_spine_cfg;
+#[path = "ops/ssm_gdn_strided_hopper.rs"]
+mod ssm_gdn_strided_hopper;
+#[path = "ops/ssm_gdn_tc_route.rs"]
+mod ssm_gdn_tc_route;
 #[path = "ops/ssm_mamba.rs"]
 mod ssm_mamba;
 #[path = "ops/ssm_preproc.rs"]
@@ -160,12 +209,16 @@ pub mod token_overlay;
 mod wide_prefill;
 
 pub use activations::*;
+pub use dense_gemm_m16_bf16::*;
 pub use derived_weights::{Derivation, DerivedWeights};
-pub use dispatch_config::GemmDispatch;
+pub use dispatch_config::{CublasScope, GemmDispatch, parse_cublas_scope};
 pub use dispatch_helpers::*;
 pub use dispatch_proj::*;
+pub use dispatch_proj_decode::*;
 pub use dispatch_proj_rowwise::*;
 pub use embeddings::*;
+pub use fp8_act_quant::*;
+pub use fp8_act_quant_floor::*;
 pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;
 pub use fp8_moe_batch_a::*;
@@ -212,13 +265,22 @@ pub use q4k_mmq::*;
 pub use qsa::*;
 pub use quant_dispatch::*;
 pub use sampling::*;
+pub use ssm_ba_gates_hopper::*;
 pub use ssm_gdn_a::*;
 pub use ssm_gdn_a2::*;
 pub use ssm_gdn_a3::*;
 pub use ssm_gdn_b::*;
 pub use ssm_gdn_batched::*;
+pub use ssm_gdn_hopper::*;
+pub(crate) use ssm_gdn_hopper_prefill::*;
 pub use ssm_gdn_snap::*;
+pub use ssm_gdn_spine_cfg::*;
+pub use ssm_gdn_strided_hopper::*;
+pub use ssm_gdn_tc_route::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;
+pub use target_defaults::{Resolved, Source, TargetLevers};
+pub use w8a16_gemm_m16::*;
+pub use w8a16_gemv_ncol::*;
 pub use wide_prefill::*;

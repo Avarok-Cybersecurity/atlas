@@ -14,6 +14,23 @@
 //!   - `prefill`: batched prefill with paged attention
 //!   - `trait_impl`: `TransformerLayer` trait implementation
 
+// The bit-exact N-column-blocked decode tier for the FP8 attention
+// projections (#927). Lives beside `init` rather than inside `trait_impl`
+// because `init` caches its lever on the layer and BOTH multi-seq call sites
+// (QKV strided, o_proj contiguous) read the one rule.
+mod attn_ncol_gemv;
+// The `ATLAS_ATTN_M16_TC` route lines (#927, H100 round 9 cell W) — `pub(crate)`
+// because both multi-seq call sites that need them
+// (`trait_impl::multi_seq::qkv_fp8_batch`, `trait_impl::multi_seq::attn::o_proj`)
+// reach it via the full crate path, the same way `dense_ffn_m16_tc`'s route
+// log is reached from outside its own file.
+pub(crate) mod attn_m16_tc_route;
+// The FUSED attention Q/K/V decode GEMM rule (#927). Beside `init` for the
+// same reason `attn_m16_tc_route` is: `init` caches the lever on the layer,
+// the multi-seq dispatch site in `trait_impl::multi_seq::w8a8_decode` selects
+// on it, and the weight loader + the residency PREDICTION both have to ask the
+// same question before a checkpoint exists. One rule, one file.
+pub(crate) mod attn_qkv_fused;
 mod decode;
 // V4: `pub(crate)` so the DeepSeek-V4 weight loader (`weight_loader::deepseek_v4`)
 // and the V4 attention submodules can call `helpers::yarn_rope_mscale`. Non-V4
@@ -31,6 +48,10 @@ mod op_dump;
 #[cfg(feature = "cuda")]
 pub mod innerq_driver;
 mod prefill;
+// The cuBLASLt W8A8 prefill arm that replaced `ATLAS_CUBLAS_GEMM=attn`'s
+// off-ledger BF16 weight dequant (#917 round 3 / #927).
+mod prefill_qkv_w8a8;
+mod prefill_w8a8;
 mod prefill_weights;
 mod trait_impl;
 mod types;
@@ -43,7 +64,8 @@ pub use innerq_driver::InnerQDriver;
 pub(crate) use types::HeadGateActivation;
 pub use types::Qwen3AttentionLayer;
 pub use types_weights::{
-    CompressorWeights, HcHeadWeights, HcLowRank, HcSiteWeights, HcWeights, MlaWeights,
+    CompressorWeights, Fp8TwinSet, HcHeadWeights, HcLowRank, HcSiteWeights, HcWeights, MlaWeights,
+    W8A8_PREFILL_KERNELS, w8a8_prefill_kernels_loaded,
 };
 
 /// Startup fail-fast for `--kv-cache-dtype`: resolve every kernel handle the

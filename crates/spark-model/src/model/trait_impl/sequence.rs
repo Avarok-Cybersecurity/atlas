@@ -488,6 +488,16 @@ impl TransformerModel {
         // sequences → shared GDN state → cross-stream content bleed. A no-op
         // for the ownership-TRANSFER caller (lifecycle swap-out), where the
         // target is owned by the retiring victim and not on the free list.
+        //
+        // The false return is therefore NOT an error here and cannot be
+        // promoted to one: this call cannot tell "owned by the victim I am
+        // about to disown" (legal) from "owned by a live stream that keeps
+        // it" (corruption). Choosing a legal target is the CALLER's rule, and
+        // it has exactly one home — `scheduler::mod_helpers::slot_targets`,
+        // which routes around slots held by the `prefilling` queue, plus the
+        // `a.seq.slot_idx == victim_idx` transfer precondition in
+        // `scheduler::lifecycle::swap_out_sequence`. Both exist because
+        // round-13 cell V violated them (#1002).
         self.ssm_pool.claim_specific(new_slot);
         if let Some(g) = seq.ssm_slot.as_mut() {
             // Guard owned `old_slot`; drop that ownership before releasing.

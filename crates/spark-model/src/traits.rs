@@ -20,6 +20,56 @@ pub struct MixedForwardResult {
     pub prefill_logits: DevicePtr,
 }
 
+/// A batched-prefill refusal raised BEFORE any stream's state was mutated.
+///
+/// The distinction is not cosmetic. Once a batched forward has entered Phase A
+/// it has allocated KV blocks, taken prefix reservations and staged hidden for
+/// every member, so re-running those streams one at a time would double-allocate
+/// — the caller must fail them (with a response, never a silent drop). A refusal
+/// raised before that point leaves the streams exactly as the scheduler handed
+/// them over, so the caller can and MUST re-run the whole wave per-stream and
+/// complete every request.
+///
+/// Attach with `anyhow::Error::new(BatchedPrefillDeclined::new(reason))` (or
+/// `.context(..)` on top of it) and detect with `downcast_ref`. The scheduler's
+/// wave-failure path (`run_batched_prefill_step`) is the reader.
+#[derive(Debug, Clone)]
+pub struct BatchedPrefillDeclined {
+    reason: String,
+}
+
+impl BatchedPrefillDeclined {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// Does this error chain carry a decline marker? True ⇒ no stream state was
+    /// mutated and the wave may safely be re-run per-stream.
+    pub fn is_decline(err: &anyhow::Error) -> bool {
+        err.chain()
+            .any(|c| c.downcast_ref::<BatchedPrefillDeclined>().is_some())
+    }
+}
+
+impl std::fmt::Display for BatchedPrefillDeclined {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "batched prefill declined before any stream was mutated: {} \
+             (caller must re-run this wave per-stream)",
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for BatchedPrefillDeclined {}
+
 /// Per-stream input slice for batched prefill.
 ///
 /// One of these per concurrent prefilling stream — `prefill_batch_chunk` and
@@ -137,11 +187,22 @@ pub struct SequenceState {
     /// Persistent paged metadata for chunked prefill, allocated lazily on the
     /// first chunk that needs paged attention.
     pub chunked_prefill_meta: Option<ChunkedPrefillPageMetadata>,
-    /// Number of prompt tokens served by the prefix cache (block-aligned).
-    /// Set by the model layer on the chunk-0 prefix-cache lookup; read by
-    /// the scheduler to populate `usage.prompt_tokens_details.cached_tokens`.
-    /// 0 when prefix caching is disabled or the prompt had no cache match.
+    /// Number of prompt tokens MATCHED by the chunk-0 prefix-cache lookup
+    /// (block-aligned). Load-bearing for block-ref accounting: `free_sequence`
+    /// release, `cache_sequence` double-bump avoidance, and the chunked-prefill
+    /// KV write floor all key off it. NOT what gets reported to clients —
+    /// a match can be found and then discarded (see `reused_prefix_tokens`).
     pub cached_prefix_tokens: usize,
+    /// Number of prompt tokens whose KV this request actually READ from the
+    /// prefix cache instead of recomputing. Stamped after the skip decision;
+    /// read by the scheduler to populate
+    /// `usage.prompt_tokens_details.cached_tokens`.
+    ///
+    /// Atlas #919: this used to be `cached_prefix_tokens`, which reports the
+    /// lookup result — so a request that matched 48 tokens and then recomputed
+    /// all of them (no SSM snapshot / exact-leaf bypass / declined Marconi
+    /// restore) advertised `cached_tokens: 48` next to a full-prefill log line.
+    pub reused_prefix_tokens: usize,
     /// Number of `block_table` entries that came FROM the prefix cache on this
     /// sequence's lookup (`matched_blocks.len()`). The cache already holds its
     /// own "+1" KV ref on each of those blocks, and eviction returns exactly ONE
@@ -298,6 +359,7 @@ impl SequenceState {
             adapter_id: 0,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
+            reused_prefix_tokens: 0,
             cached_prefix_blocks: 0,
             prefix_ref_tokens: Vec::new(),
             prefix_lookup_applied: false,

@@ -246,6 +246,36 @@ pub struct ServeArgs {
     #[arg(long, default_value = "snapshot")]
     pub ssm_rollback_mode: String,
 
+    /// Phase-C SSM decode-rollback ring depth: `auto` (default) or an
+    /// explicit slot count in `0..=8`.
+    ///
+    /// The ring retains boundary SSM-state snapshots so a watchdog re-steer
+    /// can rewind the recurrent state; its cost is `depth x
+    /// --max-batch-size x the per-sequence SSM state blob`, which on the 27B
+    /// (151.5 MiB/seq) at the default depth 8 and `--max-batch-size 32` is
+    /// 37.88 GiB — the whole reason an 80 GB H100 refused the hopper recipe
+    /// (#915, rental H100 2026-09-05: inference reserve 45,823 MiB against a
+    /// 71.3 GiB budget carrying 57.2 GiB of weights).
+    ///
+    /// `auto` keeps the depth at 8 (or the existing skips — the ring is
+    /// unreachable under `--speculative`/`--dflash` and with watchdogs off)
+    /// and lets preflight SHRINK it down `8, 4, 2, 1, 0` until the reserve
+    /// fits, logging the formula at WARN. Depth degrades gracefully: fewer
+    /// retained boundaries means fewer reachable re-steer anchors, and a
+    /// sequence that finds none hard-stops instead of re-steering — never a
+    /// partial SSM rewind.
+    ///
+    /// An explicit `N` pins the depth on BOTH sides (reserve and allocation)
+    /// and disables the fit: a serve that does not fit at `N` is REFUSED with
+    /// the formula, rather than booted at a depth the recipe does not record.
+    /// `0` disables the ring outright; 8 is the wired default and the
+    /// arithmetic ceiling.
+    ///
+    /// Legacy: `ATLAS_SSM_DECODE_RING=1|0` still means depth 8 and 0. It is
+    /// only consulted when this flag is `auto` — absent is not a value.
+    #[arg(long, default_value = "auto", value_name = "AUTO_OR_N")]
+    pub ssm_decode_ring_slots: String,
+
     /// Fused GDN output-norm kernel on the decode path (default: off).
     ///
     /// Required by `--ssm-h-dtype f16`: the FP16 h-state twins live on the
@@ -906,10 +936,15 @@ pub struct ServeArgs {
     pub profile: bool,
 
     /// Number of warmup tokens for online FP8 KV cache scale calibration.
-    /// During the first N tokens, tracks max |K| and max |V| values across
-    /// all attention layers. After N tokens, computes per-tensor scales as
-    /// max/448 (mapping the observed range to FP8 E4M3 [-448, 448]).
-    /// 0 = disabled (use static scales from checkpoint, or uncalibrated 1.0).
+    /// Tracks max |K| and max |V| over the first N observed tokens — ACROSS
+    /// requests, so a readiness probe counts toward the window but can never
+    /// close it on its own (#919) — then computes per-tensor scales as
+    /// amax*headroom/448 (mapping the observed range to FP8 E4M3 [-448, 448]).
+    /// The window's own KV is held in BF16 and requantized at the freeze, so
+    /// the write scale always equals the read scale; N is clamped to 4096 to
+    /// bound that staging. 1 = freeze on the first observe (the pre-#919
+    /// behaviour). 0 = disabled (use static scales from checkpoint, or
+    /// uncalibrated 1.0).
     /// Only applies when --kv-cache-dtype is fp8.
     /// Precedence (highest wins): this flag → MODEL.toml
     /// `[behavior].fp8_kv_calibration_tokens` → 0. An explicit value always
@@ -918,12 +953,11 @@ pub struct ServeArgs {
     #[arg(long)]
     pub fp8_kv_calibration_tokens: Option<usize>,
 
-    /// Headroom multiplier applied to the first-observe absmax when the online
-    /// FP8 KV scale freezes (calibration freezes on the FIRST observe so the
-    /// write scale always equals the read scale). The first observe sees only
-    /// the first prefill chunk, so the frozen scale covers headroom× its
-    /// observed max — later tokens whose magnitude grows don't clip, at a cost
-    /// of <1 bit of precision. Must be ≥ 1.0 (below 1.0 guarantees clipping;
+    /// Headroom multiplier applied to the accumulated absmax when the online
+    /// FP8 KV scale freezes. The calibration window only sees the first
+    /// `--fp8-kv-calibration-tokens` tokens, so the frozen scale covers
+    /// headroom× their max — later tokens whose magnitude grows don't clip, at
+    /// a cost of <1 bit of precision. Must be ≥ 1.0 (below 1.0 guarantees clipping;
     /// rejected at startup). Replaces `ATLAS_FP8_KV_HEADROOM`.
     #[arg(long, default_value_t = 2.0)]
     pub fp8_kv_headroom: f32,

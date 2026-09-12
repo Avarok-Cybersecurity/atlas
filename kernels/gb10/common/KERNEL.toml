@@ -35,10 +35,32 @@ extra_nvcc_flags = ["--fmad=false", "-DTQ_PLUS_SIGNS"]
 #       not shadow rms_norm.cu, so it always gets the common/ copies. If a
 #       vanilla-norm model ever forks rms_norm.cu, the startup audit still
 #       hard-errors on the missing kernels.
+#
+#   norm::gated_rms_norm_f32_input_strided
+#       The strided twin of `gated_rms_norm_f32_input` (#927): the same
+#       per-(sequence, head) reduction with `blockIdx.y` walking the
+#       sequences, so a batched GDN decode step spends ONE launch per layer
+#       instead of one per row. A LAUNCH-COUNT optimisation and nothing else —
+#       its only dispatch site is a `try_kernel` (qwen3_ssm/init.rs), and the
+#       documented fallback on handle 0 is the per-sequence loop, which is the
+#       arm every one of these models runs today.
+#
+#       Exempt rather than back-ported because the ten model shadows of
+#       rms_norm.cu are NOT copies of common/rms_norm.cu that fell behind:
+#       they implement STANDARD RMS norm (`x * weight / rms`) where common
+#       implements offset-from-1 (`x * (1 + weight) / rms`), and each carries
+#       1,100+ lines of that divergence. Re-deriving them from common would
+#       silently renormalise five models; appending just this one kernel would
+#       add a tenth copy of a function whose only caller is optional. Neither
+#       buys anything the fallback does not already give.
 [shadow_exempt]
 w4a16 = ["w4a16_dequant"]
 moe_w4a16 = ["moe_w4a16_grouped_gemm"]
-norm = ["rms_norm_residual_vanilla", "residual_add_rms_norm_vanilla"]
+norm = [
+  "rms_norm_residual_vanilla",
+  "residual_add_rms_norm_vanilla",
+  "gated_rms_norm_f32_input_strided",
+]
 
 # File stem → module name overrides.
 # Any .cu file not listed here uses its file stem as the module name.

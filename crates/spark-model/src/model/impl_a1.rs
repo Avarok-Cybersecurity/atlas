@@ -134,6 +134,30 @@ impl TransformerModel {
         let dense_gemv_batchm_kernel = gpu
             .kernel("dense_gemv_bf16_batchm", "dense_gemv_bf16_batchm")
             .unwrap_or(spark_runtime::gpu::KernelHandle(0));
+        // Tensor-core BF16 head arm (#927/#928). Optional: older kernel sets
+        // have neither entry point, and a 0 handle is exactly how
+        // `lm_head_m16_tc_route` declines.
+        //
+        // ★ PROBED ONLY WHEN THE ARM IS ARMED. It was loaded unconditionally on
+        // the grounds that "a handle is cheap", which stopped being true when
+        // `dense_gemm_m16_bf16.cu` became a HOPPER-TUNED source
+        // (`kernels/hopper/common`) that GB10 does not compile: the boot audit
+        // (`kernel_audit::classify_failures`) fails CLOSED on every unresolved
+        // lookup nothing declared, so the probe itself would refuse a GB10
+        // boot. The target declares the arm (`[defaults] lm_head_m16_tc`) and
+        // `ATLAS_LM_HEAD_M16_TC` overrides.
+        let lm_head_m16_tc_on = crate::layers::ops::target_defaults::resolved()
+            .lm_head_m16_tc
+            .value;
+        let head_probe = |func: &str| {
+            if lm_head_m16_tc_on {
+                crate::layers::try_kernel(gpu.as_ref(), "dense_gemm_m16_bf16", func)
+            } else {
+                spark_runtime::gpu::KernelHandle(0)
+            }
+        };
+        let lm_head_m16_tc_kernel = head_probe("dense_gemm_m16_bf16");
+        let lm_head_m16_tc_n64_kernel = head_probe("dense_gemm_m16_bf16_n64");
         let argmax_kernel = gpu.kernel("argmax", "argmax_bf16")?;
         let argmax_batch_kernel = gpu
             .kernel("argmax", "argmax_bf16_batch")
@@ -275,8 +299,9 @@ impl TransformerModel {
         // therefore unreachable, and on this model it is NOT cheap: 8 slots x
         // max_batch x the full SSM blob (27B: 158.9 MB) = ~19.9 GB at batch 16,
         // allocated up front. Skip it when speculative decode is on.
-        // The ring-depth decision (env overrides + speculative/watchdog
-        // skip) is SSOT'd in `crate::ssm_reserve::decode_rollback_ring_slots`
+        // The ring-depth decision (the published `--ssm-decode-ring-slots` /
+        // #915 auto-fit depth, env overrides, speculative/watchdog skip) is
+        // SSOT'd in `crate::ssm_reserve::decode_rollback_ring_slots`
         // — spark-server's `preflight_reserve` calls the SAME helper, so the
         // GPU reservation and this allocation cannot drift. The scheduler
         // keys off `decode_rollback_ring_slots()`, so a 0 here disables save
@@ -878,6 +903,8 @@ impl TransformerModel {
             dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,
             dense_gemv_batchm_kernel,
+            lm_head_m16_tc_kernel,
+            lm_head_m16_tc_n64_kernel,
             argmax_kernel,
             argmax_batch_kernel,
             argmax_logits_kernel,

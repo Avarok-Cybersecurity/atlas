@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "url": "http://127.0.0.1:8888",
+  "determinism_ok": true,
+  "toolcall_ok": true,
+  "think_leak_ok": true,
+  "passed": true,
+  "known_answer_ok": true
+}

@@ -1700,6 +1700,40 @@ extern "C" __global__ void moe_fp8_grouped_gemm_ptrtable_t(
     }
 }
 
+// ── W4A4 (FP4 weights AND FP4 activations): Blackwell warp-block-scale only ──
+//
+// Everything below the guard is compiled out on any target that defines
+// ATLAS_NO_WARP_BLOCKSCALE_MMA, because its instruction selection does not
+// exist there. The instructions are named inside the guard, with the code
+// that issues them — `tests/blockscale_mma_guard.rs` scans this file for
+// those spellings and fails on one outside, comments included, so the only
+// place they may be written is where they are true.
+#ifndef ATLAS_NO_WARP_BLOCKSCALE_MMA
+// Both instructions below exist on consumer/GB10 Blackwell (sm_120/sm_121)
+// and NOWHERE ELSE Atlas targets:
+//
+//   sm_90a  (H100/H200): no NVFP4 datapath.
+//           ptxas: Instruction 'cvt with .e2m1x2' not supported
+//   sm_100a (B200/GB200): has NVFP4, but issues block-scaled MMA through
+//           tcgen05, not the warp-level mma.sync form.
+//           ptxas: Instruction 'mma with block scale' not supported
+//
+// (measured 2026-09-05, CUDA 13.0.88 — receipts in
+// docs/campaigns/hopper-atlas-vs-vllm-2026-09/receipts/. Neither
+// architecture is a superset of the other, so this is one define, not an
+// arch comparison.)
+//
+// A target whose ISA lacks them sets the define in `[build] extra_nvcc_flags`
+// in its HARDWARE.toml. The two entry points then do not exist for that
+// target, which its MODEL.toml declares in [expected_absent.moe_w4a16] with
+// the ptxas error as the reason. Both are resolved with `try_kernel` and
+// dispatched only behind `handle != 0` plus a default-off opt-in
+// (ATLAS_HOLO_MOE_GATEUP_FP4 / _DOWN_FP4), so their absence costs the FP4
+// escape hatch and nothing else.
+//
+// GB10 never defines it: this region compiles exactly as before, and gb10's
+// PTX is byte-identical across the change that added the guard.
+
 // ═══════════════════════════════════════════════════════════════════
 // FP4 (block-scaled e2m1) fused gate+up MoE GEMM — Phase 2.
 //
@@ -2317,3 +2351,4 @@ extern "C" __global__ void moe_w4a16_down_t_k64_fp4(
         if (r1v && c1 < N) C[r1*N+c1] = __float2bfloat16(acc[nt][3] * scale2);
     }
 }
+#endif  // ATLAS_NO_WARP_BLOCKSCALE_MMA

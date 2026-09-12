@@ -349,9 +349,21 @@ impl Qwen3SsmLayer {
                 })?;
             }
         } else {
-            ops::gdn_decode(
+            // #927's Hopper twin, or the gb10 parent. The lever, the handle
+            // and the kernel's dimension contract are ONE decision and it
+            // lives in `ops::gdn_decode_f32_auto`; the twin is DEFAULT OFF
+            // since H100 round 12 measured it at +6.8% per C=1 step
+            // (`ops::gdn_decode_hopper_enabled`, GDN-DECODE-ATTRIBUTION.md).
+            // A zero handle off the FP32 state keeps the parent, as before.
+            let hopper_twin = if use_f32_gdn {
+                self.gdn_f32_hopper_k
+            } else {
+                spark_runtime::gpu::KernelHandle(0)
+            };
+            ops::gdn_decode_f32_auto(
                 ctx.gpu,
                 gdn_kernel,
+                hopper_twin,
                 state.h_state,
                 q_conv,
                 k_conv,

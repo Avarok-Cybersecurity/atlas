@@ -17,6 +17,14 @@ mod attention_forward_oproj;
 mod attention_forward_v4;
 mod high_speed_swap;
 mod run_paged_decode;
+// The paged-decode split-K policy and its two kernel pairs (#928). Its own
+// file because the rule has three call sites in `run_paged_decode.rs` — the
+// NVFP4, FP8 and BF16 arms — and that file is already on the repository's
+// file-size allow list.
+mod splitk_dispatch;
+#[cfg(test)]
+#[path = "decode/splitk_route_tests.rs"]
+mod splitk_route_tests;
 mod write_kv_cache;
 
 impl Qwen3AttentionLayer {

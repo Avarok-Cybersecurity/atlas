@@ -1550,12 +1550,45 @@ want_rc_msg 1 "is missing hardware tree(s)" \
 
 # ...and it still catches the violation it exists for: a shadow byte-identical
 # to the common file it overrides is a dead override.
+# Every tree in HW_SOURCE_EXT, because the check REFUSES a kernels/ root it
+# cannot fully scan (that is the control two blocks up). `hopper` and `b200`
+# joined that list in this PR; the RULE3 fixture below was written with them
+# and this older one was not, so it stopped reaching RULE1 at all and failed
+# on "is missing hardware tree(s)" instead — an assertion that still went red,
+# for the wrong reason.
 mkdir -p "$TMP/ks/live/gb10/common" "$TMP/ks/live/gb10/m1/q" \
+         "$TMP/ks/live/hopper/common" "$TMP/ks/live/b200/common" \
          "$TMP/ks/live/metal" "$TMP/ks/live/strix" "$TMP/ks/live/strix-hip"
 printf '__global__ void k() {}\n' > "$TMP/ks/live/gb10/common/k.cu"
 cp "$TMP/ks/live/gb10/common/k.cu" "$TMP/ks/live/gb10/m1/q/k.cu"
 want_rc_msg 1 "RULE1" "control: the kernel-shadow check still catches a dead override" \
   python3 scripts/check_kernel_shadows.py "$TMP/ks/live"
+
+# RULE3 -- an inheriting target's common/ is a symlink mirror, so a REGULAR
+# file there is either a declared tuned kernel (kernels/hopper's four, since
+# the 2026-09-11 review) or a silent fork of a shared kernel that diverges for
+# every model on the target at once. Nothing on disk tells the two apart, so
+# the declaration is what the check reads. Both directions are controlled:
+# undeclared file, and declared-but-missing.
+mkdir -p "$TMP/ks/r3/gb10/common" "$TMP/ks/r3/hopper/common" \
+         "$TMP/ks/r3/b200/common" "$TMP/ks/r3/metal" "$TMP/ks/r3/strix" \
+         "$TMP/ks/r3/strix-hip"
+printf '__global__ void k() {}\n' > "$TMP/ks/r3/gb10/common/k.cu"
+ln -s ../../gb10/common/k.cu "$TMP/ks/r3/hopper/common/k.cu"
+ln -s ../../gb10/common/k.cu "$TMP/ks/r3/b200/common/k.cu"
+printf '__global__ void tuned() {}\n' > "$TMP/ks/r3/hopper/common/tuned.cu"
+want_rc_msg 1 "RULE3" \
+  "control: an undeclared regular file in an inherited common/ is rejected" \
+  python3 scripts/check_kernel_shadows.py "$TMP/ks/r3"
+
+printf '[kernels]\noverrides = ["tuned.cu"]\n' > "$TMP/ks/r3/hopper/HARDWARE.toml"
+want_rc 0 "declaring the tuned kernel in [kernels] overrides accepts it" \
+  python3 scripts/check_kernel_shadows.py "$TMP/ks/r3"
+
+rm "$TMP/ks/r3/hopper/common/tuned.cu"
+want_rc_msg 1 "does not resolve" \
+  "control: a declared override that vanished is rejected" \
+  python3 scripts/check_kernel_shadows.py "$TMP/ks/r3"
 
 # ---------------------------------------------------------------------------
 # A write whose failure is swallowed, and no probe behind it

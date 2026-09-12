@@ -1,0 +1,1737 @@
+{
+  "generated_utc": "2026-09-05T02:17:00Z",
+  "host": "spark1",
+  "hw": "hopper",
+  "arch": "sm_90a",
+  "nvcc": "Build cuda_13.0.r13.0/compiler.36424714_0",
+  "strict": true,
+  "selftest": {
+    "bad_failed": true,
+    "good_passed": true,
+    "bad_fixture": "known_bad_post_hopper.cu"
+  },
+  "summary": {
+    "total": 171,
+    "pass": 171,
+    "fail": 0,
+    "by_model": {
+      "nemotron-super-120b-a12b": {
+        "total": 171,
+        "pass": 171,
+        "fail": 0
+      }
+    }
+  },
+  "results": [
+    {
+      "file": "gb10/common/argmax_bf16.cu",
+      "stem": "argmax_bf16",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 15,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/bf16_add.cu",
+      "stem": "bf16_add",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 10,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/causal_conv1d.cu",
+      "stem": "causal_conv1d",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 36,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemm_bf16.cu",
+      "stem": "dense_gemm_bf16",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 123,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemm_splitk.cu",
+      "stem": "dense_gemm_splitk",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemm_tc.cu",
+      "stem": "dense_gemm_tc",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemv_bf16.cu",
+      "stem": "dense_gemv_bf16",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 34,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemv_bf16_batch2.cu",
+      "stem": "dense_gemv_bf16_batch2",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 44,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemv_bf16_batchm.cu",
+      "stem": "dense_gemv_bf16_batchm",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 38,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemv_fp8w.cu",
+      "stem": "dense_gemv_fp8w",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 31,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemv_fp8w_batch2.cu",
+      "stem": "dense_gemv_fp8w_batch2",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dequant_fp8_blockscaled_bf16.cu",
+      "stem": "dequant_fp8_blockscaled_bf16",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 14,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dequant_gguf_bf16.cu",
+      "stem": "dequant_gguf_bf16",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 20,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dequant_nvfp4_bf16.cu",
+      "stem": "dequant_nvfp4_bf16",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 16,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dflash2.cu",
+      "stem": "dflash2",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 30,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/e2m1_branchless.cu",
+      "stem": "e2m1_branchless",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 22,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/embed_from_argmax.cu",
+      "stem": "embed_from_argmax",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 16,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/fp8_gemm_t_blockscaled.cu",
+      "stem": "fp8_gemm_t_blockscaled",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 167,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/fp8_gemv_rt.cu",
+      "stem": "fp8_gemv_rt",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 105,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/fused_k_norm_rope_cache.cu",
+      "stem": "fused_k_norm_rope_cache",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule.cu",
+      "stem": "gated_delta_rule",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_fla.cu",
+      "stem": "gated_delta_rule_fla",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 255,
+      "spill_bytes": 324,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_persistent.cu",
+      "stem": "gated_delta_rule_persistent",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 255,
+      "spill_bytes": 124,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_regresident.cu",
+      "stem": "gated_delta_rule_regresident",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 48,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy.cu",
+      "stem": "gated_delta_rule_wy",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy2_resident.cu",
+      "stem": "gated_delta_rule_wy2_resident",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 255,
+      "spill_bytes": 120,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy2_resident_f16.cu",
+      "stem": "gated_delta_rule_wy2_resident_f16",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 255,
+      "spill_bytes": 40,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy3.cu",
+      "stem": "gated_delta_rule_wy3",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy3_f16.cu",
+      "stem": "gated_delta_rule_wy3_f16",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 48,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy3_resident.cu",
+      "stem": "gated_delta_rule_wy3_resident",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 255,
+      "spill_bytes": 204,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy3_resident_f16.cu",
+      "stem": "gated_delta_rule_wy3_resident_f16",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 255,
+      "spill_bytes": 64,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy4.cu",
+      "stem": "gated_delta_rule_wy4",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 56,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy4_f16.cu",
+      "stem": "gated_delta_rule_wy4_f16",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 48,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy64_prefill.cu",
+      "stem": "gated_delta_rule_wy64_prefill",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 143,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy_f16.cu",
+      "stem": "gated_delta_rule_wy_f16",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wyn.cu",
+      "stem": "gated_delta_rule_wyn",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gdn_verify_fused_conv_kn.cu",
+      "stem": "gdn_verify_fused_conv_kn",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gdn_verify_fused_k2.cu",
+      "stem": "gdn_verify_fused_k2",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 34,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_decode.cu",
+      "stem": "inferspark_decode",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill.cu",
+      "stem": "inferspark_prefill",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_fp8kv.cu",
+      "stem": "inferspark_prefill_fp8kv",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_h128.cu",
+      "stem": "inferspark_prefill_h128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged.cu",
+      "stem": "inferspark_prefill_paged",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_512.cu",
+      "stem": "inferspark_prefill_paged_512",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 126,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_batched.cu",
+      "stem": "inferspark_prefill_paged_batched",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 94,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_bf16k_turbo2v.cu",
+      "stem": "inferspark_prefill_paged_bf16k_turbo2v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 94,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_bf16k_turbo3v.cu",
+      "stem": "inferspark_prefill_paged_bf16k_turbo3v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 78,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_bf16k_turbo4v.cu",
+      "stem": "inferspark_prefill_paged_bf16k_turbo4v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 94,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_fp8.cu",
+      "stem": "inferspark_prefill_paged_fp8",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 79,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_fp8_batched.cu",
+      "stem": "inferspark_prefill_paged_fp8_batched",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 94,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_fp8k_turbo2v.cu",
+      "stem": "inferspark_prefill_paged_fp8k_turbo2v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 78,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_fp8k_turbo3v.cu",
+      "stem": "inferspark_prefill_paged_fp8k_turbo3v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 78,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_fp8k_turbo4v.cu",
+      "stem": "inferspark_prefill_paged_fp8k_turbo4v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 78,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_indirect.cu",
+      "stem": "inferspark_prefill_paged_indirect",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 78,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_nvfp4.cu",
+      "stem": "inferspark_prefill_paged_nvfp4",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_nvfp4_batched.cu",
+      "stem": "inferspark_prefill_paged_nvfp4_batched",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 94,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo2.cu",
+      "stem": "inferspark_prefill_paged_turbo2",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo3.cu",
+      "stem": "inferspark_prefill_paged_turbo3",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo3k_turbo8v.cu",
+      "stem": "inferspark_prefill_paged_turbo3k_turbo8v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 92,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo4.cu",
+      "stem": "inferspark_prefill_paged_turbo4",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo4k_turbo3v.cu",
+      "stem": "inferspark_prefill_paged_turbo4k_turbo3v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 96,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo4k_turbo8v.cu",
+      "stem": "inferspark_prefill_paged_turbo4k_turbo8v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 78,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo8.cu",
+      "stem": "inferspark_prefill_paged_turbo8",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 77,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_v47.cu",
+      "stem": "inferspark_prefill_v47",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 253,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/kv_cache_append.cu",
+      "stem": "kv_cache_append",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 24,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/lora_bgmv.cu",
+      "stem": "lora_bgmv",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 36,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/mamba2_ssd_chunk.cu",
+      "stem": "mamba2_ssd_chunk",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 66,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/mamba2_ssm_decode.cu",
+      "stem": "mamba2_ssm_decode",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/metadata_fill.cu",
+      "stem": "metadata_fill",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 12,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_bf16_grouped_gemm.cu",
+      "stem": "moe_bf16_grouped_gemm",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 94,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_decode_atomic_c4.cu",
+      "stem": "moe_decode_atomic_c4",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_expert_gemv.cu",
+      "stem": "moe_expert_gemv",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 36,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_expert_gemv_fused.cu",
+      "stem": "moe_expert_gemv_fused",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 56,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_expert_relu2_down_shared.cu",
+      "stem": "moe_expert_relu2_down_shared",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_fp8_grouped_gemm.cu",
+      "stem": "moe_fp8_grouped_gemm",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 128,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_gate_topk.cu",
+      "stem": "moe_gate_topk",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_hash_route.cu",
+      "stem": "moe_hash_route",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_lora_gather_bgmv.cu",
+      "stem": "moe_lora_gather_bgmv",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 36,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_lora_grouped_down.cu",
+      "stem": "moe_lora_grouped_down",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 36,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_permute.cu",
+      "stem": "moe_permute",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 34,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_prefill.cu",
+      "stem": "moe_prefill",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused.cu",
+      "stem": "moe_shared_expert_fused",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_batch2.cu",
+      "stem": "moe_shared_expert_fused_batch2",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 34,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_batch2_t.cu",
+      "stem": "moe_shared_expert_fused_batch2_t",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_batch3.cu",
+      "stem": "moe_shared_expert_fused_batch3",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_batch3_t.cu",
+      "stem": "moe_shared_expert_fused_batch3_t",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_bf16.cu",
+      "stem": "moe_shared_expert_fused_bf16",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 34,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_bf16_batch2.cu",
+      "stem": "moe_shared_expert_fused_bf16_batch2",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 48,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_fp8.cu",
+      "stem": "moe_shared_expert_fused_fp8",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_fp8_batch2.cu",
+      "stem": "moe_shared_expert_fused_fp8_batch2",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_fp8_batch2_t.cu",
+      "stem": "moe_shared_expert_fused_fp8_batch2_t",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 34,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_fp8_batch3.cu",
+      "stem": "moe_shared_expert_fused_fp8_batch3",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_fp8_batch3_t.cu",
+      "stem": "moe_shared_expert_fused_fp8_batch3_t",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 34,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_fp8_t.cu",
+      "stem": "moe_shared_expert_fused_fp8_t",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_t.cu",
+      "stem": "moe_shared_expert_fused_t",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_silu_mul.cu",
+      "stem": "moe_silu_mul",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_sorted_prefill.cu",
+      "stem": "moe_sorted_prefill",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_topk.cu",
+      "stem": "moe_topk",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 29,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_topk_sigmoid.cu",
+      "stem": "moe_topk_sigmoid",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_topk_softmax_bias.cu",
+      "stem": "moe_topk_softmax_bias",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_topk_sqrtsoftplus.cu",
+      "stem": "moe_topk_sqrtsoftplus",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_transpose_batched.cu",
+      "stem": "moe_transpose_batched",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 28,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_w4a16_grouped_gemm.cu",
+      "stem": "moe_w4a16_grouped_gemm",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 168,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_w8a8_grouped_gemm.cu",
+      "stem": "moe_w8a8_grouped_gemm",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 128,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/nemotron_moe_prefill.cu",
+      "stem": "nemotron_moe_prefill",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/nllb_encoder.cu",
+      "stem": "nllb_encoder",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn.cu",
+      "stem": "paged_decode_attn",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 48,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_bf16k_turbo2v.cu",
+      "stem": "paged_decode_attn_bf16k_turbo2v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_bf16k_turbo2v_128.cu",
+      "stem": "paged_decode_attn_bf16k_turbo2v_128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_bf16k_turbo3v.cu",
+      "stem": "paged_decode_attn_bf16k_turbo3v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_bf16k_turbo3v_128.cu",
+      "stem": "paged_decode_attn_bf16k_turbo3v_128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_bf16k_turbo4v.cu",
+      "stem": "paged_decode_attn_bf16k_turbo4v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_bf16k_turbo4v_128.cu",
+      "stem": "paged_decode_attn_bf16k_turbo4v_128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8.cu",
+      "stem": "paged_decode_attn_fp8",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 56,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8k_turbo2v.cu",
+      "stem": "paged_decode_attn_fp8k_turbo2v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8k_turbo2v_128.cu",
+      "stem": "paged_decode_attn_fp8k_turbo2v_128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8k_turbo3v.cu",
+      "stem": "paged_decode_attn_fp8k_turbo3v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8k_turbo3v_128.cu",
+      "stem": "paged_decode_attn_fp8k_turbo3v_128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8k_turbo4v.cu",
+      "stem": "paged_decode_attn_fp8k_turbo4v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8k_turbo4v_128.cu",
+      "stem": "paged_decode_attn_fp8k_turbo4v_128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_nvfp4.cu",
+      "stem": "paged_decode_attn_nvfp4",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo2.cu",
+      "stem": "paged_decode_attn_turbo2",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo2_128.cu",
+      "stem": "paged_decode_attn_turbo2_128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo3.cu",
+      "stem": "paged_decode_attn_turbo3",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo3_128.cu",
+      "stem": "paged_decode_attn_turbo3_128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo3k_turbo8v.cu",
+      "stem": "paged_decode_attn_turbo3k_turbo8v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo3k_turbo8v_128.cu",
+      "stem": "paged_decode_attn_turbo3k_turbo8v_128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4.cu",
+      "stem": "paged_decode_attn_turbo4",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4_128.cu",
+      "stem": "paged_decode_attn_turbo4_128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4_512.cu",
+      "stem": "paged_decode_attn_turbo4_512",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 159,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4k_turbo3v.cu",
+      "stem": "paged_decode_attn_turbo4k_turbo3v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4k_turbo3v_128.cu",
+      "stem": "paged_decode_attn_turbo4k_turbo3v_128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4k_turbo8v.cu",
+      "stem": "paged_decode_attn_turbo4k_turbo8v",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4k_turbo8v_128.cu",
+      "stem": "paged_decode_attn_turbo4k_turbo8v_128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo8.cu",
+      "stem": "paged_decode_attn_turbo8",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo8_128.cu",
+      "stem": "paged_decode_attn_turbo8_128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo8_512.cu",
+      "stem": "paged_decode_attn_turbo8_512",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 128,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/per_token_group_quant_fp8.cu",
+      "stem": "per_token_group_quant_fp8",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 19,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/q2_0_gemv.cu",
+      "stem": "q2_0_gemv",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/q2_0_gemv_vec.cu",
+      "stem": "q2_0_gemv_vec",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 48,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/quant_rowwise_fp8.cu",
+      "stem": "quant_rowwise_fp8",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 20,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/quantize_bf16_to_fp8_blockscaled.cu",
+      "stem": "quantize_bf16_to_fp8_blockscaled",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/quantize_bf16_to_nvfp4.cu",
+      "stem": "quantize_bf16_to_nvfp4",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 30,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/relu_squared.cu",
+      "stem": "relu_squared",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/reshape_and_cache.cu",
+      "stem": "reshape_and_cache",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/reshape_and_cache_turbo.cu",
+      "stem": "reshape_and_cache_turbo",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 61,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/residual_add.cu",
+      "stem": "residual_add",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 16,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu",
+      "stem": "rms_norm",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/rms_norm_vanilla.cu",
+      "stem": "rms_norm_vanilla",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/rope.cu",
+      "stem": "rope",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 29,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/rope_mrope_interleaved.cu",
+      "stem": "rope_mrope_interleaved",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 30,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/ssm_h_dtype.cu",
+      "stem": "ssm_h_dtype",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 12,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/ssm_preprocess.cu",
+      "stem": "ssm_preprocess",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/ssm_state_norm.cu",
+      "stem": "ssm_state_norm",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/token_overlay.cu",
+      "stem": "token_overlay",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/tq_plus_innerq_apply.cu",
+      "stem": "tq_plus_innerq_apply",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 22,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/transpose_u8.cu",
+      "stem": "transpose_u8",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 28,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/vector_add.cu",
+      "stem": "vector_add",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 12,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w4a16_fp8_ldmab.cu",
+      "stem": "w4a16_fp8_ldmab",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 128,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu",
+      "stem": "w4a16_gemm",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 168,
+      "spill_bytes": 624,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w4a16_gemv.cu",
+      "stem": "w4a16_gemv",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 148,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w4a16_gemv_fused.cu",
+      "stem": "w4a16_gemv_fused",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 43,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemm.cu",
+      "stem": "w8a16_gemm",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 96,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemm_pipelined.cu",
+      "stem": "w8a16_gemm_pipelined",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemm_t.cu",
+      "stem": "w8a16_gemm_t",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 122,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemm_t_m128.cu",
+      "stem": "w8a16_gemm_t_m128",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 128,
+      "spill_bytes": 356,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemv.cu",
+      "stem": "w8a16_gemv",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemv_batch4.cu",
+      "stem": "w8a16_gemv_batch4",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemv_fused.cu",
+      "stem": "w8a16_gemv_fused",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 53,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/wht_bf16.cu",
+      "stem": "wht_bf16",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/widen_block_scale_f32.cu",
+      "stem": "widen_block_scale_f32",
+      "model": "nemotron-super-120b-a12b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 10,
+      "spill_bytes": 0,
+      "error_head": ""
+    }
+  ]
+}

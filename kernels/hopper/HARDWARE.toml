@@ -1,0 +1,742 @@
+[hardware]
+name = "hopper"
+vendor = "nvidia"
+# H100 SXM5 / H200 SXM5 — both SM 9.0. `sm_90a` enables the arch-specific
+# Hopper feature set (wgmma/TMA/setmaxnreg) for kernels that opt in; the
+# shared gb10-derived kernels below use none of it yet and compile as
+# plain sm_90 code. PTX built for sm_90a is NOT forward-compatible with
+# sm_100/sm_120 devices — this target is Hopper-only by design.
+arch = "sm_90a"
+compute_capability = "9.0"
+# Streaming multiprocessors. H100 SXM5/PCIe and H200 SXM5 are all GH100 with
+# 132 SMs enabled; the H100 NVL card is 132 too. READ by
+# `atlas_kernels::attn_splitk` for the paged-decode split-K split count, and
+# CROSS-CHECKED at boot against `cudaDevAttrMultiProcessorCount` — a serve on a
+# part with a different count logs a warning naming both numbers rather than
+# silently sizing a grid for the wrong machine (`arch_preflight.rs`).
+#
+# The defect it closes (#928): `atlas_core::device::sm121::NUM_SMS = 48`, the
+# GB10 constant, was compiled into the H100 attention dispatch, so
+# `num_splits` was 1 at every batch size and `paged_decode_attn_fp8` ran 24
+# CTAs on 132 SMs — 22.7% of a C=1 decode step at 1.28% of HBM
+# (`ATTN-DECODE-SPLITK-ATTRIBUTION.md`).
+sm_count = 132
+# H100 SXM5 80 GB HBM3: 3350 GB/s. H200 SXM5 141 GB HBM3e: 4800 GB/s.
+# Sized to the smaller SKU; the runtime reads real free memory via
+# cuMemGetInfo, this is documentation + roofline input only.
+memory_bandwidth_gbps = 3350
+memory_type = "HBM3"
+memory_gb = 80
+
+# Flags added to EVERY kernel compiled for this hardware, under
+# common/KERNEL.toml's and the model's (build_flags::merge_extra_flags).
+#
+# ATLAS_NO_WARP_BLOCKSCALE_MMA compiles out the W4A4 path in
+# qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu. Hopper has no NVFP4
+# datapath, so `cvt.rn.satfinite.e2m1x2.f32` and the warp-level
+# `mma.sync ... .kind::mxf4nvf4.block_scale` do not exist here — ptxas:
+# "Instruction 'cvt with .e2m1x2' not supported on .target 'sm_90a'"
+# (measured 2026-09-05, CUDA 13.0.88; receipt under
+# docs/campaigns/hopper-atlas-vs-vllm-2026-09/receipts/).
+#
+# A hardware-level define, not a per-model one, because it is a fact about
+# the ISA and because every KERNEL.toml under this tree is a symlink into
+# kernels/gb10 — saying it per model would fork a shared file once per
+# model, which tests/inherited_targets.rs forbids.
+[build]
+extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
+
+# ── Serving defaults for this target ───────────────────────────────────────
+#
+# SSOT for the per-target serving levers, baked into `atlas_kernels` by
+# build.rs (`build_defaults.rs`) as `atlas_kernels::TARGET_DEFAULTS` and read
+# by every resolver in spark-model BEFORE the environment.
+#
+# WHY IT IS HERE. Maintainer review, 2026-09-11 (tbraun96): "Every Hopper/GB10
+# divergence is expressed as an env lever set by an H100 recipe living outside
+# this repo — not as arch-selected code. 'No interference' rests on discipline
+# rather than structure." Every value below WAS a line in that external recipe.
+# The recipe is now the target's own declaration, so an H100 serve with NO
+# environment set reproduces the round-9 best configuration — plus the one row
+# that has been added to it since, `gdn_prefill_tc`, on round 13's receipt —
+# and a GB10 serve cannot be reached by it: the two tables are separate files.
+#
+# The environment still overrides any of these; the serve log's
+# `target defaults (hopper): …` line marks which values came from it.
+[defaults]
+# H100 round 3/9: the cuBLASLt arms win on all three projection families.
+# SCOPED, not a global boolean — `ATLAS_CUBLAS_GEMM=1` once armed the SSM arm
+# by accident and materialised ~10.3 GiB of unledgered BF16 dequant
+# (dispatch_config::CublasScope). `head` is parsed but has no consumer.
+cublas_gemm_scope = "ffn,ssm,attn"
+# `w8a16_gemv_batch16`: with `cublas_gemm_scope` arming the FFN's W8A8 arm at
+# these same 5..=32 widths, the batch16 tier is a measured LOSS on H100 — the
+# recipe that produced round 9 sets `ATLAS_FFN_NO_BATCH16`.
+ffn_batch16_tier = false
+# `w8a16_gemm_m16` on the dense-FFN arm: round 6 A/B, +13.7% on the SSM-layer
+# FFN step at bs16 (544 CTAs against a 528-CTA residency). Off; the ATTENTION
+# tiers below are the half of that lever that wins.
+ffn_m16_tc = false
+# `w8a16_gemm_m16{,_strided}` on QKV and o_proj: round 6 A/B, -21.7% on the
+# attention phase at bs16. Net +5.3% on the serve once split from the FFN arm.
+attn_m16_tc = true
+# `w8a16_gemv_batch16_ncol{2,4}`: no H100 serving receipt yet — the microtest
+# exists, the A/B does not. Stays off until it does.
+attn_ncol_gemv = false
+# `dense_gemm_m16_bf16` on the BF16 decode head: +4% on the serve.
+lm_head_m16_tc = true
+# The BF16 decode head's batched-GEMV band. 16, not GB10's frozen 8: on H100
+# the TILE GEMM is what loses at decode widths (#927 — 224 ms/step at 16
+# active rows), which is the opposite of the GB10 measurement that froze 8.
+# Clamped at the kernel's compile-time row bound by the resolver.
+lm_head_batchm_max = 16
+# One strided recurrent launch per batch on the GDN decode path: +6% on the
+# serve, and md5-identical output to the per-sequence launches.
+ssm_batched_recurrent = true
+# The Hopper GDN DECODE twins (#927, `gdn_decode_hopper.cu` below). OFF — the
+# one Hopper-owned kernel this table turns down, and the only row here whose
+# receipt is a LOSS. H100 round 12 (2026-09-11, 1xH100 80GB HBM3,
+# Qwen/Qwen3.8-27B-FP8 @ `cc5a21e46`, `h100-round12-report.md`), three
+# independent measurements agreeing:
+#   * microtest `native_gdn_decode_hopper_microtest`: BIT-IDENTICAL on all 12
+#     legs (`state_diff`/`out_diff` 0, `max_abs` 0.000e0), and 0.83x the parent
+#     at the leg that decides C=1 (contiguous n=1, 13.62 vs 11.30 us), 0.98-1.01x
+#     — i.e. null — on the other eleven;
+#   * nsys, launch count for launch count: the twin is +6.8% per C=1 step
+#     (912.7 vs 854.2 us over 48 launches) and +0.19% at n=16 (2749.9 vs
+#     2744.8 us), a clean null;
+#   * the serve A/B: cell F (`ATLAS_NO_GDN_HOPPER=1`) beat cell E by +0.41%
+#     aggregate and -0.43% TPOT at C=1, against rep spreads of 0.02%/0.04%.
+# The column-tiled grid has nothing to fill on a 132-SM H100: the parent
+# already saturates the device at n>=4, and at n=1 the extra CTAs cost more in
+# launch and reduction than they recover. This is an H100 finding, NOT a
+# verdict on the kernel — on a smaller-SM Hopper part the trade may go the
+# other way, which is why `gdn_decode_hopper.cu` stays in `[kernels] overrides`
+# below and keeps being compiled. `ATLAS_GDN_DECODE_HOPPER=1` is the positive
+# lever that runs that measurement; `ATLAS_NO_GDN_HOPPER=1`, the kill switch
+# round 12's cell F was run with, still forces it off and outranks the
+# positive. Numbers: `GDN-DECODE-ATTRIBUTION.md`.
+gdn_decode_hopper = false
+# The Hopper ONE-READ strided GDN decode twin (#927,
+# `gdn_decode_strided_hopper.cu` below). ON, for the n >= 4 batched arm only —
+# the n=1 path stays on the parent, which the row above is the receipt for.
+#
+# A DIFFERENT KERNEL FROM THE ROW ABOVE, and the distinction is the whole
+# design. `gdn_decode_hopper.cu` re-partitions state COLUMNS across more CTAs
+# to fill 132 SMs at n=1; round 12 measured that 0.83x at n=1 and a null at
+# n=16, because at n=16 the parent's grid is already 768 CTAs and there is
+# nothing to fill. This kernel re-partitions NOTHING — it cannot, because the
+# per-column reduction over `kd` is a serial f32 chain and any split across
+# threads re-brackets it — and attacks the other axis instead: how many times
+# the f32 state is read.
+#
+# THE COST. nsys `--cuda-graph-trace=node`, 1xH100 80GB HBM3,
+# Qwen/Qwen3.8-27B-FP8 @ `3717cb05e`, round 13 cell V, median n=16 decode step
+# 19.887 ms busy (`h100-r13-attribution.md` SS C.2/C.3): the strided GDN decode
+# recurrence is 48 graph nodes, **2 748.9 us = 13.82% of the step** and the
+# third largest item in it, 57.27 us per launch. At nk=16 nv=48 kd=vd=128 the
+# live state is `2 * n * nv * kd * vd * 4 B` = 100.66 MB per layer of
+# COMPULSORY traffic (one read, one write) = 1 758 GB/s = 52.5% of this part's
+# 3 350 GB/s. But the parent walks the state TWICE — once for `hk_dot`, once to
+# apply the update — so its ISSUED traffic is 150.99 MB = 2 637 GB/s = 78.7%.
+# The distance between 52.5% and 78.7% is not slack; it is a second read.
+#
+# WHAT THE TWIN DOES. Of the 128 rows of each (sequence, head) state tile it
+# stages 72 in shared memory on pass 1, retains 24 in registers, and re-reads
+# only the last 32 from global — 2.25 reads-equivalents against the parent's
+# 3.00, i.e. 25% less state traffic. The 32 re-read rows are 12.6 MB across an
+# n=16 launch and are re-read within microseconds, so they are the ones L2
+# plausibly serves; the 96 it keeps are the ones it plausibly does not, because
+# the whole live state is 50.33 MB against an H100's 50 MB of L2 and all 768
+# CTAs run at once.
+#
+# WHY 72/24/32 AND NOT 0/128 OR 128/0 — ptxas, sm_90a, CUDA 13.0,
+# `--fmad=false`, `--Werror all-warnings`. The binding constraint is occupancy:
+# the parent is 40 registers and 1 040 B of smem, so its ceiling is 12 CTAs/SM
+# and the n=16 GRID caps it at 5.82 CTAs/SM = 23.3 warps in ONE wave. A twin
+# that halves the traffic and also halves the residency has made a trade, not a
+# fix — that is how the n=1 twin became a 0.83x. The shipped split is the
+# lowest-traffic point that still keeps SIX CTAs resident (792 slots for 768
+# CTAs, still one wave):
+#
+#   smem rows / reg rows | registers | smem B | CTAs/SM | traffic units
+#   ---------------------|-----------|--------|---------|--------------
+#   (parent)             |        40 |  1 040 | 5.82(*) | 3.000
+#   72 / 16              |        66 | 37 904 |       6 | 2.313
+#   72 / 24  (SHIPPED)   |        80 | 37 904 |       6 | 2.250
+#   72 / 32              |        96 | 37 904 |       5 | 2.188
+#   80 / 24              |        72 | 42 000 |       5 | 2.188
+#   80 / 48              |       128 | 42 000 |       4 | 2.000
+#   64 / 64              | 255 + 68 B spill | 33 808 |   2 | 2.000
+#
+#   (*) grid-limited. CTAs/SM is `min(65536 / (regs * 128), 233472 / smem)`.
+#
+# The last row reproduces, from the other direction, the loss the tree already
+# had on file: full-width register retention spills (the in-tree note at
+# `gated_delta_rule_decode_f32_strided_norm_half`, -11.6% e2e), turning the
+# retained columns into LOCAL memory — the traffic the lever was removing.
+#
+# ⚠️ NO SERVING RECEIPT YET, and the prediction is a BAND, not a number. Round
+# 13's nsys is the receipt for the COST; the saving depends on how much of the
+# parent's second read L2 already serves, which no trace in this campaign
+# measures. All of these are arithmetic on the measured 57.27 us/launch:
+# second read entirely missing -> -687 us/step (-3.5%); half served -> -412 us
+# (-2.1%); entirely served -> instruction-side only. The round-13 lever table's
+# "945 us/step at an 80%-of-HBM target" is the ceiling of the band, not a
+# prediction. Round 17's nsys picks the point.
+#
+# Turned ON rather than left off for the reason `ssm_ba_gates_hopper` is: the
+# arm cannot change a bit of output — `native_gdn_decode_hopper_microtest`
+# asserts `state_diff`/`out_diff` == 0 against the parent, not a tolerance, on
+# 6 legs with a KNOWN_BAD control — and its occupancy is the parent's, so its
+# worst case is a null. `ATLAS_GDN_DECODE_STRIDED_HOPPER=0` is the
+# one-variable A/B and `ATLAS_NO_GDN_HOPPER=1` still outranks it, the same kill
+# switch that outranks the row above.
+#
+# THE WIDTH GUARD IS LOAD-BEARING. One CTA per (sequence, head) means the grid
+# IS `nv * n`, so the twin declines below 4 rows AND below a grid of
+# `sm_count` CTAs and the parent runs — at n=1 the grid is 48 CTAs on 132 SMs
+# and the problem is underfill, not traffic, which is the row above's job.
+# `ops::gdn_decode_strided_hopper_accept` is the rule. Numbers:
+# `GDN-DECODE-ATTRIBUTION.md`.
+gdn_decode_strided_hopper = true
+# The tensor-core GDN chunked-PREFILL spine (#928). ON, and the largest measured
+# win of the H100 campaign. Round 9 put the scalar spine at 26.6%/32.3% of a
+# 1193/4593-token H100 prefill; the accuracy receipt this row was waiting for
+# arrived with round 13 (2026-09-11, 1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8 @
+# `3c0379030`, `h100-round13-report.md`), cell T1 against cell A on the SAME
+# binary:
+#   * 1193/256 tokens: C=1 TTFT 269.1 -> 162.4 ms (-39.6%) — the first metric in
+#     this campaign where Atlas leads vLLM on this box (162.4 vs 179 ms);
+#     C=16 aggregate 429.05 -> 521.19 tok/s (+21.5%);
+#   * 4593/512 tokens: C=1 TTFT 889.3 -> 491.5 ms (-44.7%); C=16 aggregate
+#     308.86 -> 405.91 tok/s (+31.4%), TTFT 7524.7 -> 4145.5 ms (-44.9%);
+#   * coherency 4/4 on every gate, determinism 8/8 identical over 3 runs, and
+#     the only differences against the control are two cosmetic word choices in
+#     7 coherency prompts ("we can" -> "you can", "Thus" -> "Therefore");
+#   * numerics are gated on GB10 by `native_gdn_chunk_prefill_microtest`: the
+#     shipped `_x2` arm reproduces the scalar spine's `uc`/`S_c` to four digits
+#     (rel_rms 1.6721e-3 on both at T=4593), holds the f32 state at 3.9e-6 with
+#     `cosine=1.000000000`, drift BOUNDED, KNOWN_BAD refused at all three T.
+# The kernel is still SHARED (`kernels/gb10/common/gated_delta_rule_chunk_tc.cu`,
+# validated on GB10) and is NOT relocated here — only the default moved.
+# `ATLAS_GDN_PREFILL_TC=0` turns the whole family off, which is how the A/B is
+# re-run now that the positive arm is the default.
+#
+# It is a FAMILY lever: it also selects the two Hopper prefill remnant twins
+# declared below (`gdn_recompute_wu_hopper.cu`, `gdn_fwd_o_hopper.cu`), because
+# the three kernels are one pipeline. `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` is
+# the one-variable A/B that keeps the spine and pins those two to their
+# parents; it is the ONLY way to run them apart, and round 13 ran it: cell T2
+# isolates the twins at -12.1%/-13.0% of C=1 TTFT on the two shapes
+# (184.7 -> 162.4 ms and 565.0 -> 491.5 ms). nsys on the same two cells prices
+# them per kernel at T=4593 — `chunk_fwd_o_hopper` 4.28x (71 548 -> 16 716 us),
+# `recompute_wu_hopper` 1.60x (47 389 -> 29 558 us) — with the SHARED spine
+# kernel as the internal control at 0.99x (51 775 vs 52 060 us), so the -71.7 ms
+# of prefill GPU busy is accounted for by the twins' -72.4 ms and by nothing
+# else. Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
+#
+# HOPPER ONLY. gb10 and b200 keep `false`: no target but this one has a serving
+# receipt for the family, and b200 must not inherit a Hopper recipe by
+# resemblance (`tests/target_defaults.rs`).
+gdn_prefill_tc = true
+# CTAs per value head inside that spine (#928, `gdn_chunk_delta_h_vsplit_hopper.cu`
+# below). 1 = OFF, i.e. the unsplit `..._tcfuse_x2` — and this is the one Hopper
+# row added with NO device receipt at all, so it ships off.
+#
+# WHAT IT ATTACKS. nsys round 13 cell T1N (1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8,
+# `h100-r13-attribution.md` SS A.3/A.4): `gated_delta_rule_chunk_delta_h_tcfuse_x2`
+# is 52 060.3 us = 11.32% of the 4593-token prefill's 459.812 ms of GPU busy,
+# 1 062.45 us per launch at M=4576, 13.64 TFLOP/s = 1.4% of BF16 tensor-core peak
+# and 327 GB/s = 9.7% of HBM. Arithmetic intensity 41.8 FLOP/byte: bound by
+# NEITHER roofline. The engine also already runs at the isolated kernel's own
+# ceiling — the GB10 microtest reports 1.0553 ms at T=4593 against the engine's
+# 1.0625, 0.7% apart — so no implementation slack is left at this launch
+# geometry. What IS left is the grid: `[nv=48, batch=1]` = 48 CTAs on 132 SMs,
+# 36% of the machine, with 84 SMs idle for the whole 52 ms.
+#
+# WHY THE SPLIT IS EXACT. Phase A contracts over `k` and Phase B over `i`;
+# neither contracts over `v`. Column block j of the state depends only on column
+# block j of U (hence of V) plus the SHARED k-space operands W, K and the decay
+# row, which are re-read rather than reduced — and `chunk_fwd_o` reads the
+# outputs the same way. So a vd-split needs no cross-CTA reduction and no change
+# in per-element accumulation order, and the twin is BIT-IDENTICAL to the parent
+# rather than a numerics trade. Gated as byte equality of `h`, `uc` and `S_c`
+# (`native_gdn_spine_vsplit_hopper_microtest`, plus the host simulation in
+# `ops::ssm_gdn_vsplit_tests`, which compares the split and unsplit index maps
+# for EXACT f64 equality with a one-column negative control).
+#
+# WHY IT IS STILL OFF. Bit-identity removes the accuracy question, not the speed
+# one, and the worst case here is NOT a null: each split re-reads the k-space W
+# and K, so total traffic is 1.335x at 2-way and 2.005x at 4-way. And the split
+# has been measured before — `gated_delta_rule_chunk_tc.cu`'s 2026-06-25 in-file
+# V-split verdict recorded bit-parity 18/18 and 0.71x/0.65x/0.34x at VTILES=2/4/8
+# on GB10, a 48-SM part where nv=48 CTAs already fill the device. That verdict
+# does not transfer to 132 SMs, which is exactly why the lever exists; a default
+# is a claim about a measurement, and round 16 is where the measurement is made:
+# `ATLAS_GDN_SPINE_VSPLIT=2` (96 CTAs) and `=4` (192 CTAs). Predicted at 2-way,
+# from the idle-SM fraction alone: ~-26 ms of the 459.8 ms 4593-token prefill and
+# ~-7 ms of the 1168-token forward. Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
+gdn_spine_vsplit = 1
+# The Hopper BA-gates twin (#928, `ssm_ba_gates_hopper.cu` below). ON, and
+# BIT-IDENTICAL to its gb10 parent by construction, so this row is a pure speed
+# claim with no accuracy question attached — the microtest
+# `native_ssm_ba_gates_hopper_microtest` asserts byte equality of `gate` and
+# `beta` at M in {17, 25, 1168, 4576}, not a tolerance.
+#
+# WHAT IT FIXES. `dense_gemm_ba_gates_prefill` launches `ceil(N/4)` CTAs per
+# token and each one walks that token's entire `K=5120` activation row for the
+# four BA outputs it owns — and each of those four sweeps the WHOLE row, because
+# the CTA's 256 threads are four 64-lane groups, one per output. At
+# `N = ssm_ba_size = 2*nv = 96` that is 24 CTAs per token and **96 reads and 96
+# conversions of each activation row**, one per BA output. nsys, 1xH100 80GB
+# HBM3, Qwen/Qwen3.8-27B-FP8 @ `815c9f160`, round 13 cell T1
+# (`h100-r13-attribution.md` SS A.3/A.4): 26 881.8 us = 5.85% of the 4593-token
+# prefill, 555.04 us per launch at M=4576, observed grid `(24, 4576)`, 88 GB/s
+# of compulsory traffic — 2.6% of HBM, i.e. nowhere near a bandwidth bound. The
+# twin is one CTA per token and one A fetch per 8 outputs, so the row is read 12
+# times instead of 96; SASS on sm_90a puts the launch at ~1.8x fewer
+# instructions for the same bits.
+#
+# ⚠️ NO SERVING RECEIPT YET. Round 13's nsys is the receipt for the COST; the
+# saving is a round-14 deliverable, and `SSM-BA-GATES-ATTRIBUTION.md` states the
+# prediction as arithmetic (instruction-issue counts) rather than as a measured
+# number, because the kernel is issue-bound and not bandwidth-bound: the
+# attribution doc's roofline "60% of HBM" target does not apply to it. Turned ON
+# rather than left off because the arm cannot change a bit of output and its
+# worst case is a null; `ATLAS_SSM_BA_GATES_HOPPER=0` is the one-variable A/B
+# that pins the parent.
+#
+# The launcher declines the twin below `2 * SM count` tokens and keeps the
+# parent: at one CTA per token a 16-row decode step would occupy 16 SMs of 132,
+# and this kernel is on the BATCHED DECODE path too (nsys round 13 SS C.2:
+# 227.5 us/step at n=16). That guard is `ops::ssm_ba_gates_hopper_reject`, and
+# it is why this row does not put the decode step at risk.
+ssm_ba_gates_hopper = true
+# The Hopper FP8 ACTIVATION-QUANT twin (#928, round 16). ON, and behind a
+# WIDTH FLOOR that this row alone does not express — read
+# `crates/spark-model/src/layers/ops/fp8_act_quant_floor.rs` before moving it.
+#
+# `per_token_group_quant_fp8_hopper` gives each 128-element K-group 16 threads
+# of one `uint4` and packs 8 groups into a 128-thread CTA, so the CTA's load is
+# 2 KB against the parent's 256 B, the activation row stays in registers, and
+# the group max is a 16-lane `__shfl_xor_sync` butterfly with no smem and no
+# barrier. BIT-IDENTICAL output: same `amax / 448.0f`, same `1e-12f` floor,
+# same per-element `div.rn.f32`, same saturating `__nv_cvt_float_to_fp8`.
+#
+# WHAT IT BUYS, and WHERE IT COSTS. `native_fp8_act_quant_hopper_microtest`,
+# 1xH100 80GB HBM3, round 16, 15 arms, all bit-identical:
+#
+#   M=4576 K=17408   377.75 us (639.2 GB/s, 19.1% HBM) -> 105.33 us (2292.5, 68.4%)  3.59x
+#   M=4576 K=6144    135.57 us (628.6, 18.8%)          ->  39.38 us (2164.3, 64.6%)  3.44x
+#   M=4576 K=5120    113.47 us (625.9, 18.7%)          ->  33.29 us (2133.4, 63.7%)  3.41x
+#   M=1168 K=5120     30.76 us (589.2, 17.6%)          ->   9.12 us (1986.9, 59.3%)  3.37x
+#   M=25   K=5120      3.20 us                         ->   4.21 us                  0.76x
+#   M=17   K=6144      3.09 us                         ->   3.87 us                  0.80x
+#   M=16   K=5120      3.22 us                         ->   3.84 us                  0.84x
+#   M=16..25 K=17408   3.95-4.67 us                    ->   3.89-4.32 us             1.02-1.08x
+#
+# The parent's standalone 625.9/628.6/639.2 GB/s reproduces round 13's in-engine
+# nsys figure (633/636/641) to 1.1%, so the attribution's anchor is confirmed by
+# two methods on two binaries. The twin reaches 63.7-68.4% of HBM, NOT the 80%
+# the attribution's prediction table was derived from.
+#
+# SIX of the fifteen arms are LOSSES, and they are exactly the decode widths.
+# 8 groups per CTA means 8x fewer CTAs; at M <= 25 the parent's `M x K/128`
+# grid is already under one wave on 132 SMs, so dividing it by 8 removes
+# parallelism that was doing useful work. Round 16 shipped this kernel selected
+# by PRESENCE, with no lever and no floor, so every decode-width W8A8 call took
+# the slower arm. The floor is the fix: the twin takes a launch only when its
+# own grid clears `2 * sm_count` = 264 CTAs, which is `M >= 53` at K=5120,
+# `M >= 44` at K=6144 and `M >= 16` at K=17408 — the sign of all fifteen arms.
+#
+# The kernel is an ADDITION under `[kernels] overrides`, not an override of the
+# gb10 stem: both must be in the image at once, because the bit-equality gate
+# runs on device. gb10 and b200 carry neither this row's `true` nor the source.
+# `ATLAS_FP8_ACT_QUANT_HOPPER=0` is the A/B. Numbers:
+# `FP8-ACT-QUANT-ATTRIBUTION.md`.
+fp8_act_quant_hopper = true
+# The FUSED dense-FFN gate+up decode GEMM (#927). ON. One block-scaled FP8
+# cuBLASLt call at `N = 2 * intermediate = 34816` on the 5..=16-row decode band
+# replaces two at `N = 17408`.
+#
+# The two GEMMs read the SAME weight bytes either way — the fused weight is the
+# two `[17408, 5120]` E4M3 blocks appended along N — so this row is NOT a
+# traffic claim. It is a per-LAUNCH one, and the trace prices it directly. nsys
+# `--cuda-graph-trace=node`, 1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8 @
+# `3717cb05e`, round 13 cell V, median n=16 decode step 19.887 ms busy
+# (`h100-r13-attribution.md` SS C.2-C.4): the gate+up pair is 128 graph nodes,
+# 5 730.5 us = 44.77 us/node, and at 89.1 MB of weights per node that is
+# 1 991 GB/s = 59.4% of HBM. In the SAME step, on the SAME arm, `down`
+# (K=17408 N=5120, one launch per layer for the same 89.1 MB) reaches 71.4%
+# and SSM `in_proj_qkvz` (N=16384) 73.2%. The only difference between the
+# 59.4% arm and the 71-73% arms is that the first issues TWO launches per layer
+# for the work the others do in one: one launch of twice the N halves the
+# per-launch fixed cost and doubles the tile count per wave. At an 80% target
+# — `down` is already at 71.4% and the LM head hits 80.2% in this trace — that
+# is 1 476 us/step, 7.4% of the step and the single largest decode kernel item
+# in the round-13 table.
+#
+# NUMERICS: a bit claim, not a tolerance. Splitting N produces INDEPENDENT
+# output columns over the same K with the same block scales, so every element
+# of the fused result is the same dot product in the same order as its
+# un-fused twin. `native_fp8_ffn_gateup_fused_microtest` asserts BYTE equality
+# of the gate and up halves at M in {5, 8, 16}, not a cosine.
+#
+# RESIDENCY: net zero. The loader builds the fused `[34816, 5120]` weight and
+# its `[272, 40]` FP32 block-scale grid once per layer, re-points gate and up
+# at VIEWS inside it, and `prune_after_load` releases the two source store
+# tensors it copied — so the arm costs no resident bytes and every un-fused
+# rung keeps working unchanged. Rule: `layers/dense_ffn_gateup_fused.rs`.
+#
+# The consumer, `kernels/hopper/common/silu_mul_strided.cu`, is HOPPER-OWNED
+# (`[kernels] overrides`, an addition) for the same reason this row is: it has
+# exactly one dispatcher and only this target arms it. gb10 and b200 carry
+# neither the row's `true` nor the source, so `ATLAS_FFN_GATEUP_FUSED=1` there
+# arms a lever whose kernel lookup returns 0 and the arm declines — which is
+# what an A/B on a target with no receipt should do.
+#
+# SCOPED TO DECODE. At the prefill widths the same two GEMMs already run at
+# 68.6% of FP8 PEAK (M=4576, `h100-r13-attribution.md` SS A.4) — compute-bound,
+# where a launch saving buys nothing — so the band stops at 16 rows and the
+# prefill arm is untouched. `ATLAS_FFN_GATEUP_FUSED=0` is the A/B. Numbers:
+# `FFN-GATEUP-FUSION-ATTRIBUTION.md`.
+ffn_gateup_fused = true
+# The FUSED attention Q/K/V decode GEMM (#927). ON. One block-scaled FP8
+# cuBLASLt call at `N = q_proj_dim + 2*kv_dim = 14336` on the 5..=16-row decode
+# band replaces three: `q_proj` at N=12288 and `k_proj`/`v_proj` at N=1024 each.
+#
+# Like the gate+up row above, the weight bytes are read once either way — the
+# fused weight is the three `[N_i, 5120]` E4M3 blocks appended along N — so
+# this is a per-LAUNCH row, and the trace prices it directly. nsys
+# `--cuda-graph-trace=node`, 1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8 @
+# `3717cb05e`, round 13 cell V, median n=16 decode step 19.887 ms busy
+# (`h100-r13-attribution.md` SS C.2-C.4):
+#
+#   arm            K     N      nodes  us (us/node)  GB/s   % HBM
+#   attn q_proj    5120  12288  16     460.0 (28.75) 2 189  65.3%
+#   attn k + v     5120  1024   32     510.9 (15.97)   328   9.8%
+#
+# k/v are the worst-utilised GEMMs in the step by a factor of six. 10.5 MB of
+# weight per node CANNOT amortise a launch: at 128-wide N tiles a node is 8
+# tiles on 132 SMs, so 124 SMs sit idle for the whole launch, twice per layer.
+# Appended onto `q_proj` those 8 tiles ride a wave of 96 that is already
+# running and the two launches disappear. Rank 5 of the round-13 decode table:
+# 428 us/step, 2.2% of the step.
+#
+# NUMERICS: a bit claim, not a tolerance. Splitting N produces INDEPENDENT
+# output columns over the same K with the same block scales, so every element
+# of the fused result is the same dot product in the same order as its
+# un-fused twin. `native_fp8_attn_qkv_fused_microtest` asserts BYTE equality of
+# the Q, K and V slices, of the `deinterleave_qg` output that reads Q, and of
+# the KV-cache bytes the FP8 and BF16 KV writes produce — not a cosine.
+#
+# NO NEW KERNEL, and that is the layout argument. `qkv_output` is ALREADY
+# `[n, per_seq_qkv]` with Q at column 0, K at `q_proj_dim` and V after it, and
+# `per_seq_qkv / 2 == q_proj_dim + 2*kv_dim == 14336`. So the fused GEMM's
+# `[m, 14336]` output IS that layout byte for byte: `deinterleave_qg` already
+# takes the row stride, the KV-cache write already reads K and V at their
+# column offsets, and the decode attention already reads Q at column 0. An
+# interleaved fused layout would have needed all three to change; this one
+# needs none, which is why it is N-concatenation. (The NVFP4 wide-verify path
+# in `multi_seq/qkv.rs` has fused on exactly this identity since #915.)
+#
+# RESIDENCY: net zero. The loader builds the fused `[14336, 5120]` weight and
+# its `[112, 40]` FP32 block-scale grid once per full-attention layer, re-points
+# q/k/v at VIEWS inside them, and `prune_after_load` releases the three source
+# store tensors it copied. Rule:
+# `qwen3_attention/trait_impl/multi_seq/qkv_fused.rs`.
+#
+# SCOPED TO DECODE. The n=1 path runs the W8A16 GEMVs at 2 567 GB/s = 76.6% of
+# HBM (SS C.5) — no headroom to buy — and the PREFILL W8A8 arm writes Q into
+# `qkv_output` CONTIGUOUS while K and V go to `ssm_qkvz`, so a fused N there
+# would need a scatter and is a separate measurement. Both are untouched.
+# `ATLAS_ATTN_QKV_FUSED=0` is the A/B. Numbers:
+# `ATTN-QKV-FUSION-ATTRIBUTION.md`.
+attn_qkv_fused = true
+# Split SiLU+down on the decode path — shipped ON everywhere since #928.
+# Paged-decode attention split-K. `auto` — the split count that fills this
+# target's SMs at the single-stream shape:
+#
+#   num_splits = clamp(ceil(2 * sm_count / num_q_heads), 1, 16)
+#
+# which on Qwen3.8-27B (24 q heads) is 11, i.e. 264 CTAs where the shipped
+# geometry launched 24. It is a pure function of (sm_count, num_q_heads) and
+# therefore of CONFIGURATION ONLY — never of the runtime co-batched count, so
+# the reduction tree a sequence sees is fixed per serve and a sequence decoded
+# alone produces the same bytes as the same sequence decoded beside fifteen
+# others. That invariant is what `split_ref_seqs` was added for
+# (`tasks/determinism_investigation.md`) and it is preserved, not relaxed.
+#
+# `legacy` is the pre-#928 rule, `sm_count / (num_q_heads * split_ref_seqs)`,
+# which every other target keeps. `ATLAS_ATTN_DECODE_SPLITK=legacy|auto|N|0`
+# is the A/B; `0`/`off` pins one split, which is what an H100 served before
+# this row existed.
+#
+# ⚠️ `0` AND `off` RESOLVE TO ONE SPLIT, and the boot line reports the RESOLVED
+# count, not the raw spelling — so `ATLAS_ATTN_DECODE_SPLITK=0` prints
+# `attn_decode_splitk=1 (env)`. That is honest (one split IS no split-K, and
+# the dispatch then routes to the non-split entry rather than running the
+# split-K kernel at one split, which measures 15% SLOWER) but it surprised
+# H100 round 15's operator, who expected `=0` echoed back. The kernel that
+# actually ran is named on the dispatch-side route line
+# (`paged decode attention: … num_splits=1 … policy=1`), which is the receipt
+# to read; `splitk_dispatch::route_line` is its one formatter.
+#
+# EVIDENCE, and what is still owed. nsys on 1xH100 80GB HBM3,
+# Qwen/Qwen3.8-27B-FP8, round 13 cell T1N: `paged_decode_attn_fp8` at C=1 is
+# `grid=(24,1,1)`, 231.51 us/launch for 9.93 MB of KV = 42.9 GB/s = 1.28% of
+# HBM; with the BF16-KV sibling the pair is 3.79 ms of a 16.69 ms step. That is
+# the receipt for the DEFECT. The receipt for the FIX is round 14 — the
+# predicted `4096x512` C=1 TPOT is 16.86 -> ~13.1 ms — and this row ships `auto`
+# on the strength of the geometry, which is the one thing the trace measures
+# directly. Numbers: `ATTN-DECODE-SPLITK-ATTRIBUTION.md`.
+attn_decode_splitk = "auto"
+decode_split_silu = true
+# `auto` = size the decode-rollback ring from free memory at preflight (#915).
+ssm_decode_ring_slots = "auto"
+# Upper M for the W8A8 block-scaled dense-FFN prefill (#917). NO CAP here:
+# 4294967295 is u32::MAX, which is `build_defaults::baseline`'s value and the
+# way this table spells "every M takes the W8A8 arm". H100 measures W8A8 at 2.0-3.1x over W8A16 at every M tried (M=64 and
+# M=1193, gate/up and down, 2026-09-11) — the opposite of GB10, where the
+# same arm is a measured 23.4% TTFT regression above the crossover.
+#
+# Declared explicitly rather than left to the baseline for the reason
+# `gdn_decode_hopper` is: a row present in one target's table and missing from
+# another's is how a lever comes to mean two things in one repository.
+w8a8_prefill_max_m_widening = 4294967295
+w8a8_prefill_max_m_narrowing = 4294967295
+
+# ── Kernels this target OVERRIDES instead of inheriting ────────────────────
+#
+# Every other entry in `kernels/hopper/common/` is a relative symlink into
+# `kernels/gb10/common/`, which is what makes gb10 the oracle for this tree
+# (`crates/atlas-kernels/tests/inherited_targets.rs`). The files listed here
+# are REAL FILES: sources that exist for HOPPER PERFORMANCE and are not used on
+# GB10, so gb10's tree does not carry them at all and gb10's build does not
+# compile them.
+#
+# Maintainer rule, 2026-09-11 (tbraun96): "symlinks are fine provided the
+# pointed-to gb10 file is not edited when iterating on Hopper; Hopper-tuned
+# kernels must be real files under kernels/hopper/". A declaration rather than
+# "any regular file is fine": an UNDECLARED regular file in a mirror is a
+# silent fork of a shared kernel, which is the defect the mirror check exists
+# to catch, and the two cases are indistinguishable without this list.
+#
+#   dense_gemm_m16_bf16.cu   BF16 decode head, m16n8k16 M tile (#927/#928).
+#                            Reached only under `[defaults] lm_head_m16_tc`.
+#   fp8_scale_transpose.cu   K-major activation-scale adapter for cuBLASLt
+#                            block-scaled FP8. Reached only under a
+#                            `cublas_gemm_scope` family; cuBLASLt is not the
+#                            GB10 path.
+#   w8a16_gemm_m16.cu        Native-FP8 M16 tensor-core tiers for the dense
+#                            FFN and the decode QKV/o_proj. Reached only under
+#                            `[defaults] ffn_m16_tc` / `attn_m16_tc`.
+#   w8a16_gemv_ncol.cu       N-column-blocked decode attention projections.
+#                            Reached only under `[defaults] attn_ncol_gemv`.
+#
+# Every consumer resolves these through `try_kernel` and declines on a zero
+# handle, and every probe is gated on the same lever that would launch the
+# kernel — so a target without them boots, rather than failing the kernel
+# audit on a lookup nothing declared.
+#
+# ── The other four: the decode families that REPLACE a gb10 namesake ───────
+#
+# These arrived from #927/#928 and were declared in a Rust constant
+# (`HOPPER_OWNED_COMMON`) before this table existed. They are HERE now because
+# a target's kernel ownership is one question with one answer: two lists is how
+# a file comes to be declared in one and forgotten in the other.
+#
+#   w8a16_gemv.cu            The W8A16 M=1 decode GEMV. On an H100 this family
+#   w8a16_gemv_fused.cu      is 71% of the C=1 decode step (nsys, 1xH100,
+#                            Qwen/Qwen3.8-27B-FP8, 2026-09-11 round 10) and the
+#                            gb10 kernels are LSU-bound on the E4M3 LUT gather
+#                            rather than bandwidth-bound. These two OVERRIDE
+#                            their gb10 namesakes: same entry points, same
+#                            arithmetic in the same order, different dequant
+#                            instruction. gb10 keeps its own file untouched —
+#                            gb10, b200, strix and strix-hip all compile it.
+#   w8a16_gemv_hopper.cuh    The shared inner loop of those two, and the SSOT
+#                            for the bit-identity argument. No gb10
+#                            counterpart by design: nothing else includes it.
+#   gdn_decode_hopper.cu     The GDN decode recurrence streamed across all SMs
+#                            (#927). The OTHER shape this table allows: an
+#                            ADDITION with a new stem, not an override. Its
+#                            gb10 namesake `gated_delta_rule.cu` is shadowed
+#                            out of every build that matters by the model
+#                            dir's own copy, so a same-stem file in `common/`
+#                            would never be compiled; the twins carry new entry
+#                            names and a launcher tier instead. Numbers:
+#                            `GDN-DECODE-ATTRIBUTION.md`.
+#
+#   gdn_decode_strided_hopper.cu  The BATCHED GDN decode recurrence with the
+#                            f32 state read ONCE for 96 of its 128 rows (#927).
+#                            An ADDITION with a new stem, the shape
+#                            `gdn_decode_hopper.cu` takes and for the same
+#                            reason — its gb10 namesake `gated_delta_rule.cu`
+#                            is shadowed out of every build that matters by the
+#                            model directory's own copy. A SECOND file rather
+#                            than a second entry point inside
+#                            `gdn_decode_hopper.cu` because the two are
+#                            different claims under different levers: that file
+#                            re-partitions columns for the n=1 underfill and is
+#                            OFF on a measured loss, this one keeps the
+#                            partition and cuts state traffic for the n>=4
+#                            batched arm and is ON. Sharing a file would make
+#                            one `[defaults]` row govern both, which is the
+#                            thing `gdn_prefill_tc`'s family lever had to grow
+#                            an `ATLAS_NO_*_REMNANTS` escape hatch for. Reached
+#                            only under `[defaults] gdn_decode_strided_hopper`
+#                            plus a width guard. Numbers:
+#                            `GDN-DECODE-ATTRIBUTION.md`.
+#
+#   gdn_recompute_wu_hopper.cu  The two SCALAR REMNANTS of the chunked PREFILL
+#   gdn_fwd_o_hopper.cu         (#928) on tensor cores: `wu`'s two forward
+#                            substitutions and `fwd_o`'s triangular
+#                            `tril(kq).uc`. ADDITIONS, like the decode twin
+#                            above, but for the opposite reason — their
+#                            parents live in `common/gated_delta_rule_fla.cu`,
+#                            which NO model directory shadows, so a same-stem
+#                            override there WOULD compile. It is 2105 lines
+#                            declaring fourteen entry points, of which these
+#                            replace two: a whole-file override is whole-file
+#                            and would fork the other twelve, which is the
+#                            shadow-drift class `build.rs` reports. New stems
+#                            with new entry names fork nothing, and the
+#                            launcher picks parent or twin by kernel presence
+#                            under `[defaults] gdn_prefill_tc`. Reached only
+#                            under that row. Numbers:
+#                            `GDN-PREFILL-ATTRIBUTION.md`.
+#   gdn_chunk_delta_h_vsplit_hopper.cu  The VALUE-SPLIT arm of the chunked
+#                            PREFILL state spine (#928). An ADDITION with new
+#                            entry names, for the `gdn_*_hopper.cu` reason: its
+#                            parent `gated_delta_rule_chunk_delta_h_tcfuse_x2`
+#                            lives in `common/gated_delta_rule_chunk_tc.cu`
+#                            beside a second entry point five targets compile,
+#                            so a same-stem override would fork it. Selected by
+#                            `[defaults] gdn_spine_vsplit` above plus kernel
+#                            presence (`ops::gdn_spine_vsplit_pick`); at the
+#                            shipped `1` it is compiled and never launched.
+#                            Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
+#   paged_decode_fp8_splitk_hopper.cu   The paged-decode SPLIT-K pair (#928):
+#   paged_decode_bf16_splitk_hopper.cu  a partial-attention kernel per KV split
+#                            plus the merge that folds the partials. ADDITIONS,
+#                            the `gdn_*_hopper.cu` shape: gb10's
+#                            `paged_decode_attn_fp8.cu` already declares a
+#                            split-K pair, but a same-stem override there would
+#                            fork the NON-split `paged_decode_attn_fp8` entry
+#                            beside them — the kernel five targets compile and
+#                            six KV dtypes route through — to retune two. New
+#                            stems fork nothing. The FP8 twin restores the
+#                            PD_BC=4 batched inner loop (gb10's split-K path is
+#                            the scalar one, which a 132-SM split count would
+#                            multiply rather than hide); the BF16 twin is a new
+#                            CAPABILITY — `run_paged_decode.rs` had an explicit
+#                            "no Split-K (not implemented for BF16 yet)" branch,
+#                            so the `--kv-high-precision-layers auto` layers had
+#                            nothing to select. Reached only under
+#                            `[defaults] attn_decode_splitk`.
+#   paged_decode_splitk_hopper.cuh   Their shared machinery — the split
+#                            partition, the smem tree merge, the workspace
+#                            format and the reduce body. No gb10 counterpart by
+#                            design, the shape `w8a16_gemv_hopper.cuh` and
+#                            `gdn_prefill_hopper.cuh` take.
+#
+#                            NOT symlinked into `kernels/b200`: that target
+#                            declares `attn_decode_splitk = "legacy"` for want
+#                            of a receipt, exactly as it does for every other
+#                            Hopper row, so the kernels would be compiled and
+#                            never reached. Same disposition as
+#                            `gdn_decode_hopper.cu`.
+#
+#   fp8_act_quant_hopper.cu  The per-token / per-128-K-group FP8 E4M3
+#                            ACTIVATION quantizer that feeds every W8A8
+#                            projection (#928). An ADDITION, for the third
+#                            reason on this page: the parent
+#                            `per_token_group_quant_fp8.cu` is a
+#                            SINGLE-entry-point file, so a same-stem override
+#                            would fork nothing — but then the shared kernel
+#                            would not be in the Hopper image at all, and the
+#                            gate for this kernel is BYTE EQUALITY against it
+#                            on device. A new stem keeps both compiled, which
+#                            is what lets
+#                            `native_fp8_act_quant_hopper_microtest` compare
+#                            them in one process at
+#                            M in {16,17,25,1168,4576} x K in {5120,6144,17408}.
+#                            gb10 is untouched and keeps launching its own.
+#                            Selected by kernel presence (`try_kernel` →
+#                            `ops::Fp8ActQuant`) AND by `[defaults]
+#                            fp8_act_quant_hopper` AND by a CTA-count floor.
+#                            Presence alone is what round 16 shipped, and it
+#                            put every DECODE-width call on an arm measured at
+#                            0.76x-0.95x: the two kernels are bit-identical by
+#                            contract, so the lever is a SPEED kill switch and
+#                            not a numeric A/B, and the floor is where the
+#                            width lives. Rule:
+#                            `layers/ops/fp8_act_quant_floor.rs`. Numbers:
+#                            `FP8-ACT-QUANT-ATTRIBUTION.md`.
+#   gdn_prefill_hopper.cuh   Their shared operand machinery — padded smem
+#                            strides and the MMA fragment maps both twins
+#                            read. No gb10 counterpart by design, the same
+#                            shape `w8a16_gemv_hopper.cuh` takes.
+#
+#   ssm_ba_gates_hopper.cu   The SSM BA projection + GDN gate transforms with
+#                            ONE CTA per token (#928). An ADDITION for the
+#                            third distinct reason: its parent
+#                            `dense_gemm_ba_gates_prefill` lives in
+#                            `common/ssm_preprocess.cu` beside two other entry
+#                            points that GB10 and four other targets compile,
+#                            so a same-stem override would fork those two as
+#                            well. A new stem with a new entry name forks
+#                            nothing, and `ops::ssm_ba_gates_pick` selects
+#                            parent or twin by kernel presence under
+#                            `[defaults] ssm_ba_gates_hopper` plus a token-count
+#                            guard. Numbers: `SSM-BA-GATES-ATTRIBUTION.md`.
+#
+#   silu_mul_strided.cu      SiLU(gate)*up over ROW-STRIDED operands — the
+#                            consumer of the FUSED gate+up decode GEMM (#927).
+#                            An ADDITION, and the one on this page whose
+#                            reason is not instruction selection at all: the
+#                            code is ordinary bf16 elementwise work that any
+#                            of these targets could compile. It is Hopper's
+#                            because the only thing that dispatches it is
+#                            `[defaults] ffn_gateup_fused`, which only this
+#                            target declares true. Putting it in
+#                            `kernels/gb10/common` would compile a kernel two
+#                            targets can never launch AND add a new
+#                            cross-hardware symlink to each of their mirrors,
+#                            which `scripts/check_cross_hardware.py` rule S1
+#                            refuses outright. Selected by kernel PRESENCE
+#                            (`try_kernel`, probed only when the lever is
+#                            armed) beside the lever itself, the same pairing
+#                            `w8a16_gemm_m16.cu` uses. A GB10 receipt would
+#                            move the file down and add the two mirror links
+#                            in the same commit. Numbers:
+#                            `FFN-GATEUP-FUSION-ATTRIBUTION.md`.
+#
+# The two shapes are checked differently and both are checked: an override must
+# be tuned and must leave gb10's file alone; an addition must declare entry
+# points gb10 does not and must not be a gb10 source under a new name. See
+# `crates/atlas-kernels/tests/inherited_targets.rs`.
+[kernels]
+overrides = [
+  "dense_gemm_m16_bf16.cu",
+  "paged_decode_bf16_splitk_hopper.cu",
+  "paged_decode_fp8_splitk_hopper.cu",
+  "paged_decode_splitk_hopper.cuh",
+  "fp8_act_quant_hopper.cu",
+  "fp8_scale_transpose.cu",
+  "gdn_chunk_delta_h_vsplit_hopper.cu",
+  "gdn_decode_hopper.cu",
+  "gdn_decode_strided_hopper.cu",
+  "gdn_fwd_o_hopper.cu",
+  "gdn_prefill_hopper.cuh",
+  "gdn_recompute_wu_hopper.cu",
+  "silu_mul_strided.cu",
+  "ssm_ba_gates_hopper.cu",
+  "w8a16_gemm_m16.cu",
+  "w8a16_gemv.cu",
+  "w8a16_gemv_fused.cu",
+  "w8a16_gemv_hopper.cuh",
+  "w8a16_gemv_ncol.cu",
+]

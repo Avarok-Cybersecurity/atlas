@@ -10,7 +10,13 @@ echo "[conglom] box=$BOX sha=$SHA art=$ART"
 git -C "$WT" fetch origin 2>/dev/null; git -C "$WT" checkout "$SHA" 2>/dev/null || { echo FETCH_FIRST; exit 1; }
 ( cd "$WT" && PATH=/usr/local/cuda/bin:$PATH ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.6-27b \
    cargo build --release -p spark-server --bin spark --features cuda ) || { echo BUILD_FAIL; exit 1; }
-grep -m1 'compiled .* kernels for target' "$WT"/build*.log 2>/dev/null || true
+# The build's own kernel-count receipt (atlas-kernels' one cargo:warning per
+# target). Three counts since H100 round 15: kernels, model-dir kernels and the
+# `[kernels] overrides` list — the second used to print alone, labelled as the
+# third (§1.2). The alternations keep the pre-2026-09 and the two-count
+# wordings matching so an archived log still hits.
+grep -m1 -E 'atlas-kernels: [0-9]+ kernels \([^)]*\)(, [0-9]+ model-dir kernels)?, [0-9]+ declared overrides|atlas-kernels: [0-9]+ kernels \(|compiled .* kernels for target' \
+  "$WT"/build*.log 2>/dev/null || true
 # 2. serve (frozen c2final, ARM=bare/K=3) — mount fresh binary
 sudo docker rm -f atlas-conglom >/dev/null 2>&1; sleep 3
 sudo docker run -d --name atlas-conglom --network host --gpus all --ipc=host \

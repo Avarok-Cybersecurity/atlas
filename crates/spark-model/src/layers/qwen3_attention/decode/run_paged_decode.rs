@@ -39,7 +39,7 @@ impl Qwen3AttentionLayer {
         max_decode_seqs: u32,
         stream: u64,
     ) -> Result<()> {
-        use atlas_core::device::sm121::NUM_SMS;
+        use super::splitk_dispatch::{self, SplitkPlan};
 
         // DeepSeek-V4-Flash uses MLA with a compressed KV cache (576 dims:
         // 512 latent + 64 rope). Detection: V4-Flash has rope > 0 (64 dims),
@@ -135,18 +135,20 @@ impl Qwen3AttentionLayer {
                 )
             }
             KvCacheDtype::Nvfp4 => {
-                // Split count derived from the configured max batch (constant),
-                // not the runtime co-batched count, so a sequence's reduction
-                // tree is identical alone vs co-batched (determinism fix).
-                let current_ctas =
-                    num_q_heads * super::super::split_ref_seqs(num_seqs, max_decode_seqs);
-                let num_splits = if current_ctas >= NUM_SMS {
-                    1u32
-                } else {
-                    NUM_SMS / current_ctas
-                };
+                // Split count from CONFIGURATION — the compiled target's SM
+                // count, the q-head count and the pinned max batch — never
+                // from the runtime co-batched count, so a sequence's
+                // reduction tree is identical alone vs co-batched
+                // (`splitk_dispatch`, #928).
+                let num_splits =
+                    splitk_dispatch::num_splits(num_q_heads, head_dim, num_seqs, max_decode_seqs);
 
-                if num_splits > 1 {
+                if splitk_dispatch::splits_are_worth_it(num_splits) {
+                    splitk_dispatch::log_decode_route(
+                        splitk_dispatch::RouteArm::Nvfp4,
+                        splitk_dispatch::ROUTE_SPLITK_NVFP4,
+                        num_splits,
+                    );
                     let splitk_k = self
                         .paged_decode_splitk_k
                         .expect("split-K kernel required for NVFP4");
@@ -188,6 +190,11 @@ impl Qwen3AttentionLayer {
                         stream,
                     )
                 } else {
+                    splitk_dispatch::log_decode_route(
+                        splitk_dispatch::RouteArm::Nvfp4,
+                        splitk_dispatch::ROUTE_NONSPLIT_NVFP4,
+                        num_splits,
+                    );
                     ops::paged_decode_attn_nvfp4(
                         gpu,
                         self.paged_decode_k,
@@ -531,16 +538,67 @@ impl Qwen3AttentionLayer {
                 }
             }
             KvCacheDtype::Bf16 => {
-                // BF16 paged decode — no Split-K (not implemented for BF16 yet)
+                // Gemma-4 sliding layers attend only to the last `window_size`
+                // KV positions; full layers (and all non-Gemma-4 models) pass 0.
+                let sliding = self.sliding_window.unwrap_or(0);
+                // BF16 paged decode. This arm used to read
+                //   // no Split-K (not implemented for BF16 yet)
+                // and take the single-CTA kernel unconditionally. On an H100
+                // that is 24 CTAs on 132 SMs for the 4
+                // `--kv-high-precision-layers auto` layers — 1 013 us of a
+                // 16.69 ms C=1 step at 2.34% of HBM. The twin now exists
+                // (`kernels/hopper/common/paged_decode_bf16_splitk_hopper.cu`);
+                // targets without it still resolve `None` here and fall
+                // through to exactly the code below (#928).
+                //
+                let bf16_splitk = self.bf16_splitk_pair(head_dim);
+                let num_splits =
+                    splitk_dispatch::num_splits(num_q_heads, head_dim, num_seqs, max_decode_seqs);
+                if let (true, Some(pair)) = (
+                    splitk_dispatch::splits_are_worth_it(num_splits),
+                    bf16_splitk,
+                ) {
+                    splitk_dispatch::log_decode_route(
+                        splitk_dispatch::RouteArm::Bf16,
+                        pair.name,
+                        num_splits,
+                    );
+                    return self.launch_splitk_bf16(
+                        gpu,
+                        &pair,
+                        SplitkPlan {
+                            num_splits,
+                            num_q_heads,
+                            num_kv_heads,
+                            head_dim,
+                            block_size,
+                            max_blocks_per_seq,
+                            num_seqs,
+                            inv_sqrt_d,
+                            q_stride,
+                            sliding_window: sliding,
+                        },
+                        q,
+                        kv_cache.k_pool_ptr(self.attn_layer_idx),
+                        kv_cache.v_pool_ptr(self.attn_layer_idx),
+                        workspace,
+                        output,
+                        block_table,
+                        seq_lens,
+                        stream,
+                    );
+                }
+                splitk_dispatch::log_decode_route(
+                    splitk_dispatch::RouteArm::Bf16,
+                    splitk_dispatch::ROUTE_NONSPLIT_BF16,
+                    num_splits,
+                );
                 // Use HDIM=512 kernel for Gemma-4 full-attention layers (head_dim > 256)
                 let kernel = if head_dim > 256 && self.paged_decode_512_k.0 != 0 {
                     self.paged_decode_512_k
                 } else {
                     self.paged_decode_k
                 };
-                // Gemma-4 sliding layers attend only to the last `window_size`
-                // KV positions; full layers (and all non-Gemma-4 models) pass 0.
-                let sliding = self.sliding_window.unwrap_or(0);
                 ops::paged_decode_attn_bf16(
                     gpu,
                     kernel,
@@ -563,80 +621,65 @@ impl Qwen3AttentionLayer {
                 )
             }
             _ => {
-                // FP8 paged decode. Split count from configured max batch
-                // (constant), not runtime co-batched count → deterministic
-                // reduction tree alone vs co-batched (determinism fix).
-                let current_ctas =
-                    num_q_heads * super::super::split_ref_seqs(num_seqs, max_decode_seqs);
-                let num_splits = if current_ctas >= NUM_SMS {
-                    1u32
-                } else {
-                    NUM_SMS / current_ctas
-                };
-
-                // DIAGNOSTIC (ATLAS_ATTN_DBG): split-K reduction structure for the
-                // active row depends on `num_seqs` (co-batched count) via num_splits.
-                // Print only when co-batched (num_seqs>1) to confirm whether a
-                // serial-looking workload ever shares a batch (root-cause probe for
-                // batch>1 temp-0 nondeterminism).
-                if num_seqs != 1 && std::env::var("ATLAS_ATTN_DBG").is_ok() {
-                    tracing::debug!(
-                        "ATTN_DBG L{} num_seqs={} num_splits={} (NUM_SMS={} nq={})",
-                        self.attn_layer_idx,
-                        num_seqs,
-                        num_splits,
-                        NUM_SMS,
-                        num_q_heads
-                    );
-                }
+                // FP8 paged decode. Split count from CONFIGURATION — the
+                // compiled target's SM count, the q-head count and the pinned
+                // max batch — never the runtime co-batched count, so the
+                // reduction tree is fixed per serve (`splitk_dispatch`, #928).
+                let num_splits =
+                    splitk_dispatch::num_splits(num_q_heads, head_dim, num_seqs, max_decode_seqs);
+                splitk_dispatch::trace_splits(
+                    self.attn_layer_idx,
+                    num_seqs,
+                    num_q_heads,
+                    num_splits,
+                );
 
                 let (k_scale, v_scale) = self.effective_fp8_scales();
                 let sliding = self.sliding_window.unwrap_or(0);
+                let plan = SplitkPlan {
+                    num_splits,
+                    num_q_heads,
+                    num_kv_heads,
+                    head_dim,
+                    block_size,
+                    max_blocks_per_seq,
+                    num_seqs,
+                    inv_sqrt_d,
+                    q_stride,
+                    sliding_window: sliding,
+                };
 
-                if num_splits > 1 {
-                    let splitk_k = self
-                        .paged_decode_splitk_k
-                        .expect("split-K kernel required for FP8");
-                    let reduce_k = self
-                        .paged_decode_reduce_k
-                        .expect("reduce kernel required for FP8");
-                    ops::paged_decode_attn_splitk_fp8(
+                if let (true, Some(pair)) = (
+                    splitk_dispatch::splits_are_worth_it(num_splits),
+                    self.fp8_splitk_pair(head_dim),
+                ) {
+                    splitk_dispatch::log_decode_route(
+                        splitk_dispatch::RouteArm::Fp8,
+                        pair.name,
+                        num_splits,
+                    );
+                    self.launch_splitk_fp8(
                         gpu,
-                        splitk_k,
+                        &pair,
+                        plan,
                         q,
                         kv_cache.k_pool_ptr(self.attn_layer_idx),
                         kv_cache.v_pool_ptr(self.attn_layer_idx),
                         workspace,
+                        output,
                         block_table,
                         seq_lens,
-                        max_blocks_per_seq,
-                        num_q_heads,
-                        num_kv_heads,
-                        head_dim,
-                        block_size,
-                        inv_sqrt_d,
-                        num_splits,
                         k_scale,
                         v_scale,
-                        q_stride,
                         kv_cache.cache_stride() as u64,
-                        num_seqs,
-                        sliding,
-                        stream,
-                    )?;
-                    ops::paged_decode_attn_reduce_fp8(
-                        gpu,
-                        reduce_k,
-                        workspace,
-                        output,
-                        seq_lens,
-                        num_q_heads,
-                        head_dim,
-                        num_splits,
-                        num_seqs,
                         stream,
                     )
                 } else {
+                    splitk_dispatch::log_decode_route(
+                        splitk_dispatch::RouteArm::Fp8,
+                        splitk_dispatch::ROUTE_NONSPLIT_FP8,
+                        num_splits,
+                    );
                     // Use HDIM=512 kernel for Gemma-4 full-attention layers
                     let fp8_kernel = if head_dim > 256 && self.paged_decode_512_k.0 != 0 {
                         self.paged_decode_512_k

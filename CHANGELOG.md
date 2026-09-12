@@ -27,6 +27,58 @@ behind specific subsystems — see the
   result. Previously only the result was stored, so a number could not be
   attributed to a configuration or reproduced. Pre-existing files still load.
 
+### Changed
+- **The tensor-core GDN chunked-prefill family is ON by default on Hopper.**
+  `kernels/hopper/HARDWARE.toml` `[defaults] gdn_prefill_tc = true` — the state
+  spine and both Hopper prefill remnant twins. H100 round 13 measured it on one
+  binary against a same-round control: C=1 TTFT 269.1 → 162.4 ms on 1193/256 and
+  889.3 → 491.5 ms on 4593/512, C=16 aggregate +21.5% / +31.4%, coherency 4/4,
+  determinism 8/8 identical over three runs, and nsys pricing the two twins at
+  4.28× (`chunk_fwd_o_hopper`) and 1.60× (`recompute_wu_hopper`) with the shared
+  spine kernel unchanged at 0.99× as the internal control. `kernels/gb10` and
+  `kernels/b200` keep `false` — this is an H100 receipt. `ATLAS_GDN_PREFILL_TC=0`
+  turns the whole family off and `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` keeps the
+  spine while pinning the twins to their parents; both print on the serve's
+  `target defaults (hopper): …` line. Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
+- **Serving defaults are now per-hardware-target and live in the repository.**
+  `kernels/<hw>/HARDWARE.toml` gained a `[defaults]` table, baked into the
+  binary by `build.rs` as `atlas_kernels::TARGET_DEFAULTS`. Every kernel-path
+  lever that differs between GB10 and H100 — the cuBLASLt scope, the M16
+  tensor-core tiers, the BF16 head's batched-GEMV band, the batched GDN
+  recurrence — resolves from that declaration FIRST and the environment second.
+  An H100 serve therefore reproduces its measured configuration with no
+  `ATLAS_*` prefix at all, and a serve prints one `target defaults (<hw>): …`
+  line naming every resolved value and which of them came from the
+  environment. GB10's declaration restates the previous hardcoded defaults
+  exactly, asserted as an equality in `atlas-kernels/tests/target_defaults.rs`,
+  so GB10 behaviour is unchanged.
+- **`ATLAS_*=0` now means OFF for the kernel-path toggles** it previously left
+  ON (`ATLAS_ATTN_M16_TC`, `ATLAS_FFN_M16_TC`, `ATLAS_M16_TC`,
+  `ATLAS_LM_HEAD_M16_TC`, `ATLAS_ATTN_NCOL_GEMV`,
+  `ATLAS_SSM_BATCHED_RECURRENT`). They were presence-gated, which cannot
+  express "off" — and once a target's default can be ON, an operator needs to
+  be able to turn one off without editing a launch script. `VAR=1` is unchanged
+  everywhere, and the `ATLAS_NO_*` kill switches stay presence-gated.
+  `ATLAS_GDN_PREFILL_TC` joins that list: it is now `[defaults] gdn_prefill_tc`
+  (and the kernel it reaches stays shared), so `=0` means off there too.
+- **A hardware target declares which kernels it OWNS**, in
+  `kernels/<hw>/HARDWARE.toml` `[kernels] overrides`. `kernels/hopper` and
+  `kernels/b200` are otherwise pure symlink mirrors of `kernels/gb10`; a
+  Hopper-tuned kernel is now a real file under `kernels/hopper/common` that
+  either REPLACES a gb10 namesake (gb10 keeps its own copy — four other targets
+  compile it) or ADDS a stem gb10 does not have. Declared rather than merely
+  tolerated: an undeclared regular file in a mirror is a silent fork of a
+  shared kernel, and nothing on disk tells the two apart.
+  `scripts/check_kernel_shadows.py` RULE 3 and
+  `atlas-kernels/tests/inherited_overrides.rs` check it from the one table.
+
+### Removed
+- **The split-K W8A16 decode GEMV** (`w8a16_gemv_splitk`,
+  `ATLAS_FFN_DOWN_SPLITK`, `layers::ops::w8a16_decode_gemv`). It was written
+  for the down projection's ~1.2-wave grid on a 132-SM H100 and measured a null
+  there (58.9 us staged scalar vs 61.8 us split-K), and 1.5x slower on the
+  short-N k/v shape it was also aimed at. Nothing dispatched it by default.
+
 ### Added
 
 - DeepSeek-V4-Flash support on GB10: native MXFP4 (E8M0) routed-expert

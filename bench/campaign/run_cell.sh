@@ -1,0 +1,436 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Run ONE campaign cell end to end and emit its section-10 artifact.
+#
+# A "cell" is (engine, model, SKU, workload, concurrency, spec, think). This
+# script is the day-of driver: preflight, serve, boot gate, coherency gate,
+# latency pack, teardown, assemble, validate. It orchestrates the tools that
+# already exist -- scripts/start-node-ep.sh, bench/campaign/vllm_control.sh,
+# bench/hopper_ab/{time_to_ready.sh,coherency_gate.py},
+# bench/ladder38/harness_w55_conc_ladder.py -- and rewrites none of them.
+#
+# THE RULE THAT SHAPES THE WHOLE FLOW: the artifact is ALWAYS written. A cell
+# that fails its boot gate is not a cell with no data; it is a NO-GO with a
+# named failing stage, and that is a result the campaign needs as much as a
+# CERTIFIED one. So a failing stage records itself, teardown still runs, the
+# artifact is still assembled and validated, and only the EXIT CODE says the
+# cell failed. The alternative -- die on the first non-zero and leave nothing
+# behind -- is how an expensive hour on a rented box produces a shrug.
+#
+# AND IT IS WRITTEN ON THE WAY OUT OF A SIGNAL, TOO. Teardown that only normal
+# control flow reaches is teardown that does not run when an operator Ctrl-Cs
+# the campaign or a scheduler sends SIGTERM -- and a detached `docker run -d`
+# server then keeps the GPU until somebody notices it by hand. So every way out
+# of this script, clean or signalled, goes through ONE idempotent finalizer:
+# kill the children this invocation started, stop and remove only what it
+# created, and assemble the artifact naming the stage that was interrupted. A
+# cell killed at its boot gate is a NO-GO at `boot`, not a silent -15.
+#
+# WHAT IT REFUSES
+#
+#  * Nothing starts on a box without --yes. --dry-run prints every command and
+#    launches nothing; without either flag the script exits 2. A benchmark
+#    driver that boots an engine because someone was reading its help text is a
+#    bad neighbour on a shared GPU.
+#  * A (model, SKU) pair with no recipe exits 3 before anything is created.
+#    Reconstructing a serve command is how a campaign measures a guess.
+#  * --spec on against a model whose recipe declares no speculative profile
+#    exits 4. Both-or-neither is only enforceable if neither side can improvise.
+#  * A thinking mode excluded by the PRD exits 9 before launch. Missing
+#    recipes still exit 3; a thinking policy does not supply a recipe.
+#
+# WHAT IT WARNS ABOUT, LOUDLY, AND RECORDS
+#
+#  * --think on. The ladder sends chat_template_kwargs.enable_thinking=true
+#    only when passed --enable-thinking (default false, the GB10 campaign's
+#    setting). This script passes it for a think-on cell and the ladder header
+#    records which value was sent, so compare.py refuses a think-mismatched
+#    pair. Older ladder JSONs without the flag were think-off.
+#  * A missing warmup prompt. PRD section 6 pins
+#    --warmup-prompt bench/hopper_ab/warmup_1024.txt (a copy of the repo's
+#    tests/fixtures/bench_prompt_1024.txt) to kill the 5-30 s first-request
+#    autotune. If the file is absent the launcher is given no warmup prompt and
+#    the artifact says so rather than silently serving a cold first request.
+#
+# Usage:
+#   run_cell.sh --engine atlas|vllm --model <key> --sku h100|h200|b200|gb10 \
+#               --workload lat|agent --concurrency <N> --spec on|off \
+#               --think on|off --out <dir> [--dry-run] [--yes] \
+#               [--paired-artifact PATH] [--ptx-receipt PATH]\
+#               [--process --model-path PINNED_SNAPSHOT] [--cell-timeout-s N]
+#
+# Environment:
+#   ATLAS_PORT / VLLM_PORT   client port (default 8888 / 8000)
+#   SPARK_BIN                Atlas binary (default ./target/release/spark)
+#   IMAGE                    Atlas container image; empty = run SPARK_BIN
+#   VLLM_IMAGE_DIGEST        sha256:... -- required for a real vLLM run
+#   HF_CACHE                 host HF cache (default ~/.cache/huggingface)
+#   ATLAS_NODE_RUN_DIR       PREFIX for this cell's node-EP run directory: the
+#                            cell reserves <prefix>-<pid> for itself and stops
+#                            only what it recorded (default <out>/node-ep)
+#
+# Exit: 0 every gate passed · 1 a gate failed (artifact written anyway) ·
+#       2 usage or refusal-to-start · 3 no recipe for the pair · 4 --spec on
+#       with no speculative profile · 8 invalid vLLM revision identity ·
+#       9 excluded thinking mode ·
+#       128+N terminated by signal N (130 INT,
+#       143 TERM, 129 HUP), with the same teardown run and the artifact naming
+#       the stage that was interrupted
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+
+WORKLOADS="$ROOT/bench/hopper_ab/workloads.json"
+LADDER="$ROOT/bench/ladder38/harness_w55_conc_ladder.py"
+TTR="$ROOT/bench/hopper_ab/time_to_ready.sh"
+COHERENCY="$ROOT/bench/hopper_ab/coherency_gate.py"
+LAUNCHER="$ROOT/scripts/start-node-ep.sh"
+ATLAS_RECIPES="$HERE/atlas_recipes.json"
+VLLM_RECIPES="$HERE/vllm_recipes.json"
+
+ENGINE=""; MODEL=""; SKU=""; WORKLOAD=""; CONC=""; SPEC=""; THINK=""; OUT=""
+DRY_RUN=0; YES=0; PAIRED=""; PTX_RECEIPT=""
+PROCESS_MODE=0; MODEL_PATH=""; PROCESS_RENDER_JSON=""; CELL_TIMEOUT_S=""
+
+usage() { sed -n '2,74p' "$0"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --engine) ENGINE="${2:-}"; shift 2 ;;
+    --model) MODEL="${2:-}"; shift 2 ;;
+    --sku) SKU="${2:-}"; shift 2 ;;
+    --workload) WORKLOAD="${2:-}"; shift 2 ;;
+    --concurrency) CONC="${2:-}"; shift 2 ;;
+    --spec) SPEC="${2:-}"; shift 2 ;;
+    --think) THINK="${2:-}"; shift 2 ;;
+    --out) OUT="${2:-}"; shift 2 ;;
+    --paired-artifact) PAIRED="${2:-}"; shift 2 ;;
+    --ptx-receipt) PTX_RECEIPT="${2:-}"; shift 2 ;;
+    --process) PROCESS_MODE=1; shift ;;
+    --model-path) MODEL_PATH="${2:-}"; shift 2 ;;
+    --cell-timeout-s)
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo "--cell-timeout-s requires seconds" >&2; exit 2; }
+      CELL_TIMEOUT_S="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --yes) YES=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+die() { echo "ERROR: $*" >&2; exit 2; }
+
+case "$ENGINE" in atlas|vllm) ;; *) die "--engine must be atlas or vllm (got '${ENGINE}')" ;; esac
+case "$SKU" in h100|h200|b200|gb10) ;; *) die "--sku must be h100|h200|b200|gb10 (got '${SKU}')" ;; esac
+case "$WORKLOAD" in lat|agent) ;; *) die "--workload must be lat or agent (got '${WORKLOAD}')" ;; esac
+case "$SPEC" in on|off) ;; *) die "--spec must be on or off (got '${SPEC}')" ;; esac
+case "$THINK" in on|off) ;; *) die "--think must be on or off (got '${THINK}')" ;; esac
+case "$CONC" in ''|*[!0-9]*) die "--concurrency must be a positive integer (got '${CONC}')" ;; esac
+[ "$CONC" -gt 0 ] || die "--concurrency must be greater than zero"
+[ -n "$MODEL" ] || die "--model is required"
+[ -n "$OUT" ] || die "--out is required"
+if [ -n "$CELL_TIMEOUT_S" ]; then
+  case "$CELL_TIMEOUT_S" in *[!0-9]*|0) die "--cell-timeout-s must be a positive integer" ;; esac
+  [ "$CELL_TIMEOUT_S" -gt 0 ] && [ "$CELL_TIMEOUT_S" -le 28800 ] \
+    || die "--cell-timeout-s must be within 1..28800 seconds"
+fi
+
+if [ "$DRY_RUN" != "1" ] && [ "$YES" != "1" ]; then
+  echo "REFUSED: this would start an engine on this box." >&2
+  echo "  Re-run with --dry-run to see every command, or --yes to actually run it." >&2
+  exit 2
+fi
+
+for f in "$WORKLOADS" "$LADDER" "$TTR" "$COHERENCY" "$ATLAS_RECIPES" "$VLLM_RECIPES" \
+         "$HERE/thinking_policy.py" "$HERE/campaign_policy.json"; do
+  [ -f "$f" ] || die "missing required tool or data file: $f"
+done
+
+# ── shape, from the frozen workload file ─────────────────────────────────────
+ISL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workloads"][sys.argv[2]]["isl"])' "$WORKLOADS" "$WORKLOAD")"
+OSL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workloads"][sys.argv[2]]["osl"])' "$WORKLOADS" "$WORKLOAD")"
+REPS="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["reps"])' "$WORKLOADS")"
+WARMUP="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["warmup"])' "$WORKLOADS")"
+BOOT_CAP="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["gates"]["boot_s_max"])' "$WORKLOADS")"
+
+# ── recipe resolution, before anything is created ────────────────────────────
+if [ "$ENGINE" = "atlas" ]; then
+  if ! python3 "$HERE/atlas_render.py" --recipes "$ATLAS_RECIPES" \
+        --model "$MODEL" --sku "$SKU" --probe; then
+    exit 3
+  fi
+  HF_ID="$(python3 "$HERE/atlas_render.py" --recipes "$ATLAS_RECIPES" --model "$MODEL" --sku "$SKU" --field hf_id)"
+  NGPUS="$(python3 "$HERE/atlas_render.py" --recipes "$ATLAS_RECIPES" --model "$MODEL" --sku "$SKU" --field ngpus)"
+  EP_SIZE="$(python3 "$HERE/atlas_render.py" --recipes "$ATLAS_RECIPES" --model "$MODEL" --sku "$SKU" --field ep_size)"
+  TP_SIZE="$(python3 "$HERE/atlas_render.py" --recipes "$ATLAS_RECIPES" --model "$MODEL" --sku "$SKU" --field tp_size)"
+  EXTRA_ARGS="$(python3 "$HERE/atlas_render.py" --recipes "$ATLAS_RECIPES" --model "$MODEL" \
+                  --sku "$SKU" --spec "$SPEC" --think "$THINK" --extra-args)" || exit $?
+  PORT="${ATLAS_PORT:-8888}"
+else
+  if ! python3 "$HERE/vllm_render.py" --recipes "$VLLM_RECIPES" \
+        --model "$MODEL" --sku "$SKU" --probe; then
+    exit 3
+  fi
+  HF_ID="$(python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+print(next(e["hf_id"] for e in d["entries"]
+           if e["model_key"]==sys.argv[2] and e["sku"]==sys.argv[3]))' \
+    "$VLLM_RECIPES" "$MODEL" "$SKU")"
+  VLLM_IMAGE_NAME="$(python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+print(next(e["image"] for e in d["entries"]
+           if e["model_key"]==sys.argv[2] and e["sku"]==sys.argv[3]))' \
+    "$VLLM_RECIPES" "$MODEL" "$SKU")"
+  PORT="${VLLM_PORT:-8000}"
+fi
+python3 "$HERE/thinking_policy.py" --model "$MODEL" --think "$THINK" || exit $?
+if [ "$PROCESS_MODE" = "1" ]; then
+  PROCESS_RENDER_ARGS=( --engine "$ENGINE" --model "$MODEL" --sku "$SKU"
+    --spec "$SPEC" --think "$THINK" --model-path "$MODEL_PATH" --port "$PORT"
+    --spark-bin "${SPARK_BIN:-./target/release/spark}" --vllm-bin "${VLLM_BIN:-vllm}"
+    --warmup "$ROOT/bench/hopper_ab/warmup_1024.txt" )
+  PROCESS_RENDER_JSON="$(python3 "$HERE/process_recipe.py" "${PROCESS_RENDER_ARGS[@]}")" || exit $?
+  if [ "$DRY_RUN" != "1" ] && [ ! -d "$MODEL_PATH" ]; then
+    echo "REFUSED: pinned model snapshot directory does not exist: $MODEL_PATH" >&2
+    exit 8
+  fi
+fi
+URL="http://127.0.0.1:$PORT"
+
+CELL_ID="$ENGINE.$MODEL.$SKU.$WORKLOAD.c$CONC.spec$SPEC.think$THINK"
+# Docker accepts dots in a name, but a name that reads back as the cell it
+# belongs to is what makes a stray container identifiable an hour later. The
+# pid is appended because the name must ALSO be this invocation's alone: a
+# deterministic name is a name a re-run, or a second operator, already holds,
+# and `docker run` then fails with 125 while the teardown below aims at
+# somebody else's live server.
+CONTAINER="atlas-campaign-$(printf '%s' "$MODEL-$SKU-$WORKLOAD-c$CONC-spec$SPEC-think$THINK" | tr '.' '-')-$$"
+# The ownership stamp that survives on the container itself, so a stray one can
+# be traced back to the cell and the moment that created it -- and so teardown
+# can FIND it. Cell, epoch and pid together make the value this invocation's
+# alone: two runs of the same cell, even in the same second, hold different
+# pids, so a query by this label can never return somebody else's container.
+# That is what makes asking Docker "what did I create?" safe where asking by
+# name is not.
+RUN_LABEL="atlas-campaign.run=$CELL_ID-$(date +%s)-$$"
+# Written by vllm_control.sh only when its `docker run -d` actually created a
+# container. Its absence is the proof that there is nothing to tear down.
+CONTAINER_ID_FILE="$OUT/container.id"
+CONTAINER_ID=""
+# What that container is RUNNING, as opposed to what it was asked to run:
+# vllm_control.sh writes the created container's resolved image ID here.
+CONTAINER_IMAGE_FILE="$OUT/container.image"
+# The name and the label are both chosen HERE and written down BEFORE the
+# create, because the window that leaks is the one inside `docker run -d`: the
+# container exists and its ID has not come back yet. A record written after the
+# ID arrives cannot describe that window; this one can.
+OWNER_JSON="$OUT/owner.json"
+CREATE_ATTEMPTED=0
+# The launcher identifies a launch by (run dir, PORT_BASE), and its --stop
+# reaches only what its own run directory recorded. So the run directory has to
+# be this invocation's ALONE: a directory shared with an earlier run holds that
+# run's rank records, and a --stop aimed at it stops ranks this cell never
+# started. The pid makes it exclusive, and the serve stage below CREATES it --
+# `mkdir`, not `mkdir -p` -- so "this cell reserved it" is a fact rather than an
+# assumption. ATLAS_NODE_RUN_DIR therefore names the prefix, not the directory.
+NODE_RUN_DIR="${ATLAS_NODE_RUN_DIR:-$OUT/node-ep}-$$"
+NODE_RUN_DIR_RESERVED=0
+
+echo "=== campaign cell $CELL_ID ==="
+echo "engine:      $ENGINE"
+echo "model:       $MODEL -> $HF_ID"
+echo "sku:         $SKU"
+echo "workload:    $WORKLOAD  isl=$ISL osl=$OSL  C=$CONC  reps=$REPS warmup=$WARMUP"
+echo "spec:        $SPEC     think: $THINK"
+echo "boot cap:    ${BOOT_CAP}s"
+echo "out:         $OUT"
+echo "client url:  $URL"
+if [ "$DRY_RUN" = "1" ]; then echo "mode:        DRY RUN (nothing is launched, nothing is written)"; fi
+echo ""
+
+# --think on is a client-side setting too: the ladder sends
+# chat_template_kwargs.enable_thinking=true only with --enable-thinking, and
+# records which it sent in its header (compare.py refuses a mismatched pair).
+LADDER_THINK=()
+if [ "$THINK" = "on" ]; then LADDER_THINK=(--enable-thinking); fi
+
+WARMUP_PROMPT="$ROOT/bench/hopper_ab/warmup_1024.txt"
+WARMUP_NOTE=""
+if [ ! -f "$WARMUP_PROMPT" ]; then
+  echo "WARNING: $WARMUP_PROMPT does not exist."
+  echo "  PRD section 6 pins it to kill the 5-30 s first-request autotune. Serving"
+  echo "  without it means the first measured request may carry a capture cost."
+  echo "  Recording warmup_prompt=null rather than pretending it was used."
+  echo ""
+  WARMUP_PROMPT=""
+  WARMUP_NOTE="served with no --warmup-prompt: bench/hopper_ab/warmup_1024.txt was not found, so the first request may carry autotune cost"
+fi
+
+# ── plumbing ─────────────────────────────────────────────────────────────────
+FAILING_STAGE=""
+note_fail() { [ -n "$FAILING_STAGE" ] || FAILING_STAGE="$1"; echo "STAGE FAILED: $1"; }
+
+step() { echo ""; echo "--- $* ---"; }
+
+# The stage in progress, in the artifact schema's own vocabulary, so a cell
+# that is killed mid-flight can name where it was killed. "The runner exited"
+# is not a campaign result; "NO-GO at boot" is.
+CURRENT_STAGE=""
+stage() { CURRENT_STAGE="$1"; shift; step "$@"; }
+
+show() { echo "\$ $*"; }
+
+if [ "$DRY_RUN" != "1" ]; then
+  mkdir -p "$OUT" || die "cannot create $OUT"
+fi
+
+ARTIFACT="$OUT/artifact.json"
+SERVE_ARGV="$OUT/serve.argv"
+SERVE_ENV="$OUT/serve.env"
+SMI_Q="$OUT/nvidia-smi-q.txt"
+BOOT_JSON="$OUT/boot.json"
+COH_JSON="$OUT/coherency.json"
+LADDER_JSON="$OUT/ladder.json"
+# THIS CHECKOUT, and nothing about the engine. `git rev-parse HEAD` here
+# describes run_cell.sh, the assembler and the recipes -- the harness. It used
+# to be passed as engine_version.git_sha for either engine, which is how an
+# artifact came to name a revision nothing had verified while the digest of the
+# image that ran and the hash of the binary that ran were both null. It is
+# harness provenance, and the engine's identity is read from the engine below.
+HARNESS_GIT_SHA=""
+# Filled in by capture_engine_identity, from what actually served the requests.
+ENGINE_GIT_SHA=""
+ENGINE_IMAGE_DIGEST=""
+ENGINE_BINARY=""
+ENGINE_VLLM_VERSION=""
+IDENTITY_CAPTURED=0
+MODEL_LAUNCH_JSON=""
+MODEL_LAUNCH_CONTAINER_ID=""
+MODEL_LAUNCH_LABEL=""
+MODEL_LAUNCH_PROCESS_JSON=""
+MODEL_LAUNCH_PROCESS_OWNER_JSON=""
+PROCESS_RUN_DIR="$OUT/process-$$"
+PROCESS_RECORD="$PROCESS_RUN_DIR/owner.json"
+PROCESS_DIR_RESERVED=0
+CELL_DEADLINE_PID=""
+CELL_DEADLINE_RECEIPT="$OUT/cell-deadline.json"
+
+# ── the finalizer: the ONE way out ───────────────────────────────────────────
+# Everything this invocation created is released here and nowhere else, so the
+# path through a signal is the same path as the path through a clean finish.
+# The alternative -- teardown written inline where only normal control flow
+# reaches it -- is what leaves a detached vLLM container holding the GPU when
+# the campaign is interrupted, with no artifact to say the cell ever ran.
+CHILD_PIDS=""          # pids this invocation started, space separated
+SERVE_PID=""
+FINALIZED=0
+MAIN_DONE=0
+INTERRUPT_SIG=""
+EXTRA_NOTE=""
+
+# shellcheck source=bench/campaign/cell_lifecycle.sh
+source "$HERE/cell_lifecycle.sh"
+# shellcheck source=bench/campaign/cell_identity.sh
+source "$HERE/cell_identity.sh"
+# shellcheck source=bench/campaign/cell_process.sh
+source "$HERE/cell_process.sh"
+# shellcheck source=bench/campaign/cell_finalize.sh
+source "$HERE/cell_finalize.sh"
+
+if [ -n "$CELL_TIMEOUT_S" ]; then
+  show "whole-cell deadline ${CELL_TIMEOUT_S}s; cleanup grace 60s"
+  if [ "$DRY_RUN" != "1" ]; then
+    python3 "$HERE/cell_deadline.py" watch --pid "$$" --timeout-s "$CELL_TIMEOUT_S" \
+      --grace-s 60 --receipt "$CELL_DEADLINE_RECEIPT" > "$OUT/cell-deadline.log" 2>&1 &
+    CELL_DEADLINE_PID=$!
+    if ! python3 "$HERE/cell_deadline.py" wait-armed --receipt "$CELL_DEADLINE_RECEIPT" \
+        --timeout-s 5 >> "$OUT/cell-deadline.log" 2>&1; then
+      note_fail preflight
+      add_note "whole-cell deadline could not be armed; see cell-deadline.log"
+      exit 1
+    fi
+  fi
+fi
+
+# ── 1. preflight ─────────────────────────────────────────────────────────────
+stage preflight "stage 1/7 preflight"
+show "nvidia-smi -q > $SMI_Q"
+show "df -h $OUT > $OUT/df.txt"
+show "git -C $ROOT rev-parse HEAD"
+show "sha256sum $LADDER"
+if [ "$DRY_RUN" != "1" ]; then
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi -q > "$SMI_Q" 2>"$OUT/nvidia-smi-q.err" || note_fail preflight
+  else
+    echo "no nvidia-smi on this host" > "$OUT/nvidia-smi-q.err"
+    note_fail preflight
+  fi
+  df -h "$OUT" > "$OUT/df.txt" 2>&1
+  HARNESS_GIT_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]; then
+    echo "NOTE: the tree is dirty; harness.git_sha $HARNESS_GIT_SHA does not fully"
+    echo "  describe it."
+  fi
+fi
+
+# ── 2. serve ─────────────────────────────────────────────────────────────────
+stage serve "stage 2/7 serve"
+START_EPOCH=""
+# shellcheck source=bench/campaign/cell_serve.sh
+source "$HERE/cell_serve.sh"
+# A recorded preflight failure must also prevent every engine launch path.
+if [ "$DRY_RUN" = "1" ] || [ -z "$FAILING_STAGE" ]; then
+  if [ "$PROCESS_MODE" = "1" ]; then
+    serve_process
+  else
+    serve_recipe
+  fi
+fi
+
+# ── 3. boot gate ─────────────────────────────────────────────────────────────
+stage boot "stage 3/7 boot gate (cap ${BOOT_CAP}s)"
+BOOT_ARGS=(--url "$URL" --model "$HF_ID" --engine "$ENGINE" --start-epoch "$START_EPOCH"
+           --timeout-s "$BOOT_CAP" --out "$BOOT_JSON")
+BOOT_PROCESS_HINT=""
+if [ "$PROCESS_MODE" = "1" ]; then
+  BOOT_ARGS+=(--process-owner "$PROCESS_RECORD")
+  BOOT_PROCESS_HINT=" --process-owner $PROCESS_RECORD"
+fi
+show "bash $TTR --url $URL --model $HF_ID --engine $ENGINE --start-epoch <serve-start> --timeout-s $BOOT_CAP --out $BOOT_JSON$BOOT_PROCESS_HINT"
+if [ "$DRY_RUN" != "1" ] && [ -z "$FAILING_STAGE" ]; then
+  run_child bash "$TTR" "${BOOT_ARGS[@]}" || note_fail boot
+  if [ "$PROCESS_MODE" = "1" ] && [ -z "$FAILING_STAGE" ]; then
+    prove_process_endpoint
+  fi
+fi
+
+# ── 4. coherency gate ────────────────────────────────────────────────────────
+stage coherency "stage 4/7 coherency gate"
+show "python3 $COHERENCY --url $URL --model $HF_ID --think $THINK --out $COH_JSON"
+if [ "$DRY_RUN" != "1" ] && [ -z "$FAILING_STAGE" ]; then
+  run_child python3 "$COHERENCY" --url "$URL" --model "$HF_ID" --think "$THINK" --out "$COH_JSON" \
+    || note_fail coherency
+fi
+
+# ── 5. latency pack ──────────────────────────────────────────────────────────
+stage ladder "stage 5/7 latency pack"
+if [ "$DRY_RUN" != "1" ] && [ "$PROCESS_MODE" = "1" ] && [ -z "$FAILING_STAGE" ]; then
+  prove_process_endpoint
+fi
+show "python3 $LADDER --url $URL --model $HF_ID --label $CELL_ID --out $LADDER_JSON --concs $CONC --reps $REPS --isl $ISL --osl $OSL --warmup $WARMUP ${LADDER_THINK[*]:-}"
+if [ "$DRY_RUN" != "1" ] && [ -z "$FAILING_STAGE" ]; then
+  run_child python3 "$LADDER" --url "$URL" --model "$HF_ID" --label "$CELL_ID" \
+          --out "$LADDER_JSON" --concs "$CONC" --reps "$REPS" \
+          --isl "$ISL" --osl "$OSL" --warmup "$WARMUP" "${LADDER_THINK[@]}" || note_fail ladder
+fi
+
+# ── 6 + 7. teardown, assemble, validate ─────────────────────────────────────
+# Not written out again here: these stages ARE the finalizer above, which is
+# the same code a SIGINT/SIGTERM/SIGHUP takes. One teardown, one artifact, one
+# way out.
+MAIN_DONE=1
+finalize

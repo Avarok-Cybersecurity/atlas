@@ -1,0 +1,1 @@
+../../gb10/common/residual_add.cu

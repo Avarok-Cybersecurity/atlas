@@ -54,7 +54,17 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
             h_f16,
             h_f16_pool,
             fused_norm: args.gdn_fused_norm.unwrap_or(false),
-            batched_recurrent: args.ssm_batched_recurrent.unwrap_or(false),
+            // ★ NOT `unwrap_or(false)`. `set_from_cli` publishes all three GDN
+            // selections at once, so `--ssm-h-dtype f16` alone used to clear a
+            // batched recurrence the operator never mentioned. With the
+            // compiled target declaring it (`kernels/hopper` says ON, +6% and
+            // md5-identical), a `false` here would silently un-declare the
+            // target's own default on every serve that names any GDN flag.
+            batched_recurrent: args.ssm_batched_recurrent.unwrap_or(
+                spark_model::layers::ops::target_defaults::resolved()
+                    .ssm_batched_recurrent
+                    .value,
+            ),
             exact_verify: args.exact_verify.unwrap_or(false),
         };
         let in_force = spark_model::layers::qwen3_ssm::gdn_flags::set_from_cli(flags);
@@ -80,6 +90,31 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
             "ssm-rollback-mode was already resolved ({rollback_in_force:?}); the command \
              line's ({rollback:?}) did NOT take effect"
         );
+    }
+    // `--ssm-decode-ring-slots`: ABSENT IS NOT A VALUE. `auto` (the clap
+    // default) publishes NOTHING, so the documented `ATLAS_SSM_DECODE_RING`
+    // fallback stays reachable AND preflight can publish the depth it fitted
+    // to free memory later in the same boot (#915). An explicit N is
+    // published here, before preflight runs, which is exactly what makes the
+    // auto-fit's later write a no-op — an operator's pinned depth is refused
+    // rather than silently shrunk.
+    // The compiled target may DECLARE a depth (`kernels/<hw>/HARDWARE.toml`
+    // `[defaults] ssm_decode_ring_slots`); both current targets declare `auto`,
+    // so this is normally a no-op. An explicit `--ssm-decode-ring-slots N`
+    // still outranks it — `set_decode_ring_slots` is first-write-wins and the
+    // CLI's write is below, so the CLI is tried FIRST.
+    let cli_slots = spark_model::ssm_reserve::parse_decode_ring_slots(&args.ssm_decode_ring_slots)
+        .expect("validated by validate_serve_args");
+    let declared_slots = spark_model::layers::ops::target_defaults::resolved()
+        .ssm_decode_ring_slots
+        .value;
+    if let Some(slots) = cli_slots.or(declared_slots) {
+        let in_force = spark_model::ssm_reserve::set_decode_ring_slots(slots);
+        if in_force != slots {
+            tracing::warn!(
+                "ssm-decode-ring-slots was already resolved ({in_force}); the command                  line's ({slots}) did NOT take effect"
+            );
+        }
     }
     // `--prefill-varlen-batch`: its own single-value cell, so it publishes
     // independently of the GDN trio. Absent publishes nothing and the
@@ -112,11 +147,19 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     // may now come from the environment, and a log that echoes what was asked
     // for rather than what is in force is exactly how a dead knob stays
     // invisible for a campaign.
+    // ONE line naming every per-target serving default, its resolved value and
+    // whether the environment overrode it. The deliverable of the 2026-09-11
+    // maintainer review: a reader of a serve log can now tell which
+    // configuration produced a number without also having the launch script.
+    tracing::info!(
+        "{}",
+        spark_model::layers::ops::target_defaults::summary_line()
+    );
     let gdn = spark_model::layers::qwen3_ssm::gdn_flags::flags();
     tracing::info!(
         "kernel flags: ssm_h_dtype={} gdn_fused_norm={} ssm_batched_recurrent={} \
          exact_verify={} ssm_tail_midchunk={} mtp_gate={} ssm_rollback_mode={:?} \
-         prefill_varlen_batch={}",
+         ssm_decode_ring_slots={} prefill_varlen_batch={} prefill_chunk_zero_batch={}",
         if gdn.h_f16 { "f16" } else { "f32" },
         gdn.fused_norm,
         gdn.batched_recurrent,
@@ -130,8 +173,21 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
             "auto"
         },
         spark_model::ssm_reserve::ssm_rollback_mode(),
+        // RESOLVED: `auto` until something publishes a depth. Preflight logs
+        // the fitted depth (and the formula behind it) when it shrinks one.
+        match spark_model::ssm_reserve::published_decode_ring_slots() {
+            Some(slots) => slots.to_string(),
+            None => "auto".to_string(),
+        },
         // RESOLVED, not the raw argument — may come from the environment.
         spark_model::layers::ops::prefill_varlen_enabled(),
+        // The chunk-zero admission decision itself, printed beside the lever
+        // that sets it. Four call sites read this predicate; when they
+        // disagreed, `--prefill-varlen-batch` admitted a wave of fresh prompts
+        // and then refused it mid-forward, failing all sixteen requests at
+        // C=16 with an HTTP 200 and no body (#927 cell E). A boot line that
+        // names the resolved decision is what makes that arguable from a log.
+        spark_model::layers::ops::prefill_batched_chunk_zero_allowed(),
     );
 }
 

@@ -142,8 +142,43 @@ struct DflashRaw {
     target_layer_ids: Vec<usize>,
 }
 
+/// The `TARGET_DEFAULTS` constant for the hardware tree this build selected.
+///
+/// APPENDED TO `target_ptx.rs` rather than written to a file of its own, on
+/// BOTH paths — the skip stub and the real build. Two reasons:
+///
+/// * the constant is CONFIGURATION read by spark-model's resolvers, not a
+///   kernel blob, and every CPU gate in the repo runs under
+///   `ATLAS_SKIP_BUILD=1`; emitting it only on the compiling path would leave
+///   `TARGET_DEFAULTS` unresolvable in exactly the builds that test it;
+/// * cargo does not track an `include!`d generated file as a recompile input
+///   (the 98-vs-99 staleness hole in `lib.rs`'s comment). ONE generated file
+///   behind ONE `include!` and ONE content hash has one way to go stale, which
+///   `ATLAS_KERNEL_SET_HASH` already closes. A second one would need its own
+///   copy of that argument.
+fn target_defaults_literal(workspace_root: &std::path::Path) -> String {
+    let hw = env::var("ATLAS_TARGET_HW").unwrap_or_else(|_| build_diagnose::DEFAULT_HW.into());
+    let kernels_root = workspace_root.join("kernels");
+    let path = kernels_root.join(&hw).join("HARDWARE.toml");
+    if path.exists() {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    format!(
+        "{}{}",
+        build_defaults::literal(&build_defaults::read_defaults(&kernels_root, &hw)),
+        build_defaults::sm_count_literal(build_defaults::read_sm_count(&kernels_root, &hw)),
+    )
+}
+
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    // Two levels up from `crates/atlas-kernels`. Resolved before the skip
+    // branch because `target_defaults_literal` runs on both paths.
+    let workspace_root_owned = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("crates/atlas-kernels is two levels below the workspace root")
+        .to_path_buf();
 
     println!("cargo:rerun-if-env-changed=ATLAS_SKIP_BUILD");
     // Without these the cargo cache short-circuits when only the target
@@ -177,10 +212,12 @@ fn main() {
             pub fn ptx_modules() -> Vec<(&'static str, &'static [u8])> { Vec::new() }\n\
             pub fn metallib_modules() -> Vec<(&'static str, &'static [u8])> { Vec::new() }\n\
             pub fn all_ptx_sets() -> Vec<TargetPtxSet> { Vec::new() }\n";
-        std::fs::write(out_dir.join("target_ptx.rs"), stub).expect("write skip stub target_ptx.rs");
+        let stub = format!("{stub}{}", target_defaults_literal(&workspace_root_owned));
+        std::fs::write(out_dir.join("target_ptx.rs"), &stub)
+            .expect("write skip stub target_ptx.rs");
         println!(
             "cargo:rustc-env=ATLAS_KERNEL_SET_HASH={}",
-            content_hash(stub)
+            content_hash(&stub)
         );
         println!("cargo:rustc-env=ATLAS_PTX_DIR={}", out_dir.display());
         // No compiler ran, so this binary can attest to nothing. Emitted
@@ -439,19 +476,32 @@ fn main() {
         if let Some(ref common) = target.common_kernel_dir {
             println!("cargo:rerun-if-changed={}", common.display());
         }
-        let n_overrides = find_cu_files(&target.model_kernel_dir, source_ext).len();
+        // THE line: one `cargo:warning=` per target, so the resolved kernel
+        // count reaches the terminal of a plain `cargo build` instead of only
+        // `target/<profile>/build/atlas-kernels-*/output` (H100 rounds 11 and
+        // 13). Text formatted by `build_summary::summary`, which
+        // `tests/build_summary.rs` grades.
+        // TWO counts, honestly named (H100 round 15 §1.2 / anomaly 1). The
+        // first is the per-model/quant directory's own `.cu` count — what this
+        // line has always printed, mislabelled as the overrides list. The
+        // second IS that list: `kernels/<hw>/HARDWARE.toml` `[kernels]
+        // overrides`, the declaration `scripts/check_kernel_shadows.py` and
+        // `tests/support/inherited.rs` read. They are different numbers (14 vs
+        // 11 in round 14, 14 vs 15 in round 15) and only the second answers
+        // "did my override land".
+        let n_model_dir = find_cu_files(&target.model_kernel_dir, source_ext).len();
+        let n_overrides =
+            build_summary::count_declared_overrides(&workspace_root.join("kernels"), &target.hw);
         println!(
-            "cargo:warning=atlas-kernels: compiled {} kernels for target {} ({}, {}, {}){}",
-            cu_files.len(),
-            idx,
-            target.hw,
-            target.model,
-            target.quant,
-            if n_overrides > 0 {
-                format!(" ({n_overrides} model-specific overrides)")
-            } else {
-                String::new()
-            },
+            "cargo:warning={}",
+            build_summary::summary(
+                cu_files.len(),
+                &target.hw,
+                &target.model,
+                &target.quant,
+                n_model_dir,
+                n_overrides,
+            )
         );
     }
 
@@ -539,6 +589,9 @@ fn main() {
         output_ext,
         uses_cuda_api,
     );
+    // The per-target serving defaults ride in the SAME generated file: one
+    // `include!`, one content hash, one way to go stale.
+    let generated = format!("{generated}{}", target_defaults_literal(workspace_root));
     let gen_path = out_dir.join("target_ptx.rs");
     std::fs::write(&gen_path, &generated)
         .unwrap_or_else(|e| panic!("Failed to write {}: {e}", gen_path.display()));
@@ -1028,6 +1081,14 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
         .to_string();
     println!("cargo:rerun-if-changed={}", hw_toml_path.display());
 
+    // The LEAST specific flag layer: `[build] extra_nvcc_flags` in
+    // HARDWARE.toml, for facts about the architecture rather than the model.
+    // `kernels/hopper` and `kernels/b200` define
+    // `-DATLAS_NO_WARP_BLOCKSCALE_MMA` here because neither ISA has the
+    // warp-level block-scaled MMA; gb10 declares nothing and its compile line
+    // is unchanged. See `build_flags::hardware_extra_flags`.
+    let hw_extra_flags = build_flags::hardware_extra_flags(&hw_toml, &target_vendor);
+
     // Expand model wildcard (exclude the `common/` shared-kernel dir,
     // which has no MODEL.toml).
     let models: Vec<String> = if model_spec == "*" {
@@ -1112,7 +1173,14 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             // by propagating mappings into all 13 model tomls). Semantics
             // now: common parses first as the base; the model toml appends
             // flags (deduped, model last) and wins per-key on [modules].
-            let mut extra_flags: Vec<String> = Vec::new();
+            //
+            // FLAGS have a third layer under those two — HARDWARE.toml's
+            // `hw_extra_flags`, merged least-specific-first by
+            // `build_flags::merge_extra_flags`, which is the SSOT for the
+            // order and the deduping. `[modules]` has no hardware layer:
+            // a module rename is a property of the source file, not the GPU.
+            let mut common_flags: Vec<String> = Vec::new();
+            let mut model_flags: Vec<String> = Vec::new();
             let mut module_overrides: HashMap<String, String> = HashMap::new();
             // Shadow-drop exemptions merge the same way: common/ declares the
             // repo-wide superseded kernels, a model KERNEL.toml adds the ones
@@ -1120,20 +1188,18 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             let mut shadow_exempt: Vec<(String, String)> = Vec::new();
             if has_common_dir && common_kernel_dir.join("KERNEL.toml").exists() {
                 let (f, m) = parse_kernel_toml(&common_kernel_dir, &target_vendor);
-                extra_flags.extend(f);
+                common_flags = f;
                 module_overrides.extend(m);
                 shadow_exempt.extend(parse_shadow_exempt(&common_kernel_dir));
             }
             if has_model_dir && model_kernel_dir.join("KERNEL.toml").exists() {
                 let (f, m) = parse_kernel_toml(&model_kernel_dir, &target_vendor);
-                for flag in f {
-                    if !extra_flags.contains(&flag) {
-                        extra_flags.push(flag);
-                    }
-                }
+                model_flags = f;
                 module_overrides.extend(m);
                 shadow_exempt.extend(parse_shadow_exempt(&model_kernel_dir));
             }
+            let extra_flags =
+                build_flags::merge_extra_flags(&hw_extra_flags, &common_flags, &model_flags);
             shadow_exempt.sort();
             shadow_exempt.dedup();
 
@@ -1383,6 +1449,28 @@ fn find_cu_files(kernel_dir: &std::path::Path, source_ext: &str) -> Vec<PathBuf>
         })
         .collect()
 }
+
+// The HARDWARE.toml `arch` -> `KernelTarget.arch` mapping. Its own file, with
+// no `super::` dependencies, so `tests/kernel_target_arch.rs` can compile the
+// same code — cargo never runs a build script's `#[cfg(test)]` modules.
+#[path = "build_arch.rs"]
+mod build_arch;
+
+// The extra-compiler-flag layers and their merge rule. Same reason for its own
+// file as `build_arch.rs`: `tests/kernel_build_flags.rs` compiles it directly.
+#[path = "build_flags.rs"]
+mod build_flags;
+
+// The per-target SERVING defaults (`[defaults]` in HARDWARE.toml). Same reason
+// for its own file: `tests/target_defaults.rs` compiles it against the real
+// kernels/ tree.
+#[path = "build_defaults.rs"]
+mod build_defaults;
+
+// The one summary line a build prints per kernel target. Same reason for its
+// own file: `tests/build_summary.rs` compiles it directly.
+#[path = "build_summary.rs"]
+mod build_summary;
 
 #[path = "build_codegen.rs"]
 mod build_codegen;

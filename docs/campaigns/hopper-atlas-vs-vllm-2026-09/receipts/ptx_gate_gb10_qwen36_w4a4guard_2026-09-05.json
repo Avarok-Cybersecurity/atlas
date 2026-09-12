@@ -1,0 +1,1758 @@
+{
+  "generated_utc": "2026-09-05T03:27:36Z",
+  "host": "spark1",
+  "hw": "gb10",
+  "arch": "sm_121f",
+  "nvcc": "Build cuda_13.0.r13.0/compiler.36424714_0",
+  "hardware_flags": [],
+  "strict": true,
+  "selftest": {
+    "bad_failed": true,
+    "good_passed": true,
+    "bad_fixture": "known_bad_post_hopper.cu"
+  },
+  "summary": {
+    "total": 173,
+    "pass": 151,
+    "fail": 22,
+    "by_model": {
+      "qwen3.6-35b-a3b": {
+        "total": 173,
+        "pass": 151,
+        "fail": 22
+      }
+    }
+  },
+  "results": [
+    {
+      "file": "gb10/common/argmax_bf16.cu",
+      "stem": "argmax_bf16",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 19,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/bf16_add.cu",
+      "stem": "bf16_add",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 10,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/causal_conv1d.cu",
+      "stem": "causal_conv1d",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemm_bf16.cu",
+      "stem": "dense_gemm_bf16",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 96,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemm_splitk.cu",
+      "stem": "dense_gemm_splitk",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemm_tc.cu",
+      "stem": "dense_gemm_tc",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemv_bf16.cu",
+      "stem": "dense_gemv_bf16",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 44,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemv_bf16_batch2.cu",
+      "stem": "dense_gemv_bf16_batch2",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 42,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemv_bf16_batchm.cu",
+      "stem": "dense_gemv_bf16_batchm",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 48,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemv_fp8w.cu",
+      "stem": "dense_gemv_fp8w",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 33,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dense_gemv_fp8w_batch2.cu",
+      "stem": "dense_gemv_fp8w_batch2",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dequant_fp8_blockscaled_bf16.cu",
+      "stem": "dequant_fp8_blockscaled_bf16",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 14,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dequant_gguf_bf16.cu",
+      "stem": "dequant_gguf_bf16",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 34,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dequant_nvfp4_bf16.cu",
+      "stem": "dequant_nvfp4_bf16",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 10,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/dflash2.cu",
+      "stem": "dflash2",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 39,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/e2m1_branchless.cu",
+      "stem": "e2m1_branchless",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 23,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/embed_from_argmax.cu",
+      "stem": "embed_from_argmax",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 20,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/fp8_gemm_t_blockscaled.cu",
+      "stem": "fp8_gemm_t_blockscaled",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 162,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/fp8_gemv_rt.cu",
+      "stem": "fp8_gemv_rt",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 106,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/fused_k_norm_rope_cache.cu",
+      "stem": "fused_k_norm_rope_cache",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule.cu",
+      "stem": "gated_delta_rule",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 255,
+      "spill_bytes": 1412,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_fla.cu",
+      "stem": "gated_delta_rule_fla",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 250,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_persistent.cu",
+      "stem": "gated_delta_rule_persistent",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 255,
+      "spill_bytes": 2240,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_regresident.cu",
+      "stem": "gated_delta_rule_regresident",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 48,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy.cu",
+      "stem": "gated_delta_rule_wy",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 56,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule_wy17.cu",
+      "stem": "gated_delta_rule_wy17",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 110,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy2_resident.cu",
+      "stem": "gated_delta_rule_wy2_resident",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 255,
+      "spill_bytes": 112,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy2_resident_f16.cu",
+      "stem": "gated_delta_rule_wy2_resident_f16",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 255,
+      "spill_bytes": 24,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy3.cu",
+      "stem": "gated_delta_rule_wy3",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 68,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy3_f16.cu",
+      "stem": "gated_delta_rule_wy3_f16",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy3_resident.cu",
+      "stem": "gated_delta_rule_wy3_resident",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 255,
+      "spill_bytes": 16,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy3_resident_f16.cu",
+      "stem": "gated_delta_rule_wy3_resident_f16",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 255,
+      "spill_bytes": 148,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy4.cu",
+      "stem": "gated_delta_rule_wy4",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 68,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy4_f16.cu",
+      "stem": "gated_delta_rule_wy4_f16",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 66,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy64_prefill.cu",
+      "stem": "gated_delta_rule_wy64_prefill",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 145,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wy_f16.cu",
+      "stem": "gated_delta_rule_wy_f16",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 56,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gated_delta_rule_wyn.cu",
+      "stem": "gated_delta_rule_wyn",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 108,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gdn_verify_fused_conv_kn.cu",
+      "stem": "gdn_verify_fused_conv_kn",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 46,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/gdn_verify_fused_k2.cu",
+      "stem": "gdn_verify_fused_k2",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 44,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_decode.cu",
+      "stem": "inferspark_decode",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 56,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill.cu",
+      "stem": "inferspark_prefill",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 124,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_64' uses too much shared data (0x16000 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_fp8kv.cu",
+      "stem": "inferspark_prefill_fp8kv",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 121,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_fp8kv_64' uses too much shared data (0x16000 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_h128.cu",
+      "stem": "inferspark_prefill_h128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged.cu",
+      "stem": "inferspark_prefill_paged",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 125,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_64' uses too much shared data (0x16000 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_512.cu",
+      "stem": "inferspark_prefill_paged_512",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 121,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_batched.cu",
+      "stem": "inferspark_prefill_paged_batched",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 125,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_batched_64' uses too much shared data (0x16000 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_bf16k_turbo2v.cu",
+      "stem": "inferspark_prefill_paged_bf16k_turbo2v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 125,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_bf16k_turbo2v_64' uses too much shared data (0x16010 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_bf16k_turbo3v.cu",
+      "stem": "inferspark_prefill_paged_bf16k_turbo3v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 125,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_bf16k_turbo3v_64' uses too much shared data (0x16020 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_bf16k_turbo4v.cu",
+      "stem": "inferspark_prefill_paged_bf16k_turbo4v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 125,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_bf16k_turbo4v_64' uses too much shared data (0x16040 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_fp8.cu",
+      "stem": "inferspark_prefill_paged_fp8",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 123,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_fp8_64' uses too much shared data (0x10400 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_fp8_batched.cu",
+      "stem": "inferspark_prefill_paged_fp8_batched",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 127,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_fp8_batched_64' uses too much shared data (0x16000 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_fp8k_turbo2v.cu",
+      "stem": "inferspark_prefill_paged_fp8k_turbo2v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 123,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_fp8k_turbo2v_64' uses too much shared data (0x16010 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_fp8k_turbo3v.cu",
+      "stem": "inferspark_prefill_paged_fp8k_turbo3v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 125,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_fp8k_turbo3v_64' uses too much shared data (0x16020 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_fp8k_turbo4v.cu",
+      "stem": "inferspark_prefill_paged_fp8k_turbo4v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 123,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_fp8k_turbo4v_64' uses too much shared data (0x16040 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_indirect.cu",
+      "stem": "inferspark_prefill_paged_indirect",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 126,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_indirect_64' uses too much shared data (0x1600c bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_nvfp4.cu",
+      "stem": "inferspark_prefill_paged_nvfp4",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 125,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_nvfp4_64' uses too much shared data (0x16040 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_nvfp4_batched.cu",
+      "stem": "inferspark_prefill_paged_nvfp4_batched",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 127,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_nvfp4_batched_64' uses too much shared data (0x16040 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo2.cu",
+      "stem": "inferspark_prefill_paged_turbo2",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 125,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo2_64' uses too much shared data (0x16010 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo3.cu",
+      "stem": "inferspark_prefill_paged_turbo3",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 128,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo3_64' uses too much shared data (0x16020 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo3k_turbo8v.cu",
+      "stem": "inferspark_prefill_paged_turbo3k_turbo8v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 123,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo3k_turbo8v_64' uses too much shared data (0x16020 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo4.cu",
+      "stem": "inferspark_prefill_paged_turbo4",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 125,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo4_64' uses too much shared data (0x16040 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo4k_turbo3v.cu",
+      "stem": "inferspark_prefill_paged_turbo4k_turbo3v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 123,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo4k_turbo3v_64' uses too much shared data (0x16060 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo4k_turbo8v.cu",
+      "stem": "inferspark_prefill_paged_turbo4k_turbo8v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 123,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo4k_turbo8v_64' uses too much shared data (0x16040 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_paged_turbo8.cu",
+      "stem": "inferspark_prefill_paged_turbo8",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": false,
+      "registers_max": 128,
+      "spill_bytes": 0,
+      "error_head": "ptxas error   : Entry function 'inferspark_prefill_paged_turbo8_64' uses too much shared data (0x16000 bytes, 0xc000 max)"
+    },
+    {
+      "file": "gb10/common/inferspark_prefill_v47.cu",
+      "stem": "inferspark_prefill_v47",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 252,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/kv_cache_append.cu",
+      "stem": "kv_cache_append",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 24,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/lora_bgmv.cu",
+      "stem": "lora_bgmv",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/mamba2_ssd_chunk.cu",
+      "stem": "mamba2_ssd_chunk",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/mamba2_ssm_decode.cu",
+      "stem": "mamba2_ssm_decode",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/metadata_fill.cu",
+      "stem": "metadata_fill",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 12,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_bf16_grouped_gemm.cu",
+      "stem": "moe_bf16_grouped_gemm",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_decode_atomic_c4.cu",
+      "stem": "moe_decode_atomic_c4",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_expert_gemv.cu",
+      "stem": "moe_expert_gemv",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 42,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_expert_gemv_fused.cu",
+      "stem": "moe_expert_gemv_fused",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 54,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_expert_relu2_down_shared.cu",
+      "stem": "moe_expert_relu2_down_shared",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_fp8_grouped_gemm.cu",
+      "stem": "moe_fp8_grouped_gemm",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 128,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_gate_topk.cu",
+      "stem": "moe_gate_topk",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_hash_route.cu",
+      "stem": "moe_hash_route",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 32,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_lora_gather_bgmv.cu",
+      "stem": "moe_lora_gather_bgmv",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_lora_grouped_down.cu",
+      "stem": "moe_lora_grouped_down",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 46,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_permute.cu",
+      "stem": "moe_permute",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_prefill.cu",
+      "stem": "moe_prefill",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused.cu",
+      "stem": "moe_shared_expert_fused",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_batch2.cu",
+      "stem": "moe_shared_expert_fused_batch2",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 42,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_batch2_t.cu",
+      "stem": "moe_shared_expert_fused_batch2_t",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_batch3.cu",
+      "stem": "moe_shared_expert_fused_batch3",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 42,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_batch3_t.cu",
+      "stem": "moe_shared_expert_fused_batch3_t",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_bf16.cu",
+      "stem": "moe_shared_expert_fused_bf16",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 42,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_bf16_batch2.cu",
+      "stem": "moe_shared_expert_fused_bf16_batch2",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 46,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_fp8.cu",
+      "stem": "moe_shared_expert_fused_fp8",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_fp8_batch2.cu",
+      "stem": "moe_shared_expert_fused_fp8_batch2",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 42,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_fp8_batch2_t.cu",
+      "stem": "moe_shared_expert_fused_fp8_batch2_t",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_fp8_batch3.cu",
+      "stem": "moe_shared_expert_fused_fp8_batch3",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 42,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_fp8_batch3_t.cu",
+      "stem": "moe_shared_expert_fused_fp8_batch3_t",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_fp8_t.cu",
+      "stem": "moe_shared_expert_fused_fp8_t",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_shared_expert_fused_t.cu",
+      "stem": "moe_shared_expert_fused_t",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_silu_mul.cu",
+      "stem": "moe_silu_mul",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 31,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_sorted_prefill.cu",
+      "stem": "moe_sorted_prefill",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_topk.cu",
+      "stem": "moe_topk",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 33,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_topk_sigmoid.cu",
+      "stem": "moe_topk_sigmoid",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_topk_softmax_bias.cu",
+      "stem": "moe_topk_softmax_bias",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_topk_sqrtsoftplus.cu",
+      "stem": "moe_topk_sqrtsoftplus",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_transpose_batched.cu",
+      "stem": "moe_transpose_batched",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 24,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu",
+      "stem": "moe_w4a16_grouped_gemm",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 132,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/moe_w8a8_grouped_gemm.cu",
+      "stem": "moe_w8a8_grouped_gemm",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 122,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/nemotron_moe_prefill.cu",
+      "stem": "nemotron_moe_prefill",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/nllb_encoder.cu",
+      "stem": "nllb_encoder",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn.cu",
+      "stem": "paged_decode_attn",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 56,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_bf16k_turbo2v.cu",
+      "stem": "paged_decode_attn_bf16k_turbo2v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_bf16k_turbo2v_128.cu",
+      "stem": "paged_decode_attn_bf16k_turbo2v_128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_bf16k_turbo3v.cu",
+      "stem": "paged_decode_attn_bf16k_turbo3v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_bf16k_turbo3v_128.cu",
+      "stem": "paged_decode_attn_bf16k_turbo3v_128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_bf16k_turbo4v.cu",
+      "stem": "paged_decode_attn_bf16k_turbo4v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_bf16k_turbo4v_128.cu",
+      "stem": "paged_decode_attn_bf16k_turbo4v_128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8.cu",
+      "stem": "paged_decode_attn_fp8",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 48,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8k_turbo2v.cu",
+      "stem": "paged_decode_attn_fp8k_turbo2v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8k_turbo2v_128.cu",
+      "stem": "paged_decode_attn_fp8k_turbo2v_128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8k_turbo3v.cu",
+      "stem": "paged_decode_attn_fp8k_turbo3v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8k_turbo3v_128.cu",
+      "stem": "paged_decode_attn_fp8k_turbo3v_128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8k_turbo4v.cu",
+      "stem": "paged_decode_attn_fp8k_turbo4v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_fp8k_turbo4v_128.cu",
+      "stem": "paged_decode_attn_fp8k_turbo4v_128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_nvfp4.cu",
+      "stem": "paged_decode_attn_nvfp4",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo2.cu",
+      "stem": "paged_decode_attn_turbo2",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo2_128.cu",
+      "stem": "paged_decode_attn_turbo2_128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo3.cu",
+      "stem": "paged_decode_attn_turbo3",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo3_128.cu",
+      "stem": "paged_decode_attn_turbo3_128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo3k_turbo8v.cu",
+      "stem": "paged_decode_attn_turbo3k_turbo8v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo3k_turbo8v_128.cu",
+      "stem": "paged_decode_attn_turbo3k_turbo8v_128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4.cu",
+      "stem": "paged_decode_attn_turbo4",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4_128.cu",
+      "stem": "paged_decode_attn_turbo4_128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4_512.cu",
+      "stem": "paged_decode_attn_turbo4_512",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 128,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4k_turbo3v.cu",
+      "stem": "paged_decode_attn_turbo4k_turbo3v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4k_turbo3v_128.cu",
+      "stem": "paged_decode_attn_turbo4k_turbo3v_128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4k_turbo8v.cu",
+      "stem": "paged_decode_attn_turbo4k_turbo8v",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 80,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo4k_turbo8v_128.cu",
+      "stem": "paged_decode_attn_turbo4k_turbo8v_128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo8.cu",
+      "stem": "paged_decode_attn_turbo8",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 79,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo8_128.cu",
+      "stem": "paged_decode_attn_turbo8_128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/paged_decode_attn_turbo8_512.cu",
+      "stem": "paged_decode_attn_turbo8_512",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 128,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/per_token_group_quant_fp8.cu",
+      "stem": "per_token_group_quant_fp8",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 19,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/q2_0_gemv.cu",
+      "stem": "q2_0_gemv",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 64,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/q2_0_gemv_vec.cu",
+      "stem": "q2_0_gemv_vec",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 56,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/quant_rowwise_fp8.cu",
+      "stem": "quant_rowwise_fp8",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/quantize_bf16_to_fp8_blockscaled.cu",
+      "stem": "quantize_bf16_to_fp8_blockscaled",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 39,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/quantize_bf16_to_nvfp4.cu",
+      "stem": "quantize_bf16_to_nvfp4",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 37,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/relu_squared.cu",
+      "stem": "relu_squared",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/reshape_and_cache.cu",
+      "stem": "reshape_and_cache",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/reshape_and_cache_turbo.cu",
+      "stem": "reshape_and_cache_turbo",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 59,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/residual_add.cu",
+      "stem": "residual_add",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 17,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/rms_norm.cu",
+      "stem": "rms_norm",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/rms_norm_vanilla.cu",
+      "stem": "rms_norm_vanilla",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 38,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/rope.cu",
+      "stem": "rope",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 36,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/rope_mrope_interleaved.cu",
+      "stem": "rope_mrope_interleaved",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 36,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/ssm_h_dtype.cu",
+      "stem": "ssm_h_dtype",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 12,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/ssm_preprocess.cu",
+      "stem": "ssm_preprocess",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/ssm_state_norm.cu",
+      "stem": "ssm_state_norm",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/token_overlay.cu",
+      "stem": "token_overlay",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 40,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/tq_plus_innerq_apply.cu",
+      "stem": "tq_plus_innerq_apply",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 18,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/transpose_u8.cu",
+      "stem": "transpose_u8",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 30,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/vector_add.cu",
+      "stem": "vector_add",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 12,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu",
+      "stem": "vision_encoder",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 42,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w4a16_fp8_ldmab.cu",
+      "stem": "w4a16_fp8_ldmab",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 126,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu",
+      "stem": "w4a16_gemm",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 168,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w4a16_gemv.cu",
+      "stem": "w4a16_gemv",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 139,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w4a16_gemv_fused.cu",
+      "stem": "w4a16_gemv_fused",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 41,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemm.cu",
+      "stem": "w8a16_gemm",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 128,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemm_pipelined.cu",
+      "stem": "w8a16_gemm_pipelined",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 55,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemm_t.cu",
+      "stem": "w8a16_gemm_t",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 124,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemm_t_m128.cu",
+      "stem": "w8a16_gemm_t_m128",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 128,
+      "spill_bytes": 496,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemv.cu",
+      "stem": "w8a16_gemv",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 38,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemv_batch4.cu",
+      "stem": "w8a16_gemv_batch4",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 72,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/w8a16_gemv_fused.cu",
+      "stem": "w8a16_gemv_fused",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 54,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/wht_bf16.cu",
+      "stem": "wht_bf16",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 38,
+      "spill_bytes": 0,
+      "error_head": ""
+    },
+    {
+      "file": "gb10/common/widen_block_scale_f32.cu",
+      "stem": "widen_block_scale_f32",
+      "model": "qwen3.6-35b-a3b",
+      "ptx_ok": true,
+      "ptxas_ok": true,
+      "registers_max": 10,
+      "spill_bytes": 0,
+      "error_head": ""
+    }
+  ]
+}

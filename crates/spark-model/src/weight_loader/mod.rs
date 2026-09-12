@@ -52,6 +52,12 @@ pub use qwen3_vl::Qwen3VLWeightLoader;
 pub use qwen4_exp::Qwen4ExpWeightLoader;
 pub use qwen35::Qwen35WeightLoader;
 pub use qwen35_dense::Qwen35DenseWeightLoader;
+/// The native-FP8 dense loader's derived-copy decision table and the shape
+/// arithmetic that prices it (#915).
+pub use qwen35_dense::fp8_residency;
+/// That table evaluated BEFORE the checkpoint loads, so preflight can size
+/// the SSM decode ring against the predicted post-load KV headroom (#915).
+pub use qwen35_dense::predicted_residency;
 pub use step3p7::Step3p7WeightLoader;
 
 use anyhow::Result;

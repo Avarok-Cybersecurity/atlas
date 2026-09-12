@@ -32,7 +32,6 @@ pub(super) fn build_choice_message(
     cwd_hint: Option<&str>,
     choice_idx: usize,
 ) -> ir::Choice {
-    let _ = response; // currently only used for finish_reason.clone() below
     // Neutral locals — the wire annotations (URL citations) are derived
     // at encode time by the surfaces that emit them.
     let mut reasoning_content = reasoning_content_i;
@@ -179,6 +178,20 @@ pub(super) fn build_choice_message(
         tool_calls,
         refusal: msg_refusal,
         finish_reason: ir::FinishReason::from(finish_reason_i.as_str()),
+        // ── `stop_reason` extension field (#927 / #1000 / #1002) ─────
+        // The guard NAME, beside the wire `finish_reason` that flattens
+        // every non-timeout guard to "length"
+        // (`scheduler::lifecycle::guard_stop_wire_reason` carries the
+        // measured rationale for that, and it does not change here).
+        // Skipped entirely when `None`, so a natural stop serialises
+        // byte-identically to before.
+        //
+        // Round 13 cell V was measured on THIS surface: the 16-way probe
+        // ran `stream=false` and 6/16 responses came back at 49 tokens,
+        // cut by the content-loop watchdog and every one labelled
+        // `finish_reason: "length"` on a request that asked for 256. A
+        // blocking client had nothing else to read.
+        stop_reason: response.guard_stop,
         matched_stop: None, // caller fills
         logprobs: None,     // caller fills
     }

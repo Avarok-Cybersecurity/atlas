@@ -106,7 +106,16 @@ fn main() -> Result<()> {
     ops::gdn_prefill_fla(
         g,
         k_wu,
+        // The two Hopper prefill remnant twins (#928): 0 = absent, for the same
+        // reason as every handle below — this example diffs ONE spine against
+        // FlashInfer, so every optional kernel stays off.
+        spark_runtime::gpu::KernelHandle(0),
+        spark_runtime::gpu::KernelHandle(0),
         k_dh,
+        spark_runtime::gpu::KernelHandle(0),
+        // tcfuse handle: 0 = absent, same reason as the three below.
+        spark_runtime::gpu::KernelHandle(0),
+        // value-split twin handle: 0 = absent, same reason.
         spark_runtime::gpu::KernelHandle(0),
         // vtile handle: 0 = absent, so this cross-impl A/B keeps comparing the
         // ksplit spine FlashInfer was originally diffed against.

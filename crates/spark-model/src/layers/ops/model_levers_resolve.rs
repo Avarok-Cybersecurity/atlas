@@ -27,6 +27,10 @@ pub(super) fn from_values(
     // under parallel test execution. `from_values` is pure over its inputs;
     // that is the property the whole test suite rests on.
     draft_conf_tau: f32,
+    // The compiled target's `[defaults] decode_split_silu`. Passed IN for the
+    // same purity reason as `draft_conf_tau` above: `target_defaults::resolved`
+    // reads the real environment whatever the closures say.
+    default_split_silu: bool,
 ) -> ModelLevers {
     fn opt_in(value: Option<&str>) -> bool {
         value == Some("1")
@@ -72,7 +76,20 @@ pub(super) fn from_values(
         dflash_debug_dump_full: opt_in(value("ATLAS_DFLASH_DEBUG_DUMP_FULL").as_deref()),
         mtp_debug_norms: opt_in(value("ATLAS_MTP_DEBUG_NORMS").as_deref()),
         draft_conf_tau,
-        decode_split_silu: !present("ATLAS_NO_DECODE_SPLIT_SILU"),
+        // The compiled target declares this (`kernels/<hw>/HARDWARE.toml`
+        // `[defaults] decode_split_silu`); BOTH current targets declare it ON,
+        // which is the shipped default since #928. `ATLAS_NO_DECODE_SPLIT_SILU`
+        // stays the PRESENCE kill switch, unchanged, and still wins.
+        // Resolved through `present` rather than `target_defaults::resolved()`
+        // so `from_values` stays pure over its closures — the property the
+        // whole test suite rests on. The declaration reaches it as the
+        // `default_split_silu` argument.
+        decode_split_silu: crate::layers::ops::target_defaults::resolve_toggle(
+            default_split_silu,
+            None,
+            present("ATLAS_NO_DECODE_SPLIT_SILU"),
+        )
+        .value,
         bf16_tc_prefill: present("ATLAS_BF16_TC_PREFILL"),
         fp8_m64_prefill: present("ATLAS_FP8_M64_PREFILL"),
         int8_prefill: present("ATLAS_INT8_PREFILL"),
@@ -163,6 +180,7 @@ impl ModelLevers {
             crate::speculative::shadow_topk(),
             crate::model::drafter_context::resolve_from_env(),
             crate::speculative::draft_conf_tau(),
+            crate::layers::ops::target_defaults::declared().decode_split_silu,
         )
     }
 

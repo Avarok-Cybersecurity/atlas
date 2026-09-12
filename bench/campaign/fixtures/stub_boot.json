@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "engine": "atlas",
+  "url": "http://127.0.0.1:8888",
+  "model": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+  "start_epoch": 1788600000.0,
+  "time_to_ready_s": 412.0,
+  "first_token_s": 1.83,
+  "polls": 413,
+  "http_codes_seen": [
+    "503",
+    "200"
+  ],
+  "timeout_s": 1800.0,
+  "status": "ready",
+  "passed": true,
+  "total_s": 413.83
+}
