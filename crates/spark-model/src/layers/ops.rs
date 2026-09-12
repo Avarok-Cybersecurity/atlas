@@ -152,6 +152,8 @@ mod ssm_gdn_a3;
 mod ssm_gdn_b;
 #[path = "ops/ssm_gdn_batched.rs"]
 mod ssm_gdn_batched;
+#[path = "ops/ssm_gdn_hopper_prefill.rs"]
+mod ssm_gdn_hopper_prefill;
 #[path = "ops/ssm_gdn_snap.rs"]
 mod ssm_gdn_snap;
 #[path = "ops/ssm_mamba.rs"]
@@ -222,6 +224,7 @@ pub use ssm_gdn_a2::*;
 pub use ssm_gdn_a3::*;
 pub use ssm_gdn_b::*;
 pub use ssm_gdn_batched::*;
+pub(crate) use ssm_gdn_hopper_prefill::*;
 pub use ssm_gdn_snap::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;

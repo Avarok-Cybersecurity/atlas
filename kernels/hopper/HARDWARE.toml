@@ -98,3 +98,47 @@ ssm_batched_recurrent = true
 gdn_prefill_tc = false
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+
+# ── The `common/` entries this target OWNS rather than inherits ──────────────
+#
+# The SSOT for "which kernels does Hopper tune for itself", read by the build,
+# by `scripts/check_kernel_shadows.py`, and by
+# `crates/atlas-kernels/tests/inherited_targets.rs`. Two SHAPES live in the one
+# list and they are checked differently:
+#
+#   * an OVERRIDE replaces a gb10 namesake — same entry points, this hardware's
+#     instruction selection — and must leave gb10's own file alone, because
+#     other targets compile it;
+#   * an ADDITION has a stem gb10 does not have at all, and must bring entry
+#     points gb10 does not declare, so that no target ever compiles two
+#     definitions of one kernel name.
+#
+# Every entry below is an ADDITION.
+#
+#   gdn_recompute_wu_hopper.cu  The two SCALAR REMNANTS of the chunked PREFILL
+#   gdn_fwd_o_hopper.cu         (#928) on tensor cores: `wu`'s two forward
+#                            substitutions and `fwd_o`'s triangular
+#                            `tril(kq).uc`. ADDITIONS rather than overrides
+#                            because their parents live in
+#                            `common/gated_delta_rule_fla.cu`, which NO model
+#                            directory shadows, so a same-stem override there
+#                            WOULD compile. That file is 2105 lines declaring
+#                            fourteen entry points, of which these replace two:
+#                            a whole-file override is whole-file and would fork
+#                            the other twelve, which is the shadow-drift class
+#                            `build.rs` reports. New stems with new entry names
+#                            fork nothing, and the launcher picks parent or twin
+#                            by kernel presence under `[defaults]
+#                            gdn_prefill_tc`. Reached only under that row.
+#                            Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
+#   gdn_prefill_hopper.cuh   Their shared operand machinery — the padded smem
+#                            strides and the MMA fragment maps both twins read.
+#                            No gb10 counterpart by design: it is the shared
+#                            inner loop of the two `.cu` additions above and
+#                            nothing else includes it.
+[kernels]
+overrides = [
+  "gdn_fwd_o_hopper.cu",
+  "gdn_prefill_hopper.cuh",
+  "gdn_recompute_wu_hopper.cu",
+]
