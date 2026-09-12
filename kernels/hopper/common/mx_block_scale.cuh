@@ -1,0 +1,1 @@
+../../gb10/common/mx_block_scale.cuh

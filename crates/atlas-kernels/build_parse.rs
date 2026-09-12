@@ -24,14 +24,10 @@ pub(super) fn parse_kernel_toml(
     .unwrap_or_else(|e| panic!("Bad TOML in {}: {e}", kernel_toml_path.display()));
     println!("cargo:rerun-if-changed={}", kernel_toml_path.display());
 
-    // Per-vendor extra flag keys. NVIDIA reads `extra_nvcc_flags`; Apple
-    // reads `extra_metal_flags`. KERNEL.toml may declare both — only the
-    // vendor-matching list is forwarded so flags don't bleed across
-    // toolchains (e.g. nvcc's `--fmad=false` is invalid for xcrun metal).
-    let flag_key = match vendor {
-        "apple" | "metal" => "extra_metal_flags",
-        _ => "extra_nvcc_flags",
-    };
+    // Per-vendor extra flag keys — SSOT in `build_flags::flag_key`, shared
+    // with HARDWARE.toml's layer so the two files can never disagree about
+    // which key a vendor reads.
+    let flag_key = super::build_flags::flag_key(vendor);
     let extra_flags: Vec<String> = kernel_toml
         .get("build")
         .and_then(|b| b.get(flag_key))

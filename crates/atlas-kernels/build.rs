@@ -1028,6 +1028,14 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
         .to_string();
     println!("cargo:rerun-if-changed={}", hw_toml_path.display());
 
+    // The LEAST specific flag layer: `[build] extra_nvcc_flags` in
+    // HARDWARE.toml, for facts about the architecture rather than the model.
+    // `kernels/hopper` and `kernels/b200` define
+    // `-DATLAS_NO_WARP_BLOCKSCALE_MMA` here because neither ISA has the
+    // warp-level block-scaled MMA; gb10 declares nothing and its compile line
+    // is unchanged. See `build_flags::hardware_extra_flags`.
+    let hw_extra_flags = build_flags::hardware_extra_flags(&hw_toml, &target_vendor);
+
     // Expand model wildcard (exclude the `common/` shared-kernel dir,
     // which has no MODEL.toml).
     let models: Vec<String> = if model_spec == "*" {
@@ -1112,7 +1120,14 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             // by propagating mappings into all 13 model tomls). Semantics
             // now: common parses first as the base; the model toml appends
             // flags (deduped, model last) and wins per-key on [modules].
-            let mut extra_flags: Vec<String> = Vec::new();
+            //
+            // FLAGS have a third layer under those two — HARDWARE.toml's
+            // `hw_extra_flags`, merged least-specific-first by
+            // `build_flags::merge_extra_flags`, which is the SSOT for the
+            // order and the deduping. `[modules]` has no hardware layer:
+            // a module rename is a property of the source file, not the GPU.
+            let mut common_flags: Vec<String> = Vec::new();
+            let mut model_flags: Vec<String> = Vec::new();
             let mut module_overrides: HashMap<String, String> = HashMap::new();
             // Shadow-drop exemptions merge the same way: common/ declares the
             // repo-wide superseded kernels, a model KERNEL.toml adds the ones
@@ -1120,20 +1135,18 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             let mut shadow_exempt: Vec<(String, String)> = Vec::new();
             if has_common_dir && common_kernel_dir.join("KERNEL.toml").exists() {
                 let (f, m) = parse_kernel_toml(&common_kernel_dir, &target_vendor);
-                extra_flags.extend(f);
+                common_flags = f;
                 module_overrides.extend(m);
                 shadow_exempt.extend(parse_shadow_exempt(&common_kernel_dir));
             }
             if has_model_dir && model_kernel_dir.join("KERNEL.toml").exists() {
                 let (f, m) = parse_kernel_toml(&model_kernel_dir, &target_vendor);
-                for flag in f {
-                    if !extra_flags.contains(&flag) {
-                        extra_flags.push(flag);
-                    }
-                }
+                model_flags = f;
                 module_overrides.extend(m);
                 shadow_exempt.extend(parse_shadow_exempt(&model_kernel_dir));
             }
+            let extra_flags =
+                build_flags::merge_extra_flags(&hw_extra_flags, &common_flags, &model_flags);
             shadow_exempt.sort();
             shadow_exempt.dedup();
 
@@ -1383,6 +1396,17 @@ fn find_cu_files(kernel_dir: &std::path::Path, source_ext: &str) -> Vec<PathBuf>
         })
         .collect()
 }
+
+// The HARDWARE.toml `arch` -> `KernelTarget.arch` mapping. Its own file, with
+// no `super::` dependencies, so `tests/kernel_target_arch.rs` can compile the
+// same code — cargo never runs a build script's `#[cfg(test)]` modules.
+#[path = "build_arch.rs"]
+mod build_arch;
+
+// The extra-compiler-flag layers and their merge rule. Same reason for its own
+// file as `build_arch.rs`: `tests/kernel_build_flags.rs` compiles it directly.
+#[path = "build_flags.rs"]
+mod build_flags;
 
 #[path = "build_codegen.rs"]
 mod build_codegen;

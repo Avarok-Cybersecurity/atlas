@@ -1,0 +1,1 @@
+../../gb10/common/moe_permute.cu
