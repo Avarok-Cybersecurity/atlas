@@ -346,9 +346,24 @@ impl Qwen3SsmLayer {
     /// A/B. Shared by `prefill_inner_hc` and `decode_batched_inner_hc` so the
     /// two verify bodies cannot drift apart on the FFN.
     /// Widest row count the small-M FFN may decompose into fused 1/2/3-row
-    /// arms. Above this it takes the grouped GEMM. See the comment at the
-    /// use site for the measured curve that sets it.
-    const HC_FFN_CHUNK_MAX_ROWS: usize = 32;
+    /// arms; above it the grouped GEMM. `ATLAS_HC_FFN_CHUNK_MAX_ROWS` overrides.
+    ///
+    /// 64, not 32: at 32 the decode bench's own ~34-41-token PROMPTS fell just
+    /// above the cap and below the grouped GEMM's crossover (~50-64 rows: the
+    /// ladder is ~105 us/row, the grouped path streams every active expert for
+    /// a few ms regardless of width), and C=1 read -4% (51.2 vs 53.5) in an
+    /// aggregate that includes each request's prefill. Verify widths (<= ~15)
+    /// and short prompts stay on the ladder; a real prefill chunk (hundreds to
+    /// thousands of rows) never lands here either way.
+    fn hc_ffn_chunk_max_rows() -> usize {
+        static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        *N.get_or_init(|| {
+            std::env::var("ATLAS_HC_FFN_CHUNK_MAX_ROWS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(64)
+        })
+    }
 
     pub(super) fn hc_small_m_ffn(
         &self,
@@ -448,8 +463,8 @@ impl Qwen3SsmLayer {
                 // measured on: nothing narrower than the widest batched verify
                 // (11 rows at C=4 K=2, ~15 at K=3, VERIFY_ROW_CAP is 96) should
                 // change, and no prefill chunk (hundreds to thousands of rows)
-                // should ever land here. 32 sits in the gap with room both ways.
-                if chunked && small_m && num_tokens > 3 && num_tokens <= Self::HC_FFN_CHUNK_MAX_ROWS {
+                // should ever land here. See `hc_ffn_chunk_max_rows` for why 64.
+                if chunked && small_m && num_tokens > 3 && num_tokens <= Self::hc_ffn_chunk_max_rows() {
                     let h = ctx.config.hidden_size;
                     let bf16 = 2usize;
                     // Widths, seq-major: 3s then the 1-or-2 remainder.
