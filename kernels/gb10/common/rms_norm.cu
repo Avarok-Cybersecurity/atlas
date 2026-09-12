@@ -1172,6 +1172,103 @@ extern "C" __global__ void gated_rms_norm_f32_input(
     }
 }
 
+// Strided sibling of `gated_rms_norm_f32_input`: normalizes `gridDim.y`
+// SEQUENCES of `gridDim.x` head-rows in ONE launch, where consecutive
+// sequences are `*_seq_stride` ELEMENTS apart and head-rows inside a sequence
+// are packed at `hidden_size` (input/output) / `gate_stride` (gate).
+//
+// Motivation (#927): multi-seq decode normalizes one sequence per launch, so
+// the H100 nsys trace of a batch-16 step showed `gated_rms_norm_f32_input`
+// firing 768 times — 48 SSM layers x 16 sequences — for 1.61 ms, i.e. 2.1 us
+// each. That is pure launch/tail overhead, not work: every OTHER per-layer
+// kernel in that step is at 48 or 64 launches. This makes it 48.
+//
+// Bit-identical to the packed kernel: each block still owns exactly one
+// (sequence, head) row, computes the same reduction over the same elements in
+// the same order, and writes the same addresses. Only the base address differs.
+//
+// Grid: (heads_per_seq, num_seqs, 1)   Block: (min(hidden_size, 1024), 1, 1)
+extern "C" __global__ void gated_rms_norm_f32_input_strided(
+    const float* __restrict__ input,              // [num_seqs, input_seq_stride] FP32
+    const __nv_bfloat16* __restrict__ gate,       // [num_seqs, gate_seq_stride]
+    const __nv_bfloat16* __restrict__ weight,     // [hidden_size]
+    __nv_bfloat16* __restrict__ output,           // [num_seqs, output_seq_stride]
+    unsigned int hidden_size,
+    float eps,
+    unsigned int gate_stride,                     // elements between HEADS in gate
+    unsigned int group_size,
+    unsigned int input_seq_stride,                // floats between SEQUENCES
+    unsigned int gate_seq_stride,                 // bf16 elements between SEQUENCES
+    unsigned int output_seq_stride                // bf16 elements between SEQUENCES
+) {
+    (void)group_size;
+    unsigned int head = blockIdx.x;
+    unsigned int seq = blockIdx.y;
+    unsigned int tid = threadIdx.x;
+
+    const float* x = input + (unsigned long long)seq * input_seq_stride
+                           + (unsigned long long)head * hidden_size;
+    const __nv_bfloat16* g = gate + (unsigned long long)seq * gate_seq_stride
+                                  + (unsigned long long)head * gate_stride;
+    __nv_bfloat16* out = output + (unsigned long long)seq * output_seq_stride
+                                + (unsigned long long)head * hidden_size;
+
+    // Pass 1: sum of squares (FP32 input — no BF16 unpack needed).
+    float sum_sq = 0.0f;
+    for (unsigned int i = tid; i < hidden_size; i += blockDim.x) {
+        float f = x[i];
+        sum_sq += f * f;
+    }
+
+    sum_sq = warp_reduce_sum(sum_sq);
+    __shared__ float warp_sums[32];
+    unsigned int warp_id = tid / 32;
+    unsigned int lane_id = tid % 32;
+    if (lane_id == 0) warp_sums[warp_id] = sum_sq;
+    __syncthreads();
+    if (warp_id == 0) {
+        float val = (lane_id < (blockDim.x + 31) / 32) ? warp_sums[lane_id] : 0.0f;
+        val = warp_reduce_sum(val);
+        if (lane_id == 0) warp_sums[0] = val;
+    }
+    __syncthreads();
+
+    float rms = rsqrtf(warp_sums[0] / (float)hidden_size + eps);
+
+    // Pass 2: normalize + gate (re-read FP32 from L1 cache).
+    const unsigned long long* g64 = (const unsigned long long*)g;
+    const unsigned long long* w64 = (const unsigned long long*)weight;
+    unsigned long long* out64 = (unsigned long long*)out;
+
+    const unsigned int quad_size = hidden_size / 4;
+    for (unsigned int i = tid; i < quad_size; i += blockDim.x) {
+        unsigned int base = i * 4;
+        float f0 = x[base];
+        float f1 = x[base + 1];
+        float f2 = x[base + 2];
+        float f3 = x[base + 3];
+
+        unsigned long long wv = w64[i];
+        float w0, w1, w2, w3;
+        unpack_bf16x2((unsigned int)wv, w0, w1);
+        unpack_bf16x2((unsigned int)(wv >> 32), w2, w3);
+
+        unsigned long long gv = g64[i];
+        float g0, g1, g2, g3;
+        unpack_bf16x2((unsigned int)gv, g0, g1);
+        unpack_bf16x2((unsigned int)(gv >> 32), g2, g3);
+
+        float s0 = g0 / (1.0f + expf(-g0));
+        float s1 = g1 / (1.0f + expf(-g1));
+        float s2 = g2 / (1.0f + expf(-g2));
+        float s3 = g3 / (1.0f + expf(-g3));
+
+        unsigned int lo = pack_bf16x2(f0 * rms * w0 * s0, f1 * rms * w1 * s1);
+        unsigned int hi = pack_bf16x2(f2 * rms * w2 * s2, f3 * rms * w3 * s3);
+        out64[i] = ((unsigned long long)hi << 32) | (unsigned long long)lo;
+    }
+}
+
 // Batched Gated RMS Norm for prefill: processes all (head, token) pairs
 // in a single kernel launch instead of N separate launches per actual token.
 //

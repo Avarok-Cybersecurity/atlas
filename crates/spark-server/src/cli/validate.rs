@@ -234,7 +234,7 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     if args.fp8_kv_headroom < 1.0 {
         v.push(Violation::new(
             format!("--fp8-kv-headroom {} is below 1.0.", args.fp8_kv_headroom),
-            "the frozen FP8 KV scale covers headroom× the first-observe absmax; \
+            "the frozen FP8 KV scale covers headroom× the calibration-window absmax; \
              a multiplier under 1.0 clips the very values it was measured from.",
             "use a value ≥ 1.0 (default 2.0).",
         ));

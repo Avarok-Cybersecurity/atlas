@@ -58,13 +58,23 @@ impl Qwen3AttentionLayer {
     /// than read here so tests can drive both arms without racing the
     /// process-global `OnceLock` in [`fp8_batchm_enabled`].
     ///
-    /// GRAPH-CAPTURE: `c.n` is the ctx n, which IS `padded_n` (decode_a2.rs
-    /// pads to [2,4,8] and keys the graph cache on it), so branching on it
-    /// bakes exactly the value the graph is keyed by — the same contract the
-    /// n==2 / n==3 NVFP4 branches rely on. Never branch on the unpadded
-    /// `seqs.len()` here.
+    /// GRAPH-CAPTURE: `c.n` is the ctx n, which IS `padded_n` (the ladder in
+    /// `traits::model::padded_batch_n`, which the graph cache is keyed by), so
+    /// branching on it bakes exactly the value the graph is keyed by — the
+    /// same contract the n==2 / n==3 NVFP4 branches rely on. Never branch on
+    /// the unpadded `seqs.len()` here.
+    ///
+    /// The band is 2..=16, the MAX_M of `w8a16_gemv_batch16_strided`. It read
+    /// 2..=8 when this module landed, against a comment that the ladder was
+    /// [2,4,8]; the ladder has had rungs 12 and 16 since the C=[1,2,4,8,16]
+    /// concurrency work, so padded_n 12 and 16 were dropping back to the
+    /// per-sequence scalar `w8a16_gemv` loop — 3n launches and n full weight
+    /// passes per attention layer per step, which is the #927 cliff on the
+    /// projection side. 17+ still falls through: the kernel's MAX_M is 16 and
+    /// it CLAMPS rather than erroring, so the band's upper edge is the
+    /// template bound and not a tuning choice.
     pub(super) fn ms_qkv_batchm_fp8_selected(&self, c: &MultiSeqCtx<'_>, enabled: bool) -> bool {
-        if !enabled || !(2..=8).contains(&c.n) {
+        if !enabled || !(2..=16).contains(&c.n) {
             return false;
         }
         if self.w8a16_gemv_batch4_strided_k.0 == 0 || self.w8a16_gemv_batch16_strided_k.0 == 0 {
@@ -127,10 +137,7 @@ impl Qwen3AttentionLayer {
             nkv,
             hd,
             bf16,
-            q_proj_dim,
-            q_proj_bytes,
             per_seq_qkv,
-            normed,
             qkv_buf,
             ..
         } = *c;
@@ -144,9 +151,63 @@ impl Qwen3AttentionLayer {
         let a_stride = h as u32;
         let c_stride = (per_seq_qkv / bf16) as u32;
         let kv_dim = nkv * hd;
+
+        // ── W8A8 block-scaled cuBLASLt at 5..16 rows (#927) ──
+        // Round 7 (H100, 2026-09-11, n=16) put these three at 3.74 ms = 8.6%
+        // of the 43.595 ms step on `w8a16_gemv_batch16_strided`, while the
+        // dense FFN ran the SAME 16 rows through cuBLASLt W8A8 at ~128
+        // us/layer. `ldc = per_seq_qkv` writes each row straight into its slot;
+        // the phantom rows and the write-extent bound are argued in
+        // `w8a8_decode.rs`. Declining for ANY reason keeps the GEMV tier below
+        // — and the post-GEMV deinterleave runs either way.
+        if !self.try_ms_qkv_decode_w8a8(c, q, k, v, kv_dim)? {
+            self.ms_qkv_batchm_fp8_gemv(c, q, k, v, kv_dim, a_stride, c_stride)?;
+        }
+
+        if self.gated && !self.q_lora_active() {
+            ops::deinterleave_qg(
+                fwd.gpu,
+                self.deinterleave_qg_k,
+                qkv_buf,
+                n as u32,
+                nq,
+                hd,
+                c_stride,
+                stream,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The unchanged one-strided-launch-per-projection GEMV tier: `batch4`
+    /// below 5 rows, then the `ATLAS_FFN_M16_TC` MMA arm, the bit-exact
+    /// N-column arm, and `batch16`.
+    #[allow(clippy::too_many_arguments)]
+    fn ms_qkv_batchm_fp8_gemv(
+        &self,
+        c: &MultiSeqCtx<'_>,
+        q: &Fp8Weight,
+        k: &Fp8Weight,
+        v: &Fp8Weight,
+        kv_dim: u32,
+        a_stride: u32,
+        c_stride: u32,
+    ) -> Result<()> {
+        let MultiSeqCtx {
+            fwd,
+            n,
+            stream,
+            h,
+            bf16,
+            q_proj_dim,
+            q_proj_bytes,
+            qkv_buf,
+            normed,
+            ..
+        } = *c;
         let kv_bytes = kv_dim as usize * bf16;
 
-        // batch4 for n<=4, batch16 for 5..=8 — one launch either way; the only
+        // batch4 for n<=4, batch16 for 5..=16 — one launch either way; the only
         // difference is the kernel's compile-time register-array bound (and so
         // the MAX_M the wrapper enforces).
         let (launch, kernel): (StridedBatchGemv, KernelHandle) = if n <= 4 {
@@ -182,19 +243,6 @@ impl Qwen3AttentionLayer {
         gemv(q, qkv_buf, q_proj_dim)?;
         gemv(k, qkv_buf.offset(q_proj_bytes), kv_dim)?;
         gemv(v, qkv_buf.offset(q_proj_bytes + kv_bytes), kv_dim)?;
-
-        if self.gated && !self.q_lora_active() {
-            ops::deinterleave_qg(
-                fwd.gpu,
-                self.deinterleave_qg_k,
-                qkv_buf,
-                n as u32,
-                nq,
-                hd,
-                c_stride,
-                stream,
-            )?;
-        }
         Ok(())
     }
 }
