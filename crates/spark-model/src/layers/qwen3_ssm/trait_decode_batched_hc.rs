@@ -90,7 +90,7 @@ impl Qwen3SsmLayer {
         // `hc_pre` replaces the fused gate-f32 norm, so ATLAS_FP32_ROUTING
         // would have the router read the PREVIOUS layer's activations.
         anyhow::ensure!(
-            !self.ffn.fp32_routing_active(),
+            !self.ffn.fp32_routing_active(ctx.levers),
             "qwen3_ssm mHC batched verify: ATLAS_FP32_ROUTING needs the fused \
              gate-f32 norm, which the highway path replaces. Unset it."
         );

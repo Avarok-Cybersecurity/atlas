@@ -11,7 +11,20 @@ use atlas_core::config::ModelConfig;
 use crate::cli;
 
 pub(crate) fn quant_multiplier(config: &ModelConfig) -> Option<f64> {
-    if config.model_type == "minimax_m2" || config.model_type == "step3p7" {
+    if config.model_type == "glm5_next" {
+        // GLM-5.3 at TP=2/EP=2 is 99.64 GB on-disk per rank against ~111.5 GB free. The
+        // generic 1.3x default projects 129.54 GB and refuses a load that fits: the fast
+        // loader's staging is a BOUNDED read/copy pipeline, not a fraction of the model, so
+        // on a ~100 GB checkpoint the 1.3x is 30 GB of imaginary overhead.
+        //
+        // ⚠️ 1.10 is a HEADROOM ALLOWANCE, not a measurement — nothing has profiled this
+        // load yet. It also does NOT cover what comes after: `Glm5NextWeightLoader` builds
+        // TP-sliced copies of the non-expert tensors while the store still holds the
+        // originals (the routed experts are bound zero-copy from the store's own pointers,
+        // so they are not doubled). That is ~6 GB this pre-flight cannot see. If a load OOMs
+        // shortly AFTER this gate passes, that is the cause — not this number.
+        Some(1.10)
+    } else if config.model_type == "minimax_m2" || config.model_type == "step3p7" {
         Some(1.02)
     } else if config
         .quantization_config
@@ -71,6 +84,19 @@ pub(crate) fn load_weight_store(
             loader.peak_memory_multiplier = mult;
             loader.skip_activation_scales = skip_activation_scales(config);
             loader.skip_mtp = skip_mtp(config, want_mtp(args));
+            // A text-only port never binds the vision tower, so don't read it.
+            // The reclaim in `build_model` still catches every other path, but
+            // it runs AFTER the inference-buffer preflight has already sized
+            // (and possibly refused) the serve against the free memory the
+            // tower was occupying.
+            loader.skip_vision = !binds_vision(config);
+            if loader.skip_vision {
+                tracing::info!(
+                    "Vision tower: not loaded — the weight loader for model_type '{}' is a \
+                     text-only port and binds no vision encoder.",
+                    config.model_type,
+                );
+            }
             loader.prefetch_shards = args.fast_load_prefetch_shards
                 || std::env::var("ATLAS_FAST_LOAD_PREFETCH_SHARDS")
                     .ok()
@@ -437,6 +463,17 @@ fn skip_mtp(config: &ModelConfig, want_mtp: bool) -> bool {
 /// True when the operator asked for the `mtp.*` tensors to be uploaded.
 fn want_mtp(args: &cli::ServeArgs) -> bool {
     args.speculative || std::env::var("ATLAS_QWEN4EXP_MTP").as_deref() == Ok("1")
+}
+
+
+
+/// Will the model's weight loader bind a vision encoder?
+///
+/// Unresolvable model types answer `true`: never skip weights on a guess.
+fn binds_vision(config: &atlas_core::config::ModelConfig) -> bool {
+    spark_model::factory::loader_for_config(config)
+        .map(|l| l.binds_vision_encoder())
+        .unwrap_or(true)
 }
 
 #[cfg(test)]

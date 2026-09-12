@@ -110,7 +110,7 @@ impl Qwen3SsmLayer {
         // `hc_pre` replaces the fused gate-f32 norm, so ATLAS_FP32_ROUTING
         // would have the router read the PREVIOUS layer's activations.
         anyhow::ensure!(
-            !self.ffn.fp32_routing_active(),
+            !self.ffn.fp32_routing_active(ctx.levers),
             "qwen3_ssm mHC multi-seq verify: ATLAS_FP32_ROUTING needs the fused \
              gate-f32 norm, which the highway path replaces. Unset it."
         );
@@ -442,7 +442,7 @@ impl Qwen3SsmLayer {
             use std::sync::atomic::{AtomicUsize, Ordering};
             static CALLS: AtomicUsize = AtomicUsize::new(0);
             let call = CALLS.fetch_add(1, Ordering::Relaxed);
-            if call % 1024 == 0 && call > 0 {
+            if call.is_multiple_of(1024) && call > 0 {
                 tracing::info!(
                     call,
                     rows,

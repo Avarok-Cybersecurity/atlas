@@ -145,8 +145,8 @@ impl Qwen3SsmLayer {
         // and the FP32 conv path uses `ssm_conv_out_f32`, not `ssm_qkvz`.
         let normed_out_base = ctx.buffers.ssm_qkvz();
         let ssm_out_base = ctx.buffers.moe_output();
-        let detail_profile = std::env::var("ATLAS_SSM_DETAIL_PROFILE").ok().as_deref() == Some("1")
-            && !ctx.graph_capture;
+        let detail_profile =
+            crate::layers::ops::ModelLevers::get().ssm_detail_profile && !ctx.graph_capture;
         let mut detail_parts: Vec<(&'static str, u128)> = Vec::new();
         let mut detail_t0 = if detail_profile {
             ctx.gpu.synchronize(stream).ok();
@@ -204,7 +204,7 @@ impl Qwen3SsmLayer {
         };
         let use_batch4 = gemv_batch_k.0 != 0
             && n <= 16
-            && std::env::var("ATLAS_SSM_GEMV_BATCH4").ok().as_deref() != Some("0");
+            && crate::layers::ops::ModelLevers::get().ssm_gemv_batch4;
         // FP4 sibling: the narrow w4a16_gemv batch{4..8} family (M<=8), else
         // batch16 (M<=16). Single NVFP4 weight pass for the QKVZ + out_proj
         // GEMVs (amortizes the weight read). The narrow tiers size acc/smem —

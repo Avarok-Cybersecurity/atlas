@@ -238,6 +238,7 @@ mod history {
             target_url: "http://127.0.0.1:8870".into(),
             target_model: "nvidia/Qwen3.6-27B-NVFP4".into(),
             params: Default::default(),
+            serve_overrides: Default::default(),
             source: RunSource::default(),
             atlas_version: "1.0.0".into(),
             frame: BenchmarkResult::completed("done", Duration::from_secs(6430))
@@ -383,4 +384,117 @@ fn the_params_form_scrolls_to_keep_the_selected_row_on_screen() {
     let first_label: String = a.bench.row_meta(0).0.to_string();
     let rows = screen(&a, 100, 12);
     assert!(has(&rows, &first_label), "{rows:#?}");
+}
+
+// ── LIKE-FOR-LIKE RULES IN THE RUN LIST ──────────────────────────────────
+//
+// Two runs look identical in this list by design — same table, same tiles.
+// That is what makes them look comparable, and comparability is exactly what
+// a changed model or parameter set destroys. These pin that the list draws a
+// rule where the basis changes, and — the part that matters — that it does
+// NOT draw one where the basis holds.
+
+#[test]
+fn the_basis_is_the_same_for_two_like_for_like_runs() {
+    let a = basis("org/model-a", &[("osl", "320")]);
+    let b = basis("org/model-a", &[("osl", "320")]);
+    assert_eq!(
+        a, b,
+        "identical basis must compare equal — else every row rules"
+    );
+}
+
+#[test]
+fn a_different_model_changes_the_basis() {
+    let a = basis("org/model-a", &[("osl", "320")]);
+    let b = basis("org/model-b", &[("osl", "320")]);
+    assert_ne!(
+        a, b,
+        "the same gate against a different checkpoint is a different measurement"
+    );
+}
+
+#[test]
+fn a_different_parameter_changes_the_basis() {
+    let a = basis("org/model-a", &[("osl", "320")]);
+    let b = basis("org/model-a", &[("osl", "512")]);
+    assert_ne!(a, b, "osl 320 and osl 512 are not comparable numbers");
+}
+
+#[test]
+fn any_parameter_counts_not_a_hand_picked_subset() {
+    // The record stores EVERY parameter precisely so a comparison cannot be
+    // invalidated by one nobody thought to enumerate. A basis built from a
+    // subset would miss this.
+    let a = basis("org/model-a", &[("osl", "320"), ("obscure_knob", "1")]);
+    let b = basis("org/model-a", &[("osl", "320"), ("obscure_knob", "2")]);
+    assert_ne!(a, b, "an unlisted parameter must still break the basis");
+}
+
+/// THE CASE THE RULE EXISTS FOR: identical benchmark, identical model,
+/// identical parameters — and a different serve regime. Before the overrides
+/// reached `RunRecord` these two were indistinguishable, so the split's effect
+/// on the score rendered as one continuous line.
+#[test]
+fn the_same_run_under_a_different_serve_regime_is_a_different_basis() {
+    let params = pmap(&[("osl", "320")]);
+    let stock = super::history::basis_of("org/model-a", &params, &pmap(&[]));
+    let hermetic = super::history::basis_of("org/model-a", &params, &pmap(&[("hermetic", "true")]));
+    assert_ne!(
+        stock, hermetic,
+        "a score measured under `hermetic` is not comparable to one measured without it"
+    );
+}
+
+/// The user-facing half: the band has to be READABLE, not merely distinct.
+/// A digest tells you the basis changed; the name tells you what to blame.
+#[test]
+fn the_regime_is_named_in_the_basis_not_only_digested() {
+    let b = super::history::basis_of(
+        "org/model-a",
+        &pmap(&[("osl", "320")]),
+        &pmap(&[("hermetic", "true")]),
+    );
+    assert!(
+        b.contains("hermetic"),
+        "the rule must name the regime that moved the score, got {b:?}"
+    );
+}
+
+/// An empty override map means "no regime recorded", which is NOT the same
+/// claim as "the server was unconfigured" — a `--url` attach records empty
+/// whatever the server was doing. The label must not overclaim.
+#[test]
+fn an_unrecorded_regime_says_unpinned_rather_than_claiming_stock() {
+    let b = super::history::basis_of("org/model-a", &pmap(&[("osl", "320")]), &pmap(&[]));
+    assert!(
+        b.contains("unpinned"),
+        "an unrecorded regime must be labelled as unrecorded, got {b:?}"
+    );
+}
+
+/// Two regimes sharing a KEY but differing in VALUE must not share a band.
+/// The name alone cannot carry this, which is why the digest rides beside it.
+#[test]
+fn the_same_override_key_with_a_different_value_is_a_different_basis() {
+    let params = pmap(&[("osl", "320")]);
+    let force = super::history::basis_of("org/m", &params, &pmap(&[("mtp_gate", "force")]));
+    let auto = super::history::basis_of("org/m", &params, &pmap(&[("mtp_gate", "auto")]));
+    assert_ne!(
+        force, auto,
+        "mtp_gate=force and mtp_gate=auto are different measurements"
+    );
+    assert!(force.contains("mtp_gate") && auto.contains("mtp_gate"));
+}
+
+/// Convenience for the regime-agnostic cases: an unpinned run.
+fn basis(model: &str, params: &[(&str, &str)]) -> String {
+    super::history::basis_of(model, &pmap(params), &pmap(&[]))
+}
+
+fn pmap(params: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+    params
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
 }

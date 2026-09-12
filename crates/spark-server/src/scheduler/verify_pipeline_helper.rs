@@ -52,6 +52,9 @@
 
 mod argmax;
 mod fast_masked;
+mod pick_positions;
+#[cfg(test)]
+mod pick_positions_tests;
 #[cfg(test)]
 mod sampling_parity_tests;
 mod scratch;
@@ -495,63 +498,5 @@ pub fn verify_pick_all_with_pipeline(
     }
     ctx.timing.record(Phase::D2h, t_d2h);
 
-    let mut picks: Vec<u32> = Vec::with_capacity(k);
-    // Snapshot the matcher's history depth BEFORE speculative advances so we
-    // roll back exactly the ACTUAL advances afterward. BUG#3 (2026-06-02):
-    // stop/EOS and terminated tokens return true from `accept_token` WITHOUT
-    // advancing the matcher, so a count of `accept_token`→true calls would
-    // over-rewind. `emit_token` (run after this helper) re-advances from the
-    // restored, clean state.
-    let grammar_steps_before = a.grammar_state.as_ref().map(|gs| gs.num_history_steps());
-
-    for i in 0..k {
-        let slice = &buf[i * vocab * elem_bytes..(i + 1) * vocab * elem_bytes];
-        // P1-3 (2026-07-09): `i` threads the verify-position index down for
-        // the per-position seed offset of the temp>0 sampling branch.
-        let pick = verify_pick_with_pipeline(slice, false, vocab, a, ctx, i);
-        picks.push(pick);
-
-        // Speculatively advance the matcher with `pick[i]` so the next
-        // position's bitmask reflects post-emit state. Skip on the last
-        // position (no next position to mask) and when the seq has no
-        // grammar (nothing to advance).
-        if i + 1 < k
-            && let Some(ref mut gs) = a.grammar_state
-            && !a.inside_thinking
-        {
-            // Matcher advance can fail if `pick` is not in the current
-            // bitmask. If our pipeline correctly applied the bitmask,
-            // pick is the argmax over masked logits → MUST be in the
-            // bitmask → advance MUST succeed. The defensive check
-            // exists for forced-token fast-path returns where the
-            // grammar may have terminated; those legitimately can't
-            // advance further.
-            if !gs.accept_token(pick) {
-                tracing::debug!(
-                    pick,
-                    i,
-                    "verify_pick: grammar speculative advance refused — pipeline picked a token outside the current bitmask. \
-                     This indicates a stale bitmask in the pipeline or a forced-token fastpath that terminated grammar. \
-                     Stopping speculation here; the real `accept_token` in emit_token will fail and end the response."
-                );
-                break;
-            }
-            // accept_token advanced the matcher as a side effect; the rollback
-            // below counts the ACTUAL advances from matcher history (BUG#3).
-        }
-    }
-
-    // Roll back exactly the ACTUAL speculative advances (history delta) so the
-    // matcher returns to its pre-call state; `emit_token` then re-advances it
-    // normally. BUG#3: counting from accept_token→true calls over-rewinds when
-    // a stop/EOS/terminated token (which returns true WITHOUT advancing) lands
-    // in the verified span.
-    if let (Some(before), Some(gs)) = (grammar_steps_before, a.grammar_state.as_mut()) {
-        let advanced = gs.num_history_steps().saturating_sub(before);
-        if advanced > 0 {
-            gs.rollback(advanced);
-        }
-    }
-
-    picks
+    pick_positions::pick_positions_from_host(&buf, vocab, elem_bytes, k, a, ctx)
 }

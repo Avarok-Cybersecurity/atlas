@@ -65,7 +65,15 @@ fn record(f: BenchmarkResult) -> RunRecord {
     let specs = d.build().parameters();
     let values = ParamValues::defaults(&specs);
     let target = TargetEndpoint::new("http://127.0.0.1:8888", "m");
-    RunRecord::new(d, &values, &target, RunSource::Cli, "1.0.0-beta-preview", f)
+    RunRecord::new(
+        d,
+        &values,
+        &target,
+        Default::default(),
+        RunSource::Cli,
+        "1.0.0-beta-preview",
+        f,
+    )
 }
 
 #[test]
@@ -121,7 +129,15 @@ fn params_are_recorded_whole_and_rehydrate() {
     let specs = d.build().parameters();
     let values = ParamValues::from_overrides(&specs, [("osl", "8")]).expect("parses");
     let target = TargetEndpoint::new("http://127.0.0.1:9", "m");
-    let mut r = RunRecord::new(d, &values, &target, RunSource::Cli, "v", frame("done"));
+    let mut r = RunRecord::new(
+        d,
+        &values,
+        &target,
+        Default::default(),
+        RunSource::Cli,
+        "v",
+        frame("done"),
+    );
     save(&store, &mut r).expect("saves");
 
     let back = &load(&store, "concurrency-sweep")[0];

@@ -42,7 +42,7 @@ impl Qwen3SsmLayer {
         // activations and the router would route on them. Latent today (the
         // flag is off by default) and silent if it ever is not.
         anyhow::ensure!(
-            !self.ffn.fp32_routing_active(),
+            !self.ffn.fp32_routing_active(ctx.levers),
             "qwen3_ssm mHC: ATLAS_FP32_ROUTING needs the fused gate-f32 norm, \
              which the highway path replaces. The router would read a stale \
              moe_router_in_f32. Unset it."

@@ -111,6 +111,11 @@ impl TransformerModel {
         // token slice is read. Destructuring is what makes that legal, and it
         // avoids cloning a 12k-token vector on every propose.
         let capture_gen = seq.mtp_capture_gen;
+        // Read before the destructure below borrows `seq` field-wise. This is
+        // the identity the carry slot is gated on; see `CarriedDrafter`.
+        let session_hash = seq.session_hash;
+        // And the ticket for the shared hidden rows; see `StoreRange`.
+        let store_gen = seq.mtp_store_gen;
         let SequenceState {
             tokens: seq_tokens,
             prompt_len,
@@ -174,6 +179,8 @@ impl TransformerModel {
                     proposer,
                     seq_tokens,
                     p,
+                    session_hash,
+                    store_gen,
                     prop_state.as_mut(),
                     ctx,
                     stream,
@@ -211,6 +218,8 @@ impl TransformerModel {
         proposer: &dyn DraftProposer,
         seq_tokens: &[u32],
         prompt_len: usize,
+        session_hash: u64,
+        store_gen: u64,
         prop_state: &mut dyn crate::speculative::ProposerState,
         ctx: &ForwardContext,
         stream: u64,
@@ -220,13 +229,24 @@ impl TransformerModel {
         let Some(entry) = self.mtp_carry.lock().take() else {
             return CarryOutcome::NoCarry;
         };
-        let Some((rows, last_key)) = entry.usable_by(prompt) else {
-            let common = entry.common_prefix_len(prompt);
-            proposer.free_drafter_kv(&entry.block_table);
-            return CarryOutcome::PrefixMismatch {
-                common,
-                entry_rows: entry.rows,
+        let Some((rows, last_key)) = entry.usable_by(prompt, session_hash) else {
+            // `usable_by` is the single authority on admission; this only
+            // LABELS its refusal, by asking the same predicate which of the
+            // two rules said no. A foreign-session refusal reported as a
+            // prefix mismatch is how the channel stayed invisible.
+            let outcome = if entry.session_matches(session_hash) {
+                CarryOutcome::PrefixMismatch {
+                    common: entry.common_prefix_len(prompt),
+                    entry_rows: entry.rows,
+                }
+            } else {
+                CarryOutcome::ForeignSession {
+                    entry_session: entry.session_hash,
+                    prompt_session: session_hash,
+                }
             };
+            proposer.free_drafter_kv(&entry.block_table);
+            return outcome;
         };
         // `install_drafter_kv` takes ownership on success only; keep a copy of
         // the ids so a refused install frees them instead of leaking.
@@ -237,9 +257,25 @@ impl TransformerModel {
             proposer.free_drafter_kv(&block_ids);
             return CarryOutcome::NoCarry;
         }
-        let (lo, hi) = *self.mtp_store_range.lock();
+        // Only rows THIS sequence wrote are visible; another owner's interval
+        // reads as empty, which `plan_append` then refuses.
+        //
+        // Deliberately placed AFTER `install_drafter_kv`: the carried rows are
+        // already proven valid for this session, and refusing to APPEND is no
+        // reason to throw them away. It also means the blocks must NOT be freed
+        // here — `install_drafter_kv` has taken ownership, and the proposer
+        // state releases or re-deposits them.
+        let stored = *self.mtp_store_range.lock();
+        let (lo, hi) = stored.visible_to(store_gen);
         let Some(plan) = plan_append(last_key, prompt.len(), lo, hi) else {
-            return CarryOutcome::NoHiddens;
+            return if stored.owner != store_gen && stored.owner != 0 {
+                CarryOutcome::ForeignHiddens {
+                    owner: stored.owner,
+                    expected: store_gen,
+                }
+            } else {
+                CarryOutcome::NoHiddens
+            };
         };
         // `drafter_rows_impl` reads `tokens[r + 1]` and `hiddens` row `r` for
         // row r, and RoPE `pos_base + r`. Row r must be pair key
@@ -442,8 +478,53 @@ impl TransformerModel {
         _stream: u64,
         grammar_bitmask: Option<&[i32]>,
     ) -> Result<Vec<u32>> {
-        // MTP loads ALL experts on every rank — no EP all_reduce needed.
-        // Rank 1 does not participate in MTP propose.
+        // 🔴 Whether rank 1 participates is a PROPERTY OF THE PROPOSER, not of MTP.
+        //
+        // The Qwen and DeepSeek-V4 MTP modules load every expert on every rank, so their
+        // propose is complete on rank 0 alone and a comm would double the output via SUM —
+        // that is what the old unconditional comment ("MTP loads ALL experts on every rank")
+        // described, and it stays the default.
+        //
+        // GLM-5.3's MTP block is EP-sharded (144 of 288 experts) with a row-parallel DSA
+        // `o_proj`, so rank-0-only means drafting from half of both. Under
+        // `ATLAS_MTP_EP_PROPOSE=1` the head tells the worker to run the same propose FIRST,
+        // then both ranks issue the same collectives in the same order.
+        //
+        // 🪤 Order matters: the command and its three scalars must be on the wire BEFORE
+        // this rank enters the drafter forward, or the worker is still blocked in
+        // `ep_recv_seq_and_cmd` when rank 0 hits its first all-reduce. That is `t58`.
+        if self.multi_rank_protocol_active()
+            && self.proposer.as_ref().is_some_and(|p| p.needs_comm())
+        {
+            self.ep_broadcast_cmd_for_seq(
+                seq.slot_idx as u32,
+                crate::speculative::EP_CMD_MTP_PROPOSE,
+            )?;
+            self.ep_broadcast_u32(token)?;
+            self.ep_broadcast_u32(position as u32)?;
+            self.ep_broadcast_u32(num_drafts as u32)?;
+            // 🔴 THE FOURTH WORD IS THE WHOLE POINT OF AN ALL-REDUCE HERE.
+            //
+            // `run_mtp_propose_inner` reads its `target_hidden` from `mtp_hidden_save`, and
+            // the worker's command arms never write it — only the head calls
+            // `save_hidden_for_mtp`. Without this the worker drafts from a STALE hidden, so
+            // the two ranks reduce partials computed from DIFFERENT input vectors and the sum
+            // is not the block's output at all. Measured: p1 0.747 -> 0.530, worse than the
+            // rank-0-only half-sum it was meant to fix.
+            //
+            // The index is the one the head's own `save_hidden_for_mtp` just used (verify row
+            // 1 on a K=2 accept, row 0 on a reject), latched by
+            // `save_hidden_for_mtp_dispatch`. Both ranks ran the same verify forward, so row
+            // `idx` of `hidden_states()` holds the same vector on both.
+            //
+            // 🪤 Paths that save from the verify STASH (`save_hidden_for_mtp_from_stash`, the
+            // batched multi-seq verify) do not latch this index — they are multi-seq mode,
+            // which this single-sequence propose protocol does not serve.
+            self.ep_broadcast_u32(
+                self.last_mtp_hidden_idx
+                    .load(std::sync::atomic::Ordering::Relaxed) as u32,
+            )?;
+        }
         self.run_mtp_propose_inner(token, position, num_drafts, seq, grammar_bitmask)
     }
 
@@ -468,7 +549,7 @@ impl TransformerModel {
         };
         // The confidence clamp is a per-seq propose feature; keep semantics
         // by falling back whenever it is armed.
-        if crate::speculative::draft_conf_tau() > 0.0 {
+        if self.levers.draft_conf_tau > 0.0 {
             return Ok(None);
         }
         if self.verify_hidden_stash.is_null() {
@@ -492,6 +573,7 @@ impl TransformerModel {
             profile: false,
             comm: None,
             graph_capture: false,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
             host_token_ids: None,

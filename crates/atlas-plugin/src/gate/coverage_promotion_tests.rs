@@ -87,7 +87,11 @@ fn the_contamination_candidate_accrues_debt_for_engine_changes() {
         owed,
         ["cross-contamination"],
         "a scheduler change is exactly the kind of edit that can cross-wire \
-         concurrent requests; it must accrue debt, got {owed:?}"
+         concurrent requests, so the contamination candidate is owed. \
+         kat-equality-gate was the second entry here until 2026-09-10; it is \
+         REQUIRED now, and a required gate is owed as a gate, never as debt — \
+         `every_promotion_candidate_is_a_registered_benchmark` refuses both at \
+         once; got {owed:?}"
     );
     assert!(
         coverage::promotion_debt(["docs/adr/README.md", "site/index.html"]).is_empty(),

@@ -246,7 +246,7 @@ impl Exl3LmHead {
         stream: u64,
     ) -> Result<()> {
         ensure!(
-            rows >= 1 && rows <= EXL3_DRAFT_ROWS,
+            (1..=EXL3_DRAFT_ROWS).contains(&rows),
             "EXL3 lm_head: {rows} draft rows exceeds the {EXL3_DRAFT_ROWS} reserved"
         );
         self.project(gpu, src, rows, self.draft_scratch_row(), dst, stream)

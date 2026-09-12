@@ -774,6 +774,7 @@ impl TransformerModel {
         }
 
         let ctx = ForwardContext {
+            decode_step: false,
             buffers: &self.buffers,
             hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
@@ -963,6 +964,7 @@ impl TransformerModel {
                         moe_row_adapter: attn_metadata.moe_row_adapter,
                     };
                     let row_ctx = ForwardContext {
+                        decode_step: false,
                         buffers: &self.buffers,
                         hc_row_offset: t,
                         gpu: self.gpu.as_ref(),

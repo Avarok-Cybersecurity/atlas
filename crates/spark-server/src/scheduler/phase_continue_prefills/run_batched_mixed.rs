@@ -17,8 +17,8 @@ use spark_runtime::gpu::DevicePtr;
 use std::time::Instant;
 
 use super::super::decode_logits_step::process_decode_logits;
-use super::super::sample_first_token;
 use super::super::types::{ActiveSeq, PrefillInProgress};
+use super::super::{FirstTokenPolicy, sample_first_token};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_batched_mixed_step(
@@ -173,6 +173,7 @@ pub(super) fn run_batched_mixed_step(
             p.min_p,
             &p.eos_tokens,
             p.grammar_state.as_mut(),
+            FirstTokenPolicy::for_birth(p.enable_thinking, think_end_token, tool_call_start_token),
             &sched.levers.sampling(),
         ) {
             Ok(first) => {

@@ -9,6 +9,34 @@
 
 use std::fmt::Write as _;
 
+/// Emitted tokens per decode step, `completion / (completion - accepted)`.
+///
+/// ★ THE SPECULATION ARM, READ OFF THE WIRE. On the serial arm every emitted
+/// token costs one step, so this is exactly **1.00**; on the batch-K MTP arm
+/// it is the mean accept depth, ~2.3 on this model. The two modes are ~1.3
+/// apart on a quantity whose WITHIN-mode variance is a rounding error, which
+/// makes it a far better arm detector than delivered throughput — throughput
+/// mixes the arm with clocks, admission stagger and the tail of the batch.
+///
+/// SSOT on purpose. `decode_floor` derived this first and
+/// `concurrency` needs the identical rule; two spellings of one formula is
+/// how a metric comes to mean different things in two gates that are
+/// compared against each other.
+///
+/// `None` when it cannot be derived: no accept field on the wire, or a
+/// corrupt `accepted >= completion`, which would divide by zero or go
+/// negative. A `None` must never be silently read as 1.0 — that is the serial
+/// arm's value, and it would turn "the server did not tell us" into "the
+/// server ran serial".
+pub fn accept_len(
+    completion_tokens: usize,
+    accepted_prediction_tokens: Option<usize>,
+) -> Option<f64> {
+    let accepted = accepted_prediction_tokens?;
+    (accepted < completion_tokens && completion_tokens > 0)
+        .then(|| completion_tokens as f64 / (completion_tokens - accepted) as f64)
+}
+
 /// Varied filler. Uniform repetition ("hello hello …") collapses attention on
 /// pure-attention models and makes them emit EOS immediately, which turns an
 /// input-length sweep into a measurement of degenerate decode.

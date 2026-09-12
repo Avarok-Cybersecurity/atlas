@@ -45,12 +45,7 @@ impl TransformerModel {
         // transformers and dump matching hidden-state captures.
         // Per-model latch: a static would let the previous model swallow this
         // one's dump. Env first, so a disabled dump never burns the shot.
-        if std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
-            .ok()
-            .as_deref()
-            == Some("1")
-            && self.stats.dumped.keyed("dump:dflash_tokens")
-        {
+        if self.levers.dflash_debug_dump_full && self.stats.dumped.keyed("dump:dflash_tokens") {
             let tokens_json = serde_json::json!({
                 "prompt_len": position - seq.tokens.len() + seq.tokens.len(),
                 "position": position,
@@ -74,9 +69,15 @@ impl TransformerModel {
         }
         let stream = self.gpu.default_stream();
         let draft_embed_target = None;
-        // MTP loads ALL experts on every rank (no EP filtering), so its MoE
-        // output is already complete — no all_reduce needed. Passing comm: None
-        // prevents MoeLayer::forward() from doubling the output via SUM.
+        // 🔴 `comm: None` is the DEFAULT and it is load-bearing for the Qwen and DeepSeek-V4
+        // drafters: their MTP modules load every expert on every rank, so the MoE output is
+        // already complete and a comm would DOUBLE it via SUM.
+        //
+        // GLM-5.3's MTP block is EP-sharded with a row-parallel DSA `o_proj`, so for it the
+        // same `None` means drafting from half the routed sum and half the attention output.
+        // `needs_comm()` is that distinction, and it is only true once the worker rank is
+        // running this same propose (`ATLAS_MTP_EP_PROPOSE=1`) — a comm without a partner is
+        // the `t58` deadlock.
         let ctx = ForwardContext {
             buffers: &self.buffers,
             // Qwen's proposer reads the accepted target highway row. Other
@@ -97,8 +98,13 @@ impl TransformerModel {
             stats: &self.stats,
             attn_metadata: None,
             profile: false,
-            comm: None,
+            comm: if proposer.needs_comm() {
+                self.comm_ref()
+            } else {
+                None
+            },
             graph_capture: false,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
             host_token_ids: None,
@@ -256,7 +262,7 @@ impl TransformerModel {
         // K=1 on the 35B MoE is ~0.66). The drafter KV rows written by
         // this propose MUST be trimmed exactly as a full rejection would
         // (after_verify(0)), or the drafter desyncs from the target.
-        let tau = crate::speculative::draft_conf_tau();
+        let tau = self.levers.draft_conf_tau;
         if tau > 0.0
             && !drafts.is_empty()
             && let Some(conf) = proposer.last_confidence()

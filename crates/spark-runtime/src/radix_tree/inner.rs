@@ -199,6 +199,16 @@ impl RadixTreeInner {
         // identical temp-0 requests returned three different completions;
         // with the arms off, six returned one. See
         // `super::subblock_matching_from_env`.
+        //
+        // ⚠ POLARITY DIVERGES FROM UPSTREAM, deliberately. main resolves this
+        // here as a local `OnceLock` defaulting ON (`ATLAS_PREFIX_SUBBLOCK`
+        // != "0"). This branch takes `subblock_ok` as a PARAMETER resolved once
+        // in `RadixTree::new`, defaulting OFF, on the measurement above — and a
+        // local here would SHADOW that parameter and silently restore the
+        // corrupting default. It stays a lever either way, so the #936
+        // arm-ladder requirement that it remain operable is still met; only the
+        // default differs. Reconcile deliberately, with a measurement, not by
+        // taking whichever side a merge offers.
         if subblock_ok
             && remainder > 0
             && remainder < block_size

@@ -34,6 +34,9 @@ docker/gb10/spark-fastbin
 # scratch; everything else under .claude/ stays ignored.
 .claude/*
 !.claude/skills/
+# `.claude/agents/` likewise: an agent file is a blocking review contract
+# (.claude/agents/oracle*.md), and a gate nobody can read is not a gate.
+!.claude/agents/
 .gemini/
 .agent*/
 .codex/
@@ -155,3 +158,8 @@ bench/qwen4_exp/qsa_golden.npz
 bench/ngram_ref/ngram_golden.npz
 *.swp
 bench/qwen4_exp/qwen4exp_forward_golden.npz
+.ncclstub
+
+# The certification-state oracle's per-checkout campaign lockfile, and its
+# .stale./.released. rotations. An interlock, never meant to travel.
+/.oracle_should_begin_cert*

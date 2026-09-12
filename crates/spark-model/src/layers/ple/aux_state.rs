@@ -5,7 +5,7 @@
 //! Split from `layer.rs` for the ≤500 LoC cap.
 
 use anyhow::Result;
-use spark_runtime::gpu::GpuBackend;
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::{PleLayer, PleSeqState};
 use crate::layers::ple::ids::ple_ngram_ids;
@@ -130,6 +130,41 @@ impl PleLayer {
         st.prestaged_va = Some(va);
         st.last_staged_va = va;
         Ok(())
+    }
+
+    /// Release one sequence's PLE carry.
+    ///
+    /// Same shape of defect as the QSA indexer carry: `conv` is a bare
+    /// `DevicePtr`, so dropping `PleSeqState` frees nothing. Individually
+    /// small (~147 KB) and below the 32 MB allocation-trace threshold, which
+    /// is exactly why it stayed invisible — but it is one per SSM layer (36
+    /// on qwen4_exp) per sequence, and it never comes back.
+    ///
+    /// Idempotent: `conv` is nulled once freed.
+    pub fn release_seq_state(&self, st: &mut PleSeqState, gpu: &dyn GpuBackend) -> Result<()> {
+        if st.conv.is_null() {
+            return Ok(());
+        }
+        let mut r = gpu.free(st.conv);
+        st.conv = DevicePtr(0);
+        // The verify snapshot slots share `conv`'s lifetime and its leak class:
+        // `save_verify_row` above gpu.alloc's one per row and nothing else frees
+        // them. Draining here is what makes this release COMPLETE — freeing
+        // `conv` alone still leaks a conv-sized buffer per verify row per SSM
+        // layer per sequence.
+        for slot in st.verify_conv.drain(..) {
+            if !slot.is_null()
+                && let Err(e) = gpu.free(slot)
+                && r.is_ok()
+            {
+                r = Err(e);
+            }
+        }
+        st.verify_rows.clear();
+        st.history.clear();
+        st.prestaged_va = None;
+        st.last_staged_va = 0;
+        r
     }
 }
 

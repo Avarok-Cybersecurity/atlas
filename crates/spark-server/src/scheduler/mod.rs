@@ -25,6 +25,9 @@ mod emit_step;
 mod fast_greedy;
 #[cfg(test)]
 mod finish_guard_tests;
+mod first_token_policy;
+#[cfg(test)]
+mod first_token_policy_tests;
 mod helpers;
 mod lifecycle;
 #[cfg(test)]
@@ -93,6 +96,7 @@ use decode_logits_seq::*;
 use decode_logits_step::*;
 use decode_step::*;
 use emit_step::*;
+use first_token_policy::*;
 pub use helpers::WatchdogParams;
 pub(crate) use helpers::parse_disable_watchdogs;
 pub use helpers::resolve_content_loop_watchdog;

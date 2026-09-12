@@ -1469,7 +1469,7 @@ impl Qwen3SsmLayer {
             use std::sync::atomic::{AtomicUsize, Ordering};
             static CALLS: AtomicUsize = AtomicUsize::new(0);
             let call = CALLS.fetch_add(1, Ordering::Relaxed);
-            if call % 1024 == 0 && call > 0 {
+            if call.is_multiple_of(1024) && call > 0 {
                 tracing::info!(
                     call,
                     rows = num_tokens,

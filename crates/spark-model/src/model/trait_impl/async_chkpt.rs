@@ -97,6 +97,7 @@ impl TransformerModel {
     /// chosen by the replay gate rather than by the pass-scoped exact leg.
     fn replay_forward_ctx(&self) -> crate::layer::ForwardContext<'_> {
         crate::layer::ForwardContext {
+            decode_step: false,
             buffers: &self.buffers,
             hc_row_offset: 0,
             gpu: self.gpu.as_ref(),

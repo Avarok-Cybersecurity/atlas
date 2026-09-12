@@ -38,7 +38,7 @@ pub fn step_verify_k4(
 
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
-        a.finished = true;
+        super::lifecycle::fail_sequence(a, format!("sync_secondary: {e:#}"));
         return;
     }
 
@@ -51,13 +51,13 @@ pub fn step_verify_k4(
     // EP: broadcast verify K=4 command + 4 tokens.
     if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF4) {
         tracing::error!("EP broadcast verify_k4 cmd: {e:#}");
-        a.finished = true;
+        super::lifecycle::fail_sequence(a, format!("EP broadcast verify_k4 cmd: {e:#}"));
         return;
     }
     for &t in &tokens_k4 {
         if let Err(e) = model.ep_broadcast_cmd(t) {
             tracing::error!("EP broadcast verify_k4 token: {e:#}");
-            a.finished = true;
+            super::lifecycle::fail_sequence(a, format!("EP broadcast verify_k4 token: {e:#}"));
             return;
         }
     }
@@ -74,7 +74,7 @@ pub fn step_verify_k4(
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("decode_and_verify_fused (k4): {e:#}");
-                a.finished = true;
+                super::lifecycle::fail_sequence(a, format!("decode_and_verify_fused (k4): {e:#}"));
                 return;
             }
         }
@@ -83,7 +83,7 @@ pub fn step_verify_k4(
             Ok(r) => r.to_vec(),
             Err(e) => {
                 tracing::error!("decode_verify_graphed_k4: {e:#}");
-                a.finished = true;
+                super::lifecycle::fail_sequence(a, format!("decode_verify_graphed_k4: {e:#}"));
                 return;
             }
         }
@@ -189,7 +189,7 @@ pub fn step_verify_k4(
     // EP: broadcast num_accepted to worker.
     if let Err(e) = model.ep_broadcast_cmd(num_accepted as u32) {
         tracing::error!("EP broadcast verify_k4 result: {e:#}");
-        a.finished = true;
+        super::lifecycle::fail_sequence(a, format!("EP broadcast verify_k4 result: {e:#}"));
         return;
     }
 

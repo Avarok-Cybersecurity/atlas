@@ -26,9 +26,12 @@ pub mod bench;
 pub mod card;
 pub mod check;
 mod check_fmt;
+mod check_group;
+pub mod check_paths;
 pub mod closure;
 pub mod codeowners;
 pub mod coverage;
+pub mod hermetic;
 pub mod record;
 mod record_path;
 pub mod scoring;
@@ -79,7 +82,7 @@ pub use record::{
 /// mix — which is exactly what makes crossing them so easy to miss. Each
 /// bench's `BASELINE.json` pins its own model, and a model mismatch is a hard
 /// fail in `check_record`.
-pub const REQUIRED_GATES: [&str; 11] = [
+pub const REQUIRED_GATES: [&str; 12] = [
     coverage::REQUIRED[0].id,
     coverage::REQUIRED[1].id,
     coverage::REQUIRED[2].id,
@@ -91,6 +94,7 @@ pub const REQUIRED_GATES: [&str; 11] = [
     coverage::REQUIRED[8].id,
     coverage::REQUIRED[9].id,
     coverage::REQUIRED[10].id,
+    coverage::REQUIRED[11].id,
 ];
 
 /// The wall-clock timeout a gate run gives the endpoint's `/hardware` fetch.
@@ -272,6 +276,15 @@ mod card_tests;
 
 /// Ed25519 record signatures: round trips and, mostly, negative controls.
 pub mod agreement;
+pub mod group;
+
+#[cfg(test)]
+#[path = "group_tests.rs"]
+mod group_tests;
+
+#[cfg(test)]
+#[path = "group_verdict_tests.rs"]
+mod group_verdict_tests;
 
 #[cfg(test)]
 #[path = "agreement_tests.rs"]

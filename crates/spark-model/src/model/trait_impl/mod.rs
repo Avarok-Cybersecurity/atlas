@@ -26,6 +26,7 @@ mod decode_b;
 mod decode_b2;
 mod decode_checkpoint;
 mod decode_graph_key;
+mod decode_multi_seq_gate;
 mod decode_route;
 mod drafter_prefill;
 mod ep_misc;

@@ -67,9 +67,17 @@ fn project_bf16_lm_head(
 ) -> Result<()> {
     // The existing kernel shares one BF16 weight read across up to eight rows.
     // Its uint4 loads require each input/weight row to remain 16-byte aligned.
+    //
+    // 🔴 `DENSE_GEMV_BATCHM_DECODE_MAX_M`, NOT the kernel's `MAX_M`. The GEMV
+    // tier was widened to 16 for PREFILL only; this is a decode head, and the
+    // band's upper edge is what decides whether a width lands on the batched
+    // GEMV or the reassociating tile GEMM — i.e. which bits a decode of that
+    // width produces. When `MAX_M` was 8 the two names were the same number
+    // and this site read the right one by accident; they are not the same
+    // number any more. See `layers/ops/gemm_quant.rs` for the frozen band.
     if batch_enabled
         && batch_gemv.0 != 0
-        && (1..=ops::DENSE_GEMV_BATCHM_MAX_M).contains(&m)
+        && (1..=ops::DENSE_GEMV_BATCHM_DECODE_MAX_M).contains(&m)
         && k.is_multiple_of(8)
     {
         ops::dense_gemv_batchm(gpu, batch_gemv, input, weight, output, m, n, k, n, stream)

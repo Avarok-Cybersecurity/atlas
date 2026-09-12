@@ -1105,11 +1105,21 @@ mod h_stored_geometry_tests {
         }
     }
 
-    /// Replay-scaffold pool geometry: no per-token intermediates, checkpoints
-    /// and the input ring allocated, verify refused loudly, dispatch capacity
-    /// unconstrained (the refusal must be LOUD, never a silent zero-draft).
+    /// Replay pool geometry: per-token intermediates are ALLOCATED but SHARED
+    /// — one slot's worth, every slot addressing element 0 — with checkpoints
+    /// and the input ring allocated, verify refused loudly, and dispatch
+    /// capacity unconstrained (the refusal must be LOUD, never a silent
+    /// zero-draft).
+    ///
+    /// ⚠ This asserted `h_intermediate_pools.is_empty()` while replay DROPPED
+    /// the intermediates. "Make replay roughly free" changed it to SHARE them
+    /// instead and did not update the test, so the assertion outlived the
+    /// design it described and had been failing on this branch since. Sharing
+    /// is deliberately expressed as a LAYOUT, not a special case in the
+    /// accessors: full per-slot counts so every verify arm's length check
+    /// still passes, with all offsets zero. That is what this now pins.
     #[test]
-    fn replay_pool_has_checkpoints_and_ring_but_no_intermediates() {
+    fn replay_pool_shares_one_slot_of_intermediates() {
         let config = ModelConfig::qwen3_next_80b_nvfp4();
         let gpu = MockGpuBackend::new();
         let p = SsmStatePool::new(
@@ -1123,14 +1133,37 @@ mod h_stored_geometry_tests {
             &gpu,
         )
         .unwrap();
-        assert!(p.h_intermediate_pools.is_empty());
-        assert!(p.conv_intermediate_pools.is_empty());
-        assert_eq!(p.h_inter_counts, vec![0; p.mtp_slots + 1]);
+        assert!(p.intermediates_shared, "replay shares rather than drops");
+        assert!(
+            !p.h_intermediate_pools.is_empty(),
+            "replay allocates ONE slot's worth of intermediates, not none"
+        );
+        assert!(!p.conv_intermediate_pools.is_empty());
+        // The sharing IS the layout: full per-slot capacity so the verify arms'
+        // length checks pass, every slot starting at element 0.
+        assert_eq!(p.h_inter_counts.len(), p.mtp_slots + 1);
+        assert!(
+            p.h_inter_counts.iter().all(|&c| c == p.h_inter_counts[0]),
+            "replay gives every slot the same capacity: {:?}",
+            p.h_inter_counts
+        );
+        assert!(
+            p.h_inter_offsets.iter().all(|&o| o == 0),
+            "every slot must address the SAME storage: {:?}",
+            p.h_inter_offsets
+        );
         assert_eq!(p.h_checkpoint_pools.len(), p.num_ssm_layers);
         assert_eq!(p.replay_input_rings.len(), p.num_ssm_layers);
-        assert_eq!(p.verify_draft_capacity(0), usize::MAX);
-        let err = p.require_verify_rollback_supported().unwrap_err();
-        assert!(err.to_string().contains("EXPERIMENTAL"), "{err}");
+        // Capacity is the ORDINARY per-slot bound now, not the scaffold's
+        // unconstrained `usize::MAX`: replay carries the same real counts as
+        // snapshot because the storage is shared rather than absent.
+        assert_eq!(p.verify_draft_capacity(0), p.h_inter_counts[0]);
+        assert_ne!(p.verify_draft_capacity(0), usize::MAX);
+        // Capture + reconstruction are wired, so replay no longer refuses the
+        // serve outright. The one uncovered path is the DFlash block drafter's
+        // own verify chain, and this config declares no capture layers.
+        assert!(!p.replay_uncovered_dflash);
+        assert!(p.require_verify_rollback_supported().is_ok());
         // Snapshot mode: supported, and its geometry untouched.
         let snap = pool(false);
         assert!(snap.require_verify_rollback_supported().is_ok());
@@ -1240,6 +1273,12 @@ mod slot_guard_tests {
             conv_intermediate_pools: Vec::new(),
             h_checkpoint_pools: Vec::new(),
             conv_checkpoint_pools: Vec::new(),
+            // Replay-mode bookkeeping. Inert here: this pool exists only to
+            // exercise the CPU-side `free_slots`/`max_slots` invariant, and
+            // nothing on that path reads them.
+            intermediates_shared: false,
+            replay_row_bytes: 0,
+            replay_uncovered_dflash: false,
             h_bytes: 0,
             h_stored_bytes: 0,
             h_prefill_stage_pool: None,

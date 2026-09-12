@@ -8,8 +8,9 @@ use atlas_core::config::ModelConfig;
 
 use crate::cli;
 
+mod per_sequence_state;
 mod ssm_h_fp16;
-use ssm_h_fp16::ssm_h_fp16_preconditions;
+use {per_sequence_state::per_sequence_reserve, ssm_h_fp16::ssm_h_fp16_preconditions};
 
 pub(crate) struct ReservePreflight {
     pub(crate) inference_reserve: usize,
@@ -184,7 +185,34 @@ pub(crate) fn preflight_reserve(
         )
         .slots
     };
-    let ssm_snapshot_bytes = (args.ssm_cache_slots + decode_ring_slots * args.max_batch_size)
+    // Marconi snapshot region. SSOT:
+    // `spark_model::ssm_reserve::marconi_snapshot_slots` makes the SAME
+    // decision (same env var, same predicate) the runtime allocation in
+    // `TransformerModel::new` makes. The region's only reader is a
+    // prefix-cache lookup, so with the cache inactive every reserved slot is
+    // unreachable — 2380 MiB on GLM-5.3 (16 slots x 34 KDA layers x FP32
+    // h+conv) that nothing can ever restore from. Kill switch:
+    // ATLAS_SSM_MARCONI_FULL.
+    let marconi = spark_model::ssm_reserve::marconi_snapshot_slots(
+        args.ssm_cache_slots,
+        spark_model::ssm_reserve::prefix_caching_active(
+            args.prefix_caching_enabled(),
+            config.kv_only_prefix_cache_is_safe(),
+        ),
+    );
+    if let Some(reason) = marconi.skip_reason {
+        tracing::info!(
+            "SSM snapshot pool: Marconi region SKIPPED ({}) — {} slot(s) x {} layer(s) \
+             = {} MB not reserved (restore with --enable-prefix-caching, or \
+             ATLAS_SSM_MARCONI_FULL to over-reserve)",
+            reason,
+            args.ssm_cache_slots,
+            config.num_ssm_layers(),
+            (args.ssm_cache_slots * config.num_ssm_layers() * (h_state_bytes + conv_state_bytes))
+                / (1024 * 1024),
+        );
+    }
+    let ssm_snapshot_bytes = (marconi.slots + decode_ring_slots * args.max_batch_size)
         * config.num_ssm_layers()
         * (h_state_bytes + conv_state_bytes);
     // Same predicate as the pool term: DFlash IS a speculative serve and
@@ -211,7 +239,8 @@ pub(crate) fn preflight_reserve(
         + ssm_replay_ring
         + ssm_snapshot_bytes
         + gdn_two_phase_bytes
-        + cuda_headroom;
+        + cuda_headroom
+        + per_sequence_reserve(args, config);
     let total_reserve = inference_reserve + buffer_arena_bytes;
     if total_reserve > free_mem {
         let need_gb = total_reserve as f64 / (1024.0 * 1024.0 * 1024.0);
@@ -282,7 +311,7 @@ pub(crate) fn preflight_reserve(
         },
         config.num_ssm_layers(),
         ssm_snapshot_bytes / (1024 * 1024),
-        args.ssm_cache_slots,
+        marconi.slots,
         gdn_two_phase_bytes / (1024 * 1024),
         max_batch_tokens_pre,
         cuda_headroom / (1024 * 1024),

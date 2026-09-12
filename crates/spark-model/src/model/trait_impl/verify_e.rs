@@ -188,6 +188,15 @@ impl TransformerModel {
             // per-sequence loop, which reads as "concurrency does not
             // amortise" rather than as a disabled feature.
             && !self.verify_hidden_stash.is_null()
+            // A layer may DECLINE the batched verify sweep (Stage 0). Its
+            // absence was already fail-closed by `decode_verify_multi`'s
+            // `bail!`, but that is a mid-request abort; this makes the same
+            // answer a ROUTING decision, so the request falls back cleanly to
+            // the per-sequence verify loop — the sealed single-sequence path.
+            && !self
+                .layers
+                .iter()
+                .any(|l| l.decode_verify_multi_unsupported())
             // HSS: the paged-decode kernel reads HBM only, missing on-disk
             // history (see verify_c2's HSS fallback) — batched path unsupported.
             && self
@@ -597,6 +606,7 @@ impl TransformerModel {
                 profile: false,
                 comm: self.comm_ref(),
                 graph_capture: capture,
+                decode_step: false,
                 gdn_exact_replay: false,
                 token_ids: None,
                 // The R verify rows, flat and seq-major — row `off[i] + j` is
@@ -690,6 +700,7 @@ impl TransformerModel {
                     // ONE context for the whole layer: the batched attention
                     // projections/brackets, and the batched FFN sublayer.
                     let layer_ctx = ForwardContext {
+                        decode_step: false,
                         buffers: &self.buffers,
                         hc_row_offset: 0,
                         gpu: self.gpu.as_ref(),
@@ -734,7 +745,7 @@ impl TransformerModel {
                         let bs = kv_cache.block_size() as u32;
                         attn_layer.verify_attn_pre_hc(
                             hidden,
-                            &ks,
+                            ks,
                             &all_row_seq_lens,
                             metadata.seq_slot,
                             bs,
@@ -830,6 +841,7 @@ impl TransformerModel {
                             row_seq_lens.push(base_seq_len + t);
                         }
                         let seq_ctx = ForwardContext {
+                            decode_step: false,
                             buffers: &self.buffers,
                             // This sequence's rows live at `off[i]` on the
                             // highway; the body offsets its streams by it.
@@ -963,7 +975,7 @@ impl TransformerModel {
                                      Qwen3AttentionLayer"
                                 )
                             })?;
-                        attn.decode_verify_ffn_rows_hc(hidden, &ks, &layer_ctx, stream)?;
+                        attn.decode_verify_ffn_rows_hc(hidden, ks, &layer_ctx, stream)?;
                         {
                             static SAID: std::sync::Once = std::sync::Once::new();
                             SAID.call_once(|| {

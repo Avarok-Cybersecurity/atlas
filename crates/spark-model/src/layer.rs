@@ -334,6 +334,15 @@ pub struct ForwardContext<'a> {
     /// True when inside CUDA graph capture (between begin_capture/end_capture).
     /// MoE layers use sync all_reduce (capturable) instead of async (event-based).
     pub graph_capture: bool,
+    /// True ONLY on the single-token decode step, where `attn_metadata`'s `positions`,
+    /// `slot`, `seq_len` and `block_table` are the step's SCALARS at stable addresses.
+    ///
+    /// 🪤 `prefill_default` drives a layer that has no `prefill` of its own by calling its
+    /// `decode` once per token — with the PREFILL context, whose `positions`/`slot` are
+    /// per-token ARRAYS and whose `block_table`/`seq_len` are NULL unless the pass is paged.
+    /// A layer that reads those pointers as decode scalars gets an illegal address on the
+    /// first prompt. Check this flag, not `attn_metadata.is_some()`.
+    pub decode_step: bool,
     /// True when this prefill pass must take the TOKEN-SEQUENTIAL GDN
     /// recurrence ladder (register-resident -> WY4 -> persistent -> split4)
     /// instead of the FLA chunked kernel.
@@ -471,3 +480,7 @@ pub enum MoeLoraRoute {
 /// each is attention, SSM, MoE, or dense FFN.
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "layer/release_contract_tests.rs"]
+mod release_contract_tests;

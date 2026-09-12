@@ -183,12 +183,25 @@ jobs:
 Y
 want_rc 1 "control: cheap pool guarded but checking out a fork ref" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
-# And the shape we actually ship must PASS, or the rule is unusable.
+# The fleet gate is required on every self-hosted route. Without it a job on a
+# box that is down does not fail, it QUEUES -- and a queued job creates no check
+# run, so a required context reads as absent rather than red and the PR is
+# unmergeable with nothing showing as broken. This control is that rule.
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request: { types: [opened] } }
 jobs:
   j:
     runs-on: "${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest') || 'ubuntu-latest' }}"
+    steps: [{ uses: actions/checkout@v4 }]
+Y
+want_rc 1 "control: guarded cheap-pool routing WITHOUT the fleet gate" \
+  sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
+# And the shape we actually ship must PASS, or the rule is unusable.
+cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
+on: { pull_request: { types: [opened] } }
+jobs:
+  j:
+    runs-on: "${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest') || 'ubuntu-latest' }}"
     steps: [{ uses: actions/checkout@v4 }]
 Y
 want_rc 0 "the shipped cheap-pool routing shape is accepted" \
@@ -490,6 +503,33 @@ if [ -s "$TMP/alias.sh" ]; then
   # ever passed, any diff could skip certification by breaking classify-diff.
   want_rc 1 "control: a broken classifier (empty web_only) stays red" \
     env RESULT=skipped WEB_ONLY= STAMPED=true EXPEDITED=false bash "$TMP/alias.sh"
+
+  # ── ONE CAMPAIGN PER STACK (2026-09-12) ───────────────────────────────────
+  # A stack LAYER skips certification because the top carries it: merging a
+  # registered stack's top lands every layer below it in one operation, so the
+  # tree reaching `main` is the top's tree. These rows are the whole safety
+  # argument for that skip, so each failure mode gets its own control.
+  want_rc 0 "alias: a stack layer passes on a deliberate skip" \
+    env RESULT=skipped WEB_ONLY=false STAMPED=true EXPEDITED=false IS_STACK_LAYER=true bash "$TMP/alias.sh"
+  # A layer's OWN stamp is not what releases the stack's certification, so an
+  # unstamped layer must still pass -- otherwise a 26-layer stack needs 26
+  # stamps and one forgotten comment wedges the whole thing.
+  want_rc 0 "alias: an UNSTAMPED stack layer still passes" \
+    env RESULT=skipped WEB_ONLY=false STAMPED=false EXPEDITED=false IS_STACK_LAYER=true bash "$TMP/alias.sh"
+  # THE TOP ALWAYS CERTIFIES. `is_stack_layer` is false for a PR with nothing
+  # above it, and that PR is the one whose merge lands the stack. If this ever
+  # passed, a whole stack could merge with no records at all.
+  want_rc 1 "control: the TOP of a stack (not a layer) stays red on a skip" \
+    env RESULT=skipped WEB_ONLY=false STAMPED=true EXPEDITED=false IS_STACK_LAYER=false bash "$TMP/alias.sh"
+  # A BROKEN classifier leaves it EMPTY. Same shape and same reason as the
+  # empty-web_only control above: fail closed, or breaking the classifier
+  # becomes a way to skip certification.
+  want_rc 1 "control: an empty is_stack_layer stays red" \
+    env RESULT=skipped WEB_ONLY=false STAMPED=true EXPEDITED=false IS_STACK_LAYER= bash "$TMP/alias.sh"
+  # Being a layer excuses a SKIP, never a FAILURE. A layer whose certification
+  # ran and said no is still no.
+  want_rc 1 "control: a stack layer does not excuse a FAILED certification" \
+    env RESULT=failure WEB_ONLY=false STAMPED=true EXPEDITED=false IS_STACK_LAYER=true bash "$TMP/alias.sh"
 else
   bad "could not extract the alias shell from ci.yml"
 fi
@@ -2413,6 +2453,39 @@ want_rc_msg 1 "same commit" "control: head == base is refused" \
 want_rc 2 "control: called with no arguments it refuses, it does not pass" \
   bash .github/scripts/assert-stack-layer-differs.sh
 
+echo "== one campaign per stack is WIRED =="
+# ★ The alias rows above prove a layer's SKIP is translated into a pass. They
+# cannot prove the certification job actually skips for a layer -- that lives
+# in `pr-benchmark-gate`'s own `if:`, and deleting it would silently restore
+# one campaign per layer (~120 GPU-hours for a 26-layer stack) with every
+# selftest row still green. So assert the condition structurally, and prove the
+# assertion itself can fail.
+assert_stack_skip_wired() {
+  python3 - "$1" <<'PYW'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+cond = " ".join((d["jobs"]["pr-benchmark-gate"].get("if") or "").split())
+need = "needs.changes.outputs.is_stack_layer != 'true'"
+if need not in cond:
+    print("pr-benchmark-gate's if: does not carry " + repr(need), file=sys.stderr)
+    print("  got: " + cond, file=sys.stderr)
+    raise SystemExit(1)
+# An EQUALITY here would be a hole: the classifier fails open, so an empty
+# output must RUN the gate. Only the negative test is acceptable.
+if "is_stack_layer ==" in cond:
+    print("the layer test must be `!= 'true'`, never an equality", file=sys.stderr)
+    raise SystemExit(1)
+PYW
+}
+want_rc 0 "the benchmark gate skips stack layers (one campaign per stack)" \
+  assert_stack_skip_wired .github/workflows/ci.yml
+mkdir -p "$TMP/sw"
+printf 'jobs:\n  pr-benchmark-gate:\n    if: notacondition\n' > "$TMP/sw/ci.yml"
+want_rc 1 "control: dropping the layer test from the gate is caught" \
+  assert_stack_skip_wired "$TMP/sw/ci.yml"
+printf "jobs:\n  pr-benchmark-gate:\n    if: needs.changes.outputs.is_stack_layer == 'false'\n" > "$TMP/sw/eq.yml"
+want_rc 1 "control: an EQUALITY layer test is caught (it fails the wrong way)" \
+  assert_stack_skip_wired "$TMP/sw/eq.yml"
 echo "== job outputs are exported =="
 # The guard that would have caught `is_stack_layer` being computed, logged and
 # never exported -- which told every lower stack layer it was not one and made
@@ -2428,6 +2501,34 @@ want_rc_msg 1 "does not export 'zzz'" "control: an unexported consumer is caught
 rm -rf "$TMP/jo/.github/workflows"; mkdir -p "$TMP/jo/.github/workflows"
 want_rc_msg 1 "no workflow files found" "control: a guard that finds nothing must fail" \
   sh -c "cd '$TMP/jo' && python3 '$PWD/.github/scripts/assert-job-outputs-exported.py'"
+
+echo "== stuck runs are recognised before they can hide =="
+# A run that never creates a job publishes no check run, so a required context
+# it owns reads as ABSENT rather than red -- the PR cannot merge and nothing is
+# showing as broken. Each control below is a case that MUST NOT be swept, and
+# each rules out a real, healthy situation.
+STUCK='.github/scripts/stuck-runs.py'
+want_out "1" "a queued run with no jobs, past the threshold, is selected" \
+  sh -c "printf '%s' '{\"now\":\"2026-01-01T12:00:00Z\",\"threshold_minutes\":25,\"runs\":[{\"id\":1,\"status\":\"queued\",\"created_at\":\"2026-01-01T11:00:00Z\",\"job_count\":0}]}' | python3 $STUCK"
+# Control: a run waiting on a busy hosted pool is queued with no jobs and is
+# entirely healthy. Sweeping it would force-cancel real work.
+want_out "SWEPT-NOTHING" "control: a young queued run is left alone" \
+  sh -c "printf '%s' '{\"now\":\"2026-01-01T12:00:00Z\",\"threshold_minutes\":25,\"runs\":[{\"id\":2,\"status\":\"queued\",\"created_at\":\"2026-01-01T11:50:00Z\",\"job_count\":0}]}' | python3 $STUCK && echo SWEPT-NOTHING"
+# Control: a run that HAS jobs is merely slow, and is somebody else's problem.
+want_out "SWEPT-NOTHING" "control: a queued run that created jobs is left alone" \
+  sh -c "printf '%s' '{\"now\":\"2026-01-01T12:00:00Z\",\"threshold_minutes\":25,\"runs\":[{\"id\":3,\"status\":\"queued\",\"created_at\":\"2026-01-01T11:00:00Z\",\"job_count\":4}]}' | python3 $STUCK && echo SWEPT-NOTHING"
+# Control: an unresolved job count is NOT zero. Treating it as zero is the
+# fail-open direction, and it would cancel healthy runs whenever the jobs API
+# hiccups.
+want_out "SWEPT-NOTHING" "control: an unknown job count is not treated as zero" \
+  sh -c "printf '%s' '{\"now\":\"2026-01-01T12:00:00Z\",\"threshold_minutes\":25,\"runs\":[{\"id\":4,\"status\":\"queued\",\"created_at\":\"2026-01-01T11:00:00Z\",\"job_count\":null}]}' | python3 $STUCK && echo SWEPT-NOTHING"
+# Control: a guard that cannot read its input must refuse. Exiting 0 there would
+# report "nothing stuck" for every run forever, which is indistinguishable from
+# a healthy repo -- the exact way a dead guard survives.
+want_rc 2 "control: unreadable input is refused, not passed" \
+  sh -c "printf 'not json' | python3 $STUCK"
+want_rc 2 "control: a payload with no threshold is refused" \
+  sh -c "printf '%s' '{\"runs\":[]}' | python3 $STUCK"
 
 echo
 echo "  $PASS passed, $FAIL failed"

@@ -349,8 +349,9 @@ fn debt_is_derived_from_the_prs_own_paths() {
         },
     ];
     let views = super::views(&root, &prs);
-    // The discrimination is real now that `cross-contamination` is a
-    // candidate: the docs PR owes nothing, the engine PR owes the candidate.
+    // The discrimination is real: the docs PR owes nothing, the engine PR
+    // owes BOTH candidates — a scheduler edit can cross-wire concurrent
+    // requests AND make a reply depend on what ran before it.
     assert_eq!(views[0].promotion_debt, Vec::<&str>::new());
     assert_eq!(views[1].promotion_debt, vec!["cross-contamination"]);
 }

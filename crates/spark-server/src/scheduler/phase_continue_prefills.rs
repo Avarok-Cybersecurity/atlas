@@ -36,8 +36,8 @@ use std::time::Instant;
 use spark_model::traits::Model;
 
 use super::phase_promote_prefills::promote_completed_prefills;
-use super::sample_first_token;
 use super::types::{ActiveSeq, PrefillInProgress};
+use super::{FirstTokenPolicy, sample_first_token};
 use crate::scheduling_policy::{ActiveSeqTiming, SchedulingPolicy};
 
 use run_batched_mixed::run_batched_mixed_step;
@@ -244,6 +244,8 @@ pub(super) fn continue_in_progress_prefills(
             max_batch_tokens,
             prefill_stream,
             prefill_event,
+            think_end_token,
+            tool_call_start_token,
         );
         promote_completed_prefills(
             model,
@@ -346,6 +348,11 @@ pub(super) fn continue_in_progress_prefills(
                         p.min_p,
                         &p.eos_tokens,
                         p.grammar_state.as_mut(),
+                        FirstTokenPolicy::for_birth(
+                            p.enable_thinking,
+                            think_end_token,
+                            tool_call_start_token,
+                        ),
                         &sched.levers.sampling(),
                     ) {
                         Ok(first) => {

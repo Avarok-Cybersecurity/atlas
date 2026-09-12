@@ -160,12 +160,16 @@ pub async fn serve_for(
     overrides: BTreeMap<String, String>,
 ) -> Result<SelfServed> {
     let root = super::bench_run::repo_root()?;
-    let baseline = gate::read_baseline(&root, benchmark_id)?;
+    // A shard serves what its GROUP serves — same recipe, same checkpoint —
+    // and differs only in which rows it measures. Without this a member cannot
+    // be run at all.
+    let serve_id = gate::group::serve_baseline_id(benchmark_id);
+    let baseline = gate::read_baseline(&root, serve_id)?;
     let Resolved {
         model,
         recipe_id,
         entry,
-    } = super::bench_resolve::resolve(&baseline, benchmark_id, hardware, checkpoint)?;
+    } = super::bench_resolve::resolve(&baseline, serve_id, hardware, checkpoint)?;
 
     let store = atlas_plugin::ArtifactStore::discover()?;
     let index = crate::recipe::fetch::cached(store.root());
@@ -209,7 +213,13 @@ pub async fn serve_for(
     }
 
     let port = atlas_plugin::benchmarks::agentic::score::free_port()?;
-    let requested = gate::merge_serve_overrides(entry.serve_overrides.clone(), overrides);
+    // `--hermetic` expands into the keys it closes BEFORE the recipe renders,
+    // so a recipe default that turns one of them on does not produce a command
+    // line contradicting itself. See `cli::hermetic::CLOSED_KEYS`.
+    let requested = crate::cli::hermetic::expand(gate::merge_serve_overrides(
+        entry.serve_overrides.clone(),
+        overrides,
+    ));
     let mut overrides = requested.clone();
     overrides.insert("port".to_string(), port.to_string());
     let serve_args = recipe.serve_args(&overrides).with_context(|| {

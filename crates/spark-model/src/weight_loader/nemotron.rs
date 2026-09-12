@@ -76,6 +76,12 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                 atlas_core::config::LayerType::SlidingAttention => {
                     unreachable!("unexpected SlidingAttention in this loader")
                 }
+                // GLM-5.3's `deepseek_sparse_attention`. Nemotron has no indexer and no
+                // sparse-selection path, so this is a hard error rather than a silent
+                // fallthrough into the dense-attention arm.
+                atlas_core::config::LayerType::SparseAttention => anyhow::bail!(
+                    "layer {i}: SparseAttention (deepseek_sparse_attention) has no Nemotron loader"
+                ),
                 atlas_core::config::LayerType::Moe => {
                     // Standalone MoE FFN layer (uniform Super/Nano or Puzzle per-block)
                     let moe_inter = config.moe_intermediate_size_for(i);

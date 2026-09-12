@@ -110,6 +110,7 @@ async fn a_failed_probe_warns_but_still_runs_the_benchmark() {
         descriptor,
         values: ParamValues::defaults(&specs),
         target: target(mock.port),
+        serve_overrides: Default::default(),
         options: HeadlessOptions {
             poll: Duration::from_millis(10),
             save: false,

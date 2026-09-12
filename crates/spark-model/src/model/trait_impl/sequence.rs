@@ -190,6 +190,26 @@ impl TransformerModel {
             }
         }
 
+        // Release per-sequence layer state that is NOT pooled: the QSA indexer
+        // carry (12 full-attention layers x ~61.6 MB at 200K ctx) and the PLE
+        // conv carry. Both are bare `DevicePtr`s inside the layer state, so
+        // dropping `seq.layer_states` reclaims the host structs and leaks the
+        // device buffers — ~739 MB per request, invisible to RSS on unified
+        // memory and reported as N/A by `nvidia-smi`, which is why it read as
+        // "the box is growing" with no process to blame.
+        //
+        // Errors are logged, not propagated: this runs on the teardown path,
+        // and a sequence that cannot free its state is still finished. Bailing
+        // here would strand the KV blocks and prefix refs released below —
+        // trading a leak for a worse one.
+        for (layer_idx, ls) in seq.layer_states.iter_mut().enumerate() {
+            if let Some(layer) = self.layers.get(layer_idx)
+                && let Err(e) = layer.release_state(ls.as_mut(), self.gpu.as_ref())
+            {
+                tracing::error!("free_sequence: release_state(layer {layer_idx}): {e:#}");
+            }
+        }
+
         // Task #25: release this sequence's LoRA slot ref (the single terminal
         // chokepoint every stamped seq routes through — normal stop/EOS/length,
         // error/abort, prefill-error frees, and swap-out spill). Guarded by the
@@ -249,6 +269,64 @@ impl TransformerModel {
             seq.disk_block_ids.clear();
             for v in seq.disk_last_offloaded_per_layer.iter_mut() {
                 *v = 0;
+            }
+        }
+
+        // 🔴 Drop the graphs captured for THIS slot when a layer owns per-SEQUENCE device
+        // state. The caches are slot-keyed on the premise that the only per-sequence
+        // addresses a capture bakes live in the slot-addressed SSM pool; a layer that
+        // allocates its own state per sequence (GLM-5.3's indexer cache and KDA state)
+        // breaks it, and the next request replays — and writes — this one's freed buffers.
+        // Observed as request 2 continuing request 1's text.
+        //
+        // 🪤 NOT an unconditional drain. `decode_graph_key::tests` pins that, and it is
+        // right: recapturing on every completion is a real cost, and it must not come back
+        // for the models whose premise still holds. This is one slot, and only when a layer
+        // says so.
+        if !slot_reused_by_compact && self.layers.iter().any(|l| l.graph_stale_on_new_sequence()) {
+            let slot = seq.slot_idx as u32;
+            let mut stale: Vec<spark_runtime::gpu::GraphHandle> = self
+                .decode_graph
+                .lock()
+                .remove(&seq.slot_idx)
+                .into_iter()
+                .collect();
+            // 🔴 The K-row VERIFY graphs, for exactly the same reason — and this omission
+            // was ANOMALIES A56. `verify2_graph` / `verify3_graph` / `verify4_graph` are slot-keyed too and
+            // bake `Glm5NextDsaState::{k_normed, gate, valid}`, which `alloc_state`
+            // allocates PER SEQUENCE. Request 1 captured them; requests 2..n replayed a
+            // graph selecting over request 1's freed indexer cache. It reproduces as: the
+            // FIRST request after a start is byte-exact and later ones are not — which is
+            // why it looked data-dependent for a day.
+            for m in [
+                &self.verify2_graph,
+                &self.verify3_graph,
+                &self.verify4_graph,
+            ] {
+                stale.extend(m.lock().remove(&seq.slot_idx));
+            }
+            {
+                // A batched graph bakes EVERY row's state pointers, so one retired
+                // sequence poisons every key it appears in.
+                let mut batch = self.batch_decode_graphs.lock();
+                let keys: Vec<Vec<u32>> = batch
+                    .0
+                    .keys()
+                    .filter(|k| k.contains(&slot))
+                    .cloned()
+                    .collect();
+                for k in keys {
+                    if let Some((g, _)) = batch.0.remove(&k) {
+                        stale.push(g);
+                    }
+                }
+            }
+            for g in stale {
+                if g.0 != 0
+                    && let Err(e) = self.gpu.destroy_graph(g)
+                {
+                    tracing::warn!("free_sequence: destroy graph for slot {slot}: {e:#}");
+                }
             }
         }
 
@@ -317,6 +395,10 @@ impl TransformerModel {
                 rows,
                 last_pair_key,
                 tokens: seq.tokens.clone(),
+                // The identity the next adopter is checked against. Stamping
+                // it here is what makes "the next turn of the same session"
+                // above a rule rather than a comment.
+                session_hash: seq.session_hash,
             };
             let previous = self.mtp_carry.lock().replace(entry);
             if let Some(old) = previous {
@@ -339,6 +421,11 @@ impl TransformerModel {
         }
 
         self.free_chunked_prefill_meta(seq)?;
+
+        // ATLAS_SEQ_MEMTRACE: the closing half of this sequence's memory bracket.
+        // Last statement on purpose — everything this sequence owns has now been
+        // handed back, so `live` here is the number a leak moves.
+        crate::model::seq_memtrace::trace(self.gpu.as_ref(), "free");
 
         Ok(())
     }

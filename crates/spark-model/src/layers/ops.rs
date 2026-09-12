@@ -68,6 +68,10 @@ mod gemv_q2;
 mod gemv_q2_vec;
 #[path = "ops/gemv_sw.rs"]
 mod gemv_sw;
+/// GLM-5.3-Flash mHC dispatch (Slice 10 gate 0) -- kept out of `hyper_connection.rs` so
+/// DeepSeek-V4's proven dispatch stays byte-untouched.
+#[path = "ops/glm5next_mhc.rs"]
+mod glm5next_mhc;
 #[path = "ops/hyper_connection.rs"]
 mod hyper_connection;
 #[path = "ops/hyper_connection_dispatch.rs"]
@@ -185,6 +189,7 @@ pub use gemm_quant::*;
 pub use gemv_q2::*;
 pub use gemv_q2_vec::*;
 pub use gemv_sw::*;
+pub use glm5next_mhc::*;
 pub use hyper_connection::*;
 pub use hyper_connection_dispatch::*;
 pub use hyper_connection_lowrank::*;

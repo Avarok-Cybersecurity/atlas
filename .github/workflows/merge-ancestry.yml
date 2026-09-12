@@ -60,7 +60,8 @@ jobs:
     # by construction). Reporting a foregone conclusion is the price of the
     # verdict being enforceable at all on the events where it is not foregone.
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -119,7 +120,8 @@ jobs:
   self-test:
     name: Merge-ancestry guard self-test
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}

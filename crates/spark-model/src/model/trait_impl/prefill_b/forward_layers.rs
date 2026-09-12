@@ -115,6 +115,7 @@ impl TransformerModel {
             profile: profile_now,
             comm: self.comm_ref(),
             graph_capture: false,
+            decode_step: false,
             // Cold and warm passes must take the SAME GDN recurrence kernel
             // across a Marconi restore boundary, so this is NOT `marconi_skip`
             // alone — see `crate::model::gdn_replay`.

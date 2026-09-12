@@ -539,7 +539,10 @@ impl Qwen4ExpMtpHead {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<Vec<u32>> {
-        anyhow::ensure!(n >= 1 && n <= BATCH_CAP, "draft_tokens_batched: n={n} (cap {BATCH_CAP})");
+        anyhow::ensure!(
+            (1..=BATCH_CAP).contains(&n),
+            "draft_tokens_batched: n={n} (cap {BATCH_CAP})"
+        );
         let vocab = ctx.config.vocab_size;
         let h = ctx.config.hidden_size;
         // NATIVE EXL3 FIRST, as the single-row `draft_token` does: under
