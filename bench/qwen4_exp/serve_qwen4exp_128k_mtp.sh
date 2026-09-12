@@ -151,10 +151,15 @@ export NCCL_IB_DISABLE=0
 export NCCL_IB_HCA=rocep1s0f1,roceP2p1s0f1
 export NCCL_SOCKET_IFNAME=enp1s0f1np1
 export NCCL_NVLS_ENABLE=0
-export NCCL_PROTO=Simple
+# NCCL_PROTO / QPS are OVERRIDABLE so the small-message regime can be A/B'd
+# without a rebuild. `Simple` is the high-bandwidth, high-LATENCY protocol;
+# under TP=2 nearly every collective here is a ~5 KB all-reduce (48 TP + 48 EP
+# per step), which is the regime NCCL would normally serve with LL. Pinning
+# Simple blocks that auto-selection. Unset NCCL_PROTO to let NCCL choose.
+export NCCL_PROTO="${NCCL_PROTO:-Simple}"
 export NCCL_CROSS_NIC=1
-export NCCL_IB_QPS_PER_CONNECTION=4
-export NCCL_IB_SPLIT_DATA_ON_QPS=1
+export NCCL_IB_QPS_PER_CONNECTION="${NCCL_IB_QPS_PER_CONNECTION:-4}"
+export NCCL_IB_SPLIT_DATA_ON_QPS="${NCCL_IB_SPLIT_DATA_ON_QPS:-1}"
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export LD_LIBRARY_PATH="/home/ms/nccl/build/lib:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 export RUST_LOG="${RUST_LOG:-info}"

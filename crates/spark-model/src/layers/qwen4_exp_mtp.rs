@@ -285,6 +285,33 @@ impl Qwen4ExpMtpHead {
         max_seq_len: usize,
         max_sequences: usize,
     ) -> Result<Self> {
+        // ── Full pre-shard view, derived BEFORE anything is sized. ──
+        //
+        // The drafter is replicated, so it must be built end-to-end at full
+        // width: its weights, its private KV cache, and its arena. Deriving
+        // this only for the forward pass (and leaving `new` sizing from the
+        // TP-divided config) allocated a 1-KV-head draft cache under a 2-KV-head
+        // forward, and `run_mtp_propose_batched` failed its D2D copy with
+        // CUDA_ERROR_INVALID_VALUE at C=4 — the batched propose fell back and
+        // C=4 read 46.8 tok/s against EP-only's 68.7.
+        //
+        // Correct whichever config the caller passes: an already-full one
+        // (tp_world_size == 1) clones unchanged; a divided one multiplies back.
+        let cfg = {
+            let mut c = config.clone();
+            let tp = config.tp_world_size.max(1);
+            if tp > 1 {
+                c.num_attention_heads *= tp;
+                c.num_key_value_heads *= tp;
+                c.linear_num_key_heads *= tp;
+                c.linear_num_value_heads *= tp;
+                c.tp_world_size = 1;
+                c.tp_rank = 0;
+            }
+            c
+        };
+        // Shadow: every `config.` below now reads the drafter's own geometry.
+        let config = &cfg;
         let h = config.hidden_size;
         let hc = config.hc_mult.max(1);
         let row = h * 2;
@@ -351,26 +378,10 @@ impl Qwen4ExpMtpHead {
             (free_before.saturating_sub(free_after)) as f64 / 1e9,
         );
 
-        // Full pre-shard view for the replicated drafter. Correct whichever
-        // config the caller hands us: an already-full one (tp_world_size == 1)
-        // clones unchanged, a TP-divided one is multiplied back up.
-        let cfg = {
-            let mut c = config.clone();
-            let tp = config.tp_world_size.max(1);
-            if tp > 1 {
-                c.num_attention_heads *= tp;
-                c.num_key_value_heads *= tp;
-                c.linear_num_key_heads *= tp;
-                c.linear_num_value_heads *= tp;
-                c.tp_world_size = 1;
-                c.tp_rank = 0;
-            }
-            c
-        };
         Ok(Self {
             module,
             embed_tokens,
-            cfg,
+            cfg: cfg.clone(),
             kv_cache: Mutex::new(kv_cache),
             arena,
             batch_cap,
