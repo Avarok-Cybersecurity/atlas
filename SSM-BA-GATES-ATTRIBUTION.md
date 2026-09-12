@@ -50,6 +50,50 @@ inst/MAC; **8 → 64 / 4.19**; 12 → spills; 16 → 80 regs / 4.05 but 3 CTAs/S
 4. Occupancy halves against the parent's 8 CTAs/SM; the eight independent
 accumulator chains per thread pay for that.
 
+## Round-15 measurement — MEASURED, 1xH100 80GB HBM3, tip `8a6f50b61`
+
+The prediction below landed. Cell B0 (`ATLAS_SSM_BA_GATES_HOPPER=0`) against
+cell A15 (`auto`), same binary, one variable:
+
+| rung | B0 (twin off) | **A15 (twin on)** | Δ | predicted |
+|---|---:|---:|---:|---|
+| `4096x512` C=1 TTFT | 498.2 ms | **489.7 ms** | **−8.5 ms** | **−7.9** (−6.0…−9.7) |
+| `1024x256` C=1 TTFT | 162.7 ms | **160.5 ms** | **−2.2 ms** | **−2.1** |
+| `4096x512` C=1 TPOT | 13.66 ms | 13.66 ms | **0.00%** | 0 (guard) |
+| `1024x256` C=1 TPOT | 13.40 ms | 13.40 ms | **0.00%** | 0 (guard) |
+| C=1 tok/s, both shapes | 68.47 / 71.49 | 68.54 / 71.53 | +0.10 / +0.06% | 0 (guard) |
+
+**Both TTFT predictions land inside their stated range and TPOT is identical to
+the hundredth of a millisecond on both shapes** — the token-count guard keeping
+decode on the parent, exactly as designed.
+
+**The kernel, by two independent methods, agreeing to 0.35%.** nsys (cell A15N,
+prefill forward) prices the twin at **372.86 µs** per `M=4576` launch, grid
+`(4576,1,1)`, 48 launches = 3.85% of prefill busy; the microtest, on the same
+binary, at **371.56 µs** against the parent's 545.20 µs there and **555 µs** in
+round 13's live trace — **0.67×**. Over 48 launches the M=4576 chunk saves
+**8.74 ms**, against the B0-vs-A15 serve TTFT delta of **8.5 ms**: 3% apart.
+The predicted 355–430 µs (midpoint 390) landed at the fast end.
+
+**The guard is confirmed on the live engine.** nsys shows the M=17 tail chunk on
+the parent at `grid=(24,17,1)`, 4.93 µs, and decode on `dense_gemv_ba_gates` at
+`(24,1,1)`, 4.61 µs, 48×/step — round-13 costs, unchanged. The microtest prices
+the twin BELOW the floor at a 3× loss (M=17: 6.17 → 20.04 µs), which is what
+`twin_floor = 264 tokens` exists for.
+
+**Byte-identical, as claimed.** `out_diff=0` and `max_abs=0.000e0` at all four M
+in the microtest, the one-ulp KNOWN_BAD control refused at every one, A-row
+reads 96 → 12 exactly; and at serve level A15 and B0 are md5-identical on all
+seven coherency exchanges.
+
+**One observability defect, now closed.** The route line's once-flag was shared
+between its two branches, so on five of six round-15 serve cells the log read
+`the Hopper twin is NOT running at M=27` for the life of the process — the
+smoke test's 27-token request tripping the flag — while nsys showed the twin
+running 48× per prefill. `ba_gates_log` now keeps one flag per branch, so a
+serve log carries both the refusal and the positive pick, each naming the M it
+was reached at.
+
 ## Round-14 prediction — PREDICTION, arithmetic only, not a measurement
 
 Twin issue floor at M=4576: `4576 · 256 thr · 8865 inst / 32 / 926.6 G = 351 µs`

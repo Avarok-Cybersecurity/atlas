@@ -125,7 +125,7 @@ pub fn ssm_ba_gates_hopper_reject(
     } else if k_stride < k {
         Some("K_stride < K: the activation row is shorter than the reduction")
     } else if m < ba_gates_min_tokens(sm_count) {
-        Some("too few tokens to fill the device at one CTA per token")
+        Some(BA_GATES_TOO_FEW_TOKENS)
     } else {
         None
     }
@@ -172,29 +172,92 @@ pub fn ba_gates_pick(
     }
 }
 
-/// Say WHICH kernel runs and, when the lever asked for the twin and did not get
-/// it, WHICH guard refused — ONCE per process.
+/// Every guard string [`ssm_ba_gates_hopper_reject`] can return, in the order
+/// it tests them — and therefore the log's slot table.
 ///
-/// Once, not once per call: this runs inside the per-layer prefill step, so on
-/// a 48-GDN-layer model an unconditional line is 48 of them per request. The
-/// verdict CAN change between calls here (the token count is an argument), so
-/// unlike the GDN remnants' `Once` this logs the first verdict and names the
-/// shape it was reached at — a reader who sees "too few tokens" at M=16 has the
-/// number that explains it.
+/// A list, not a bare set of literals at the call sites, because
+/// [`ba_gates_log`] gives each ONE its own once-flag and a reason with no slot
+/// would silently share another's. `every_reject_reason_has_its_own_log_slot`
+/// drives the reject function over every guard and fails if a new string
+/// appears here without a slot.
+pub const BA_GATES_REJECTS: [&str; 6] = [
+    "not requested",
+    "kernel absent from this image (kernels/hopper only)",
+    "empty BA projection",
+    "K is not a multiple of 8 (the uint4 K sweep would drop a tail)",
+    "K_stride < K: the activation row is shorter than the reduction",
+    BA_GATES_TOO_FEW_TOKENS,
+];
+
+/// The token-count floor's guard string, named because it is the one the
+/// round-15 H100 serve logs printed forever while the twin ran (§3.2).
+pub const BA_GATES_TOO_FEW_TOKENS: &str = "too few tokens to fill the device at one CTA per token";
+
+/// Which line [`ba_gates_log`] would say for this verdict — `None` for silence.
+///
+/// ONE slot per branch, and that is the whole fix. The round-15 H100 serve logs
+/// carried `the Hopper twin is NOT running at M=27` on five of six cells for the
+/// life of the process while nsys showed the twin running 48x per prefill: a
+/// single `Once` shared by both branches, tripped by the smoke test's 27-token
+/// request, so the positive line could never be said. A reader of a serve log
+/// got the exact opposite of what the engine did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaGatesLogSlot {
+    /// The twin took the launch.
+    Twin,
+    /// The parent took it, for the guard at this index of
+    /// [`BA_GATES_REJECTS`].
+    Reject(usize),
+}
+
+/// Total once-flags [`ba_gates_log`] keeps: one per guard, plus the twin's.
+pub const BA_GATES_LOG_SLOTS: usize = BA_GATES_REJECTS.len() + 1;
+
+/// The slot a verdict belongs to. Pure, so the once-set can be replayed on a
+/// CPU against a real serve's call order.
+pub fn ba_gates_log_slot(pick: &BaGatesPick, requested: bool) -> Option<BaGatesLogSlot> {
+    match pick.reject {
+        None => Some(BaGatesLogSlot::Twin),
+        // The lever is off: the parent is the ANSWER, not a refusal, and a
+        // line per process saying so is noise on every other target.
+        Some(_) if !requested => None,
+        Some(why) => BA_GATES_REJECTS
+            .iter()
+            .position(|r| *r == why)
+            .map(BaGatesLogSlot::Reject),
+    }
+}
+
+/// Say WHICH kernel runs and, when the lever asked for the twin and did not get
+/// it, WHICH guard refused — once per process PER BRANCH.
+///
+/// Once per branch, not once per call: this runs inside the per-layer prefill
+/// step, so on a 48-GDN-layer model an unconditional line is 48 of them per
+/// request. But the verdict CHANGES between calls — the token count is an
+/// argument — so a single flag records whichever M arrived first and then lies
+/// for the life of the process. Round 15 measured exactly that: a 27-token
+/// smoke request before the first real prefill, and the twin's own line never
+/// printed on any of the five serve cells that ran it. With a flag per branch a
+/// serve log now carries BOTH lines, each naming the shape it was reached at.
 pub fn ba_gates_log(pick: &BaGatesPick, requested: bool, m: u32) {
-    static SAID: std::sync::Once = std::sync::Once::new();
-    SAID.call_once(|| match pick.reject {
-        Some(why) if requested => {
-            tracing::info!(
-                "SSM ba_gates: the Hopper twin is NOT running at M={m}: {why} \
-                 (ATLAS_SSM_BA_GATES_HOPPER)"
-            );
-        }
+    static SAID: [std::sync::Once; BA_GATES_LOG_SLOTS] =
+        [const { std::sync::Once::new() }; BA_GATES_LOG_SLOTS];
+    let Some(slot) = ba_gates_log_slot(pick, requested) else {
+        return;
+    };
+    let (idx, why) = match slot {
+        BaGatesLogSlot::Twin => (BA_GATES_LOG_SLOTS - 1, None),
+        BaGatesLogSlot::Reject(i) => (i, pick.reject),
+    };
+    SAID[idx].call_once(|| match why {
+        Some(why) => tracing::info!(
+            "SSM ba_gates: the Hopper twin is NOT running at M={m}: {why} \
+             (ATLAS_SSM_BA_GATES_HOPPER)"
+        ),
         None => tracing::info!(
             "SSM ba_gates: dense_gemm_ba_gates_prefill_hopper \
              (ATLAS_SSM_BA_GATES_HOPPER) M={m} block={BA_GATES_BLOCK} grid=(M,1,1)"
         ),
-        _ => {}
     });
 }
 
