@@ -94,7 +94,24 @@ cd "$(dirname "$0")/../.."
 
 RANK="${1:?usage: serve_qwen4exp_128k_mtp.sh <rank 0|1>}"
 
-MODEL_DIR="${QWEN4EXP_PATH:-/home/ms/.cache/huggingface/hub/models--nvidia--Qwen3.8-Flash-Next-NVFP4/snapshots/fc694b54fb0174e0913e6adf86691ef85a4ead47}"
+# ── Model dir: prefer the LOCAL symlink farm when this host has one. ────────
+# The HF snapshot is an NFS mount of a USB SSD on gx10 (and that USB SSD
+# locally on gx10). Weights are read ONCE at load, so that is fine for them —
+# but the 53.7 GB PLE n-gram table (model-fp8-mtp-ple.safetensors) is DEFERRED
+# and faulted in row by row at RUNTIME: one profiled 8K cold prefill showed
+# 110,265 misses, 13.72 s of resolve, 124 us per miss. The local dir is the
+# snapshot's files as symlinks plus that ONE file real on local NVMe. Measured
+# 2026-09-12, TP=2 x EP=2: prefill 8K/11K 231-261/267 -> 280/278, decode and
+# known-answer unchanged, 0 errors. QWEN4EXP_PATH still overrides either way.
+HF_SNAPSHOT=/home/ms/.cache/huggingface/hub/models--nvidia--Qwen3.8-Flash-Next-NVFP4/snapshots/fc694b54fb0174e0913e6adf86691ef85a4ead47
+LOCAL_FARM=/home/ms/models/qwen4exp-nvfp4-local
+if [ -n "${QWEN4EXP_PATH:-}" ]; then
+  MODEL_DIR="$QWEN4EXP_PATH"
+elif [ -f "$LOCAL_FARM/model-fp8-mtp-ple.safetensors" ] && [ ! -L "$LOCAL_FARM/model-fp8-mtp-ple.safetensors" ]; then
+  MODEL_DIR="$LOCAL_FARM"
+else
+  MODEL_DIR="$HF_SNAPSHOT"
+fi
 MASTER="${MASTER:-192.168.177.11}"          # dgx-00 = rank 0 = the box that serves
 if [ "$RANK" = "0" ]; then
   BIN="${BIN:-$PWD/target/release/spark}"
