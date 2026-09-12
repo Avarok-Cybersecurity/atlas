@@ -285,16 +285,16 @@ name = "native_fp8_ffn_batch16_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "native_fp8_oproj_batch_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "native_fp8_ffn_w8a8_microtest"
 required-features = ["cuda", "gpu-examples"]
 # The cuBLASLt-vs-kernel acceptance rule is CPU-testable; see the `tests`
 # module in `examples/common/native_fp8_bf16_compare.rs`, which the example
 # pulls in with `#[path]`.
 test = true
-
-[[example]]
-name = "native_fp8_oproj_batch_microtest"
-required-features = ["cuda", "gpu-examples"]
 
 [[example]]
 name = "native_fp8_qkv_batch_microtest"

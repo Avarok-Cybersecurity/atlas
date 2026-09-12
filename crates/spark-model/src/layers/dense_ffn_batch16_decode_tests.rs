@@ -6,6 +6,12 @@
 //! offsets it derives. Bit-exactness against the scalar `w8a16_gemv` at the
 //! real Qwen3.8-27B shapes is the GPU oracle's job
 //! (`examples/native_fp8_ffn_batch16_microtest.rs`).
+//!
+//! THE TIER IS OFF BY DEFAULT (`ATLAS_FFN_BATCH16=1` arms it), so every test
+//! here that expects a batch16 launch arms it EXPLICITLY — via the pure rule's
+//! `enabled` argument, or via `layer.batch16_enabled` on the dispatch cases.
+//! `stock_serve_is_the_pre_927_routing` pins the default itself, so a later
+//! flip back to default-on has to change a test that says so out loud.
 
 use super::{Batch16Plan, batch16_plan};
 use crate::layer::{ForwardContext, MoeLoraRoute};
@@ -30,11 +36,7 @@ const WIDTH: u32 = 128;
 #[test]
 fn batch16_declines_the_rows_the_batch4_rung_owns() {
     for m in [1, 2, 3, 4] {
-        assert_eq!(
-            batch16_plan(m, true, false),
-            None,
-            "m={m} belongs to batch4"
-        );
+        assert_eq!(batch16_plan(m, true, true), None, "m={m} belongs to batch4");
     }
 }
 
@@ -42,7 +44,7 @@ fn batch16_declines_the_rows_the_batch4_rung_owns() {
 fn batch16_claims_five_to_sixteen_in_one_launch() {
     for m in [5, 6, 8, 12, 15, 16] {
         assert_eq!(
-            batch16_plan(m, true, false),
+            batch16_plan(m, true, true),
             Some(Batch16Plan::Single),
             "m={m} must be one weight pass"
         );
@@ -52,7 +54,7 @@ fn batch16_claims_five_to_sixteen_in_one_launch() {
 #[test]
 fn batch16_splits_seventeen_to_thirtytwo_into_halves_that_fit_max_m() {
     for m in 17..=32u32 {
-        let Some(Batch16Plan::Halves { first }) = batch16_plan(m, true, false) else {
+        let Some(Batch16Plan::Halves { first }) = batch16_plan(m, true, true) else {
             panic!("m={m} must split into halves");
         };
         assert_eq!(
@@ -77,7 +79,7 @@ fn batch16_splits_seventeen_to_thirtytwo_into_halves_that_fit_max_m() {
 fn batch16_declines_prefill_widths_above_thirtytwo() {
     for m in [33, 64, 128, 1193] {
         assert_eq!(
-            batch16_plan(m, true, false),
+            batch16_plan(m, true, true),
             None,
             "m={m} is a prefill width"
         );
@@ -89,24 +91,23 @@ fn batch16_declines_when_the_kernel_is_absent() {
     // A model shadow that does not carry the MAX_M=16 entry point must land
     // exactly where it did before #927, not on a zero handle.
     for m in [5, 8, 16, 17, 32] {
-        assert_eq!(
-            batch16_plan(m, false, false),
-            None,
-            "m={m} without a handle"
-        );
+        assert_eq!(batch16_plan(m, false, true), None, "m={m} without a handle");
     }
 }
 
-/// `ATLAS_FFN_NO_BATCH16` — injected, not read from the environment: the real
+/// The DEFAULT, pinned: without `ATLAS_FFN_BATCH16=1` every width in the band
+/// routes exactly where it did before #927, kernel handle present or not.
+///
+/// `enabled` is injected rather than read from the environment: the real
 /// accessor is a process-global `OnceLock` and a test that set the variable
 /// would leak into every other test in this binary.
 #[test]
-fn batch16_kill_switch_restores_the_previous_routing() {
+fn unarmed_batch16_leaves_the_band_on_the_pre_927_arms() {
     for m in [5, 8, 16, 17, 32] {
         assert_eq!(
-            batch16_plan(m, true, true),
+            batch16_plan(m, true, false),
             None,
-            "m={m} with the switch set"
+            "m={m} must decline while the tier is unarmed"
         );
     }
 }
@@ -152,6 +153,10 @@ fn run(m: u32, expect: Expect, configure: impl FnOnce(&mut DenseFfnLayer)) {
     .unwrap();
     layer.w8a16_gemv_batch4_k = KernelHandle(BATCH4_K);
     layer.w8a16_gemv_batch16_k = KernelHandle(BATCH16_K);
+    // ARMED for the cases below, because the tier is off in a stock serve and
+    // these tests are about what it dispatches WHEN asked for. `configure` can
+    // put it back; `stock_serve_is_the_pre_927_routing` does exactly that.
+    layer.batch16_enabled = true;
     layer.act_mul = KernelHandle(0xAC7);
     let fp8 = Fp8Weight {
         weight: gpu.alloc(128 * 128).unwrap(),
@@ -276,6 +281,29 @@ fn without_the_batch16_handle_the_cliff_widths_fall_back_as_before() {
     for m in [5, 8, 16, 17, 32] {
         run(m, Expect::Tile, |layer| {
             layer.w8a16_gemv_batch16_k = KernelHandle(0);
+        });
+    }
+}
+
+/// The default all the way through `forward_prefill`, not just through the
+/// pure rule: a layer that nobody armed emits the M-padded tile GEMM at every
+/// width in the band even though the handle IS loaded. This is the shape the
+/// H100 A/B says a stock serve should have (121.4 -> 128.0 tok/s at C=16 with
+/// the tier off), and GB10 has never been measured either way.
+#[test]
+fn stock_serve_is_the_pre_927_routing() {
+    for m in [5, 8, 16, 17, 32] {
+        run(m, Expect::Tile, |layer| layer.batch16_enabled = false);
+    }
+}
+
+/// The 1..=4 rung is NOT part of the opt-in: it predates #927 and must keep
+/// its arm whether or not the batch16 tier is armed.
+#[test]
+fn the_batch4_rung_is_untouched_by_the_opt_in() {
+    for m in [1, 4] {
+        run(m, Expect::One(BATCH4_K, m), |layer| {
+            layer.batch16_enabled = false
         });
     }
 }
