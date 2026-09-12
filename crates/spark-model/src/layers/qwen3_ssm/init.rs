@@ -28,6 +28,7 @@ impl Qwen3SsmLayer {
         // prefill launches, so the scalar spine's route line has to read it,
         // and a field initializer cannot read a sibling field.
         let gdn_tc_spine = gdn_prefill_tc_kernel(gpu);
+        let gdn_vsplit_spine = init_kernels::gdn_spine_vsplit_kernel(gpu);
 
         Ok(Self {
             // mHC is attached later by the loader, and only for models that
@@ -265,10 +266,15 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_chunk_delta_h_tc_vblock",
             ),
             gdn_prefill_fla_chunk_delta_h_tcfuse_k: gdn_tc_spine,
+            gdn_prefill_fla_chunk_delta_h_vsplit_k: gdn_vsplit_spine,
             // ONE handle for the scalar fused GDN state spine, and the route
             // line naming whichever spine the prefill will launch — see
             // `init_kernels::fused_spine_kernel` for both.
-            gdn_prefill_fla_chunk_delta_h_fused_k: fused_spine_kernel(gpu, gdn_tc_spine),
+            gdn_prefill_fla_chunk_delta_h_fused_k: fused_spine_kernel(
+                gpu,
+                gdn_tc_spine,
+                gdn_vsplit_spine,
+            ),
             gdn_prefill_fla_chunk_delta_h_tma_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule_fla",

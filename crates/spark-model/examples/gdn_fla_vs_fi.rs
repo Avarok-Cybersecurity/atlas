@@ -113,7 +113,9 @@ fn main() -> Result<()> {
         spark_runtime::gpu::KernelHandle(0),
         k_dh,
         spark_runtime::gpu::KernelHandle(0),
-        // tcfuse handle: 0 = absent, same reason as the two below.
+        // tcfuse handle: 0 = absent, same reason as the three below.
+        spark_runtime::gpu::KernelHandle(0),
+        // value-split twin handle: 0 = absent, same reason.
         spark_runtime::gpu::KernelHandle(0),
         // vtile handle: 0 = absent, so this cross-impl A/B keeps comparing the
         // ksplit spine FlashInfer was originally diffed against.

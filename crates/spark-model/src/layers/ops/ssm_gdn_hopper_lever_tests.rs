@@ -38,6 +38,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     gdn_decode_hopper: false,
     gdn_decode_strided_hopper: true,
     gdn_prefill_tc: true,
+    gdn_spine_vsplit: 1,
     ssm_ba_gates_hopper: true,
     ffn_gateup_fused: true,
     attn_qkv_fused: true,

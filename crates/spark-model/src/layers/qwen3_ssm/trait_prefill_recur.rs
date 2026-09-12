@@ -224,6 +224,7 @@ impl Qwen3SsmLayer {
                 self.gdn_prefill_fla_chunk_delta_h_k,
                 self.gdn_prefill_fla_chunk_delta_h_tc_vblock_k,
                 self.gdn_prefill_fla_chunk_delta_h_tcfuse_k,
+                self.gdn_prefill_fla_chunk_delta_h_vsplit_k,
                 self.gdn_prefill_fla_chunk_delta_h_fused_k,
                 self.gdn_prefill_fla_chunk_delta_h_tma_k,
                 self.gdn_prefill_fla_chunk_fwd_o_k,

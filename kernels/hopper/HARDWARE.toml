@@ -240,6 +240,44 @@ gdn_decode_strided_hopper = true
 # receipt for the family, and b200 must not inherit a Hopper recipe by
 # resemblance (`tests/target_defaults.rs`).
 gdn_prefill_tc = true
+# CTAs per value head inside that spine (#928, `gdn_chunk_delta_h_vsplit_hopper.cu`
+# below). 1 = OFF, i.e. the unsplit `..._tcfuse_x2` — and this is the one Hopper
+# row added with NO device receipt at all, so it ships off.
+#
+# WHAT IT ATTACKS. nsys round 13 cell T1N (1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8,
+# `h100-r13-attribution.md` SS A.3/A.4): `gated_delta_rule_chunk_delta_h_tcfuse_x2`
+# is 52 060.3 us = 11.32% of the 4593-token prefill's 459.812 ms of GPU busy,
+# 1 062.45 us per launch at M=4576, 13.64 TFLOP/s = 1.4% of BF16 tensor-core peak
+# and 327 GB/s = 9.7% of HBM. Arithmetic intensity 41.8 FLOP/byte: bound by
+# NEITHER roofline. The engine also already runs at the isolated kernel's own
+# ceiling — the GB10 microtest reports 1.0553 ms at T=4593 against the engine's
+# 1.0625, 0.7% apart — so no implementation slack is left at this launch
+# geometry. What IS left is the grid: `[nv=48, batch=1]` = 48 CTAs on 132 SMs,
+# 36% of the machine, with 84 SMs idle for the whole 52 ms.
+#
+# WHY THE SPLIT IS EXACT. Phase A contracts over `k` and Phase B over `i`;
+# neither contracts over `v`. Column block j of the state depends only on column
+# block j of U (hence of V) plus the SHARED k-space operands W, K and the decay
+# row, which are re-read rather than reduced — and `chunk_fwd_o` reads the
+# outputs the same way. So a vd-split needs no cross-CTA reduction and no change
+# in per-element accumulation order, and the twin is BIT-IDENTICAL to the parent
+# rather than a numerics trade. Gated as byte equality of `h`, `uc` and `S_c`
+# (`native_gdn_spine_vsplit_hopper_microtest`, plus the host simulation in
+# `ops::ssm_gdn_vsplit_tests`, which compares the split and unsplit index maps
+# for EXACT f64 equality with a one-column negative control).
+#
+# WHY IT IS STILL OFF. Bit-identity removes the accuracy question, not the speed
+# one, and the worst case here is NOT a null: each split re-reads the k-space W
+# and K, so total traffic is 1.335x at 2-way and 2.005x at 4-way. And the split
+# has been measured before — `gated_delta_rule_chunk_tc.cu`'s 2026-06-25 in-file
+# V-split verdict recorded bit-parity 18/18 and 0.71x/0.65x/0.34x at VTILES=2/4/8
+# on GB10, a 48-SM part where nv=48 CTAs already fill the device. That verdict
+# does not transfer to 132 SMs, which is exactly why the lever exists; a default
+# is a claim about a measurement, and round 16 is where the measurement is made:
+# `ATLAS_GDN_SPINE_VSPLIT=2` (96 CTAs) and `=4` (192 CTAs). Predicted at 2-way,
+# from the idle-SM fraction alone: ~-26 ms of the 459.8 ms 4593-token prefill and
+# ~-7 ms of the 1168-token forward. Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
+gdn_spine_vsplit = 1
 # The Hopper BA-gates twin (#928, `ssm_ba_gates_hopper.cu` below). ON, and
 # BIT-IDENTICAL to its gb10 parent by construction, so this row is a pure speed
 # claim with no accuracy question attached — the microtest
@@ -526,6 +564,17 @@ w8a8_prefill_max_m_narrowing = 4294967295
 #                            under `[defaults] gdn_prefill_tc`. Reached only
 #                            under that row. Numbers:
 #                            `GDN-PREFILL-ATTRIBUTION.md`.
+#   gdn_chunk_delta_h_vsplit_hopper.cu  The VALUE-SPLIT arm of the chunked
+#                            PREFILL state spine (#928). An ADDITION with new
+#                            entry names, for the `gdn_*_hopper.cu` reason: its
+#                            parent `gated_delta_rule_chunk_delta_h_tcfuse_x2`
+#                            lives in `common/gated_delta_rule_chunk_tc.cu`
+#                            beside a second entry point five targets compile,
+#                            so a same-stem override would fork it. Selected by
+#                            `[defaults] gdn_spine_vsplit` above plus kernel
+#                            presence (`ops::gdn_spine_vsplit_pick`); at the
+#                            shipped `1` it is compiled and never launched.
+#                            Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
 #   paged_decode_fp8_splitk_hopper.cu   The paged-decode SPLIT-K pair (#928):
 #   paged_decode_bf16_splitk_hopper.cu  a partial-attention kernel per KV split
 #                            plus the merge that folds the partials. ADDITIONS,
@@ -629,6 +678,7 @@ overrides = [
   "paged_decode_splitk_hopper.cuh",
   "fp8_act_quant_hopper.cu",
   "fp8_scale_transpose.cu",
+  "gdn_chunk_delta_h_vsplit_hopper.cu",
   "gdn_decode_hopper.cu",
   "gdn_decode_strided_hopper.cu",
   "gdn_fwd_o_hopper.cu",

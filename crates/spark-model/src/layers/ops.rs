@@ -188,6 +188,8 @@ mod ssm_gdn_hopper;
 mod ssm_gdn_hopper_prefill;
 #[path = "ops/ssm_gdn_snap.rs"]
 mod ssm_gdn_snap;
+#[path = "ops/ssm_gdn_spine_cfg.rs"]
+mod ssm_gdn_spine_cfg;
 #[path = "ops/ssm_gdn_strided_hopper.rs"]
 mod ssm_gdn_strided_hopper;
 #[path = "ops/ssm_gdn_tc_route.rs"]
@@ -267,6 +269,7 @@ pub use ssm_gdn_batched::*;
 pub use ssm_gdn_hopper::*;
 pub(crate) use ssm_gdn_hopper_prefill::*;
 pub use ssm_gdn_snap::*;
+pub use ssm_gdn_spine_cfg::*;
 pub use ssm_gdn_strided_hopper::*;
 pub use ssm_gdn_tc_route::*;
 pub use ssm_mamba::*;

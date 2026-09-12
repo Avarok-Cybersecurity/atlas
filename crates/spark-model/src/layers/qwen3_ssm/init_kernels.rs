@@ -126,6 +126,34 @@ pub(super) fn gdn_prefill_tc_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
     )
 }
 
+/// The VALUE-SPLIT spine twin's handle, for the split `[defaults]
+/// gdn_spine_vsplit` resolved to (`ATLAS_GDN_SPINE_VSPLIT` overriding).
+///
+/// ONE handle for two entry points, resolved here rather than at every launch:
+/// the split is a property of the serve, `target_defaults::resolved` is
+/// `OnceLock`-cached so the route cannot change between a CUDA-graph capture
+/// and its replay, and binding the entry for the resolved split is what makes
+/// the init line, the dispatch line and the launched kernel one answer — the
+/// round-14 defect (`ops::gdn_init_spine_line`) one level down.
+///
+/// `try_kernel` and a zero handle at split 1 or on a target without the source:
+/// `kernels/hopper` is the only tree that carries
+/// `gdn_chunk_delta_h_vsplit_hopper.cu`, so the lookup must MISS quietly and
+/// leave the launcher on the unsplit spine, and `ops::gdn_spine_vsplit_reject`
+/// then names which of the two reasons applied.
+pub(super) fn gdn_spine_vsplit_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
+    let levers = crate::layers::ops::target_defaults::resolved();
+    if !levers.gdn_prefill_tc.value {
+        return KernelHandle(0);
+    }
+    match crate::layers::ops::gdn_spine_vsplit_entry(levers.gdn_spine_vsplit.value) {
+        Some(entry) => {
+            crate::layers::try_kernel(gpu, crate::layers::ops::GDN_SPINE_VSPLIT_MODULE, entry)
+        }
+        None => KernelHandle(0),
+    }
+}
+
 /// The SCALAR fused GDN state-spine handle, and the one route line
 /// `qwen3_ssm::init` prints per layer while binding it.
 ///
@@ -147,9 +175,14 @@ pub(super) fn gdn_prefill_tc_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
 /// what this prints is the entry the PREFILL will launch rather than the
 /// fallback sitting underneath it — round 14 caught 48 of these lines naming
 /// the scalar parent while all 14 400 dispatches went to the tensor-core entry.
-pub(super) fn fused_spine_kernel(gpu: &dyn GpuBackend, tc_spine: KernelHandle) -> KernelHandle {
+pub(super) fn fused_spine_kernel(
+    gpu: &dyn GpuBackend,
+    tc_spine: KernelHandle,
+    vsplit_spine: KernelHandle,
+) -> KernelHandle {
     use crate::layers::ops::{
-        GDN_SCALAR_SPINE_PIPE, GDN_SCALAR_SPINE_VFUSED, GDN_SCALAR_SPINE_VTILE, gdn_init_spine_line,
+        GDN_SCALAR_SPINE_PIPE, GDN_SCALAR_SPINE_VFUSED, GDN_SCALAR_SPINE_VTILE,
+        gdn_init_spine_line, gdn_spine_vsplit_entry, target_defaults,
     };
     let scalar = match (
         std::env::var("ATLAS_GDN_PIPE").ok().as_deref(),
@@ -159,7 +192,13 @@ pub(super) fn fused_spine_kernel(gpu: &dyn GpuBackend, tc_spine: KernelHandle) -
         (_, Some("1")) => GDN_SCALAR_SPINE_VTILE,
         _ => GDN_SCALAR_SPINE_VFUSED,
     };
-    tracing::info!("{}", gdn_init_spine_line(tc_spine.0 != 0, scalar));
+    // The value-split twin is named ONLY when its handle is bound, which is the
+    // same bit the dispatch reads: a line that named a split whose kernel is
+    // absent would be the round-14 defect with an extra step.
+    let vsplit = (vsplit_spine.0 != 0)
+        .then(|| gdn_spine_vsplit_entry(target_defaults::resolved().gdn_spine_vsplit.value))
+        .flatten();
+    tracing::info!("{}", gdn_init_spine_line(tc_spine.0 != 0, vsplit, scalar));
     crate::layers::try_kernel(gpu, "gated_delta_rule_fla", scalar)
 }
 

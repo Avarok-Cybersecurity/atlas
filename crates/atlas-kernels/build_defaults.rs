@@ -40,6 +40,7 @@ pub(crate) struct Defaults {
     pub gdn_decode_hopper: bool,
     pub gdn_decode_strided_hopper: bool,
     pub gdn_prefill_tc: bool,
+    pub gdn_spine_vsplit: u32,
     pub ssm_ba_gates_hopper: bool,
     pub ffn_gateup_fused: bool,
     pub attn_qkv_fused: bool,
@@ -76,6 +77,10 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         gdn_decode_hopper: false,
         gdn_decode_strided_hopper: false,
         gdn_prefill_tc: false,
+        // 1 = the unsplit `..._tcfuse_x2` spine, one CTA per value head. The
+        // value-split twin exists only under `kernels/hopper` and has no
+        // serving receipt on any target, so the baseline is "unchanged".
+        gdn_spine_vsplit: 1,
         ssm_ba_gates_hopper: false,
         ffn_gateup_fused: false,
         attn_qkv_fused: false,
@@ -203,6 +208,7 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             "gdn_decode_hopper" => out.gdn_decode_hopper = boolean(key, value),
             "gdn_decode_strided_hopper" => out.gdn_decode_strided_hopper = boolean(key, value),
             "gdn_prefill_tc" => out.gdn_prefill_tc = boolean(key, value),
+            "gdn_spine_vsplit" => out.gdn_spine_vsplit = unsigned(key, value),
             "ssm_ba_gates_hopper" => out.ssm_ba_gates_hopper = boolean(key, value),
             "ffn_gateup_fused" => out.ffn_gateup_fused = boolean(key, value),
             "attn_qkv_fused" => out.attn_qkv_fused = boolean(key, value),
@@ -244,6 +250,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   gdn_decode_hopper: {gdn_decode},\n\
          \x20   gdn_decode_strided_hopper: {gdn_decode_strided},\n\
          \x20   gdn_prefill_tc: {gdn_tc},\n\
+         \x20   gdn_spine_vsplit: {gdn_vsplit},\n\
          \x20   ssm_ba_gates_hopper: {ba_gates},\n\
          \x20   ffn_gateup_fused: {gateup_fused},\n\
          \x20   attn_qkv_fused: {qkv_fused},\n\
@@ -265,6 +272,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
         gdn_decode = d.gdn_decode_hopper,
         gdn_decode_strided = d.gdn_decode_strided_hopper,
         gdn_tc = d.gdn_prefill_tc,
+        gdn_vsplit = d.gdn_spine_vsplit,
         ba_gates = d.ssm_ba_gates_hopper,
         gateup_fused = d.ffn_gateup_fused,
         qkv_fused = d.attn_qkv_fused,

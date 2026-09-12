@@ -314,3 +314,180 @@ are nsys, not the microtest — a better measurement of speed (the live engine a
 the real T) and no measurement at all of numerics, which live only in that
 example. The unit error is fixed and pinned by a host test at the microtest's
 own geometry (`examples/common/gdn_remnants.rs`).
+
+---
+
+# The spine's remaining axis — CTA occupancy (round 15, 2026-09-11)
+
+Nothing on this page is measured on hardware in this section. It is a design
+record, a compile-time receipt and a prediction, and it says so in every row —
+the same disposition the twins shipped with above, and for the same reason: the
+box is not in hand. `[defaults] gdn_spine_vsplit` ships **1 (off) on every
+target** and round 16 runs the A/B.
+
+## What round 13 left on the table
+
+From cell T1N (`h100-r13-attribution.md` §A.3/§A.4), the shipped spine at
+`T = 4593`, `C = 1`, on the `M = 4576` chunk:
+
+| quantity | value | of peak |
+|---|---|---|
+| `gated_delta_rule_chunk_delta_h_tcfuse_x2`, 96 launches | **52 060.3 µs** | **11.32 %** of 459.812 ms of prefill GPU busy |
+| per launch at `M = 4576` | **1 062.45 µs** | vs the GB10 microtest's own **1 055.3 µs** at `T=4593` — 0.7 % apart |
+| achieved | **13.64 TFLOP/s** | **1.38 %** of 989 TFLOP/s BF16 |
+| achieved | **327 GB/s** | **9.7 %** of 3.35 TB/s HBM3 |
+| arithmetic intensity | **41.8 FLOP/byte** | bound by neither roofline |
+| grid | **`[nv=48, batch=1]`** | **48 CTAs on 132 SMs = 36 %** |
+
+Two of those rows together are the whole argument. The kernel is at neither
+roofline, and it is already at the isolated kernel's own ceiling — so there is
+no implementation slack at this launch geometry, and the only variable left is
+how many SMs the launch touches. 84 of 132 are idle for the whole 52 ms.
+
+## Separability — what is exact, and what is not
+
+The recurrence the kernel runs, per (chunk, value head), with the value index
+`v` held fixed:
+
+```
+Phase A   ws[i][v]      = SUM_k W[i][k] * S_c[k][v]
+          uc[i][v]      = U[i][v] - ws[i][v]
+          duc[i][v]     = exp(gc_last - gc_i) * uc[i][v]
+Phase B   S_{c+1}[k][v] = exp(gc_last) * S_c[k][v] + SUM_i K[i][k] * duc[i][v]
+```
+
+Phase A contracts over `k`; Phase B contracts over `i`. **Neither contracts over
+`v`.** So column block *j* of the state depends only on column block *j* of `U`
+— hence of `V` — plus `W`, `K` and the decay row `gc`, which are **k-space or
+scalar, shared, and re-read rather than reduced**. The three outputs follow the
+same rule: `S_out[:, v]`, `uc_out[:, v]` and `h[:, v]` are each written by the
+one CTA that owns `v`. The downstream reader is separable too —
+`chunk_fwd_o` computes `O[:, v] = Q̃·S_c[:, v] + tril(decay·Q̃Kᵀ)·uc[:, v]` — so
+nothing about the split is visible to it, and it is untouched.
+
+**Everything in this kernel is column-separable. There is no term that is not**,
+and in particular:
+
+* `W` and `U` are **inputs** here, produced by `recompute_wu`; `w` is k-space
+  (`[CHUNK][kd]`) and `u` is v-space (`[CHUNK][vd]`), and the split reads the
+  columns of `u` it owns and all of `w`. The forward substitutions that build
+  them are not re-run and not re-partitioned.
+* There is **no per-row normalisation** anywhere in the spine. The only scaling
+  is the per-token decay `exp(gc_last - gc_i)` and the per-chunk `exp(gc_last)`,
+  both scalar in `v`, both recomputed identically per CTA from the same `gc`
+  row in the same f32 operations.
+* `S_c`'s and `duc`'s two-bf16-limb splits are per element.
+
+So a vd-split needs **no cross-CTA reduction**, no workspace, no atomics, and
+no determinism question of the kind `split_ref_seqs` exists to answer for
+attention split-K.
+
+**Bit-identity, and why it is a contract rather than a hope.** An
+`mma.sync.m16n8k16` output element is a fixed k-tree over the kernel's `ks`
+loop, and a warp's n-tiles are *independent* accumulators. Narrowing a C
+fragment from 16 n-tiles to 8 (2-way) or 4 (4-way) therefore re-partitions
+accumulators without reassociating any of them, provided the n-tile boundaries
+stay on the same 8-column multiples — which they do. The twin preserves, per
+element: the `ks` order (0…112 in Phase A, 0…48 in Phase B), the n-tile
+boundaries, the f32 decay arithmetic, and both bf16 limbs. The parent's own
+in-file V-split experiment is the corroboration: the 2026-06-25 verdict in
+`kernels/gb10/common/gated_delta_rule_chunk_tc.cu` recorded **bit-parity 18/18**
+at VTILES = 2/4/8 and rejected the split on *speed*.
+
+## The twin
+
+`kernels/hopper/common/gdn_chunk_delta_h_vsplit_hopper.cu`, two entry points,
+same 21-arg ABI and block 256 as `…_tcfuse_x2`. `grid.y = batch * split`, with
+`b = blockIdx.y / split` and the column block `vs = blockIdx.y % split` — the
+shape `…_tc_vblock` already uses for its DV blocks.
+
+**ptxas receipt** (sm_90a, CUDA 13.0.88, `--fmad=false
+-DATLAS_NO_WARP_BLOCKSCALE_MMA -DTQ_PLUS_SIGNS`, the tree's own build flags;
+cross-compiled on gx10-a309 2026-09-11 — no H100 was touched):
+
+| entry | launch_bounds | registers | spill | dyn. smem | CTAs/SM by reg | by smem | CTAs at nv=48 |
+|---|---|---|---|---|---|---|---|
+| `…_tcfuse_x2` (parent) | `(256, 1)` | **243** | 0 B | 88 324 B | **1** | 2 | **48** |
+| `…_vsplit2_hopper` | `(256, 2)` | **124** | 0 B | **54 532 B** | **2** | 4 | **96** |
+| `…_vsplit4_hopper` | `(256, 2)` | **110** | 0 B | **45 828 B** | **2** | 5 | **192** |
+
+The parent is **register**-limited to one CTA per SM (243 × 256 = 62 208 of
+65 536), not shared-memory-limited — which is why the smem drop matters only in
+combination with the register drop the narrower C fragment buys. Both twins fit
+`(256, 2)` with zero spill, which is what the 4-way arm needs: 192 CTAs land on
+132 SMs in one wave rather than two.
+
+Shared memory, per split, by tile — `Wp` (W, `[64][136]`) and `Kt` (Kᵀ,
+`[128][72]`) are k-space and do **not** shrink, and `Kt` aliases `St`:
+
+| split | St/Kt | Wp | Up | ducT | dec | total |
+|---|---|---|---|---|---|---|
+| 1 | 34 816 | 17 408 | 17 408 | 18 432 | 260 | **88 324 B** |
+| 2 | 18 432 | 17 408 | 9 216 | 9 216 | 260 | **54 532 B** |
+| 4 | 18 432 | 17 408 | 5 120 | 4 608 | 260 | **45 828 B** |
+
+## What it costs
+
+`U`, `uc_out` and `S_out` split with the columns; `W`, `K` and `gc` are re-read
+by every split. Per (chunk, head), against the 98 560 B the parent moves:
+
+| split | bytes/(chunk, head) | vs parent | implied GB/s at the parent's time |
+|---|---|---|---|
+| 1 | 98 560 | 1.000x | 327 (9.7 % HBM) |
+| 2 | 131 584 | **1.335x** | 437 (13.0 %) |
+| 4 | 197 632 | **2.005x** | 656 (19.6 %) |
+
+Affordable precisely because the kernel is at 9.7 % of HBM — and the reason a
+2-way split cannot be a clean 2×, and the reason 8-way is not compiled (384
+CTAs, three waves, 3.34× the traffic, and a 16-column value tile below the two
+n-tiles Phase A's warp split needs).
+
+## The round-16 prediction
+
+Stated as arithmetic on the idle-SM fraction, not as a promise. At 2-way the
+grid goes 48 → 96 CTAs of 132, so the wave is still one deep and the per-CTA
+work halves; the ceiling is 2×, the duplicated W/K traffic pulls it back, and
+the attribution doc's own lever table scores the idle SMs at **2×**:
+
+| cell | now | predicted | basis |
+|---|---|---|---|
+| `chunk_delta_h` at T=4593 | 52 060 µs | **≈ 26 030 µs** | 2× on 48→96 CTAs (`h100-r13-attribution.md` §A.5 rank 2) |
+| 4593-token prefill GPU busy | 459.8 ms | **≈ 433.8 ms** | **−26.0 ms (−5.7 %)** |
+| `4096x512` C=1 TTFT | 497 ms (494.0 ms span + host) | **≈ 471 ms** | the same −26 ms, one-for-one as in round 13 |
+| 1168-token forward (T1 recipe) | ≈ 118.4 ms (§B.3 projection) | **≈ 111.4 ms** | **≈ −7 ms**, the spine's ≈ 14 ms halved |
+| `1024x256` C=1 TTFT | 162.4 ms | **≈ 155 ms** | the same ≈ −7 ms |
+
+4-way is measured, not predicted: 192 CTAs is 1.45 waves on 132 SMs, so the
+trailing partial wave and 2.005× traffic may take back more than the extra
+parallelism gives. That is exactly the question `ATLAS_GDN_SPINE_VSPLIT=4`
+exists to settle.
+
+**Why the row ships off.** Bit-identity removes the *accuracy* question, not the
+*speed* one, and unlike `ssm_ba_gates_hopper` the worst case here is not a null:
+the twin re-reads W and K, and the same split was **measured a loss** on GB10
+(0.71x / 0.65x / 0.34x at VTILES = 2/4/8) on a 48-SM part where `nv=48` CTAs
+already fill the device. That verdict does not transfer to 132 SMs — which is
+why the lever exists — but a default is a claim about a measurement, and there
+is none yet. `kernels/gb10` and `kernels/b200` declare `1` for the reasons they
+declare every other Hopper row: gb10 has the negative receipt, b200 has none and
+does not even link the source.
+
+## The gates
+
+* `native_gdn_spine_vsplit_hopper_microtest` (H100 only — the entries exist in
+  no other image): **byte equality** of `h`, `uc` and `S_c` against
+  `…_tcfuse_x2` at `T ∈ {256, 1193, 4593}` for both splits, plus ms and
+  TFLOP/s per arm. Not a tolerance — the split reassociates nothing, so
+  anything short of byte equality is a map defect. `S_out`/`uc_out` are poisoned
+  before each run so an unwritten column block cannot inherit a previous arm's
+  bytes, and the KNOWN_BAD control launches the 2-way twin on the **parent's**
+  `grid.y`, leaving half the columns unwritten with every shape and bound still
+  legal.
+* `ops::ssm_gdn_vsplit_tests` (CPU, no GPU): the column-block accumulator and
+  Phase-A maps tile the state exactly once at every split; every padded address
+  stays inside its buffer; the smem model matches the kernel's
+  `static_assert`s; and the split and unsplit index maps, driven in the MMA's
+  `ks` order, agree **bit-for-bit in f64** — with a one-column offset in the `U`
+  read as the negative control.
+* `ops::ssm_gdn_tc_route` pins that the route line names the entry that
+  launches, at the split it launches with.

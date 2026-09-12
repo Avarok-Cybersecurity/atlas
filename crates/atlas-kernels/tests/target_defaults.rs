@@ -132,6 +132,17 @@ fn hopper_declares_the_round_nine_recipe() {
          saving on the cuBLASLt W8A8 arm this target arms, worth 428 us of a \
          19.887 ms step (`ATTN-QKV-FUSION-ATTRIBUTION.md`)"
     );
+    // The row round 15 adds (#928), and the only Hopper row here with NO device
+    // receipt of any kind: 1 = the unsplit spine. The twin is bit-identical by
+    // construction (neither phase of the recurrence contracts over the value
+    // dimension), but bit-identity answers the accuracy question, not the speed
+    // one — each split re-reads the k-space W and K, and the same split was
+    // measured a LOSS on GB10's 48 SMs. Round 16 runs `ATLAS_GDN_SPINE_VSPLIT`.
+    assert_eq!(
+        d.gdn_spine_vsplit, 1,
+        "the value-split spine ships OFF: it has no serving receipt, and a \
+         default is a claim about a measurement"
+    );
     assert_eq!(d.ssm_decode_ring_slots, "auto");
     // The row round 13's attribution added (#928). `auto` is the split count
     // that fills 132 SMs at the single-stream shape; `legacy` is what was
@@ -240,6 +251,11 @@ fn b200_declares_the_conservative_table_not_hoppers() {
          and OFF here for want of one — the same rule, stated on the row that \
          most recently moved"
     );
+    assert_eq!(
+        d.gdn_spine_vsplit, 1,
+        "the value-split spine is Hopper-only source and unmeasured everywhere; \
+         B200 declares the unsplit parent for want of a receipt"
+    );
     assert!(
         !d.ssm_ba_gates_hopper && declared("hopper").ssm_ba_gates_hopper,
         "the BA-gates twin is Hopper-only source; B200's common/ does not link \
@@ -311,6 +327,10 @@ fn a_hopper_only_lever_is_still_declared_by_every_table() {
             // #927. The fifth hopper-only boolean, declared false by gb10 and
             // b200 rather than omitted, for the same reason.
             "attn_qkv_fused",
+            // #928. The sixth hopper-only row, and the first that is not a
+            // bool: gb10 and b200 declare `1` rather than omitting it, so an
+            // absent split and a deliberate unsplit spine cannot look alike.
+            "gdn_spine_vsplit",
             // #917. GB10 caps, hopper and b200 declare u32::MAX. The row is
             // mandatory everywhere for the same reason as the two above: an
             // absent cap and a deliberate no-cap must not look identical.
@@ -414,6 +434,7 @@ fn the_generated_constant_names_every_field() {
         "attn_qkv_fused: true",
         "decode_split_silu: true",
         "ssm_decode_ring_slots: \"auto\"",
+        "gdn_spine_vsplit: 1",
     ] {
         assert!(
             generated.contains(field),
@@ -446,6 +467,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
         declared.gdn_decode_strided_hopper
     );
     assert_eq!(baked.gdn_prefill_tc, declared.gdn_prefill_tc);
+    assert_eq!(baked.gdn_spine_vsplit, declared.gdn_spine_vsplit);
     assert_eq!(baked.ssm_ba_gates_hopper, declared.ssm_ba_gates_hopper);
     assert_eq!(baked.ffn_gateup_fused, declared.ffn_gateup_fused);
     assert_eq!(baked.attn_qkv_fused, declared.attn_qkv_fused);

@@ -196,6 +196,7 @@ pub struct TargetLevers {
     pub gdn_decode_hopper: Resolved<bool>,
     pub gdn_decode_strided_hopper: Resolved<bool>,
     pub gdn_prefill_tc: Resolved<bool>,
+    pub gdn_spine_vsplit: Resolved<u32>,
     pub ssm_ba_gates_hopper: Resolved<bool>,
     pub ffn_gateup_fused: Resolved<bool>,
     pub attn_qkv_fused: Resolved<bool>,
@@ -329,6 +330,21 @@ pub fn resolve(
             var("ATLAS_GDN_PREFILL_TC").as_deref(),
             false,
         ),
+        // CTAs per value head in the tensor-core prefill spine (#928). The
+        // RULE is `ops::resolve_spine_vsplit`, beside the guards that consume
+        // it and the entry names it maps to — the shape `attn_decode_splitk`
+        // takes. This table is the only thing that REPORTS it.
+        gdn_spine_vsplit: {
+            let (split, from_env) = super::resolve_spine_vsplit(
+                defaults.gdn_spine_vsplit,
+                var("ATLAS_GDN_SPINE_VSPLIT").as_deref(),
+            );
+            if from_env {
+                Resolved::env(split)
+            } else {
+                Resolved::target(split)
+            }
+        },
         // The Hopper BA-gates twin (#928). Hopper declares it ON; the twin is
         // BIT-IDENTICAL to its gb10 parent by construction, so unlike every
         // other Hopper-owned row this one carries no accuracy question and no
