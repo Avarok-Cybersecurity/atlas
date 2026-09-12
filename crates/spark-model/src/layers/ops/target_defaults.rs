@@ -167,6 +167,7 @@ pub struct TargetLevers {
     pub hw: &'static str,
     pub lm_head_batchm_max: Resolved<u32>,
     pub ssm_batched_recurrent: Resolved<bool>,
+    pub fp8_act_quant_hopper: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
 }
 
@@ -195,6 +196,20 @@ pub fn resolve(
         ssm_batched_recurrent: resolve_toggle(
             defaults.ssm_batched_recurrent,
             var("ATLAS_SSM_BATCHED_RECURRENT").as_deref(),
+            false,
+        ),
+        // The Hopper FP8 activation-quant twin (#928, round-16 receipt § 2.1).
+        // Hopper declares it ON. The twin is BIT-IDENTICAL to its gb10 parent,
+        // so the row carries no accuracy question and no `ATLAS_NO_*` legacy
+        // spelling — the lever is new, so there is no older script for a
+        // presence rule to keep faith with. It is also not the whole rule: the
+        // twin is 0.76x-0.95x at M <= 25 for K in {5120, 6144}, so it passes a
+        // CTA-count floor (`layers/ops/fp8_act_quant_floor.rs`) before it takes
+        // a launch. `ATLAS_FP8_ACT_QUANT_HOPPER=0` declines the twin at EVERY
+        // width, which is the A/B.
+        fp8_act_quant_hopper: resolve_toggle(
+            defaults.fp8_act_quant_hopper,
+            var("ATLAS_FP8_ACT_QUANT_HOPPER").as_deref(),
             false,
         ),
         // DECLARATION plus the legacy kill switch, and no positive variable:
@@ -247,7 +262,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
     format!(
         "target defaults ({hw}): sm_count={sms} \
          lm_head_batchm_max={batchm}{batchm_src} \
-         ssm_batched_recurrent={recurrent} decode_split_silu={silu}",
+         ssm_batched_recurrent={recurrent} fp8_act_quant_hopper={act_quant} \
+         decode_split_silu={silu}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
         // at boot against the driver. Printed on this line because the levers
@@ -257,6 +273,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         batchm = l.lm_head_batchm_max.value,
         batchm_src = l.lm_head_batchm_max.source.tag(),
         recurrent = onoff(l.ssm_batched_recurrent),
+        act_quant = onoff(l.fp8_act_quant_hopper),
         silu = onoff(l.decode_split_silu),
     )
 }

@@ -89,6 +89,49 @@ lm_head_batchm_max = 8
 # row that used to be `ATLAS_SSM_BATCHED_RECURRENT=1` in a launch script
 # outside this repository.
 ssm_batched_recurrent = true
+# The Hopper FP8 ACTIVATION-QUANT twin (#928, round 16). ON, and behind a
+# WIDTH FLOOR that this row alone does not express — read
+# `crates/spark-model/src/layers/ops/fp8_act_quant_floor.rs` before moving it.
+#
+# `per_token_group_quant_fp8_hopper` gives each 128-element K-group 16 threads
+# of one `uint4` and packs 8 groups into a 128-thread CTA, so the CTA's load is
+# 2 KB against the parent's 256 B, the activation row stays in registers, and
+# the group max is a 16-lane `__shfl_xor_sync` butterfly with no smem and no
+# barrier. BIT-IDENTICAL output: same `amax / 448.0f`, same `1e-12f` floor,
+# same per-element `div.rn.f32`, same saturating `__nv_cvt_float_to_fp8`.
+#
+# WHAT IT BUYS, and WHERE IT COSTS. `native_fp8_act_quant_hopper_microtest`,
+# 1xH100 80GB HBM3, round 16, 15 arms, all bit-identical:
+#
+#   M=4576 K=17408   377.75 us (639.2 GB/s, 19.1% HBM) -> 105.33 us (2292.5, 68.4%)  3.59x
+#   M=4576 K=6144    135.57 us (628.6, 18.8%)          ->  39.38 us (2164.3, 64.6%)  3.44x
+#   M=4576 K=5120    113.47 us (625.9, 18.7%)          ->  33.29 us (2133.4, 63.7%)  3.41x
+#   M=1168 K=5120     30.76 us (589.2, 17.6%)          ->   9.12 us (1986.9, 59.3%)  3.37x
+#   M=25   K=5120      3.20 us                         ->   4.21 us                  0.76x
+#   M=17   K=6144      3.09 us                         ->   3.87 us                  0.80x
+#   M=16   K=5120      3.22 us                         ->   3.84 us                  0.84x
+#   M=16..25 K=17408   3.95-4.67 us                    ->   3.89-4.32 us             1.02-1.08x
+#
+# The parent's standalone 625.9/628.6/639.2 GB/s reproduces round 13's in-engine
+# nsys figure (633/636/641) to 1.1%, so the attribution's anchor is confirmed by
+# two methods on two binaries. The twin reaches 63.7-68.4% of HBM, NOT the 80%
+# the attribution's prediction table was derived from.
+#
+# SIX of the fifteen arms are LOSSES, and they are exactly the decode widths.
+# 8 groups per CTA means 8x fewer CTAs; at M <= 25 the parent's `M x K/128`
+# grid is already under one wave on 132 SMs, so dividing it by 8 removes
+# parallelism that was doing useful work. Round 16 shipped this kernel selected
+# by PRESENCE, with no lever and no floor, so every decode-width W8A8 call took
+# the slower arm. The floor is the fix: the twin takes a launch only when its
+# own grid clears `2 * sm_count` = 264 CTAs, which is `M >= 53` at K=5120,
+# `M >= 44` at K=6144 and `M >= 16` at K=17408 — the sign of all fifteen arms.
+#
+# The kernel is an ADDITION under `[kernels] overrides`, not an override of the
+# gb10 stem: both must be in the image at once, because the bit-equality gate
+# runs on device. gb10 and b200 carry neither this row's `true` nor the source.
+# `ATLAS_FP8_ACT_QUANT_HOPPER=0` is the A/B. Numbers:
+# `FP8-ACT-QUANT-ATTRIBUTION.md`.
+fp8_act_quant_hopper = true
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
 
@@ -128,7 +171,17 @@ decode_split_silu = true
 #                            compare them in one process at
 #                            M in {16,17,25,1168,4576} x K in {5120,6144,17408}.
 #                            gb10 is untouched and keeps launching its own.
-#                            Numbers: `FP8-ACT-QUANT-ATTRIBUTION.md`.
+#                            Selected by kernel presence (`try_kernel` →
+#                            `ops::Fp8ActQuant`) AND by `[defaults]
+#                            fp8_act_quant_hopper` AND by a CTA-count floor.
+#                            Presence alone is what round 16 shipped, and it
+#                            put every DECODE-width call on an arm measured at
+#                            0.76x-0.95x: the two kernels are bit-identical by
+#                            contract, so the lever is a SPEED kill switch and
+#                            not a numeric A/B, and the floor is where the
+#                            width lives. Rule:
+#                            `layers/ops/fp8_act_quant_floor.rs`. Numbers:
+#                            `FP8-ACT-QUANT-ATTRIBUTION.md`.
 [kernels]
 overrides = [
   "fp8_act_quant_hopper.cu",

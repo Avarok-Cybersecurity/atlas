@@ -13,11 +13,18 @@
 //! CTA's load is 2 KB. Its output is BIT-IDENTICAL by contract — see that file
 //! and `native_fp8_act_quant_hopper_microtest`.
 //!
-//! Selected by PRESENCE, not by a lever, and that is the point of this type.
-//! The twin exists only under `kernels/hopper` (`[kernels] overrides`), so on
-//! gb10/b200/strix `try_kernel` misses and the shared kernel runs, exactly as
-//! it does today. There is no numeric A/B to arm because there is no numeric
-//! difference; the control for the GB/s claim is a build without the file.
+//! Selected by PRESENCE **and by WIDTH**. The twin exists only under
+//! `kernels/hopper` (`[kernels] overrides`), so on gb10/b200/strix
+//! `try_kernel` misses and the shared kernel runs. On Hopper the choice is
+//! then `[defaults] fp8_act_quant_hopper` plus a CTA-count floor, because
+//! presence alone shipped a 0.76x-0.95x REGRESSION at every decode width
+//! (round-16 receipt SS 2.1, Recommendation 2). The rule, the per-K
+//! thresholds and the once-per-branch route line live in
+//! `fp8_act_quant_floor.rs`; this file owns the PAIR and the two grids.
+//!
+//! There is still no numeric A/B to arm — the two kernels emit the same bytes
+//! — so `ATLAS_FP8_ACT_QUANT_HOPPER=0` is a SPEED kill switch, and the control
+//! for the GB/s claim remains a build without the file.
 //!
 //! [`Fp8ActQuant`] is a PAIR rather than a single resolved handle because the
 //! two kernels need DIFFERENT grids, and a bare `KernelHandle` cannot say which
@@ -26,6 +33,8 @@
 //! ([`fp8_quant_grid`]), and every layer that holds a quantizer holds this.
 
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
+
+use super::Fp8QuantPick;
 
 /// The shared quantizer's module and entry point — the same string in both
 /// slots, because the file and the kernel share a name.
@@ -87,27 +96,62 @@ impl Fp8ActQuant {
 
     /// Is there a quantizer to launch at all? The replacement for the
     /// `handle.0 != 0` test every W8A8 selector used to spell inline.
+    ///
+    /// EITHER handle, not [`Self::pick`]'s: the pick is width-dependent, and a
+    /// caller asking "is there an FP8 path on this target" is not asking about
+    /// one launch's M.
     pub fn available(&self) -> bool {
-        self.kernel().0 != 0
+        self.shared.0 != 0 || self.hopper.0 != 0
     }
 
-    /// True when the launch will use the Hopper twin.
-    pub fn is_hopper(&self) -> bool {
+    /// Is the twin in this image? PRESENCE, which is a property of the build —
+    /// not "will the next launch use it", which is [`Fp8QuantPick::twin`].
+    pub fn twin_present(&self) -> bool {
         self.hopper.0 != 0
     }
 
-    /// The handle to launch: the twin when present, else the shared kernel.
-    pub fn kernel(&self) -> KernelHandle {
-        if self.is_hopper() {
-            self.hopper
-        } else {
-            self.shared
+    /// Which kernel this `(m, k)` launches, on which grid, and why not the
+    /// other one — the process's resolved lever and the compiled target's SM
+    /// count. See [`Self::pick_with`] for the pure form.
+    pub fn pick(&self, m: u32, k: u32) -> Fp8QuantPick {
+        self.pick_with(
+            super::fp8_act_quant_hopper_enabled(),
+            m,
+            k,
+            atlas_kernels::TARGET_SM_COUNT,
+        )
+    }
+
+    /// [`Self::pick`] over an explicit lever and SM count — pure, so every
+    /// (M, K) the attribution prices is gradeable from a CPU test.
+    pub fn pick_with(&self, requested: bool, m: u32, k: u32, sm_count: u32) -> Fp8QuantPick {
+        let reject = super::fp8_act_quant_hopper_reject(
+            requested,
+            self.twin_present(),
+            self.shared.0 != 0,
+            m,
+            k,
+            sm_count,
+        );
+        let twin = reject.is_none();
+        Fp8QuantPick {
+            kernel: if twin { self.hopper } else { self.shared },
+            grid: fp8_quant_grid(twin, m, k),
+            twin,
+            reject,
+            requested,
         }
     }
 
-    /// The grid for `(m, k)`, matching [`Self::kernel`].
+    /// The handle this `(m, k)` launches.
+    pub fn kernel(&self, m: u32, k: u32) -> KernelHandle {
+        self.pick(m, k).kernel
+    }
+
+    /// The grid for `(m, k)`, matching [`Self::kernel`] — from the SAME pick,
+    /// so a twin handle can never reach the parent's grid.
     pub fn grid(&self, m: u32, k: u32) -> [u32; 3] {
-        fp8_quant_grid(self.is_hopper(), m, k)
+        self.pick(m, k).grid
     }
 }
 
