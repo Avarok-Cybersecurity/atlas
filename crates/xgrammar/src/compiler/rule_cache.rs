@@ -44,6 +44,7 @@
 // keeps the LRU list — which is inherently shared — trivially correct.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::mask::AdaptiveTokenMask;
@@ -101,6 +102,11 @@ struct Inner {
 pub struct RuleLevelCache {
     max_size: usize,
     inner: Arc<Mutex<Inner>>,
+    /// Lifetime lookup outcomes, for the #918 warm-up logging and for
+    /// tests that need a DETERMINISTIC hit/miss oracle rather than a
+    /// wall-clock ratio. `(hits, misses)`.
+    hits: Arc<AtomicU64>,
+    misses: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for RuleLevelCache {
@@ -126,6 +132,8 @@ impl RuleLevelCache {
                 lru: Vec::new(),
                 current_size: 0,
             })),
+            hits: Arc::new(AtomicU64::new(0)),
+            misses: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -133,7 +141,11 @@ impl RuleLevelCache {
     /// on a hit. Port of `RuleLevelCache::GetCache`.
     pub fn get(&self, key: &RuleMaskKey) -> Option<Arc<AdaptiveTokenMask>> {
         let mut inner = self.inner.lock().expect("rule cache mutex poisoned");
-        let idx = *inner.index.get(key)?;
+        let Some(&idx) = inner.index.get(key) else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
+        self.hits.fetch_add(1, Ordering::Relaxed);
         Self::touch(&mut inner, idx);
         // After `touch`, the entry is at the back.
         Some(Arc::clone(&inner.lru[inner.lru.len() - 1].mask))
@@ -194,6 +206,21 @@ impl RuleLevelCache {
         computed
     }
 
+    /// Snapshot every cached entry in LRU order (least-recently-used
+    /// first), for cross-process persistence — see #918 and
+    /// [`super::mask_snapshot`].
+    ///
+    /// Returns clones of the `Arc`s, so the caller can encode the
+    /// masks without holding the cache lock.
+    pub fn entries(&self) -> Vec<(RuleMaskKey, Arc<AdaptiveTokenMask>)> {
+        let inner = self.inner.lock().expect("rule cache mutex poisoned");
+        inner
+            .lru
+            .iter()
+            .map(|e| (e.key, Arc::clone(&e.mask)))
+            .collect()
+    }
+
     /// Drop every cached entry. Port of `RuleLevelCache::ClearCache`.
     pub fn clear(&self) {
         let mut inner = self.inner.lock().expect("rule cache mutex poisoned");
@@ -215,6 +242,16 @@ impl RuleLevelCache {
             .lock()
             .expect("rule cache mutex poisoned")
             .current_size
+    }
+
+    /// Lifetime `(hits, misses)` over [`Self::get`] — the deterministic
+    /// oracle behind the #918 snapshot hit/miss tests. Not reset by
+    /// [`Self::clear`]: they count lookups, not residency.
+    pub fn hit_miss(&self) -> (u64, u64) {
+        (
+            self.hits.load(Ordering::Relaxed),
+            self.misses.load(Ordering::Relaxed),
+        )
     }
 
     /// Number of cached entries — for tests / introspection.

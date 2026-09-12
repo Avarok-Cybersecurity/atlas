@@ -21,6 +21,11 @@ use super::extract_ordered_vocab;
 pub struct GrammarEngine {
     pub(super) compiler: GrammarCompiler,
     vocab_size: usize,
+    /// #918: the on-disk token-mask snapshot this engine loads at
+    /// startup and re-writes as the cross-grammar cache grows. `None`
+    /// until [`Self::attach_mask_cache`] runs, and when persistence is
+    /// switched off. See [`super::mask_cache`].
+    pub(super) snapshot: Option<super::mask_cache::MaskSnapshot>,
 }
 
 // SAFETY: GrammarEngine is initialized on the main thread and moved to the
@@ -152,6 +157,7 @@ impl GrammarEngine {
         Ok(Self {
             compiler,
             vocab_size,
+            snapshot: None,
         })
     }
 
