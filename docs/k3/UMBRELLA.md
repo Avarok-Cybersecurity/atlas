@@ -14,7 +14,7 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | S1 CPU graph in-tree; C1 bind + HF goldens in flight (C0 green) |
+| Phase | **C1 in flight** (until-EOS vs HF). C2–C7 blocked on C1. C0 green. |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
 | Last session | 2026-09-12 |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
@@ -31,14 +31,16 @@ Sheets so far: `docs/k3/rst/s0-fabric-nccl.md`, `s0-5090-sm121.md`, `s0-atlas-se
 
 S7 (rental soak) is forbidden until every box is green. Each box also needs its RST sheet.
 
-- [x] C0 config / factory / weight-name map dry-run (no shard download) — spark2 Linux 9/9 `kimi_k3` + atlas-core parse tests
-- [ ] C1 `Kimi-K3-0.40B` greedy 128 tok × 8 prompts, exact vs HF — first-8 **green**; **46 generated tokens match** then diverge (ours `39058` vs HF `163585` at index 54). Full 128 still red. `docs/k3/rst/c1-engine.md`
-- [ ] C2 prefill-then-decode vs full-prefill logits (atol/rtol in test file)
-- [ ] C3 prefix-cache hit == no-cache decode
-- [ ] C4 MLA KV and KDA state advance on the same positions (incl. after prefix hit)
-- [ ] C5 AttnRes fixture max-abs-err bound
-- [ ] C6 LatentMoE top-k + mix vs frozen gates
-- [ ] C7 production-width dummy TP=2 on spark1+spark2 == spark1 single-GPU tokens
+**Order is the list. Do not start C(n+1) until C(n) is checked.** Synthetic-only tests do not check a box. Twin means `K3_TWIN` + 0.40B BF16 on spark2.
+
+- [x] C0 config / factory / weight-name map dry-run (no shard download) — spark2 Linux `kimi_k3` + atlas-core parse + known-bads
+- [ ] C1 `Kimi-K3-0.40B` greedy, max_new=128, **exact vs HF through first `[EOS]` (163585)** × 8 prompts. Post-EOS tokens are not an oracle (HF loops `[EOS]`). first-8 already matched. spark2 8-prompt until-EOS in flight. `docs/k3/rst/c1-engine.md`
+- [ ] C2 prefill-then-decode vs full-prefill logits on the **C1 twin** (`c2_prefill_decode_logits_match_full_prefill_twin`)
+- [ ] C3 prefix-cache hit == no-cache decode on the **C1 twin** (`c3_prefix_cache_hit_matches_nocache_twin`)
+- [ ] C4 MLA KV + KDA state after prefix hit on the **C1 twin** (`c4_hybrid_state_prefix_hit_matches_cold_prefill_twin`)
+- [ ] C5 AttnRes fixture max-abs-err + twin mix=0 vs mix=1 (`c5_*`)
+- [ ] C6 LatentMoE frozen-gate mix + twin force-expert-0 (`c6_*`)
+- [ ] C7 production-width dummy TP=2 on spark1+spark2 == spark1 single-GPU tokens — **last**
 
 49M `smol-kimi-k3` is shape-only. It does not satisfy C1.
 
