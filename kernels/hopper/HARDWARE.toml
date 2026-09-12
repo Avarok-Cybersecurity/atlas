@@ -89,5 +89,174 @@ lm_head_batchm_max = 8
 # row that used to be `ATLAS_SSM_BATCHED_RECURRENT=1` in a launch script
 # outside this repository.
 ssm_batched_recurrent = true
+# The tensor-core GDN chunked-PREFILL spine (#928). ON, and the largest measured
+# win of the H100 campaign. Round 9 put the scalar spine at 26.6%/32.3% of a
+# 1193/4593-token H100 prefill; the accuracy receipt this row was waiting for
+# arrived with round 13 (2026-09-11, 1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8 @
+# `3c0379030`, `h100-round13-report.md`), cell T1 against cell A on the SAME
+# binary:
+#   * 1193/256 tokens: C=1 TTFT 269.1 -> 162.4 ms (-39.6%) — the first metric in
+#     this campaign where Atlas leads vLLM on this box (162.4 vs 179 ms);
+#     C=16 aggregate 429.05 -> 521.19 tok/s (+21.5%);
+#   * 4593/512 tokens: C=1 TTFT 889.3 -> 491.5 ms (-44.7%); C=16 aggregate
+#     308.86 -> 405.91 tok/s (+31.4%), TTFT 7524.7 -> 4145.5 ms (-44.9%);
+#   * coherency 4/4 on every gate, determinism 8/8 identical over 3 runs, and
+#     the only differences against the control are two cosmetic word choices in
+#     7 coherency prompts ("we can" -> "you can", "Thus" -> "Therefore");
+#   * numerics are gated on GB10 by `native_gdn_chunk_prefill_microtest`: the
+#     shipped `_x2` arm reproduces the scalar spine's `uc`/`S_c` to four digits
+#     (rel_rms 1.6721e-3 on both at T=4593), holds the f32 state at 3.9e-6 with
+#     `cosine=1.000000000`, drift BOUNDED, KNOWN_BAD refused at all three T.
+# The kernel was developed and validated on GB10 and is arch-neutral; it is
+# declared in this target's `[kernels] overrides` rather than in the shared tree
+# only because rule S1 refuses new cross-hardware symlinks. See that entry.
+# `ATLAS_GDN_PREFILL_TC=0` turns the whole family off, which is how the A/B is
+# re-run now that the positive arm is the default.
+#
+# It is a FAMILY lever: it also selects the two Hopper prefill remnant twins
+# declared below (`gdn_recompute_wu_hopper.cu`, `gdn_fwd_o_hopper.cu`), because
+# the three kernels are one pipeline. `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` is
+# the one-variable A/B that keeps the spine and pins those two to their
+# parents; it is the ONLY way to run them apart, and round 13 ran it: cell T2
+# isolates the twins at -12.1%/-13.0% of C=1 TTFT on the two shapes
+# (184.7 -> 162.4 ms and 565.0 -> 491.5 ms). nsys on the same two cells prices
+# them per kernel at T=4593 — `chunk_fwd_o_hopper` 4.28x (71 548 -> 16 716 us),
+# `recompute_wu_hopper` 1.60x (47 389 -> 29 558 us) — with the SHARED spine
+# kernel as the internal control at 0.99x (51 775 vs 52 060 us), so the -71.7 ms
+# of prefill GPU busy is accounted for by the twins' -72.4 ms and by nothing
+# else. Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
+#
+# HOPPER ONLY. gb10 and b200 keep `false`: no target but this one has a serving
+# receipt for the family, and b200 must not inherit a Hopper recipe by
+# resemblance (`tests/target_defaults.rs`).
+gdn_prefill_tc = true
+# The Hopper BA-gates twin (#928, `ssm_ba_gates_hopper.cu` below). ON, and
+# BIT-IDENTICAL to its gb10 parent by construction, so this row is a pure speed
+# claim with no accuracy question attached — the microtest
+# `native_ssm_ba_gates_hopper_microtest` asserts byte equality of `gate` and
+# `beta` at M in {17, 25, 1168, 4576}, not a tolerance.
+#
+# WHAT IT FIXES. `dense_gemm_ba_gates_prefill` launches `ceil(N/4)` CTAs per
+# token and each one walks that token's entire `K=5120` activation row for the
+# four BA outputs it owns — and each of those four sweeps the WHOLE row, because
+# the CTA's 256 threads are four 64-lane groups, one per output. At
+# `N = ssm_ba_size = 2*nv = 96` that is 24 CTAs per token and **96 reads and 96
+# conversions of each activation row**, one per BA output. nsys, 1xH100 80GB
+# HBM3, Qwen/Qwen3.8-27B-FP8 @ `815c9f160`, round 13 cell T1
+# (`h100-r13-attribution.md` SS A.3/A.4): 26 881.8 us = 5.85% of the 4593-token
+# prefill, 555.04 us per launch at M=4576, observed grid `(24, 4576)`, 88 GB/s
+# of compulsory traffic — 2.6% of HBM, i.e. nowhere near a bandwidth bound. The
+# twin is one CTA per token and one A fetch per 8 outputs, so the row is read 12
+# times instead of 96; SASS on sm_90a puts the launch at ~1.8x fewer
+# instructions for the same bits.
+#
+# THE SERVING RECEIPT. Round 15 (1xH100 80GB HBM3, tip `8a6f50b61`) ran cell B0
+# (`ATLAS_SSM_BA_GATES_HOPPER=0`) against cell A15 (auto) on one binary, one
+# variable: C=1 TTFT 498.2 -> 489.7 ms on 4096x512 (-8.5 ms) and 162.7 -> 160.5
+# on 1024x256 (-2.2 ms), both inside the range round 14 predicted from
+# instruction-issue counts (-7.9, band -6.0..-9.7, and -2.1). TPOT is identical
+# to the hundredth of a millisecond on both shapes — the token-count guard
+# keeping decode on the parent, exactly as designed. Two independent methods
+# price the kernel itself within 0.35%: nsys 372.86 us per M=4576 launch, the
+# microtest 371.56 us against the parent's 545.20 there and 555 in round 13's
+# live trace, i.e. 0.67x; over 48 launches that is 8.74 ms against the 8.5 ms
+# serve delta. Byte equality holds at every M (`out_diff=0`, `max_abs=0.000e0`,
+# the one-ulp KNOWN_BAD control refused), and A15/B0 are md5-identical on all
+# seven coherency exchanges. The roofline "60% of HBM" target in earlier notes
+# does NOT apply to this kernel: it is issue-bound, so the honest figure is
+# ~8 ms rather than ~26. `ATLAS_SSM_BA_GATES_HOPPER=0` is the one-variable A/B
+# that pins the parent.
+#
+# The launcher declines the twin below `2 * SM count` tokens and keeps the
+# parent: at one CTA per token a 16-row decode step would occupy 16 SMs of 132,
+# and this kernel is on the BATCHED DECODE path too (nsys round 13 SS C.2:
+# 227.5 us/step at n=16). That guard is `ops::ssm_ba_gates_hopper_reject`, and
+# it is why this row does not put the decode step at risk.
+ssm_ba_gates_hopper = true
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+
+# ── The `common/` entries this target OWNS rather than inherits ──────────────
+#
+# The SSOT for "which kernels does Hopper tune for itself", read by the build,
+# by `scripts/check_kernel_shadows.py`, and by
+# `crates/atlas-kernels/tests/inherited_targets.rs`. Two SHAPES live in the one
+# list and they are checked differently:
+#
+#   * an OVERRIDE replaces a gb10 namesake — same entry points, this hardware's
+#     instruction selection — and must leave gb10's own file alone, because
+#     other targets compile it;
+#   * an ADDITION has a stem gb10 does not have at all, and must bring entry
+#     points gb10 does not declare, so that no target ever compiles two
+#     definitions of one kernel name.
+#
+# Every entry below is an ADDITION.
+#
+#   gated_delta_rule_chunk_tc.cu  The tensor-core GDN chunked-PREFILL state
+#                            spine (#928) — `chunk_delta_h_tcfuse_x2`, the
+#                            k-reduction moved into the MMA tree. An ADDITION:
+#                            its parent `chunk_delta_h_vfused` lives in
+#                            `common/gated_delta_rule_fla.cu` beside thirteen
+#                            other entry points, so a same-stem override would
+#                            fork all of them.
+#
+#                            DEVELOPED AND VALIDATED ON GB10, and it is
+#                            arch-neutral — no `__CUDA_ARCH__` arm and one MMA
+#                            shape, `m16n8k16 f32.bf16.bf16.f32`, which is
+#                            sm_80+. It lives HERE rather than in
+#                            `kernels/gb10/common` only because this repository
+#                            refuses to create a new cross-hardware symlink
+#                            (`check_cross_hardware.py` rule S1): a file in the
+#                            gb10 tree is mirrored into hopper and b200 by
+#                            `every_inherited_common_mirrors_every_gb10_common_file`,
+#                            and new SHARING is a decision that must be made
+#                            deliberately rather than inherited from a mirror.
+#                            The consequence is stated plainly: GB10 no longer
+#                            compiles this kernel, so its `gdn_prefill_tc` row
+#                            is inert and `native_gdn_chunk_prefill_microtest`
+#                            skips on a GB10 image. A GB10 receipt moves the
+#                            file down and adds the two mirror links in one
+#                            commit. Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
+#
+#   gdn_recompute_wu_hopper.cu  The two SCALAR REMNANTS of the chunked PREFILL
+#   gdn_fwd_o_hopper.cu         (#928) on tensor cores: `wu`'s two forward
+#                            substitutions and `fwd_o`'s triangular
+#                            `tril(kq).uc`. ADDITIONS rather than overrides
+#                            because their parents live in
+#                            `common/gated_delta_rule_fla.cu`, which NO model
+#                            directory shadows, so a same-stem override there
+#                            WOULD compile. That file is 2105 lines declaring
+#                            fourteen entry points, of which these replace two:
+#                            a whole-file override is whole-file and would fork
+#                            the other twelve, which is the shadow-drift class
+#                            `build.rs` reports. New stems with new entry names
+#                            fork nothing, and the launcher picks parent or twin
+#                            by kernel presence under `[defaults]
+#                            gdn_prefill_tc`. Reached only under that row.
+#                            Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
+#   gdn_prefill_hopper.cuh   Their shared operand machinery — the padded smem
+#                            strides and the MMA fragment maps both twins read.
+#                            No gb10 counterpart by design: it is the shared
+#                            inner loop of the two `.cu` additions above and
+#                            nothing else includes it.
+#
+#   ssm_ba_gates_hopper.cu   The SSM BA projection + GDN gate transforms with
+#                            ONE CTA per token (#928). An ADDITION for a third
+#                            distinct reason: its parent
+#                            `dense_gemm_ba_gates_prefill` lives in
+#                            `common/ssm_preprocess.cu` beside two other entry
+#                            points that GB10 and four other targets compile,
+#                            so a same-stem override would fork those two as
+#                            well. A new stem with a new entry name forks
+#                            nothing, and `ops::ssm_ba_gates_pick` selects
+#                            parent or twin by kernel presence under
+#                            `[defaults] ssm_ba_gates_hopper` plus a token-count
+#                            guard. Numbers: `SSM-BA-GATES-ATTRIBUTION.md`.
+[kernels]
+overrides = [
+  "gated_delta_rule_chunk_tc.cu",
+  "gdn_fwd_o_hopper.cu",
+  "gdn_prefill_hopper.cuh",
+  "gdn_recompute_wu_hopper.cu",
+  "ssm_ba_gates_hopper.cu",
+]

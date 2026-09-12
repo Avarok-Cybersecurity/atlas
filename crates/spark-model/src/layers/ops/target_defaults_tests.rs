@@ -29,19 +29,24 @@ const GB10: TargetDefaults = TargetDefaults {
     hw: "gb10",
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: false,
+    gdn_prefill_tc: false,
+    ssm_ba_gates_hopper: false,
     decode_split_silu: true,
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]`.
 ///
-/// One row differs from GB10's: the batched GDN recurrence, ON, on a Hopper
-/// receipt (+6% on the serve, md5-identical output to the per-sequence
-/// launches). The head band deliberately holds at the frozen 8 — see
-/// `atlas-kernels/tests/target_defaults.rs`.
+/// Three rows differ from GB10's, each on its own Hopper receipt: the batched
+/// GDN recurrence (ON, +6% on the serve, md5-identical output to the
+/// per-sequence launches), `gdn_prefill_tc`, which round 13 added, and
+/// `ssm_ba_gates_hopper`, which round 14 did. The head band deliberately holds
+/// at the frozen 8 — see `atlas-kernels/tests/target_defaults.rs`.
 const HOPPER: TargetDefaults = TargetDefaults {
     hw: "hopper",
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: true,
+    gdn_prefill_tc: true,
+    ssm_ba_gates_hopper: true,
     decode_split_silu: true,
 };
 
@@ -80,7 +85,24 @@ fn hopper_resolves_its_recipe_from_an_empty_environment() {
          TARGET — an ` (env)` tag here would mean the log credits a prefix \
          nobody typed"
     );
+    assert!(
+        l.gdn_prefill_tc.value,
+        "round 13: the tensor-core GDN prefill family is the H100 default — \
+         C=1 TTFT -39.6%/-44.7%, C=16 aggregate +21.5%/+31.4%, coherency 4/4, \
+         determinism 8/8 x 3"
+    );
+    assert!(
+        l.ssm_ba_gates_hopper.value,
+        "the BA-gates twin is bit-identical to its parent, so it ships on: its \
+         worst case is a null and off it re-reads every activation row 96 \
+         times, once per BA output"
+    );
     assert!(l.decode_split_silu.value);
+    assert!(
+        l.ssm_ba_gates_hopper.value,
+        "round 14: the BA-gates twin is bit-identical to its parent, so it is \
+         on without an accuracy receipt and its worst case is a null"
+    );
     assert_eq!(l.lm_head_batchm_max.value, 8);
     assert_eq!(l.hw, "hopper");
 }
@@ -95,6 +117,18 @@ fn gb10_with_an_empty_environment_is_todays_behaviour() {
     let l = empty(&GB10);
     assert_eq!(l.lm_head_batchm_max.value, DENSE_GEMV_BATCHM_DECODE_MAX_M);
     assert!(!l.ssm_batched_recurrent.value);
+    assert!(
+        !l.gdn_prefill_tc.value,
+        "the scalar GDN prefill spine stays GB10's default. Round 13 promoted \
+         the tensor-core family on HOPPER, on an H100 receipt; a 48-SM GB10 is \
+         the part the 48-CTA grid nearly fills, so that number does not \
+         transfer by argument and this row waits for a GB10 A/B"
+    );
+    assert!(
+        !l.ssm_ba_gates_hopper.value,
+        "GB10 does not compile the twin at all — the row is declared so the \
+         lever list is one list, not to change anything"
+    );
     assert!(l.decode_split_silu.value);
     for source in [
         l.lm_head_batchm_max.source,
@@ -140,6 +174,31 @@ fn a_declared_off_lever_is_still_armed_by_the_bare_one() {
     let l = with(&GB10, &[("ATLAS_SSM_BATCHED_RECURRENT", "1")]);
     assert!(l.ssm_batched_recurrent.value);
     assert!(l.ssm_batched_recurrent.from_env());
+}
+
+/// ⚠️ THE POLARITY CHANGE. `ATLAS_GDN_PREFILL_TC` was PRESENCE-gated, so
+/// `=0` used to arm the tensor-core spine; under the 2026-09-11 grammar it
+/// disarms it. Every recipe that ever set this variable set it to `1`
+/// (`GDN-PREFILL-ATTRIBUTION.md`'s A/B), so no existing recipe changes
+/// meaning — but a `=0` that silently re-armed the arm would be an accuracy
+/// change nobody typed, which is what this pins. Since round 13 flipped
+/// `kernels/hopper` to true this spelling is also the FAMILY kill switch —
+/// spine and both remnant twins, which read the same resolved bit
+/// (`ssm_gdn_remnants_tests::the_twins_read_the_spines_resolved_lever`).
+#[test]
+fn the_tensor_core_prefill_spine_reads_zero_as_off_not_as_present() {
+    for off in ["0", "false", "off", "no", "OFF", " 0 "] {
+        let l = with(&GB10, &[("ATLAS_GDN_PREFILL_TC", off)]);
+        assert!(
+            !l.gdn_prefill_tc.value,
+            "`{off}` must disarm the spine, not arm it by being present"
+        );
+        assert!(l.gdn_prefill_tc.from_env());
+    }
+    // …and the bare `=1` the A/B recipes use still arms it.
+    let on = with(&GB10, &[("ATLAS_GDN_PREFILL_TC", "1")]);
+    assert!(on.gdn_prefill_tc.value);
+    assert!(on.gdn_prefill_tc.from_env());
 }
 
 /// The legacy PRESENCE kill switch is unchanged and outranks the declaration.
@@ -201,6 +260,8 @@ fn the_summary_line_names_every_lever_and_flags_the_environment() {
         "sm_count=",
         "lm_head_batchm_max=12 (env)",
         "ssm_batched_recurrent=on",
+        "gdn_prefill_tc=on",
+        "ssm_ba_gates_hopper=on",
         "decode_split_silu=on",
     ] {
         assert!(line.contains(field), "missing `{field}` in:\n{line}");

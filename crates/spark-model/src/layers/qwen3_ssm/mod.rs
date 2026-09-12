@@ -183,6 +183,21 @@ pub struct Qwen3SsmLayer {
     /// chunk_delta_h_ksplit (k-split occupancy) → chunk_fwd_o. 1.75x vs wy4 @16k,
     /// token-equal (cos=1.0 vs scalar). Three handles; all must be non-null.
     gdn_prefill_fla_recompute_wu_k: KernelHandle,
+    /// Hopper twins of the two SCALAR REMNANTS of the FLA prefill (#928):
+    /// `gdn_recompute_wu_hopper.cu`'s blocked triangular solve on tensor cores
+    /// and `gdn_fwd_o_hopper.cu`'s masked `tril(kq).uc` square. They live only
+    /// under `kernels/hopper`, so `try_kernel` gives 0 everywhere else and the
+    /// launcher then runs the unchanged parents. Selected by the family lever
+    /// `[defaults] gdn_prefill_tc` (`ATLAS_GDN_PREFILL_TC` overriding), which
+    /// Hopper ships ON since round 13; `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` pins them
+    /// off while keeping the tensor-core state spine, which is the A/B that
+    /// separates the three kernels. The nsys receipt that motivates them is in
+    /// `GDN-PREFILL-ATTRIBUTION.md`: 5.5% and 4.0% of a 1193-token H100
+    /// prefill, both with their big matmuls already on `mma.sync` and their
+    /// remainder — a triangular product on 128 of 512 threads, and two forward
+    /// substitutions worth 79-85% of their kernel — still scalar.
+    gdn_prefill_fla_recompute_wu_hopper_k: KernelHandle,
+    gdn_prefill_fla_chunk_fwd_o_hopper_k: KernelHandle,
     gdn_prefill_fla_chunk_delta_h_k: KernelHandle,
     /// Tensor-core / DV-block-split variant of the FLA chunk_delta_h spine
     /// (`gated_delta_rule_chunk_delta_h_tc_vblock`). Loaded by default but not
@@ -190,6 +205,19 @@ pub struct Qwen3SsmLayer {
     /// isolation first. `allow(dead_code)` until the launch site reads it.
     #[allow(dead_code)]
     gdn_prefill_fla_chunk_delta_h_tc_vblock_k: KernelHandle,
+    /// TENSOR-CORE chunked-prefill state spine
+    /// (`gated_delta_rule_chunk_tc::gated_delta_rule_chunk_delta_h_tcfuse`),
+    /// behind `[defaults] gdn_prefill_tc` — ON for `kernels/hopper` since round
+    /// 13, OFF elsewhere, with `ATLAS_GDN_PREFILL_TC` overriding either way.
+    /// Both per-chunk
+    /// products run on `mma.sync.m16n8k16` with bf16 operands and an f32
+    /// accumulator that IS the recurrent state; `h` stays f32 in memory. The
+    /// nsys receipt that motivates it is in `GDN-PREFILL-ATTRIBUTION.md`
+    /// (#928): the shipped scalar spine is 26.6%/32.3% of the 1193/4593-token
+    /// H100 prefill at 3.7 TFLOP/s, i.e. latency-bound at 4.5% warp residency.
+    /// `try_kernel` => 0 on images without it, and the launcher additionally
+    /// refuses any head/chunk that differs from the compile-time tile.
+    gdn_prefill_fla_chunk_delta_h_tcfuse_k: KernelHandle,
     /// Warp-dense fused GDN state spine (`gated_delta_rule_chunk_delta_h_vtile`).
     /// 512 threads = 16 warps/CTA against ksplit's 8, with the SAME grid (one CTA
     /// per head) so `W`/`K` global loads are not duplicated — an ncu profile put
@@ -219,6 +247,12 @@ pub struct Qwen3SsmLayer {
     gdn_prefill_split4_batched_k: KernelHandle,
     compute_gdn_gates_k: KernelHandle,
     ba_gates_prefill_k: KernelHandle,
+    /// Hopper twin of `ba_gates_prefill_k`
+    /// (`ssm_ba_gates_hopper::dense_gemm_ba_gates_prefill_hopper`, #928): one
+    /// CTA per token instead of `ceil(N/4)`, bit-identical output. Null on
+    /// every target but hopper, and declined below the token-count floor —
+    /// `ops::ba_gates_pick` owns both rules.
+    ba_gates_prefill_hopper_k: KernelHandle,
     // Kernels — prefill (multi-token sequential)
     conv1d_prefill_k: KernelHandle,
     /// Token-parallel prefill conv1d (`causal_conv1d_update_prefill_tp`).

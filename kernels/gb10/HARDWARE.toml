@@ -50,5 +50,38 @@ lm_head_batchm_max = 8
 # One strided recurrent launch per batch on the GDN decode path. No GB10
 # receipt; unchanged from main.
 ssm_batched_recurrent = false
+# The tensor-core GDN chunked-PREFILL spine (#928). OFF, and INERT here: the
+# kernel is `kernels/hopper/common/gated_delta_rule_chunk_tc.cu`, declared in
+# that target's `[kernels] overrides`, and GB10's build does not compile it — so
+# the probe returns `KernelHandle(0)` and the launcher stays on the scalar
+# parent `gated_delta_rule_fla::chunk_delta_h_vfused` whatever this row says.
+# Declared anyway because the lever list is one list.
+#
+# It was DEVELOPED AND VALIDATED HERE, on GB10, and it is arch-neutral; it sits
+# in the Hopper tree only because a file in `kernels/gb10/common` is mirrored
+# into hopper and b200 by symlink, and `check_cross_hardware.py` rule S1
+# refuses to create new cross-hardware symlinks. Two things would move it back
+# down, in one commit: a GB10 A/B receipt, and the two mirror links.
+#
+# The standing reason this row would stay false even then: the arm reassociates
+# the k-reduction into the MMA tree, and this kernel's lesson is that a spine
+# change can read cos=1.0000 and still cost 1.4 BFCL points, so promotion needs
+# the ssm-poisoning tripwire. HOPPER ships it ON (round 13, -39.6%/-44.7% C=1
+# TTFT, coherency 4/4, determinism 8/8 x 3), and that is an H100 receipt: a
+# 48-SM GB10 is the part the 48-CTA grid nearly fills, so the margin does not
+# transfer by argument.
+gdn_prefill_tc = false
+# The Hopper BA-gates twin (#928). OFF, and INERT here: the kernel lives in
+# `kernels/hopper/common/ssm_ba_gates_hopper.cu`, which GB10's tree does not
+# carry and GB10's build does not compile, so the probe returns
+# `KernelHandle(0)` and the launcher stays on the gb10 parent
+# `ssm_preprocess::dense_gemm_ba_gates_prefill` whatever this row says.
+# Declared anyway, for the same reason every other row here is: the lever list
+# is one list, and a row present in one target's table and missing from
+# another's is how a lever comes to mean two things in one repository. The twin is bit-identical to that parent, so a GB10 receipt could
+# move this row on speed alone — but the parent's 24-CTAs-per-token grid is a
+# much better fit for a 48-SM part than for a 132-SM H100, and there is no GB10
+# A/B. See `kernels/hopper/HARDWARE.toml` and `SSM-BA-GATES-ATTRIBUTION.md`.
+ssm_ba_gates_hopper = false
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true

@@ -15,6 +15,58 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight}
 
 use super::*;
 
+/// The tensor-core spine's compile-time tile: `K_DIM == V_DIM` in
+/// `kernels/hopper/common/gated_delta_rule_chunk_tc.cu`.
+pub(crate) const GDN_TC_DIM: u32 = 128;
+/// That kernel's `CHUNK`.
+pub(crate) const GDN_TC_CHUNK: u32 = 64;
+/// SSOT mirror of `TCF_SMEM` in the same file:
+///   St[128][136] + Wp[64][136] + Up[64][136] + ducT[128][72] + dec[65] f32
+///   = 34816 + 17408 + 17408 + 18432 + 260 = 88 324 B.
+/// The padded 136/72 row strides are what make the MMA fragment reads
+/// bank-conflict-free; under-sizing this reads a tile out of bounds, so the
+/// launcher and the kernel must not be able to disagree about it.
+pub(crate) const GDN_TC_SMEM: u32 = GDN_TC_DIM * 136 * 2
+    + 2 * (GDN_TC_CHUNK * 136 * 2)
+    + GDN_TC_DIM * 72 * 2
+    + (GDN_TC_CHUNK + 1) * 4;
+
+/// Why the `ATLAS_GDN_PREFILL_TC` spine is NOT running — `None` means it is.
+///
+/// Pure so the grammar is testable without a GPU or the process environment.
+/// NAME THE GUARD THAT REJECTED: a perf path that asks to be enabled and
+/// silently is not measures as "no effect" (PR #296 shipped exactly that, an
+/// ldmatrix GEMM that fell back with no error while both gates stayed green).
+///
+/// The tile guards are not defensive padding. The kernel's descriptors, smem
+/// layout and fragment maps are all compile-time 128/128/64, and its K staging
+/// reads 16 bytes at a time, so a narrower head or an odd `qk_stride` would
+/// load the wrong columns or fault rather than run slowly.
+pub(crate) fn gdn_tc_spine_reject(
+    requested: bool,
+    kernel_present: bool,
+    k_dim: u32,
+    v_dim: u32,
+    chunk: u32,
+    qk_stride: u32,
+) -> Option<&'static str> {
+    if !requested {
+        Some("not requested")
+    } else if !kernel_present {
+        Some("kernel absent from this image")
+    } else if k_dim != GDN_TC_DIM || v_dim != GDN_TC_DIM || chunk != GDN_TC_CHUNK {
+        Some("head/chunk differs from the compile-time tile (K_DIM=V_DIM=128, CHUNK=64)")
+    } else if !qk_stride.is_multiple_of(8) {
+        Some("qk_stride is not a multiple of 8 (the K staging uses 16-byte vector loads)")
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+#[path = "ssm_gdn_tc_tests.rs"]
+mod ssm_gdn_tc_tests;
+
 /// FLA multi-kernel chunked GDN prefill (`ATLAS_GDN_FLA=1`).
 ///
 /// Three sequential launches on `stream` (CPU-serialized → no GPU sync needed):
@@ -33,11 +85,20 @@ use super::*;
 pub fn gdn_prefill_fla(
     gpu: &dyn GpuBackend,
     k_recompute_wu: KernelHandle,
+    // Hopper twins of kernels 1 and 3 (#928), KernelHandle(0) off that target.
+    // Selection grammar and footprints: ops::ssm_gdn_hopper_prefill.
+    k_recompute_wu_hopper: KernelHandle,
+    k_chunk_fwd_o_hopper: KernelHandle,
     k_chunk_delta_h: KernelHandle,
     // wmma + DV-block-split spine (gated_delta_rule_chunk_delta_h_tc_vblock). When
     // non-zero AND ATLAS_GDN_TC_VBLOCK=1, replaces the scalar ksplit spine (drop-in
     // ABI; grid y = batch·num_dv_blocks, smem 81KB vs 97KB). KernelHandle(0) = off.
     k_chunk_delta_h_tc_vblock: KernelHandle,
+    // TENSOR-CORE spine (gated_delta_rule_chunk_delta_h_tcfuse), behind
+    // ATLAS_GDN_PREFILL_TC (presence, default OFF). Drop-in ABI == the fused
+    // spine; grid [nv, batch] and block 256 are unchanged, only the smem
+    // footprint differs. KernelHandle(0) = absent from this image.
+    k_chunk_delta_h_tcfuse: KernelHandle,
     k_chunk_delta_h_fused: KernelHandle,
     k_chunk_delta_h_tma: KernelHandle,
     k_chunk_fwd_o: KernelHandle,
@@ -102,11 +163,30 @@ pub fn gdn_prefill_fla(
         };
     }
 
-    // Kernel 1: recompute_wu.
-    KernelLaunch::new(gpu, k_recompute_wu)
+    // The TC prefill FAMILY lever, resolved ONCE for the three kernels it picks:
+    // the twins here and the state spine below. `[defaults] gdn_prefill_tc`,
+    // `ATLAS_GDN_PREFILL_TC` overriding — a VALUE, not a presence check, so `=0`
+    // turns the family off. `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` is the A/B that
+    // keeps the spine and pins these two to their parents.
+    let tc_requested = super::target_defaults::resolved().gdn_prefill_tc.value;
+    let (wu, fo) = gdn_hopper_remnants(
+        tc_requested,
+        k_recompute_wu,
+        smem_wu,
+        k_chunk_fwd_o,
+        smem_fo,
+        k_recompute_wu_hopper,
+        k_chunk_fwd_o_hopper,
+        kd,
+        vd,
+        C,
+    );
+
+    // Kernel 1: recompute_wu, or its Hopper twin.
+    KernelLaunch::new(gpu, wu.kernel)
         .grid([num_chunks, num_v_heads, batch_size])
-        .block([256, 1, 1])
-        .shared_mem(smem_wu)
+        .block([wu.block, 1, 1])
+        .shared_mem(wu.smem)
         .arg_ptr(key)
         .arg_ptr(value)
         .arg_ptr(gate)
@@ -193,6 +273,59 @@ pub fn gdn_prefill_fla(
         Some("1") if !pipe => 512u32, // SPLIT=4 build
         _ => 256u32,                  // SPLIT=2 build (default, and the pipe build)
     };
+    // ── TENSOR-CORE spine (`[defaults] gdn_prefill_tc`, false everywhere) ────
+    //
+    // WHY, in one receipt (full derivation in GDN-PREFILL-ATTRIBUTION.md): on
+    // 1xH100 / Qwen3.8-27B-FP8, nsys round 9 (2026-09-11) put
+    // `gated_delta_rule_chunk_delta_h_vfused` at 97.8 ms of a 368.3 ms
+    // 1193-token prefill (26.6%) and 376.1 ms of a 1163.5 ms 4593-token prefill
+    // (32.3%) across 96 launches — 3.75 / 3.70 TFLOP/s and 94 / 89 GB/s, i.e.
+    // 5.6% of FP32 peak, 2.7% of HBM and 0.38% of bf16 tensor-core peak with
+    // ZERO mma instructions issued. Its per-chunk cost is FLAT in T (53.6 us at
+    // 19 chunks, 54.4 us at 72) at ~95 000 cycles against a one-SM FP32 floor of
+    // 16 384, so it is latency-bound on the 64-deep dependent FMA chain, not
+    // bandwidth- or FLOP-bound. Its two siblings in the same file, whose big
+    // matmuls are already on mma.sync, run at 16-17 and 12-14.5 TFLOP/s.
+    //
+    // This arm puts BOTH per-chunk products on mma.sync.m16n8k16 (bf16 operands,
+    // f32 accumulate). The recurrent state never leaves the f32 accumulator and
+    // the decay math stays exact f32; S_c and duc are newly rounded to bf16 as
+    // MMA operands, and the k-reduction is reassociated into the MMA tree. That
+    // is why this is OPT-IN: the campaign's standing lesson on this exact kernel
+    // is that a spine change can read cos=1.0000 and still cost 1.4 BFCL points
+    // (see the SPLIT=4 note in ssm_gdn_a3's kernel-2 comment), so promotion needs
+    // the ssm-poisoning tripwire, not a cosine.
+    //
+    // The enable bit comes from the COMPILED TARGET's `[defaults] gdn_prefill_tc`
+    // with `ATLAS_GDN_PREFILL_TC` overriding, the same rung as every other
+    // lever (`layers::ops::target_defaults`). Every target declares it false, so
+    // this is opt-in everywhere today; the row exists so the reason is written
+    // down beside the arch it applies to, and so `init.rs` can gate the PROBE on
+    // the same bit that launches the kernel.
+    //
+    // NAME THE GUARD THAT REJECTED — a perf path that asks to be enabled and
+    // silently is not measures as "no effect" (PR #296 shipped exactly that).
+    let smem_tcfuse = GDN_TC_SMEM;
+    let tc_reject = gdn_tc_spine_reject(
+        tc_requested,
+        k_chunk_delta_h_tcfuse.0 != 0,
+        kd,
+        vd,
+        C,
+        qk_stride,
+    );
+    if tc_requested && let Some(why) = tc_reject {
+        tracing::warn!("ATLAS_GDN_PREFILL_TC set but the tensor-core spine is NOT running: {why}");
+    }
+    let tc_ok = tc_reject.is_none();
+    if tc_ok {
+        // `ssm_gdn_tc_route`: built from the SAME constant `init_kernels`
+        // binds the handle with (round 12 caught this line naming the family).
+        tracing::info!(
+            "{}",
+            gdn_tc_spine_route_line(num_v_heads, batch_size, smem_tcfuse)
+        );
+    }
     // ── TMA path (ATLAS_GDN_TMA=1) ───────────────────────────────────────────
     // Every precondition is CHECKED, not assumed. The descriptors are encoded
     // from the compile-time tile (K_DIM/V_DIM = 128, CHUNK = 64), so a runtime
@@ -208,6 +341,11 @@ pub fn gdn_prefill_fla(
     // env set, fell back to `vfused`, and the two arms differed by noise.
     let tma_reject: Option<&str> = if !tma_requested {
         Some("not requested")
+    } else if tc_ok {
+        // Both levers are set: TMA yields, because ATLAS_GDN_PREFILL_TC is the
+        // one with a numerics contract to measure. Say so rather than silently
+        // running one of the two.
+        Some("ATLAS_GDN_PREFILL_TC is active and takes precedence")
     } else if k_chunk_delta_h_tma.0 == 0 {
         Some("kernel absent from this image")
     } else if is_varlen {
@@ -281,7 +419,9 @@ pub fn gdn_prefill_fla(
     // Kernel 2 (non-TMA). Both paths write s_out/uc_out and fall through to
     // kernel 3, which is identical either way.
     if !tma_ok {
-        let (k_cdh, cdh_grid_y, cdh_smem, cdh_block) = if use_fused {
+        let (k_cdh, cdh_grid_y, cdh_smem, cdh_block) = if tc_ok {
+            (k_chunk_delta_h_tcfuse, batch_size, smem_tcfuse, 256u32)
+        } else if use_fused {
             (k_chunk_delta_h_fused, batch_size, smem_fused, fused_block)
         } else if use_tcvb {
             (
@@ -322,11 +462,11 @@ pub fn gdn_prefill_fla(
         prof!("gdn_fla_chunk_delta_h", &mut t0);
     }
 
-    // Kernel 3: chunk_fwd_o.
-    KernelLaunch::new(gpu, k_chunk_fwd_o)
+    // Kernel 3: chunk_fwd_o, or its Hopper twin.
+    KernelLaunch::new(gpu, fo.kernel)
         .grid([num_chunks, num_v_heads, batch_size])
-        .block([512, 1, 1])
-        .shared_mem(smem_fo)
+        .block([fo.block, 1, 1])
+        .shared_mem(fo.smem)
         .arg_ptr(query)
         .arg_ptr(key)
         .arg_ptr(gate)

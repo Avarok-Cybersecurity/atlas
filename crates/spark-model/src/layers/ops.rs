@@ -142,6 +142,8 @@ mod qsa;
 mod quant_dispatch;
 #[path = "ops/sampling.rs"]
 mod sampling;
+#[path = "ops/ssm_ba_gates_hopper.rs"]
+mod ssm_ba_gates_hopper;
 #[path = "ops/ssm_gdn_a.rs"]
 mod ssm_gdn_a;
 #[path = "ops/ssm_gdn_a2.rs"]
@@ -152,8 +154,12 @@ mod ssm_gdn_a3;
 mod ssm_gdn_b;
 #[path = "ops/ssm_gdn_batched.rs"]
 mod ssm_gdn_batched;
+#[path = "ops/ssm_gdn_hopper_prefill.rs"]
+mod ssm_gdn_hopper_prefill;
 #[path = "ops/ssm_gdn_snap.rs"]
 mod ssm_gdn_snap;
+#[path = "ops/ssm_gdn_tc_route.rs"]
+mod ssm_gdn_tc_route;
 #[path = "ops/ssm_mamba.rs"]
 mod ssm_mamba;
 #[path = "ops/ssm_preproc.rs"]
@@ -217,12 +223,15 @@ pub use q4k_mmq::*;
 pub use qsa::*;
 pub use quant_dispatch::*;
 pub use sampling::*;
+pub use ssm_ba_gates_hopper::*;
 pub use ssm_gdn_a::*;
 pub use ssm_gdn_a2::*;
 pub use ssm_gdn_a3::*;
 pub use ssm_gdn_b::*;
 pub use ssm_gdn_batched::*;
+pub(crate) use ssm_gdn_hopper_prefill::*;
 pub use ssm_gdn_snap::*;
+pub use ssm_gdn_tc_route::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;
