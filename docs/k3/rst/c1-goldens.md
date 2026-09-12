@@ -33,4 +33,4 @@ BUGS
 0.40B twin greedy output is prompt-insensitive mush. Do not use it to judge K3 quality. Use it only as a bit-exact HF lock.
 
 STOP
-Charter complete for "goldens exist and the instrument was shown to fail first". Engine compare still `#[ignore]` until bind lands.
+Goldens frozen. CPU bind (`7b1d1b52d`) 26 atlas-core tests green; HF token-exact still skipped until safetensors→`K3CpuModel` ingest (in flight). Twin quality is not an oracle.
