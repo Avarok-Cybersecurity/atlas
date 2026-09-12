@@ -73,6 +73,16 @@ pub struct TargetDefaults {
     /// H100 launch script outside this repository, which is the arrangement
     /// the 2026-09-11 review called discipline rather than structure.
     pub ssm_batched_recurrent: bool,
+    /// `gated_delta_rule_chunk_delta_h_tcfuse_x2` serves the GDN chunked
+    /// PREFILL state spine on tensor cores (`layers/ops/ssm_gdn_a3.rs`).
+    ///
+    /// FALSE on every target, deliberately. The kernel is shared — it lives in
+    /// `kernels/gb10/common/gated_delta_rule_chunk_tc.cu` and is validated on
+    /// GB10 — and the arm reassociates the k-reduction into the MMA tree, so
+    /// promotion needs the ssm-poisoning tripwire rather than a cosine (#928).
+    /// It is here so the probe that loads it is GATED on the same bit that
+    /// launches it, like every other kernel in this table.
+    pub gdn_prefill_tc: bool,
     /// Split SiLU+down on the decode path (`ModelLevers::decode_split_silu`).
     pub decode_split_silu: bool,
 }

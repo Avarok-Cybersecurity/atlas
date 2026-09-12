@@ -29,6 +29,7 @@ const GB10: TargetDefaults = TargetDefaults {
     hw: "gb10",
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: false,
+    gdn_prefill_tc: false,
     decode_split_silu: true,
 };
 
@@ -42,6 +43,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     hw: "hopper",
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: true,
+    gdn_prefill_tc: false,
     decode_split_silu: true,
 };
 
@@ -95,6 +97,11 @@ fn gb10_with_an_empty_environment_is_todays_behaviour() {
     let l = empty(&GB10);
     assert_eq!(l.lm_head_batchm_max.value, DENSE_GEMV_BATCHM_DECODE_MAX_M);
     assert!(!l.ssm_batched_recurrent.value);
+    assert!(
+        !l.gdn_prefill_tc.value,
+        "the scalar GDN prefill spine stays the default: the tensor-core arm \
+         reassociates the k-reduction and has no accuracy receipt"
+    );
     assert!(l.decode_split_silu.value);
     for source in [
         l.lm_head_batchm_max.source,
@@ -140,6 +147,28 @@ fn a_declared_off_lever_is_still_armed_by_the_bare_one() {
     let l = with(&GB10, &[("ATLAS_SSM_BATCHED_RECURRENT", "1")]);
     assert!(l.ssm_batched_recurrent.value);
     assert!(l.ssm_batched_recurrent.from_env());
+}
+
+/// ⚠️ THE POLARITY CHANGE. `ATLAS_GDN_PREFILL_TC` was PRESENCE-gated, so
+/// `=0` used to arm the tensor-core spine; under the 2026-09-11 grammar it
+/// disarms it. Every recipe that ever set this variable set it to `1`
+/// (`GDN-PREFILL-ATTRIBUTION.md`'s A/B), so no existing recipe changes
+/// meaning — but a `=0` that silently re-armed the arm would be an accuracy
+/// change nobody typed, which is what this pins.
+#[test]
+fn the_tensor_core_prefill_spine_reads_zero_as_off_not_as_present() {
+    for off in ["0", "false", "off", "no", "OFF", " 0 "] {
+        let l = with(&GB10, &[("ATLAS_GDN_PREFILL_TC", off)]);
+        assert!(
+            !l.gdn_prefill_tc.value,
+            "`{off}` must disarm the spine, not arm it by being present"
+        );
+        assert!(l.gdn_prefill_tc.from_env());
+    }
+    // …and the bare `=1` the A/B recipes use still arms it.
+    let on = with(&GB10, &[("ATLAS_GDN_PREFILL_TC", "1")]);
+    assert!(on.gdn_prefill_tc.value);
+    assert!(on.gdn_prefill_tc.from_env());
 }
 
 /// The legacy PRESENCE kill switch is unchanged and outranks the declaration.
@@ -201,6 +230,7 @@ fn the_summary_line_names_every_lever_and_flags_the_environment() {
         "sm_count=",
         "lm_head_batchm_max=12 (env)",
         "ssm_batched_recurrent=on",
+        "gdn_prefill_tc=off",
         "decode_split_silu=on",
     ] {
         assert!(line.contains(field), "missing `{field}` in:\n{line}");

@@ -264,6 +264,7 @@ fn the_generated_constant_names_every_field() {
         "hw: \"hopper\"",
         "lm_head_batchm_max: 8",
         "ssm_batched_recurrent: true",
+        "gdn_prefill_tc: false",
         "decode_split_silu: true",
     ] {
         assert!(
@@ -285,6 +286,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.hw, declared.hw);
     assert_eq!(baked.lm_head_batchm_max, declared.lm_head_batchm_max);
     assert_eq!(baked.ssm_batched_recurrent, declared.ssm_batched_recurrent);
+    assert_eq!(baked.gdn_prefill_tc, declared.gdn_prefill_tc);
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
     assert_eq!(
         atlas_kernels::TARGET_SM_COUNT,
