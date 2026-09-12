@@ -467,6 +467,14 @@ impl DenseFfnLayer {
         if self.q2_weights.is_some() {
             return Ok(());
         }
+        // Native FP8 (#915): `forward_prefill_inner` returns from inside its
+        // `self.fp8_weights` arm long before the Q4_K/MMQ arm, so this repack
+        // is dead work — and since #915 the loader installs NULL NVFP4 source
+        // weights on that route, over which `ensure_q4k_weight`'s dequant is a
+        // CUDA-700 illegal access. Same reason as the packed-Q2 guard above.
+        if self.fp8_weights.is_some() {
+            return Ok(());
+        }
         let q4k_active = self.q4k_mmq_nc_k.0 != 0
             && self.q4k_quant_act_k.0 != 0
             && self.q4k_quant_w_k.0 != 0
@@ -563,6 +571,13 @@ impl DenseFfnLayer {
         // present) and repacks the NVFP4 gate/up — over NULL pointers that's a
         // CUDA-700 illegal access. Packed-Q2 uses its own decode/prefill path.
         if self.q2_weights.is_some() {
+            return Ok(());
+        }
+        // Native FP8 (#915): same reasoning as `finalize_q4k_load`, and this
+        // one is active by DEFAULT wherever the W4A4-MMQ kernels exist — so on
+        // a target that ships them it would repack NULL NVFP4 gate/up AND free
+        // `_t` copies for a prefill arm the FP8 early-return never reaches.
+        if self.fp8_weights.is_some() {
             return Ok(());
         }
         let active = self.nvfp4_mmq_nc_k.0 != 0
@@ -1552,7 +1567,15 @@ impl DenseFfnLayer {
     /// (batchm kernel present AND NVFP4 weights loaded — the batchm GEMV
     /// reads the non-transposed NVFP4 layout).
     pub fn can_forward_km(&self, m: u32) -> bool {
-        self.batchm_kernel(m).0 != 0 && !self.weights.gate_proj.weight.is_null()
+        self.batchm_kernel(m).0 != 0
+            && (!self.weights.gate_proj.weight.is_null()
+                // Native FP8 (#915): the loader no longer builds the NVFP4
+                // fallback, but `forward_km` redirects to `forward_prefill` for
+                // an FP8 layer anyway (`native_small_batch_uses_prefill`), so
+                // the answer must stay `true` or the n=4..8 verify arm in
+                // `multi_seq/ffn.rs:145` would fall through to a DIFFERENT
+                // branch and quietly change the routing this fix must not touch.
+                || self.fp8_weights.is_some())
     }
 
     /// K=m (m<=8) speculative verify: batched GEMV for m tokens.
@@ -2704,6 +2727,12 @@ mod native_batch_tests;
 #[cfg(test)]
 #[path = "dense_ffn_kernel_tests.rs"]
 mod kernel_tests;
+
+/// #915: the native-FP8 route must work with NO NVFP4 fallback weights, so the
+/// loader can stop allocating 18.4 GiB of them.
+#[cfg(test)]
+#[path = "dense_ffn_fp8_residency_tests.rs"]
+mod fp8_residency_tests;
 
 #[cfg(test)]
 mod tests {

@@ -43,7 +43,7 @@ pub use innerq_driver::InnerQDriver;
 pub(crate) use types::HeadGateActivation;
 pub use types::Qwen3AttentionLayer;
 pub use types_weights::{
-    CompressorWeights, HcHeadWeights, HcLowRank, HcSiteWeights, HcWeights, MlaWeights,
+    CompressorWeights, Fp8TwinSet, HcHeadWeights, HcLowRank, HcSiteWeights, HcWeights, MlaWeights,
 };
 
 /// Startup fail-fast for `--kv-cache-dtype`: resolve every kernel handle the
