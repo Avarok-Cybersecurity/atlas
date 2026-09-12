@@ -37,8 +37,12 @@ pub(crate) const GDN_HOPPER_DIM: u32 = 128;
 pub(crate) const GDN_HOPPER_CHUNK: u32 = 64;
 
 /// SSOT mirror of `FOH_SMEM` in `gdn_fwd_o_hopper.cu`:
-///   sq[64][136] + sk[64][136] + Sb[128][136] + ucT[128][72] + kqh[64][72]
-///   + gc[64] f32 = 17408 + 17408 + 34816 + 18432 + 9216 + 256 = 97 536 B.
+///
+/// ```text
+/// sq[64][136] + sk[64][136] + Sb[128][136] + ucT[128][72] + kqh[64][72]
+///   + gc[64] f32 = 17408 + 17408 + 34816 + 18432 + 9216 + 256 = 97 536 B
+/// ```
+///
 /// SMALLER than the parent's 98 816 B, because the `kq` lo limb aliases `sk`.
 /// The padded 136/72 row strides are what make the MMA fragment reads
 /// bank-conflict-free; under-sizing this reads a tile out of bounds, so the
@@ -51,9 +55,12 @@ pub(crate) const GDN_FWD_O_HOPPER_SMEM: u32 = 2 * (GDN_HOPPER_CHUNK * 136 * 2)
     + GDN_HOPPER_CHUNK * 4;
 
 /// SSOT mirror of `WUH_SMEM` in `gdn_recompute_wu_hopper.cu`:
-///   sk[64][136] + Ld/Tf[64][24] f32 + Lh/Ll[64][72] + Th/Tl[64][24]
+///
+/// ```text
+/// sk[64][136] + Ld/Tf[64][24] f32 + Lh/Ll[64][72] + Th/Tl[64][24]
 ///   + Xh/Xl[16][16][24] + gc[64] f32
-///   = 17408 + 2*6144 + 2*9216 + 2*3072 + 2*12288 + 256 = 79 104 B.
+///   = 17408 + 2*6144 + 2*9216 + 2*3072 + 2*12288 + 256 = 79 104 B
+/// ```
 pub(crate) const GDN_WU_HOPPER_SMEM: u32 = GDN_HOPPER_CHUNK * 136 * 2
     + 2 * (GDN_HOPPER_CHUNK * 24 * 4)
     + 2 * (GDN_HOPPER_CHUNK * 72 * 2)
