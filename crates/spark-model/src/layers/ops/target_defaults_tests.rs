@@ -29,19 +29,22 @@ const GB10: TargetDefaults = TargetDefaults {
     hw: "gb10",
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: false,
+    fp8_act_quant_hopper: false,
     decode_split_silu: true,
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]`.
 ///
-/// One row differs from GB10's: the batched GDN recurrence, ON, on a Hopper
+/// Two rows differ from GB10's: the batched GDN recurrence, ON, on a Hopper
 /// receipt (+6% on the serve, md5-identical output to the per-sequence
-/// launches). The head band deliberately holds at the frozen 8 — see
-/// `atlas-kernels/tests/target_defaults.rs`.
+/// launches), and the FP8 activation-quant twin, ON, whose source only
+/// `kernels/hopper` carries (#928). The head band deliberately holds at the
+/// frozen 8 — see `atlas-kernels/tests/target_defaults.rs`.
 const HOPPER: TargetDefaults = TargetDefaults {
     hw: "hopper",
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: true,
+    fp8_act_quant_hopper: true,
     decode_split_silu: true,
 };
 
@@ -201,6 +204,7 @@ fn the_summary_line_names_every_lever_and_flags_the_environment() {
         "sm_count=",
         "lm_head_batchm_max=12 (env)",
         "ssm_batched_recurrent=on",
+        "fp8_act_quant_hopper=on",
         "decode_split_silu=on",
     ] {
         assert!(line.contains(field), "missing `{field}` in:\n{line}");
@@ -210,6 +214,12 @@ fn the_summary_line_names_every_lever_and_flags_the_environment() {
     let clean = format_levers(&empty(&HOPPER));
     assert!(!clean.contains("(env)"), "{clean}");
 }
+
+// The per-lever seam for `fp8_act_quant_hopper` (#928, round 16). A child
+// module, not a sibling, so the row's declaration, override and reported
+// spelling sit together and share the fixtures above instead of copying them.
+#[path = "target_defaults_actquant_tests.rs"]
+mod actquant;
 
 /// A build that read no HARDWARE.toml at all has an empty `hw`, and the line
 /// must still be readable rather than `target defaults (): …`.

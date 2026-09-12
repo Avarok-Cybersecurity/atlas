@@ -3,6 +3,7 @@
 //! Exercise the BF16 projection used by both ordinary and mixed decode.
 
 use super::{bf16_batch_gemv_from_value, project_bf16_lm_head};
+use crate::layers::ops;
 use crate::weight_map::DenseWeight;
 use spark_runtime::gpu::mock::{MockArg, MockGpuBackend};
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
@@ -144,6 +145,9 @@ fn the_declared_band_is_what_selects_the_tier() {
         run_case_band(m, 128, true, true, 8, false);
         run_case_band(m, 128, true, true, 16, true);
     }
+    // 17 is outside the kernel's compile-time row bound, so no declaration
+    // reaches it — `DENSE_GEMV_BATCHM_MAX_M` clamps the band below it.
+    run_case_band(17, 128, true, true, 16, false);
     // …and the band never overrides the other two gates: a missing kernel or
     // a K that breaks the uint4 alignment still falls through.
     run_case_band(12, 128, false, true, 16, false);

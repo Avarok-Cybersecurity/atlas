@@ -83,6 +83,14 @@ impl Qwen3SsmLayer {
             } else {
                 super::super::try_kernel(gpu, "norm", "gated_rms_norm_f32_input")
             },
+            // Only the SiLU (non-sigmoid) family has a strided twin today; a
+            // `gdn_norm_sigmoid` model gets KernelHandle(0) and keeps the
+            // per-sequence loop, which is correct, just launch-heavy.
+            gated_rms_norm_f32_strided_k: if config.gdn_norm_sigmoid {
+                KernelHandle(0)
+            } else {
+                super::super::try_kernel(gpu, "norm", "gated_rms_norm_f32_input_strided")
+            },
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             dense_gemv_batch2_k: gpu.kernel("dense_gemv_bf16_batch2", "dense_gemv_bf16_batch2")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
@@ -457,15 +465,16 @@ impl Qwen3SsmLayer {
             w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers::resolve(gpu),
             w4a16_gemv_batch16_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch16"),
             w8a16_gemm_t_k: super::super::try_kernel(gpu, "w8a16_gemm_t", "w8a16_gemm_t"),
-            per_token_group_quant_fp8_k: super::super::try_kernel(
-                gpu,
-                "per_token_group_quant_fp8",
-                "per_token_group_quant_fp8",
-            ),
+            per_token_group_quant_fp8_k: ops::Fp8ActQuant::resolve(gpu),
             fp8_gemm_t_blockscaled_k: super::super::try_kernel(
                 gpu,
                 "fp8_gemm_t_blockscaled",
                 "fp8_gemm_t_blockscaled",
+            ),
+            fp8_act_scale_kmajor_k: super::super::try_kernel(
+                gpu,
+                "fp8_scale_transpose",
+                "fp8_act_scale_to_kmajor",
             ),
         })
     }

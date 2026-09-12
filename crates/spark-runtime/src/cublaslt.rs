@@ -14,7 +14,15 @@ use std::sync::OnceLock;
 // Native FP8 (E4M3) GEMM paths live in the `fp8` sibling (≤500 LoC split);
 // re-exported so `spark_runtime::cublaslt::fp8_gemm_*` paths are unchanged.
 mod fp8;
-pub use fp8::{fp8_gemm_act_weight_t_blkscaled, fp8_gemm_act_weight_t_rowwise};
+pub use fp8::{
+    fp8_gemm_act_weight_t_blkscaled, fp8_gemm_act_weight_t_blkscaled_ldc,
+    fp8_gemm_act_weight_t_rowwise,
+};
+
+// What the library documents about block-scaling factor tensors, as index math
+// the callers, the CUDA adapter kernel and the CPU tests all share. SSOT — the
+// FP8 paths below only take pointers, so the layout rules cannot live in them.
+pub mod scale_layout;
 
 #[allow(non_camel_case_types)]
 type cublasLtHandle_t = *mut c_void;

@@ -76,24 +76,18 @@ impl Qwen3AttentionLayer {
         {
             ops::log_cutlass_nvfp4_route(ctx.gpu, "attn_o", n, h, nq * hd);
             ops::cutlass_nvfp4_proj_from_fp8(ctx, attn_out, fp8w, o_out, n, h, nq * hd, stream)?;
-        } else if ctx.dispatch.cublas_gemm
-            && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
-        {
-            // cuBLASLt BF16 (3x the hand-written mma.sync GEMM on GB10).
-            ops::cublas_bf16_proj(
-                ctx.gpu,
-                ctx.derived,
-                attn_out,
-                fp8w,
-                o_out,
-                n,
-                h,
-                nq * hd,
-                stream,
-            )?;
+        // NO cuBLASLt-BF16 ARM HERE ANY MORE (#927). `ctx.dispatch.cublas.attn`
+        // used to route this projection to `ops::cublas_bf16_proj`, whose
+        // cached FP8->BF16 weight dequant is 2 B per weight element allocated
+        // outside the buffer ledger — the same leak that cost the SSM QKVZ arm
+        // ~10.3 GiB and killed a 28-token H100 prefill at layer 36 (#917
+        // round 3). It mattered again because the decode recipe arms
+        // `ATLAS_CUBLAS_GEMM=ffn,ssm,attn`. The W8A8 arm below IS the
+        // replacement: it now routes to cuBLASLt when `attn` is armed, with no
+        // dequant and no allocation (`prefill_w8a8.rs`).
         } else if force_w8a8
             && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
-            && self.per_token_group_quant_fp8_k.0 != 0
+            && self.per_token_group_quant_fp8_k.available()
             && self.fp8_gemm_t_blockscaled_k.0 != 0
         {
             // o_proj GEMM: C[M, N] = A[M, K] @ B[N, K]
@@ -119,14 +113,13 @@ impl Qwen3AttentionLayer {
                 nq * hd,
                 stream,
             )?;
-            ops::fp8_gemm_t_blockscaled(
-                ctx.gpu,
-                self.fp8_gemm_t_blockscaled_k,
+            self.attn_prefill_w8a8_gemm(
+                ctx,
                 a_fp8_buf,
                 a_scale_buf,
-                fp8w.weight,
-                fp8w.row_scale,
+                fp8w,
                 o_out,
+                ctx.buffers.norm_output_bytes(),
                 n,
                 n_out as u32,
                 k_dim as u32,
@@ -238,7 +231,7 @@ impl Qwen3AttentionLayer {
             // BF16 dense fallback (Gemma-4 dense per Nvidia ModelOpt's
             // ignore list — all self_attn projections must stay BF16).
             // Tensor-core pipelined GEMM (~40× scalar on large-M prefill).
-            if ctx.dispatch.cublas_gemm && n > 1 {
+            if ctx.dispatch.cublas.attn && n > 1 {
                 ops::cublas_bf16_proj_dense(attn_out, o_bf16.weight, o_out, n, h, nq * hd, stream)?;
             } else if self.dense_gemm_pipelined_k.0 != 0 {
                 ops::dense_gemm_bf16_pipelined(

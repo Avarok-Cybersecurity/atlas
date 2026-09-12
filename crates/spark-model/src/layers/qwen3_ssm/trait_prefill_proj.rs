@@ -104,11 +104,13 @@ impl Qwen3SsmLayer {
             return Ok(());
         }
         let force_w8a8 = ctx.dispatch.fp8_blockscaled_prefill;
-        // High-efficiency cuBLASLt BF16 GEMM path (ATLAS_CUBLAS_GEMM=1). The
-        // hand-written blockscaled mma.sync GEMM hits only ~30% of the cuBLAS
-        // ceiling on GB10 (32 vs 85 TFLOPS bf16 on this shape). Dequant the FP8
-        // weight to BF16 once (cached), then route the projection through
-        // cuBLASLt. W16A16 here is strictly more accurate than the W8A8 path.
+        // NO cuBLASLt-BF16 ARM HERE, deliberately. `ATLAS_CUBLAS_GEMM=1` used
+        // to route this projection to `ops::cublas_bf16_proj`, whose cached
+        // FP8→BF16 weight dequant cost 167772160 B per layer (~10.3 GiB over 48
+        // SSM layers) outside the buffer ledger and killed a 28-token H100
+        // prefill at layer 36 on 2026-09-11. The cuBLASLt arm now lives INSIDE
+        // the W8A8 branch below, consumes the FP8 weight directly, and
+        // allocates nothing — see `prefill_w8a8.rs` for the full receipt.
         if ctx.dispatch.cutlass_nvfp4_qkvz
             && let Some(ref nvfp4_t) = self.qkvz_nvfp4_t
         {
@@ -173,20 +175,6 @@ impl Qwen3SsmLayer {
                 h as u32,
                 stream,
             )?;
-        } else if ctx.dispatch.cublas_gemm
-            && let Some(ref fp8w) = self.qkvz_fp8w
-        {
-            ops::cublas_bf16_proj(
-                ctx.gpu,
-                ctx.derived,
-                normed,
-                fp8w,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )?;
         } else if force_bf16 {
             // cuBLASLt, NOT the hand-written `dense_gemm`. The weights are
             // already BF16 [N,K] on this path, so there is no dequant step and
@@ -214,21 +202,24 @@ impl Qwen3SsmLayer {
             })?;
         } else if force_w8a8
             && let Some(ref fp8w) = self.qkvz_fp8w
-            && self.per_token_group_quant_fp8_k.0 != 0
+            && self.per_token_group_quant_fp8_k.available()
             && self.fp8_gemm_t_blockscaled_k.0 != 0
         {
             tracing::debug!(
                 "ssm prefill: QKVZ via block-scaled FP8 (W8A8+FP32-epilogue, M={k} K={h} N={qkvz_size})"
             );
-            let m = k as usize;
             let k_dim = h;
             // Persistent arena scratch (no per-projection alloc/sync/free): the
-            // quant→GEMM chain is same-stream ordered.
+            // quant→GEMM chain is same-stream ordered. PADDED rows, because the
+            // cuBLASLt arm reads `ceil16(M)` of them.
+            let m_pad = ops::cublas_fp8_m_pad(k) as usize;
             let a_fp8_buf = ctx.buffers.fp8_act();
             let a_scale_buf = ctx.buffers.fp8_act_scale();
-            debug_assert!(m * k_dim <= ctx.buffers.fp8_act_bytes());
+            debug_assert!(m_pad * k_dim <= ctx.buffers.fp8_act_bytes());
+            debug_assert!(m_pad * k_dim.div_ceil(128) * 4 <= ctx.buffers.fp8_act_scale_bytes());
             // Per-token block FP8 quant of the activation, then block-scaled
-            // FP8×FP8 GEMM folding both per-128 scales in an FP32 epilogue.
+            // FP8×FP8 GEMM folding both per-128 scales in an FP32 epilogue —
+            // cuBLASLt or the in-tree kernel, chosen by `qkvz_w8a8_gemm`.
             ops::per_token_group_quant_fp8(
                 ctx.gpu,
                 self.per_token_group_quant_fp8_k,
@@ -239,14 +230,21 @@ impl Qwen3SsmLayer {
                 k_dim as u32,
                 stream,
             )?;
-            ops::fp8_gemm_t_blockscaled(
-                ctx.gpu,
-                self.fp8_gemm_t_blockscaled_k,
+            // `proj_dst` is one of two ARENA buffers, picked above by
+            // `sequential_qkvz`; the cuBLASLt arm writes `ceil16(M)` rows into
+            // it, so it is bounds-checked against the one it actually got.
+            let dst_capacity = if self.sequential_qkvz {
+                ctx.buffers.ssm_deinterleaved_bytes()
+            } else {
+                ctx.buffers.ssm_qkvz_bytes()
+            };
+            self.qkvz_w8a8_gemm(
+                ctx,
                 a_fp8_buf,
                 a_scale_buf,
-                fp8w.weight,
-                fp8w.row_scale,
+                fp8w,
                 proj_dst,
+                dst_capacity,
                 k,
                 qkvz_size as u32,
                 h as u32,

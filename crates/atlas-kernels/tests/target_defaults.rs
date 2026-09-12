@@ -64,6 +64,20 @@ fn hopper_declares_what_an_h100_serve_runs_with() {
     // this kernel set, so 16 here would be an unmeasured configuration; the
     // row moves with the commit that lands the arm. A default is a claim
     // about a measurement.
+    // The row round 16 adds (#928). ON, and on without an accuracy receipt
+    // because it cannot need one: the twin is bit-identical to its parent, so
+    // the row is a speed claim only. It is also the first row whose arm
+    // carries a width FLOOR — measured 3.30-3.59x at M in {1168, 4576} and
+    // 0.76x-0.95x at M in {16, 17, 25} for K in {5120, 6144} — so `true` here
+    // arms a kernel that still declines its own launch below `2 * sm_count`
+    // CTAs. The row says WHETHER; the floor says WHERE.
+    assert!(
+        d.fp8_act_quant_hopper,
+        "the FP8 activation-quant twin is Hopper's default: 3.30-3.59x and \
+         63.7-68.4% of HBM at prefill widths against the parent's 18.6-19.1%, \
+         bit-identical, with the decode-width loss handled by the CTA floor \
+         rather than by this row (`FP8-ACT-QUANT-ATTRIBUTION.md`)"
+    );
     assert_eq!(
         d.lm_head_batchm_max,
         baseline("hopper").lm_head_batchm_max,
@@ -101,6 +115,13 @@ fn b200_declares_the_conservative_table_not_hoppers() {
          OFF here for want of one — B200 must not inherit a measured recipe by \
          resemblance"
     );
+    assert!(
+        !d.fp8_act_quant_hopper && declared("hopper").fp8_act_quant_hopper,
+        "the FP8 activation-quant twin is Hopper-only source; B200's common/ \
+         does not link it, so the row is inert here and must read false — and \
+         its floor is `2 * sm_count` CTAs, which on 148 SMs is a threshold \
+         nobody has measured"
+    );
 }
 
 /// The targets that declare NO `[defaults]` table are unaffected: they resolve
@@ -136,6 +157,10 @@ fn every_declaring_target_states_every_lever() {
             "lm_head_batchm_max",
             "ssm_batched_recurrent",
             "decode_split_silu",
+            // #928, round 16. The first hopper-only boolean: gb10 and b200
+            // declare the row FALSE rather than omitting it, because an
+            // absent row and a deliberate `false` must not look identical.
+            "fp8_act_quant_hopper",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
@@ -266,6 +291,7 @@ fn the_generated_constant_names_every_field() {
         "hw: \"hopper\"",
         "lm_head_batchm_max: 8",
         "ssm_batched_recurrent: true",
+        "fp8_act_quant_hopper: true",
         "decode_split_silu: true",
     ] {
         assert!(
@@ -287,6 +313,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.hw, declared.hw);
     assert_eq!(baked.lm_head_batchm_max, declared.lm_head_batchm_max);
     assert_eq!(baked.ssm_batched_recurrent, declared.ssm_batched_recurrent);
+    assert_eq!(baked.fp8_act_quant_hopper, declared.fp8_act_quant_hopper);
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
     assert_eq!(
         atlas_kernels::TARGET_SM_COUNT,

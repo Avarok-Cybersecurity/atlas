@@ -219,7 +219,7 @@ impl Qwen3AttentionLayer {
             ops::cutlass_nvfp4_proj_from_fp8(ctx, normed, fp8w, out, n, out_dim, h, stream)?;
         } else if force_w8a8
             && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
-            && self.per_token_group_quant_fp8_k.0 != 0
+            && self.per_token_group_quant_fp8_k.available()
             && self.fp8_gemm_t_blockscaled_k.0 != 0
         {
             let m = n as usize;
@@ -367,7 +367,7 @@ impl Qwen3AttentionLayer {
             // Prefer the tensor-core pipelined GEMM (~40× the scalar kernel on
             // these large-M prefill projections; same math) — the scalar
             // `dense_gemm` dominated batched-prefill GPU time (nsys: 60%).
-            if ctx.dispatch.cublas_gemm && n > 1 {
+            if ctx.dispatch.cublas.attn && n > 1 {
                 ops::cublas_bf16_proj_dense(normed, dense.weight, out, n, out_dim, h, stream)?;
             } else if self.dense_gemm_pipelined_k.0 != 0 {
                 ops::dense_gemm_bf16_pipelined(
