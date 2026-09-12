@@ -27,7 +27,7 @@ pub(super) use kv_cache::{
     KvCacheConfig, PrefillBudget, resolve_kv_cache_config, resolve_prefill_budget,
 };
 pub(super) use preflight::{
-    ReservePreflight, init_gpu_backend, post_load_memory_audit, preflight_reserve,
+    PostLoadInputs, ReservePreflight, init_gpu_backend, post_load_memory_audit, preflight_reserve,
 };
 pub(super) use runtime::{
     SamplingDefaults, load_eos_tokens, load_sampling_defaults, log_behavior_audit,

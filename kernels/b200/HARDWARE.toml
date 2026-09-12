@@ -71,3 +71,9 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = false
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+# The fused dense-FFN gate+up decode GEMM (#927). OFF for want of a receipt,
+# like every other row here — B200 must not inherit a Hopper recipe by
+# resemblance. The arm's strided-SiLU consumer is Hopper-owned and is NOT
+# symlinked into this tree, so the row is inert here. See
+# `kernels/hopper/HARDWARE.toml`.
+ffn_gateup_fused = false

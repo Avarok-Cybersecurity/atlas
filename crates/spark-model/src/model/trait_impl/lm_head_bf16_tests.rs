@@ -3,6 +3,7 @@
 //! Exercise the BF16 projection used by both ordinary and mixed decode.
 
 use super::{bf16_batch_gemv_from_value, project_bf16_lm_head};
+use crate::layers::ops;
 use crate::weight_map::DenseWeight;
 use spark_runtime::gpu::mock::{MockArg, MockGpuBackend};
 use spark_runtime::gpu::{GpuBackend, KernelHandle};

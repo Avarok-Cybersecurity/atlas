@@ -75,4 +75,10 @@ pub struct TargetDefaults {
     pub ssm_batched_recurrent: bool,
     /// Split SiLU+down on the decode path (`ModelLevers::decode_split_silu`).
     pub decode_split_silu: bool,
+    /// One fused `[gate | up]` cuBLASLt W8A8 GEMM at `N = 2 * intermediate` on
+    /// the 5..=16-row decode band, instead of two at `N = intermediate`
+    /// (#927). TRUE only on hopper: the arm's strided-SiLU consumer
+    /// (`silu_mul_strided.cu`) is a Hopper-owned source, so the row is inert
+    /// on a target whose tree does not carry it.
+    pub ffn_gateup_fused: bool,
 }

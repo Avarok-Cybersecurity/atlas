@@ -31,6 +31,9 @@ mod op_dump;
 #[cfg(feature = "cuda")]
 pub mod innerq_driver;
 mod prefill;
+// The cuBLASLt W8A8 prefill arm that replaced `ATLAS_CUBLAS_GEMM=attn`'s
+// off-ledger BF16 weight dequant (#917 round 3 / #927).
+mod prefill_w8a8;
 mod prefill_weights;
 mod trait_impl;
 mod types;
@@ -43,7 +46,8 @@ pub use innerq_driver::InnerQDriver;
 pub(crate) use types::HeadGateActivation;
 pub use types::Qwen3AttentionLayer;
 pub use types_weights::{
-    CompressorWeights, HcHeadWeights, HcLowRank, HcSiteWeights, HcWeights, MlaWeights,
+    CompressorWeights, Fp8TwinSet, HcHeadWeights, HcLowRank, HcSiteWeights, HcWeights, MlaWeights,
+    W8A8_PREFILL_KERNELS, w8a8_prefill_kernels_loaded,
 };
 
 /// Startup fail-fast for `--kv-cache-dtype`: resolve every kernel handle the

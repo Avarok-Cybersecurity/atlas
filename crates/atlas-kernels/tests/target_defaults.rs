@@ -58,6 +58,13 @@ fn hopper_declares_what_an_h100_serve_runs_with() {
         "+6% on the serve, md5-identical output to the per-sequence launches"
     );
     assert!(d.decode_split_silu);
+    // The fused gate+up decode GEMM: ON here and nowhere else, because its
+    // strided-SiLU consumer is a Hopper-owned source and the receipt is a
+    // Hopper one.
+    assert!(
+        d.ffn_gateup_fused,
+        "one cuBLASLt call at N=34816 on the decode band, not two at N=17408"
+    );
     // ★ NOT 16. The 16 an H100 recipe exported was measured with the
     // tensor-core head arm (`dense_gemm_m16_bf16`, #927) also on, where that
     // arm serves 5..=16 and this band is very nearly inert. The arm is not in
@@ -95,6 +102,11 @@ fn gb10_declares_the_baseline_and_nothing_else() {
 fn b200_declares_the_conservative_table_not_hoppers() {
     let d = declared("b200");
     assert_eq!(d, baseline("b200"));
+    assert!(
+        !d.ffn_gateup_fused && declared("hopper").ffn_gateup_fused,
+        "the fused gate+up decode GEMM is ON for Hopper on a Hopper receipt \
+         and OFF here for want of one"
+    );
     assert!(
         !d.ssm_batched_recurrent && declared("hopper").ssm_batched_recurrent,
         "the batched GDN recurrence is ON for Hopper on a Hopper receipt and \
@@ -136,6 +148,7 @@ fn every_declaring_target_states_every_lever() {
             "lm_head_batchm_max",
             "ssm_batched_recurrent",
             "decode_split_silu",
+            "ffn_gateup_fused",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
@@ -267,6 +280,7 @@ fn the_generated_constant_names_every_field() {
         "lm_head_batchm_max: 8",
         "ssm_batched_recurrent: true",
         "decode_split_silu: true",
+        "ffn_gateup_fused: true",
     ] {
         assert!(
             generated.contains(field),
@@ -288,6 +302,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.lm_head_batchm_max, declared.lm_head_batchm_max);
     assert_eq!(baked.ssm_batched_recurrent, declared.ssm_batched_recurrent);
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
+    assert_eq!(baked.ffn_gateup_fused, declared.ffn_gateup_fused);
     assert_eq!(
         atlas_kernels::TARGET_SM_COUNT,
         read_sm_count(&kernels_root(), baked.hw),

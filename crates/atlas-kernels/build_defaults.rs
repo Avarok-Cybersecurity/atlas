@@ -32,6 +32,7 @@ pub(crate) struct Defaults {
     pub lm_head_batchm_max: u32,
     pub ssm_batched_recurrent: bool,
     pub decode_split_silu: bool,
+    pub ffn_gateup_fused: bool,
 }
 
 /// What a target that declares NO `[defaults]` table gets.
@@ -52,6 +53,11 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         lm_head_batchm_max: 8,
         ssm_batched_recurrent: false,
         decode_split_silu: true,
+        // The fused gate+up decode GEMM is Hopper-only today: its
+        // strided-SiLU consumer is a Hopper-owned source, so the row is
+        // INERT anywhere the file is not compiled. OFF is what every
+        // target served before #927.
+        ffn_gateup_fused: false,
     }
 }
 
@@ -145,6 +151,7 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             "lm_head_batchm_max" => out.lm_head_batchm_max = unsigned(key, value),
             "ssm_batched_recurrent" => out.ssm_batched_recurrent = boolean(key, value),
             "decode_split_silu" => out.decode_split_silu = boolean(key, value),
+            "ffn_gateup_fused" => out.ffn_gateup_fused = boolean(key, value),
             other => panic!(
                 "kernels/{hw}/HARDWARE.toml: [defaults] has no key `{other}`. \
                  The lever list is the field list of `TargetDefaults` \
@@ -173,11 +180,13 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   lm_head_batchm_max: {batchm},\n\
          \x20   ssm_batched_recurrent: {batched_recurrent},\n\
          \x20   decode_split_silu: {split_silu},\n\
+         \x20   ffn_gateup_fused: {gateup_fused},\n\
          }};\n",
         hw = d.hw,
         batchm = d.lm_head_batchm_max,
         batched_recurrent = d.ssm_batched_recurrent,
         split_silu = d.decode_split_silu,
+        gateup_fused = d.ffn_gateup_fused,
     )
 }
 

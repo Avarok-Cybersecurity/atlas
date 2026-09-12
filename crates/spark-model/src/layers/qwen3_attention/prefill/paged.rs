@@ -746,7 +746,7 @@ impl Qwen3AttentionLayer {
             // (grid [2, ceil(n/16)]) so the kernel is badly underutilized.
             // A/B (ISL 1024/8192, C=1): sTTFT 765->747 / 4177->4068 ms = ~2.5%.
             // dense_gemm_tc stays as the fallback when cuBLAS is off.
-            if ctx.dispatch.cublas_gemm {
+            if ctx.dispatch.cublas.attn {
                 ops::cublas_bf16_proj_dense(normed, g_proj.weight, gate_buf, n, nq, h, stream)?;
             } else {
                 ops::dense_gemm_tc(

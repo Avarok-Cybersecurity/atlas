@@ -226,3 +226,80 @@ pub struct HcWeights {
     /// final norm and the checkpoint ships no `model.norm.weight`.
     pub is_last_model_layer: bool,
 }
+
+/// Which of the four attention projections get an FP8 `[K, N]` transposed twin
+/// built by [`Qwen3AttentionLayer::transpose_fp8_for_prefill`].
+///
+/// [`Qwen3AttentionLayer::transpose_fp8_for_prefill`]:
+///     super::Qwen3AttentionLayer::transpose_fp8_for_prefill
+///
+/// WHY per projection and not one flag (#915): the four are reached by
+/// DIFFERENT prefill chains and only two of them are W8A8-gated.
+///
+/// * **K and V** are read by `prefill/cache_skip_qkv.rs:218` / `:235`, whose
+///   dispatch chain has **no W8A8 arm at all** — and `cache_skip` is the
+///   first-chunk path (`trait_impl/prefill_inner.rs:138`, `seq_len_start == 0`)
+///   taken by every request. Their twins are never dead.
+/// * **Q** on that chain is behind `ATLAS_ATTN_PREFILL_Q_T=1`
+///   (`cache_skip_qkv.rs:142`); otherwise it is reached only after the W8A8
+///   arm in `prefill/paged_qkv.rs:220` declines.
+/// * **O** is routed to `prefill/paged_oproj.rs` from both chains, so it is
+///   reached only after the W8A8 arm at `paged_oproj.rs:94` declines.
+///
+/// On 1xH100 (Qwen3.8-27B-FP8) the four cost 100 MiB/layer x 16 layers =
+/// 1,600 MB — the `weight_map/quantized.rs:643` ledger row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fp8TwinSet {
+    pub q: bool,
+    pub k: bool,
+    pub v: bool,
+    pub o: bool,
+}
+
+impl Fp8TwinSet {
+    pub const NONE: Self = Self {
+        q: false,
+        k: false,
+        v: false,
+        o: false,
+    };
+    /// Every twin — what a loader that has not opted into the #915 plan asks
+    /// for, i.e. the pre-#915 behaviour.
+    pub const ALL: Self = Self {
+        q: true,
+        k: true,
+        v: true,
+        o: true,
+    };
+
+    pub fn any(self) -> bool {
+        self.q || self.k || self.v || self.o
+    }
+}
+
+/// The two `(module, function)` pairs the W8A8 block-scaled prefill arm needs
+/// (`prefill/paged_qkv.rs:220`, `prefill/paged_oproj.rs:94`).
+///
+/// SSOT for three readers that must not drift (#915): `init.rs` resolves the
+/// handles, `Qwen3AttentionLayer::has_w8a8_prefill_kernels` tests them, and
+/// [`w8a8_prefill_kernels_loaded`] asks the BACKEND the same question before
+/// any layer exists — which is what lets preflight predict, pre-load, whether
+/// the Q and O FP8 prefill twins will be built. A name typo'd in one of the
+/// three would mis-predict ~1.5 GB of residency on the 27B in silence.
+pub const W8A8_PREFILL_KERNELS: [(&str, &str); 2] = [
+    ("per_token_group_quant_fp8", "per_token_group_quant_fp8"),
+    ("fp8_gemm_t_blockscaled", "fp8_gemm_t_blockscaled"),
+];
+
+/// Whether BOTH [`W8A8_PREFILL_KERNELS`] are loaded for this target, asked of
+/// the backend rather than of a constructed layer.
+///
+/// Same answer `Qwen3AttentionLayer::has_w8a8_prefill_kernels` gives — the
+/// layer just caches the handles `init.rs` already resolved through
+/// `try_kernel`, and `try_kernel` returns `KernelHandle(0)` for an absent
+/// kernel exactly as this does.
+pub fn w8a8_prefill_kernels_loaded(gpu: &dyn spark_runtime::gpu::GpuBackend) -> bool {
+    W8A8_PREFILL_KERNELS
+        .iter()
+        .all(|(module, func)| crate::layers::try_kernel(gpu, module, func).0 != 0)
+}

@@ -142,17 +142,40 @@ fn small_native_ffn_uses_existing_batched_gemv() {
 
 #[test]
 fn larger_native_ffn_uses_existing_pipelined_gemm() {
-    for rows in [5, 8, 129] {
+    // 5..=32 now belong to `w8a16_gemv_batch16` (#927), so the tile GEMM's
+    // first row count is 33. Zeroing the batch16 handle is how a shadow that
+    // lacks the entry point behaves, and it must still land here.
+    run_case(129, true, 0xDEAD, [4, 2, 1], [256, 1, 1], |_| {});
+    for rows in [5, 8] {
         run_case(
             rows,
             true,
             0xDEAD,
             [4, rows.div_ceil(128), 1],
             [256, 1, 1],
-            |_| {},
+            |layer| layer.w8a16_gemv_batch16_k = KernelHandle(0),
         );
     }
-    run_case(5, false, 0xDEAD, [4, 1, 1], [256, 1, 1], |_| {});
+    run_case(5, false, 0xDEAD, [4, 1, 1], [256, 1, 1], |layer| {
+        layer.w8a16_gemv_batch16_k = KernelHandle(0)
+    });
+}
+
+/// #927: the 5..=16 band streams the FP8 weight ONCE through the MAX_M=16
+/// twin of `w8a16_gemv_batch4` — same grid, same block, same argument layout,
+/// so only the handle distinguishes the two rungs. (`run_case` asserts one
+/// launch per projection, which is the other half of the contract: the tile
+/// GEMM it replaces also emitted one, but over an M-padded MMA tile.)
+#[test]
+fn five_to_sixteen_row_native_ffn_uses_the_batch16_gemv() {
+    for rows in [5, 8, 16] {
+        run_case(rows, true, 0xB16, [32, 1, 1], [256, 1, 1], |layer| {
+            layer.w8a16_gemv_batch16_k = KernelHandle(0xB16)
+        });
+    }
+    run_case(5, false, 0xB16, [32, 1, 1], [256, 1, 1], |layer| {
+        layer.w8a16_gemv_batch16_k = KernelHandle(0xB16)
+    });
 }
 
 #[test]
@@ -173,6 +196,7 @@ fn missing_optional_kernels_keep_base_native_gemm() {
             [128, 1, 1],
             |layer| {
                 layer.w8a16_gemv_batch4_k = KernelHandle(0);
+                layer.w8a16_gemv_batch16_k = KernelHandle(0);
                 layer.w8a16_gemm_pipelined_k = KernelHandle(0);
             },
         );

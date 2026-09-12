@@ -108,6 +108,13 @@ pub struct Qwen3SsmLayer {
     rms_norm_residual_k: KernelHandle,
     gated_rms_norm_k: KernelHandle,
     gated_rms_norm_f32_k: KernelHandle,
+    /// `gated_rms_norm_f32_input_strided` — the SAME per-(sequence, head) math
+    /// as `gated_rms_norm_f32_k`, with `blockIdx.y` walking the sequences, so
+    /// a batched decode step spends ONE launch per layer instead of one per
+    /// row. 0 when absent (notably on a `gdn_norm_sigmoid` model, which has no
+    /// strided sigmoid twin), which keeps the per-seq loop. #927: the H100
+    /// batch-16 trace showed the per-seq loop at 768 launches / 1.61 ms.
+    gated_rms_norm_f32_strided_k: KernelHandle,
     dense_gemv_k: KernelHandle,
     /// K=2 verify: batched (M=2) BF16 GDN in_proj_qkvz — one weight pass for
     /// both verify tokens instead of two M=1 `dense_gemv` reads.
@@ -371,18 +378,26 @@ pub struct Qwen3SsmLayer {
     // `ATLAS_FP8_W8A8=1` for staged rollout.
     per_token_group_quant_fp8_k: KernelHandle,
     fp8_gemm_t_blockscaled_k: KernelHandle,
+    /// `fp8_act_scale_to_kmajor` — rewrites the quantizer's `[M, K/128]`
+    /// VEC128 activation scales into the `[K/128, ceil16(M)]` layout cuBLASLt
+    /// documents. 0 when the module is absent, which makes the cuBLASLt QKVZ
+    /// arm decline (see `prefill_w8a8.rs`); the in-tree kernel reads the
+    /// quantizer's own order and needs no adapter.
+    fp8_act_scale_kmajor_k: KernelHandle,
 }
 
 // Kernel-selection helpers moved to `kernel_select.rs` (≤500 LoC split).
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod debug;
+mod decode_w8a8_proj;
 pub mod gdn_flags;
 mod init;
 mod init_fp8;
 mod init_q2;
 mod kernel_select;
 mod lora;
+mod prefill_w8a8;
 mod ssm_forward;
 pub(crate) mod ssm_h_fp16;
 mod trait_decode;
@@ -413,6 +428,9 @@ pub use gdn_flags::{
 
 // ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──
 
+#[cfg(test)]
+#[path = "prefill_alloc_tests.rs"]
+mod prefill_alloc_tests;
 #[cfg(test)]
 mod tests;
 

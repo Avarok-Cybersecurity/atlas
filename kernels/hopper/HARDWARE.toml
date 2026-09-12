@@ -91,3 +91,73 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = true
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+# The FUSED dense-FFN gate+up decode GEMM (#927). ON. One block-scaled FP8
+# cuBLASLt call at `N = 2 * intermediate = 34816` on the 5..=16-row decode band
+# replaces two at `N = 17408`.
+#
+# The two GEMMs read the SAME weight bytes either way — the fused weight is the
+# two `[17408, 5120]` E4M3 blocks appended along N — so this row is NOT a
+# traffic claim. It is a per-LAUNCH one, and the trace prices it directly. nsys
+# `--cuda-graph-trace=node`, 1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8 @
+# `3717cb05e`, round 13 cell V, median n=16 decode step 19.887 ms busy: the
+# gate+up pair is 128 graph nodes, 5 730.5 us = 44.77 us/node, and at 89.1 MB
+# of weights per node that is 1 991 GB/s = 59.4% of HBM. In the SAME step, on
+# the SAME arm, `down` (K=17408 N=5120, one launch per layer for the same
+# 89.1 MB) reaches 71.4% and SSM `in_proj_qkvz` (N=16384) 73.2%. The only
+# difference between the 59.4% arm and the 71-73% arms is that the first issues
+# TWO launches per layer for the work the others do in one.
+#
+# NUMERICS: a bit claim, not a tolerance. Splitting N produces INDEPENDENT
+# output columns over the same K with the same block scales, so every element
+# of the fused result is the same dot product in the same order as its
+# un-fused twin. `native_fp8_ffn_gateup_fused_microtest` asserts BYTE equality
+# of the gate and up halves at M in {5, 8, 16}, not a cosine.
+#
+# RESIDENCY: net zero. The loader builds the fused `[34816, 5120]` weight and
+# its `[272, 40]` FP32 block-scale grid once per layer, re-points gate and up
+# at VIEWS inside it, and `prune_after_load` releases the two source store
+# tensors; `predicted_residency` prices the pair as a DIFFERENCE so the
+# preflight ring fit is unmoved.
+#
+# SCOPED TO DECODE. At the prefill widths the same two GEMMs already run at
+# 68.6% of FP8 PEAK (M=4576) — compute-bound, where a launch saving buys
+# nothing — so the band stops at 16 rows and the prefill arm is untouched.
+# `ATLAS_FFN_GATEUP_FUSED=0` is the A/B. Round 16 is PENDING: no serving
+# number is claimed for this row yet. Numbers:
+# `FFN-GATEUP-FUSION-ATTRIBUTION.md`.
+ffn_gateup_fused = true
+
+# ── Kernels this target OVERRIDES or ADDS instead of inheriting ────────────
+#
+# `kernels/hopper/common/` is gb10's directory reached by symlink, PLUS the
+# real files named here. The maintainer rule (2026-09-11): symlinks are fine
+# provided the pointed-to gb10 file is not edited while iterating on Hopper;
+# a Hopper-TUNED kernel must be a real file under `kernels/hopper/`.
+#
+# This list is graded on disk by `tests/inherited_overrides.rs` — an entry
+# that is still a symlink, or an ADDITION that re-declares a gb10 entry point,
+# fails there rather than in a reader's head.
+#
+#   silu_mul_strided.cu      SiLU(gate)*up over ROW-STRIDED operands — the
+#                            consumer of the FUSED gate+up decode GEMM (#927).
+#                            An ADDITION, and the one whose reason is not
+#                            instruction selection at all: the code is
+#                            ordinary bf16 elementwise work that any of these
+#                            targets could compile. It is Hopper's because the
+#                            only thing that dispatches it is `[defaults]
+#                            ffn_gateup_fused`, which only this target
+#                            declares true. Putting it in
+#                            `kernels/gb10/common` would compile a kernel two
+#                            targets can never launch AND add a new
+#                            cross-hardware symlink to each of their mirrors,
+#                            which `scripts/check_cross_hardware.py` rule S1
+#                            refuses outright. Selected by kernel PRESENCE
+#                            (`try_kernel`, probed only when the lever is
+#                            armed) beside the lever itself. A GB10 receipt
+#                            would move the file down and add the two mirror
+#                            links in the same commit. Numbers:
+#                            `FFN-GATEUP-FUSION-ATTRIBUTION.md`.
+[kernels]
+overrides = [
+  "silu_mul_strided.cu",
+]
