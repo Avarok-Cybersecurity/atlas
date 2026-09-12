@@ -91,6 +91,15 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = true
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+# `w8a16_gemm_m16` on the dense-FFN decode arm (#927). OFF, and the only row
+# in this table whose receipt is a LOSS. H100 round 6, serve J against serve I
+# on the same binary: C=16 aggregate 228.02 -> 216.27 (-5.2%) short and
+# 177.60 -> 171.62 (-3.4%) long, TPOT +5.7% / +4.3%, deltas 30-95x the
+# rep-to-rep spread. C=1 is a measured null (the tier is 5..=32 rows only).
+# The ATTENTION half of the same kernel WINS -- see `attn_m16_tc` below, which
+# is why this is two rows. `ATLAS_FFN_M16_TC=1` re-runs the A/B;
+# `ATLAS_M16_TC=1` arms both halves, i.e. exactly what round 6 measured.
+ffn_m16_tc = false
 
 # ── Kernels this target OWNS instead of inheriting ─────────────────────────
 #

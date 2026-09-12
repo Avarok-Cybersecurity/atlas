@@ -30,6 +30,7 @@ const GB10: TargetDefaults = TargetDefaults {
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: false,
     decode_split_silu: true,
+    ffn_m16_tc: false,
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]`.
@@ -43,6 +44,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: true,
     decode_split_silu: true,
+    ffn_m16_tc: false,
 };
 
 fn with(defaults: &TargetDefaults, env: &[(&str, &str)]) -> TargetLevers {
@@ -233,5 +235,54 @@ fn the_process_resolution_reads_this_binarys_declaration() {
         resolved().hw,
         atlas_kernels::TARGET_DEFAULTS.hw,
         "one table, one resolution"
+    );
+}
+
+// ── The M16 tensor-core family: two rows, one kernel, one umbrella ──
+
+/// Round 6 measured the dense-FFN arm of `w8a16_gemm_m16` as a LOSS (C=16
+/// aggregate −5.2%), so Hopper declares it OFF and an H100 serve with an empty
+/// environment does not run it.
+#[test]
+fn hopper_leaves_the_ffn_tensor_core_arm_off_by_declaration() {
+    assert!(!empty(&HOPPER).ffn_m16_tc.value);
+    assert!(!empty(&HOPPER).ffn_m16_tc.from_env());
+    assert!(!empty(&GB10).ffn_m16_tc.value);
+}
+
+/// `ATLAS_FFN_M16_TC` is the A/B that re-runs it, in BOTH directions, and says
+/// it came from the environment.
+#[test]
+fn the_ffn_tensor_core_arm_is_overridable_in_both_directions() {
+    let on = with(&HOPPER, &[("ATLAS_FFN_M16_TC", "1")]);
+    assert!(on.ffn_m16_tc.value && on.ffn_m16_tc.from_env());
+    let armed = TargetDefaults {
+        ffn_m16_tc: true,
+        ..HOPPER
+    };
+    let off = with(&armed, &[("ATLAS_FFN_M16_TC", "0")]);
+    assert!(!off.ffn_m16_tc.value && off.ffn_m16_tc.from_env());
+}
+
+/// `ATLAS_M16_TC` is round 6's umbrella and still arms this arm — folded in by
+/// the RESOLVER, so it composes with the narrow variable rather than racing it.
+#[test]
+fn the_m16_umbrella_arms_the_ffn_arm_too() {
+    let on = with(&HOPPER, &[("ATLAS_M16_TC", "1")]);
+    assert!(on.ffn_m16_tc.value && on.ffn_m16_tc.from_env());
+    // The narrow variable WINS when both are set, so `ATLAS_FFN_M16_TC=0
+    // ATLAS_M16_TC=1` means what it reads as rather than depending on export
+    // order.
+    let narrow_off = with(&HOPPER, &[("ATLAS_FFN_M16_TC", "0"), ("ATLAS_M16_TC", "1")]);
+    assert!(!narrow_off.ffn_m16_tc.value);
+}
+
+/// The serve log names the row, so an operator can tell a target default from
+/// an `(env)` override without reading the recipe.
+#[test]
+fn the_serve_line_names_the_ffn_tensor_core_row() {
+    assert!(format_levers(&empty(&HOPPER)).contains("ffn_m16_tc=off"));
+    assert!(
+        format_levers(&with(&HOPPER, &[("ATLAS_FFN_M16_TC", "1")])).contains("ffn_m16_tc=on (env)")
     );
 }

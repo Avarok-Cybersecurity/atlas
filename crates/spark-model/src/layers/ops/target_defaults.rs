@@ -168,6 +168,8 @@ pub struct TargetLevers {
     pub lm_head_batchm_max: Resolved<u32>,
     pub ssm_batched_recurrent: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
+    /// The `w8a16_gemm_m16` tier on the dense-FFN decode arm (#927).
+    pub ffn_m16_tc: Resolved<bool>,
 }
 
 /// The whole table, as a pure function of the baked declaration and a variable
@@ -202,6 +204,19 @@ pub fn resolve(
         // stays PRESENCE-gated and unchanged, so every script that predates
         // this file means what it meant.
         decode_split_silu: resolve_toggle(defaults.decode_split_silu, None, split_silu_off),
+        // Two rows for ONE kernel family, because round 6 measured the FFN
+        // arm and the attention arms moving in opposite directions on the same
+        // serve. `ATLAS_M16_TC` is the round-6 umbrella that arms both; it is
+        // folded in HERE rather than in the consumer so that an umbrella can
+        // never DISARM a target's declaration, which would make the recipe
+        // depend on export order.
+        ffn_m16_tc: resolve_toggle(
+            defaults.ffn_m16_tc,
+            var("ATLAS_FFN_M16_TC")
+                .or_else(|| var("ATLAS_M16_TC"))
+                .as_deref(),
+            false,
+        ),
     }
 }
 
@@ -247,7 +262,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
     format!(
         "target defaults ({hw}): sm_count={sms} \
          lm_head_batchm_max={batchm}{batchm_src} \
-         ssm_batched_recurrent={recurrent} decode_split_silu={silu}",
+         ssm_batched_recurrent={recurrent} decode_split_silu={silu} \
+         ffn_m16_tc={ffn_m16_tc}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
         // at boot against the driver. Printed on this line because the levers
@@ -258,6 +274,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         batchm_src = l.lm_head_batchm_max.source.tag(),
         recurrent = onoff(l.ssm_batched_recurrent),
         silu = onoff(l.decode_split_silu),
+        ffn_m16_tc = onoff(l.ffn_m16_tc),
     )
 }
 

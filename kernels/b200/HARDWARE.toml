@@ -71,6 +71,10 @@ lm_head_batchm_max = 8
 ssm_batched_recurrent = false
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
+# `w8a16_gemm_m16` on the dense-FFN decode arm (#927). OFF: no B200 receipt,
+# and this target does not carry the kernel. A Hopper row is not inherited by
+# resemblance (`tests/target_defaults.rs`).
+ffn_m16_tc = false
 
 # ── Kernels this target does NOT reach ────────────────────────────────────
 #

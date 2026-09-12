@@ -136,6 +136,7 @@ fn every_declaring_target_states_every_lever() {
             "lm_head_batchm_max",
             "ssm_batched_recurrent",
             "decode_split_silu",
+            "ffn_m16_tc",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
