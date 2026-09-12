@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! GPU init + pre-load reserve preflight + post-load OOM check.
+//! GPU init + the pre-load reserve preflight.
+//!
+//! The post-load OOM check that used to live here is `post_load_audit.rs`;
+//! it moved when the #915 second pass brought the decode ring's post-load
+//! yardstick in (`headroom.rs`) and this file reached its 500-line cap.
 
 use anyhow::{Context, Result};
 
@@ -9,9 +13,13 @@ use atlas_core::config::ModelConfig;
 use crate::cli;
 
 mod decode_ring;
+mod headroom;
 mod per_sequence_state;
+mod post_load_audit;
 mod refusal;
 mod ssm_h_fp16;
+pub(crate) use headroom::PostLoadInputs;
+pub(crate) use post_load_audit::post_load_memory_audit;
 use {per_sequence_state::per_sequence_reserve, ssm_h_fp16::ssm_h_fp16_preconditions};
 
 pub(crate) struct ReservePreflight {
@@ -26,6 +34,12 @@ pub(crate) fn preflight_reserve(
     args: &cli::ServeArgs,
     config: &ModelConfig,
     free_mem: usize,
+    // #915 second pass: what the decode-ring auto-fit needs to predict the
+    // POST-load KV headroom instead of fitting against pre-load free memory.
+    // Gathered by the caller because none of it is derivable from `args` +
+    // `config`: the device total, the checkpoint directory, the resolved KV
+    // dtype and whether this target ships the W8A8 prefill kernels.
+    post_load: &PostLoadInputs<'_>,
 ) -> Result<ReservePreflight> {
     let h_state_bytes = config.ssm_h_state_bytes();
     let conv_state_bytes = config.ssm_conv_state_bytes();
@@ -227,6 +241,12 @@ pub(crate) fn preflight_reserve(
     // `TransformerModel::new` allocates exactly what was reserved).
     let ring_requested = decode_ring::requested_slots(args, config);
     let ring_slot_bytes = decode_ring::slot_bytes(args, per_seq_blob);
+    // The yardstick, and why it is that one: the predicted post-load KV
+    // headroom where the route's residency can be predicted, pre-load free
+    // memory (the first pass's behaviour) everywhere else. See `headroom.rs`
+    // for the H100 receipts that made the first yardstick the wrong one.
+    let yardstick =
+        headroom::post_load_yardstick(args, config, post_load, fixed_reserve, buffer_arena_bytes);
     let fit = decode_ring::autofit(
         args,
         ring_requested,
@@ -234,7 +254,9 @@ pub(crate) fn preflight_reserve(
         per_seq_blob,
         fixed_reserve + buffer_arena_bytes,
         free_mem,
+        &yardstick,
     );
+    tracing::info!("{}", fit.decision);
     if let Some(warning) = &fit.warning {
         tracing::warn!("SSM decode-rollback ring auto-fit — {}", warning);
     }
@@ -255,6 +277,7 @@ pub(crate) fn preflight_reserve(
                 ring_requested,
                 ring_slots: fit.slots,
                 per_seq_blob,
+                ring_pinned: spark_model::ssm_reserve::published_decode_ring_slots().is_some(),
             },
         ));
     }
@@ -366,69 +389,6 @@ pub(crate) fn init_gpu_backend(
         free_mem as f64 / (1024.0 * 1024.0 * 1024.0),
     );
     Ok((gpu, free_mem))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn post_load_memory_audit(
-    args: &cli::ServeArgs,
-    config: &ModelConfig,
-    gpu: &dyn spark_runtime::gpu::GpuBackend,
-    weight_bytes: usize,
-    free_mem: usize,
-    inference_reserve: usize,
-    total_reserve: usize,
-    gdn_two_phase_bytes: usize,
-    max_batch_tokens_pre: usize,
-) -> Result<()> {
-    let estimated_free = free_mem.saturating_sub(weight_bytes);
-    let actual_free = gpu.free_memory().unwrap_or(estimated_free);
-    let available_free = if actual_free > 0 {
-        actual_free
-    } else {
-        estimated_free
-    };
-    if available_free < total_reserve {
-        let avail_gb = available_free as f64 / (1024.0 * 1024.0 * 1024.0);
-        let need_gb = total_reserve as f64 / (1024.0 * 1024.0 * 1024.0);
-        let hint = if args.max_batch_size > 1 {
-            format!(
-                " Reduce --max-batch-size (currently {}) or --max-seq-len (currently {}).",
-                args.max_batch_size, args.max_seq_len
-            )
-        } else {
-            format!(
-                " Reduce --max-seq-len (currently {}) or use a smaller model.",
-                args.max_seq_len
-            )
-        };
-        anyhow::bail!(
-            "Insufficient GPU memory for inference buffers. \
-             After loading {:.2} GB of weights, only {:.2} GB remains \
-             but {:.2} GB is needed for SSM state pool ({} slots × {} layers) + scratch buffers.{}",
-            weight_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-            avail_gb,
-            need_gb,
-            args.max_batch_size,
-            config.num_ssm_layers(),
-            hint,
-        );
-    }
-    if gdn_two_phase_bytes > 0 {
-        tracing::info!(
-            "GDN chunked prefill reserve: {} MB (chunk_size={}, max_seq_len={})",
-            gdn_two_phase_bytes / (1024 * 1024),
-            max_batch_tokens_pre,
-            args.max_seq_len,
-        );
-    }
-    tracing::info!(
-        "Weights: {:.2} GB, estimated free: {:.1} GB, actual free: {:.1} GB (reserve: {} MB)",
-        weight_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-        estimated_free as f64 / (1024.0 * 1024.0 * 1024.0),
-        actual_free as f64 / (1024.0 * 1024.0 * 1024.0),
-        inference_reserve / (1024 * 1024),
-    );
-    Ok(())
 }
 
 /// Peek the DFlash drafter's trained block size (γ) from its config.json

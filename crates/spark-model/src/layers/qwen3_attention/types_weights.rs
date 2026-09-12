@@ -276,3 +276,30 @@ impl Fp8TwinSet {
         self.q || self.k || self.v || self.o
     }
 }
+
+/// The two `(module, function)` pairs the W8A8 block-scaled prefill arm needs
+/// (`prefill/paged_qkv.rs:220`, `prefill/paged_oproj.rs:94`).
+///
+/// SSOT for three readers that must not drift (#915): `init.rs` resolves the
+/// handles, `Qwen3AttentionLayer::has_w8a8_prefill_kernels` tests them, and
+/// [`w8a8_prefill_kernels_loaded`] asks the BACKEND the same question before
+/// any layer exists — which is what lets preflight predict, pre-load, whether
+/// the Q and O FP8 prefill twins will be built. A name typo'd in one of the
+/// three would mis-predict ~1.5 GB of residency on the 27B in silence.
+pub const W8A8_PREFILL_KERNELS: [(&str, &str); 2] = [
+    ("per_token_group_quant_fp8", "per_token_group_quant_fp8"),
+    ("fp8_gemm_t_blockscaled", "fp8_gemm_t_blockscaled"),
+];
+
+/// Whether BOTH [`W8A8_PREFILL_KERNELS`] are loaded for this target, asked of
+/// the backend rather than of a constructed layer.
+///
+/// Same answer `Qwen3AttentionLayer::has_w8a8_prefill_kernels` gives — the
+/// layer just caches the handles `init.rs` already resolved through
+/// `try_kernel`, and `try_kernel` returns `KernelHandle(0)` for an absent
+/// kernel exactly as this does.
+pub fn w8a8_prefill_kernels_loaded(gpu: &dyn spark_runtime::gpu::GpuBackend) -> bool {
+    W8A8_PREFILL_KERNELS
+        .iter()
+        .all(|(module, func)| crate::layers::try_kernel(gpu, module, func).0 != 0)
+}

@@ -10,6 +10,42 @@ use spark_runtime::weights::{WeightDtype, WeightStore};
 
 use super::*;
 
+/// Step (1) of [`detect_nvfp4_variant`]: the variant the CONFIG declares,
+/// asked WITHOUT a [`WeightStore`].
+///
+/// Factored out (#915, 2026-09-11) so a caller that has only `config.json` —
+/// the pre-load residency prediction in
+/// `weight_loader::predicted_residency`, which runs before the store
+/// exists — asks exactly the question the loader will later answer instead
+/// of keeping a second copy of this precedence. `None` means "the config
+/// does not say"; it is NEVER a guess, and the sniffing half of
+/// [`detect_nvfp4_variant`] is what resolves it once the store is loaded.
+pub fn config_declared_variant(config: &atlas_core::config::ModelConfig) -> Option<Nvfp4Variant> {
+    let qc = config.quantization_config.as_ref()?;
+    match qc.quant_method.as_str() {
+        "modelopt" if qc.quant_algo.eq_ignore_ascii_case("NVFP4") => Some(Nvfp4Variant::Standard),
+        "modelopt" if qc.quant_algo.eq_ignore_ascii_case("FP8") => Some(Nvfp4Variant::Fp8Dequanted),
+        "compressed-tensors" => {
+            // `format` is the sub-selector here. Block-scaled FP8 is tagged
+            // either with a literal "fp8" OR with compressed-tensors'
+            // `"float-quantized"` (8-bit float = FP8 E4M3, e.g.
+            // Hcompany/Holo-3.1-*-FP8); the rest ("nvfp4-pack-quantized",
+            // "pack-quantized") are NVFP4.
+            let fmt = qc.format.to_ascii_lowercase();
+            if fmt.contains("fp8") || fmt.contains("float-quant") {
+                Some(Nvfp4Variant::Fp8Dequanted)
+            } else {
+                Some(Nvfp4Variant::CompressedTensors)
+            }
+        }
+        "fp8" => Some(Nvfp4Variant::Fp8Dequanted),
+        // Unknown method with non-empty ignore list — the caller falls
+        // through to heuristic detection. A warning was already emitted by
+        // `quant_format::detect_quant_format`.
+        _ => None,
+    }
+}
+
 /// Detect the weight quantization variant from the weight store.
 ///
 /// Dispatch order matches vLLM / TRT-LLM / SGLang:
@@ -30,36 +66,11 @@ pub fn detect_nvfp4_variant(
 ) -> Nvfp4Variant {
     // (1) Config-first dispatch. See module docs on `quant_format` for
     // the full rationale — this is the fix for the Discord 2026-04-17
-    // `CUDA_ERROR_ILLEGAL_ADDRESS` bug.
-    if let Some(qc) = &config.quantization_config {
-        match qc.quant_method.as_str() {
-            "modelopt" if qc.quant_algo.eq_ignore_ascii_case("NVFP4") => {
-                return Nvfp4Variant::Standard;
-            }
-            "modelopt" if qc.quant_algo.eq_ignore_ascii_case("FP8") => {
-                return Nvfp4Variant::Fp8Dequanted;
-            }
-            "compressed-tensors" => {
-                // `format` is the sub-selector here. Block-scaled FP8 is tagged
-                // either with a literal "fp8" OR with compressed-tensors'
-                // `"float-quantized"` (8-bit float = FP8 E4M3, e.g.
-                // Hcompany/Holo-3.1-*-FP8); the rest ("nvfp4-pack-quantized",
-                // "pack-quantized") are NVFP4.
-                let fmt = qc.format.to_ascii_lowercase();
-                if fmt.contains("fp8") || fmt.contains("float-quant") {
-                    return Nvfp4Variant::Fp8Dequanted;
-                }
-                return Nvfp4Variant::CompressedTensors;
-            }
-            "fp8" => {
-                return Nvfp4Variant::Fp8Dequanted;
-            }
-            _ => {
-                // Unknown method with non-empty ignore list — fall
-                // through to heuristic detection. A warning was already
-                // emitted by `quant_format::detect_quant_format`.
-            }
-        }
+    // `CUDA_ERROR_ILLEGAL_ADDRESS` bug. `None` = the config does not declare
+    // one (or declares a method this engine does not know), which is the only
+    // case that falls through to sniffing.
+    if let Some(declared) = config_declared_variant(config) {
+        return declared;
     }
 
     let lp = config.layer_prefix(0);
