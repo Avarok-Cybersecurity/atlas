@@ -15,7 +15,7 @@ token-level diff. Run cold (no solo pass first) so no warm restore is involved.
 import os, json, threading, urllib.request, sys
 
 PORT = int(os.environ.get("ATLAS_BENCH_PORT", "8892"))
-MODEL = "qwen4exp-nvfp4"
+MODEL = os.environ.get("ATLAS_BENCH_MODEL", "qwen4exp-nvfp4")
 
 PROBES = [
     ("capital", "What is the capital of France? Reply with only the city name.", "paris"),

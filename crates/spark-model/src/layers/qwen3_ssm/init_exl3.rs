@@ -12,6 +12,17 @@ use super::Qwen3SsmLayer;
 use crate::layer::ForwardContext;
 use crate::layers::exl3_dense::Exl3GdnWeights;
 
+/// Widest `m` the chunked GEMV out_proj is used for. Above it the GEMM tier
+/// is the right arm again; the crossover is a measurement, not a guess, and
+/// prefill (m in the thousands) must never reach the chunked path.
+const EXL3_OPROJ_CHUNK_MAX_M: usize = 32;
+
+/// `ATLAS_EXL3_OPROJ_CHUNKED=0` restores the single GEMM-tier call.
+fn exl3_oproj_chunked() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_EXL3_OPROJ_CHUNKED").as_deref() != Ok("0"))
+}
+
 impl Qwen3SsmLayer {
     /// Install the packed GDN family. Every materialized slot of BOTH the
     /// fused in-projection (BF16 dense, NVFP4 quant + transposed twin, FP8
@@ -114,6 +125,47 @@ impl Qwen3SsmLayer {
         stream: u64,
     ) -> Result<()> {
         Self::ensure_not_capturing(ctx, "out_proj")?;
+        // ── M > 8: chunk onto the GEMV tier ──
+        // `exl3_dense_linear` branches `m <= EXL3_GEMV_MAX_M` (8) onto GEMV,
+        // else the GEMM tier. The cross-sequence verify runs m = sum(ks) = 11
+        // at C=4 and falls off — the same cliff that cost the NVFP4 out_proj
+        // ~8x its bandwidth floor, where chunking 8+3 was worth +4.1%.
+        //
+        // Projection rows are INDEPENDENT (each its own GEMV against the
+        // shared weight), so the split is arithmetically identical to one
+        // call. Bounded: past `EXL3_OPROJ_CHUNK_MAX_M` the GEMM tier wins
+        // again, and prefill (m in the thousands) must never come here — which
+        // is why this lives at the verify site and not inside
+        // `exl3_dense_linear`.
+        let gemv_max = crate::layers::ops::EXL3_GEMV_MAX_M;
+        if m > gemv_max && m <= EXL3_OPROJ_CHUNK_MAX_M && exl3_oproj_chunked() {
+            let h = ctx.config.hidden_size;
+            let vd = ctx.config.linear_value_head_dim * ctx.config.linear_num_value_heads;
+            let bf16 = 2usize;
+            let mut off = 0usize;
+            while off < m {
+                let take = (m - off).min(gemv_max);
+                g.out_proj_linear(
+                    ctx.gpu,
+                    a_bf16.offset(off * vd * bf16),
+                    dst_bf16.offset(off * h * bf16),
+                    take,
+                    stream,
+                )?;
+                off += take;
+            }
+            {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| {
+                    tracing::info!(
+                        rows = m,
+                        "EXL3 out_proj: CHUNKED onto the GEMV tier \
+                         (ATLAS_EXL3_OPROJ_CHUNKED=0 restores the single GEMM call)"
+                    );
+                });
+            }
+            return Ok(());
+        }
         g.out_proj_linear(ctx.gpu, a_bf16, dst_bf16, m, stream)
     }
 }

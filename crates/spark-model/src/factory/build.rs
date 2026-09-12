@@ -418,17 +418,32 @@ pub fn build_model(
         if qwen4_exp_mtp_module.is_some() {
             // Saying "no MTP weights were loaded" here would be a lie: the
             // block IS loaded and audited. Whether a proposer gets wired
-            // depends on ATLAS_QWEN4EXP_MTP_VERIFY — this arm only fires when
-            // it is OFF, since the proposer install path logs its own line.
-            tracing::warn!(
-                "qwen4_exp: the MTP module is loaded and audited, but the \
-                 proposer is NOT armed — speculative decoding stays OFF. Set \
-                 ATLAS_QWEN4EXP_MTP_VERIFY=1 to arm the draft head together \
-                 with the mHC K-row verify path it needs; the two arm together \
-                 because a proposer without that verify path routes the draft \
-                 into `refuse_batched_under_hc` mid-step, which the scheduler \
-                 turns into a truncated response rather than a fallback."
-            );
+            // depends on ATLAS_QWEN4EXP_MTP_VERIFY, so test THAT — via the
+            // same `requested_spec` the arming path uses — instead of firing
+            // on `mtp_weights.is_empty()`, which is ALWAYS true here because
+            // qwen4_exp carries its own module rather than the generic weight
+            // map. That made this warning fire on every `--speculative` boot,
+            // including ones where speculation then ran at p1 0.85; a warning
+            // that cries wolf is worse than none, because it trains the reader
+            // past the boot where it is true.
+            if !requested_spec {
+                tracing::warn!(
+                    "qwen4_exp: the MTP module is loaded and audited, but the \
+                     proposer is NOT armed — speculative decoding stays OFF. Set \
+                     ATLAS_QWEN4EXP_MTP_VERIFY=1 to arm the draft head together \
+                     with the mHC K-row verify path it needs; the two arm together \
+                     because a proposer without that verify path routes the draft \
+                     into `refuse_batched_under_hc` mid-step, which the scheduler \
+                     turns into a truncated response rather than a fallback."
+                );
+            } else {
+                // Armed here; the install path below still reports if the head
+                // itself turns out to be unprojectable.
+                tracing::info!(
+                    "qwen4_exp: MTP module loaded and audited, speculation requested \
+                     and ATLAS_QWEN4EXP_MTP_VERIFY=1 — arming the draft head."
+                );
+            }
         } else {
             tracing::warn!(
                 "`--speculative` was requested but no MTP weights were loaded for this \

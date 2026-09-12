@@ -98,15 +98,23 @@ pub(crate) struct Exl3LmHead {
     vocab: usize,
     /// Row capacity reachable through the logits arena, equal to that arena's
     /// row capacity. Rows `0..max_rows` are keyed by the destination logits
-    /// row; row `max_rows` is the RESERVED DRAFT ROW (see `draft_row`).
+    /// row; rows `max_rows..max_rows + EXL3_DRAFT_ROWS` are the RESERVED DRAFT
+    /// ROWS (see `draft_scratch_row`).
     max_rows: usize,
-    /// Allocated rows of the fp16 slabs = `max_rows + 1`. The extra row is
-    /// the qwen4_exp MTP draft head's, whose destination is its own PRIVATE
-    /// arena and therefore has no logits-arena row to key on. Reserving a row
-    /// instead of borrowing row 0 keeps the draft's rotation scratch disjoint
-    /// from every co-dispatched prefill row.
+    /// Allocated rows of the fp16 slabs = `max_rows + EXL3_DRAFT_ROWS`. The
+    /// extra rows are the qwen4_exp MTP draft head's, whose destination is its
+    /// own PRIVATE arena and therefore has no logits-arena row to key on.
+    /// Reserving rows instead of borrowing row 0 keeps the draft's rotation
+    /// scratch disjoint from every co-dispatched prefill row; reserving
+    /// SEVERAL lets the batched propose score n sequences in one projection.
     slab_rows: usize,
 }
+
+/// Scratch rows reserved past the logits arena for the MTP draft head — the
+/// widest batched propose it can score in one projection. Matches the
+/// proposer's own `BATCH_CAP`; a mismatch is caught by `project`'s bounds
+/// check rather than by silent overlap.
+pub(crate) const EXL3_DRAFT_ROWS: usize = 16;
 
 impl Exl3LmHead {
     /// Validate the tensor against the compiled kernel envelope and the
@@ -182,8 +190,11 @@ impl Exl3LmHead {
                 }
             }
         };
-        // One row past the logits arena: the reserved MTP-draft row.
-        let slab_rows = max_rows + 1;
+        // Past the logits arena: the reserved MTP-draft ROWS. One row served
+        // the per-sequence draft; the batched propose scores n sequences in
+        // ONE projection and needs n disjoint scratch rows. 15 extra rows of
+        // the two fp16 slabs is ~7.5 MB at this vocab.
+        let slab_rows = max_rows + EXL3_DRAFT_ROWS;
         let a_f16 = alloc(slab_rows * hidden * 2)?;
         let c_f16 = alloc(slab_rows * w.out_dim * 2)?;
         // 8 rows (the GEMV tier's cap): row 0 is the fp32-logits single-token
@@ -220,6 +231,25 @@ impl Exl3LmHead {
     /// scratch by a logits-arena row the way every other caller does.
     pub(crate) fn draft_scratch_row(&self) -> usize {
         self.max_rows
+    }
+
+    /// `rows`-row draft projection into an ARBITRARY destination, using the
+    /// reserved draft scratch rows — the batched-propose twin of
+    /// `project_draft`. Same head, same kernels, same numerics; only the row
+    /// count differs, so a batched draft scores identically to n single ones.
+    pub(crate) fn project_draft_rows(
+        &self,
+        gpu: &dyn GpuBackend,
+        src: DevicePtr,
+        rows: usize,
+        dst: DevicePtr,
+        stream: u64,
+    ) -> Result<()> {
+        ensure!(
+            rows >= 1 && rows <= EXL3_DRAFT_ROWS,
+            "EXL3 lm_head: {rows} draft rows exceeds the {EXL3_DRAFT_ROWS} reserved"
+        );
+        self.project(gpu, src, rows, self.draft_scratch_row(), dst, stream)
     }
 
     /// One-row draft projection into an ARBITRARY destination (the qwen4_exp

@@ -457,10 +457,19 @@ impl Qwen4ExpMtpHead {
     /// `project_draft` and is not batched here), the batchm GEMV family, and
     /// the batched argmax kernel.
     pub fn batch_ready(&self) -> bool {
-        self.lm_head_exl3.is_none()
-            && self.lm_head_nvfp4.is_some()
-            && self.w4a16_batchm.has_base()
-            && self.argmax_batch_k.0 != 0
+        if self.argmax_batch_k.0 == 0 {
+            return false;
+        }
+        // Native EXL3: the trellis head projects n rows through the SAME
+        // `project` the one-row draft uses — it only needed the reserved
+        // scratch rows to sit on (`EXL3_DRAFT_ROWS`). No NVFP4 head exists
+        // under native EXL3, and manufacturing one would mean a second
+        // 318 MB vocab copy scoring drafts through a different approximation
+        // than the target samples from.
+        if self.lm_head_exl3.is_some() {
+            return true;
+        }
+        self.lm_head_nvfp4.is_some() && self.w4a16_batchm.has_base()
     }
 
     pub fn batch_cap(&self) -> usize {
@@ -494,8 +503,15 @@ impl Qwen4ExpMtpHead {
         anyhow::ensure!(n >= 1 && n <= BATCH_CAP, "draft_tokens_batched: n={n} (cap {BATCH_CAP})");
         let vocab = ctx.config.vocab_size;
         let h = ctx.config.hidden_size;
+        // NATIVE EXL3 FIRST, as the single-row `draft_token` does: under
+        // `ATLAS_EXL3_NATIVE` there is no NVFP4 head to fall back to, and the
+        // borrowed trellis head is the one the target samples from.
+        if let Some(exl3) = self.lm_head_exl3.as_ref() {
+            exl3.project_draft_rows(ctx.gpu, self.buf.batch_h_out, n, self.buf.batch_logits, stream)?;
+            return self.batched_argmax(n, vocab, ctx, stream);
+        }
         let w = self.lm_head_nvfp4.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("draft_tokens_batched: no NVFP4 lm_head (EXL3 head is not batched)")
+            anyhow::anyhow!("draft_tokens_batched: no NVFP4 and no native-EXL3 lm_head")
         })?;
         let mut off = 0usize;
         while off < n {
@@ -515,6 +531,19 @@ impl Qwen4ExpMtpHead {
             )?;
             off += take;
         }
+        self.batched_argmax(n, vocab, ctx, stream)
+    }
+
+    /// ONE batched argmax over `[n, vocab]` draft logits and ONE D2H of the n
+    /// token ids — shared by both head arms, so the NVFP4 and native-EXL3
+    /// paths cannot drift in how they read a batch back.
+    fn batched_argmax(
+        &self,
+        n: usize,
+        vocab: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
         ops::argmax_bf16_batch(
             ctx.gpu,
             self.argmax_batch_k,

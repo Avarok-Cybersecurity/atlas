@@ -92,6 +92,22 @@ DRAFTS="${DRAFTS:-2}"
 # reconstructs a partial accept instead of storing per-token state snapshots.
 ROLLBACK="${ROLLBACK:-snapshot}"
 
+# 🪤 Prefill chunk size. This was pinned at 2048 — inherited from the 32K
+# PROFILING config and never revisited for 128K — while the flag's own help
+# documents 8192 as the default and records "halves chunk count vs 4096,
+# giving ~11% TTFT improvement at 32K with no decode regression on DGX Spark".
+# MEASURED HERE, 128K x 4 EP=2: 8192 is WORSE — cold prefill at 8.3K fell
+# 242.3 -> 217.3 tok/s, and decode was unchanged (C=1 49.8->48.7, C=2
+# 62.1->62.0, C=4 70.3->69.7, all within noise). That is the row-cap
+# interaction: a cap reasoned at one chunk size fires its overflow tier at
+# another. Default stays 2048 until the cap is measured alongside it.
+# At 2048 a 88K prompt is 43 chunks; the serve log steps 2048 tokens per
+# ~9.2 s, i.e. ~222 tok/s, and TTFT dominates everything decode-side at these
+# lengths. Interacts with the MoE row cap (see the exl3 row-cap note: a cap
+# reasoned at one chunk size fires its overflow tier at another), so quote
+# prefill numbers as (chunk, cap), never chunk alone.
+PREFILL_CHUNK="${PREFILL_CHUNK:-2048}"
+
 # 🪤 util RESERVES its whole fraction of TOTAL box memory up front, and the KV
 # pool then expands to fill whatever the weights leave over. 0.65 is the
 # measured-comfortable point for the 128K x 4 shape at EP=2; 0.58 is the 32K
@@ -195,7 +211,7 @@ exec "$BIN" serve \
   --kv-cache-dtype bf16 \
   --ssm-cache-slots "$SSM_CACHE_SLOTS" \
   --ssm-rollback-mode "$ROLLBACK" \
-  --max-prefill-tokens 2048 \
+  --max-prefill-tokens "$PREFILL_CHUNK" \
   --request-timeout 1800 \
   --fast-load-prefetch-shards \
   --enable-prefix-caching \

@@ -21,7 +21,7 @@ spread attached, not a single sample.
 import os, json, time, threading, urllib.request, sys
 
 PORT = int(os.environ.get("ATLAS_BENCH_PORT", "8892"))
-MODEL = "qwen4exp-nvfp4"
+MODEL = os.environ.get("ATLAS_BENCH_MODEL", "qwen4exp-nvfp4")
 C = int(sys.argv[1]) if len(sys.argv) > 1 else 4
 REPS = int(sys.argv[2]) if len(sys.argv) > 2 else 3
 MAXTOK = 400
