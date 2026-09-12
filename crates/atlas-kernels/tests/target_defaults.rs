@@ -75,6 +75,10 @@ fn hopper_declares_what_an_h100_serve_runs_with() {
         "the same kernel family on the dense-FFN arm measured -5.2% (round 6 \
          cell J); one kernel, two rows, two verdicts"
     );
+    assert!(
+        d.lm_head_m16_tc,
+        "round 9 cell Y: +4.09% C=16 aggregate on the BF16 decode head"
+    );
     // ★ NOT 16. The 16 an H100 recipe exported was measured with the
     // tensor-core head arm (`dense_gemm_m16_bf16`, #927) also on, where that
     // arm serves 5..=16 and this band is very nearly inert. The arm is not in
@@ -188,6 +192,7 @@ fn every_declaring_target_states_every_lever() {
             "attn_decode_splitk",
             "ffn_m16_tc",
             "attn_m16_tc",
+            "lm_head_m16_tc",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),

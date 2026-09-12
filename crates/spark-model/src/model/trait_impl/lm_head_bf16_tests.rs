@@ -3,8 +3,8 @@
 //! Exercise the BF16 projection used by both ordinary and mixed decode.
 
 use super::{
-    LmHeadM16Tc, bf16_batch_gemv_from_value, lm_head_m16_tc_route, m16_tc_enabled_from_presence,
-    m16_tc_head_route_message, m16_tc_n_tile_from_value, project_bf16_lm_head,
+    LmHeadM16Tc, bf16_batch_gemv_from_value, lm_head_m16_tc_route, m16_tc_head_route_message,
+    m16_tc_n_tile_from_value, project_bf16_lm_head,
 };
 use crate::layers::ops;
 use crate::weight_map::DenseWeight;
@@ -285,7 +285,6 @@ fn expect_tc_launch(m: u32, k: u32, m16_tc: LmHeadM16Tc, handle: u64, n_tile: u3
 /// where both kernels are present, which is what a shipped image looks like.
 #[test]
 fn tc_head_is_off_until_the_lever_is_set() {
-    assert!(!m16_tc_enabled_from_presence(false));
     for m in [5, 8, 13, 16] {
         assert!(lm_head_m16_tc_route(tc(false, 32), m, 5120).is_none());
     }
