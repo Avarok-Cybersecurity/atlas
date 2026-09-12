@@ -319,11 +319,11 @@ pub fn gdn_prefill_fla(
     }
     let tc_ok = tc_reject.is_none();
     if tc_ok {
+        // `ssm_gdn_tc_route`: built from the SAME constant `init_kernels`
+        // binds the handle with (round 12 caught this line naming the family).
         tracing::info!(
-            "GDN state spine: gated_delta_rule_chunk_delta_h_tcfuse \
-             (ATLAS_GDN_PREFILL_TC; bf16 mma.sync operands, f32 accumulator = the \
-             recurrent state, h stays f32) grid=[{num_v_heads},{batch_size}] block=256 \
-             smem={smem_tcfuse}B"
+            "{}",
+            gdn_tc_spine_route_line(num_v_heads, batch_size, smem_tcfuse)
         );
     }
     // ── TMA path (ATLAS_GDN_TMA=1) ───────────────────────────────────────────
