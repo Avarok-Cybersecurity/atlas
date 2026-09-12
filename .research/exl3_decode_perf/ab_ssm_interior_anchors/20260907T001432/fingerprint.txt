@@ -1,0 +1,7 @@
+FINGERPRINT ab_ssm_interior_anchors date=20260907T001432 host=dgx-00 port=8899
+binary=/home/ms/atlas/.claude/worktrees/agent-a059125c774205e7c/target/release/spark sha256=585275361e8bece7 git=16dd1b6ae branch=perf/ssm-interior-anchors
+ckpt=/tank/exl3-ckpt/qwen38-flash-next-4.05bpw preset=qwen3.8-flash-next-exl3 (prefix caching ON, --max-prefill-tokens 8192 default)
+order=off anchor1024 anchor512
+               total        used        free      shared  buff/cache   available
+Mem:             121           9          89           0          23         112
+NVIDIA GB10, [N/A], [N/A]

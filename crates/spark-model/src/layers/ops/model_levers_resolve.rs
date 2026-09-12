@@ -54,6 +54,7 @@ pub(super) fn from_values(
         kv_poison: opt_in(value("ATLAS_KV_POISON").as_deref()),
         drafter,
         gdn_regresident: value("ATLAS_NO_GDN_REGRESIDENT").as_deref() != Some("1"),
+        gdn_fla_under_prefix_cache: opt_in(value("ATLAS_GDN_FLA_UNDER_PREFIX_CACHE").as_deref()),
         gdn_batched_fla: opt_in(value("ATLAS_GDN_BATCHED_FLA").as_deref()),
         gdn_wy17: opt_out(value("ATLAS_GDN_WY17").as_deref()),
         gdn_wyn: opt_out(value("ATLAS_GDN_WYN").as_deref()),

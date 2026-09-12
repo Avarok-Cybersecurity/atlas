@@ -21,6 +21,7 @@ mod decode;
 pub(crate) mod helpers;
 mod init;
 mod init_arch_gates;
+mod init_exl3;
 mod init_kernel_dispatch;
 mod kernel_requirements;
 mod op_dump;
@@ -33,6 +34,7 @@ pub mod innerq_driver;
 mod prefill;
 mod prefill_weights;
 mod trait_impl;
+pub use trait_impl::verify_attn_rows_enabled;
 mod types;
 mod types_weights;
 

@@ -1,0 +1,1 @@
+[2m2026-09-07T04:22:13.279602Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::midchunk_capture[0m[2m:[0m ssm interior anchors: declined (tail tb=7968 is off the 64-token capture grid (block_size=16, gdn split align=64)) [first decline only at info]

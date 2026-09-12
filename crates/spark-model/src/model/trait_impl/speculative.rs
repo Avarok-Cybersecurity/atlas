@@ -361,6 +361,15 @@ impl TransformerModel {
             let dst = self.verify_hidden_stash.offset(i * h * bf16);
             self.gpu.copy_d2d_async(src, dst, h * bf16, stream)?;
         }
+        // Keep the ABSOLUTE rows beside the stash: the qwen4_exp proposer
+        // reads the accepted target's highway row (`impl_b3.rs`), and the slot
+        // index is not that row. Without this the restore below cannot publish
+        // a correct `last_mtp_hidden_idx` and every sequence drafts from
+        // whichever row the global happens to hold.
+        *self
+            .verify_stash_rows
+            .lock()
+            .map_err(|_| anyhow::anyhow!("verify stash rows poisoned"))? = rows.to_vec();
         Ok(())
     }
 
@@ -387,6 +396,20 @@ impl TransformerModel {
         let src = self.verify_hidden_stash.offset(idx * h * bf16);
         self.gpu
             .copy_d2d_async(src, self.mtp_hidden_save, h * bf16, stream)?;
+        // Publish the row this restore corresponds to, exactly as
+        // `save_hidden_for_mtp_dispatch` does for the single-sequence path.
+        // The qwen4_exp proposer reads the target HIGHWAY row at this index;
+        // leaving it stale makes every sequence in a batched step draft from
+        // another sequence's row (measured: draft match 0.24 vs 0.86).
+        if let Some(&row) = self
+            .verify_stash_rows
+            .lock()
+            .map_err(|_| anyhow::anyhow!("verify stash rows poisoned"))?
+            .get(idx)
+        {
+            self.last_mtp_hidden_idx
+                .store(row, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(())
     }
 
@@ -563,10 +586,35 @@ impl TransformerModel {
             self.ensure_drafter_context(proposer, seq, &ctx, stream);
         }
         let h = self.config.hidden_size;
-        let hiddens: Vec<spark_runtime::gpu::DevicePtr> = stash_idx
-            .iter()
-            .map(|&i| self.verify_hidden_stash.offset(i * h * 2))
-            .collect();
+        let hiddens: Vec<spark_runtime::gpu::DevicePtr> = if self.config.model_type == "qwen4_exp"
+        {
+            // This proposer's combiner needs the TARGET HIGHWAY row, not the
+            // collapsed hidden. `verify_stash_rows[slot]` is the absolute
+            // verify row the stash was filled from — the same row the
+            // per-sequence path publishes via `last_mtp_hidden_idx`, which
+            // is the highway-row fix's whole point. Without a recorded row
+            // there is nothing correct to draft from: decline to the
+            // per-sequence path rather than guess.
+            let rows = self
+                .verify_stash_rows
+                .lock()
+                .map_err(|_| anyhow::anyhow!("verify stash rows poisoned"))?;
+            let hc = self.config.hc_mult.max(1);
+            let base = self.buffers.hc_streams();
+            let mut out = Vec::with_capacity(stash_idx.len());
+            for &i in stash_idx {
+                let Some(&row) = rows.get(i) else {
+                    return Ok(None);
+                };
+                out.push(base.offset(row * hc * h * 4));
+            }
+            out
+        } else {
+            stash_idx
+                .iter()
+                .map(|&i| self.verify_hidden_stash.offset(i * h * 2))
+                .collect()
+        };
         let mut states: Vec<&mut dyn crate::speculative::ProposerState> = Vec::new();
         for seq in seqs.iter_mut() {
             match seq.proposer_state.as_mut() {

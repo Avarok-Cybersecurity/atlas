@@ -6,6 +6,7 @@ use super::*;
 
 mod hc;
 mod ssm_batched;
+mod ssm_batched_log;
 mod ssm_batched_recurrent;
 
 /// Batched dense FFN for wide SSM decode batches: **ON by default**, disabled

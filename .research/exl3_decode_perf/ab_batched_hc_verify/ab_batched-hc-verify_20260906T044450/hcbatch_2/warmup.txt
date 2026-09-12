@@ -1,0 +1,3 @@
+FINGERPRINT port=8899 model=qwen3.8-flash-next-exl3 prompt=code max_tokens=64 temp=0 effort=low stream=1 date=2026-09-06T05:02:36
+run 0: {'chunks': 63, 'ttft_ms': 502.8789481148124, 'gap_med_ms': 0.7175219943746924, 'gap_mean_ms': 34.445993228521395, 'tps_from_gaps': 29.03095269646621, 'completion_tokens': 64, 'tps_server_tokens': 28.505604451597865, 'finish': 'length'}
+SUMMARY n=1 gap_median_ms=0.72 decode_tok_s_median=28.51 ttft_ms=[503]

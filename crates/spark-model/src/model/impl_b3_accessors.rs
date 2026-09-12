@@ -8,6 +8,8 @@ use spark_runtime::gpu::GpuBackend;
 
 use super::types::TransformerModel;
 use crate::speculative::DraftProposer;
+// `argmax_on_device` lives on the Model trait; the shadow step calls it.
+use crate::traits::Model;
 
 impl TransformerModel {
     /// Borrow the GPU backend for post-construction wiring (e.g. installing
@@ -86,6 +88,223 @@ impl TransformerModel {
             }
         }
         self.proposer = Some(proposer);
+        self.alloc_batched_verify_buffers();
+    }
+
+    /// Allocate the batched-verify staging buffers if a LATE proposer install
+    /// left them NULL.
+    ///
+    /// `TransformerModel::new` allocates `verify_hidden_stash` and
+    /// `verify_wy_tables` only when a proposer is passed to the CONSTRUCTOR.
+    /// qwen4_exp MTP, GLM-5.3 and DFlash all install theirs afterwards through
+    /// `set_dflash_proposer`, so both stayed NULL — and `can_batch_verify`
+    /// self-gates on `!verify_hidden_stash.is_null()`.
+    ///
+    /// 🪤 The symptom is not an error. The batched verify silently declines
+    /// and every sequence takes the per-sequence loop, which returns the SAME
+    /// answers — so known-answer probes pass at any concurrency and the only
+    /// trace is that speculation does not amortise across sequences. MEASURED
+    /// here: with the highway batched verify enabled and this allocation
+    /// missing, C=2 probes were 4/4 and the path's own one-shot ACTIVE log
+    /// never printed.
+    ///
+    /// Idempotent: re-installing a proposer keeps the existing buffers, whose
+    /// addresses must stay fixed for CUDA-graph stability.
+    fn alloc_batched_verify_buffers(&mut self) {
+        if self.verify_hidden_stash.is_null() {
+            match self
+                .gpu
+                .alloc(crate::layer::VERIFY_WY_TABLE_SEQS * self.config.hidden_size * 2)
+            {
+                Ok(buf) => self.verify_hidden_stash = buf,
+                // Never fail the install: without the stash the batched verify
+                // simply keeps declining, which is the pre-existing behaviour.
+                Err(e) => tracing::warn!("batched-verify hidden stash alloc failed: {e:#}"),
+            }
+        }
+        if self.verify_wy_tables.is_null() && self.config.num_ssm_layers() > 0 {
+            let bytes = self.config.num_ssm_layers() * crate::layer::VERIFY_WY_LAYER_STRIDE_BYTES;
+            match self.gpu.alloc(bytes) {
+                Ok(buf) => {
+                    if let Err(e) = self.gpu.memset(buf, 0, bytes) {
+                        tracing::warn!("batched-verify WY table memset failed: {e:#}");
+                    }
+                    self.verify_wy_tables = buf;
+                }
+                Err(e) => tracing::warn!("batched-verify WY table alloc failed: {e:#}"),
+            }
+        }
+    }
+
+    /// Take ownership of a loaded qwen4_exp MTP draft module.
+    ///
+    /// This is NOT decoration. `DevicePtr` has no `Drop`, so a module that is
+    /// built and then dropped leaks its quantized MoE and attention buffers.
+    /// Nothing reads the field yet: no proposer consumes it, so
+    /// `has_proposer()` stays false and speculation stays off.
+    pub fn set_qwen4_exp_mtp(
+        &mut self,
+        module: Box<crate::weight_loader::qwen4_exp::Qwen4ExpMtpModule>,
+    ) {
+        tracing::info!(
+            "qwen4_exp MTP module installed on the served model (held so its \
+             device buffers are not leaked; no proposer consumes it yet)"
+        );
+        self.qwen4_exp_mtp = Some(module);
+    }
+
+    /// Is a vocab head the qwen4_exp MTP draft can project through available?
+    ///
+    /// The draft needs either the target's NVFP4 head or — under
+    /// `ATLAS_EXL3_NATIVE`, where `build.rs` deliberately leaves every
+    /// materialized head slot `None` — the native EXL3 trellis head. Arming
+    /// the proposer without one made `draft_token` fail on EVERY propose: an
+    /// error logged per decode step and speculation degenerating to serial
+    /// while the logs claimed it was armed.
+    pub fn qwen4_exp_mtp_draft_head_available(&self) -> bool {
+        self.lm_head_nvfp4.is_some() || self.lm_head_exl3.is_some()
+    }
+
+    /// Install the qwen4_exp MTP draft head for SHADOW measurement.
+    ///
+    /// The head owns the module, so this replaces `set_qwen4_exp_mtp` rather
+    /// than accompanying it. Installing it does NOT enable speculation:
+    /// `has_proposer()` is unaffected and nothing feeds a draft back into the
+    /// sequence. It only lets the decode path ask "would this draft have been
+    /// right?" and count.
+    pub fn set_qwen4_exp_mtp_head(
+        &mut self,
+        module: crate::weight_loader::qwen4_exp::Qwen4ExpMtpModule,
+        embed_tokens: crate::weight_map::DenseWeight,
+        max_seq_len: usize,
+        // Install the head as the ACTIVE proposer, so the scheduler drafts and
+        // verifies with it. Separate from merely holding the head: shadow mode
+        // holds it without ever feeding a draft back.
+        install_as_proposer: bool,
+    ) -> anyhow::Result<()> {
+        // Built here rather than in the factory because the model owns `gpu`
+        // by this point.
+        let head = crate::layers::qwen4_exp_mtp::Qwen4ExpMtpHead::new(
+            module,
+            embed_tokens,
+            // Share the target's NVFP4 vocab head (Copy pointers) so the draft
+            // goes through the SAME quantization ladder the real token does —
+            // a drafter scored against a different head measures the head, not
+            // the draft.
+            self.lm_head_nvfp4,
+            // ...or, under ATLAS_EXL3_NATIVE, the target's PACKED-TRELLIS head,
+            // borrowed. The checkpoint ships one `lm_head` and no `mtp.lm_head`,
+            // so this is a share, not a copy — and it routes the draft through
+            // the model's single `Exl3LaunchState`.
+            self.lm_head_exl3_shared(),
+            &self.config,
+            self.gpu.as_ref(),
+            max_seq_len,
+            // Every active Qwen sequence owns an SSM slot. Shadow mode only
+            // owns the one diagnostic state; active MTP uses the actual pool.
+            if install_as_proposer {
+                self.ssm_pool.mtp_slots
+            } else {
+                1
+            },
+        )?;
+        // Active MTP owns state per sequence. A second global shadow owner
+        // would accumulate private KV across requests and exceed the slot cap.
+        let shadow_state = if install_as_proposer {
+            None
+        } else {
+            Some(std::sync::Mutex::new(head.alloc_state(self.gpu.as_ref())?))
+        };
+        if !install_as_proposer {
+            tracing::warn!(
+                "qwen4_exp MTP SHADOW MODE is on: the draft head runs every decode \
+                 step and its accept rate is logged. Verified INERT — shadow-on \
+                 output is byte-identical to a shadow-off control — because the \
+                 draft runs in its own BufferArena. It still costs a FULL EXTRA \
+                 draft forward per token and produces NO speedup (nothing is fed \
+                 back), so do not benchmark with it on."
+            );
+        }
+        let head = std::sync::Arc::new(head);
+        if install_as_proposer {
+            tracing::warn!(
+                "qwen4_exp MTP SPECULATION ARMED: the draft head is installed as \
+                 the active proposer, and the mHC K-row verify path is live. \
+                 Measured draft accept is 86.5-95.5%, but this is the FIRST \
+                 configuration in which a draft is actually fed back — treat \
+                 output quality as unproven until the agentic battery runs."
+            );
+            self.proposer = Some(head.clone());
+            // Late install, same as DFlash's — see `alloc_batched_verify_buffers`.
+            // Without this the batched verify declines SILENTLY on a NULL
+            // stash and speculation never amortises across sequences.
+            self.alloc_batched_verify_buffers();
+        }
+        self.qwen4_exp_mtp_head = Some(head);
+        self.qwen4_exp_mtp_state = shadow_state;
+        Ok(())
+    }
+
+    /// Run one shadow draft step: score the previous step's draft against the
+    /// token the target just produced, then draft the next one.
+    ///
+    /// `target_streams` is the four-stream mHC highway for the row that
+    /// produced `actual_token`. No-op unless shadow mode is installed.
+    pub(super) fn qwen4_exp_mtp_shadow_step(
+        &self,
+        actual_token: u32,
+        target_streams: spark_runtime::gpu::DevicePtr,
+        position: usize,
+        ctx: &crate::layer::ForwardContext,
+        stream: u64,
+    ) {
+        let (Some(head), Some(state)) = (&self.qwen4_exp_mtp_head, &self.qwen4_exp_mtp_state)
+        else {
+            return;
+        };
+        use crate::layers::qwen4_exp_mtp::{ShadowStage, shadow_stage};
+        let Ok(mut st) = state.lock() else { return };
+        // Score the draft made LAST step against what the target actually just
+        // emitted. This is the whole measurement.
+        head.shadow_observe(st.pending_draft.take(), actual_token);
+
+        // BISECTION stage 1: count only. If the target's output is DIRTY even
+        // here, the corruption is the extra `argmax_on_device` itself (it writes
+        // `buffers.scratch()` and runs on the DEFAULT stream, not this one) —
+        // not the draft forward.
+        if shadow_stage() == ShadowStage::Observe {
+            return;
+        }
+
+        // Draft the NEXT token from (token just emitted, this row's highway).
+        let h_out = self.mtp_hidden_save;
+        if let Err(e) = head.draft_hidden(
+            actual_token,
+            target_streams,
+            position,
+            &mut st,
+            h_out,
+            ctx,
+            stream,
+        ) {
+            // Shadow is diagnostic: never fail the real decode over it.
+            tracing::warn!("qwen4_exp MTP shadow draft failed, disabling: {e:#}");
+            return;
+        }
+        // BISECTION stage 3: stop before the draft's own LM head.
+        if shadow_stage() < ShadowStage::Full {
+            return;
+        }
+
+        // The draft's logits go into the DRAFT's arena, so nothing here can
+        // touch the buffer the scheduler is about to sample from. The earlier
+        // stash/restore of the target's logits existed only because the draft
+        // borrowed the target's LM-head buffer; private-arena isolation removed
+        // the need for it entirely.
+        match head.draft_token(h_out, ctx, stream) {
+            Ok(d) => st.pending_draft = Some(d),
+            Err(e) => tracing::warn!("qwen4_exp MTP shadow draft head failed: {e:#}"),
+        }
     }
 
     /// Install the fused n-gram input embedding (LongCat family). Once set,

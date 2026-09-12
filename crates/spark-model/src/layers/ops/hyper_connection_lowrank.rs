@@ -24,6 +24,10 @@ pub(crate) use gemm::hc_pre_gemm;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
+use super::hyper_connection_lowrank_rows::{
+    HC_DEC_MAX_T, hc_decode_rows_enabled, hc_decode_rows_shape_ok, hc_pre_chunk_enabled,
+    hc_pre_rows,
+};
 use crate::layers::qwen3_attention::HcLowRank;
 
 /// `ATLAS_QWEN4EXP_NO_HC_GEMM=1`: revert the large-T collapse to the fused
@@ -37,7 +41,7 @@ fn hc_gemm_disabled() -> bool {
 /// `ATLAS_HC_DECODE_SPLIT=1`: keep the pre-cuBLASLt split path for
 /// decode-shaped T (A/B escape hatch, same convention as the GEMM kill
 /// switch above).
-fn hc_decode_split_forced() -> bool {
+pub(crate) fn hc_decode_split_forced() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("ATLAS_HC_DECODE_SPLIT").as_deref() == Ok("1"))
 }
@@ -71,6 +75,77 @@ pub fn hc_pre_lowrank(
     // ~13 MB of weights per call (measured 2.0 ms; the whole token was
     // 96 x that). The fused kernel stays for prefill, where grid=[T]
     // already fills the machine and skips the global round trip.
+    if !scratch.is_null()
+        && hc_decode_rows_enabled()
+        && hc_decode_rows_shape_ok(num_tokens, hidden_size, hc_mult, w.rank as u32)
+    {
+        {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| tracing::info!(
+                num_tokens, hidden_size, hc_mult, rank = w.rank,
+                "hc_pre_lowrank arm: DECODE-ROWS"
+            ));
+        }
+        return hc_pre_rows(
+            gpu,
+            streams,
+            w,
+            y_out,
+            inj_out,
+            scratch,
+            num_tokens,
+            hidden_size,
+            hc_mult,
+            norm_eps,
+            /* inject */ true,
+            stream,
+        );
+    }
+    // T > 8 but still decode-shaped: CHUNK onto the decode-rows arm rather
+    // than fall to the GEMM decomposition. See the module note — same cliff
+    // as the two out_proj arms, same fix, and rows are independent.
+    if !scratch.is_null()
+        && hc_decode_rows_enabled()
+        && hc_pre_chunk_enabled()
+        && num_tokens > HC_DEC_MAX_T
+        && hc_decode_rows_shape_ok(HC_DEC_MAX_T, hidden_size, hc_mult, w.rank as u32)
+    {
+        {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                tracing::info!(
+                    num_tokens,
+                    chunk = HC_DEC_MAX_T,
+                    "hc_pre_lowrank arm: DECODE-ROWS CHUNKED (T > HC_DEC_MAX_T; \
+                     ATLAS_NO_HC_PRE_CHUNK restores the cuBLASLt GEMM)"
+                );
+            });
+        }
+        let h = hidden_size as usize;
+        let hc = hc_mult as usize;
+        let mut off = 0u32;
+        while off < num_tokens {
+            let take = (num_tokens - off).min(HC_DEC_MAX_T);
+            // A ragged tail below the contract's floor would refuse; the
+            // contract admits 1..=8, so every chunk is in range.
+            hc_pre_rows(
+                gpu,
+                streams.offset(off as usize * hc * h * 4),
+                w,
+                y_out.offset(off as usize * h * 2),
+                inj_out.offset(off as usize * hc * 4),
+                scratch,
+                take,
+                hidden_size,
+                hc_mult,
+                norm_eps,
+                /* inject */ true,
+                stream,
+            )?;
+            off += take;
+        }
+        return Ok(());
+    }
     if num_tokens <= 64 && !scratch.is_null() {
         // Decode-shaped T: the GEMM decomposition with cuBLASLt for the
         // three projections. The split path's hand-rolled k_down/k_fin each
@@ -79,6 +154,13 @@ pub fn hc_pre_lowrank(
         // the prefill collapse and the batched-decode QKVZ arms, and the
         // same cure. ATLAS_HC_DECODE_SPLIT=1 keeps the split path (A/B).
         if !hc_decode_split_forced() {
+            {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| tracing::info!(
+                    num_tokens, hidden_size, hc_mult, rank = w.rank,
+                    "hc_pre_lowrank arm: DECODE-GEMM(cuBLASLt)"
+                ));
+            }
             return hc_pre_gemm(
                 gpu,
                 streams,
@@ -92,8 +174,16 @@ pub fn hc_pre_lowrank(
                 norm_eps,
                 /* inject */ true,
                 /* use_cublas */ true,
+                /* row_exact */ false,
                 stream,
             );
+        }
+        {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| tracing::info!(
+                num_tokens, hidden_size, hc_mult, rank = w.rank,
+                "hc_pre_lowrank arm: DECODE-SPLIT"
+            ));
         }
         return hc_pre_split(
             gpu,
@@ -114,6 +204,13 @@ pub fn hc_pre_lowrank(
     // this collapse running as FP32 warp loops. Kill switch reverts to the
     // fused kernel below.
     if !scratch.is_null() && !hc_gemm_disabled() {
+        {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| tracing::info!(
+                num_tokens, hidden_size, hc_mult, rank = w.rank,
+                "hc_pre_lowrank arm: PREFILL-GEMM"
+            ));
+        }
         return hc_pre_gemm(
             gpu,
             streams,
@@ -127,6 +224,7 @@ pub fn hc_pre_lowrank(
             norm_eps,
             /* inject */ true,
             /* use_cublas */ false,
+            /* row_exact */ false,
             stream,
         );
     }
@@ -172,6 +270,25 @@ pub fn hc_head_lowrank(
     norm_eps: f32,
     stream: u64,
 ) -> Result<()> {
+    if !scratch.is_null()
+        && hc_decode_rows_enabled()
+        && hc_decode_rows_shape_ok(num_tokens, hidden_size, hc_mult, w.rank as u32)
+    {
+        return hc_pre_rows(
+            gpu,
+            streams,
+            w,
+            y_out,
+            DevicePtr::NULL,
+            scratch,
+            num_tokens,
+            hidden_size,
+            hc_mult,
+            norm_eps,
+            /* inject */ false,
+            stream,
+        );
+    }
     if num_tokens <= 64 && !scratch.is_null() {
         if !hc_decode_split_forced() {
             return hc_pre_gemm(
@@ -187,6 +304,7 @@ pub fn hc_head_lowrank(
                 norm_eps,
                 /* inject */ false,
                 /* use_cublas */ true,
+                /* row_exact */ false,
                 stream,
             );
         }
@@ -221,6 +339,7 @@ pub fn hc_head_lowrank(
             norm_eps,
             /* inject */ false,
             /* use_cublas */ false,
+            /* row_exact */ false,
             stream,
         );
     }
@@ -262,7 +381,7 @@ pub fn hc_post_lowrank(
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([num_tokens, 1, 1])
+        .grid([num_tokens, hidden_size.div_ceil(256), 1])
         .block([256, 1, 1])
         .arg_ptr(block_out)
         .arg_ptr(residual)
@@ -300,7 +419,7 @@ pub(crate) fn hc_pre_split(
     let k_fin = gpu.kernel("hyper_connection", "hc_pre_finish")?;
 
     KernelLaunch::new(gpu, k_stage)
-        .grid([num_tokens, 1, 1])
+        .grid([num_tokens, hc_mult, 1])
         .block([1024, 1, 1])
         .arg_ptr(streams)
         .arg_ptr(w.norm_w)
@@ -338,4 +457,10 @@ pub(crate) fn hc_pre_split(
         .arg_u32(hc_mult)
         .arg_u32(w.rank as u32)
         .launch(stream)
+}
+
+pub(super) fn hc_variant_down() -> &'static str {
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| std::env::var("ATLAS_HC_DOWN_KERNEL").unwrap_or_default())
+        .as_str()
 }

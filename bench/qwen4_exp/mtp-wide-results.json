@@ -1,0 +1,2813 @@
+{
+  "fingerprint": {
+    "host": "dgx-00",
+    "date_utc": "2026-09-05T15:13:00.332535+00:00",
+    "checkpoint": "/tank/exl3-ckpt/qwen38-flash-next-4.05bpw",
+    "checkpoint_config_sha256": "2ff43c0d52242195071dbb6b190f358eaf74d54ba64abdd780d4776c102ed719",
+    "serve_script": "#!/bin/bash\n# SPDX-License-Identifier: AGPL-3.0-only\nset -euo pipefail\ncd /home/ms/atlas\nexport ATLAS_EXL3_NATIVE=1 ATLAS_EXL3_NATIVE_MOE=1 ATLAS_EXL3_NATIVE_DENSE=1\nexport ATLAS_PLE_MAX_TOKENS=9216 ATLAS_PLE_CACHE_SLOTS=4194304 ATLAS_QSA_MAX_TOKENS=32768\nexport ATLAS_INTHINK_TOOL_LEAK_OPENERS=0\nexport ATLAS_NO_HW_PRECHECK=1\nexport ATLAS_QWEN4EXP_MTP=1 ATLAS_QWEN4EXP_MTP_VERIFY=1 ATLAS_DFLASH_SPEC_THINK=1\nexport ATLAS_QWEN4EXP_MTP_HC_BATCHED=1\nexport ATLAS_VERIFY_EXL3_ROW_ROUTER=1 ATLAS_VERIFY_EXL3_STABLE_GRID=1\nexport ATLAS_NO_VERIFY_ROW_FFN=1\nexport ATLAS_MTP_ACCEPT_DEBUG=1 ATLAS_NO_THINKENDED_GPU_ARGMAX=1\nexec ./target/release/spark serve \\\n  --model-from-path /tank/exl3-ckpt/qwen38-flash-next-4.05bpw \\\n  --model-name qwen4exp-exl3 --kernel-target qwen3.8-flash-next \\\n  --world-size 1 --bind 127.0.0.1 --port 8892 \\\n  --max-seq-len 32768 --max-num-seqs 1 --max-batch-size 1 \\\n  --gpu-memory-utilization 0.72 --kv-cache-dtype bf16 --ssm-cache-slots 16 \\\n  --request-timeout 1800 --fast-load-prefetch-shards \\\n  --speculative --num-drafts \"${MTP_DRAFTS:?set MTP_DRAFTS}\" --mtp-gate force \\\n  --default-chat-template-kwargs '{\"reasoning_effort\":\"low\"}' \"$@\"\n",
+    "greedy_harness": "#!/bin/bash\nset -euo pipefail\narm=$1\nprompts=(\n  'Name three primary colors.'\n  'In two sentences, explain what a Merkle tree is and why it is useful.'\n  'Write a Python function that reverses a string, then explain it in one sentence.'\n  'List the first 8 prime numbers, separated by commas, and nothing else.'\n  'Explain in three sentences why quicksort is usually faster than mergesort in practice.'\n)\nfor i in \"${!prompts[@]}\"; do\n  jq -n --arg p \"${prompts[$i]}\" '{model:\"qwen4exp-exl3\",messages:[{role:\"user\",content:$p}],max_tokens:250,temperature:0.0}' > /tmp/atlas-mtp-final/request.json\n  curl --fail --silent --show-error --max-time 300 http://127.0.0.1:8892/v1/chat/completions -H 'Content-Type: application/json' --data-binary @/tmp/atlas-mtp-final/request.json > \"/tmp/atlas-mtp-final/$arm-$i.json\"\n  jq '{usage,finish:.choices[0].finish_reason}' \"/tmp/atlas-mtp-final/$arm-$i.json\"\ndone\n",
+    "comparison_variable": "MTP_DRAFTS=1,2,3; same binary and environment; three greedy repeats per width; agentic model-card sanity per width",
+    "agentic_command": "ATLAS_AGENTIC_SAMPLING=model-card ATLAS_NO_HW_PRECHECK=1 target/release/spark benchmark run agentic-webserver --yes --url http://127.0.0.1:8892 --model qwen4exp-exl3 --param iterations=1 --format json",
+    "gpu_resident_processes": "pid, process_name, used_gpu_memory [MiB]\n3713702, /usr/local/bin/monumental-asr, 3620 MiB\n",
+    "model_card": "# Qwen3.8-Flash-Next \u2014 hybrid GDN + QSA sparse attention, multi-hyperconnection\n# streams, PLE n-gram injection, 512-expert MoE, ViT tower, 1 MTP layer.\n#\n# Port tracked in Avarok #753. Serving is NOT complete: this target exists so\n# the model can RESOLVE and LOAD. The hyper-connection mixer, the QSA indexer\n# and the PLE n-gram injection are not wired yet and refuse by name.\n#\n# TWO MODEL_TYPE NAMES, ONE ARCHITECTURE. The model shipped as\n# `qwen3_8_flash_next` and was renamed `qwen4_exp`; quantizers pinned to\n# different transformers revisions emit different names (RadixArk ->\n# qwen4_exp, Inferact -> qwen3_8_flash_next). `dispatch.rs` normalizes both to\n# `qwen4_exp`, so only that one is bound below.\n[model]\nname = \"qwen3.8-flash-next\"\nhf_id = \"Qwen/Qwen3.8-Flash-Next\"\narchitecture = \"GDN + QSA sparse attention + mHC + PLE n-gram + MoE\"\nparams = \"180B\"\nactive_params = \"10B\"\n\n# 3 linear : 1 full, 48 layers. Only the 12 full-attention layers hold KV;\n# the 36 GDN layers hold recurrent state instead, which is why a ~19-24 GB KV\n# budget goes further here than the layer count suggests.\nlayers_total = 48\nlayers_linear_attention = 36\nlayers_full_attention = 12\nlayer_pattern = \"3:1 (linear, linear, linear, full)\"\n\nmoe_experts = 512\nmoe_topk = 10\nmoe_intermediate = 640\nshared_expert_intermediate = 640\n\nhidden_dim = 2560\nhead_dim = 256\nq_heads = 24\nkv_heads = 2\n\nlinear_attn_key_heads = 16\nlinear_attn_key_dim = 128\nlinear_attn_value_heads = 48\nlinear_attn_value_dim = 128\nlinear_conv_kernel = 4\n\nvocab_size = 248320\nmax_position_embeddings = 262144\nrope_theta = 10000000\npartial_rotary_factor = 0.25\nattn_output_gate = true\nmrope_interleaved = true\nmrope_section = [11, 11, 10]\n\n# Multi-hyperconnection: the residual is 4 parallel streams of hidden_dim\n# (4 x 2560 = 10240), mixed through a low-rank pair of rank 320. Atlas's mHC\n# plumbing comes from DeepSeek-V4, whose mixer is Sinkhorn-normalized instead\n# \u2014 same stream layout, different mixing math.\nhc_count = 4\nhc_lowrank = 320\n\n# QSA indexer, on the full-attention layers only.\nindexer_n_heads = 4\nindexer_head_dim = 128\nindexer_budget = 2048\nindexer_compress_ratio = 4\n\n# PLE n-gram injection at ONE layer. 16 heads x 160 dims = 2560 = hidden, so\n# the per-head slices are CONCATENATED, not projected-and-summed the way\n# LongCat's are. One logical table of ~320M rows stored as 128 shards; served\n# off NVMe via the row cache rather than resident (47.7 GB FP8 in the RadixArk\n# release, 95.4 GB BF16 in Inferact's).\nngram_size = 3\nngram_heads = 16\nngram_dim = 160\nngram_split_parts = 128\nple_layer_ids = [2]\nple_conv_kernel_size = 4\n\nmtp_layers = 1\nmtp_type = \"full_attention\"\nvision = true\n\n# Sampling: model-card recommendations (2026-08, relayed from the vendor\n# card): thinking temperature=1.0 top_p=0.95 top_k=20 min_p=0\n# presence_penalty=0 repetition_penalty=1.0; instruct/non-thinking\n# temperature=0.7 top_p=0.80 top_k=20 min_p=0 presence_penalty=1.5\n# repetition_penalty=1.0. Tools follows the instruct row (the card has no\n# tools-specific set).\n[sampling.thinking_text]\ntemperature = 1.0\ntop_p = 0.95\ntop_k = 20\n# Card declares NO min_p and no sigma filter: pin both OFF so the CLI\n# defaults (min_p 0.08, top_n_sigma 1.0) cannot stack on the card values.\n# sigma=1.0 truncates temp-1.0 sampling to near-greedy, which is exactly\n# the greedy-thinking loop this model exhibits on short prompts.\nmin_p = 0.0\ntop_n_sigma = 0.0\n\n[sampling.thinking_coding]\ntemperature = 1.0\ntop_p = 0.95\ntop_k = 20\n# Card declares NO min_p and no sigma filter: pin both OFF so the CLI\n# defaults (min_p 0.08, top_n_sigma 1.0) cannot stack on the card values.\n# sigma=1.0 truncates temp-1.0 sampling to near-greedy, which is exactly\n# the greedy-thinking loop this model exhibits on short prompts.\nmin_p = 0.0\ntop_n_sigma = 0.0\n\n[sampling.non_thinking]\ntemperature = 0.7\ntop_p = 0.8\ntop_k = 20\npresence_penalty = 1.5\n# Card declares NO min_p and no sigma filter: pin both OFF so the CLI\n# defaults (min_p 0.08, top_n_sigma 1.0) cannot stack on the card values.\n# sigma=1.0 truncates temp-1.0 sampling to near-greedy, which is exactly\n# the greedy-thinking loop this model exhibits on short prompts.\nmin_p = 0.0\ntop_n_sigma = 0.0\n\n[sampling.tools]\ntemperature = 0.7\ntop_p = 0.8\ntop_k = 20\npresence_penalty = 1.5\n# Card declares NO min_p and no sigma filter: pin both OFF so the CLI\n# defaults (min_p 0.08, top_n_sigma 1.0) cannot stack on the card values.\n# sigma=1.0 truncates temp-1.0 sampling to near-greedy, which is exactly\n# the greedy-thinking loop this model exhibits on short prompts.\nmin_p = 0.0\ntop_n_sigma = 0.0\n\n[[model_types]]\nmodel_type = \"qwen4_exp\"\nhidden_size = 2560\n\n# \u2500\u2500 Kernel-audit exemptions, mirrored from qwen3.6-35b-a3b \u2500\u2500\n#\n# This target's nvfp4 shadow IS qwen3.6-35b-a3b's (same .cu set, by symlink), so it\n# drops exactly the same kernels and needs the same exemptions. Copied rather\n# than re-derived: each entry below records WHY a dispatch path can live\n# without that kernel, and re-deriving those reasons from scratch for an\n# identical shadow would be inventing justifications.\n#\n# The audit stays fail-closed \u2014 an exemption quiets the build warning but the\n# startup gate still hard-errors if a dispatch site actually asks for one.\n\n[expected_absent.w4a16]\nw4a16_gemm_t_p3 = \"\"\"\n3-deep weight-pipeline twin of w4a16_gemm_t, shipped ONLY in\nqwen3.6-27b/nvfp4/w4a16_gemm.cu (49 globals vs this target's slimmer\nshadow). layers::tgemm_kernel probes it first, then falls back to\nw4a16_gemm_t, which resolves here. The fallback is the 2-stage parent\nthe p3 twin was derived from; the twin is UNMEASURED for this target's\nshapes \u2014 treat as a candidate to measure, not a confirmed loss.\"\"\"\nw4a16_gemm_t_k64_p3 = \"\"\"\nSame family: shipped only in qwen3.6-27b's shadow. layers::k64_kernel\nprobes it, then REQUIRES w4a16_gemm_t_k64, which resolves here.\"\"\"\nw4a16_gemm_t_k64_n64_p3 = \"\"\"\nNarrow-N deep-K twin, shipped only in qwen3.6-27b's shadow.\nlayers::k64_n64_kernel returns 0-handle when absent; dispatch gates on\nhandle != 0 before firing, so the wide-K64 tile serves these shapes.\"\"\"\nw4a16_gemm_t_m128_bf16 = \"\"\"\nBF16-projection prefill twin of w4a16_gemm_t_m128. prefill_weights\ngates the probe result (handle != 0); the fallback is the w4a16 m128\ntwin that resolves here, applied through the standard dequant.\"\"\"\n\n[expected_absent.w4a4]\nw4a4_gemm_mfast = \"\"\"\nThis model's w4a4_gemm.cu defines only w4a4_gemm; the mfast variant\nexists solely in nemotron-labs-3-puzzle-75b-a9b. Dispatch\n(qwen3_attention/init.rs) falls back to w4a4_gemm \u2014 same family the\n27B declares. UNMEASURED for this target.\"\"\"\n\n[expected_absent.moe_w4a16]\nmoe_w4a16_grouped_gemm_ptrtable_e8m0 = \"\"\"\nNative-MXFP4 (E8M0) scale-format variant. Shipped only in\ndeepseek-v4-flash's moe_w4a16 module (ARM-2 Phase-K). This target is\nNVFP4; the ptrtable grouped GEMM that resolves here serves it.\"\"\"\nmoe_w4a16_grouped_gemm_ptrtable_t_e8m0 = \"Same E8M0 family \u2014 NVFP4 target uses the resolved ptrtable_t variant.\"\nmoe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0 = \"Same E8M0 family \u2014 NVFP4 target uses the resolved ptrtable_t_k64 variant.\"\nmoe_w4a16_fused_gate_up_t_e8m0 = \"Same E8M0 family \u2014 NVFP4 target uses the resolved fused_gate_up variant.\"\nmoe_w4a16_fused_gate_up_t_k64_e8m0 = \"Same E8M0 family \u2014 NVFP4 target uses the resolved fused_gate_up_k64 variant.\"\nmoe_w4a16_fused_gate_up_t_k64_m128 = \"\"\"\nM=128 Block-D variant shipped only in minimax-m2-229b's shadow (per the\ndispatch comment in moe/init.rs). Dispatch falls through to M=64.\"\"\"\n\n# \u26a0 HONESTY NOTE on the four gated_delta_rule f16 arms: unlike every\n# entry above, the FP16-h-state decode arms dispatch these handles\n# UN-PROBED (ssm_batched_recurrent.rs:279/:509) once --ssm-h-dtype f16\n# is active. Preflight refuses f16 for bad env combos but NOT for a\n# target that lacks the twins, so setting the flag on this model is a\n# 0-handle launch, not a fallback. Declared here to unblock the gate;\n# the correct fix is a preflight check on kernel presence. UNMEASURED.\n[expected_absent.gated_delta_rule]\ngated_delta_rule_decode_f16_norm = \"FP16 h-state twin; see honesty note in this MODEL.toml. F32 fused-norm arm resolves.\"\ngated_delta_rule_decode_f16_strided_norm_half = \"FP16 h-state twin; see honesty note in this MODEL.toml. F32 strided-norm arm resolves.\"\ngated_delta_rule_decode_f32_strided_norm_half = \"\"\"\nHalf-register twin of the resolved f32_strided_norm; selected only when\nthe resolved half-register gate is set, and that gate is off by default\n(ATLAS_GDN_HALF_REG presence). Not a live path as shipped.\"\"\"\ngated_delta_rule_decode_f32_strided_norm_smem = \"\"\"\nSMEM-staged twin; gated behind ATLAS_GDN_SMEM_STAGE (presence, off by\ndefault) AND the half-register gate. Not a live path as shipped.\"\"\"\n\n# #438: the exact-verify `_snap` twins are model-shadow staged in\n# qwen3.6-27b/nvfp4 ONLY (shadow-first; promote to common/ once validated\n# per family). Every dispatch site probes handle != 0, and the whole chain\n# is opt-in via --exact-verify; the fallback stays exact.\n[expected_absent.gated_delta_rule_snap]\ngated_delta_rule_decode_f32_norm_snap = \"\"\"\nExact-verify snapshot twin (#435), shipped only in qwen3.6-27b/nvfp4.\ntrait_decode_batched_conv_gdn_exact probes handle != 0; absent, the\nexact arm uses the parent gdn_f32_norm kernel + copy_d2d snapshots\n(same bits, more launches).\"\"\"\ngated_delta_rule_decode_f32_strided_norm_snap = \"\"\"\nBatched exact-verify snapshot twin (#435), shipped only in\nqwen3.6-27b/nvfp4. trait_decode_batched_conv_gdn_multi_exact declines\nthe batched form on handle 0 and the per-sequence exact loop serves\n(still exact).\"\"\"\n\n[expected_absent.gdn_verify_fused_conv_kn_f32]\ngdn_verify_fused_conv_kn_f32 = \"\"\"\nFP32 fused verify conv for the exact-verify chain (#435), shipped only\nin qwen3.6-27b/nvfp4. Probed handle != 0; absent, the exact chain keeps\nits per-token conv launches (same bits, more launches).\"\"\"\n\n[behavior]\n# The ONLY KV dtype this model can run. Its QSA sparse-attention selection gather\n# copies raw NHD rows out of the paged cache, so a quantized cache has nothing it\n# can copy -- the decode path refuses outright. Stated here because the engine\n# default is fp8, and without this line the bare `spark serve qwen3.8-flash-next`\n# refused at startup and told the operator to pass `--kv-cache-dtype bf16`: a\n# correct message for a requirement the model already knows and can simply\n# declare. An explicit --kv-cache-dtype still wins over this, and preflight still\n# refuses it if it is not bf16.\ndefault_kv_dtype = \"bf16\"\n# Native tool-call format is Qwen3-Coder XML:\n#   <tool_call><function=fn><parameter=key>value</parameter></function></tool_call>\n# (verified from live emissions, agentic-webserver run 2026-08-27). Without a\n# parser the calls land in content and finish_reason still says tool_calls.\ntool_call_parser = \"qwen3_coder\"\n# Qwen3.8-Flash-Next is a THINKING model whose chat template gates\n# EVERYTHING on `enable_thinking is undefined or true`: the default render\n# carries a reasoning-effort system preamble (\"Reasoning effort is set to\n# xhigh...\") and opens the assistant turn with `<think>\\n`. Atlas always\n# passes enable_thinking as a DEFINED boolean, and with thinking_default\n# unset (= false) it rendered a bare 13-token prompt the model was never\n# trained on \u2014 which collapsed chat to a 2-token EOS while raw completions\n# were fine. Measured 2026-08-26: the checkpoint's own render answers\n# \"12 x 8\" with a correct reasoned 96; the bare render emits \"**<eos>\".\n# Same setting as qwen3.8-27b / qwen3.6-35b: reasoning by default.\nthinking_default = true\nthinking_in_tools = true\n# Card sampling presets ([sampling.*] above) apply to core chat/completions\n# requests too \u2014 without this a plain request gets Atlas's generic CLI\n# defaults (incl. min_p 0.08 + top_n_sigma 1.0, which gut the card's\n# temp-1.0 thinking distribution). NOTE this key lives in [behavior]; placed\n# after a [sampling.*] header it silently becomes a preset key and does\n# nothing \u2014 the exact trap that shipped 2026-08-26.\nuse_sampling_presets_for_core = true\n# The A4 POST_THINK_MIN_REASONING floor (-8 on `</think>` for the first 16\n# think tokens) collides with this model's card-native brief thinking:\n# under `reasoning_effort: low` the model closes its think at ~10 tokens,\n# and with `</think>` suppressed the turn-ending mass reroutes to\n# <|im_end|>/<|im_start|> \u2014 sampled runs EOS inside think (empty body) or\n# simulate new template turns (word salad). Measured 2026-08-26 via\n# ATLAS_LOGIT_DUMP: steps 11-13 topped by im_end/im_start while </think>\n# reappears at logit ~6 the moment the floor expires. 0 disables the floor.\nmin_reasoning_floor_tokens = 0\n# When the model does sample an EOS inside <think> (temp 1.0 makes this\n# reachable), honor it by closing the block instead of swallowing the token\n# and forcing continued reasoning \u2014 the swallow path is what turned early\n# closes into <|im_start|>user template simulation.\nhonor_eos_inside_thinking = true\nmax_thinking_budget = 2048\n",
+    "checkpoint_revision": "Local checkpoint; no upstream revision metadata present in config. File manifest captured for reproducibility.",
+    "checkpoint_manifest": [
+      {
+        "file": ".gitattributes",
+        "bytes": 1696,
+        "mtime_ns": 1788306698046912972
+      },
+      {
+        "file": "LICENSE",
+        "bytes": 3235,
+        "mtime_ns": 1788306698038912944
+      },
+      {
+        "file": "README.md",
+        "bytes": 65155,
+        "mtime_ns": 1788306698152913347
+      },
+      {
+        "file": "chat_template.jinja",
+        "bytes": 8952,
+        "mtime_ns": 1788306698120913234
+      },
+      {
+        "file": "config.json",
+        "bytes": 5055,
+        "mtime_ns": 1788306698132913277
+      },
+      {
+        "file": "generation_config.json",
+        "bytes": 202,
+        "mtime_ns": 1788306698150913340
+      },
+      {
+        "file": "merges.txt",
+        "bytes": 3353259,
+        "mtime_ns": 1788306698161913379
+      },
+      {
+        "file": "model-00001-of-00009.safetensors",
+        "bytes": 8059362762,
+        "mtime_ns": 1788307428567429211
+      },
+      {
+        "file": "model-00002-of-00009.safetensors",
+        "bytes": 8067865392,
+        "mtime_ns": 1788307201267656563
+      },
+      {
+        "file": "model-00003-of-00009.safetensors",
+        "bytes": 8062251066,
+        "mtime_ns": 1788307425064417345
+      },
+      {
+        "file": "model-00004-of-00009.safetensors",
+        "bytes": 8067896318,
+        "mtime_ns": 1788307394405313447
+      },
+      {
+        "file": "model-00005-of-00009.safetensors",
+        "bytes": 8062251066,
+        "mtime_ns": 1788307495699656392
+      },
+      {
+        "file": "model-00006-of-00009.safetensors",
+        "bytes": 8067896318,
+        "mtime_ns": 1788307171767555805
+      },
+      {
+        "file": "model-00007-of-00009.safetensors",
+        "bytes": 8062251066,
+        "mtime_ns": 1788307055813158404
+      },
+      {
+        "file": "model-00008-of-00009.safetensors",
+        "bytes": 8067896318,
+        "mtime_ns": 1788307217163710805
+      },
+      {
+        "file": "model-00009-of-00009.safetensors",
+        "bytes": 3191543125,
+        "mtime_ns": 1788307209658685200
+      },
+      {
+        "file": "model.safetensors.index.json",
+        "bytes": 32677781,
+        "mtime_ns": 1788307187318608936
+      },
+      {
+        "file": "ngram_embedding.safetensors",
+        "bytes": 39040193720,
+        "mtime_ns": 1788307620897079144
+      },
+      {
+        "file": "preprocessor_config.json",
+        "bytes": 390,
+        "mtime_ns": 1788307202014659113
+      },
+      {
+        "file": "qbench_prompts.json",
+        "bytes": 324183,
+        "mtime_ns": 1788307204652668117
+      },
+      {
+        "file": "qbench_prompts.md",
+        "bytes": 212719,
+        "mtime_ns": 1788307205395670653
+      },
+      {
+        "file": "quantization_config.json",
+        "bytes": 96601545,
+        "mtime_ns": 1788307217273711180
+      },
+      {
+        "file": "tokenizer.json",
+        "bytes": 12809320,
+        "mtime_ns": 1788307218248714505
+      },
+      {
+        "file": "tokenizer_config.json",
+        "bytes": 17928,
+        "mtime_ns": 1788307217970713557
+      },
+      {
+        "file": "video_preprocessor_config.json",
+        "bytes": 385,
+        "mtime_ns": 1788307218114714048
+      },
+      {
+        "file": "vision_k6.safetensors",
+        "bytes": 561389181,
+        "mtime_ns": 1788307291555964199
+      },
+      {
+        "file": "vocab.json",
+        "bytes": 6722759,
+        "mtime_ns": 1788307219526718865
+      }
+    ],
+    "arm_order": [
+      3,
+      2,
+      1
+    ],
+    "tool_parity_request": {
+      "model": "qwen4exp-exl3",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Use get_weather to check the weather in Paris."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get weather for a city",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "tool_choice": "required",
+      "temperature": 0,
+      "seed": 123,
+      "max_tokens": 250
+    },
+    "build_command": "env PATH=/usr/local/cuda/bin:/home/ms/.cargo/bin:/usr/bin:/bin CARGO_TARGET_DIR=/home/ms/atlas/.claude/worktrees/exl3-mtp-batched/target CUTLASS_HOME=/home/ms/cutlass FLASHINFER_HOME=/home/ms/flashinfer RUSTFLAGS='-L/home/ms/nccl/build/lib -L/usr/local/cuda/lib64' ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.8-flash-next ATLAS_TARGET_QUANT=nvfp4 cargo rustc --release -p spark-server --bin spark -j8 -- -C link-arg=-Wl,-rpath,/home/ms/nccl/build/lib -C link-arg=-Wl,-rpath,/home/ms/atlas-gdn-libs",
+    "thinking_parity_control": {
+      "script": "#!/bin/bash\n# SPDX-License-Identifier: AGPL-3.0-only\nset -euo pipefail\ncd /home/ms/atlas\nexport ATLAS_EXL3_NATIVE=1 ATLAS_EXL3_NATIVE_MOE=1 ATLAS_EXL3_NATIVE_DENSE=1\nexport ATLAS_PLE_MAX_TOKENS=9216 ATLAS_PLE_CACHE_SLOTS=4194304 ATLAS_QSA_MAX_TOKENS=32768\nexport ATLAS_INTHINK_TOOL_LEAK_OPENERS=0\nexport ATLAS_NO_HW_PRECHECK=1\nexport ATLAS_QWEN4EXP_MTP=1 ATLAS_QWEN4EXP_MTP_VERIFY=1 ATLAS_DFLASH_SPEC_THINK=0\nexport ATLAS_QWEN4EXP_MTP_HC_BATCHED=1\nexport ATLAS_VERIFY_EXL3_ROW_ROUTER=1 ATLAS_VERIFY_EXL3_STABLE_GRID=1\nexport ATLAS_NO_VERIFY_ROW_FFN=1\nexport ATLAS_MTP_ACCEPT_DEBUG=1 ATLAS_NO_THINKENDED_GPU_ARGMAX=1\nexec ./target/release/spark serve \\\n  --model-from-path /tank/exl3-ckpt/qwen38-flash-next-4.05bpw \\\n  --model-name qwen4exp-exl3 --kernel-target qwen3.8-flash-next \\\n  --world-size 1 --bind 127.0.0.1 --port 8892 \\\n  --max-seq-len 32768 --max-num-seqs 1 --max-batch-size 1 \\\n  --gpu-memory-utilization 0.72 --kv-cache-dtype bf16 --ssm-cache-slots 16 \\\n  --request-timeout 1800 --fast-load-prefetch-shards \\\n  --speculative --num-drafts \"${MTP_DRAFTS:?set MTP_DRAFTS}\" --mtp-gate force \\\n  --default-chat-template-kwargs '{\"reasoning_effort\":\"low\"}' \"$@\"\n",
+      "drafts": 1,
+      "purpose": "Fresh same-binary on/off thinking speculation output parity; one repeat of five greedy prompts, no performance claim."
+    },
+    "prior_attempts": [
+      {
+        "directory": "/tmp/atlas-mtp-wide",
+        "commit": "0ac710a832598a271bdb6acbe8f413cda0feceea",
+        "note": "15/15 parity each at one and two drafts; agentic configured2 clamps to1, so not wider-tool validation."
+      },
+      {
+        "directory": "/tmp/atlas-mtp-wide-grammar",
+        "commit": "60c2eb348833c348e9bd1355f1bb51f80088403b",
+        "note": "K3 15/15 exact and model-card agentic pass with widergrammar; K4 3/5 exact. Per-row FFN bisect restored both failures; found K4 caller bypassed native decode."
+      }
+    ],
+    "commit": "03946f4a68482a1a4cf1d5e1f90958d5da52c47d",
+    "binary_sha256": "dbe62e5d182740aec0cf42dd51f5a6714b63da06e63e1ddb67dbea9920d67b95",
+    "warmup_note": "Every arm runs the same fixed tool request before the three greedy repeats. Arm3 additionally ran the two previously failing prompts to confirm the dispatch fix before timing. Timing summaries are preliminary per-arm observations, not a strict one-variable speedup claim.",
+    "agentic_preserve_thinking": false,
+    "agentic_profile_status": "Superseded profile: ATLAS_AGENTIC_PRESERVE_THINKING was unset. Requested preserve-thinking reruns pending. One-draft agentic attempt stopped before completion."
+  },
+  "arms": {
+    "1": {
+      "greedy": [
+        {
+          "file": "d1-r1-0.json",
+          "repeat": 1,
+          "prompt_index": 0,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-0.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 45,
+            "completion_tokens": 222,
+            "total_tokens": 267,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 121,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 105,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 249.130439,
+            "response_token/s": 15.708714837800002
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user is asking for three primary colors. This is a straightforward question. The answer depends on the color model:\n\n- **Additive (light):** Red, Green, Blue (RGB)\n- **Subtractive (pigments/paint):** Red, Yellow, Blue (RYB) \u2014 traditional art model\n- **Subtractive (printing):** Cyan, Magenta, Yellow (CMY)\n\nThe most commonly expected answer, especially in general knowledge, is the traditional art model: Red, Yellow, Blue. I'll go with that as the primary answer but can mention the others briefly.\n",
+                "content": "The three primary colors (in the traditional pigment/art model) are:\n\n1. **Red**\n2. **Yellow**\n3. **Blue**\n\nThese are considered \"primary\" because they cannot be created by mixing other colors, and they can be combined to produce a wide range of other colors.\n\n*(Note: In light/digital displays, the primaries are Red, Green, and Blue; in printing, they are Cyan, Magenta, and Yellow.)*"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r1-1.json",
+          "repeat": 1,
+          "prompt_index": 1,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-1.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 161,
+            "total_tokens": 218,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 53,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 73,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 277.371503,
+            "response_token/s": 15.330360542891576
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise two-sentence explanation of a Merkle tree covering what it is and why it's useful. I need to be precise and clear, hitting the core concept (hash-based tree structure) and the key benefit (efficient verification of data integrity).\n",
+                "content": "A Merkle tree is a data structure in which every leaf node is labeled with the cryptographic hash of a data block, and every non-leaf node is labeled with the hash of its children's labels, forming a single \"root hash\" that commits to all the underlying data. It is useful because it allows anyone to efficiently verify that a specific piece of data is part of a large dataset by checking only a small subset of hashes (a Merkle proof), without needing to re-download or re-hash the entire dataset."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r1-2.json",
+          "repeat": 1,
+          "prompt_index": 2,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-2.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 111,
+            "total_tokens": 168,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 52,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 270.451825,
+            "response_token/s": 15.837381460779373
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a Python function that reverses a string, followed by a one-sentence explanation. This is straightforward. I'll use the slice notation `[::-1]` as it's the most Pythonic and concise approach. I'll keep the response clean and direct.\n",
+                "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\nThis function uses Python's slice notation `[::-1]` to return a new string with the characters in reverse order by stepping through the original string from end to start."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r1-3.json",
+          "repeat": 1,
+          "prompt_index": 3,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-3.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 56,
+            "completion_tokens": 85,
+            "total_tokens": 141,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 41,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 269.32755099999997,
+            "response_token/s": 16.394766045965397
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants the first 8 prime numbers, separated by commas, and nothing else.\n\nThe first 8 prime numbers are: 2, 3, 5, 7, 11, 13, 17, 19.\n",
+                "content": "2, 3, 5, 7, 11, 13, 17, 19"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r1-4.json",
+          "repeat": 1,
+          "prompt_index": 4,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-4.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 192,
+            "total_tokens": 249,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 86,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 85,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 278.225473,
+            "response_token/s": 14.940348953914603
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise three-sentence explanation of why quicksort tends to outperform mergesort in practice, despite both having O(n log n) average-case complexity. The key factors are: cache locality (quicksort works in-place with good spatial locality), lower constant factors (fewer operations per element), and the overhead of mergesort's auxiliary array allocation and copying. Let me distill this into three clear sentences.\n",
+                "content": "Quicksort operates in-place, meaning it accesses memory sequentially within the same array, which gives it excellent cache locality compared to mergesort's need to allocate and copy into a separate auxiliary array. It also has a lower constant factor per operation\u2014its inner loop is a simple partition step with fewer comparisons and assignments than mergesort's merge step. Together, these hardware-level advantages mean that even though both algorithms share the same O(n log n) average-case complexity, quicksort typically runs faster on real machines."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r2-0.json",
+          "repeat": 2,
+          "prompt_index": 0,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-0.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 45,
+            "completion_tokens": 222,
+            "total_tokens": 267,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 121,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 105,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 245.969585,
+            "response_token/s": 15.993404155705308
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user is asking for three primary colors. This is a straightforward question. The answer depends on the color model:\n\n- **Additive (light):** Red, Green, Blue (RGB)\n- **Subtractive (pigments/paint):** Red, Yellow, Blue (RYB) \u2014 traditional art model\n- **Subtractive (printing):** Cyan, Magenta, Yellow (CMY)\n\nThe most commonly expected answer, especially in general knowledge, is the traditional art model: Red, Yellow, Blue. I'll go with that as the primary answer but can mention the others briefly.\n",
+                "content": "The three primary colors (in the traditional pigment/art model) are:\n\n1. **Red**\n2. **Yellow**\n3. **Blue**\n\nThese are considered \"primary\" because they cannot be created by mixing other colors, and they can be combined to produce a wide range of other colors.\n\n*(Note: In light/digital displays, the primaries are Red, Green, and Blue; in printing, they are Cyan, Magenta, and Yellow.)*"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r2-1.json",
+          "repeat": 2,
+          "prompt_index": 1,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-1.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 161,
+            "total_tokens": 218,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 53,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 73,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 274.90153,
+            "response_token/s": 15.60992299428887
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise two-sentence explanation of a Merkle tree covering what it is and why it's useful. I need to be precise and clear, hitting the core concept (hash-based tree structure) and the key benefit (efficient verification of data integrity).\n",
+                "content": "A Merkle tree is a data structure in which every leaf node is labeled with the cryptographic hash of a data block, and every non-leaf node is labeled with the hash of its children's labels, forming a single \"root hash\" that commits to all the underlying data. It is useful because it allows anyone to efficiently verify that a specific piece of data is part of a large dataset by checking only a small subset of hashes (a Merkle proof), without needing to re-download or re-hash the entire dataset."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r2-2.json",
+          "repeat": 2,
+          "prompt_index": 2,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-2.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 111,
+            "total_tokens": 168,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 52,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 265.293047,
+            "response_token/s": 16.065776539698277
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a Python function that reverses a string, followed by a one-sentence explanation. This is straightforward. I'll use the slice notation `[::-1]` as it's the most Pythonic and concise approach. I'll keep the response clean and direct.\n",
+                "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\nThis function uses Python's slice notation `[::-1]` to return a new string with the characters in reverse order by stepping through the original string from end to start."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r2-3.json",
+          "repeat": 2,
+          "prompt_index": 3,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-3.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 56,
+            "completion_tokens": 85,
+            "total_tokens": 141,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 41,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 267.083067,
+            "response_token/s": 16.579353334611643
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants the first 8 prime numbers, separated by commas, and nothing else.\n\nThe first 8 prime numbers are: 2, 3, 5, 7, 11, 13, 17, 19.\n",
+                "content": "2, 3, 5, 7, 11, 13, 17, 19"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r2-4.json",
+          "repeat": 2,
+          "prompt_index": 4,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-4.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 192,
+            "total_tokens": 249,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 86,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 85,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 269.810977,
+            "response_token/s": 15.234102920186785
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise three-sentence explanation of why quicksort tends to outperform mergesort in practice, despite both having O(n log n) average-case complexity. The key factors are: cache locality (quicksort works in-place with good spatial locality), lower constant factors (fewer operations per element), and the overhead of mergesort's auxiliary array allocation and copying. Let me distill this into three clear sentences.\n",
+                "content": "Quicksort operates in-place, meaning it accesses memory sequentially within the same array, which gives it excellent cache locality compared to mergesort's need to allocate and copy into a separate auxiliary array. It also has a lower constant factor per operation\u2014its inner loop is a simple partition step with fewer comparisons and assignments than mergesort's merge step. Together, these hardware-level advantages mean that even though both algorithms share the same O(n log n) average-case complexity, quicksort typically runs faster on real machines."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r3-0.json",
+          "repeat": 3,
+          "prompt_index": 0,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-0.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 45,
+            "completion_tokens": 222,
+            "total_tokens": 267,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 121,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 105,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 244.661519,
+            "response_token/s": 15.962557783001959
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user is asking for three primary colors. This is a straightforward question. The answer depends on the color model:\n\n- **Additive (light):** Red, Green, Blue (RGB)\n- **Subtractive (pigments/paint):** Red, Yellow, Blue (RYB) \u2014 traditional art model\n- **Subtractive (printing):** Cyan, Magenta, Yellow (CMY)\n\nThe most commonly expected answer, especially in general knowledge, is the traditional art model: Red, Yellow, Blue. I'll go with that as the primary answer but can mention the others briefly.\n",
+                "content": "The three primary colors (in the traditional pigment/art model) are:\n\n1. **Red**\n2. **Yellow**\n3. **Blue**\n\nThese are considered \"primary\" because they cannot be created by mixing other colors, and they can be combined to produce a wide range of other colors.\n\n*(Note: In light/digital displays, the primaries are Red, Green, and Blue; in printing, they are Cyan, Magenta, and Yellow.)*"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r3-1.json",
+          "repeat": 3,
+          "prompt_index": 1,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-1.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 161,
+            "total_tokens": 218,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 53,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 73,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 270.833682,
+            "response_token/s": 15.592099280324506
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise two-sentence explanation of a Merkle tree covering what it is and why it's useful. I need to be precise and clear, hitting the core concept (hash-based tree structure) and the key benefit (efficient verification of data integrity).\n",
+                "content": "A Merkle tree is a data structure in which every leaf node is labeled with the cryptographic hash of a data block, and every non-leaf node is labeled with the hash of its children's labels, forming a single \"root hash\" that commits to all the underlying data. It is useful because it allows anyone to efficiently verify that a specific piece of data is part of a large dataset by checking only a small subset of hashes (a Merkle proof), without needing to re-download or re-hash the entire dataset."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r3-2.json",
+          "repeat": 3,
+          "prompt_index": 2,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-2.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 111,
+            "total_tokens": 168,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 52,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 264.278485,
+            "response_token/s": 16.06968844669324
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a Python function that reverses a string, followed by a one-sentence explanation. This is straightforward. I'll use the slice notation `[::-1]` as it's the most Pythonic and concise approach. I'll keep the response clean and direct.\n",
+                "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\nThis function uses Python's slice notation `[::-1]` to return a new string with the characters in reverse order by stepping through the original string from end to start."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r3-3.json",
+          "repeat": 3,
+          "prompt_index": 3,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-3.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 56,
+            "completion_tokens": 85,
+            "total_tokens": 141,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 41,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 266.27783300000004,
+            "response_token/s": 16.55364554158621
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants the first 8 prime numbers, separated by commas, and nothing else.\n\nThe first 8 prime numbers are: 2, 3, 5, 7, 11, 13, 17, 19.\n",
+                "content": "2, 3, 5, 7, 11, 13, 17, 19"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d1-r3-4.json",
+          "repeat": 3,
+          "prompt_index": 4,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-4.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 192,
+            "total_tokens": 249,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 86,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 85,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 269.383424,
+            "response_token/s": 15.232207258342656
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise three-sentence explanation of why quicksort tends to outperform mergesort in practice, despite both having O(n log n) average-case complexity. The key factors are: cache locality (quicksort works in-place with good spatial locality), lower constant factors (fewer operations per element), and the overhead of mergesort's auxiliary array allocation and copying. Let me distill this into three clear sentences.\n",
+                "content": "Quicksort operates in-place, meaning it accesses memory sequentially within the same array, which gives it excellent cache locality compared to mergesort's need to allocate and copy into a separate auxiliary array. It also has a lower constant factor per operation\u2014its inner loop is a simple partition step with fewer comparisons and assignments than mergesort's merge step. Together, these hardware-level advantages mean that even though both algorithms share the same O(n log n) average-case complexity, quicksort typically runs faster on real machines."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        }
+      ],
+      "tool_parity_response": {
+        "id": "chatcmpl-1ec0db6f-62f2-45cc-93df-abbbedc69bcc",
+        "object": "chat.completion",
+        "created": 1788623124,
+        "model": "qwen4exp-exl3",
+        "system_fingerprint": "fp_atlas",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "call_0000000000000000",
+                  "type": "function",
+                  "function": {
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"Paris\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls",
+            "logprobs": null
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1139,
+          "completion_tokens": 28,
+          "total_tokens": 1167,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 26,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 13,
+            "rejected_prediction_tokens": 0
+          },
+          "time_to_first_token_ms": 1994.889456,
+          "response_token/s": 15.796839916946324
+        }
+      },
+      "median_response_tps": 15.837381460779373,
+      "all_choices_equal_d1": true,
+      "acceptance_log": [
+        "2026-09-05T15:45:24.743153Z  INFO spark::scheduler::mtp_accept_debug: Done: 28 tokens (stop) 16.4 tok/s, TTFT=1994.9ms, serial=0.00 mtp=1.00 p1=0.929 mean_na=0.929 tok_step=1.929 regime_reprobes=0",
+        "2026-09-05T15:45:39.071045Z  INFO spark::scheduler::mtp_accept_debug: Done: 222 tokens (stop) 15.8 tok/s, TTFT=249.1ms, serial=0.00 mtp=1.00 p1=0.897 mean_na=0.897 tok_step=1.897 regime_reprobes=0",
+        "2026-09-05T15:45:49.794884Z  INFO spark::scheduler::mtp_accept_debug: Done: 161 tokens (stop) 15.4 tok/s, TTFT=277.4ms, serial=0.00 mtp=1.00 p1=0.839 mean_na=0.839 tok_step=1.839 regime_reprobes=0",
+        "2026-09-05T15:45:57.023343Z  INFO spark::scheduler::mtp_accept_debug: Done: 111 tokens (stop) 16.0 tok/s, TTFT=270.5ms, serial=0.00 mtp=1.00 p1=0.897 mean_na=0.897 tok_step=1.897 regime_reprobes=0",
+        "2026-09-05T15:46:02.428438Z  INFO spark::scheduler::mtp_accept_debug: Done: 85 tokens (stop) 16.6 tok/s, TTFT=269.3ms, serial=0.00 mtp=1.00 p1=0.953 mean_na=0.953 tok_step=1.953 regime_reprobes=0",
+        "2026-09-05T15:46:15.504274Z  INFO spark::scheduler::mtp_accept_debug: Done: 192 tokens (stop) 15.0 tok/s, TTFT=278.2ms, serial=0.00 mtp=1.00 p1=0.802 mean_na=0.802 tok_step=1.802 regime_reprobes=0",
+        "2026-09-05T15:46:29.583869Z  INFO spark::scheduler::mtp_accept_debug: Done: 222 tokens (stop) 16.1 tok/s, TTFT=246.0ms, serial=0.00 mtp=1.00 p1=0.897 mean_na=0.897 tok_step=1.897 regime_reprobes=0",
+        "2026-09-05T15:46:40.121641Z  INFO spark::scheduler::mtp_accept_debug: Done: 161 tokens (stop) 15.7 tok/s, TTFT=274.9ms, serial=0.00 mtp=1.00 p1=0.839 mean_na=0.839 tok_step=1.839 regime_reprobes=0",
+        "2026-09-05T15:46:47.246777Z  INFO spark::scheduler::mtp_accept_debug: Done: 111 tokens (stop) 16.2 tok/s, TTFT=265.3ms, serial=0.00 mtp=1.00 p1=0.897 mean_na=0.897 tok_step=1.897 regime_reprobes=0",
+        "2026-09-05T15:46:52.593555Z  INFO spark::scheduler::mtp_accept_debug: Done: 85 tokens (stop) 16.8 tok/s, TTFT=267.1ms, serial=0.00 mtp=1.00 p1=0.953 mean_na=0.953 tok_step=1.953 regime_reprobes=0",
+        "2026-09-05T15:47:05.414041Z  INFO spark::scheduler::mtp_accept_debug: Done: 192 tokens (stop) 15.3 tok/s, TTFT=269.8ms, serial=0.00 mtp=1.00 p1=0.802 mean_na=0.802 tok_step=1.802 regime_reprobes=0",
+        "2026-09-05T15:47:19.518170Z  INFO spark::scheduler::mtp_accept_debug: Done: 222 tokens (stop) 16.0 tok/s, TTFT=244.7ms, serial=0.00 mtp=1.00 p1=0.897 mean_na=0.897 tok_step=1.897 regime_reprobes=0",
+        "2026-09-05T15:47:30.062461Z  INFO spark::scheduler::mtp_accept_debug: Done: 161 tokens (stop) 15.7 tok/s, TTFT=270.8ms, serial=0.00 mtp=1.00 p1=0.839 mean_na=0.839 tok_step=1.839 regime_reprobes=0",
+        "2026-09-05T15:47:37.185912Z  INFO spark::scheduler::mtp_accept_debug: Done: 111 tokens (stop) 16.2 tok/s, TTFT=264.3ms, serial=0.00 mtp=1.00 p1=0.897 mean_na=0.897 tok_step=1.897 regime_reprobes=0",
+        "2026-09-05T15:47:42.540014Z  INFO spark::scheduler::mtp_accept_debug: Done: 85 tokens (stop) 16.8 tok/s, TTFT=266.3ms, serial=0.00 mtp=1.00 p1=0.953 mean_na=0.953 tok_step=1.953 regime_reprobes=0",
+        "2026-09-05T15:47:55.358605Z  INFO spark::scheduler::mtp_accept_debug: Done: 192 tokens (stop) 15.3 tok/s, TTFT=269.4ms, serial=0.00 mtp=1.00 p1=0.802 mean_na=0.802 tok_step=1.802 regime_reprobes=0",
+        "2026-09-05T15:47:55.778891Z  INFO spark::scheduler::mtp_accept_debug: Done: 2 tokens (stop) 22.6 tok/s, TTFT=202.3ms, serial=0.00 mtp=1.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0",
+        "2026-09-05T15:47:56.073303Z  INFO spark::scheduler::mtp_accept_debug: Done: 2 tokens (stop) 21.9 tok/s, TTFT=198.2ms, serial=0.00 mtp=1.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0",
+        "2026-09-05T15:47:56.666590Z  INFO spark::scheduler::mtp_accept_debug: Done: 2 tokens (stop) 23.1 tok/s, TTFT=196.4ms, serial=0.00 mtp=1.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0",
+        "2026-09-05T15:48:16.652067Z  INFO spark::scheduler::mtp_accept_debug: Done: 138 tokens (stop) 13.7 tok/s, TTFT=6854.4ms, serial=0.00 mtp=1.00 p1=0.769 mean_na=0.769 tok_step=1.769 regime_reprobes=0",
+        "2026-09-05T15:49:22.941414Z  INFO spark::scheduler::mtp_accept_debug: Done: 880 tokens (stop) 15.1 tok/s, TTFT=7393.5ms, serial=0.00 mtp=1.00 p1=0.913 mean_na=0.913 tok_step=1.913 regime_reprobes=0",
+        "2026-09-05T15:49:38.612505Z  INFO spark::scheduler::mtp_accept_debug: Done: 86 tokens (stop) 13.8 tok/s, TTFT=9338.1ms, serial=0.00 mtp=1.00 p1=0.792 mean_na=0.792 tok_step=1.792 regime_reprobes=0",
+        "2026-09-05T15:49:58.101273Z  INFO spark::scheduler::mtp_accept_debug: Done: 112 tokens (stop) 13.2 tok/s, TTFT=9948.9ms, serial=0.00 mtp=1.00 p1=0.672 mean_na=0.672 tok_step=1.672 regime_reprobes=0",
+        "2026-09-05T15:50:22.819023Z  INFO spark::scheduler::mtp_accept_debug: Done: 196 tokens (stop) 14.4 tok/s, TTFT=10054.7ms, serial=0.00 mtp=1.00 p1=0.832 mean_na=0.832 tok_step=1.832 regime_reprobes=0",
+        "2026-09-05T15:50:49.778051Z  INFO spark::scheduler::mtp_accept_debug: Done: 188 tokens (stop) 13.0 tok/s, TTFT=10486.9ms, serial=0.00 mtp=1.00 p1=0.655 mean_na=0.655 tok_step=1.655 regime_reprobes=0",
+        "2026-09-05T15:51:06.903388Z  INFO spark::scheduler::mtp_accept_debug: Done: 69 tokens (stop) 13.2 tok/s, TTFT=10840.6ms, serial=0.00 mtp=1.00 p1=0.659 mean_na=0.659 tok_step=1.659 regime_reprobes=0",
+        "2026-09-05T15:51:31.970061Z  INFO spark::scheduler::mtp_accept_debug: Done: 192 tokens (stop) 13.8 tok/s, TTFT=11131.5ms, serial=0.00 mtp=1.00 p1=0.752 mean_na=0.752 tok_step=1.752 regime_reprobes=0",
+        "2026-09-05T15:51:58.313368Z  INFO spark::scheduler::mtp_accept_debug: Done: 205 tokens (stop) 14.9 tok/s, TTFT=11517.6ms, serial=0.00 mtp=1.00 p1=0.898 mean_na=0.898 tok_step=1.898 regime_reprobes=0"
+      ]
+    },
+    "2": {
+      "greedy": [
+        {
+          "file": "d2-r1-0.json",
+          "repeat": 1,
+          "prompt_index": 0,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-0.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 45,
+            "completion_tokens": 222,
+            "total_tokens": 267,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 121,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 136,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 251.725629,
+            "response_token/s": 16.788113340887687
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user is asking for three primary colors. This is a straightforward question. The answer depends on the color model:\n\n- **Additive (light):** Red, Green, Blue (RGB)\n- **Subtractive (pigments/paint):** Red, Yellow, Blue (RYB) \u2014 traditional art model\n- **Subtractive (printing):** Cyan, Magenta, Yellow (CMY)\n\nThe most commonly expected answer, especially in general knowledge, is the traditional art model: Red, Yellow, Blue. I'll go with that as the primary answer but can mention the others briefly.\n",
+                "content": "The three primary colors (in the traditional pigment/art model) are:\n\n1. **Red**\n2. **Yellow**\n3. **Blue**\n\nThese are considered \"primary\" because they cannot be created by mixing other colors, and they can be combined to produce a wide range of other colors.\n\n*(Note: In light/digital displays, the primaries are Red, Green, and Blue; in printing, they are Cyan, Magenta, and Yellow.)*"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r1-1.json",
+          "repeat": 1,
+          "prompt_index": 1,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-1.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 161,
+            "total_tokens": 218,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 53,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 91,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 281.07383000000004,
+            "response_token/s": 15.046802724393512
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise two-sentence explanation of a Merkle tree covering what it is and why it's useful. I need to be precise and clear, hitting the core concept (hash-based tree structure) and the key benefit (efficient verification of data integrity).\n",
+                "content": "A Merkle tree is a data structure in which every leaf node is labeled with the cryptographic hash of a data block, and every non-leaf node is labeled with the hash of its children's labels, forming a single \"root hash\" that commits to all the underlying data. It is useful because it allows anyone to efficiently verify that a specific piece of data is part of a large dataset by checking only a small subset of hashes (a Merkle proof), without needing to re-download or re-hash the entire dataset."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r1-2.json",
+          "repeat": 1,
+          "prompt_index": 2,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-2.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 111,
+            "total_tokens": 168,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 64,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 271.884228,
+            "response_token/s": 15.608356062768907
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a Python function that reverses a string, followed by a one-sentence explanation. This is straightforward. I'll use the slice notation `[::-1]` as it's the most Pythonic and concise approach. I'll keep the response clean and direct.\n",
+                "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\nThis function uses Python's slice notation `[::-1]` to return a new string with the characters in reverse order by stepping through the original string from end to start."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r1-3.json",
+          "repeat": 1,
+          "prompt_index": 3,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-3.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 56,
+            "completion_tokens": 85,
+            "total_tokens": 141,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 54,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 272.68375,
+            "response_token/s": 18.407915310141277
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants the first 8 prime numbers, separated by commas, and nothing else.\n\nThe first 8 prime numbers are: 2, 3, 5, 7, 11, 13, 17, 19.\n",
+                "content": "2, 3, 5, 7, 11, 13, 17, 19"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r1-4.json",
+          "repeat": 1,
+          "prompt_index": 4,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-4.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 192,
+            "total_tokens": 249,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 86,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 106,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 279.09182599999997,
+            "response_token/s": 14.56975545180679
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise three-sentence explanation of why quicksort tends to outperform mergesort in practice, despite both having O(n log n) average-case complexity. The key factors are: cache locality (quicksort works in-place with good spatial locality), lower constant factors (fewer operations per element), and the overhead of mergesort's auxiliary array allocation and copying. Let me distill this into three clear sentences.\n",
+                "content": "Quicksort operates in-place, meaning it accesses memory sequentially within the same array, which gives it excellent cache locality compared to mergesort's need to allocate and copy into a separate auxiliary array. It also has a lower constant factor per operation\u2014its inner loop is a simple partition step with fewer comparisons and assignments than mergesort's merge step. Together, these hardware-level advantages mean that even though both algorithms share the same O(n log n) average-case complexity, quicksort typically runs faster on real machines."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r2-0.json",
+          "repeat": 2,
+          "prompt_index": 0,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-0.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 45,
+            "completion_tokens": 222,
+            "total_tokens": 267,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 121,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 136,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 247.376116,
+            "response_token/s": 17.137395861352317
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user is asking for three primary colors. This is a straightforward question. The answer depends on the color model:\n\n- **Additive (light):** Red, Green, Blue (RGB)\n- **Subtractive (pigments/paint):** Red, Yellow, Blue (RYB) \u2014 traditional art model\n- **Subtractive (printing):** Cyan, Magenta, Yellow (CMY)\n\nThe most commonly expected answer, especially in general knowledge, is the traditional art model: Red, Yellow, Blue. I'll go with that as the primary answer but can mention the others briefly.\n",
+                "content": "The three primary colors (in the traditional pigment/art model) are:\n\n1. **Red**\n2. **Yellow**\n3. **Blue**\n\nThese are considered \"primary\" because they cannot be created by mixing other colors, and they can be combined to produce a wide range of other colors.\n\n*(Note: In light/digital displays, the primaries are Red, Green, and Blue; in printing, they are Cyan, Magenta, and Yellow.)*"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r2-1.json",
+          "repeat": 2,
+          "prompt_index": 1,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-1.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 161,
+            "total_tokens": 218,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 53,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 91,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 274.287161,
+            "response_token/s": 15.320182151419875
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise two-sentence explanation of a Merkle tree covering what it is and why it's useful. I need to be precise and clear, hitting the core concept (hash-based tree structure) and the key benefit (efficient verification of data integrity).\n",
+                "content": "A Merkle tree is a data structure in which every leaf node is labeled with the cryptographic hash of a data block, and every non-leaf node is labeled with the hash of its children's labels, forming a single \"root hash\" that commits to all the underlying data. It is useful because it allows anyone to efficiently verify that a specific piece of data is part of a large dataset by checking only a small subset of hashes (a Merkle proof), without needing to re-download or re-hash the entire dataset."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r2-2.json",
+          "repeat": 2,
+          "prompt_index": 2,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-2.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 111,
+            "total_tokens": 168,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 64,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 266.116505,
+            "response_token/s": 15.816852898750174
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a Python function that reverses a string, followed by a one-sentence explanation. This is straightforward. I'll use the slice notation `[::-1]` as it's the most Pythonic and concise approach. I'll keep the response clean and direct.\n",
+                "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\nThis function uses Python's slice notation `[::-1]` to return a new string with the characters in reverse order by stepping through the original string from end to start."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r2-3.json",
+          "repeat": 2,
+          "prompt_index": 3,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-3.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 56,
+            "completion_tokens": 85,
+            "total_tokens": 141,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 54,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 268.711486,
+            "response_token/s": 18.627724183969775
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants the first 8 prime numbers, separated by commas, and nothing else.\n\nThe first 8 prime numbers are: 2, 3, 5, 7, 11, 13, 17, 19.\n",
+                "content": "2, 3, 5, 7, 11, 13, 17, 19"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r2-4.json",
+          "repeat": 2,
+          "prompt_index": 4,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-4.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 192,
+            "total_tokens": 249,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 86,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 106,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 269.54033599999997,
+            "response_token/s": 14.802264792826566
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise three-sentence explanation of why quicksort tends to outperform mergesort in practice, despite both having O(n log n) average-case complexity. The key factors are: cache locality (quicksort works in-place with good spatial locality), lower constant factors (fewer operations per element), and the overhead of mergesort's auxiliary array allocation and copying. Let me distill this into three clear sentences.\n",
+                "content": "Quicksort operates in-place, meaning it accesses memory sequentially within the same array, which gives it excellent cache locality compared to mergesort's need to allocate and copy into a separate auxiliary array. It also has a lower constant factor per operation\u2014its inner loop is a simple partition step with fewer comparisons and assignments than mergesort's merge step. Together, these hardware-level advantages mean that even though both algorithms share the same O(n log n) average-case complexity, quicksort typically runs faster on real machines."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r3-0.json",
+          "repeat": 3,
+          "prompt_index": 0,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-0.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 45,
+            "completion_tokens": 222,
+            "total_tokens": 267,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 121,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 136,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 245.97945800000002,
+            "response_token/s": 17.141460316613625
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user is asking for three primary colors. This is a straightforward question. The answer depends on the color model:\n\n- **Additive (light):** Red, Green, Blue (RGB)\n- **Subtractive (pigments/paint):** Red, Yellow, Blue (RYB) \u2014 traditional art model\n- **Subtractive (printing):** Cyan, Magenta, Yellow (CMY)\n\nThe most commonly expected answer, especially in general knowledge, is the traditional art model: Red, Yellow, Blue. I'll go with that as the primary answer but can mention the others briefly.\n",
+                "content": "The three primary colors (in the traditional pigment/art model) are:\n\n1. **Red**\n2. **Yellow**\n3. **Blue**\n\nThese are considered \"primary\" because they cannot be created by mixing other colors, and they can be combined to produce a wide range of other colors.\n\n*(Note: In light/digital displays, the primaries are Red, Green, and Blue; in printing, they are Cyan, Magenta, and Yellow.)*"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r3-1.json",
+          "repeat": 3,
+          "prompt_index": 1,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-1.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 161,
+            "total_tokens": 218,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 53,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 91,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 275.13945099999995,
+            "response_token/s": 15.332845554564768
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise two-sentence explanation of a Merkle tree covering what it is and why it's useful. I need to be precise and clear, hitting the core concept (hash-based tree structure) and the key benefit (efficient verification of data integrity).\n",
+                "content": "A Merkle tree is a data structure in which every leaf node is labeled with the cryptographic hash of a data block, and every non-leaf node is labeled with the hash of its children's labels, forming a single \"root hash\" that commits to all the underlying data. It is useful because it allows anyone to efficiently verify that a specific piece of data is part of a large dataset by checking only a small subset of hashes (a Merkle proof), without needing to re-download or re-hash the entire dataset."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r3-2.json",
+          "repeat": 3,
+          "prompt_index": 2,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-2.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 111,
+            "total_tokens": 168,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 64,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 265.48927199999997,
+            "response_token/s": 15.890335090885099
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a Python function that reverses a string, followed by a one-sentence explanation. This is straightforward. I'll use the slice notation `[::-1]` as it's the most Pythonic and concise approach. I'll keep the response clean and direct.\n",
+                "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\nThis function uses Python's slice notation `[::-1]` to return a new string with the characters in reverse order by stepping through the original string from end to start."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r3-3.json",
+          "repeat": 3,
+          "prompt_index": 3,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-3.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 56,
+            "completion_tokens": 85,
+            "total_tokens": 141,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 54,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 266.598234,
+            "response_token/s": 18.596005844664422
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants the first 8 prime numbers, separated by commas, and nothing else.\n\nThe first 8 prime numbers are: 2, 3, 5, 7, 11, 13, 17, 19.\n",
+                "content": "2, 3, 5, 7, 11, 13, 17, 19"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d2-r3-4.json",
+          "repeat": 3,
+          "prompt_index": 4,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-4.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 192,
+            "total_tokens": 249,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 86,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 106,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 271.293091,
+            "response_token/s": 14.823711639181655
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise three-sentence explanation of why quicksort tends to outperform mergesort in practice, despite both having O(n log n) average-case complexity. The key factors are: cache locality (quicksort works in-place with good spatial locality), lower constant factors (fewer operations per element), and the overhead of mergesort's auxiliary array allocation and copying. Let me distill this into three clear sentences.\n",
+                "content": "Quicksort operates in-place, meaning it accesses memory sequentially within the same array, which gives it excellent cache locality compared to mergesort's need to allocate and copy into a separate auxiliary array. It also has a lower constant factor per operation\u2014its inner loop is a simple partition step with fewer comparisons and assignments than mergesort's merge step. Together, these hardware-level advantages mean that even though both algorithms share the same O(n log n) average-case complexity, quicksort typically runs faster on real machines."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        }
+      ],
+      "tool_parity_response": {
+        "id": "chatcmpl-a01dac70-d980-4029-ba49-8a5be10e18fc",
+        "object": "chat.completion",
+        "created": 1788622356,
+        "model": "qwen4exp-exl3",
+        "system_fingerprint": "fp_atlas",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "call_0000000000000000",
+                  "type": "function",
+                  "function": {
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"Paris\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls",
+            "logprobs": null
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1139,
+          "completion_tokens": 28,
+          "total_tokens": 1167,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 26,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 17,
+            "rejected_prediction_tokens": 0
+          },
+          "time_to_first_token_ms": 1927.916174,
+          "response_token/s": 17.47826603350625
+        }
+      },
+      "median_response_tps": 15.816852898750174,
+      "all_choices_equal_d1": true,
+      "agentic": {
+        "schema": 1,
+        "run_id": "run-1788622909880428198",
+        "benchmark_id": "agentic-webserver",
+        "benchmark_name": "Agentic Webserver Test",
+        "recorded_at": 1788622909,
+        "target_url": "http://127.0.0.1:8892",
+        "target_model": "qwen4exp-exl3",
+        "params": {
+          "build_timeout_s": "600",
+          "command_timeout_s": "180",
+          "iterations": "1",
+          "max_tokens": "8192",
+          "max_turns": "40",
+          "request_timeout_s": "900",
+          "s_per_turn_budget": "0",
+          "serve_timeout_s": "30",
+          "wall_budget_s": "1000"
+        },
+        "source": "cli",
+        "atlas_version": "1.0.0-beta-preview",
+        "frame": {
+          "status": "Completed",
+          "phase": "done",
+          "progress": [
+            1,
+            1
+          ],
+          "summary": [
+            {
+              "label": "webserver_ok",
+              "value": "1/1",
+              "unit": "",
+              "style": "Good"
+            },
+            {
+              "label": "followed_directions",
+              "value": "1/1",
+              "unit": "",
+              "style": "Good"
+            },
+            {
+              "label": "s/turn",
+              "value": "28.433",
+              "unit": "s",
+              "style": "Neutral"
+            },
+            {
+              "label": "\u03a3 wall",
+              "value": "404",
+              "unit": "s",
+              "style": "Good"
+            }
+          ],
+          "table": {
+            "title": "ITERATIONS",
+            "columns": [
+              {
+                "title": "Run",
+                "align": "Right",
+                "width": 4
+              },
+              {
+                "title": "wall s",
+                "align": "Right",
+                "width": 8
+              },
+              {
+                "title": "ws_ok",
+                "align": "Left",
+                "width": 6
+              },
+              {
+                "title": "steps",
+                "align": "Right",
+                "width": 6
+              },
+              {
+                "title": "turns",
+                "align": "Right",
+                "width": 6
+              },
+              {
+                "title": "tools",
+                "align": "Right",
+                "width": 6
+              },
+              {
+                "title": "note",
+                "align": "Left",
+                "width": 40
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "text": "0",
+                  "style": "Neutral"
+                },
+                {
+                  "text": "403.5",
+                  "style": "Neutral"
+                },
+                {
+                  "text": "pass",
+                  "style": "Good"
+                },
+                {
+                  "text": "6/6",
+                  "style": "Good"
+                },
+                {
+                  "text": "14",
+                  "style": "Neutral"
+                },
+                {
+                  "text": "13",
+                  "style": "Neutral"
+                },
+                {
+                  "text": "",
+                  "style": "Dim"
+                }
+              ]
+            ]
+          },
+          "verdict": {
+            "kind": "Pass",
+            "reason": "1/1 webserver_ok \u00b7 1/1 followed_directions \u00b7 28.433s/turn (unbounded) \u00b7 \u03a3wall 404s \u2264 1000s"
+          },
+          "metrics": {
+            "decode_tps": 7.729935544709373,
+            "followed_directions": 1.0,
+            "iterations": 1.0,
+            "s_per_turn": 28.433059113428573,
+            "step:curled": 1.0,
+            "step:ran_server": 1.0,
+            "step:ran_tests": 1.0,
+            "step:tore_down": 1.0,
+            "step:wrote_project": 1.0,
+            "step:wrote_tests": 1.0,
+            "sum_agent_wall_s": 398.062827588,
+            "sum_completion_tokens": 3077.0,
+            "sum_tool_calls": 13.0,
+            "sum_turns": 14.0,
+            "sum_wall_s": 403.535024969,
+            "webserver_ok": 1.0
+          },
+          "log": [],
+          "elapsed": {
+            "secs": 404,
+            "nanos": 75129978
+          },
+          "hardware_state": {
+            "sensitivity": "speed",
+            "before": {
+              "captured_at": 1788622504,
+              "machine": {
+                "hostname": "dgx-00",
+                "machine_id": "d103edc98a4b40419003c632707f59b6",
+                "gpu": "NVIDIA GB10",
+                "driver": "580.173.02"
+              },
+              "gpu_temp_c": 61.0,
+              "chassis_temps_c": [
+                {
+                  "name": "acpitz",
+                  "temp_c": 74.0
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 61.3
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 61.0
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 61.7
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 74.0
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 64.9
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 62.7
+                }
+              ],
+              "sm_clock_mhz": 2275.0,
+              "sm_clock_max_mhz": 3003.0,
+              "throttle_counters": {
+                "sw_power_cap_us": 2636107775,
+                "sw_thermal_us": 0,
+                "hw_thermal_us": 0,
+                "hw_power_brake_us": 0,
+                "sync_boost_us": 0
+              },
+              "throttle_active": {
+                "sw_power_cap": false,
+                "sw_thermal": false,
+                "hw_thermal": false,
+                "hw_power_brake": false
+              },
+              "mem_available_kb": 21345848,
+              "mem_total_kb": 127535020,
+              "page_cache_kb": 10094916,
+              "gpu_compute_apps": [
+                {
+                  "pid": 3713702,
+                  "name": "/usr/local/bin/monumental-asr",
+                  "used_mib": 3620
+                },
+                {
+                  "pid": 4076564,
+                  "name": "./target/release/spark",
+                  "used_mib": 87198
+                }
+              ],
+              "cpu_governor": "performance",
+              "persistence_mode": true,
+              "sources": [
+                "nvidia-smi",
+                "procfs",
+                "sysfs"
+              ]
+            },
+            "after": {
+              "captured_at": 1788622909,
+              "machine": {
+                "hostname": "dgx-00",
+                "machine_id": "d103edc98a4b40419003c632707f59b6",
+                "gpu": "NVIDIA GB10",
+                "driver": "580.173.02"
+              },
+              "gpu_temp_c": 64.0,
+              "chassis_temps_c": [
+                {
+                  "name": "acpitz",
+                  "temp_c": 72.3
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 68.2
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 71.1
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 67.8
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 72.3
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 68.7
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 69.9
+                }
+              ],
+              "sm_clock_mhz": 2281.0,
+              "sm_clock_max_mhz": 3003.0,
+              "throttle_counters": {
+                "sw_power_cap_us": 2636107775,
+                "sw_thermal_us": 0,
+                "hw_thermal_us": 0,
+                "hw_power_brake_us": 0,
+                "sync_boost_us": 0
+              },
+              "throttle_active": {
+                "sw_power_cap": false,
+                "sw_thermal": false,
+                "hw_thermal": false,
+                "hw_power_brake": false
+              },
+              "mem_available_kb": 20762536,
+              "mem_total_kb": 127535020,
+              "page_cache_kb": 10367608,
+              "gpu_compute_apps": [
+                {
+                  "pid": 3713702,
+                  "name": "/usr/local/bin/monumental-asr",
+                  "used_mib": 3620
+                },
+                {
+                  "pid": 4076564,
+                  "name": "./target/release/spark",
+                  "used_mib": 87338
+                }
+              ],
+              "cpu_governor": "performance",
+              "persistence_mode": true,
+              "sources": [
+                "nvidia-smi",
+                "procfs",
+                "sysfs"
+              ]
+            },
+            "delta": {
+              "elapsed_s": 405,
+              "sw_power_cap_us": 0,
+              "sw_thermal_us": 0,
+              "hw_thermal_us": 0,
+              "hw_power_brake_us": 0,
+              "gpu_temp_delta_c": 3.0,
+              "hottest_chassis_delta_c": -1.7000000000000028
+            },
+            "precheck": {
+              "decision": "warn",
+              "concerns": [
+                "2 GPU compute processes other than this one (at most 1 expected \u2014 the model under test)",
+                "ATLAS_NO_HW_PRECHECK=1 \u2014 REFUSAL SUPPRESSED BY OPERATOR. The concerns above stand and are recorded with the run; the kill switch only lets it start."
+              ]
+            },
+            "postcheck": {
+              "validity": "valid",
+              "concerns": [
+                "hottest chassis zone moved -2 \u00b0C"
+              ]
+            },
+            "perf_class": "gb10@dgx-00"
+          }
+        }
+      },
+      "acceptance_log": [
+        "2026-09-05T15:32:36.673399Z  INFO spark::scheduler::mtp_accept_debug: Done: 28 tokens (stop) 18.1 tok/s, TTFT=1927.9ms, serial=0.00 mtp=1.00 p1=0.900 mean_na=1.700 tok_step=2.700 regime_reprobes=0",
+        "2026-09-05T15:32:50.100578Z  INFO spark::scheduler::mtp_accept_debug: Done: 222 tokens (stop) 16.9 tok/s, TTFT=251.7ms, serial=0.00 mtp=1.00 p1=0.882 mean_na=1.600 tok_step=2.600 regime_reprobes=0",
+        "2026-09-05T15:32:55.914787Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.867 mean_na=1.562 tok_step=2.562 token_ratio=1.3724 span_ms=20510 fresh=false",
+        "2026-09-05T15:33:01.026675Z  INFO spark::scheduler::mtp_accept_debug: Done: 161 tokens (stop) 15.1 tok/s, TTFT=281.1ms, serial=0.00 mtp=1.00 p1=0.768 mean_na=1.319 tok_step=2.319 regime_reprobes=0",
+        "2026-09-05T15:33:08.357477Z  INFO spark::scheduler::mtp_accept_debug: Done: 111 tokens (stop) 15.8 tok/s, TTFT=271.9ms, serial=0.00 mtp=1.00 p1=0.826 mean_na=1.391 tok_step=2.391 regime_reprobes=0",
+        "2026-09-05T15:33:13.206969Z  INFO spark::scheduler::mtp_accept_debug: Done: 85 tokens (stop) 18.6 tok/s, TTFT=272.7ms, serial=0.00 mtp=1.00 p1=0.933 mean_na=1.800 tok_step=2.800 regime_reprobes=0",
+        "2026-09-05T15:33:16.830013Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.852 mean_na=1.492 tok_step=2.492 token_ratio=1.3460 span_ms=20760 fresh=false",
+        "2026-09-05T15:33:26.607890Z  INFO spark::scheduler::mtp_accept_debug: Done: 192 tokens (stop) 14.6 tok/s, TTFT=279.1ms, serial=0.00 mtp=1.00 p1=0.776 mean_na=1.247 tok_step=2.247 regime_reprobes=0",
+        "2026-09-05T15:33:36.869458Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.844 mean_na=1.414 tok_step=2.414 token_ratio=1.3093 span_ms=19879 fresh=false",
+        "2026-09-05T15:33:39.766940Z  INFO spark::scheduler::mtp_accept_debug: Done: 222 tokens (stop) 17.2 tok/s, TTFT=247.4ms, serial=0.00 mtp=1.00 p1=0.882 mean_na=1.600 tok_step=2.600 regime_reprobes=0",
+        "2026-09-05T15:33:50.498345Z  INFO spark::scheduler::mtp_accept_debug: Done: 161 tokens (stop) 15.4 tok/s, TTFT=274.3ms, serial=0.00 mtp=1.00 p1=0.768 mean_na=1.319 tok_step=2.319 regime_reprobes=0",
+        "2026-09-05T15:33:57.120725Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.820 mean_na=1.430 tok_step=2.430 token_ratio=1.3348 span_ms=20097 fresh=false",
+        "2026-09-05T15:33:57.729348Z  INFO spark::scheduler::mtp_accept_debug: Done: 111 tokens (stop) 16.0 tok/s, TTFT=266.1ms, serial=0.00 mtp=1.00 p1=0.826 mean_na=1.391 tok_step=2.391 regime_reprobes=0",
+        "2026-09-05T15:34:02.517480Z  INFO spark::scheduler::mtp_accept_debug: Done: 85 tokens (stop) 18.8 tok/s, TTFT=268.7ms, serial=0.00 mtp=1.00 p1=0.933 mean_na=1.800 tok_step=2.800 regime_reprobes=0",
+        "2026-09-05T15:34:15.700333Z  INFO spark::scheduler::mtp_accept_debug: Done: 192 tokens (stop) 14.9 tok/s, TTFT=269.5ms, serial=0.00 mtp=1.00 p1=0.776 mean_na=1.247 tok_step=2.247 regime_reprobes=0",
+        "2026-09-05T15:34:17.726739Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.836 mean_na=1.383 tok_step=2.383 token_ratio=1.2979 span_ms=20456 fresh=false",
+        "2026-09-05T15:34:28.853728Z  INFO spark::scheduler::mtp_accept_debug: Done: 222 tokens (stop) 17.2 tok/s, TTFT=246.0ms, serial=0.00 mtp=1.00 p1=0.882 mean_na=1.600 tok_step=2.600 regime_reprobes=0",
+        "2026-09-05T15:34:37.602025Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.859 mean_na=1.555 tok_step=2.555 token_ratio=1.3739 span_ms=19723 fresh=false",
+        "2026-09-05T15:34:39.577584Z  INFO spark::scheduler::mtp_accept_debug: Done: 161 tokens (stop) 15.4 tok/s, TTFT=275.1ms, serial=0.00 mtp=1.00 p1=0.768 mean_na=1.319 tok_step=2.319 regime_reprobes=0",
+        "2026-09-05T15:34:46.779068Z  INFO spark::scheduler::mtp_accept_debug: Done: 111 tokens (stop) 16.0 tok/s, TTFT=265.5ms, serial=0.00 mtp=1.00 p1=0.826 mean_na=1.391 tok_step=2.391 regime_reprobes=0",
+        "2026-09-05T15:34:51.575945Z  INFO spark::scheduler::mtp_accept_debug: Done: 85 tokens (stop) 18.8 tok/s, TTFT=266.6ms, serial=0.00 mtp=1.00 p1=0.933 mean_na=1.800 tok_step=2.800 regime_reprobes=0",
+        "2026-09-05T15:34:58.189421Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.844 mean_na=1.469 tok_step=2.469 token_ratio=1.3390 span_ms=20436 fresh=false",
+        "2026-09-05T15:35:04.745545Z  INFO spark::scheduler::mtp_accept_debug: Done: 192 tokens (stop) 14.9 tok/s, TTFT=271.3ms, serial=0.00 mtp=1.00 p1=0.776 mean_na=1.247 tok_step=2.247 regime_reprobes=0",
+        "2026-09-05T15:35:05.187418Z  INFO spark::scheduler::mtp_accept_debug: Done: 2 tokens (stop) 22.4 tok/s, TTFT=200.1ms, serial=0.00 mtp=1.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0",
+        "2026-09-05T15:35:05.479117Z  INFO spark::scheduler::mtp_accept_debug: Done: 2 tokens (stop) 22.3 tok/s, TTFT=197.3ms, serial=0.00 mtp=1.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0",
+        "2026-09-05T15:35:06.019038Z  INFO spark::scheduler::mtp_accept_debug: Done: 2 tokens (stop) 22.9 tok/s, TTFT=196.6ms, serial=0.00 mtp=1.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0",
+        "2026-09-05T15:35:22.995364Z  INFO spark::scheduler::mtp_accept_debug: Done: 94 tokens (stop) 13.6 tok/s, TTFT=6863.9ms, serial=0.00 mtp=1.00 p1=0.714 mean_na=1.214 tok_step=2.214 regime_reprobes=0",
+        "2026-09-05T15:35:36.105546Z  INFO spark::scheduler::mtp_accept_debug: Done: 91 tokens (stop) 15.5 tok/s, TTFT=6972.2ms, serial=0.00 mtp=1.00 p1=0.806 mean_na=1.500 tok_step=2.500 regime_reprobes=0",
+        "2026-09-05T15:35:46.800317Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.805 mean_na=1.344 tok_step=2.344 token_ratio=1.2987 span_ms=48456 fresh=false",
+        "2026-09-05T15:35:52.052561Z  INFO spark::scheduler::mtp_accept_debug: Done: 97 tokens (stop) 14.0 tok/s, TTFT=8900.5ms, serial=0.00 mtp=1.00 p1=0.738 mean_na=1.286 tok_step=2.286 regime_reprobes=0",
+        "2026-09-05T15:36:18.192612Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.602 mean_na=1.008 tok_step=2.008 token_ratio=1.2537 span_ms=31228 fresh=false",
+        "2026-09-05T15:36:26.227584Z  INFO spark::scheduler::mtp_accept_debug: Done: 323 tokens (stop) 13.5 tok/s, TTFT=10082.4ms, serial=0.00 mtp=1.00 p1=0.683 mean_na=1.221 tok_step=2.221 regime_reprobes=0",
+        "2026-09-05T15:36:49.923088Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.773 mean_na=1.422 tok_step=2.422 token_ratio=1.3656 span_ms=31567 fresh=false",
+        "2026-09-05T15:37:10.631178Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.930 mean_na=1.766 tok_step=2.766 token_ratio=1.4332 span_ms=20546 fresh=false",
+        "2026-09-05T15:37:31.475687Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.938 mean_na=1.805 tok_step=2.805 token_ratio=1.4476 span_ms=20682 fresh=false",
+        "2026-09-05T15:37:33.420477Z  INFO spark::scheduler::mtp_accept_debug: Done: 916 tokens (stop) 16.2 tok/s, TTFT=10462.6ms, serial=0.00 mtp=1.00 p1=0.865 mean_na=1.622 tok_step=2.622 regime_reprobes=0",
+        "2026-09-05T15:37:52.532016Z  INFO spark::scheduler::mtp_accept_debug: Done: 89 tokens (stop) 13.3 tok/s, TTFT=12425.0ms, serial=0.00 mtp=1.00 p1=0.675 mean_na=1.200 tok_step=2.200 regime_reprobes=0",
+        "2026-09-05T15:38:18.036647Z  INFO spark::scheduler::mtp_accept_debug: Done: 94 tokens (stop) 12.8 tok/s, TTFT=12672.2ms, serial=0.00 mtp=1.00 p1=0.591 mean_na=1.114 tok_step=2.114 regime_reprobes=0",
+        "2026-09-05T15:38:37.717839Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.633 mean_na=1.117 tok_step=2.117 token_ratio=1.2967 span_ms=66077 fresh=false",
+        "2026-09-05T15:38:42.059153Z  INFO spark::scheduler::mtp_accept_debug: Done: 133 tokens (stop) 13.2 tok/s, TTFT=13282.2ms, serial=0.00 mtp=1.00 p1=0.639 mean_na=1.164 tok_step=2.164 regime_reprobes=0",
+        "2026-09-05T15:39:05.826607Z  INFO spark::scheduler::mtp_accept_debug: Done: 120 tokens (stop) 13.1 tok/s, TTFT=13594.6ms, serial=0.00 mtp=1.00 p1=0.679 mean_na=1.125 tok_step=2.125 regime_reprobes=0",
+        "2026-09-05T15:39:27.956034Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.609 mean_na=1.023 tok_step=2.023 token_ratio=1.2573 span_ms=50074 fresh=false",
+        "2026-09-05T15:39:30.834969Z  INFO spark::scheduler::mtp_accept_debug: Done: 125 tokens (stop) 11.7 tok/s, TTFT=14257.3ms, serial=0.00 mtp=1.00 p1=0.523 mean_na=0.908 tok_step=1.908 regime_reprobes=0",
+        "2026-09-05T15:39:55.176762Z  INFO spark::scheduler::mtp_accept_debug: Done: 149 tokens (stop) 17.0 tok/s, TTFT=14543.3ms, serial=0.00 mtp=1.00 p1=0.925 mean_na=1.792 tok_step=2.792 regime_reprobes=0",
+        "2026-09-05T15:40:19.935293Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.758 mean_na=1.359 tok_step=2.359 token_ratio=1.3422 span_ms=51818 fresh=false",
+        "2026-09-05T15:40:27.885229Z  INFO spark::scheduler::mtp_accept_debug: Done: 227 tokens (stop) 12.8 tok/s, TTFT=14921.0ms, serial=0.00 mtp=1.00 p1=0.639 mean_na=1.093 tok_step=2.093 regime_reprobes=0",
+        "2026-09-05T15:40:54.959040Z  INFO spark::scheduler::mtp_accept_debug: Done: 150 tokens (stop) 14.2 tok/s, TTFT=15448.1ms, serial=0.00 mtp=1.00 p1=0.750 mean_na=1.328 tok_step=2.328 regime_reprobes=0",
+        "2026-09-05T15:41:14.169535Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.766 mean_na=1.344 tok_step=2.344 token_ratio=1.3274 span_ms=54069 fresh=false",
+        "2026-09-05T15:41:34.986966Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=2 verifies=128 p1=0.797 mean_na=1.305 tok_step=2.305 token_ratio=1.2826 span_ms=20656 fresh=false",
+        "2026-09-05T15:41:44.079573Z  INFO spark::scheduler::mtp_accept_debug: Done: 469 tokens (stop) 14.3 tok/s, TTFT=15798.3ms, serial=0.00 mtp=1.00 p1=0.787 mean_na=1.317 tok_step=2.317 regime_reprobes=0"
+      ]
+    },
+    "3": {
+      "greedy": [
+        {
+          "file": "d3-r1-0.json",
+          "repeat": 1,
+          "prompt_index": 0,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-0.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 45,
+            "completion_tokens": 222,
+            "total_tokens": 267,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 121,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 153,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 248.630167,
+            "response_token/s": 17.09261188525451
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user is asking for three primary colors. This is a straightforward question. The answer depends on the color model:\n\n- **Additive (light):** Red, Green, Blue (RGB)\n- **Subtractive (pigments/paint):** Red, Yellow, Blue (RYB) \u2014 traditional art model\n- **Subtractive (printing):** Cyan, Magenta, Yellow (CMY)\n\nThe most commonly expected answer, especially in general knowledge, is the traditional art model: Red, Yellow, Blue. I'll go with that as the primary answer but can mention the others briefly.\n",
+                "content": "The three primary colors (in the traditional pigment/art model) are:\n\n1. **Red**\n2. **Yellow**\n3. **Blue**\n\nThese are considered \"primary\" because they cannot be created by mixing other colors, and they can be combined to produce a wide range of other colors.\n\n*(Note: In light/digital displays, the primaries are Red, Green, and Blue; in printing, they are Cyan, Magenta, and Yellow.)*"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r1-1.json",
+          "repeat": 1,
+          "prompt_index": 1,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-1.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 161,
+            "total_tokens": 218,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 53,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 101,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 276.31676500000003,
+            "response_token/s": 14.563946703695073
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise two-sentence explanation of a Merkle tree covering what it is and why it's useful. I need to be precise and clear, hitting the core concept (hash-based tree structure) and the key benefit (efficient verification of data integrity).\n",
+                "content": "A Merkle tree is a data structure in which every leaf node is labeled with the cryptographic hash of a data block, and every non-leaf node is labeled with the hash of its children's labels, forming a single \"root hash\" that commits to all the underlying data. It is useful because it allows anyone to efficiently verify that a specific piece of data is part of a large dataset by checking only a small subset of hashes (a Merkle proof), without needing to re-download or re-hash the entire dataset."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r1-2.json",
+          "repeat": 1,
+          "prompt_index": 2,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-2.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 111,
+            "total_tokens": 168,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 74,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 274.87506699999994,
+            "response_token/s": 16.259952649944726
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a Python function that reverses a string, followed by a one-sentence explanation. This is straightforward. I'll use the slice notation `[::-1]` as it's the most Pythonic and concise approach. I'll keep the response clean and direct.\n",
+                "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\nThis function uses Python's slice notation `[::-1]` to return a new string with the characters in reverse order by stepping through the original string from end to start."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r1-3.json",
+          "repeat": 1,
+          "prompt_index": 3,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-3.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 56,
+            "completion_tokens": 85,
+            "total_tokens": 141,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 60,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 276.806846,
+            "response_token/s": 18.840988926607334
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants the first 8 prime numbers, separated by commas, and nothing else.\n\nThe first 8 prime numbers are: 2, 3, 5, 7, 11, 13, 17, 19.\n",
+                "content": "2, 3, 5, 7, 11, 13, 17, 19"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r1-4.json",
+          "repeat": 1,
+          "prompt_index": 4,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-4.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 192,
+            "total_tokens": 249,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 86,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 117,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 273.305351,
+            "response_token/s": 13.841153370788131
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise three-sentence explanation of why quicksort tends to outperform mergesort in practice, despite both having O(n log n) average-case complexity. The key factors are: cache locality (quicksort works in-place with good spatial locality), lower constant factors (fewer operations per element), and the overhead of mergesort's auxiliary array allocation and copying. Let me distill this into three clear sentences.\n",
+                "content": "Quicksort operates in-place, meaning it accesses memory sequentially within the same array, which gives it excellent cache locality compared to mergesort's need to allocate and copy into a separate auxiliary array. It also has a lower constant factor per operation\u2014its inner loop is a simple partition step with fewer comparisons and assignments than mergesort's merge step. Together, these hardware-level advantages mean that even though both algorithms share the same O(n log n) average-case complexity, quicksort typically runs faster on real machines."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r2-0.json",
+          "repeat": 2,
+          "prompt_index": 0,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-0.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 45,
+            "completion_tokens": 222,
+            "total_tokens": 267,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 121,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 153,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 248.86127199999999,
+            "response_token/s": 17.407535590174785
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user is asking for three primary colors. This is a straightforward question. The answer depends on the color model:\n\n- **Additive (light):** Red, Green, Blue (RGB)\n- **Subtractive (pigments/paint):** Red, Yellow, Blue (RYB) \u2014 traditional art model\n- **Subtractive (printing):** Cyan, Magenta, Yellow (CMY)\n\nThe most commonly expected answer, especially in general knowledge, is the traditional art model: Red, Yellow, Blue. I'll go with that as the primary answer but can mention the others briefly.\n",
+                "content": "The three primary colors (in the traditional pigment/art model) are:\n\n1. **Red**\n2. **Yellow**\n3. **Blue**\n\nThese are considered \"primary\" because they cannot be created by mixing other colors, and they can be combined to produce a wide range of other colors.\n\n*(Note: In light/digital displays, the primaries are Red, Green, and Blue; in printing, they are Cyan, Magenta, and Yellow.)*"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r2-1.json",
+          "repeat": 2,
+          "prompt_index": 1,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-1.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 161,
+            "total_tokens": 218,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 53,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 101,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 273.713368,
+            "response_token/s": 14.613165670180454
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise two-sentence explanation of a Merkle tree covering what it is and why it's useful. I need to be precise and clear, hitting the core concept (hash-based tree structure) and the key benefit (efficient verification of data integrity).\n",
+                "content": "A Merkle tree is a data structure in which every leaf node is labeled with the cryptographic hash of a data block, and every non-leaf node is labeled with the hash of its children's labels, forming a single \"root hash\" that commits to all the underlying data. It is useful because it allows anyone to efficiently verify that a specific piece of data is part of a large dataset by checking only a small subset of hashes (a Merkle proof), without needing to re-download or re-hash the entire dataset."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r2-2.json",
+          "repeat": 2,
+          "prompt_index": 2,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-2.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 111,
+            "total_tokens": 168,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 74,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 270.27307299999995,
+            "response_token/s": 16.514300302375187
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a Python function that reverses a string, followed by a one-sentence explanation. This is straightforward. I'll use the slice notation `[::-1]` as it's the most Pythonic and concise approach. I'll keep the response clean and direct.\n",
+                "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\nThis function uses Python's slice notation `[::-1]` to return a new string with the characters in reverse order by stepping through the original string from end to start."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r2-3.json",
+          "repeat": 2,
+          "prompt_index": 3,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-3.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 56,
+            "completion_tokens": 85,
+            "total_tokens": 141,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 60,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 267.751309,
+            "response_token/s": 19.050119053923133
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants the first 8 prime numbers, separated by commas, and nothing else.\n\nThe first 8 prime numbers are: 2, 3, 5, 7, 11, 13, 17, 19.\n",
+                "content": "2, 3, 5, 7, 11, 13, 17, 19"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r2-4.json",
+          "repeat": 2,
+          "prompt_index": 4,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-4.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 192,
+            "total_tokens": 249,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 86,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 117,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 271.008243,
+            "response_token/s": 13.853755457791138
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise three-sentence explanation of why quicksort tends to outperform mergesort in practice, despite both having O(n log n) average-case complexity. The key factors are: cache locality (quicksort works in-place with good spatial locality), lower constant factors (fewer operations per element), and the overhead of mergesort's auxiliary array allocation and copying. Let me distill this into three clear sentences.\n",
+                "content": "Quicksort operates in-place, meaning it accesses memory sequentially within the same array, which gives it excellent cache locality compared to mergesort's need to allocate and copy into a separate auxiliary array. It also has a lower constant factor per operation\u2014its inner loop is a simple partition step with fewer comparisons and assignments than mergesort's merge step. Together, these hardware-level advantages mean that even though both algorithms share the same O(n log n) average-case complexity, quicksort typically runs faster on real machines."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r3-0.json",
+          "repeat": 3,
+          "prompt_index": 0,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-0.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 45,
+            "completion_tokens": 222,
+            "total_tokens": 267,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 121,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 153,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 246.194963,
+            "response_token/s": 17.401569301787344
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user is asking for three primary colors. This is a straightforward question. The answer depends on the color model:\n\n- **Additive (light):** Red, Green, Blue (RGB)\n- **Subtractive (pigments/paint):** Red, Yellow, Blue (RYB) \u2014 traditional art model\n- **Subtractive (printing):** Cyan, Magenta, Yellow (CMY)\n\nThe most commonly expected answer, especially in general knowledge, is the traditional art model: Red, Yellow, Blue. I'll go with that as the primary answer but can mention the others briefly.\n",
+                "content": "The three primary colors (in the traditional pigment/art model) are:\n\n1. **Red**\n2. **Yellow**\n3. **Blue**\n\nThese are considered \"primary\" because they cannot be created by mixing other colors, and they can be combined to produce a wide range of other colors.\n\n*(Note: In light/digital displays, the primaries are Red, Green, and Blue; in printing, they are Cyan, Magenta, and Yellow.)*"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r3-1.json",
+          "repeat": 3,
+          "prompt_index": 1,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-1.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 161,
+            "total_tokens": 218,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 53,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 101,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 272.905783,
+            "response_token/s": 14.603708506354668
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise two-sentence explanation of a Merkle tree covering what it is and why it's useful. I need to be precise and clear, hitting the core concept (hash-based tree structure) and the key benefit (efficient verification of data integrity).\n",
+                "content": "A Merkle tree is a data structure in which every leaf node is labeled with the cryptographic hash of a data block, and every non-leaf node is labeled with the hash of its children's labels, forming a single \"root hash\" that commits to all the underlying data. It is useful because it allows anyone to efficiently verify that a specific piece of data is part of a large dataset by checking only a small subset of hashes (a Merkle proof), without needing to re-download or re-hash the entire dataset."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r3-2.json",
+          "repeat": 3,
+          "prompt_index": 2,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-2.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 111,
+            "total_tokens": 168,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 74,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 269.040351,
+            "response_token/s": 16.49237367737674
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a Python function that reverses a string, followed by a one-sentence explanation. This is straightforward. I'll use the slice notation `[::-1]` as it's the most Pythonic and concise approach. I'll keep the response clean and direct.\n",
+                "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\nThis function uses Python's slice notation `[::-1]` to return a new string with the characters in reverse order by stepping through the original string from end to start."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r3-3.json",
+          "repeat": 3,
+          "prompt_index": 3,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-3.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 56,
+            "completion_tokens": 85,
+            "total_tokens": 141,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 55,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 60,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 264.377158,
+            "response_token/s": 18.989722076295564
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants the first 8 prime numbers, separated by commas, and nothing else.\n\nThe first 8 prime numbers are: 2, 3, 5, 7, 11, 13, 17, 19.\n",
+                "content": "2, 3, 5, 7, 11, 13, 17, 19"
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "file": "d3-r3-4.json",
+          "repeat": 3,
+          "prompt_index": 4,
+          "reference_file": "/tmp/atlas-mtp-final/d1-r1-4.json",
+          "choices_equal_d1": true,
+          "usage": {
+            "prompt_tokens": 57,
+            "completion_tokens": 192,
+            "total_tokens": 249,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 86,
+              "audio_tokens": 0,
+              "accepted_prediction_tokens": 117,
+              "rejected_prediction_tokens": 0
+            },
+            "time_to_first_token_ms": 271.406452,
+            "response_token/s": 13.829046462767533
+          },
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "reasoning_content": "The user wants a concise three-sentence explanation of why quicksort tends to outperform mergesort in practice, despite both having O(n log n) average-case complexity. The key factors are: cache locality (quicksort works in-place with good spatial locality), lower constant factors (fewer operations per element), and the overhead of mergesort's auxiliary array allocation and copying. Let me distill this into three clear sentences.\n",
+                "content": "Quicksort operates in-place, meaning it accesses memory sequentially within the same array, which gives it excellent cache locality compared to mergesort's need to allocate and copy into a separate auxiliary array. It also has a lower constant factor per operation\u2014its inner loop is a simple partition step with fewer comparisons and assignments than mergesort's merge step. Together, these hardware-level advantages mean that even though both algorithms share the same O(n log n) average-case complexity, quicksort typically runs faster on real machines."
+              },
+              "finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        }
+      ],
+      "tool_parity_response": {
+        "id": "chatcmpl-49b2ad7f-ef52-4e8b-9694-74ff1d19c477",
+        "object": "chat.completion",
+        "created": 1788621302,
+        "model": "qwen4exp-exl3",
+        "system_fingerprint": "fp_atlas",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "call_0000000000000000",
+                  "type": "function",
+                  "function": {
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"Paris\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls",
+            "logprobs": null
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1139,
+          "completion_tokens": 28,
+          "total_tokens": 1167,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 26,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 19,
+            "rejected_prediction_tokens": 0
+          },
+          "time_to_first_token_ms": 1946.6774309999998,
+          "response_token/s": 18.62563919399602
+        }
+      },
+      "median_response_tps": 16.49237367737674,
+      "all_choices_equal_d1": true,
+      "agentic": {
+        "schema": 1,
+        "run_id": "run-1788622181031575941",
+        "benchmark_id": "agentic-webserver",
+        "benchmark_name": "Agentic Webserver Test",
+        "recorded_at": 1788622181,
+        "target_url": "http://127.0.0.1:8892",
+        "target_model": "qwen4exp-exl3",
+        "params": {
+          "build_timeout_s": "600",
+          "command_timeout_s": "180",
+          "iterations": "1",
+          "max_tokens": "8192",
+          "max_turns": "40",
+          "request_timeout_s": "900",
+          "s_per_turn_budget": "0",
+          "serve_timeout_s": "30",
+          "wall_budget_s": "1000"
+        },
+        "source": "cli",
+        "atlas_version": "1.0.0-beta-preview",
+        "frame": {
+          "status": "Completed",
+          "phase": "done",
+          "progress": [
+            1,
+            1
+          ],
+          "summary": [
+            {
+              "label": "webserver_ok",
+              "value": "1/1",
+              "unit": "",
+              "style": "Good"
+            },
+            {
+              "label": "followed_directions",
+              "value": "1/1",
+              "unit": "",
+              "style": "Good"
+            },
+            {
+              "label": "s/turn",
+              "value": "38.207",
+              "unit": "s",
+              "style": "Neutral"
+            },
+            {
+              "label": "\u03a3 wall",
+              "value": "727",
+              "unit": "s",
+              "style": "Good"
+            }
+          ],
+          "table": {
+            "title": "ITERATIONS",
+            "columns": [
+              {
+                "title": "Run",
+                "align": "Right",
+                "width": 4
+              },
+              {
+                "title": "wall s",
+                "align": "Right",
+                "width": 8
+              },
+              {
+                "title": "ws_ok",
+                "align": "Left",
+                "width": 6
+              },
+              {
+                "title": "steps",
+                "align": "Right",
+                "width": 6
+              },
+              {
+                "title": "turns",
+                "align": "Right",
+                "width": 6
+              },
+              {
+                "title": "tools",
+                "align": "Right",
+                "width": 6
+              },
+              {
+                "title": "note",
+                "align": "Left",
+                "width": 40
+              }
+            ],
+            "rows": [
+              [
+                {
+                  "text": "0",
+                  "style": "Neutral"
+                },
+                {
+                  "text": "726.8",
+                  "style": "Neutral"
+                },
+                {
+                  "text": "pass",
+                  "style": "Good"
+                },
+                {
+                  "text": "6/6",
+                  "style": "Good"
+                },
+                {
+                  "text": "19",
+                  "style": "Neutral"
+                },
+                {
+                  "text": "20",
+                  "style": "Neutral"
+                },
+                {
+                  "text": "",
+                  "style": "Dim"
+                }
+              ]
+            ]
+          },
+          "verdict": {
+            "kind": "Pass",
+            "reason": "1/1 webserver_ok \u00b7 1/1 followed_directions \u00b7 38.207s/turn (unbounded) \u00b7 \u03a3wall 727s \u2264 1000s"
+          },
+          "metrics": {
+            "decode_tps": 7.973278817672057,
+            "followed_directions": 1.0,
+            "iterations": 1.0,
+            "s_per_turn": 38.20656293521053,
+            "step:curled": 1.0,
+            "step:ran_server": 1.0,
+            "step:ran_tests": 1.0,
+            "step:tore_down": 1.0,
+            "step:wrote_project": 1.0,
+            "step:wrote_tests": 1.0,
+            "sum_agent_wall_s": 725.924695769,
+            "sum_completion_tokens": 5788.0,
+            "sum_tool_calls": 20.0,
+            "sum_turns": 19.0,
+            "sum_wall_s": 726.844087249,
+            "webserver_ok": 1.0
+          },
+          "log": [],
+          "elapsed": {
+            "secs": 727,
+            "nanos": 386306823
+          },
+          "hardware_state": {
+            "sensitivity": "speed",
+            "before": {
+              "captured_at": 1788621452,
+              "machine": {
+                "hostname": "dgx-00",
+                "machine_id": "d103edc98a4b40419003c632707f59b6",
+                "gpu": "NVIDIA GB10",
+                "driver": "580.173.02"
+              },
+              "gpu_temp_c": 61.0,
+              "chassis_temps_c": [
+                {
+                  "name": "acpitz",
+                  "temp_c": 73.1
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 61.3
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 61.2
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 62.1
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 73.1
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 65.3
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 62.8
+                }
+              ],
+              "sm_clock_mhz": 2275.0,
+              "sm_clock_max_mhz": 3003.0,
+              "throttle_counters": {
+                "sw_power_cap_us": 2636107775,
+                "sw_thermal_us": 0,
+                "hw_thermal_us": 0,
+                "hw_power_brake_us": 0,
+                "sync_boost_us": 0
+              },
+              "throttle_active": {
+                "sw_power_cap": false,
+                "sw_thermal": false,
+                "hw_thermal": false,
+                "hw_power_brake": false
+              },
+              "mem_available_kb": 21156420,
+              "mem_total_kb": 127535020,
+              "page_cache_kb": 11050720,
+              "gpu_compute_apps": [
+                {
+                  "pid": 3713702,
+                  "name": "/usr/local/bin/monumental-asr",
+                  "used_mib": 3620
+                },
+                {
+                  "pid": 3983094,
+                  "name": "./target/release/spark",
+                  "used_mib": 87323
+                }
+              ],
+              "cpu_governor": "performance",
+              "persistence_mode": true,
+              "sources": [
+                "nvidia-smi",
+                "procfs",
+                "sysfs"
+              ]
+            },
+            "after": {
+              "captured_at": 1788622180,
+              "machine": {
+                "hostname": "dgx-00",
+                "machine_id": "d103edc98a4b40419003c632707f59b6",
+                "gpu": "NVIDIA GB10",
+                "driver": "580.173.02"
+              },
+              "gpu_temp_c": 66.0,
+              "chassis_temps_c": [
+                {
+                  "name": "acpitz",
+                  "temp_c": 73.7
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 69.2
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 71.2
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 69.2
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 73.7
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 70.6
+                },
+                {
+                  "name": "acpitz",
+                  "temp_c": 70.8
+                }
+              ],
+              "sm_clock_mhz": 2281.0,
+              "sm_clock_max_mhz": 3003.0,
+              "throttle_counters": {
+                "sw_power_cap_us": 2636107775,
+                "sw_thermal_us": 0,
+                "hw_thermal_us": 0,
+                "hw_power_brake_us": 0,
+                "sync_boost_us": 0
+              },
+              "throttle_active": {
+                "sw_power_cap": false,
+                "sw_thermal": false,
+                "hw_thermal": false,
+                "hw_power_brake": false
+              },
+              "mem_available_kb": 20619048,
+              "mem_total_kb": 127535020,
+              "page_cache_kb": 11261208,
+              "gpu_compute_apps": [
+                {
+                  "pid": 3713702,
+                  "name": "/usr/local/bin/monumental-asr",
+                  "used_mib": 3620
+                },
+                {
+                  "pid": 3983094,
+                  "name": "./target/release/spark",
+                  "used_mib": 87513
+                }
+              ],
+              "cpu_governor": "performance",
+              "persistence_mode": true,
+              "sources": [
+                "nvidia-smi",
+                "procfs",
+                "sysfs"
+              ]
+            },
+            "delta": {
+              "elapsed_s": 728,
+              "sw_power_cap_us": 0,
+              "sw_thermal_us": 0,
+              "hw_thermal_us": 0,
+              "hw_power_brake_us": 0,
+              "gpu_temp_delta_c": 5.0,
+              "hottest_chassis_delta_c": 0.6000000000000085
+            },
+            "precheck": {
+              "decision": "warn",
+              "concerns": [
+                "2 GPU compute processes other than this one (at most 1 expected \u2014 the model under test)",
+                "ATLAS_NO_HW_PRECHECK=1 \u2014 REFUSAL SUPPRESSED BY OPERATOR. The concerns above stand and are recorded with the run; the kill switch only lets it start."
+              ]
+            },
+            "postcheck": {
+              "validity": "valid",
+              "concerns": [
+                "hottest chassis zone moved +1 \u00b0C"
+              ]
+            },
+            "perf_class": "gb10@dgx-00"
+          }
+        }
+      },
+      "acceptance_log": [
+        "2026-09-05T15:13:59.875530Z  INFO spark::scheduler::mtp_accept_debug: Done: 161 tokens (stop) 14.4 tok/s, TTFT=296.2ms, serial=0.00 mtp=1.00 p1=0.746 mean_na=1.712 tok_step=2.712 regime_reprobes=0",
+        "2026-09-05T15:14:13.614284Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.766 mean_na=1.680 tok_step=2.680 token_ratio=1.4336 span_ms=24616 fresh=false",
+        "2026-09-05T15:14:14.189106Z  INFO spark::scheduler::mtp_accept_debug: Done: 192 tokens (stop) 13.7 tok/s, TTFT=276.9ms, serial=0.00 mtp=1.00 p1=0.770 mean_na=1.581 tok_step=2.581 regime_reprobes=0",
+        "2026-09-05T15:15:02.426941Z  INFO spark::scheduler::mtp_accept_debug: Done: 28 tokens (stop) 19.3 tok/s, TTFT=1946.7ms, serial=0.00 mtp=1.00 p1=0.875 mean_na=2.375 tok_step=3.375 regime_reprobes=0",
+        "2026-09-05T15:15:15.617257Z  INFO spark::scheduler::mtp_accept_debug: Done: 222 tokens (stop) 17.2 tok/s, TTFT=248.6ms, serial=0.00 mtp=1.00 p1=0.897 mean_na=2.250 tok_step=3.250 regime_reprobes=0",
+        "2026-09-05T15:15:25.567406Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.859 mean_na=2.062 tok_step=3.062 token_ratio=1.4622 span_ms=71762 fresh=false",
+        "2026-09-05T15:15:26.892065Z  INFO spark::scheduler::mtp_accept_debug: Done: 161 tokens (stop) 14.7 tok/s, TTFT=276.3ms, serial=0.00 mtp=1.00 p1=0.746 mean_na=1.712 tok_step=2.712 regime_reprobes=0",
+        "2026-09-05T15:15:33.943265Z  INFO spark::scheduler::mtp_accept_debug: Done: 111 tokens (stop) 16.4 tok/s, TTFT=274.9ms, serial=0.00 mtp=1.00 p1=0.833 mean_na=2.056 tok_step=3.056 regime_reprobes=0",
+        "2026-09-05T15:15:38.689911Z  INFO spark::scheduler::mtp_accept_debug: Done: 85 tokens (stop) 19.1 tok/s, TTFT=276.8ms, serial=0.00 mtp=1.00 p1=0.917 mean_na=2.500 tok_step=3.500 regime_reprobes=0",
+        "2026-09-05T15:15:50.899881Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.828 mean_na=1.938 tok_step=2.938 token_ratio=1.4530 span_ms=25144 fresh=false",
+        "2026-09-05T15:15:52.773468Z  INFO spark::scheduler::mtp_accept_debug: Done: 192 tokens (stop) 13.9 tok/s, TTFT=273.3ms, serial=0.00 mtp=1.00 p1=0.770 mean_na=1.581 tok_step=2.581 regime_reprobes=0",
+        "2026-09-05T15:16:05.733468Z  INFO spark::scheduler::mtp_accept_debug: Done: 222 tokens (stop) 17.5 tok/s, TTFT=248.9ms, serial=0.00 mtp=1.00 p1=0.897 mean_na=2.250 tok_step=3.250 regime_reprobes=0",
+        "2026-09-05T15:16:15.656972Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.852 mean_na=2.008 tok_step=3.008 token_ratio=1.4599 span_ms=24570 fresh=false",
+        "2026-09-05T15:16:16.969171Z  INFO spark::scheduler::mtp_accept_debug: Done: 161 tokens (stop) 14.7 tok/s, TTFT=273.7ms, serial=0.00 mtp=1.00 p1=0.746 mean_na=1.712 tok_step=2.712 regime_reprobes=0",
+        "2026-09-05T15:16:23.911779Z  INFO spark::scheduler::mtp_accept_debug: Done: 111 tokens (stop) 16.7 tok/s, TTFT=270.3ms, serial=0.00 mtp=1.00 p1=0.833 mean_na=2.056 tok_step=3.056 regime_reprobes=0",
+        "2026-09-05T15:16:28.598438Z  INFO spark::scheduler::mtp_accept_debug: Done: 85 tokens (stop) 19.3 tok/s, TTFT=267.8ms, serial=0.00 mtp=1.00 p1=0.917 mean_na=2.500 tok_step=3.500 regime_reprobes=0",
+        "2026-09-05T15:16:40.783940Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.828 mean_na=1.938 tok_step=2.938 token_ratio=1.4530 span_ms=24939 fresh=false",
+        "2026-09-05T15:16:42.666859Z  INFO spark::scheduler::mtp_accept_debug: Done: 192 tokens (stop) 13.9 tok/s, TTFT=271.0ms, serial=0.00 mtp=1.00 p1=0.770 mean_na=1.581 tok_step=2.581 regime_reprobes=0",
+        "2026-09-05T15:16:55.626406Z  INFO spark::scheduler::mtp_accept_debug: Done: 222 tokens (stop) 17.5 tok/s, TTFT=246.2ms, serial=0.00 mtp=1.00 p1=0.897 mean_na=2.250 tok_step=3.250 regime_reprobes=0",
+        "2026-09-05T15:17:05.552823Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.852 mean_na=2.008 tok_step=3.008 token_ratio=1.4599 span_ms=24581 fresh=false",
+        "2026-09-05T15:17:06.865299Z  INFO spark::scheduler::mtp_accept_debug: Done: 161 tokens (stop) 14.7 tok/s, TTFT=272.9ms, serial=0.00 mtp=1.00 p1=0.746 mean_na=1.712 tok_step=2.712 regime_reprobes=0",
+        "2026-09-05T15:17:13.813566Z  INFO spark::scheduler::mtp_accept_debug: Done: 111 tokens (stop) 16.6 tok/s, TTFT=269.0ms, serial=0.00 mtp=1.00 p1=0.833 mean_na=2.056 tok_step=3.056 regime_reprobes=0",
+        "2026-09-05T15:17:18.513412Z  INFO spark::scheduler::mtp_accept_debug: Done: 85 tokens (stop) 19.2 tok/s, TTFT=264.4ms, serial=0.00 mtp=1.00 p1=0.917 mean_na=2.500 tok_step=3.500 regime_reprobes=0",
+        "2026-09-05T15:17:30.725008Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.828 mean_na=1.938 tok_step=2.938 token_ratio=1.4530 span_ms=24984 fresh=false",
+        "2026-09-05T15:17:32.606142Z  INFO spark::scheduler::mtp_accept_debug: Done: 192 tokens (stop) 13.9 tok/s, TTFT=271.4ms, serial=0.00 mtp=1.00 p1=0.770 mean_na=1.581 tok_step=2.581 regime_reprobes=0",
+        "2026-09-05T15:17:33.029002Z  INFO spark::scheduler::mtp_accept_debug: Done: 2 tokens (stop) 22.6 tok/s, TTFT=201.5ms, serial=0.00 mtp=1.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0",
+        "2026-09-05T15:17:33.325938Z  INFO spark::scheduler::mtp_accept_debug: Done: 2 tokens (stop) 22.5 tok/s, TTFT=202.8ms, serial=0.00 mtp=1.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0",
+        "2026-09-05T15:17:33.867168Z  INFO spark::scheduler::mtp_accept_debug: Done: 2 tokens (stop) 23.1 tok/s, TTFT=197.5ms, serial=0.00 mtp=1.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0",
+        "2026-09-05T15:17:51.944777Z  INFO spark::scheduler::mtp_accept_debug: Done: 114 tokens (stop) 14.2 tok/s, TTFT=6931.9ms, serial=0.00 mtp=1.00 p1=0.821 mean_na=1.897 tok_step=2.897 regime_reprobes=0",
+        "2026-09-05T15:18:07.884795Z  INFO spark::scheduler::mtp_accept_debug: Done: 112 tokens (stop) 13.0 tok/s, TTFT=7113.4ms, serial=0.00 mtp=1.00 p1=0.674 mean_na=1.581 tok_step=2.581 regime_reprobes=0",
+        "2026-09-05T15:18:21.888887Z  INFO spark::scheduler::mtp_accept_debug: Done: 95 tokens (stop) 14.7 tok/s, TTFT=7396.6ms, serial=0.00 mtp=1.00 p1=0.844 mean_na=1.938 tok_step=2.938 regime_reprobes=0",
+        "2026-09-05T15:18:31.716891Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.789 mean_na=1.750 tok_step=2.750 token_ratio=1.4410 span_ms=60805 fresh=false",
+        "2026-09-05T15:18:57.628183Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.570 mean_na=1.195 tok_step=2.195 token_ratio=1.3632 span_ms=25711 fresh=false",
+        "2026-09-05T15:19:23.524770Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.836 mean_na=2.070 tok_step=3.070 token_ratio=1.4553 span_ms=25696 fresh=false",
+        "2026-09-05T15:19:48.965681Z  INFO spark::scheduler::mtp_accept_debug: Done: 1162 tokens (stop) 14.8 tok/s, TTFT=8257.7ms, serial=0.00 mtp=1.00 p1=0.783 mean_na=1.969 tok_step=2.969 regime_reprobes=0",
+        "2026-09-05T15:19:59.540608Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.969 mean_na=2.719 tok_step=3.719 token_ratio=1.4921 span_ms=35814 fresh=false",
+        "2026-09-05T15:20:25.605158Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.727 mean_na=1.508 tok_step=2.508 token_ratio=1.4208 span_ms=25862 fresh=false",
+        "2026-09-05T15:20:32.782352Z  INFO spark::scheduler::mtp_accept_debug: Done: 448 tokens (stop) 13.4 tok/s, TTFT=10254.6ms, serial=0.00 mtp=1.00 p1=0.777 mean_na=1.693 tok_step=2.693 regime_reprobes=0",
+        "2026-09-05T15:21:02.680981Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.688 mean_na=1.508 tok_step=2.508 token_ratio=1.4074 span_ms=36876 fresh=false",
+        "2026-09-05T15:21:13.011113Z  INFO spark::scheduler::mtp_accept_debug: Done: 353 tokens (stop) 12.1 tok/s, TTFT=11100.2ms, serial=0.00 mtp=1.00 p1=0.653 mean_na=1.444 tok_step=2.444 regime_reprobes=0",
+        "2026-09-05T15:21:40.189159Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.656 mean_na=1.445 tok_step=2.445 token_ratio=1.3962 span_ms=37307 fresh=false",
+        "2026-09-05T15:22:05.984425Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.758 mean_na=1.523 tok_step=2.523 token_ratio=1.4311 span_ms=25592 fresh=false",
+        "2026-09-05T15:22:31.599679Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.859 mean_na=1.953 tok_step=2.953 token_ratio=1.4622 span_ms=25418 fresh=false",
+        "2026-09-05T15:22:48.311440Z  INFO spark::scheduler::mtp_accept_debug: Done: 1124 tokens (stop) 13.4 tok/s, TTFT=11644.2ms, serial=0.00 mtp=1.00 p1=0.763 mean_na=1.693 tok_step=2.693 regime_reprobes=0",
+        "2026-09-05T15:23:11.117989Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.734 mean_na=1.766 tok_step=2.766 token_ratio=1.4234 span_ms=39320 fresh=false",
+        "2026-09-05T15:23:15.241351Z  INFO spark::scheduler::mtp_accept_debug: Done: 149 tokens (stop) 11.2 tok/s, TTFT=13573.2ms, serial=0.00 mtp=1.00 p1=0.621 mean_na=1.242 tok_step=2.242 regime_reprobes=0",
+        "2026-09-05T15:23:52.174461Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.594 mean_na=1.164 tok_step=2.164 token_ratio=1.3578 span_ms=40859 fresh=false",
+        "2026-09-05T15:24:09.265993Z  INFO spark::scheduler::mtp_accept_debug: Done: 456 tokens (stop) 11.8 tok/s, TTFT=14571.1ms, serial=0.00 mtp=1.00 p1=0.620 mean_na=1.370 tok_step=2.370 regime_reprobes=0",
+        "2026-09-05T15:24:33.573036Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.672 mean_na=1.555 tok_step=2.555 token_ratio=1.4019 span_ms=41200 fresh=false",
+        "2026-09-05T15:24:35.106645Z  INFO spark::scheduler::mtp_accept_debug: Done: 119 tokens (stop) 11.0 tok/s, TTFT=15042.5ms, serial=0.00 mtp=1.00 p1=0.623 mean_na=1.226 tok_step=2.226 regime_reprobes=0",
+        "2026-09-05T15:25:02.523052Z  INFO spark::scheduler::mtp_accept_debug: Done: 135 tokens (stop) 12.7 tok/s, TTFT=15719.3ms, serial=0.00 mtp=1.00 p1=0.698 mean_na=1.528 tok_step=2.528 regime_reprobes=0",
+        "2026-09-05T15:25:30.232105Z  INFO spark::scheduler::mtp_accept_debug: Done: 103 tokens (stop) 10.7 tok/s, TTFT=16019.2ms, serial=0.00 mtp=1.00 p1=0.562 mean_na=1.125 tok_step=2.125 regime_reprobes=0",
+        "2026-09-05T15:25:51.859169Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.664 mean_na=1.375 tok_step=2.375 token_ratio=1.3991 span_ms=78086 fresh=false",
+        "2026-09-05T15:25:55.862891Z  INFO spark::scheduler::mtp_accept_debug: Done: 97 tokens (stop) 11.2 tok/s, TTFT=16945.8ms, serial=0.00 mtp=1.00 p1=0.558 mean_na=1.233 tok_step=2.233 regime_reprobes=0",
+        "2026-09-05T15:26:28.471270Z  INFO spark::scheduler::mtp_accept_debug: Done: 174 tokens (stop) 11.5 tok/s, TTFT=17451.1ms, serial=0.00 mtp=1.00 p1=0.640 mean_na=1.307 tok_step=2.307 regime_reprobes=0",
+        "2026-09-05T15:26:56.463335Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.586 mean_na=1.195 tok_step=2.195 token_ratio=1.3695 span_ms=64406 fresh=false",
+        "2026-09-05T15:27:00.471261Z  INFO spark::scheduler::mtp_accept_debug: Done: 106 tokens (stop) 9.6 tok/s, TTFT=17952.4ms, serial=0.00 mtp=1.00 p1=0.491 mean_na=0.909 tok_step=1.909 regime_reprobes=0",
+        "2026-09-05T15:27:29.365371Z  INFO spark::scheduler::mtp_accept_debug: Done: 142 tokens (stop) 16.2 tok/s, TTFT=18123.8ms, serial=0.00 mtp=1.00 p1=0.860 mean_na=2.279 tok_step=3.279 regime_reprobes=0",
+        "2026-09-05T15:28:01.267076Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.750 mean_na=1.648 tok_step=2.648 token_ratio=1.4286 span_ms=64604 fresh=false",
+        "2026-09-05T15:28:07.612724Z  INFO spark::scheduler::mtp_accept_debug: Done: 251 tokens (stop) 12.7 tok/s, TTFT=18427.9ms, serial=0.00 mtp=1.00 p1=0.745 mean_na=1.551 tok_step=2.551 regime_reprobes=0",
+        "2026-09-05T15:28:40.144901Z  INFO spark::scheduler::mtp_accept_debug: Done: 158 tokens (stop) 15.0 tok/s, TTFT=18902.3ms, serial=0.00 mtp=1.00 p1=0.788 mean_na=2.019 tok_step=3.019 regime_reprobes=0",
+        "2026-09-05T15:29:09.842504Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.805 mean_na=1.797 tok_step=2.797 token_ratio=1.4459 span_ms=68372 fresh=false",
+        "2026-09-05T15:29:35.551326Z  INFO spark::scheduler::mtp_accept_debug: MTP accept n=1 k_drafts=3 verifies=128 p1=0.734 mean_na=1.555 tok_step=2.555 token_ratio=1.4234 span_ms=25509 fresh=false",
+        "2026-09-05T15:29:39.790003Z  INFO spark::scheduler::mtp_accept_debug: Done: 490 tokens (stop) 12.5 tok/s, TTFT=19281.8ms, serial=0.00 mtp=1.00 p1=0.755 mean_na=1.495 tok_step=2.495 regime_reprobes=0"
+      ]
+    }
+  },
+  "rebase": {
+    "main": "8682329cce0dd8bec1d3775704e978533b00bf7a",
+    "tip": "0d099342e977544acdf096e1c6d22d87a6d1f952",
+    "runtime_dependency_trees_identical": true,
+    "rebased_build_binary_sha256": "dbe62e5d182740aec0cf42dd51f5a6714b63da06e63e1ddb67dbea9920d67b95"
+  }
+}

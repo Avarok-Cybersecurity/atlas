@@ -31,7 +31,10 @@ fn fused_qkv_enabled() -> bool {
 }
 
 impl Qwen3AttentionLayer {
-    pub(super) fn ms_phase_qkv(&self, c: &MultiSeqCtx<'_>) -> Result<()> {
+    pub(in crate::layers::qwen3_attention) fn ms_phase_qkv(
+        &self,
+        c: &MultiSeqCtx<'_>,
+    ) -> Result<()> {
         let MultiSeqCtx {
             fwd,
             n,
@@ -51,7 +54,12 @@ impl Qwen3AttentionLayer {
             ..
         } = *c;
 
-        if n == 3
+        // Native EXL3 q/k/v (ATLAS_EXL3_NATIVE_DENSE=1) FIRST: every arm below
+        // reads projection slots the loader left null for such a layer (the
+        // dense-BF16 predicate would otherwise admit an ungated layer).
+        if self.ms_qkv_exl3(c)? {
+            // qkv_buf written (+ Q deinterleaved unless a q adapter defers it).
+        } else if n == 3
             && self.q_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()
             && self.k_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()
             && self.v_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()
@@ -191,7 +199,7 @@ impl Qwen3AttentionLayer {
         Ok(())
     }
 
-    fn q_lora_active(&self) -> bool {
+    pub(super) fn q_lora_active(&self) -> bool {
         self.lora.as_ref().and_then(|lw| lw.q.as_ref()).is_some()
     }
 

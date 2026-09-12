@@ -1,0 +1,24 @@
+== arm proof for E1b/shipped
+2026-09-06T09:29:44.341464Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_DFLASH_SPEC_THINK=1
+2026-09-06T09:29:44.341526Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=512
+2026-09-06T09:29:44.341527Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_MOE_ROWS_PER_EXPERT=1024
+2026-09-06T09:29:44.341528Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_NATIVE=1
+2026-09-06T09:29:44.341529Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_NATIVE_DENSE=1
+2026-09-06T09:29:44.341530Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_EXL3_NATIVE_MOE=1
+2026-09-06T09:29:44.341531Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_INTHINK_TOOL_LEAK_OPENERS=0
+2026-09-06T09:29:44.341532Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_MTP_MAX_SEQS=4
+2026-09-06T09:29:44.341533Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_NO_THINKENDED_GPU_ARGMAX=1
+2026-09-06T09:29:44.341534Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_NO_VERIFY_ROW_FFN=1
+2026-09-06T09:29:44.341534Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_PLE_CACHE_SLOTS=4194304
+2026-09-06T09:29:44.341535Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_PLE_MAX_TOKENS=9216
+2026-09-06T09:29:44.341536Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_QSA_MAX_TOKENS=131072
+2026-09-06T09:29:44.341537Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_QWEN4EXP_MTP=1
+2026-09-06T09:29:44.341538Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_QWEN4EXP_MTP_HC_BATCHED=1
+2026-09-06T09:29:44.341539Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_QWEN4EXP_MTP_VERIFY=1
+2026-09-06T09:29:44.341541Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_VERIFY_EXL3_ROW_ROUTER=1
+2026-09-06T09:29:44.341542Z  INFO spark::main_modules::serve_presets: Preset env default applied: ATLAS_VERIFY_EXL3_STABLE_GRID=1
+2026-09-06T09:30:34.523113Z  INFO spark::scheduler::phase_continue_prefills::contention: Concurrent prefill: shortest-remaining-first head-only for hc models [armed] (this model: hc, applies), contention chunk cap [off] (ATLAS_PREFILL_CONTENTION_CHUNK=<n> arms), SRF aging 5000 ms (aged streams oldes
+2026-09-06T09:30:34.533004Z  INFO spark_model::model::trait_impl::prefill_b::forward_layers: Prefill token ids for PLE: host slice (ATLAS_NO_PREFILL_HOST_TOKEN_IDS restores the per-pass D2H)
+2026-09-06T09:30:34.533034Z  INFO spark_model::model::gdn_replay: Marconi min-tokens floor: 64 tokens [env] (ATLAS_MARCONI_MIN_TOKENS overrides; anchors below are declined)
+2026-09-06T09:30:34.533037Z  INFO spark_model::model::gdn_replay: GDN prefill: token-sequential recurrence forced for ALL prefill passes (prefix caching active on a hybrid-SSM model), so a warm Marconi replay recomputes exactly what the cold pass cached. ATLAS_GDN_FLA_UNDER_PREFIX_CACHE=1 restores t
+2026-09-06T09:30:34.533848Z  INFO spark_model::layers::qwen3_ssm::trait_prefill_recur: GDN prefill: REGISTER-RESIDENT warm-replay path ACTIVE (default; H in regs, no smem-H)

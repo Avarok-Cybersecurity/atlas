@@ -1,0 +1,5 @@
+FINGERPRINT cliff bin=3e5d2e699d3d8fb0 git=3850de790 date=2026-09-06T23:33:28Z host=dgx-00
+ 19:33:28 up 7 days,  7:24,  5 users,  load average: 5.36, 3.14, 2.70
+READY ~49s
+2026-09-06T23:34:15.907841Z  INFO spark_model::layers::moe::ptr_table_build: EXL3 native MoE state allocated: 5120 decode slots (512 tokens x top_k 10) + prefill batch 4096 tokens (fused C=6 x 1024 ro
+2026-09-06T23:34:15.927149Z  INFO spark_model::layers::ops::exl3_dense::reconstruct: EXL3 dense reconstruct tier ARMED: calls with m >= 512 rows reconstruct the trellis weight to BF16 once and run den

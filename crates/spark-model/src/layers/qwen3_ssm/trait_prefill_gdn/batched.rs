@@ -51,7 +51,13 @@ impl Qwen3SsmLayer {
         // passed as the per-request POINTER TABLE (is_table=true) — same table
         // wy64 uses, so no gather/scatter. Scratch regions span the whole batch:
         // base=(b*num_chunks+c)*nv, so size by total_nt = batch*num_chunks.
-        if ctx.levers.gdn_batched_fla && kd == 128 && vd == 128 {
+        // `gdn_exact_replay` is the cold/warm kernel contract, not a debug
+        // flag: FLA is NOT invariant to where a prefill is cut (measured:
+        // 110,428 of 2,097,152 bf16 words differ across a 464-token cut,
+        // relL2 1.2e-3), so a batch that takes FLA here while a warm replay
+        // takes the token-sequential path reopens the seam this flag exists
+        // to close. Honour it on the batched path too.
+        if ctx.levers.gdn_batched_fla && !ctx.gdn_exact_replay && kd == 128 && vd == 128 {
             let fla_scratch = ctx.buffers.gdn_fla_scratch();
             if fla_scratch.0 != 0
                 && self.gdn_prefill_fla_recompute_wu_k.0 != 0
@@ -243,6 +249,7 @@ impl Qwen3SsmLayer {
         let vd = ctx.config.linear_value_head_dim;
         let fla_scratch = ctx.buffers.gdn_fla_scratch();
         if !ctx.levers.gdn_batched_fla
+            || ctx.gdn_exact_replay
             || kd != 128
             || vd != 128
             || fla_scratch.0 == 0

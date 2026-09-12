@@ -1,0 +1,3 @@
+FINGERPRINT port=8899 model=qwen3.8-flash-next max_tokens=1 temp=0 salted-unique-prompts date=2026-09-05T23:36:04
+target~8000: prompt_tokens=7993 wall=19.64s prefill=407 tok/s
+SUMMARY target~8000: prompt_tokens~7993 prefill_tok_s_median=407

@@ -41,6 +41,20 @@ pub const VERIFY_WY_TABLE_STRIDE_BYTES: usize = VERIFY_WY_TABLE_SEQS * 8;
 pub const VERIFY_WY_LAYER_STRIDE_BYTES: usize =
     VERIFY_WY_TABLES_PER_LAYER * VERIFY_WY_TABLE_STRIDE_BYTES;
 
+/// What [`TransformerLayer::snapshot_aux_plan`] promises the batched Marconi
+/// aux collect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuxSnapshotPlan {
+    /// No batched fill: the collect must fall back to the draining
+    /// [`TransformerLayer::snapshot_aux`]. Correct, just not batched — and the
+    /// default, so opting in is explicit and forgetting to is never silent.
+    Unbatched,
+    /// This layer's blob is exactly `bytes` long and
+    /// [`TransformerLayer::snapshot_aux_into`] will fill it without syncing.
+    /// `bytes == 0` is a legitimate answer meaning "no blob for this sequence".
+    Batched { bytes: usize },
+}
+
 pub trait TransformerLayer: Send + Sync {
     /// True when this layer's PREFILL attends only over the tokens it is
     /// handed, so a prefix-cache skip would hide the cached prefix from
@@ -53,6 +67,12 @@ pub trait TransformerLayer: Send + Sync {
     /// `&mut dyn Any` downcast hook for post-construction weight overlays (e.g.
     /// the LoRA install walk). Default `None`; overlay-capable layers override.
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+
+    /// `&dyn Any` downcast hook for read-only, layer-specific fast paths
+    /// (the K-row mHC verify body on the attention layer). Default `None`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
     }
 
@@ -127,6 +147,16 @@ pub trait TransformerLayer: Send + Sync {
         false
     }
 
+    /// True when this layer launches COOPERATIVE kernels on the verify path
+    /// (routed experts served natively from EXL3 trellis) — never
+    /// graph-capturable. Every graph-capturing verify site ORs this across
+    /// layers next to the `lm_head_exl3` veto. Kept separate from
+    /// `decode_graph_unsupported` so the EXL3 gate leaves the verify-graph
+    /// behavior of QSA/PLE models exactly as it was.
+    fn exl3_graph_veto(&self) -> bool {
+        false
+    }
+
     /// Marconi aux state: host-serialized per-layer SEQUENCE state that must
     /// travel with an SSM snapshot for a prefix-cache hit to be complete —
     /// PLE's n-gram history + conv state, QSA's ingested indexer keys.
@@ -143,10 +173,141 @@ pub trait TransformerLayer: Send + Sync {
         Ok(None)
     }
 
+    /// Can this layer's aux blob be gathered by the BATCHED collect?
+    ///
+    /// The batched path replaces one draining `copy_d2h_on_stream` per layer
+    /// with N enqueues into a shared page-locked blob and ONE `synchronize`.
+    /// It needs two things a layer must opt into: a byte length computable on
+    /// the host (no device read), and a fill that does not synchronise.
+    ///
+    /// The default is [`AuxSnapshotPlan::Unbatched`] and that is load-bearing:
+    /// a layer that overrides `snapshot_aux` but not this pair keeps working
+    /// through the legacy path. Defaulting the other way would silently DROP
+    /// such a layer's blob from every Marconi snapshot, which restores as
+    /// another request's lexical state rather than as an error.
+    fn snapshot_aux_plan(&self, _state: &dyn LayerState) -> AuxSnapshotPlan {
+        AuxSnapshotPlan::Unbatched
+    }
+
+    /// Write this layer's aux blob into `dst` (exactly the length reported by
+    /// [`Self::snapshot_aux_plan`]) WITHOUT synchronising: host header bytes
+    /// written directly, device bytes ENQUEUED with `copy_d2h_async`.
+    ///
+    /// The caller owns the single trailing `synchronize` and must not read
+    /// `dst` before it. Only reachable for layers answering
+    /// [`AuxSnapshotPlan::Batched`].
+    fn snapshot_aux_into(
+        &self,
+        _state: &dyn LayerState,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+        _dst: &mut [u8],
+    ) -> Result<()> {
+        anyhow::bail!(
+            "snapshot_aux_into called on a layer that reported AuxSnapshotPlan::Unbatched"
+        )
+    }
+
     /// True when this layer WOULD produce aux state — restore sites use it
     /// to decline snapshots that lack aux rather than restore a stale mix.
     fn has_aux_state(&self) -> bool {
         false
+    }
+
+    /// True when [`Self::align_aux`] alone restores this layer's aux carry
+    /// exactly, so a speculative rollback needs NO blob for it.
+    ///
+    /// The two carries this model class advances during a K-row verify want
+    /// different mechanisms, and the difference is not stylistic:
+    ///
+    /// * QSA's `ingested`/`pooled` are CONTIGUOUS MARKS over buffers written
+    ///   forward from them, so moving the mark back to the committed position
+    ///   is a complete rewind — and it costs nothing, where a snapshot would
+    ///   round-trip `ingested * head_dim * 2` bytes of raw keys per attention
+    ///   layer through the host on EVERY speculative step.
+    /// * PLE's rolling conv state and its fixed-length n-gram history window
+    ///   have already discarded their oldest entries, so truncation cannot
+    ///   rebuild them. Those must be snapshotted.
+    ///
+    /// `collect_verify_aux_states` skips layers that answer `true` here;
+    /// `commit_verify_aux` realigns them by absolute position instead.
+    fn aux_rewind_is_exact(&self) -> bool {
+        false
+    }
+
+    /// Align this layer's aux carry to an ABSOLUTE sequence position.
+    ///
+    /// Used before a verify replays rows the carry may already have ingested.
+    /// Absolute, because the overlap is not a constant — see
+    /// `QsaIndexer::align_seq_state`.
+    fn align_aux(
+        &self,
+        _state: &mut dyn LayerState,
+        _to_pos: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Rewind this layer's aux carry to the boundary AFTER verify row `row`,
+    /// i.e. to a commit of `row + 1` rows out of a K-row speculative verify.
+    ///
+    /// The third of the three per-row carries, and the only one that needs a
+    /// snapshot. The SSM `h_state`/`conv_state` are rewound from pool
+    /// intermediates by `commit_accepted_prefix`, and QSA's contiguous marks
+    /// are rewound by `align_aux` to an absolute position — neither goes
+    /// through here. PLE does: its rolling conv + fixed history window cannot
+    /// be reconstructed by truncation.
+    ///
+    /// Default no-op: only the one layer carrying PLE has anything to do.
+    fn commit_verify_row(
+        &self,
+        _state: &mut dyn LayerState,
+        _row: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Reconstruct this layer's SSM state after a PARTIAL accept under
+    /// `--ssm-rollback-mode replay`, by re-running `num_accepted` cached
+    /// verify rows forward from the pre-verify checkpoint.
+    ///
+    /// Snapshot mode does this with a single copy out of
+    /// `h_state_intermediates[num_accepted - 1]`; replay does not allocate
+    /// those and keeps the rows' INPUTS instead. The caller has already
+    /// restored the checkpoint, so this only advances.
+    ///
+    /// Default no-op: only the recurrent layers have state to reconstruct.
+    fn replay_verify_rows(
+        &self,
+        _state: &mut dyn LayerState,
+        _num_accepted: usize,
+        _ctx: &crate::layer::ForwardContext,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Roll this layer's aux carry back by `rows`, after a rejected
+    /// speculative draft.
+    ///
+    /// Distinct from `restore_aux` on purpose. `snapshot_aux` returns `None`
+    /// when a sequence has not reached this layer's ingest yet, so a
+    /// snapshot/restore pair CANNOT undo the very first draft — there is
+    /// nothing to restore, and the carry is left ahead of the sequence
+    /// (measured: `QSA: decode at pos 0 but 1 tokens ingested`). A mark rewind
+    /// has no such hole and needs no blob.
+    fn rewind_aux(
+        &self,
+        _state: &mut dyn LayerState,
+        _rows: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
     }
 
     /// Restore the aux state captured by [`Self::snapshot_aux`] on a

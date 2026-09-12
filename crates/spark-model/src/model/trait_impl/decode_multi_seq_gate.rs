@@ -130,8 +130,15 @@ mod tests {
             "decode_a2 must consult the layer predicate"
         );
         // The veto is the FIRST disjunct of hc_perseq, i.e. outside `hc_mult > 0`.
+        //
+        // Pinned as "`ms_layer_veto` then `||`", NOT as "`|| (`": what matters
+        // is that the veto sits outside the length-dependent conjunction, not
+        // how the rest of the condition is spelled. This branch routes the
+        // length terms through `decode_route::hc_perseq_fallback(..)` so that
+        // decode_a2 and decode_b share ONE decider, which reads `|| super::`
+        // rather than `|| (` and is equally hoisted.
         assert!(
-            b.contains("let hc_perseq = ms_layer_veto\n            || ("),
+            b.contains("let hc_perseq = ms_layer_veto\n            || "),
             "the veto must be hoisted OUT of the hc_mult/qsa_active conjunction; \
              folded inside, it would only fire at seq_len >= index_topk - 1"
         );
@@ -147,8 +154,9 @@ mod tests {
             b.contains("decode_multi_seq_unsupported()"),
             "decode_b must consult the layer predicate — it is the single-GPU path"
         );
+        // Same shape-agnostic pin as decode_a2's: veto first, then `||`.
         assert!(
-            b.contains("let hc_qsa_perseq = ms_layer_veto\n            || ("),
+            b.contains("let hc_qsa_perseq = ms_layer_veto\n            || "),
             "the veto must be hoisted OUT of the hc_mult/index_topk conjunction"
         );
     }

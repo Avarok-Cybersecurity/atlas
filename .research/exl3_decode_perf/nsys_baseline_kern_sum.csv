@@ -1,0 +1,66 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+50.7,7910512832,28848,274213.6,359040.0,90272,1020640,129127.2,w4a16_gemm
+8.9,1388179840,16716,83045.0,94912.0,52960,271392,23789.5,exl3_gemm_k6_cb2_sh3_f32
+7.4,1159095648,19104,60672.9,59552.0,51072,326816,8029.0,exl3_mgemm_k4_cb2_sh2_f16
+4.8,749282464,19303,38816.9,35104.0,28480,220608,6919.3,void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x1_tn_align8>(T1::Params)
+4.8,749157600,19303,38810.4,33376.0,27520,181952,9113.4,void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_32x32_128x2_tn_align8>(T1::Params)
+4.6,722999328,14376,50292.1,62656.0,17120,248640,24042.8,exl3_gemm_k6_cb2_sh2_f32
+3.7,582214816,9552,60952.1,60608.0,54688,208192,4137.7,exl3_mgemm_k4_cb2_sh4_f32
+2.6,411259200,200,2056296.0,2047776.0,2008224,2616384,46003.8,exl3_gemm_k6_cb2_sh4_f32
+1.6,253537696,7164,35390.5,35232.0,32128,82144,1657.9,gated_delta_rule_decode_f32
+1.6,250739104,19400,12924.7,12896.0,12320,113568,1190.2,hc_pre_mix
+1.2,187931392,19400,9687.2,9376.0,9024,103008,1719.4,hc_pre_stage_bf16
+1.1,178117632,690,258141.5,322528.0,54368,854720,150378.4,dense_gemm_bf16_pipelined
+1.0,153073440,48,3189030.0,3174880.0,2218944,4246816,490159.1,exl3_moe_k4_n128_cb2
+0.9,142646208,19200,7429.5,8000.0,5120,47520,2214.6,hc_post
+0.5,84309536,9552,8826.4,8928.0,5696,56672,1443.4,w4a16_gemv_sw
+0.5,71232000,9600,7420.0,7296.0,7072,145888,2066.6,moe_batched_blend
+0.4,67416704,9552,7057.9,7040.0,6944,28480,259.5,moe_topk_softmax
+0.3,50565952,19104,2646.9,2432.0,2240,32800,860.0,"void dot_kernel<float, (int)128, (int)0, cublasDotParams<cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<float>>>(T4)"
+0.3,44991072,2388,18840.5,18816.0,15360,56800,1339.5,"std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)7, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)"
+0.3,41573408,2388,17409.3,17920.0,9344,65344,4205.9,paged_decode_attn
+0.2,36291488,7164,5065.8,4480.0,3744,90624,1664.3,dense_gemv_ba_gates
+0.2,33239520,2388,13919.4,13856.0,13696,46208,975.4,deinterleave_qg
+0.2,31675520,26364,1201.5,1088.0,1024,21920,526.0,exl3_f32_to_bf16
+0.2,31174272,19303,1615.0,1536.0,1472,21504,418.6,"void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, (bool)0, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)"
+0.2,28954464,7164,4041.7,3392.0,3136,52672,1407.4,causal_conv1d_update_l2norm_f32
+0.2,27312544,21860,1249.4,1184.0,1024,16064,570.3,exl3_bf16_to_f16
+0.2,26399360,19104,1381.9,1344.0,1280,100864,799.8,"void reduce_1Block_kernel<float, (int)128, (int)7, cublasGemvTensorStridedBatched<float>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>>(const T1 *, T1, T4, int, const T1 *, T1, T5, T6, cublasPointerMode_t, cublasLtEpilogue_t, cublasGemvTensorStridedBatched<const biasType<T6::value_type, T1>::type>)"
+0.2,24889280,84,296301.0,336208.0,186880,513216,102395.0,exl3_gemm_k6_cb2_sh3_f16
+0.1,22753568,19400,1172.9,1152.0,960,17792,365.4,hc_silu_scale
+0.1,19515648,9552,2043.1,1920.0,1856,43072,865.5,exl3_moe_stage_ingress
+0.1,19378720,14528,1333.9,1184.0,1120,13888,821.3,exl3_f32_to_bf16_2d
+0.1,15783712,7164,2203.2,2112.0,1856,28256,662.6,gated_rms_norm_f32_input_sigmoid
+0.1,12671936,2388,5306.5,5248.0,5088,13184,309.9,rope_forward_mrope_interleaved
+0.1,11929536,9552,1248.9,1152.0,1056,107648,1230.2,exl3_silu_mul_f16
+0.1,10394464,9600,1082.8,1024.0,992,19968,470.4,moe_silu_mul
+0.1,9048928,4788,1889.9,1856.0,1760,48288,761.8,rms_norm
+0.1,8805824,2400,3669.1,3744.0,1280,32672,901.2,reshape_and_cache_flash
+0.1,8362208,200,41811.0,41920.0,38432,55456,1558.7,ple_gate
+0.0,3417792,36,94938.7,94976.0,92928,97952,1077.7,gated_delta_rule_chunk_delta_h_vfused
+0.0,3129120,600,5215.2,5152.0,4832,14912,447.3,qsa_block_pool
+0.0,3120320,36,86675.6,86656.0,86368,87328,198.0,gated_delta_rule_chunk_fwd_o
+0.0,2777920,2388,1163.3,1120.0,992,9024,265.5,sigmoid_gate_mul
+0.0,2302720,24,95946.7,96016.0,93792,97952,1419.3,exl3_gemm_k6_cb2_sh2_f16
+0.0,2282112,200,11410.6,11552.0,3296,25696,3630.3,hc_expand
+0.0,2229408,200,11147.0,11840.0,2880,33792,3155.3,batched_embed_exl3
+0.0,1910656,200,9553.3,9664.0,4992,62080,4018.5,ple_conv
+0.0,1885184,36,52366.2,52608.0,48352,55104,1661.7,gated_delta_rule_recompute_wu
+0.0,1884832,48,39267.3,39184.0,33856,45664,2512.3,exl3_moe_reduce_slots_f32
+0.0,1230016,36,34167.1,33936.0,31200,45056,2344.6,dense_gemm_ba_gates_prefill
+0.0,885376,72,12296.9,11856.0,8992,18080,3210.8,exl3_f16_to_bf16_2d
+0.0,646272,48,13464.0,13120.0,12864,30304,2487.5,moe_sort_by_expert
+0.0,542560,36,15071.1,13616.0,12768,20896,2364.2,gated_rms_norm_prefill_sigmoid
+0.0,417152,9,46350.2,46208.0,46016,46784,304.5,argmax_bf16_batch
+0.0,377760,36,10493.3,10240.0,8096,13664,1688.8,causal_conv1d_update_prefill_tp
+0.0,339808,48,7079.3,6736.0,6656,20320,1956.5,moe_topk_softmax_batched
+0.0,302272,12,25189.3,26016.0,21600,28416,2504.3,nvjet_sm121_tst_mma_64x32x64_8_16x32x64_tmaAB_bz_TNNN
+0.0,258912,36,7192.0,7104.0,7008,9120,341.2,l2_norm_bf16
+0.0,241792,200,1209.0,992.0,928,21184,1498.6,ple_add_highway
+0.0,226048,12,18837.3,18688.0,18496,19776,349.3,rope_forward
+0.0,194208,12,16184.0,15968.0,15872,18752,810.8,inferspark_prefill_64
+0.0,186368,36,5176.9,1248.0,1216,14976,5661.5,exl3_f16_to_bf16
+0.0,163360,12,13613.3,13312.0,13184,16480,910.8,deinterleave_qg_split_qnorm
+0.0,104928,48,2186.0,1920.0,1888,7744,1035.2,exl3_moe_stage_sorted
+0.0,69728,12,5810.7,5792.0,5760,5952,51.9,sigmoid_gate_mul_batched
+0.0,19648,1,19648.0,19648.0,19648,19648,0.0,batched_embed

@@ -244,6 +244,30 @@ impl ModelWeightLoader for Qwen35WeightLoader {
             fc2_b: vision_tensor_dense_auto(store, &format!("{mp}.linear_fc2.bias"), gpu)?.weight,
         };
 
+        // The ViT MLP width comes from the TENSOR, not the config. EXL3
+        // exports pad `linear_fc1`/`linear_fc2` from the config's 4304 to
+        // 4352 (a multiple of the 128-wide trellis tile); the padded fc1 rows
+        // carry zero output scale and zero bias, so the math is unchanged —
+        // but the fc2 GEMM indexes its `[hidden, inter]` weight at row stride
+        // `inter`, and driving it with the config's 4304 against a 4352-wide
+        // tensor reads every row n >= 1 misaligned: in bounds, no fault,
+        // silently garbage image embeddings in all 27 blocks (found by the
+        // 2026-09-01 vision map of the 2.05bpw checkpoint).
+        let fc1_name = format!("{vp}.blocks.0.mlp.linear_fc1.weight");
+        let intermediate_size = match store.get(&fc1_name) {
+            Ok(t) if t.shape.len() == 2 && t.shape[0] != vcfg.intermediate_size => {
+                tracing::warn!(
+                    "vision: {fc1_name} is [{}, {}] but vision_config.intermediate_size = {} — \
+                     using the tensor's {} (padded export; the extra rows are zero-scaled)",
+                    t.shape[0],
+                    t.shape[1],
+                    vcfg.intermediate_size,
+                    t.shape[0],
+                );
+                t.shape[0]
+            }
+            _ => vcfg.intermediate_size,
+        };
         let deepstack_indexes = vcfg.deepstack_visual_indexes.clone();
         let ve = crate::layers::VisionEncoder::new(
             patch_embed_w.weight,
@@ -258,16 +282,17 @@ impl ModelWeightLoader for Qwen35WeightLoader {
             vcfg.num_heads,
             vcfg.spatial_merge_size,
             vcfg.out_hidden_size,
-            vcfg.intermediate_size,
+            intermediate_size,
             vcfg.patch_size,
             vcfg.max_pixels,
             gpu,
         )?;
         tracing::info!(
-            "Qwen3.6 vision encoder loaded: depth={}, hidden={}, heads={}, FP8-blocks>=4",
+            "Qwen3.6 vision encoder loaded: depth={}, hidden={}, heads={}, mlp={}",
             vcfg.depth,
             vcfg.hidden_size,
             vcfg.num_heads,
+            intermediate_size,
         );
         Ok(Some(ve))
     }

@@ -126,6 +126,9 @@ fn mk_state(gpu: &MockGpuBackend, layer: &Qwen3SsmLayer, n_inter: usize) -> SsmL
         conv_state_intermediates: (0..n_inter)
             .map(|i| conv_slab.offset(i * conv_bytes))
             .collect(),
+        // Snapshot mode: replay keeps per-token INPUTS instead, and the vec
+        // length is the mode gate.
+        replay_inputs: Vec::new(),
         h_is_f16: false,
         h_prefill_stage: None,
         ple: None,

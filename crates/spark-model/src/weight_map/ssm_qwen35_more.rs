@@ -189,9 +189,9 @@ pub(crate) fn load_moe_minimax(
             // Free FP8 source and companion scale_inv — no longer needed
             // once NVFP4 has been produced. WeightStore retains stale
             // pointers; nothing reads them again.
-            gpu.free(src_ptr)?;
+            store.release_ptr(gpu, src_ptr)?;
             if let Some(sp) = scale_ptr {
-                gpu.free(sp)?;
+                store.release_ptr(gpu, sp)?;
             }
         }
         Ok(nvfp4)

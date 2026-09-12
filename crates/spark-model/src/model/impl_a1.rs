@@ -73,6 +73,11 @@ impl TransformerModel {
         vision_encoder: Option<crate::layers::VisionEncoder>,
         ssm_cache_slots: usize,
         ssm_checkpoint_interval: usize,
+        // A BESPOKE MTP module is installed post-construction (qwen4_exp's
+        // Track-B head). Such a model leaves `mtp_weights` EMPTY, so the
+        // `!mtp_weights.is_empty()` term below is false and the SSM verify
+        // pools would never be allocated — see the has_mtp comment.
+        bespoke_mtp: bool,
     ) -> Result<Self> {
         // `rms_norm_kernel` normalizes exactly one weight: `final_norm` (a
         // checkpoint tensor). Models that ship HF-vanilla norm weights load it
@@ -201,20 +206,32 @@ impl TransformerModel {
         let draft_lm_head_nvfp4 = mtp_lm_head_nvfp4.or(lm_head_nvfp4);
         // 🔴 This flag SIZES THE RECURRENT ROLLBACK POOLS (checkpoints + per-token
         // intermediates). It has to be true for every proposer that can reject a draft, not
-        // just the Qwen-shaped one.
+        // just the Qwen-shaped one — and TWO families populate none of the original signals,
+        // for different reasons. Both terms below are load-bearing.
         //
-        // 🪤 GLM-5.3 populates NEITHER of the first two signals: its MTP block is
+        // 🪤 GLM-5.3 populates neither of the first two: its MTP block is
         // `layers.{num_hidden_layers}`, not the Qwen `MtpWeights`, and its LM head is BF16 so
         // there is no NVFP4 draft head. Its proposer is installed AFTER construction via
         // `set_dflash_proposer`, so `new()` cannot see it either. `mtp_layer_types` is what the
         // config parser records when the CHECKPOINT declares MTP layers — the one signal
         // available this early. Without it the pools are never allocated and the first decode
         // panics in `ssm_pool::h_checkpoint` ("len is 0 but the index is 0").
+        //
+        // ★ qwen4_exp's MTP is a Track-B module installed after construction too, so
+        // `mtp_weights` stays EMPTY and that term is false even under --speculative — leaving
+        // `num_intermediates` at 0, so NO SSM checkpoint pools exist. `verify_draft_capacity`
+        // then returns usize::MAX (ssm_pool.rs) and the scheduler never clamps, while this
+        // model's 36 GDN layers read exactly those pools for partial-accept rollback.
+        // DeepSeek-V4 never hit it because it is all-attention. `bespoke_mtp` is a threaded
+        // BOOL, deliberately not a `model_type == "qwen4_exp"` test: string gates on
+        // model_type are fragile and the capability, not the name, is what matters.
+        // DFlash already needed the same escape hatch (`dflash_kgamma > 0`).
         let checkpoint_declares_mtp = !config.mtp_layer_types.is_empty();
         let has_mtp = self_speculative
             || (use_speculative
                 && ((!mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
                     || checkpoint_declares_mtp))
+            || (use_speculative && bespoke_mtp)
             || dflash_kgamma > 0;
         let num_intermediates = if !has_mtp {
             0
@@ -854,6 +871,9 @@ impl TransformerModel {
             lm_head_nvfp4,
             lm_head_nvfp4_t,
             lm_head_fp8,
+            // Installed post-construction by the factory (`set_lm_head_exl3`)
+            // when ATLAS_EXL3_NATIVE=1 kept the lm_head trellis packed.
+            lm_head_exl3: None,
             // ★ Before `layers` is moved: the veto is a fold over the layers
             // and must be computed while they are still nameable here.
             decode_graph_veto: layers.iter().any(|l| l.decode_graph_unsupported()),
@@ -907,8 +927,18 @@ impl TransformerModel {
             profile,
             profile_first_pending: std::sync::atomic::AtomicBool::new(profile_first),
             proposer,
+            // Installed post-construction via `set_qwen4_exp_mtp` (the module
+            // is loaded in `factory::build`, which owns the WeightStore).
+            qwen4_exp_mtp: None,
+            qwen4_exp_mtp_head: None,
+            pending_verify_aux: std::sync::Mutex::new(std::collections::HashMap::new()),
+            pending_verify_span: std::sync::Mutex::new(std::collections::HashMap::new()),
+            qwen4_exp_mtp_state: None,
             mtp_hidden_save,
+            decode_aux_ring: Default::default(),
+            aux_staging: Default::default(),
             verify_hidden_stash,
+            verify_stash_rows: std::sync::Mutex::new(Vec::new()),
             mtp_catchup_ring,
             mtp_catchup_meta: parking_lot::Mutex::new((0, 0)),
             mtp_prefill_hidden,

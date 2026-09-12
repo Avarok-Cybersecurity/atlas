@@ -1,0 +1,26 @@
+exl3 native matmul parity — sm_count=48, locks buffer zeroed once
+moe-prefill fused [2560x640] E=16 top_k=4 T=3  rel_rms=1.885e-3 (gate 8.0e-3)  max_z=1.340e-2 (gate 8.0e-2)  PASS
+moe-prefill T=3 no-sync shortcut taken (num_active=-1) = true
+moe-prefill fused [2560x640] E=16 top_k=4 T=64  rel_rms=1.866e-3 (gate 8.0e-3)  max_z=1.658e-2 (gate 8.0e-2)  PASS
+moe-prefill T=64 host-sync tier fused-only (num_active=16, overflow=0) = true
+moe-prefill EP local=[4,16) sentinel-tail T=64  rel_rms=1.861e-3 (gate 8.0e-3)  max_z=1.614e-2 (gate 8.0e-2)  PASS
+moe-prefill EP all-remote token row is exact zero = true
+moe-prefill CONTROL masked-vs-full rel_rms=5.265e-1 exceeds gate = true
+moe-prefill OVERFLOW skew T=192 (expert0 rows=487)  rel_rms=1.905e-3 (gate 8.0e-3)  max_z=2.515e-2 (gate 8.0e-2)  PASS
+moe-prefill OVERFLOW exercised (hot_rows=487 > 128, overflow_experts=1, fused num_active=15) = true
+moe-prefill WIDE T=192 skew: expert0 rows=487, non-empty experts=16, tokens touching expert0=190 / clean=2
+moe-prefill WIDE cap=512 host-sync fused T=192 (expert0 rows=487 > 128)  rel_rms=1.860e-3 (gate 8.0e-3)  max_z=2.515e-2 (gate 8.0e-2)  PASS
+moe-prefill WIDE cap=512 host-sync fused tier stats (num_active=16 want 16, overflow_experts=0 want 0) = true
+moe-prefill WIDE cap=512 vs cap=128 bf16 bits: clean-token mismatches 0/5120 ; expert0-token mismatch fraction 2.6481e-1 (128802/486400), max|delta| 1.280e2, max bf16-ulp 33164
+moe-prefill WIDE cap=512 ASSERT clean tokens (all experts fused in BOTH runs) bit-identical to cap=128 = true
+moe-prefill WIDE cap=768 no-sync shortcut T=192 (expert0 rows=487 > 128)  rel_rms=1.860e-3 (gate 8.0e-3)  max_z=2.515e-2 (gate 8.0e-2)  PASS
+moe-prefill WIDE cap=768 no-sync shortcut tier stats (num_active=-1 want -1, overflow_experts=0 want 0) = true
+moe-prefill WIDE cap=768 vs cap=128 bf16 bits: clean-token mismatches 0/5120 ; expert0-token mismatch fraction 2.6481e-1 (128802/486400), max|delta| 1.280e2, max bf16-ulp 33164
+moe-prefill WIDE cap=768 ASSERT clean tokens (all experts fused in BOTH runs) bit-identical to cap=128 = true
+moe-prefill WIDE ASSERT cap=512 host-sync vs cap=768 shortcut bit-identical (same grid 6x8 SMs): mismatches=0 = true
+moe-prefill DET epilogue T=192 skew (overflow experts=1)  rel_rms=1.910e-3 (gate 8.0e-3)  max_z=2.086e-2 (gate 8.0e-2)  PASS
+moe-prefill ATOMIC epilogue T=192 skew (overflow experts=1)  rel_rms=1.910e-3 (gate 8.0e-3)  max_z=2.086e-2 (gate 8.0e-2)  PASS
+moe-prefill epilogue cost T=192 skew: det 10.405 ms/batch vs atomic 17.862 ms/batch (-41.7%)
+moe-prefill DETERMINISM: 8 identical batches -> 1 distinct fp32 accumulators (want 1) = true
+moe-prefill CONTROL (--deterministic-moe-prefill false): 8 identical batches -> 8 distinct fp32 accumulators (want > 1)
+PASS — EXL3 MoE prefill legs (G, G2) match the CPU truth.

@@ -88,17 +88,40 @@ impl TransformerModel {
             seqs.iter().any(|s| s.seq_len >= bound)
         };
         // A layer may DECLINE the batched multi-seq step outright (Stage 0).
-        // 🪤 Hoisted OUT of the `hc_mult > 0` conjunction on purpose: a layer
-        // that cannot be indexed by row must be routed per-sequence whether or
-        // not it is an mHC-highway model, and whether or not QSA selection has
+        // 🪤 Hoisted OUT of the `hc_mult` conjunction on purpose: a layer that
+        // cannot be indexed by row must be routed per-sequence whether or not
+        // it is an mHC-highway model, and whether or not QSA selection has
         // activated. Keying this on `hc_mult`, `index_topk` or `model_type`
-        // instead would reintroduce exactly the length-dependent cliff below —
+        // instead would reintroduce exactly the length-dependent cliff —
         // `qsa_active` is false for every sequence shorter than
         // `index_topk + index_compress_ratio - 1`, so a declining model would
-        // be correct on long contexts and silently wrong on short ones.
+        // be correct on long contexts and silently wrong on short ones. That
+        // is why it ORs onto `hc_perseq_fallback` instead of being folded in.
         let ms_layer_veto = self.layers.iter().any(|l| l.decode_multi_seq_unsupported());
+        // ★ `qsa_active` NO LONGER forces the per-seq loop: the batched
+        // multi-seq attention path consumes a per-row `QsaSelection`
+        // (`layers/qwen3_attention/trait_impl/multi_seq/qsa.rs`). The full
+        // rationale + the unit tests that pin it live in `decode_route.rs`.
+        // `ATLAS_HC_PERSEQ_DECODE=1` remains the kill switch.
         let hc_perseq = ms_layer_veto
-            || (self.config.hc_mult > 0 && (qsa_active || self.levers.hc_perseq_decode));
+            || super::decode_route::hc_perseq_fallback(
+                self.config.hc_mult,
+                qsa_active,
+                self.levers.hc_perseq_decode,
+                self.multi_rank_protocol_active(),
+            );
+        if qsa_active && !hc_perseq {
+            // Provable engagement, once per process: grep the serve log for
+            // "QSA-active batch" to confirm long-context batches are batched.
+            static LOGGED: std::sync::Once = std::sync::Once::new();
+            LOGGED.call_once(|| {
+                tracing::info!(
+                    "QSA-active batch on the BATCHED multi-seq decode path \
+                     (per-row selection consumed in multi_seq/qsa.rs); \
+                     ATLAS_HC_PERSEQ_DECODE=1 restores the per-seq staging loop"
+                );
+            });
+        }
         // ★ The per-seq routing decision is resolved ABOVE the EP branch on
         // purpose. It used to sit below, so under EP a QSA-active batch
         // returned at `decode_batch_compute_main` before ever reaching the
@@ -139,10 +162,10 @@ impl TransformerModel {
         // Highway models: the BATCHED multi-seq path (per-layer hc-bracketed
         // decode, weight reads amortized at the GEMM level next increment)
         // is the default. Fall back to the per-seq staging loop when
-        //   * ATLAS_HC_PERSEQ_DECODE=1 (A/B escape hatch), or
-        //   * QSA would be ACTIVE for any sequence (the ms attention path has
-        //     no per-seq indexer hook yet — dense past the budget is NOT the
-        //     reference model, so keep those batches on the proven loop).
+        //   * ATLAS_HC_PERSEQ_DECODE=1 (A/B escape hatch).
+        // QSA-active batches used to be listed here too; they are not any
+        // more — `multi_seq/qsa.rs` consumes a per-row selection, so the
+        // batched path serves them at the reference model's sparsity.
         if mla_perseq_fallback || hc_perseq {
             use std::sync::atomic::Ordering;
             let logits = self.decode_logits_ptr();
@@ -277,7 +300,16 @@ impl TransformerModel {
         // capture hits 'PLE: un-prestaged forward inside CUDA graph capture'
         // on the first joint hc step.
         let layer_veto = self.decode_graph_veto;
-        let graph_key = if !ms_profile && !lora_eager && !layer_veto && multiseq_graphs_enabled() {
+        // Native EXL3 lm_head: the batched head runs inside the captured
+        // region and its kernels are cooperative launches — not capturable
+        // (CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED). Eager decode only.
+        let exl3_head_veto = self.lm_head_exl3.is_some();
+        let graph_key = if !ms_profile
+            && !lora_eager
+            && !layer_veto
+            && !exl3_head_veto
+            && multiseq_graphs_enabled()
+        {
             self.batch_decode_graph_key(&*seqs, padded_n)
         } else {
             None
@@ -454,6 +486,7 @@ impl TransformerModel {
                             conv_state_checkpoint: None,
                             h_state_intermediates: Vec::new(),
                             conv_state_intermediates: Vec::new(),
+            replay_inputs: Vec::new(),
                             // Padding rows point at the write-only dummy slot;
                             // tag them with the active mode so the decode mixer
                             // does not re-convert scratch on every single step.
@@ -614,6 +647,12 @@ impl TransformerModel {
                     self.gpu.launch_graph(graph, stream)?;
                 }
             }
+
+            // NOTE: the MTP shadow hook is NOT here. `decode_batch_dispatch`
+            // returns early for n == 1 (delegating to `decode()`), so a hook on
+            // this batched path would never fire on the single-sequence decode
+            // it is meant to measure. It lives in `decode_a.rs` instead. Shadow
+            // mode is C=1 only anyway — the head keeps one draft state.
 
             // Restore real layer_states to sequences (dummy states dropped)
             for (seq, ls) in seqs.iter_mut().zip(all_layer_states.drain(..n)) {

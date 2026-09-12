@@ -77,6 +77,129 @@ impl TransformerModel {
         Ok(())
     }
 
+    /// Advance a replay-mode rollback over the accepted rows.
+    ///
+    /// The copies above put every layer back to its PRE-VERIFY checkpoint —
+    /// correct as-is for a full reject, and the reconstruction base for a
+    /// partial accept. This walks the recurrent layers and re-runs each one's
+    /// `num_accepted` cached rows forward from that base.
+    ///
+    /// Runs on the DEFAULT stream, not the secondary rollback stream: the
+    /// state copies are pure d2d and safe to overlap, but this is KERNEL work
+    /// reading the shared decode scratch, so overlapping it with the next
+    /// forward would race on those buffers. Replay is the capacity mode, not
+    /// the fast one.
+    /// Minimal [`ForwardContext`] for a replay-mode rollback.
+    ///
+    /// See the module note: `comm` MUST stay `None` (this pass runs the
+    /// recurrence only and must issue no collective, or the EP ranks
+    /// desynchronise), and `gdn_exact_replay` stays `false` so the arm is
+    /// chosen by the replay gate rather than by the pass-scoped exact leg.
+    fn replay_forward_ctx(&self) -> crate::layer::ForwardContext<'_> {
+        crate::layer::ForwardContext {
+            decode_step: false,
+            buffers: &self.buffers,
+            hc_row_offset: 0,
+            gpu: self.gpu.as_ref(),
+            config: &self.config,
+            dispatch: &self.dispatch,
+            moe_lora_route: self.decode_moe_route(),
+            derived: &self.derived,
+            levers: &self.levers,
+            stats: &self.stats,
+            attn_metadata: None,
+            profile: false,
+            comm: None,
+            graph_capture: false,
+            gdn_exact_replay: false,
+            token_ids: None,
+            host_token_ids: None,
+            routed_lora_layers: None,
+            midchunk_capture: None,
+        }
+    }
+
+    /// Partial-accept rollback under replay: checkpoint, then replay.
+    ///
+    /// Mirrors the snapshot path's contract — on return the live state is the
+    /// state after the committed prefix, and the checkpoint holds that same
+    /// state ready for the next verify.
+    fn replay_commit_accepted_prefix(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+    ) -> Result<()> {
+        let stream = self.gpu.default_stream();
+        let mut h_back: Vec<StateCopy> = Vec::new();
+        let mut conv_back: Vec<StateCopy> = Vec::new();
+        let mut h_ckpt: Vec<StateCopy> = Vec::new();
+        let mut conv_ckpt: Vec<StateCopy> = Vec::new();
+        let h_bytes = self.ssm_pool.h_stored_bytes;
+        let conv_bytes = (self.config.linear_num_key_heads * self.config.linear_key_head_dim * 2
+            + self.config.linear_num_value_heads * self.config.linear_value_head_dim)
+            * self.config.linear_conv_kernel_dim
+            * 4;
+        for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
+            if self.config.layer_type(i) != LayerType::LinearAttention {
+                continue;
+            }
+            let Some(ssm) = layer_state.as_any_mut().downcast_mut::<SsmLayerState>() else {
+                continue;
+            };
+            if let Some(ckpt) = ssm.h_state_checkpoint {
+                h_back.push(StateCopy {
+                    src: ckpt,
+                    dst: ssm.h_state,
+                    bytes: h_bytes,
+                });
+                h_ckpt.push(StateCopy {
+                    src: ssm.h_state,
+                    dst: ckpt,
+                    bytes: h_bytes,
+                });
+            }
+            if let Some(ckpt) = ssm.conv_state_checkpoint {
+                conv_back.push(StateCopy {
+                    src: ckpt,
+                    dst: ssm.conv_state,
+                    bytes: conv_bytes,
+                });
+                conv_ckpt.push(StateCopy {
+                    src: ssm.conv_state,
+                    dst: ckpt,
+                    bytes: conv_bytes,
+                });
+            }
+        }
+        // Restore -> advance -> re-checkpoint, all on the default stream: the
+        // advance is kernel work on shared decode scratch and must not overlap
+        // the next forward.
+        run_ssm_state_copies(self.gpu.as_ref(), &h_back, &conv_back, stream)?;
+        self.replay_rollback_rows(seq, num_accepted, stream)?;
+        run_ssm_state_copies(self.gpu.as_ref(), &h_ckpt, &conv_ckpt, stream)?;
+        self.commit_verify_aux_rows(seq, num_accepted, stream)
+    }
+
+    fn replay_rollback_rows(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+        _stream: u64,
+    ) -> Result<()> {
+        if num_accepted == 0 {
+            return Ok(());
+        }
+        let stream = self.gpu.default_stream();
+        let ctx = self.replay_forward_ctx();
+        for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
+            if self.config.layer_type(i) != LayerType::LinearAttention {
+                continue;
+            }
+            self.layers[i].replay_verify_rows(layer_state.as_mut(), num_accepted, &ctx, stream)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn start_rollback_and_checkpoint_async_dispatch(
         &self,
         seq: &mut SequenceState,
@@ -116,7 +239,15 @@ impl TransformerModel {
                 let conv_bytes = conv_dim * d_conv * 4;
 
                 // Rollback: restore h_state and conv_state from the appropriate source.
-                if num_accepted == 0 {
+                //
+                // Under `--ssm-rollback-mode replay` there are no per-token
+                // intermediates, so EVERY accept count restores the pre-verify
+                // checkpoint here and a partial accept is then advanced by
+                // `replay_verify_rows` below. `num_accepted == 0` is already
+                // that same restore, so the two modes agree on the reject path
+                // and differ only in how a partial accept gets forward again.
+                let replay_rollback = !ssm.replay_inputs.is_empty();
+                if num_accepted == 0 || replay_rollback {
                     // No tokens accepted: restore from checkpoint (pre-verify state).
                     if let Some(ckpt) = ssm.h_state_checkpoint {
                         h_back.push(StateCopy {
@@ -170,6 +301,11 @@ impl TransformerModel {
             }
         }
         run_ssm_state_copies(self.gpu.as_ref(), &h_back, &conv_back, stream)?;
+        // Replay: the checkpoint is only the BASE. Advance it over the
+        // accepted rows before re-checkpointing, or the next verify would
+        // start from the pre-verify state and silently drop the accepted
+        // tokens from the recurrence.
+        self.replay_rollback_rows(seq, num_accepted, stream)?;
         run_ssm_state_copies(self.gpu.as_ref(), &h_ckpt, &conv_ckpt, stream)?;
         // Record event so default stream can wait (GPU-side, no CPU block).
         self.gpu.record_event(self.secondary_event, stream)?;
@@ -257,7 +393,7 @@ impl TransformerModel {
         // Full accept: the verify kernel's final h_state/conv_state is
         // already the canonical committed state — nothing to do.
         if num_accepted == k {
-            return Ok(());
+            return self.commit_verify_aux_rows(seq, num_accepted, self.secondary_stream);
         }
 
         // `num_accepted == 0` has no representable rewind target here: the
@@ -279,6 +415,17 @@ impl TransformerModel {
                  Use rollback_ssm_states() for a full-reject rewind to the pre-verify \
                  checkpoint."
             );
+        }
+
+        // Replay: the per-token intermediates are SHARED scratch, so there is
+        // no per-sequence blob to rewind to. Restore the pre-verify checkpoint
+        // and re-run the accepted rows instead — the same reconstruction the
+        // full-reject path uses, with `num_accepted` rows to replay rather
+        // than none. `num_accepted` here counts the committed prefix
+        // (`na + 1` from the verdict), and the rows cached are the verify
+        // window's, so the replay advances by exactly the committed tokens.
+        if self.ssm_pool.intermediates_shared {
+            return self.replay_commit_accepted_prefix(seq, num_accepted);
         }
 
         let stream = self.secondary_stream;
@@ -309,7 +456,7 @@ impl TransformerModel {
             // Partial accept: rewind live state to the last accepted token's
             // intermediate (state after token `num_accepted-1`).
             let slot = seq.slot_idx;
-            let inter_idx = num_accepted - 1;
+            let inter_idx = commit_rewind_index(num_accepted);
             h_plan.push(StateCopy {
                 src: self.ssm_pool.h_intermediate(ssm_layer_idx, slot, inter_idx),
                 dst: ssm.h_state,
@@ -326,7 +473,29 @@ impl TransformerModel {
             ssm_layer_idx += 1;
         }
         run_ssm_state_copies(self.gpu.as_ref(), &h_plan, &conv_plan, stream)?;
+        // The SSM carry is now committed. The OTHER TWO per-row carries — PLE's
+        // rolling conv/history window and QSA's ingested/pooled marks — are
+        // still sitting `k - num_accepted` rows ahead, which is the measured
+        // degeneration class. No-op unless the K-row BATCHED mHC verify ran
+        // (it is what records the per-row PLE snapshots and the verify span).
+        self.commit_verify_aux_rows(seq, num_accepted, stream)?;
+        // The next decode must wait for PLE's restore as well as the SSM
+        // copies. Recording earlier leaves that auxiliary copy unfenced.
         self.gpu.record_event(self.secondary_event, stream)?;
         Ok(())
     }
+}
+
+/// The verify-intermediate slot `commit_accepted_prefix` rewinds the live SSM
+/// state to for `num_accepted` committed rows: "state after token
+/// `num_accepted - 1`".
+///
+/// Named, and paired with `verify_hc::hc_publish_rows`, because the two halves
+/// of this contract live in different files and a verify path that publishes
+/// FEWER rows than this can read rewinds onto never-written pool memory —
+/// which is exactly what the mHC verify did before 2026-09-03 (36 GDN layers
+/// of live `h_state`/`conv_state` overwritten with garbage on every K=3 step).
+/// Callers guarantee `num_accepted >= 1`.
+pub(super) const fn commit_rewind_index(num_accepted: usize) -> usize {
+    num_accepted - 1
 }

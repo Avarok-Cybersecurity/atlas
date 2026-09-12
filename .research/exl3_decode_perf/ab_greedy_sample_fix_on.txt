@@ -1,0 +1,17 @@
+The user wants a complete Rust implementation of an LRU cache with:
+- Generic key and value types
+- HashMap for O(1) lookup
+- Doubly linked list implemented via indices into a Vec arena (not pointers)
+- get, put, capacity handling
+- Unit tests
+- Comments explaining design decisions
+
+Let me think through the design:
+
+1. **Arena-based doubly linked list**: Instead of using `Box<Node>` or `Rc<RefCell<Node>>`, we store nodes in a `Vec<Node>` and use indices (usize) to link them. This avoids heap allocation per node and gives us cache locality. We use `usize::MAX` or `Option<usize>` as sentinel for "no node".
+
+2. **HashMap**: Maps `K` to the index in the arena. This gives O(1) lookup.
+
+3. **Node structure**: Each node stores the key, value, prev index, next index.
+=====CONTENT=====
+```rust

@@ -148,6 +148,7 @@ impl RadixTreeInner {
         tokens: &[u32],
         block_size: usize,
         adapter_id: u64,
+        subblock_ok: bool,
     ) -> (Vec<u32>, Vec<u32>, usize) {
         let mut current = match self.root_for_read(adapter_id) {
             Some(r) => r,
@@ -186,20 +187,28 @@ impl RadixTreeInner {
         // This enables warm-cache TTFT optimization by matching ALL prompt tokens
         // even when total % block_size != 0.
         let remainder = tokens.len() - matched_tokens;
-        // ATLAS_PREFIX_SUBBLOCK=0 restricts matching to WHOLE blocks.
+        // `subblock_ok` is OFF by default (`ATLAS_PREFIX_SUBBLOCK=1` opts in);
+        // resolved once per cache in `RadixTree::new`.
         //
         // The sub-block arms below return a `matched_tokens` that is NOT
         // block-aligned, and they do it by reusing a block whose KV was
         // computed for a LONGER key — i.e. for a different continuation past
-        // our suffix. If any consumer treats `matched_tokens` as a block
-        // boundary, the tail of that block is foreign context the model then
-        // attends to. This lever exists to A/B exactly that.
-        // Resolved once: `walk` runs on every prefix lookup. This is one of
-        // the #936 arm-ladder levers, so it must stay operable — caching does
-        // not change that, since nothing mutates the environment after start.
-        static SUBBLOCK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let subblock_ok =
-            *SUBBLOCK.get_or_init(|| std::env::var("ATLAS_PREFIX_SUBBLOCK").as_deref() != Ok("0"));
+        // our suffix. The tail of that block is foreign context, and the
+        // sequence writes its OWN new tokens over it inside a block the tree
+        // still shares with the original key. Measured consequence: three
+        // identical temp-0 requests returned three different completions;
+        // with the arms off, six returned one. See
+        // `super::subblock_matching_from_env`.
+        //
+        // ⚠ POLARITY DIVERGES FROM UPSTREAM, deliberately. main resolves this
+        // here as a local `OnceLock` defaulting ON (`ATLAS_PREFIX_SUBBLOCK`
+        // != "0"). This branch takes `subblock_ok` as a PARAMETER resolved once
+        // in `RadixTree::new`, defaulting OFF, on the measurement above — and a
+        // local here would SHADOW that parameter and silently restore the
+        // corrupting default. It stays a lever either way, so the #936
+        // arm-ladder requirement that it remain operable is still met; only the
+        // default differs. Reconcile deliberately, with a measurement, not by
+        // taking whichever side a merge offers.
         if subblock_ok
             && remainder > 0
             && remainder < block_size

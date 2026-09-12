@@ -1,0 +1,25 @@
+ab_fused_egress 20260906_001602
+binary  /home/ms/atlas/.claude/worktrees/wf_7ddada6f-077-4/target/release/spark
+sha256  d086972fa45bf1cd
+commit  6a54a005f (perf/exl3-gemm-bf16-egress)
+host    dgx-00  port 8899  ckpt /tank/exl3-ckpt/qwen38-flash-next-4.05bpw  repeats 3
+
+=== mtp / off (00:16:02)
+SUMMARY n=3 gap_median_ms=0.70 decode_tok_s_median=30.05 ttft_ms=[614, 477, 472]
+sample sha256 c5d02cf52a6db14b  bytes 775
+=== mtp / on (00:18:20)
+SUMMARY n=3 gap_median_ms=0.77 decode_tok_s_median=30.66 ttft_ms=[534, 471, 470]
+sample sha256 c5d02cf52a6db14b  bytes 775
+SAMPLE mtp: BYTE-IDENTICAL across arms
+=== serial / off (00:19:47)
+SUMMARY n=3 gap_median_ms=43.38 decode_tok_s_median=22.63 ttft_ms=[445, 398, 393]
+sample sha256 36dc8fc65945b71f  bytes 814
+=== serial / on (00:21:49)
+SUMMARY n=3 gap_median_ms=42.16 decode_tok_s_median=23.51 ttft_ms=[423, 391, 392]
+sample sha256 36dc8fc65945b71f  bytes 814
+SAMPLE serial: BYTE-IDENTICAL across arms
+
+free -g after:
+               total        used        free      shared  buff/cache   available
+Mem:             121          14         100           0           8         107
+records: /home/ms/atlas/.claude/worktrees/wf_7ddada6f-077-4/.research/exl3_decode_perf/ab_fused_egress_20260906_001602

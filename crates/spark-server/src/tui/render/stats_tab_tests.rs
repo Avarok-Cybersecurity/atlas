@@ -31,6 +31,13 @@ fn sched() -> SchedulerSnapshot {
         mtp_mode: MtpModeSnap::Mtp,
         delivered_tps: 42.0,
         steps_total: 900,
+        // A 12.6k-token prompt a third of the way through,
+        // dispatched on the fused arm — the shape the tile and the
+        // sequences line render.
+        prefill_tokens_done: 4200,
+        prefill_tokens_total: 12618,
+        prefill_chunk_width: 8192,
+        prefill_fused: true,
         published_at: std::time::Instant::now(),
     }
 }
@@ -96,6 +103,33 @@ fn a_server_under_load_reports_its_measurements_in_the_tiles() {
     // other two figures are request counts. Same formatter as the download
     // row now, so `M` cannot mean one thing here and another there.
     assert!(has(&rows, "↓2.0 KB/s ↑3.0 MB/s"), "{rows:#?}");
+}
+
+#[test]
+fn the_prefill_tile_reports_ingest_rate_and_in_flight_prefills() {
+    let mut a = stats_app();
+    // Prefill runs ~20x the generation rate, which is exactly why it gets its
+    // own tile and its own sparkline instead of sharing the throughput axis.
+    a.stats.prompt_tps = 890.0;
+    a.stats.gen_tps = 40.0;
+    a.stats.sched = Some(sched());
+    let rows = screen(&a, 160, 48);
+    assert!(has(&rows, "PREFILL"), "{rows:#?}");
+    assert!(has(&rows, "890 tok/s"), "ingest rate:\n{rows:#?}");
+    // `sched()` publishes prefilling_seqs = 1.
+    assert!(has(&rows, "● 1"), "in-flight prefills:\n{rows:#?}");
+    // In-flight progress, compacted so it fits the narrowest tile.
+    assert!(has(&rows, "33%"), "in-flight progress percent:\n{rows:#?}");
+    // Dispatch width + fused arm, in the pane with room for it.
+    assert!(
+        has(&rows, "M=8192 fused"),
+        "dispatch width + fused arm:\n{rows:#?}"
+    );
+    // The other tiles must survive the narrower split.
+    assert!(
+        has(&rows, "40.0 tok/s"),
+        "throughput still there:\n{rows:#?}"
+    );
 }
 
 #[test]
@@ -188,7 +222,9 @@ fn the_throughput_chart_captions_both_rates() {
     a.stats.gen_tps = 59.9;
     a.stats.prompt_tps = 1841.0;
     let rows = screen(&a, 160, 48);
-    assert!(has(&rows, "gen 60 tok/s · prompt 1841 tok/s"), "{rows:#?}");
+    // "prefill", not "prompt": the tile, the metric and the chart all name
+    // the same thing now.
+    assert!(has(&rows, "gen 60 tok/s · prefill 1841 tok/s"), "{rows:#?}");
 }
 
 #[test]
@@ -259,4 +295,14 @@ fn a_box_with_no_gpu_reading_shows_a_dash_not_zero() {
         has(&rows, "atlas 12.5 GB"),
         "a real reading must still be shown:\n{rows:#?}"
     );
+}
+
+#[test]
+fn an_idle_server_shows_no_prefill_progress_or_chunk_width() {
+    // "0/0" and "M=0" on an idle box would be noise dressed as data.
+    let a = stats_app();
+    let rows = screen(&a, 160, 48);
+    assert!(has(&rows, "PREFILL"), "tile is always present:\n{rows:#?}");
+    assert!(!has(&rows, "0/0 M="), "{rows:#?}");
+    assert!(!has(&rows, "M=0"), "{rows:#?}");
 }

@@ -1,0 +1,31 @@
+/home/ms/atlas/.claude/worktrees/exl3-research/.research/exl3_decode_perf/probe_warm_restore_ttft.py:61: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  print(f"FINGERPRINT probe_warm_restore_ttft label={args.label} port={args.port} model={args.model} tokens={args.tokens} repeats={args.repeats} date={datetime.datetime.utcnow().isoformat()}Z", flush=True)
+FINGERPRINT probe_warm_restore_ttft label=prefix_on port=8899 model=qwen3.8-flash-next tokens=[128, 512, 2048] repeats=2 date=2026-09-06T06:22:41.379852Z
+rep=0 L=  128 cold  prompt_tokens=193 cached=0 ttft_ms=670 wall_ms=686
+rep=0 L=  128 full  prompt_tokens=193 cached=192 ttft_ms=634 wall_ms=638
+rep=0 L=  128 tail  prompt_tokens=198 cached=176 ttft_ms=646 wall_ms=650
+rep=0 L=  128 cold2 prompt_tokens=199 cached=32 ttft_ms=669 wall_ms=674
+rep=0 L=  512 cold  prompt_tokens=619 cached=32 ttft_ms=1185 wall_ms=1189
+rep=0 L=  512 full  prompt_tokens=619 cached=608 ttft_ms=198 wall_ms=202
+rep=0 L=  512 tail  prompt_tokens=634 cached=592 ttft_ms=334 wall_ms=338
+rep=0 L=  512 cold2 prompt_tokens=607 cached=32 ttft_ms=1162 wall_ms=1166
+rep=0 L= 2048 cold  prompt_tokens=2349 cached=32 ttft_ms=4322 wall_ms=4327
+rep=0 L= 2048 full  prompt_tokens=2349 cached=2336 ttft_ms=221 wall_ms=228
+rep=0 L= 2048 tail  prompt_tokens=2406 cached=2272 ttft_ms=4219 wall_ms=4226
+rep=0 L= 2048 cold2 prompt_tokens=2317 cached=32 ttft_ms=4143 wall_ms=4150
+rep=1 L=  128 cold  prompt_tokens=200 cached=32 ttft_ms=655 wall_ms=659
+rep=1 L=  128 full  prompt_tokens=200 cached=192 ttft_ms=647 wall_ms=650
+rep=1 L=  128 tail  prompt_tokens=203 cached=176 ttft_ms=654 wall_ms=657
+rep=1 L=  128 cold2 prompt_tokens=191 cached=32 ttft_ms=656 wall_ms=661
+rep=1 L=  512 cold  prompt_tokens=631 cached=32 ttft_ms=1181 wall_ms=1186
+rep=1 L=  512 full  prompt_tokens=631 cached=624 ttft_ms=196 wall_ms=200
+rep=1 L=  512 tail  prompt_tokens=643 cached=592 ttft_ms=1180 wall_ms=1183
+rep=1 L=  512 cold2 prompt_tokens=613 cached=32 ttft_ms=1176 wall_ms=1180
+rep=1 L= 2048 cold  prompt_tokens=2336 cached=32 ttft_ms=4179 wall_ms=4185
+rep=1 L= 2048 full  prompt_tokens=2336 cached=2336 ttft_ms=219 wall_ms=226
+rep=1 L= 2048 tail  prompt_tokens=2403 cached=2256 ttft_ms=4211 wall_ms=4217
+rep=1 L= 2048 cold2 prompt_tokens=2353 cached=32 ttft_ms=4171 wall_ms=4179
+SUMMARY (median ttft_ms over repeats)
+  L=  128  cold=663  full=640  tail=650  cold2=662
+  L=  512  cold=1183  full=197  tail=757  cold2=1169
+  L= 2048  cold=4250  full=220  tail=4215  cold2=4157

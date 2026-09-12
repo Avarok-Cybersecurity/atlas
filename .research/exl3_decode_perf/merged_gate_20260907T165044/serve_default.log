@@ -1,0 +1,744 @@
+[2m2026-09-07T20:50:44.294277Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Serve preset "qwen3.8-flash-next-exl3" (kernel target qwen3.8-flash-next): Qwen3.8-Flash-Next, EXL3 4.05 bpw (turboderp), native EXL3 kernels, bf16 KV, 2 MTP drafts, prefix caching, thinking preserved, 4 sequences x 128K — the gate-passing single-GB10 profile (2026-09-06: ~480 tok/s prefill at 8K/11K, ~30 tok/s decode, model-card agentic PASS).
+[2m2026-09-07T20:50:44.294422Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset flag defaults applied: --default-chat-template-kwargs {"reasoning_effort":"low","preserve_thinking":true} --enable-prefix-caching --fast-load-prefetch-shards --gpu-memory-utilization 0.72 --max-batch-size 4 --max-num-seqs 4 --max-seq-len 131072 --num-drafts 2 --request-timeout 1800 --speculative --ssm-cache-slots 64 --kernel-target qwen3.8-flash-next
+[2m2026-09-07T20:50:44.294425Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_DFLASH_SPEC_THINK=1
+[2m2026-09-07T20:50:44.294427Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=512
+[2m2026-09-07T20:50:44.294428Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_EXL3_MOE_ROWS_PER_EXPERT=1024
+[2m2026-09-07T20:50:44.294429Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_EXL3_NATIVE=1
+[2m2026-09-07T20:50:44.294430Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_EXL3_NATIVE_DENSE=1
+[2m2026-09-07T20:50:44.294431Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_EXL3_NATIVE_MOE=1
+[2m2026-09-07T20:50:44.294432Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_INTHINK_TOOL_LEAK_OPENERS=0
+[2m2026-09-07T20:50:44.294433Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_MARCONI_MIN_TOKENS=64
+[2m2026-09-07T20:50:44.294434Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_MTP_MAX_SEQS=4
+[2m2026-09-07T20:50:44.294435Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_NO_THINKENDED_GPU_ARGMAX=1
+[2m2026-09-07T20:50:44.294436Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_NO_VERIFY_ROW_FFN=1
+[2m2026-09-07T20:50:44.294437Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_PLE_CACHE_SLOTS=4194304
+[2m2026-09-07T20:50:44.294438Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_PLE_MAX_TOKENS=9216
+[2m2026-09-07T20:50:44.294438Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_QSA_MAX_TOKENS=131072
+[2m2026-09-07T20:50:44.294439Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_QWEN4EXP_MTP=1
+[2m2026-09-07T20:50:44.294440Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_QWEN4EXP_MTP_HC_BATCHED=1
+[2m2026-09-07T20:50:44.294441Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_QWEN4EXP_MTP_VERIFY=1
+[2m2026-09-07T20:50:44.294442Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_VERIFY_EXL3_ROW_ROUTER=1
+[2m2026-09-07T20:50:44.294443Z[0m [32m INFO[0m [2mspark::main_modules::serve_presets[0m[2m:[0m Preset env default applied: ATLAS_VERIFY_EXL3_STABLE_GRID=1
+[2m2026-09-07T20:50:44.294875Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Atlas Spark starting...
+[2m2026-09-07T20:50:44.294895Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Licensed under AGPL-3.0-only — see /LICENSE in this container
+[2m2026-09-07T20:50:44.297105Z[0m [32m INFO[0m [2mspark::main_modules::serve_flags[0m[2m:[0m kernel flags: ssm_h_dtype=f32 gdn_fused_norm=false ssm_batched_recurrent=false exact_verify=false ssm_tail_midchunk=true mtp_gate=auto ssm_rollback_mode=Snapshot prefill_varlen_batch=false deterministic_moe_prefill=true
+[2m2026-09-07T20:50:44.297937Z[0m [32m INFO[0m [2mspark::model_resolver[0m[2m:[0m Model path: /tank/exl3-ckpt/qwen38-flash-next-4.05bpw (local directory)
+[2m2026-09-07T20:50:44.297947Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m Port: 8888
+[2m2026-09-07T20:50:44.297951Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m SSM decode h-state dtype: f32 (full precision) (--ssm-h-dtype)
+[2m2026-09-07T20:50:44.299258Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Vision area bound 16777216 px from /tank/exl3-ckpt/qwen38-flash-next-4.05bpw/preprocessor_config.json (was: hard-coded 1280px long side)
+[2m2026-09-07T20:50:44.299270Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m Vision area bound: 16777216 px (checkpoint processor config / ATLAS_VISION_MAX_PIXELS)
+[2m2026-09-07T20:50:44.299273Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m Remote image fetching disabled (default); image_url parts carrying an http(s) URL are refused with a 400. Send base64 data: URIs, or pass --vision-allow-remote-images.
+[2m2026-09-07T20:50:44.299419Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m Video decoding disabled (default). Animated GIF decodes in-process; every other container needs ffmpeg — pass --video-allow-ffmpeg to enable it.
+[2m2026-09-07T20:50:44.299423Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m Model config: 48 layers, 12 attention, 36 SSM, 512 experts, rope_theta=10000000, head_dim=256, rotary_dim=64
+[2m2026-09-07T20:50:44.299576Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m Selected kernel target: (sm_121, qwen3.8-flash-next, nvfp4) (180 modules) — quant compat: kernel=nvfp4 model=bf16 OK
+[2m2026-09-07T20:50:44.922754Z[0m [32m INFO[0m [2mspark_runtime::cuda_backend[0m[2m:[0m AtlasCudaBackend initialized on GPU 0 with 180 PTX modules
+[2m2026-09-07T20:50:44.922853Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m GPU 0: 121.6 GB total, 111.0 GB free
+[2m2026-09-07T20:50:44.922962Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m Preflight reserve: inference=13563 MB, buffer_arena=3536 MB (pre-load free: 111.0 GB)
+[2m2026-09-07T20:50:44.923027Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m OOM watchdog started (threshold: 2 GB, interval: 2s)
+[2m2026-09-07T20:50:44.923029Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m OOM guard reserve: 4096 MB
+[2m2026-09-07T20:50:44.923599Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::weights[0m[2m:[0m Using fast weight loader (O_DIRECT + pipelined read/copy)
+[2m2026-09-07T20:50:44.923601Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::weights[0m[2m:[0m Fast weight loader shard prefetch/readahead enabled
+[2m2026-09-07T20:50:44.923662Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::weights[0m[2m:[0m EXL3 weight pool enabled for the fast loader (kept-packed trellis quartets share one arena per shard and class; ATLAS_EXL3_WEIGHT_POOL=0 disables)
+[2m2026-09-07T20:50:45.803128Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-load pre-flight: 63.02 GB on-disk, 1.3x overhead = 81.93 GB peak, 110.87 GB free, 4.0 GB reserve (FP8: false)
+[2m2026-09-07T20:50:46.183103Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m EXL3 weight pool: 73885 kept-packed prefixes (295540 tensors) will be pooled into one arena per (shard, class); everything else per tensor
+[2m2026-09-07T20:50:46.189905Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 1/9: model-00001-of-00009.safetensors (30933 tensors)
+[2m2026-09-07T20:50:46.458173Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   Shard has 30933 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-09-07T20:50:46.458374Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   NFS/shard prefetch requested for /tank/exl3-ckpt/qwen38-flash-next-4.05bpw/model-00001-of-00009.safetensors (7.51 GB)
+[2m2026-09-07T20:50:50.384850Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   EXL3 weight pool: 30784 tensors / 6.10 GB into 2 arena(s) — 30782 per-tensor cuMemAllocs avoided, ~1.65 GB of 2 MiB chunk-tail padding avoided (GB10 driver model)
+[2m2026-09-07T20:50:50.418083Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 1/9 done — GPU memory: 7.81 GB used, 103.04 GB free
+[2m2026-09-07T20:50:50.425837Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 2/9: model-00002-of-00009.safetensors (37110 tensors)
+[2m2026-09-07T20:50:50.729518Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   Shard has 37110 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-09-07T20:50:50.729593Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   NFS/shard prefetch requested for /tank/exl3-ckpt/qwen38-flash-next-4.05bpw/model-00002-of-00009.safetensors (7.51 GB)
+[2m2026-09-07T20:50:54.547327Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   EXL3 weight pool: 36940 tensors / 7.32 GB into 2 arena(s) — 36938 per-tensor cuMemAllocs avoided, ~1.98 GB of 2 MiB chunk-tail padding avoided (GB10 driver model)
+[2m2026-09-07T20:50:54.569534Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 2/9 done — GPU memory: 15.40 GB used, 95.46 GB free
+[2m2026-09-07T20:50:54.581820Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 3/9: model-00003-of-00009.safetensors (37116 tensors)
+[2m2026-09-07T20:50:54.880411Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   Shard has 37116 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-09-07T20:50:54.880590Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   NFS/shard prefetch requested for /tank/exl3-ckpt/qwen38-flash-next-4.05bpw/model-00003-of-00009.safetensors (7.51 GB)
+[2m2026-09-07T20:50:58.522621Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   EXL3 weight pool: 36944 tensors / 7.32 GB into 2 arena(s) — 36942 per-tensor cuMemAllocs avoided, ~1.98 GB of 2 MiB chunk-tail padding avoided (GB10 driver model)
+[2m2026-09-07T20:50:58.544026Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 3/9 done — GPU memory: 23.00 GB used, 87.86 GB free
+[2m2026-09-07T20:50:58.555202Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 4/9: model-00004-of-00009.safetensors (37110 tensors)
+[2m2026-09-07T20:50:58.872772Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   Shard has 37110 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-09-07T20:50:58.872851Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   NFS/shard prefetch requested for /tank/exl3-ckpt/qwen38-flash-next-4.05bpw/model-00004-of-00009.safetensors (7.51 GB)
+[2m2026-09-07T20:51:02.828608Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   EXL3 weight pool: 36940 tensors / 7.32 GB into 2 arena(s) — 36938 per-tensor cuMemAllocs avoided, ~1.98 GB of 2 MiB chunk-tail padding avoided (GB10 driver model)
+[2m2026-09-07T20:51:02.849473Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 4/9 done — GPU memory: 30.63 GB used, 80.22 GB free
+[2m2026-09-07T20:51:02.857237Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 5/9: model-00005-of-00009.safetensors (37116 tensors)
+[2m2026-09-07T20:51:03.158994Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   Shard has 37116 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-09-07T20:51:03.159219Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   NFS/shard prefetch requested for /tank/exl3-ckpt/qwen38-flash-next-4.05bpw/model-00005-of-00009.safetensors (7.51 GB)
+[2m2026-09-07T20:51:07.109424Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   EXL3 weight pool: 36944 tensors / 7.32 GB into 2 arena(s) — 36942 per-tensor cuMemAllocs avoided, ~1.98 GB of 2 MiB chunk-tail padding avoided (GB10 driver model)
+[2m2026-09-07T20:51:07.131824Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 5/9 done — GPU memory: 38.24 GB used, 72.61 GB free
+[2m2026-09-07T20:51:07.142476Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 6/9: model-00006-of-00009.safetensors (37110 tensors)
+[2m2026-09-07T20:51:07.454473Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   Shard has 37110 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-09-07T20:51:07.454646Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   NFS/shard prefetch requested for /tank/exl3-ckpt/qwen38-flash-next-4.05bpw/model-00006-of-00009.safetensors (7.51 GB)
+[2m2026-09-07T20:51:12.413466Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   EXL3 weight pool: 36940 tensors / 7.32 GB into 2 arena(s) — 36938 per-tensor cuMemAllocs avoided, ~1.98 GB of 2 MiB chunk-tail padding avoided (GB10 driver model)
+[2m2026-09-07T20:51:12.671603Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 6/9 done — GPU memory: 44.86 GB used, 65.99 GB free
+[2m2026-09-07T20:51:12.679476Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 7/9: model-00007-of-00009.safetensors (37116 tensors)
+[2m2026-09-07T20:51:13.028355Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   Shard has 37116 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-09-07T20:51:13.028536Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   NFS/shard prefetch requested for /tank/exl3-ckpt/qwen38-flash-next-4.05bpw/model-00007-of-00009.safetensors (7.51 GB)
+[2m2026-09-07T20:51:18.158140Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   EXL3 weight pool: 36944 tensors / 7.32 GB into 2 arena(s) — 36942 per-tensor cuMemAllocs avoided, ~1.98 GB of 2 MiB chunk-tail padding avoided (GB10 driver model)
+[2m2026-09-07T20:51:18.269811Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 7/9 done — GPU memory: 52.49 GB used, 58.37 GB free
+[2m2026-09-07T20:51:18.277553Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 8/9: model-00008-of-00009.safetensors (37110 tensors)
+[2m2026-09-07T20:51:18.581891Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   Shard has 37110 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-09-07T20:51:18.582068Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   NFS/shard prefetch requested for /tank/exl3-ckpt/qwen38-flash-next-4.05bpw/model-00008-of-00009.safetensors (7.51 GB)
+[2m2026-09-07T20:51:22.101098Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   EXL3 weight pool: 36940 tensors / 7.32 GB into 2 arena(s) — 36938 per-tensor cuMemAllocs avoided, ~1.98 GB of 2 MiB chunk-tail padding avoided (GB10 driver model)
+[2m2026-09-07T20:51:22.442666Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 8/9 done — GPU memory: 61.01 GB used, 49.85 GB free
+[2m2026-09-07T20:51:22.449300Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 9/9: model-00009-of-00009.safetensors (12400 tensors)
+[2m2026-09-07T20:51:22.518156Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   Shard has 12400 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-09-07T20:51:22.518357Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   NFS/shard prefetch requested for /tank/exl3-ckpt/qwen38-flash-next-4.05bpw/model-00009-of-00009.safetensors (2.97 GB)
+[2m2026-09-07T20:51:24.470871Z[0m [32m INFO[0m [2mspark_runtime::fast_weights::shard[0m[2m:[0m   EXL3 weight pool: 6164 tensors / 1.66 GB into 2 arena(s) — 6162 per-tensor cuMemAllocs avoided, ~0.33 GB of 2 MiB chunk-tail padding avoided (GB10 driver model)
+[2m2026-09-07T20:51:24.486406Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 9/9 done — GPU memory: 63.36 GB used, 47.50 GB free
+[2m2026-09-07T20:51:24.486853Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loaded 303121 weight tensors
+[2m2026-09-07T20:51:24.486864Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m EXL3 weight pool: 18 arena(s), 59.02 GB owned by the weight store
+[2m2026-09-07T20:51:24.522466Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::weights[0m[2m:[0m Loaded 303121 weight tensors
+[2m2026-09-07T20:51:26.434893Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize::sidecar_shards[0m[2m:[0m EXL3 sidecar shard vision_k6.safetensors (vision tower outside the index): 987 tensors registered (987 vision, 0.56 GB), 0 already in the store (index wins), 0 skipped by the loader policy
+[2m2026-09-07T20:51:26.440904Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize[0m[2m:[0m EXL3 checkpoint: materializing 75751 trellis-quantized linears (experts -> NVFP4 triplet, rest -> BF16 dense)
+[2m2026-09-07T20:51:26.487545Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize[0m[2m:[0m EXL3 checkpoint has no in-store PLE n-gram shards — the exl3 export keeps them in ngram_embedding.safetensors; `register_exl3_ngram_sidecar` (called right after this pass on the serve path) registers that file's trellis tensors for the NVMe row cache. Models without PLE are unaffected either way.
+[2m2026-09-07T20:51:27.116129Z[0m [32m INFO[0m [2mspark_model::weight_map::loaders_fp8[0m[2m:[0m quantize_to_nvfp4: n=640 k=2560 total=1638400 global_max=0.402344 scale2=0.00014968 grid1=1024
+[2m2026-09-07T20:51:27.116846Z[0m [32m INFO[0m [2mspark_model::weight_map::loaders_fp8[0m[2m:[0m quantize_to_nvfp4: n=640 k=2560 total=1638400 global_max=0.464844 scale2=0.00017293 grid1=1024
+[2m2026-09-07T20:51:27.117525Z[0m [32m INFO[0m [2mspark_model::weight_map::loaders_fp8[0m[2m:[0m quantize_to_nvfp4: n=2560 k=640 total=1638400 global_max=0.382812 scale2=0.00014242 grid1=1024
+[2m2026-09-07T20:51:27.118205Z[0m [32m INFO[0m [2mspark_model::weight_map::loaders_fp8[0m[2m:[0m quantize_to_nvfp4: n=640 k=2560 total=1638400 global_max=0.220703 scale2=0.00008211 grid1=1024
+[2m2026-09-07T20:51:27.118923Z[0m [32m INFO[0m [2mspark_model::weight_map::loaders_fp8[0m[2m:[0m quantize_to_nvfp4: n=640 k=2560 total=1638400 global_max=0.519531 scale2=0.00019328 grid1=1024
+[2m2026-09-07T20:51:27.526538Z[0m [32m INFO[0m [2mspark_model::weight_map::loaders_fp8[0m[2m:[0m quantize_to_nvfp4 PROFILE after 512 calls (ms total): alloc_max=9.4 launch1=1.1 sync1=12.5 d2h=6.9 alloc_out=3.7 launch2=1.0 sync2=9.2 | sum=43.8 per_call=0.086ms
+[2m2026-09-07T20:51:27.723720Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize[0m[2m:[0m EXL3 native: keeping lm_head packed ([2560x248320] K=6 cb=Mul1) for the fused trellis matmul path
+[2m2026-09-07T20:51:27.937907Z[0m [32m INFO[0m [2mspark_model::weight_map::loaders_fp8[0m[2m:[0m quantize_to_nvfp4 PROFILE after 1024 calls (ms total): alloc_max=19.3 launch1=2.3 sync1=24.6 d2h=13.9 alloc_out=7.7 launch2=2.1 sync2=18.3 | sum=88.1 per_call=0.086ms
+[2m2026-09-07T20:51:28.368922Z[0m [32m INFO[0m [2mspark_model::weight_map::loaders_fp8[0m[2m:[0m quantize_to_nvfp4 PROFILE after 1536 calls (ms total): alloc_max=29.3 launch1=3.4 sync1=36.8 d2h=21.0 alloc_out=11.9 launch2=3.2 sync2=27.4 | sum=132.9 per_call=0.087ms
+[2m2026-09-07T20:51:28.483845Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize[0m[2m:[0m EXL3 materialization done: 1683 experts -> NVFP4 triplets, 183 linears -> BF16 dense, 73885 kept packed for native serving
+[2m2026-09-07T20:51:28.483867Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize[0m[2m:[0m EXL3 native MoE: 73728 routed-expert projections kept packed — 60.87 GB resident vs 67.95 GB as runtime NVFP4 triplets (7.08 GB saved)
+[2m2026-09-07T20:51:28.483871Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize[0m[2m:[0m EXL3 native dense: GDN routed set (["in_proj_qkv", "in_proj_z", "out_proj"]) kept packed on 36 layers (0 materialized), attention routed set (["q_proj", "k_proj", "v_proj", "o_proj"]) kept packed on 12 layers (0 materialized) — 2.01 GB resident vs 5.35 GB as BF16 dense (3.34 GB saved)
+[2m2026-09-07T20:51:28.496713Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize::ngram[0m[2m:[0m EXL3 ngram sidecar registered from /tank/exl3-ckpt/qwen38-flash-next-4.05bpw/ngram_embedding.safetensors (trellis deferred for the NVMe row cache)
+[2m2026-09-07T20:51:28.496732Z[0m [32m INFO[0m [2mspark_runtime::weights::prefix_detect[0m[2m:[0m Weight prefix: model.language_model
+[2m2026-09-07T20:51:28.500197Z[0m [32m INFO[0m [2mspark_model::preflight[0m[2m:[0m Pre-flight: no dedicated LM head tensor; assuming tied embeddings.
+[2m2026-09-07T20:51:28.597098Z[0m [32m INFO[0m [2mspark_model::preflight[0m[2m:[0m Pre-flight checks passed
+[2m2026-09-07T20:51:28.602577Z[0m [33m WARN[0m [2mspark_model::weight_map::nvfp4_detect[0m[2m:[0m Partial NVFP4 metadata: `.weight_scale` exists for some tensors (e.g. KV scales) but not for MLP/MoE projections. Falling back to runtime BF16→NVFP4 quantization. For best quality use a fully-quantized NVFP4 release (e.g. Sehyo/*-NVFP4).
+[2m2026-09-07T20:51:28.602593Z[0m [33m WARN[0m [2mspark_model::quant_format[0m[2m:[0m QuantFormat: no quantization declared and no pre-quantized weights found; treating checkpoint as BF16 raw (weights will be runtime-quantized). Quality will be inferior to a calibrated NVFP4 release.
+[2m2026-09-07T20:51:28.602596Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m Quantization format: modelopt (base variant Standard), ignored globs = 0
+[2m2026-09-07T20:51:28.780732Z[0m [32m INFO[0m [2mspark_runtime::cublaslt[0m[2m:[0m cuBLASLt pre-warmed (handle + workspace + kernel images)
+[2m2026-09-07T20:51:28.785067Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m GDN chunked prefill reserve: 355 MB (chunk_size=8192, max_seq_len=131072)
+[2m2026-09-07T20:51:28.785081Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m Weights: 64.26 GB, estimated free: 46.7 GB, actual free: 45.9 GB (reserve: 13563 MB)
+[2m2026-09-07T20:51:28.785089Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::kv_cache[0m[2m:[0m Prefill config: ssm_prefill_chunk=8192, args.max_prefill_tokens=8192, prefill_budget=8192, max_batch_tokens=8196
+[2m2026-09-07T20:51:28.785137Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::build[0m[2m:[0m Prefix caching: ENABLED (radix tree)
+[2m2026-09-07T20:51:28.785184Z[0m [32m INFO[0m [2mspark_runtime::radix_tree[0m[2m:[0m Prefix cache: sub-block matching off (default) — matches are block-aligned. ATLAS_PREFIX_SUBBLOCK=1 restores the old behaviour.
+[2m2026-09-07T20:51:28.785189Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m mHC decode MoE FFN: BATCHED — one n-row dispatch per layer per step (hc_batched_moe_decode=true)
+[2m2026-09-07T20:51:29.058726Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::config[0m[2m:[0m Capping vocab_size from 248320 to 248077 (tokenizer)
+[2m2026-09-07T20:51:29.087297Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::kv_cache[0m[2m:[0m KV cache dtype: bf16 (from MODEL.toml default_kv_dtype, override with --kv-cache-dtype)
+[2m2026-09-07T20:51:29.094525Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize[0m[2m:[0m EXL3 checkpoint: materializing 73885 trellis-quantized linears (experts -> NVFP4 triplet, rest -> BF16 dense)
+[2m2026-09-07T20:51:29.140671Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize[0m[2m:[0m EXL3 checkpoint has no in-store PLE n-gram shards — the exl3 export keeps them in ngram_embedding.safetensors; `register_exl3_ngram_sidecar` (called right after this pass on the serve path) registers that file's trellis tensors for the NVMe row cache. Models without PLE are unaffected either way.
+[2m2026-09-07T20:51:29.784369Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize[0m[2m:[0m EXL3 native: keeping lm_head packed ([2560x248320] K=6 cb=Mul1) for the fused trellis matmul path
+[2m2026-09-07T20:51:29.807210Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize[0m[2m:[0m EXL3 materialization done: 0 experts -> NVFP4 triplets, 0 linears -> BF16 dense, 73885 kept packed for native serving
+[2m2026-09-07T20:51:29.807223Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize[0m[2m:[0m EXL3 native MoE: 73728 routed-expert projections kept packed — 60.87 GB resident vs 67.95 GB as runtime NVFP4 triplets (7.08 GB saved)
+[2m2026-09-07T20:51:29.807227Z[0m [32m INFO[0m [2mspark_model::weight_map::exl3_materialize[0m[2m:[0m EXL3 native dense: GDN routed set (["in_proj_qkv", "in_proj_z", "out_proj"]) kept packed on 36 layers (0 materialized), attention routed set (["q_proj", "k_proj", "v_proj", "o_proj"]) kept packed on 12 layers (0 materialized) — 2.01 GB resident vs 5.35 GB as BF16 dense (3.34 GB saved)
+[2m2026-09-07T20:51:29.817578Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::probe[0m[2m:[0m qwen4_exp namespace: 36/48 GDN + 12 full-attention layers, 48 MoE blocks, 96 hc blocks, 12 indexers, 0 PLE shards, 27 ViT blocks, embed=true lm_head=true
+[2m2026-09-07T20:51:29.817592Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::probe[0m[2m:[0m qwen4_exp: no per-layer input/post-attention norms, as expected — this architecture keeps normalization inside the hyper-connection blocks
+[2m2026-09-07T20:51:29.824284Z[0m [33m WARN[0m [2mspark_model::weight_map::nvfp4_detect[0m[2m:[0m Partial NVFP4 metadata: `.weight_scale` exists for some tensors (e.g. KV scales) but not for MLP/MoE projections. Falling back to runtime BF16→NVFP4 quantization. For best quality use a fully-quantized NVFP4 release (e.g. Sehyo/*-NVFP4).
+[2m2026-09-07T20:51:29.824302Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp[0m[2m:[0m Qwen3.8-Flash-Next: 48 layers (36 GDN + 12 full attention), 512 experts top-10, hc 4 streams x rank 320, indexer budget 2048, PLE at [2]; NVFP4 variant Bf16Raw
+[2m2026-09-07T20:51:29.824312Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp[0m[2m:[0m GDN projections: BF16 as shipped (no runtime NVFP4 requantization) on the 36 linear-attention layers
+[2m2026-09-07T20:51:29.828057Z[0m [32m INFO[0m [2mspark_model::layers::ops::exl3_dense::launch_state[0m[2m:[0m EXL3 launch state allocated: locks 4104 KB + fence event (ONE dispatch section at a time across MoE + dense arms; cross-stream sections fence on the device)
+[2m2026-09-07T20:51:29.853630Z[0m [32m INFO[0m [2mspark_model::layers::moe::ptr_table_build[0m[2m:[0m EXL3 native MoE state allocated: 5120 decode slots (512 tokens x top_k 10) + prefill batch 4096 tokens (fused C=6 x 1024 rows/expert [Env] = 78.6 MB temp slabs, overflow chunk 1024), 722.7 MB slabs over the shared launch state (locks + fence; shared across all MoE layers and the dense arms); deterministic prefill epilogue ON (419.4 MB per-slot scratch)
+[2m2026-09-07T20:51:29.853652Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.0: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:29.872278Z[0m [32m INFO[0m [2mspark_model::layers::ops::exl3_dense::reconstruct[0m[2m:[0m EXL3 dense reconstruct tier ARMED: calls with m >= 512 rows reconstruct the trellis weight to BF16 once and run dense_gemm_bf16_pipelined; scratch 302.0 MB (f16 [in, out] + bf16 [out, in] at 6144 x 12288). Numerics differ from the trellis GEMM (see ops/exl3_dense/reconstruct.rs); ATLAS_NO_EXL3_DENSE_RECONSTRUCT disarms
+[2m2026-09-07T20:51:29.872309Z[0m [32m INFO[0m [2mspark_model::layers::ops::exl3_dense::stage[0m[2m:[0m EXL3 native dense stage allocated: 4096 rows x (in 6144, out 12288; fp32-C out 2560) = 243.3 MB slabs (A + A_had + f16 C + f32 C), shared across all GDN/attention layers; rows above 4096 are batched
+[2m2026-09-07T20:51:29.872326Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 0: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:29.872334Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.0.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:29.872415Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.0.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:29.873376Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:29.874737Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 0: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:29.876842Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.1: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:29.876908Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 1: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:29.876915Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.1.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:29.876938Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.1.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:29.877098Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:29.877153Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 1: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.180256Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ple[0m[2m:[0m PLE at MODEL LAYER 1 (exl3_ngram_trellis): 320001536 rows x 160 dims at K=6 (39.0 GB packed) served off NVMe with 4194304 cached slots (511.7 MB); 16 heads, conv k=4 dilation=3
+[2m2026-09-07T20:51:30.237169Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.2: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.237264Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 2: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.237283Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.2.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.237311Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.2.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.237486Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.237551Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 2: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.239385Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.3: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.239453Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 3: attention q/k/v/o kept as packed EXL3 trellis (native dense arm; no BF16 dense, no runtime NVFP4 requant, no transposed twins)
+[2m2026-09-07T20:51:30.240606Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 3: EXL3 native attention family installed — q_proj [2560->12288] K=6 (gated, [Q|gate] interleaved per head), k/v_proj [2560->512] K=6/6, o_proj [6144->2560] K=6 cb=MUL1; 37.4 MB packed vs 99.6 MB BF16 (no runtime NVFP4 requant, no transposed twins); decode-graph capture vetoed
+[2m2026-09-07T20:51:30.243456Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.4: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.243533Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 4: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.243540Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.4.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.243568Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.4.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.243742Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.243804Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 4: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.245824Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.5: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.245882Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 5: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.245887Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.5.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.245920Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.5.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.246073Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.246133Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 5: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.247832Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.6: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.247879Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 6: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.247884Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.6.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.247904Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.6.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.248053Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.248105Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 6: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.250013Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.7: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.250061Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 7: attention q/k/v/o kept as packed EXL3 trellis (native dense arm; no BF16 dense, no runtime NVFP4 requant, no transposed twins)
+[2m2026-09-07T20:51:30.250143Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 7: EXL3 native attention family installed — q_proj [2560->12288] K=6 (gated, [Q|gate] interleaved per head), k/v_proj [2560->512] K=6/6, o_proj [6144->2560] K=6 cb=MUL1; 37.4 MB packed vs 99.6 MB BF16 (no runtime NVFP4 requant, no transposed twins); decode-graph capture vetoed
+[2m2026-09-07T20:51:30.252857Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.8: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.252914Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 8: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.252919Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.8.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.252943Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.8.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.253105Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.253155Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 8: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.254748Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.9: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.254795Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 9: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.254800Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.9.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.254823Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.9.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.254966Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.255014Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 9: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.256575Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.10: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.256620Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 10: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.256625Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.10.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.256646Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.10.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.256790Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.256835Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 10: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.258375Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.11: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.258419Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 11: attention q/k/v/o kept as packed EXL3 trellis (native dense arm; no BF16 dense, no runtime NVFP4 requant, no transposed twins)
+[2m2026-09-07T20:51:30.258493Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 11: EXL3 native attention family installed — q_proj [2560->12288] K=6 (gated, [Q|gate] interleaved per head), k/v_proj [2560->512] K=6/6, o_proj [6144->2560] K=6 cb=MUL1; 37.4 MB packed vs 99.6 MB BF16 (no runtime NVFP4 requant, no transposed twins); decode-graph capture vetoed
+[2m2026-09-07T20:51:30.261133Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.12: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.261187Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 12: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.261192Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.12.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.261217Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.12.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.261369Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.261423Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 12: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.263179Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.13: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.263225Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 13: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.263230Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.13.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.263251Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.13.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.263396Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.263444Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 13: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.265143Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.14: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.265187Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 14: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.265192Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.14.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.265214Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.14.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.265356Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.265400Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 14: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.267041Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.15: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.267093Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 15: attention q/k/v/o kept as packed EXL3 trellis (native dense arm; no BF16 dense, no runtime NVFP4 requant, no transposed twins)
+[2m2026-09-07T20:51:30.267165Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 15: EXL3 native attention family installed — q_proj [2560->12288] K=6 (gated, [Q|gate] interleaved per head), k/v_proj [2560->512] K=6/6, o_proj [6144->2560] K=6 cb=MUL1; 37.4 MB packed vs 99.6 MB BF16 (no runtime NVFP4 requant, no transposed twins); decode-graph capture vetoed
+[2m2026-09-07T20:51:30.269719Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.16: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.269766Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 16: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.269771Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.16.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.269794Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.16.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.269935Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.269985Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 16: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.271662Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.17: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.271705Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 17: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.271710Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.17.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.271729Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.17.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.271865Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.271916Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 17: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.273554Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.18: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.273599Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 18: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.273604Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.18.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.273624Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.18.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.273764Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.273809Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 18: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.275400Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.19: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.275450Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 19: attention q/k/v/o kept as packed EXL3 trellis (native dense arm; no BF16 dense, no runtime NVFP4 requant, no transposed twins)
+[2m2026-09-07T20:51:30.275523Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 19: EXL3 native attention family installed — q_proj [2560->12288] K=6 (gated, [Q|gate] interleaved per head), k/v_proj [2560->512] K=6/6, o_proj [6144->2560] K=6 cb=MUL1; 37.4 MB packed vs 99.6 MB BF16 (no runtime NVFP4 requant, no transposed twins); decode-graph capture vetoed
+[2m2026-09-07T20:51:30.277920Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.20: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.277966Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 20: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.277971Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.20.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.277992Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.20.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.278142Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.278186Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 20: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.279867Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.21: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.279913Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 21: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.279918Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.21.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.279941Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.21.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.280081Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.280127Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 21: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.281755Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.22: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.281800Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 22: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.281805Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.22.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.281828Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.22.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.281965Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.282008Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 22: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.283611Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.23: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.283654Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 23: attention q/k/v/o kept as packed EXL3 trellis (native dense arm; no BF16 dense, no runtime NVFP4 requant, no transposed twins)
+[2m2026-09-07T20:51:30.283726Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 23: EXL3 native attention family installed — q_proj [2560->12288] K=6 (gated, [Q|gate] interleaved per head), k/v_proj [2560->512] K=6/6, o_proj [6144->2560] K=6 cb=MUL1; 37.4 MB packed vs 99.6 MB BF16 (no runtime NVFP4 requant, no transposed twins); decode-graph capture vetoed
+[2m2026-09-07T20:51:30.286269Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.24: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.286326Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 24: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.286331Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.24.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.286354Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.24.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.286500Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.286547Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 24: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.288210Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.25: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.288264Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 25: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.288269Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.25.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.288289Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.25.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.288431Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.288475Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 25: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.290004Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.26: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.290042Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 26: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.290047Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.26.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.290066Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.26.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.290205Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.290249Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 26: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.291824Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.27: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.291865Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 27: attention q/k/v/o kept as packed EXL3 trellis (native dense arm; no BF16 dense, no runtime NVFP4 requant, no transposed twins)
+[2m2026-09-07T20:51:30.291937Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 27: EXL3 native attention family installed — q_proj [2560->12288] K=6 (gated, [Q|gate] interleaved per head), k/v_proj [2560->512] K=6/6, o_proj [6144->2560] K=6 cb=MUL1; 37.4 MB packed vs 99.6 MB BF16 (no runtime NVFP4 requant, no transposed twins); decode-graph capture vetoed
+[2m2026-09-07T20:51:30.294406Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.28: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.294455Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 28: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.294460Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.28.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.294486Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.28.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.294626Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.294674Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 28: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.296313Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.29: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.296357Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 29: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.296362Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.29.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.296386Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.29.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.296523Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.296566Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 29: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.298176Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.30: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.298221Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 30: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.298225Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.30.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.298246Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.30.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.298388Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.298430Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 30: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.299922Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.31: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.299963Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 31: attention q/k/v/o kept as packed EXL3 trellis (native dense arm; no BF16 dense, no runtime NVFP4 requant, no transposed twins)
+[2m2026-09-07T20:51:30.300033Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 31: EXL3 native attention family installed — q_proj [2560->12288] K=6 (gated, [Q|gate] interleaved per head), k/v_proj [2560->512] K=6/6, o_proj [6144->2560] K=6 cb=MUL1; 37.4 MB packed vs 99.6 MB BF16 (no runtime NVFP4 requant, no transposed twins); decode-graph capture vetoed
+[2m2026-09-07T20:51:30.302501Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.32: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.302551Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 32: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.302556Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.32.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.302577Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.32.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.302724Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.302774Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 32: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.304398Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.33: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.304447Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 33: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.304452Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.33.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.304472Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.33.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.304611Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.304656Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 33: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.306595Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.34: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.306643Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 34: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.306647Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.34.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.306673Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.34.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.306814Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.306856Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 34: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.308424Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.35: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.308469Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 35: attention q/k/v/o kept as packed EXL3 trellis (native dense arm; no BF16 dense, no runtime NVFP4 requant, no transposed twins)
+[2m2026-09-07T20:51:30.308540Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 35: EXL3 native attention family installed — q_proj [2560->12288] K=6 (gated, [Q|gate] interleaved per head), k/v_proj [2560->512] K=6/6, o_proj [6144->2560] K=6 cb=MUL1; 37.4 MB packed vs 99.6 MB BF16 (no runtime NVFP4 requant, no transposed twins); decode-graph capture vetoed
+[2m2026-09-07T20:51:30.310971Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.36: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.311023Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 36: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.311034Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.36.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.311060Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.36.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.311201Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.311247Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 36: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.312877Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.37: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.312918Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 37: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.312922Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.37.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.312945Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.37.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.313091Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.313133Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 37: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.314643Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.38: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.314687Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 38: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.314691Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.38.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.314715Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.38.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.314850Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.314892Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 38: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.316467Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.39: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.316513Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 39: attention q/k/v/o kept as packed EXL3 trellis (native dense arm; no BF16 dense, no runtime NVFP4 requant, no transposed twins)
+[2m2026-09-07T20:51:30.316584Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 39: EXL3 native attention family installed — q_proj [2560->12288] K=6 (gated, [Q|gate] interleaved per head), k/v_proj [2560->512] K=6/6, o_proj [6144->2560] K=6 cb=MUL1; 37.4 MB packed vs 99.6 MB BF16 (no runtime NVFP4 requant, no transposed twins); decode-graph capture vetoed
+[2m2026-09-07T20:51:30.319079Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.40: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.319127Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 40: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.319132Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.40.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.319156Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.40.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.319302Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.319347Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 40: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.320883Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.41: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.320929Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 41: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.320934Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.41.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.320953Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.41.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.321096Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.321140Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 41: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.322750Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.42: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.322791Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 42: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.322799Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.42.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.322820Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.42.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.322958Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.323001Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 42: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.324493Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.43: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.324534Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 43: attention q/k/v/o kept as packed EXL3 trellis (native dense arm; no BF16 dense, no runtime NVFP4 requant, no transposed twins)
+[2m2026-09-07T20:51:30.324606Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 43: EXL3 native attention family installed — q_proj [2560->12288] K=6 (gated, [Q|gate] interleaved per head), k/v_proj [2560->512] K=6/6, o_proj [6144->2560] K=6 cb=MUL1; 37.4 MB packed vs 99.6 MB BF16 (no runtime NVFP4 requant, no transposed twins); decode-graph capture vetoed
+[2m2026-09-07T20:51:30.327155Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.44: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.327209Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 44: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.327214Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.44.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.327237Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.44.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.327375Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.327422Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 44: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.328971Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.45: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.329010Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 45: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.329014Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.45.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.329050Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.45.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.329188Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.329236Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 45: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.330910Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.46: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.330960Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::linear_attn_arms[0m[2m:[0m Layer 46: SSM in_proj_qkv/in_proj_z/out_proj kept as packed EXL3 trellis (native dense arm, no fused QKVZ concat); BA/conv/gates BF16 as before
+[2m2026-09-07T20:51:30.330964Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.46.linear_attn.A_log from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.330986Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.language_model.layers.46.linear_attn.dt_bias from BF16 to FP32 ([48])
+[2m2026-09-07T20:51:30.331125Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::init[0m[2m:[0m GDN state spine: gated_delta_rule_chunk_delta_h_vfused
+[2m2026-09-07T20:51:30.331171Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 46: EXL3 native GDN family installed — in_proj_qkv [2560->10240] K=6 + in_proj_z [2560->6144] K=6 (shared-A pair into the fused [Q|K|V|Z] row of 16384), out_proj [6144->2560] K=6 cb=MUL1; 43.3 MB packed vs 115.3 MB BF16; decode-graph capture vetoed
+[2m2026-09-07T20:51:30.332808Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::ffn[0m[2m:[0m model.language_model.layers.47: routed experts served natively from EXL3 trellis (512 local experts; gate/up/down K=4/4/4 cb=2)
+[2m2026-09-07T20:51:30.332855Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 47: attention q/k/v/o kept as packed EXL3 trellis (native dense arm; no BF16 dense, no runtime NVFP4 requant, no transposed twins)
+[2m2026-09-07T20:51:30.332927Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::exl3_dense_arms[0m[2m:[0m Layer 47: EXL3 native attention family installed — q_proj [2560->12288] K=6 (gated, [Q|gate] interleaved per head), k/v_proj [2560->512] K=6/6, o_proj [6144->2560] K=6 cb=MUL1; 37.4 MB packed vs 99.6 MB BF16 (no runtime NVFP4 requant, no transposed twins); decode-graph capture vetoed
+[2m2026-09-07T20:51:30.333535Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp[0m[2m:[0m qwen4_exp layer construction: MoE 1.50 GB (31.3 MB/layer), attn/GDN arms 0.56 GB (11.7 MB/layer), mHC+PLE 2.08 GB
+[2m2026-09-07T20:51:30.333539Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::exl3_dense[0m[2m:[0m EXL3 native dense: 36 GDN + 12 full-attention layers serve their routed projections from packed trellis (gates: gdn=true attn=true; routed leaves: gdn=["in_proj_qkv", "in_proj_z", "out_proj"] attn=["q_proj", "k_proj", "v_proj", "o_proj"])
+[2m2026-09-07T20:51:30.333543Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp[0m[2m:[0m Qwen3.8-Flash-Next loaded 48 layers with the mHC highway live on all of them (36 GDN + 12 full-attention).
+[2m2026-09-07T20:51:30.333562Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m Layer construction: 4.14 GB consumed (49.10 GB free -> 44.96 GB free) across 48 layers, 86.2 MB/layer average
+[2m2026-09-07T20:51:30.333566Z[0m [33m WARN[0m [2mspark_model::weight_loader::qwen4_exp::aux[0m[2m:[0m qwen4_exp: final norm is a PLACEHOLDER. The real one is `model.language_model.hyper_connection_mixer.hc_norm` [10240], applied while collapsing the 4 residual streams — that is mHC work, not a final-norm substitution.
+[2m2026-09-07T20:51:30.333601Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m lm_head served natively from EXL3 trellis ([2560x248320] K=6 cb=Mul1); skipping the dense load
+[2m2026-09-07T20:51:30.333620Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::probe_mtp[0m[2m:[0m qwen4_exp MTP namespace: tensors=true experts=PerExpert (probed expert 0), 0 missing, 0 shape mismatches, 0 unexpected
+[2m2026-09-07T20:51:30.340370Z[0m [33m WARN[0m [2mspark_model::weight_map::nvfp4_detect[0m[2m:[0m Partial NVFP4 metadata: `.weight_scale` exists for some tensors (e.g. KV scales) but not for MLP/MoE projections. Falling back to runtime BF16→NVFP4 quantization. For best quality use a fully-quantized NVFP4 release (e.g. Sehyo/*-NVFP4).
+[2m2026-09-07T20:51:30.340446Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::mtp[0m[2m:[0m qwen4_exp MTP: sharing the model's native-EXL3 loader state (one Exl3LaunchState / dense stage / MoE state across the main layers and this draft module); native gates moe=true dense=true, mtp attention family kept packed: false
+[2m2026-09-07T20:51:30.355706Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 48: loading attention projections (Bf16Raw)
+[2m2026-09-07T20:51:30.355714Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 48: BF16 → NVFP4 (TP-aware)
+[2m2026-09-07T20:51:30.358732Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35::load_layers::attention_arms[0m[2m:[0m Layer 48: Q/K/V/O quantized, 41.8 GB free
+[2m2026-09-07T20:51:30.365248Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen4_exp::mtp[0m[2m:[0m qwen4_exp MTP module loaded (PerExpert experts): MoE +0.00 GB, attention body +0.11 GB, mHC+QSA+combiner +0.01 GB, +0.12 GB net. Deltas are free-memory differences, so a NEGATIVE figure means that stage freed more than it allocated (the fused arm frees its BF16 sources) — it is NOT the resident cost of the module. NOTE: no proposer is wired — this module is loaded and audited, nothing decodes it.
+[2m2026-09-07T20:51:30.365269Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m qwen4_exp MTP draft module loaded and audited (num_mtp_modules=1)
+[2m2026-09-07T20:51:30.365272Z[0m [33m WARN[0m [2mspark_model::factory::build[0m[2m:[0m qwen4_exp: the MTP module is loaded and audited, but the proposer is NOT armed — speculative decoding stays OFF. Set ATLAS_QWEN4EXP_MTP_VERIFY=1 to arm the draft head together with the mHC K-row verify path it needs; the two arm together because a proposer without that verify path routes the draft into `refuse_batched_under_hc` mid-step, which the scheduler turns into a truncated response rather than a fallback.
+[2m2026-09-07T20:51:30.365492Z[0m [33m WARN[0m [2mspark_model::weight_loader::qwen35[0m[2m:[0m vision: model.visual.blocks.0.mlp.linear_fc1.weight is [4352, 1152] but vision_config.intermediate_size = 4304 — using the tensor's 4352 (padded export; the extra rows are zero-scaled)
+[2m2026-09-07T20:51:30.365494Z[0m [33m WARN[0m [2mspark_model::layers::vision_encoder::enc_impl::init[0m[2m:[0m Vision encoder capacity 16384 patches (2048x2048 px) — the resolved area bound wanted 65536 patches, clamped: the ViT score matrix is O(patches^2) and 65536 would need ~24.0 GB of scratch. Lower --vision-max-pixels to reclaim memory, or raise CEILING_MAX_PATCHES only alongside tiled ViT attention.
+[2m2026-09-07T20:51:30.366643Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen35[0m[2m:[0m Qwen3.6 vision encoder loaded: depth=27, hidden=1152, heads=16, mlp=4352
+[2m2026-09-07T20:51:30.561219Z[0m [32m INFO[0m [2mspark_runtime::buffers[0m[2m:[0m Buffer arena: 8196 tokens × 3541.9 MB total (attn_out=96.0MB, ssm_deint=256.1MB, kv_lora_rank=0)
+[2m2026-09-07T20:51:30.561365Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m KV budget self-relative (ledger): Atlas-own 70.5 GB live in the alloc ledger; 12.8 GB of co-tenant/page-cache use excluded (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)
+[2m2026-09-07T20:51:30.561370Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m KV cache: 121.6 GB total × 72% util = 87.6 GB budget; 70.5 GB pre-KV + 13.2 GB reserve → 3.8 GB for KV → 10493 blocks × 16 tok/block = 167888 max KV tokens
+[2m2026-09-07T20:51:30.561373Z[0m [33m WARN[0m [2mspark_model::factory::build[0m[2m:[0m KV OVERCOMMIT: pool fits 1 seq(s) at full --max-seq-len=131072 but --max-batch-size=4 requested (8192 block(s)/seq, 10493 block(s) total). Paged KV allocates on demand; long-context bursts are back-pressured at the block allocator, not refused at boot.
+[2m2026-09-07T20:51:32.175573Z[0m [32m INFO[0m [2mspark_runtime::kv_cache::paged_impl[0m[2m:[0m KV cache: 10493 blocks × 12 layers × 32768 bytes/block = 3.8 GB total
+[2m2026-09-07T20:51:32.235043Z[0m [32m INFO[0m [2mspark_model::model::lm_head_exl3[0m[2m:[0m EXL3 native lm_head installed: [2560 -> 248077] K=6 cb=Mul1 (trellis rows 248320), scratch 160 rows (0.8 MB A + 80.0 MB C) over the shared launch state; decode-graph capture disabled (cooperative launches are not capturable)
+[2m2026-09-07T20:51:32.235248Z[0m [32m INFO[0m [2mspark_model::model::drafter_context[0m[2m:[0m MTP drafter context: prefill=ON carry=ON (default). Disable both with ATLAS_NO_MTP_DRAFTER_CONTEXT=1.
+[2m2026-09-07T20:51:32.235253Z[0m [32m INFO[0m [2mspark_model::model::impl_a1[0m[2m:[0m TransformerModel: 48 layers, vocab=248077, hidden=2560
+[2m2026-09-07T20:51:32.602980Z[0m [32m INFO[0m [2mspark_model::model::ssm_pool[0m[2m:[0m SSM MTP pools (3 intermediates + checkpoints): 1732 MB
+[2m2026-09-07T20:51:32.603012Z[0m [32m INFO[0m [2mspark_model::model::ssm_pool[0m[2m:[0m SSM state pool: 4 slots × 36 layers = 454 MB
+[2m2026-09-07T20:51:32.603019Z[0m [32m INFO[0m [2mspark_model::model::impl_a1[0m[2m:[0m SSM decode-rollback ring: SKIPPED (speculative decode active) — the ring's save/rollback path only runs on plain decode with watchdogs enabled. Saves 3.8 GB (4 seqs x 8 slots x full SSM blob). If plain-decode loop re-steer is ever reached it fail-opens to decline; ATLAS_SSM_DECODE_RING=1 force-restores the ring.
+[2m2026-09-07T20:51:34.554396Z[0m [32m INFO[0m [2mspark_model::model::ssm_snapshot[0m[2m:[0m SSM snapshot pool: Marconi 64 slots (7272 MB), decode-rollback 0 slots × 4 seqs (0 MB), 36 layers
+[2m2026-09-07T20:51:34.554449Z[0m [32m INFO[0m [2mspark_model::model::impl_a1[0m[2m:[0m Marconi intermediate checkpoints: every 256 blocks (4096 tokens at block_size=16)
+[2m2026-09-07T20:51:34.554628Z[0m [32m INFO[0m [2mspark_model::model::impl_a1[0m[2m:[0m MTP drafter context: allocating 671 MB prompt-hidden capture (131072 x 2560 BF16)
+[2m2026-09-07T20:51:34.679317Z[0m [32m INFO[0m [2mspark_model::model::impl_a1[0m[2m:[0m Pinned metadata staging: 5156 KB
+[2m2026-09-07T20:51:34.931038Z[0m [32m INFO[0m [2mspark_model::model::impl_a1_init[0m[2m:[0m GDN prefill buffers: 355 MB for 8196 tokens (chunked SSM prefill)
+[2m2026-09-07T20:51:35.160317Z[0m [32m INFO[0m [2mspark_runtime::kv_cache::paged_impl[0m[2m:[0m KV cache: 32776 blocks × 1 layers × 32768 bytes/block = 1.0 GB total
+[2m2026-09-07T20:51:35.160347Z[0m [32m INFO[0m [2mspark_model::layers::qwen4_exp_mtp[0m[2m:[0m qwen4_exp MTP head: private KV pool 32776 blocks x 16 tok = 524416 tokens, 2 kv_heads x 256 head_dim BF16 (~1.07 GB), capacity 4 sequence slots (1074003968 bytes). This is allocated AFTER the main pool and is therefore OUTSIDE the util pledge.
+[2m2026-09-07T20:51:35.218528Z[0m [32m INFO[0m [2mspark_runtime::buffers[0m[2m:[0m Buffer arena: 1 tokens × 336.5 MB total (attn_out=0.0MB, ssm_deint=0.0MB, kv_lora_rank=0)
+[2m2026-09-07T20:51:35.218616Z[0m [32m INFO[0m [2mspark_model::layers::qwen4_exp_mtp[0m[2m:[0m qwen4_exp MTP head: private T=1 buffer arena costs 0.357 GB. The draft runs entirely inside it, so it cannot reach the target's buffers.
+[2m2026-09-07T20:51:35.218739Z[0m [33m WARN[0m [2mspark_model::model::impl_b3_accessors[0m[2m:[0m qwen4_exp MTP SPECULATION ARMED: the draft head is installed as the active proposer, and the mHC K-row verify path is live. Measured draft accept is 86.5-95.5%, but this is the FIRST configuration in which a draft is actually fed back — treat output quality as unproven until the agentic battery runs.
+[2m2026-09-07T20:51:35.219723Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m GPU allocation ledger: 92.40 GB live across 98 sites
+[2m2026-09-07T20:51:35.219726Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m     60438.5 MB  x18    crates/spark-runtime/src/fast_weights/pool.rs:195
+[2m2026-09-07T20:51:35.219727Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      6912.0 MB  x36    crates/spark-model/src/model/ssm_snapshot.rs:165
+[2m2026-09-07T20:51:35.219728Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      2677.2 MB  x773   crates/spark-runtime/src/fast_weights/shard.rs:256
+[2m2026-09-07T20:51:35.219729Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      2479.6 MB  x13    crates/spark-runtime/src/kv_cache/paged_impl.rs:27
+[2m2026-09-07T20:51:35.219730Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      2479.6 MB  x13    crates/spark-runtime/src/kv_cache/paged_impl.rs:28
+[2m2026-09-07T20:51:35.219731Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      2300.6 MB  x6     crates/spark-model/src/model/ssm_pool.rs:149
+[2m2026-09-07T20:51:35.219732Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      1369.2 MB  x1736  crates/spark-model/src/weight_map/loaders_fp8.rs:233
+[2m2026-09-07T20:51:35.219733Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      1013.4 MB  x183   crates/spark-runtime/src/weights/exl3/reconstruct_launch.rs:169
+[2m2026-09-07T20:51:35.219734Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m       689.2 MB  x23    crates/spark-model/src/layers/moe/ptr_table_build.rs:282
+[2m2026-09-07T20:51:35.219736Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m       640.0 MB  x1     crates/spark-model/src/model/impl_a1.rs:500
+[2m2026-09-07T20:51:35.219737Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m       609.4 MB  x2     crates/spark-runtime/src/buffers.rs:200
+[2m2026-09-07T20:51:35.219738Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m       533.0 MB  x2     crates/spark-runtime/src/buffers.rs:191
+[2m2026-09-07T20:51:35.219739Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      5981.9 MB  across 86 smaller sites
+[2m2026-09-07T20:51:35.219740Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m   ── by file ──
+[2m2026-09-07T20:51:35.219741Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m     60438.5 MB  x18    crates/spark-runtime/src/fast_weights/pool.rs
+[2m2026-09-07T20:51:35.219742Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      7272.3 MB  x73    crates/spark-model/src/model/ssm_snapshot.rs
+[2m2026-09-07T20:51:35.219743Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      4959.1 MB  x26    crates/spark-runtime/src/kv_cache/paged_impl.rs
+[2m2026-09-07T20:51:35.219744Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      3878.4 MB  x62    crates/spark-runtime/src/buffers.rs
+[2m2026-09-07T20:51:35.219745Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      2677.2 MB  x773   crates/spark-runtime/src/fast_weights/shard.rs
+[2m2026-09-07T20:51:35.219760Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      2300.6 MB  x6     crates/spark-model/src/model/ssm_pool.rs
+[2m2026-09-07T20:51:35.219761Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      1540.4 MB  x3472  crates/spark-model/src/weight_map/loaders_fp8.rs
+[2m2026-09-07T20:51:35.219762Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      1350.6 MB  x7     crates/spark-model/src/layers/ple/layer.rs
+[2m2026-09-07T20:51:35.219763Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m      1013.4 MB  x183   crates/spark-runtime/src/weights/exl3/reconstruct_launch.rs
+[2m2026-09-07T20:51:35.219764Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m       692.3 MB  x896   crates/spark-model/src/layers/moe/ptr_table_build.rs
+[2m2026-09-07T20:51:35.219764Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m       640.0 MB  x5     crates/spark-model/src/model/impl_a1.rs
+[2m2026-09-07T20:51:35.219765Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m       355.2 MB  x4     crates/spark-model/src/model/impl_a1_init.rs
+[2m2026-09-07T20:51:35.219786Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m util pledge honored: 86.1 GB tracked live within the 87.6 GB budget (1.5 GB pledge headroom)
+[2m2026-09-07T20:51:35.288838Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::kernel_gate[0m[2m:[0m 
+┌─ Kernel load audit ─ 180 kernels embedded · set-hash 6d52d8234695 ─
+│ MODULE (operation)                 PTX-HASH       RESOLUTION           SHADOWED
+│ ────────────────────────────────────────────────────────────────────────────────────
+│ argmax                             146afc07b872   used                 N
+│ bf16_add                           3b911dbbeb06   -                    N
+│ causal_conv1d                      73d4fe52be41   used                 N
+│ dense_gemv_bf16_batch2             643d095130e5   used                 N
+│ dense_gemv_bf16_batchm             f2a0ce8130a4   used                 N
+│ dense_gemv_fp8w_batch2             8a010157114b   used                 N
+│ dequant_fp8_blockscaled_bf16       baed10ae77f9   -                    N
+│ dequant_gguf_bf16                  3aa21352b749   used                 N
+│ dequant_nvfp4_bf16                 ef19f55d6db1   -                    N
+│ dflash2                            aee2ed2a21f9   -                    N
+│ e2m1                               442d6982f685   -                    N
+│ embed_from_argmax                  e63aebcad4bb   used                 N
+│ exl3_matmul                        4948887d4f36   used                 N
+│ exl3_moe                           93606c7e303f   used                 N
+│ exl3_reconstruct                   8edf46b8afb9   used                 N
+│ fp8_gemm_t_blockscaled             9ad641b7c69a   used                 N
+│ fp8_gemv_rt                        3037267e209b   -                    N
+│ fused_k_norm_rope_cache            80e345fd8c32   used                 N
+│ gated_delta_rule                   c6540d1f3071   used                 N
+│ gated_delta_rule_fla               bc874b3dfdb6   used                 N
+│ gated_delta_rule_persistent        31c1d9061e9e   used                 N
+│ gated_delta_rule_regresident       4f4f51914fb6   used                 N
+│ gated_delta_rule_wy                915d7e6a68e0   used                 N
+│ gated_delta_rule_wy17              9eb2d1de34bc   used                 N
+│ gated_delta_rule_wy2_resident      333ac7b01e4d   used                 N
+│ gated_delta_rule_wy2_resident_f16  c852b08a42b0   used                 N
+│ gated_delta_rule_wy3               c97231fe0733   used                 N
+│ gated_delta_rule_wy3_f16           4ff9d9af33ef   used                 N
+│ gated_delta_rule_wy3_resident      528c15e297c4   used                 N
+│ gated_delta_rule_wy3_resident_f16  8d5e8e22c977   used                 N
+│ gated_delta_rule_wy4               30241cefd4dc   used                 N
+│ gated_delta_rule_wy4_f16           6dd725c10b2b   used                 N
+│ gated_delta_rule_wy64_prefill      13008cae79d2   used                 N
+│ gated_delta_rule_wy_f16            d6cb36b0fa68   used                 N
+│ gated_delta_rule_wyn               64fa3d9722b5   used                 N
+│ gated_norm_sigmoid                 793c8c9b40cd   used                 N
+│ gdn_verify_fused_conv_kn           f5ddcf38fc76   used                 N
+│ gdn_verify_fused_k2                f1ed46dfa3ca   used                 N
+│ gemm                               35b4266f9b76   used                 N
+│ gemm_splitk                        3b7d6970ac53   used                 N
+│ gemm_tc                            18f38bb3cd31   used                 N
+│ gemv                               ea78471f6094   used                 N
+│ gemv_fp8w                          fb2ab7213975   used                 N
+│ hyper_connection                   050f5fbdc0cc   used                 N
+│ inferspark_decode                  e53d1371b0c2   -                    N
+│ inferspark_prefill                 037e9899a277   used                 N
+│ inferspark_prefill_h128            bf5e27735eee   -                    N
+│ inferspark_prefill_paged_512       5e88b8d9d423   -                    N
+│ inferspark_prefill_paged_batched   918170430876   used                 N
+│ inferspark_prefill_paged_fp8_batched 1d308d2f9ff4   used                 N
+│ inferspark_prefill_paged_nvfp4_batched 91d45f59998c   used                 N
+│ inferspark_prefill_v47             1459bf0fb492   -                    N
+│ kv_cache                           a8e2f7403d05   -                    N
+│ lora_bgmv                          0da658058920   -                    N
+│ mamba2_ssd_chunk                   aed33e9fe11f   -                    N
+│ mamba2_ssm                         fb2443da2ae9   -                    N
+│ metadata_fill                      5499e146f2b7   used                 N
+│ moe                                8ee3d3d63ae2   used                 N
+│ moe_bf16_grouped_gemm              b6d2ba05bb04   used                 N
+│ moe_decode_atomic_c4               7b562d0c4cf2   used                 N
+│ moe_expert_gemv                    5c9f2ac7b7ae   used                 N
+│ moe_expert_gemv_fused              63b64cd71ac0   -                    N
+│ moe_fp8_grouped_gemm               3ea04dda360e   used                 N
+│ moe_fused_batch2                   ef7a38847672   used                 N
+│ moe_fused_batch3                   d6ad724ec679   used                 N
+│ moe_gate_topk                      feac0203c7e9   used                 N
+│ moe_hash_route                     03abef3c12c3   used                 N
+│ moe_lora_gather_bgmv               1476e8764c0d   -                    N
+│ moe_lora_grouped_down              90477923d5b0   -                    N
+│ moe_prefill                        94d9b1726442   used                 N
+│ moe_relu2_fused                    46aa8db7fd71   -                    N
+│ moe_shared_expert_fused            f93aa6fc9925   used                 N
+│ moe_shared_expert_fused_batch2_t   af5ce78d6844   used                 N
+│ moe_shared_expert_fused_batch3_t   fd76d7757493   used                 N
+│ moe_shared_expert_fused_bf16       c7e28add2160   used                 N
+│ moe_shared_expert_fused_bf16_batch2 129a1ff2389a   used                 N
+│ moe_shared_expert_fused_fp8        8c50f9aa733a   used                 N
+│ moe_shared_expert_fused_fp8_batch2 4e7fc7b12c28   used                 N
+│ moe_shared_expert_fused_fp8_batch2_t 555e90f9083c   used                 N
+│ moe_shared_expert_fused_fp8_batch3 03868ee5b950   used                 N
+│ moe_shared_expert_fused_fp8_batch3_t a9ee4b18ef6e   used                 N
+│ moe_shared_expert_fused_fp8_t      945a38932067   used                 N
+│ moe_shared_expert_fused_t          b8df73c5fe55   used                 N
+│ moe_silu_mul                       cbdda82714b1   used                 N
+│ moe_sorted                         0d64b65a4994   used                 N
+│ moe_topk                           f505b10c34ff   used                 N
+│ moe_topk_sig                       860c9678ccfb   used                 N
+│ moe_topk_softmax_bias              ce895d9cd2ea   used                 N
+│ moe_topk_sqrt                      31dd302c3d7a   used                 N
+│ moe_transpose_batched              f82c77251eef   used                 N
+│ moe_w4a16                          6b5323993f88   used                 Y (1 dropped)
+│ moe_w8a8_grouped_gemm              8f35b3f9dcc4   used                 N
+│ nemotron_moe_prefill               caf35182ff05   -                    N
+│ nllb_encoder                       cc3922ab36e1   -                    N
+│ norm                               0b8c9dcc8aa6   used                 N
+│ paged_decode                       baa32830950d   used                 N
+│ paged_decode_bf16k_turbo2v         a30300cedf19   -                    N
+│ paged_decode_bf16k_turbo2v_128     647e1fccc68f   -                    N
+│ paged_decode_bf16k_turbo3v         8f93bb89910e   -                    N
+│ paged_decode_bf16k_turbo3v_128     eeea33ef4094   -                    N
+│ paged_decode_bf16k_turbo4v         ba9fdf49db12   -                    N
+│ paged_decode_bf16k_turbo4v_128     146fd3ed9947   -                    N
+│ paged_decode_fp8                   e02a31b7d66f   used                 N
+│ paged_decode_fp8k_turbo2v          58cc6b26f98e   -                    N
+│ paged_decode_fp8k_turbo2v_128      22647f18115c   -                    N
+│ paged_decode_fp8k_turbo3v          bf773433b61b   -                    N
+│ paged_decode_fp8k_turbo3v_128      ba17e18a94c1   -                    N
+│ paged_decode_fp8k_turbo4v          26e3f0d3af0b   -                    N
+│ paged_decode_fp8k_turbo4v_128      443b8ebb08df   -                    N
+│ paged_decode_nvfp4                 5be91531e60f   -                    N
+│ paged_decode_turbo2                549d5ef28a85   -                    N
+│ paged_decode_turbo2_128            16f3bd5ba873   -                    N
+│ paged_decode_turbo3                36ad565a6203   -                    N
+│ paged_decode_turbo3_128            f1606334ccdb   -                    N
+│ paged_decode_turbo3k_turbo8v       5d264a0e5182   -                    N
+│ paged_decode_turbo3k_turbo8v_128   51251cb8e9ff   -                    N
+│ paged_decode_turbo4                1d8eee164a24   -                    N
+│ paged_decode_turbo4_128            243291046931   -                    N
+│ paged_decode_turbo4_512            df9649bd504a   -                    N
+│ paged_decode_turbo4k_turbo3v       20b5d6da5511   -                    N
+│ paged_decode_turbo4k_turbo3v_128   9e1335964d2b   -                    N
+│ paged_decode_turbo4k_turbo8v       f834b6dfccff   -                    N
+│ paged_decode_turbo4k_turbo8v_128   62f22608e4e9   -                    N
+│ paged_decode_turbo8                98cf9df38f83   -                    N
+│ paged_decode_turbo8_128            a3119132d53d   -                    N
+│ paged_decode_turbo8_512            300c75ed757d   -                    N
+│ per_token_group_quant_fp8          826fdd189118   used                 N
+│ ple                                24b0d643c771   used                 N
+│ prefill_fp8kv                      4cf574bd1d31   -                    N
+│ prefill_paged                      b4d1b00308d3   used                 N
+│ prefill_paged_bf16k_turbo2v        f572c0feb7da   used                 N
+│ prefill_paged_bf16k_turbo3v        eb65ce33787f   used                 N
+│ prefill_paged_bf16k_turbo4v        379afc96e8fe   used                 N
+│ prefill_paged_fp8                  18561c06e463   used                 N
+│ prefill_paged_fp8k_turbo2v         380abc39f00e   used                 N
+│ prefill_paged_fp8k_turbo3v         4bd92a52dd4f   used                 N
+│ prefill_paged_fp8k_turbo4v         739b8591bac4   used                 N
+│ prefill_paged_indirect             79ecb56d29e8   -                    N
+│ prefill_paged_nvfp4                5969570553e1   used                 N
+│ prefill_paged_turbo2               26aa32c57194   used                 N
+│ prefill_paged_turbo3               9e0cb0ebd72a   used                 N
+│ prefill_paged_turbo3k_turbo8v      a1e3e3f378d8   used                 N
+│ prefill_paged_turbo4               304ac87ef92e   used                 N
+│ prefill_paged_turbo4k_turbo3v      d2dd11b53f7c   used                 N
+│ prefill_paged_turbo4k_turbo8v      b1beb0b3769a   used                 N
+│ prefill_paged_turbo8               f44e131f7eae   used                 N
+│ q2_0_gemv                          c35a0829904e   -                    N
+│ q2_0_gemv_vec                      c47d832bb344   used                 N
+│ qsa_indexer                        62c6c459998d   used                 N
+│ quant_rowwise_fp8                  74c3a43f6bea   -                    N
+│ quantize_bf16_to_fp8_blockscaled   6bec238a1d20   -                    N
+│ quantize_nvfp4                     57b5d5c9e5e0   used                 N
+│ relu2                              539c5c2a1fd5   -                    N
+│ reshape_and_cache                  a38c58242ad3   used                 N
+│ reshape_and_cache_turbo            36fb1d30ec71   -                    N
+│ residual_add                       37012643cb81   used                 N
+│ rms_norm_vanilla                   857392c0b973   -                    N
+│ rope                               a815dc308e6f   used                 N
+│ rope_mrope_interleaved             49ec9fb772da   used                 N
+│ ssm_h_dtype                        57ec990e15b5   used                 N
+│ ssm_preprocess                     4beec545a73c   used                 N
+│ ssm_state_norm                     bc6b3ea0d217   used                 N
+│ token_overlay                      fb5e1aabc650   used                 N
+│ tq_plus_innerq_apply               4b3f0fe0969b   used                 N
+│ transpose_u8                       fc1b422de2de   used                 N
+│ vector_add                         2ed9bd7a0ff6   -                    N
+│ vision_encoder                     c8fcd4ee82ca   used                 N
+│ w4a16                              60f6c791024e   used                 Y (1 dropped)
+│ w4a16_fp8_ldmab                    a96ed0c9ddb9   -                    N
+│ w4a16_gemv                         5fbe9266c08f   used                 N
+│ w4a16_gemv_fused                   32ccd620cdd1   used                 N
+│ w8a16_gemm                         0d755979b5cd   used                 N
+│ w8a16_gemm_pipelined               0ba3dae4b1f1   used                 N
+│ w8a16_gemm_t                       66cd82586537   used                 N
+│ w8a16_gemm_t_m128                  ad88221e46ed   used                 N
+│ w8a16_gemv                         995473ce7d70   used                 N
+│ w8a16_gemv_batch4                  9c3f6afcc9ba   used                 N
+│ w8a16_gemv_fused                   9886bc964566   -                    N
+│ wht_bf16                           535da4ea433b   used                 N
+│ widen_block_scale_f32              6bdcca29bf2c   -                    N
+└─
+
+18 kernel(s) declared expected-absent in this target's MODEL.toml [expected_absent] (no action):
+    gated_delta_rule::gated_delta_rule_decode_f16_norm, gated_delta_rule::gated_delta_rule_decode_f16_strided_norm_half, gated_delta_rule::gated_delta_rule_decode_f32_strided_norm_half, gated_delta_rule::gated_delta_rule_decode_f32_strided_norm_smem, gated_delta_rule_snap::gated_delta_rule_decode_f32_norm_snap, gated_delta_rule_snap::gated_delta_rule_decode_f32_strided_norm_snap, gdn_verify_fused_conv_kn_f32::gdn_verify_fused_conv_kn_f32, moe_w4a16::moe_w4a16_fused_gate_up_t_e8m0, moe_w4a16::moe_w4a16_fused_gate_up_t_k64_e8m0, moe_w4a16::moe_w4a16_fused_gate_up_t_k64_m128, moe_w4a16::moe_w4a16_grouped_gemm_ptrtable_e8m0, moe_w4a16::moe_w4a16_grouped_gemm_ptrtable_t_e8m0, moe_w4a16::moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0, w4a16::w4a16_gemm_t_k64_n64_p3, w4a16::w4a16_gemm_t_k64_p3, w4a16::w4a16_gemm_t_m128_bf16, w4a16::w4a16_gemm_t_p3, w4a4::w4a4_gemm_mfast
+
+[2m2026-09-07T20:51:35.290145Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m EOS tokens (from generation_config.json): [248046, 248044]
+[2m2026-09-07T20:51:35.290427Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Default sampling: temperature=1, top_k=20, top_p=0.95, top_n_sigma=1, min_p=0
+[2m2026-09-07T20:51:35.519177Z[0m [32m INFO[0m [2mspark::tokenizer::jinja_helpers[0m[2m:[0m Loaded Jinja chat template from tokenizer_config.json (8964 chars)
+[2m2026-09-07T20:51:35.519974Z[0m [32m INFO[0m [2mspark::tokenizer::chat_impl[0m[2m:[0m Loaded tokenizer from /tank/exl3-ckpt/qwen38-flash-next-4.05bpw/tokenizer.json
+[2m2026-09-07T20:51:35.573568Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Reasoning parser: qwen (default for thinking-capable model)
+[2m2026-09-07T20:51:35.573762Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Code-fence token: 71093 (``` — F2 fence guard active)
+[2m2026-09-07T20:51:35.700887Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Numeric-token mask: 10/248077 ids classified as digit-runs (digit-normalized content-loop path active)
+[2m2026-09-07T20:51:35.828367Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Boundary-token mask: 620/248077 ids end in a newline / sentence boundary (Phase-C rollback-to-boundary active)
+[2m2026-09-07T20:51:35.953399Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Mid-word token mask: 241519/248077 ids end in alphanumeric (mid-word </think> defer active during thinking)
+[2m2026-09-07T20:51:35.953414Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Thinking end token: 248069 (</think>)
+[2m2026-09-07T20:51:35.953416Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Thinking start token: 248068 (<think>)
+[2m2026-09-07T20:51:35.953427Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m ChatML role-boundary hard stop: <|im_start|> (id 248045) registered
+[2m2026-09-07T20:51:35.953432Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Tool-response hard stop: <tool_response> (id 248066) registered
+[2m2026-09-07T20:51:35.953465Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Tool call start token: 248058 (<tool_call>)
+[2m2026-09-07T20:51:35.953468Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Tool call end token: 248059 (</tool_call>)
+[2m2026-09-07T20:51:36.155571Z[0m [32m INFO[0m [2mspark::grammar::engine[0m[2m:[0m Grammar: detected tokenizer vocab_type=byte_level, add_prefix_space=false
+[2m2026-09-07T20:51:36.363101Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Grammar engine initialized (vocab_size=248077, vocab_type=auto-detected from tokenizer)
+[2m2026-09-07T20:51:36.363306Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m mHC highway model: concurrency 4 via the per-seq highway decode loop (batched highway kernels are the perf follow-up)
+[2m2026-09-07T20:51:36.363310Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m Speculative decoding: ENABLED (2 drafts/step)
+[2m2026-09-07T20:51:36.363312Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m Scheduling policy: FIFO
+[2m2026-09-07T20:51:36.363480Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Tool call parser: qwen3_coder (MODEL.toml [behavior].tool_call_parser)
+[2m2026-09-07T20:51:36.363494Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Tool call parser: 'qwen3_coder' has registered XGrammar grammar — constrained decoding ENABLED for tool requests
+[2m2026-09-07T20:51:36.363497Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Response store: max_entries=10000, ttl=86400s, persist=memory-only
+[2m2026-09-07T20:51:36.363506Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Model behavior: max_thinking_budget=2048, thinking_default=true
+[2m2026-09-07T20:51:36.363507Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Model behavior: MODEL sampling defaults enabled (non-thinking: temp=0.7, top_k=20, top_p=0.8; tools: temp=0.7, top_k=20, top_p=0.8)
+[2m2026-09-07T20:51:36.363511Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Model behavior: watchdog rollback+re-steer ENABLED (cap 2 per sequence)
+[2m2026-09-07T20:51:36.363792Z[0m [32m INFO[0m [2mspark::scheduler::mtp_gate[0m[2m:[0m MTP gate: throughput-arbitrated (K=2); window=16 steps, dwell=2, reprobe=256 tok, refresh=1024 tok
+[2m2026-09-07T20:51:36.363808Z[0m [32m INFO[0m [2mspark::scheduler[0m[2m:[0m Scheduler started (batched mode, max_batch=4, mtp=true, ngram=false, num_drafts=2, policy=fifo, chunked_prefill=true, max_prefill_tokens=8192)
+[2m2026-09-07T20:51:36.364145Z[0m [32m INFO[0m [2mspark::main_modules::serve_router[0m[2m:[0m API reachable only from this machine (loopback). To expose on the LAN pass --bind 0.0.0.0; combine with --require-auth and --auth-tokens-file for non-trusted networks.
+[2m2026-09-07T20:51:36.364208Z[0m [32m INFO[0m [2mspark::main_modules::serve_router[0m[2m:[0m Server live and ready at 127.0.0.1:8888 running qwen3.8-flash-next-exl3
+[2m2026-09-07T20:51:36.364323Z[0m [32m INFO[0m [2mspark::scheduler[0m[2m:[0m Swap space: 3 GB at /tmp/atlas-swap-4069847
+[2m2026-09-07T20:51:36.522039Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m Request: model=qwen3.8-flash-next, messages=1, tools=0, tools_active=false, tool_choice=None, stream=false, temp=Some(0.0), max_tokens=1, freq_pen=None, rep_pen=None
+[2m2026-09-07T20:51:36.531773Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m Session 0x35ff3f83bdc200f0: 8011 prompt tokens, tools=false (0 defined)
+[2m2026-09-07T20:51:36.531794Z[0m [32m INFO[0m [2mspark::api::chat::sampling_setup[0m[2m:[0m sampling resolved (first request): temp=0.000 top_p=0.950 top_k=20 min_p=0.0000 top_n_sigma=0.0000 rep_pen=1.000 (core_preset=true)
+[2m2026-09-07T20:51:36.532080Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Thinking enabled, budget=Some(1)
+[2m2026-09-07T20:51:36.532090Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 8011 prompt tokens, chunk_size=8011, max_tokens=1
+[2m2026-09-07T20:51:36.591173Z[0m [32m INFO[0m [2mspark_model::model::gdn_replay[0m[2m:[0m GDN prefill: token-sequential recurrence forced for ALL prefill passes (prefix caching active on a hybrid-SSM model), so a warm Marconi replay recomputes exactly what the cold pass cached. ATLAS_GDN_FLA_UNDER_PREFIX_CACHE=1 restores the split behaviour.
+[2m2026-09-07T20:51:36.591548Z[0m [32m INFO[0m [2mspark_model::layers::ops::exl3_dense[0m[2m:[0m EXL3 dense decode egress: fused into the GEMM epilogue (_abf16_obf16) (ATLAS_EXL3_NO_FUSED_EGRESS unset) [3mfused[0m[2m=[0mtrue
+[2m2026-09-07T20:51:36.592721Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill_recur[0m[2m:[0m GDN prefill: REGISTER-RESIDENT warm-replay path ACTIVE (default; H in regs, no smem-H)
+[2m2026-09-07T20:51:37.176217Z[0m [32m INFO[0m [2mspark_model::layers::ple::layer::gather[0m[2m:[0m PLE gather: 127744 ids, 63109 hits / 64635 misses, resolve 339535us
+[2m2026-09-07T20:51:52.678527Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::save_checkpoint[0m[2m:[0m Intermediate SSM checkpoint saved at token 7984 (snapshot_id 0, block 499)
+[2m2026-09-07T20:51:52.684520Z[0m [32m INFO[0m [2mspark_model::layers::ple::layer::gather[0m[2m:[0m PLE gather: 432 ids, 176 hits / 256 misses, resolve 3183us
+[2m2026-09-07T20:51:52.801909Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::finalize_last[0m[2m:[0m Saved SSM snapshot 1 for 8011 tokens (501 blocks) [chunk]
+[2m2026-09-07T20:51:52.939107Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::drafter_prefill[0m[2m:[0m MTP drafter coverage: prompt_len=8011 captured=8011 drafter_rows=0
+[2m2026-09-07T20:51:52.939119Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::drafter_prefill[0m[2m:[0m MTP eager drafter prefill ENGAGED: the whole-prompt capture is consumed at end-of-prefill, so every concurrent sequence (not only the last-prefilled) can build drafter KV over its own prompt
+[2m2026-09-07T20:51:52.945098Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Prefill first token: 760
+[2m2026-09-07T20:51:52.945434Z[0m [32m INFO[0m [2mspark::scheduler::mtp_accept_debug[0m[2m:[0m Done: 1 tokens (length) 3081.4 tok/s, TTFT=16413.0ms, serial=0.00 mtp=0.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0
+[2m2026-09-07T20:51:52.951864Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m Request: model=qwen3.8-flash-next, messages=1, tools=0, tools_active=false, tool_choice=None, stream=false, temp=Some(0.0), max_tokens=1, freq_pen=None, rep_pen=None
+[2m2026-09-07T20:51:52.965233Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m Session 0xfa557de30e74a826: 8001 prompt tokens, tools=false (0 defined)
+[2m2026-09-07T20:51:52.989034Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m Saved finish-leaf SSM snapshot 2 for 8011 tokens
+[2m2026-09-07T20:51:52.997499Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Thinking enabled, budget=Some(1)
+[2m2026-09-07T20:51:52.997515Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 8001 prompt tokens, chunk_size=8001, max_tokens=1
+[2m2026-09-07T20:51:53.003745Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Prefix cache hit: 32 tokens (2 blocks) but no SSM snapshot — recomputing all KV
+[2m2026-09-07T20:51:53.491285Z[0m [32m INFO[0m [2mspark_model::layers::ple::layer::gather[0m[2m:[0m PLE gather: 127744 ids, 83056 hits / 44688 misses, resolve 189989us
+[2m2026-09-07T20:52:08.896962Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::save_checkpoint[0m[2m:[0m Intermediate SSM checkpoint saved at token 7984 (snapshot_id 1, block 499)
+[2m2026-09-07T20:52:08.901858Z[0m [32m INFO[0m [2mspark_model::layers::ple::layer::gather[0m[2m:[0m PLE gather: 272 ids, 200 hits / 72 misses, resolve 2824us
+[2m2026-09-07T20:52:09.006151Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::finalize_last[0m[2m:[0m Saved SSM snapshot 3 for 8001 tokens (501 blocks) [chunk]
+[2m2026-09-07T20:52:09.130770Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::drafter_prefill[0m[2m:[0m MTP drafter coverage: prompt_len=8001 captured=8001 drafter_rows=0
+[2m2026-09-07T20:52:09.131761Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Prefill first token: 760
+[2m2026-09-07T20:52:09.132985Z[0m [32m INFO[0m [2mspark::scheduler::mtp_accept_debug[0m[2m:[0m Done: 1 tokens (length) 822.3 tok/s, TTFT=16134.3ms, serial=0.00 mtp=0.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0
+[2m2026-09-07T20:52:09.139143Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m Request: model=qwen3.8-flash-next, messages=1, tools=0, tools_active=false, tool_choice=None, stream=false, temp=Some(0.0), max_tokens=1, freq_pen=None, rep_pen=None
+[2m2026-09-07T20:52:09.152028Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m Session 0x28435dd32418c7ba: 10987 prompt tokens, tools=false (0 defined)
+[2m2026-09-07T20:52:09.182218Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m Saved finish-leaf SSM snapshot 4 for 8001 tokens
+[2m2026-09-07T20:52:09.190880Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Thinking enabled, budget=Some(1)
+[2m2026-09-07T20:52:09.190893Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 10987 prompt tokens, chunk_size=8196, max_tokens=1
+[2m2026-09-07T20:52:09.197108Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Prefix cache hit: 32 tokens (2 blocks) but no SSM snapshot — recomputing all KV
+[2m2026-09-07T20:52:09.657001Z[0m [32m INFO[0m [2mspark_model::layers::ple::layer::gather[0m[2m:[0m PLE gather: 131136 ids, 93643 hits / 37493 misses, resolve 153632us
+[2m2026-09-07T20:52:25.596725Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::save_checkpoint[0m[2m:[0m Intermediate SSM checkpoint saved at token 8196 (snapshot_id 3, block 512)
+[2m2026-09-07T20:52:25.596763Z[0m [32m INFO[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefill chunk 0/10987: 8196/10987 tokens
+[2m2026-09-07T20:52:25.700911Z[0m [32m INFO[0m [2mspark_model::layers::ple::layer::gather[0m[2m:[0m PLE gather: 44224 ids, 32948 hits / 11276 misses, resolve 47318us
+[2m2026-09-07T20:52:31.459470Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::save_checkpoint[0m[2m:[0m Intermediate SSM checkpoint saved at token 10960 (snapshot_id 5, block 685)
+[2m2026-09-07T20:52:31.462902Z[0m [32m INFO[0m [2mspark_model::layers::ple::layer::gather[0m[2m:[0m PLE gather: 432 ids, 360 hits / 72 misses, resolve 2678us
+[2m2026-09-07T20:52:31.585937Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::finalize_last[0m[2m:[0m Saved SSM snapshot 6 for 10987 tokens (687 blocks) [chunk]
+[2m2026-09-07T20:52:31.726872Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::drafter_prefill[0m[2m:[0m MTP drafter coverage: prompt_len=10987 captured=10987 drafter_rows=0
+[2m2026-09-07T20:52:31.726886Z[0m [32m INFO[0m [2mspark::scheduler::phase_continue_prefills::run_standard[0m[2m:[0m Prefill chunk 10987/10987 tokens
+[2m2026-09-07T20:52:31.732600Z[0m [32m INFO[0m [2mspark::scheduler::phase_continue_prefills::run_standard[0m[2m:[0m Prefill first token: 760
+[2m2026-09-07T20:52:31.732622Z[0m [32m INFO[0m [2mspark::scheduler::mtp_accept_debug[0m[2m:[0m Done: 1 tokens (length) 97352.0 tok/s, TTFT=22541.7ms, serial=0.00 mtp=0.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0
+[2m2026-09-07T20:52:31.739136Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m Request: model=qwen3.8-flash-next, messages=1, tools=0, tools_active=false, tool_choice=None, stream=false, temp=Some(0.0), max_tokens=1, freq_pen=None, rep_pen=None
+[2m2026-09-07T20:52:31.763060Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m Session 0x9e4fbc6741065517: 10941 prompt tokens, tools=false (0 defined)
+[2m2026-09-07T20:52:31.779667Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m Saved finish-leaf SSM snapshot 7 for 10987 tokens
+[2m2026-09-07T20:52:31.788375Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Thinking enabled, budget=Some(1)
+[2m2026-09-07T20:52:31.788388Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 10941 prompt tokens, chunk_size=8196, max_tokens=1
+[2m2026-09-07T20:52:31.794572Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::prefix_lookup[0m[2m:[0m Prefix cache hit: 32 tokens (2 blocks) but no SSM snapshot — recomputing all KV
+[2m2026-09-07T20:52:32.219576Z[0m [32m INFO[0m [2mspark_model::layers::ple::layer::gather[0m[2m:[0m PLE gather: 131136 ids, 102151 hits / 28985 misses, resolve 117475us
+[2m2026-09-07T20:52:40.272598Z[0m [32m INFO[0m [2mspark::tui::shutdown[0m[2m:[0m Shutdown requested (SIGTERM) — draining in-flight requests
+[2m2026-09-07T20:52:48.190781Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::save_checkpoint[0m[2m:[0m Intermediate SSM checkpoint saved at token 8196 (snapshot_id 6, block 512)
+[2m2026-09-07T20:52:48.190822Z[0m [32m INFO[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefill chunk 0/10941: 8196/10941 tokens
+[2m2026-09-07T20:52:48.283264Z[0m [32m INFO[0m [2mspark_model::layers::ple::layer::gather[0m[2m:[0m PLE gather: 43456 ids, 34965 hits / 8491 misses, resolve 38309us
+[2m2026-09-07T20:52:53.936716Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::save_checkpoint[0m[2m:[0m Intermediate SSM checkpoint saved at token 10912 (snapshot_id 8, block 682)
+[2m2026-09-07T20:52:53.939843Z[0m [32m INFO[0m [2mspark_model::layers::ple::layer::gather[0m[2m:[0m PLE gather: 464 ids, 376 hits / 88 misses, resolve 2436us
+[2m2026-09-07T20:52:54.063091Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::finalize_last[0m[2m:[0m Saved SSM snapshot 9 for 10941 tokens (684 blocks) [chunk]
+[2m2026-09-07T20:52:54.208243Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::drafter_prefill[0m[2m:[0m MTP drafter coverage: prompt_len=10941 captured=10941 drafter_rows=0
+[2m2026-09-07T20:52:54.208255Z[0m [32m INFO[0m [2mspark::scheduler::phase_continue_prefills::run_standard[0m[2m:[0m Prefill chunk 10941/10941 tokens
+[2m2026-09-07T20:52:54.209311Z[0m [32m INFO[0m [2mspark::scheduler::phase_continue_prefills::run_standard[0m[2m:[0m Prefill first token: 760
+[2m2026-09-07T20:52:54.209327Z[0m [32m INFO[0m [2mspark::scheduler::mtp_accept_debug[0m[2m:[0m Done: 1 tokens (length) 123517.8 tok/s, TTFT=22420.9ms, serial=0.00 mtp=0.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0
+[2m2026-09-07T20:52:54.254142Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m Saved finish-leaf SSM snapshot 10 for 10941 tokens
+[2m2026-09-07T20:52:54.379741Z[0m [32m INFO[0m [2mspark::tui::shutdown[0m[2m:[0m Drain complete — no active requests
+[2m2026-09-07T20:52:54.379768Z[0m [32m INFO[0m [2mspark::main_modules::serve_router[0m[2m:[0m Shutdown complete

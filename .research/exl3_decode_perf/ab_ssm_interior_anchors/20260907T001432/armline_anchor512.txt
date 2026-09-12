@@ -1,0 +1,1 @@
+[2m2026-09-07T04:28:33.556457Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::midchunk_capture[0m[2m:[0m ssm interior anchors ACTIVE: stride=512 tokens grid=64 pool_pct=25 headroom=2 first_plan=[512, 1024, 1536, 2048, 2560, 3072, 3584, 4096, 4608, 5120, 5632, 6144, 6656, 7168,

@@ -27,6 +27,17 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
+/// Sequence retirement: run `cache_sequence` (finish-leaf SSM snapshot + radix
+/// insert) on the worker too.
+///
+/// Without it only the head took finish-leaf snapshots, so the ranks' snapshot
+/// pools held different entries, evicted differently, and eventually proposed
+/// different Marconi anchors — different SSM replay lengths, mismatched
+/// collectives, NCCL spin. This branch's command space uses 0xF0..0xF4 plus
+/// 0xE0; 0xFFFF_FFF6 is free here and matches the code on `research/glm-exl3`,
+/// so the two trees stay wire-compatible.
+pub(crate) const EP_CMD_CACHE_SEQ: u32 = 0xFFFF_FFF6;
+
 impl TransformerModel {
     pub(super) fn comm_ref(&self) -> Option<&dyn spark_comm::CommBackend> {
         self.comm.as_deref()
@@ -248,6 +259,59 @@ impl TransformerModel {
         Ok(min_val)
     }
 
+    /// Both bounds of `val` across the ranks, in the SAME rooted-broadcast pass
+    /// [`Self::ep_min_u32`] already pays for — so agreement costs no extra
+    /// collective over the min it replaces.
+    ///
+    /// `min == max` is the only proof that every rank proposed the same value.
+    /// A min alone is not enough when the value SELECTS A RESOURCE: the rank
+    /// holding the minimum would use it while a rank that proposed something
+    /// larger has no such resource to fall back to, and the two then diverge
+    /// anyway. See [`Self::ep_all_agree_u32`].
+    pub(super) fn ep_minmax_u32(&self, val: u32) -> Result<(u32, u32)> {
+        let Some(comm) = self.comm.as_ref() else {
+            return Ok((val, val));
+        };
+        let stream = self.gpu.default_stream();
+        // Same `max()` reasoning as ep_min_u32: under pure TP `ep_world_size`
+        // is 1 while the comm spans `tp_world_size` ranks.
+        let world = self.config.ep_world_size.max(self.config.tp_world_size);
+        let (mut min_val, mut max_val) = (val, val);
+        for root in 0..world {
+            let v = if comm.rank() == root {
+                self.gpu.copy_h2d(&val.to_le_bytes(), self.ep_cmd_buf)?;
+                comm.broadcast(self.ep_cmd_buf.0, 4, root)?;
+                val
+            } else {
+                comm.broadcast(self.ep_cmd_buf.0, 4, root)?;
+                self.gpu.synchronize(stream)?;
+                let mut buf = [0u8; 4];
+                self.gpu.copy_d2h(self.ep_cmd_buf, &mut buf)?;
+                u32::from_le_bytes(buf)
+            };
+            min_val = min_val.min(v);
+            max_val = max_val.max(v);
+        }
+        Ok((min_val, max_val))
+    }
+
+    /// Do ALL ranks propose `val`?
+    ///
+    /// 🪤 A COLLECTIVE. Every rank must call it the same number of times, at
+    /// the same point — call it unconditionally on the multi-rank path, never
+    /// behind a rank-local `if`, exactly as F83 learned for
+    /// [`Self::ep_min_u32`] (gating that on `matched_tokens > 0` deadlocked
+    /// when one rank matched and the other did not).
+    ///
+    /// Returns `true` on a single-rank world, so callers need no guard.
+    pub(crate) fn ep_all_agree_u32(&self, val: u32) -> Result<bool> {
+        if !self.multi_rank_protocol_active() {
+            return Ok(true);
+        }
+        let (mn, mx) = self.ep_minmax_u32(val)?;
+        Ok(mn == mx)
+    }
+
     /// Broadcast a `(seq_id, cmd)` pair from rank 0 to all ranks.
     ///
     /// When `v2` is true, this fires a `seq_id` broadcast immediately before
@@ -349,6 +413,43 @@ impl TransformerModel {
         Ok(())
     }
 
+    /// Announce a batched multi-sequence verify to the workers.
+    ///
+    /// Mirrors [`Self::ep_broadcast_decode_batch_dispatch`] and carries one
+    /// extra list: `ks`, because a verify's rows-per-sequence is not 1 and can
+    /// differ between sequences on the MTP ladder.
+    ///
+    /// 🪤 `seq_ids` must be in the HEAD'S dispatch order, not slot order. The
+    /// batched forward issues ONE all-reduce over the contiguous row span, so a
+    /// worker that rebuilt its refs in a different order would sum partials of
+    /// different sequences — silently, and only under TP>1.
+    pub(super) fn ep_broadcast_verify_batch_dispatch(
+        &self,
+        seq_ids: &[u32],
+        ks: &[u32],
+        tokens: &[u32],
+    ) -> Result<()> {
+        if !self.multi_rank_protocol_active() {
+            return Ok(());
+        }
+        debug_assert!(
+            self.ep_protocol_v2,
+            "ep_broadcast_verify_batch_dispatch called without ATLAS_EP_PROTOCOL=v2"
+        );
+        debug_assert_eq!(seq_ids.len(), ks.len(), "seq_ids and ks length mismatch");
+        debug_assert_eq!(
+            tokens.len(),
+            ks.iter().map(|&k| k as usize).sum::<usize>(),
+            "tokens must be the seq-major concatenation of every sequence's rows"
+        );
+        self.ep_broadcast_seq_and_cmd(0, crate::speculative::EP_CMD_VERIFY_BATCH, true)?;
+        self.ep_broadcast_u32(seq_ids.len() as u32)?;
+        self.ep_broadcast_tokens(seq_ids)?;
+        self.ep_broadcast_tokens(ks)?;
+        self.ep_broadcast_tokens(tokens)?;
+        Ok(())
+    }
+
     /// Receive a `(seq_id, cmd)` pair from rank 0. Worker-side counterpart
     /// of [`Self::ep_broadcast_seq_and_cmd`].
     ///
@@ -431,6 +532,12 @@ impl TransformerModel {
         // + tokens off the wire and dispatches the matched compute.
         if cmd == 0xFFFFFFE0 {
             return self.ep_worker_decode_batch(slots);
+        }
+
+        // Batched VERIFY (`0xFFFF_FFE1`): same list shape as batched decode —
+        // sentinel preamble seq_id, real routing in the seq_ids[N] payload.
+        if cmd == crate::speculative::EP_CMD_VERIFY_BATCH {
+            return self.ep_worker_verify_batch(slots);
         }
 
         let slot_idx = seq_id as usize;
@@ -523,6 +630,19 @@ impl TransformerModel {
                     self.trim_proposer_state(seq, 0, 0)?;
                     self.start_rollback_and_checkpoint_async(seq, 1)?;
                 }
+                // Land the PLE/QSA carries at the committed row count. The head
+                // does this inside `commit_accepted_prefix`; the worker rewinds
+                // its own SSM state and token buffers and never called it, so
+                // QSA's `ingested` mark stayed `k - committed` rows ahead of
+                // `seq_len` and the NEXT decode died on
+                //   QSA: decode at pos N but N+2 tokens ingested
+                // (2-node EP=2 agentic run, 2026-09-07 — the gap was exactly
+                // the draft width). AFTER the rewind, not before:
+                // `commit_verify_aux_rows` asserts `seq_len == base +
+                // num_accepted`, so calling it first fails with
+                //   batched mHC commit: 1/3 rows from 3513, but seq_len=3516
+                // No-op unless the K-row batched mHC verify recorded a span.
+                self.commit_verify_aux_rows(seq, accepted as usize + 1, stream)?;
             }
             crate::speculative::EP_CMD_MTP_PROPOSE => {
                 // Run the SAME drafter forward rank 0 is running, so its collectives have a
@@ -574,6 +694,8 @@ impl TransformerModel {
                         self.start_rollback_and_checkpoint_async(seq, 1)?;
                     }
                 }
+                // Aux carries AFTER the rewind — see the K=2 arm.
+                self.commit_verify_aux_rows(seq, num_accepted as usize + 1, stream)?;
             }
             0xFFFFFFF4 => {
                 // Verify K=4: receive 4 tokens, run verify, receive num_accepted (0/1/2/3)
@@ -608,6 +730,15 @@ impl TransformerModel {
                         self.start_rollback_and_checkpoint_async(seq, 1)?;
                     }
                 }
+                // Aux carries AFTER the rewind — see the K=2 arm.
+                self.commit_verify_aux_rows(seq, num_accepted as usize + 1, stream)?;
+            }
+            EP_CMD_CACHE_SEQ => {
+                // Sequence retirement. Run the SAME bookkeeping the head runs
+                // so both ranks' snapshot pools hold the same entries — that
+                // symmetry is what keeps the Marconi anchor decision equal on
+                // both ranks. No collective inside, so no ordering guard.
+                self.cache_sequence_dispatch(seq);
             }
             token => {
                 // Regular decode
@@ -680,6 +811,109 @@ impl TransformerModel {
 
         let stream = self.gpu.default_stream();
         self.decode_batch_compute_main(&tokens, &mut refs, stream)?;
+        Ok(true)
+    }
+
+    /// Worker side of [`crate::speculative::EP_CMD_VERIFY_BATCH`].
+    ///
+    /// Runs the SAME batched forward the head runs, then applies the same
+    /// per-sequence rewind the head applies. Structured exactly like
+    /// [`Self::ep_worker_decode_batch`] — receive the lists, order the refs by
+    /// the head's `seq_ids`, call the shared compute — with the verify's extra
+    /// step of reading one verdict word per sequence AFTER the forward.
+    ///
+    /// 🔴 This arm is what lets the `comm.is_none()` conjunct come off
+    /// `can_batch_verify_dispatch`. Without it the head would issue a batched
+    /// forward whose all-reduces no worker is answering, and both ranks spin at
+    /// ~96% util on an NCCL wait — the documented multi-rank speculation hang.
+    fn ep_worker_verify_batch(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
+        let n = self.ep_broadcast_u32(0)? as usize;
+        let seq_ids = self.ep_broadcast_tokens(&vec![0u32; n])?;
+        let ks_u32 = self.ep_broadcast_tokens(&vec![0u32; n])?;
+        let ks: Vec<usize> = ks_u32.iter().map(|&k| k as usize).collect();
+        let r_total: usize = ks.iter().sum();
+        let tokens = self.ep_broadcast_tokens(&vec![0u32; r_total])?;
+
+        // Validate before touching slot state, and bail rather than serve a
+        // partial batch: a mismatch means head and worker disagree about the
+        // batch, and verifying the wrong sequence's rows corrupts its KV and
+        // its recurrent state at once.
+        let mut seen = std::collections::HashSet::new();
+        for (i, &id) in seq_ids.iter().enumerate() {
+            let idx = id as usize;
+            if idx >= slots.len() {
+                anyhow::bail!(
+                    "ep_worker_verify_batch: seq_id {id} exceeds slot capacity {}",
+                    slots.len(),
+                );
+            }
+            if !seen.insert(id) {
+                anyhow::bail!("ep_worker_verify_batch: duplicate seq_id {id} in batch");
+            }
+            if ks[i] == 0 {
+                anyhow::bail!("ep_worker_verify_batch: seq_id {id} has k = 0");
+            }
+        }
+
+        let mut slot_refs: Vec<(usize, &mut SequenceState)> = slots
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, opt)| opt.as_mut().map(|s| (i, s)))
+            .collect();
+
+        // The head's order, not slot order — see the broadcast helper.
+        let mut refs: Vec<&mut SequenceState> = Vec::with_capacity(n);
+        for &id in &seq_ids {
+            let idx = id as usize;
+            let pos = slot_refs
+                .iter()
+                .position(|(i, _)| *i == idx)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("ep_worker_verify_batch: slot {idx} not allocated")
+                })?;
+            let (_, seq) = slot_refs.swap_remove(pos);
+            refs.push(seq);
+        }
+
+        let stream = self.gpu.default_stream();
+        self.sync_secondary()?;
+        self.decode_verify_batched_dispatch(&tokens, &ks, &mut refs, stream)?;
+
+        // Verdicts arrive after the head's accept walk, one word per sequence,
+        // in the same order. Read them ALL before acting: an early bail with
+        // words still on the wire desynchronises every later command.
+        let mut accepted: Vec<usize> = Vec::with_capacity(n);
+        for _ in 0..n {
+            accepted.push(self.ep_broadcast_u32(0)? as usize);
+        }
+
+        // 🔴 Mirror `k4_apply_verdict` — the BATCHED head step — not the
+        // single-sequence K=3/K=4 arms above. Both restore `intermediate[na]`,
+        // but they are different entry points with different width arguments,
+        // and the head this worker is paired with is the batched one. Mirroring
+        // the wrong head leaves the two ranks' recurrent state disagreeing,
+        // which does not fault: it degrades a later sequence's logits.
+        //
+        // The ORDER is part of the contract too — pops before `trim`, then the
+        // commit — because `trim_proposer_state` reads the sequence length it
+        // is trimming against.
+        for (i, seq) in refs.iter_mut().enumerate() {
+            let k_rows = ks[i];
+            let nd = k_rows.saturating_sub(1);
+            let na = accepted[i].min(nd);
+            if na == nd {
+                // Full accept: the verify kernel already wrote the canonical
+                // h_state, so this commit is the no-op the head takes.
+                self.commit_accepted_prefix(seq, k_rows, k_rows)?;
+            } else {
+                seq.seq_len -= nd - na;
+                for _ in 0..(nd - na) {
+                    seq.tokens.pop();
+                }
+                self.trim_proposer_state(seq, na, 0)?;
+                self.commit_accepted_prefix(seq, na + 1, k_rows)?;
+            }
+        }
         Ok(true)
     }
 }

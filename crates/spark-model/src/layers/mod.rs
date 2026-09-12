@@ -4,8 +4,10 @@ pub mod deepseek_v4_mtp;
 pub mod dense_ffn;
 pub mod dflash_head;
 pub mod ep_dispatch;
+pub mod exl3_dense;
 pub mod fp8_calibration;
 mod gemv_tier;
+pub mod hc_ffn_plan;
 /// GLM-5.3-Flash KDA integrated layer (Slice 6 -- one layer, no scheduler/cache wiring).
 pub mod glm5next_dsa;
 /// GLM-5.3-Flash DSA + kpool indexer CPU reference (Slice 8 design artifact).
@@ -32,6 +34,8 @@ pub mod ple;
 pub mod qsa;
 pub mod qwen3_attention;
 pub mod qwen3_ssm;
+pub mod qwen4_exp_mtp;
+pub mod qwen4_exp_mtp_proposer;
 pub mod vision_encoder;
 pub mod w4a16_gemv_tiers;
 
@@ -75,6 +79,7 @@ pub use dense_ffn::{DenseFfnLayer, DenseFfnWeights, FfnActivation};
 pub use dflash_head::{
     BlockDiffusionDraftHead, DflashLayer, DflashProposerState, DflashQuantization, dflash_ctx_cap,
 };
+pub use exl3_dense::{AttnProj, Exl3AttnWeights, Exl3GdnWeights};
 pub use glm5next_mtp_head::Glm5NextMtpHead;
 pub use moe::MoeLayer;
 pub use mtp_head::{MtpHead, MtpQuantization, mtp_drafter_prefill_enabled};
@@ -366,6 +371,18 @@ impl FfnComponent {
         }
     }
 
+    /// True when this FFN's routed experts are served natively from EXL3
+    /// trellis (`ATLAS_EXL3_NATIVE_MOE=1`). Every mgemm in that arm is a
+    /// COOPERATIVE launch — not CUDA-graph-capturable — so each layer kind's
+    /// `decode_graph_unsupported` (and the verify-path `use_graphs` terms)
+    /// must include this, exactly like the `lm_head_exl3` veto.
+    pub fn exl3_native_moe(&self) -> bool {
+        match self {
+            Self::Moe(m) => m.exl3_native_active(),
+            _ => false,
+        }
+    }
+
     pub fn forward(
         &self,
         input: DevicePtr,
@@ -400,7 +417,11 @@ impl FfnComponent {
     /// false). Lets callers gate branch entry BEFORE computing the pre-FFN
     /// norm, so there is no half-done fallthrough to `forward_prefill`.
     pub fn can_forward_km(&self, m: u32) -> bool {
-        matches!(self, Self::Dense(d) if d.can_forward_km(m))
+        match self {
+            Self::Dense(d) => d.can_forward_km(m),
+            Self::Moe(moe) => moe.can_forward_km(m),
+            Self::None => false,
+        }
     }
 
     /// K=m (m=4..8) verify FFN via batched GEMV (dense only). Returns
@@ -416,6 +437,10 @@ impl FfnComponent {
         match self {
             Self::Dense(d) if d.can_forward_km(m) => {
                 d.forward_km(input, m, ctx, stream)?;
+                Ok(true)
+            }
+            Self::Moe(moe) if moe.can_forward_km(m) => {
+                moe.forward_km(input, m, ctx, stream)?;
                 Ok(true)
             }
             _ => Ok(false),

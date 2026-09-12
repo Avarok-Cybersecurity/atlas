@@ -175,7 +175,7 @@ impl VisionEncoder {
         let h = self.hidden_size as u32;
         let p32 = p as u32;
         let qkv_n = (3 * self.num_heads * self.head_dim) as u32; // 3456
-        let inter = self.intermediate_size as u32; // 4304
+        let inter = self.intermediate_size as u32; // 4304, or the padded tensor width
         let n_h = p * self.hidden_size;
         // Attention-kernel shared memory: scores[p] + q_rope[head_dim].
         let sm_bytes = (p + self.head_dim) * std::mem::size_of::<f32>();
@@ -349,7 +349,7 @@ impl VisionEncoder {
         let h = self.hidden_size as u32;
         let pt = p_total as u32;
         let qkv_n = (3 * self.num_heads * self.head_dim) as u32; // 3456
-        let inter = self.intermediate_size as u32; // 4304
+        let inter = self.intermediate_size as u32; // 4304, or the padded tensor width
         let n_h = p_total * self.hidden_size;
 
         // --- Attention sub-block ---

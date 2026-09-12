@@ -93,6 +93,15 @@ pub enum RollbackFallback {
     /// every subsequent token — so the rollback is honestly declined and
     /// the caller hard-stops instead.
     NoSsmSnapshot,
+    /// Hybrid model carrying AUX state (QSA indexer cursor, PLE n-gram
+    /// history): the SSM snapshot exists but its aux companion does not,
+    /// or failed to restore. Rewinding the recurrent state and `seq_len`
+    /// while the QSA indexer keeps its old cursor is exactly the desync
+    /// that fails the next decode with "QSA: decode at pos N but M tokens
+    /// ingested — the indexer cache lost sync" and 500s the request, so
+    /// the rollback is honestly declined and the caller hard-stops
+    /// (truncation is stream-safe).
+    NoAuxSnapshot,
 }
 
 /// Find the index (into `output_tokens`) of the last well-formed
@@ -277,6 +286,24 @@ pub fn rollback_to_boundary(
             );
             return RollbackOutcome::Fallback(RollbackFallback::NoSsmSnapshot);
         }
+        // AUX companion (QSA cursor / PLE history) — restored from the
+        // SAME ring slot, and BEFORE any buffer truncation for the same
+        // reason as the SSM half: a failure must leave the sequence
+        // untouched for the caller's hard-stop. A model with no aux state
+        // returns Ok(()) here, so this is inert for pure-attention and
+        // plain-SSM models.
+        if model.requires_aux_state()
+            && let Err(e) = model.restore_decode_aux_snapshot(&mut a.seq, slot)
+        {
+            tracing::error!(
+                error = %e,
+                ring_slot = slot,
+                keep_len,
+                "aux decode-snapshot restore failed; declining rollback \
+                 (rolling back without it desyncs the QSA indexer)"
+            );
+            return RollbackOutcome::Fallback(RollbackFallback::NoAuxSnapshot);
+        }
         // The degenerate tail's snapshots are now stale — drop them so
         // their ring slots are reusable. The boundary snapshot itself is
         // kept (generation resumes from it).
@@ -344,6 +371,25 @@ pub fn snapshot_boundary_if_ssm(
         );
         // The just-recorded entry would point at stale/garbage GPU
         // state — remove it so `slot_for_position` never selects it.
+        model.forget_decode_aux_snapshot(&a.seq, slot);
+        a.ssm_rollback_ring
+            .truncate_after(token_position.saturating_sub(1));
+        return;
+    }
+    // AUX companion: a boundary has BOTH halves or is not a boundary at
+    // all. Saving the SSM half alone would let `rollback_to_boundary`
+    // select a slot it then has to decline on (NoAuxSnapshot), turning a
+    // recoverable loop into a hard stop.
+    if model.requires_aux_state()
+        && let Err(e) = model.save_decode_aux_snapshot(&a.seq, slot)
+    {
+        tracing::warn!(
+            error = %e,
+            ring_slot = slot,
+            token_position,
+            "aux decode-snapshot save failed; dropping ring entry (SSM half discarded too)"
+        );
+        model.forget_decode_aux_snapshot(&a.seq, slot);
         a.ssm_rollback_ring
             .truncate_after(token_position.saturating_sub(1));
     }

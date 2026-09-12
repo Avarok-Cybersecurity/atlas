@@ -81,25 +81,52 @@ impl TransformerModel {
             if ep_active && !reserved {
                 let local = prefix_match.matched_tokens as u32;
                 let agreed = self.ep_min_u32(local)? as usize;
-                if agreed < prefix_match.matched_tokens {
-                    self.prefix_cache.release(tokens, bs, seq.adapter_id);
-                    if agreed > 0 {
-                        prefix_match = self.prefix_cache.lookup(
-                            &tokens[..agreed],
-                            bs,
-                            seq.session_hash,
-                            seq.adapter_id,
-                        );
-                    } else {
-                        prefix_match = spark_runtime::prefix_cache::PrefixMatch::empty();
-                    }
+                // 🔴 SYMMETRY IS LOAD-BEARING, and it is why this release +
+                // re-lookup is UNCONDITIONAL rather than gated on
+                // `agreed < local`.
+                //
+                // The snapshot index evicts by LRU over `last_access`, which is
+                // a LOGICAL counter bumped once per `lookup`
+                // (radix_tree/snapshot.rs:233) — there is no wall-clock in that
+                // file. Eviction is therefore a pure function of the OPERATION
+                // SEQUENCE, and two ranks issuing the same sequence hold the
+                // same pool.
+                //
+                // Gating this block on `agreed < local` ran the extra `lookup`
+                // on ONLY the rank that had matched more. That one extra bump
+                // drifts the ranks' `access_counter`s apart, LRU then picks
+                // different victims, the snapshot pools stop agreeing, and the
+                // ranks eventually propose different Marconi anchors — i.e.
+                // different SSM replay lengths, mismatched collectives, and
+                // both GPUs pinned in an NCCL spin at 96% util / 13 W.
+                // (Measured on a GLM EXL3-K2 agentic run: rank 0 restored at
+                // token 3128 replaying 167, rank 1 at 3120 replaying 175.)
+                //
+                // When `agreed == local` the re-lookup returns the match this
+                // rank already had, so this costs one host-side radix walk per
+                // chunk-0 prefill and changes no result — and it keeps the
+                // cache HIT that the cross-rank anchor guard would otherwise
+                // have to throw away.
+                self.prefix_cache.release(tokens, bs, seq.adapter_id);
+                prefix_match = if agreed > 0 {
+                    self.prefix_cache.lookup(
+                        &tokens[..agreed],
+                        bs,
+                        seq.session_hash,
+                        seq.adapter_id,
+                    )
+                } else {
+                    spark_runtime::prefix_cache::PrefixMatch::empty()
+                };
+                if agreed < local as usize {
                     tracing::info!(
                         "F83 EP-cache-sync: local_matched={local} agreed_matched={agreed} \
                          (cap to min across ranks)"
                     );
                 } else if local > 0 || agreed > 0 {
                     tracing::debug!(
-                        "F83 EP-cache-sync: local_matched={local} agreed_matched={agreed} (no cap)"
+                        "F83 EP-cache-sync: local_matched={local} agreed_matched={agreed} \
+                         (no cap; re-looked-up anyway to keep the ranks' LRU in step)"
                     );
                 }
             }
@@ -153,16 +180,119 @@ impl TransformerModel {
             // original values (a non-bit-equal rewrite would poison them).
             // Phase 1b spill-tier fault-in: fold a resident hit with a
             // faulted-back spilled anchor; see `ssm_fault_in::eff_ssm_snapshot`.
-            let (eff_snapshot, eff_snapshot_tokens) =
-                self.eff_ssm_snapshot(&prefix_match, seq.session_hash, stream);
+            // Full-prompt hit on the exact leaf: that anchor is DECLINED below
+            // (`bypass_exact` / `exact_without_hidden`), so the resolver first
+            // re-anchors on the deepest snapshot strictly below the prompt and
+            // this becomes an ordinary intermediate hit (`snap_tok < matched ==
+            // total`) instead of a full recompute. See `prefix_reanchor.rs`.
+            let (eff_snapshot, eff_snapshot_tokens) = self.prefill_b_resolve_ssm_anchor(
+                tokens,
+                &mut prefix_match,
+                total,
+                seq.session_hash,
+                seq.adapter_id,
+                stream,
+            )?;
 
+            // F83's sibling, and the same failure it fixed. F83 agrees on
+            // `matched`; the Marconi ANCHOR was left a rank-local choice, and
+            // it decides the SSM replay length (`total - snap_tok`) — which is
+            // the collective schedule just as surely as `matched` is.
+            //
+            // Measured on a GLM EXL3-K2 agentic run, both ranks driving the
+            // same request to token 3295:
+            //
+            //   rank 0: restored at token 3128, replaying 167 SSM tokens
+            //   rank 1: restored at token 3120, replaying 175 SSM tokens
+            //
+            // -> mismatched collectives -> both GPUs pinned at 96% util / 13 W
+            // in an NCCL spin, no `Done:` line, client socket ESTAB forever.
+            //
+            // 🔴 Agree on the FINAL DECISION, not the candidate. Every gate
+            // below can still decline an agreed candidate, and
+            // `snapshot_aux_is_restorable` reads RANK-LOCAL aux state — so
+            // agreeing on `eff_snapshot_tokens` alone still permits one rank to
+            // restore while the other recomputes. The value exchanged here is
+            // therefore "the token I will actually restore at, or 0".
+            //
+            // ALL-OR-NOTHING, not a min: `snap_tok` selects a RESOURCE. Capping
+            // to the min would have the low rank restore while a rank that
+            // proposed a higher anchor holds no snapshot at that token.
+            //
+            // 🪤 UNCONDITIONAL on the multi-rank path, including when this rank
+            // decides 0. Gating the call on "I have a snapshot" is precisely the
+            // shape that deadlocked F83 before it was made unconditional.
+            // Per-gate results are kept so a disagreement can name the gate
+            // that rejected an anchor this rank actually held.
+            let mut dbg_min_ok = true;
+            let mut dbg_ewh = false;
+            let mut dbg_bypass = false;
+            let mut dbg_session_ok = true;
+            let mut dbg_aux_ok = true;
+            let local_decision: u32 = match eff_snapshot {
+                Some(snap_id) => {
+                    let snap_tok = eff_snapshot_tokens;
+                    dbg_ewh = snap_tok == matched
+                        && matched == total
+                        && !self.ssm_snapshots.has_hidden(snap_id);
+                    dbg_bypass = snap_tok == matched
+                        && matched == total
+                        && std::env::var("ATLAS_MARCONI_EXACT").as_deref() != Ok("1");
+                    dbg_min_ok =
+                        snap_tok >= crate::model::mtp_carry::marconi_min_tokens() && snap_tok > 0;
+                    dbg_session_ok = !prefix_match.ssm_snapshot_is_tail
+                        || self
+                            .ssm_snapshots
+                            .session_matches(snap_id, seq.session_hash);
+                    // The aux gate MUST be the same predicate the restore site
+                    // below uses, or the value we agree on is not "the token I
+                    // will actually restore at" and a rank can still restore
+                    // while its peer recomputes. On `research/glm-exl3` that is
+                    // `snapshot_aux_is_restorable` (a set-COMPLETENESS check
+                    // built for the DSA aux carry); this tree has neither
+                    // `SsmSnapshotPool::aux_layers` nor `aux_set_is_complete`,
+                    // and its restore site takes the weaker "any blob present"
+                    // form. Mirror THAT, so the two stay in lockstep.
+                    dbg_aux_ok =
+                        !self.requires_aux_state() || self.ssm_snapshots.aux(snap_id).is_some();
+                    let eligible = dbg_min_ok
+                        && matched <= total
+                        && !dbg_ewh
+                        && !dbg_bypass
+                        && dbg_session_ok
+                        && dbg_aux_ok;
+                    if eligible { snap_tok as u32 } else { 0 }
+                }
+                None => 0,
+            };
+            let eff_snapshot = if self.ep_all_agree_u32(local_decision)? {
+                eff_snapshot
+            } else {
+                tracing::info!(
+                    "Marconi anchor DISAGREES across ranks: decided={} cand_tok={} \
+                     cand_id={:?} matched={} total={} is_tail={} | min_ok={} ewh={} \
+                     bypass={} session_ok={} aux_ok={} — declining on every rank",
+                    local_decision,
+                    eff_snapshot_tokens,
+                    eff_snapshot,
+                    matched,
+                    total,
+                    prefix_match.ssm_snapshot_is_tail,
+                    dbg_min_ok,
+                    dbg_ewh,
+                    dbg_bypass,
+                    dbg_session_ok,
+                    dbg_aux_ok,
+                );
+                None
+            };
             let mut skip = if let Some(snap_id) = eff_snapshot {
                 let snap_tok = eff_snapshot_tokens;
                 // Exact full-prompt hit on a hiddenless snapshot (finish
                 // leaves never stash a hidden): the exact-snap fixup cannot
-                // produce the first token's logits, so fall through to the
-                // no-snapshot full-recompute path. Only affects identical
-                // retried prompts; multi-turn warm hits have matched < total.
+                // produce the first token's logits. Reached only when the
+                // resolver above found no lower anchor to re-anchor on; then
+                // fall through to the no-snapshot full-recompute path.
                 let exact_without_hidden = snap_tok == matched
                     && matched == total
                     && !self.ssm_snapshots.has_hidden(snap_id);

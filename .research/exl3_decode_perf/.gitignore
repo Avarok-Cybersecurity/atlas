@@ -1,0 +1,3 @@
+# Operator run output (nsys reports, sqlite exports, server logs, CSV tables).
+# Copy the small artefacts you cite into the write-up; never commit the reps.
+runs/

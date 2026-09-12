@@ -1,0 +1,4 @@
+FINGERPRINT ab_batched-hc-verify bin=/home/ms/atlas/.claude/worktrees/wf_a8fa8242-651-7/target/release/spark sha256=aefac27e8c49bb3b git=9e81c4d06 branch=perf/batched-hc-verify dirty=14 date=2026-09-06T08:44:51Z host=dgx-00 port=8899 preset=qwen3.8-flash-next-exl3 arms=[serial hcbatch hcbatch serial] salt=4242
+               total        used        free      shared  buff/cache   available
+Mem:             121           9          95           0          18         112
+Swap:             31           1          30

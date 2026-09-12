@@ -200,6 +200,7 @@ pub(super) fn generate_target_ptx_rs(
              \x20           dflash: {},\n\
              \x20           shadowed_dropped: &[{}],\n\
              \x20           expected_absent: &[{}],\n\
+             \x20           serve_presets: &[{}],\n\
              \x20       }},\n",
             target.model, target.quant,
             fmt_cat(&target.sampling_thinking_text),
@@ -272,11 +273,43 @@ pub(super) fn generate_target_ptx_rs(
                 .map(|(m, f)| format!("(\"{m}\", \"{f}\")"))
                 .collect::<Vec<_>>()
                 .join(", "),
+            target
+                .serve_presets
+                .iter()
+                .map(serve_preset_literal)
+                .collect::<Vec<_>>()
+                .join(", "),
         ));
     }
     g.push_str("    ]\n}\n");
 
     g
+}
+
+/// One `ServePreset { .. }` struct literal for the generated registry.
+///
+/// Every string goes through `{:?}`, which renders a valid, escaped Rust
+/// string literal — a preset's `default_chat_template_kwargs` value is JSON
+/// with embedded quotes, and a description may contain anything. The other
+/// fields in this file are emitted as bare `"{}"` because their parsers reject
+/// quotes and backslashes; these are free text, so the emission escapes.
+fn serve_preset_literal(p: &super::ServePresetRaw) -> String {
+    let pairs = |kv: &[(String, String)]| -> String {
+        kv.iter()
+            .map(|(k, v)| format!("({k:?}, {v:?})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "ServePreset {{ name: {:?}, hf_id: {:?}, hf_revision: {:?}, description: {:?}, \
+         flags: &[{}], env: &[{}] }}",
+        p.name,
+        p.hf_id,
+        p.hf_revision,
+        p.description,
+        pairs(&p.flags),
+        pairs(&p.env),
+    )
 }
 
 /// Locate the SCALE (scale-lang.com) install root for the AMD/`scale`

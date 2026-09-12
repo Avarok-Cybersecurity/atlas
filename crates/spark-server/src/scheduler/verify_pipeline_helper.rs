@@ -55,6 +55,8 @@ mod fast_masked;
 mod pick_positions;
 #[cfg(test)]
 mod pick_positions_tests;
+#[cfg(test)]
+mod sampling_parity_tests;
 mod scratch;
 
 use crate::scheduler::ActiveSeq;
@@ -127,9 +129,9 @@ pub fn verify_pick_with_pipeline(
     // the reuse is silently lost.
     let mut f32_logits = scratch::ScratchGuard(f32_logits);
 
-    // 2. Build this position's penalty/bias params (Verify kind: greedy,
-    //    seed-free, no caller bias — the builder still appends the A4 floor
-    //    and the rep/presence/freq/LZ/DRY gates from `a`). Cloned before the
+    // 2. Build this position's penalty/bias params (Verify kind: neutral
+    //    sampling fields; the builder derives the request bias, A4 floor,
+    //    and rep/presence/freq/LZ/DRY gates from `a`). Cloned before the
     //    `&mut a` borrow in `process_position_logits`.
     //
     //    Without these penalties MTP-VERIFIED tokens were decided by a

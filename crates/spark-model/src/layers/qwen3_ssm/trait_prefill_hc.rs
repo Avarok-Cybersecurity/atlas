@@ -262,7 +262,15 @@ impl Qwen3SsmLayer {
             stream,
         )?;
         stage!("hc_pre_ffn");
-        self.ffn.forward_prefill(hidden, num_tokens, ctx, stream)?;
+        // Small-M FFN: at K=2/K=3 rows this body is a speculative VERIFY, not a
+        // real prefill. forward_prefill routes the MoE through the grouped GEMM,
+        // which streams every expert's weights and so costs ~9ms/layer almost
+        // independently of row count (measured: T=16 6.7-9.6ms, T=28 8.5-12.3ms
+        // — 1.75x the rows for 1.2x the time). The fused K=2/K=3 kernels do the
+        // same rows in 5 launches at decode cost. Both write moe_output(), so
+        // this is a kernel-shape substitution, not a math change.
+        // ATLAS_QWEN4EXP_HC_SMALL_M_FFN=0 restores the grouped path for A/B.
+        self.hc_small_m_ffn(hidden, num_tokens, ctx, stream)?;
         stage!("moe");
         ops::hc_post_site(
             ctx.gpu,

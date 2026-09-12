@@ -392,6 +392,10 @@ pub(super) struct ActiveSeq {
     /// which case D-Cut leaves the sequence at full depth. Truncated in
     /// lock-step with `pending_drafts` so index `j` always describes draft `j`.
     pub pending_draft_conf: Vec<f32>,
+    /// [`Self::pending_drafts`] came from the lookup index, not the MTP head
+    /// (#974): no drafter rows were written for them, so the verify's
+    /// proposer trim is skipped for that step.
+    pub pending_drafts_lookup: bool,
     /// Timestamp of the last token emission (for TBT deadline tracking).
     pub last_token_time: Instant,
     /// Timestamp when the request entered prefill (for TTFT).

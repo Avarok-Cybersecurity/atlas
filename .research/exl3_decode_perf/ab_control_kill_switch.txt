@@ -1,0 +1,5 @@
+FINGERPRINT port=8890 model=qwen3.8-flash-next prompt=code max_tokens=300 temp=0 effort=low stream=1 date=2026-09-05T19:51:41
+run 0: {'chunks': 298, 'ttft_ms': 443.76237608958036, 'gap_med_ms': 84.57955002086237, 'gap_mean_ms': 85.0342225924466, 'tps_from_gaps': 11.75997109766989, 'completion_tokens': 300, 'tps_server_tokens': 11.834735865012771, 'finish': 'length'}
+run 1: {'chunks': 298, 'ttft_ms': 388.08095909189433, 'gap_med_ms': 81.37251646257937, 'gap_mean_ms': 82.11751179115797, 'tps_from_gaps': 12.177670489373929, 'completion_tokens': 300, 'tps_server_tokens': 12.260378801546011, 'finish': 'length'}
+run 2: {'chunks': 298, 'ttft_ms': 389.2302029998973, 'gap_med_ms': 81.39457600191236, 'gap_mean_ms': 82.15813873987963, 'tps_from_gaps': 12.171648668503721, 'completion_tokens': 300, 'tps_server_tokens': 12.2528959312277, 'finish': 'length'}
+SUMMARY n=3 gap_median_ms=81.39 decode_tok_s_median=12.25 ttft_ms=[444, 388, 389]

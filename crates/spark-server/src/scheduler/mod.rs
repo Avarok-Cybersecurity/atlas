@@ -40,6 +40,7 @@ pub use mod_helpers::capture_runtime_handle;
 pub mod dumps;
 pub mod levers;
 pub mod limits;
+mod lookup_gate;
 mod mtp_accept_debug;
 mod mtp_bootstrap_step;
 mod mtp_dcut;
@@ -84,6 +85,9 @@ mod verify_k3_step;
 mod verify_k4_batch_step;
 mod verify_k4_step;
 mod verify_k4_verdict;
+mod verify_ledger;
+mod verify_kn_step;
+mod verify_mtp_wide;
 mod verify_pipeline_helper;
 pub mod vocab_masks;
 
@@ -458,6 +462,7 @@ pub fn run(
         snapshot_steps += 1;
         let t_loop = std::time::Instant::now();
         {
+            let last_chunk = sched.snapshot.last_prefill_chunk();
             let (mtp_mode, delivered_tps) = match mtp_gate.as_ref() {
                 Some(g) => g.observe(),
                 None => (snapshot::MtpModeSnap::Off, 0.0),
@@ -474,6 +479,15 @@ pub fn run(
                 mtp_mode,
                 delivered_tps,
                 steps_total: snapshot_steps,
+                // O(prefilling) over a list bounded by --max-num-seqs, of two
+                // field reads each, once per tick.
+                prefill_tokens_done: prefilling.iter().map(|p| p.chunk_offset as u32).sum(),
+                prefill_tokens_total: prefilling
+                    .iter()
+                    .map(|p| p.prompt_tokens.len() as u32)
+                    .sum(),
+                prefill_chunk_width: last_chunk.0,
+                prefill_fused: last_chunk.1,
                 published_at: std::time::Instant::now(),
             });
         }

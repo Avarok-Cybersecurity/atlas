@@ -1,0 +1,3 @@
+Done: 300 tokens (length) 25.2 tok/s, TTFT=486.4ms, serial=0.00 mtp=1.00 p1=0.767 mean_na=1.318 tok_step=2.318 regime_reprobes=0
+Done: 300 tokens (length) 26.3 tok/s, TTFT=463.1ms, serial=0.00 mtp=1.00 p1=0.767 mean_na=1.318 tok_step=2.318 regime_reprobes=0
+Done: 300 tokens (length) 26.3 tok/s, TTFT=463.2ms, serial=0.00 mtp=1.00 p1=0.767 mean_na=1.318 tok_step=2.318 regime_reprobes=0

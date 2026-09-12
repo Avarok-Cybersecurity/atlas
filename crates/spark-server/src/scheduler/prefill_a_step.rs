@@ -221,6 +221,7 @@ pub fn start_chunked_prefill(
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
             pending_draft_conf: Vec::new(),
+            pending_drafts_lookup: false,
             inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
@@ -407,6 +408,13 @@ pub fn start_chunked_prefill(
         chunk_res
     })();
 
+    // FIRST chunk ingested here — the continue-prefills path only ever sees
+    // chunks 2..n, so counting solely there under-reported every request by
+    // exactly one `max_prefill_tokens` (measured: 4423 counted vs 12618
+    // API prompt_tokens on a 12.6k prompt, an 8192 shortfall).
+    if prefill_result.is_ok() {
+        crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(chunk_len as u64);
+    }
     let logits = match prefill_result {
         Ok(l) => l,
         Err(e) => {
@@ -566,6 +574,7 @@ pub fn start_chunked_prefill(
                 logit_bias: logit_bias.clone(),
                 pending_drafts: Vec::new(),
                 pending_draft_conf: Vec::new(),
+                pending_drafts_lookup: false,
                 inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
                 enable_thinking: req_enable_thinking,
                 thinking_budget: req_thinking_budget,
@@ -655,6 +664,7 @@ pub fn start_chunked_prefill(
                 logit_bias: logit_bias.clone(),
                 pending_drafts: Vec::new(),
                 pending_draft_conf: Vec::new(),
+                pending_drafts_lookup: false,
                 inside_thinking: spontaneous_think
                     || born_inside_thinking(req_enable_thinking, think_end_token),
                 enable_thinking: req_enable_thinking,

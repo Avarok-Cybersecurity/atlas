@@ -1,0 +1,9 @@
+=== arm nowin env=[ATLAS_PREFILL_ADMISSION_WINDOW_MS=0]
+READY ~47s
+2026-09-07T03:02:44.868967Z  WARN spark::main_modules::serve_presets: Preset env default NOT applied: ATLAS_PREFILL_ADMISSION_WINDOW_MS was already set to "0" â
+  rep0 short_med_ttft=2835 ms  long_ttft=22442 ms  burst_wall=32.32 s
+  rep1 short_med_ttft=2631 ms  long_ttft=21984 ms  burst_wall=31.39 s
+  rep2 short_med_ttft=2678 ms  long_ttft=22097 ms  burst_wall=31.94 s
+  rep3 short_med_ttft=2664 ms  long_ttft=22082 ms  burst_wall=30.98 s
+  rep4 short_med_ttft=2670 ms  long_ttft=22343 ms  burst_wall=31.37 s
+SUMMARY nowin short_med_ttft_ms=2670 long_ttft_ms=22097 all_med_ttft_ms=3502 all_max_ttft_ms=22097 burst_wall_s=31.39

@@ -30,6 +30,9 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
+#[path = "verify_e_eligibility.rs"]
+mod eligibility;
+
 use anyhow::{Result, bail, ensure};
 
 /// Batched-verify metadata overlay, every offset derived from
@@ -68,7 +71,19 @@ impl TransformerModel {
     /// configured max K), and R = Σ ks ≤ `VERIFY_ROW_CAP` (the exact
     /// logits-rows / meta-gap / bt-staging capacity — sizes.rs). Everything
     /// outside falls back to the per-seq loop.
+    /// `ATLAS_MTP_EP_BATCH_VERIFY=1` lets the batched verify sweep run under EP.
+    ///
+    /// Default OFF. See the conjunct in `can_batch_verify_dispatch` for why this is
+    /// opt-in rather than simply lifted.
+    pub(super) fn ep_batch_verify_enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("ATLAS_MTP_EP_BATCH_VERIFY").as_deref() == Ok("1"))
+    }
+
     pub(super) fn can_batch_verify_dispatch(&self, ks: &[usize]) -> bool {
+        if !eligibility::supports_verify_layout(self.config.hc_mult) {
+            return false;
+        }
         let n = ks.len();
         // Two admissible shapes:
         //  * MTP ladder — every k in 2..=4, no DFlash capture buffer.
@@ -92,10 +107,62 @@ impl TransformerModel {
         } else {
             ks.iter().all(|k| (2..=4).contains(k))
         };
+        // One-shot: which conjunct refused. The batched verify is selected by a
+        // silent `&&` chain, and a single false term reads downstream as
+        // "concurrency does not amortise" rather than as a specific refusal —
+        // which is exactly how much of this path's history was spent.
+        {
+            static WHY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            WHY.get_or_init(|| {
+                tracing::info!(
+                    n,
+                    ks = ?ks,
+                    n_in_range = (2..=crate::layer::VERIFY_WY_TABLE_SEQS).contains(&n),
+                    shape_ok,
+                    rows_ok = ks.iter().sum::<usize>() <= super::verify_e2::VERIFY_ROW_CAP,
+                    comm_ok = self.comm.is_none() || Self::ep_batch_verify_enabled(),
+                    lora_ok = !(self.lora.is_some() && crate::lora::no_batch_verify()),
+                    stash_ok = !self.verify_hidden_stash.is_null(),
+                    // `decode_verify_multi_unsupported()` is a
+                    // `research/glm-exl3` trait method this tree does not have;
+                    // the equivalent refusal here is the FIRST conjunct
+                    // (`supports_verify_layout(hc_mult)`), reported as
+                    // `hc_layout_ok`. A highway model is admitted only under
+                    // ATLAS_HC_BATCH_VERIFY=1.
+                    hc_layout_ok = eligibility::supports_verify_layout(self.config.hc_mult),
+                    hss_ok = self
+                        .kv_cache
+                        .lock()
+                        .config()
+                        .cache_blocks_per_seq
+                        .is_none(),
+                    "can_batch_verify: first evaluation"
+                );
+            });
+        }
         (2..=crate::layer::VERIFY_WY_TABLE_SEQS).contains(&n)
             && shape_ok
             && ks.iter().sum::<usize>() <= super::verify_e2::VERIFY_ROW_CAP
-            && self.comm.is_none()
+            // MULTI-RANK. The bare `comm.is_none()` this replaces was
+            // introduced with the function (#388) and carries no recorded
+            // rationale beyond the doc's "the envelope verify_e was built and
+            // audited for: non-EP, ...". What it MECHANICALLY guarded is that a
+            // batched forward under EP issues per-layer all-reduces that no
+            // worker was answering — there was no command announcing a batched
+            // verify at all, so both ranks spin at ~96% util on an NCCL wait.
+            //
+            // `EP_CMD_VERIFY_BATCH` + `ep_worker_verify_batch` supply exactly
+            // that, so the gate becomes an opt-in rather than a refusal.
+            // OFF by default: this is speculation across ranks, the failure
+            // mode is a wedged pair rather than a wrong answer, and the
+            // original rationale is unrecorded — so it is earned per-deployment
+            // rather than assumed.
+            //
+            // 🪤 Requires ATLAS_EP_PROTOCOL=v2 on BOTH ranks. The command is
+            // list-shaped (sentinel preamble seq_id, routing in the payload),
+            // exactly like batched decode, and v1 has no seq_id preamble to
+            // carry it.
+            && (self.comm.is_none() || Self::ep_batch_verify_enabled())
             // LoRA is NOT a barrier here. Every weight-bearing op this path
             // batches — QKVZ, o_proj, the dense FFN, lm_head — carries its
             // delta on the batched variants (`forward_km` and the multi_seq
@@ -159,7 +226,10 @@ impl TransformerModel {
     /// state has been advanced. Logits rows stay live for row-based
     /// pipeline picks until the next forward — callers must consume them
     /// (and stash hiddens) BEFORE any propose.
-    pub(super) fn decode_verify_batched_dispatch(
+    // `pub(in crate::model)` rather than `pub(super)`: the EP worker arm lives in
+    // `model::impl_a2` and calls this directly, because the worker must run the
+    // SAME compute the head runs without re-entering the head's broadcast.
+    pub(in crate::model) fn decode_verify_batched_dispatch(
         &self,
         tokens: &[u32],
         ks: &[usize],
@@ -264,7 +334,29 @@ impl TransformerModel {
         // currently free (pad writes land on unowned pool state, zeroed
         // again at the next claim) and its tiered intermediate pool covers
         // the baked depth.
-        let graphs_on = super::verify_e2::verify_graphs_enabled() && !k4_diag;
+        // EXL3-native head / MoE experts launch cooperatively — never
+        // capturable; without this term every batched-verify capture step
+        // would trip the arms' graph_capture ensures mid-serve.
+        // mHC highway models veto capture on this path for the same KIND of
+        // reason: the highway body injects PLE ROW BY ROW
+        // (`trait_decode_batched_hc_multi.rs`), reading each row's host token
+        // id, and PLE refuses an un-prestaged forward inside a capturing
+        // stream — "PLE: un-prestaged forward inside CUDA graph capture".
+        //
+        // 🪤 It does not fail cleanly. The refusal aborts the sweep mid-capture,
+        // which leaves the capture open and poisons the context: every later
+        // `free_sequence` memset and prefill then dies with status 901, so the
+        // SERVER degrades, not just the request. MEASURED at C=2 on
+        // qwen3.8-flash-next: two 500s and two empty replies, with 900/901
+        // cascading behind them.
+        //
+        // The row-by-row injection is not negotiable — it is what gives a
+        // partial accept a per-row snapshot to rewind onto — so the capture is
+        // what gives way. GB10 measured graphs as speed-neutral here anyway.
+        let graphs_on = super::verify_e2::verify_graphs_enabled()
+            && !k4_diag
+            && !self.exl3_graph_veto()
+            && self.config.hc_mult == 0;
         let graph_key = if graphs_on {
             self.verify_batched_graph_key(&*seqs, ks, wy_tables_base.is_null())
         } else {
@@ -482,7 +574,20 @@ impl TransformerModel {
             // the body, capturing. A full cache no longer disables capture —
             // the LRU entry is destroyed at insert time (see below), so
             // slot-vector churn can never push the path permanently eager.
-            let capture = graphs.is_some();
+            // 🔴 NEVER capture under EP. A multi-rank batched verify carries
+            // its command, its operand lists and its verdicts as
+            // `ep_broadcast_*`, and every one of those is an H2D copy —
+            // `CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED` inside a capturing
+            // stream. Measured: enabling the batched verify under EP with
+            // capture left on poisoned the context on the first free
+            // (status 901 on the next memset/copy, then every later prefill).
+            //
+            // It is also a CORRECTNESS requirement independent of that: both
+            // ranks must make the SAME graph decision, or one bakes a row count
+            // and a collective schedule the other does not replay. Gating on
+            // `comm` is the same thing `decode_a2` does for its drain-tail
+            // borrow, and for the same reason.
+            let capture = graphs.is_some() && self.comm.is_none();
 
             let ctx = ForwardContext {
                 buffers: &self.buffers,
@@ -504,7 +609,18 @@ impl TransformerModel {
                 decode_step: false,
                 gdn_exact_replay: false,
                 token_ids: None,
-                host_token_ids: None,
+                // The R verify rows, flat and seq-major — row `off[i] + j` is
+                // sequence i's token j, which is exactly the indexing the
+                // highway's per-row PLE loop uses
+                // (`trait_decode_batched_hc_multi.rs`).
+                //
+                // Residual models never needed this: PLE is a highway layer,
+                // so the generic batched verify left it None and nothing
+                // noticed. The highway body REFUSES without it rather than
+                // injecting the wrong token, so on an hc model the whole
+                // batched verify failed with "PLE needs host_token_ids
+                // threaded" and poisoned the context behind it.
+                host_token_ids: Some(tokens),
                 routed_lora_layers: None,
                 midchunk_capture: None,
             };
@@ -536,12 +652,343 @@ impl TransformerModel {
                 self.gpu.begin_capture(stream)?;
             }
 
+            let stage_timing = {
+                static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *ON.get_or_init(|| {
+                    std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1")
+                })
+            };
+            let mut us_attn = 0u128;
+            let mut us_ssm = 0u128;
             let mut attn_idx = 0usize;
             let mut ssm_idx = 0usize;
             for (layer_idx, layer) in self.layers.iter().enumerate() {
                 let layer_type = self.config.layer_type(layer_idx);
+                let t_layer = stage_timing.then(std::time::Instant::now);
 
-                if layer_type == LayerType::FullAttention {
+                if layer_type == LayerType::FullAttention && self.config.hc_mult > 0 {
+                    // ── Highway attention: one-row DECODE bodies against the
+                    // OWNING SEQUENCE's real layer state ──
+                    //
+                    // The dummy-state branch below is correct for residual
+                    // models, whose attention layers carry nothing across
+                    // tokens (`AttnLayerState::default()` is empty; the KV
+                    // lives in the paged cache, addressed by block table). It
+                    // is WRONG here: this checkpoint's attention layers own a
+                    // QSA indexer carry, attached lazily per sequence, and
+                    // `decode_select` asserts `pos == st.ingested`. A fresh
+                    // dummy reports 0, so every row died with
+                    //   QSA: decode at pos 58 but 0 tokens ingested
+                    // and the completion came back EMPTY. MEASURED at C=2.
+                    //
+                    // Shape copied from the single-sequence highway verify
+                    // (`verify_hc.rs`): K sequential one-row decode bodies,
+                    // each at `hc_row_offset = row`, because row 0 re-processes
+                    // a token a serial decode already committed and its logits
+                    // must match — prefill attention (paged flash over K
+                    // queries) and decode attention (paged GEMV at M=1) differ
+                    // enough on this checkpoint to flip greedy argmaxes.
+                    //
+                    // Rows of one sequence share ONE state, so they cannot be
+                    // handed to `decode_multi_seq` as R independent rows — two
+                    // `&mut` to the same state. Hence the sequential loop.
+                    // Attention is 12 of 48 layers; the 36 GDN layers, the MoE
+                    // and both highway sites still run once over all R rows,
+                    // which is where the amortisation is.
+                    attn_idx += 1;
+                    let ffn_batched = eligibility::hc_attn_ffn_batched();
+                    // ONE context for the whole layer: the batched attention
+                    // projections/brackets, and the batched FFN sublayer.
+                    let layer_ctx = ForwardContext {
+                        decode_step: false,
+                        buffers: &self.buffers,
+                        hc_row_offset: 0,
+                        gpu: self.gpu.as_ref(),
+                        config: &self.config,
+                        dispatch: &self.dispatch,
+                        derived: &self.derived,
+                        levers: &self.levers,
+                        stats: &self.stats,
+                        attn_metadata: None,
+                        profile: false,
+                        comm: self.comm_ref(),
+                        graph_capture: false,
+                        gdn_exact_replay: false,
+                        token_ids: None,
+                        host_token_ids: Some(&tokens[..r_total]),
+                        routed_lora_layers: None,
+                        midchunk_capture: None,
+                        moe_lora_route: self.decode_moe_route(),
+                    };
+                    // ── Cross-sequence attention projections + brackets ──
+                    // hc_pre(attn) + QKV once over all R rows here; o_proj +
+                    // hc_post once after the loop. Requires the batched FFN:
+                    // the per-sequence fallback body runs the whole sublayer.
+                    let core = if ffn_batched && eligibility::hc_attn_core_batched() {
+                        let attn_layer = layer
+                            .as_any()
+                            .and_then(|a| {
+                                a.downcast_ref::<crate::layers::qwen3_attention::Qwen3AttentionLayer>()
+                            })
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "hc batched verify: attention layer {layer_idx} is not a \
+                                     Qwen3AttentionLayer"
+                                )
+                            })?;
+                        let mut all_row_seq_lens: Vec<usize> = Vec::with_capacity(r_total);
+                        for i in 0..n {
+                            for t in 0..ks[i] {
+                                all_row_seq_lens.push(seqs[i].seq_len + t);
+                            }
+                        }
+                        let bs = kv_cache.block_size() as u32;
+                        attn_layer.verify_attn_pre_hc(
+                            hidden,
+                            ks,
+                            &all_row_seq_lens,
+                            metadata.seq_slot,
+                            bs,
+                            &layer_ctx,
+                            stream,
+                        )?
+                    } else {
+                        None
+                    };
+                    // DESCENDING when the core is batched: every paged decode
+                    // lands in attn_output() row 0 and is copied out, so global
+                    // row 0 must be decoded last (verify_rows_hc module note).
+                    let order: Vec<usize> = if core.is_some() {
+                        (0..n).rev().collect()
+                    } else {
+                        (0..n).collect()
+                    };
+                    for &i in &order {
+                        let base_seq_len = seqs[i].seq_len;
+                        // ── Align the QSA marks to this sequence's position
+                        // BEFORE the pass, once per layer-sweep entry ──
+                        //
+                        // Row 0 re-processes the token the PRECEDING decode
+                        // already sampled and already ingested, so the marks
+                        // sit exactly one ahead of where row 0 decodes:
+                        //   QSA: decode at pos 58 but 59 tokens ingested
+                        // (measured at C=2 once the real per-sequence state
+                        // was in play — with dummy states it read 0 instead).
+                        // `align_aux` is an absolute move and a no-op when the
+                        // marks already agree, so this is safe on every row and
+                        // every step.
+                        //
+                        // Only layer 0 of the sweep does it: the marks are
+                        // per-sequence, not per-layer, and re-aligning on each
+                        // of the 12 attention layers would rewind marks that
+                        // the previous layer legitimately advanced.
+                        if attn_idx == 1 {
+                            self.align_verify_aux_states(seqs[i], base_seq_len, stream)?;
+                            // Record THIS sequence's verify span, the ABSOLUTE
+                            // base a partial accept is measured from. The
+                            // batched-GDN arm lands its carries from
+                            // `commit_verify_aux_rows`, which reads this — and
+                            // with no span it returns Ok(()) having restored
+                            // nothing, so a partial accept keeps PLE's carry
+                            // advanced over the rejected rows. That does not
+                            // error; it returns an EMPTY completion.
+                            //
+                            // Recorded BEFORE the pass for the same reason the
+                            // single-sequence path does it: the sweep advances
+                            // `seq_len` by k and the scheduler's reject
+                            // branches rewind it at different points, so a base
+                            // derived from a moving `seq_len` lands one row off.
+                            self.pending_verify_span
+                                .lock()
+                                .map_err(|_| {
+                                    anyhow::anyhow!("verify span stash poisoned")
+                                })?
+                                .insert(seqs[i].slot_idx, (base_seq_len, ks[i]));
+                        }
+                        // ── ONE call per sequence, not one per row ──
+                        //
+                        // `layer.decode()` per row carries the whole highway
+                        // bracket at T=1 (two hc_pre, two hc_post, the norms,
+                        // the FFN), i.e. R x 6 sites per step per attention
+                        // layer — precisely what `verify_rows_hc.rs` exists to
+                        // remove. MEASURED with the per-row loop: C=4
+                        // aggregate 41.19 -> 14.99 tok/s at EP=2.
+                        //
+                        // The K-row body runs that bracket ONCE at T=ks[i]
+                        // with the projections batched over the sequence's
+                        // rows, and keeps only the attention core per row —
+                        // where the ordering constraint actually is (row t
+                        // must see rows < t, a WITHIN-sequence property; rows
+                        // of different sequences are independent).
+                        let mut row_metas: Vec<AttnMetadataDev> = Vec::with_capacity(ks[i]);
+                        let mut row_seq_lens: Vec<usize> = Vec::with_capacity(ks[i]);
+                        for t in 0..ks[i] {
+                            let row = off[i] + t;
+                            row_metas.push(AttnMetadataDev {
+                                positions: meta_base.offset(row * 4),
+                                positions_h: meta_base.offset(row * 4),
+                                positions_w: meta_base.offset(row * 4),
+                                slot: meta_base.offset(VMETA_SLOTS + row * 8),
+                                seq_len: meta_base.offset(VMETA_SEQ_LENS + row * 4),
+                                block_table: meta_base
+                                    .offset(VMETA_BT + row * max_blocks as usize * 4),
+                                max_blocks_per_seq: max_blocks,
+                                num_seqs: 1,
+                                seq_slot: metadata.seq_slot,
+                                moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
+                            });
+                            // PRE-APPEND length, the decode convention.
+                            row_seq_lens.push(base_seq_len + t);
+                        }
+                        let seq_ctx = ForwardContext {
+                            decode_step: false,
+                            buffers: &self.buffers,
+                            // This sequence's rows live at `off[i]` on the
+                            // highway; the body offsets its streams by it.
+                            hc_row_offset: off[i],
+                            gpu: self.gpu.as_ref(),
+                            config: &self.config,
+                            dispatch: &self.dispatch,
+                            derived: &self.derived,
+                            levers: &self.levers,
+                            stats: &self.stats,
+                            attn_metadata: Some(row_metas[0]),
+                            profile: false,
+                            comm: self.comm_ref(),
+                            // Never capture: reached only on the hc path,
+                            // which vetoes graphs above.
+                            graph_capture: false,
+                            gdn_exact_replay: false,
+                            token_ids: None,
+                            host_token_ids: Some(&tokens[off[i]..off[i] + ks[i]]),
+                            routed_lora_layers: None,
+                            midchunk_capture: None,
+                            moe_lora_route: self.decode_moe_route(),
+                        };
+                        let seq = &mut *seqs[i];
+                        let attn = layer
+                            .as_any()
+                            .and_then(|a| {
+                                a.downcast_ref::<crate::layers::qwen3_attention::Qwen3AttentionLayer>()
+                            })
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "hc batched verify: attention layer {layer_idx} is not a \
+                                     Qwen3AttentionLayer"
+                                )
+                            })?;
+                        anyhow::ensure!(
+                            attn.verify_rows_hc_ok(),
+                            "hc batched verify: attention layer {layer_idx} has no K-row \
+                             highway body (hc/ffn missing)"
+                        );
+                        if let Some(c) = core.as_ref() {
+                            // Only this sequence's rope / cache write / paged
+                            // decode / QSA: projections and brackets ran once.
+                            attn.verify_attn_seq_hc(
+                                c,
+                                off[i],
+                                ks[i],
+                                seq.layer_states[layer_idx].as_mut(),
+                                &mut kv_cache,
+                                &row_metas,
+                                &row_seq_lens,
+                                stream,
+                            )?;
+                        } else if ffn_batched {
+                            // Attention sublayer only; the FFN sublayer runs
+                            // ONCE over every sequence after this loop.
+                            attn.decode_verify_rows_hc_attn_only(
+                                hidden.offset(off[i] * h * bf16),
+                                ks[i],
+                                seq.layer_states[layer_idx].as_mut(),
+                                &mut kv_cache,
+                                &row_metas,
+                                &row_seq_lens,
+                                &tokens[off[i]..off[i] + ks[i]],
+                                &mut seq.block_table,
+                                &mut seq.disk_block_ids,
+                                &mut seq.disk_last_offloaded_per_layer,
+                                &seq_ctx,
+                                stream,
+                            )?;
+                        } else {
+                            attn.decode_verify_rows_hc(
+                                hidden.offset(off[i] * h * bf16),
+                                ks[i],
+                                seq.layer_states[layer_idx].as_mut(),
+                                &mut kv_cache,
+                                &row_metas,
+                                &row_seq_lens,
+                                &tokens[off[i]..off[i] + ks[i]],
+                                &mut seq.block_table,
+                                &mut seq.disk_block_ids,
+                                &mut seq.disk_last_offloaded_per_layer,
+                                &seq_ctx,
+                                stream,
+                            )?;
+                        }
+                    }
+                    if let Some(c) = core.as_ref() {
+                        let attn_layer = layer
+                            .as_any()
+                            .and_then(|a| {
+                                a.downcast_ref::<crate::layers::qwen3_attention::Qwen3AttentionLayer>()
+                            })
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "hc batched verify: attention layer {layer_idx} is not a \
+                                     Qwen3AttentionLayer"
+                                )
+                            })?;
+                        attn_layer.verify_attn_post_hc(c, &layer_ctx, stream)?;
+                        {
+                            static SAID: std::sync::Once = std::sync::Once::new();
+                            SAID.call_once(|| {
+                                tracing::info!(
+                                    n_seqs = n,
+                                    rows = r_total,
+                                    "hc batched verify: attention projections + brackets BATCHED \
+                                     across sequences (ATLAS_HC_ATTN_CORE_BATCHED=0 restores \
+                                     per-sequence)"
+                                );
+                            });
+                        }
+                    }
+                    if ffn_batched {
+                        // ── FFN sublayer ONCE over all R rows ──
+                        // The attention CORE had to run per sequence (distinct
+                        // KV, positions, block tables). The FFN sublayer is
+                        // row-wise and sequence-independent, and every
+                        // sequence's rows are contiguous on the highway, so one
+                        // call at T=R is the same arithmetic as n calls at T=k
+                        // — minus n-1 copies of the highway bracket. The SSM
+                        // layers already work this way.
+                        let attn = layer
+                            .as_any()
+                            .and_then(|a| {
+                                a.downcast_ref::<crate::layers::qwen3_attention::Qwen3AttentionLayer>()
+                            })
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "hc batched verify: attention layer {layer_idx} is not a \
+                                     Qwen3AttentionLayer"
+                                )
+                            })?;
+                        attn.decode_verify_ffn_rows_hc(hidden, ks, &layer_ctx, stream)?;
+                        {
+                            static SAID: std::sync::Once = std::sync::Once::new();
+                            SAID.call_once(|| {
+                                tracing::info!(
+                                    n_seqs = n,
+                                    rows = r_total,
+                                    "hc batched verify: attention FFN sublayer BATCHED across \
+                                     sequences (ATLAS_HC_ATTN_FFN_BATCHED=0 restores per-sequence)"
+                                );
+                            });
+                        }
+                    }
+                } else if layer_type == LayerType::FullAttention {
                     let mut refs: Vec<&mut (dyn LayerState + 'static)> = attn_dummy_states
                         [attn_idx]
                         .iter_mut()
@@ -605,6 +1052,17 @@ impl TransformerModel {
                     }
                 }
 
+                if let Some(t0) = t_layer {
+                    // SYNC: the launches above are async, so without this the
+                    // split would measure launch cost, not kernel cost.
+                    let _ = self.gpu.synchronize(stream);
+                    let us = t0.elapsed().as_micros();
+                    if layer_type == LayerType::FullAttention {
+                        us_attn += us;
+                    } else {
+                        us_ssm += us;
+                    }
+                }
                 if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
                     anyhow::bail!(
                         "K4_DIAG(batched): CUDA error after layer {layer_idx} ({layer_type:?}): {e:#}"
@@ -628,7 +1086,26 @@ impl TransformerModel {
             }
 
             // R ≤ VERIFY_ROW_CAP = the 96-row logits buffer cap (sizes.rs).
+            let t_head = stage_timing.then(std::time::Instant::now);
             self.lm_head_batched(normed, r_total as u32, self.buffers.logits(), stream)?;
+            if let Some(t0) = t_head {
+                let _ = self.gpu.synchronize(stream);
+                let us_head = t0.elapsed().as_micros();
+                let n_attn = self.layers.len().saturating_sub(self.config.num_ssm_layers());
+                let n_ssm = self.config.num_ssm_layers();
+                tracing::info!(
+                    r_total,
+                    n_seqs = n,
+                    attn_ms = us_attn as f64 / 1000.0,
+                    ssm_ms = us_ssm as f64 / 1000.0,
+                    head_ms = us_head as f64 / 1000.0,
+                    attn_layers = n_attn,
+                    ssm_layers = n_ssm,
+                    attn_us_per_layer = if n_attn > 0 { us_attn / n_attn as u128 } else { 0 },
+                    ssm_us_per_layer = if n_ssm > 0 { us_ssm / n_ssm as u128 } else { 0 },
+                    "hc batched verify stage split (SYNCED per layer — split, not total)"
+                );
+            }
 
             if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
                 anyhow::bail!("K4_DIAG(batched): CUDA error after lm_head_batched: {e:#}");

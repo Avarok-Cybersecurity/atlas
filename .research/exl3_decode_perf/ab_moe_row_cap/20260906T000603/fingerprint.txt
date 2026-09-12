@@ -1,0 +1,7 @@
+FINGERPRINT ab_moe_row_cap date=20260906T000603 host=dgx-00 port=8899
+binary=/home/ms/atlas/.claude/worktrees/wf_7ddada6f-077-2/target/release/spark sha256=c1001dfb90b9d0dd git=b72022fe5 branch=perf/exl3-moe-prefill-row-cap
+ckpt=/tank/exl3-ckpt/qwen38-flash-next-4.05bpw preset=qwen3.8-flash-next-exl3 (max_seq_len 131072, 4 seqs, util 0.72, bf16 KV, 2 MTP drafts, prefix cache ON, default --max-prefill-tokens 8192 -> 11K prompt = 2 chunks; MoE prefill batch 4096)
+order=legacy128 default1024
+               total        used        free      shared  buff/cache   available
+Mem:             121          16          68           0          37         105
+NVIDIA GB10, [N/A], [N/A]

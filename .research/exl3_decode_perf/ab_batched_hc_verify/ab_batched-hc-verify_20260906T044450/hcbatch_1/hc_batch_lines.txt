@@ -1,0 +1,3 @@
+2026-09-06T08:52:54.683036Z  INFO spark_model::model::trait_impl::verify_hc_multi_gate: mHC batched verify: ARMED row_cap=16 shared_dense=on shared_head=on shared_hc=off (kill: ATLAS_NO_MTP_HC_BATCH_VERIFY)
+2026-09-06T08:53:50.324579Z  INFO spark::scheduler::verify_hc_multi_step: mHC batched verify gate: arm=ARMED n_verify=2 row_cap=16 shared_dense=true shared_head=true shared_hc=false
+2026-09-06T08:53:50.324647Z  INFO spark_model::model::trait_impl::verify_hc_multi: mHC verify: MULTI-SEQUENCE pass n=2 ks=[3, 3] R=6 shared_dense=true shared_head=true shared_hc=false

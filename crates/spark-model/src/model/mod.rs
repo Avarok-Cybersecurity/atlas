@@ -24,8 +24,10 @@
 #![allow(unused_imports, dead_code)]
 
 pub(crate) mod block_mgmt;
+pub(crate) mod decode_aux_ring;
 pub(crate) mod drafter_context;
 pub(crate) mod drop;
+pub(crate) mod gdn_replay;
 pub(crate) mod impl_a1;
 pub(crate) mod impl_a1_init;
 pub(crate) mod impl_a2;
@@ -39,17 +41,18 @@ pub(crate) mod impl_b3_accessors;
 pub(crate) mod impl_lora;
 pub(crate) mod impl_lora_swap;
 mod impl_ngram;
+pub(crate) mod lm_head_exl3;
 pub(crate) mod mtp_carry;
 pub(crate) mod pinned_pack;
 pub(crate) mod seq_memtrace;
 pub(crate) mod ssm_batched_copy;
 pub(crate) mod ssm_pool;
-pub(crate) mod ssm_snapshot;
+mod ssm_snapshot;
 pub(crate) mod ssm_snapshot_faultin;
 pub(crate) mod ssm_snapshot_spill;
 mod ssm_snapshot_teardown;
 pub(crate) mod ssm_spill_gate;
-pub(crate) mod ssm_spill_staging;
+pub(crate) mod pinned_host_staging;
 pub(crate) mod ssm_tier;
 pub(crate) mod token_overlay;
 pub(crate) mod trait_impl;

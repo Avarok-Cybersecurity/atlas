@@ -1,0 +1,51 @@
+=== arm base env=[<none>] 22:04:33
+READY ~47s
+CELL base cold1.r0 C=1 prompt_tok=3591 ttft_ms=[6716] ttft_max=6716 decode_tok_s=[24.12] agg_decode=24.12 cached=[0]
+CELL base cold4.r0 C=4 prompt_tok=3576 ttft_ms=[6714, 6553, 6617, 6646] ttft_max=6714 decode_tok_s=[0.67, 0.66, 0.68, 0.67] agg_decode=2.68 cached=[32, 32, 32, 32]
+CELL base warm4.r0 C=4 prompt_tok=3580 ttft_ms=[237, 241, 396, 227] ttft_max=396 decode_tok_s=[4.62, 5.4, 5.09, 4.88] agg_decode=19.99 cached=[3568, 3504, 3488, 3520]
+CELL base dec1.r0 C=1 prompt_tok=752 ttft_ms=[1314] ttft_max=1314 decode_tok_s=[30.13] agg_decode=30.13 cached=[32]
+CELL base dec4.r0 C=4 prompt_tok=728 ttft_ms=[1288, 1333, 1308, 1302] ttft_max=1333 decode_tok_s=[7.78, 7.85, 6.86, 7.84] agg_decode=30.33 cached=[32, 32, 32, 32]
+CELL base cold1.r1 C=1 prompt_tok=3490 ttft_ms=[6592] ttft_max=6592 decode_tok_s=[22.76] agg_decode=22.76 cached=[32]
+CELL base cold4.r1 C=4 prompt_tok=3489 ttft_ms=[6555, 6600, 6524, 6445] ttft_max=6600 decode_tok_s=[0.68, 0.68, 0.67, 0.68] agg_decode=2.71 cached=[32, 32, 32, 32]
+CELL base warm4.r1 C=4 prompt_tok=3493 ttft_ms=[215, 228, 359, 379] ttft_max=379 decode_tok_s=[4.85, 5.36, 5.25, 5.65] agg_decode=21.10 cached=[3472, 3520, 3504, 3472]
+CELL base dec1.r1 C=1 prompt_tok=725 ttft_ms=[1236] ttft_max=1236 decode_tok_s=[32.84] agg_decode=32.84 cached=[32]
+CELL base dec4.r1 C=4 prompt_tok=756 ttft_ms=[1264, 1259, 1256, 1261] ttft_max=1264 decode_tok_s=[6.03, 6.1, 6.44, 8.02] agg_decode=26.59 cached=[32, 32, 32, 32]
+SUMMARY base cold1_ttft=6654 cold4_ttft=6657 cold_ratio=1.00 warm4_ttft=387 dec1_agg=31.48 dec4_agg=28.46 dec_scale=0.90x
+  decode-ckpt SAVE lines: 13
+2026-09-07T02:08:05.465449Z  INFO spark_model::layers::ple::layer::gather: PLE gather: 480 ids, 480 hits / 0 misses, resolve 129us
+2026-09-07T02:08:05.682863Z  INFO spark_model::layers::ple::layer::gather: PLE gather: 11264 ids, 11080 hits / 184 misses, resolve 3107us
+2026-09-07T02:08:06.724000Z  INFO spark_model::layers::ple::layer::gather: PLE gather: 512 ids, 496 hits / 16 misses, resolve 1240us
+=== arm ple16 env=[ATLAS_PLE_FAULT_WORKERS=16] 22:09:13
+READY ~42s
+CELL ple16 cold1.r0 C=1 prompt_tok=3466 ttft_ms=[6651] ttft_max=6651 decode_tok_s=[23.36] agg_decode=23.36 cached=[0]
+CELL ple16 cold4.r0 C=4 prompt_tok=3588 ttft_ms=[6743, 6653, 6615, 6618] ttft_max=6743 decode_tok_s=[0.68, 0.68, 0.67, 0.67] agg_decode=2.69 cached=[32, 32, 32, 32]
+CELL ple16 warm4.r0 C=4 prompt_tok=3592 ttft_ms=[228, 241, 245, 231] ttft_max=245 decode_tok_s=[5.14, 5.23, 4.91, 5.8] agg_decode=21.08 cached=[3568, 3488, 3488, 3504]
+CELL ple16 dec1.r0 C=1 prompt_tok=734 ttft_ms=[1304] ttft_max=1304 decode_tok_s=[32.92] agg_decode=32.92 cached=[32]
+CELL ple16 dec4.r0 C=4 prompt_tok=731 ttft_ms=[1305, 1336, 1322, 1308] ttft_max=1336 decode_tok_s=[6.32, 9.31, 8.62, 9.26] agg_decode=33.51 cached=[32, 32, 32, 32]
+CELL ple16 cold1.r1 C=1 prompt_tok=3529 ttft_ms=[6652] ttft_max=6652 decode_tok_s=[25.96] agg_decode=25.96 cached=[32]
+CELL ple16 cold4.r1 C=4 prompt_tok=3485 ttft_ms=[6475, 6594, 6592, 6612] ttft_max=6612 decode_tok_s=[0.68, 0.67, 0.68, 0.68] agg_decode=2.72 cached=[32, 32, 32, 32]
+CELL ple16 warm4.r1 C=4 prompt_tok=3489 ttft_ms=[403, 240, 248, 407] ttft_max=407 decode_tok_s=[4.86, 4.48, 4.64, 4.9] agg_decode=18.88 cached=[3472, 3504, 3520, 3520]
+CELL ple16 dec1.r1 C=1 prompt_tok=753 ttft_ms=[1270] ttft_max=1270 decode_tok_s=[30.82] agg_decode=30.82 cached=[32]
+CELL ple16 dec4.r1 C=4 prompt_tok=731 ttft_ms=[1250, 1263, 1252, 1256] ttft_max=1263 decode_tok_s=[8.05, 8.02, 8.13, 7.52] agg_decode=31.72 cached=[32, 32, 32, 32]
+SUMMARY ple16 cold1_ttft=6651 cold4_ttft=6678 cold_ratio=1.00 warm4_ttft=326 dec1_agg=31.87 dec4_agg=32.62 dec_scale=1.02x
+  decode-ckpt SAVE lines: 10
+2026-09-07T02:12:33.904504Z  INFO spark_model::layers::ple::layer::gather: PLE gather: 288 ids, 288 hits / 0 misses, resolve 95us
+2026-09-07T02:12:34.106631Z  INFO spark_model::layers::ple::layer::gather: PLE gather: 11264 ids, 11072 hits / 192 misses, resolve 4150us
+2026-09-07T02:12:35.149881Z  INFO spark_model::layers::ple::layer::gather: PLE gather: 496 ids, 488 hits / 8 misses, resolve 2234us
+=== arm ckpt16 env=[ATLAS_DECODE_CKPT_BLOCKS=16] 22:13:28
+READY ~48s
+CELL ckpt16 cold1.r0 C=1 prompt_tok=3569 ttft_ms=[6696] ttft_max=6696 decode_tok_s=[23.85] agg_decode=23.85 cached=[0]
+CELL ckpt16 cold4.r0 C=4 prompt_tok=3504 ttft_ms=[6660, 6470, 6616, 6624] ttft_max=6660 decode_tok_s=[0.69, 0.68, 0.67, 0.68] agg_decode=2.71 cached=[32, 32, 32, 32]
+CELL ckpt16 warm4.r0 C=4 prompt_tok=3508 ttft_ms=[408, 238, 222, 241] ttft_max=408 decode_tok_s=[5.19, 4.96, 5.44, 4.69] agg_decode=20.29 cached=[3488, 3456, 3504, 3520]
+CELL ckpt16 dec1.r0 C=1 prompt_tok=733 ttft_ms=[1300] ttft_max=1300 decode_tok_s=[27.72] agg_decode=27.72 cached=[32]
+CELL ckpt16 dec4.r0 C=4 prompt_tok=745 ttft_ms=[1331, 1302, 1312, 1307] ttft_max=1331 decode_tok_s=[8.57, 8.29, 8.28, 5.07] agg_decode=30.22 cached=[32, 32, 32, 32]
+CELL ckpt16 cold1.r1 C=1 prompt_tok=3466 ttft_ms=[6519] ttft_max=6519 decode_tok_s=[22.8] agg_decode=22.80 cached=[32]
+CELL ckpt16 cold4.r1 C=4 prompt_tok=3485 ttft_ms=[6473, 6535, 6559, 6601] ttft_max=6601 decode_tok_s=[0.69, 0.68, 0.68, 0.68] agg_decode=2.72 cached=[32, 32, 32, 32]
+CELL ckpt16 warm4.r1 C=4 prompt_tok=3489 ttft_ms=[395, 404, 237, 394] ttft_max=404 decode_tok_s=[4.71, 5.19, 4.3, 4.66] agg_decode=18.86 cached=[3472, 3488, 3504, 3520]
+CELL ckpt16 dec1.r1 C=1 prompt_tok=730 ttft_ms=[1261] ttft_max=1261 decode_tok_s=[32.92] agg_decode=32.92 cached=[32]
+CELL ckpt16 dec4.r1 C=4 prompt_tok=720 ttft_ms=[1242, 1259, 1267, 1261] ttft_max=1267 decode_tok_s=[8.08, 7.93, 6.77, 6.54] agg_decode=29.33 cached=[32, 32, 32, 32]
+SUMMARY ckpt16 cold1_ttft=6607 cold4_ttft=6630 cold_ratio=1.00 warm4_ttft=406 dec1_agg=30.32 dec4_agg=29.78 dec_scale=0.98x
+  decode-ckpt SAVE lines: 3
+2026-09-07T02:16:55.383336Z  INFO spark_model::layers::ple::layer::gather: PLE gather: 480 ids, 472 hits / 8 misses, resolve 1356us
+2026-09-07T02:16:55.599786Z  INFO spark_model::layers::ple::layer::gather: PLE gather: 11776 ids, 11656 hits / 120 misses, resolve 3971us
+2026-09-07T02:16:56.668710Z  INFO spark_model::layers::ple::layer::gather: PLE gather: 304 ids, 296 hits / 8 misses, resolve 2222us

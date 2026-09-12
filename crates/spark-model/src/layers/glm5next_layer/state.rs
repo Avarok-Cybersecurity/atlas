@@ -57,6 +57,11 @@ pub fn alloc_kda_ssm_state(gpu: &dyn GpuBackend, cfg: &Glm5NextKdaConfig) -> Res
         conv_state_checkpoint: None,
         h_state_intermediates: Vec::new(),
         conv_state_intermediates: Vec::new(),
+        // Empty: replay mode keeps per-token INPUTS here instead of the state
+        // snapshots above, and the vec length is the mode gate. GLM's KDA
+        // blocks allocate in snapshot mode, so this stays empty exactly as
+        // `h_state_intermediates` would be empty under replay.
+        replay_inputs: Vec::new(),
         h_is_f16: false,
         h_prefill_stage: None,
         // GLM-5.3 hosts no `PleLayer` (its linear-attention block is KDA), so

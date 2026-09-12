@@ -1,0 +1,10 @@
+=== arm prefix_on (named preset) 02:21:56
+SUMMARY (median ttft_ms over repeats)
+  L=  128  cold=663  full=640  tail=650  cold2=662
+  L=  512  cold=1183  full=197  tail=757  cold2=1169
+  L= 2048  cold=4250  full=220  tail=4215  cold2=4157
+=== arm prefix_off (explicit flags, no --enable-prefix-caching) 02:23:35
+SUMMARY (median ttft_ms over repeats)
+  L=  128  cold=528  full=506  tail=509  cold2=518
+  L=  512  cold=1023  full=979  tail=992  cold2=1024
+  L= 2048  cold=4047  full=3964  tail=4034  cold2=4004

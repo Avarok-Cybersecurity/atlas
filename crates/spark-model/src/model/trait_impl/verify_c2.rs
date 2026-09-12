@@ -192,8 +192,13 @@ impl TransformerModel {
         // A56 instrument (see verify_c.rs). Implies GRAPHS + NOCACHE.
         let graph_trace = std::env::var("ATLAS_GLM_VERIFY_GRAPH_TRACE").is_ok_and(|v| v == "1");
         let ep_graphs = ep_graphs || graph_trace;
-        let use_graphs =
-            (self.comm.is_none() || ep_graphs) && !hss_engaged && !lora_eager && !k4_diag;
+        // EXL3 veto, as in verify_c.rs: cooperative native launches cannot be
+        // captured whatever else enables capture.
+        let use_graphs = (self.comm.is_none() || ep_graphs)
+            && !hss_engaged
+            && !lora_eager
+            && !k4_diag
+            && !self.exl3_graph_veto();
 
         let ctx = ForwardContext {
             buffers: &self.buffers,

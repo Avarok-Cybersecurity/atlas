@@ -218,3 +218,15 @@ fn externally_resolved_shadow_and_drafter_values_are_carried() {
         crate::model::drafter_context::DrafterContext::OFF
     );
 }
+
+/// `ATLAS_GDN_FLA_UNDER_PREFIX_CACHE` is an EXACT "1" opt-in, not a truthy one:
+/// "true" and "0" both leave it off. Migrated here when the levers' tests were
+/// extracted out of `model_levers.rs`; it covers a lever the other five do not.
+#[test]
+fn the_gdn_fla_prefix_cache_kill_switch_is_an_exact_opt_in() {
+    assert!(!ModelLevers::defaults().gdn_fla_under_prefix_cache);
+    assert!(!resolve(&[]).gdn_fla_under_prefix_cache);
+    assert!(!resolve(&[("ATLAS_GDN_FLA_UNDER_PREFIX_CACHE", "true")]).gdn_fla_under_prefix_cache);
+    assert!(!resolve(&[("ATLAS_GDN_FLA_UNDER_PREFIX_CACHE", "0")]).gdn_fla_under_prefix_cache);
+    assert!(resolve(&[("ATLAS_GDN_FLA_UNDER_PREFIX_CACHE", "1")]).gdn_fla_under_prefix_cache);
+}

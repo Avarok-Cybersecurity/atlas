@@ -1,0 +1,53 @@
+/home/ms/atlas/.claude/worktrees/exl3-research/.research/exl3_decode_perf/probe_partial_hit_cliff.py:59: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  f"divergence={args.divergence} repeats={args.repeats} date={datetime.datetime.utcnow().isoformat()}Z", flush=True)
+FINGERPRINT probe_partial_hit_cliff label=cliff port=8899 tokens=[2048, 8000] divergence=[0.25, 0.5, 0.75, 0.9, 0.95, 0.99] repeats=2 date=2026-09-06T23:34:18.907381Z
+rep=0 L=2048 cold           prompt=2373 cached=0 ttft_ms=4377
+rep=0 L=2048 keep=0.25  prompt=2368 cached=624 ttft_ms=4284
+rep=0 L=2048 keep=0.5   prompt=2345 cached=1200 ttft_ms=4183
+rep=0 L=2048 keep=0.75  prompt=2369 cached=1776 ttft_ms=4196
+rep=0 L=2048 keep=0.9   prompt=2369 cached=2128 ttft_ms=4197
+rep=0 L=2048 keep=0.95  prompt=2381 cached=2240 ttft_ms=4193
+rep=0 L=2048 keep=0.99  prompt=2373 cached=2336 ttft_ms=4207
+rep=0 L=2048 exact repeat   prompt=2373 cached=2368 ttft_ms=219
+rep=0 L=8000 cold           prompt=9085 cached=32 ttft_ms=18622
+rep=0 L=8000 keep=0.25  prompt=9127 cached=2304 ttft_ms=18548
+rep=0 L=8000 keep=0.5   prompt=9044 cached=4544 ttft_ms=18487
+rep=0 L=8000 keep=0.75  prompt=9092 cached=6816 ttft_ms=18582
+rep=0 L=8000 keep=0.9   prompt=9061 cached=8160 ttft_ms=18233
+rep=0 L=8000 keep=0.95  prompt=9087 cached=8608 ttft_ms=1917
+rep=0 L=8000 keep=0.99  prompt=9076 cached=8976 ttft_ms=1899
+rep=0 L=8000 exact repeat   prompt=9085 cached=9072 ttft_ms=245
+rep=1 L=2048 cold           prompt=2347 cached=32 ttft_ms=4121
+rep=1 L=2048 keep=0.25  prompt=2386 cached=624 ttft_ms=4157
+rep=1 L=2048 keep=0.5   prompt=2336 cached=1184 ttft_ms=4079
+rep=1 L=2048 keep=0.75  prompt=2337 cached=1760 ttft_ms=4108
+rep=1 L=2048 keep=0.9   prompt=2351 cached=2112 ttft_ms=4097
+rep=1 L=2048 keep=0.95  prompt=2342 cached=2224 ttft_ms=4079
+rep=1 L=2048 keep=0.99  prompt=2346 cached=2304 ttft_ms=4085
+rep=1 L=2048 exact repeat   prompt=2347 cached=2336 ttft_ms=219
+rep=1 L=8000 cold           prompt=8960 cached=32 ttft_ms=18043
+rep=1 L=8000 keep=0.25  prompt=9013 cached=2256 ttft_ms=18135
+rep=1 L=8000 keep=0.5   prompt=8963 cached=4480 ttft_ms=18000
+rep=1 L=8000 keep=0.75  prompt=8984 cached=6720 ttft_ms=18121
+rep=1 L=8000 keep=0.9   prompt=8965 cached=8048 ttft_ms=18014
+rep=1 L=8000 keep=0.95  prompt=8945 cached=8496 ttft_ms=1686
+rep=1 L=8000 keep=0.99  prompt=8962 cached=8864 ttft_ms=1687
+rep=1 L=8000 exact repeat   prompt=8960 cached=8960 ttft_ms=239
+
+SUMMARY median ttft_ms by kept-prefix fraction (cold and exact bound the range)
+  L=2048: cold=4249
+    keep  0.25: ttft=4220
+    keep   0.5: ttft=4131
+    keep  0.75: ttft=4152
+    keep   0.9: ttft=4147
+    keep  0.95: ttft=4136
+    keep  0.99: ttft=4146
+    exact    : ttft=219
+  L=8000: cold=18333
+    keep  0.25: ttft=18342
+    keep   0.5: ttft=18243
+    keep  0.75: ttft=18352
+    keep   0.9: ttft=18123
+    keep  0.95: ttft=1802
+    keep  0.99: ttft=1793
+    exact    : ttft=242

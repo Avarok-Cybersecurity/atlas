@@ -405,8 +405,14 @@ fn finalize_response(
     };
 
     // REQUESTS_ACTIVE released by the caller's ActiveRequestGuard on return.
-    crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(prompt_len as u64);
-    crate::metrics::GENERATION_TOKENS_TOTAL.inc_by(total_completion_tokens as u64);
+    // PROMPT_TOKENS_TOTAL is incremented per chunk at ingest
+    // (scheduler/phase_continue_prefills/*). Counting it here too
+    // would double-count.
+    // GENERATION_TOKENS_TOTAL is incremented PER TOKEN as the scheduler
+    // emits it (scheduler/emit_step.rs, decode_logits_step.rs). Adding the
+    // completion total here too would double-count — and counting only
+    // here is what made the TUI throughput graph flat-then-spiky: the
+    // counter did not move until a request finished.
     crate::metrics::TTFT_SECONDS
         .with_label_values(&[state.model_name.as_str()])
         .observe(first_ttft / 1000.0);

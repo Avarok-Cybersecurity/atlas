@@ -127,9 +127,9 @@ pub(super) fn effective_min_p(
 ///  * `FinalDecode` → the caller passes the effective `temperature`, the
 ///    per-token `seed` and the base `logit_bias` (`ActiveSeq.logit_bias`,
 ///    cloned) it computed for this step.
-///  * `Verify` → the MTP verify/bootstrap emission is a penalty-aware
-///    greedy ARGMAX, so callers pass `temperature = 0.0`, `seed = None`,
-///    empty base bias.
+///  * `Verify` → callers pass neutral sampling fields and empty base bias;
+///    the builder reads the request bias from `a`, including at the fast-path
+///    eligibility gates. Verify sampling is selected after post-processing.
 pub(super) fn penalty_params_for(
     a: &ActiveSeq,
     kind: PositionKind,
@@ -137,17 +137,18 @@ pub(super) fn penalty_params_for(
     seed: Option<u64>,
     base_logit_bias: Vec<(u32, f32)>,
 ) -> SamplingParams {
-    // `Verify` positions are a penalty-aware greedy ARGMAX, so the contract
-    // is temperature 0.0, no seed, no caller-supplied base bias. Pin it so a
-    // future caller can't silently pass stochastic params on the speculative
-    // path. The A4 floor below is appended for BOTH kinds (intended delta).
+    // Verify callers request penalty parameters only. Sampling shape is
+    // selected downstream, while the request bias must apply to every token.
     debug_assert!(
         kind != PositionKind::Verify
             || (temperature == 0.0 && seed.is_none() && base_logit_bias.is_empty()),
         "Verify positions must pass temperature=0.0, seed=None, empty base bias"
     );
     let in_tool = a.inside_tool_body && !a.inside_thinking;
-    let mut logit_bias = base_logit_bias;
+    let mut logit_bias = match kind {
+        PositionKind::FinalDecode => base_logit_bias,
+        PositionKind::Verify => a.logit_bias.clone(),
+    };
 
     // #192: the `<tool_call>` opener nudge must not act INSIDE a tool body
     // (spurious mid-value re-open — see `strip_in_tool_opener_bias`).

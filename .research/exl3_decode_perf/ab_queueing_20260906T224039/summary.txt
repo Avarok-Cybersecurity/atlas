@@ -1,0 +1,30 @@
+=== arm slai_win env=[ATLAS_PREFILL_ADMISSION_WINDOW_MS=100] args=[--scheduling-policy slai --tbt-deadline-ms 100] 22:40:39
+READY ~48s
+2026-09-07T02:41:26.971395Z  INFO spark::main_modules::serve_load: Scheduling policy: SLAI (TBT deadline=100ms)
+2026-09-07T02:41:26.972187Z  INFO spark::scheduler: Scheduler started (batched mode, max_batch=4, mtp=true, ngram=false, num_drafts=2, policy=slai, chunked_prefill=true, max_prefill_tokens=8
+  rep0 long    ttft=   30788 ms  wall= 33.87 s  tok=60
+  rep0 short0  ttft=    3191 ms  wall= 28.09 s  tok=64
+  rep0 short1  ttft=    4732 ms  wall= 31.79 s  tok=63
+  rep0 short2  ttft=    1563 ms  wall= 28.62 s  tok=61
+  rep0 short_med_ttft=3191 ms  long_ttft=30788 ms  burst_wall=33.87 s
+  rep1 long    ttft=   30795 ms  wall= 33.51 s  tok=64
+  rep1 short0  ttft=    1312 ms  wall= 31.27 s  tok=64
+  rep1 short1  ttft=    2611 ms  wall= 27.26 s  tok=63
+  rep1 short2  ttft=    3949 ms  wall= 28.28 s  tok=60
+  rep1 short_med_ttft=2611 ms  long_ttft=30795 ms  burst_wall=33.51 s
+SUMMARY slai_win short_med_ttft_ms=2901 long_ttft_ms=30791 all_med_ttft_ms=3621 all_max_ttft_ms=30791 burst_wall_s=33.69
+=== arm fifo_win env=[ATLAS_PREFILL_ADMISSION_WINDOW_MS=100] args=[--scheduling-policy fifo] 22:42:38
+READY ~47s
+2026-09-07T02:43:25.530335Z  INFO spark::main_modules::serve_load: Scheduling policy: FIFO
+2026-09-07T02:43:25.530946Z  INFO spark::scheduler: Scheduler started (batched mode, max_batch=4, mtp=true, ngram=false, num_drafts=2, policy=fifo, chunked_prefill=true, max_prefill_tokens=8
+  rep0 long    ttft=   22423 ms  wall= 31.90 s  tok=64
+  rep0 short0  ttft=    1410 ms  wall= 31.04 s  tok=61
+  rep0 short1  ttft=    3940 ms  wall= 31.30 s  tok=63
+  rep0 short2  ttft=    2683 ms  wall= 31.48 s  tok=60
+  rep0 short_med_ttft=2683 ms  long_ttft=22423 ms  burst_wall=31.90 s
+  rep1 long    ttft=   22219 ms  wall= 31.95 s  tok=64
+  rep1 short0  ttft=    1327 ms  wall= 31.31 s  tok=64
+  rep1 short1  ttft=    2657 ms  wall= 31.55 s  tok=63
+  rep1 short2  ttft=    3977 ms  wall= 31.34 s  tok=63
+  rep1 short_med_ttft=2657 ms  long_ttft=22219 ms  burst_wall=31.95 s
+SUMMARY fifo_win short_med_ttft_ms=2670 long_ttft_ms=22321 all_med_ttft_ms=3314 all_max_ttft_ms=22321 burst_wall_s=31.92

@@ -1,0 +1,381 @@
+{
+  "schema": 1,
+  "run_id": "run-1788828919888928313",
+  "benchmark_id": "agentic-webserver",
+  "benchmark_name": "Agentic Webserver Test",
+  "recorded_at": 1788828919,
+  "target_url": "http://127.0.0.1:8891",
+  "target_model": "qwen3.8-flash-next",
+  "params": {
+    "build_timeout_s": "600",
+    "command_timeout_s": "180",
+    "iterations": "3",
+    "max_tokens": "8192",
+    "max_turns": "40",
+    "request_timeout_s": "900",
+    "s_per_turn_budget": "0",
+    "serve_timeout_s": "30",
+    "wall_budget_s": "3600"
+  },
+  "source": "cli",
+  "atlas_version": "1.0.0-beta-preview",
+  "frame": {
+    "status": "Completed",
+    "phase": "done",
+    "progress": [
+      3,
+      3
+    ],
+    "summary": [
+      {
+        "label": "webserver_ok",
+        "value": "3/3",
+        "unit": "",
+        "style": "Good"
+      },
+      {
+        "label": "followed_directions",
+        "value": "3/3",
+        "unit": "",
+        "style": "Good"
+      },
+      {
+        "label": "s/turn",
+        "value": "13.666",
+        "unit": "s",
+        "style": "Neutral"
+      },
+      {
+        "label": "Σ wall",
+        "value": "550",
+        "unit": "s",
+        "style": "Good"
+      }
+    ],
+    "table": {
+      "title": "ITERATIONS",
+      "columns": [
+        {
+          "title": "Run",
+          "align": "Right",
+          "width": 4
+        },
+        {
+          "title": "wall s",
+          "align": "Right",
+          "width": 8
+        },
+        {
+          "title": "ws_ok",
+          "align": "Left",
+          "width": 6
+        },
+        {
+          "title": "steps",
+          "align": "Right",
+          "width": 6
+        },
+        {
+          "title": "turns",
+          "align": "Right",
+          "width": 6
+        },
+        {
+          "title": "tools",
+          "align": "Right",
+          "width": 6
+        },
+        {
+          "title": "note",
+          "align": "Left",
+          "width": 40
+        }
+      ],
+      "rows": [
+        [
+          {
+            "text": "0",
+            "style": "Neutral"
+          },
+          {
+            "text": "188.7",
+            "style": "Neutral"
+          },
+          {
+            "text": "pass",
+            "style": "Good"
+          },
+          {
+            "text": "6/6",
+            "style": "Good"
+          },
+          {
+            "text": "14",
+            "style": "Neutral"
+          },
+          {
+            "text": "16",
+            "style": "Neutral"
+          },
+          {
+            "text": "",
+            "style": "Dim"
+          }
+        ],
+        [
+          {
+            "text": "1",
+            "style": "Neutral"
+          },
+          {
+            "text": "264.6",
+            "style": "Neutral"
+          },
+          {
+            "text": "pass",
+            "style": "Good"
+          },
+          {
+            "text": "6/6",
+            "style": "Good"
+          },
+          {
+            "text": "18",
+            "style": "Neutral"
+          },
+          {
+            "text": "21",
+            "style": "Neutral"
+          },
+          {
+            "text": "",
+            "style": "Dim"
+          }
+        ],
+        [
+          {
+            "text": "2",
+            "style": "Neutral"
+          },
+          {
+            "text": "96.4",
+            "style": "Neutral"
+          },
+          {
+            "text": "pass",
+            "style": "Good"
+          },
+          {
+            "text": "6/6",
+            "style": "Good"
+          },
+          {
+            "text": "8",
+            "style": "Neutral"
+          },
+          {
+            "text": "9",
+            "style": "Neutral"
+          },
+          {
+            "text": "",
+            "style": "Dim"
+          }
+        ]
+      ]
+    },
+    "verdict": {
+      "kind": "Pass",
+      "reason": "3/3 webserver_ok · 3/3 followed_directions · 13.666s/turn (unbounded) · Σwall 550s ≤ 3600s"
+    },
+    "metrics": {
+      "decode_tps": 21.510180464615992,
+      "followed_directions": 3.0,
+      "iterations": 3.0,
+      "s_per_turn": 13.665622214725,
+      "step:curled": 3.0,
+      "step:ran_server": 3.0,
+      "step:ran_tests": 3.0,
+      "step:tore_down": 3.0,
+      "step:wrote_project": 3.0,
+      "step:wrote_tests": 3.0,
+      "sum_agent_wall_s": 546.624888589,
+      "sum_completion_tokens": 11758.0,
+      "sum_tool_calls": 46.0,
+      "sum_turns": 40.0,
+      "sum_wall_s": 549.718915699,
+      "webserver_ok": 3.0
+    },
+    "log": [],
+    "elapsed": {
+      "secs": 550,
+      "nanos": 242109782
+    },
+    "hardware_state": {
+      "sensitivity": "speed",
+      "before": {
+        "captured_at": 1788828368,
+        "machine": {
+          "hostname": "dgx-00",
+          "machine_id": "d103edc98a4b40419003c632707f59b6",
+          "gpu": "NVIDIA GB10",
+          "driver": "580.173.02"
+        },
+        "gpu_temp_c": 52.0,
+        "chassis_temps_c": [
+          {
+            "name": "acpitz",
+            "temp_c": 60.9
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 53.8
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 54.1
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 54.3
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 60.9
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 55.7
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 54.6
+          }
+        ],
+        "sm_clock_mhz": 2288.0,
+        "sm_clock_max_mhz": 3003.0,
+        "throttle_counters": {
+          "sw_power_cap_us": 2638536241,
+          "sw_thermal_us": 0,
+          "hw_thermal_us": 0,
+          "hw_power_brake_us": 0,
+          "sync_boost_us": 0
+        },
+        "throttle_active": {
+          "sw_power_cap": false,
+          "sw_thermal": false,
+          "hw_thermal": false,
+          "hw_power_brake": false
+        },
+        "mem_available_kb": 25028664,
+        "mem_total_kb": 127535020,
+        "page_cache_kb": 19316632,
+        "gpu_compute_apps": [
+          {
+            "pid": 428048,
+            "name": "/home/ms/spark-exl3",
+            "used_mib": 87187
+          }
+        ],
+        "cpu_governor": "performance",
+        "persistence_mode": true,
+        "sources": [
+          "nvidia-smi",
+          "procfs",
+          "sysfs"
+        ]
+      },
+      "after": {
+        "captured_at": 1788828919,
+        "machine": {
+          "hostname": "dgx-00",
+          "machine_id": "d103edc98a4b40419003c632707f59b6",
+          "gpu": "NVIDIA GB10",
+          "driver": "580.173.02"
+        },
+        "gpu_temp_c": 63.0,
+        "chassis_temps_c": [
+          {
+            "name": "acpitz",
+            "temp_c": 70.5
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 67.0
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 69.8
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 66.9
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 70.5
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 69.3
+          },
+          {
+            "name": "acpitz",
+            "temp_c": 68.4
+          }
+        ],
+        "sm_clock_mhz": 2281.0,
+        "sm_clock_max_mhz": 3003.0,
+        "throttle_counters": {
+          "sw_power_cap_us": 2638536241,
+          "sw_thermal_us": 0,
+          "hw_thermal_us": 0,
+          "hw_power_brake_us": 0,
+          "sync_boost_us": 0
+        },
+        "throttle_active": {
+          "sw_power_cap": false,
+          "sw_thermal": false,
+          "hw_thermal": false,
+          "hw_power_brake": false
+        },
+        "mem_available_kb": 23212676,
+        "mem_total_kb": 127535020,
+        "page_cache_kb": 19003520,
+        "gpu_compute_apps": [
+          {
+            "pid": 428048,
+            "name": "/home/ms/spark-exl3",
+            "used_mib": 87211
+          }
+        ],
+        "cpu_governor": "performance",
+        "persistence_mode": true,
+        "sources": [
+          "nvidia-smi",
+          "procfs",
+          "sysfs"
+        ]
+      },
+      "delta": {
+        "elapsed_s": 551,
+        "sw_power_cap_us": 0,
+        "sw_thermal_us": 0,
+        "hw_thermal_us": 0,
+        "hw_power_brake_us": 0,
+        "gpu_temp_delta_c": 11.0,
+        "hottest_chassis_delta_c": 9.600000000000001
+      },
+      "precheck": {
+        "decision": "proceed"
+      },
+      "postcheck": {
+        "validity": "valid",
+        "concerns": [
+          "hottest chassis zone moved +10 °C"
+        ]
+      },
+      "perf_class": "gb10@dgx-00"
+    }
+  }
+}

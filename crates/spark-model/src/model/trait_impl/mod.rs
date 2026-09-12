@@ -27,6 +27,7 @@ mod decode_b2;
 mod decode_checkpoint;
 mod decode_graph_key;
 mod decode_multi_seq_gate;
+mod decode_route;
 mod drafter_prefill;
 mod ep_misc;
 mod graph_borrow;
@@ -47,6 +48,7 @@ mod verify_d;
 mod verify_e;
 pub(in crate::model) mod verify_e2;
 mod verify_fused;
+mod verify_hc;
 
 impl Model for TransformerModel {
     fn teardown(&mut self) -> Result<()> {
@@ -349,6 +351,18 @@ impl Model for TransformerModel {
     fn restore_decode_ssm_snapshot(&self, seq: &SequenceState, ring_slot: usize) -> Result<()> {
         self.restore_decode_ssm_snapshot_dispatch(seq, ring_slot)
     }
+    fn requires_aux_state(&self) -> bool {
+        TransformerModel::requires_aux_state(self)
+    }
+    fn save_decode_aux_snapshot(&self, seq: &SequenceState, ring_slot: usize) -> Result<()> {
+        self.save_decode_aux_snapshot_dispatch(seq, ring_slot)
+    }
+    fn restore_decode_aux_snapshot(&self, seq: &mut SequenceState, ring_slot: usize) -> Result<()> {
+        self.restore_decode_aux_snapshot_dispatch(seq, ring_slot)
+    }
+    fn forget_decode_aux_snapshot(&self, seq: &SequenceState, ring_slot: usize) {
+        self.forget_decode_aux_snapshot_dispatch(seq, ring_slot)
+    }
     fn generate_speculative(
         &self,
         prompt_tokens: &[u32],
@@ -385,7 +399,65 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 2]> {
         self.ssm_pool.require_verify_rollback_supported()?;
+        // ★ ROUTE BEFORE CAPTURE. Under an mHC highway the graphed dispatch
+        // reaches `qwen3_ssm::decode_batched`, which REFUSES — and it refuses
+        // INSIDE the capture region, leaving the stream recording so every
+        // later op dies with status 901 (measured: alloc_sequence,
+        // free_sequence and the next prefill all failed after one refusal).
+        // Taking the mHC path here means the refusal never happens; taking it
+        // BEFORE capture starts means a future refusal is survivable.
+        if self.verify_needs_hc_path() {
+            let v = self.decode_verify_hc(tokens, seq, _stream)?;
+            anyhow::ensure!(v.len() == 2, "verify_hc returned {} rows, want 2", v.len());
+            return Ok([v[0], v[1]]);
+        }
         self.decode_verify_graphed_dispatch(tokens, seq, _stream)
+    }
+
+    /// Land the auxiliary carries on the `num_accepted` rows this step
+    /// actually committed, for models that verify by K-row mini-prefill.
+    ///
+    /// DEFAULT ON; `ATLAS_QWEN4EXP_MTP_AUX_COMMIT=0` is the kill switch. It
+    /// replaces the retired `ATLAS_QWEN4EXP_MTP_ROLLBACK=1`, whose arm-to-use
+    /// polarity encoded a rollback that was both unproven AND wrong: it fired
+    /// only from the K=2 reject branch and always restored row 0, so K=3 —
+    /// where `num_accepted <= 2 < k`, i.e. EVERY step is a partial accept —
+    /// had no rollback at all, and a K=3 two-row commit would have been
+    /// restored a row short even if it had. See `verify_hc.rs`.
+    fn commit_verify_aux(
+        &self,
+        seq: &mut SequenceState,
+        num_accepted: usize,
+        k: usize,
+    ) -> Result<bool> {
+        if !self.verify_needs_hc_path() {
+            return Ok(false);
+        }
+        // The BATCHED arm lands the same two carries itself, from inside
+        // `commit_accepted_prefix` (`commit_verify_aux_rows`), keyed off
+        // `pending_verify_span` rather than the per-row `pending_verify_aux`
+        // stash this path reads. The two are ALTERNATIVES, not layers: with the
+        // batched arm on, `decode_verify_hc` returns before ever taking a
+        // per-row snapshot, so reaching the code below finds an empty stash and
+        // `restore_verify_aux_at` bails "with no stashed aux snapshot" — which
+        // the scheduler converts into `finished = true`, i.e. a 4-token empty
+        // reply rather than an error anyone sees. Measured exactly that before
+        // this guard: every prompt returned 4 tokens (gamma=1) / 2 (gamma=2).
+        if crate::layers::qwen3_ssm::trait_decode_batched_hc::hc_batched_verify_enabled() {
+            return Ok(false);
+        }
+        if !verify_hc::hc_verify_commits_aux() {
+            // Diagnostic A/B only: drop the stash so the next verify's
+            // snapshot cannot be read against the wrong step.
+            let _ = self
+                .pending_verify_aux
+                .lock()
+                .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))?
+                .remove(&seq.slot_idx);
+            return Ok(false);
+        }
+        self.restore_verify_aux_at(seq, num_accepted, k)?;
+        Ok(true)
     }
     fn decode_verify_graphed_k3(
         &self,
@@ -394,6 +466,11 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 3]> {
         self.ssm_pool.require_verify_rollback_supported()?;
+        if self.verify_needs_hc_path() {
+            let v = self.decode_verify_hc(tokens, seq, _stream)?;
+            anyhow::ensure!(v.len() == 3, "verify_hc returned {} rows, want 3", v.len());
+            return Ok([v[0], v[1], v[2]]);
+        }
         self.decode_verify_graphed_k3_dispatch(tokens, seq, _stream)
     }
     fn decode_verify_graphed_k4(
@@ -403,7 +480,43 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 4]> {
         self.ssm_pool.require_verify_rollback_supported()?;
+        if self.verify_needs_hc_path() {
+            let v = self.decode_verify_hc(tokens, seq, _stream)?;
+            anyhow::ensure!(v.len() == 4, "verify_hc returned {} rows, want 4", v.len());
+            return Ok([v[0], v[1], v[2], v[3]]);
+        }
         self.decode_verify_graphed_k4_dispatch(tokens, seq, _stream)
+    }
+    fn decode_verify_graphed_kn(
+        &self,
+        tokens: &[u32],
+        seq: &mut SequenceState,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        self.ssm_pool.require_verify_rollback_supported()?;
+        if self.verify_needs_hc_path() {
+            let v = self.decode_verify_hc(tokens, seq, stream)?;
+            anyhow::ensure!(
+                v.len() == tokens.len(),
+                "verify_hc returned {} rows, want {}",
+                v.len(),
+                tokens.len()
+            );
+            return Ok(v);
+        }
+        match tokens.len() {
+            3 => Ok(self
+                .decode_verify_graphed_k3_dispatch(&[tokens[0], tokens[1], tokens[2]], seq, stream)?
+                .to_vec()),
+            4 => Ok(self
+                .decode_verify_graphed_k4_dispatch(
+                    &[tokens[0], tokens[1], tokens[2], tokens[3]],
+                    seq,
+                    stream,
+                )?
+                .to_vec()),
+            k => anyhow::bail!("decode_verify_graphed_kn: no verify path at K={k} rows on this model"),
+        }
     }
     fn can_batch_verify(&self, ks: &[usize]) -> bool {
         self.can_batch_verify_dispatch(ks)
@@ -416,6 +529,17 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<Vec<u32>> {
         self.ssm_pool.require_verify_rollback_supported()?;
+        // Announce the batch BEFORE the forward, so the worker is inside the
+        // same sweep and answering its collectives. Head-only: this function
+        // runs on rank 0; the worker reaches the identical
+        // `decode_verify_batched_dispatch` from its own command arm, never
+        // through here, because `ep_broadcast_*` on a worker is a RECEIVE and
+        // re-entering this path would consume words meant for the forward.
+        if self.multi_rank_protocol_active() {
+            let seq_ids: Vec<u32> = seqs.iter().map(|s| s.slot_idx as u32).collect();
+            let ks_u32: Vec<u32> = ks.iter().map(|&k| k as u32).collect();
+            self.ep_broadcast_verify_batch_dispatch(&seq_ids, &ks_u32, tokens)?;
+        }
         self.decode_verify_batched_dispatch(tokens, ks, seqs, _stream)
     }
     fn stash_verify_hidden_rows(&self, rows: &[usize], _stream: u64) -> Result<()> {
@@ -916,20 +1040,204 @@ impl TransformerModel {
     /// Collect chunk-boundary aux layer state (PLE, QSA) for a Marconi
     /// snapshot. Returns the blobs to attach; empty when no layer carries
     /// aux state.
+    /// Collect every layer's Marconi aux blob in ONE batched gather.
+    ///
+    /// # Why this is not a loop over `snapshot_aux`
+    ///
+    /// It used to be, and that cost one full stream drain per aux-carrying
+    /// layer: `copy_d2h_on_stream` calls `cuStreamSynchronize` INSIDE the copy
+    /// (`cuda_backend/gpu_copy.rs`). On qwen3.8-Flash-Next that is 12 QSA
+    /// layers plus 36 PLE layers, each into a freshly allocated PAGEABLE `Vec`,
+    /// and the QSA half is O(context): `ingested * head_dim * 2` bytes per
+    /// layer, ~5 MB each at 20K context. The whole thing ran every
+    /// `ATLAS_DECODE_CKPT_BLOCKS` (default 4) blocks = every 64 decode tokens,
+    /// plus once per sequence at retire, on the always-on prefix-cache path.
+    ///
+    /// The shape now is the one `ssm_snapshot_spill::gather_async` already
+    /// uses, and it has to be all three changes at once to work at all:
+    ///
+    /// 1. lay out every layer's slice from HOST-computable lengths;
+    /// 2. enqueue each copy into ONE page-locked blob with `copy_d2h_async`;
+    /// 3. `synchronize` exactly once, then split.
+    ///
+    /// Pinning is not a separate optimisation: `cuMemcpyDtoHAsync` into
+    /// pageable memory is bounced through the driver's own staging and
+    /// serialises anyway, so batching without pinning keeps every stall and
+    /// merely stops calling them syncs.
+    ///
+    /// Layers answering [`AuxSnapshotPlan::Unbatched`] keep the legacy
+    /// per-layer path (correct, just not batched), which is what makes the
+    /// default safe for any layer that has not opted in.
     pub(in crate::model) fn collect_aux_states(
         &self,
         seq: &SequenceState,
         stream: u64,
     ) -> Result<Vec<(u32, Vec<u8>)>> {
-        let mut out = Vec::new();
+        self.collect_aux_states_filtered(seq, stream, false)
+    }
+
+    /// The batched gather both collects share.
+    ///
+    /// `skip_rewindable` selects which set: `false` is the Marconi snapshot
+    /// (everything), `true` is the speculative-verify subset that drops layers
+    /// `align_aux` can rewind by moving a mark. The two differ ONLY in that
+    /// predicate, so they share the layout/enqueue/one-sync body rather than
+    /// keeping two copies that can drift.
+    fn collect_aux_states_filtered(
+        &self,
+        seq: &SequenceState,
+        stream: u64,
+        skip_rewindable: bool,
+    ) -> Result<Vec<(u32, Vec<u8>)>> {
+        use crate::layer::AuxSnapshotPlan as P;
+
+        // One-variable A/B switch, and the production rollback. `=0` forces
+        // every layer down the legacy per-layer draining path, so the batched
+        // gather can be measured against the code it replaces in ONE binary
+        // rather than two builds. Read once: this is a per-checkpoint path and
+        // an un-memoised `env::var` here would be its own small regression.
+        static BATCHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let batched_enabled = *BATCHED.get_or_init(|| {
+            std::env::var("ATLAS_AUX_COLLECT_BATCHED").as_deref() != Ok("0")
+        });
+
+        // Pass 1 — plan. `bytes == 0` means "this layer has no blob for this
+        // sequence" and contributes nothing, matching the old `Ok(None)`.
+        let mut batched: Vec<(usize, usize, usize)> = Vec::new(); // (layer, offset, len)
+        let mut unbatched: Vec<usize> = Vec::new();
+        let mut total = 0usize;
         for (i, l) in self.layers.iter().enumerate() {
-            if let Some(blob) =
-                l.snapshot_aux(seq.layer_states[i].as_ref(), self.gpu.as_ref(), stream)?
-            {
-                out.push((i as u32, blob));
+            if skip_rewindable && l.aux_rewind_is_exact() {
+                continue;
+            }
+            if !batched_enabled {
+                unbatched.push(i);
+                continue;
+            }
+            match l.snapshot_aux_plan(seq.layer_states[i].as_ref()) {
+                P::Batched { bytes: 0 } => {}
+                P::Batched { bytes } => {
+                    batched.push((i, total, bytes));
+                    total += bytes;
+                }
+                P::Unbatched => unbatched.push(i),
             }
         }
-        Ok(out)
+
+        // Arm-liveness proof (rule 6: verify engagement, never assume it). One
+        // INFO line per process, naming which path ran and how much it moves —
+        // an A/B whose arms both silently took the same path measures nothing.
+        // Two statics, because the two collects run on different paths
+        // (checkpoint vs live verify) and a single latch would prove only
+        // whichever fired first.
+        static ANNOUNCED_SNAPSHOT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        static ANNOUNCED_VERIFY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        let latch = if skip_rewindable {
+            &ANNOUNCED_VERIFY
+        } else {
+            &ANNOUNCED_SNAPSHOT
+        };
+        latch.get_or_init(|| {
+            tracing::info!(
+                "aux collect ({}): {} — {} batched layer(s), {} legacy, {} B first call",
+                if skip_rewindable { "verify" } else { "snapshot" },
+                if batched_enabled {
+                    "BATCHED (1 sync)"
+                } else {
+                    "LEGACY (1 sync/layer)"
+                },
+                batched.len(),
+                unbatched.len(),
+                total
+            );
+        });
+
+        // Pass 2 — enqueue the batched half into one page-locked blob, then
+        // take the SINGLE sync that replaces one drain per layer.
+        let mut blobs: Vec<(u32, Vec<u8>)> = Vec::with_capacity(batched.len() + unbatched.len());
+        if total > 0 {
+            let mut guard = self.aux_staging.acquire_at_least(self.gpu.as_ref(), total)?;
+            {
+                let buf = guard.as_mut_slice();
+                for &(i, off, len) in &batched {
+                    self.layers[i].snapshot_aux_into(
+                        seq.layer_states[i].as_ref(),
+                        self.gpu.as_ref(),
+                        stream,
+                        &mut buf[off..off + len],
+                    )?;
+                }
+            }
+            // THE one sync. Must happen before the blob is read OR released:
+            // the enqueued copies still reference these bytes.
+            self.gpu.synchronize(stream)?;
+            let buf = guard.as_mut_slice();
+            for &(i, off, len) in &batched {
+                blobs.push((i as u32, buf[off..off + len].to_vec()));
+            }
+        }
+
+        // Pass 3 — legacy path for anything that did not opt in.
+        for &i in &unbatched {
+            if let Some(blob) =
+                self.layers[i].snapshot_aux(seq.layer_states[i].as_ref(), self.gpu.as_ref(), stream)?
+            {
+                blobs.push((i as u32, blob));
+            }
+        }
+
+        // Callers and `apply_aux_states` index by the stored layer id, but keep
+        // the old ascending-layer order so anything that relied on it is
+        // unchanged.
+        blobs.sort_by_key(|(i, _)| *i);
+        Ok(blobs)
+    }
+
+    /// The speculative-verify subset of [`Self::collect_aux_states`]: only the
+    /// layers whose carry CANNOT be rebuilt by truncation.
+    ///
+    /// A Marconi snapshot must serialize everything, because it is restored
+    /// into a sequence with no history at all. A verify rollback is restored
+    /// into a sequence that still holds every earlier row, so any carry that
+    /// `align_aux` can rewind by moving a mark is better realigned than
+    /// round-tripped — see `Layer::aux_rewind_is_exact`. Concretely this drops
+    /// QSA's per-layer raw-key D2H (megabytes per step at context) and keeps
+    /// PLE's small conv+history blob.
+    ///
+    /// This runs on the LIVE speculative decode path — once per published
+    /// verify row, so ~2x per step at K=3 — over the 36 PLE layers this model
+    /// keeps. As a per-layer loop that was ~72 full stream drains per decode
+    /// step, which is why it takes the same batched gather as the Marconi
+    /// collect rather than only sharing its doc comment.
+    pub(in crate::model) fn collect_verify_aux_states(
+        &self,
+        seq: &SequenceState,
+        stream: u64,
+    ) -> Result<Vec<(u32, Vec<u8>)>> {
+        self.collect_aux_states_filtered(seq, stream, true)
+    }
+
+    /// Move every mark-rewindable aux carry to an ABSOLUTE sequence position.
+    /// The other half of `collect_verify_aux_states`: what that one declines to
+    /// snapshot, this one realigns.
+    pub(in crate::model) fn align_verify_aux_states(
+        &self,
+        seq: &mut SequenceState,
+        to_pos: usize,
+        stream: u64,
+    ) -> Result<()> {
+        for (i, l) in self.layers.iter().enumerate() {
+            if !l.aux_rewind_is_exact() {
+                continue;
+            }
+            l.align_aux(
+                seq.layer_states[i].as_mut(),
+                to_pos,
+                self.gpu.as_ref(),
+                stream,
+            )?;
+        }
+        Ok(())
     }
 
     /// Whether restoring a snapshot WITHOUT aux blobs would be unsound for

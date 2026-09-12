@@ -532,3 +532,609 @@ extern "C" __global__ void qsa_prefill_attn(
         }
     }
 }
+// ── QSA prefill top-k: radix select on device ──────────────────────────────
+//
+// Replaces the host top-k in `prefill_select`, which D2H'd every block score
+// and sorted per query row on the CPU. At 36K context that is ~18 MB copied
+// and 8192 sorts of 562 elements PER attention layer PER chunk — measured as
+// the dominant prefill cost once the dense attention was skipped.
+//
+// Shape here is top-512 of up to ~25000 blocks (100K ctx / ratio 4), so the
+// moe_topk iterative-argmax approach (K passes over N) is hopeless: 512
+// passes. Radix select finds the exact K-th value in 4 fixed passes over the
+// row, then emits in one more.
+//
+// Scores are relu(q.k) sums, hence NON-NEGATIVE, so the IEEE-754 bit pattern
+// reinterpreted as uint32 is monotonically ordered — no sign-flip mapping
+// needed. NaN cannot appear (relu of a finite dot product); an inf would sort
+// to the top, which is the correct behaviour anyway.
+//
+// Tie-break matches the host it replaces: larger score first, LOWER INDEX on
+// ties. Ties are common because relu floors at 0.0, so the tie pass walks in
+// index order rather than racing on an atomic.
+//
+// Output order within the list is MATHEMATICALLY irrelevant to the consumer
+// (`qsa_prefill_attn` softmaxes over the selected set), but it is NOT
+// bit-irrelevant: that kernel's online softmax accumulates in list order, so
+// a different order is a different fp32 rounding sequence. The greater-than
+// emit below hands out slots in atomicAdd race order — same SET, different
+// ORDER every run — which made temp-0 prefill non-reproducible past the
+// inert bound (the second nondeterminism source; the first was the MoE
+// prefill epilogue). The list is therefore canonicalised — ascending block
+// id, bitonic in shared memory — before the kernel returns: the same trick
+// `qsa_expand_sel` uses to reproduce the host's `sort_unstable()` for
+// decode. topk <= QSA_TOPK_SORT_MAX is enforced host-side in
+// `QsaIndexer::new` (decode's `qsa_expand_sel` shares the same 512 cap).
+
+#define QSA_TOPK_THREADS 256
+#define QSA_TOPK_SORT_MAX 512
+
+extern "C" __global__ void qsa_topk_rows(
+    const float* __restrict__ scores,  // [rows, stride] f32
+    int* __restrict__ lists,           // [rows, topk]   i32 block ids
+    unsigned int rows,
+    unsigned int stride,
+    unsigned int topk,
+    unsigned int first_pos,            // GLOBAL position of row 0
+    unsigned int ratio)                // tokens per block
+{
+    const unsigned int r = blockIdx.x;
+    if (r >= rows) return;
+
+    const unsigned int tid = threadIdx.x;
+    const float* __restrict__ row = scores + (size_t)r * stride;
+    int* __restrict__ out = lists + (size_t)r * topk;
+
+    // Blocks fully covered by this query's visible prefix. Each row sees a
+    // different prefix, which is why this is computed per row rather than
+    // passed in.
+    const unsigned int complete = (first_pos + r + 1u) / ratio;
+
+    // Degenerate guard. Callers only invoke past the inert bound, where
+    // complete > topk, but emitting a valid id beats writing uninitialised
+    // memory that the attention would then gather from.
+    if (complete <= topk) {
+        for (unsigned int i = tid; i < topk; i += QSA_TOPK_THREADS) {
+            out[i] = (int)(i < complete ? i : (complete ? complete - 1u : 0u));
+        }
+        return;
+    }
+
+    __shared__ unsigned int s_hist[256];
+    __shared__ unsigned int s_prefix;   // bit pattern fixed so far
+    __shared__ unsigned int s_need;     // still to take from the current bucket
+    __shared__ unsigned int s_above;    // count strictly greater than threshold
+    __shared__ unsigned int s_emitted;
+
+    if (tid == 0) {
+        s_prefix = 0u;
+        s_need = topk;
+        s_above = 0u;
+    }
+    __syncthreads();
+
+    // ── 4 radix passes, 8 bits at a time, most-significant first ──
+    for (int pass = 0; pass < 4; ++pass) {
+        const unsigned int shift = 24u - 8u * (unsigned int)pass;
+        // Bits already pinned by previous passes. Pass 0 pins nothing; the
+        // shift would be 32 (UB), hence the explicit zero.
+        const unsigned int mask_hi =
+            (pass == 0) ? 0u : (0xFFFFFFFFu << (shift + 8u));
+
+        for (unsigned int i = tid; i < 256u; i += QSA_TOPK_THREADS) s_hist[i] = 0u;
+        __syncthreads();
+
+        for (unsigned int i = tid; i < complete; i += QSA_TOPK_THREADS) {
+            const unsigned int b = __float_as_uint(row[i]);
+            if ((b & mask_hi) == s_prefix) {
+                atomicAdd(&s_hist[(b >> shift) & 0xFFu], 1u);
+            }
+        }
+        __syncthreads();
+
+        // Walk buckets high->low until the K-th element's bucket is reached.
+        if (tid == 0) {
+            unsigned int acc = 0u;
+            unsigned int chosen = 0u;
+            for (int d = 255; d >= 0; --d) {
+                const unsigned int c = s_hist[d];
+                if (acc + c >= s_need) { chosen = (unsigned int)d; break; }
+                acc += c;
+            }
+            s_above += acc;                 // strictly above the chosen bucket
+            s_need -= acc;                  // remaining, all inside it
+            s_prefix |= chosen << shift;
+        }
+        __syncthreads();
+    }
+
+    // s_prefix is now the exact bit pattern of the K-th largest score.
+    const unsigned int thresh = s_prefix;
+
+    // ── emit everything strictly greater ──
+    if (tid == 0) s_emitted = 0u;
+    __syncthreads();
+    for (unsigned int i = tid; i < complete; i += QSA_TOPK_THREADS) {
+        if (__float_as_uint(row[i]) > thresh) {
+            const unsigned int slot = atomicAdd(&s_emitted, 1u);
+            if (slot < topk) out[slot] = (int)i;
+        }
+    }
+    __syncthreads();
+
+    // ── fill the remainder from ties, LOWEST INDEX FIRST ──
+    // One warp walks in index order so the choice is deterministic and matches
+    // the host tie-break. Ties are the common case at the 0.0 floor, so this
+    // must not be an atomic race.
+    if (tid < 32u) {
+        unsigned int emitted = s_emitted;
+        for (unsigned int base = 0u; base < complete && emitted < topk; base += 32u) {
+            const unsigned int i = base + tid;
+            const bool tie = (i < complete) && (__float_as_uint(row[i]) == thresh);
+            const unsigned int ballot = __ballot_sync(0xFFFFFFFFu, tie);
+            if (ballot) {
+                // Rank within this 32-wide window, so lower index wins.
+                const unsigned int rank =
+                    __popc(ballot & ((1u << tid) - 1u));
+                if (tie && emitted + rank < topk) {
+                    out[emitted + rank] = (int)i;
+                }
+                emitted += __popc(ballot);
+            }
+        }
+        if (tid == 0) s_emitted = emitted < topk ? emitted : topk;
+    }
+    __syncthreads();
+
+    // Defensive: if the row somehow produced fewer than topk (impossible when
+    // complete > topk, but a silent short list would make the attention read
+    // stale ids), pad with block 0.
+    for (unsigned int i = s_emitted + tid; i < topk; i += QSA_TOPK_THREADS) {
+        out[i] = 0;
+    }
+    __syncthreads();
+
+    // ── canonicalise: ascending block id ──
+    // The emit pass assigned slots in atomicAdd race order; sorting makes the
+    // order a pure function of the SET (which is already deterministic: radix
+    // threshold + index-ordered tie fill), so the downstream fp32 accumulation
+    // order — and with it temp-0 prefill — is bit-reproducible. Ascending is
+    // also decode's canonical order. Bitonic over the next power of two,
+    // INT_MAX-padded; the pad sorts to the tail and is never written back.
+    __shared__ int s_sort[QSA_TOPK_SORT_MAX];
+    unsigned int n = 1u;
+    while (n < topk) n <<= 1u;
+    if (n <= QSA_TOPK_SORT_MAX) {
+        for (unsigned int i = tid; i < n; i += QSA_TOPK_THREADS) {
+            s_sort[i] = (i < topk) ? out[i] : 0x7FFFFFFF;
+        }
+        __syncthreads();
+        for (unsigned int k = 2u; k <= n; k <<= 1u) {
+            for (unsigned int j = k >> 1u; j > 0u; j >>= 1u) {
+                for (unsigned int i = tid; i < n; i += QSA_TOPK_THREADS) {
+                    const unsigned int ixj = i ^ j;
+                    if (ixj > i) {
+                        const bool up = ((i & k) == 0u);
+                        const int a = s_sort[i];
+                        const int b = s_sort[ixj];
+                        if ((a > b) == up) { s_sort[i] = b; s_sort[ixj] = a; }
+                    }
+                }
+                __syncthreads();
+            }
+        }
+        for (unsigned int i = tid; i < topk; i += QSA_TOPK_THREADS) {
+            out[i] = s_sort[i];
+        }
+    }
+}
+
+// ── QSA decode selection: sort + expand, on device ─────────────────────────
+//
+// The DECODE consumer differs from prefill's. `qsa_prefill_attn` reads the
+// block-id list directly and softmaxes over the set, so `qsa_topk_rows`
+// leaves the order within the list unspecified. Decode instead EXPANDS the
+// chosen blocks into a token-index array which `qsa_gather` packs into
+// contiguous scratch, and that scratch — viewed through an identity block
+// table — is handed to the stock paged decode attention. The host code this
+// replaces did `blocks.sort_unstable()` before expanding, so the scratch slot
+// order was ascending by position. Softmax is order-invariant and the decode
+// call passes sliding_window = 0 (no position-dependent masking), so only the
+// SET changes the math — but the accumulation order is not bit-invariant, and
+// "identical to the host path" is the correctness bar here. The ascending
+// sort is therefore reproduced exactly rather than dropped.
+//
+// One block per query row. topk <= QSA_EXPAND_MAX_K; the ids go through a
+// bitonic sort in shared memory, padded to a power of two with INT_MAX which
+// sorts to the tail and is never read back.
+//
+// This kernel also writes `seq_lens` and the identity block table, both pure
+// functions of host-known quantities. Emitting them here makes the whole
+// decode selection transfer-free: at 12 full-attention layers and C
+// sequences that removes 12*C small pageable H2Ds per decode step, on top of
+// the D2H stream drain the device top-k removed.
+//
+// Rows are addressed like `qsa_topk_rows`: row r's visible prefix is
+// `first_pos + r + 1` unless `visible_rows` is non-null, in which case it is
+// `visible_rows[r]` — the shape a batched multi-sequence decode needs, where
+// rows are independent sequences at unrelated lengths.
+
+#define QSA_EXPAND_THREADS 256
+#define QSA_EXPAND_MAX_K 512
+
+extern "C" __global__ __launch_bounds__(QSA_EXPAND_THREADS) void qsa_expand_sel(
+    const int* __restrict__ lists,        // [rows, topk] block ids, any order
+    const int* __restrict__ visible_rows, // [rows] visible prefix, or null
+    int* __restrict__ sel,                // [rows, sel_stride] token indices
+    int* __restrict__ seq_lens,           // [rows] n_sel, or null
+    int* __restrict__ tables,             // [rows, table_stride], or null
+    unsigned int topk,
+    unsigned int ratio,
+    unsigned int first_pos,               // GLOBAL position of row 0
+    unsigned int sel_stride,
+    unsigned int table_stride,
+    unsigned int block_size)
+{
+    const unsigned int r = blockIdx.x;
+    const unsigned int tid = threadIdx.x;
+    const int* __restrict__ in = lists + (size_t)r * topk;
+    int* __restrict__ out = sel + (size_t)r * sel_stride;
+
+    const unsigned int visible =
+        visible_rows ? (unsigned int)visible_rows[r] : (first_pos + r + 1u);
+    const unsigned int complete = visible / ratio;
+    const unsigned int n_sel = topk * ratio + (visible - complete * ratio);
+
+    __shared__ int s[QSA_EXPAND_MAX_K];
+
+    unsigned int n = 1u;
+    while (n < topk) n <<= 1;
+    for (unsigned int i = tid; i < n; i += QSA_EXPAND_THREADS) {
+        s[i] = (i < topk) ? in[i] : 0x7FFFFFFF;
+    }
+    __syncthreads();
+
+    // Bitonic sort, ascending. A stage's compare-exchange pairs are disjoint,
+    // so one barrier per stage suffices and none is needed inside it.
+    for (unsigned int k = 2u; k <= n; k <<= 1) {
+        for (unsigned int j = k >> 1; j > 0u; j >>= 1) {
+            for (unsigned int i = tid; i < n; i += QSA_EXPAND_THREADS) {
+                const unsigned int ixj = i ^ j;
+                if (ixj > i) {
+                    const bool up = ((i & k) == 0u);
+                    const int a = s[i];
+                    const int b = s[ixj];
+                    if ((a > b) == up) { s[i] = b; s[ixj] = a; }
+                }
+            }
+            __syncthreads();
+        }
+    }
+
+    // sel[i] = block[i / ratio] * ratio + (i % ratio), then the tail tokens
+    // complete*ratio .. visible — byte-for-byte the host expansion.
+    for (unsigned int i = tid; i < topk * ratio; i += QSA_EXPAND_THREADS) {
+        out[i] = s[i / ratio] * (int)ratio + (int)(i % ratio);
+    }
+    for (unsigned int i = topk * ratio + tid; i < n_sel; i += QSA_EXPAND_THREADS) {
+        out[i] = (int)(complete * ratio + (i - topk * ratio));
+    }
+
+    if (seq_lens && tid == 0) seq_lens[r] = (int)n_sel;
+    if (tables) {
+        // Identity for a single row; for a shared multi-row scratch pool the
+        // row's pages start at r * table_stride, which is what this writes.
+        const unsigned int pages = (n_sel + block_size - 1u) / block_size;
+        for (unsigned int i = tid; i < pages && i < table_stride;
+             i += QSA_EXPAND_THREADS) {
+            tables[(size_t)r * table_stride + i] = (int)(r * table_stride + i);
+        }
+    }
+}
+// ── Tensor-core `qsa_prefill_attn`. Same result, one CTA per QUERY ROW. ──
+//
+// The shipped scalar kernel launches one CTA per (row, HEAD) and, inside,
+// gives ONE WARP to ONE TOKEN: 8 FMAs per lane, then a six-shuffle tree to
+// reduce them, per token, per head. nsys (2026-09-12, TP=2 x EP=2, chunk
+// 8192) put it at 23.4% of an 8K prefill and 24.1% at 64K — 26.6 ms/call for
+// 51.5 GFLOP, i.e. **1.94 TFLOP/s**, about 5% of what the CUDA cores alone
+// can do. It is not bandwidth: at 8K the whole visible K/V is ~8 MB. It is
+// the reduction tree and the one-token-per-warp serialisation.
+//
+// Two facts make the tensor-core form fall out:
+//   * `nkv == 1` on a TP=2 rank, so `kvh = qh / (nq/nkv)` is 0 for EVERY
+//     head — all 12 query heads read the SAME K/V rows. The scalar grid
+//     re-streams them once per head.
+//   * `lists` is indexed `lists + r * topk` — the selected set is per ROW,
+//     not per head. So every head of a row attends the same tokens.
+// One row is therefore a dense little attention problem, Q[nq,hd] against
+// the row's own gathered K/V — no list union, no cross-row approximation,
+// and the selected set is EXACTLY the scalar kernel's.
+//
+// Shape: Q [16 (nq<=16, padded), 256] x K^T [256, TB] -> S [16, TB], then
+// P [16, TB] x V [TB, 256] -> O [16, 256], flash-style online softmax over
+// token tiles. m16n8k16.row.col throughout, fp32 accumulate, lane mapping
+// cribbed from `qsa_score_rows_tc` above (A rows gid/gid+8, A cols
+// d0+tid*2 (+8), B n = gid, B k = d0+tid*2 (+8), D[gid+8*part][tid*2+cc]
+// = acc[2*part+cc]).
+//
+// OCCUPANCY — why K and V SHARE one buffer. The first cut gave each its own
+// (sKT 36864 + sV 33792 + Q/P/S), 85952 B per CTA. The sm_121 opt-in ceiling
+// is 101376 B and an SM has 102400, so that is ONE CTA PER SM: 8 warps, no
+// second block to hide latency behind, where the scalar kernel's ~8 KB let
+// many CTAs stay resident. It measured +4.4% end-to-end against a 23.4%
+// profile share — the mma win was real and the occupancy loss ate most of it.
+// K and V are used in DISJOINT phases of a tile (K only for QK^T, V only for
+// PV), so they now alias one `sKV` buffer sized to the larger, and the tile
+// re-sequences to gather K, score, soften, gather V, accumulate. That costs
+// one extra __syncthreads and splits the gather in two — the same bytes read,
+// just later — and takes the CTA to 50112 B, which is TWO CTAs per SM.
+// Padding is chosen for bank behaviour, not just size: sQ keeps pad 8 because
+// its A-fragment reads stride by `gid` and a 256-element row makes all eight
+// gids land on one bank (an 8-way conflict); 264 elements spreads them.
+//
+// PRECISION. q, k and v are ALL bf16 in memory already, so the QK^T mma is
+// exact where the scalar path was (it widened the same bf16 to f32 and did
+// f32 FMAs; mma does bf16 inputs with an f32 accumulator). The one place
+// this loses ground is P: the scalar path keeps probabilities in f32, and
+// the PV mma needs them in bf16 (~8 mantissa bits). Measured against the same
+// CPU reference the scalar kernel is held to: worst cos 0.999997 vs the
+// scalar's 0.999998, so the hi/lo split `qsa_score_rows_tc` needs for q is
+// not needed here. If that ever changes, split P rather than reverting.
+// Softmax is order-invariant and rope is baked into cached K, so this equals
+// the reference mask, exactly as the scalar kernel's own comment claims.
+//
+// Grid: (rows)  Block: (256) = 8 warps.
+#define QSA_PATC_TB 64          // tokens per tile
+#define QSA_PATC_HD 256         // head_dim (checked at the call site)
+#define QSA_PATC_M 16           // mma M — nq padded to 16
+#define QSA_PATC_QPAD 8         // sQ row pad: kills an 8-way A-fragment conflict
+// sKV-as-K^T row pad. 2, not 4, and the reason is the STORE, not the size.
+// The gather reads k_cache coalesced but writes sKV[d*KT_ROW + j], striding by
+// KT_ROW across consecutive d. Bank = (d*(TB+KPAD) + j)/2 mod 32, so the pad
+// decides the stride in banks:
+//   KPAD 4 -> 68 elems -> d*34 mod 32 = d*2 -> banks 0,2,..30: 32 lanes into
+//             16 banks, a 2-way conflict on every K store of every tile;
+//   KPAD 2 -> 66 elems -> d*33 mod 32 = d   -> 32 lanes into 32 banks, none.
+// It is also 1024 B smaller. (sQ keeps pad 8 for the same class of reason on
+// its A-fragment read; V is stored row-contiguous and does not care.)
+#define QSA_PATC_KPAD 2
+#define QSA_PATC_VPAD 4         // sKV-as-V row pad
+#define QSA_PATC_PPAD 8
+extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
+    const __nv_bfloat16* __restrict__ q,        // [rows, nq, hd] (roped)
+    const __nv_bfloat16* __restrict__ k_cache,  // paged NHD
+    const __nv_bfloat16* __restrict__ v_cache,
+    const int* __restrict__ block_table,
+    const int* __restrict__ lists,              // [rows, topk] block ids
+    __nv_bfloat16* __restrict__ attn_out,       // [rows, nq, hd]
+    const unsigned int first_pos,
+    const unsigned int topk,
+    const unsigned int ratio,
+    const unsigned int block_size,
+    const unsigned int nq,
+    const unsigned int nkv,
+    const unsigned int hd,
+    const float inv_sqrt_d
+) {
+    const int TB = QSA_PATC_TB, HD = QSA_PATC_HD, M = QSA_PATC_M;
+    const int KT_ROW = TB + QSA_PATC_KPAD;   // sKV as K^T: [hd][TB+pad]
+    const int V_ROW  = HD + QSA_PATC_VPAD;   // sKV as V:   [TB][hd+pad]
+    const int Q_ROW  = HD + QSA_PATC_QPAD;
+    const int P_ROW  = TB + QSA_PATC_PPAD;
+    // Dynamic, not static: static __shared__ is capped at 49152 B. The Rust
+    // side's `QSA_PA_TC_SMEM` recomputes this same total from the same tile
+    // constants — keep the two in step.
+    extern __shared__ unsigned char smem_raw[];
+    __nv_bfloat16* sKV = (__nv_bfloat16*)smem_raw;          // K^T, then V
+    const size_t KV_ELEMS = (size_t)HD * KT_ROW > (size_t)TB * V_ROW
+                          ? (size_t)HD * KT_ROW : (size_t)TB * V_ROW;
+    __nv_bfloat16* sQ_ = sKV + KV_ELEMS;                    // M*(HD+QPAD)
+    __nv_bfloat16* sP_ = sQ_ + (size_t)M * Q_ROW;           // M*(TB+PPAD)
+    float* sS_   = (float*)(sP_ + (size_t)M * P_ROW);       // M*TB
+    float* sM    = sS_ + (size_t)M * TB;
+    float* sL    = sM + M;
+    float* sCorr = sL + M;
+    unsigned int* sTok = (unsigned int*)(sCorr + M);
+
+    const unsigned int r = blockIdx.x;
+    const unsigned int tidx = threadIdx.x, NT = 256;
+    const unsigned int warp = tidx >> 5, lane = tidx & 31u;
+    const unsigned int gid = lane >> 2, tid = lane & 3u;
+
+    const unsigned int pos = first_pos + r;
+    const unsigned int complete = (pos + 1) / ratio;
+    const unsigned int tail = (pos + 1) - complete * ratio;
+    const unsigned int n_tok = topk * ratio + tail;
+    const unsigned int row_elems = nkv * hd;
+    const unsigned long long page_stride = (unsigned long long)block_size * row_elems;
+
+    // Q tile: [nq, hd] for this row, zero-padded to 16 rows. Lives for the
+    // whole kernel; only K/V churn per tile.
+    for (unsigned int i = tidx; i < (unsigned int)(M * HD); i += NT) {
+        unsigned int h = i / HD, d = i % HD;
+        sQ_[(size_t)h * Q_ROW + d] =
+            (h < nq) ? q[((size_t)r * nq + h) * hd + d] : __float2bfloat16(0.0f);
+    }
+    for (unsigned int i = tidx; i < (unsigned int)M; i += NT) {
+        sM[i] = -1e30f; sL[i] = 0.0f;
+    }
+
+    // O accumulator: each warp owns 32 of the 256 output dims = 4 n-tiles.
+    float o[4][4];
+#pragma unroll
+    for (int t = 0; t < 4; t++)
+#pragma unroll
+        for (int e = 0; e < 4; e++) o[t][e] = 0.0f;
+
+    const int* my_list = lists + (size_t)r * topk;
+    __syncthreads();
+
+    for (unsigned int t0 = 0; t0 < n_tok; t0 += TB) {
+        const unsigned int n_this = min((unsigned int)TB, n_tok - t0);
+
+        // Token ids for this tile, resolved exactly as the scalar kernel does.
+        for (unsigned int j = tidx; j < (unsigned int)TB; j += NT) {
+            unsigned int t = t0 + j, tok = 0u;
+            if (j < n_this) {
+                tok = (t < topk * ratio)
+                    ? (unsigned int)my_list[t / ratio] * ratio + (t % ratio)
+                    : complete * ratio + (t - topk * ratio);
+            }
+            sTok[j] = tok;
+        }
+        __syncthreads();
+
+        // ── Phase A: sKV holds K^T. kvh is 0 (nkv == 1 is gated at the call
+        // site), so every head shares these rows.
+        for (unsigned int i = tidx; i < (unsigned int)(TB * HD); i += NT) {
+            unsigned int j = i / HD, d = i % HD;
+            __nv_bfloat16 kv = __float2bfloat16(0.0f);
+            if (j < n_this) {
+                unsigned int tok = sTok[j];
+                unsigned long long off =
+                    (unsigned long long)(unsigned int)block_table[tok / block_size] * page_stride
+                    + (unsigned long long)(tok % block_size) * row_elems;
+                kv = k_cache[off + d];
+            }
+            sKV[(size_t)d * KT_ROW + j] = kv;
+        }
+        __syncthreads();
+
+        // S[16, TB] = Q . K^T — each warp owns one 8-token n-tile.
+        {
+            float acc[4] = {0.f, 0.f, 0.f, 0.f};
+            const unsigned short* sA = (const unsigned short*)sQ_;
+            const unsigned short* sB = (const unsigned short*)sKV;
+            const unsigned int nc = warp * 8 + gid;   // token column
+#pragma unroll
+            for (int d0 = 0; d0 < HD; d0 += 16) {
+                unsigned int fr0 = gid, fr1 = gid + 8;
+                unsigned int fc0 = d0 + tid * 2, fc1 = fc0 + 8;
+                unsigned int a0 = ((unsigned int)sA[fr0*Q_ROW+fc0+1]<<16) | (unsigned int)sA[fr0*Q_ROW+fc0];
+                unsigned int a1 = ((unsigned int)sA[fr1*Q_ROW+fc0+1]<<16) | (unsigned int)sA[fr1*Q_ROW+fc0];
+                unsigned int a2 = ((unsigned int)sA[fr0*Q_ROW+fc1+1]<<16) | (unsigned int)sA[fr0*Q_ROW+fc1];
+                unsigned int a3 = ((unsigned int)sA[fr1*Q_ROW+fc1+1]<<16) | (unsigned int)sA[fr1*Q_ROW+fc1];
+                unsigned int k0 = d0 + tid * 2, k1 = k0 + 8;
+                unsigned int b0 = ((unsigned int)sB[(k0+1)*KT_ROW+nc]<<16) | (unsigned int)sB[k0*KT_ROW+nc];
+                unsigned int b1 = ((unsigned int)sB[(k1+1)*KT_ROW+nc]<<16) | (unsigned int)sB[k1*KT_ROW+nc];
+                asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
+                    :"=f"(acc[0]),"=f"(acc[1]),"=f"(acc[2]),"=f"(acc[3])
+                    :"r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1),
+                     "f"(acc[0]),"f"(acc[1]),"f"(acc[2]),"f"(acc[3]));
+            }
+            // D[gid + 8*part][tid*2 + cc] = acc[2*part + cc], n-tile at warp*8.
+#pragma unroll
+            for (int part = 0; part < 2; part++) {
+#pragma unroll
+                for (int cc = 0; cc < 2; cc++) {
+                    unsigned int row = gid + part * 8;
+                    unsigned int col = warp * 8 + tid * 2 + cc;
+                    if (col < (unsigned int)TB)
+                        sS_[(size_t)row * TB + col] =
+                            (col < n_this) ? acc[2*part+cc] * inv_sqrt_d : -1e30f;
+                }
+            }
+        }
+        __syncthreads();
+
+        // Online softmax: one warp per two rows, over this tile's TB scores.
+        for (unsigned int row = warp * 2; row < (unsigned int)M && row < warp * 2 + 2; row++) {
+            float mx = -1e30f;
+            for (unsigned int c = lane; c < (unsigned int)TB; c += 32)
+                mx = fmaxf(mx, sS_[(size_t)row * TB + c]);
+#pragma unroll
+            for (int o2 = 16; o2 > 0; o2 >>= 1) mx = fmaxf(mx, __shfl_down_sync(0xFFFFFFFFu, mx, o2));
+            mx = __shfl_sync(0xFFFFFFFFu, mx, 0);
+            const float m_old = sM[row];
+            const float m_new = fmaxf(m_old, mx);
+            float sum = 0.0f;
+            for (unsigned int c = lane; c < (unsigned int)TB; c += 32) {
+                float p = (c < n_this) ? __expf(sS_[(size_t)row * TB + c] - m_new) : 0.0f;
+                sP_[(size_t)row * P_ROW + c] = __float2bfloat16(p);
+                sum += p;
+            }
+#pragma unroll
+            for (int o2 = 16; o2 > 0; o2 >>= 1) sum += __shfl_down_sync(0xFFFFFFFFu, sum, o2);
+            sum = __shfl_sync(0xFFFFFFFFu, sum, 0);   // every lane must reach this
+            if (lane == 0) {
+                const float corr = __expf(m_old - m_new);
+                sCorr[row] = corr;
+                sM[row] = m_new;
+                sL[row] = sL[row] * corr + sum;
+            }
+        }
+        __syncthreads();
+
+        // Rescale the carried output while sKV is still K — the read of sCorr
+        // is the only thing phase B needs from phase A.
+        {
+            const float c0 = sCorr[gid], c1 = sCorr[gid + 8];
+#pragma unroll
+            for (int nt = 0; nt < 4; nt++) {
+                o[nt][0] *= c0; o[nt][1] *= c0;
+                o[nt][2] *= c1; o[nt][3] *= c1;
+            }
+        }
+        __syncthreads();   // everyone is done reading K^T before V overwrites it
+
+        // ── Phase B: sKV now holds V, natural [token][dim].
+        for (unsigned int i = tidx; i < (unsigned int)(TB * HD); i += NT) {
+            unsigned int j = i / HD, d = i % HD;
+            __nv_bfloat16 vv = __float2bfloat16(0.0f);
+            if (j < n_this) {
+                unsigned int tok = sTok[j];
+                unsigned long long off =
+                    (unsigned long long)(unsigned int)block_table[tok / block_size] * page_stride
+                    + (unsigned long long)(tok % block_size) * row_elems;
+                vv = v_cache[off + d];
+            }
+            sKV[(size_t)j * V_ROW + d] = vv;
+        }
+        __syncthreads();
+
+        // O += P . V
+        {
+            const unsigned short* sA = (const unsigned short*)sP_;
+            const unsigned short* sB = (const unsigned short*)sKV;
+#pragma unroll
+            for (int nt = 0; nt < 4; nt++) {
+                const unsigned int nc = warp * 32 + nt * 8 + gid;   // output dim
+#pragma unroll
+                for (int k0 = 0; k0 < TB; k0 += 16) {
+                    unsigned int fr0 = gid, fr1 = gid + 8;
+                    unsigned int fc0 = k0 + tid * 2, fc1 = fc0 + 8;
+                    unsigned int a0 = ((unsigned int)sA[fr0*P_ROW+fc0+1]<<16) | (unsigned int)sA[fr0*P_ROW+fc0];
+                    unsigned int a1 = ((unsigned int)sA[fr1*P_ROW+fc0+1]<<16) | (unsigned int)sA[fr1*P_ROW+fc0];
+                    unsigned int a2 = ((unsigned int)sA[fr0*P_ROW+fc1+1]<<16) | (unsigned int)sA[fr0*P_ROW+fc1];
+                    unsigned int a3 = ((unsigned int)sA[fr1*P_ROW+fc1+1]<<16) | (unsigned int)sA[fr1*P_ROW+fc1];
+                    unsigned int kk0 = k0 + tid * 2, kk1 = kk0 + 8;
+                    unsigned int b0 = ((unsigned int)sB[(kk0+1)*V_ROW+nc]<<16) | (unsigned int)sB[kk0*V_ROW+nc];
+                    unsigned int b1 = ((unsigned int)sB[(kk1+1)*V_ROW+nc]<<16) | (unsigned int)sB[kk1*V_ROW+nc];
+                    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
+                        :"=f"(o[nt][0]),"=f"(o[nt][1]),"=f"(o[nt][2]),"=f"(o[nt][3])
+                        :"r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1),
+                         "f"(o[nt][0]),"f"(o[nt][1]),"f"(o[nt][2]),"f"(o[nt][3]));
+                }
+            }
+        }
+        __syncthreads();   // V must survive until every warp's PV mma is done
+    }
+
+    // Epilogue: divide by l and write [nq, hd] for this row.
+#pragma unroll
+    for (int nt = 0; nt < 4; nt++) {
+#pragma unroll
+        for (int part = 0; part < 2; part++) {
+            unsigned int h = gid + part * 8;
+            if (h >= nq) continue;
+            const float inv_l = 1.0f / sL[h];
+#pragma unroll
+            for (int cc = 0; cc < 2; cc++) {
+                unsigned int d = warp * 32 + nt * 8 + tid * 2 + cc;
+                attn_out[((size_t)r * nq + h) * hd + d] =
+                    __float2bfloat16(o[nt][2*part+cc] * inv_l);
+            }
+        }
+    }
+}

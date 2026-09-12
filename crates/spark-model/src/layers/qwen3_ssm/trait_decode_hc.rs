@@ -99,6 +99,7 @@ impl Qwen3SsmLayer {
             ple.forward(st, streams, 1, false, ctx, stream)?;
         }
         stage!("ple");
+        super::debug::hc_stage_probe(ctx, "dec_ple", streams, hc_mult as usize * h, true, stream);
 
         // ── GDN sublayer. `hidden` is scratch; the highway carries state. ──
         ops::hc_pre_site(
@@ -117,11 +118,13 @@ impl Qwen3SsmLayer {
             stream,
         )?;
         stage!("hc_pre_attn");
+        super::debug::hc_stage_probe(ctx, "dec_pre_attn", hidden, h, false, stream);
         // No `input_norm`: `hc_norm` inside `hc_pre` is this layer's norm.
         // The checkpoint carries no per-layer norms and the loader's
         // ones-placeholder would NOT make a second RMS pass an identity.
         let ssm_out = self.ssm_forward(hidden, ssm_state, ctx, stream, false)?;
         stage!("ssm_forward");
+        super::debug::hc_stage_probe(ctx, "dec_ssm_out", ssm_out, h, false, stream);
         ops::hc_post_site(
             ctx.gpu,
             self.hc_post_k,
@@ -153,8 +156,10 @@ impl Qwen3SsmLayer {
             stream,
         )?;
         stage!("hc_post+hc_pre_ffn");
+        super::debug::hc_stage_probe(ctx, "dec_pre_ffn", hidden, h, false, stream);
         let moe_out = self.ffn.forward(hidden, ctx, stream)?;
         stage!("moe");
+        super::debug::hc_stage_probe(ctx, "dec_moe_out", moe_out, h, false, stream);
         ops::hc_post_site(
             ctx.gpu,
             self.hc_post_k,
@@ -168,6 +173,7 @@ impl Qwen3SsmLayer {
             h as u32,
             stream,
         )?;
+        super::debug::hc_stage_probe(ctx, "dec_end", streams, hc_mult as usize * h, true, stream);
 
         Ok(())
     }

@@ -1,0 +1,5 @@
+=== arm default start 2026-09-07T20:50:44Z
+env: <none>
+READY after ~52s
+2026-09-07T20:51:29.853630Z  INFO spark_model::layers::moe::ptr_table_build: EXL3 native MoE state allocated: 5120 decode slots (512 tokens x top_k 10) + prefill batch 4096 tokens (fused C=6 x 1024 rows/expert [Env] = 78.6 MB temp slabs, overflow chunk 1024), 
+2026-09-07T20:51:29.872278Z  INFO spark_model::layers::ops::exl3_dense::reconstruct: EXL3 dense reconstruct tier ARMED: calls with m >= 512 rows reconstruct the trellis weight to BF16 once and run dense_gemm_bf16_pipelined; scratch 302.0 MB (f16 [in, out] + bf

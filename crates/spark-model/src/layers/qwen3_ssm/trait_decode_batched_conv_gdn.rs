@@ -93,6 +93,55 @@ pub(super) struct ConvGdnArgs {
 }
 
 impl Qwen3SsmLayer {
+    /// Build [`ConvGdnArgs`] for a row-0-based call (`GdnStates::Single` and
+    /// the replay reconstruction).
+    ///
+    /// Every field but the two input buffers is derived from `ctx.config` or
+    /// `self`, identically at both call sites — shared here so a dim change
+    /// cannot land at one and miss the other.
+    pub(super) fn conv_gdn_args_single(
+        &self,
+        ctx: &ForwardContext,
+        num_tokens: usize,
+        deinterleaved: DevicePtr,
+        gates_buf: DevicePtr,
+        stream: u64,
+    ) -> ConvGdnArgs {
+        let nk = ctx.config.linear_num_key_heads;
+        let kd = ctx.config.linear_key_head_dim;
+        let nv = ctx.config.linear_num_value_heads;
+        let vd = ctx.config.linear_value_head_dim;
+        let key_dim = nk * kd;
+        let value_dim = nv * vd;
+        let conv_dim = key_dim * 2 + value_dim;
+        let conv_out_buf = ctx.buffers.ssm_qkvz();
+        ConvGdnArgs {
+            num_tokens,
+            deinterleaved,
+            gates_buf,
+            conv_out_buf,
+            gdn_out_buf: ctx.buffers.attn_output(),
+            // row0 == 0: the normed base and conv base coincide.
+            normed_out: conv_out_buf,
+            h_bytes: self.h_slot_stride_bytes(),
+            conv_bytes: self.conv_state_bytes,
+            qkvz_size: ctx.config.ssm_qkvz_size(),
+            conv_dim,
+            key_dim,
+            value_dim,
+            d_conv: ctx.config.linear_conv_kernel_dim,
+            qk_ch: (key_dim * 2) as u32,
+            nk,
+            nv,
+            kd,
+            vd,
+            bf16: 2,
+            fp32: 4,
+            stream,
+        }
+    }
+
+
     /// STAGE 1: whether the fused K=2 MTP-verify epilogue (single-launch
     /// conv1d+L2norm and gated-RMS-norm for both draft positions) should run.
     ///
@@ -342,7 +391,49 @@ impl Qwen3SsmLayer {
         // state (~16 MB/layer/step vs ~120 KB of extra conv-row bytes). It
         // would NOT make spec-on bitwise-equal to spec-off; only
         // `--exact-verify` does that.
-        if super::verify_exact_enabled() {
+        //
+        // PASS-SCOPED (2026-09-03): the same exact chain also runs, WITHOUT
+        // the global flag, whenever the PASS declares
+        // `ForwardContext::gdn_exact_replay` — today only the mHC MTP verify
+        // (`model/trait_impl/verify_hc.rs`), whose row 0 re-processes an
+        // already-committed token and therefore MUST reproduce that token's
+        // serial `decode()` bit for bit. Measured on qwen3.8-flash-next
+        // (native EXL3, gamma=1): with the WY/BF16-conv arms the verify's
+        // row-0 logits matched serial decode 0/N; the exact chain is one of
+        // the three legs that takes it to N/N. Kill switch
+        // `ATLAS_NO_VERIFY_ROW_EXACT`. Phase 8 in `decode_batched_inner`
+        // reads the SAME predicate to skip its norm.
+        // ── Replay capture, before any arm ──
+        // `--ssm-rollback-mode replay` reconstructs a partial accept by
+        // re-running the accepted rows from the checkpoint, so it needs each
+        // row's INPUTS. Captured here rather than inside an arm: every arm
+        // dispatches from this function, and a captured row must not depend on
+        // which recurrence implementation ran.
+        //
+        // Rows 0..K-2 only — a partial accept replays at most K-1 tokens and a
+        // full accept replays nothing, which is how the ring is sized.
+        if !ssm_state.replay_inputs.is_empty() {
+            let nv_gate_bytes = nv * 2 * fp32;
+            for t in 0..num_tokens.saturating_sub(1) {
+                let Some(&dst) = ssm_state.replay_inputs.get(t) else {
+                    break;
+                };
+                ctx.gpu.copy_d2d_async(
+                    deinterleaved.offset(t * qkvz_size * bf16),
+                    dst,
+                    qkvz_size * bf16,
+                    ctx.gpu.default_stream(),
+                )?;
+                ctx.gpu.copy_d2d_async(
+                    gates_buf.offset(t * nv * 2 * fp32),
+                    dst.offset(qkvz_size * bf16),
+                    nv_gate_bytes,
+                    ctx.gpu.default_stream(),
+                )?;
+            }
+        }
+
+        if super::verify_row_exact_leg(ctx.gdn_exact_replay, super::RowExactLeg::ConvGdn) {
             return self.decode_batched_conv_gdn_exact(ssm_state, ctx, args);
         }
 
