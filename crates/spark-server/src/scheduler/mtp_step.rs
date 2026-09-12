@@ -303,6 +303,7 @@ pub fn step_mtp(
                 sched,
                 effective_num_drafts,
                 dflash_verify_raw_argmax,
+                model.is_ep(),
             )
         {
             tracing::debug!("lookup bootstrap: tok={tok} → drafts={:?}", a.pending_drafts);

@@ -144,30 +144,37 @@ impl LookupDrafter {
         self.tail.extend_from_slice(&tokens[len - n.min(len)..]);
     }
 
-    /// Propose exactly `width` tokens to follow `tokens`, or nothing.
+    /// Propose exactly `width` tokens to follow `tokens` + `next`, or nothing.
     ///
-    /// `tokens` is the committed sequence, prompt and generation together.
-    pub fn propose(&mut self, tokens: &[u32], width: usize) -> Vec<u32> {
+    /// `tokens` is the sequence the model has consumed, prompt and generation
+    /// together; `next` is the newest token, emitted but not yet fed (the
+    /// scheduler's `last_token`). The drafts are what followed the last
+    /// occurrence of `tokens[..] ++ [next]`'s tail, so draft 0 is the token
+    /// after `next`, never `next` itself.
+    pub fn propose(&mut self, tokens: &[u32], next: u32, width: usize) -> Vec<u32> {
         let len = tokens.len();
         let n = self.min_match;
-        if width == 0 || len < n + width {
+        if width == 0 || len + 1 < n + width {
             return Vec::new();
         }
         self.extend(tokens);
-        let suffix_start = len - n;
-        let suffix = &tokens[suffix_start..];
-        let Some(starts) = self.index.get(&Self::key(suffix)) else {
+        // The virtual sequence v = tokens ++ [next]; its last n-gram starts
+        // at v index len + 1 - n and ends with `next`.
+        let mut suffix: Vec<u32> = tokens[len + 1 - n..].to_vec();
+        suffix.push(next);
+        let suffix_start = len + 1 - n;
+        let Some(starts) = self.index.get(&Self::key(&suffix)) else {
             return Vec::new();
         };
         let mut best: Option<(usize, usize)> = None; // (match length, start)
         for &p in starts.iter().rev() {
             let p = p as usize;
-            // The hit needs `width` tokens after it that are not the suffix
-            // itself being proposed as its own continuation.
+            // The hit needs `width` tokens after it inside `tokens`, and it
+            // cannot be the suffix itself.
             if p + n + width > len || p == suffix_start {
                 continue;
             }
-            if tokens[p..p + n] != *suffix {
+            if tokens[p..p + n] != suffix[..] {
                 continue;
             }
             // Extend the match backwards; longer context, better draft.
@@ -175,7 +182,7 @@ impl LookupDrafter {
             while m < self.max_match
                 && p >= m + 1 - n
                 && suffix_start >= m + 1 - n
-                && tokens[p + n - 1 - m] == tokens[len - 1 - m]
+                && tokens[p + n - 1 - m] == tokens[len - m]
             {
                 m += 1;
             }
@@ -202,8 +209,8 @@ mod tests {
     fn repeats_the_continuation_of_the_latest_copy() {
         let mut d = LookupDrafter::new(3, 16);
         // [1 2 3] -> 4 5 the first time, [1 2 3] -> 7 8 the second time.
-        let t = vec![1, 2, 3, 4, 5, 9, 1, 2, 3, 7, 8, 9, 1, 2, 3];
-        assert_eq!(d.propose(&t, 2), vec![7, 8]);
+        let t = vec![1, 2, 3, 4, 5, 9, 1, 2, 3, 7, 8, 9, 1, 2];
+        assert_eq!(d.propose(&t, 3, 2), vec![7, 8]);
         assert_eq!(d.fired, 1);
     }
 
@@ -211,14 +218,14 @@ mod tests {
     fn longest_backward_match_beats_recency() {
         let mut d = LookupDrafter::new(3, 16);
         // Older copy shares 4 tokens of context, newer copy shares 3.
-        let t = vec![0, 1, 2, 3, 4, 5, 9, 9, 1, 2, 3, 6, 6, 9, 0, 1, 2, 3];
-        assert_eq!(d.propose(&t, 1), vec![4]);
+        let t = vec![0, 1, 2, 3, 4, 5, 9, 9, 1, 2, 3, 6, 6, 9, 0, 1, 2];
+        assert_eq!(d.propose(&t, 3, 1), vec![4]);
     }
 
     #[test]
     fn nothing_on_fresh_generation() {
         let mut d = LookupDrafter::new(3, 16);
-        assert!(d.propose(&[1, 2, 3, 4, 5, 6, 7, 8], 2).is_empty());
+        assert!(d.propose(&[1, 2, 3, 4, 5, 6, 7], 8, 2).is_empty());
         assert_eq!(d.fired, 0);
     }
 
@@ -227,35 +234,35 @@ mod tests {
         let mut d = LookupDrafter::new(3, 16);
         // The only earlier copy has four tokens after it; a width of five
         // cannot be filled, a width of four runs into the suffix itself.
-        let t = vec![1, 2, 3, 4, 1, 2, 3];
-        assert!(d.propose(&t, 5).is_empty());
-        assert_eq!(d.propose(&t, 4), vec![4, 1, 2, 3]);
+        let t = vec![1, 2, 3, 4, 1, 2];
+        assert!(d.propose(&t, 3, 4).is_empty());
+        assert_eq!(d.propose(&t, 3, 3), vec![4, 1, 2]);
     }
 
     #[test]
     fn the_suffix_is_not_its_own_continuation() {
         let mut d = LookupDrafter::new(2, 16);
-        let t = vec![5, 5, 5, 5];
+        let t = vec![5, 5, 5];
         // Hits at 0 and 1 continue with 5; the suffix start (2) is skipped.
-        assert_eq!(d.propose(&t, 1), vec![5]);
+        assert_eq!(d.propose(&t, 5, 1), vec![5]);
     }
 
     #[test]
     fn index_extends_incrementally_and_rebuilds_on_a_new_sequence() {
         let mut d = LookupDrafter::new(3, 16);
         let mut t = vec![1, 2, 3, 4, 5];
-        assert!(d.propose(&t, 1).is_empty());
+        assert!(d.propose(&t, 6, 1).is_empty());
         assert_eq!(d.indexed_len(), 5);
-        t.extend([1, 2, 3]);
-        assert_eq!(d.propose(&t, 1), vec![4]);
+        t.extend([6, 1, 2]);
+        assert_eq!(d.propose(&t, 3, 1), vec![4]);
         assert_eq!(d.indexed_len(), 8);
         // A different sequence of the same length: re-indexed, no stale hit.
-        let u = vec![9, 8, 7, 6, 5, 9, 8, 7];
-        assert_eq!(d.propose(&u, 1), vec![6]);
+        let u = vec![9, 8, 7, 6, 5, 4, 9, 8];
+        assert_eq!(d.propose(&u, 7, 1), vec![6]);
         assert_eq!(d.indexed_len(), 8);
         // A rollback shorter than the indexed prefix is re-indexed too.
-        let v = vec![9, 8, 7, 6, 9, 8, 7];
-        assert_eq!(d.propose(&v, 1), vec![6]);
+        let v = vec![9, 8, 7, 6, 5, 9, 8];
+        assert_eq!(d.propose(&v, 7, 1), vec![6]);
         assert_eq!(d.indexed_len(), 7);
     }
 
@@ -263,10 +270,10 @@ mod tests {
     fn matches_the_quadratic_proposer_on_its_own_cases() {
         // The cases `crate::ngram` tests, at the same minimum match.
         let mut d = LookupDrafter::new(2, 16);
-        assert_eq!(d.propose(&[1, 2, 3, 4, 5, 1, 2, 3], 1), vec![4]);
-        assert!(d.propose(&[1, 2, 3, 4, 5, 6, 7, 8], 1).is_empty());
-        assert!(d.propose(&[1, 2], 1).is_empty());
-        assert_eq!(d.propose(&[10, 20, 30, 10, 20, 30, 10, 20], 1), vec![30]);
+        assert_eq!(d.propose(&[1, 2, 3, 4, 5, 1, 2], 3, 1), vec![4]);
+        assert!(d.propose(&[1, 2, 3, 4, 5, 6, 7], 8, 1).is_empty());
+        assert!(d.propose(&[1], 2, 1).is_empty());
+        assert_eq!(d.propose(&[10, 20, 30, 10, 20, 30, 10], 20, 1), vec![30]);
     }
 
     #[test]
@@ -276,18 +283,20 @@ mod tests {
         let mut t: Vec<u32> = (0..100_000u32).map(|i| i.wrapping_mul(2_654_435_761) % 50_000 + 1_000).collect();
         let block: Vec<u32> = (0..64u32).map(|i| 60_000 + i).collect();
         t.extend(&block);
-        t.extend(&block[..8]);
+        t.extend(&block[..7]);
         let mut d = LookupDrafter::new(4, 16);
         let mut hits = 0;
+        // The newest token (block[7 + 2*step]) is `next`, not yet in `t`.
         for step in 0..28 {
-            let got = d.propose(&t, 2);
+            let next = block[7 + step * 2];
+            let got = d.propose(&t, next, 2);
             let want = block[8 + step * 2..8 + step * 2 + 2].to_vec();
             if got == want {
                 hits += 1;
             }
-            t.extend(&want);
+            t.push(next);
+            t.push(want[0]);
         }
         assert_eq!(hits, 28);
-        assert_eq!(d.indexed_len(), t.len() - 2);
     }
 }

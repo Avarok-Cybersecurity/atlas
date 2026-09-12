@@ -34,9 +34,15 @@ pub(super) fn take_lookup_drafts(
     sched: &SchedCtx,
     width: usize,
     dflash: bool,
+    ep: bool,
 ) -> bool {
+    // Off under expert parallelism: the drafter runs on rank 0 only, and a
+    // lookup step on rank 0 moved the Marconi prefix-cache anchors on both
+    // ranks of a TP=2 x EP=2 build (Richard's bisect, 2026-09-12). Until
+    // that is understood the gate stays single-rank.
     if !sched.levers.lookup_drafts
         || dflash
+        || ep
         || seq.grammar_state.is_some()
         || !WIDE_WIDTHS.contains(&width)
     {
@@ -46,7 +52,9 @@ pub(super) fn take_lookup_drafts(
     if !lookup.single_sequence() {
         return false;
     }
-    let drafts = lookup.propose(&seq.seq.tokens, width);
+    // `seq.tokens` holds the rows the model has consumed; the newest token
+    // is `last_token`, emitted and not yet fed. Drafts follow it.
+    let drafts = lookup.propose(&seq.seq.tokens, seq.last_token, width);
     if drafts.is_empty() {
         return false;
     }
@@ -88,8 +96,9 @@ mod tests {
     fn fires_at_the_wide_width_and_marks_the_sequence() {
         let sched = ctx_with(3);
         sched.lookup.borrow_mut().set_single_sequence(true);
-        let mut a = seq_with(&[1, 2, 3, 4, 5, 9, 1, 2, 3]);
-        assert!(take_lookup_drafts(&mut a, &sched, 2, false));
+        let mut a = seq_with(&[1, 2, 3, 4, 5, 9, 1, 2]);
+        a.last_token = 3;
+        assert!(take_lookup_drafts(&mut a, &sched, 2, false, false));
         assert_eq!(a.pending_drafts, vec![4, 5]);
         assert!(a.pending_drafts_lookup);
         assert!(a.pending_draft_conf.is_empty());
@@ -98,13 +107,15 @@ mod tests {
     #[test]
     fn stays_out_of_dflash_grammar_narrow_and_multi_sequence() {
         let sched = ctx_with(3);
-        let t = [1, 2, 3, 4, 5, 9, 1, 2, 3];
+        let t = [1, 2, 3, 4, 5, 9, 1, 2];
         let mut a = seq_with(&t);
-        assert!(!take_lookup_drafts(&mut a, &sched, 2, false), "not armed single");
+        a.last_token = 3;
+        assert!(!take_lookup_drafts(&mut a, &sched, 2, false, false), "not armed single");
         sched.lookup.borrow_mut().set_single_sequence(true);
-        assert!(!take_lookup_drafts(&mut a, &sched, 2, true), "dflash");
-        assert!(!take_lookup_drafts(&mut a, &sched, 1, false), "K=2 lane");
-        assert!(!take_lookup_drafts(&mut a, &sched, 4, false), "past the wide verify");
+        assert!(!take_lookup_drafts(&mut a, &sched, 2, true, false), "dflash");
+        assert!(!take_lookup_drafts(&mut a, &sched, 1, false, false), "K=2 lane");
+        assert!(!take_lookup_drafts(&mut a, &sched, 4, false, false), "past the wide verify");
+        assert!(!take_lookup_drafts(&mut a, &sched, 2, false, true), "expert parallel");
         assert!(a.pending_drafts.is_empty() && !a.pending_drafts_lookup);
     }
 
@@ -121,7 +132,8 @@ mod tests {
             crate::scheduler::helpers::WatchdogParams::default(),
         );
         sched.lookup.borrow_mut().set_single_sequence(true);
-        let mut a = seq_with(&[1, 2, 3, 4, 5, 9, 1, 2, 3]);
-        assert!(!take_lookup_drafts(&mut a, &sched, 2, false));
+        let mut a = seq_with(&[1, 2, 3, 4, 5, 9, 1, 2]);
+        a.last_token = 3;
+        assert!(!take_lookup_drafts(&mut a, &sched, 2, false, false));
     }
 }

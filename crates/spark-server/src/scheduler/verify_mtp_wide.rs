@@ -137,7 +137,7 @@ pub(super) fn finish(
         seq.finished = true;
         return;
     }
-    if super::lookup_gate::take_lookup_drafts(seq, sched, num_drafts, false) {
+    if super::lookup_gate::take_lookup_drafts(seq, sched, num_drafts, false, model.is_ep()) {
         return;
     }
     let grammar_mask = super::mtp_grammar_mask_for(seq);
