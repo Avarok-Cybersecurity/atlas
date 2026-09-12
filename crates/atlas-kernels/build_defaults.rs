@@ -42,6 +42,7 @@ pub(crate) struct Defaults {
     pub gdn_prefill_tc: bool,
     pub gdn_spine_vsplit: u32,
     pub ssm_ba_gates_hopper: bool,
+    pub fp8_act_quant_hopper: bool,
     pub ffn_gateup_fused: bool,
     pub attn_qkv_fused: bool,
     pub decode_split_silu: bool,
@@ -82,6 +83,7 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         // serving receipt on any target, so the baseline is "unchanged".
         gdn_spine_vsplit: 1,
         ssm_ba_gates_hopper: false,
+        fp8_act_quant_hopper: false,
         ffn_gateup_fused: false,
         attn_qkv_fused: false,
         decode_split_silu: true,
@@ -210,6 +212,7 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             "gdn_prefill_tc" => out.gdn_prefill_tc = boolean(key, value),
             "gdn_spine_vsplit" => out.gdn_spine_vsplit = unsigned(key, value),
             "ssm_ba_gates_hopper" => out.ssm_ba_gates_hopper = boolean(key, value),
+            "fp8_act_quant_hopper" => out.fp8_act_quant_hopper = boolean(key, value),
             "ffn_gateup_fused" => out.ffn_gateup_fused = boolean(key, value),
             "attn_qkv_fused" => out.attn_qkv_fused = boolean(key, value),
             "decode_split_silu" => out.decode_split_silu = boolean(key, value),
@@ -252,6 +255,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   gdn_prefill_tc: {gdn_tc},\n\
          \x20   gdn_spine_vsplit: {gdn_vsplit},\n\
          \x20   ssm_ba_gates_hopper: {ba_gates},\n\
+         \x20   fp8_act_quant_hopper: {act_quant},\n\
          \x20   ffn_gateup_fused: {gateup_fused},\n\
          \x20   attn_qkv_fused: {qkv_fused},\n\
          \x20   decode_split_silu: {split_silu},\n\
@@ -274,6 +278,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
         gdn_tc = d.gdn_prefill_tc,
         gdn_vsplit = d.gdn_spine_vsplit,
         ba_gates = d.ssm_ba_gates_hopper,
+        act_quant = d.fp8_act_quant_hopper,
         gateup_fused = d.ffn_gateup_fused,
         qkv_fused = d.attn_qkv_fused,
         split_silu = d.decode_split_silu,

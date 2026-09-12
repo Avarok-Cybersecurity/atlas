@@ -198,6 +198,7 @@ pub struct TargetLevers {
     pub gdn_prefill_tc: Resolved<bool>,
     pub gdn_spine_vsplit: Resolved<u32>,
     pub ssm_ba_gates_hopper: Resolved<bool>,
+    pub fp8_act_quant_hopper: Resolved<bool>,
     pub ffn_gateup_fused: Resolved<bool>,
     pub attn_qkv_fused: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
@@ -353,6 +354,19 @@ pub fn resolve(
         ssm_ba_gates_hopper: resolve_toggle(
             defaults.ssm_ba_gates_hopper,
             var("ATLAS_SSM_BA_GATES_HOPPER").as_deref(),
+            false,
+        ),
+        // The Hopper FP8 activation-quant twin (#928, round-16 receipt SS 2.1).
+        // Hopper declares it ON. Bit-identical to its gb10 parent, so like
+        // `ssm_ba_gates_hopper` this row carries no accuracy question and no
+        // `ATLAS_NO_*` legacy spelling — but UNLIKE it the row is not the whole
+        // rule: the twin is 0.76x-0.95x at M <= 25 for K in {5120, 6144}, so it
+        // also passes a CTA-count floor (`layers/ops/fp8_act_quant_floor.rs`)
+        // before it takes a launch. `ATLAS_FP8_ACT_QUANT_HOPPER=0` declines the
+        // twin at EVERY width, which is the A/B.
+        fp8_act_quant_hopper: resolve_toggle(
+            defaults.fp8_act_quant_hopper,
+            var("ATLAS_FP8_ACT_QUANT_HOPPER").as_deref(),
             false,
         ),
         // The fused dense-FFN gate+up decode GEMM (#927). Hopper declares it

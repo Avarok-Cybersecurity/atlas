@@ -20,7 +20,12 @@
 //!      `j < N`, and up column `j - N` above it, byte for byte. Same for the
 //!      SiLU consumer — `ops::silu_mul_strided` over the fused rows against
 //!      `moe_silu_mul` over the pair. Four KNOWN_BAD controls prove the
-//!      comparator can go red.
+//!      comparator can go red, AT EVERY `M` — round 16 ran them once, at the
+//!      first `M`, with one of them zeroing a cuBLASLt PAD row that was
+//!      already zero, so a green kernel failed the example and took M=8, M=16,
+//!      two further controls and every timing arm down with it (§2.2 of the
+//!      round-16 receipt). The controls and their arming proof now live in
+//!      `common/gateup_fused_controls.rs`.
 //!
 //!   2. THE PHANTOM ROWS. cuBLASLt is handed `ceil16(M) = 16` at every rung of
 //!      this band and WRITES rows `m..16`. Both arms are checked over the full
@@ -47,6 +52,12 @@ use spark_runtime::cuda_backend::AtlasCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use std::time::Instant;
 
+// The KNOWN_BAD controls, the spans they index and the host tests that prove
+// each one moves a graded byte at every `M` in `ROWS` (#927, round 16 §2.2).
+#[path = "common/gateup_fused_controls.rs"]
+mod controls;
+use controls::{BF16, GATEUP_CONTROLS, apply_control, half_spans, moved_bytes};
+
 const H: usize = 5120; // hidden / contraction width
 const INTER: usize = 17408; // intermediate — one half of the fused N
 const MAX_M: usize = 16; // the cuBLASLt M pad across the whole band
@@ -54,7 +65,6 @@ const ROWS: [usize; 3] = [5, 8, 16];
 const REPS: usize = 20;
 const GUARD: usize = 64; // sentinel bytes either side of every buffer
 const SENTINEL: u8 = 0x5a;
-const BF16: usize = 2;
 
 struct Rng(u64);
 
@@ -240,17 +250,11 @@ fn main() -> Result<()> {
     // every row of the buffer is compared, phantom rows included: a phantom
     // row that differed between the arms would be a real difference in a
     // serve, where those rows land in decode slots not in the step.
-    let half_spans = |row_stride: usize, col_off: usize| -> Vec<(usize, usize)> {
-        (0..MAX_M)
-            .map(|r| ((r * row_stride + col_off) * BF16, INTER * BF16))
-            .collect()
-    };
-    let contiguous = half_spans(INTER, 0);
-    let fused_gate = half_spans(2 * INTER, 0);
-    let fused_up = half_spans(2 * INTER, INTER);
+    let contiguous = half_spans(MAX_M, INTER, 0, INTER);
+    let fused_gate = half_spans(MAX_M, 2 * INTER, 0, INTER);
+    let fused_up = half_spans(MAX_M, 2 * INTER, INTER, INTER);
 
     let mut failures = 0usize;
-    let mut controls_done = false;
 
     for m in ROWS {
         println!("\n=== M = {m} (cuBLASLt pad = {MAX_M}) ===");
@@ -341,31 +345,26 @@ fn main() -> Result<()> {
             }
         }
 
-        if !controls_done {
-            // A green run has to be able to go red.
-            for control in ["one byte", "one row", "wrong half", "nonfinite"] {
-                let mut bad = fused_host.clone();
-                match control {
-                    "one byte" => bad[fused_gate[0].0 + 2] ^= 1,
-                    "one row" => {
-                        let (o, len) = fused_gate[MAX_M - 1];
-                        bad[o..o + len].fill(0);
-                    }
-                    // The layout error this gate exists to catch: reading the
-                    // up half where the gate half belongs.
-                    "wrong half" => {
-                        let (g, len) = fused_gate[0];
-                        let (u, _) = fused_up[0];
-                        bad.copy_within(u..u + len, g);
-                    }
-                    _ => bad[fused_gate[0].0..fused_gate[0].0 + 2]
-                        .copy_from_slice(&0x7fc0_u16.to_le_bytes()),
-                }
-                let err = equal_bytes(&bad, &gate_host, &fused_gate, &contiguous)
-                    .expect_err("known-bad output was admitted by the real oracle");
-                println!("  KNOWN_BAD {control}: refused: {err}");
-            }
-            controls_done = true;
+        // A green run has to be able to go red — at EVERY M, not once at the
+        // first one. The controls are cheap (host-side, on a clone of an
+        // already-downloaded buffer) and the thing they are sensitive to is
+        // exactly M: rows `m..MAX_M` are cuBLASLt pad, and a control that
+        // lands there grades nothing. `moved_bytes` is checked FIRST, so an
+        // inert perturbation now fails saying it perturbed nothing, instead of
+        // saying the oracle admitted a known-bad output (§2.2).
+        for control in GATEUP_CONTROLS {
+            let mut bad = fused_host.clone();
+            apply_control(control, &mut bad, m, &fused_gate, &fused_up);
+            let moved = moved_bytes(&bad, &fused_host, &fused_gate);
+            ensure!(
+                moved > 0,
+                "KNOWN_BAD {control} changed none of the bytes the gate half \
+                 grades at M={m} (pad rows are {m}..{MAX_M}) — the control is \
+                 inert and the refusal below would prove nothing"
+            );
+            let err = equal_bytes(&bad, &gate_host, &fused_gate, &contiguous)
+                .expect_err("known-bad output was admitted by the real oracle");
+            println!("  KNOWN_BAD {control}: moved {moved} graded byte(s), refused: {err}");
         }
 
         // ── time ──

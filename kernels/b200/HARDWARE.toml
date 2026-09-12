@@ -82,6 +82,13 @@ gdn_prefill_tc = false
 # omitted because absence would read as agreement with a baseline nobody chose.
 gdn_spine_vsplit = 1
 ssm_ba_gates_hopper = false
+# The Hopper FP8 activation-quant twin (#928, round 16). OFF for want of a
+# receipt, like every other row here — B200 must not inherit a Hopper recipe by
+# resemblance. The source is Hopper-owned and is NOT symlinked into this tree,
+# so the row is inert exactly as `gdn_decode_hopper` is. The twin's width floor
+# is `2 * sm_count` CTAs, which on 148 SMs would be a different threshold than
+# the one that was measured. See `kernels/hopper/HARDWARE.toml`.
+fp8_act_quant_hopper = false
 # The fused dense-FFN gate+up decode GEMM (#927). OFF for want of a receipt,
 # like every other row here — B200 must not inherit a Hopper recipe by
 # resemblance. The arm's strided-SiLU consumer is Hopper-owned and is NOT

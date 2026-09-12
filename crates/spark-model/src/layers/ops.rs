@@ -43,6 +43,10 @@ mod dispatch_proj_rowwise;
 mod embeddings;
 #[path = "ops/fp8_act_quant.rs"]
 mod fp8_act_quant;
+// WHEN the Hopper FP8 act-quant twin runs: the CTA floor, its lever and the
+// route line (#928, round-16 SS 2.1). A sibling so neither file crosses the cap.
+#[path = "ops/fp8_act_quant_floor.rs"]
+mod fp8_act_quant_floor;
 #[path = "ops/fp8_gemv_batch.rs"]
 mod fp8_gemv_batch;
 // Tensor-core W8A16 decode GEMM with a 16-row M tile (#927), the ALU-bound
@@ -214,6 +218,7 @@ pub use dispatch_proj_decode::*;
 pub use dispatch_proj_rowwise::*;
 pub use embeddings::*;
 pub use fp8_act_quant::*;
+pub use fp8_act_quant_floor::*;
 pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;
 pub use fp8_moe_batch_a::*;

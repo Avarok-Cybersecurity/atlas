@@ -20,7 +20,7 @@
 mod build_defaults;
 
 use build_defaults::{
-    BASELINE_SM_COUNT, Defaults, baseline, literal, parse_defaults, read_defaults, read_sm_count,
+    BASELINE_SM_COUNT, Defaults, baseline, parse_defaults, read_defaults, read_sm_count,
     sm_count_literal,
 };
 
@@ -143,6 +143,19 @@ fn hopper_declares_the_round_nine_recipe() {
         "the value-split spine ships OFF: it has no serving receipt, and a \
          default is a claim about a measurement"
     );
+    // The row round 16 adds (#928). ON, and for the same kind of reason as
+    // `ssm_ba_gates_hopper`: the twin is bit-identical, so the row is a speed
+    // claim only. It is the first row whose arm ALSO carries a width floor —
+    // measured 3.30-3.59x at M in {1168, 4576} and 0.76x-0.95x at M in
+    // {16, 17, 25} for K in {5120, 6144} — so `true` here arms a kernel that
+    // still declines its own launch below `2 * sm_count` CTAs.
+    assert!(
+        d.fp8_act_quant_hopper,
+        "the FP8 activation-quant twin is Hopper's default: 3.30-3.59x and \
+         63.7-68.4% of HBM at prefill widths against the parent's 18.6-19.1%, \
+         bit-identical, with the decode-width loss handled by the CTA floor \
+         rather than by this row (`FP8-ACT-QUANT-ATTRIBUTION.md`)"
+    );
     assert_eq!(d.ssm_decode_ring_slots, "auto");
     // The row round 13's attribution added (#928). `auto` is the split count
     // that fills 132 SMs at the single-stream shape; `legacy` is what was
@@ -262,6 +275,13 @@ fn b200_declares_the_conservative_table_not_hoppers() {
          it, so the row is inert here and must read false"
     );
     assert!(
+        !d.fp8_act_quant_hopper && declared("hopper").fp8_act_quant_hopper,
+        "the FP8 activation-quant twin is Hopper-only source; B200's common/ \
+         does not link it, so the row is inert here and must read false — and \
+         its floor is `2 * sm_count` CTAs, which on 148 SMs is a threshold \
+         nobody has measured"
+    );
+    assert!(
         !d.ffn_gateup_fused && declared("hopper").ffn_gateup_fused,
         "the fused gate+up decode GEMM is ON for Hopper on a Hopper receipt \
          (round 13 nsys) and OFF here for want of one — B200 also declares \
@@ -331,6 +351,10 @@ fn a_hopper_only_lever_is_still_declared_by_every_table() {
             // bool: gb10 and b200 declare `1` rather than omitting it, so an
             // absent split and a deliberate unsplit spine cannot look alike.
             "gdn_spine_vsplit",
+            // #928, round 16. Another hopper-only boolean, and the one whose
+            // arm also carries a width floor — the row says WHETHER, the
+            // floor says WHERE.
+            "fp8_act_quant_hopper",
             // #917. GB10 caps, hopper and b200 declare u32::MAX. The row is
             // mandatory everywhere for the same reason as the two above: an
             // absent cap and a deliberate no-cap must not look identical.
@@ -405,72 +429,9 @@ fn a_missing_hardware_toml_resolves_to_the_baseline() {
     );
 }
 
-// ── the generated constant ──
-
-/// The emitted `const` must be the initialiser `lib.rs` `include!`s — a
-/// `TargetDefaults` literal naming every field. Checked as text because the
-/// generator's output is compiled by a LATER rustc invocation, so a missing
-/// field would surface as an unrelated error in `atlas-kernels` rather than
-/// here.
-#[test]
-fn the_generated_constant_names_every_field() {
-    let generated = literal(&declared("hopper"));
-    assert!(generated.contains("pub const TARGET_DEFAULTS: TargetDefaults = TargetDefaults {"));
-    for field in [
-        "hw: \"hopper\"",
-        "cublas_gemm_scope: \"ffn,ssm,attn\"",
-        "ffn_batch16_tier: false",
-        "ffn_m16_tc: false",
-        "attn_m16_tc: true",
-        "attn_ncol_gemv: false",
-        "lm_head_m16_tc: true",
-        "lm_head_batchm_max: 16",
-        "ssm_batched_recurrent: true",
-        "gdn_decode_hopper: false",
-        "gdn_decode_strided_hopper: true",
-        "gdn_prefill_tc: true",
-        "ssm_ba_gates_hopper: true",
-        "ffn_gateup_fused: true",
-        "attn_qkv_fused: true",
-        "decode_split_silu: true",
-        "ssm_decode_ring_slots: \"auto\"",
-        "gdn_spine_vsplit: 1",
-    ] {
-        assert!(
-            generated.contains(field),
-            "generated constant is missing `{field}`:\n{generated}"
-        );
-    }
-}
-
-/// The constant this BINARY was built with is the one its own hardware tree
-/// declares. The join between the generator and the runtime: without it, a
-/// build script that wrote the wrong tree's table would pass every test above.
-#[test]
-fn the_baked_constant_matches_its_own_hardware_tree() {
-    let baked = atlas_kernels::TARGET_DEFAULTS;
-    // `ATLAS_SKIP_BUILD` (every CPU gate) with no `ATLAS_TARGET_HW` bakes the
-    // default tree. Whatever tree it is, its declaration must round-trip.
-    let declared = read_defaults(&kernels_root(), baked.hw);
-    assert_eq!(baked.hw, declared.hw);
-    assert_eq!(baked.cublas_gemm_scope, declared.cublas_gemm_scope);
-    assert_eq!(baked.ffn_batch16_tier, declared.ffn_batch16_tier);
-    assert_eq!(baked.ffn_m16_tc, declared.ffn_m16_tc);
-    assert_eq!(baked.attn_m16_tc, declared.attn_m16_tc);
-    assert_eq!(baked.attn_ncol_gemv, declared.attn_ncol_gemv);
-    assert_eq!(baked.lm_head_m16_tc, declared.lm_head_m16_tc);
-    assert_eq!(baked.lm_head_batchm_max, declared.lm_head_batchm_max);
-    assert_eq!(baked.ssm_batched_recurrent, declared.ssm_batched_recurrent);
-    assert_eq!(baked.gdn_decode_hopper, declared.gdn_decode_hopper);
-    assert_eq!(
-        baked.gdn_decode_strided_hopper,
-        declared.gdn_decode_strided_hopper
-    );
-    assert_eq!(baked.gdn_prefill_tc, declared.gdn_prefill_tc);
-    assert_eq!(baked.gdn_spine_vsplit, declared.gdn_spine_vsplit);
-    assert_eq!(baked.ssm_ba_gates_hopper, declared.ssm_ba_gates_hopper);
-    assert_eq!(baked.ffn_gateup_fused, declared.ffn_gateup_fused);
-    assert_eq!(baked.attn_qkv_fused, declared.attn_qkv_fused);
-    assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
-    assert_eq!(baked.ssm_decode_ring_slots, declared.ssm_decode_ring_slots);
-}
+/// The generated half — the emitted `const` and the constant this binary was
+/// baked with. A child module, not a sibling test binary: the #927/#928 merge
+/// carried this file past the 500-line cap and the two halves ask different
+/// questions of the same fixtures.
+#[path = "support/target_defaults_generated.rs"]
+mod generated;

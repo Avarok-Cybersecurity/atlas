@@ -66,7 +66,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
          gdn_decode_hopper={gdn_decode} \
          gdn_decode_strided_hopper={gdn_decode_strided} gdn_prefill_tc={gdn_tc} \
          gdn_spine_vsplit={gdn_vsplit}{gdn_vsplit_src} \
-         ssm_ba_gates_hopper={ba_gates} ffn_gateup_fused={gateup} \
+         ssm_ba_gates_hopper={ba_gates} fp8_act_quant_hopper={act_quant} \
+         ffn_gateup_fused={gateup} \
          attn_qkv_fused={qkv_fused} \
          decode_split_silu={silu} \
          ssm_decode_ring_slots={ring}{ring_src} \
@@ -88,6 +89,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         gdn_vsplit = l.gdn_spine_vsplit.value,
         gdn_vsplit_src = l.gdn_spine_vsplit.source.tag(),
         ba_gates = onoff(l.ssm_ba_gates_hopper),
+        act_quant = onoff(l.fp8_act_quant_hopper),
         gateup = onoff(l.ffn_gateup_fused),
         qkv_fused = onoff(l.attn_qkv_fused),
         silu = onoff(l.decode_split_silu),

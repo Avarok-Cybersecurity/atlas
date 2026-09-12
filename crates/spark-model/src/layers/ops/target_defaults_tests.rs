@@ -44,6 +44,7 @@ const GB10: TargetDefaults = TargetDefaults {
     gdn_prefill_tc: false,
     gdn_spine_vsplit: 1,
     ssm_ba_gates_hopper: false,
+    fp8_act_quant_hopper: false,
     ffn_gateup_fused: false,
     attn_qkv_fused: false,
     decode_split_silu: true,
@@ -71,6 +72,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     gdn_prefill_tc: true,
     gdn_spine_vsplit: 1,
     ssm_ba_gates_hopper: true,
+    fp8_act_quant_hopper: true,
     ffn_gateup_fused: true,
     attn_qkv_fused: true,
     decode_split_silu: true,
@@ -432,6 +434,12 @@ mod splitk;
 mod gateup;
 #[path = "target_defaults_qkv_fused_tests.rs"]
 mod qkv_fused;
+
+/// The `fp8_act_quant_hopper` row (#928, round 16). Same seam again: the row's
+/// declaration, its override and its reported spelling sit together, and the
+/// CTA-count floor it arms is graded next to them in `fp8_act_quant_tests.rs`.
+#[path = "target_defaults_actquant_tests.rs"]
+mod actquant;
 
 /// The serve log line (section 4). A child module for the same reason as
 /// `splitk` above: the #927 merge carried this file past the 500-line cap.
