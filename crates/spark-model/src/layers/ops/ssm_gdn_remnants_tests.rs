@@ -274,8 +274,77 @@ fn the_lever_is_off_until_asked_for() {
     assert_eq!(
         gdn_hopper_remnant_reject(false, false, true, 128, 128, 64),
         Some("not requested"),
-        "ATLAS_GDN_PREFILL_TC must default OFF — the parents stay the default"
+        "the TC prefill family must default OFF — the parents stay the default"
     );
+}
+
+/// The twins read the SPINE'S lever, not a second one of their own.
+///
+/// This is the bit the launcher hands `gdn_hopper_remnants`, taken here the
+/// same way `gdn_prefill_fla` takes it. It pins two things that a fresh
+/// `std::env::var("ATLAS_GDN_PREFILL_TC").is_ok()` at this layer would break,
+/// and which nothing else in the suite would notice:
+///
+///  * `ATLAS_GDN_PREFILL_TC=0` is an explicit OFF under the 2026-09-11
+///    grammar. A presence check would read it as ON and run a prefill whose
+///    twins were enabled and whose state spine was not — neither leg of the
+///    A/B the variable exists for;
+///  * the COMPILED TARGET's `[defaults] gdn_prefill_tc` is what applies when
+///    the variable is absent, so a target that one day declares it true gets
+///    the whole family, with no launch script to remember.
+///
+/// What is under test HERE is that the remnants are wired to THAT value —
+/// whatever it is. `kernels/hopper` declares it TRUE since round 13 and every
+/// other target declares it false, and this binary's own value depends on
+/// which tree it was compiled from, so the assertion is an IMPLICATION rather
+/// than a constant: lever on => the twins are asked for, lever off => refused
+/// with "not requested". Written that way deliberately — the previous spelling
+/// asserted `!spine` and would have had to be rewritten by whoever flipped the
+/// default, which is a test that grades the calendar rather than the wiring.
+/// Which value the TOML holds is `atlas-kernels`' own `target_defaults.rs`.
+#[test]
+fn the_twins_read_the_spines_resolved_lever() {
+    let spine = crate::layers::ops::target_defaults::resolved()
+        .gdn_prefill_tc
+        .value;
+    assert_eq!(
+        gdn_hopper_remnant_reject(spine, false, true, 128, 128, 64),
+        if spine { None } else { Some("not requested") },
+        "the twins must follow the spine's resolved lever ({spine}), not a \
+         lever of their own"
+    );
+}
+
+/// …and the family KILL SWITCH reaches the twins through that same bit. With
+/// `[defaults] gdn_prefill_tc` now true on Hopper, `ATLAS_GDN_PREFILL_TC=0` is
+/// what turns the WHOLE family off — spine and both twins — and this is the
+/// twins' half of that statement, decided without a GPU: a false spine bit
+/// refuses them whatever else is true, including a present handle and the
+/// production geometry.
+#[test]
+fn a_false_spine_bit_refuses_the_twins_whatever_else_holds() {
+    assert_eq!(
+        gdn_hopper_remnant_reject(false, false, true, 128, 128, 64),
+        Some("not requested"),
+    );
+    // …and the pick that follows it is the pre-#928 parent launch, byte for
+    // byte, which is what "the family is off" has to mean at the launch site.
+    let p = gdn_hopper_remnant_pick(
+        false,
+        false,
+        PARENT,
+        256,
+        33_024,
+        TWIN,
+        GDN_WU_HOPPER_SMEM,
+        128,
+        128,
+        64,
+    );
+    assert_eq!(p.kernel.0, PARENT.0);
+    assert_eq!(p.block, 256);
+    assert_eq!(p.smem, 33_024);
+    assert_eq!(p.reject, Some("not requested"));
 }
 
 /// Each refusal NAMES itself, so an A/B that silently fell back cannot be

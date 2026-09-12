@@ -375,12 +375,18 @@ fn the_production_geometry_is_accepted() {
     assert_eq!(gdn_tc_spine_reject(true, true, 128, 128, 64, 10240), None);
 }
 
+/// A FALSE resolved bit refuses the spine even with the kernel present and the
+/// production geometry — which is what `ATLAS_GDN_PREFILL_TC=0` has to mean now
+/// that `kernels/hopper` declares `[defaults] gdn_prefill_tc = true` (round 13)
+/// and the variable is the family's kill switch rather than its arming lever.
+/// The bit is RESOLVED by `target_defaults` and handed in; this layer never
+/// reads the environment, so "off" is one question with one answer here.
 #[test]
-fn the_lever_is_off_until_asked_for() {
+fn a_false_lever_refuses_the_spine() {
     assert_eq!(
         gdn_tc_spine_reject(false, true, 128, 128, 64, 10240),
         Some("not requested"),
-        "ATLAS_GDN_PREFILL_TC must default OFF — the scalar spine stays the default"
+        "a false resolved bit must keep the scalar spine, whatever else holds"
     );
 }
 

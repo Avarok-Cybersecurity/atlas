@@ -68,7 +68,9 @@ the identical algebra in scalar FP32; (1) and (3) are already equivalent.
 
 ## The lever, and what it measured
 
-`ATLAS_GDN_PREFILL_TC` (presence, default OFF) routes the spine to
+`[defaults] gdn_prefill_tc` — **true on `kernels/hopper` since round 13**,
+false on every other target, with `ATLAS_GDN_PREFILL_TC` overriding either
+way — routes the spine to
 `gated_delta_rule_chunk_delta_h_tcfuse_x2`: both per-chunk products on
 `mma.sync.m16n8k16`, bf16 operands, f32 accumulator — and that accumulator IS
 the recurrent state (64 registers per thread against the scalar spine's 128 of
@@ -76,6 +78,17 @@ live state). `h` stays f32 in memory; the decay math stays exact f32. Per CTA pe
 chunk: 512 MMAs for `W·S` (4 m-tiles × 16 n-tiles × 8 k-steps) + 512 for `Kᵀ·duc`
 (8 × 16 × 4), against 8192 scalar FMAs per thread. Grid `[nv, batch]` and block
 256 are unchanged.
+
+⚠️ **The variable was PRESENCE-gated and is now grammar-gated**, so
+`ATLAS_GDN_PREFILL_TC=0` means OFF where it used to mean ON. Every A/B in this
+document ran it as `=1` and is unaffected. On Hopper `=0` is now the arm that
+CHANGES anything: the family is the declared default there, and `=0` is the
+whole-family kill switch — spine and both remnant twins, because the twins read
+the same resolved bit. The kernel stays where it is —
+`kernels/gb10/common/gated_delta_rule_chunk_tc.cu`, shared and validated on
+GB10; the declaration gates the PROBE that loads it as well as the launch, so a
+target with the lever off does not ask the kernel audit about a module nothing
+can reach.
 
 **Numerics contract, measured** (`native_gdn_chunk_prefill_microtest`, GB10,
 nv=48, f64 CPU reference, 2026-09-11). Two operands are newly rounded to bf16:
@@ -109,7 +122,9 @@ chunks. `ptxas -v`: 243 regs / 0 spills at `sm_90a`, 255 / 0 at `sm_121a`,
 *larger* — a prediction, not a receipt. And the standing lesson on this kernel is
 that a spine change can read cos=1.0000 and still cost 1.4 BFCL points (the
 SPLIT=4 note in `gated_delta_rule_fla.cu`): promotion to default needs the
-ssm-poisoning tripwire. Hence opt-in.
+ssm-poisoning tripwire. Hence opt-in — until round 13 ran it on the hardware;
+see **The H100 answer** below, which is why `kernels/hopper` now declares the
+row true and `kernels/gb10` still does not.
 
 Not taken: (b) fusing `recompute_wu` into the delta-h pass — rejected, different
 grids, fusing would drag `wu` to 48 CTAs; (c) an H100 DV-split to lift 48 CTAs
@@ -226,12 +241,76 @@ Both also replace the parents' 128/64-element operand strides with padded
 136/72/24, because the parents' put all eight `grp` rows of every fragment read
 on one bank group.
 
-**What is NOT established.** No H100 has run either twin. Everything above about
-them is a compile-time receipt (`ptxas -v` at sm_90a, CUDA 13.0, `--fmad=false`,
-cross-compiled on gx10-a309 2026-09-11) plus host simulation of the index maps
-and of the limb arithmetic against an f64 reference
-(`crates/spark-model/src/layers/ops/ssm_gdn_remnants*_tests.rs`). No speedup is
-claimed, predicted or implied. `native_gdn_prefill_remnants_microtest` is the
-oracle that produces the runtime numbers and the numerics verdict; it SKIPS on
-every image but `kernels/hopper`, and the promotion bar is the one the spine
-already carries — the ssm-poisoning tripwire, not a cosine.
+**What was NOT established when the twins landed.** No H100 had run either of
+them: everything above was a compile-time receipt (`ptxas -v` at sm_90a, CUDA
+13.0, `--fmad=false`, cross-compiled on gx10-a309 2026-09-11) plus host
+simulation of the index maps and of the limb arithmetic against an f64
+reference (`crates/spark-model/src/layers/ops/ssm_gdn_remnants*_tests.rs`), and
+no speedup was claimed, predicted or implied. Round 13 supplied the hardware
+receipt; it is below.
+
+---
+
+# The H100 answer (round 13, 2026-09-11) — the family is Hopper's default
+
+1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8 @ `3c0379030` (196 sm_90a kernels),
+`h100-round13-report.md`. Three serve cells on ONE binary, one variable apart:
+**A** the control (family off), **T2** `ATLAS_GDN_PREFILL_TC=1
+ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` (spine only), **T1** `ATLAS_GDN_PREFILL_TC=1`
+(spine + both twins). Frozen ladder, temp 0 / seed 42, 1 warmup + 3 reps,
+`MAX_BATCH_SIZE=16`, client-side streaming TTFT.
+
+| metric | A (off) | T2 (spine only) | **T1 (whole family)** | T1 vs A | T1 vs T2 = the twins |
+|---|---|---|---|---|---|
+| 1193/256 C=1 TTFT | 269.1 ms | 184.7 | **162.4** | **-39.6%** | **-12.1%** |
+| 1193/256 C=16 agg | 429.05 tok/s | 498.71 | **521.19** | **+21.5%** | +4.5% |
+| 1193/256 C=16 TTFT | 2 279.9 ms | 1 571.2 | **1 372.8** | **-39.8%** | -12.6% |
+| 4593/512 C=1 TTFT | 889.3 ms | 565.0 | **491.5** | **-44.7%** | **-13.0%** |
+| 4593/512 C=16 agg | 308.86 tok/s | 383.52 | **405.91** | **+31.4%** | +5.8% |
+| 4593/512 C=16 TTFT | 7 524.7 ms | 4 786.1 | **4 145.5** | **-44.9%** | -13.4% |
+
+T1's short-prompt C=1 TTFT of **162.4 ms beats vLLM 0.28.0's 179 ms on the same
+box** — the first metric in this campaign where Atlas leads.
+
+**Quality.** Coherency 4/4 on T1 (`'391'`, `'Tokyo'`, `'rotaregirfer'` all OK);
+determinism **8/8 md5-identical across 3 runs**; zero content-loop, fuzzy or
+SimHash watchdog fires. Against the control, 5 of 7 coherency outputs are
+md5-identical and the two that differ differ cosmetically ("we can break the
+multiplication down" -> "you can…", "Thus" -> "Therefore"). T2 — the spine
+alone — is md5-identical to A on all 7, so the divergence belongs entirely to
+the twins and is at the bf16 storage floor.
+
+**Per-kernel attribution, nsys, T=4593 C=1, 96 launches each.** Two captures,
+identical recipe, `ATLAS_NO_GDN_PREFILL_TC_REMNANTS` the only difference:
+
+| kernel | T2 = gb10 parent | **T1 = Hopper twin** | speedup |
+|---|---|---|---|
+| `chunk_fwd_o` -> `chunk_fwd_o_hopper` | 71 548.4 µs (13.46% of busy) | **16 715.5 µs (3.63%)** | **4.28x** |
+| `recompute_wu` -> `recompute_wu_hopper` | 47 388.6 µs (8.91%) | **29 558.3 µs (6.43%)** | **1.60x** |
+| `chunk_delta_h_tcfuse_x2` (spine, same kernel both cells) | 51 775.3 µs | 52 060.3 µs | 0.99x *(control)* |
+| **GDN family total** | **170 712.3 µs (32.11%)** | **98 334.1 µs (21.38%)** | **1.74x** |
+| prefill GPU busy (union) | 531.6 ms | 459.9 ms | **-71.7 ms** |
+
+The shared spine kernel landing within 0.55% is the internal control that
+nothing else moved: the -71.7 ms of prefill busy is accounted for by the twins'
+-72.4 ms, every non-GDN row is unchanged to under 1% (`nvjet_sm90_…1x2_h`
+162 939 vs 162 961 µs; `per_token_group_quant_fp8` 47 659 vs 47 660 µs), and it
+shows up one-for-one in client TTFT (565.0 -> 491.5 ms). Against the pre-TC
+baseline for this shape — GDN chunk recurrence 376 ms, 32% of a 1 171 ms
+prefill — the family is now 98.3 ms, 21% of a 460 ms prefill: a **3.8x cut**.
+
+**Scope.** This is an H100 receipt and it changes ONE file's row:
+`kernels/hopper/HARDWARE.toml`. `kernels/gb10` and `kernels/b200` still declare
+`gdn_prefill_tc = false` — GB10 has ~48 SMs, the count the 48-CTA grid nearly
+fills, so the Hopper margin does not transfer by argument, and B200 has no
+serving receipt of any kind.
+
+**The oracle.** `native_gdn_prefill_remnants_microtest` is still where the
+twins' numerics verdict comes from; it SKIPS on every image but
+`kernels/hopper`. Round 13 was its first hardware run and it panicked before its
+first comparison on a harness unit error (`take(full, rows, per)` re-applies
+`NV`, and the caller passed `nt * NV`), so round 13's per-kernel numbers above
+are nsys, not the microtest — a better measurement of speed (the live engine at
+the real T) and no measurement at all of numerics, which live only in that
+example. The unit error is fixed and pinned by a host test at the microtest's
+own geometry (`examples/common/gdn_remnants.rs`).

@@ -39,11 +39,12 @@ const GB10: TargetDefaults = TargetDefaults {
 /// receipt (+6% on the serve, md5-identical output to the per-sequence
 /// launches). The head band deliberately holds at the frozen 8 — see
 /// `atlas-kernels/tests/target_defaults.rs`.
+/// `gdn_prefill_tc` is the row round 13 added to that recipe.
 const HOPPER: TargetDefaults = TargetDefaults {
     hw: "hopper",
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: true,
-    gdn_prefill_tc: false,
+    gdn_prefill_tc: true,
     decode_split_silu: true,
 };
 
@@ -82,6 +83,12 @@ fn hopper_resolves_its_recipe_from_an_empty_environment() {
          TARGET — an ` (env)` tag here would mean the log credits a prefix \
          nobody typed"
     );
+    assert!(
+        l.gdn_prefill_tc.value,
+        "round 13: the tensor-core GDN prefill family is the H100 default — \
+         C=1 TTFT -39.6%/-44.7%, C=16 aggregate +21.5%/+31.4%, coherency 4/4, \
+         determinism 8/8 x 3"
+    );
     assert!(l.decode_split_silu.value);
     assert_eq!(l.lm_head_batchm_max.value, 8);
     assert_eq!(l.hw, "hopper");
@@ -99,8 +106,10 @@ fn gb10_with_an_empty_environment_is_todays_behaviour() {
     assert!(!l.ssm_batched_recurrent.value);
     assert!(
         !l.gdn_prefill_tc.value,
-        "the scalar GDN prefill spine stays the default: the tensor-core arm \
-         reassociates the k-reduction and has no accuracy receipt"
+        "the scalar GDN prefill spine stays GB10's default. Round 13 promoted \
+         the tensor-core family on HOPPER, on an H100 receipt; a 48-SM GB10 is \
+         the part the 48-CTA grid nearly fills, so that number does not \
+         transfer by argument and this row waits for a GB10 A/B"
     );
     assert!(l.decode_split_silu.value);
     for source in [
@@ -154,7 +163,10 @@ fn a_declared_off_lever_is_still_armed_by_the_bare_one() {
 /// disarms it. Every recipe that ever set this variable set it to `1`
 /// (`GDN-PREFILL-ATTRIBUTION.md`'s A/B), so no existing recipe changes
 /// meaning — but a `=0` that silently re-armed the arm would be an accuracy
-/// change nobody typed, which is what this pins.
+/// change nobody typed, which is what this pins. Since round 13 flipped
+/// `kernels/hopper` to true this spelling is also the FAMILY kill switch —
+/// spine and both remnant twins, which read the same resolved bit
+/// (`ssm_gdn_remnants_tests::the_twins_read_the_spines_resolved_lever`).
 #[test]
 fn the_tensor_core_prefill_spine_reads_zero_as_off_not_as_present() {
     for off in ["0", "false", "off", "no", "OFF", " 0 "] {
@@ -230,7 +242,7 @@ fn the_summary_line_names_every_lever_and_flags_the_environment() {
         "sm_count=",
         "lm_head_batchm_max=12 (env)",
         "ssm_batched_recurrent=on",
-        "gdn_prefill_tc=off",
+        "gdn_prefill_tc=on",
         "decode_split_silu=on",
     ] {
         assert!(line.contains(field), "missing `{field}` in:\n{line}");

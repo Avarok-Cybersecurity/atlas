@@ -76,10 +76,13 @@ pub(super) fn wyn_f16_kernels(gpu: &dyn GpuBackend) -> [KernelHandle; 12] {
 /// launches it: `[defaults] gdn_prefill_tc`, with `ATLAS_GDN_PREFILL_TC`
 /// overriding (`layers::ops::target_defaults`).
 ///
-/// A probe that runs unconditionally asks the kernel audit about a module no
-/// target enables, which is how a lever nobody set comes to be the reason a
-/// boot failed. Off yields `KernelHandle(0)`, and `ops::gdn_tc_spine_reject`
-/// then answers "not requested" — which is what it would have answered anyway.
+/// A probe that runs unconditionally asks the kernel audit about a module the
+/// target may not enable, which is how a lever nobody set comes to be the
+/// reason a boot failed. Off yields `KernelHandle(0)`, and
+/// `ops::gdn_tc_spine_reject` then answers "not requested" — which is what it
+/// would have answered anyway. Since round 13 `kernels/hopper` declares the row
+/// TRUE, so on that target the probe runs by default and
+/// `ATLAS_GDN_PREFILL_TC=0` is what silences it again.
 ///
 /// The `_x2` entry (two bf16 limbs of S_c in Phase A) is the one the lever
 /// ships: the single-limb `..._tcfuse` entry is in the image for the oracle's

@@ -70,6 +70,15 @@ fn hopper_declares_what_an_h100_serve_runs_with() {
         "the band holds at the frozen 8 until the arm it was measured beside \
          lands"
     );
+    // The one row round 13 ADDED to the recipe, and the largest measured win of
+    // the campaign: cell T1 against cell A on the same binary, C=1 TTFT
+    // 269.1 -> 162.4 ms and 889.3 -> 491.5 ms, C=16 aggregate +21.5%/+31.4%,
+    // coherency 4/4, determinism 8/8 x 3.
+    assert!(
+        d.gdn_prefill_tc,
+        "round 13: the tensor-core GDN prefill family is Hopper's default — \
+         -39.6%/-44.7% on C=1 TTFT, +21.5%/+31.4% on C=16 aggregate"
+    );
 }
 
 /// THE REGRESSION GATE, as data: `kernels/gb10` declares EXACTLY the baseline,
@@ -100,6 +109,12 @@ fn b200_declares_the_conservative_table_not_hoppers() {
         "the batched GDN recurrence is ON for Hopper on a Hopper receipt and \
          OFF here for want of one — B200 must not inherit a measured recipe by \
          resemblance"
+    );
+    assert!(
+        !d.gdn_prefill_tc && declared("hopper").gdn_prefill_tc,
+        "the GDN prefill family is ON for Hopper on a Hopper receipt (round 13) \
+         and OFF here for want of one — the same rule, stated on the row that \
+         most recently moved"
     );
 }
 
@@ -264,7 +279,7 @@ fn the_generated_constant_names_every_field() {
         "hw: \"hopper\"",
         "lm_head_batchm_max: 8",
         "ssm_batched_recurrent: true",
-        "gdn_prefill_tc: false",
+        "gdn_prefill_tc: true",
         "decode_split_silu: true",
     ] {
         assert!(
