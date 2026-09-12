@@ -83,6 +83,15 @@ gdn_prefill_tc = false
 # much better fit for a 48-SM part than for a 132-SM H100, and there is no GB10
 # A/B. See `kernels/hopper/HARDWARE.toml` and `SSM-BA-GATES-ATTRIBUTION.md`.
 ssm_ba_gates_hopper = false
+# The Hopper FP8 activation-quant twin (#928, round 16). OFF: the source lives
+# under `kernels/hopper` only, so the lookup returns 0 here and the row is
+# INERT — declared so the lever list is one list, the same disposition as
+# `gdn_decode_hopper` and `ssm_ba_gates_hopper` above. The twin's own receipt
+# is an H100 one (3.3-3.6x at prefill M, 0.76-0.95x at M <= 25), and its CTA
+# floor is derived from a 132-SM part; a 48-SM GB10 would want its own
+# measurement before either moves.
+# See `kernels/hopper/HARDWARE.toml` and `FP8-ACT-QUANT-ATTRIBUTION.md`.
+fp8_act_quant_hopper = false
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true
 # Paged-decode attention split-K. `legacy` is the rule GB10 has always run —

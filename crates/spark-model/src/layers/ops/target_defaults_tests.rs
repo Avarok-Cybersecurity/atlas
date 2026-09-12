@@ -31,6 +31,7 @@ const GB10: TargetDefaults = TargetDefaults {
     ssm_batched_recurrent: false,
     gdn_prefill_tc: false,
     ssm_ba_gates_hopper: false,
+    fp8_act_quant_hopper: false,
     decode_split_silu: true,
     attn_decode_splitk: "legacy",
     ffn_m16_tc: false,
@@ -42,17 +43,19 @@ const GB10: TargetDefaults = TargetDefaults {
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]`.
 ///
-/// Three rows differ from GB10's, each on its own Hopper receipt: the batched
+/// Four rows differ from GB10's, each on its own Hopper receipt: the batched
 /// GDN recurrence (ON, +6% on the serve, md5-identical output to the
-/// per-sequence launches), `gdn_prefill_tc`, which round 13 added, and
-/// `ssm_ba_gates_hopper`, which round 14 did. The head band deliberately holds
-/// at the frozen 8 — see `atlas-kernels/tests/target_defaults.rs`.
+/// per-sequence launches), `gdn_prefill_tc`, which round 13 added,
+/// `ssm_ba_gates_hopper`, which round 14 did, and the FP8 activation-quant
+/// twin, which round 16 did (#928); its source only `kernels/hopper` carries.
+/// The head band is 16 — see `atlas-kernels/tests/target_defaults.rs`.
 const HOPPER: TargetDefaults = TargetDefaults {
     hw: "hopper",
     lm_head_batchm_max: 16,
     ssm_batched_recurrent: true,
     gdn_prefill_tc: true,
     ssm_ba_gates_hopper: true,
+    fp8_act_quant_hopper: true,
     decode_split_silu: true,
     attn_decode_splitk: "auto",
     ffn_m16_tc: false,
@@ -274,6 +277,7 @@ fn the_summary_line_names_every_lever_and_flags_the_environment() {
         "ssm_batched_recurrent=on",
         "gdn_prefill_tc=on",
         "ssm_ba_gates_hopper=on",
+        "fp8_act_quant_hopper=on",
         "decode_split_silu=on",
         "attn_decode_splitk=auto",
         "ffn_gateup_fused=on",
@@ -341,6 +345,12 @@ fn the_split_k_policy_resolves_and_reports_like_every_other_lever() {
     assert_eq!(typo.attn_decode_splitk.value, SplitkPolicy::Auto);
     assert_eq!(typo.attn_decode_splitk.source, Source::Target);
 }
+
+// The per-lever seam for `fp8_act_quant_hopper` (#928, round 16). A child
+// module, not a sibling, so the row's declaration, override and reported
+// spelling sit together and share the fixtures above instead of copying them.
+#[path = "target_defaults_actquant_tests.rs"]
+mod actquant;
 
 /// A build that read no HARDWARE.toml at all has an empty `hw`, and the line
 /// must still be readable rather than `target defaults (): …`.

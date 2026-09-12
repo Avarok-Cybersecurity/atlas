@@ -171,6 +171,7 @@ pub struct TargetLevers {
     pub ssm_batched_recurrent: Resolved<bool>,
     pub gdn_prefill_tc: Resolved<bool>,
     pub ssm_ba_gates_hopper: Resolved<bool>,
+    pub fp8_act_quant_hopper: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
     pub attn_decode_splitk: Resolved<SplitkPolicy>,
     /// The `w8a16_gemm_m16` tier on the dense-FFN decode arm (#927).
@@ -229,6 +230,20 @@ pub fn resolve(
         ssm_ba_gates_hopper: resolve_toggle(
             defaults.ssm_ba_gates_hopper,
             var("ATLAS_SSM_BA_GATES_HOPPER").as_deref(),
+            false,
+        ),
+        // The Hopper FP8 activation-quant twin (#928, round-16 receipt § 2.1).
+        // Hopper declares it ON. The twin is BIT-IDENTICAL to its gb10 parent,
+        // so the row carries no accuracy question and no `ATLAS_NO_*` legacy
+        // spelling — the lever is new, so there is no older script for a
+        // presence rule to keep faith with. It is also not the whole rule: the
+        // twin is 0.76x-0.95x at M <= 25 for K in {5120, 6144}, so it passes a
+        // CTA-count floor (`layers/ops/fp8_act_quant_floor.rs`) before it takes
+        // a launch. `ATLAS_FP8_ACT_QUANT_HOPPER=0` declines the twin at EVERY
+        // width, which is the A/B.
+        fp8_act_quant_hopper: resolve_toggle(
+            defaults.fp8_act_quant_hopper,
+            var("ATLAS_FP8_ACT_QUANT_HOPPER").as_deref(),
             false,
         ),
         // DECLARATION plus the legacy kill switch, and no positive variable:
@@ -351,7 +366,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
          ssm_ba_gates_hopper={ba_gates} decode_split_silu={silu} \
          attn_decode_splitk={splitk}{splitk_src} ffn_m16_tc={ffn_m16_tc} \
          attn_m16_tc={attn_m16_tc} lm_head_m16_tc={lm_head_m16_tc} \
-         attn_ncol_gemv={attn_ncol_gemv} ffn_gateup_fused={gateup}",
+         attn_ncol_gemv={attn_ncol_gemv} ffn_gateup_fused={gateup} \
+         fp8_act_quant_hopper={act_quant}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
         // at boot against the driver. Printed on this line because the levers
@@ -363,6 +379,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         recurrent = onoff(l.ssm_batched_recurrent),
         gdn_tc = onoff(l.gdn_prefill_tc),
         ba_gates = onoff(l.ssm_ba_gates_hopper),
+        act_quant = onoff(l.fp8_act_quant_hopper),
         silu = onoff(l.decode_split_silu),
         splitk = l.attn_decode_splitk.value.label(),
         splitk_src = l.attn_decode_splitk.source.tag(),
