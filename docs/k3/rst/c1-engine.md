@@ -58,5 +58,11 @@ TEST NOTES (2026-09-12, gate formula)
 Twin JSON omits `gate_lower_bound`. HF modeling passes `lower_bound=None` → FLA
 `-exp(A_log)*softplus(z+dt_bias)`. CPU was guessing `-5 * sigmoid(exp(A_log)*z)`.
 Parser now leaves 0.0; `kda_from` maps 0.0 → `None`. Production JSON still `-5`.
-Spark2 re-run of `c1_all_prompts_first_generated_token` pending this commit.
+
+STOP
+spark2 `c1_all_prompts_first_generated_token` at `f5a3b99` (38.38s): **8/8 first-token exact**.
+p4 pred=996 want=996 margin=0.412 top4=[(996, 10.744933), (60063, 10.3324795), (528, 10.11593), (318, 6.4081883)].
+HF CUDA last-pos was 996=10.75, 60063=10.3125. Unbounded FLA gate closed the 0.18-logit flip.
+
+C1 **green**. First-token identity vs HF goldens on the 0.40B twin.
 
