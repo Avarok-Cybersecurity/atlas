@@ -194,6 +194,7 @@ pub struct TargetLevers {
     pub lm_head_batchm_max: Resolved<u32>,
     pub ssm_batched_recurrent: Resolved<bool>,
     pub gdn_decode_hopper: Resolved<bool>,
+    pub gdn_decode_strided_hopper: Resolved<bool>,
     pub gdn_prefill_tc: Resolved<bool>,
     pub ssm_ba_gates_hopper: Resolved<bool>,
     pub ffn_gateup_fused: Resolved<bool>,
@@ -304,6 +305,19 @@ pub fn resolve(
         gdn_decode_hopper: resolve_toggle(
             defaults.gdn_decode_hopper,
             var("ATLAS_GDN_DECODE_HOPPER").as_deref(),
+            gdn_hopper_off,
+        ),
+        // The Hopper ONE-READ strided GDN decode twin (#927). A DIFFERENT
+        // kernel from the row above and a different claim: that one
+        // re-partitions state columns and lost, this one keeps the partition
+        // and drops a full read of the f32 state (2R+1W -> 1.25R+1W). On
+        // without a serving receipt because it cannot change a bit of output
+        // and ptxas puts six CTAs on an SM against the 5.82 the n=16 grid
+        // supplies. `ATLAS_NO_GDN_HOPPER` is SHARED with the row above on
+        // purpose (`GDN-DECODE-ATTRIBUTION.md`, "Round 17").
+        gdn_decode_strided_hopper: resolve_toggle(
+            defaults.gdn_decode_strided_hopper,
+            var("ATLAS_GDN_DECODE_STRIDED_HOPPER").as_deref(),
             gdn_hopper_off,
         ),
         // ⚠️ `ATLAS_GDN_PREFILL_TC` was PRESENCE-gated and is now grammar-gated
@@ -450,7 +464,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
          ffn_batch16_tier={batch16} ffn_m16_tc={ffn_m16} attn_m16_tc={attn_m16} \
          attn_ncol_gemv={ncol} lm_head_m16_tc={head_m16} \
          lm_head_batchm_max={batchm}{batchm_src} ssm_batched_recurrent={recurrent} \
-         gdn_decode_hopper={gdn_decode} gdn_prefill_tc={gdn_tc} \
+         gdn_decode_hopper={gdn_decode} \
+         gdn_decode_strided_hopper={gdn_decode_strided} gdn_prefill_tc={gdn_tc} \
          ssm_ba_gates_hopper={ba_gates} ffn_gateup_fused={gateup} \
          attn_qkv_fused={qkv_fused} \
          decode_split_silu={silu} \
@@ -468,6 +483,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         batchm_src = l.lm_head_batchm_max.source.tag(),
         recurrent = onoff(l.ssm_batched_recurrent),
         gdn_decode = onoff(l.gdn_decode_hopper),
+        gdn_decode_strided = onoff(l.gdn_decode_strided_hopper),
         gdn_tc = onoff(l.gdn_prefill_tc),
         ba_gates = onoff(l.ssm_ba_gates_hopper),
         gateup = onoff(l.ffn_gateup_fused),

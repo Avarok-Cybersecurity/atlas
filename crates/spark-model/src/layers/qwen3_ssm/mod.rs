@@ -159,6 +159,9 @@ pub struct Qwen3SsmLayer {
     /// the parent's SSM_STATE_MAX_NORM clamp, so it is a drop-in for the
     /// batched arm that `ATLAS_GDN_FUSED_NORM` leaves unfused.
     gdn_f32_strided_hopper_k: KernelHandle,
+    /// Hopper ONE-READ twin of `gdn_f32_strided_k` (#927): the parent's partition,
+    /// state read once for 96 of 128 rows, n >= 4. `ops::ssm_gdn_strided_hopper`.
+    gdn_f32_strided_hopper_smem_k: KernelHandle,
     /// Half-width register retention (k_dim==v_dim==128): retains the first 64 H
     /// columns so the update re-reads only the rest (2R+1W -> 1.5R+1W).
     gdn_f32_strided_norm_half_k: KernelHandle,

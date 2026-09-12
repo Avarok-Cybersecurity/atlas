@@ -117,6 +117,89 @@ ssm_batched_recurrent = true
 # round 12's cell F was run with, still forces it off and outranks the
 # positive. Numbers: `GDN-DECODE-ATTRIBUTION.md`.
 gdn_decode_hopper = false
+# The Hopper ONE-READ strided GDN decode twin (#927,
+# `gdn_decode_strided_hopper.cu` below). ON, for the n >= 4 batched arm only —
+# the n=1 path stays on the parent, which the row above is the receipt for.
+#
+# A DIFFERENT KERNEL FROM THE ROW ABOVE, and the distinction is the whole
+# design. `gdn_decode_hopper.cu` re-partitions state COLUMNS across more CTAs
+# to fill 132 SMs at n=1; round 12 measured that 0.83x at n=1 and a null at
+# n=16, because at n=16 the parent's grid is already 768 CTAs and there is
+# nothing to fill. This kernel re-partitions NOTHING — it cannot, because the
+# per-column reduction over `kd` is a serial f32 chain and any split across
+# threads re-brackets it — and attacks the other axis instead: how many times
+# the f32 state is read.
+#
+# THE COST. nsys `--cuda-graph-trace=node`, 1xH100 80GB HBM3,
+# Qwen/Qwen3.8-27B-FP8 @ `3717cb05e`, round 13 cell V, median n=16 decode step
+# 19.887 ms busy (`h100-r13-attribution.md` SS C.2/C.3): the strided GDN decode
+# recurrence is 48 graph nodes, **2 748.9 us = 13.82% of the step** and the
+# third largest item in it, 57.27 us per launch. At nk=16 nv=48 kd=vd=128 the
+# live state is `2 * n * nv * kd * vd * 4 B` = 100.66 MB per layer of
+# COMPULSORY traffic (one read, one write) = 1 758 GB/s = 52.5% of this part's
+# 3 350 GB/s. But the parent walks the state TWICE — once for `hk_dot`, once to
+# apply the update — so its ISSUED traffic is 150.99 MB = 2 637 GB/s = 78.7%.
+# The distance between 52.5% and 78.7% is not slack; it is a second read.
+#
+# WHAT THE TWIN DOES. Of the 128 rows of each (sequence, head) state tile it
+# stages 72 in shared memory on pass 1, retains 24 in registers, and re-reads
+# only the last 32 from global — 2.25 reads-equivalents against the parent's
+# 3.00, i.e. 25% less state traffic. The 32 re-read rows are 12.6 MB across an
+# n=16 launch and are re-read within microseconds, so they are the ones L2
+# plausibly serves; the 96 it keeps are the ones it plausibly does not, because
+# the whole live state is 50.33 MB against an H100's 50 MB of L2 and all 768
+# CTAs run at once.
+#
+# WHY 72/24/32 AND NOT 0/128 OR 128/0 — ptxas, sm_90a, CUDA 13.0,
+# `--fmad=false`, `--Werror all-warnings`. The binding constraint is occupancy:
+# the parent is 40 registers and 1 040 B of smem, so its ceiling is 12 CTAs/SM
+# and the n=16 GRID caps it at 5.82 CTAs/SM = 23.3 warps in ONE wave. A twin
+# that halves the traffic and also halves the residency has made a trade, not a
+# fix — that is how the n=1 twin became a 0.83x. The shipped split is the
+# lowest-traffic point that still keeps SIX CTAs resident (792 slots for 768
+# CTAs, still one wave):
+#
+#   smem rows / reg rows | registers | smem B | CTAs/SM | traffic units
+#   ---------------------|-----------|--------|---------|--------------
+#   (parent)             |        40 |  1 040 | 5.82(*) | 3.000
+#   72 / 16              |        66 | 37 904 |       6 | 2.313
+#   72 / 24  (SHIPPED)   |        80 | 37 904 |       6 | 2.250
+#   72 / 32              |        96 | 37 904 |       5 | 2.188
+#   80 / 24              |        72 | 42 000 |       5 | 2.188
+#   80 / 48              |       128 | 42 000 |       4 | 2.000
+#   64 / 64              | 255 + 68 B spill | 33 808 |   2 | 2.000
+#
+#   (*) grid-limited. CTAs/SM is `min(65536 / (regs * 128), 233472 / smem)`.
+#
+# The last row reproduces, from the other direction, the loss the tree already
+# had on file: full-width register retention spills (the in-tree note at
+# `gated_delta_rule_decode_f32_strided_norm_half`, -11.6% e2e), turning the
+# retained columns into LOCAL memory — the traffic the lever was removing.
+#
+# ⚠️ NO SERVING RECEIPT YET, and the prediction is a BAND, not a number. Round
+# 13's nsys is the receipt for the COST; the saving depends on how much of the
+# parent's second read L2 already serves, which no trace in this campaign
+# measures. All of these are arithmetic on the measured 57.27 us/launch:
+# second read entirely missing -> -687 us/step (-3.5%); half served -> -412 us
+# (-2.1%); entirely served -> instruction-side only. The round-13 lever table's
+# "945 us/step at an 80%-of-HBM target" is the ceiling of the band, not a
+# prediction. Round 17's nsys picks the point.
+#
+# Turned ON rather than left off for the reason `ssm_ba_gates_hopper` is: the
+# arm cannot change a bit of output — `native_gdn_decode_hopper_microtest`
+# asserts `state_diff`/`out_diff` == 0 against the parent, not a tolerance, on
+# 6 legs with a KNOWN_BAD control — and its occupancy is the parent's, so its
+# worst case is a null. `ATLAS_GDN_DECODE_STRIDED_HOPPER=0` is the
+# one-variable A/B and `ATLAS_NO_GDN_HOPPER=1` still outranks it, the same kill
+# switch that outranks the row above.
+#
+# THE WIDTH GUARD IS LOAD-BEARING. One CTA per (sequence, head) means the grid
+# IS `nv * n`, so the twin declines below 4 rows AND below a grid of
+# `sm_count` CTAs and the parent runs — at n=1 the grid is 48 CTAs on 132 SMs
+# and the problem is underfill, not traffic, which is the row above's job.
+# `ops::gdn_decode_strided_hopper_accept` is the rule. Numbers:
+# `GDN-DECODE-ATTRIBUTION.md`.
+gdn_decode_strided_hopper = true
 # The tensor-core GDN chunked-PREFILL spine (#928). ON, and the largest measured
 # win of the H100 campaign. Round 9 put the scalar spine at 26.6%/32.3% of a
 # 1193/4593-token H100 prefill; the accuracy receipt this row was waiting for
@@ -405,6 +488,27 @@ w8a8_prefill_max_m_narrowing = 4294967295
 #                            names and a launcher tier instead. Numbers:
 #                            `GDN-DECODE-ATTRIBUTION.md`.
 #
+#   gdn_decode_strided_hopper.cu  The BATCHED GDN decode recurrence with the
+#                            f32 state read ONCE for 96 of its 128 rows (#927).
+#                            An ADDITION with a new stem, the shape
+#                            `gdn_decode_hopper.cu` takes and for the same
+#                            reason — its gb10 namesake `gated_delta_rule.cu`
+#                            is shadowed out of every build that matters by the
+#                            model directory's own copy. A SECOND file rather
+#                            than a second entry point inside
+#                            `gdn_decode_hopper.cu` because the two are
+#                            different claims under different levers: that file
+#                            re-partitions columns for the n=1 underfill and is
+#                            OFF on a measured loss, this one keeps the
+#                            partition and cuts state traffic for the n>=4
+#                            batched arm and is ON. Sharing a file would make
+#                            one `[defaults]` row govern both, which is the
+#                            thing `gdn_prefill_tc`'s family lever had to grow
+#                            an `ATLAS_NO_*_REMNANTS` escape hatch for. Reached
+#                            only under `[defaults] gdn_decode_strided_hopper`
+#                            plus a width guard. Numbers:
+#                            `GDN-DECODE-ATTRIBUTION.md`.
+#
 #   gdn_recompute_wu_hopper.cu  The two SCALAR REMNANTS of the chunked PREFILL
 #   gdn_fwd_o_hopper.cu         (#928) on tensor cores: `wu`'s two forward
 #                            substitutions and `fwd_o`'s triangular
@@ -526,6 +630,7 @@ overrides = [
   "fp8_act_quant_hopper.cu",
   "fp8_scale_transpose.cu",
   "gdn_decode_hopper.cu",
+  "gdn_decode_strided_hopper.cu",
   "gdn_fwd_o_hopper.cu",
   "gdn_prefill_hopper.cuh",
   "gdn_recompute_wu_hopper.cu",

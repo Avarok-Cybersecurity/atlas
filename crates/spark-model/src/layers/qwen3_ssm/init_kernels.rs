@@ -197,6 +197,22 @@ pub(super) fn decode_hopper_strided_k(gpu: &dyn GpuBackend) -> KernelHandle {
     )
 }
 
+/// GDN decode recurrence, one strided launch per batch, state read ONCE for
+/// 96 of its 128 rows (#927). A SECOND Hopper twin of the same parent as
+/// [`decode_hopper_strided_k`] above, under its own `[defaults]` row, because
+/// the two are different claims: that one re-partitions columns for the n=1
+/// underfill and lost, this one keeps the partition and cuts state traffic on
+/// the n >= 4 batched arm. The module and entry are named ONCE, in
+/// `ops::ssm_gdn_strided_hopper`, so the probe and the route line cannot spell
+/// different kernels.
+pub(super) fn decode_hopper_strided_smem_k(gpu: &dyn GpuBackend) -> KernelHandle {
+    crate::layers::try_kernel(
+        gpu,
+        crate::layers::ops::GDN_STRIDED_SMEM_MODULE,
+        crate::layers::ops::GDN_STRIDED_SMEM_ENTRY,
+    )
+}
+
 /// Prefill kernel 1's twin: the two forward substitutions on tensor cores
 /// (#928). Selected by `[defaults] gdn_prefill_tc`, the same family lever as
 /// [`gdn_prefill_tc_kernel`] above; unlike the spine, the probe is NOT gated on

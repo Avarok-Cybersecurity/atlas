@@ -65,6 +65,16 @@ lm_head_m16_tc = false
 lm_head_batchm_max = 8
 ssm_batched_recurrent = false
 gdn_decode_hopper = false
+# The Hopper ONE-READ strided GDN decode twin (#927). OFF for want of a
+# receipt, like every other row here, and INERT: unlike `gdn_decode_hopper.cu`
+# the new source is NOT symlinked into this tree, so the probe returns
+# `KernelHandle(0)` and the batched decode stays on the gb10 parent. The kernel
+# is sized for a GH100 SM — 72 of its 128 state rows in 37 904 B of shared
+# memory, six CTAs resident against a 132-SM device's 5.82-CTA grid at n=16 —
+# and a B200 has 148 SMs and a different smem budget, so `auto`-inheriting it
+# by resemblance is the reasoning this table replaces. See
+# `kernels/hopper/HARDWARE.toml` and `GDN-DECODE-ATTRIBUTION.md`.
+gdn_decode_strided_hopper = false
 gdn_prefill_tc = false
 ssm_ba_gates_hopper = false
 # The fused dense-FFN gate+up decode GEMM (#927). OFF for want of a receipt,
