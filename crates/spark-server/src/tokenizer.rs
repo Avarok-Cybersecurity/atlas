@@ -62,9 +62,9 @@ fn normalize_tool_call_arguments(messages: &[serde_json::Value]) -> Vec<serde_js
 
 /// Wraps a HuggingFace tokenizer with Jinja chat template support.
 mod chat_impl;
-pub(crate) mod chat_render;
+mod chat_render;
 mod deepseek_v4;
-pub(crate) mod jinja_helpers;
+mod jinja_helpers;
 mod message_preprocess;
 
 pub(crate) use message_preprocess::{
@@ -82,8 +82,6 @@ pub struct ChatTokenizer {
     eos_token_id: u32,
     supports_thinking: bool,
     chat_encoding: ChatEncoding,
-    /// Checkpoint Qwen tool instructions own schema rendering (no override selected).
-    native_qwen_tool_template: bool,
     /// Compiled Jinja chat template (from tokenizer_config.json).
     #[allow(dead_code)]
     chat_template: String,
