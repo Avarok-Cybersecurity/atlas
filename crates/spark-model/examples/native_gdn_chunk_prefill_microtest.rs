@@ -371,32 +371,18 @@ fn report(tag: &str, a: &[f32], r: &[f64]) -> (f64, f64, f64) {
 fn main() -> Result<()> {
     let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
-    let k_wu = g.kernel("gated_delta_rule_fla", "gated_delta_rule_recompute_wu")?;
-    let k_old = g.kernel(
-        "gated_delta_rule_fla",
-        "gated_delta_rule_chunk_delta_h_vfused",
-    )?;
-    // The spine is declared in `kernels/hopper`'s `[kernels] overrides`, so it
-    // is absent from every other image and this oracle SKIPS there rather than
-    // failing. It was developed and validated on GB10 and is arch-neutral; it
-    // sits in the Hopper tree only because rule S1 refuses new cross-hardware
-    // symlinks (`kernels/hopper/HARDWARE.toml`). A GB10 receipt moves the file
-    // back down and this skip stops firing there.
+    const FLA: &str = "gated_delta_rule_fla";
+    const TC: &str = "gated_delta_rule_chunk_tc";
+    let k_wu = g.kernel(FLA, "gated_delta_rule_recompute_wu")?;
+    let k_old = g.kernel(FLA, "gated_delta_rule_chunk_delta_h_vfused")?;
+    // The spine is declared in `kernels/hopper`'s `[kernels] overrides` (rule S1
+    // keeps new cross-hardware symlinks out of the shared tree), so it is absent
+    // from other images and this oracle SKIPS rather than failing a lookup.
     let (Ok(k_new), Ok(k_x2)) = (
-        g.kernel(
-            "gated_delta_rule_chunk_tc",
-            "gated_delta_rule_chunk_delta_h_tcfuse",
-        ),
-        g.kernel(
-            "gated_delta_rule_chunk_tc",
-            "gated_delta_rule_chunk_delta_h_tcfuse_x2",
-        ),
+        g.kernel(TC, "gated_delta_rule_chunk_delta_h_tcfuse"),
+        g.kernel(TC, "gated_delta_rule_chunk_delta_h_tcfuse_x2"),
     ) else {
-        println!(
-            "SKIPPED: the tensor-core GDN prefill spine is not in this image. It \
-             is declared under kernels/hopper (sm_90a); build with that hardware \
-             set to run this oracle."
-        );
+        println!("SKIPPED: the tensor-core GDN prefill spine is not in this image");
         return Ok(());
     };
 
