@@ -86,7 +86,7 @@ pub(super) async fn run_blocking(
                 early_stopping: p.early_stopping,
                 image_pixels: Vec::new(),
                 max_tokens: req.max_tokens,
-                min_tokens: 0,
+                min_tokens: req.min_tokens,
                 temperature: p.temperature,
                 top_k: p.top_k,
                 top_p: p.top_p,
@@ -223,4 +223,30 @@ pub(super) async fn run_blocking(
         usage,
     ))
     .into_response()
+}
+
+#[cfg(test)]
+impl CompletionParams {
+    pub(super) fn test() -> Self {
+        Self {
+            temperature: 1.0,
+            top_k: 20,
+            top_p: 0.95,
+            top_n_sigma: 0.0,
+            min_p: 0.0,
+            repetition_penalty: 1.0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            logit_bias: Vec::new(),
+            stop_tokens: Vec::new(),
+            repetition_detection: None,
+            logprobs_k: None,
+            adapter_slot: -1,
+            src_lang_id: 0,
+            tgt_lang_id: 0,
+            num_beams: 1,
+            length_penalty: 1.0,
+            early_stopping: false,
+        }
+    }
 }

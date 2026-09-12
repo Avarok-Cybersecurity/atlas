@@ -273,6 +273,71 @@ pub async fn completions(
     super::completions_exec::run_blocking(state, &req, prompts, params).await
 }
 
+/// Build the streaming `InferenceRequest` for the legacy completions path.
+///
+/// Extracted from `completions_stream` so the `min_tokens` passthrough is
+/// unit-testable; behavior identical to the original inline construction.
+fn build_streaming_request(
+    req: &CompletionRequest,
+    p: super::completions_exec::CompletionParams,
+    prompt_tokens: std::sync::Arc<Vec<u32>>,
+    session_hash: u64,
+    timeout_at: Option<std::time::Instant>,
+    token_tx: tokio::sync::mpsc::Sender<StreamEvent>,
+) -> InferenceRequest {
+    let echo = req.echo;
+    let logprobs_k = p.logprobs_k;
+    InferenceRequest::Streaming {
+        prompt_tokens,
+        session_hash,
+        adapter_slot: p.adapter_slot,
+        src_lang_id: p.src_lang_id,
+        tgt_lang_id: p.tgt_lang_id,
+        num_beams: p.num_beams,
+        length_penalty: p.length_penalty,
+        early_stopping: p.early_stopping,
+        image_pixels: Vec::new(),
+        max_tokens: req.max_tokens,
+        min_tokens: req.min_tokens,
+        temperature: p.temperature,
+        top_k: p.top_k,
+        top_p: p.top_p,
+        top_n_sigma: p.top_n_sigma,
+        min_p: p.min_p,
+        repetition_penalty: p.repetition_penalty,
+        presence_penalty: p.presence_penalty,
+        frequency_penalty: p.frequency_penalty,
+        // Legacy /v1/completions path doesn't have tool semantics.
+        dry_multiplier: 0.0,
+        dry_base: 1.75,
+        dry_allowed_length: 2,
+        lz_penalty: 0.0,
+        logit_bias: p.logit_bias,
+        stop_tokens: p.stop_tokens,
+        enable_thinking: false,
+        thinking_budget: None,
+        repetition_detection: p.repetition_detection,
+        require_tool_call: false,
+        // Completions API defines no tools — multi-tool-call continuation off.
+        tools_present: false,
+        suppress_tool_call: false,
+        disable_mtp: false,
+        grammar_spec: None,
+        seed: req.seed,
+        top_logprobs: logprobs_k,
+        prompt_logprobs: if echo { logprobs_k } else { None },
+        echo,
+        // Was hard-coded `None`: streaming /v1/completions was the one
+        // surface with NO deadline while every other surface had 300 s.
+        timeout_at,
+        token_tx,
+        // /v1/completions has no guard pipeline yet — the flag is
+        // created so the scheduler's emit_step type-checks cleanly,
+        // but never flipped.
+        cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    }
+}
+
 /// SSE streaming path for legacy completions (single prompt, n=1, handler-
 /// guarded). Echo: prompt text (+ logprobs when set) is the FIRST chunk; with
 /// `stream_options.include_usage` a `choices: []` usage chunk precedes `[DONE]`.
@@ -304,55 +369,14 @@ pub(super) async fn completions_stream(
     };
 
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
-    let request = InferenceRequest::Streaming {
-        prompt_tokens: std::sync::Arc::new(prompt_tokens),
+    let request = build_streaming_request(
+        &req,
+        p,
+        std::sync::Arc::new(prompt_tokens),
         session_hash,
-        adapter_slot: p.adapter_slot,
-        src_lang_id: p.src_lang_id,
-        tgt_lang_id: p.tgt_lang_id,
-        num_beams: p.num_beams,
-        length_penalty: p.length_penalty,
-        early_stopping: p.early_stopping,
-        image_pixels: Vec::new(),
-        max_tokens: req.max_tokens,
-        min_tokens: 0,
-        temperature: p.temperature,
-        top_k: p.top_k,
-        top_p: p.top_p,
-        top_n_sigma: p.top_n_sigma,
-        min_p: p.min_p,
-        repetition_penalty: p.repetition_penalty,
-        presence_penalty: p.presence_penalty,
-        frequency_penalty: p.frequency_penalty,
-        // Legacy /v1/completions path doesn't have tool semantics.
-        dry_multiplier: 0.0,
-        dry_base: 1.75,
-        dry_allowed_length: 2,
-        lz_penalty: 0.0,
-        logit_bias: p.logit_bias,
-        stop_tokens: p.stop_tokens,
-        enable_thinking: false,
-        thinking_budget: None,
-        repetition_detection: p.repetition_detection,
-        require_tool_call: false,
-        // Completions API defines no tools — multi-tool-call continuation off.
-        tools_present: false,
-        suppress_tool_call: false,
-        disable_mtp: false,
-        grammar_spec: None,
-        seed: req.seed,
-        top_logprobs: logprobs_k,
-        prompt_logprobs: if echo { logprobs_k } else { None },
-        echo,
-        // Was hard-coded `None`: streaming /v1/completions was the one
-        // surface with NO deadline while every other surface had 300 s.
-        timeout_at: state.request_deadline(None),
+        state.request_deadline(None),
         token_tx,
-        // /v1/completions has no guard pipeline yet — the flag is
-        // created so the scheduler's emit_step type-checks cleanly,
-        // but never flipped.
-        cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-    };
+    );
 
     state.request_tx.send(request).await.map_err(|_| {
         (
@@ -500,4 +524,48 @@ pub(super) async fn completions_stream(
 /// as "wrong URL".
 pub(super) fn not_supported(message: &'static str) -> Response {
     openai_error_response(StatusCode::NOT_IMPLEMENTED, message.into())
+}
+
+#[cfg(test)]
+mod min_tokens_wiring_tests {
+    use super::*;
+
+    #[test]
+    fn streaming_path_wires_min_tokens() {
+        let req: CompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "m",
+            "prompt": "hi",
+            "min_tokens": 2048,
+        }))
+        .unwrap();
+        let (token_tx, _token_rx) = tokio::sync::mpsc::channel::<StreamEvent>(16);
+        let request = build_streaming_request(
+            &req,
+            crate::api::completions_exec::CompletionParams::test(),
+            std::sync::Arc::new(vec![1, 2, 3]),
+            42,
+            None,
+            token_tx,
+        );
+        assert_eq!(request.min_tokens(), 2048);
+    }
+
+    #[test]
+    fn streaming_path_defaults_min_tokens_to_zero() {
+        let req: CompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "m",
+            "prompt": "hi",
+        }))
+        .unwrap();
+        let (token_tx, _token_rx) = tokio::sync::mpsc::channel::<StreamEvent>(16);
+        let request = build_streaming_request(
+            &req,
+            crate::api::completions_exec::CompletionParams::test(),
+            std::sync::Arc::new(vec![1]),
+            42,
+            None,
+            token_tx,
+        );
+        assert_eq!(request.min_tokens(), 0);
+    }
 }

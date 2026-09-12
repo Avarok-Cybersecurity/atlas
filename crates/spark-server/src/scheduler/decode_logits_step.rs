@@ -39,6 +39,7 @@ fn logits_ctx<'a>(
         think_start_token,
         tool_call_start_token,
         tool_call_end_token,
+        verify_pos: 0,
         watchdog: sched.watchdog,
         scratch,
         dumps: &sched.dumps,
@@ -165,7 +166,10 @@ pub fn process_decode_logits(
         let excused = admit_think_ended && think_ended_gpu_ok(a);
         (a.inside_thinking || a.think_ended || a.grammar_state.is_some()) && !excused
     }) || any_logprobs
-        || model_logits_fp32;
+        || model_logits_fp32
+        // GPU argmax bypasses the pre-sampling EOS mask. Keep requests with
+        // an active minimum-token floor on the host pipeline.
+        || active.iter().any(|a| a.min_tokens > a.output_tokens.len());
 
     // Try the GPU argmax first. `None` here means "not eligible, or the result
     // needs the host pipeline after all" and falls through to the host branch —
@@ -276,6 +280,7 @@ pub fn process_decode_logits(
                             think_start_token,
                             tool_call_start_token,
                             tool_call_end_token,
+                            verify_pos: 0,
                             watchdog,
                             scratch,
                             dumps,
