@@ -45,6 +45,46 @@ fn bf16_batch_gemv_from_value(value: Option<&str>) -> bool {
     value != Some("0")
 }
 
+/// Resolve `ATLAS_LM_HEAD_BATCHM_MAX` into the BF16 decode head's batched-GEMV
+/// band. A RESOLVED VALUE, deliberately, and not an edit to
+/// `DENSE_GEMV_BATCHM_DECODE_MAX_M`.
+///
+/// 🔴 Read `layers/ops/gemm_quant.rs` before touching this. That constant is
+/// the FROZEN band, and it is frozen for a reason that still holds: the MTP
+/// row dispatch (`layers/mtp_head/row_dispatch.rs`), the verify-`k` workspace
+/// sizing (`weight_loader/glm5_next_load.rs`) and this head all read it, the
+/// band's upper edge decides whether a width lands on the batched GEMV or on a
+/// REASSOCIATING tile GEMM, and the A/B behind the number measured the GEMV
+/// NEGATIVE above 8 on GB10 (-14.4% at C=16, commits 84d5b763c / 78d276832).
+/// So the default here stays 8 and GB10 bits are unchanged by construction;
+/// H100 sets `ATLAS_LM_HEAD_BATCHM_MAX=16` because on that machine the tile
+/// GEMM is the thing that loses at decode widths (#927, 224 ms/step at 16
+/// active rows). The lever is per-site: it moves THIS head and nothing else.
+///
+/// Clamped to `DENSE_GEMV_BATCHM_MAX_M`, the kernel's compile-time row bound —
+/// `dense_gemv_batchm` refuses above it rather than silently writing 16 of m
+/// rows, and a lever that produced an Err at every decode step would be a
+/// worse failure than ignoring the excess. Unparseable or `0` keeps the
+/// default; the value is a band, not a switch, so there is no "off".
+fn batchm_max_from_value(value: Option<&str>) -> u32 {
+    value
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(ops::DENSE_GEMV_BATCHM_DECODE_MAX_M)
+        .min(ops::DENSE_GEMV_BATCHM_MAX_M)
+}
+
+/// Process-wide resolution of the band above. `OnceLock`-cached because this
+/// is a per-step site AND because the route must be CONSTANT across
+/// CUDA-graph replays — a per-call `env::var` could change the captured
+/// launch set between capture and replay.
+fn lm_head_batchm_max() -> u32 {
+    static MAX: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| {
+        batchm_max_from_value(std::env::var("ATLAS_LM_HEAD_BATCHM_MAX").ok().as_deref())
+    })
+}
+
 fn lmhead_batch_gemv_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
@@ -63,23 +103,22 @@ fn project_bf16_lm_head(
     output: DevicePtr,
     [m, n, k]: [u32; 3],
     batch_enabled: bool,
+    batchm_max: u32,
     stream: u64,
 ) -> Result<()> {
     // The existing kernel shares one BF16 weight read across up to eight rows.
     // Its uint4 loads require each input/weight row to remain 16-byte aligned.
     //
-    // 🔴 `DENSE_GEMV_BATCHM_DECODE_MAX_M`, NOT the kernel's `MAX_M`. The GEMV
+    // 🔴 `batchm_max` is the DECODE band, NOT the kernel's `MAX_M`. The GEMV
     // tier was widened to 16 for PREFILL only; this is a decode head, and the
     // band's upper edge is what decides whether a width lands on the batched
     // GEMV or the reassociating tile GEMM — i.e. which bits a decode of that
     // width produces. When `MAX_M` was 8 the two names were the same number
     // and this site read the right one by accident; they are not the same
-    // number any more. See `layers/ops/gemm_quant.rs` for the frozen band.
-    if batch_enabled
-        && batch_gemv.0 != 0
-        && (1..=ops::DENSE_GEMV_BATCHM_DECODE_MAX_M).contains(&m)
-        && k.is_multiple_of(8)
-    {
+    // number any more. See `layers/ops/gemm_quant.rs` for the frozen band and
+    // `batchm_max_from_value` above for the `ATLAS_LM_HEAD_BATCHM_MAX` lever
+    // that moves it for THIS head only (default: the frozen 8).
+    if batch_enabled && batch_gemv.0 != 0 && (1..=batchm_max).contains(&m) && k.is_multiple_of(8) {
         ops::dense_gemv_batchm(gpu, batch_gemv, input, weight, output, m, n, k, n, stream)
     } else {
         ops::dense_gemm(gpu, fallback, input, weight, output, m, n, k, stream)
@@ -210,6 +249,7 @@ impl TransformerModel {
                 logits,
                 [padded_n as u32, v as u32, h as u32],
                 lmhead_batch_gemv_enabled(),
+                lm_head_batchm_max(),
                 stream,
             )?;
         }
