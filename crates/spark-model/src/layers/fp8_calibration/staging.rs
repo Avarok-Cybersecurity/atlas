@@ -87,7 +87,7 @@ struct StagedBatch {
 }
 
 /// Device-side copies of the calibration window's BF16 K/V and slot mappings.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct KvStaging {
     k: DevicePtr,
     v: DevicePtr,
@@ -96,6 +96,20 @@ pub(super) struct KvStaging {
     elems_per_token: usize,
     used_tokens: usize,
     batches: Vec<StagedBatch>,
+}
+
+impl Default for KvStaging {
+    fn default() -> Self {
+        Self {
+            k: DevicePtr(0),
+            v: DevicePtr(0),
+            slots: DevicePtr(0),
+            capacity_tokens: 0,
+            elems_per_token: 0,
+            used_tokens: 0,
+            batches: Vec::new(),
+        }
+    }
 }
 
 impl KvStaging {
