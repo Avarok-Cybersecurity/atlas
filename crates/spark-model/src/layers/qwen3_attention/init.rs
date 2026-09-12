@@ -198,6 +198,15 @@ impl Qwen3AttentionLayer {
                 "fp8_gemm_t_blockscaled",
                 "fp8_gemm_t_blockscaled",
             ),
+            // Same optional adapter the SSM layer loads (`init.rs`): absent on
+            // a shadow that has no `fp8_scale_transpose` module, which makes
+            // the cuBLASLt W8A8 arms decline rather than hand the library the
+            // wrong scale order.
+            fp8_act_scale_kmajor_k: super::super::try_kernel(
+                gpu,
+                "fp8_scale_transpose",
+                "fp8_act_scale_to_kmajor",
+            ),
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
             rms_norm_w_k: if crate::ships_vanilla_norm_weights(config) {
                 gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?
@@ -235,6 +244,26 @@ impl Qwen3AttentionLayer {
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w4a16_gemv_sw_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
+            w8a16_gemv_batch4_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_batch4",
+                "w8a16_gemv_batch4",
+            ),
+            w8a16_gemv_batch16_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_batch4",
+                "w8a16_gemv_batch16",
+            ),
+            w8a16_gemv_batch4_strided_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_batch4",
+                "w8a16_gemv_batch4_strided",
+            ),
+            w8a16_gemv_batch16_strided_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_batch4",
+                "w8a16_gemv_batch16_strided",
+            ),
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemm_pipelined_k: super::super::try_kernel(
                 gpu,

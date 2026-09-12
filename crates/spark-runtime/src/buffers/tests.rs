@@ -11,8 +11,15 @@ fn mixed_dense_moe_sizes_for_widest_ffn() {
     cfg.moe_intermediate_size = 1_024;
 
     let sizes = BufferSizes::from_config(&cfg, 4, 4096, 16, 32);
-    assert_eq!(sizes.expert_gate_out, 4 * 12_288 * 2);
-    assert_eq!(sizes.expert_up_out, 4 * 12_288 * 2);
+    // The DENSE intermediate (12288) is wider than the routed one
+    // (top_k 10 x moe_intermediate 1024 = 10240), and it is the dense width
+    // these buffers must hold. Rows are `max_batch_tokens` rounded up to 16 —
+    // the cuBLASLt FP8 M-pad headroom the W8A8 dense-FFN prefill writes into
+    // (#917/#928); see the sizing note on `k_max` in `sizes.rs`.
+    let rows = 4_usize.div_ceil(16) * 16;
+    assert!(cfg.intermediate_size > cfg.num_experts_per_tok * cfg.moe_intermediate_size);
+    assert_eq!(sizes.expert_gate_out, rows * 12_288 * 2);
+    assert_eq!(sizes.expert_up_out, rows * 12_288 * 2);
 }
 use crate::gpu::mock::MockGpuBackend;
 use std::collections::HashSet;
@@ -27,22 +34,31 @@ fn test_buffer_sizes_qwen3() {
     // (Was FP32 = 8192 in earlier prototypes; NVFP4 path keeps the
     // residual stream in BF16, halving the buffer size.)
     assert_eq!(sizes.hidden_states, 4096);
-    // qkv: 1 * (16*2 + 2*2) * 256 * 2 = 1 * 36 * 256 * 2 = 18432
-    // Q+gate: 16*2*256, K: 2*256, V: 2*256
-    assert_eq!(sizes.qkv_output, 18432);
+    // qkv: ceil16(1) * (16*2 + 2*2) * 256 * 2 = 16 * 36 * 256 * 2 = 294912
+    // Q+gate: 16*2*256, K: 2*256, V: 2*256 — and the row extent is the
+    // cuBLASLt M-pad, exactly as for `ssm_qkvz` / `ssm_deinterleaved` below:
+    // the cache-skip Q/K/V prefill's cuBLASLt arm hands the library ceil16(M)
+    // and WRITES the phantom rows (#928, `sizes.rs`'s `m_pad`). The 16x here
+    // is an artifact of sizing at M=1; at a real prefill arena the pad is
+    // <= 15 rows out of thousands.
+    assert_eq!(sizes.qkv_output, 294912);
     // attn: 1 * 16 * 256 * 2 = 8192
     assert_eq!(sizes.attn_output, 8192);
     // gate: 1 * 512 * 2 = 1024
     assert_eq!(sizes.gate_logits, 1024);
     // logits: 1 * 151936 * 2 = 303872
     assert_eq!(sizes.logits, 303872);
-    // ssm_qkvz: 1 * 12288 * 2 = 24576
-    // Q(16*128) + K(16*128) + V(32*128) + Z(32*128) = 12288
-    assert_eq!(sizes.ssm_qkvz, 24576);
+    // ssm_qkvz: ceil16(1) * 12288 * 2 = 393216
+    // Q(16*128) + K(16*128) + V(32*128) + Z(32*128) = 12288, and the row
+    // extent is the cuBLASLt M-pad: the SSM QKVZ cuBLASLt arm hands the
+    // library ceil16(M) and WRITES the phantom rows (#917, 2026-09-11). The
+    // 16x here is an artifact of sizing at M=1; at a real prefill arena the
+    // pad is <= 15 rows out of thousands.
+    assert_eq!(sizes.ssm_qkvz, 393216);
     // ssm_ba: max(1 * 64 * 2, 256) = 256 (minimum allocation)
     assert_eq!(sizes.ssm_ba, 256);
-    // ssm_deinterleaved: same as ssm_qkvz = 24576
-    assert_eq!(sizes.ssm_deinterleaved, 24576);
+    // ssm_deinterleaved: same as ssm_qkvz, same M-pad = 393216
+    assert_eq!(sizes.ssm_deinterleaved, 393216);
     // ssm_gates: 1 * 32 * 2 * 4 = 256 (FP32 gate + beta, scaled by M)
     assert_eq!(sizes.ssm_gates, 256);
 }
@@ -120,8 +136,18 @@ fn test_buffer_arena_alloc() {
         ("ffn_act_q8", arena.ffn_act_q8(), sizes.ffn_act_q8),
         ("ffn_act_a", arena.ffn_act_a(), sizes.ffn_act_a),
         ("ffn_act_scale", arena.ffn_act_scale(), sizes.ffn_act_scale),
+        (
+            "ffn_act_scale_kmajor",
+            arena.ffn_act_scale_kmajor(),
+            sizes.ffn_act_scale_kmajor,
+        ),
         ("fp8_act", arena.fp8_act(), sizes.fp8_act),
         ("fp8_act_scale", arena.fp8_act_scale(), sizes.fp8_act_scale),
+        (
+            "fp8_act_scale_kmajor",
+            arena.fp8_act_scale_kmajor(),
+            sizes.fp8_act_scale_kmajor,
+        ),
         (
             "q2_dequant_scratch",
             arena.q2_dequant_scratch(),
@@ -267,4 +293,90 @@ fn test_buffer_sizes_decode_meta_widening() {
     assert_eq!(s192.logits, 193 * cfg.vocab_size * 2);
     let max_blocks = 4096 / 16 + 1;
     assert!(s192.scratch >= 32768 + 24 * 192 + 192 * max_blocks * 4);
+}
+
+// ── Row-wise FP8 GDN prefill BF16-weight slab (#917) ──────────────────────
+//
+// H100, 2026-09-11, `Qwen/Qwen3.8-27B-FP8`: the `ATLAS_FP8_ROWWISE` GDN arms
+// dequantised their per-row FP8 weights to BF16 through a `gpu.alloc` memoised
+// by weight pointer — `167772160` B per layer with NO entry here, so
+// `--gpu-memory-utilization` could not see it and a 28-token prefill died at
+// layer 36 with `cuMemAlloc_v2 failed: status 2`. These pin the entry that
+// replaced it: present IFF the lever is armed, and exact at the 27B geometry.
+//
+// The lever is passed in rather than set: `set_var` is process-global and
+// unsafe, and would race every other test in this binary.
+
+/// `Qwen/Qwen3.8-27B-FP8` at the shapes `kernels/gb10/qwen3.8-27b/MODEL.toml`
+/// declares (hidden 5120, 64 layers on a 4-cycle → 48 GDN), plus the GDN head
+/// geometry `ModelConfig` reads from the checkpoint's own `config.json`
+/// (16x128 key heads, 48x128 value heads). Same fixture as
+/// `weight_loader::qwen35_dense::predicted_residency_tests::qwen38_27b`.
+fn qwen38_27b() -> ModelConfig {
+    use atlas_core::config::LayerType;
+    let mut c = ModelConfig::qwen3_next_80b_nvfp4();
+    c.hidden_size = 5120;
+    c.num_hidden_layers = 64;
+    c.linear_num_key_heads = 16;
+    c.linear_key_head_dim = 128;
+    c.linear_num_value_heads = 48;
+    c.linear_value_head_dim = 128;
+    c.full_attention_interval = 4;
+    c.layer_types = (0..64)
+        .map(|i| {
+            if (i + 1) % 4 == 0 {
+                LayerType::FullAttention
+            } else {
+                LayerType::LinearAttention
+            }
+        })
+        .collect();
+    c
+}
+
+#[test]
+fn rowwise_bf16_slab_is_sized_only_when_the_lever_is_armed() {
+    let cfg = qwen38_27b();
+    assert_eq!(
+        ssm_rowwise_w_bf16_bytes_for(&cfg, false),
+        0,
+        "an unarmed ATLAS_FP8_ROWWISE must leave the default recipe's ledger \
+         byte-identical — the arena allocates NULL for a 0-byte entry"
+    );
+
+    // in_proj_qkvz: (16*128 q + 16*128 k + 48*128 v + 48*128 z) = 16384 rows
+    // x 5120 hidden x 2 B = 167772160 — the exact per-layer figure the H100
+    // OOM receipt names. out_proj: [5120, 48*128] x 2 B = 62914560.
+    assert_eq!(cfg.ssm_qkvz_size(), 16_384);
+    let qkvz = 16_384 * 5_120 * 2;
+    let out_proj = 5_120 * (48 * 128) * 2;
+    assert_eq!(qkvz, 167_772_160);
+    assert_eq!(ssm_rowwise_w_bf16_layer_bytes(&cfg), qkvz + out_proj);
+    assert_eq!(cfg.num_ssm_layers(), 48);
+    assert_eq!(
+        ssm_rowwise_w_bf16_bytes_for(&cfg, true),
+        48 * (qkvz + out_proj),
+        "48 GDN layers x (in_proj_qkvz + out_proj) — 10.31 GiB, which is what \
+         the preflight ring fitter now prices instead of discovering at \
+         layer 36"
+    );
+}
+
+/// The entry has to reach `total_bytes()`, because THAT is what preflight's
+/// `headroom::post_load_yardstick` takes as its `arena` term. A field the
+/// sum forgets is exactly as invisible as the `gpu.alloc` it replaced.
+#[test]
+fn rowwise_bf16_slab_is_counted_in_total_bytes() {
+    let cfg = qwen38_27b();
+    let mut sizes = BufferSizes::from_config(&cfg, 64, 4096, 16, 32);
+    // Zeroed first, not assumed zero: `from_config` reads the ambient
+    // environment, and a runner that happens to export ATLAS_FP8_ROWWISE=1
+    // must not turn this into an assertion about nothing.
+    sizes.ssm_rowwise_w_bf16 = 0;
+    let before = sizes.total_bytes();
+    // A SENTINEL, not the real slab size. This test is about the sum, and
+    // reading the sizing function here would let a sizing bug that returns 0
+    // make it vacuously true — which is exactly how a term goes missing.
+    sizes.ssm_rowwise_w_bf16 = 4096;
+    assert_eq!(sizes.total_bytes(), before + 4096);
 }
