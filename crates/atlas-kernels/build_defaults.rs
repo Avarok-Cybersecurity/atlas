@@ -32,6 +32,7 @@ pub(crate) struct Defaults {
     pub lm_head_batchm_max: u32,
     pub ssm_batched_recurrent: bool,
     pub gdn_prefill_tc: bool,
+    pub ssm_ba_gates_hopper: bool,
     pub decode_split_silu: bool,
 }
 
@@ -53,6 +54,7 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         lm_head_batchm_max: 8,
         ssm_batched_recurrent: false,
         gdn_prefill_tc: false,
+        ssm_ba_gates_hopper: false,
         decode_split_silu: true,
     }
 }
@@ -147,6 +149,7 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             "lm_head_batchm_max" => out.lm_head_batchm_max = unsigned(key, value),
             "ssm_batched_recurrent" => out.ssm_batched_recurrent = boolean(key, value),
             "gdn_prefill_tc" => out.gdn_prefill_tc = boolean(key, value),
+            "ssm_ba_gates_hopper" => out.ssm_ba_gates_hopper = boolean(key, value),
             "decode_split_silu" => out.decode_split_silu = boolean(key, value),
             other => panic!(
                 "kernels/{hw}/HARDWARE.toml: [defaults] has no key `{other}`. \
@@ -176,12 +179,14 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   lm_head_batchm_max: {batchm},\n\
          \x20   ssm_batched_recurrent: {batched_recurrent},\n\
          \x20   gdn_prefill_tc: {gdn_tc},\n\
+         \x20   ssm_ba_gates_hopper: {ba_gates},\n\
          \x20   decode_split_silu: {split_silu},\n\
          }};\n",
         hw = d.hw,
         batchm = d.lm_head_batchm_max,
         batched_recurrent = d.ssm_batched_recurrent,
         gdn_tc = d.gdn_prefill_tc,
+        ba_gates = d.ssm_ba_gates_hopper,
         split_silu = d.decode_split_silu,
     )
 }

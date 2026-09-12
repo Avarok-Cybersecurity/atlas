@@ -70,5 +70,6 @@ lm_head_batchm_max = 8
 # declares this ON on a Hopper receipt; B200 has none, so it stays off.
 ssm_batched_recurrent = false
 gdn_prefill_tc = false
+ssm_ba_gates_hopper = false
 # Split SiLU+down on the decode path — shipped ON everywhere.
 decode_split_silu = true

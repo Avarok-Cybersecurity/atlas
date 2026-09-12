@@ -585,6 +585,7 @@ impl Qwen3SsmLayer {
             ops::dense_gemm_ba_gates_prefill(
                 ctx.gpu,
                 self.ba_gates_prefill_k,
+                self.ba_gates_prefill_hopper_k,
                 normed,
                 &self.ssm.in_proj_ba,
                 self.ssm.a_log.weight,

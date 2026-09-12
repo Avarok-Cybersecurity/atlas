@@ -83,6 +83,25 @@ pub struct TargetDefaults {
     /// It is here so the probe that loads it is GATED on the same bit that
     /// launches it, like every other kernel in this table.
     pub gdn_prefill_tc: bool,
+    /// `dense_gemm_ba_gates_prefill_hopper` serves the SSM BA projection +
+    /// GDN gate transforms with ONE CTA per token
+    /// (`layers/ops/ssm_ba_gates_hopper.rs`), in place of its gb10 parent's
+    /// `ceil(N/4)` CTAs per token.
+    ///
+    /// TRUE on hopper, false elsewhere. The twin is BIT-IDENTICAL to the
+    /// parent by construction — same lane-strided K sweep, same butterfly,
+    /// same cross-warp order — so the row is purely a speed claim, and the
+    /// claim is about ISSUED work: at N=96 the parent re-reads and re-converts
+    /// each token's whole `K=5120` activation row 96 times, once per BA output
+    /// (nsys round 13: 26 881.8 us = 5.85% of a 4593-token H100 prefill, at
+    /// 88 GB/s of compulsory traffic — 2.6% of HBM, so not a bandwidth bound).
+    /// The twin reads it 12 times and issues ~1.8x fewer instructions for the
+    /// same bits (SASS, sm_90a). `kernels/gb10`
+    /// and `kernels/b200` do not carry the source, so the row is INERT there
+    /// and declared only because the lever list is one list (#928).
+    /// `ATLAS_SSM_BA_GATES_HOPPER=0` is the A/B. Numbers:
+    /// `SSM-BA-GATES-ATTRIBUTION.md`.
+    pub ssm_ba_gates_hopper: bool,
     /// Split SiLU+down on the decode path (`ModelLevers::decode_split_silu`).
     pub decode_split_silu: bool,
 }

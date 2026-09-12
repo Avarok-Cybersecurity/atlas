@@ -294,6 +294,7 @@ impl Qwen3SsmLayer {
             ),
             compute_gdn_gates_k: gpu.kernel("ssm_preprocess", "compute_gdn_gates")?,
             ba_gates_prefill_k: gpu.kernel("ssm_preprocess", "dense_gemm_ba_gates_prefill")?,
+            ba_gates_prefill_hopper_k: init_kernels::ba_gates_hopper_k(gpu),
             conv1d_prefill_k: gpu.kernel("causal_conv1d", "causal_conv1d_update_prefill")?,
             conv1d_prefill_tp_k: super::super::try_kernel(
                 gpu,

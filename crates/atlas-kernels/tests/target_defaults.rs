@@ -79,6 +79,16 @@ fn hopper_declares_what_an_h100_serve_runs_with() {
         "round 13: the tensor-core GDN prefill family is Hopper's default — \
          -39.6%/-44.7% on C=1 TTFT, +21.5%/+31.4% on C=16 aggregate"
     );
+    // The row round 14 adds. BIT-IDENTICAL to its parent by construction, so
+    // it is on without an accuracy receipt and its worst case is a null; the
+    // cost it attacks is nsys round 13's 26 881.8 us = 5.85% of the 4593-token
+    // prefill at 96 reads of every token's activation row, one per BA output.
+    assert!(
+        d.ssm_ba_gates_hopper,
+        "the BA-gates twin is bit-identical to its parent and Hopper-only; it \
+         is on because it cannot change output and off it re-reads every \
+         activation row 96 times (`SSM-BA-GATES-ATTRIBUTION.md`)"
+    );
 }
 
 /// THE REGRESSION GATE, as data: `kernels/gb10` declares EXACTLY the baseline,
@@ -116,6 +126,11 @@ fn b200_declares_the_conservative_table_not_hoppers() {
          and OFF here for want of one — the same rule, stated on the row that \
          most recently moved"
     );
+    assert!(
+        !d.ssm_ba_gates_hopper && declared("hopper").ssm_ba_gates_hopper,
+        "the BA-gates twin is Hopper-only source; B200's common/ does not link \
+         it, so the row is inert here and must read false"
+    );
 }
 
 /// The targets that declare NO `[defaults]` table are unaffected: they resolve
@@ -150,6 +165,8 @@ fn every_declaring_target_states_every_lever() {
         for lever in [
             "lm_head_batchm_max",
             "ssm_batched_recurrent",
+            "gdn_prefill_tc",
+            "ssm_ba_gates_hopper",
             "decode_split_silu",
         ] {
             assert!(
@@ -280,6 +297,7 @@ fn the_generated_constant_names_every_field() {
         "lm_head_batchm_max: 8",
         "ssm_batched_recurrent: true",
         "gdn_prefill_tc: true",
+        "ssm_ba_gates_hopper: true",
         "decode_split_silu: true",
     ] {
         assert!(
@@ -302,6 +320,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.lm_head_batchm_max, declared.lm_head_batchm_max);
     assert_eq!(baked.ssm_batched_recurrent, declared.ssm_batched_recurrent);
     assert_eq!(baked.gdn_prefill_tc, declared.gdn_prefill_tc);
+    assert_eq!(baked.ssm_ba_gates_hopper, declared.ssm_ba_gates_hopper);
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
     assert_eq!(
         atlas_kernels::TARGET_SM_COUNT,

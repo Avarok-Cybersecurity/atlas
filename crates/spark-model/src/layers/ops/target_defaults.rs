@@ -168,6 +168,7 @@ pub struct TargetLevers {
     pub lm_head_batchm_max: Resolved<u32>,
     pub ssm_batched_recurrent: Resolved<bool>,
     pub gdn_prefill_tc: Resolved<bool>,
+    pub ssm_ba_gates_hopper: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
 }
 
@@ -205,6 +206,16 @@ pub fn resolve(
         gdn_prefill_tc: resolve_toggle(
             defaults.gdn_prefill_tc,
             var("ATLAS_GDN_PREFILL_TC").as_deref(),
+            false,
+        ),
+        // The Hopper BA-gates twin (#928). Hopper declares it ON; the twin is
+        // BIT-IDENTICAL to its gb10 parent by construction, so unlike every
+        // other Hopper-owned row this one carries no accuracy question and no
+        // `ATLAS_NO_*` legacy spelling — `ATLAS_SSM_BA_GATES_HOPPER=0` is the
+        // whole A/B, under the 2026-09-11 grammar above.
+        ssm_ba_gates_hopper: resolve_toggle(
+            defaults.ssm_ba_gates_hopper,
+            var("ATLAS_SSM_BA_GATES_HOPPER").as_deref(),
             false,
         ),
         // DECLARATION plus the legacy kill switch, and no positive variable:
@@ -258,7 +269,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         "target defaults ({hw}): sm_count={sms} \
          lm_head_batchm_max={batchm}{batchm_src} \
          ssm_batched_recurrent={recurrent} gdn_prefill_tc={gdn_tc} \
-         decode_split_silu={silu}",
+         ssm_ba_gates_hopper={ba_gates} decode_split_silu={silu}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
         // at boot against the driver. Printed on this line because the levers
@@ -269,6 +280,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         batchm_src = l.lm_head_batchm_max.source.tag(),
         recurrent = onoff(l.ssm_batched_recurrent),
         gdn_tc = onoff(l.gdn_prefill_tc),
+        ba_gates = onoff(l.ssm_ba_gates_hopper),
         silu = onoff(l.decode_split_silu),
     )
 }
