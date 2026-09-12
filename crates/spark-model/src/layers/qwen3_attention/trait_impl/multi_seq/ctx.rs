@@ -11,7 +11,7 @@ use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 /// Shared scalars / buffer pointers for `super::decode_multi_seq_inner`.
 /// Built once in the orchestrator, then handed to each phase by `&self`.
 #[allow(dead_code)]
-pub(in crate::layers::qwen3_attention) struct MultiSeqCtx<'a> {
+pub(crate) struct MultiSeqCtx<'a> {
     /// Wrapping forward-pass context (kernels, buffers, gpu, config…).
     pub fwd: &'a ForwardContext<'a>,
     /// Per-token hidden state buffer (input).

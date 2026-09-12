@@ -628,6 +628,232 @@ impl Qwen3AttentionLayer {
     /// `None` = shape outside the phases (MLA, TP, QSA selection active, the
     /// flag unset); the caller falls back to the per-row core.
     #[allow(clippy::too_many_arguments)]
+    /// Cross-sequence attention sublayer, part 1 of 3: hc_expand (first
+    /// model layer), hc_pre(attn), the input norm and the QKV projection, ONCE
+    /// over all `ks.iter().sum()` rows at highway base 0. See the module note
+    /// on the order contract. `all_row_seq_lens` is every sequence's rows in
+    /// batch order (for the QSA-selection decline); `seq_slot` is the
+    /// per-request adapter slot buffer (`DevicePtr(0)` without LoRA).
+    ///
+    /// Returns `None` when the batched projections decline — the caller must
+    /// then run this layer per sequence, exactly as before.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn verify_attn_pre_hc<'a>(
+        &self,
+        hidden: DevicePtr,
+        ks: &[usize],
+        all_row_seq_lens: &[usize],
+        seq_slot: DevicePtr,
+        bs: u32,
+        ctx: &'a ForwardContext<'a>,
+        stream: u64,
+    ) -> Result<Option<MultiSeqCtx<'a>>> {
+        let r: usize = ks.iter().sum();
+        if !verify_attn_rows_qkv_enabled()
+            || r < 2
+            || self.mla.is_some()
+            || ctx.config.tp_world_size > 1
+            || self.ms_qsa_selection_active(all_row_seq_lens, r)
+        {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            ctx.hc_row_offset == 0 && all_row_seq_lens.len() == r,
+            "verify_attn_pre_hc: runs at highway base 0 over {r} rows (got offset {}, {} seq_lens)",
+            ctx.hc_row_offset,
+            all_row_seq_lens.len()
+        );
+        let h = ctx.config.hidden_size;
+        let eps = ctx.config.rms_norm_eps as f32;
+        let n = r as u32;
+        let hc = self
+            .hc
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("verify_attn_pre_hc on a layer without mHC"))?;
+        let hc_streams = ctx.buffers.hc_streams();
+        let post = ctx.buffers.hc_post();
+        let comb = ctx.buffers.hc_comb();
+        let normed = ctx.buffers.norm_output();
+        if hc.is_first_model_layer {
+            ops::hc_expand(
+                ctx.gpu,
+                self.hc_expand_k,
+                hidden,
+                hc_streams,
+                n,
+                h as u32,
+                hc.hc_mult as u32,
+                stream,
+            )?;
+        }
+        ops::hc_pre_site(
+            ctx.gpu,
+            self.hc_pre_k,
+            hc_streams,
+            &hc.attn,
+            hc,
+            hidden,
+            post,
+            comb,
+            ctx.buffers.hc_lowrank_scratch(),
+            n,
+            h as u32,
+            eps,
+            stream,
+        )?;
+        if ops::HcVariant::of(hc).applies_block_input_norm() {
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                hidden,
+                &self.input_norm,
+                normed,
+                n,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        } else {
+            ctx.gpu.copy_d2d_async(hidden, normed, r * h * 2, stream)?;
+        }
+        let mut c = MultiSeqCtx::new(self, ctx, hidden, hidden, r, bs, stream);
+        c.seq_slot = seq_slot;
+        self.ms_phase_qkv(&c)?;
+        Ok(Some(c))
+    }
+
+    /// Part 2 of 3: ONE sequence's rows `off..off+k` of the R-row context —
+    /// rope, cache write, per-row paged decode, QSA ingest — against ITS
+    /// state, KV and metadata. Sequences MUST be called in descending `off`
+    /// order (module note).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn verify_attn_seq_hc(
+        &self,
+        c: &MultiSeqCtx<'_>,
+        off: usize,
+        k: usize,
+        state: &mut (dyn LayerState + 'static),
+        kv_cache: &mut PagedKvCache,
+        row_metas: &[AttnMetadataDev],
+        row_seq_lens: &[usize],
+        stream: u64,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            k >= 1 && row_metas.len() == k && row_seq_lens.len() == k && off + k <= c.n,
+            "verify_attn_seq_hc: k={k} at off={off} of {} rows, {} metas / {} seq_lens",
+            c.n,
+            row_metas.len(),
+            row_seq_lens.len()
+        );
+        let h = c.h;
+        let view = |row0: usize, rows: usize| MultiSeqCtx {
+            fwd: c.fwd,
+            hidden: c.hidden.offset(row0 * h * c.bf16),
+            residual: c.residual,
+            n: rows,
+            stream: c.stream,
+            h: c.h,
+            nq: c.nq,
+            nkv: c.nkv,
+            hd: c.hd,
+            eps: c.eps,
+            bs: c.bs,
+            bf16: c.bf16,
+            q_dim: c.q_dim,
+            q_proj_dim: c.q_proj_dim,
+            q_proj_bytes: c.q_proj_bytes,
+            per_seq_qkv: c.per_seq_qkv,
+            normed: c.normed.offset(row0 * h * c.bf16),
+            qkv_buf: c.qkv_buf.offset(row0 * c.per_seq_qkv),
+            seq_slot: c.seq_slot,
+        };
+        // This sequence's k rows are a contiguous pack in the verify metadata,
+        // and `row_metas[0]` carries its bases.
+        let view_k = view(off, k);
+        let meta_k = AttnMetadataDev {
+            num_seqs: k as u32,
+            ..row_metas[0]
+        };
+        self.ms_phase_rope(&view_k, meta_k)?;
+        self.ms_phase_cache_write(&view_k, kv_cache, meta_k)?;
+
+        let attn_out = c.fwd.buffers.attn_output();
+        let q_row = c.q_dim as usize * c.bf16;
+        for t in (0..k).rev() {
+            let g = off + t;
+            let out = self.ms_phase_paged_decode(&view(g, 1), kv_cache, row_metas[t])?;
+            if g > 0 {
+                c.fwd
+                    .gpu
+                    .copy_d2d_async(out, attn_out.offset(g * q_row), q_row, stream)?;
+            } else {
+                anyhow::ensure!(
+                    out == attn_out,
+                    "paged decode row 0 must land in attn_output() row 0"
+                );
+            }
+        }
+        if self.qsa.is_some() {
+            for t in 0..k {
+                let mut states: [&mut (dyn LayerState + 'static); 1] = [&mut *state];
+                self.ms_qsa_ingest_only(
+                    &view(off + t, 1),
+                    &mut states,
+                    &row_seq_lens[t..t + 1],
+                    kv_cache,
+                    row_metas[t],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Part 3 of 3: o_proj, the post-attention norm and hc_post(attn), ONCE
+    /// over all R rows of the context.
+    pub(crate) fn verify_attn_post_hc(
+        &self,
+        c: &MultiSeqCtx<'_>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let h = ctx.config.hidden_size;
+        let eps = ctx.config.rms_norm_eps as f32;
+        let n = c.n as u32;
+        let hc = self
+            .hc
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("verify_attn_post_hc on a layer without mHC"))?;
+        let attn_out = ctx.buffers.attn_output();
+        let o_out = self.ms_phase_o_proj(c, attn_out)?;
+        if let Some(ref post_norm) = self.post_attn_out_norm {
+            ops::rms_norm(
+                ctx.gpu,
+                self.rms_norm_w_k,
+                o_out,
+                post_norm,
+                o_out,
+                n,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        }
+        let hc_streams = ctx.buffers.hc_streams();
+        ops::hc_post_site(
+            ctx.gpu,
+            self.hc_post_k,
+            hc,
+            o_out,
+            hc_streams,
+            ctx.buffers.hc_post(),
+            ctx.buffers.hc_comb(),
+            hc_streams,
+            n,
+            h as u32,
+            stream,
+        )
+    }
+
     fn attention_rows_batched(
         &self,
         hidden: DevicePtr,

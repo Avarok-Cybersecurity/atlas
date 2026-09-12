@@ -687,7 +687,72 @@ impl TransformerModel {
                     // which is where the amortisation is.
                     attn_idx += 1;
                     let ffn_batched = eligibility::hc_attn_ffn_batched();
-                    for i in 0..n {
+                    // ONE context for the whole layer: the batched attention
+                    // projections/brackets, and the batched FFN sublayer.
+                    let layer_ctx = ForwardContext {
+                        buffers: &self.buffers,
+                        hc_row_offset: 0,
+                        gpu: self.gpu.as_ref(),
+                        config: &self.config,
+                        dispatch: &self.dispatch,
+                        derived: &self.derived,
+                        levers: &self.levers,
+                        stats: &self.stats,
+                        attn_metadata: None,
+                        profile: false,
+                        comm: self.comm_ref(),
+                        graph_capture: false,
+                        gdn_exact_replay: false,
+                        token_ids: None,
+                        host_token_ids: Some(&tokens[..r_total]),
+                        routed_lora_layers: None,
+                        midchunk_capture: None,
+                        moe_lora_route: self.decode_moe_route(),
+                    };
+                    // ── Cross-sequence attention projections + brackets ──
+                    // hc_pre(attn) + QKV once over all R rows here; o_proj +
+                    // hc_post once after the loop. Requires the batched FFN:
+                    // the per-sequence fallback body runs the whole sublayer.
+                    let core = if ffn_batched && eligibility::hc_attn_core_batched() {
+                        let attn_layer = layer
+                            .as_any()
+                            .and_then(|a| {
+                                a.downcast_ref::<crate::layers::qwen3_attention::Qwen3AttentionLayer>()
+                            })
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "hc batched verify: attention layer {layer_idx} is not a \
+                                     Qwen3AttentionLayer"
+                                )
+                            })?;
+                        let mut all_row_seq_lens: Vec<usize> = Vec::with_capacity(r_total);
+                        for i in 0..n {
+                            for t in 0..ks[i] {
+                                all_row_seq_lens.push(seqs[i].seq_len + t);
+                            }
+                        }
+                        let bs = kv_cache.block_size() as u32;
+                        attn_layer.verify_attn_pre_hc(
+                            hidden,
+                            &ks,
+                            &all_row_seq_lens,
+                            metadata.seq_slot,
+                            bs,
+                            &layer_ctx,
+                            stream,
+                        )?
+                    } else {
+                        None
+                    };
+                    // DESCENDING when the core is batched: every paged decode
+                    // lands in attn_output() row 0 and is copied out, so global
+                    // row 0 must be decoded last (verify_rows_hc module note).
+                    let order: Vec<usize> = if core.is_some() {
+                        (0..n).rev().collect()
+                    } else {
+                        (0..n).collect()
+                    };
+                    for &i in &order {
                         let base_seq_len = seqs[i].seq_len;
                         // ── Align the QSA marks to this sequence's position
                         // BEFORE the pass, once per layer-sweep entry ──
@@ -805,7 +870,20 @@ impl TransformerModel {
                             "hc batched verify: attention layer {layer_idx} has no K-row \
                              highway body (hc/ffn missing)"
                         );
-                        if ffn_batched {
+                        if let Some(c) = core.as_ref() {
+                            // Only this sequence's rope / cache write / paged
+                            // decode / QSA: projections and brackets ran once.
+                            attn.verify_attn_seq_hc(
+                                c,
+                                off[i],
+                                ks[i],
+                                seq.layer_states[layer_idx].as_mut(),
+                                &mut kv_cache,
+                                &row_metas,
+                                &row_seq_lens,
+                                stream,
+                            )?;
+                        } else if ffn_batched {
                             // Attention sublayer only; the FFN sublayer runs
                             // ONCE over every sequence after this loop.
                             attn.decode_verify_rows_hc_attn_only(
@@ -839,6 +917,32 @@ impl TransformerModel {
                             )?;
                         }
                     }
+                    if let Some(c) = core.as_ref() {
+                        let attn_layer = layer
+                            .as_any()
+                            .and_then(|a| {
+                                a.downcast_ref::<crate::layers::qwen3_attention::Qwen3AttentionLayer>()
+                            })
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "hc batched verify: attention layer {layer_idx} is not a \
+                                     Qwen3AttentionLayer"
+                                )
+                            })?;
+                        attn_layer.verify_attn_post_hc(c, &layer_ctx, stream)?;
+                        {
+                            static SAID: std::sync::Once = std::sync::Once::new();
+                            SAID.call_once(|| {
+                                tracing::info!(
+                                    n_seqs = n,
+                                    rows = r_total,
+                                    "hc batched verify: attention projections + brackets BATCHED \
+                                     across sequences (ATLAS_HC_ATTN_CORE_BATCHED=0 restores \
+                                     per-sequence)"
+                                );
+                            });
+                        }
+                    }
                     if ffn_batched {
                         // ── FFN sublayer ONCE over all R rows ──
                         // The attention CORE had to run per sequence (distinct
@@ -848,26 +952,6 @@ impl TransformerModel {
                         // call at T=R is the same arithmetic as n calls at T=k
                         // — minus n-1 copies of the highway bracket. The SSM
                         // layers already work this way.
-                        let ffn_ctx = ForwardContext {
-                            buffers: &self.buffers,
-                            hc_row_offset: 0,
-                            gpu: self.gpu.as_ref(),
-                            config: &self.config,
-                            dispatch: &self.dispatch,
-                            derived: &self.derived,
-                            levers: &self.levers,
-                            stats: &self.stats,
-                            attn_metadata: None,
-                            profile: false,
-                            comm: self.comm_ref(),
-                            graph_capture: false,
-                            gdn_exact_replay: false,
-                            token_ids: None,
-                            host_token_ids: Some(&tokens[..r_total]),
-                            routed_lora_layers: None,
-                            midchunk_capture: None,
-                            moe_lora_route: self.decode_moe_route(),
-                        };
                         let attn = layer
                             .as_any()
                             .and_then(|a| {
@@ -879,7 +963,7 @@ impl TransformerModel {
                                      Qwen3AttentionLayer"
                                 )
                             })?;
-                        attn.decode_verify_ffn_rows_hc(hidden, &ks, &ffn_ctx, stream)?;
+                        attn.decode_verify_ffn_rows_hc(hidden, &ks, &layer_ctx, stream)?;
                         {
                             static SAID: std::sync::Once = std::sync::Once::new();
                             SAID.call_once(|| {

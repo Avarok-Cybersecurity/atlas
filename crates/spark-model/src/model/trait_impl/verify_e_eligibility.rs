@@ -63,3 +63,14 @@ pub(super) fn hc_attn_ffn_batched() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("ATLAS_HC_ATTN_FFN_BATCHED").as_deref() != Ok("0"))
 }
+
+/// `ATLAS_HC_ATTN_CORE_BATCHED` (default on; `=0` restores the per-sequence
+/// attention sublayer). Runs hc_pre(attn) + QKV, then o_proj + hc_post, once
+/// over all sequences' rows; only rope/cache/paged-decode/QSA stay per
+/// sequence. Measured before the change (C=4, k=3): ~335 us per sequence per
+/// layer in the core, of which QKV 150 and o_proj 55 read weights that are
+/// identical for every sequence, plus ~100 us of per-sequence hc_pre.
+pub(super) fn hc_attn_core_batched() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ATLAS_HC_ATTN_CORE_BATCHED").as_deref() != Ok("0"))
+}
