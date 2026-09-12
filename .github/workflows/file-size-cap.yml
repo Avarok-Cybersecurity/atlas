@@ -609,6 +609,17 @@ jobs:
             "crates/spark-model/src/weight_loader/nemotron.rs"
             # 503 LoC (was 500) — +3 lines. Model metadata surface.
             "crates/spark-model/src/model/trait_impl/meta.rs"
+            # ── #927 + #928 merge carry-over ──
+            # 510 LoC (was 500) — the Qwen3-Next SSM layer STRUCT and nothing
+            # else: every impl already lives in one of the 36 sibling files this
+            # file declares (`kernel_select.rs` took the last of them), so what
+            # remains is a field list that cannot be split — the fields are
+            # private and read from those siblings, which a child module would
+            # put out of scope. #927 landed it at exactly 500 and #928's
+            # value-split spine handle is the eleventh line. Lift it by grouping
+            # the GDN prefill-spine handles behind one struct, the `Ctx`+`State`
+            # pattern wave 4g used on `chat.rs`; tracked as follow-up.
+            "crates/spark-model/src/layers/qwen3_ssm/mod.rs"
           )
 
           # ★ The scanned tree must EXIST and must contain Rust. `find crates`
