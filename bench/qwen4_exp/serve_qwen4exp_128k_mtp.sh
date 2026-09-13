@@ -251,8 +251,18 @@ export RUST_LOG="${RUST_LOG:-info}"
 #                         (it costs tokens*10240*14 bytes).
 #   ATLAS_PLE_CACHE_SLOTS n-gram row cache; cheap.
 export ATLAS_QSA_MAX_TOKENS="${ATLAS_QSA_MAX_TOKENS:-$((MAX_SEQ_LEN + 4096))}"
-export ATLAS_PLE_MAX_TOKENS="${ATLAS_PLE_MAX_TOKENS:-9000}"
-export ATLAS_PLE_CACHE_SLOTS="${ATLAS_PLE_CACHE_SLOTS:-1048576}"
+# 9216, also from the preset: the cap must be >= the prefill chunk (8192) and
+# the layer refuses a larger chunk BY NAME rather than overrunning. 9000 cleared
+# 8192 too, but there is no reason to sit below the maintained value.
+export ATLAS_PLE_MAX_TOKENS="${ATLAS_PLE_MAX_TOKENS:-9216}"
+# 4194304, matching this target's serve preset in
+# kernels/gb10/qwen3.8-flash-next/MODEL.toml. This launcher passes explicit
+# flags rather than `spark serve <preset>`, so the preset never applied and
+# this had drifted to 1M — a quarter of the maintained value. The old
+# "PLE cache sizing is a non-lever" result only swept 64K -> 256K slots and
+# concluded from a COLD-cache compulsory-miss pattern, which says nothing
+# about steady state 16x higher. ~320 B/slot, so ~1.3 GB.
+export ATLAS_PLE_CACHE_SLOTS="${ATLAS_PLE_CACHE_SLOTS:-4194304}"
 
 export ATLAS_INTHINK_TOOL_LEAK_OPENERS=0
 export ATLAS_NO_HW_PRECHECK=1
