@@ -275,8 +275,9 @@ impl TransformerModel {
         // therefore unreachable, and on this model it is NOT cheap: 8 slots x
         // max_batch x the full SSM blob (27B: 158.9 MB) = ~19.9 GB at batch 16,
         // allocated up front. Skip it when speculative decode is on.
-        // The ring-depth decision (env overrides + speculative/watchdog
-        // skip) is SSOT'd in `crate::ssm_reserve::decode_rollback_ring_slots`
+        // The ring-depth decision (the published `--ssm-decode-ring-slots` /
+        // #915 auto-fit depth, env overrides, speculative/watchdog skip) is
+        // SSOT'd in `crate::ssm_reserve::decode_rollback_ring_slots`
         // — spark-server's `preflight_reserve` calls the SAME helper, so the
         // GPU reservation and this allocation cannot drift. The scheduler
         // keys off `decode_rollback_ring_slots()`, so a 0 here disables save

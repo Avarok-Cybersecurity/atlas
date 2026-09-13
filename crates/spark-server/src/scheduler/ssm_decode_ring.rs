@@ -21,9 +21,11 @@
 //! cost bounded: at most `capacity` D2D copies are live per sequence,
 //! and the ring evicts oldest-first so a long generation never grows
 //! the set. `capacity` is the model's
-//! `decode_rollback_ring_slots()` — sized `ROLLBACK_RESTEER_CAP + 1`
-//! so every permitted rollback has a distinct snapshot plus the current
-//! boundary.
+//! `decode_rollback_ring_slots()` — 8 by default, so every permitted
+//! rollback has a distinct snapshot plus the current boundary, but as
+//! low as 0 when `--ssm-decode-ring-slots` or preflight's free-memory
+//! fit (#915) says so. A smaller ring retains fewer boundaries and so
+//! reaches fewer re-steer anchors; 0 declines every rollback.
 //!
 //! Memory cost: each slot stores `h_state + conv_state` for **all** SSM
 //! layers. Per marconi.md that is ~77 MB/slot for a 122B/36-layer model;

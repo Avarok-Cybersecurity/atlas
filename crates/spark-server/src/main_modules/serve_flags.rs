@@ -81,6 +81,24 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
              line's ({rollback:?}) did NOT take effect"
         );
     }
+    // `--ssm-decode-ring-slots`: ABSENT IS NOT A VALUE. `auto` (the clap
+    // default) publishes NOTHING, so the documented `ATLAS_SSM_DECODE_RING`
+    // fallback stays reachable AND preflight can publish the depth it fitted
+    // to free memory later in the same boot (#915). An explicit N is
+    // published here, before preflight runs, which is exactly what makes the
+    // auto-fit's later write a no-op — an operator's pinned depth is refused
+    // rather than silently shrunk.
+    if let Some(slots) =
+        spark_model::ssm_reserve::parse_decode_ring_slots(&args.ssm_decode_ring_slots)
+            .expect("validated by validate_serve_args")
+    {
+        let in_force = spark_model::ssm_reserve::set_decode_ring_slots(slots);
+        if in_force != slots {
+            tracing::warn!(
+                "ssm-decode-ring-slots was already resolved ({in_force}); the command                  line's ({slots}) did NOT take effect"
+            );
+        }
+    }
     // `--prefill-varlen-batch`: its own single-value cell, so it publishes
     // independently of the GDN trio. Absent publishes nothing and the
     // documented `ATLAS_PREFILL_VARLEN` fallback stays reachable.
@@ -116,7 +134,7 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     tracing::info!(
         "kernel flags: ssm_h_dtype={} gdn_fused_norm={} ssm_batched_recurrent={} \
          exact_verify={} ssm_tail_midchunk={} mtp_gate={} ssm_rollback_mode={:?} \
-         prefill_varlen_batch={}",
+         ssm_decode_ring_slots={} prefill_varlen_batch={}",
         if gdn.h_f16 { "f16" } else { "f32" },
         gdn.fused_norm,
         gdn.batched_recurrent,
@@ -130,6 +148,12 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
             "auto"
         },
         spark_model::ssm_reserve::ssm_rollback_mode(),
+        // RESOLVED: `auto` until something publishes a depth. Preflight logs
+        // the fitted depth (and the formula behind it) when it shrinks one.
+        match spark_model::ssm_reserve::published_decode_ring_slots() {
+            Some(slots) => slots.to_string(),
+            None => "auto".to_string(),
+        },
         // RESOLVED, not the raw argument — may come from the environment.
         spark_model::layers::ops::prefill_varlen_enabled(),
     );
