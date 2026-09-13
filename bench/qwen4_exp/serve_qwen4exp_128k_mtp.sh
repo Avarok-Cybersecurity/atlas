@@ -345,7 +345,17 @@ export ATLAS_QWEN4EXP_MTP_HC_BATCHED="${ATLAS_QWEN4EXP_MTP_HC_BATCHED:-1}"
 export ATLAS_VERIFY_ROW_PROJ="${ATLAS_VERIFY_ROW_PROJ:-1}"
 
 # ── MTP. Priority #1 for this config. ──────────────────────────────────────
-export ATLAS_QWEN4EXP_MTP=1 ATLAS_QWEN4EXP_MTP_VERIFY=1
+# MTP=0 turns speculation off for correctness discriminators. These were
+# UNCONDITIONAL exports, so `MTP=0 ./serve...` silently served the identical
+# config — the tell was a re-run reproducing byte-identical metrics. Spec
+# decode changes the temp=0 answer on this family, so an MTP switch is the
+# first thing any deterministic-answer evaluation needs.
+MTP="${MTP:-1}"
+if [ "$MTP" = "1" ]; then
+  export ATLAS_QWEN4EXP_MTP=1 ATLAS_QWEN4EXP_MTP_VERIFY=1
+else
+  export ATLAS_QWEN4EXP_MTP=0 ATLAS_QWEN4EXP_MTP_VERIFY=0
+fi
 # Speculation is INERT inside <think> without this, and thinking is ON here,
 # so without it MTP would do nothing for most of a reasoning turn.
 export ATLAS_DFLASH_SPEC_THINK=1
@@ -354,13 +364,28 @@ export ATLAS_NO_THINKENDED_GPU_ARGMAX=1
 # rank, so drafts agree only if the all-reduce leaves every rank identical.
 # If they drift the target still VERIFIES the draft — acceptance drops, output
 # does not corrupt.
-export ATLAS_EP_MTP=1
+[ "$MTP" = "1" ] && export ATLAS_EP_MTP=1 || export ATLAS_EP_MTP=0
 # The only liveness proof that MTP is doing work. Counters live on RANK 0.
 export ATLAS_MTP_ACCEPT_DEBUG=1
 
 echo "Qwen3.8-Flash-Next NVFP4  EP=2 (TP=1)  rank=$RANK host=$(hostname)"
 echo "  ctx=$MAX_SEQ_LEN seqs=$NUM_SEQS util=$GPU_UTIL ssm_slots=$SSM_CACHE_SLOTS"
-echo "  MTP=on drafts=$DRAFTS  rollback=$ROLLBACK"
+# VIDEO_FFMPEG=1 allows MP4/MOV decode. OFF by default, matching the flag's own
+# rationale: it makes the server exec another program per video request, and a
+# deployment that does not want subprocess execution must not acquire it by
+# upgrading. The decode is bounded (no shell, no temp file, capped frames,
+# output and wall clock), and ffmpeg is at /usr/bin/ffmpeg here.
+#
+# Without it EVERY MP4 leg of `video-fidelity` returns HTTP 400 "this container
+# needs ffmpeg to decode and subprocess decoding is disabled" — which reads as
+# 0 correct at every concurrency and 6 skipped legs, i.e. exactly like a model
+# failure. It is not one: animated GIF decodes natively either way.
+VIDEO_ARGS=""
+[ "${VIDEO_FFMPEG:-0}" = "1" ] && VIDEO_ARGS="--video-allow-ffmpeg"
+
+SPEC_ARGS="--speculative --num-drafts $DRAFTS --mtp-gate force"
+[ "$MTP" = "1" ] || SPEC_ARGS=""
+echo "  MTP=$([ "$MTP" = "1" ] && echo on || echo OFF) drafts=$DRAFTS  rollback=$ROLLBACK"
 echo "  thinking=on reasoning_effort=low  prefix-cache=on"
 echo "  qsa_cap=$ATLAS_QSA_MAX_TOKENS (> ctx) ple_chunk=$ATLAS_PLE_MAX_TOKENS"
 echo "  bind=$BIND:$PORT  master=$MASTER"
@@ -384,7 +409,7 @@ exec "$BIN" serve \
   --request-timeout 1800 \
   --fast-load-prefetch-shards \
   --enable-prefix-caching \
-  --speculative --num-drafts "$DRAFTS" --mtp-gate force \
+  ${SPEC_ARGS} ${VIDEO_ARGS} \
   --default-chat-template-kwargs '{"reasoning_effort":"low","enable_thinking":true}' \
   ${EXTRA_ARGS:-} \
   "${@:2}"
