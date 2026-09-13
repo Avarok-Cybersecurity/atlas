@@ -64,7 +64,7 @@ Run **independent charters in parallel** when they do not contend for the same G
 | `docs/k3/rst/s1-graph.md` | CPU graph 2026-09-12 |
 | `docs/k3/rst/s1-gpu-fallback.md` | CPU fallback GPU wrapper 2026-09-12 |
 | `docs/k3/rst/s1-cuda-kda.md` | CUDA KDA decode vs CPU; BoundLayer LinearAttention default CUDA (`K3_CUDA_KDA=0` CPU). spark1 `7238f64bf` CUDA default **C1** (nvfp4 ships `kda_decode`); mix=0 still moves tokens |
-| `docs/k3/rst/s1-cuda-mla.md` | CUDA gated-NoPE MLA vs CPU; BoundLayer FullAttention **default CUDA** (`K3_CUDA_MLA=0` CPU escape), same polarity as KDA |
+| `docs/k3/rst/s1-cuda-mla.md` | CUDA gated-NoPE MLA vs CPU; BoundLayer FullAttention **default CUDA** (`K3_CUDA_MLA=0` CPU). spark1 `9d6c273` CUDA default **C1** (no env); mix=0 still moves tokens |
 | `docs/k3/rst/c1-cpu-forward.md` | in flight (goldens + twin weights still missing) |
 | `docs/k3/rst/c7-dummy-tp2.md` | in-process dummy TP=2 (spark1+spark2 still open) |
 | `docs/k3/rst/s5-mxfp4-e8m0.md` | host unpack reuses DSV4 E8M0 |

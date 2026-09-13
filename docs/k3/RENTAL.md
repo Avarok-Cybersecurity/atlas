@@ -14,7 +14,7 @@ This file is the soak runbook. Lab twin cannot hold official MXFP4 (~1.56 TB). *
 
 ## What is green on lab serve (2026-09-13)
 
-- CUDA KDA + CUDA MLA default (`K3_CUDA_KDA=0` / `K3_CUDA_MLA=0` CPU escape): aviation greedy bee-fly at `0898345` with `K3_CUDA_MLA=1`; mix=0 → `to to to…`. Logs: `kda_decode` and `mla_decode`. Recopy after default-on commit.
+- CUDA KDA + CUDA MLA default (`K3_CUDA_KDA=0` / `K3_CUDA_MLA=0` CPU escape): spark1 `9d6c273` serve with **no** `K3_CUDA_MLA` env — aviation greedy bee-fly, first id 1459. mix=0 → `to to to…` (first id 308). Logs: `kda_decode` and `mla_decode`. Live left on CUDA default.
 - Packed LatentMoE **launches** `moe_w4a16_grouped_gemm_ptrtable_e8m0` (`089834512`). 0.40B has no packed experts → CPU MoE. Lookup-fail does not silent-CPU.
 - Dummy TP=2 NCCL hidden=7168 spark1+spark2.
 

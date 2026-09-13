@@ -32,8 +32,15 @@ TEST NOTES
 - BoundLayer mock: MLA + flag launches rope then sdpa; MLA without flag does not look up `mla_decode`; KDA ignores the MLA flag.
 - Serve selects `(sm_121, kimi-k3, nvfp4)`. Stem is already symlinked into nvfp4/.
 
+TEST NOTES (9d6c273, CUDA MLA default)
+- spark1 spark-k3 SHA `9d6c273`. Serve **without** `K3_CUDA_MLA` (unset, not `=1`). Log: `K3 FullAttention decode via CUDA mla_decode` and `K3 LinearAttention decode via CUDA kda_decode`.
+- Aviation T=0 max_tokens=16 → `'there is no way a bee should be able to fly. Its wings are too'`. Prefill first token **1459**. C1 prefix holds on the default CUDA mixer.
+- Known-bad `K3_ATTNRES_MIX=0` (still CUDA MLA+KDA): `'to to to to to to to to to to to to to to to to'`, first token **308**. Mix lever still moves tokens.
+- Live spark1 :8888 left on CUDA default (no `K3_CUDA_MLA`, no mix0).
+
 BUGS
-#N/A host oracle + source contract + BoundLayer default-on. Recopy spark-k3 after this commit before claiming default-on aviation.
+#N/A host oracle + source contract + BoundLayer default-on.
+#N/A CUDA-default aviation C1 + mix=0 known-bad on spark1 nvfp4 serve after `9d6c273`.
 
 STOP
-Charter complete for default CUDA MLA (KDA polarity). Do not book: projections / AttnRes / router still host; official 1.56 TB not downloaded. Rental soak is CR1–CR3.
+On-device CUDA MLA default **matches** C1 aviation greedy on spark1 nvfp4 serve. Mix=0 still moves tokens. Do not book: projections / AttnRes / router still host; official 1.56 TB not downloaded. Rental soak is CR1–CR3.

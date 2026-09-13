@@ -51,5 +51,10 @@ TEST NOTES (7238f64bf, nvfp4 kda_decode)
 - `K3_ATTNRES_MIX=0` still on CUDA KDA: `to to to…`, first id **308**.
 - Live spark1 :8888 left on CUDA default. CUDA-default-live **yes**.
 
+TEST NOTES (9d6c273, CUDA MLA default)
+- Serve **without** `K3_CUDA_MLA`. Logs `kda_decode` + `mla_decode`. Aviation T=0 max_tokens=16 C1 bee-fly, first id **1459**.
+- `K3_ATTNRES_MIX=0` still CUDA MLA+KDA: `to to to…`, first id **308**.
+- Live spark1 :8888 left on CUDA default (no MLA env, no mix0).
+
 STOP
-HTTP **and** C1 greedy prefix **green** on spark1 **CUDA default** (`7238f64bf`, stem in nvfp4 bundle). Mix=0 still moves tokens. Do not treat this as Hopper soak.
+HTTP **and** C1 greedy prefix **green** on spark1 **CUDA KDA+MLA default** (`9d6c273`). Mix=0 still moves tokens. Do not treat this as Hopper soak.
