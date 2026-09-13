@@ -14,7 +14,7 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | C0–C7 green. CUDA KDA+MLA **default** (`K3_CUDA_*=0` CPU). Packed LatentMoE launches DSV4 E8M0 GEMM. 0.40B CPU MoE. AttnRes/projections host. Next: 8×B300 CR1–CR3. |
+| Phase | C0–C6 green. **C7 open** — dummy NCCL o_proj is not 0.40B TP=2. CUDA KDA+MLA default. Packed LatentMoE launches DSV4 E8M0 GEMM. 0.40B CPU MoE. AttnRes/projections host. |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
 | Last session | 2026-09-13 09:07 CDT — CUDA MLA default live on spark1 (`9d6c273`, no env); mix=0 still moves tokens. |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
@@ -40,7 +40,7 @@ S7 (rental soak) is forbidden until every box is green. Each box also needs its 
 - [x] C4 MLA KV + KDA state after prefix hit on the **C1 twin** (`c4_hybrid_state_prefix_hit_matches_cold_prefill_twin`, spark2 18.6s)
 - [x] C5 AttnRes fixture + twin mix=0 vs mix=1 (`c5_twin_mix0_is_skip_and_diverges_from_mix1`, spark2 14.4s, one-hot fixture)
 - [x] C6 LatentMoE frozen-gate mix + twin force-expert-0 (`c6_twin_force_expert_zero_diverges`, spark2 14.4s)
-- [x] C7 production-width dummy TP=2 on spark1+spark2 == spark1 single-GPU tokens — NCCL column-split `o_proj` hidden=7168, greedy 8, `MATCH True`; drop-rank-1 `DROP True`. In-process K3 dummy also green (`kimi_k3::c7`). `docs/k3/rst/c7-dummy-tp2.md` + `docs/k3/scripts/c7_dummy_tp2_nccl.py` (in-process CPU `kimi_k3::c7` is not this box)
+- [ ] C7 0.40B twin TP=2 on spark1+spark2 == spark1 TP=1 tokens. Dummy NCCL `o_proj` hidden=7168 `MATCH`/`DROP` is fabric-only (`docs/k3/rst/c7-dummy-tp2.md`) — it does **not** check this box. Live `spark-k3` is still TP=1; `--tp-size 2` refused (`supports_tp` was false). In-tree loader now returns true (`2ed1455`) but that binary was never staged. `docs/k3/rst/c7-k3-tp2.md`
 
 49M `smol-kimi-k3` is shape-only. It does not satisfy C1.
 
