@@ -6,7 +6,7 @@ use super::plan::{self, Unit};
 use super::runner::RunOutcome;
 use super::state;
 
-pub(super) fn human(secs: u64) -> String {
+pub(in crate::cli::bench_certify) fn human(secs: u64) -> String {
     if secs >= 3600 {
         format!("{:.1} h", secs as f64 / 3600.0)
     } else if secs >= 60 {
@@ -16,7 +16,7 @@ pub(super) fn human(secs: u64) -> String {
     }
 }
 
-pub(super) fn describe(o: &RunOutcome) -> String {
+pub(in crate::cli::bench_certify) fn describe(o: &RunOutcome) -> String {
     match o {
         RunOutcome::Passed { record } => format!("PASS ({})", record.display()),
         RunOutcome::MemberDone { record } => format!("shard done ({})", record.display()),

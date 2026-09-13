@@ -43,7 +43,7 @@ pub struct RecordFacts {
 }
 
 /// Where a unit's newest record is read from.
-pub trait Records {
+pub trait Records: Send {
     /// The newest record for `id` recorded at or after `since` (unix secs).
     fn newest_since(&self, root: &Path, id: &str, since: u64) -> Option<RecordFacts>;
 }

@@ -67,6 +67,13 @@ impl Campaign {
         Some(i)
     }
 
+    /// Mark a chosen pending unit running (a scheduler picked it rather
+    /// than the first pending one).
+    pub fn start(&mut self, i: usize) {
+        debug_assert_eq!(self.phase[i], Phase::Pending);
+        self.phase[i] = Phase::Running;
+    }
+
     /// Is any unit still to run or running?
     pub fn stopped(&self) -> bool {
         self.aborted.is_some()
