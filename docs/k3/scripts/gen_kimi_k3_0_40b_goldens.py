@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """C1 goldens: HF greedy on inference-optimization/Kimi-K3-0.40B.
 
+Also: `docs/k3/scripts/tiktoken_to_tokenizer_json.py` for spark serve.
+
 RST: freeze the prompt list. Known-bad is a mutated graph that must diverge.
 Do not download official 1.56 TB shards.
 """
