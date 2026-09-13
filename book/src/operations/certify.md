@@ -15,6 +15,55 @@ spark bench certify --pr 1027 --yes     # a real campaign, agentic gate confirme
 
 `bench` is the short spelling of `benchmark`; both work everywhere.
 
+```
+spark bench certify --with-nodes 10.10.10.2,dgx3.local   # this box + two nodes, in parallel
+spark bench certify --with-nodes 10.10.10.2 --remote-only # from a laptop: nodes only
+```
+
+## `--with-nodes`
+
+The same campaign, on several machines at once. Every address is asked
+through `atlasctl bench nodes` (`ip[:port]`, `[v6]:port`, `host.local`,
+`dns.name`; port omitted → atlasctl's peer port), and a node is **admitted**
+only when it can sign records this repository will accept: bench enabled, the
+box class being certified, a signer committed in `.github/record-signers/`,
+not busy, nothing queued, memory and disk above the floors, a GPU it can
+name. Every refusal is printed with its reason; the campaign runs on what was
+admitted. This box is a node too, unless `--remote-only`.
+
+**Planning.** Whenever a node is free it takes the longest remaining unit it
+may run (longest-first list scheduling: within 4/3 of optimal, and the same
+rule at plan time and at run time, so `--dry-run`'s makespan is what
+happens). Among equals, a shard whose group already has a shard on that node
+yields to one that does not, so losing a node costs a quarter of a group.
+
+**Speed-class gates spread only across boxes that are one box.** Before
+anything starts, every pair of admitted nodes is checked by
+`hardware::equivalence` (same GPU and driver line, clock ceiling within 1 %,
+memory within 5 %, no thermal throttle, chassis within 10 °C — the fields
+that told two "identical" GB10s apart by 0.66 tok/s). If every pair agrees,
+Speed units go anywhere; otherwise they are **bundled** on the node with the
+most headroom and the plan prints `WARNING speed-class gates BUNDLED on …`
+with the concrete mismatch. CI re-checks the same rule from the records'
+own captures (`docs/provable-benchmark-work.md` §5c).
+
+**Each remote unit** is submitted with an idempotent key
+(`certify-<run>-<node>-<gate>`), followed over a re-attachable stream (a
+lost link resumes from the last event; ten losses is a harness failure),
+fetched, and placed only after this side has checked the record is for that
+unit at the anchor on this class, completed, clean, and signed by a committed
+key. A record that fails any of those is removed again and never retried on
+that node. A node that fails twice in a row is retired for the campaign.
+Ctrl-C or a drift on the guarded branch cancels every node's job.
+
+**What atlasctl must have.** Each node runs an `atlasctl agent` with a
+`bench.yaml` (atlas-recipes `docs/BENCH.md`) and has granted this machine
+`bench` (`atlasctl peer grant-bench <fingerprint>` there); this machine
+needs `atlasctl` on `PATH` or `--atlasctl PATH`, paired with each node.
+`atlasctl` is run with this process's environment, so a submitter identity
+kept outside the default directory is selected with
+`ATLASCTL_CONFIG_DIR=/path spark bench certify …`.
+
 ## What it does, in order
 
 1. **Plan.** `gate::check_gates` at the anchor (HEAD) says which required gates
@@ -66,9 +115,11 @@ spark bench certify --pr 1027 --yes     # a real campaign, agentic gate confirme
 
 ## `--json`
 
-One object per line on stdout, `event` ∈ `plan`, `preflight`, `guard`,
-`start`, `line`, `done`, `summary`, `final`, each with an `at` timestamp. The
-human report is suppressed.
+One object per line on stdout, `event` ∈ `plan`, `preflight`, `fleet` (with
+`--with-nodes`: nodes, rejections, `speed_mode`, per-node queues, makespan),
+`guard`, `start`, `line`, `done` (each with `node` under `--with-nodes`),
+`summary`, `final`, each with an `at` timestamp. The human report is
+suppressed.
 
 ## After a campaign
 

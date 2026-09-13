@@ -15,9 +15,11 @@
 
 pub mod args;
 pub mod guard;
+pub mod local;
 pub mod lockfile;
 pub mod plan;
 pub mod preflight;
+pub mod remote;
 pub mod report;
 pub mod runner;
 pub mod state;
@@ -32,9 +34,9 @@ use anyhow::{Context, Result, bail};
 use atlas_plugin::{ArtifactStore, gate, history};
 
 use self::args::CertifyArgs;
-use self::runner::{GateRunner, RunCtx, RunOutcome};
+use self::local::drive_local;
 use self::state::Campaign;
-use self::text::{SummaryJson, describe, human, print_plan, print_summary};
+use self::text::{SummaryJson, print_plan, print_summary};
 
 /// How often the drift guard runs while a unit is in flight.
 pub const GUARD_EVERY: Duration = Duration::from_secs(60);
@@ -69,9 +71,6 @@ impl Emit {
 pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     if let Err(msg) = args.validate() {
         bail!("{msg}");
-    }
-    if !args.with_nodes.is_empty() {
-        bail!("--with-nodes is not available in this build yet");
     }
     let emit = Emit { json: args.json };
     let root = super::bench_run::repo_root()?;
@@ -138,6 +137,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
         args.no_guard,
         needs,
         args.yes,
+        args.remote_only,
     )?;
     let findings = preflight::evaluate(&facts);
     emit.event(
@@ -150,6 +150,32 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     for f in &findings {
         emit.say(&format!("preflight: {f}"));
     }
+
+    // ── the fleet (--with-nodes) ──
+    let fleet = if args.with_nodes.is_empty() {
+        None
+    } else {
+        let atlasctl = remote::atlasctl::SubprocessAtlasctl::locate(args.atlasctl.as_deref())?;
+        let wanted = remote::node::Wanted {
+            hardware: &hardware,
+            committed_signers: &facts.committed_signers,
+            anchor: &anchor,
+            min_free_fraction: preflight::MIN_FREE_FRACTION,
+        };
+        let f = remote::assemble(
+            &atlasctl,
+            &args.with_nodes,
+            args.remote_only,
+            &wanted,
+            &facts.signer,
+        )?;
+        let plan = remote::schedule::simulate(&units, &f.nodes, &f.mode, BUILD_ALLOWANCE.as_secs());
+        emit.event("fleet", remote::fleet_json(&f, &units, &plan));
+        if !args.json {
+            remote::print_fleet(&f, &units, &plan);
+        }
+        Some(f)
+    };
     if args.dry_run {
         emit.say(if findings.is_empty() {
             "dry run: preflight clean; nothing was run"
@@ -212,132 +238,51 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
         .clone()
         .unwrap_or_else(|| root.join(".certify").join(&anchor));
     std::fs::create_dir_all(&log_dir).with_context(|| format!("creating {}", log_dir.display()))?;
-    let exe = std::env::current_exe().context("locating this binary")?;
-    let mut runner = runner::LocalChild {
-        exe,
-        records: Box::new(runner::RepoRecords),
-        cancel: cancel.clone(),
-        extra_args: vec![],
-    };
-    let git = guard::GitCli { root: root.clone() };
     let guard_ref_for_loop = if args.no_guard {
         None
     } else {
         guard_ref.clone()
     };
-    let mut campaign = Campaign::new(units, args.keep_going);
-    let factor = args.timeout_factor;
-
-    while let Some(i) = campaign.next_to_start() {
-        let unit = campaign.units[i].clone();
-        // Guard before every start.
-        let mut guard_rc = 0;
-        if let Some(r) = &guard_ref_for_loop {
-            let result = guard::drift(&git, &anchor, r).map_err(|e| format!("{e:#}"));
-            guard_rc = match &result {
-                Ok(guard::Drift::PerfPathMoved { .. }) => 1,
-                Ok(_) => 0,
-                Err(_) => 2,
-            };
-            emit.event(
-                "guard",
-                serde_json::json!({ "unit": unit.id, "result": format!("{result:?}") }),
+    let campaign = Campaign::new(units, args.keep_going);
+    let campaign = match &fleet {
+        None => drive_local(
+            &args,
+            &root,
+            &anchor,
+            &hardware,
+            guard_ref_for_loop.as_deref(),
+            cancel.clone(),
+            &log_dir,
+            &emit,
+            &mut lock,
+            campaign,
+        )?,
+        Some(f) => {
+            let atlasctl: Arc<dyn remote::atlasctl::Atlasctl> = Arc::new(
+                remote::atlasctl::SubprocessAtlasctl::locate(args.atlasctl.as_deref())?,
             );
-            if let Some(why) = campaign.guard(result) {
-                emit.say(&format!("ABORT: {why}"));
-                break;
-            }
+            let run_id = format!("{}-{}", &anchor[..anchor.len().min(10)], now);
+            let runners = remote::runners(f, atlasctl, &run_id, cancel.clone(), &log_dir)?;
+            let shared = remote::Shared {
+                root: &root,
+                anchor: &anchor,
+                hardware: &hardware,
+                yes: args.yes,
+                log_dir: &log_dir,
+                timeout_factor: args.timeout_factor,
+                emit: &emit,
+                cancel: cancel.clone(),
+            };
+            remote::drive(
+                campaign,
+                f,
+                runners,
+                &shared,
+                guard_ref_for_loop.as_deref(),
+                &mut lock,
+            )?
         }
-        lock.beat(unit.id, guard_rc, lockfile::now_unix())?;
-        emit.event(
-            "start",
-            serde_json::json!({ "unit": unit.id, "expected_secs": unit.secs() }),
-        );
-        emit.say(&format!("▶ {} (expected ~{})", unit.id, human(unit.secs())));
-        let deadline = Duration::from_secs((unit.secs() as f64 * factor) as u64) + BUILD_ALLOWANCE;
-        let ctx = RunCtx {
-            root: &root,
-            anchor: &anchor,
-            hardware: &hardware,
-            yes: args.yes,
-            deadline,
-            log_dir: &log_dir,
-        };
-        // Guard on a timer while the unit runs: drift sets the cancel flag,
-        // and the reason is read back below so the abort names the paths.
-        let drift_seen: Arc<std::sync::Mutex<Option<Result<guard::Drift, String>>>> =
-            Arc::new(std::sync::Mutex::new(None));
-        let stop_ticker = Arc::new(AtomicBool::new(false));
-        let ticker = guard_ref_for_loop.as_ref().map(|r| {
-            let (r, root, anchor) = (r.clone(), root.clone(), anchor.clone());
-            let (cancel, seen, stop) = (cancel.clone(), drift_seen.clone(), stop_ticker.clone());
-            std::thread::spawn(move || {
-                let git = guard::GitCli { root };
-                let mut waited = Duration::ZERO;
-                while !stop.load(Ordering::SeqCst) {
-                    std::thread::sleep(Duration::from_millis(500));
-                    waited += Duration::from_millis(500);
-                    if waited < GUARD_EVERY {
-                        continue;
-                    }
-                    waited = Duration::ZERO;
-                    let result = guard::drift(&git, &anchor, &r).map_err(|e| format!("{e:#}"));
-                    let bad = !matches!(
-                        result,
-                        Ok(guard::Drift::Unmoved) | Ok(guard::Drift::MovedHarmlessly { .. })
-                    );
-                    if bad {
-                        *seen.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
-                        cancel.store(true, Ordering::SeqCst);
-                        return;
-                    }
-                }
-            })
-        });
-        let started = std::time::Instant::now();
-        let mut on_line = |line: &str| {
-            if args.json {
-                emit.event("line", serde_json::json!({ "unit": unit.id, "text": line }));
-            } else if line.starts_with("  [") || line.contains("Pass:") || line.contains("Fail:") {
-                eprintln!("  {} {}", unit.id, line.trim_end());
-            }
-        };
-        let outcome = runner.run(&unit, &ctx, &mut on_line);
-        stop_ticker.store(true, Ordering::SeqCst);
-        if let Some(t) = ticker {
-            let _ = t.join();
-        }
-        let elapsed = started.elapsed().as_secs();
-        emit.event(
-            "done",
-            serde_json::json!({ "unit": unit.id, "outcome": format!("{outcome:?}"), "elapsed_secs": elapsed }),
-        );
-        emit.say(&format!(
-            "■ {} → {} after {}",
-            unit.id,
-            describe(&outcome),
-            human(elapsed)
-        ));
-        let drift = drift_seen.lock().unwrap_or_else(|p| p.into_inner()).take();
-        if let (RunOutcome::Cancelled, Some(result)) = (&outcome, drift) {
-            campaign.finished(i, outcome);
-            if let Some(why) = campaign.guard(result) {
-                emit.say(&format!("ABORT: {why}"));
-            }
-            break;
-        }
-        let retry = campaign.finished(i, outcome.clone());
-        if matches!(
-            outcome,
-            RunOutcome::Passed { .. } | RunOutcome::MemberDone { .. }
-        ) {
-            lock.done(unit.id)?;
-        }
-        if retry {
-            emit.say(&format!("retrying {} once", unit.id));
-        }
-    }
-
+    };
     let summary = campaign.summary();
     emit.event(
         "summary",

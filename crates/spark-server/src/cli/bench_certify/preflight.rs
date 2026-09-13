@@ -36,6 +36,10 @@ pub struct PreflightFacts {
     pub no_guard: bool,
     pub needs_confirmation_units: Vec<&'static str>,
     pub yes: bool,
+    /// `--remote-only`: this box runs nothing, so its GPU and memory are
+    /// not this campaign's business. Its signer still is — a record placed
+    /// from a node is verified here against the same committed set.
+    pub remote_only: bool,
 }
 
 /// One reason not to start. The text is the remedy.
@@ -80,7 +84,7 @@ pub fn evaluate(f: &PreflightFacts) -> Vec<Finding> {
             f.atlas_home
         )));
     }
-    if !f.other_spark_pids.is_empty() {
+    if !f.other_spark_pids.is_empty() && !f.remote_only {
         out.push(Finding(format!(
             "another spark process is running (pid {}): a gate needs the GPU to itself, \
              and a speed number measured under contention is not a measurement",
@@ -92,6 +96,7 @@ pub fn evaluate(f: &PreflightFacts) -> Vec<Finding> {
         )));
     }
     match f.free_fraction {
+        _ if f.remote_only => {}
         Some(frac) if frac < MIN_FREE_FRACTION => out.push(Finding(format!(
             "only {:.0} % of host memory is available; a self-start needs {:.0} % — \
              something else is holding memory (check `nvidia-smi --query-compute-apps` \
@@ -129,6 +134,7 @@ pub fn gather(
     no_guard: bool,
     needs_confirmation_units: Vec<&'static str>,
     yes: bool,
+    remote_only: bool,
 ) -> Result<PreflightFacts> {
     let head = gate::git_sha(root)?;
     let dirty_perf_paths = gate::dirty_perf_paths(root)?;
@@ -157,6 +163,7 @@ pub fn gather(
         no_guard,
         needs_confirmation_units,
         yes,
+        remote_only,
     })
 }
 
@@ -215,7 +222,26 @@ mod tests {
             no_guard: false,
             needs_confirmation_units: vec![],
             yes: false,
+            remote_only: false,
         }
+    }
+
+    /// `--remote-only` waives the two findings about THIS box's GPU and
+    /// memory and nothing else: the signer rule still applies, because a
+    /// record placed from a node is verified here.
+    #[test]
+    fn remote_only_waives_the_local_box_findings_only() {
+        let mut f = clean();
+        f.other_spark_pids = vec![4242];
+        f.free_fraction = Some(0.10);
+        assert_eq!(evaluate(&f).len(), 2);
+        f.remote_only = true;
+        assert!(evaluate(&f).is_empty(), "{:?}", evaluate(&f));
+        // NEGATIVE CONTROL: an uncommitted signer is still refused.
+        f.signer = "not-committed".into();
+        let v = evaluate(&f);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].0.contains("record-signers"));
     }
 
     #[test]

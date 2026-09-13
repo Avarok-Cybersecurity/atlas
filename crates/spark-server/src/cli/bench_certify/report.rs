@@ -64,6 +64,9 @@ pub fn added_records(paths: &[PathBuf]) -> Vec<AddedRecord> {
             let r = gate::read_record(p).ok()?;
             Some(AddedRecord {
                 path: p.display().to_string(),
+                hardware: Some(
+                    atlas_plugin::hardware::equivalence::HardwareFingerprint::from_record(&r),
+                ),
                 benchmark_id: r.benchmark_id,
                 git_sha: r.git_sha,
                 signer: signer_of(p),

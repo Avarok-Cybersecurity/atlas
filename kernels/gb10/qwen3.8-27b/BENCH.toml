@@ -222,6 +222,13 @@ label = "Qwen3.8-27B dense (NVFP4, unsloth)"
 default = true
 status = "measured"
 note = """\
+BOX RULE (2026-09-13): this is a Speed-class gate; a campaign spread with \
+`spark bench certify --with-nodes` measures it on another box ONLY when that \
+box is equivalent by hardware::equivalence::SPEED_SPREAD (same GPU and driver \
+line, clock ceiling within 1 %, memory within 5 %, no thermal throttle, \
+chassis within 10 °C), decided from the records' own captures — otherwise \
+every Speed unit is bundled on one node. Two GB10s otherwise identical read \
+0.66 tok/s apart at 65 vs 89 °C, ten times this entry's sigma. \
 CALIBRATED 2026-08-15, dgx1, this branch's binary: n=12 runs across 4 driver \
 passes, every run 28.0-28.1 tok/s, mean 28.03, sigma ~0.05. Fingerprint (the \
 instrument these bounds belong to): the DRIVER'S OWN MinHeap fixture, \
@@ -385,6 +392,9 @@ label = "Qwen3.8-27B dense (NVFP4, unsloth)"
 default = true
 status = "measured"
 note = """\
+BOX RULE (2026-09-13): Speed-class; spread across nodes only under \
+hardware::equivalence::SPEED_SPREAD, else bundled — see the decode-floor \
+note and docs/provable-benchmark-work.md §5c. \
 ★ READ FIRST — EVERY LADDER FIGURE IN THIS NOTE IS SUPERSEDED HISTORY, NOT \
 THE BOUNDS IN FORCE. The floors this entry enforces were re-cut 2026-08-30 \
 from the WIDENED instrument (C=1..128 at bs=128, concurrent warm-up); their \
