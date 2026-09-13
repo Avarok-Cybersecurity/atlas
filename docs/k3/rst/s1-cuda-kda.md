@@ -41,10 +41,16 @@ TEST NOTES (7661a9a94, spark1 serve)
 - `K3_CUDA_KDA=0`: `/v1/completions` T=0 max_tokens=16 → `'there is no way a bee should be able to fly. Its wings are too'`. Prefill first token **1459**. C1 prefix holds.
 - Known-bad `K3_ATTNRES_MIX=0` (still CPU escape): `'to to to to to to to to to to to to to to to to'`, first token **308**. Mix lever still moves tokens.
 
+TEST NOTES (7238f64bf, nvfp4 stem)
+- `kernels/gb10/kimi-k3/nvfp4/{kda_decode.cu,KERNEL.toml}` symlink the bf16 unique stem. spark2 CUDA rebuild: kimi-k3 nvfp4 **179** modules (was 178), 1 model-specific override. BUILD_EXIT:0.
+- CUDA default (unset `K3_CUDA_KDA`, no unresolved-lookup): selected `(sm_121, kimi-k3, nvfp4)` (179 modules). Log: `K3 LinearAttention decode via CUDA kda_decode`.
+- Aviation T=0 max_tokens=16 → `'there is no way a bee should be able to fly. Its wings are too'`. Prefill first token **1459**. C1 prefix holds on the CUDA mixer.
+- Known-bad `K3_ATTNRES_MIX=0` (still CUDA KDA): `'to to to…'`, first token **308**. Mix lever still moves tokens.
+- Live spark1 :8888 left on CUDA default (no `K3_CUDA_KDA`, no mix0).
+
 BUGS
-#BUG
-CUDA-default serve is **not** live. nvfp4 target has no `kda_decode` module. Do not book. CPU escape + mix=0 still work.
+#N/A CUDA-default aviation C1 + mix=0 known-bad on spark1 nvfp4 serve after `7238f64bf`.
 #N/A this slice for the host oracle + source contract + BoundLayer CUDA default.
 
 STOP
-On-device CUDA default **failed** the boot-audit lookup on spark1 nvfp4 serve. Aviation-after-CUDA-rebuild still parked until the stem is in the nvfp4 bundle (or a bf16 target is selected). Official 1.56 TB out of scope.
+On-device CUDA default **matches** C1 aviation greedy on spark1 nvfp4 serve. Mix=0 still moves tokens. Do not book: projections / AttnRes / MLP still host; MXFP4 grouped GEMM and official 1.56 TB still out of scope.
