@@ -382,6 +382,10 @@ echo "  ctx=$MAX_SEQ_LEN seqs=$NUM_SEQS util=$GPU_UTIL ssm_slots=$SSM_CACHE_SLOT
 # failure. It is not one: animated GIF decodes natively either way.
 VIDEO_ARGS=""
 [ "${VIDEO_FFMPEG:-0}" = "1" ] && VIDEO_ARGS="--video-allow-ffmpeg"
+# VIDEO_FPS: diagnostic only. The checkpoint's processor_config declares fps 2
+# and that is what the model's video handling was calibrated on; raising it
+# also doubles vision tokens per clip. Left unset -> the CLI default of 2.
+[ -n "${VIDEO_FPS:-}" ] && VIDEO_ARGS="$VIDEO_ARGS --video-fps $VIDEO_FPS"
 
 SPEC_ARGS="--speculative --num-drafts $DRAFTS --mtp-gate force"
 [ "$MTP" = "1" ] || SPEC_ARGS=""
