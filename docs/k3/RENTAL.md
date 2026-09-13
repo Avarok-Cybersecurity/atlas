@@ -1,8 +1,7 @@
 # Rental soak — fill after C0–C7 (now)
 
 C0–C7 lab boxes are checked on the 0.40B twin / dummy path (PR #1053, 2026-09-12).
-This file is the soak runbook. **Do not book until S1 GPU + S6 `spark serve` dummy also exist.**
-CPU C1 is not a Hopper substitute. 5090 cannot launch SM121.
+This file is the soak runbook. Lab twin cannot hold official MXFP4 (~1.56 TB). **Booking 8×B300 is for CR1–CR3**, not for finishing KDA/MLA. 5090 cannot launch SM121.
 
 ## What is green (lab)
 
@@ -13,16 +12,21 @@ CPU C1 is not a Hopper substitute. 5090 cannot launch SM121.
 | C2–C6 | twin tests on spark2 |
 | C7 | dummy NCCL TP=2 hidden=7168 spark1+spark2 `MATCH True`; drop-rank-1 `DROP True` |
 
-## What is **not** green (blocks a useful soak)
+## What is green on lab serve (2026-09-13)
 
-- `K3BoundLayer::decode` LinearAttention default is CUDA `kda_decode` (`K3_CUDA_KDA=0` is the CPU escape). FullAttention MLA is CPU unless `K3_CUDA_MLA=1` (opt-in; C1 unproven). Host still does projections / AttnRes / MLP. **Do not book.** spark1 recopy `7238f64bf` CUDA KDA default **matches C1** aviation greedy (nvfp4 ships `kda_decode`); mix=0 still moves tokens.
-- Serve-path token match is not a Hopper soak. Projections / AttnRes / MLP still host.
-- MXFP4 GPU grouped GEMM: extra_cu + packed lander (`K3_ALLOW_MXFP4=1`) + LatentMoE launches `moe_w4a16_grouped_gemm_ptrtable_e8m0` when packed (mock contract: 3 launches). spark2 nvcc still required to compile extra_cu PTX. Router / SiTU / down / up / shared still host. **Do not book.**
-- Official 1.56 TB not downloaded (correct)
+- CUDA KDA default + `K3_CUDA_MLA=1`: aviation greedy bee-fly; mix=0 → `to to to…`. Logs: `kda_decode` and `mla_decode`.
+- Packed LatentMoE **launches** `moe_w4a16_grouped_gemm_ptrtable_e8m0` (`089834512`). 0.40B has no packed experts → CPU MoE. Lookup-fail does not silent-CPU.
+- Dummy TP=2 NCCL hidden=7168 spark1+spark2.
 
-## Box to book (when S6 exits)
+## Still host / untested on official shards
 
-Prefer **8×B300** (fits official MXFP4). Alternate 16×H200 / 16×B200. Need IB. Pin the **then-current** vLLM K3 image the week of booking — do not assume a tag from this file.
+- Projections, AttnRes, router/SiTU/down/up/shared experts
+- GEMM never run against 96-shard official MXFP4 (correct: not downloaded)
+- `K3_ALLOW_MXFP4=1` required on rental load
+
+## Box to book
+
+Prefer **8×B300** (official MXFP4). Alternate 16×H200 / 16×B200. Need IB. Pin the **then-current** vLLM K3 image the week of booking. Serve flags: `K3_CUDA_MLA=1`, `K3_ALLOW_MXFP4=1`. Lab 0.40B serve is **not** the soak.
 
 ## Soak protocol (CR1–CR3)
 
