@@ -11,7 +11,7 @@
 //! one nearly every time, and the step costs the verify alone. On fresh
 //! reasoning nothing matches and the MTP head drafts as before.
 //!
-//! The hookup is [`crate::scheduler::lookup_gate`]: when the index fires, the
+//! The hookup is `scheduler::lookup_gate`: when the index fires, the
 //! drafts go into `pending_drafts` and the MTP propose is skipped for that
 //! step; the verify, accept and commit are unchanged.
 //!

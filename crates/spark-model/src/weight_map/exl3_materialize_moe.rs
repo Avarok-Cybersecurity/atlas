@@ -80,14 +80,14 @@ pub fn exl3_native_serves_moe(prefix: &str) -> bool {
 /// 6 (6.05), uniform across gate/up/down — every branch's routed experts
 /// qualify. A MIXED-K layer additionally needs every K inside the k0
 /// runtime-dispatch switch, `ops::EXL3_MOE_MIXED_K_BITS` = {2,3,4}
-/// (`ops::exl3_moe_fused_serves`, applied per layer by [`expert_keep_set`]).
+/// (`ops::exl3_moe_fused_serves`, applied per layer by `expert_keep_set`).
 pub const EXL3_NATIVE_MOE_K_BITS: [u32; 5] = crate::layers::ops::EXL3_MOE_FUSED_K_BITS;
 
 /// The per-TENSOR MoE kernel envelope (see module docs for the derivation).
 /// Distinct from [`super::exl3_native_supported`]'s dense set
 /// {2,3,4,5,6,8}: the expert path never touches the GEMV tier, but the fused
 /// prefill kernel has no K=8 instance (see [`EXL3_NATIVE_MOE_K_BITS`]). The
-/// per-LAYER mixed-K rule lives in [`expert_keep_set`].
+/// per-LAYER mixed-K rule lives in `expert_keep_set`.
 pub fn exl3_native_supported_moe(w: &Exl3Weight) -> bool {
     EXL3_NATIVE_MOE_K_BITS.contains(&w.k_bits)
         && matches!(w.cb, Exl3Codebook::Mcg | Exl3Codebook::Mul1)

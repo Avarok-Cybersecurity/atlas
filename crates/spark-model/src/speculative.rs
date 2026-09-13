@@ -304,9 +304,9 @@ pub fn hidden_fingerprint(gpu: &dyn GpuBackend, p: DevicePtr, h: usize) -> u64 {
 /// `ATLAS_EP_PROTOCOL=v2` for the same reason batched decode does.
 ///
 /// Wire format, head -> worker, in this order:
-///   cmd, N, seq_ids[N], ks[N], tokens[sum ks]
+///   `cmd, N, seq_ids[N], ks[N], tokens[sum ks]`
 /// then AFTER the forward, one word per sequence:
-///   num_accepted[N]
+///   `num_accepted[N]`
 ///
 /// 🪤 The verdict words are a SECOND broadcast that arrives after the head's
 /// accept walk, not part of the preamble. The worker must run the forward
@@ -329,7 +329,7 @@ pub const EP_CMD_VERIFY_BATCH: u32 = 0xFFFF_FFE1;
 /// requirement beyond what the K=3/K=4 arms already have.
 ///
 /// Wire format, head -> worker, in this order:
-///   cmd, k, tokens[k]
+///   `cmd, k, tokens[k]`
 /// then AFTER the forward, one word:
 ///   num_accepted
 ///

@@ -69,7 +69,7 @@ impl Default for RadixTree {
 
 /// Is sub-block prefix matching enabled? OPT-IN (`ATLAS_PREFIX_SUBBLOCK=1`).
 ///
-/// The two sub-block arms in [`inner::RadixTreeInner::walk`] return a
+/// The two sub-block arms in `inner::RadixTreeInner::walk` (private) return a
 /// `matched_tokens` that is NOT block-aligned, by reusing a block whose KV was
 /// computed for a LONGER key. Two things then go wrong, and both were measured
 /// on qwen3.8-flash-next with `--enable-prefix-caching`:

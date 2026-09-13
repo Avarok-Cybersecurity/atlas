@@ -8,7 +8,7 @@
 //! ops-level [`Exl3DenseWeight`] (`trellis`/`suh`/`svh`/dims/K/kernel
 //! codebook index), converted from the runtime's [`Exl3Weight`] at
 //! construction — plus the model-shared [`Exl3DenseStage`] (f16 staging slabs
-//! over the ONE per-model [`Exl3LaunchState`]: locks + fence + section mutex,
+//! over the ONE per-model `Exl3LaunchState`: locks + fence + section mutex,
 //! shared with the MoE arm). The layer dispatches through the carrier's
 //! `*_linear` helpers, which are the SAME functions the parity example
 //! exercises, so a layer site cannot drift from the proven arm.

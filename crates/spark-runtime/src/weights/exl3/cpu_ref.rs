@@ -141,7 +141,7 @@ fn fwht_stage_f16(v: &mut [f16; 128], group: usize, s: usize) {
 ///     then 5 FWHT stages over the 32 groups (f16)
 ///  3. per row: 4-point butterfly over col groups in f32 (exact), one
 ///     rounding to f16, *rs (f16), then 5 FWHT stages over groups (f16),
-///     then *suh[row] then *svh[col] (two f16 muls)
+///     then `*suh[row]` then `*svh[col]` (two f16 muls)
 #[allow(clippy::needless_range_loop)]
 pub fn reconstruct_had_block(
     trellis_block: impl Fn(usize, usize) -> Vec<u16>, // (tile_r, tile_c) -> 16*k words

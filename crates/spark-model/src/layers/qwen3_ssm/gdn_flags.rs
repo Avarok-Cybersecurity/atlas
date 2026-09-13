@@ -276,7 +276,7 @@ fn row_exact_lever() -> bool {
     })
 }
 
-/// Pure form of [`row_exact_lever`]: armed only when asked for, and the kill
+/// Pure form of `row_exact_lever` (private): armed only when asked for, and the kill
 /// switch wins over the arm.
 pub const fn row_exact_lever_from(arm: bool, kill: bool) -> bool {
     arm && !kill
@@ -304,7 +304,7 @@ pub fn verify_row_exact_for_pass(pass_exact_replay: bool) -> bool {
 /// separately is what makes "which leg buys the bit-equality, and what does it
 /// cost" a measurement rather than an argument — each has its own PRESENCE
 /// kill switch. The whole chain is OPT-IN (`ATLAS_VERIFY_ROW_EXACT`, see
-/// [`row_exact_lever`]); `ATLAS_NO_VERIFY_ROW_EXACT` still disarms all four.
+/// `row_exact_lever`); `ATLAS_NO_VERIFY_ROW_EXACT` still disarms all four.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RowExactLeg {
     /// The two mHC `hc_pre` sites (`ATLAS_NO_VERIFY_ROW_HC`).

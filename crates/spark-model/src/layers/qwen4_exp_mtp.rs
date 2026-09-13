@@ -866,8 +866,8 @@ impl Qwen4ExpMtpHead {
     ///
     /// The n-sequence attention metadata is drafter-local, in the drafter
     /// arena's scratch, laid out by the arena's derived `decode_meta()` —
-    /// positions u32[R] @0, slots i64[R] @8R, seq_lens i32[R] @16R, block
-    /// table i32[R x max_blocks] @24R — exactly the layout the target's
+    /// `positions u32[R] @0`, `slots i64[R] @8R`, `seq_lens i32[R] @16R`,
+    /// `block table i32[R x max_blocks] @24R` — exactly the layout the target's
     /// batched decode uploads, so the attention kernels read what they
     /// expect. `num_seqs = n`, no padding rows.
     ///
