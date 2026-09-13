@@ -285,8 +285,10 @@ pub fn ngram_words_per_row(k: u32) -> usize {
 /// `state_i` bit `m` lives at stream bit
 /// `((i - m/K) mod 160)*K + (m%K)`.
 ///
-///     row[i] = decode_mul1(state_i) as f32 * scale as f32
-///              [+ head_bias[i] as f32]
+/// ```text
+/// row[i] = decode_mul1(state_i) as f32 * scale as f32
+///          [+ head_bias[i] as f32]
+/// ```
 ///
 /// f32 math mirrors both the upstream reference and the
 /// `batched_embed_exl3` kernel; output is the f32 value (callers round
