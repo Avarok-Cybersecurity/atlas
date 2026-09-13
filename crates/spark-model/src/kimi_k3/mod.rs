@@ -11,6 +11,7 @@ pub mod bound;
 pub mod cache;
 mod host_decode;
 pub mod kda;
+pub mod kda_cuda;
 pub mod latent_moe;
 pub mod layer;
 pub mod mla;
@@ -23,4 +24,5 @@ pub use atlas_core::kimi_k3::{
     gated_mla_attend, greedy_decode, kda_decode_token, latent_moe_forward, sigmoid_topk, situ_glu,
     situ_glu_vec, softcap,
 };
+pub use kda_cuda::{K3KdaDecodeKernels, launch_k3_kda_decode_token};
 pub use state::K3CpuFallbackState;

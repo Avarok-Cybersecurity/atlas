@@ -23,6 +23,9 @@
 
 use super::situ::sigmoid;
 
+/// FLA `use_qk_l2norm_in_kernel` eps. CUDA `k3_kda_recurrent_step_f32` uses the same.
+pub const KDA_L2_EPS: f32 = 1e-6;
+
 /// KDA geometry. Tiny dims are legal for CPU tests; production is 128/4.
 #[derive(Clone, Copy, Debug)]
 pub struct KdaConfig {
@@ -42,6 +45,17 @@ impl KdaConfig {
             head_dim: 128,
             conv_kernel: 4,
             gate_lower_bound: Some(-5.0),
+            use_full_rank_gate: true,
+        }
+    }
+
+    /// `inference-optimization/Kimi-K3-0.40B` linear_attn_config (gate key omitted).
+    pub fn twin_0_40b() -> Self {
+        Self {
+            heads: 8,
+            head_dim: 32,
+            conv_kernel: 4,
+            gate_lower_bound: None,
             use_full_rank_gate: true,
         }
     }
@@ -164,8 +178,8 @@ pub fn kda_recurrent_step(
 ) -> Vec<f32> {
     let (h_n, d) = (cfg.heads, cfg.head_dim);
     let qkv_dim = h_n * d;
-    let q = l2norm_rows(&qkv[..qkv_dim], d, 1e-6);
-    let k = l2norm_rows(&qkv[qkv_dim..2 * qkv_dim], d, 1e-6);
+    let q = l2norm_rows(&qkv[..qkv_dim], d, KDA_L2_EPS);
+    let k = l2norm_rows(&qkv[qkv_dim..2 * qkv_dim], d, KDA_L2_EPS);
     let v = &qkv[2 * qkv_dim..3 * qkv_dim];
     let scale = 1.0 / (d as f32).sqrt();
     let mut out = vec![0.0f32; qkv_dim];

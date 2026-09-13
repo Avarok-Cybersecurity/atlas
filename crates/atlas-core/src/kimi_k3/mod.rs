@@ -4,7 +4,7 @@
 //! SiTU-GLU, and LatentMoE.
 //!
 //! K3-DECISION: KDA is a new backend. These refs do not call GDN / Mamba-2
-//! / Qwen3-Next kernels. GPU kernels come later behind goldens.
+//! / Qwen3-Next kernels. CUDA decode is `kernels/gb10/kimi-k3/bf16/kda_decode.cu`.
 
 pub mod attnres;
 pub mod cache;
@@ -27,7 +27,7 @@ pub use cpu_bind::{assemble_layer, kda_from, mla_from, moe_from, text_key};
 pub use cpu_forward::{AttnResStream, K3LayerCtx, forward_one_layer, forward_token};
 pub use cpu_weights::{Ablation, K3CpuLayer, K3CpuModel};
 pub use greedy::greedy_decode;
-pub use kda::{KdaConfig, KdaState, kda_decode_token};
+pub use kda::{KDA_L2_EPS, KdaConfig, KdaState, kda_decode_token};
 pub use latent_moe::{LatentMoeConfig, latent_moe_forward, sigmoid_topk};
 pub use layer::{K3Graph, K3LayerSpec, MixerKind, MlpKind};
 pub use mla::{MlaConfig, gated_mla_attend};
@@ -49,3 +49,5 @@ mod c6;
 mod c7;
 #[cfg(test)]
 mod host_fallback;
+#[cfg(test)]
+mod kda_cuda_parity;

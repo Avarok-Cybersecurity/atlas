@@ -1,0 +1,12 @@
+# K3 BF16 twin: unique KDA decode (conv-4 + L2 q/k + sigmoid(beta)).
+#
+# Stem `kda_decode` does not exist in common/. This is an ADD, not a
+# shadow of common/kda_recurrent.cu, kda_gate.cu, gated_delta_rule*.cu,
+# or mamba2_ssm_decode.cu. Do not copy those files here.
+#
+# GLM KDA (common/kda_*) expects L2 and sigmoid fused upstream and is
+# sized for head_dim=128. The 0.40B twin is heads=8, head_dim=32, conv=4.
+# Host SSOT: crates/atlas-core/src/kimi_k3/kda.rs (`kda_decode_token`).
+
+[build]
+# Common KERNEL.toml already merges --fmad=false (CPU mul-add order).
