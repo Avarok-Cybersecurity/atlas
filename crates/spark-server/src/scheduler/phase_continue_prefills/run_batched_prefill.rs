@@ -10,13 +10,12 @@
 //! FIFO `prefilling.first_mut()` starvation). Phase 2/3 replace the default
 //! impl with batched kernel dispatch for true L2-amortised throughput.
 
-use spark_model::traits::{Model, PrefillSlice};
-use spark_runtime::gpu::DevicePtr;
+use spark_model::traits::{BatchedPrefillDeclined, Model, PrefillSlice};
 use std::time::Instant;
 
 use super::super::types::PrefillInProgress;
-use super::super::{FirstTokenPolicy, sample_first_token};
-use super::prefill_waves::{WaveGeom, plan_prefill_waves};
+use super::prefill_fallback::{advance_and_sample, run_wave_per_stream};
+use super::prefill_waves::{WaveGeom, plan_prefill_waves, plan_stream_chunk, waves_this_tick};
 
 pub(super) fn run_batched_prefill_step(
     model: &dyn Model,
@@ -80,22 +79,41 @@ pub(super) fn run_batched_prefill_step(
         let (chunk_len, is_last) = if let Some((cl, il)) = shared_geom {
             (cl, il)
         } else {
-            let remaining = p.prompt_tokens.len() - p.chunk_offset;
             // Same MLA correctness gate as `run_standard_chunk_loop` — MLA
             // models lack a paged-MLA prefill kernel so multi-chunk prefill
             // silently corrupts attention. Force single-chunk for MLA.
             let effective_max = if model.is_mla() {
-                remaining
+                p.prompt_tokens.len() - p.chunk_offset
             } else {
                 max_prefill_tokens
             };
-            let mut chunk_len = remaining.min(effective_max);
-            let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
-            // Align intermediate chunks to GDN WY4 boundary (4 tokens).
-            if !is_last && chunk_len >= 4 {
-                chunk_len = (chunk_len / 4) * 4;
-            }
-            (chunk_len, is_last)
+            // TAIL PRE-SPLIT (VARLEN only) + WY4 alignment live in
+            // `prefill_waves::plan_stream_chunk` — the SSOT, so a test can
+            // replay a stream's WHOLE chunk sequence and prove the batched
+            // path hands it the same geometry the per-stream path does
+            // (#1002; BF16 accumulation is not associative, so a shape that
+            // depends on who you batched with is a different answer to the
+            // same request at temperature 0).
+            //
+            // Asking the model where it would cut and cutting there is also
+            // what lets the tails batch: every member of a co-arriving burst
+            // of equal-length prompts gets the same `chunk_start` for its
+            // tail, so the wave planner groups all N tails into ONE forward.
+            // #927 measured the standalone alternative at 29.3 ms for 25
+            // tokens — 1 170 us/token, 11.7% of prefill GPU time for 2.1% of
+            // the tokens.
+            let tail_cut = if varlen {
+                model.prefill_tail_cut(&p.prompt_tokens)
+            } else {
+                None
+            };
+            plan_stream_chunk(
+                p.chunk_offset,
+                p.prompt_tokens.len(),
+                effective_max,
+                tail_cut,
+                varlen,
+            )
         };
         chunk_lens.push(chunk_len);
         is_last_flags.push(is_last);
@@ -118,21 +136,34 @@ pub(super) fn run_batched_prefill_step(
             is_last: is_last_flags[i],
         })
         .collect();
-    let waves = plan_prefill_waves(&geoms, varlen, wave_cap);
+    let planned = plan_prefill_waves(&geoms, varlen, wave_cap);
+    let n_planned = planned.len();
+    // ONE WAVE PER TICK under VARLEN. Waves used to run back-to-back inside a
+    // tick, so no stream was promoted until every wave had run and every TTFT
+    // in the burst collapsed onto the slowest — H100 round 15 measured the
+    // short shape at TTFT p50 1 359.4 -> 4 141.2 ms (p50 = p99) and aggregate
+    // 513.86 -> 427.53 tok/s (-16.8%) whenever the lever engaged, with TPOT
+    // going the OTHER way (25.90 -> 21.28 ms). The rule and its reasoning live
+    // in `prefill_waves::waves_this_tick`; the deferred streams re-plan next
+    // tick and batch among themselves (#1002).
+    let waves = waves_this_tick(planned, varlen);
     let n_waves = waves.len();
     if varlen {
         // Engagement proof for serve-log diagnosis: one INFO line per tick
-        // with the planned wave shapes. M per wave = Σ chunk_len of its
-        // members — the row count every fused per-layer GEMM launches at
-        // (assuming the model-side dispatch admits; it logs its own verdict
-        // under target "atlas::q12").
+        // with the planned wave shapes and how much of it this tick runs.
+        // M per wave = Σ chunk_len of its members — the row count every fused
+        // per-layer GEMM launches at (assuming the model-side dispatch admits;
+        // it logs its own verdict under target "atlas::q12").
         let wave_m: Vec<usize> = waves
             .iter()
             .map(|w| w.iter().map(|&i| chunk_lens[i]).sum())
             .collect();
+        let dispatched: usize = waves.iter().map(Vec::len).sum();
         tracing::info!(
-            "Varlen prefill waves: {n} streams -> {n_waves} wave(s), M per wave {wave_m:?} \
-             (cap {wave_cap})"
+            "Varlen prefill waves: {n} streams -> {n_planned} wave(s) planned, \
+             {n_waves} dispatched this tick, M per wave {wave_m:?} (cap {wave_cap}), \
+             {} stream(s) deferred to the next tick",
+            n - dispatched,
         );
     }
 
@@ -162,14 +193,44 @@ pub(super) fn run_batched_prefill_step(
         let logits_per_stream = match model.prefill_batch_chunk(&mut slices, prefill_stream) {
             Ok(v) => v,
             Err(e) => {
+                let declined = BatchedPrefillDeclined::is_decline(&e);
                 tracing::error!(
-                    "Batched prefill error (wave of {} streams, {n} prefilling): {e:#}",
+                    "Batched prefill error (wave of {} streams, {n} prefilling, \
+                     declined={declined}): {e:#}",
                     wave.len()
                 );
-                // Fail ONLY this wave's streams (freed in
-                // `promote_completed_prefills`). Later waves are left
-                // untouched — they have not advanced this tick and retry
-                // next tick rather than dispatching after a failed forward.
+                drop(slices);
+                if declined {
+                    // DECLINE: the model refused before touching a single
+                    // stream, so every member of this wave still has to be
+                    // prefilled — one at a time, which is what the model would
+                    // have done anyway. Dropping them here is what produced
+                    // #927 cell E's sixteen empty HTTP 200s.
+                    run_wave_per_stream(
+                        model,
+                        sched,
+                        prefilling,
+                        completed_indices,
+                        &wave,
+                        &chunk_lens,
+                        &is_last_flags,
+                        n,
+                        prefill_stream,
+                        prefill_event,
+                        think_end_token,
+                        tool_call_start_token,
+                    );
+                    continue;
+                }
+                // HARD ERROR: an admitted batch can already own KV blocks and
+                // prefix reservations, so re-running it per-stream would
+                // double-allocate. Fail ONLY this wave's streams —
+                // `promote_completed_prefills` now sends each of them an error
+                // frame, so a failed wave is visible to its clients instead of
+                // closing sixteen streams with no content and no
+                // `finish_reason`. Later waves are left untouched: they have
+                // not advanced this tick and retry next tick rather than
+                // dispatching after a failed forward.
                 for &i in &wave {
                     completed_indices.push((i, None));
                 }
@@ -193,57 +254,26 @@ pub(super) fn run_batched_prefill_step(
         // completed — BEFORE the next wave dispatches, because every wave
         // reuses the same logits rows.
         for (k, &i) in wave.iter().enumerate() {
-            let p = &mut prefilling[i];
-            p.chunk_offset += chunk_lens[i];
-            if !is_last_flags[i] {
-                continue;
-            }
-            let logits = logits_per_stream[k];
-            if logits == DevicePtr::NULL {
-                tracing::error!(
-                    "Batched prefill: stream {i} marked is_last but model returned NULL logits",
-                );
-                completed_indices.push((i, None));
-                continue;
-            }
-            // #131: grammar-constrain the FIRST token (and advance the matcher);
-            // no-op without a grammar.
-            // P1-4 (2026-07-09): thread the resolved `min_p` — previously a
-            // hardcoded 0.0 inside the sampler. Kill-switch: ATLAS_NO_MTP_MINP=1.
-            match sample_first_token(
+            advance_and_sample(
                 model,
-                logits,
-                p.temperature,
-                p.top_k,
-                p.top_p,
-                p.min_p,
-                &p.eos_tokens,
-                p.grammar_state.as_mut(),
-                FirstTokenPolicy::for_birth(
-                    p.enable_thinking,
-                    think_end_token,
-                    tool_call_start_token,
-                ),
-                &sched.levers.sampling(),
-            ) {
-                Ok(first) => {
-                    tracing::info!(
-                        "Batched prefill[{i}/{n}] first token: {first} (chunk_len={}, total_tokens={})",
-                        chunk_lens[i],
-                        p.prompt_tokens.len(),
-                    );
-                    completed_indices.push((i, Some(first)));
-                }
-                Err(e) => {
-                    tracing::error!("Batched prefill[{i}] sampling: {e:#}");
-                    completed_indices.push((i, None));
-                }
-            }
+                sched,
+                &mut prefilling[i],
+                i,
+                n,
+                chunk_lens[i],
+                is_last_flags[i],
+                logits_per_stream[k],
+                completed_indices,
+                think_end_token,
+                tool_call_start_token,
+            );
         }
     }
 
     let elapsed = t0_batch.elapsed().as_micros();
     if elapsed > 1000 {
-        tracing::debug!("Batched prefill step: {n} streams, {n_waves} waves, {elapsed}µs total");
+        tracing::debug!(
+            "Batched prefill step: {n} streams, {n_waves}/{n_planned} waves, {elapsed}µs total"
+        );
     }
 }

@@ -20,7 +20,11 @@
 //!  - `run_batched_mixed`   — Q12 Phase 5 batched mixed (decode+prefill) step.
 //!  - `prefill_waves`       — pure wave planner for `run_batched_prefill`
 //!                            (VARLEN budget capping + geometry grouping).
+//!  - `prefill_fallback`    — per-stream re-run of a DECLINED wave, plus the
+//!                            advance/sample bookkeeping both paths share.
 
+#[path = "phase_continue_prefills/prefill_fallback.rs"]
+mod prefill_fallback;
 #[path = "phase_continue_prefills/prefill_waves.rs"]
 mod prefill_waves;
 #[path = "phase_continue_prefills/run_batched_mixed.rs"]
@@ -39,6 +43,11 @@ use super::phase_promote_prefills::promote_completed_prefills;
 use super::types::{ActiveSeq, PrefillInProgress};
 use super::{FirstTokenPolicy, sample_first_token};
 use crate::scheduling_policy::{ActiveSeqTiming, SchedulingPolicy};
+
+// Re-export for `phase_start_prefills`: the deferral decision and the wave
+// planner have to agree about the budget, so the rule lives with the planner
+// (#1002).
+pub(super) use prefill_waves::varlen_admission;
 
 use run_batched_mixed::run_batched_mixed_step;
 use run_batched_prefill::run_batched_prefill_step;

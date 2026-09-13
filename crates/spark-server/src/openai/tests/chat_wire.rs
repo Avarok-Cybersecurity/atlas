@@ -148,3 +148,70 @@ fn tool_call_response_carries_reasoning_content() {
         "reasoning_content missing: {json}"
     );
 }
+
+// ── `stop_reason` extension field (#927 / #1000 / #1002) ────────────
+
+/// Blocking twin of the streaming assertions in
+/// `encode_stream::tests`: the non-streaming `chat.completion` choice
+/// reports `finish_reason: "length"` AND names the guard that cut it.
+///
+/// Round-13 cell V (`--prefill-varlen-batch`) is the receipt — 6 of 16
+/// responses truncated at 49 tokens by the content-loop watchdog, all
+/// of them reporting bare `"length"`. `finish_reason` is deliberately
+/// unchanged here: the detail is an extension FIELD (unknown fields are
+/// ignored by every SDK; unknown enum VALUES hard-fail typed clients),
+/// which is the seam vLLM uses for its own `stop_reason`.
+#[test]
+fn blocking_choice_carries_stop_reason_beside_length() {
+    let choice = ChatChoice {
+        index: 0,
+        message: ChatMessage {
+            role: "assistant".to_string(),
+            reasoning_content: None,
+            annotations: None,
+            refusal: None,
+            content: Some("the the the".to_string()),
+            tool_calls: None,
+        },
+        finish_reason: "length".to_string(),
+        logprobs: None,
+        stop_reason: Some("content_loop_watchdog"),
+    };
+    let json = serde_json::to_value(&choice).expect("serializable");
+    assert_eq!(json["finish_reason"], "length");
+    assert_eq!(json["stop_reason"], "content_loop_watchdog");
+}
+
+/// NEGATIVE: a natural EOS stop must not gain a key. `to_value` rather
+/// than a substring check, so `"stop_reason":null` cannot sneak past —
+/// absent and null are different bytes to a client that branches on
+/// `"stop_reason" in choice`.
+#[test]
+fn blocking_choice_omits_stop_reason_on_natural_stop() {
+    let choice = ChatChoice {
+        index: 0,
+        message: ChatMessage {
+            role: "assistant".to_string(),
+            reasoning_content: None,
+            annotations: None,
+            refusal: None,
+            content: Some("done.".to_string()),
+            tool_calls: None,
+        },
+        finish_reason: "stop".to_string(),
+        logprobs: None,
+        stop_reason: None,
+    };
+    let json = serde_json::to_value(&choice).expect("serializable");
+    assert_eq!(json["finish_reason"], "stop");
+    assert!(
+        json.get("stop_reason").is_none(),
+        "key must be ABSENT, not null: {json}"
+    );
+    assert!(
+        !serde_json::to_string(&choice)
+            .unwrap()
+            .contains("stop_reason"),
+        "wire moved for a normal stop"
+    );
+}

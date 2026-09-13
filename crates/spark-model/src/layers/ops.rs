@@ -13,6 +13,9 @@
 
 #[path = "ops/activations.rs"]
 mod activations;
+#[cfg(test)]
+#[path = "ops/chunk_zero_ssot_tests.rs"]
+mod chunk_zero_ssot_tests;
 #[path = "ops/derived_weights.rs"]
 mod derived_weights;
 #[path = "ops/dispatch_config.rs"]

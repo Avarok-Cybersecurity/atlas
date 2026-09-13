@@ -77,6 +77,11 @@ pub(crate) fn encode_chat_response(
                 },
                 finish_reason: c.finish_reason.as_wire().to_string(),
                 logprobs: c.logprobs.map(encode_logprobs),
+                // Carried through verbatim: the IR decides whether a
+                // guard cut this choice, the wire only reports it.
+                // `None` (the ordinary case) is skipped by serde, so
+                // this body is byte-identical to the pre-#1002 shape.
+                stop_reason: c.stop_reason,
             }
         })
         .collect();

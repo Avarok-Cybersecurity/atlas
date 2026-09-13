@@ -141,6 +141,29 @@ impl TransformerModel {
                 }
             }
         }
+        // INVARIANT, always on (#1002): every LIVE row must own a DISTINCT
+        // pool slot. Two rows on one slot share their GDN `h_state` /
+        // `conv_state`, which is cross-stream state bleed — degenerate,
+        // repetition-looping output that the content-loop watchdog then cuts
+        // (round 13 cell V: 24 fires, 6/16 responses stopped at 49 tokens).
+        // The slot vector is right here and `n <= 32`, so the check is a few
+        // dozen comparisons per step against a multi-millisecond forward; the
+        // round-13 diagnosis took a serve-log archaeology pass that this line
+        // would have replaced. Warn only — the graph key itself is still
+        // correct (it describes exactly the pointers that will be baked), and
+        // refusing to decode is worse than decoding on corrupted state.
+        if key.iter().enumerate().any(|(i, s)| key[..i].contains(s)) {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            let shared = key.clone();
+            WARNED.call_once(move || {
+                tracing::error!(
+                    "SSM pool slot SHARED by two live decode rows: slots={shared:?}. \
+                     Their recurrent state is aliased — expect repetition/watchdog cuts on \
+                     those streams. See #1002 (scheduler slot compaction vs the prefilling \
+                     queue); this fires once per process."
+                );
+            });
+        }
         let dummy = self.ssm_pool.dummy_slot() as u32;
         for _ in n..padded_n {
             key.push(dummy);

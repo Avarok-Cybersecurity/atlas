@@ -217,6 +217,34 @@ pub(super) fn handle_done(
         reason: crate::ir::FinishReason::from(fr),
         usage,
         token_ids: state.take_ids_if(ctx.req_return_token_ids),
+        // ── `stop_reason` extension field (#927 / #1000 / #1002) ─────
+        // The follow-up `guard_stop_wire_reason` named: the wire
+        // `finish_reason` above stays exactly what it was, and WHICH
+        // guard fired rides a separate, optional key.
+        //
+        // Round-13 cell V (`--prefill-varlen-batch`) is the receipt: 6
+        // of 16 responses were truncated at 49 tokens by the
+        // content-loop / fuzzy / SimHash degeneration watchdogs, and
+        // all 6 reported `finish_reason: "length"`. That value is not
+        // wrong and must not move — relabelling guard cuts to `"stop"`
+        // measurably cost 2/10 then 6/10 episodes of the agentic gate,
+        // and a fifth enum value hard-fails strictly typed clients. But
+        // "length" alone is also not enough: a client deciding whether
+        // to raise `max_tokens` and retry, or to reroll because the
+        // model degenerated, cannot read that decision off it.
+        //
+        // `state.guard_stop` is already the merged view of BOTH guard
+        // families — the scheduler's `ActiveSeq::guard_stop` arrives on
+        // `StreamEvent::Done` and is folded in with `.or()` at
+        // `chat_stream::mod`, and the stream-side watchdogs in
+        // `handle_token` write the same field. So this is the one place
+        // that knows the guard's name at the terminal delta, and it is
+        // the same value the `--dump` body reports below; the two
+        // cannot drift.
+        //
+        // `None` whenever no guard fired, which serde skips — an
+        // ordinary stop/length response is byte-identical to today.
+        stop_reason: state.guard_stop,
     });
 
     // Metrics. (REQUESTS_ACTIVE is released by the ActiveRequestGuard in

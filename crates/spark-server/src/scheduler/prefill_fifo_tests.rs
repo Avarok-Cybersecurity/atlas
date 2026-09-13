@@ -28,169 +28,16 @@
 //! ordering assertions are on the production queue itself, not on a model
 //! of it.
 
-use anyhow::Result;
-use spark_model::traits::{Model, SequenceState};
-use spark_runtime::gpu::DevicePtr;
-
 use super::phase_continue_prefills::continue_in_progress_prefills;
 use super::phase_promote_prefills::promote_completed_prefills;
 use super::sched_ctx::SchedCtx;
 use super::test_support::{test_prefill_ident, test_seq};
+use super::test_support_prefill::{FIRST, PrefillStubModel};
 use super::types::{ActiveSeq, PrefillInProgress};
 use crate::scheduling_policy::FifoPolicy;
 
-/// The sampled first token. Not an EOS (the fixture's `eos_tokens` is
-/// empty), so promotion pushes onto `active` rather than finishing.
-const FIRST: u32 = 7;
-
 /// One prompt = one chunk = one tick of prefill work.
 const CHUNK: usize = 4;
-
-/// Minimal `Model`: every prefill chunk succeeds and the greedy sampler
-/// (temperature 0.0, no suppressed ids) answers from `argmax_on_device`.
-/// Everything else is unreachable on the single-stream prefill path.
-#[derive(Default)]
-struct PrefillStubModel;
-
-impl Model for PrefillStubModel {
-    fn prefill_chunk(
-        &self,
-        tokens: &[u32],
-        seq: &mut SequenceState,
-        chunk_start: usize,
-        chunk_len: usize,
-        _is_last: bool,
-        _stream: u64,
-    ) -> Result<DevicePtr> {
-        // Mirror the real contract: the chunk's tokens land in the sequence.
-        seq.tokens
-            .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
-        seq.seq_len = seq.tokens.len();
-        Ok(DevicePtr::NULL)
-    }
-    fn argmax_on_device(&self, _logits_ptr: DevicePtr, _stream: u64) -> Result<u32> {
-        Ok(FIRST)
-    }
-    fn vocab_size(&self) -> usize {
-        32
-    }
-    fn free_sequence(&self, _seq: &mut SequenceState) -> Result<()> {
-        Ok(())
-    }
-    fn cache_sequence(&self, _seq: &SequenceState) {}
-    fn detach_slot_for_reuse(&self, _seq: &mut SequenceState) {}
-    fn has_proposer(&self) -> bool {
-        false
-    }
-    fn has_self_speculative(&self) -> bool {
-        false
-    }
-    fn logits_buffer_ptr(&self) -> DevicePtr {
-        DevicePtr::NULL
-    }
-    fn hidden_after_norm(&self) -> DevicePtr {
-        DevicePtr::NULL
-    }
-    fn bind_gpu_to_thread(&self) -> Result<()> {
-        Ok(())
-    }
-    fn alloc_sequence(&self) -> Result<SequenceState> {
-        Ok(SequenceState::host_only(0))
-    }
-    fn copy_logits_to_host(&self, _l: DevicePtr, _dst: &mut [u8]) -> Result<()> {
-        unreachable!("greedy fast path never reads logits back")
-    }
-    fn prefill(&self, _t: &[u32], _s: &mut SequenceState, _st: u64) -> Result<DevicePtr> {
-        unreachable!("chunked prefill only")
-    }
-    fn decode(&self, _t: u32, _s: &mut SequenceState, _st: u64) -> Result<DevicePtr> {
-        unreachable!("decode is driven by mod.rs, not by this harness")
-    }
-    fn decode_batch(
-        &self,
-        _t: &[u32],
-        _s: &mut [&mut SequenceState],
-        _st: u64,
-    ) -> Result<DevicePtr> {
-        unreachable!("decode is driven by mod.rs, not by this harness")
-    }
-    fn decode_draft(&self, _t: u32, _s: &mut SequenceState, _st: u64) -> Result<DevicePtr> {
-        unreachable!("no speculation in this harness")
-    }
-    fn decode_verify(&self, _t: &[u32], _s: &mut SequenceState, _st: u64) -> Result<Vec<u32>> {
-        unreachable!("no speculation in this harness")
-    }
-    fn decode_verify_graphed(
-        &self,
-        _t: &[u32; 2],
-        _s: &mut SequenceState,
-        _st: u64,
-    ) -> Result<[u32; 2]> {
-        unreachable!("no speculation in this harness")
-    }
-    fn decode_verify_graphed_k3(
-        &self,
-        _t: &[u32; 3],
-        _s: &mut SequenceState,
-        _st: u64,
-    ) -> Result<[u32; 3]> {
-        unreachable!("no speculation in this harness")
-    }
-    fn decode_verify_graphed_k4(
-        &self,
-        _t: &[u32; 4],
-        _s: &mut SequenceState,
-        _st: u64,
-    ) -> Result<[u32; 4]> {
-        unreachable!("no speculation in this harness")
-    }
-    fn argmax_batch(&self, _l: DevicePtr, _n: usize, _st: u64) -> Result<Vec<u32>> {
-        unreachable!("batched decode is not driven here")
-    }
-    fn checkpoint_ssm_states(&self, _s: &mut SequenceState) -> Result<()> {
-        unreachable!("no speculation in this harness")
-    }
-    fn rollback_ssm_states(&self, _s: &mut SequenceState, _n: usize) -> Result<()> {
-        unreachable!("no speculation in this harness")
-    }
-    fn compact_sequence(&self, _s: &mut SequenceState, _new_slot: usize) -> Result<()> {
-        unreachable!("no compaction in this harness")
-    }
-    fn save_hidden_for_mtp(&self, _token_idx: usize, _st: u64) -> Result<()> {
-        unreachable!("no speculation in this harness")
-    }
-    fn run_mtp_propose(
-        &self,
-        _t: u32,
-        _p: usize,
-        _s: &mut SequenceState,
-        _st: u64,
-    ) -> Result<Option<u32>> {
-        unreachable!("no speculation in this harness")
-    }
-    fn run_mtp_propose_multi(
-        &self,
-        _t: u32,
-        _p: usize,
-        _n: usize,
-        _s: &mut SequenceState,
-        _st: u64,
-        _mask: Option<&[i32]>,
-    ) -> Result<Vec<u32>> {
-        unreachable!("no speculation in this harness")
-    }
-    fn trim_proposer_state(&self, _s: &mut SequenceState, _n: usize, _st: u64) -> Result<()> {
-        unreachable!("no speculation in this harness")
-    }
-    fn generate_speculative(
-        &self,
-        _p: &[u32],
-        _params: &spark_runtime::sampler::SamplingParams,
-        _n: usize,
-    ) -> Result<spark_model::engine::GenerateResult> {
-        unreachable!("no speculation in this harness")
-    }
-}
 
 /// What one run of the tick loop observed.
 struct Run {
@@ -208,7 +55,7 @@ struct Run {
 /// is applied before the continue phase, the order `mod.rs` uses
 /// (`start_new_requests` then `continue_in_progress_prefills`).
 fn drive(seed_depth: usize, ticks: usize) -> Run {
-    let model = PrefillStubModel;
+    let model = PrefillStubModel::default();
     let policy = FifoPolicy;
     let sched = SchedCtx::for_test();
 
@@ -339,7 +186,7 @@ fn the_tick_loop_makes_progress_every_tick() {
 /// rest of the queue in arrival order.
 #[test]
 fn promoting_the_head_preserves_the_order_of_the_remainder() {
-    let model = PrefillStubModel;
+    let model = PrefillStubModel::default();
     let mut keep = Vec::new();
     let mut prefilling: Vec<PrefillInProgress> = (1..=4)
         .map(|id| {
@@ -378,7 +225,7 @@ fn promoting_the_head_preserves_the_order_of_the_remainder() {
 /// keeping the indices valid, not licence to reorder.
 #[test]
 fn promoting_several_at_once_preserves_the_order_of_the_remainder() {
-    let model = PrefillStubModel;
+    let model = PrefillStubModel::default();
     let mut keep = Vec::new();
     let mut prefilling: Vec<PrefillInProgress> = (1..=5)
         .map(|id| {

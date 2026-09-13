@@ -89,6 +89,10 @@ workspace = true
 # NOTE: the ARM-2 Leg-2 native-MXFP4 (E8M0) numeric gate lives as a real
 # `#[ignore]`d integration test — see crates/spark-model/tests/arm2_leg2_*.rs.
 [[example]]
+name = "native_prefill_varlen_batch_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "kda_gate_microtest"
 required-features = ["cuda", "gpu-examples"]
 

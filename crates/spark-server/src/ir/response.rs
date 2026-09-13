@@ -38,6 +38,29 @@ pub struct Choice {
     /// Refusal message (safety classifier), when set.
     pub refusal: Option<String>,
     pub finish_reason: FinishReason,
+    /// The server-side degeneration guard that cut this choice, when
+    /// one did (`"content_loop_watchdog"`, `"fuzzy_repetition"`, …);
+    /// `None` for every ordinary stop. Companion to — never a
+    /// replacement for — `finish_reason`: a guard cut keeps reporting
+    /// `"length"` on the OpenAI wire (see [`FINISH_REASON_TIMEOUT`]'s
+    /// note on why no further non-standard enum VALUE may be minted),
+    /// and this carries the detail as an extension FIELD instead.
+    ///
+    /// #927 / #1000 / #1002, round-13 cell V
+    /// (`--prefill-varlen-batch`): 6 of 16 responses were cut at 49
+    /// tokens by the content-loop watchdog while reporting
+    /// `finish_reason: "length"`; the client could not distinguish a
+    /// quality cut from a budget stop.
+    ///
+    /// Both surfaces produce it. Streaming carries
+    /// `ActiveSeq::guard_stop` on the Done frame
+    /// (`StreamDelta::Finish::stop_reason`); blocking carries the same
+    /// value on `api::InferenceResponse::guard_stop`, set by
+    /// `scheduler::lifecycle::finish_sequence` and read by
+    /// `api::chat_blocking_choice`. The blocking surface is the one the
+    /// round-13 probe actually ran (`stream=false`), so it is not
+    /// optional.
+    pub stop_reason: Option<&'static str>,
     /// The client stop sequence that terminated generation, when one
     /// did. Feeds Anthropic's `stop_sequence` field.
     pub matched_stop: Option<String>,
@@ -100,8 +123,13 @@ pub struct Usage {
 /// raised on OpenRouter's non-standard "error"). "timeout" is kept as a
 /// deliberate, shipped exception because silent truncation is worse; do
 /// NOT add further non-standard values — server-side guard cuts map to
-/// "stop" and carry their detail in the `guard_stop` side-channel (see
-/// `scheduler::lifecycle::guard_stop_wire_reason`).
+/// "length" and carry their detail in the `stop_reason` extension FIELD
+/// (see `scheduler::lifecycle::guard_stop_wire_reason` for the mapping
+/// and [`Choice::stop_reason`] for the field). Unknown FIELDS are
+/// ignored by every SDK; unknown enum VALUES are what hard-fail typed
+/// clients — which is why the detail rides a new key rather than a
+/// fifth `finish_reason` string. vLLM makes the same split with its own
+/// `stop_reason` extension.
 pub const FINISH_REASON_TIMEOUT: &str = "timeout";
 
 /// Why generation stopped. `Other` preserves unknown engine reasons

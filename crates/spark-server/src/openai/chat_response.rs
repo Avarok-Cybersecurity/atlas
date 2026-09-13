@@ -28,6 +28,20 @@ pub struct ChatChoice {
     pub message: ChatMessage,
     pub finish_reason: String,
     pub logprobs: Option<ChoiceLogprobs>,
+    /// WHICH server-side degeneration guard cut this response, when one
+    /// did (`"content_loop_watchdog"`, `"fuzzy_repetition"`, …).
+    /// Skipped when absent, so an ordinary stop/length body is
+    /// byte-identical to what shipped before this field existed.
+    ///
+    /// Blocking twin of [`ChunkChoice::stop_reason`]; the full
+    /// rationale lives there. Short version (#927 / #1000 / #1002):
+    /// round-13 cell V cut 6 of 16 responses at 49 tokens via the
+    /// content-loop watchdog and reported `finish_reason: "length"` for
+    /// all of them. The wire `finish_reason` is a measured contract and
+    /// does not move; the detail rides an extension FIELD, which every
+    /// SDK ignores when it does not know it (cf. vLLM's `stop_reason`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<&'static str>,
 }
 
 /// Token usage and performance timing.
@@ -183,6 +197,7 @@ impl ChatCompletionResponse {
                 },
                 finish_reason: finish_reason.to_string(),
                 logprobs: None,
+                stop_reason: None,
             }],
             usage,
             service_tier: None,
@@ -215,6 +230,7 @@ impl ChatCompletionResponse {
                 },
                 finish_reason: "tool_calls".to_string(),
                 logprobs: None,
+                stop_reason: None,
             }],
             usage,
             service_tier: None,

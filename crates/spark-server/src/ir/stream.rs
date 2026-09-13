@@ -39,6 +39,24 @@ pub enum StreamDelta {
         reason: super::response::FinishReason,
         usage: super::response::Usage,
         token_ids: Vec<u32>,
+        /// The server-side degeneration guard that cut this response,
+        /// when one did (`"content_loop_watchdog"`,
+        /// `"fuzzy_repetition"`, `"simhash_semantic_loop"`,
+        /// `"token_loop_watchdog"`, …); `None` for every ordinary
+        /// stop. Deliberately SEPARATE from `reason`: the wire
+        /// `finish_reason` for a guard cut stays `"length"` (see
+        /// `scheduler::lifecycle::guard_stop_wire_reason` and
+        /// `api::chat_stream::handle_done::resolve_wire_finish_reason`
+        /// for the measured reason that value must not move), so this
+        /// is the only channel that says WHICH guard fired.
+        ///
+        /// #927 / #1000 / #1002, round-13 cell V
+        /// (`--prefill-varlen-batch`): 6 of 16 responses were cut at 49
+        /// tokens by the content-loop / fuzzy / SimHash watchdogs and
+        /// every one of them reported `finish_reason: "length"` on the
+        /// wire. A client could not tell a quality cut from a budget
+        /// stop — which is exactly the retry decision it needs to make.
+        stop_reason: Option<&'static str>,
     },
     /// Stream-level error payload, sent verbatim as SSE data.
     Error { message: String },

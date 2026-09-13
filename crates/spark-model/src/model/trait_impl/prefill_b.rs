@@ -27,6 +27,8 @@ use crate::traits::{Model, SequenceState};
 mod batch;
 mod batch_kernel;
 #[cfg(test)]
+mod batch_kernel_chunk_zero_tests;
+#[cfg(test)]
 mod batch_kernel_tests;
 mod batched_layer;
 mod embed_chunk;
@@ -110,7 +112,10 @@ impl TransformerModel {
         {
             let bs = self.kv_cache.lock().block_size();
             // One block below the last block boundary strictly under `total`.
-            let cut = ((total.saturating_sub(1) / bs) * bs).saturating_sub(bs);
+            // SSOT: `tail_split_cut` — `Model::prefill_tail_cut` hands the same
+            // number to the scheduler so the batched path can pre-split and
+            // keep this shape (#927).
+            let cut = tail_split_cut(total, bs);
             // UNCONDITIONAL. This used to additionally require
             // `ep_active || peek_matched_tokens(..) > 0`, i.e. it split only on a
             // WARM request (radix already populated) — which made the prompt take a
@@ -136,7 +141,7 @@ impl TransformerModel {
             // That is the OTHER way to satisfy the invariant — always one pass — and
             // it keeps the single-pass numerics, at the cost of the warm-turn tail
             // checkpoint this split exists to create.
-            let split_disabled = std::env::var("ATLAS_NO_TAIL_SPLIT").as_deref() == Ok("1");
+            let split_disabled = tail_split_disabled();
             if !split_disabled && cut > chunk_start && cut < total {
                 self.prefill_chunk_dispatch(
                     tokens,
@@ -386,5 +391,60 @@ impl TransformerModel {
             )?;
             Ok(DevicePtr::NULL)
         }
+    }
+}
+
+/// The tail-checkpoint cut for a prompt of `total` tokens at KV block size
+/// `bs`: one block below the last block boundary strictly under `total`.
+///
+/// Free function so `prefill_chunk_dispatch` (which performs the split) and
+/// `TransformerModel::prefill_tail_cut` (which reports it to the scheduler)
+/// cannot drift apart — two call sites computing this expression separately is
+/// exactly the class of divergence that produced #927 cell E one module over.
+pub(in crate::model) fn tail_split_cut(total: usize, bs: usize) -> usize {
+    if bs == 0 {
+        return 0;
+    }
+    ((total.saturating_sub(1) / bs) * bs).saturating_sub(bs)
+}
+
+/// `ATLAS_NO_TAIL_SPLIT=1` — disable the tail-checkpoint split entirely
+/// (same-binary A/B; keeps the single-pass numerics and loses the warm-turn
+/// tail checkpoint).
+pub(in crate::model) fn tail_split_disabled() -> bool {
+    std::env::var("ATLAS_NO_TAIL_SPLIT").as_deref() == Ok("1")
+}
+
+#[cfg(test)]
+mod tail_split_cut_tests {
+    use super::tail_split_cut;
+
+    #[test]
+    fn the_cut_is_one_block_below_the_last_boundary_under_the_prompt() {
+        // The #927 shape: a 1193-token prompt at block size 16 splits
+        // 1168 + 25. ((1193-1)/16)*16 = 1184, minus one block = 1168.
+        assert_eq!(tail_split_cut(1193, 16), 1168);
+        assert_eq!(1193 - tail_split_cut(1193, 16), 25);
+    }
+
+    #[test]
+    fn a_prompt_on_a_boundary_still_cuts_a_block_below_it() {
+        // 1024 is itself a boundary; the last boundary STRICTLY under it is
+        // 1008, so the cut is 992 and the tail is 32 — never zero-length.
+        assert_eq!(tail_split_cut(1024, 16), 992);
+    }
+
+    #[test]
+    fn short_prompts_saturate_to_zero_and_disable_the_split() {
+        // `prefill_chunk_dispatch` only splits when `cut > chunk_start`, so a
+        // zero cut means "one pass" for a chunk starting at 0.
+        assert_eq!(tail_split_cut(16, 16), 0);
+        assert_eq!(tail_split_cut(0, 16), 0);
+        assert_eq!(tail_split_cut(1, 16), 0);
+    }
+
+    #[test]
+    fn a_zero_block_size_is_not_a_division() {
+        assert_eq!(tail_split_cut(1193, 0), 0);
     }
 }

@@ -36,6 +36,29 @@ pub struct ChunkChoice {
     /// format is byte-identical for clients that did not opt in.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub token_ids: Vec<u32>,
+    /// WHICH server-side degeneration guard cut this response, when one
+    /// did — `"content_loop_watchdog"`, `"fuzzy_repetition"`,
+    /// `"simhash_semantic_loop"`, `"token_loop_watchdog"`, … Set only on
+    /// the terminal chunk (the one carrying `finish_reason`), and only
+    /// when a guard actually fired; skipped otherwise, so a normal
+    /// stop/length chunk is byte-identical to what shipped before.
+    ///
+    /// WHY A FIELD AND NOT A FINISH REASON (#927 / #1000 / #1002).
+    /// Round-13 cell V (`--prefill-varlen-batch`) produced 6 of 16
+    /// responses truncated at 49 tokens by the content-loop / fuzzy /
+    /// SimHash watchdogs, and every one of them reported
+    /// `finish_reason: "length"` on the wire — a client could not tell
+    /// a quality cut from a budget stop. The wire `finish_reason` still
+    /// must not move: relabelling guard cuts to `"stop"` measurably
+    /// cost 2/10 then 6/10 episodes of the agentic gate
+    /// (`scheduler::lifecycle::guard_stop_wire_reason`), and minting a
+    /// fifth enum value hard-fails strictly typed clients (Rust
+    /// `async-openai` fails deserialization outright; pydantic-ai
+    /// raised on OpenRouter's non-standard `"error"`). Unknown FIELDS,
+    /// by contrast, are ignored by every SDK — the same seam vLLM uses
+    /// for its own `stop_reason`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -86,6 +109,7 @@ impl ChatCompletionChunk {
                 finish_reason: None,
                 logprobs: None,
                 token_ids: Vec::new(),
+                stop_reason: None,
             }],
             usage: None,
         }
@@ -112,6 +136,7 @@ impl ChatCompletionChunk {
                 finish_reason: None,
                 logprobs: None,
                 token_ids: Vec::new(),
+                stop_reason: None,
             }],
             usage: None,
         }
@@ -137,6 +162,7 @@ impl ChatCompletionChunk {
                 finish_reason: None,
                 logprobs: None,
                 token_ids: Vec::new(),
+                stop_reason: None,
             }],
             usage: None,
         }
@@ -177,6 +203,7 @@ impl ChatCompletionChunk {
                 finish_reason: None,
                 logprobs: None,
                 token_ids: Vec::new(),
+                stop_reason: None,
             }],
             usage: None,
         }
@@ -213,6 +240,7 @@ impl ChatCompletionChunk {
                 finish_reason: None,
                 logprobs: None,
                 token_ids: Vec::new(),
+                stop_reason: None,
             }],
             usage: None,
         }
@@ -238,6 +266,7 @@ impl ChatCompletionChunk {
                 finish_reason: Some(finish_reason.to_string()),
                 logprobs: None,
                 token_ids: Vec::new(),
+                stop_reason: None,
             }],
             usage: Some(usage),
         }
@@ -284,6 +313,7 @@ impl ChatCompletionChunk {
                 finish_reason: None,
                 logprobs: None,
                 token_ids: Vec::new(),
+                stop_reason: None,
             }],
             usage: None,
         }
@@ -311,6 +341,7 @@ impl ChatCompletionChunk {
                 finish_reason: Some(finish_reason.to_string()),
                 logprobs: None,
                 token_ids: Vec::new(),
+                stop_reason: None,
             }],
             usage: None,
         }
@@ -326,6 +357,26 @@ impl ChatCompletionChunk {
             && let Some(choice) = self.choices.first_mut()
         {
             choice.token_ids = ids;
+        }
+        self
+    }
+
+    /// Stamp the guard name onto this chunk's first choice. Same
+    /// no-op-when-absent shape as [`Self::with_token_ids`]: `None`
+    /// leaves the chunk byte-identical to what a client received
+    /// before the field existed, so no snapshot of an ordinary
+    /// stop/length response moves.
+    ///
+    /// Only the terminal chunk is stamped (`encode_stream` calls this
+    /// on the `Finish` arm alone) — a guard cut is one event, not a
+    /// property of every delta that preceded it. See
+    /// [`ChunkChoice::stop_reason`] for the #927 / #1000 / #1002
+    /// receipt behind the field.
+    pub(crate) fn with_stop_reason(mut self, guard: Option<&'static str>) -> Self {
+        if guard.is_some()
+            && let Some(choice) = self.choices.first_mut()
+        {
+            choice.stop_reason = guard;
         }
         self
     }

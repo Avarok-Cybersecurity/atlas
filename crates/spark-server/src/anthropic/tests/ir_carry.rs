@@ -349,6 +349,7 @@ fn choice() -> crate::ir::Choice {
         tool_calls: Vec::new(),
         refusal: None,
         finish_reason: crate::ir::FinishReason::Stop,
+        stop_reason: None,
         matched_stop: None,
         logprobs: None,
     }
