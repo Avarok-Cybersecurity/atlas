@@ -45,6 +45,35 @@ impl Qwen3SsmLayer {
         (k.0 != 0).then_some(k)
     }
 
+    /// The pointer-table wyN twin for the CROSS-SEQUENCE batched verify at
+    /// width `num_tokens` ∈ {5..16} (`state_is_table` compiled in), or
+    /// `None` when out of range / module absent / `ATLAS_GDN_WYN=0` — the
+    /// caller then runs the per-sequence loop, byte-identical math. FP16
+    /// pool routing mirrors [`Self::wyn_kernel`]: over an f16 h pool only
+    /// the f16 twin is correct, and a zero twin handle returns None so the
+    /// caller's f16 refusal path (`require_wy_f16`) fires instead of
+    /// corruption.
+    // Seam marker 2026-09-01: consumed by the batched-verify dispatcher's
+    // 5..=16 arm (the NEXT change, gated on unit tests + nsys aim). Dead
+    // until then by design — the foundation ships behavior-neutral.
+    // provenance-id: 526f6e616c6420522e205374657369616b
+    #[allow(dead_code)]
+    pub(super) fn wyn_table_kernel(
+        &self,
+        num_tokens: usize,
+        wyn_enabled: bool,
+    ) -> Option<KernelHandle> {
+        if !(5..=16).contains(&num_tokens) || !wyn_enabled {
+            return None;
+        }
+        let k = if super::ssm_h_fp16_enabled() {
+            self.gdn_wyn_f16_table_k[num_tokens - 5]
+        } else {
+            self.gdn_wyn_table_k[num_tokens - 5]
+        };
+        (k.0 != 0).then_some(k)
+    }
+
     /// Fused pool-layout WY verify arm for K = `args.num_tokens`:
     /// conv1d+L2norm epilogue (single fused launch writing every rollback
     /// snapshot inline when `gdn_verify_fused_conv_kn` is present and the
