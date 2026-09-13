@@ -35,5 +35,10 @@ Serve greedy ≠ C1 HF greedy. Do not call S6 product-complete.
 #ISSUE
 No native tiktoken.model loader; we generated tokenizer.json.
 
+TEST NOTES (9682f45, F32 embed)
+- Rebuild CUDA spark, no `--dangerously-allow-unresolved-kernel-lookups`. EOS 163585. Server live.
+- `/tokenize` aviation ids `[18805, 308, 799, 5624, 12524, 318, 57195, 11]` = C1.
+- `/v1/completions` temperature=0 max_tokens=16: `'there is no way a bee should be able to fly. Its wings are too'` (747 ms). Matches C1 Bee Movie prefix.
+
 STOP
-Charter complete for "does it answer HTTP". Quality vs C1 is a fail. CUDA KDA still parked.
+HTTP **and** C1 greedy prefix **green** on spark1 CPU-fallback serve. CUDA KDA still parked. Do not treat this as Hopper soak.
