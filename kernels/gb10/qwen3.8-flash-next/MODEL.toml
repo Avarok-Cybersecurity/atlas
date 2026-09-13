@@ -311,8 +311,10 @@ hf_id = "nvidia/Qwen3.8-Flash-Next-NVFP4"
 description = "Qwen3.8-Flash-Next, NVIDIA ModelOpt NVFP4, TP=2 x EP=2 across two GB10 nodes, bf16 KV, 2 MTP drafts, prefix caching, 4 sequences x 128K — the vision/video gate-passing multi-node profile (2026-09-13: vision-fidelity PASS, video-fidelity PASS 14/14, ~1450-1475 tok/s cold prefill at 8K/11K)."
 
 [serve_presets.flags]
-# Two nodes, tensor-parallel WITHIN the expert-parallel pair (the groups
-# overlap; see the EP=2 notes in bench/qwen4_exp/serve_qwen4exp_128k_mtp.sh).
+# Two nodes, tensor-parallel WITHIN the expert-parallel pair. The groups
+# OVERLAP: both ranks hold every layer's attention shard and half the experts,
+# so a token is split across the pair for attention and routed across it for
+# the MoE. This is not TP=2 stacked on a separate EP=2 pair of nodes.
 world_size = 2
 tp_size = 2
 ep_size = 2
