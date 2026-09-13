@@ -21,7 +21,7 @@ pub(crate) use deepseek_v4::parse_deepseek_v4;
 pub(crate) use gemma4::parse_gemma4_params;
 pub use glm5_next::glm5_next_mtp_layer_index;
 pub(crate) use glm5_next::parse_glm5_next;
-pub(crate) use kimi_k3::parse_kimi_k3;
+pub(crate) use kimi_k3::{parse_kimi_k3, sanitize_kimi_k3_eos};
 pub(crate) use laguna::parse_laguna;
 pub(crate) use longcat::parse_longcat_ngram;
 pub use lora::{

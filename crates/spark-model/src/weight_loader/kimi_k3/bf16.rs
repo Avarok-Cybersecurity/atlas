@@ -8,13 +8,14 @@ use std::sync::{Arc, OnceLock};
 use anyhow::Result;
 use atlas_core::config::ModelConfig;
 use atlas_core::kimi_k3::{K3Graph, MixerKind, MlpKind, kda_from, mla_from, moe_from};
+use half::bf16;
 use parking_lot::Mutex;
 use spark_runtime::gpu::GpuBackend;
-use spark_runtime::weights::WeightStore;
+use spark_runtime::weights::{WeightDtype, WeightStore};
 
 use crate::kimi_k3::bound::{K3BoundLayer, K3HostShared, WeightMeta};
 use crate::layer::TransformerLayer;
-use crate::weight_map::{DenseWeight, dense};
+use crate::weight_map::DenseWeight;
 
 pub fn text_key(config: &ModelConfig, rest: &str) -> String {
     let p = config.weight_prefix.trim_end_matches('.');
@@ -28,29 +29,75 @@ pub fn text_key(config: &ModelConfig, rest: &str) -> String {
 pub fn load_embedding(
     store: &WeightStore,
     config: &ModelConfig,
-    _gpu: &dyn GpuBackend,
+    gpu: &dyn GpuBackend,
 ) -> Result<DenseWeight> {
-    dense(store, &text_key(config, "model.embed_tokens.weight"))
+    // Twin safetensors are F32 (HF tensor type). Engine embed/lm_head/norm
+    // gather BF16 rows (`h * 2`). Leave FP32 as-is and the aviation prompt
+    // becomes `自主性!!!!…` instead of C1 id 1459.
+    dense_for_bf16_engine(store, &text_key(config, "model.embed_tokens.weight"), gpu)
 }
 
 pub fn load_final_norm(
     store: &WeightStore,
     config: &ModelConfig,
-    _gpu: &dyn GpuBackend,
+    gpu: &dyn GpuBackend,
 ) -> Result<DenseWeight> {
-    dense(store, &text_key(config, "model.norm.weight"))
+    dense_for_bf16_engine(store, &text_key(config, "model.norm.weight"), gpu)
 }
 
 pub fn load_lm_head(
     store: &WeightStore,
     config: &ModelConfig,
-    _gpu: &dyn GpuBackend,
+    gpu: &dyn GpuBackend,
 ) -> Result<DenseWeight> {
     let a = text_key(config, "lm_head.weight");
     if store.contains(&a) {
-        return dense(store, &a);
+        return dense_for_bf16_engine(store, &a, gpu);
     }
-    dense(store, "lm_head.weight")
+    dense_for_bf16_engine(store, "lm_head.weight", gpu)
+}
+
+/// Engine embed/lm_head/final_norm are BF16 gathers. Host-convert F32 so we
+/// do not issue `quantize_nvfp4::f32_to_bf16_trunc` (another unresolved
+/// lookup on the kimi-k3 target).
+fn dense_for_bf16_engine(
+    store: &WeightStore,
+    name: &str,
+    gpu: &dyn GpuBackend,
+) -> Result<DenseWeight> {
+    let w = store.get(name)?;
+    if w.dtype != WeightDtype::FP32 {
+        return Ok(DenseWeight { weight: w.ptr });
+    }
+    let n = w.num_elements();
+    let mut raw = vec![0u8; n * 4];
+    gpu.copy_d2h(w.ptr, &mut raw)?;
+    let bf16_bytes = f32_le_to_bf16_bytes(&raw);
+    let ptr = gpu.alloc(bf16_bytes.len())?;
+    gpu.copy_h2d(&bf16_bytes, ptr)?;
+    Ok(DenseWeight { weight: ptr })
+}
+
+fn f32_le_to_bf16_bytes(raw: &[u8]) -> Vec<u8> {
+    raw.chunks_exact(4)
+        .flat_map(|c| {
+            let f = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+            bf16::from_f32(f).to_le_bytes()
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::f32_le_to_bf16_bytes;
+    use half::bf16;
+
+    #[test]
+    fn f32_embed_row_becomes_bf16() {
+        let f = 1.5f32;
+        let out = f32_le_to_bf16_bytes(&f.to_le_bytes());
+        assert_eq!(out, bf16::from_f32(1.5).to_le_bytes());
+    }
 }
 
 pub fn load_layers(

@@ -13,7 +13,7 @@ use super::{
     default_rope_theta, finalize_config, parse_deepseek_v4, parse_gemma4_params, parse_glm5_next,
     parse_kimi_k3, parse_laguna, parse_longcat_ngram, parse_minimax_m2, parse_mistral_params,
     parse_quantization_config, parse_qwen4_exp, parse_step3p7, parse_vision_config,
-    validate_config,
+    sanitize_kimi_k3_eos, validate_config,
 };
 
 fn required_u64(raw: &serde_json::Value, key: &str, model_type: &str) -> Result<u64> {
@@ -47,6 +47,7 @@ fn required_u32(raw: &serde_json::Value, key: &str, model_type: &str) -> Result<
 pub fn parse_config(json: &str) -> Result<ModelConfig> {
     let mut config = parse_config_dispatch(json)?;
     populate_eos_token_ids(&mut config, json);
+    sanitize_kimi_k3_eos(&mut config);
     Ok(config)
 }
 

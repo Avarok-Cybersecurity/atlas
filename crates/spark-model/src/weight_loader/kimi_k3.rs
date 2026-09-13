@@ -107,6 +107,15 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn kimi_k3_does_not_probe_nvfp4_tgemm() {
+        assert!(
+            !crate::layers::tgemm_probe_ok("kimi_k3"),
+            "BF16/FP32 twin must not look up w4a16_gemm_t_p3"
+        );
+        assert!(crate::layers::tgemm_probe_ok("qwen3_5_moe"));
+    }
+
+    #[test]
     fn loader_for_config_kimi_k3() {
         let mut config = ModelConfig::qwen3_next_80b_nvfp4();
         for ty in ["kimi_k3", "kimi_linear", "Kimi-K3"] {

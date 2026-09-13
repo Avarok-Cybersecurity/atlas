@@ -91,3 +91,58 @@ fn cpu_fallback_prefix_cache_bytes_match_c3() {
         "C3: restored LayerCache bytes must match in-place prefix cache"
     );
 }
+
+/// Serve prefill is layer-outer / token-inner (`prefill_default` loops
+/// `decode` per token). C1 greedy is token-outer. Same math iff AttnRes is
+/// per-token and KDA/MLA state is per-layer.
+#[test]
+fn layer_outer_prefill_matches_token_outer() {
+    use super::attnres::rms_norm;
+    use super::ops::embed_token;
+    let model = K3CpuModel::synthetic_tiny();
+    let prompt = [1u32, 2, 3, 4];
+    let ablation = Ablation::default();
+    let mut cache_tok = HybridCache::from_graph(&model.graph, &model.kda);
+    let mut h_tok = Vec::new();
+    for (pos, &tok) in prompt.iter().enumerate() {
+        h_tok = forward_token(&model, tok, pos, &mut cache_tok, ablation);
+    }
+    let mut cache_layer = HybridCache::from_graph(&model.graph, &model.kda);
+    let ctx = K3LayerCtx::from_model(&model);
+    let mut streams: Vec<AttnResStream> = prompt
+        .iter()
+        .map(|&tok| {
+            let embed = embed_token(&model.embed, tok, model.graph.hidden, model.vocab);
+            let mut s = AttnResStream::new(model.graph.hidden, model.graph.attn_res_block_size);
+            s.partial.clone_from(&embed);
+            s
+        })
+        .collect();
+    for layer in &model.layers {
+        for (pos, stream) in streams.iter_mut().enumerate() {
+            forward_one_layer(
+                &ctx,
+                layer,
+                pos,
+                &mut cache_layer.layers[layer.spec.index],
+                stream,
+                ablation,
+            );
+        }
+    }
+    let mixed = streams[prompt.len() - 1].mix(
+        &model.output_res_proj,
+        &model.output_res_norm,
+        model.eps,
+        ablation.attnres_mix,
+    );
+    let h_layer = rms_norm(&mixed, &model.final_norm, model.eps);
+    assert_eq!(
+        h_tok, h_layer,
+        "serve layer-outer prefill must match C1 token-outer"
+    );
+    assert_eq!(
+        argmax(&super::cpu_forward::logits(&model, &h_tok)),
+        argmax(&super::cpu_forward::logits(&model, &h_layer)),
+    );
+}

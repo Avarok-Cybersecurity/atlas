@@ -41,6 +41,7 @@ pub fn parse_kimi_k3(json: &str) -> Result<ModelConfig> {
     overlay_mla(&mut config, &text)?;
     overlay_linear_attn(&mut config, &text)?;
     overlay_k3_flags(&mut config, &text)?;
+    overlay_eos(&mut config);
 
     config.layer_types = build_layer_types(&text, config.num_hidden_layers)?;
     config.mlp_only_layers = build_mlp_only_layers(&text, config.num_hidden_layers)?;
@@ -159,6 +160,41 @@ fn overlay_linear_attn(config: &mut ModelConfig, text: &serde_json::Value) -> Re
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     Ok(())
+}
+
+/// Llama leftover: the 0.40B twin writes `text_config.eos_token_id = 2` while
+/// the tokenizer EOS is 163585 (C1 / S6). Vocab is 163840. Official K3 JSON
+/// already has 163586 — leave it.
+const K3_VOCAB: usize = 163_840;
+const LLAMA_EOS: u32 = 2;
+const TWIN_TOKENIZER_EOS: u32 = 163_585;
+
+fn overlay_eos(config: &mut ModelConfig) {
+    if config.eos_token_id == LLAMA_EOS && config.vocab_size == K3_VOCAB {
+        config.eos_token_id = TWIN_TOKENIZER_EOS;
+    }
+}
+
+/// Drop `eos=2` from the stop set after `populate_eos_token_ids` re-reads JSON.
+/// Primary is already corrected by [`overlay_eos`] when `parse_kimi_k3` ran.
+pub(crate) fn sanitize_kimi_k3_eos(config: &mut ModelConfig) {
+    if config.model_type != "kimi_k3" || config.vocab_size != K3_VOCAB {
+        return;
+    }
+    config.eos_token_ids.retain(|&id| id != LLAMA_EOS);
+    if config.eos_token_id == LLAMA_EOS {
+        config.eos_token_id = config
+            .eos_token_ids
+            .first()
+            .copied()
+            .unwrap_or(TWIN_TOKENIZER_EOS);
+    }
+    if config.eos_token_ids.is_empty() {
+        config.eos_token_ids.push(config.eos_token_id);
+    } else if config.eos_token_ids[0] != config.eos_token_id {
+        config.eos_token_ids.retain(|&id| id != config.eos_token_id);
+        config.eos_token_ids.insert(0, config.eos_token_id);
+    }
 }
 
 fn overlay_k3_flags(config: &mut ModelConfig, text: &serde_json::Value) -> Result<()> {
@@ -358,6 +394,11 @@ mod tests {
         assert_eq!(c.qk_rope_head_dim, 64);
         assert_eq!(c.v_head_dim, 128);
         assert_eq!(c.weight_prefix, "language_model");
+        assert_eq!(
+            c.eos_token_id, 163586,
+            "official EOS is not the twin leftover"
+        );
+        assert!(!c.is_eos(2));
         assert!(c.nested_config);
         let qc = c.quantization_config.as_ref().expect("quant config");
         assert_eq!(qc.format, "mxfp4-pack-quantized");
@@ -416,5 +457,12 @@ mod tests {
             .filter(|t| **t == LayerType::LinearAttention)
             .count();
         assert_eq!(kda, 6);
+        assert_eq!(
+            c.eos_token_id, 163585,
+            "twin text_config.eos_token_id=2 is Llama leftover; tokenizer EOS is 163585"
+        );
+        assert_eq!(c.eos_ids(), vec![163585]);
+        assert!(c.is_eos(163585));
+        assert!(!c.is_eos(2), "must not stop on token 2");
     }
 }

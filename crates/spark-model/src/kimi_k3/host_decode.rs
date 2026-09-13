@@ -65,6 +65,10 @@ impl K3BoundLayer {
                     self.index
                 )
             })?;
+            // `seq_len` is the 0-based *position* (`TransformerLayer::decode`).
+            // Prefill already walks tokens in `prefill_default` (one decode per
+            // token, KDA/MLA step once). Do not treat this as packed N — looping
+            // `seq_len` times would step KDA N times on one hidden row.
             forward_one_layer(&lctx, layer, seq_len, &mut st.cache, stream_res, ablation);
         }
 
