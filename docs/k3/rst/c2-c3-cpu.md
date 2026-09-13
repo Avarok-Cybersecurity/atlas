@@ -25,5 +25,10 @@ BUGS
 #ISSUE
 Do not check C2/C3 on the umbrella rental list until C1 token-exact is green (or the same tests run on a matching engine).
 
+TEST NOTES (spark2, 2026-09-13, `K3_TWIN` 0.40B, `83c0d34`)
+`cargo test -p atlas-core --lib -- _twin -- --test-threads=1 --nocapture`
+- `c2_prefill_decode_logits_match_full_prefill_twin` **ok** — aviation prompt logits prefill-decode vs full-prefill; skip layer 0 on decode diverged.
+- `c3_prefix_cache_hit_matches_nocache_twin` **ok** — 8 greedy ids match cold. Known-bad: trash-all KDA conv+recurrent after prefix write changed tokens. MLA-only kv stomp did **not** move 8 aviation ids (6 KDA / 2 MLA); not used as the mutant.
+
 STOP
-CPU self-consistency charter complete. HF/GPU C2/C3 still open.
+C2 and C3 **green** on the C1 twin. GPU paged-cache TODO remains; not required to check these boxes.
