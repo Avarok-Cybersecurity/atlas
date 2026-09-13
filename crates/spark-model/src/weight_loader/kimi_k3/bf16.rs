@@ -94,19 +94,6 @@ pub(super) fn f32_le_to_bf16_bytes(raw: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::f32_le_to_bf16_bytes;
-    use half::bf16;
-
-    #[test]
-    fn f32_embed_row_becomes_bf16() {
-        let f = 1.5f32;
-        let out = f32_le_to_bf16_bytes(&f.to_le_bytes());
-        assert_eq!(out, bf16::from_f32(1.5).to_le_bytes());
-    }
-}
-
 pub fn load_layers(
     store: &WeightStore,
     config: &ModelConfig,
@@ -260,4 +247,17 @@ pub fn layer_keys(
         }
     }
     k
+}
+
+#[cfg(test)]
+mod tests {
+    use super::f32_le_to_bf16_bytes;
+    use half::bf16;
+
+    #[test]
+    fn f32_embed_row_becomes_bf16() {
+        let f = 1.5f32;
+        let out = f32_le_to_bf16_bytes(&f.to_le_bytes());
+        assert_eq!(out, bf16::from_f32(1.5).to_le_bytes());
+    }
 }
