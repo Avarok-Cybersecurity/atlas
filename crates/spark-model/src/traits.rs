@@ -174,6 +174,12 @@ pub struct SequenceState {
     /// The `skip` half of the chunk-0 lookup's return value, replayed verbatim
     /// when `prefix_lookup_applied` short-circuits a retry.
     pub prefix_lookup_skip: bool,
+    /// Token count of an SSM anchor near this prompt's end that the pool
+    /// holds for it: the tail-split checkpoint saved during THIS prefill, or
+    /// the checkpoint a warm prefill restored from. Cleared at chunk 0; read
+    /// by `finalize_last` to decide whether the exact prefill-end leaf earns
+    /// a pool slot (`prefill_b::exact_leaf`).
+    pub tail_checkpoint_tokens: Option<usize>,
     /// Contiguous prefix length (in tokens, from position 0) whose paged KV is
     /// guaranteed fully written for THIS sequence — either reused from a valid
     /// prefix-cache match or written by a real prefill pass this turn. Updated
@@ -301,6 +307,7 @@ impl SequenceState {
             cached_prefix_blocks: 0,
             prefix_ref_tokens: Vec::new(),
             prefix_lookup_applied: false,
+            tail_checkpoint_tokens: None,
             prefix_lookup_skip: false,
             kv_valid_tokens: 0,
             last_decode_ckpt_block: 0,

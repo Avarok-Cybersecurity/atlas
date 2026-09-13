@@ -61,7 +61,6 @@ async fn run_with_orders(port: u16, orders: &str) -> atlas_plugin::RunRecord {
                 descriptor,
                 values,
                 target,
-                serve_overrides: Default::default(),
                 options: atlas_plugin::headless::HeadlessOptions::cli("test"),
             },
             &mut atlas_plugin::headless::SilentReporter,

@@ -372,6 +372,7 @@ impl TransformerModel {
             cached_prefix_blocks: 0,
             prefix_ref_tokens: Vec::new(),
             prefix_lookup_applied: false,
+            tail_checkpoint_tokens: None,
             prefix_lookup_skip: false,
             kv_valid_tokens: 0,
             last_decode_ckpt_block: 0,
