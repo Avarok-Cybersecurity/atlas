@@ -102,6 +102,7 @@ pub fn dry_run_weight_map(
 }
 
 /// Official moonshotai/Kimi-K3 is 96 shards. Twin maps are not.
+#[cfg(test)]
 pub fn require_shard_count(report: &KimiK3DryRun, n: usize) -> Result<()> {
     if report.shards.len() != n {
         bail!(
