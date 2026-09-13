@@ -23,6 +23,12 @@
 //! `ATLAS_EXL3_NATIVE=1`; with native serving off nothing is kept, so
 //! nothing is pooled and the predicate is not installed at all.
 
+// `spark_runtime::fast_weights` is `#[cfg(unix)]` — the fast loader is built on
+// mmap and the pool lives inside it. Only the predicate CONSTRUCTOR needs the
+// type, and its one caller (serve_phases/weights.rs) is already inside a
+// `#[cfg(unix)]` block, so gating here costs Windows nothing and keeps the
+// prediction logic and its tests building on every platform.
+#[cfg(unix)]
 use spark_runtime::fast_weights::PoolPredicate;
 
 use super::native::exl3_native_serves_with;
@@ -70,6 +76,9 @@ pub fn exl3_pool_keep_predicted(
 /// (`ATLAS_EXL3_NATIVE` unset) or the kill switch is set. Reads the gates
 /// once; gate VALIDATION stays with the materialize pass, which runs right
 /// after the load and fails the boot on a misconfiguration either way.
+///
+/// Unix only, with the fast loader it installs into.
+#[cfg(unix)]
 pub fn exl3_fast_load_pool_predicate() -> Option<PoolPredicate> {
     let native = super::exl3_native_enabled();
     if !native || !exl3_weight_pool_enabled() {

@@ -65,9 +65,11 @@ pub use native::{
 // exactly the prefixes this pass will keep packed) — child module, re-exported.
 #[path = "exl3_pool_predicate.rs"]
 mod pool_predicate;
-pub use pool_predicate::{
-    exl3_fast_load_pool_predicate, exl3_pool_keep_predicted, exl3_weight_pool_enabled,
-};
+pub use pool_predicate::{exl3_pool_keep_predicted, exl3_weight_pool_enabled};
+// The constructor names `PoolPredicate`, which lives in the `#[cfg(unix)]`
+// fast loader; its one caller is gated the same way.
+#[cfg(unix)]
+pub use pool_predicate::exl3_fast_load_pool_predicate;
 
 // `register_exl3_ngram_sidecar` lives in the child module (≤500 LoC split);
 // the re-export keeps `weight_map::register_exl3_ngram_sidecar` unchanged.

@@ -306,8 +306,8 @@ void exl3_gemm_kernel_inner
     int gl_c_stride_n = TILESIZE_N;
     int gl_c_stride_m = TILESIZE_M * size_n;
 
-    half* gl_c_ptr_16 = ((half*) C) + slice_m * gl_c_stride_m + slice2_n * gl_c_stride_n;
-    float* gl_c_ptr_32 = ((float*) C) + slice_m * gl_c_stride_m + slice2_n * gl_c_stride_n;
+    [[maybe_unused]] half* gl_c_ptr_16 = ((half*) C) + slice_m * gl_c_stride_m + slice2_n * gl_c_stride_n;
+    [[maybe_unused]] float* gl_c_ptr_32 = ((float*) C) + slice_m * gl_c_stride_m + slice2_n * gl_c_stride_n;
 
     FragA frag_a[FRAG_STAGES];
     FragB frag_b[FRAG_STAGES][FRAGS_N_PER_WARP];
@@ -423,7 +423,7 @@ void exl3_gemm_kernel_inner
     // Threadblock reduction
     auto threadblock_reduce = [&] ()
     {
-        auto store = [&] (int i)
+        [[maybe_unused]] auto store = [&] (int i)
         {
             if (sub_k == i)
             {
@@ -438,7 +438,7 @@ void exl3_gemm_kernel_inner
             __syncthreads();
         };
 
-        auto add = [&] (int i)
+        [[maybe_unused]] auto add = [&] (int i)
         {
             if (sub_k == i)
             {
@@ -452,7 +452,7 @@ void exl3_gemm_kernel_inner
             }
         };
 
-        auto store_small = [&] (int i)
+        [[maybe_unused]] auto store_small = [&] (int i)
         {
             if (sub_k == i && lane_id / 4 < size_m)
             {
@@ -467,7 +467,7 @@ void exl3_gemm_kernel_inner
             __syncthreads();
         };
 
-        auto add_small = [&] (int i)
+        [[maybe_unused]] auto add_small = [&] (int i)
         {
             if (sub_k == i && lane_id / 4 < size_m)
             {
@@ -532,7 +532,7 @@ void exl3_gemm_kernel_inner
     };
 
     // Pre-hadamard: Write final output tile to shmem
-    auto write_sum_tile_sh = [&]()
+    [[maybe_unused]] auto write_sum_tile_sh = [&]()
     {
         const int n0 = warp_id * FRAGS_N_PER_WARP;
         const int r0 = lane_id / 4;
@@ -562,7 +562,7 @@ void exl3_gemm_kernel_inner
     };
 
     // Copy output tile to global with hadamard transform and out scale
-    auto output_had_sh_gl = [&]()
+    [[maybe_unused]] auto output_had_sh_gl = [&]()
     {
         int sh_warp = warp_id;
         constexpr int active_warps = EXL3_GEMM_BASE_THREADS / 32;
