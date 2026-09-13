@@ -422,7 +422,7 @@ impl Qwen3SsmLayer {
             // DRAFTS=3 measurement is uninterpretable without knowing which
             // arm ran.
             static SAID: std::sync::Once = std::sync::Once::new();
-            if (4..=8).contains(&num_tokens) {
+            if (4..=16).contains(&num_tokens) {
                 SAID.call_once(|| {
                     tracing::info!(
                         num_tokens,

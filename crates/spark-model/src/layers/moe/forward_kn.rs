@@ -16,14 +16,34 @@
 
 use super::*;
 
-/// Widest row count the arm serves. The router GEMV is `w4a16_gemv_batch8`.
-pub(crate) const MOE_KM_MAX_ROWS: u32 = 8;
+/// Widest row count the arm serves.
+///
+/// Was 8, bounded by the router GEMV `w4a16_gemv_batch8`. `w4a16_gemv_batch16`
+/// already exists (the MTP head resolves it) and `w4a16_gemv_batchm` accepts
+/// M<=16, so the router is no longer the cap; the three `*_batchn` FFN kernels
+/// were already row-generic (rows are `blockIdx.y`, `num_tokens` is a launch
+/// argument — the "3 tokens" comment on gate_up is stale from its batch3
+/// origin).
+///
+/// WHY 16 MATTERS HERE: a C=4 verify at DRAFTS=2 is 11 rows, which fell
+/// outside 4..=8 and landed on the 3-row chunked ladder as four sequential
+/// fused MoE calls. ATLAS_MTP_TIMING says the C=4 step is 93% forward
+/// (113 of 122 ms), so that is where the time is.
+pub(crate) const MOE_KM_MAX_ROWS: u32 = 16;
+
+/// Widest row count the NARROW router GEMV serves; past this the arm needs
+/// `w4a16_gemv_batch16`.
+pub(crate) const MOE_KM_NARROW_ROUTER_ROWS: u32 = 8;
 
 impl MoeLayer {
     /// Whether `forward_km(m)` can run for this layer: the NVFP4 decode-layout
     /// routed path, the batchn kernels resolved, and `m` inside 4..=8.
     pub fn can_forward_km(&self, m: u32) -> bool {
         (4..=MOE_KM_MAX_ROWS).contains(&m)
+            // Past 8 rows the narrow router GEMV silently truncates, so the
+            // wide one must be present — `try_kernel`, so a target without it
+            // simply keeps the old 4..=8 band.
+            && (m <= MOE_KM_NARROW_ROUTER_ROWS || self.w4a16_gemv_batch16_k.0 != 0)
             && self.moe_expert_gate_up_shared_batchn.0 != 0
             && self.moe_expert_silu_down_shared_batchn.0 != 0
             && self.moe_weighted_sum_blend_batchn.0 != 0
@@ -65,9 +85,16 @@ impl MoeLayer {
         // 1. Router GEMV: the gate weight read once for m rows.
         let gate_logits = ctx.buffers.gate_logits();
         let nvfp4 = self.gate_nvfp4.as_ref().expect("checked by can_forward_km");
+        // `w4a16_gemv_batchm` caps at M=16 and the kernel SILENTLY TRUNCATES
+        // past its own width, so the handle must match the row count.
+        let router_k = if m > MOE_KM_NARROW_ROUTER_ROWS {
+            self.w4a16_gemv_batch16_k
+        } else {
+            self.w4a16_gemv_batch8_k
+        };
         ops::w4a16_gemv_batchm(
             ctx.gpu,
-            self.w4a16_gemv_batch8_k,
+            router_k,
             router_in,
             nvfp4,
             gate_logits,

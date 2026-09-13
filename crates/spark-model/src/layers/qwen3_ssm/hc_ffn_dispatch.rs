@@ -28,7 +28,7 @@ pub(super) fn hc_ffn_dispatch(
         // Four rows previously fell through to sorted-expert prefill,
         // bypassing the replay router and stable single-token split-K plan.
         4 if small_m && exact_replay && native_exl3 => HcFfnDispatch::NativeBatched,
-        4..=8 if small_m && km_available => HcFfnDispatch::Km,
+        4..=16 if small_m && km_available => HcFfnDispatch::Km,
         _ => HcFfnDispatch::Prefill,
     }
 }

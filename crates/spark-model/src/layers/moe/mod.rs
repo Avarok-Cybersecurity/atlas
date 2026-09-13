@@ -82,6 +82,11 @@ pub struct MoeLayer {
     moe_weighted_sum_blend_batchn: KernelHandle,
     /// Router GEMV for 4..=8 rows (`w4a16_gemv_batch8`).
     w4a16_gemv_batch8_k: KernelHandle,
+    /// Wide router GEMV (M<=16) for the K-row arm past 8 rows. Resolved
+    /// DIRECTLY rather than through `w4a16_gemv_tiers`: that table stops at 8
+    /// on purpose ("folding them in here would silently widen every site that
+    /// today caps at 8"), so this widens exactly one site.
+    w4a16_gemv_batch16_k: KernelHandle,
     moe_weighted_sum_blend_batch3: KernelHandle,
     w4a16_gemv_batch3: KernelHandle,
     // Generic token-major NVFP4 MoE kernels. Used as an opt-in decode
