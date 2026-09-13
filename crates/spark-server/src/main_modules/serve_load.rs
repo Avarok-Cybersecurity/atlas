@@ -868,6 +868,7 @@ pub(crate) fn load_model(
         &tokenizer,
         &mut eos_tokens,
         supports_thinking,
+        &model_dir,
     );
 
     // 7. Create scheduler channel + spawn scheduler
