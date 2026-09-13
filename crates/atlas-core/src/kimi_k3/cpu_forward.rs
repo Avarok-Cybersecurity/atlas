@@ -67,7 +67,7 @@ impl AttnResStream {
 ///
 /// `K3BoundLayer::decode` copies hidden D2H, runs this math, copies H2D.
 /// LinearAttention injects CUDA conv+recurrent unless `K3_CUDA_KDA=0`.
-/// FullAttention injects CUDA gated-NoPE MLA only when `K3_CUDA_MLA=1`.
+/// FullAttention injects CUDA gated-NoPE MLA unless `K3_CUDA_MLA=0`.
 pub struct K3LayerCtx<'a> {
     pub kda: &'a KdaConfig,
     pub mla: &'a MlaConfig,

@@ -4,8 +4,8 @@
 //! SiTU-GLU, and LatentMoE.
 //!
 //! K3-DECISION: KDA is a new backend. These refs do not call GDN / Mamba-2
-//! / Qwen3-Next kernels. CUDA: `kda_decode.cu` (default), `mla_decode.cu`
-//! (`K3_CUDA_MLA=1` opt-in), packed LatentMoE E8M0 grouped GEMM.
+//! / Qwen3-Next kernels. CUDA: `kda_decode.cu` / `mla_decode.cu` (default;
+//! `K3_CUDA_KDA=0` / `K3_CUDA_MLA=0` CPU escape), packed LatentMoE E8M0 GEMM.
 
 pub mod attnres;
 pub mod cache;

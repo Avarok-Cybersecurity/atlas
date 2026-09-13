@@ -4,7 +4,7 @@
 //!
 //! `MixerKind::Kda` runs conv+recurrent via [`launch_k3_kda_decode_token`]
 //! unless `K3_CUDA_KDA=0`. `MixerKind::Mla` runs rope+SDPA+gate via
-//! [`launch_k3_mla_decode_token`] only when `K3_CUDA_MLA=1`. Packed
+//! [`launch_k3_mla_decode_token`] unless `K3_CUDA_MLA=0`. Packed
 //! `MlpKind::LatentMoe` experts launch [`launch_k3_latent_moe_experts`].
 
 use std::collections::HashMap;
@@ -179,8 +179,8 @@ impl K3BoundLayer {
             return Ok(k);
         }
         let k = K3MlaDecodeKernels::resolve(gpu).context(
-            "K3 CUDA MLA: mla_decode PTX missing (FullAttention opt-in). \
-             Unset K3_CUDA_MLA for host mla_decode_token",
+            "K3 CUDA MLA: mla_decode PTX missing (FullAttention default). \
+             Set K3_CUDA_MLA=0 for host mla_decode_token",
         )?;
         tracing::info!("K3 FullAttention decode via CUDA mla_decode");
         Ok(*self.shared.mla_kernels.get_or_init(|| k))

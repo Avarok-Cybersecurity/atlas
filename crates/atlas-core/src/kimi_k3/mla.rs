@@ -10,7 +10,7 @@
 //! those slots are **not rotated**, not that they are dropped.
 //!
 //! CUDA decode is `kernels/gb10/kimi-k3/bf16/mla_decode.cu` (`k3_mla_*`).
-//! BoundLayer FullAttention stays on this CPU path unless `K3_CUDA_MLA=1`.
+//! BoundLayer FullAttention uses CUDA `mla_decode` unless `K3_CUDA_MLA=0`.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -62,11 +62,10 @@ impl MlaConfig {
     }
 }
 
-/// FullAttention BoundLayer uses CUDA `mla_decode` only when `K3_CUDA_MLA=1`.
-/// Unset / `0` keeps this CPU mixer so aviation greedy cannot regress
-/// until spark1 C1 is proven. Opposite polarity from `K3_CUDA_KDA`.
+/// FullAttention BoundLayer uses CUDA `mla_decode` unless `K3_CUDA_MLA=0`.
+/// Same polarity as `K3_CUDA_KDA`. Projections stay on the host either way.
 pub fn cuda_mla_enabled() -> bool {
-    matches!(std::env::var("K3_CUDA_MLA").as_deref(), Ok("1"))
+    !matches!(std::env::var("K3_CUDA_MLA").as_deref(), Ok("0"))
 }
 
 /// Optional RoPE on the rope **slice** of a packed `[nope | rope]` head.
@@ -349,28 +348,28 @@ mod tests {
     }
 
     #[test]
-    fn cuda_mla_env_default_off() {
+    fn cuda_mla_env_default_on() {
         if std::env::var_os("K3_CUDA_MLA").is_some() {
             return;
         }
         assert!(
-            !cuda_mla_enabled(),
-            "FullAttention default is CPU MLA; K3_CUDA_MLA=1 is opt-in"
+            cuda_mla_enabled(),
+            "FullAttention default is CUDA MLA; K3_CUDA_MLA=0 is the CPU escape"
         );
     }
 
     #[test]
-    fn cuda_mla_env_opt_in() {
-        const THIS: &str = "kimi_k3::mla::tests::cuda_mla_env_opt_in";
+    fn cuda_mla_env_opt_out() {
+        const THIS: &str = "kimi_k3::mla::tests::cuda_mla_env_opt_out";
         const MARKER: &str = "K3_CUDA_MLA_CHILD";
         if std::env::var_os(MARKER).is_some() {
-            assert!(cuda_mla_enabled(), "K3_CUDA_MLA=1 must enable CUDA MLA");
+            assert!(!cuda_mla_enabled(), "K3_CUDA_MLA=0 must keep the CPU mixer");
             return;
         }
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", THIS])
             .env(MARKER, "1")
-            .env("K3_CUDA_MLA", "1")
+            .env("K3_CUDA_MLA", "0")
             .output()
             .unwrap();
         assert!(

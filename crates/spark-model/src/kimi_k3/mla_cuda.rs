@@ -4,7 +4,7 @@
 //!
 //! Two kernels, one token: maybe_rope (NoPE skips rotate), then SDPA + gate.
 //! CPU oracle: [`atlas_core::kimi_k3::mla_decode_token`]. BoundLayer serve
-//! FullAttention is CPU unless `K3_CUDA_MLA=1`.
+//! FullAttention default is this launch (`K3_CUDA_MLA=0` keeps CPU).
 
 use anyhow::{Context, Result, bail};
 use atlas_core::kimi_k3::{MlaConfig, MlaKv};

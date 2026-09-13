@@ -14,7 +14,7 @@ This file is the soak runbook. Lab twin cannot hold official MXFP4 (~1.56 TB). *
 
 ## What is green on lab serve (2026-09-13)
 
-- CUDA KDA default + `K3_CUDA_MLA=1`: aviation greedy bee-fly; mix=0 → `to to to…`. Logs: `kda_decode` and `mla_decode`.
+- CUDA KDA + CUDA MLA default (`K3_CUDA_KDA=0` / `K3_CUDA_MLA=0` CPU escape): aviation greedy bee-fly at `0898345` with `K3_CUDA_MLA=1`; mix=0 → `to to to…`. Logs: `kda_decode` and `mla_decode`. Recopy after default-on commit.
 - Packed LatentMoE **launches** `moe_w4a16_grouped_gemm_ptrtable_e8m0` (`089834512`). 0.40B has no packed experts → CPU MoE. Lookup-fail does not silent-CPU.
 - Dummy TP=2 NCCL hidden=7168 spark1+spark2.
 
@@ -26,7 +26,7 @@ This file is the soak runbook. Lab twin cannot hold official MXFP4 (~1.56 TB). *
 
 ## Box to book
 
-Prefer **8×B300** (official MXFP4). Alternate 16×H200 / 16×B200. Need IB. Pin the **then-current** vLLM K3 image the week of booking. Serve flags: `K3_CUDA_MLA=1`, `K3_ALLOW_MXFP4=1`. Lab 0.40B serve is **not** the soak.
+Prefer **8×B300** (official MXFP4). Alternate 16×H200 / 16×B200. Need IB. Pin the **then-current** vLLM K3 image the week of booking. Serve flags: `K3_ALLOW_MXFP4=1`. CUDA MLA/KDA default on (`K3_CUDA_MLA=0` / `K3_CUDA_KDA=0` CPU). Lab 0.40B serve is **not** the soak.
 
 ## Soak protocol (CR1–CR3)
 

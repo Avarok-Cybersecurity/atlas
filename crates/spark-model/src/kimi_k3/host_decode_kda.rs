@@ -211,7 +211,7 @@ fn mla_layer_ignores_cuda_kda_flag() {
     assert_eq!(model.layers[3].spec.mixer, MixerKind::Mla);
     // Layer 0 seeds AttnRes; MLA still must not touch kda_decode.
     let (n, lookups) = run_layers(&[(0, false, false), (3, true, false)]);
-    assert_eq!(n, 0, "MLA mixer stays on CPU without K3_CUDA_MLA");
+    assert_eq!(n, 0, "MLA mixer stays on CPU when CUDA MLA flag is false");
     assert!(
         lookups.iter().all(|(m, _)| m != MODULE && m != MLA_MODULE),
         "MLA must not look up CUDA mixers: {lookups:?}"

@@ -14,9 +14,9 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | C0–C7 green. CUDA KDA+MLA serve C1. Packed LatentMoE launches DSV4 E8M0 GEMM (`0898345`). 0.40B CPU MoE. AttnRes/projections host. Next: 8×B300 CR1–CR3. |
+| Phase | C0–C7 green. CUDA KDA+MLA **default** (`K3_CUDA_*=0` CPU). Packed LatentMoE launches DSV4 E8M0 GEMM. 0.40B CPU MoE. AttnRes/projections host. Next: 8×B300 CR1–CR3. |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
-| Last session | 2026-09-13 08:30 CDT — LatentMoE packed path launches DSV4 `moe_w4a16_grouped_gemm_ptrtable_e8m0`. |
+| Last session | 2026-09-13 08:50 CDT — CUDA MLA default (`K3_CUDA_MLA=0` CPU), same polarity as KDA. |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
 | Official weights downloaded in lab | **no** |
 | Rental booked | **no** |
