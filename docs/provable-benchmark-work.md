@@ -126,8 +126,10 @@ Total: days of engineering, <1 minute of added CI time, <1% bench overhead.
 
 Two gates — `bfcl-subset` and `bfcl-subset-echolp` — are **groups**: their number
 is produced by four member runs that may execute on different boxes at the same
-time. That changes what a verifier has to check, in ways the layers above do not
-cover on their own.
+time. Since 2026-09-13 that is the **only** way either gate is satisfied: a
+whole-draw record under the group's own id is history, not evidence, and
+`check_one` hands every group id straight to `check_group`. That changes what
+a verifier has to check, in ways the layers above do not cover on their own.
 
 **Each member record is signed by the box that ran it.** These are
 `Sensitivity::Correctness` gates, which the agreement rule already permits to
@@ -145,7 +147,13 @@ therefore check, and `check_group` does:
    different sample set, not a partial one;
 2. all members name the same commit;
 3. the members' recorded shard identities are exactly `0..N` once each;
-4. no member reports transport failures.
+4. no member reports transport failures;
+5. every member passes the per-record rules a plain gate's record passes —
+   it is the gate's required subject, its frame completed, it was measured
+   from a clean tree, and its signature verifies. A group member is a gate
+   record like any other; being one quarter of the measurement exempts it
+   from nothing (before 2026-09-13 the whole-draw path ran first and masked
+   the fact that no shard was ever asked these questions).
 
 (3) is the one that is easy to miss and impossible to catch downstream. Two
 members that both ran shard C still contribute the right number of rows, so the
@@ -169,14 +177,30 @@ the group's id, with one member's provenance (checkpoint, serve overrides,
 hardware), which is sound only because (2) has already established the members
 agree on the commit.
 
-**What this does not prove.** A group inherits every limit in §1–§4, and adds
-one: the four members were measured in four separate processes, so any property
-that depends on request ORDER within a run is not preserved by the split. That
-is not hypothetical — issue #936 is exactly a case where the sharded and
-unsharded runs of the same draw at the same commit disagree on a handful of
-samples. Until that is explained, a merged record proves that each sample was
-scored once at this commit; it does not prove the merged score equals the score
-the same draw would have produced serially.
+**What this does not prove — and the choice that makes it so.** A group inherits
+every limit in §1–§4, and adds one: the four members were measured in four
+separate processes, so any property that depends on request ORDER within a run
+is not preserved by the split. That is measured, not hypothetical: issue #936
+ran the golden draw whole and as its four shards at one commit on the shipped
+serve and found **12 of 995** samples answering differently —
+`live_irrelevance_{2-0-2, 8-0-8, 14-2-2, 15-2-3, 16-2-4, 40-2-28, 47-2-35,
+55-2-43, 71-2-59, 79-2-67}`, `live_multiple_57-22-4`,
+`live_parallel_multiple_3-2-1` — because a request restores from whichever SSM
+snapshot anchor an earlier request happened to leave in the shared pool, and at
+a near-tied argmax that flips the token.
+
+The certified regime **keeps that reuse on, by decision** (2026-09-13). It is
+not `--hermetic`, which closes the channels and reads 0 of 995 (#981) at a
+measurable cost in score; `--hermetic` is pinned as the subject of
+`kat-equality-gate` only. What follows from the choice is stated where it
+bites: the twelve are listed in `benchmarks::bfcl::sensitive`, every run warns
+on each one it scores and reports the count as `known_partition_sensitive`, and
+both gates' floors are cut from the **sharded** aggregate, never from a
+whole-draw run — so the bar and the measurement are taken under the same
+regime. A merged record therefore proves that each sample was scored once at
+this commit, as four shards, against a floor that was itself cut from four
+shards. It does not claim to equal the number the same draw would produce
+serially, and nothing downstream reads it as if it did.
 
 ---
 

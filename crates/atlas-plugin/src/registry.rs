@@ -104,6 +104,35 @@ mod tests {
         assert!(find("nope").is_none());
     }
 
+    /// `expected_secs` is the scheduler's only input, so a zero on anything a
+    /// campaign can run would plan it as free and schedule it last or nowhere.
+    /// Zero is permitted only for benchmarks whose hint says they cannot run.
+    #[test]
+    fn every_runnable_benchmark_declares_an_expected_duration() {
+        for d in all() {
+            if d.duration_hint.starts_with("unrunnable") {
+                assert_eq!(
+                    d.expected_secs, 0,
+                    "{}: unrunnable but has a duration",
+                    d.id
+                );
+                continue;
+            }
+            assert!(d.expected_secs > 0, "{}: expected_secs is 0", d.id);
+        }
+        // The required gates and every group member are the ones the planner
+        // will actually see; pin them by name so a new entry cannot slip in
+        // with the field forgotten.
+        for id in crate::gate::REQUIRED_GATES {
+            assert!(find(id).unwrap().expected_secs > 0, "{id}");
+        }
+        for g in crate::gate::group::GROUPS {
+            for m in g.members {
+                assert!(find(m).unwrap().expected_secs > 0, "{m}");
+            }
+        }
+    }
+
     #[test]
     fn every_benchmark_declares_defaults_that_validate() {
         for d in all() {

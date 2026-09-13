@@ -194,7 +194,10 @@ scored for accuracy — so the work is embarrassingly parallel: split the draw,
 run the pieces on different boxes, merge, score once.
 
 `bfcl-subset` and `bfcl-subset-echolp` are therefore **benchmark groups**. The
-gate id is unchanged; what changed is how its number is produced. Each has four
+gate id is unchanged; what changed is how its number is produced — and since
+2026-09-13 the four members are the **only** thing that produces it: a
+whole-draw record under the gate's own id no longer satisfies the gate, and the
+verdict says so by name if one is all the directory holds. Each group has four
 members that can run at the same time on different boxes:
 
 ```
@@ -233,6 +236,7 @@ judged only when four conditions hold. Each of these was a way to get a
 | members measured at different commits | a group is ONE measurement |
 | the shard indices are not `0..3` once each | two members running the same shard — the row count is still right, and one shard was measured twice while another never ran |
 | a member reports transport failures | those samples were scored as "made no call", which is the *correct* answer across the irrelevance subsets, so a degraded shard can raise the aggregate while measuring less |
+| a member is off-subject, failed, dirty or unsigned | the per-record rules a plain gate applies — required checkpoint, completed frame, clean tree, verified `.sig` — apply to every member; a quarter of a measurement is not exempt |
 
 The third deserves emphasis: the `samples` threshold is pinned exactly
 (`min == max == 995`) and **cannot** catch a duplicated shard, because the
@@ -241,6 +245,20 @@ duplicate still contributes the right number of rows.
 Aggregation is over **counts, never scores**. `score.py` weights
 hierarchically, so the mean of four shard scores is not the whole-set value; the
 group sums each subset's `(hits, n)` integers and applies the hierarchy once.
+
+#### The number is partition-dependent, and that is the certified regime
+
+The shards are scored **open**: cross-request SSM snapshot reuse stays on, as
+in production, and the serve is not `--hermetic`. The consequence is measured
+(#936): running the golden draw whole and as its four shards at one commit
+changes the answer on **12 of 995** samples — ten in `live_irrelevance`, one
+each in `live_multiple` and `live_parallel_multiple` — because a request
+restores from whichever SSM snapshot an earlier request left behind. The twelve
+are listed in `benchmarks::bfcl::sensitive`; every run warns on each one it
+scores and reports the count as `known_partition_sensitive`. The floors for
+both gates are cut from the **sharded** aggregate, so the bar and the
+measurement are taken under the same regime. `--hermetic` closes the channels
+(0 of 995) and is the subject of `kat-equality-gate`, not of these gates.
 
 Only `Sensitivity::Correctness` benchmarks may be grouped. For a speed
 benchmark the timing *is* the number, and four quarter-length runs across three
