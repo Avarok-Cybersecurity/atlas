@@ -80,9 +80,33 @@ pub struct Qwen4ExpWeightLoader;
 
 impl ModelWeightLoader for Qwen4ExpWeightLoader {
     fn supports_tp(&self) -> bool {
-        // Not attempted. mHC would need the stream buffer sharded alongside
-        // every projection, and the PLE row cache is a single-device arena.
-        false
+        // TP=2 x EP=2 (overlapping groups on 2 ranks). The old note here said
+        // "mHC would need the stream buffer sharded alongside every projection"
+        // — that premise is wrong. The mHC highway is this model's RESIDUAL
+        // STREAM, and a residual stream is REPLICATED under Megatron TP, not
+        // sharded: each rank keeps a full `hc_mult * hidden` copy, the
+        // row-parallel out_proj produces a partial sum, one all-reduce makes it
+        // whole, and hc_post injects the identical full contribution into each
+        // rank's identical highway. The all-reduce that makes this true is
+        // already in the hc path (`verify_rows_hc.rs`, the `attn_out` reduce
+        // before the copy into `hidden`), and in `ssm_tp_all_reduce` after GDN
+        // out_proj. Nothing about hc_pre/hc_post/hc_head is head-dependent.
+        //
+        // The PLE row cache is likewise replicated — every rank loads the full
+        // arena, which costs memory but cannot be incorrect. Same for
+        // embed_tokens and lm_head. Sharding those is a memory optimization,
+        // not a correctness requirement, and is deliberately left undone.
+        //
+        // What actually shards is what qwen35 already shards, through the very
+        // same `load_layers` arms this loader delegates to: full attention
+        // (`build_full_attention_nvfp4`) and GDN head-parallel
+        // (`build_linear_attention_nvfp4`). `Qwen35WeightLoader::supports_tp`
+        // has returned true for those arms all along.
+        //
+        // Ceiling is tp=2: num_key_value_heads is 2. QSA is untouched by
+        // topology.rs (indexer_kv_heads=1 cannot shard) and so stays replicated
+        // and consistent across ranks.
+        true
     }
 
     fn load_layers(

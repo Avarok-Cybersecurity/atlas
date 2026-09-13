@@ -64,6 +64,8 @@ impl SsmSnapshotIndex {
             self.last_lookup_session = session_hash;
             self.evictions_since_lookup = 0;
         }
+        // Resolved ONCE per lookup rather than per entry.
+        let hermetic = crate::hermetic_enabled();
         // Deepest matching prefix across BOTH resident and spilled entries.
         let mut best: Option<usize> = None;
         let mut best_depth = 0usize;
@@ -71,17 +73,12 @@ impl SsmSnapshotIndex {
             if entry.token_count > matched_tokens {
                 continue;
             }
-            // Session gate applies ONLY to is_tail entries. A tail's SSM state
-            // bleeds past its advertised token_count (a partial block beyond the
-            // exact prefix), so it is byte-safe only within the same non-zero
-            // session. Exact snapshots and is_tail_sibling early captures are a
-            // pure function of the verified token prefix — safe cross-session,
-            // exactly like the KV radix (which shares blocks on token match with
-            // no session gate). The old blanket gate rejected every otherwise-
-            // valid non-tail anchor from a prior turn because session_hash =
-            // hash(first min(len,1024) prompt tokens) is UNSTABLE across turns of
-            // a growing conversation — the warm-TTFT-climb root cause.
-            if entry.is_tail && (session_hash == 0 || entry.session_hash != session_hash) {
+            // THE SERVING PATH's session gate. The rule, the reasoning, and
+            // what `--hermetic` changes about it all live in ONE place —
+            // `snapshot::session_gate_blocks` — because this condition and the
+            // one in the (dead) `lookup` were separate copies of the same
+            // subtle predicate, and only this one runs.
+            if super::snapshot_session::session_gate_blocks(entry, session_hash, hermetic) {
                 continue;
             }
             if hash_token_prefix(tokens, entry.token_count, adapter_id) != entry.prefix_hash {

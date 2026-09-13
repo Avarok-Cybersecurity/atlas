@@ -229,6 +229,12 @@ impl MlperfAgentic {
 
     /// Write the per-turn artifact beside the dataset so a scorer change can
     /// re-score a finished run without re-generating it.
+    ///
+    /// ★ A FIXED filename, safe only because this benchmark has no group
+    /// members. `bfcl` had the same name and it lost data the moment
+    /// `bfcl-subset` became a group; see `bfcl::exec::responses_file`. The
+    /// assumption is checked, not assumed, by
+    /// `sharding_this_benchmark_would_need_a_per_leg_responses_file`.
     fn write_responses(&self) -> Result<()> {
         let artifacts = self.artifacts.as_ref().context("not provisioned")?;
         let path = artifacts.dir.join("responses.jsonl");

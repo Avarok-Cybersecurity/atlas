@@ -10,6 +10,26 @@ use super::super::Qwen3AttentionLayer;
 use crate::layer::{BatchedAttnMetadata, ForwardContext};
 use crate::layers::ops;
 
+/// One-shot engagement telemetry for the prefill RoPE route.
+///
+/// A rotary route that silently degrades is invisible in every shape check —
+/// the tensors are the right size and the text stays fluent — so the route
+/// has to say which arm it took at least once per process. This is how the
+/// missing MRoPE arm was caught: the streams were uploaded and nothing read
+/// them.
+pub(in crate::layers::qwen3_attention) fn log_rope_route(route: &'static str) {
+    use std::sync::Mutex;
+    static SEEN: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    // Once per DISTINCT route, not once per process: a single line cannot say
+    // whether a later request took a different arm, and that ambiguity is
+    // exactly what hides a route that degrades only for some prompts.
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if !seen.contains(&route) {
+        seen.push(route);
+        tracing::info!("Prefill RoPE route (cache-skip): {}", route);
+    }
+}
+
 impl Qwen3AttentionLayer {
     /// Prefill attention with optional KV cache write skip for prefix caching.
     ///
@@ -462,7 +482,48 @@ impl Qwen3AttentionLayer {
                 stream,
             )
             .map_err(|e| anyhow::anyhow!("rope_proportional failed: {e}"))?;
+        } else if self.mrope_interleaved && self.rope_mrope_interleaved_k.0 != 0 {
+            log_rope_route("mrope_interleaved (T,H,W)");
+            // The (T, H, W) streams are built for every vision prompt and
+            // uploaded to the GPU, but this path had no route that READ them:
+            // the only MRoPE arm here was the fused-Q one behind
+            // ATLAS_ATTN_PREFILL_FUSED_QROPE, off by default, so a cache-skip
+            // prefill fell through to scalar `ops::rope` on the T stream
+            // alone. `paged.rs` has carried this branch all along, which is
+            // why the defect only showed on prompts short enough to skip the
+            // paged route — i.e. every ordinary single-image request.
+            //
+            // T is CONSTANT across one image (t_len = 1 makes `base + g`
+            // collapse to `base`), so dropping H and W did not merely blur
+            // position, it gave all of an image's patches the SAME rotary
+            // position. The tower was exact and the splice was in order; the
+            // model still read the picture as an unordered bag of patches,
+            // naming colours correctly while placing none of them.
+            ops::rope_mrope_interleaved(
+                ctx.gpu,
+                self.rope_mrope_interleaved_k,
+                q_contiguous,
+                k_contiguous,
+                positions,
+                positions_h,
+                positions_w,
+                n,
+                nq,
+                nkv,
+                hd,
+                self.rotary_dim_override
+                    .unwrap_or(ctx.config.rotary_dim() as u32),
+                self.rope_theta_override
+                    .unwrap_or(ctx.config.rope_theta as f32),
+                stream,
+            )
+            .map_err(|e| anyhow::anyhow!("rope_mrope_interleaved failed: {e}"))?;
         } else {
+            log_rope_route(if self.mrope_interleaved {
+                "SCALAR — mrope configured but kernel handle missing"
+            } else {
+                "scalar (text-only model)"
+            });
             ops::rope(
                 ctx.gpu,
                 self.rope_k,
@@ -597,9 +658,7 @@ impl Qwen3AttentionLayer {
         let (wht_k_dtype, wht_v_dtype) = self.kv_dtype.kv_pair();
         let k_is_turbo = wht_k_dtype.is_wht_rotated();
         let v_is_turbo = wht_v_dtype.is_wht_rotated();
-        let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
         let wht_runtime_active = !weight_pre_rotated && (hd == 128 || hd == 256 || hd == 512);
         if wht_runtime_active && kv_write_start > 0 && self.wht_bf16_k.0 != 0 {
             use spark_runtime::kernel_args::KernelLaunch;
@@ -793,7 +852,7 @@ impl Qwen3AttentionLayer {
             // through the same cuBLASLt path q/k/v/o use (bf16_gemm_act_weight_t),
             // which handles small N better (~2.5% C=1 prefill, A/B ISL 1024/8192);
             // dense_gemm_tc stays as the fallback when cuBLAS is off.
-            if ctx.dispatch.cublas_gemm {
+            if ctx.dispatch.cublas.attn {
                 ops::cublas_bf16_proj_dense(normed, g_proj.weight, gate_buf, n, nq, h, stream)?;
             } else {
                 ops::dense_gemm_tc(

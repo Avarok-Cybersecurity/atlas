@@ -233,3 +233,91 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
 
 #[path = "bench_override_tree_tests.rs"]
 mod bench_override_tree_tests;
+
+/// A hermetic gate must pin EVERYTHING hermetic closes, and it is refused at
+/// parse if it does not.
+///
+/// `check_record` compares the record's serve overrides against the baseline's
+/// pins in BOTH directions, and a requested `hermetic=true` expands into the
+/// keys it closes — so the record carries three keys where this entry pins
+/// one, and the check fails with "present on the record but not pinned by the
+/// baseline". That failure lands AFTER the run, having spent the GPU hours on
+/// a gate that could never have been discharged by the run it asked for. So it
+/// is a parse error, in milliseconds, like the `port` refusal above.
+#[test]
+fn a_hermetic_gate_that_does_not_pin_what_hermetic_closes_is_refused() {
+    let root = fixture(
+        "hermetic-underpinned",
+        r#"
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "org/A"
+gate = "bfcl-subset"
+default = true
+status = "measured"
+[benchmarks.serve_overrides]
+hermetic = "true"
+[benchmarks.metrics.overall_accuracy]
+min = 85.0
+"#,
+    );
+    let err = format!("{:#}", baseline_for(&root, "bfcl-subset").unwrap_err());
+    assert!(
+        err.contains("pins hermetic=true but not"),
+        "must name the omission: {err}"
+    );
+    assert!(
+        err.contains("enable_prefix_caching=false") && err.contains("mtp_gate=force"),
+        "and must name every missing key at the value it needs: {err}"
+    );
+}
+
+/// The complete set parses. A refusal that also rejected the CORRECT entry
+/// would make the regime unusable in a baseline, which is the same class of
+/// mistake as the validator that made `--hermetic` unusable in a recipe.
+#[test]
+fn a_hermetic_gate_that_pins_the_whole_set_is_accepted() {
+    let root = fixture(
+        "hermetic-complete",
+        r#"
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "org/A"
+gate = "bfcl-subset"
+default = true
+status = "measured"
+[benchmarks.serve_overrides]
+hermetic = "true"
+enable_prefix_caching = "false"
+mtp_gate = "force"
+[benchmarks.metrics.overall_accuracy]
+min = 85.0
+"#,
+    );
+    let baseline = baseline_for(&root, "bfcl-subset").expect("the complete set must parse");
+    let (_, entry) = baseline.resolve("gb10", None).unwrap();
+    assert_eq!(entry.serve_overrides.len(), 3);
+    assert!(crate::gate::hermetic::missing_pins(&entry.serve_overrides).is_empty());
+}
+
+/// And an entry that pins none of it is untouched — the rule must not fire on
+/// every gate in the repository.
+#[test]
+fn a_gate_with_no_hermetic_pin_is_unaffected() {
+    let root = fixture(
+        "hermetic-absent",
+        r#"
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "org/A"
+gate = "bfcl-subset"
+default = true
+status = "measured"
+[benchmarks.serve_overrides]
+ssm_cache_slots = "256"
+[benchmarks.metrics.overall_accuracy]
+min = 85.0
+"#,
+    );
+    assert!(baseline_for(&root, "bfcl-subset").is_ok());
+}

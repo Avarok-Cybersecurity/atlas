@@ -10,6 +10,12 @@ use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 use super::super::{ViTBlock, VisionEncoder};
 
 impl VisionEncoder {
+    /// Packed merged-patch output of the last encode, for `ATLAS_VISION_DUMP`.
+    /// `None` before the first image allocates the scratch group.
+    pub fn scratch_buf_out(&self) -> Option<spark_runtime::gpu::DevicePtr> {
+        self.scratch.get().map(|s| s.buf_out)
+    }
+
     /// ViT GEMM with bias: C[m,n] = A[m,k] @ B[n,k]^T + bias[n] (BF16).
     /// Prefers the tensor-core `dense_gemm_bf16_pipelined` (~40× the scalar
     /// `vision_gemm_bias` on the ViT's large-M shapes) + a fused bias-add; falls

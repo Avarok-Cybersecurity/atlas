@@ -215,6 +215,20 @@ impl DraftProposer for MtpHead {
         self.read_deferred_draft_token(gpu)
     }
 
+    /// ★ The one `draft_conf_tau` reader that KEEPS its environment read.
+    ///
+    /// Its three siblings were asked per propose whether the feature was on,
+    /// so they paid the process-wide environment lock only to learn it was
+    /// off. This one is different: `run_mtp_propose_inner` already gates on
+    /// `tau > 0.0` before calling it, so this read happens only when the
+    /// feature is ARMED — which is never on a shipped config, since the
+    /// clamp is staged off. Routing it through `ModelLevers` would mean
+    /// widening a `DraftProposer` trait method to carry levers for a read
+    /// that costs nothing in production.
+    ///
+    /// The check stays because it is this method's own contract — `None`
+    /// means "no confidence is being tracked" — and a future caller must not
+    /// have to know that `run_mtp_propose_inner` checked first.
     fn last_confidence(&self) -> Option<f32> {
         if crate::speculative::draft_conf_tau() <= 0.0 {
             return None;

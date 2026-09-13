@@ -77,6 +77,24 @@ pub struct SequenceState {
     pub block_table: Vec<u32>,
     /// Current sequence length (prompt + generated).
     pub seq_len: usize,
+    /// MRoPE position offset: `rope_position - token_index`, HF's `rope_deltas`.
+    ///
+    /// A vision item occupies `t_len * gh * gw` PAD TOKENS but advances the
+    /// rotary position by only `max(t_len, gh, gw)` — a 7x7 image is 49 tokens
+    /// and 7 positions. So after any image the rotary stream runs BEHIND the
+    /// token index, and every position taken afterwards has to carry the
+    /// difference or it lands in a gap the prompt never occupied.
+    ///
+    /// Decode read `seq.seq_len` directly, which is the TOKEN index: a single
+    /// small image put every generated token 42 positions past the end of its
+    /// own prompt, and a 448x448 image put it 182 past. The model answered
+    /// fluently and wrongly — it could see the picture, and believed it was
+    /// far away.
+    ///
+    /// `0` for every text-only sequence (no pad run, no divergence), so the
+    /// shift is a strict no-op outside multimodal serving. Negative by
+    /// construction once vision is present.
+    pub mrope_delta: i64,
     /// Per-layer state (EmptyLayerState for attention, SsmLayerState for SSM).
     pub layer_states: Vec<Box<dyn LayerState>>,
     /// Per-sequence state for speculative decoding proposer (None if no proposer).
@@ -118,6 +136,17 @@ pub struct SequenceState {
     /// sequence's captured hiddens (poisoned drafter KV; blind is strictly
     /// better than poisoned). 0 = never owned a capture.
     pub mtp_capture_gen: u64,
+    /// Ownership ticket for the shared hidden-row interval
+    /// (`mtp_store_range`), drawn at `alloc_sequence` from the same atomic
+    /// that issues capture generations.
+    ///
+    /// Distinct from `mtp_capture_gen` because that one is assigned ONLY under
+    /// `chunk_start == 0`, and a warm turn never starts at 0 — so it is `0` for
+    /// the entire life of exactly the sequences the carry path serves, and
+    /// would make every warm sequence look like the same owner. This is drawn
+    /// unconditionally at admission. `0` = drawn outside `alloc_sequence` (the
+    /// mock and test fakes), and never matches anything.
+    pub mtp_store_gen: u64,
     /// Per-adapter prefix-cache namespace (adapter-correct KV). Folded into the
     /// prefix hash so two adapters that share a token prefix never reuse each
     /// other's blocks. `0` = base / no adapter (a strict no-op in the fold, so
@@ -260,6 +289,24 @@ pub struct SequenceState {
 }
 
 impl SequenceState {
+    /// Rotary position for the token at `token_index`.
+    ///
+    /// The token index and the rotary position are the same number for a
+    /// text-only sequence and diverge at the first image: a vision item spans
+    /// many pad TOKENS but only `max(t_len, gh, gw)` POSITIONS. Every rotary
+    /// position taken after a prompt's vision run has to come from here, while
+    /// KV slot math, block indices and sequence lengths keep using the raw
+    /// token index — mixing the two is what put generated tokens in a
+    /// positional gap their own prompt never occupied.
+    pub fn rope_pos_at(&self, token_index: usize) -> u32 {
+        (token_index as i64 + self.mrope_delta).max(0) as u32
+    }
+
+    /// Rotary position for the token about to be generated.
+    pub fn rope_pos(&self) -> u32 {
+        self.rope_pos_at(self.seq_len)
+    }
+
     /// A detached, host-only sequence state: no GPU resources, no SSM
     /// slot, no layer states, every counter zeroed. The single source
     /// for the "empty sequence" field defaults — construction sites
@@ -271,6 +318,7 @@ impl SequenceState {
     /// crate-private by design.
     pub fn host_only(slot_idx: usize) -> Self {
         SequenceState {
+            mrope_delta: 0,
             tokens: Vec::new(),
             block_table: Vec::new(),
             seq_len: 0,
@@ -282,6 +330,8 @@ impl SequenceState {
             marconi_exact_snap: None,
             session_hash: 0,
             mtp_capture_gen: 0,
+            // Not from `alloc_sequence`, so it owns no hidden rows.
+            mtp_store_gen: 0,
             adapter_id: 0,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
@@ -359,4 +409,4 @@ impl SequenceState {
 mod logprobs;
 mod model;
 pub use logprobs::*;
-pub use model::{BeamReq, Model, padded_batch_n};
+pub use model::{BeamReq, EpCommandFailed, Model, padded_batch_n};

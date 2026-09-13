@@ -67,6 +67,15 @@ impl TransformerModel {
         // validated for the absorbed-MLA path — so MLA stays on the
         // dedicated `decode_batch` route.
         // Use padded_n (not n_decode) because padding slots consume hidden buffer space.
+        // A layer may decline batched multi-seq decode outright — same veto as
+        // `decode_a2`'s `hc_perseq`, and REQUIRED here too: this is the
+        // single-GPU fused decode+prefill caller, so a decision made only in
+        // `decode_a2` would leave C>1 exposed at `world_size == 1`. It also
+        // keeps a declining layer away from the fused `prefill_ctx` below,
+        // which is the one `ForwardContext` built with a NON-ZERO
+        // `hc_row_offset` (`padded_n`). ORs onto the shared decider rather
+        // than replacing it — the two answer different questions.
+        let ms_layer_veto = self.layers.iter().any(|l| l.decode_multi_seq_unsupported());
         // hc + QSA: the batched ms decode inlined below now CONSUMES a
         // per-row selection (multi_seq/qsa.rs), so a long sequence no longer
         // forces the fused path apart. One decider for both routes —
@@ -78,12 +87,13 @@ impl TransformerModel {
             let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
             decode_seqs.iter().any(|s| s.seq_len >= bound)
         };
-        let hc_qsa_perseq = super::decode_route::hc_perseq_fallback(
-            self.config.hc_mult,
-            qsa_active,
-            std::env::var("ATLAS_HC_PERSEQ_DECODE").as_deref() == Ok("1"),
-            self.multi_rank_protocol_active(),
-        );
+        let hc_qsa_perseq = ms_layer_veto
+            || super::decode_route::hc_perseq_fallback(
+                self.config.hc_mult,
+                qsa_active,
+                self.levers.hc_perseq_decode,
+                self.multi_rank_protocol_active(),
+            );
         if self.comm.is_some()
             || self.is_mla_dispatch()
             || hc_qsa_perseq
@@ -320,8 +330,14 @@ impl TransformerModel {
             // SAFETY: Single-threaded scheduler access.
             let stg = unsafe { &mut *self.pinned_staging.get() };
             stg.positions.clear();
+            // Rotary base, not the token index. This mixed path builds only
+            // the scalar T stream (positions_h/_w alias it below), so a
+            // multimodal prompt prefilled here is already degraded; carrying
+            // the delta at least keeps it from ALSO jumping into the gap the
+            // pad run opened.
+            let rope_base = (proc_start as i64 + prefill_seq.mrope_delta).max(0) as u32;
             stg.positions
-                .extend(proc_start as u32..(proc_start + proc_count) as u32);
+                .extend(rope_base..rope_base + proc_count as u32);
 
             if !needs_paged {
                 stg.slots.clear();
@@ -469,6 +485,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
             // PLE (qwen4_exp n-gram) computes its hash rows from HOST ids;
@@ -495,6 +512,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
             // The chunk's ids, for the PLE prefill hash on the fused path.

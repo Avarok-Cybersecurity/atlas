@@ -29,8 +29,10 @@ pub fn build_model(
     // weight pointer, and it used to be a local in `startup()` that was dropped
     // once the layers had copied pointers out of it: the memory stayed live
     // with nothing able to free it. The model owns it now, so `teardown` can.
-    // (`mut` only for the EXL3 materialization pass below, which rewrites
-    // trellis tensors in place before any loader reads the store.)
+    // `mut` has TWO reasons now: `prune_after_load` (Step 3c), which lets a
+    // loader drop the originals of tensors it re-uploaded before the KV budget
+    // is computed, and the EXL3 materialization pass below, which rewrites
+    // trellis tensors in place before any loader reads the store.
     mut store: WeightStore,
     gpu: Box<dyn GpuBackend>,
     max_batch_tokens: usize,
@@ -209,6 +211,13 @@ pub fn build_model(
     // pre-KV, of which the arena (872 MB) and the GDN prefill scratch (88 MB)
     // explain under a gigabyte. Without these three lines the only way to
     // find the rest is to guess.
+    //
+    // `MemTrace` (campaign) marks EVERY build step; upstream's free_before/after
+    // pair below is kept because it is the one step with a per-layer average.
+    // Reconciling the two into a single reporter belongs to the M0 telemetry
+    // commit, not to this rebase.
+    let mut mem = MemTrace::new(gpu.as_ref());
+
     // ── The native-EXL3 LOADER state's strong holder. ──
     //
     // `load_layers` (below) and `load_qwen4_exp_mtp_module` (step 5, further
@@ -240,13 +249,16 @@ pub fn build_model(
             / 1e6
             / config.num_hidden_layers.max(1) as f64,
     );
+    mem.mark("load_layers");
     let embed = loader.load_embedding(&store, &config, gpu.as_ref())?;
+    mem.mark("load_embedding");
     // n-gram fused embedding (LongCat family; None everywhere else). Built
     // before `config` is moved into the model. Staged for `max_batch_tokens`
     // because that is exactly the widest embed the arena can be handed.
     let ngram_embed =
         loader.load_ngram_embedding(&store, &config, gpu.as_ref(), max_batch_tokens)?;
     let final_norm = loader.load_final_norm(&store, &config, gpu.as_ref())?;
+    mem.mark("load_final_norm");
 
     // ── Step 2b: native EXL3 lm_head (ATLAS_EXL3_NATIVE=1) ──
     // When the materialization pass kept `lm_head` packed (see
@@ -304,7 +316,9 @@ pub fn build_model(
     } else {
         loader.load_lm_head(&store, &config, gpu.as_ref())?
     };
+    mem.mark("load_lm_head");
     let mtp_weights = loader.load_mtp_weights_multi(&store, &config, gpu.as_ref())?;
+    mem.mark("load_mtp_weights_multi");
 
     // DeepSeek-V4 ships an architecturally distinct MTP module (MLA + mHC), not
     // the Qwen-shaped `MtpWeights`. Load it via the V4-specific path and keep it
@@ -315,6 +329,38 @@ pub fn build_model(
     // verification then dropped.
     // Only rank 0 runs the MTP draft (no-EP, all experts local). Skip loading it
     // on the worker ranks — they never call propose(), so it would be dead weight.
+    // GLM-5.3's MTP block is architecturally distinct in a THIRD way: neither the Qwen-shaped
+    // `MtpWeights` nor DeepSeek's `mtp.0.*` module, but `layers.45` — a DSA mixer + the same
+    // 288-expert routed MoE + `shared_head.norm`, with NO hyper-connection.
+    //
+    // 🔴 Loaded on EVERY rank, unlike the V4 module below. GLM's MTP MoE is EP-sharded exactly
+    // like the text stack, so both ranks hold a half and the block's own all-reduce assembles
+    // it; a rank-0-only drafter would silently drop half the routed sum and draft from a
+    // half-computed hidden.
+    let glm_mtp_module = if config.model_type == "glm5_next" && use_speculative {
+        match crate::weight_loader::load_glm5next_mtp_module(&store, &config, gpu.as_ref()) {
+            Ok(Some(m)) => {
+                tracing::info!(
+                    "GLM-5.3 MTP draft module loaded (layers.{})",
+                    config.num_hidden_layers
+                );
+                Some(m)
+            }
+            Ok(None) => {
+                tracing::info!("GLM-5.3: no MTP block in checkpoint (MTP off)");
+                None
+            }
+            Err(e) => {
+                tracing::error!("GLM-5.3 MTP module load FAILED: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let glm_mtp_embed = embed;
+    let glm_mtp_lm_head = lm_head;
+
     let v4_mtp_module =
         if config.model_type == "deepseek_v4" && use_speculative && config.ep_rank == 0 {
             match crate::weight_loader::deepseek_v4::load_v4_mtp_module(
@@ -372,9 +418,34 @@ pub fn build_model(
         && (use_speculative || std::env::var("ATLAS_QWEN4EXP_MTP").as_deref() == Ok("1"))
         && mtp_tensors_present
     {
+        // The MTP drafter is REPLICATED across TP ranks — it is small, and
+        // sharding it would put collectives inside the one path whose entire
+        // purpose is to be cheaper than a target pass. But `topology.rs` has
+        // already divided the model-wide head counts by tp_size, so handing
+        // `config` straight to the audit makes every drafter attention tensor
+        // read as DOUBLE the expected width (`q_rows = 2 * heads * head_dim`
+        // computed at 12 heads against a checkpoint written at 24), the audit
+        // fails, and — before the `?` below — the failure was swallowed into
+        // `None` and the server booted with speculation silently OFF.
+        //
+        // Restore the full pre-shard counts for the drafter's view. Index
+        // (QSA) heads are deliberately untouched: topology.rs never divides
+        // them either, because indexer_kv_heads=1 cannot shard.
+        let mtp_config = if config.tp_world_size > 1 {
+            let mut c = config.clone();
+            c.num_attention_heads *= config.tp_world_size;
+            c.num_key_value_heads *= config.tp_world_size;
+            c.linear_num_key_heads *= config.tp_world_size;
+            c.linear_num_value_heads *= config.tp_world_size;
+            c.tp_world_size = 1;
+            c.tp_rank = 0;
+            std::borrow::Cow::Owned(c)
+        } else {
+            std::borrow::Cow::Borrowed(&config)
+        };
         match crate::weight_loader::qwen4_exp::load_qwen4_exp_mtp_module(
             &store,
-            &config,
+            &mtp_config,
             gpu.as_ref(),
         ) {
             Ok(Some(m)) => {
@@ -389,6 +460,19 @@ pub fn build_model(
                 None
             }
             Err(e) => {
+                // FAIL LOUD when speculation was actually asked for. This used
+                // to log and continue, which is how a TP=2 boot measured a
+                // clean, plausible, entirely wrong -31% decode "cost of TP":
+                // the drafter had failed its shape audit and the server served
+                // correct tokens, one per step, through every gate.
+                if use_speculative {
+                    anyhow::bail!(
+                        "qwen4_exp MTP module load FAILED and speculation was requested \
+                         (--speculative / ATLAS_QWEN4EXP_MTP_VERIFY): {e:#}. Refusing to \
+                         boot into a silently non-speculative server. Unset the \
+                         speculation flags to serve without MTP deliberately."
+                    );
+                }
                 tracing::error!("qwen4_exp MTP module load FAILED: {e:#}");
                 None
             }
@@ -418,26 +502,95 @@ pub fn build_model(
         if qwen4_exp_mtp_module.is_some() {
             // Saying "no MTP weights were loaded" here would be a lie: the
             // block IS loaded and audited. Whether a proposer gets wired
-            // depends on ATLAS_QWEN4EXP_MTP_VERIFY — this arm only fires when
-            // it is OFF, since the proposer install path logs its own line.
-            tracing::warn!(
-                "qwen4_exp: the MTP module is loaded and audited, but the \
-                 proposer is NOT armed — speculative decoding stays OFF. Set \
-                 ATLAS_QWEN4EXP_MTP_VERIFY=1 to arm the draft head together \
-                 with the mHC K-row verify path it needs; the two arm together \
-                 because a proposer without that verify path routes the draft \
-                 into `refuse_batched_under_hc` mid-step, which the scheduler \
-                 turns into a truncated response rather than a fallback."
-            );
-        } else {
-            tracing::warn!(
-                "`--speculative` was requested but no MTP weights were loaded for this \
-                 model — speculative decoding will be disabled. Either drop `--speculative` \
-                 or use a checkpoint that ships an MTP head (e.g. `mtp.safetensors`)."
+            // depends on ATLAS_QWEN4EXP_MTP_VERIFY, so test THAT — via the
+            // same `requested_spec` the arming path uses — instead of firing
+            // on `mtp_weights.is_empty()`, which is ALWAYS true here because
+            // qwen4_exp carries its own module rather than the generic weight
+            // map. That made this warning fire on every `--speculative` boot,
+            // including ones where speculation then ran at p1 0.85; a warning
+            // that cries wolf is worse than none, because it trains the reader
+            // past the boot where it is true.
+            if !requested_spec {
+                tracing::warn!(
+                    "qwen4_exp: the MTP module is loaded and audited, but the \
+                     proposer is NOT armed — speculative decoding stays OFF. Set \
+                     ATLAS_QWEN4EXP_MTP_VERIFY=1 to arm the draft head together \
+                     with the mHC K-row verify path it needs; the two arm together \
+                     because a proposer without that verify path routes the draft \
+                     into `refuse_batched_under_hc` mid-step, which the scheduler \
+                     turns into a truncated response rather than a fallback."
+                );
+            } else {
+                // Armed here; the install path below still reports if the head
+                // itself turns out to be unprojectable.
+                tracing::info!(
+                    "qwen4_exp: MTP module loaded and audited, speculation requested \
+                     and ATLAS_QWEN4EXP_MTP_VERIFY=1 — arming the draft head."
+                );
+            }
+        } else if glm_mtp_module.is_none() && v4_mtp_module.is_none() {
+            // Nothing bound an MTP head anywhere, so speculative decoding will
+            // silently no-op. Surface it loudly.
+            //
+            // 🪤 `mtp_weights` is only the GENERIC (`load_mtp_weights_multi`)
+            // path. qwen4_exp (the arm above), GLM-5.3 and DeepSeek-V4 each
+            // bind architecturally distinct modules and leave that vec empty,
+            // so testing it alone printed "no MTP weights were loaded" two
+            // lines under "GLM-5.3 MTP draft module loaded (layers.45)". EVERY
+            // binding path has to be consulted — which is why qwen4_exp is the
+            // `if` arm and glm/v4 are guarded here — and when none of them
+            // bound anything the checkpoint still has to be asked whether it
+            // SHIPS an MTP head: "Atlas can't read this layout" and "there is
+            // no head here" are different faults wanting different messages.
+            match crate::mtp_layout::detect_in_store(&store, &config) {
+                None => tracing::warn!(
+                    "`--speculative` was requested but this checkpoint ships no MTP head — \
+                     speculative decoding will be disabled. Either drop `--speculative` or \
+                     use a checkpoint that ships one (e.g. `mtp.safetensors`)."
+                ),
+                Some(layout) => tracing::error!(
+                    "`--speculative` was requested and this checkpoint DOES ship MTP weights \
+                     ({layout:?}), but no loader bound them for model_type '{}' — speculative \
+                     decoding will be disabled. This is an Atlas capability gap, not a \
+                     checkpoint problem.",
+                    config.model_type,
+                ),
+            }
+        }
+    }
+    mem.mark("mtp modules (glm/v4)");
+    let vision_encoder = loader.load_vision_encoder(&store, &config, gpu.as_ref())?;
+    mem.mark("load_vision_encoder");
+
+    // A multimodal checkpoint's vision tower is read by the weight loader like
+    // everything else, but only a loader that implements `load_vision_encoder`
+    // ever binds it. GLM-5.3's port is text-only by design
+    // (`weight_loader/glm5_next.rs`: "Vision tower — present in the checkpoint,
+    // out of scope for the text port"), so its 1.05 GiB of `model.visual.*`
+    // sat resident on BOTH ranks for the life of the process, bound to nothing,
+    // subtracted from the KV budget computed below.
+    //
+    // Freeing is keyed off the bind result, not off a model list: if the encoder
+    // was built, `vision_encoder` is `Some` and nothing is touched — including
+    // the loaders that bind zero-copy from these very pointers. The day a GLM
+    // vision encoder lands, this stops firing on its own.
+    if vision_encoder.is_none() {
+        let (n, bytes) = store.free_matching(gpu.as_ref(), |name| {
+            name.starts_with("model.visual.")
+                || name.starts_with("model.vision")
+                || name.starts_with("visual.")
+        })?;
+        if n > 0 {
+            tracing::info!(
+                "Vision tower: {n} tensors ({:.2} GiB) released — this build binds no vision \
+                 encoder for model_type '{}', so the tower was resident and unreachable. \
+                 Text capability is unchanged; image input was already unsupported here.",
+                bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                config.model_type,
             );
         }
     }
-    let vision_encoder = loader.load_vision_encoder(&store, &config, gpu.as_ref())?;
+    mem.mark("vision reclaim");
 
     // If the checkpoint's `quantization_config.ignore_modules` lists MTP
     // (e.g. Sehyo/Qwen3.5-35B-A3B-NVFP4 ignores `mtp.*`), the MTP weights
@@ -505,6 +658,22 @@ pub fn build_model(
     // gemma4) still call `transpose_for_prefill` inline during layer
     // construction; this default-no-op hook doesn't perturb them.
     maybe_run_minimax_m2_moe_transpose(&config, gpu.as_ref(), &mut layers)?;
+
+    // ── Step 3c: Let the loader drop store tensors it has finished with ──
+    //
+    // Default is a no-op. Loaders that upload their OWN copies (a TP shard, a
+    // host round-trip) leave the store's originals resident for nothing; on
+    // unified-memory GB10 that duplicate is subtracted from the KV budget
+    // computed a few lines below, so it has to happen HERE — after every
+    // `load_*` reader above, before `BufferArena::new` and `gpu.free_memory()`.
+    loader.prune_after_load(&mut store, &config, gpu.as_ref())?;
+    mem.mark("prune_after_load");
+    tracing::info!(
+        "WeightStore after prune: {} tensors, {:.3} GiB still resident",
+        store.len(),
+        store.resident_bytes() as f64 / (1024.0 * 1024.0 * 1024.0),
+    );
+
     // ── Step 4: Create buffer arena ──
     let buffers = BufferArena::new(
         &config,
@@ -870,7 +1039,65 @@ pub fn build_model(
                     (used_so_far + inference_reserve) as f64 / (1024.0 * 1024.0 * 1024.0),
                 );
             }
-            let n = PagedKvCache::compute_num_blocks(&kv_config, kv_budget)?;
+            let budget_blocks = PagedKvCache::compute_num_blocks(&kv_config, kv_budget)?;
+            // ── Clamp the pool to blocks the engine can actually reach ──
+            //
+            // `compute_num_blocks` spends the ENTIRE residual budget, and
+            // nothing downstream caps it: the `max_concurrent` check below is a
+            // warn/bail only, never a cap. So the pool is sized by "what is
+            // left over", not by "what can be addressed".
+            //
+            // Measured on GLM-5.3, 2xGB10, `--max-seq-len 2048
+            // --max-batch-size 1`, prefix caching off: 45,386 blocks = 7.6 GiB
+            // = 726,176 KV tokens, against a reachable ceiling of
+            // `1 x ceil(2048/16) = 128` blocks. ~99.7 % of the pool could never
+            // be addressed by any request.
+            //
+            // On a discrete GPU that waste is merely idle VRAM. On unified
+            // memory it is host RAM taken from the kernel, the page cache and
+            // every co-tenant — and it is the reason correcting an
+            // over-reservation elsewhere frees nothing: `kv_budget` is a
+            // residual, so every byte released by a smaller `inference_reserve`
+            // is immediately re-absorbed here. This clamp is what turns a
+            // reserve correction into recovered headroom.
+            //
+            // Only applied when the prefix cache is INACTIVE. An active cache
+            // makes surplus blocks genuinely reachable (they hold shared
+            // prefixes), which is exactly the case the unbounded sizing was
+            // written for. `+ max_batch_size + 1` mirrors the HBM-shrink arm
+            // above: one spare block per sequence plus the dummy slot the
+            // OOB-safe paged kernels read.
+            //
+            // Kill switch: `ATLAS_KV_POOL_UNCLAMPED` (presence — `=0` is NOT
+            // "off") restores the budget-driven pool.
+            let n = if prefix_cache.is_active() || std::env::var("ATLAS_KV_POOL_UNCLAMPED").is_ok()
+            {
+                budget_blocks
+            } else {
+                let per_seq = max_seq_len.div_ceil(kv_block_size);
+                let reachable = max_batch_size
+                    .saturating_mul(per_seq)
+                    .saturating_add(max_batch_size)
+                    .saturating_add(1);
+                let clamped = budget_blocks.min(reachable);
+                if clamped < budget_blocks {
+                    let freed = (budget_blocks - clamped) * kv_config.block_bytes_kv_all_layers();
+                    tracing::info!(
+                        "KV pool clamped to reachable demand: {} -> {} blocks \
+                         ({} seq x {} blocks/seq + {} spare + 1 dummy); \
+                         {:.2} GB not allocated (prefix caching inactive, so surplus \
+                         blocks are unreachable). Restore with --enable-prefix-caching \
+                         or ATLAS_KV_POOL_UNCLAMPED.",
+                        budget_blocks,
+                        clamped,
+                        max_batch_size,
+                        per_seq,
+                        max_batch_size,
+                        freed as f64 / (1024.0 * 1024.0 * 1024.0),
+                    );
+                }
+                clamped
+            };
             let max_kv_tokens = n * kv_block_size;
             tracing::info!(
                 "KV cache: {:.1} GB total × {:.0}% util = {:.1} GB budget; \
@@ -1104,6 +1331,29 @@ pub fn build_model(
         }
     }
 
+    // ── Step 6d: GLM-5.3 MTP proposer (optional, post-construction) ──
+    //
+    // Built here for the same reason as the V4 head: it needs the model's owned GPU backend and
+    // the shared embedding + LM head, neither of which `new()` hands out.
+    if let Some(m) = glm_mtp_module {
+        match crate::layers::Glm5NextMtpHead::new(
+            m,
+            glm_mtp_embed,
+            glm_mtp_lm_head,
+            model.config_ref(),
+            model.gpu_backend(),
+            max_seq_len,
+        ) {
+            Ok(head) => {
+                model.set_dflash_proposer(std::sync::Arc::new(head));
+                tracing::info!("GLM-5.3 MTP speculative decoding: ENABLED");
+            }
+            Err(e) => tracing::warn!(
+                "Failed to build GLM-5.3 MTP proposer: {e:#}. Speculative decoding disabled."
+            ),
+        }
+    }
+
     // ── Step 7: DFlash drafter (optional, post-construction) ──
     //
     // Loaded last because it depends on the target's `embed_tokens` and
@@ -1202,4 +1452,50 @@ pub fn build_model(
         }
     }
     Ok(Box::new(model))
+}
+
+/// Per-step GPU residency ledger for model construction.
+///
+/// Every `load_*` step below allocates into the same GB10 unified pool the KV
+/// cache is later sized from, but until now the only numbers in the log were
+/// the loader's on-disk estimate ("Weights: 99.64 GB" — which is
+/// `estimate_load_bytes`, an ON-DISK byte sum of the tensors this rank reads,
+/// NOT residency) and one aggregate free-memory reading. Anything between them
+/// — binder re-uploads, dtype conversions, the store originals a loader forgot
+/// to drop — was unattributable, and a 4-5 GB residual is the difference
+/// between K=3 fitting and not.
+///
+/// This walks `gpu.free_memory()` across the build and prints a signed delta
+/// per step. Log-only: it allocates nothing and changes no semantics.
+struct MemTrace<'a> {
+    gpu: &'a dyn GpuBackend,
+    last: usize,
+    start: usize,
+}
+
+impl<'a> MemTrace<'a> {
+    fn new(gpu: &'a dyn GpuBackend) -> Self {
+        let f = gpu.free_memory().unwrap_or(0);
+        Self {
+            gpu,
+            last: f,
+            start: f,
+        }
+    }
+
+    /// Log the free-memory delta since the previous mark. Negative = allocated.
+    fn mark(&mut self, step: &str) {
+        let Ok(now) = self.gpu.free_memory() else {
+            return;
+        };
+        let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
+        let delta = now as i128 - self.last as i128;
+        tracing::info!(
+            "build residency: {step:<26} {:+9.3} GiB   (cumulative {:8.3} GiB, free {:7.3} GiB)",
+            delta as f64 / (1024.0 * 1024.0 * 1024.0),
+            gib(self.start) - gib(now),
+            gib(now),
+        );
+        self.last = now;
+    }
 }

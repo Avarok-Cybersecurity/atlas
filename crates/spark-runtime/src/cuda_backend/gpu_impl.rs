@@ -55,11 +55,22 @@ static D2H_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 
 fn d2h_trace_tick() {
     use std::sync::atomic::Ordering;
-    let n = D2H_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    let Ok(target) = std::env::var("ATLAS_D2H_TRACE") else {
+    // ★ RESOLVED ONCE, AND CHECKED BEFORE THE COUNTER. This runs on EVERY D2H
+    // copy — the doc above counts 32,343 in one 1K prefill — and used to call
+    // `std::env::var` on each, which allocates and takes the process-wide env
+    // lock, serialising the copies against every other thread's getenv.
+    // `None` (the shipped state) makes this a single relaxed load; the counter
+    // sits below because nothing reads it when the trace is off. `unwrap_or(0)`
+    // keeps the original reading: SETTING the variable arms the 10,000th report.
+    static TARGET: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    let Some(target) = *TARGET.get_or_init(|| {
+        std::env::var("ATLAS_D2H_TRACE")
+            .ok()
+            .map(|v| v.parse().unwrap_or(0))
+    }) else {
         return;
     };
-    let target: u64 = target.parse().unwrap_or(0);
+    let n = D2H_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
     if target != 0 && n == target {
         tracing::warn!(
             "ATLAS_D2H_TRACE: call #{n} backtrace:\n{}",
@@ -108,7 +119,21 @@ impl GpuBackend for AtlasCudaBackend {
     fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
         let site = std::panic::Location::caller();
         let mut dptr: u64 = 0;
-        let status = unsafe { cuMemAlloc_v2(&mut dptr, bytes) };
+        // A55 RED ZONE (`ATLAS_REDZONE=<bytes>`, default 0 = off). Over-allocate by `pad`
+        // and hand the caller the base, so the buffer it sees is unchanged and correctly
+        // aligned (cuMemAlloc is 256-byte aligned; padding the TAIL keeps that). The pad is
+        // poisoned at birth and read back by `scan_redzones`.
+        //
+        // This is the detector compute-sanitizer could not be: Atlas suballocates from pools,
+        // so an overrun that stays inside a pooled block is invisible to memcheck but lands
+        // squarely in a red zone here.
+        let seq = super::ALLOC_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let pad = if seq >= super::redzone_min_idx() {
+            super::redzone_bytes()
+        } else {
+            0
+        };
+        let status = unsafe { cuMemAlloc_v2(&mut dptr, bytes + pad) };
         if status != 0 {
             let mut free: usize = 0;
             let mut total: usize = 0;
@@ -119,6 +144,25 @@ impl GpuBackend for AtlasCudaBackend {
                 free as f64 / (1024.0 * 1024.0),
                 total as f64 / (1024.0 * 1024.0 * 1024.0),
             );
+        }
+        if pad > 0 {
+            let st = unsafe {
+                super::cuMemsetD8Async(dptr + bytes as u64, super::redzone_fill(), pad, 0)
+            };
+            if st != 0 {
+                bail!("ATLAS_REDZONE: poisoning the guard band failed: status {st}");
+            }
+            self.record_redzone(dptr, bytes, pad, seq);
+            // One line per guarded allocation, in creation order. The bisection reports an
+            // INDEX; this is what turns that index into a buffer you can name by its size,
+            // and `ATLAS_REDZONE_TRACE_IDX` adds the call site for the one that matters.
+            tracing::info!("redzone: alloc#{seq} bytes={bytes} ptr={dptr:#x}");
+            if super::redzone_trace_idx() == Some(seq) {
+                tracing::error!(
+                    "redzone: alloc#{seq} bytes={bytes} backtrace:\n{}",
+                    std::backtrace::Backtrace::force_capture()
+                );
+            }
         }
         self.record_alloc(DevicePtr(dptr), bytes, site);
         // Large-allocation tracing for memory attribution (GB10 unified
@@ -140,6 +184,20 @@ impl GpuBackend for AtlasCudaBackend {
             );
         }
         Ok(DevicePtr(dptr))
+    }
+
+    fn scan_redzones(&self) -> Result<usize> {
+        if super::redzone_bytes() == 0 {
+            return Ok(0);
+        }
+        AtlasCudaBackend::scan_redzones(self)
+    }
+
+    fn poison_redzones(&self, lo: usize, hi: usize) -> Result<()> {
+        if super::redzone_bytes() == 0 {
+            return Ok(());
+        }
+        AtlasCudaBackend::poison_redzones(self, lo, hi)
     }
 
     #[track_caller]
@@ -179,6 +237,9 @@ impl GpuBackend for AtlasCudaBackend {
                 ptr.0,
                 live as f64 / (1024.0 * 1024.0 * 1024.0)
             );
+        }
+        if super::redzone_bytes() > 0 {
+            self.forget_redzone(ptr.0);
         }
         let status = unsafe { cuMemFree_v2(ptr.0) };
         // A context that is already being destroyed reports every free as
@@ -239,6 +300,16 @@ impl GpuBackend for AtlasCudaBackend {
     }
 
     fn copy_d2d(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
+        if crate::launch_trace::on() {
+            crate::launch_trace::record(crate::launch_trace::Entry {
+                kind: "d2d",
+                func: 0,
+                grid: [0, 0, 0],
+                block: [0, 0, 0],
+                smem: 0,
+                args: vec![src.0, dst.0, bytes as u64],
+            });
+        }
         AtlasCudaBackend::copy_d2d_impl(self, src, dst, bytes)
     }
 
@@ -333,6 +404,7 @@ impl GpuBackend for AtlasCudaBackend {
             Ok(raw) => {
                 crate::kernel_audit::record(module, func_name, true, site);
                 self.kernel_cache.lock().insert(key, raw.0 as u64);
+                crate::launch_trace::name_kernel(raw.0 as u64, module, func_name);
                 Ok(KernelHandle(raw.0 as u64))
             }
             Err(e) => {
@@ -431,6 +503,16 @@ impl GpuBackend for AtlasCudaBackend {
         self.memset_cu(ptr, value, bytes)
     }
     fn memset_async(&self, ptr: DevicePtr, value: u8, bytes: usize, stream: u64) -> Result<()> {
+        if crate::launch_trace::on() {
+            crate::launch_trace::record(crate::launch_trace::Entry {
+                kind: "memset",
+                func: 0,
+                grid: [0, 0, 0],
+                block: [0, 0, 0],
+                smem: 0,
+                args: vec![ptr.0, value as u64, bytes as u64],
+            });
+        }
         self.memset_async_cu(ptr, value, bytes, stream)
     }
     fn total_memory(&self) -> Result<usize> {
@@ -438,6 +520,12 @@ impl GpuBackend for AtlasCudaBackend {
     }
     fn free_memory(&self) -> Result<usize> {
         self.free_memory_cu()
+    }
+    fn device_free_memory(&self) -> Result<usize> {
+        self.device_free_memory_cu()
+    }
+    fn live_alloc_count(&self) -> usize {
+        self.live_alloc_len()
     }
     fn sm_count(&self) -> Result<u32> {
         self.sm_count_cu()

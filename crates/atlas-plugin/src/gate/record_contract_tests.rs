@@ -57,16 +57,9 @@ fn from_run_rejects_a_missing_sha_and_a_non_terminal_frame() {
     let record = run_record(BTreeMap::new(), Verdict::pass("ok"));
     for missing in ["", " \t\n"] {
         assert_eq!(
-            GateRecord::from_run(
-                &record,
-                hw(),
-                missing.into(),
-                Vec::new(),
-                None,
-                Default::default(),
-            )
-            .unwrap_err()
-            .to_string(),
+            GateRecord::from_run(&record, hw(), missing.into(), Vec::new(), None,)
+                .unwrap_err()
+                .to_string(),
             "a gate record needs the commit sha it was measured from"
         );
     }
@@ -74,16 +67,9 @@ fn from_run_rejects_a_missing_sha_and_a_non_terminal_frame() {
     let mut running = record.clone();
     running.frame.status = RunStatus::Running;
     assert_eq!(
-        GateRecord::from_run(
-            &running,
-            hw(),
-            SHA.into(),
-            Vec::new(),
-            None,
-            Default::default(),
-        )
-        .unwrap_err()
-        .to_string(),
+        GateRecord::from_run(&running, hw(), SHA.into(), Vec::new(), None,)
+            .unwrap_err()
+            .to_string(),
         "the run never reached a terminal frame — nothing to gate"
     );
 }
@@ -98,7 +84,6 @@ fn from_run_reconstructs_the_exact_cli_command() {
         SHA.into(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     assert_eq!(
@@ -131,7 +116,6 @@ fn a_self_provisioned_run_records_the_recipe_not_a_dead_url() {
         SHA.into(),
         Vec::new(),
         Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".to_string()),
-        Default::default(),
     )
     .unwrap();
     assert_eq!(
@@ -157,15 +141,7 @@ fn a_self_provisioned_run_records_the_recipe_not_a_dead_url() {
 fn the_agentic_bench_needs_yes_in_its_command() {
     let mut record = run_record(BTreeMap::new(), Verdict::pass("ok"));
     record.benchmark_id = "agentic-webserver".to_string();
-    let gate = GateRecord::from_run(
-        &record,
-        hw(),
-        SHA.into(),
-        Vec::new(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
     assert_eq!(
         gate.command,
         [
@@ -195,15 +171,7 @@ fn a_failed_frame_is_recorded_but_never_passes() {
         ),
         ..run_record(BTreeMap::new(), Verdict::fail("scoring crashed"))
     };
-    let gate = GateRecord::from_run(
-        &record,
-        hw(),
-        SHA.into(),
-        Vec::new(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
     assert_eq!(gate.frame_status, RunStatus::Failed);
     assert_eq!(gate.verdict.as_deref(), Some("FAIL"));
     assert_eq!(gate.verdict_reason, "scoring crashed");
@@ -279,11 +247,20 @@ fn perf_env_defaults_match_the_scheduler() {
     // Match the RESOLUTION, not the first mention: each control is named in a
     // doc comment before it is read, so anchoring on the name alone would
     // assert against prose and pass whatever the code did.
+    //
+    // The scrape follows the RESOLUTION across a delegation. `codispatch_window`
+    // used to read the variable and apply its default in one expression; it now
+    // forwards to `admission_window_from`, which is where `unwrap_or(100)` lives.
+    // A fixed 220-char window after the `env::var` call therefore stopped seeing
+    // the default and failed a contract that had not actually moved — the value
+    // is still 100. Widen to the rest of the file so a delegation is followed,
+    // while the assertion still fails if the NUMBER changes anywhere after the
+    // read.
     let resolution = |var: &str| -> String {
         let at = src
             .find(&format!("std::env::var(\"{var}\")"))
             .unwrap_or_else(|| panic!("{var} is not read in mod_helpers.rs"));
-        src[at..].chars().take(220).collect()
+        src[at..].to_string()
     };
     assert!(
         resolution("ATLAS_PREFILL_CODISPATCH_WINDOW_MS").contains("unwrap_or(100)"),
@@ -295,9 +272,15 @@ fn perf_env_defaults_match_the_scheduler() {
         "the scheduler's co-dispatch SETTLE default moved; PERF_CONTROLS in record.rs still \
          says 10"
     );
+    // Either idiom states the SAME contract — an unset variable is off. The
+    // scheduler used to write `unwrap_or(false)` and now writes
+    // `is_some_and(..)` on the `Option`, whose `None` arm is false by
+    // definition. Accept both: pinning the spelling made this test fail a
+    // refactor that did not change the default, which is the opposite of what
+    // a contract test is for.
     let enable = resolution("ATLAS_PREFILL_CODISPATCH");
     assert!(
-        enable.contains("unwrap_or(false)"),
+        enable.contains("unwrap_or(false)") || enable.contains("is_some_and("),
         "the scheduler's co-dispatch ENABLE default moved; the record's \"0\" default is only \
          correct while an unset variable means off"
     );
@@ -309,4 +292,47 @@ fn repo_root() -> std::path::PathBuf {
         assert!(d.pop(), "no repo root above CARGO_MANIFEST_DIR");
     }
     d
+}
+
+/// The gate record's regime is DERIVED from the run's, not passed beside it.
+///
+/// Both records used to be handed the same map by one caller, which made them
+/// agree by convention — one future edit away from a history record and a gate
+/// record describing different regimes for the same run, with nothing anywhere
+/// saying which was true. Deriving makes that state impossible to express, and
+/// this pins it so the parameter cannot come back.
+#[test]
+fn the_gate_records_regime_is_the_runs_regime() {
+    let mut record = run_record(BTreeMap::new(), Verdict::pass("ok"));
+    record.serve_overrides = [
+        ("hermetic".to_string(), "true".to_string()),
+        ("ssm_cache_slots".to_string(), "0".to_string()),
+    ]
+    .into_iter()
+    .collect();
+
+    let gate = GateRecord::from_run(&record, hw(), SHA.to_string(), Vec::new(), None).unwrap();
+
+    assert_eq!(
+        gate.serve_overrides, record.serve_overrides,
+        "the gate record must carry the regime the run was measured under"
+    );
+    // And it must reach the REPLAY command, or the record describes a server
+    // nobody can start again.
+    let cmd = gate.command.join(" ");
+    assert!(
+        cmd.contains("--serve-override hermetic=true"),
+        "the replay command must reproduce the regime: {cmd}"
+    );
+    assert!(cmd.contains("--serve-override ssm_cache_slots=0"), "{cmd}");
+}
+
+/// A run with no recorded regime produces a gate record with none — an empty
+/// map, not a missing one, and no stray `--serve-override` in the command.
+#[test]
+fn a_run_with_no_recorded_regime_claims_none() {
+    let record = run_record(BTreeMap::new(), Verdict::pass("ok"));
+    let gate = GateRecord::from_run(&record, hw(), SHA.to_string(), Vec::new(), None).unwrap();
+    assert!(gate.serve_overrides.is_empty());
+    assert!(!gate.command.join(" ").contains("--serve-override"));
 }

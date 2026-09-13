@@ -129,9 +129,12 @@ impl TransformerModel {
                 let chunk_tokens = &tokens[chunk_start..chunk_start + chunk_len];
                 let have_vision = !grids.is_empty() && chunk_tokens.iter().copied().any(is_pad);
 
+                // Resume the rotary stream where the last chunk left it, not
+                // at this chunk's TOKEN index. They are the same number until
+                // the first image and never again.
+                let current_pos: u32 = (proc_start as i64 + seq.mrope_delta).max(0) as u32;
                 if have_vision {
                     stg.positions.clear();
-                    let current_pos: u32 = proc_start as u32;
                     // Co-dispatch: this request owns grids[grid_base .. grid_base+owned]
                     // of the shared packed vision_image_grids (0/all for legacy).
                     let grid_base = *self.vision_grid_base.lock();
@@ -141,7 +144,7 @@ impl TransformerModel {
                     } else {
                         grids.len()
                     };
-                    mrope_pos::build(
+                    let end_pos = mrope_pos::build(
                         chunk_tokens,
                         &grids,
                         grid_base,
@@ -153,6 +156,42 @@ impl TransformerModel {
                         &mut stg.positions_h,
                         &mut stg.positions_w,
                     );
+                    // HF's `rope_deltas`, carried on the sequence: the gap
+                    // between where the rotary stream ends and where the token
+                    // stream ends. Decode and every later chunk add it back.
+                    seq.mrope_delta = end_pos as i64 - (chunk_start + chunk_tokens.len()) as i64;
+                    // ATLAS_MROPE_DUMP: the three streams exactly as they are
+                    // about to be uploaded. A position rule can be right on
+                    // paper and still ship wrong values — this is the only
+                    // check that reads what the GPU will read.
+                    if let Ok(path) = std::env::var("ATLAS_MROPE_DUMP")
+                        && !path.is_empty()
+                    {
+                        let mut blob = Vec::with_capacity(stg.positions.len() * 12);
+                        for v in stg
+                            .positions
+                            .iter()
+                            .chain(stg.positions_h.iter())
+                            .chain(stg.positions_w.iter())
+                        {
+                            blob.extend_from_slice(&v.to_le_bytes());
+                        }
+                        let _ = std::fs::write(&path, &blob);
+                        tracing::info!(
+                            "ATLAS_MROPE_DUMP: {} tokens x 3 streams -> {path}",
+                            stg.positions.len()
+                        );
+                    }
+                } else if seq.mrope_delta != 0 {
+                    // A later chunk of a prompt whose image sat in an earlier
+                    // one. No pads here, but the rotary stream is already
+                    // behind the token index and must stay behind — rebuilding
+                    // from `proc_start` would silently jump it forward.
+                    stg.positions.clear();
+                    stg.positions
+                        .extend(current_pos..current_pos + proc_count as u32);
+                    stg.positions_h.extend_from_slice(&stg.positions);
+                    stg.positions_w.extend_from_slice(&stg.positions);
                 } else {
                     stg.positions_h.extend_from_slice(&stg.positions);
                     stg.positions_w.extend_from_slice(&stg.positions);

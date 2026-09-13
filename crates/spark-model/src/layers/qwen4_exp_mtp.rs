@@ -145,11 +145,30 @@ struct MtpBuffers {
     /// about to sample from. The target's logits are parked here first and put
     /// back afterwards, so the draft cannot change what the model emits.
     logits_stash: DevicePtr,
+    /// Batched propose (see `draft_tokens_batched`): `[batch_cap, hidden]`
+    /// BF16 draft hiddens, one row per sequence, so n bodies can run before
+    /// one LM head scores them all.
+    batch_h_out: DevicePtr,
+    /// `[batch_cap, vocab]` BF16 draft logits, private to the draft.
+    batch_logits: DevicePtr,
+    /// `[batch_cap]` u32 argmax results — ONE D2H for the whole batch.
+    batch_tok: DevicePtr,
 }
 
 pub struct Qwen4ExpMtpHead {
     module: Qwen4ExpMtpModule,
     embed_tokens: DenseWeight,
+    /// ★ THE DRAFTER'S OWN CONFIG — full pre-shard head counts, tp_world_size 1.
+    ///
+    /// The drafter is REPLICATED across TP ranks: every rank runs the whole
+    /// draft locally, which is why its `ForwardContext` carries `comm: None`.
+    /// But that context is built with `..*ctx`, so it used to inherit the
+    /// TARGET's config — and under TP=2 `topology.rs` has already halved
+    /// `num_attention_heads` there. The drafter then computed 12-head attention
+    /// over its own 24-head weights: no error, no crash, correct-looking text
+    /// (rejected drafts still emit the target's token), and acceptance falling
+    /// from p1 0.83 to 0.42 while propose kept costing full price.
+    cfg: atlas_core::config::ModelConfig,
     kv_cache: Mutex<PagedKvCache>,
     /// ★ THE DRAFT'S OWN BUFFER ARENA — isolation by CONSTRUCTION.
     ///
@@ -161,6 +180,13 @@ pub struct Qwen4ExpMtpHead {
     /// cannot reach anything the target owns.
     arena: spark_runtime::buffers::BufferArena,
     buf: MtpBuffers,
+    /// Rows the private arena carries (= sequences one batched propose can
+    /// run). `max_sequences` capped at `BATCH_CAP`.
+    batch_cap: usize,
+    /// Batched LM-head GEMV tiers (4..8 rows) for `draft_tokens_batched`.
+    w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers,
+    /// Batched argmax over `[n, vocab]` draft logits. 0-handle = unbatched only.
+    argmax_batch_k: KernelHandle,
     rms_norm_k: KernelHandle,
     dense_gemv_k: KernelHandle,
     hc_head_k: KernelHandle,
@@ -240,6 +266,10 @@ pub fn shadow_stage() -> ShadowStage {
     )
 }
 
+/// Sequences one batched propose can score in a single LM-head pass. Sized
+/// for the C<=16 shapes this model serves; the scheduler chunks wider batches.
+pub(crate) const BATCH_CAP: usize = 16;
+
 impl Qwen4ExpMtpHead {
     // `pub(crate)`: the signature now names `Exl3LmHead`, which is a
     // crate-private type (the native head is an internal dispatch arm). The
@@ -255,6 +285,33 @@ impl Qwen4ExpMtpHead {
         max_seq_len: usize,
         max_sequences: usize,
     ) -> Result<Self> {
+        // ── Full pre-shard view, derived BEFORE anything is sized. ──
+        //
+        // The drafter is replicated, so it must be built end-to-end at full
+        // width: its weights, its private KV cache, and its arena. Deriving
+        // this only for the forward pass (and leaving `new` sizing from the
+        // TP-divided config) allocated a 1-KV-head draft cache under a 2-KV-head
+        // forward, and `run_mtp_propose_batched` failed its D2D copy with
+        // CUDA_ERROR_INVALID_VALUE at C=4 — the batched propose fell back and
+        // C=4 read 46.8 tok/s against EP-only's 68.7.
+        //
+        // Correct whichever config the caller passes: an already-full one
+        // (tp_world_size == 1) clones unchanged; a divided one multiplies back.
+        let cfg = {
+            let mut c = config.clone();
+            let tp = config.tp_world_size.max(1);
+            if tp > 1 {
+                c.num_attention_heads *= tp;
+                c.num_key_value_heads *= tp;
+                c.linear_num_key_heads *= tp;
+                c.linear_num_value_heads *= tp;
+                c.tp_world_size = 1;
+                c.tp_rank = 0;
+            }
+            c
+        };
+        // Shadow: every `config.` below now reads the drafter's own geometry.
+        let config = &cfg;
         let h = config.hidden_size;
         let hc = config.hc_mult.max(1);
         let row = h * 2;
@@ -306,19 +363,30 @@ impl Qwen4ExpMtpHead {
         // token-scaled buffer at one row; `max_seq_len` still sizes the scratch
         // block-table region, and kv_block_size must match this head's own pool.
         let free_before = gpu.free_memory().unwrap_or(0);
-        let arena = spark_runtime::buffers::BufferArena::new(config, 1, max_seq_len, 16, 1, gpu)?;
+        // Rows 1..cap exist for the batched propose; row 0 is what the
+        // per-sequence path always used. See `draft_bodies_batched`.
+        let batch_cap = max_sequences.clamp(1, BATCH_CAP);
+        let arena = spark_runtime::buffers::BufferArena::new(
+            config, batch_cap, max_seq_len, 16, batch_cap, gpu,
+        )?;
         let free_after = gpu.free_memory().unwrap_or(0);
         tracing::info!(
-            "qwen4_exp MTP head: private T=1 buffer arena costs {:.3} GB. The draft \
-             runs entirely inside it, so it cannot reach the target's buffers.",
+            "qwen4_exp MTP head: private {}-row buffer arena costs {:.3} GB (rows 1.. serve \
+             the batched propose; row 0 is the per-sequence path). The draft runs entirely \
+             inside it, so it cannot reach the target's buffers.",
+            batch_cap,
             (free_before.saturating_sub(free_after)) as f64 / 1e9,
         );
 
         Ok(Self {
             module,
             embed_tokens,
+            cfg: cfg.clone(),
             kv_cache: Mutex::new(kv_cache),
             arena,
+            batch_cap,
+            w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers::resolve(gpu),
+            argmax_batch_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch"),
             buf: MtpBuffers {
                 streams: gpu.alloc(streams_bytes)?,
                 normed_streams: gpu.alloc(streams_bytes)?,
@@ -334,6 +402,9 @@ impl Qwen4ExpMtpHead {
                 // writes past the end of the allocation. Measured, not guessed.
                 per_stream: gpu.alloc(hc * h * 2)?,
                 head_scratch: gpu.alloc((hc * h + config.hc_lowrank.max(1)) * 4)?,
+                batch_h_out: gpu.alloc(BATCH_CAP * row)?,
+                batch_logits: gpu.alloc(BATCH_CAP * config.vocab_size * 2)?,
+                batch_tok: gpu.alloc(BATCH_CAP * 4)?,
                 logits_stash: gpu.alloc(config.vocab_size * 2)?,
             },
             // Atlas's offset-from-1 rms_norm, NOT V4's `rms_norm_vanilla`:
@@ -420,6 +491,119 @@ impl Qwen4ExpMtpHead {
         self.arena.hc_streams()
     }
 
+    /// Whether `draft_tokens_batched` can run: an NVFP4 head to batch over
+    /// (the EXL3 trellis head is scored one row at a time by its own
+    /// `project_draft` and is not batched here), the batchm GEMV family, and
+    /// the batched argmax kernel.
+    pub fn batch_ready(&self) -> bool {
+        if self.argmax_batch_k.0 == 0 {
+            return false;
+        }
+        // Native EXL3: the trellis head projects n rows through the SAME
+        // `project` the one-row draft uses — it only needed the reserved
+        // scratch rows to sit on (`EXL3_DRAFT_ROWS`). No NVFP4 head exists
+        // under native EXL3, and manufacturing one would mean a second
+        // 318 MB vocab copy scoring drafts through a different approximation
+        // than the target samples from.
+        if self.lm_head_exl3.is_some() {
+            return true;
+        }
+        self.lm_head_nvfp4.is_some() && self.w4a16_batchm.has_base()
+    }
+
+    pub fn batch_cap(&self) -> usize {
+        self.batch_cap
+    }
+
+    /// Staged draft-hidden row `i` — pass as `draft_hidden`'s `h_out`.
+    pub fn batch_h_out_row(&self, i: usize, hidden: usize) -> DevicePtr {
+        self.buf.batch_h_out.offset(i * hidden * 2)
+    }
+
+    /// Arena highway row `i` (FP32, `hc_mult * hidden` per row): the batched
+    /// body's input for sequence i, and its output after the body ran.
+    pub fn arena_streams_row(&self, i: usize, hc_mult: usize, hidden: usize) -> DevicePtr {
+        self.arena.hc_streams().offset(i * hc_mult * hidden * 4)
+    }
+
+    /// Score `n` staged draft hiddens with ONE LM-head pass and ONE batched
+    /// argmax, returning their token ids from a single D2H.
+    ///
+    /// The per-sequence `draft_token` streams the full-vocab NVFP4 head
+    /// (~318 MB at this vocab) and drains the queue once PER DRAFT; at C=4,
+    /// DRAFTS=2 that is 8 head reads and 8 drains a step for a weight that is
+    /// the same for every sequence. Chunked at the batchm family's width.
+    pub fn draft_tokens_batched(
+        &self,
+        n: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        anyhow::ensure!(
+            (1..=BATCH_CAP).contains(&n),
+            "draft_tokens_batched: n={n} (cap {BATCH_CAP})"
+        );
+        let vocab = ctx.config.vocab_size;
+        let h = ctx.config.hidden_size;
+        // NATIVE EXL3 FIRST, as the single-row `draft_token` does: under
+        // `ATLAS_EXL3_NATIVE` there is no NVFP4 head to fall back to, and the
+        // borrowed trellis head is the one the target samples from.
+        if let Some(exl3) = self.lm_head_exl3.as_ref() {
+            exl3.project_draft_rows(ctx.gpu, self.buf.batch_h_out, n, self.buf.batch_logits, stream)?;
+            return self.batched_argmax(n, vocab, ctx, stream);
+        }
+        let w = self.lm_head_nvfp4.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("draft_tokens_batched: no NVFP4 and no native-EXL3 lm_head")
+        })?;
+        let mut off = 0usize;
+        while off < n {
+            let take = (n - off).min(8);
+            let k = self.w4a16_batchm.kernel(take as u32);
+            anyhow::ensure!(k.0 != 0, "draft_tokens_batched: no batchm tier for {take} rows");
+            ops::w4a16_gemv_batchm(
+                ctx.gpu,
+                k,
+                self.buf.batch_h_out.offset(off * h * 2),
+                w,
+                self.buf.batch_logits.offset(off * vocab * 2),
+                take as u32,
+                vocab as u32,
+                h as u32,
+                stream,
+            )?;
+            off += take;
+        }
+        self.batched_argmax(n, vocab, ctx, stream)
+    }
+
+    /// ONE batched argmax over `[n, vocab]` draft logits and ONE D2H of the n
+    /// token ids — shared by both head arms, so the NVFP4 and native-EXL3
+    /// paths cannot drift in how they read a batch back.
+    fn batched_argmax(
+        &self,
+        n: usize,
+        vocab: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        ops::argmax_bf16_batch(
+            ctx.gpu,
+            self.argmax_batch_k,
+            self.buf.batch_logits,
+            self.buf.batch_tok,
+            vocab as u32,
+            n as u32,
+            vocab as u32,
+            stream,
+        )?;
+        let mut b = vec![0u8; n * 4];
+        ctx.gpu.copy_d2h(self.buf.batch_tok, &mut b)?;
+        Ok(b
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect())
+    }
+
     /// Turn the draft's final hidden into a token id, entirely inside the
     /// draft's own arena.
     ///
@@ -456,11 +640,14 @@ impl Qwen4ExpMtpHead {
                     "qwen4_exp MTP: no NVFP4 and no native-EXL3 lm_head for the draft head"
                 )
             })?;
+            // Single-warp GEMV per the model lever (bit-identical to the base
+            // kernel, gemv_sw.rs): the draft LM head is the widest GEMV of the
+            // step (vocab rows) and ran the base kernel alone.
             ops::w4a16_decode_gemv(
                 ctx.gpu,
                 self.w4a16_gemv_k,
                 self.w4a16_gemv_sw_k,
-                false,
+                ctx.levers.gemv_sw,
                 h_out,
                 w,
                 logits,
@@ -527,13 +714,17 @@ impl Qwen4ExpMtpHead {
     /// head. `target_streams` is the target's four-stream highway for the
     /// position that just produced `last_token`.
     #[allow(clippy::too_many_arguments)]
-    pub fn draft_hidden(
+    /// Steps 1-2 of a draft: embedding branch, hidden branch, and the
+    /// combine that writes the body's INPUT highway to `streams_out`.
+    ///
+    /// Snapshots `target_streams` into private scratch first, so `streams_out`
+    /// may alias it (chained drafts read the arena row they then overwrite).
+    /// Shared by the per-sequence path (row 0) and the batched path (row i).
+    pub fn draft_combine(
         &self,
         last_token: u32,
         target_streams: DevicePtr,
-        position: usize,
-        state: &mut Qwen4ExpMtpState,
-        h_out: DevicePtr,
+        streams_out: DevicePtr,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -541,48 +732,7 @@ impl Qwen4ExpMtpHead {
         let hc = ctx.config.hc_mult.max(1) as u32;
         let eps = ctx.config.rms_norm_eps as f32;
         let row = h as usize * 2;
-
-        // The body reads its highway through the private arena. Snapshot the
-        // input before the combiner writes that arena: chained drafts read
-        // from the same arena, so input and output can alias. Highway elements
-        // are FP32, even though collapsed hidden rows are BF16.
         let hc_bytes = hc as usize * h as usize * 4;
-
-        // ── DIAGNOSTIC (ATLAS_QWEN4EXP_MTP_DIFF=1) ──
-        // The bisect proved the BODY forward dirties state the target still
-        // needs, but not WHICH buffer. Rather than keep guessing, fingerprint
-        // the shared buffers either side of the call and name the ones that
-        // changed. Taken BEFORE the combiner runs, so the baseline is the
-        // TARGET's state — an earlier version sampled it after the combiner had
-        // already written hc_streams, which made hc_streams a false positive.
-        let diff = std::env::var("ATLAS_QWEN4EXP_MTP_DIFF").as_deref() == Ok("1");
-        let probes: Vec<(&str, DevicePtr, usize)> = if diff {
-            ctx.gpu.synchronize(stream).ok();
-            vec![
-                ("hc_streams", ctx.buffers.hc_streams(), hc_bytes.min(4096)),
-                ("hc_post", ctx.buffers.hc_post(), 256),
-                ("hc_comb", ctx.buffers.hc_comb(), 256),
-                ("hc_lowrank_scratch", ctx.buffers.hc_lowrank_scratch(), 4096),
-                ("hidden_states", ctx.buffers.hidden_states(), row),
-                ("residual", ctx.buffers.residual(), row),
-                ("norm_output", ctx.buffers.norm_output(), row),
-                (
-                    "scratch@target_meta",
-                    ctx.buffers.scratch().offset(32768),
-                    4096,
-                ),
-            ]
-        } else {
-            Vec::new()
-        };
-        let before: Vec<u64> = probes
-            .iter()
-            .map(|(_, p, n)| crate::speculative::hidden_fingerprint(ctx.gpu, *p, *n / 2))
-            .collect();
-
-        // The draft's highway lives in the DRAFT's arena, not the target's.
-        // Nothing below writes a buffer the target owns.
-        let body_streams = self.arena.hc_streams();
         ctx.gpu
             .copy_d2d_async(target_streams, self.buf.streams, hc_bytes, stream)?;
 
@@ -653,11 +803,247 @@ impl Qwen4ExpMtpHead {
             self.combine_k,
             self.buf.per_stream,
             self.buf.embed_proj,
-            body_streams,
+            streams_out,
             h,
             hc,
             stream,
         )?;
+
+        Ok(())
+    }
+
+    /// Collapse arena highway row `i` into `h_out` (one row) — step 4 of a
+    /// draft, addressed by row for the batched path.
+    pub fn draft_collapse_row(
+        &self,
+        i: usize,
+        h_out: DevicePtr,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let h = ctx.config.hidden_size as u32;
+        let hc = ctx.config.hc_mult.max(1) as u32;
+        let eps = ctx.config.rms_norm_eps as f32;
+        let head = self
+            .module
+            .hc_head
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("qwen4_exp MTP: module has no hc_head"))?;
+        let lowrank = head.lowrank.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("qwen4_exp MTP: hc_head is not low-rank; this model's is")
+        })?;
+        ops::hc_head_lowrank(
+            ctx.gpu,
+            self.hc_head_k,
+            self.arena_streams_row(i, hc as usize, h as usize),
+            lowrank,
+            h_out,
+            self.buf.head_scratch,
+            1,
+            h,
+            hc,
+            eps,
+            stream,
+        )
+    }
+
+    /// Step 3 of a draft for `n` sequences at once: the module body over arena
+    /// rows 0..n via `decode_multi_seq`, each row against that sequence's own
+    /// private KV and draft state.
+    ///
+    /// The n-sequence attention metadata is drafter-local, in the drafter
+    /// arena's scratch, laid out by the arena's derived `decode_meta()` —
+    /// positions u32[R] @0, slots i64[R] @8R, seq_lens i32[R] @16R, block
+    /// table i32[R x max_blocks] @24R — exactly the layout the target's
+    /// batched decode uploads, so the attention kernels read what they
+    /// expect. `num_seqs = n`, no padding rows.
+    ///
+    /// Advances every state's `seq_len` by one, as `draft_hidden` does.
+    pub fn draft_bodies_batched(
+        &self,
+        states: &mut [&mut Qwen4ExpMtpState],
+        positions: &[usize],
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let n = states.len();
+        anyhow::ensure!(
+            n >= 1 && n <= self.batch_cap && positions.len() == n,
+            "draft_bodies_batched: n={n} (cap {}), {} positions",
+            self.batch_cap,
+            positions.len()
+        );
+        let mut kv_cache = self.kv_cache.lock().expect("mtp kv cache poisoned");
+        let bs = kv_cache.block_size();
+        for st in states.iter_mut() {
+            let blocks_needed = (st.seq_len / bs) + 1;
+            while st.block_table.len() < blocks_needed {
+                st.block_table.push(kv_cache.alloc_block()?);
+            }
+        }
+
+        // ── n-sequence attention metadata, in the DRAFTER arena's scratch ──
+        let lay = self.arena.decode_meta();
+        anyhow::ensure!(
+            n <= lay.rows(),
+            "draft_bodies_batched: n={n} exceeds the arena's {}-row metadata layout",
+            lay.rows()
+        );
+        let max_blocks = states
+            .iter()
+            .map(|st| st.block_table.len())
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        const META_OFF: usize = 32768;
+        let need = META_OFF + lay.meta_bytes(max_blocks);
+        anyhow::ensure!(
+            need <= self.arena.scratch_bytes(),
+            "draft_bodies_batched: metadata needs {need} B of arena scratch, have {}",
+            self.arena.scratch_bytes()
+        );
+        let rows = lay.rows();
+        let mut positions_u32: Vec<u32> = vec![0; rows];
+        let mut slots: Vec<i64> = vec![0; rows];
+        let mut seq_lens_i32: Vec<i32> = vec![1; rows];
+        let mut bt_flat: Vec<i32> = vec![0; rows * max_blocks];
+        for (i, st) in states.iter().enumerate() {
+            let pos = st.seq_len;
+            positions_u32[i] = positions[i] as u32;
+            let block_idx = st.block_table[pos / bs];
+            slots[i] = (block_idx as i64) * (bs as i64) + ((pos % bs) as i64);
+            seq_lens_i32[i] = (pos + 1) as i32;
+            for (j, &b) in st.block_table.iter().take(max_blocks).enumerate() {
+                bt_flat[i * max_blocks + j] = b as i32;
+            }
+        }
+        let base = self.arena.scratch().offset(META_OFF);
+        let to_bytes_u32 = |v: &[u32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        let to_bytes_i64 = |v: &[i64]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        let to_bytes_i32 = |v: &[i32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        ctx.gpu
+            .copy_h2d_async(&to_bytes_u32(&positions_u32), base, stream)?;
+        ctx.gpu
+            .copy_h2d_async(&to_bytes_i64(&slots), base.offset(lay.slots_off()), stream)?;
+        ctx.gpu.copy_h2d_async(
+            &to_bytes_i32(&seq_lens_i32),
+            base.offset(lay.seq_lens_off()),
+            stream,
+        )?;
+        ctx.gpu.copy_h2d_async(
+            &to_bytes_i32(&bt_flat),
+            base.offset(lay.block_table_off()),
+            stream,
+        )?;
+        let meta = crate::layer::AttnMetadataDev {
+            positions: base,
+            positions_h: base,
+            positions_w: base,
+            slot: base.offset(lay.slots_off()),
+            seq_len: base.offset(lay.seq_lens_off()),
+            block_table: base.offset(lay.block_table_off()),
+            max_blocks_per_seq: max_blocks as u32,
+            num_seqs: n as u32,
+            seq_slot: DevicePtr(0),
+            moe_row_adapter: DevicePtr::NULL,
+        };
+        let mtp_ctx = ForwardContext {
+            hc_row_offset: 0,
+            attn_metadata: Some(meta),
+            // Rank-0 only, no EP collective — same as the per-sequence body.
+            comm: None,
+            // NOT the target's config: see `Qwen4ExpMtpHead::cfg`. Under TP the
+            // target's head counts are per-rank; the drafter is replicated and
+            // must read its own full-width geometry.
+            config: &self.cfg,
+            graph_capture: false,
+            host_token_ids: None,
+            routed_lora_layers: None,
+            midchunk_capture: None,
+            moe_lora_route: crate::layer::MoeLoraRoute::Skip,
+            buffers: &self.arena,
+            ..*ctx
+        };
+
+        let seq_lens: Vec<usize> = states.iter().map(|st| st.seq_len).collect();
+        let block_tables: Vec<Vec<u32>> = states.iter().map(|st| st.block_table.clone()).collect();
+        let mut refs: Vec<&mut (dyn LayerState + 'static)> =
+            states.iter_mut().map(|st| st.body_state.as_mut()).collect();
+        self.module.body.decode_multi_seq(
+            self.arena.hidden_states(),
+            self.arena.residual(),
+            n,
+            &mut refs,
+            &mut kv_cache,
+            &seq_lens,
+            &block_tables,
+            &mtp_ctx,
+            stream,
+        )?;
+        drop(kv_cache);
+        for st in states.iter_mut() {
+            st.seq_len += 1;
+        }
+        Ok(())
+    }
+
+    pub fn draft_hidden(
+        &self,
+        last_token: u32,
+        target_streams: DevicePtr,
+        position: usize,
+        state: &mut Qwen4ExpMtpState,
+        h_out: DevicePtr,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let h = ctx.config.hidden_size as u32;
+        let hc = ctx.config.hc_mult.max(1) as u32;
+        let eps = ctx.config.rms_norm_eps as f32;
+        let row = h as usize * 2;
+
+        // The body reads its highway through the private arena. Snapshot the
+        // input before the combiner writes that arena: chained drafts read
+        // from the same arena, so input and output can alias. Highway elements
+        // are FP32, even though collapsed hidden rows are BF16.
+        let hc_bytes = hc as usize * h as usize * 4;
+
+        // ── DIAGNOSTIC (ATLAS_QWEN4EXP_MTP_DIFF=1) ──
+        // The bisect proved the BODY forward dirties state the target still
+        // needs, but not WHICH buffer. Rather than keep guessing, fingerprint
+        // the shared buffers either side of the call and name the ones that
+        // changed. Taken BEFORE the combiner runs, so the baseline is the
+        // TARGET's state — an earlier version sampled it after the combiner had
+        // already written hc_streams, which made hc_streams a false positive.
+        let diff = std::env::var("ATLAS_QWEN4EXP_MTP_DIFF").as_deref() == Ok("1");
+        let probes: Vec<(&str, DevicePtr, usize)> = if diff {
+            ctx.gpu.synchronize(stream).ok();
+            vec![
+                ("hc_streams", ctx.buffers.hc_streams(), hc_bytes.min(4096)),
+                ("hc_post", ctx.buffers.hc_post(), 256),
+                ("hc_comb", ctx.buffers.hc_comb(), 256),
+                ("hc_lowrank_scratch", ctx.buffers.hc_lowrank_scratch(), 4096),
+                ("hidden_states", ctx.buffers.hidden_states(), row),
+                ("residual", ctx.buffers.residual(), row),
+                ("norm_output", ctx.buffers.norm_output(), row),
+                (
+                    "scratch@target_meta",
+                    ctx.buffers.scratch().offset(32768),
+                    4096,
+                ),
+            ]
+        } else {
+            Vec::new()
+        };
+        let before: Vec<u64> = probes
+            .iter()
+            .map(|(_, p, n)| crate::speculative::hidden_fingerprint(ctx.gpu, *p, *n / 2))
+            .collect();
+
+        // The draft's highway lives in the DRAFT's arena, not the target's.
+        // Nothing below writes a buffer the target owns.
+        let body_streams = self.arena.hc_streams();
+        self.draft_combine(last_token, target_streams, body_streams, ctx, stream)?;
 
         // No save/restore of target buffers: the draft runs in its own arena.
         // ── 3. Body decode against the module's OWN cache ──
@@ -701,6 +1087,9 @@ impl Qwen4ExpMtpHead {
             // The draft body must not issue an EP all-reduce: it is rank-0 only
             // and `ensure_loadable` refuses ep_world_size > 1 outright.
             comm: None,
+            // Full-width drafter geometry, not the target's per-rank counts.
+            // See `Qwen4ExpMtpHead::cfg`.
+            config: &self.cfg,
             // Host-built metadata + H2D uploads are illegal under capture.
             graph_capture: false,
             host_token_ids: None,

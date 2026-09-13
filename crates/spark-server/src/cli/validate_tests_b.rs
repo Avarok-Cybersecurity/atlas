@@ -255,3 +255,88 @@ fn an_unset_gamma_is_left_to_the_runtime_backstop() {
     // the sequential fallback bails rather than reading FP16 bits as FP32.
     assert!(validate_serve_args(&f16_dflash(None)).is_ok());
 }
+
+// ── `--hermetic` ───────────────────────────────────────────────────────────
+
+/// The flag must reach the RESOLVERS, not merely parse. A `--hermetic` that
+/// set a field nobody read would validate, log, and land in the record while
+/// changing nothing about the run — which is the exact failure the record
+/// would then misreport as a measured regime.
+#[test]
+fn hermetic_closes_both_channels_through_the_resolvers() {
+    let a = parse(&["--hermetic"]);
+    assert!(
+        !a.prefix_caching_enabled(),
+        "--hermetic must close the radix KV prefix cache"
+    );
+    assert_eq!(
+        a.mtp_gate_force(),
+        Some(true),
+        "--hermetic must PIN the MTP gate rather than leave it to the environment"
+    );
+}
+
+/// And absent it, nothing moves.
+#[test]
+fn without_hermetic_neither_channel_is_touched() {
+    let a = parse(&[]);
+    assert!(!a.prefix_caching_enabled(), "the flag's own default is off");
+    assert_eq!(
+        a.mtp_gate_force(),
+        None,
+        "absent means the documented ATLAS_MTP_GATE_FORCE fallback decides"
+    );
+    let on = parse(&["--enable-prefix-caching"]);
+    assert!(
+        on.prefix_caching_enabled(),
+        "asking for the cache without --hermetic must still get it"
+    );
+}
+
+/// A contradiction is REFUSED, not resolved. Resolving it silently would leave
+/// a record reading `hermetic=true` beside an override the server ignored, and
+/// a reader would reasonably believe both applied.
+#[test]
+fn hermetic_beside_a_flag_it_closes_is_refused() {
+    let err = validate_serve_args(&parse(&["--hermetic", "--enable-prefix-caching"])).unwrap_err();
+    assert!(err.contains("--hermetic"), "{err}");
+    assert!(err.contains("--enable-prefix-caching"), "{err}");
+    assert!(
+        err.contains("known-answer test"),
+        "the message must say WHY, not just that: {err}"
+    );
+
+    let err = validate_serve_args(&parse(&["--hermetic", "--mtp-gate", "auto"])).unwrap_err();
+    assert!(err.contains("--mtp-gate auto"), "{err}");
+}
+
+/// Agreement is not contradiction: naming the value hermetic would have picked
+/// is redundant, not wrong, and refusing it would make the flag harder to use
+/// for no gain.
+#[test]
+fn hermetic_beside_an_agreeing_flag_is_accepted() {
+    assert!(validate_serve_args(&parse(&["--hermetic", "--mtp-gate", "force"])).is_ok());
+    assert!(validate_serve_args(&parse(&["--hermetic"])).is_ok());
+}
+
+/// How the GATE will actually deliver it. A recorded `[benchmarks.serve_overrides]`
+/// entry `hermetic = "true"` becomes `--hermetic true` on the command line,
+/// because `recipe::schema::NOT_FLAGS` is empty and every key maps to a flag.
+/// The bare form and the valued form must mean the same thing, and `false`
+/// must mean false — a serve override that silently enabled the regime it
+/// spells `false` would put an untrue regime name into the record.
+#[test]
+fn the_serve_override_spelling_of_hermetic_round_trips() {
+    assert!(parse(&["--hermetic"]).hermetic, "the bare flag enables it");
+    assert!(
+        parse(&["--hermetic", "true"]).hermetic,
+        "`--serve-override hermetic=true` becomes `--hermetic true`"
+    );
+    assert!(
+        !parse(&["--hermetic", "false"]).hermetic,
+        "`hermetic=false` must NOT enable the regime"
+    );
+    // And the resolvers follow the parsed value, not the flag's presence.
+    assert_eq!(parse(&["--hermetic", "false"]).mtp_gate_force(), None);
+    assert_eq!(parse(&["--hermetic", "true"]).mtp_gate_force(), Some(true));
+}

@@ -168,7 +168,15 @@ impl Sampler {
         // flat binary file. The reporting APIs only expose post-softmax
         // values, which cannot distinguish a genuinely flat distribution
         // from a mis-scaled one — the raw values can.
-        if let Ok(dir) = std::env::var("ATLAS_DUMP_LOGITS_PATH") {
+        // Resolved ONCE — this runs per stochastic sample step. Same
+        // variable as the sibling dump in
+        // `spark-server/scheduler/decode_logits_seq.rs`, which caches it the
+        // same way; two crates cannot share a levers struct, so the shared
+        // thing is the spelling, and both write into the SAME directory under
+        // different file names (`logits_fetch.bin` here,
+        // `logits_seq.bin` there) precisely so one flag arms both views.
+        static DUMP_DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        if let Some(dir) = DUMP_DIR.get_or_init(|| std::env::var("ATLAS_DUMP_LOGITS_PATH").ok()) {
             use std::io::Write;
             let path = std::path::Path::new(&dir).join("logits_fetch.bin");
             if let Ok(mut f) = std::fs::OpenOptions::new()

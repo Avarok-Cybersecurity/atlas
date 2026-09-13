@@ -510,9 +510,7 @@ impl BlockDiffusionDraftHead {
         // K row at the slot we just wrote and compares first 8 BF16 values
         // against the source k_buf row 0. If they differ, the cache write
         // landed in the wrong slot or with the wrong layout. ONE-SHOT.
-        if layer_idx == 0
-            && std::env::var("ATLAS_DFLASH_OPTION_B_DIAG").ok().as_deref() == Some("1")
-        {
+        if layer_idx == 0 && self.levers.option_b_diag {
             // Per-model latch (see `ModelStats::dumped`): a static would let
             // the previous model swallow this model's one-shot diagnostic.
             if ctx.stats.dumped.keyed("dflash_option_b") {

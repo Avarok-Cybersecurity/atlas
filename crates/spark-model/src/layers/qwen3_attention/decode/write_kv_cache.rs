@@ -71,9 +71,7 @@ impl Qwen3AttentionLayer {
                 // Turbo8 scales to BF16 (~0.4% precision); WHT is back on by
                 // default. Turbo3/4 still use FP8 scales — they're affected
                 // less because their LUTs already have lower precision targets.
-                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
+                let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
                 if !weight_pre_rotated
                     && self.wht_bf16_k.0 != 0
                     && (head_dim == 128 || head_dim == 256 || head_dim == 512)
@@ -139,9 +137,7 @@ impl Qwen3AttentionLayer {
                 // V-side WHT bookend (mirrors symmetric turbo3 path). K stays
                 // in raw bf16 — no rotation needed because BF16 has enough
                 // dynamic range to absorb outliers natively.
-                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
+                let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
                 if !weight_pre_rotated
                     && self.wht_bf16_k.0 != 0
                     && (head_dim == 128 || head_dim == 256 || head_dim == 512)
@@ -183,9 +179,7 @@ impl Qwen3AttentionLayer {
                 // V-side WHT bookend (mirrors bf16k_turbo3v path). K stays
                 // in raw bf16 — no rotation needed because BF16 has enough
                 // dynamic range to absorb outliers natively.
-                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
+                let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
                 if !weight_pre_rotated
                     && self.wht_bf16_k.0 != 0
                     && (head_dim == 128 || head_dim == 256 || head_dim == 512)
@@ -222,9 +216,7 @@ impl Qwen3AttentionLayer {
             KvCacheDtype::Bf16KTurbo2V => {
                 // TurboQuant+ safer-asym: K = bf16, V = turbo2 (6.4x V
                 // compression). V-side WHT bookend; K stays raw bf16.
-                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
+                let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
                 if !weight_pre_rotated
                     && self.wht_bf16_k.0 != 0
                     && (head_dim == 128 || head_dim == 256 || head_dim == 512)
@@ -264,9 +256,7 @@ impl Qwen3AttentionLayer {
                 // TurboQuant+ both-sides asym: K and V are BOTH turbo dtypes.
                 // WHT bookend applies to BOTH K and V (mirrors sym turbo3/4/8/2
                 // arm) — and InnerQ apply also fires on K when active.
-                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
+                let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
                 if !weight_pre_rotated
                     && self.wht_bf16_k.0 != 0
                     && (head_dim == 128 || head_dim == 256 || head_dim == 512)
@@ -373,9 +363,7 @@ impl Qwen3AttentionLayer {
                 // V-side WHT bookend (mirrors bf16k_turbo*v path). K side gets
                 // no WHT — its FP8 dynamic range already covers attention scores
                 // adequately for the per-tensor scale model is calibrated for.
-                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
+                let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
                 if !weight_pre_rotated
                     && self.wht_bf16_k.0 != 0
                     && (head_dim == 128 || head_dim == 256 || head_dim == 512)

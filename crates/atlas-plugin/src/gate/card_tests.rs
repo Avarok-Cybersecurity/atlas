@@ -17,15 +17,7 @@ fn rec(id: &str, metrics: &[(&str, f64)]) -> GateRecord {
         Verdict::pass("ok"),
     );
     r.benchmark_id = id.to_string();
-    GateRecord::from_run(
-        &r,
-        hw(),
-        SHA.to_string(),
-        Vec::new(),
-        None,
-        Default::default(),
-    )
-    .expect("record")
+    GateRecord::from_run(&r, hw(), SHA.to_string(), Vec::new(), None).expect("record")
 }
 
 fn template() -> String {

@@ -71,7 +71,9 @@ impl TransformerModel {
         // Active sequences
         for (i, seq) in seqs.iter().enumerate() {
             let pos = seq.seq_len as u32;
-            positions.push(pos);
+            // `pos` is the TOKEN index and drives the KV slot below;
+            // the rotary stream is a different number after an image.
+            positions.push(seq.rope_pos());
 
             let block_idx = pos as usize / block_size;
             let block_offset = pos as usize % block_size;
@@ -323,7 +325,9 @@ impl TransformerModel {
 
         for seq in seqs.iter() {
             let pos = seq.seq_len as u32;
-            positions.push(pos);
+            // Same split as the fixed-address path: token index for the
+            // slot, rotary position for RoPE.
+            positions.push(seq.rope_pos());
 
             let block_idx = pos as usize / block_size;
             let block_offset = pos as usize % block_size;
@@ -458,6 +462,7 @@ impl TransformerModel {
                 profile: false,
                 comm: ctx.comm,
                 graph_capture: ctx.graph_capture,
+                decode_step: false,
                 gdn_exact_replay: false,
                 token_ids: None,
                 host_token_ids: None,
@@ -599,7 +604,9 @@ impl TransformerModel {
         let meta_base = self.buffers.scratch().offset(32768);
         let max_blocks = seq.block_table.len() as u32;
 
-        let pos_val = seq.seq_len as u32;
+        // Rotary position (see SequenceState::rope_pos); the slot math
+        // below stays on the raw token index.
+        let pos_val = seq.rope_pos();
         self.gpu
             .copy_h2d_async(&pos_val.to_le_bytes(), meta_base, stream)?;
 
@@ -660,6 +667,7 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false, // Eager mode — no CUDA graph
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
             host_token_ids: None,

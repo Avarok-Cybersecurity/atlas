@@ -135,6 +135,116 @@ impl DraftProposer for Qwen4ExpMtpHead {
         Ok(drafts)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn propose_batch(
+        &self,
+        last_tokens: &[u32],
+        target_hiddens: &[DevicePtr],
+        positions: &[usize],
+        num_drafts: usize,
+        states: &mut [&mut dyn ProposerState],
+        ctx: &ForwardContext,
+        stream: u64,
+        _out_conf: Option<&mut Vec<Vec<f32>>>,
+    ) -> Result<Option<Vec<Vec<u32>>>> {
+        let n = states.len();
+        if n < 2 || n > self.batch_cap() || !self.batch_ready() {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            last_tokens.len() == n && target_hiddens.len() == n && positions.len() == n,
+            "qwen4_exp propose_batch: {n} states but {} tokens / {} hiddens / {} positions",
+            last_tokens.len(),
+            target_hiddens.len(),
+            positions.len()
+        );
+        let h = ctx.config.hidden_size;
+        let hc = ctx.config.hc_mult.max(1);
+        let streams_bytes = hc * h * 4;
+
+        // Same per-round bookkeeping as `propose`, per sequence.
+        for st in states.iter_mut() {
+            let st = st
+                .as_any_mut()
+                .downcast_mut::<Qwen4ExpMtpProposerState>()
+                .ok_or_else(|| anyhow::anyhow!("qwen4_exp MTP: wrong proposer state type"))?;
+            st.inner.begin_round()?;
+            if st.inner.pending_rewind > 0 {
+                let rows = st.inner.pending_rewind;
+                self.rewind_draft(&mut st.inner, rows, ctx.gpu, stream)?;
+                st.inner.pending_rewind = 0;
+            }
+        }
+
+        // Draft 1 reads each sequence's TARGET highway row; later drafts read
+        // the parked copy of that sequence's own previous draft highway.
+        let mut streams: Vec<DevicePtr> = target_hiddens.to_vec();
+        let mut toks: Vec<u32> = last_tokens.to_vec();
+        let mut drafts: Vec<Vec<u32>> = vec![Vec::with_capacity(num_drafts); n];
+        let _ = streams_bytes;
+        for j in 0..num_drafts {
+            // Combine every sequence into its own arena highway row.
+            for i in 0..n {
+                self.draft_combine(toks[i], streams[i], self.arena_streams_row(i, hc, h), ctx, stream)?;
+            }
+            // ONE body forward over all n rows.
+            {
+                let mut inners: Vec<&mut crate::layers::qwen4_exp_mtp::Qwen4ExpMtpState> =
+                    Vec::with_capacity(n);
+                for st in states.iter_mut() {
+                    let st = st
+                        .as_any_mut()
+                        .downcast_mut::<Qwen4ExpMtpProposerState>()
+                        .ok_or_else(|| anyhow::anyhow!("qwen4_exp MTP: wrong proposer state type"))?;
+                    inners.push(&mut st.inner);
+                }
+                let pos_j: Vec<usize> = positions.iter().map(|&p| p + j).collect();
+                self.draft_bodies_batched(&mut inners, &pos_j, ctx, stream)?;
+                // Count completed body forwards, as `propose` does, so a later
+                // rewind unwinds exactly these rows.
+                for st in inners.iter_mut() {
+                    st.last_num_drafted += 1;
+                }
+            }
+            // Collapse each row into its staged draft hidden; the next draft
+            // reads this sequence's highway straight from its arena row.
+            for i in 0..n {
+                self.draft_collapse_row(i, self.batch_h_out_row(i, h), ctx, stream)?;
+                streams[i] = self.arena_streams_row(i, hc, h);
+            }
+            // ONE LM head over all n staged rows, ONE argmax, ONE D2H.
+            let new = self.draft_tokens_batched(n, ctx, stream)?;
+            for i in 0..n {
+                drafts[i].push(new[i]);
+                toks[i] = new[i];
+            }
+        }
+        {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                tracing::info!(
+                    n_seqs = n,
+                    num_drafts,
+                    "qwen4_exp MTP: propose BATCHED across sequences — one body forward and one \
+                     LM-head pass per draft position (ATLAS_NO_MTP_BATCH_PROPOSE restores per-sequence)"
+                );
+            });
+        }
+        Ok(Some(drafts))
+    }
+
+    fn propose_batch_max(
+        &self,
+        _buffers: &spark_runtime::buffers::BufferArena,
+        _config: &atlas_core::config::ModelConfig,
+    ) -> usize {
+        if self.batch_ready() {
+            self.batch_cap()
+        } else {
+            1
+        }
+    }
+
     /// Unwind the draft body's own state for every REJECTED row.
     ///
     /// This is the draft-side mirror of the target-side `rollback_verify_hc`.

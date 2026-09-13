@@ -25,7 +25,6 @@ pub(crate) async fn write_gate_record(
     url: &str,
     model: &str,
     recipe: Option<String>,
-    serve_overrides: BTreeMap<String, String>,
     sha_at_start: String,
     dirty_at_start: Vec<String>,
     // `--output-image` target plus its parsed `--output-image-args`.
@@ -79,12 +78,11 @@ pub(crate) async fn write_gate_record(
     let target = TargetEndpoint::new(url, model);
     let hardware = atlas_plugin::http::fetch_hardware(&target, gate::HARDWARE_TIMEOUT).await;
     let dirty = dirty_at_start;
-    let gate_record =
-        gate::GateRecord::from_run(record, hardware, sha, dirty, recipe, serve_overrides)?
-            // What THIS binary's kernels were compiled from. Baked at build
-            // time, so it describes the code that actually ran rather than the
-            // tree as it stands now.
-            .with_closure(atlas_kernels::TARGET_CLOSURES);
+    let gate_record = gate::GateRecord::from_run(record, hardware, sha, dirty, recipe)?
+        // What THIS binary's kernels were compiled from. Baked at build
+        // time, so it describes the code that actually ran rather than the
+        // tree as it stands now.
+        .with_closure(atlas_kernels::TARGET_CLOSURES);
     let path = gate::write_record(&root, &gate_record)?;
 
     // Sign it, and say BOTH filenames. The operator commits what the terminal

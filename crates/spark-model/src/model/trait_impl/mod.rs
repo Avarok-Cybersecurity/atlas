@@ -26,6 +26,7 @@ mod decode_b;
 mod decode_b2;
 mod decode_checkpoint;
 mod decode_graph_key;
+mod decode_multi_seq_gate;
 mod decode_route;
 mod drafter_prefill;
 mod ep_misc;
@@ -452,7 +453,7 @@ impl Model for TransformerModel {
                 .pending_verify_aux
                 .lock()
                 .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))?
-                .take();
+                .remove(&seq.slot_idx);
             return Ok(false);
         }
         self.restore_verify_aux_at(seq, num_accepted, k)?;
@@ -486,6 +487,39 @@ impl Model for TransformerModel {
         }
         self.decode_verify_graphed_k4_dispatch(tokens, seq, _stream)
     }
+    fn decode_verify_graphed_kn(
+        &self,
+        tokens: &[u32],
+        seq: &mut SequenceState,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        self.ssm_pool.require_verify_rollback_supported()?;
+        if self.verify_needs_hc_path() {
+            let v = self.decode_verify_hc(tokens, seq, stream)?;
+            anyhow::ensure!(
+                v.len() == tokens.len(),
+                "verify_hc returned {} rows, want {}",
+                v.len(),
+                tokens.len()
+            );
+            return Ok(v);
+        }
+        match tokens.len() {
+            3 => Ok(self
+                .decode_verify_graphed_k3_dispatch(&[tokens[0], tokens[1], tokens[2]], seq, stream)?
+                .to_vec()),
+            4 => Ok(self
+                .decode_verify_graphed_k4_dispatch(
+                    &[tokens[0], tokens[1], tokens[2], tokens[3]],
+                    seq,
+                    stream,
+                )?
+                .to_vec()),
+            k => anyhow::bail!(
+                "decode_verify_graphed_kn: no verify path at K={k} rows on this model"
+            ),
+        }
+    }
     fn can_batch_verify(&self, ks: &[usize]) -> bool {
         self.can_batch_verify_dispatch(ks)
     }
@@ -497,6 +531,17 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<Vec<u32>> {
         self.ssm_pool.require_verify_rollback_supported()?;
+        // Announce the batch BEFORE the forward, so the worker is inside the
+        // same sweep and answering its collectives. Head-only: this function
+        // runs on rank 0; the worker reaches the identical
+        // `decode_verify_batched_dispatch` from its own command arm, never
+        // through here, because `ep_broadcast_*` on a worker is a RECEIVE and
+        // re-entering this path would consume words meant for the forward.
+        if self.multi_rank_protocol_active() {
+            let seq_ids: Vec<u32> = seqs.iter().map(|s| s.slot_idx as u32).collect();
+            let ks_u32: Vec<u32> = ks.iter().map(|&k| k as u32).collect();
+            self.ep_broadcast_verify_batch_dispatch(&seq_ids, &ks_u32, tokens)?;
+        }
         self.decode_verify_batched_dispatch(tokens, ks, seqs, _stream)
     }
     fn stash_verify_hidden_rows(&self, rows: &[usize], _stream: u64) -> Result<()> {
@@ -973,6 +1018,9 @@ impl Model for TransformerModel {
     fn ep_broadcast_tokens(&self, tokens: &[u32]) -> Result<Vec<u32>> {
         self.ep_broadcast_tokens_dispatch(tokens)
     }
+    fn ep_exchange_vision(&self, tokens: &[u32]) -> Result<()> {
+        self.ep_exchange_vision_dispatch(tokens)
+    }
     fn default_stream(&self) -> u64 {
         self.default_stream_dispatch()
     }
@@ -1054,9 +1102,8 @@ impl TransformerModel {
         // rather than two builds. Read once: this is a per-checkpoint path and
         // an un-memoised `env::var` here would be its own small regression.
         static BATCHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let batched_enabled = *BATCHED.get_or_init(|| {
-            std::env::var("ATLAS_AUX_COLLECT_BATCHED").as_deref() != Ok("0")
-        });
+        let batched_enabled = *BATCHED
+            .get_or_init(|| std::env::var("ATLAS_AUX_COLLECT_BATCHED").as_deref() != Ok("0"));
 
         // Pass 1 — plan. `bytes == 0` means "this layer has no blob for this
         // sequence" and contributes nothing, matching the old `Ok(None)`.
@@ -1097,7 +1144,11 @@ impl TransformerModel {
         latch.get_or_init(|| {
             tracing::info!(
                 "aux collect ({}): {} — {} batched layer(s), {} legacy, {} B first call",
-                if skip_rewindable { "verify" } else { "snapshot" },
+                if skip_rewindable {
+                    "verify"
+                } else {
+                    "snapshot"
+                },
                 if batched_enabled {
                     "BATCHED (1 sync)"
                 } else {
@@ -1113,7 +1164,9 @@ impl TransformerModel {
         // take the SINGLE sync that replaces one drain per layer.
         let mut blobs: Vec<(u32, Vec<u8>)> = Vec::with_capacity(batched.len() + unbatched.len());
         if total > 0 {
-            let mut guard = self.aux_staging.acquire_at_least(self.gpu.as_ref(), total)?;
+            let mut guard = self
+                .aux_staging
+                .acquire_at_least(self.gpu.as_ref(), total)?;
             {
                 let buf = guard.as_mut_slice();
                 for &(i, off, len) in &batched {
@@ -1136,9 +1189,11 @@ impl TransformerModel {
 
         // Pass 3 — legacy path for anything that did not opt in.
         for &i in &unbatched {
-            if let Some(blob) =
-                self.layers[i].snapshot_aux(seq.layer_states[i].as_ref(), self.gpu.as_ref(), stream)?
-            {
+            if let Some(blob) = self.layers[i].snapshot_aux(
+                seq.layer_states[i].as_ref(),
+                self.gpu.as_ref(),
+                stream,
+            )? {
                 blobs.push((i as u32, blob));
             }
         }

@@ -65,6 +65,9 @@ pub(crate) fn resolve_topology(
     };
     config.tp_rank = tp_rank;
     config.tp_world_size = tp_size;
+    // 🔴 GLM-5.3's DSA indexer cache is reserved per sequence from this, not from the
+    // checkpoint's `max_position_embeddings`. Set it before any loader runs.
+    config.serve_max_seq_len = args.max_seq_len;
     config.ep_rank = ep_rank;
     config.ep_world_size = ep_size;
     if tp_size > 1 {

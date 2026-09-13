@@ -78,6 +78,16 @@ pub struct SsmLayerState {
     pub h_state_intermediates: Vec<DevicePtr>,
     /// Intermediate conv_state snapshots during batched verification.
     pub conv_state_intermediates: Vec<DevicePtr>,
+    /// Cached verify-row GDN INPUTS for `--ssm-rollback-mode replay`: element
+    /// `t` holds token `t`'s deinterleaved qkvz row (BF16) followed by its
+    /// gate/beta row (FP32), laid out by `ssm_reserve::ssm_replay_row_bytes`.
+    ///
+    /// Replay keeps these instead of the per-token STATE snapshots above and
+    /// reconstructs a partial accept by re-running the sequential conv+GDN
+    /// chain from the checkpoint over the accepted rows. Empty in snapshot
+    /// mode — exactly as `h_state_intermediates` is empty in replay mode, so
+    /// the vec length is the mode gate as well as the capacity gate.
+    pub replay_inputs: Vec<DevicePtr>,
     /// Storage dtype of `h_state`: `false` = FP32, `true` = FP16
     /// (`--ssm-h-dtype f16`).
     ///
@@ -324,6 +334,15 @@ pub struct ForwardContext<'a> {
     /// True when inside CUDA graph capture (between begin_capture/end_capture).
     /// MoE layers use sync all_reduce (capturable) instead of async (event-based).
     pub graph_capture: bool,
+    /// True ONLY on the single-token decode step, where `attn_metadata`'s `positions`,
+    /// `slot`, `seq_len` and `block_table` are the step's SCALARS at stable addresses.
+    ///
+    /// 🪤 `prefill_default` drives a layer that has no `prefill` of its own by calling its
+    /// `decode` once per token — with the PREFILL context, whose `positions`/`slot` are
+    /// per-token ARRAYS and whose `block_table`/`seq_len` are NULL unless the pass is paged.
+    /// A layer that reads those pointers as decode scalars gets an illegal address on the
+    /// first prompt. Check this flag, not `attn_metadata.is_some()`.
+    pub decode_step: bool,
     /// True when this prefill pass must take the TOKEN-SEQUENTIAL GDN
     /// recurrence ladder (register-resident -> WY4 -> persistent -> split4)
     /// instead of the FLA chunked kernel.
@@ -461,3 +480,7 @@ pub enum MoeLoraRoute {
 /// each is attention, SSM, MoE, or dense FFN.
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "layer/release_contract_tests.rs"]
+mod release_contract_tests;

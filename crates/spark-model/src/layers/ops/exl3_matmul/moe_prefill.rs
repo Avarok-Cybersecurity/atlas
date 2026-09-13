@@ -215,8 +215,7 @@ pub struct Exl3MoePrefillStats {
 static TIER_STATS_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 fn tier_stats_on() -> bool {
-    *TIER_STATS_ON
-        .get_or_init(|| std::env::var("ATLAS_EXL3_MOE_TIER_STATS").as_deref() == Ok("1"))
+    *TIER_STATS_ON.get_or_init(|| std::env::var("ATLAS_EXL3_MOE_TIER_STATS").as_deref() == Ok("1"))
 }
 
 static TS_CALLS: AtomicU64 = AtomicU64::new(0);

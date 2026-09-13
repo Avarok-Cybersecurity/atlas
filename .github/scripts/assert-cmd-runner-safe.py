@@ -48,6 +48,14 @@ PR_VAR = PR_POOLS[0][1]
 SAME_REPO_GUARD = (
     "github.event.pull_request.head.repo.full_name == github.repository"
 )
+# The fleet switch. Every self-hosted pool in this repo lives on one box; when
+# that box is down, a job routed to it does not fail, it QUEUES -- and a queued
+# job creates no check run at all, so a required context reads as *absent*
+# rather than red and the PR is unmergeable with nothing showing as broken.
+# That is the failure this gate exists to make impossible to reintroduce: with
+# the variable unset or not '1', every runs-on falls back to ubuntu-latest,
+# which is free on a public repo. Setting it to '1' is how the fleet comes back.
+FLEET_GATE = "vars.USE_AVAROK_UBUNTU_RUNNERS == '1'"
 # Triggers whose payload a fork controls. `pull_request_target` and
 # `issue_comment` run from the DEFAULT branch, so they are safe on their own --
 # what makes them unsafe is checking out the head ref, which is checked below.
@@ -103,6 +111,24 @@ def main():
             if not isinstance(job, dict):
                 continue
             pool = pr_pool_of(job)
+            # Required on the two avarok Ubuntu pools, which is the hardware the
+            # gate names. The command runner is deliberately NOT covered: it
+            # routes through CMD_RUNNER_LABEL, which cmd-runner-health.yml
+            # repoints every 15 minutes to whichever runner is actually online
+            # (and to ubuntu-latest when none is), so it already has a live
+            # answer to the problem this gate solves statically. Putting both
+            # mechanisms on one job would mean a runner that IS up still cannot
+            # be reached because a variable elsewhere says no.
+            if pool is not None:
+                if FLEET_GATE not in routing_blob(job):
+                    problems.append(
+                        f"{path.name}:{name} routes to a self-hosted runner "
+                        f"without the fleet gate ({FLEET_GATE}) in runs-on — "
+                        f"when the box is down this job queues forever instead "
+                        f"of falling back to ubuntu-latest, and a queued job "
+                        f"reports no check at all — it is ABSENT, not red, so "
+                        f"the PR is unmergeable with nothing showing as broken."
+                    )
             if pool is not None:
                 routed.append((pool, routing_blob(job), f"{path.name}:{name}"))
                 if triggers & FORK_CONTROLLED and not guards_against_forks(job):
@@ -174,9 +200,10 @@ def main():
             print(f"  - {p}")
         return 1
     print(
-        f"no workflow on '{LABEL}' checks out untrusted code, and every "
+        f"no workflow on '{LABEL}' checks out untrusted code; every "
         f"job on {[p[0] for p in PR_POOLS]} under a pull_request trigger carries "
-        f"the same-repo guard, one expression per pool."
+        f"the same-repo guard, one expression per pool; and every job on those "
+        f"pools carries the fleet gate."
     )
     return 0
 

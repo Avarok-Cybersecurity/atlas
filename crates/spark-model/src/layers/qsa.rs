@@ -100,6 +100,10 @@ pub struct QsaIndexer {
     /// falls back to the host selection tail.
     k_expand_sel_k: KernelHandle,
     k_prefill_attn_k: KernelHandle,
+    /// Tensor-core twin of `qsa_prefill_attn` (one CTA per row, all heads).
+    /// `try_kernel`: absent on a target that did not build it, and the
+    /// dispatch falls back to the scalar kernel.
+    k_prefill_attn_tc_k: KernelHandle,
 
     qk_scratch: DevicePtr, // [INGEST_SLAB, (n_heads+1)*hd] BF16
     q_post: DevicePtr,     // [n_heads, hd] F32
@@ -180,6 +184,7 @@ impl QsaIndexer {
             k_topk_rows_k: crate::layers::try_kernel(gpu, "qsa_indexer", "qsa_topk_rows"),
             k_expand_sel_k: crate::layers::try_kernel(gpu, "qsa_indexer", "qsa_expand_sel"),
             k_prefill_attn_k: gpu.kernel("qsa_indexer", "qsa_prefill_attn")?,
+            k_prefill_attn_tc_k: crate::layers::try_kernel(gpu, "qsa_indexer", "qsa_prefill_attn_tc"),
             qk_scratch: gpu.alloc(INGEST_SLAB * qk_width * 2)?,
             q_post: gpu.alloc(n_heads * hd * 4)?,
             scores_dev: gpu.alloc(max_tokens / ratio * 4)?,

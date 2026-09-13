@@ -4,8 +4,8 @@
 
 use crate::benchmark::BenchmarkDescriptor;
 use crate::benchmarks::{
-    agentic, bfcl, concurrency, contamination, decode_floor, mlperf_agentic, quick_speed,
-    serve_matrix, ssm_poison, ttft, video, vision,
+    agentic, bfcl, concurrency, contamination, decode_floor, kat_equality, mlperf_agentic,
+    quick_speed, serve_matrix, ssm_poison, ttft, video, vision,
 };
 
 /// Every benchmark, list order. Cheapest and most-run first.
@@ -41,10 +41,25 @@ const ALL: &[&BenchmarkDescriptor] = &[
     // class the agentic run only surfaces by accident, so it is listed
     // before it.
     &ssm_poison::DESCRIPTOR,
+    // Sits beside the poisoning gate because they are the two invariants about
+    // one request's state reaching another — that one asks whether a REPLAY
+    // changes, this one whether the ORDER matters.
+    &kat_equality::DESCRIPTOR,
     &agentic::DESCRIPTOR,
     &bfcl::SUBSET_DESCRIPTOR,
     &bfcl::SUBSET_ECHOLP_DESCRIPTOR,
     &bfcl::FULL_DESCRIPTOR,
+    // The two gates above are also benchmark GROUPS; these are their members.
+    // Members are not required gates — `gate::group::GROUPS` names them and
+    // `coverage::REQUIRED` still lists only the group ids.
+    &bfcl::SUBSET_A,
+    &bfcl::SUBSET_B,
+    &bfcl::SUBSET_C,
+    &bfcl::SUBSET_D,
+    &bfcl::ECHOLP_A,
+    &bfcl::ECHOLP_B,
+    &bfcl::ECHOLP_C,
+    &bfcl::ECHOLP_D,
     // Unrunnable until MLCommons publishes its dataset; listed after the BFCL
     // legs it will eventually sit beside so the pane shows it exists.
     &mlperf_agentic::SUBSET_DESCRIPTOR,

@@ -325,6 +325,7 @@ fn the_dataset_fingerprint_survives_into_a_gate_record() {
         benchmark_id: "mlperf-agentic-subset".into(),
         benchmark_name: "MLPerf agentic (subset)".into(),
         recorded_at: 1,
+        serve_overrides: Default::default(),
         target_url: "http://localhost:1".into(),
         target_model: "m".into(),
         params: Default::default(),
@@ -338,7 +339,6 @@ fn the_dataset_fingerprint_survives_into_a_gate_record() {
         "abc123".into(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     assert_eq!(
@@ -356,4 +356,27 @@ fn the_dataset_fingerprint_survives_into_a_gate_record() {
     );
     let old: crate::gate::GateRecord = serde_json::from_str(&stripped).unwrap();
     assert_eq!(old.dataset_fingerprint, None);
+}
+
+/// `write_responses` uses a FIXED filename, which is safe only while exactly
+/// one leg writes into this benchmark's artifact directory.
+///
+/// `bfcl` had the same fixed name and it became a data-losing bug the moment
+/// `bfcl-subset` became a group: five legs, one directory, four outputs
+/// destroyed. If this benchmark ever gains shards, the same bug arrives here —
+/// silently, because the run still passes and only the evidence disappears.
+/// So the assumption is a test rather than a comment.
+#[test]
+fn sharding_this_benchmark_would_need_a_per_leg_responses_file() {
+    assert!(
+        crate::gate::group::find("mlperf-agentic-subset").is_none(),
+        "mlperf-agentic-subset is now a GROUP. Its legs share one artifact \
+         directory and one fixed `responses.jsonl`, so every leg but the last \
+         loses its per-turn output. Key the filename by benchmark id, the way \
+         `bfcl::exec::responses_file` does, before shipping the shards."
+    );
+    assert!(
+        crate::gate::group::member_of("mlperf-agentic-subset").is_none(),
+        "mlperf-agentic-subset is now a group MEMBER — same problem, same fix"
+    );
 }

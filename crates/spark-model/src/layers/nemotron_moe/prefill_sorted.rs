@@ -98,7 +98,7 @@ impl NemotronMoeLayer {
         // reused across requests and nothing else zeroes them, so any row a future
         // change fails to write would leak the previous request's activations
         // rather than merely being wrong. `ATLAS_MOE_NO_ZERO_INTERMEDIATES=1` skips.
-        if std::env::var("ATLAS_MOE_NO_ZERO_INTERMEDIATES").is_err() {
+        if ctx.levers.moe_zero_intermediates {
             ctx.gpu.memset_async(
                 expert_up_out,
                 0,
@@ -125,7 +125,7 @@ impl NemotronMoeLayer {
         // expert's real tile count exit immediately, so the cost is launch overhead,
         // not work. `ATLAS_MOE_MAX_M_TILES_ESTIMATE=1` restores the old bound for an
         // A/B; it is not safe to serve on.
-        let max_m_tiles = if std::env::var("ATLAS_MOE_MAX_M_TILES_ESTIMATE").is_ok() {
+        let max_m_tiles = if ctx.levers.moe_max_m_tiles_estimate {
             (avg_per_expert * 2).div_ceil(64).max(1) as u32
         } else {
             (total_expanded as usize).div_ceil(64).max(1) as u32
@@ -144,7 +144,7 @@ impl NemotronMoeLayer {
             && self.moe_w4a4_grouped_k.0 != 0
             && self.quantize_nvfp4_k.0 != 0
             && ctx.buffers.fp8_act_bytes() >= (p.n as usize) * (p.latent as usize)
-            && std::env::var("ATLAS_MOE_W4A4").is_ok();
+            && ctx.levers.moe_w4a4;
         if w4a4_up {
             let a4 = ctx.buffers.fp8_act();
             let a4_sf = a4.offset((p.n as usize) * (p.latent as usize) / 2);
@@ -237,7 +237,7 @@ impl NemotronMoeLayer {
 
         // 5e. Grouped DOWN GEMM: [sorted, p.inter] → [sorted, expert_out_dim]
         let expert_down_out = ctx.buffers.expert_down_out();
-        if std::env::var("ATLAS_MOE_NO_ZERO_INTERMEDIATES").is_err() {
+        if ctx.levers.moe_zero_intermediates {
             ctx.gpu.memset_async(
                 expert_down_out,
                 0,
@@ -323,7 +323,7 @@ impl NemotronMoeLayer {
             && self.w4a4_gemm_k.0 != 0
             && self.quantize_nvfp4_k.0 != 0
             && ctx.buffers.fp8_act_bytes() >= (p.shared_inter as usize) * (p.n as usize)
-            && std::env::var("ATLAS_SHARED_W4A4_DOWN").is_ok();
+            && ctx.levers.shared_w4a4_down;
         if let Some(fp8w) = native_down {
             let (kern, pipelined) = if self.w8a16_gemm_pipelined_k.0 != 0 {
                 (self.w8a16_gemm_pipelined_k, true)

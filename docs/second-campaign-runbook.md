@@ -44,7 +44,7 @@ campaign entirely.
     for g in decode-floor vision-fidelity video-fidelity \
              ssm-state-poisoning-gate concurrency-sweep agentic-webserver \
              ttft-cold-gate ttft-cold-gate ttft-warm-gate ttft-warm-gate \
-             bfcl-subset bfcl-subset-echolp; do
+             bfcl-subset bfcl-subset-echolp kat-equality-gate; do
       timeout 21600 ./target/release/spark benchmark run "$g" --pull-request-gate --yes
       rc=$?          # capture IMMEDIATELY: a $(date) on the next line resets it
       echo "$g rc=$rc"

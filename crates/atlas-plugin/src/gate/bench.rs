@@ -153,6 +153,33 @@ pub fn load_all(root: &Path) -> Result<Vec<(taxon::Target, BenchEntry)>> {
                     entry.checkpoint
                 );
             }
+            // A hermetic gate must pin EVERYTHING hermetic closes.
+            //
+            // `scoring::check_record` compares the record's serve overrides
+            // against the baseline's pins in BOTH directions, and a requested
+            // `hermetic=true` expands into the keys it closes — so a record
+            // carries three keys where an entry pinning only `hermetic` pins
+            // one, and the check fails with "present on the record but not
+            // pinned by the baseline". Refused HERE, at parse, in
+            // milliseconds, rather than after a campaign has spent the GPU
+            // hours on a gate that cannot be discharged by the run it asks
+            // for.
+            if super::hermetic::is_requested(&entry.serve_overrides) {
+                let missing = super::hermetic::missing_pins(&entry.serve_overrides);
+                if !missing.is_empty() {
+                    bail!(
+                        "{}: {} / {} pins hermetic=true but not {}: --hermetic expands into                          those keys, so the record will carry them and `check_record`                          compares the two sets in both directions. Pin them at these values                          or drop hermetic.",
+                        path.display(),
+                        entry.gate,
+                        entry.checkpoint,
+                        missing
+                            .iter()
+                            .map(|(k, v)| format!("{k}={v}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+            }
             validate_noise(&path, &entry)?;
             out.push((
                 taxon::Target {

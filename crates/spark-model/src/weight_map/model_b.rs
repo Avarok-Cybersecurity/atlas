@@ -86,6 +86,13 @@ impl ModelWeights {
                 atlas_core::config::LayerType::Moe => {
                     unreachable!("Qwen3 has no standalone MoE layers")
                 }
+                // GLM-5.3's `deepseek_sparse_attention`. `LayerWeights` has no sparse
+                // variant, so bail rather than fall through to `FullAttention` — a
+                // sparse layer bound as dense attends over the whole cache and produces
+                // plausible output, which is the worst failure mode available.
+                atlas_core::config::LayerType::SparseAttention => anyhow::bail!(
+                    "layer {i}: SparseAttention has no weight-map variant in this loader"
+                ),
             }
 
             if (i + 1) % 12 == 0 {

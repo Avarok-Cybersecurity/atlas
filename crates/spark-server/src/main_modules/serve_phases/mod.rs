@@ -16,7 +16,7 @@ mod weights;
 
 pub(super) use build::{
     build_high_speed_swap_config, build_model, build_prefix_cache, maybe_run_ep_worker,
-    validate_head_high_speed_swap,
+    resolve_swap_space_gb, validate_head_high_speed_swap,
 };
 pub(super) use config::{
     apply_model_default_num_drafts, cap_vocab_size_to_tokenizer, load_model_config,
@@ -27,7 +27,7 @@ pub(super) use kv_cache::{
     KvCacheConfig, PrefillBudget, resolve_kv_cache_config, resolve_prefill_budget,
 };
 pub(super) use preflight::{
-    ReservePreflight, init_gpu_backend, post_load_memory_audit, preflight_reserve,
+    PostLoadInputs, ReservePreflight, init_gpu_backend, post_load_memory_audit, preflight_reserve,
 };
 pub(super) use runtime::{
     SamplingDefaults, load_eos_tokens, load_sampling_defaults, log_behavior_audit,

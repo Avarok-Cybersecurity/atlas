@@ -25,6 +25,9 @@ mod emit_step;
 mod fast_greedy;
 #[cfg(test)]
 mod finish_guard_tests;
+mod first_token_policy;
+#[cfg(test)]
+mod first_token_policy_tests;
 mod helpers;
 mod lifecycle;
 #[cfg(test)]
@@ -37,6 +40,7 @@ pub use mod_helpers::capture_runtime_handle;
 pub mod dumps;
 pub mod levers;
 pub mod limits;
+mod lookup_gate;
 mod mtp_accept_debug;
 mod mtp_bootstrap_step;
 mod mtp_dcut;
@@ -54,6 +58,8 @@ mod prefill_a_step_params;
 mod prefill_b_step;
 #[cfg(test)]
 mod prefill_fifo_tests;
+#[cfg(test)]
+mod prefill_timing_tests;
 mod repetition;
 mod rollback;
 mod sample_step;
@@ -82,6 +88,7 @@ mod verify_k4_batch_step;
 mod verify_k4_step;
 mod verify_k4_verdict;
 mod verify_ledger;
+mod verify_kn_step;
 mod verify_mtp_wide;
 mod verify_pipeline_helper;
 pub mod vocab_masks;
@@ -93,6 +100,7 @@ use decode_logits_seq::*;
 use decode_logits_step::*;
 use decode_step::*;
 use emit_step::*;
+use first_token_policy::*;
 pub use helpers::WatchdogParams;
 pub(crate) use helpers::parse_disable_watchdogs;
 pub use helpers::resolve_content_loop_watchdog;

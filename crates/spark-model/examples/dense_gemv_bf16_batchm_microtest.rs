@@ -14,6 +14,13 @@
 //!      meaningfully faster at M=2 and M=4 (ideally ~M x, since the weight read
 //!      is paid once instead of M times).
 //!
+//! 🪤 The bit-identity assertion is the load-bearing one, and it is a REGRESSION
+//! test, not just a property test: the kernel stages the A tile in shared memory,
+//! which is a pure data-movement change that must not perturb a single bit. A
+//! standalone cold-weight A/B against the pre-staging revision lives in spark-bench
+//! at `scripts/glm53-dense-bf16/bench_dense_bf16.cu` (80/80 (N,K,M) cases identical,
+//! 1.06-1.45x depending on shape).
+//!
 //! Run:
 //!   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=laguna-s-2.1 ATLAS_TARGET_QUANT=nvfp4 \
 //!     cargo run -p spark-model --release --features cuda,gpu-examples \
@@ -31,8 +38,35 @@ const SHAPES: &[(usize, usize, &str)] = &[
     (9216, 3072, "q_proj"),
     (3072, 9216, "o_proj"),
     (1024, 3072, "k/v/shared"),
+    // GLM-5.3 prefill at PREFILL_ROWS. N=4096 carries 69 % of the dense BF16
+    // bucket (292,500 launches / 35.40 s of a 9000-token prefill); K=16384 is the
+    // large-K arm where the A tile overflows L1.
+    (4096, 3072, "glm N4096"),
+    (4096, 16384, "glm N4096 K16k"),
+    // The rest of the real GLM per-rank dense sites, so the M<=16 identity contract
+    // is asserted on every shape the prefill actually launches — not just the two
+    // biggest. Shallow-K `f_b` is here because it is the one shape a wider tier makes
+    // SLOWER (0.77x per token, measured), and a future width change must not quietly
+    // break it while chasing the others.
+    (4096, 4096, "glm KDA qkv/o"),
+    (16384, 1536, "glm DSA q_absorb"),
+    (1024, 4096, "glm shared gate/up"),
+    (4096, 1024, "glm shared down"),
+    (4096, 128, "glm KDA f_b (shallow K)"),
+    (32, 4096, "glm KDA b_proj (8 blocks)"),
+    // 🪤 N % N_PER_BLOCK != 0: the last block has lanes with n >= N. They must
+    // still reach the shared-memory staging barriers, so the kernel masks rather
+    // than returning early. This shape is the regression test for that.
+    (4098, 3072, "N not mult of 4"),
 ];
-const MS: &[usize] = &[1, 2, 4];
+// Every width the dispatch can hand the kernel, 1..=MAX_M.
+//
+// 🔴 The narrow widths are the ones that matter most here. MAX_M is 16 since
+// 2026-09-02, but decode, the MTP verify arm and the BF16 lm_head arm still run
+// m <= 8 on this same kernel — so a width extension is only safe if 1..=8 come back
+// byte-for-byte what they were. 9..=16 is the new prefill capability; 16 is the
+// width `PREFILL_ROWS` actually runs at.
+const MS: &[usize] = &[1, 2, 4, 8, 9, 12, 15, 16];
 const ITERS: usize = 50;
 const WARMUP: usize = 10;
 

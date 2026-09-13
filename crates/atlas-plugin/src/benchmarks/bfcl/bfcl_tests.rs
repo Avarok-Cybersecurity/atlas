@@ -73,6 +73,7 @@ fn scores(overall: f64, normalized: f64) -> Scores {
         subset_scores: BTreeMap::new(),
         total_samples: 995,
         unmatched_responses: 0,
+        subset_totals: BTreeMap::new(),
     }
 }
 

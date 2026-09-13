@@ -46,6 +46,25 @@ impl TransformerModel {
     /// streams. Cheap upfront check — caller (dispatch) falls back to
     /// per-stream when false.
     pub(in crate::model) fn kernel_batched_eligible(&self, streams: &[PrefillSlice<'_>]) -> bool {
+        // A vision prompt must not take this path. `stage_batched` stages
+        // T = H = W = the linear token index for every stream — it has no
+        // MRoPE vision arm, and says so ("assume no vision pads in batched
+        // prefill ... the scheduler can refuse"). This is that refusal.
+        //
+        // Nothing about the result LOOKS wrong when it happens: token counts,
+        // splice offsets and geometry are all identical, and the model answers
+        // fluently. It just answers a slightly different question, because its
+        // image arrived as a flat run of consecutive positions instead of a
+        // grid. Measured on the 1280x720 size-label fixture, the same request
+        // at temperature 0 read the full label alone and only half of it at
+        // C>=2; text-only prompts were byte-identical at every width, which is
+        // what localised it here.
+        if streams
+            .iter()
+            .any(|s| self.tokens_have_vision_pad(s.prompt_tokens))
+        {
+            return false;
+        }
         // Routed-MoE prefill is a flat [total_tokens] sort/grouped-GEMM/scatter
         // with no notion of stream boundaries (layers/moe/** contains no
         // chunk_len / batch_size / stream_idx), so it needs no ragged

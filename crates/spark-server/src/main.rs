@@ -47,6 +47,7 @@ pub mod metrics;
 mod model_download;
 mod model_resolver;
 mod moe_quality;
+mod lookup_drafts;
 mod ngram;
 mod openai;
 mod rate_limiter;

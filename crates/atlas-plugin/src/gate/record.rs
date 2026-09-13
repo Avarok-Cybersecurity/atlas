@@ -342,8 +342,13 @@ impl GateRecord {
         git_sha: String,
         dirty_paths: Vec<String>,
         served_by: Option<String>,
-        serve_overrides: BTreeMap<String, String>,
     ) -> Result<Self> {
+        // DERIVED from the run, never passed alongside it. Both records used
+        // to be handed the same map by one caller, which made them agree by
+        // CONVENTION — one future edit away from a history record and a gate
+        // record describing different regimes for one run. Reading it off the
+        // record makes disagreement impossible to express.
+        let serve_overrides = record.serve_overrides.clone();
         if git_sha.trim().is_empty() {
             bail!("a gate record needs the commit sha it was measured from");
         }

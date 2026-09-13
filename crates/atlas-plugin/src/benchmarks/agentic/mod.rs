@@ -177,6 +177,33 @@ impl AgenticWebserver {
         let _ = std::fs::remove_dir_all(&sandbox);
         std::fs::create_dir_all(&sandbox)
             .with_context(|| format!("creating sandbox {}", sandbox.display()))?;
+        // `./target` -> the warm target dir, so the CONVENTIONAL path resolves.
+        //
+        // The warm cache exists to stop each generation cold-compiling the
+        // dependency tree, and it does that by pointing CARGO_TARGET_DIR at a
+        // shared directory. The side effect is that `cargo build` writes the
+        // binary somewhere the agent has no reason to expect: every run reached
+        //
+        //   setsid: failed to execute ./target/debug/ping-pong: No such file
+        //
+        // and then spent turns rediscovering CARGO_TARGET_DIR — "the binary
+        // path is wrong, the target directory is a custom one
+        // (atlas-warm-target)", verbatim from two trajectories. That is the
+        // same class of environmental artifact the warm cache was built to
+        // remove, charged back as turns and therefore as s/turn.
+        //
+        // A symlink restores the convention without giving up the cache. It
+        // cannot manufacture a pass: the scorer builds the sandbox's own source
+        // before it tests anything, so a leftover binary from an earlier
+        // iteration is rebuilt or the run fails for the missing source.
+        #[cfg(unix)]
+        if let Some(dir) = &self.cargo_target_dir {
+            let link = sandbox.join("target");
+            let _ = std::fs::remove_file(&link);
+            if let Err(e) = std::os::unix::fs::symlink(dir, &link) {
+                tracing::debug!("sandbox target symlink: {e}");
+            }
+        }
 
         let cfg = agent::AgentConfig {
             sandbox: sandbox.clone(),

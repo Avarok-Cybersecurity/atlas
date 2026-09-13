@@ -74,7 +74,11 @@ impl Qwen3AttentionLayer {
     /// `true` when this layer carries an indexer AND at least one row of the
     /// batch is past the inert bound. `false` keeps the batch on the plain
     /// batched attention + ingest-only loop (bit-identical to before).
-    pub(super) fn ms_qsa_selection_active(&self, seq_lens: &[usize], n: usize) -> bool {
+    pub(in crate::layers::qwen3_attention) fn ms_qsa_selection_active(
+        &self,
+        seq_lens: &[usize],
+        n: usize,
+    ) -> bool {
         self.qsa
             .as_ref()
             .is_some_and(|q| any_selection_active(q.inert_bound(), seq_lens, n))
@@ -88,7 +92,7 @@ impl Qwen3AttentionLayer {
     /// `Some` would mean this function and [`Self::ms_qsa_selection_active`]
     /// disagree — refuse loudly rather than serve dense-past-budget, which
     /// is NOT the reference model.
-    pub(super) fn ms_qsa_ingest_only<'a, 'b: 'a>(
+    pub(in crate::layers::qwen3_attention) fn ms_qsa_ingest_only<'a, 'b: 'a>(
         &self,
         c: &MultiSeqCtx<'_>,
         states: &'a mut [&'b mut (dyn LayerState + 'static)],

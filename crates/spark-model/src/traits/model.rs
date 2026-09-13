@@ -514,7 +514,9 @@ pub trait Model: Send + Sync {
     /// model keeps no decode-rollback snapshots — appropriate for
     /// pure-attention models and for SSM models when the snapshot pool
     /// has no capacity reserved. SSM models with a populated pool
-    /// override to `ROLLBACK_RESTEER_CAP + 1`.
+    /// override to the depth `ssm_reserve::decode_rollback_ring_slots`
+    /// decided — 8 by default, or whatever `--ssm-decode-ring-slots` /
+    /// preflight's free-memory fit published (#915).
     fn decode_rollback_ring_slots(&self) -> usize {
         0
     }
@@ -687,6 +689,33 @@ pub trait Model: Send + Sync {
         seq: &mut SequenceState,
         stream: u64,
     ) -> Result<[u32; 4]>;
+
+    /// K=N verify for `tokens.len()` rows (1 verified + N-1 drafts), the
+    /// width-generic entry of the K-row verify (#1060). Returns one argmax
+    /// per row. Default: the K=3 and K=4 graphed paths; any other width is an
+    /// error unless the model overrides (the Flash-Next highway verify does).
+    fn decode_verify_graphed_kn(
+        &self,
+        tokens: &[u32],
+        seq: &mut SequenceState,
+        stream: u64,
+    ) -> Result<Vec<u32>> {
+        match tokens.len() {
+            3 => Ok(self
+                .decode_verify_graphed_k3(&[tokens[0], tokens[1], tokens[2]], seq, stream)?
+                .to_vec()),
+            4 => Ok(self
+                .decode_verify_graphed_k4(
+                    &[tokens[0], tokens[1], tokens[2], tokens[3]],
+                    seq,
+                    stream,
+                )?
+                .to_vec()),
+            k => anyhow::bail!(
+                "decode_verify_graphed_kn: no verify path at K={k} rows on this model"
+            ),
+        }
+    }
 
     /// Whether [`Self::decode_verify_batched`] can run for `ks.len()`
     /// sequences at `ks[i]` verify rows each (one more than that sequence's
@@ -1029,6 +1058,11 @@ pub trait Model: Send + Sync {
     /// EP worker step: receive a (seq_id, cmd) preamble from rank 0 and
     /// execute the command in the addressed slot.
     ///
+    /// 🔴 An `Err` carrying [`EpCommandFailed`] means the command EXECUTED and failed —
+    /// a per-request fault the head raises identically and answers the client with. The
+    /// worker must STAY UP. Any other `Err` came from receiving the command, i.e. the link
+    /// to the head is gone, and the worker must exit. See [`EpCommandFailed`].
+    ///
     /// Returns false when the worker should shut down.
     /// Only valid on rank > 0 with EP enabled.
     ///
@@ -1135,6 +1169,15 @@ pub trait Model: Send + Sync {
     /// Uses a single NCCL broadcast instead of per-token broadcasts.
     fn ep_broadcast_tokens(&self, _tokens: &[u32]) -> Result<Vec<u32>> {
         Ok(Vec::new()) // no-op for non-EP models
+    }
+
+    /// EP: hand rank 0's vision embeddings and grids to every other rank.
+    ///
+    /// Must be called on EVERY rank at the same point in the prefill command
+    /// stream — right after the prompt tokens — because it runs a fixed
+    /// sequence of collectives whether or not the prompt has an image.
+    fn ep_exchange_vision(&self, _tokens: &[u32]) -> Result<()> {
+        Ok(()) // no-op for non-EP models
     }
 
     /// Trim the MTP proposer's KV cache after verification.
@@ -1325,5 +1368,57 @@ mod padded_batch_n_tests {
         }
         // Above the ladder: fall-through unchanged.
         assert_eq!(padded_batch_n(129), 129);
+    }
+}
+
+/// A worker command that was received and then FAILED TO EXECUTE.
+///
+/// 🔴 Why this distinction is load-bearing. The EP worker loop used to `break` on any
+/// error, so a per-request fault — a prefill chunk the model legitimately refuses — killed
+/// the worker, which then exited with status **0** while the head stayed up. The head's very
+/// next request issued a collective against a peer that no longer existed and spun in NCCL
+/// forever at 100 % CPU, with `/v1/models`, `/health` and `/health/live` all still answering
+/// 200. Measured 2026-08-30: rank 1 logged this exact refusal and stopped 4 s later; rank 0
+/// accepted a 13-token request 10 minutes on and never produced a single further log line.
+/// ANOMALIES A60 (the wedge) and A62 (the refusal that triggered it).
+///
+/// The head raises the SAME error for the SAME command and turns it into an HTTP 500, so the
+/// two ranks disagreeing about whether it is fatal is the defect. A receive failure stays
+/// fatal: the link is gone, and the next iteration's receive would fail again anyway.
+#[derive(Debug)]
+pub struct EpCommandFailed(pub anyhow::Error);
+
+impl std::fmt::Display for EpCommandFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.0)
+    }
+}
+
+impl std::error::Error for EpCommandFailed {}
+
+#[cfg(test)]
+mod ep_command_failed_tests {
+    use super::EpCommandFailed;
+
+    /// The worker loop classifies by downcast, so the tag must survive being boxed into an
+    /// `anyhow::Error` — and the original message must survive with it, or the operator
+    /// loses the only line that says WHY the command failed.
+    #[test]
+    fn the_tag_and_its_message_survive_anyhow() {
+        let inner = anyhow::anyhow!("Prefill chunk layer 3 failed: DSA indexer cache: 16385");
+        let tagged = anyhow::Error::new(EpCommandFailed(inner));
+        assert!(
+            tagged.downcast_ref::<EpCommandFailed>().is_some(),
+            "the worker loop cannot tell a command failure from a dead link without this"
+        );
+        assert!(format!("{tagged:#}").contains("DSA indexer cache: 16385"));
+    }
+
+    /// A receive failure must NOT be mistaken for a command failure: the link is gone and
+    /// the worker has to exit rather than spin re-reading a dead socket.
+    #[test]
+    fn an_untagged_error_stays_fatal() {
+        let recv = anyhow::anyhow!("ep_recv_seq_and_cmd: peer closed");
+        assert!(recv.downcast_ref::<EpCommandFailed>().is_none());
     }
 }

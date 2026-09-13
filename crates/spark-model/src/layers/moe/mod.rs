@@ -76,6 +76,17 @@ pub struct MoeLayer {
     // K=3 fused MoE kernel handles
     moe_expert_gate_up_shared_batch3: KernelHandle,
     moe_expert_silu_down_shared_batch3: KernelHandle,
+    /// N-row decode MoE arm (#1060), rows 4..=8; a zero handle = arm absent.
+    moe_expert_gate_up_shared_batchn: KernelHandle,
+    moe_expert_silu_down_shared_batchn: KernelHandle,
+    moe_weighted_sum_blend_batchn: KernelHandle,
+    /// Router GEMV for 4..=8 rows (`w4a16_gemv_batch8`).
+    w4a16_gemv_batch8_k: KernelHandle,
+    /// Wide router GEMV (M<=16) for the K-row arm past 8 rows. Resolved
+    /// DIRECTLY rather than through `w4a16_gemv_tiers`: that table stops at 8
+    /// on purpose ("folding them in here would silently widen every site that
+    /// today caps at 8"), so this widens exactly one site.
+    w4a16_gemv_batch16_k: KernelHandle,
     moe_weighted_sum_blend_batch3: KernelHandle,
     w4a16_gemv_batch3: KernelHandle,
     // Generic token-major NVFP4 MoE kernels. Used as an opt-in decode
@@ -436,6 +447,7 @@ mod forward_exl3_router;
 mod forward_exl3_shared;
 mod forward_k2;
 mod forward_k3;
+mod forward_kn;
 mod forward_phase;
 mod forward_prefill;
 mod forward_prefill_bf16;

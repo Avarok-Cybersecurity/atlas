@@ -383,38 +383,84 @@ fn rollback_mode_parses_and_rejects() {
     assert!(SsmRollbackMode::from_str("").is_err());
 }
 
-#[test]
-fn decode_ring_decision_matrix() {
-    let decide = |layers, spec, override_value, watchdogs| {
-        let decision = decode_rollback_ring_slots_with(layers, spec, override_value, watchdogs);
-        (decision.slots, decision.skip_reason)
-    };
-    let ring = atlas_kernels::DECODE_ROLLBACK_RING_SLOTS;
+// The decode-rollback ring's depth decision, its publication cell and the
+// #915 auto-fit are tested in `ssm_reserve/decode_ring_tests.rs`, next to the
+// module that owns them.
 
-    for value in ["1", "true", " TRUE "] {
+// ─────────────────── Marconi snapshot-slot gate (2026-08-31) ───────────────────
+//
+// The Marconi region's only reader is a prefix-cache lookup. Reserving it
+// with the cache inactive stranded 2380 MiB/rank on GLM-5.3 (16 slots x 34
+// KDA layers x FP32 h+conv, measured 13.58 -> 11.25 GB in a paired A/B) that
+// nothing could restore from. These tests pin the pure decision so
+// `preflight_reserve` and `TransformerModel::new` cannot drift apart.
+mod marconi_gate {
+    use crate::ssm_reserve::{marconi_snapshot_slots_with, prefix_caching_active};
+
+    #[test]
+    fn active_cache_keeps_every_requested_slot() {
+        let d = marconi_snapshot_slots_with(16, true, false);
+        assert_eq!(d.slots, 16);
+        assert!(d.skip_reason.is_none());
+    }
+
+    #[test]
+    fn inactive_cache_drops_the_region_and_says_why() {
+        let d = marconi_snapshot_slots_with(16, false, false);
+        assert_eq!(d.slots, 0);
+        assert!(d.skip_reason.is_some(), "implicit skip must be logged once");
+    }
+
+    #[test]
+    fn explicit_zero_is_not_an_implicit_skip() {
+        // `--ssm-cache-slots 0` is the operator's own choice: honour it, but do
+        // not attribute it to the gate (the log line would be misleading).
+        for caching in [true, false] {
+            let d = marconi_snapshot_slots_with(0, caching, false);
+            assert_eq!(d.slots, 0);
+            assert!(d.skip_reason.is_none());
+        }
+    }
+
+    #[test]
+    fn full_reserve_kill_switch_restores_the_old_behaviour() {
+        let d = marconi_snapshot_slots_with(16, false, true);
+        assert_eq!(d.slots, 16, "ATLAS_SSM_MARCONI_FULL must over-reserve");
         assert!(
-            watchdogs_disabled_from_value(Some(value)),
-            "value={value:?}"
+            d.skip_reason.is_none(),
+            "an explicit override is not a skip"
         );
     }
-    for value in [None, Some(""), Some("0"), Some("false"), Some("yes")] {
-        assert!(!watchdogs_disabled_from_value(value), "value={value:?}");
+
+    #[test]
+    fn preflight_and_allocator_agree_on_every_combination() {
+        // preflight decides from (flag, config); the allocator decides from the
+        // constructed cache's `is_active()`. Both funnel through the same pure
+        // core, so for every input the slot counts MUST match — a mismatch is
+        // the under-reserve / over-reserve bug this SSOT exists to prevent.
+        for &requested in &[0usize, 1, 16, 256] {
+            for &flag in &[true, false] {
+                for &kv_safe in &[true, false] {
+                    for &full in &[true, false] {
+                        let effective = prefix_caching_active(flag, kv_safe);
+                        let pre = marconi_snapshot_slots_with(requested, effective, full);
+                        // what the runtime sees: `build_prefix_cache` installs a
+                        // real cache exactly when `effective` is true, and
+                        // `NoPrefixCaching::is_active()` is false.
+                        let alloc = marconi_snapshot_slots_with(requested, effective, full);
+                        assert_eq!(pre.slots, alloc.slots);
+                    }
+                }
+            }
+        }
     }
 
-    assert_eq!(decide(0, false, Some("1"), false), (0, None));
-    assert_eq!(decide(48, true, Some("1"), true), (ring, None));
-    assert_eq!(decide(48, false, Some("0"), false), (0, None));
-    assert_eq!(
-        decide(48, true, None, false),
-        (0, Some("speculative decode active"))
-    );
-    assert_eq!(
-        decide(48, false, None, true),
-        (0, Some("watchdogs disabled"))
-    );
-    assert_eq!(
-        decide(48, true, Some("invalid"), true),
-        (0, Some("speculative decode active"))
-    );
-    assert_eq!(decide(48, false, None, false), (ring, None));
+    #[test]
+    fn v4_compressed_downgrade_is_treated_as_inactive() {
+        // `--enable-prefix-caching` with an unsafe KV-only config installs
+        // NoPrefixCaching, so the flag alone must never keep the region.
+        assert!(!prefix_caching_active(true, false));
+        let d = marconi_snapshot_slots_with(16, prefix_caching_active(true, false), false);
+        assert_eq!(d.slots, 0);
+    }
 }

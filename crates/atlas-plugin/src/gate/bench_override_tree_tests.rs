@@ -112,6 +112,38 @@ fn every_committed_param_override_parses_against_its_gates_schema() {
                 // property the vacuity rule protects.
                 "200".into(),
             ),
+            // kat-equality-gate, added with the 2026-09-10 promotion. All
+            // three pins are load-bearing for a bound: `orders` and
+            // `sample_cap` are what the `orders`/`samples` metric pins are
+            // statements ABOUT, and `max_new_tokens` is BFCL's own budget —
+            // this gate replays BFCL's request body, and shipped once at 512
+            // against BFCL's 1024.
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "kat-equality-gate".into(),
+                "max_new_tokens".into(),
+                "1024".into(),
+            ),
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "kat-equality-gate".into(),
+                "orders".into(),
+                "2".into(),
+            ),
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "kat-equality-gate".into(),
+                "sample_cap".into(),
+                // 257 is the end of live_parallel_multiple in the golden
+                // draw's sorted concatenation, i.e. the smallest prefix
+                // covering every subset in which order-dependence has been
+                // observed. `truncate` selects a prefix, not a sample, so this
+                // number decides WHICH subsets are compared.
+                "257".into(),
+            ),
         ],
         "the committed override validation must not pass vacuously or skip a pin"
     );

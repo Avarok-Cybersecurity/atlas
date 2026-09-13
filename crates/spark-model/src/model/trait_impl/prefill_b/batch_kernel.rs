@@ -540,6 +540,7 @@ impl TransformerModel {
             profile: self.profile,
             comm: self.comm_ref(),
             graph_capture: false,
+            decode_step: false,
             // Always COLD (warm hybrid-SSM matches fall back to the per-stream
             // path), but a cold pass is the reference a later warm Marconi
             // replay must reproduce — same kernel rule applies.

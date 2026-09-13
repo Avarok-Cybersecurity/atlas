@@ -56,6 +56,13 @@ pub struct RunRequest {
     pub descriptor: &'static BenchmarkDescriptor,
     pub values: ParamValues,
     pub target: TargetEndpoint,
+    /// The serve overrides the caller started `target` under, recorded onto
+    /// the run. Beside `target` and not on `HeadlessOptions` on purpose:
+    /// `HeadlessOptions` is how the driver behaves, this is what is being
+    /// measured. Empty when the caller did not start the server — see
+    /// [`crate::RunRecord::serve_overrides`] for why that is not the same
+    /// claim as "no overrides".
+    pub serve_overrides: std::collections::BTreeMap<String, String>,
     pub options: HeadlessOptions,
 }
 
@@ -173,6 +180,7 @@ pub fn run_blocking(
         request.descriptor,
         &request.values,
         &request.target,
+        request.serve_overrides.clone(),
         request.options.source,
         &request.options.atlas_version,
         frame,

@@ -17,10 +17,17 @@ mod activations;
 mod derived_weights;
 #[path = "ops/dispatch_config.rs"]
 mod dispatch_config;
+#[cfg(test)]
+#[path = "ops/dispatch_config_routing_tests.rs"]
+mod dispatch_config_routing_tests;
 #[path = "ops/dispatch_helpers.rs"]
 mod dispatch_helpers;
 #[path = "ops/dispatch_proj.rs"]
 mod dispatch_proj;
+// W8A8 block-scaled cuBLASLt routing for the 5..16-row DECODE projections
+// (#927), a sibling of dispatch_proj.rs so neither file crosses the cap.
+#[path = "ops/dispatch_proj_decode.rs"]
+mod dispatch_proj_decode;
 // Row-wise FP8 routing, split out when it took dispatch_proj.rs over the cap.
 #[path = "ops/dispatch_proj_rowwise.rs"]
 mod dispatch_proj_rowwise;
@@ -68,12 +75,21 @@ mod gemv_q2;
 mod gemv_q2_vec;
 #[path = "ops/gemv_sw.rs"]
 mod gemv_sw;
+/// GLM-5.3-Flash mHC dispatch (Slice 10 gate 0) -- kept out of `hyper_connection.rs` so
+/// DeepSeek-V4's proven dispatch stays byte-untouched.
+#[path = "ops/glm5next_mhc.rs"]
+mod glm5next_mhc;
 #[path = "ops/hyper_connection.rs"]
 mod hyper_connection;
 #[path = "ops/hyper_connection_dispatch.rs"]
 mod hyper_connection_dispatch;
 #[path = "ops/hyper_connection_lowrank.rs"]
 mod hyper_connection_lowrank;
+#[path = "ops/hyper_connection_lowrank_rows.rs"]
+mod hyper_connection_lowrank_rows;
+#[cfg(test)]
+#[path = "ops/hyper_connection_lowrank_rows_tests.rs"]
+mod hyper_connection_lowrank_rows_tests;
 #[cfg(test)]
 #[path = "ops/hyper_connection_lowrank_tests.rs"]
 mod hyper_connection_lowrank_tests;
@@ -109,6 +125,10 @@ pub mod moe_lora_grouped;
 mod moe_prefill;
 #[path = "ops/norm.rs"]
 mod norm;
+// The gated-RMS-norm launch-count pin (#927): 48 per step, not 768.
+#[cfg(test)]
+#[path = "ops/norm_gated_rms_strided_tests.rs"]
+mod norm_gated_rms_strided_tests;
 mod nvfp4_mmq;
 #[path = "ops/ple.rs"]
 mod ple;
@@ -161,9 +181,10 @@ mod wide_prefill;
 
 pub use activations::*;
 pub use derived_weights::{Derivation, DerivedWeights};
-pub use dispatch_config::GemmDispatch;
+pub use dispatch_config::{CublasScope, GemmDispatch, parse_cublas_scope};
 pub use dispatch_helpers::*;
 pub use dispatch_proj::*;
+pub use dispatch_proj_decode::*;
 pub use dispatch_proj_rowwise::*;
 pub use embeddings::*;
 pub use exl3_dense::*;
@@ -180,6 +201,7 @@ pub use gemm_quant::*;
 pub use gemv_q2::*;
 pub use gemv_q2_vec::*;
 pub use gemv_sw::*;
+pub use glm5next_mhc::*;
 pub use hyper_connection::*;
 pub use hyper_connection_dispatch::*;
 pub use hyper_connection_lowrank::*;

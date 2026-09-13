@@ -9,7 +9,8 @@ use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::types::Qwen3AttentionLayer;
-use crate::weight_map::{Fp8Weight, QuantWeight, QuantizedWeight};
+use super::types_weights::Fp8TwinSet;
+use crate::weight_map::{Fp8Weight, Fp8WeightTransposed, QuantWeight, QuantizedWeight};
 
 impl Qwen3AttentionLayer {
     /// Dispatch the M=128 W4A16 prefill GEMM. Routes to the v2 shadow
@@ -39,9 +40,13 @@ impl Qwen3AttentionLayer {
         // Gated by ATLAS_BF16_TC_PROJ (default off → unchanged). Removes the
         // FP8 prefill perturbation on the attention projections.
         // Load-time weight prep runs before any `TransformerModel` exists to
-        // carry the levers, so this resolves at the point of use. The
-        // interpretation stays SSOT in `ModelLevers`.
-        let bf16_proj = crate::layers::ops::ModelLevers::from_env().bf16_tc_proj;
+        // carry the levers, so this cannot take a plumbed value and reads the
+        // process-wide levers instead. Those resolve from the environment
+        // exactly ONCE; this site used to call `from_env()`, which re-reads ~30
+        // variables, and it runs once per layer per prefill — MEASURED at
+        // 32,513 resolutions in one `concurrency-sweep`. The interpretation
+        // stays SSOT in `ModelLevers`.
+        let bf16_proj = crate::layers::ops::ModelLevers::get().bf16_tc_proj;
         if bf16_proj && self.w4a16_gemm_t_m128_bf16_k.0 != 0 {
             return crate::layers::ops::w4a16_gemm_n128_m128_bf16(
                 gpu,
@@ -338,13 +343,40 @@ impl Qwen3AttentionLayer {
         anyhow::bail!("LoRA: router/expert deltas installed on a layer with no MoE FFN component")
     }
 
+    /// Whether BOTH kernels the W8A8 block-scaled prefill arm needs are
+    /// loaded for this target (`prefill/paged_qkv.rs:220`,
+    /// `prefill/paged_oproj.rs:94`). The loader asks this to decide whether the
+    /// Q and O FP8 prefill twins are reachable at all (#915).
+    pub fn has_w8a8_prefill_kernels(&self) -> bool {
+        self.per_token_group_quant_fp8_k.0 != 0 && self.fp8_gemm_t_blockscaled_k.0 != 0
+    }
+
     /// Transpose FP8 weights for fast prefill (`w8a16_gemm_t`: coalesced
     /// reads). Must be called after [`Self::set_fp8_weights`]. Allocates
     /// new GPU buffers.
+    ///
+    /// Builds all four twins and gives them no owner — the pre-#915 behaviour,
+    /// kept for the loaders that have not been given a residency plan.
     pub fn transpose_fp8_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,
         stream: u64,
+    ) -> anyhow::Result<()> {
+        self.transpose_fp8_for_prefill_selected(gpu, stream, Fp8TwinSet::ALL, None)
+    }
+
+    /// [`Self::transpose_fp8_for_prefill`], building only `want` and handing
+    /// each result to `derived` so teardown RELEASES it instead of the backend
+    /// sweep reclaiming it unowned (#736, #915).
+    ///
+    /// `want` comes from the loader's residency plan; which projection is
+    /// reachable on which prefill chain is documented on [`Fp8TwinSet`].
+    pub fn transpose_fp8_for_prefill_selected(
+        &mut self,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+        want: Fp8TwinSet,
+        derived: Option<&spark_runtime::weights::DerivedStore>,
     ) -> anyhow::Result<()> {
         // Load-time decision, taken in the weight loader before any
         // `TransformerModel` exists to carry the config. Resolved at the point
@@ -356,27 +388,43 @@ impl Qwen3AttentionLayer {
             );
             return Ok(());
         }
+        if !want.any() {
+            return Ok(());
+        }
         if self.w8a16_gemm_t_k.0 == 0 {
             return Ok(()); // kernel not available
         }
         let transpose_k = gpu.kernel("w8a16_gemm_t", "transpose_fp8")?;
         let transpose_scale_k = gpu.kernel("w8a16_gemm_t", "transpose_block_scale")?;
 
-        if let Some(w) = self.q_weight.as_ref().and_then(|w| w.as_fp8()) {
-            self.q_fp8w_t =
-                Some(w.transpose_for_gemm(gpu, transpose_k, transpose_scale_k, stream)?);
+        let build = |src: Option<&QuantWeight>| -> anyhow::Result<Option<Fp8WeightTransposed>> {
+            let Some(w) = src.and_then(|w| w.as_fp8()) else {
+                return Ok(None);
+            };
+            let t = w.transpose_for_gemm(gpu, transpose_k, transpose_scale_k, stream)?;
+            if let Some(d) = derived {
+                let (n, k) = (w.n as usize, w.k as usize);
+                d.adopt("attn fp8 prefill twin (weight_t)", t.weight_t, n * k);
+                d.adopt(
+                    "attn fp8 prefill twin (scale_t)",
+                    t.scale_t,
+                    n.div_ceil(128) * k.div_ceil(128) * 4,
+                );
+            }
+            Ok(Some(t))
+        };
+
+        if want.q {
+            self.q_fp8w_t = build(self.q_weight.as_ref())?;
         }
-        if let Some(w) = self.k_weight.as_ref().and_then(|w| w.as_fp8()) {
-            self.k_fp8w_t =
-                Some(w.transpose_for_gemm(gpu, transpose_k, transpose_scale_k, stream)?);
+        if want.k {
+            self.k_fp8w_t = build(self.k_weight.as_ref())?;
         }
-        if let Some(w) = self.v_weight.as_ref().and_then(|w| w.as_fp8()) {
-            self.v_fp8w_t =
-                Some(w.transpose_for_gemm(gpu, transpose_k, transpose_scale_k, stream)?);
+        if want.v {
+            self.v_fp8w_t = build(self.v_weight.as_ref())?;
         }
-        if let Some(w) = self.o_weight.as_ref().and_then(|w| w.as_fp8()) {
-            self.o_fp8w_t =
-                Some(w.transpose_for_gemm(gpu, transpose_k, transpose_scale_k, stream)?);
+        if want.o {
+            self.o_fp8w_t = build(self.o_weight.as_ref())?;
         }
         Ok(())
     }

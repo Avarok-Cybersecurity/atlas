@@ -220,9 +220,53 @@ measured without proof of speculative engagement is the 2026-08-15 decode \
 flip-flop all over again."""
 
 [benchmarks.metrics.server_decode_tok_s]
-# Median-of-3 server decode rate. The floor of 22.7 is the bound in force —
-# an effective floor of 22.2 tok/s once noise 0.5 is applied by
+# Median-of-3 server decode rate. The floor of 25.0 is the bound in force —
+# an effective floor of 24.5 tok/s once noise 0.5 is applied by
 # scoring::compare.
+#
+# ★ RATCHETED 2026-09-11, 22.7 -> 25.0, from a fresh 12-run set on this
+# entry's own instrument and on dgx2 (spark-43fa) — the SLOWEST box, which is
+# where the superseded bar was drawn from too, so the basis is comparable:
+#
+#     26.3 26.1 26.1 26.2 26.1 26.1 26.1 26.1 26.1 26.1 26.1 26.1
+#     n=12  mean 26.125  sigma 0.062  range 26.1-26.3
+#
+# sigma is quantization-limited (the gate reports one decimal), so the true
+# spread is at most this. 24.5 sits ~26 sigma below the mean, and ~6.2% below
+# it — wider than the mean-minus-5% the sweeps use, so this is a deliberately
+# conservative ratchet rather than the tightest the data allows (that would be
+# 25.3).
+#
+# ★ WHY THE LEVEL MOVED. It is a STEP, not drift: records from 2026-08-23 to
+# 09-07 read 22.4-23.5 and records from 09-08 onward read 26.1-26.3, with
+# accept_len_mean 2.6826 unchanged across the whole span — so this is a
+# wall-clock change, not better speculation.
+#
+# ★ THE CAUSE IS NOT #968, AND AN EARLIER DRAFT OF THIS NOTE SAID IT WAS.
+# Three things in this repository refute it, and they are recorded here so the
+# wrong story is not re-derived:
+#   * f9fd8ca43's own message states "C=1 IS IDENTICAL, AND THAT IS THE
+#     DIAGNOSTIC — parent 18.5 / with bug 18.5". The bug it fixed only bites
+#     when admissions interleave, so it cannot move a serial rung.
+#   * The campaign measured AT f9fd8ca43 reads 22.58 here and C1 18.42 on the
+#     sweep — both PRE-step values, at the very commit credited with the step.
+#     That record was committed in ac736e938 and dropped in 3cfe4d8c45, which
+#     is the only reason "every record from 09-08 reads 26.1-26.3" looked true.
+#     `git show ac736e938:.benchmarks/decode-floor/2026-09-08-f9fd8ca431.json`.
+#   * The DFlash2 ladder stepped on the same day, and that gate is
+#     conflicts_with = "speculative", so an mtp-carry fix cannot reach it.
+#
+# The leading candidate is 7dd531f59 (#965, the GLM-5.3-Flash port), the only
+# code change on the first-parent path through this window; it rewrote the
+# dense_gemv M=1 sites that a 248K-vocab BF16 lm head leans on, which fits a
+# gain that is large serially and vanishes above C=2. STATED AS A CANDIDATE,
+# NOT A FINDING: no A/B across 7dd531f59^ has been run, and this note has
+# already been wrong once about the cause.
+#
+# What the bar does NOT depend on: the step is measured, reproduced 15 times,
+# and 24.5 sits far above the entire pre-step band whatever moved it. The
+# attribution matters for knowing what to protect, not for whether to protect
+# it.
 #
 # ★ RATCHETED 2026-09-06, 21.0 -> 22.7, and this is the FIRST time this
 # entry's own ">=10-run set on this same instrument" rule has actually been
@@ -264,10 +308,10 @@ flip-flop all over again."""
 # and therefore the only box that can certify, the margin is ~1.5 tok/s.
 # Re-cut this floor if a second box is ever registered and is slower.
 #
-# noise 0.5 covers the run-to-run band (observed 0.2 peak-to-peak over the ten
-# runs) and stays under the 5% validate_noise cap (5% of 22.7 = 1.135).
+# noise 0.5 covers the run-to-run band (observed 0.2 peak-to-peak over the
+# twelve runs) and stays under the 5% validate_noise cap (5% of 25.0 = 1.25).
 # Ratchet only from a fresh >=10-run set on this same instrument.
-min = 22.7
+min = 25.0
 noise = 0.5
 [benchmarks.metrics.output_tokens]
 # The driver emits the MINIMUM completion_tokens across the 3 runs, so this
@@ -448,7 +492,48 @@ osl = "320"
 # be re-cut much tighter. Stated here so nobody reads C=8 as well-guarded.
 
 [benchmarks.metrics.c1_aggregate_tok_s]
-min = 17.5
+# ★ RATCHETED 2026-09-11, 17.5 -> 20.4 (effective 20.1 after noise 0.3). This
+# rung is cut ALONE, which the block above says the ladder is not — "every rung
+# cut together". The exception is deliberate and the reason is that only this
+# rung's instrument moved:
+#
+#     C=1  pre-#968  n=47  18.2-20.1      post-#968  n=14  21.2-21.3
+#
+# f9fd8ca43 ("mtp-carry: give the store ticket its own dispenser — sharing the
+# capture counter cost 24% of C=2 decode", #968) stepped the single-stream
+# rungs and left the batched ones where they were. decode-floor records the
+# same step on the same day. Cutting the whole ladder from one post-step
+# calibration would move seven rungs whose LEVEL did not change, on three reps
+# fewer than the 2026-08-30 cut used.
+#
+# The set behind 20.4 — ten consecutive gate runs on this same instrument,
+# dgx2 (spark-43fa), plus the four post-step records already committed:
+#
+#     21.2 21.2 21.2 21.2 21.2 21.2 21.2 21.2 21.3 21.2
+#     n=10  mean 21.21  sigma 0.030  range 21.2-21.3
+#
+# mean - max(3*sigma, 5%) is 20.15, the 5% arm governing exactly as it does for
+# the top four rungs; 20.4/0.3 lands there while leaving `noise` untouched so
+# the ratchet is visible in the bound rather than hidden in the allowance.
+#
+# ★ WHY THE OTHER SEVEN RUNGS ARE NOT CUT HERE, measured rather than assumed,
+# from the same ten runs:
+#
+#   C2   mean 29.75 sigma 1.470 — trimodal; run 10 of this very set read 25.5
+#        after nine in 29.9-31.3. The formula bar (25.34) clears that by 0.6%.
+#        The floor belongs in the gap between modes, where it already is.
+#   C4   mean 49.56 sigma 1.495 — formula bar 45.07 against a current-regime
+#        minimum of 45.4. 0.7% is not a margin.
+#   C8   mean 63.05 sigma 1.609 — the block above defers this rung explicitly
+#        until atlas#812 is root-caused, and nothing here root-caused it.
+#   C16  mean 89.95 sigma 0.206 — looks tight in a fresh set, but its own
+#        history dips to 82.4 with NO regime change, so the formula bar (85.45)
+#        would have failed a run that was healthy. This is the rung that proves
+#        a ten-run set is not a substitute for reading the history.
+#   C32/C64/C128  all clear their formula bars by ~4.5%, but each has only
+#        n=11 committed history and none stepped. ~2.5 tok/s of tightening is
+#        not worth spending that thin a record on; re-cut them with the ladder.
+min = 20.4
 noise = 0.3
 
 [benchmarks.metrics.c2_aggregate_tok_s]
@@ -636,7 +721,32 @@ isls = "512"
 osl = "200"
 
 [benchmarks.metrics.c1_aggregate_tok_s]
-min = 20.0
+# ★ RATCHETED 2026-09-11, 20.0 -> 23.7 (effective 22.75 after noise 0.95),
+# alongside the plain ladder's C=1 rung and for the same reason: this rung's
+# LEVEL moved and the floor did not follow, so 30% of the measured throughput
+# was unguarded.
+#
+#     pre-step   n=7   21.72-23.46
+#     post-step  n=4   24.77-24.86   (committed records)
+#
+# The set behind 23.7 is twelve fresh gate runs on the current instrument,
+# SIX ON EACH BOX, because a one-box set is what this session already got
+# wrong once at this rung's plain-ladder sibling:
+#
+#     dgx1 (spark-256a)  n=6  24.4 24.6 24.6 24.8 24.7 24.7   mean 24.633
+#     dgx2 (spark-43fa)  n=6  25.0 24.8 24.9 24.9 24.8 24.9   mean 24.883
+#     combined           n=12 mean 24.758  sigma 0.161
+#
+# mean - max(3*sigma, 5%) is 23.52, the 5% arm governing. 23.7/0.95 lands at
+# 22.75, i.e. DELIBERATELY BELOW the formula: it keeps 6.8% under the WORST
+# observed run rather than sitting on the mean-derived bar, so a regression
+# has to be real to fail it.
+#
+# ★ What it now catches that 19.05 did not: a regression halving the step
+# lands near 23.3 and FAILS. At the superseded 19.05 a regression could have
+# undone the entire step -- back to the 21.7-23.5 pre-step band -- and still
+# passed, silently.
+min = 23.7
 noise = 0.95
 
 [benchmarks.metrics.c2_aggregate_tok_s]
@@ -942,3 +1052,135 @@ max = 0.0
 
 [benchmarks.metrics.control_held]
 min = 1.0
+
+# --- kat-equality-gate ------------------------------------------------------
+# The order-independence gate. REQUIRED (gate::coverage::REQUIRED) since
+# 2026-09-10, promoted from PROMOTION_CANDIDATES once its excusal's stated
+# precondition was met: "a measured run under --hermetic reaches zero
+# divergences, and pin the sample count that was actually measured".
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "unsloth/Qwen3.8-27B-NVFP4"
+gate = "kat-equality-gate"
+recipe = "qwen3.8/qwen3.8-27b-nvfp4-unsloth-bfcl"
+label = "Qwen3.8-27B dense (NVFP4, unsloth)"
+# The only entry, so `default = true` is mandatory rather than a choice:
+# bench.rs bails on zero defaults exactly as it does on two.
+default = true
+status = "measured"
+note = """\
+Does the same sample answer the same, whatever ran before it? One draw issued \
+in two orders against ONE server, diffed byte-exact per `sample_id`. \
+★ It rides the BFCL checkpoint and recipe DELIBERATELY: the gate replays \
+BFCL's request body, so a different subject would answer about a workload \
+nobody scores. ★ BUT DO NOT READ A GREEN HERE AS CERTIFYING THE BFCL GATE'S \
+OWN CONDITIONS. This entry pins the CLOSED regime; the bfcl-subset entry pins \
+no serve_overrides at all and is scored OPEN, which is the regime this gate \
+measures at 36 divergences of 257. So a green says the BFCL workload is \
+order-independent WHEN THE CHANNELS ARE CLOSED, and says nothing about the \
+conditions the committed 84.22 / 84.12 were taken under. Closing that gap \
+means pinning hermetic on bfcl-subset, which would invalidate every \
+whole-draw record on main and is deliberately not done here. That is \
+also why `max_new_tokens` is pinned to BFCL's 1024 and not the driver's old \
+512 — see the MAX_NEW_TOKENS commit. \
+★ THE BOUNDS BELOW ARE INVARIANTS, NOT MEASURED PERFORMANCE. `diverged` and \
+`unmeasured` are pinned at 0 because the gate's whole claim is that they ARE \
+0 — the same shape as ssm-poison's `collapsed max = 0`, and the reason this \
+gate may be promoted on a run it itself judges: no bar here was cut from that \
+run. The one quantity taken from measurement is the sample count. \
+★ THE SERVE PINS ARE THE SUBJECT, NOT CONFIGURATION. With the channels OPEN \
+this gate reads 36 divergences of 257 on this checkpoint — measured 2026-09-10 \
+on spark-43fa, 3878 s, identical 221, unmeasured 0, empty_replies 0 — and \
+under the pinned regime it reads 0. That open-arm run is this gate's negative \
+control, and it was run at THIS cap rather than inherited from the whole-draw \
+measurement, because truncating the draw changes what ran before every \
+surviving sample. \
+★ Note 36, not the 12-of-995 that #936 records: those are different \
+instruments. #936 compared the whole draw against its own four shards; this \
+gate reverses the request order against ONE server, which is a stronger \
+perturbation, so it sees more. Do not read the two numbers as a regression \
+between them. \
+The three keys are pinned together because --hermetic EXPANDS into the other \
+two and check_record compares the two sets in both directions — a record \
+carrying three against a baseline pinning one fails after the GPU hours are \
+spent."""
+
+[benchmarks.serve_overrides]
+# All three, not just `hermetic`: bench.rs refuses an under-pinned hermetic
+# baseline at PARSE time precisely so this cannot be discovered after a run.
+# A record measured this way carries all three: see this gate's own committed
+# record under .benchmarks/kat-equality-gate/, whose serve_overrides read
+# {enable_prefix_caching: false, hermetic: true, mtp_gate: force}. (An earlier
+# draft of this note cited an arm-D bfcl-subset record by sha; that record was
+# measured on a box and never committed, so the citation named a file no
+# reader could open. Cite something in the tree.)
+hermetic = "true"
+enable_prefix_caching = "false"
+mtp_gate = "force"
+
+[benchmarks.param_overrides]
+# The instrument. Each of these is load-bearing for a bound below:
+#   orders          — the `orders` metric pin is only a statement about the
+#                     instrument if the param is pinned too.
+#   sample_cap      — `samples` depends on it; unpinned, a --param sample_cap=50
+#                     run would read 50/50 and look green with 20% of the draw.
+#                     ★ 257 IS A SUBSET BOUNDARY, NOT A ROUND NUMBER. The draw
+#                     concatenates in sorted subset order, and `truncate` keeps
+#                     a prefix of it, so the cap decides WHICH SUBSETS are
+#                     compared, deterministically — this is not sampling. The
+#                     12 divergences measured on this checkpoint were 10
+#                     live_irrelevance, 1 live_multiple and 1
+#                     live_parallel_multiple; 257 is exactly the end of
+#                     live_parallel_multiple, so it covers every subset in
+#                     which the effect has ever been observed. What it gives
+#                     up is 738 samples: live_simple (25) plus the whole
+#                     non_live half (713 — multiple, parallel,
+#                     parallel_multiple, simple_java, simple_javascript,
+#                     simple_python). ★ Say live_simple out loud rather than
+#                     calling the remainder "the non_live tail", which an
+#                     earlier draft of this note did: live_simple is a `live`
+#                     subset, so the cap DOES blind this gate to one subset of
+#                     the category the effect lives in. Neither instrument has
+#                     produced a live_simple divergence — not the 12 the shard
+#                     split found, not the 36 the order reversal found — but
+#                     that is a measured absence, not a structural one, and it
+#                     is the first thing to re-check if a future divergence
+#                     lands outside the capped prefix.
+#                     The whole draw in two orders costs ~4.3 h (1990
+#                     generations at the 7.9 s/generation this record measured)
+#                     against this cap's ~1 h, on every PR, forever. State the
+#                     cap when you report a green: the driver logs the same
+#                     warning.
+#   max_new_tokens  — BFCL's own budget. Divergence surface scales with it, and
+#                     every committed bfcl-subset record was measured at 1024.
+orders = "2"
+sample_cap = "257"
+max_new_tokens = "1024"
+
+[benchmarks.metrics.orders]
+# An exact pin: a run comparing fewer orders is not this instrument.
+min = 2.0
+max = 2.0
+
+[benchmarks.metrics.samples]
+# Pinned at what was ACTUALLY measured, per the promotion precondition.
+min = 257.0
+max = 257.0
+
+[benchmarks.metrics.diverged]
+# The invariant. Any divergence at all is the failure this gate exists for.
+max = 0.0
+
+[benchmarks.metrics.unmeasured]
+# A timeout or transport error is NOT evidence that the orders agreed, so an
+# unmeasured sample fails rather than being skipped.
+max = 0.0
+
+[benchmarks.metrics.empty_replies]
+# Measured 0 of 257 on the open arm (2026-09-10). Pinned at 0 as a DEFINITION
+# rather than as a performance bar: an empty canonical reply is not a KAT
+# observation, and two empty replies agreeing is not evidence the orders
+# agreed. `compare` already refuses a wholly-empty run as vacuous; this catches
+# the PARTIAL case, where enough replies go empty to hollow the comparison out
+# while the run still looks green.
+max = 0.0

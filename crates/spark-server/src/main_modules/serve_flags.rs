@@ -81,6 +81,24 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
              line's ({rollback:?}) did NOT take effect"
         );
     }
+    // `--ssm-decode-ring-slots`: ABSENT IS NOT A VALUE. `auto` (the clap
+    // default) publishes NOTHING, so the documented `ATLAS_SSM_DECODE_RING`
+    // fallback stays reachable AND preflight can publish the depth it fitted
+    // to free memory later in the same boot (#915). An explicit N is
+    // published here, before preflight runs, which is exactly what makes the
+    // auto-fit's later write a no-op — an operator's pinned depth is refused
+    // rather than silently shrunk.
+    if let Some(slots) =
+        spark_model::ssm_reserve::parse_decode_ring_slots(&args.ssm_decode_ring_slots)
+            .expect("validated by validate_serve_args")
+    {
+        let in_force = spark_model::ssm_reserve::set_decode_ring_slots(slots);
+        if in_force != slots {
+            tracing::warn!(
+                "ssm-decode-ring-slots was already resolved ({in_force}); the command                  line's ({slots}) did NOT take effect"
+            );
+        }
+    }
     // `--prefill-varlen-batch`: its own single-value cell, so it publishes
     // independently of the GDN trio. Absent publishes nothing and the
     // documented `ATLAS_PREFILL_VARLEN` fallback stays reachable.
@@ -118,9 +136,10 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     // still decides. Passing the clap default instead sealed both cells on
     // every boot and made those variables silent no-ops.
     spark_runtime::set_ssm_tail_midchunk(args.ssm_tail_midchunk);
-    crate::scheduler::levers::set_mtp_gate_force(
-        args.mtp_gate.as_deref().map(|gate| gate == "force"),
-    );
+    // Published BEFORE any prefill, like its neighbours: the snapshot lookup
+    // resolves it once and caches, so a late publish would be read as off.
+    spark_runtime::set_hermetic(args.hermetic);
+    crate::scheduler::levers::set_mtp_gate_force(args.mtp_gate_force());
     // Every value RESOLVED, none of them the raw argument. Each of these five
     // may now come from the environment, and a log that echoes what was asked
     // for rather than what is in force is exactly how a dead knob stays
@@ -129,7 +148,7 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     tracing::info!(
         "kernel flags: ssm_h_dtype={} gdn_fused_norm={} ssm_batched_recurrent={} \
          exact_verify={} ssm_tail_midchunk={} mtp_gate={} ssm_rollback_mode={:?} \
-         prefill_varlen_batch={} deterministic_moe_prefill={}",
+         ssm_decode_ring_slots={} prefill_varlen_batch={} deterministic_moe_prefill={}",
         if gdn.h_f16 { "f16" } else { "f32" },
         gdn.fused_norm,
         gdn.batched_recurrent,
@@ -143,6 +162,12 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
             "auto"
         },
         spark_model::ssm_reserve::ssm_rollback_mode(),
+        // RESOLVED: `auto` until something publishes a depth. Preflight logs
+        // the fitted depth (and the formula behind it) when it shrinks one.
+        match spark_model::ssm_reserve::published_decode_ring_slots() {
+            Some(slots) => slots.to_string(),
+            None => "auto".to_string(),
+        },
         // RESOLVED, not the raw argument — may come from the environment.
         spark_model::layers::ops::prefill_varlen_enabled(),
         // RESOLVED, and reading it here SEALS the default-ON cell — which is

@@ -257,25 +257,33 @@ pub(crate) fn parse_forced_token_fastpath(env: Option<&str>) -> bool {
     }
 }
 
-/// Resolve a "default-ON, explicit-disable" env flag. `None` (unset) → ON.
-/// A falsy value (`"0"` / `"false"`, case-insensitive, trimmed) → OFF.
-/// Everything else (`"1"`, `"true"`, junk) → ON. Mirrors the disable-idiom
-/// of [`parse_forced_token_fastpath`].
-fn env_flag_default_on(name: &str) -> bool {
-    match std::env::var(name).ok().as_deref().map(str::trim) {
+/// The "default-ON, explicit-disable" rule, pure over the raw value. `None`
+/// (unset) → ON. A falsy value (`"0"` / `"false"`, case-insensitive, trimmed)
+/// → OFF. Everything else (`"1"`, `"true"`, junk) → ON. Mirrors the
+/// disable-idiom of [`parse_forced_token_fastpath`].
+///
+/// Split from the reader for the reason [`parse_disable_watchdogs`] was:
+/// `SchedLevers` resolves two of these ONCE per run and carries them, and it
+/// must reuse this rule rather than re-spell it. Re-spelling `"0"`-or-`"false"`
+/// as `== "1"` at a second site is exactly how a lever's polarity drifts.
+pub(crate) fn parse_flag_default_on(env: Option<&str>) -> bool {
+    match env.map(str::trim) {
         Some(v) => !(v == "0" || v.eq_ignore_ascii_case("false")),
         None => true,
     }
 }
 
-/// Fix A (2026-06-05, baked default ON): lift EOS suppression after a
-/// completed tool call in auto mode (is_terminated() never becomes true there).
-/// This is the verified root-cause fix for the post-think cap-burn that drove
-/// the webserver_ok 10/10 + Σwall win; default ON so the win is not env-dependent.
-/// Kill-switch preserved: `ATLAS_TOOL_EOS_ESCAPE=0`/`false` disables.
-pub fn tool_eos_escape_enabled() -> bool {
-    env_flag_default_on("ATLAS_TOOL_EOS_ESCAPE")
+/// [`parse_flag_default_on`] against the live environment.
+///
+/// ★ Only for levers read OFF the per-token path. The two that were on it —
+/// `ATLAS_TOOL_RESPONSE_STOP` and `ATLAS_TOOL_EOS_ESCAPE` — are now
+/// `SchedLevers` fields; they were resolved once per generated token per
+/// sequence, on the scheduler thread, where `std::env::var` allocates and
+/// takes the process-wide environment lock.
+fn env_flag_default_on(name: &str) -> bool {
+    parse_flag_default_on(std::env::var(name).ok().as_deref())
 }
+
 /// #144 (budget-aware graceful close, default ON): when a length-limited
 /// structured-output response would otherwise stop with the EOS token
 /// grammar-illegal mid-structure (e.g. inside an open JSON string), emit the
@@ -283,12 +291,6 @@ pub fn tool_eos_escape_enabled() -> bool {
 /// Kill-switch: `ATLAS_GRAMMAR_BUDGET_CLOSE=0`/`false` disables.
 pub fn grammar_budget_close_enabled() -> bool {
     env_flag_default_on("ATLAS_GRAMMAR_BUDGET_CLOSE")
-}
-/// Fix B (2026-06-05, baked default ON): hard-stop on the <tool_response>
-/// control token (a token the model must never generate). Default ON for the
-/// same reason as Fix A. Kill-switch: `ATLAS_TOOL_RESPONSE_STOP=0`/`false`.
-pub fn tool_response_stop_enabled() -> bool {
-    env_flag_default_on("ATLAS_TOOL_RESPONSE_STOP")
 }
 
 /// Per-model tunables for the always-on decode-time watchdogs. Sourced

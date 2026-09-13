@@ -10,12 +10,16 @@ impl MoeLayer {
     /// the gate GEMM then consumes at full precision. Requires the f32 kernels to
     /// be present and the softmax-routed dense-gate config (NVFP4 gate / sigmoid+bias
     /// stay BF16). Default off → BF16 routing unchanged.
-    pub fn fp32_routing_active(&self) -> bool {
+    /// The lever is the LAST term on purpose: the four preconditions are
+    /// properties of this layer's weights and kernels, and only the final
+    /// one is configuration. `levers` is passed rather than read because
+    /// this is called once per layer per DECODE TOKEN from six sites.
+    pub fn fp32_routing_active(&self, levers: &crate::layers::ops::ModelLevers) -> bool {
         self.gate_nvfp4.is_none()
             && self.correction_bias_dev.is_none()
             && self.dense_gemm_f32in.0 != 0
             && self.moe_topk_f32.0 != 0
-            && std::env::var("ATLAS_FP32_ROUTING").as_deref() == Ok("1")
+            && levers.fp32_routing
     }
 
     /// Forward pass: gate → top-K routing → batched expert FFN → blend.
@@ -93,12 +97,7 @@ impl MoeLayer {
         // preserving Atlas's TPS on the bulk of the network. The 5 capture layers
         // pay ~250 µs each (microbench), totalling ≈1.25 ms per token (negligible
         // at Atlas's ~58 ms/token decode latency).
-        if self.is_dflash_capture_layer
-            && std::env::var("ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL")
-                .ok()
-                .as_deref()
-                == Some("1")
-        {
+        if self.is_dflash_capture_layer && ctx.levers.frankenstein_decode_via_prefill {
             // One-time per-process log so we can verify the env-gated route is hit.
             if ctx.stats.once("log:moe_route") {
                 tracing::info!(

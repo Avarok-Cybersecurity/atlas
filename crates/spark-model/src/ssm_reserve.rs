@@ -1,48 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! SSOT for the Phase-C decode-rollback ring depth.
+//! SSOT for the SSM/linear-attention GPU reserve terms.
 //!
-//! Two call sites MUST agree on this number or a serve either
-//! under-reserves (runtime CUDA alloc failure after weights load) or
-//! over-reserves (preflight refuses batch sizes the runtime could fund):
+//! Every term here is computed TWICE — once by `spark-server`'s
+//! `preflight_reserve` before the weights load, once by the allocating call
+//! site (`SsmStatePool::new`, `TransformerModel::new`) after — and the two
+//! MUST agree or a serve either under-reserves (runtime CUDA alloc failure)
+//! or over-reserves (preflight refuses a configuration the runtime could
+//! fund). Each function below is the one place that decision is made.
 //!
-//! * `spark-server` `preflight_reserve` — sizes the SSM-snapshot GPU
-//!   reservation before weights load;
-//! * `TransformerModel::new` (`impl_a1.rs`) — allocates the actual ring.
-//!
-//! The ring's ONLY writer (scheduler `snapshot_boundary_if_ssm`) and reader
-//! (content-loop `rollback_to_boundary`) live on the PLAIN decode path — the
-//! speculative path does its rejection rollback through the verify snapshot,
-//! never this ring. Under `--speculative` the ring is unreachable, and it is
-//! NOT cheap: 8 slots × max_batch × the full SSM blob (27B: 158.9 MB) is
-//! ~19 GB at batch 16 and ~38 GB at batch 32. Reserving it unconditionally
-//! while the runtime skipped it capped the native batch at ~20 on GB10
-//! (SSM reserve 75.2 GB vs an 85.2 GB budget at util 0.70).
-//!
-//! Env contract (read HERE and nowhere else):
-//!
-//! * `ATLAS_SSM_DECODE_RING=1` force-allocates the ring even under spec
-//!   (mixed workloads whose grammar-bound sequences fall to plain decode and
-//!   should keep loop re-steer); `=0` force-disables it even without spec.
-//! * `ATLAS_DISABLE_WATCHDOGS=1|true` (trimmed, case-insensitive — mirrors
-//!   spark-server's `parse_disable_watchdogs`): the ring's only reader can
-//!   never fire, so the ring is skipped.
+//! The Phase-C decode-rollback ring DEPTH — its publication cell, the
+//! `ATLAS_SSM_DECODE_RING` / `ATLAS_DISABLE_WATCHDOGS` contract and the #915
+//! auto-fit — lives in the `decode_ring` sibling module and is re-exported
+//! here, so every existing `ssm_reserve::decode_rollback_ring_slots` path is
+//! unchanged.
 
-/// Outcome of the ring-depth decision.
-///
-/// `skip_reason` is `Some` only for the IMPLICIT skip (speculative decode /
-/// watchdogs off) — never for an explicit `ATLAS_SSM_DECODE_RING=0`
-/// override — so the allocating call site can log the savings once.
-pub struct DecodeRingDecision {
-    pub slots: usize,
-    pub skip_reason: Option<&'static str>,
-}
+mod decode_ring;
+pub use decode_ring::{
+    DECODE_RING_FIT_LADDER, DecodeRingDecision, decode_rollback_ring_slots,
+    decode_rollback_ring_slots_with, fit_decode_ring_slots, parse_decode_ring_slots,
+    published_decode_ring_slots, set_decode_ring_slots, watchdogs_disabled_from_value,
+};
 
 /// Number of SSM-pool slots the MTP/DFlash VERIFY state pools (per-token
 /// intermediates + pre-verify checkpoints) must cover.
 ///
 /// Three call sites MUST agree on this number (same contract as the decode
-/// ring above):
+/// ring in `decode_ring`):
 ///
 /// * `spark-server` `preflight_reserve` — sizes the pre-load GPU reserve;
 /// * `SsmStatePool::new` — allocates the intermediate/checkpoint pools;
@@ -96,6 +80,72 @@ pub struct DecodeRingDecision {
 /// cheaper diet (row-budget-sized intermediates rather than slot-major)
 /// would recover ~9 GB and still not reach 0.70; the reserve, not the
 /// speculation regime, is what makes the low-util single config impossible.
+/// Verify width the MTP intermediate pools must cover — the MTP head's own
+/// draft count, OR the lookup-draft width when that is wider.
+///
+/// The pools are sized `num_drafts + 1` intermediates because the head is
+/// normally the only thing that drafts. Lookup drafts (#1026) break that: a
+/// lookup hit proposes at `ATLAS_LOOKUP_WIDTH` (default 7) while the head
+/// keeps drafting `num_drafts`, which is the whole point — fresh generation
+/// never pays for the wide step. But `verify_draft_capacity` reports
+/// `num_intermediates - 1`, and `lookup_gate` clamps the proposed width to it,
+/// so pools sized from the head silently cap the lookup width at the head's:
+/// at `--num-drafts 2` a width-7 lookup is clamped to 2 and the wide path is
+/// unreachable. Sizing here instead of widening the head keeps the head narrow
+/// (a wider head is a 26% C=1 LOSS on this model — DRAFTS=3, measured) while
+/// letting a lookup step go wide.
+///
+/// THREE call sites must agree, exactly as for [`mtp_state_slots`]:
+/// `preflight_reserve`, `SsmStatePool::new`'s `num_intermediates`, and
+/// anything reading `verify_draft_capacity`. This is MEMORY: every extra
+/// intermediate is one more H+conv blob per covered slot per layer, so
+/// `ATLAS_LOOKUP_WIDTH` is the knob to turn down if a boot gets tight.
+///
+/// Widening this makes `num_intermediates != num_drafts + 1`, which flips
+/// `SsmStatePool::new`'s `uniform_h` and gives EVERY covered slot full width
+/// instead of the per-slot tiering. That is required, not incidental: the
+/// tiering assumes a slot's index bounds the width it can verify, and a lookup
+/// step can land on any slot.
+/// ★ Widen only to a width the verify can ACTUALLY run — measured, because
+/// getting this wrong is a regression, not a no-op.
+///
+/// Under EP `verify_kn_step` used to fall back to `step_verify_k4` with
+/// `&drafts[..3]`, so a width-7 proposal was verified 4 rows wide and four
+/// drafts were discarded every fire. Proposing wide and verifying narrow is
+/// WORSE than proposing narrow — copy task, TP=2 x EP=2, one binary:
+///   pools 3 / width 2   61.88 tok/s
+///   pools 4 / width 3   61.20 tok/s   (1474 fires, all width 3)
+///   pools 8 / width 7   53.31 tok/s   (1106 fires, all width 7)
+///   lookup off          55.28 tok/s
+/// at 866 / 1150 / 2286 MB of pools and 1.32M / 1.30M / 1.22M KV tokens. Note
+/// widths 2 and 3 are FLAT: under the old cap every path verified at K=4, so
+/// pool width alone bought nothing. `EP_CMD_VERIFY_KN` is what makes the
+/// widening pay.
+pub fn mtp_pool_draft_width(num_drafts: usize, ep: bool) -> usize {
+    // Mirrors `SchedLevers`: lookup drafts are on unless explicitly zeroed and
+    // the width defaults to 7. Read from the environment rather than plumbed
+    // because the pools are built before the scheduler exists.
+    let lookup_on = !matches!(
+        std::env::var("ATLAS_LOOKUP_DRAFTS").as_deref(),
+        Ok("0") | Ok("false")
+    );
+    if !lookup_on {
+        return num_drafts;
+    }
+    let width = std::env::var("ATLAS_LOOKUP_WIDTH")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(7);
+    // EP used to verify at most K=4 (3 drafts) however wide the proposal was,
+    // so sizing past that cost memory, KV and throughput for nothing. The
+    // width-generic worker command (`EP_CMD_VERIFY_KN`) lifts that, so the
+    // full width is now reachable on both topologies. `ep` is kept in the
+    // signature because it is the axis that would cap this again if the
+    // command were ever unavailable.
+    let _ = ep;
+    num_drafts.max(width)
+}
+
 pub fn mtp_state_slots(max_batch_size: usize) -> usize {
     mtp_state_slots_with(
         max_batch_size,
@@ -427,70 +477,117 @@ pub fn ssm_replay_ring_bytes(
     mtp_state_slots * k_ceiling.saturating_sub(1) * num_ssm_layers * row_bytes
 }
 
-/// Decide the per-sequence decode-rollback ring depth.
+/// Outcome of the Marconi snapshot-slot decision.
 ///
-/// `use_speculative` MUST be the same flag `factory::build_model` receives
-/// (`--speculative || --dflash` as plumbed by spark-server) at every call
-/// site, or preflight and allocation diverge.
-pub fn decode_rollback_ring_slots(
-    num_ssm_layers: usize,
-    use_speculative: bool,
-) -> DecodeRingDecision {
-    let watchdogs_value = std::env::var("ATLAS_DISABLE_WATCHDOGS").ok();
-    let watchdogs_disabled = watchdogs_disabled_from_value(watchdogs_value.as_deref());
-    let ring_override = std::env::var("ATLAS_SSM_DECODE_RING").ok();
-    decode_rollback_ring_slots_with(
-        num_ssm_layers,
-        use_speculative,
-        ring_override.as_deref(),
-        watchdogs_disabled,
-    )
+/// `skip_reason` is `Some` only for the IMPLICIT skip (prefix caching
+/// inactive) — never for an explicit `--ssm-cache-slots 0` and never for an
+/// `ATLAS_SSM_MARCONI_FULL` override — so the allocating call site can log
+/// the savings exactly once.
+pub struct MarconiSlotDecision {
+    pub slots: usize,
+    pub skip_reason: Option<&'static str>,
 }
 
-fn watchdogs_disabled_from_value(value: Option<&str>) -> bool {
-    value
-        .map(|v| {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true"
-        })
-        .unwrap_or(false)
+/// Number of Marconi SSM-snapshot slots to RESERVE and ALLOCATE.
+///
+/// Two call sites MUST agree on this number, exactly as they must for the
+/// decode-rollback ring above, or a serve either under-reserves (runtime
+/// CUDA alloc failure after weights load) or over-reserves (preflight
+/// refuses a configuration the runtime could fund):
+///
+/// * `spark-server` `preflight_reserve` — sizes the pre-load GPU reserve;
+/// * `TransformerModel::new` (`impl_a1.rs`) — allocates `SsmSnapshotPool`.
+///
+/// WHY a gate exists. The Marconi region's ONLY consumer is the prefix
+/// cache: a slot is written by `prefill_b_save_checkpoint` /
+/// `insert_*_snapshot` and can only ever be READ BACK through a prefix-cache
+/// lookup that returns an `ssm_snapshot` id (`prefix_cache.rs`, "SSM state
+/// snapshot ID at the deepest matched node (Marconi caching)"). Without
+/// `--enable-prefix-caching`, `build_prefix_cache` installs `NoPrefixCaching`
+/// — no radix tree exists, no lookup can ever produce a snapshot id, and
+/// every reserved slot is unreachable for the life of the process. Yet
+/// `--ssm-cache-slots` defaults to **16** and was sized independently of the
+/// flag, so a serve with prefix caching disabled still reserved
+/// `16 × num_ssm_layers × (h_state + conv_state)` bytes that nothing can
+/// restore from.
+///
+/// Measured on GLM-5.3-Flash NVFP4, 2× GB10, TP=2 EP=2, K=3, batch 1,
+/// GMU 0.90: **2380 MiB per rank** — 16 slots × 34 KDA layers ×
+/// (h 4.000 MiB + conv 0.375 MiB). Both widths are FP32 by construction
+/// (`ModelConfig::ssm_h_state_bytes` / `ssm_conv_state_bytes` each end in
+/// `* 4`), and `--ssm-h-dtype f16-pool` is opt-in, so the FP32 figure is
+/// what an ordinary serve reserves AND allocates: `SsmStatePool` reads the
+/// same two accessors (`ssm_pool.rs:182`), so reserve and residency agree.
+/// Confirmed by a paired A/B, same session, 90 s apart, identical flags
+/// (`2 131072 1 0.90`): post-load requirement **13.58 → 11.25 GB**, a
+/// 2.33 GB drop that matches 2380 MiB exactly. The gated default now needs
+/// precisely what the same image required only when an operator passed
+/// `--ssm-cache-slots 0` by hand (ANOMALIES A68).
+///
+/// 🪤 `GLM53-MEMORY-LEDGER-20260830.md` §2/§4 records this region as
+/// "16 slots × 74.4 MB = 1190 MB". That is the FP16-width arithmetic
+/// (h 2.000 + conv 0.1875 MiB/layer) and is exactly half; the same halving
+/// applies to its "SSM live state pool 1 slot × 34 layers = 74 MB" row.
+/// Trust the FP32 figure — it is what the code allocates and what the live
+/// A/B measured.
+///
+/// This is the same defect class the decode ring above already fixed:
+/// a pool reserved unconditionally while nothing could reach it.
+///
+/// Nothing degrades when the slots are dropped. `prefill_b_save_checkpoint`
+/// early-returns on `!ssm_snapshots.is_enabled()`, so there is no work and
+/// no warning spam on the prefill path; the only user-visible difference is
+/// that prefix-cache hits would recompute SSM state — and with the cache
+/// inactive there are no hits.
+///
+/// Env contract (read HERE and nowhere else):
+///
+/// * `ATLAS_SSM_MARCONI_FULL` (PRESENCE, house convention — `=0` is NOT
+///   "off"): restore the old unconditional reservation. Accounting-safe
+///   over-reserve; the kill switch for this diet.
+pub fn marconi_snapshot_slots(
+    requested: usize,
+    prefix_caching_active: bool,
+) -> MarconiSlotDecision {
+    marconi_snapshot_slots_with(requested, prefix_caching_active, marconi_reserve_full())
 }
 
-fn decode_rollback_ring_slots_with(
-    num_ssm_layers: usize,
-    use_speculative: bool,
-    ring_override: Option<&str>,
-    watchdogs_disabled: bool,
-) -> DecodeRingDecision {
-    if num_ssm_layers == 0 {
-        return DecodeRingDecision {
-            slots: 0,
+/// The `ATLAS_SSM_MARCONI_FULL` kill switch (PRESENCE, house convention).
+pub fn marconi_reserve_full() -> bool {
+    std::env::var_os("ATLAS_SSM_MARCONI_FULL").is_some()
+}
+
+/// Pure core of [`marconi_snapshot_slots`] (env-free, unit-testable).
+pub fn marconi_snapshot_slots_with(
+    requested: usize,
+    prefix_caching_active: bool,
+    full_reserve: bool,
+) -> MarconiSlotDecision {
+    if requested == 0 || prefix_caching_active || full_reserve {
+        return MarconiSlotDecision {
+            slots: requested,
             skip_reason: None,
         };
     }
-    match ring_override {
-        Some("1") => DecodeRingDecision {
-            slots: atlas_kernels::DECODE_ROLLBACK_RING_SLOTS,
-            skip_reason: None,
-        },
-        Some("0") => DecodeRingDecision {
-            slots: 0,
-            skip_reason: None,
-        },
-        _ if use_speculative || watchdogs_disabled => DecodeRingDecision {
-            slots: 0,
-            skip_reason: Some(if use_speculative {
-                "speculative decode active"
-            } else {
-                "watchdogs disabled"
-            }),
-        },
-        _ => DecodeRingDecision {
-            slots: atlas_kernels::DECODE_ROLLBACK_RING_SLOTS,
-            skip_reason: None,
-        },
+    MarconiSlotDecision {
+        slots: 0,
+        skip_reason: Some("prefix caching inactive — Marconi snapshot slots are unreachable"),
     }
 }
+
+/// Whether the prefix cache this serve will actually install is a REAL cache.
+///
+/// SSOT mirror of `spark-server`'s `build_prefix_cache`: the flag alone is
+/// not enough, because a compressed DeepSeek-V4 config downgrades to
+/// `NoPrefixCaching` even with `--enable-prefix-caching` (the cache does not
+/// preserve the compressor pool/ring state required for exact reuse). The
+/// allocating call site asks the constructed cache directly
+/// (`PrefixCache::is_active`); preflight runs before it exists and must
+/// reproduce the same predicate from `args` + `config`.
+pub fn prefix_caching_active(enable_flag: bool, kv_only_prefix_cache_is_safe: bool) -> bool {
+    enable_flag && kv_only_prefix_cache_is_safe
+}
+
 #[cfg(test)]
 #[path = "ssm_reserve_tests.rs"]
 mod mtp_state_slot_tests;

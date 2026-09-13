@@ -4,6 +4,7 @@
 
 use clap::Parser;
 
+pub mod bench_aggregate;
 mod bench_args;
 pub mod bench_card;
 mod bench_gate_check;
@@ -14,6 +15,7 @@ pub mod bench_run;
 mod bench_selfstart;
 pub(crate) mod doctor;
 pub(crate) mod flag_values;
+pub(crate) mod hermetic;
 pub(crate) mod manifest;
 mod serve_args;
 pub(crate) mod sync_recipes;

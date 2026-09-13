@@ -56,7 +56,7 @@ pub(crate) fn build_full_attention_nvfp4(
              TP={tp_size} is not supported (qwen4_exp does not load under TP)"
         );
         ensure!(
-            !super::tq_plus_weight_rotation::weight_rotation_enabled(),
+            !crate::layers::ops::ModelLevers::get().weight_pre_rotated,
             "ATLAS_EXL3_NATIVE_DENSE=1 is incompatible with TQ_PLUS_WEIGHT_ROTATION=1 \
              (the rotation is applied to BF16 q/k/v at load; packed trellis cannot be \
              re-rotated); unset one"
@@ -168,7 +168,7 @@ pub(crate) fn build_full_attention_nvfp4(
                     // launches on Q/K/V become redundant. O projection skipped (the
                     // input-side rotation needs a transpose). hd=128 only — 256/512
                     // sign arrays not yet vendored.
-                    if super::tq_plus_weight_rotation::weight_rotation_enabled()
+                    if crate::layers::ops::ModelLevers::get().weight_pre_rotated
                         && (name == "q_proj" || name == "k_proj" || name == "v_proj")
                         && config.head_dim == 128
                     {

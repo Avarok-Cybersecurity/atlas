@@ -26,6 +26,15 @@ mistral     = "mistral"       # Mistral Small 4 — native [TOOL_CALLS]name[ARGS
 gemma4      = "gemma4"        # Gemma-4 — native format: <|tool_call>call:name{...}<tool_call|>
 minimax_m2  = "minimax_xml"    # MiniMax M2 — <minimax:tool_call><invoke name=""><parameter name="">...
 laguna      = "poolside_v1"     # Poolside — <tool_call>name<arg_key>k</arg_key><arg_value>v</arg_value>
+glm5_next   = "poolside_v1"     # GLM-5.3-Flash — SAME wire format, quoted verbatim from the
+                                # checkpoint's own chat_template.jinja:
+                                #   <tool_call>{function-name}<arg_key>{arg-key-1}</arg_key>
+                                #   <arg_value>{arg-value-1}</arg_value>...</tool_call>
+                                # Without this entry `resolve_tool_call_parser` logs "disabled
+                                # (no mapping for model_type 'glm5_next')", `tools_active` is
+                                # false in api/chat/prepare.rs, and the caller's `tools` are
+                                # DROPPED before the template renders — the model is told
+                                # nothing and answers "I have no tools available".
 deepseek_v4 = "deepseek_v4"    # DeepSeek-V4-Flash — checkpoint-native typed DSML
 
 # Default reasoning parser per model_type.

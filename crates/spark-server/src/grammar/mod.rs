@@ -15,7 +15,7 @@ mod schema;
 mod state;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use engine::{GrammarEngine, GrammarError};
 pub use schema::augment_schema_with_tafc_think;

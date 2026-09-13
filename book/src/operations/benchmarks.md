@@ -185,6 +185,68 @@ takes the schema default. An unknown key is an error listing the valid ones,
 because a silently-ignored override produces a run measuring something other
 than what you asked for.
 
+### Sharded benchmarks (known-answer tests)
+
+Two legs dominate every certification campaign: the BFCL draws are ~1000 samples
+each and run for hours, so a failure in one is not visible until the campaign is
+nearly over. They are **known-answer tests** — an input, an expected output,
+scored for accuracy — so the work is embarrassingly parallel: split the draw,
+run the pieces on different boxes, merge, score once.
+
+`bfcl-subset` and `bfcl-subset-echolp` are therefore **benchmark groups**. The
+gate id is unchanged; what changed is how its number is produced. Each has four
+members that can run at the same time on different boxes:
+
+```
+spark benchmark run bfcl-subset-a --pull-request-gate --hardware gb10   # on dgx1
+spark benchmark run bfcl-subset-b --pull-request-gate --hardware gb10   # on dgx2
+...
+spark benchmark aggregate bfcl-subset      # what the group scores, and what is missing
+```
+
+Selection is a **stride within each subset** — row `i` goes to shard `i % 4` —
+so every shard gets a proportional slice of every subset, and a 16-row subset
+does not vanish from three of them.
+
+For an ad-hoc split at any N, use the `shard` parameter rather than the
+registered members:
+
+```
+spark benchmark run bfcl-subset --model <served-model> --param shard=3/9
+```
+
+The index is **0-based**, so the whole draw is `0/1` and `1/1` is refused (it is
+index 1 of one shard). The default is `inherit`, which leaves whatever the
+benchmark id already selects — the whole draw, or a registered member's own
+quarter. Setting it to `0/1` on `bfcl-subset-a` would run the whole draw under a
+member's name, which is why `inherit` and not `0/1` is the default.
+
+#### What the group refuses, and why
+
+Merging counts is only sound if the parts really are the draw, so a group is
+judged only when four conditions hold. Each of these was a way to get a
+**passing number for a measurement that never happened**:
+
+| Refusal | What it catches |
+|---|---|
+| a member has no record at this commit | three shards is not 75 % measured, it is a different sample set |
+| members measured at different commits | a group is ONE measurement |
+| the shard indices are not `0..3` once each | two members running the same shard — the row count is still right, and one shard was measured twice while another never ran |
+| a member reports transport failures | those samples were scored as "made no call", which is the *correct* answer across the irrelevance subsets, so a degraded shard can raise the aggregate while measuring less |
+
+The third deserves emphasis: the `samples` threshold is pinned exactly
+(`min == max == 995`) and **cannot** catch a duplicated shard, because the
+duplicate still contributes the right number of rows.
+
+Aggregation is over **counts, never scores**. `score.py` weights
+hierarchically, so the mean of four shard scores is not the whole-set value; the
+group sums each subset's `(hits, n)` integers and applies the hierarchy once.
+
+Only `Sensitivity::Correctness` benchmarks may be grouped. For a speed
+benchmark the timing *is* the number, and four quarter-length runs across three
+boxes have a different wall, TTFT distribution and concurrency profile from one
+serial run — no arithmetic recovers the original.
+
 ### Exit codes
 
 | Code | Meaning |

@@ -70,9 +70,12 @@ impl RunObs {
     /// `None` when it cannot be derived (no accept field, or a corrupt
     /// `accepted >= completion` which would divide by zero or go negative).
     pub(crate) fn accept_len(&self) -> Option<f64> {
-        let accepted = self.accepted_prediction_tokens?;
-        (accepted < self.completion_tokens && self.completion_tokens > 0)
-            .then(|| self.completion_tokens as f64 / (self.completion_tokens - accepted) as f64)
+        // SSOT: `stats::accept_len`. `concurrency` reads the same rule, and
+        // the two gates are compared against each other.
+        crate::benchmarks::stats::accept_len(
+            self.completion_tokens,
+            self.accepted_prediction_tokens,
+        )
     }
 }
 

@@ -218,7 +218,7 @@ impl Qwen3AttentionLayer {
         let normed2 = ctx.buffers.norm_output();
         // ATLAS_FP32_ROUTING: attention layers also have an MoE FFN — emit the
         // MoE-input norm in FP32 so their gates route at full precision too.
-        if self.ffn.fp32_routing_active() && self.residual_add_rms_norm_gatef32_k.0 != 0 {
+        if self.ffn.fp32_routing_active(ctx.levers) && self.residual_add_rms_norm_gatef32_k.0 != 0 {
             ops::residual_add_rms_norm_gatef32(
                 ctx.gpu,
                 self.residual_add_rms_norm_gatef32_k,

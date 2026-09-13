@@ -143,6 +143,24 @@ impl TransformerModel {
         // the VisionEncoder's buf_out buffer ([total_patches, out_hidden_size] BF16).
         {
             let pending = *self.vision_embed_patches.lock();
+            // Log BEFORE the guard, and on every rank. Under TP the ranks each
+            // embed the same tokens and all-reduce every layer, so a rank that
+            // skips the splice keeps the raw pad-token embedding at exactly
+            // the positions the other rank filled with the picture. Logging
+            // only inside the guard cannot show that: the rank that never
+            // splices is the one that stays silent.
+            {
+                let (ipad, vpad) = self.vision_pad_ids();
+                let pads = tokens[chunk_start..chunk_start + chunk_len]
+                    .iter()
+                    .filter(|&&t| t == ipad || t == vpad)
+                    .count();
+                if pads > 0 {
+                    tracing::info!(
+                        "Vision splice: {pads} pad tokens in chunk, {pending} encoder rows available"
+                    );
+                }
+            }
             if pending > 0
                 && let Some(ve) = &self.vision_encoder
             {
@@ -167,6 +185,25 @@ impl TransformerModel {
                         self.gpu
                             .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
                         img_idx += 1;
+                    }
+                }
+                // ATLAS_SPLICE_DUMP: the hidden chunk AFTER the overwrite.
+                // The encoder dump proves what buf_out HOLDS; only this proves
+                // what the language model actually RECEIVES — that every
+                // encoder row reached a pad position, in order, at the right
+                // magnitude relative to the text rows around it.
+                if let Ok(path) = std::env::var("ATLAS_SPLICE_DUMP")
+                    && !path.is_empty()
+                {
+                    self.gpu.synchronize(stream).ok();
+                    let bytes = chunk_len * h * elem_bytes;
+                    let mut host = vec![0u8; bytes];
+                    if self.gpu.copy_d2h(hidden_dst, &mut host).is_ok() {
+                        let _ = std::fs::write(&path, &host);
+                        tracing::info!(
+                            "ATLAS_SPLICE_DUMP: {chunk_len} x {h} ({elem_bytes} B/elem), \
+                             {img_idx} pads spliced of {pending} encoder rows -> {path}"
+                        );
                     }
                 }
             }

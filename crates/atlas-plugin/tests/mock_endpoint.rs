@@ -26,6 +26,29 @@ pub async fn start(tokens: usize, ttft: Duration, gap: Duration) -> MockEndpoint
     start_saying(None, tokens, ttft, gap).await
 }
 
+/// A server whose reply depends on HOW MANY requests it has already served,
+/// and on nothing else.
+///
+/// This is the order-dependence a KAT must not have, in its purest form: ask
+/// the same question twice in different positions and get different answers.
+/// It exists so a gate that claims to detect that can be shown detecting it —
+/// a gate proven only against a well-behaved server has been shown to say
+/// "pass", not to work.
+pub async fn start_indexed(ttft: Duration, gap: Duration) -> MockEndpoint {
+    start_inner(Reply::Indexed, 0, ttft, gap).await
+}
+
+/// What a completion answers with.
+#[derive(Clone)]
+enum Reply {
+    /// `tokens` deltas of filler.
+    Filler,
+    /// The same text every time.
+    Fixed(String),
+    /// `reply-<n>` for the nth request served.
+    Indexed,
+}
+
 /// As [`start`], but every completion answers with `reply` instead of filler.
 ///
 /// One implementation, so the chunk-splitting the decoder is tested against is
@@ -36,6 +59,14 @@ pub async fn start_saying(
     ttft: Duration,
     gap: Duration,
 ) -> MockEndpoint {
+    let reply = match reply {
+        Some(text) => Reply::Fixed(text),
+        None => Reply::Filler,
+    };
+    start_inner(reply, tokens, ttft, gap).await
+}
+
+async fn start_inner(reply: Reply, tokens: usize, ttft: Duration, gap: Duration) -> MockEndpoint {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let requests = Arc::new(AtomicUsize::new(0));
@@ -80,7 +111,7 @@ pub async fn start_saying(
                     let _ = socket.write_all(b"0\r\n\r\n").await;
                     return;
                 }
-                counter.fetch_add(1, Ordering::Relaxed);
+                let served = counter.fetch_add(1, Ordering::Relaxed);
                 let _ = socket
                     .write_all(
                         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
@@ -90,8 +121,9 @@ pub async fn start_saying(
                 tokio::time::sleep(ttft).await;
                 // A canned reply is one delta; filler is `tokens` of them.
                 let deltas: Vec<String> = match &reply {
-                    Some(text) => vec![text.clone()],
-                    None => (0..tokens).map(|i| format!("t{i} ")).collect(),
+                    Reply::Fixed(text) => vec![text.clone()],
+                    Reply::Indexed => vec![format!("reply-{served}")],
+                    Reply::Filler => (0..tokens).map(|i| format!("t{i} ")).collect(),
                 };
                 let tokens = deltas.len();
                 for (i, delta) in deltas.iter().enumerate() {

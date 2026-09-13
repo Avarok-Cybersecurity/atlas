@@ -320,6 +320,30 @@ impl SsmSnapshotPool {
     /// widens it back: snapshots are always written FP32, so `restore` — which
     /// only ever lands in a prefill — needs no dtype knowledge, and neither do
     /// the spill, fault-in, tier-fingerprint or swap paths.
+    /// Take the LOWEST free slot.
+    ///
+    /// 🔴 Deliberately not `pop()`. A LIFO stack makes the chosen slot depend on
+    /// the ORDER slots were freed, which under EP diverges between ranks — and
+    /// a slot recycled earlier takes its snapshot-index entry with it. That is
+    /// how two ranks that saved the SAME checkpoint at token 3296 (rank 0 into
+    /// slot 0, rank 1 into slot 2) ended up with only one of them still holding
+    /// the anchor at lookup: different Marconi anchors, mismatched SSM replay
+    /// lengths, and an NCCL deadlock before the cross-rank guard caught it.
+    ///
+    /// Lowest-index is a pure function of the free SET, so ranks performing the
+    /// same save sequence choose the same slots and expire entries together.
+    /// O(num_slots) over 16 entries, against per-layer D2D copies in the same
+    /// call — not measurable.
+    fn take_free_slot(&self) -> Option<usize> {
+        let mut free = self.free_slots.lock();
+        let pos = free
+            .iter()
+            .enumerate()
+            .min_by_key(|&(_, slot)| *slot)
+            .map(|(i, _)| i)?;
+        Some(free.swap_remove(pos))
+    }
+
     pub(super) fn save(
         &self,
         ssm_slot: usize,
@@ -344,7 +368,7 @@ impl SsmSnapshotPool {
                 "ATLAS_SSM_H_FP16: cannot widen a decode-produced snapshot —                  ssm_h_dtype::ssm_h_state_f16_to_f32 did not resolve"
             );
         }
-        let snap_slot = match self.free_slots.lock().pop() {
+        let snap_slot = match self.take_free_slot() {
             Some(s) => s,
             None => return Ok(None),
         };
@@ -496,7 +520,7 @@ impl SsmSnapshotPool {
         if !self.is_enabled() {
             return None;
         }
-        let snap_slot = self.free_slots.lock().pop()?;
+        let snap_slot = self.take_free_slot()?;
         self.slot_has_hidden.lock().remove(&snap_slot);
         if session_hash != 0 {
             self.session_tags.lock().insert(snap_slot, session_hash);

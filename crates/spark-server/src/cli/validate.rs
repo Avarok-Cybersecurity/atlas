@@ -67,6 +67,37 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     if let Some(gate) = &args.mtp_gate {
         check_enum(&mut v, "--mtp-gate", gate, MTP_GATES);
     }
+
+    // ── `--hermetic` contradictions. ──
+    //
+    // `--hermetic` CLOSES these channels. An operator who also names one of
+    // them is asking for two different regimes at once, and the resolvers in
+    // `cli::hermetic` would quietly pick hermetic's answer. Quietly is the
+    // problem: the record would say `hermetic=true` beside an override the
+    // server ignored, and a reader would reasonably believe both applied.
+    // Refuse the pair and make them delete one.
+    if args.hermetic && args.enable_prefix_caching {
+        v.push(Violation::new(
+            "--hermetic with --enable-prefix-caching",
+            "--hermetic closes the radix KV prefix cache: it is keyed on token content \
+             with no session component, so one request's KV blocks are reachable by any \
+             later request sharing a prefix — exactly the cross-request channel a \
+             known-answer test must not have",
+            "drop --enable-prefix-caching (--hermetic already implies it is off), or drop \
+             --hermetic if you meant to measure WITH the cache",
+        ));
+    }
+    if args.hermetic && args.mtp_gate.as_deref() == Some("auto") {
+        v.push(Violation::new(
+            "--hermetic with --mtp-gate auto",
+            "--hermetic pins the MTP gate to `force`, which disarms the arbiter. Under \
+             `auto` the gate PROBES: its token counter is cumulative and is never reset \
+             at a request boundary, so which request gets served by the serial arm — \
+             which is not byte-equal to the batch arm even at temperature 0 — depends on \
+             everything served before it",
+            "drop --mtp-gate auto (--hermetic already forces the gate), or drop --hermetic",
+        ));
+    }
     // The FP16 h-state twins live ONLY on the fused-norm decode arm. Without
     // it the dispatch lands on an FP32-only kernel pointed at an FP16 pool,
     // which does not fault — it emits fluent garbage. Reject the pair here,
@@ -147,6 +178,19 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
             ),
             why,
             "use snapshot (default, wired) or replay (experimental scaffold).",
+        ));
+    }
+    // `--ssm-decode-ring-slots`: same SSOT rule — the parse that validates is
+    // the parse `publish_kernel_flags` publishes through (#915).
+    if let Err(why) = spark_model::ssm_reserve::parse_decode_ring_slots(&args.ssm_decode_ring_slots)
+    {
+        v.push(Violation::new(
+            format!(
+                "--ssm-decode-ring-slots '{}' is not a valid value.",
+                args.ssm_decode_ring_slots
+            ),
+            why,
+            "use auto (default: preflight sizes the ring from free memory) or 0..=8.",
         ));
     }
     // #435: the exact-verify arm's kernels are FP32 readers, so an FP16

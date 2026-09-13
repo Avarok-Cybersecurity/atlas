@@ -323,11 +323,14 @@ impl TransformerModel {
             // by K and the scheduler's reject branches rewind it at different
             // points — deriving the base from a moving `seq_len` is how the
             // carries end up one row off.
-            *self
-                .pending_verify_span
+            // Keyed by SLOT: the batched multi-sequence verify has N of these
+            // in flight at once, and a single slot would have one sequence
+            // consume another's base — a silently wrong rewind, which surfaces
+            // as an EMPTY completion rather than an error.
+            self.pending_verify_span
                 .lock()
-                .map_err(|_| anyhow::anyhow!("verify span stash poisoned"))? =
-                Some((seq.seq_len, k));
+                .map_err(|_| anyhow::anyhow!("verify span stash poisoned"))?
+                .insert(seq.slot_idx, (seq.seq_len, k));
             return self.verify_hc_rows(tokens, seq, stream);
         }
 
@@ -342,7 +345,7 @@ impl TransformerModel {
             // behaviour this file's fix replaced, so the diagnostic arm
             // reproduces the corruption rather than erroring on a missing row.
             let stash = self.collect_verify_aux_states(seq, stream_d)?;
-            self.stash_verify_aux(VerifyAuxRows {
+            self.stash_verify_aux(seq.slot_idx, VerifyAuxRows {
                 base_pos,
                 k,
                 rows: vec![stash; hc_publish_rows(k).len().max(1)],
@@ -377,7 +380,7 @@ impl TransformerModel {
             }
         }
         if k > 1 {
-            self.stash_verify_aux(VerifyAuxRows {
+            self.stash_verify_aux(seq.slot_idx, VerifyAuxRows {
                 base_pos,
                 k,
                 rows: aux_rows,
@@ -386,11 +389,13 @@ impl TransformerModel {
         Ok(out)
     }
 
-    fn stash_verify_aux(&self, stash: VerifyAuxRows) -> Result<()> {
-        *self
-            .pending_verify_aux
+    fn stash_verify_aux(&self, slot: usize, stash: VerifyAuxRows) -> Result<()> {
+        // Per SLOT — see the span stash above for why a single slot is wrong
+        // once more than one sequence is verified in a sweep.
+        self.pending_verify_aux
             .lock()
-            .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))? = Some(stash);
+            .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))?
+            .insert(slot, stash);
         Ok(())
     }
 
@@ -481,7 +486,7 @@ impl TransformerModel {
             .pending_verify_aux
             .lock()
             .map_err(|_| anyhow::anyhow!("verify aux stash poisoned"))?
-            .take();
+            .remove(&seq.slot_idx);
         let Some(stash) = stash else {
             anyhow::bail!(
                 "commit_verify_aux({num_accepted}/{k}) with no stashed aux snapshot — \
@@ -573,7 +578,7 @@ impl TransformerModel {
             .pending_verify_span
             .lock()
             .map_err(|_| anyhow::anyhow!("verify span stash poisoned"))?
-            .take();
+            .remove(&seq.slot_idx);
         let Some((base, k)) = span else {
             return Ok(());
         };
@@ -769,6 +774,7 @@ impl TransformerModel {
         }
 
         let ctx = ForwardContext {
+            decode_step: false,
             buffers: &self.buffers,
             hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
@@ -888,6 +894,61 @@ impl TransformerModel {
             // slots, so row `t` is a pointer bump of `t*4` / `t*8`. Only the
             // device `seq_len` differs in KIND between the two shapes, and it
             // is uploaded above.
+            // K-ROW ATTENTION BODY (default on; `ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS=0` disables): the
+            // hyper-connection sites, the norms and the FFN run once at T=K
+            // (the GDN layers' dispatch); only the attention core stays per
+            // row. Same rows, same metadata, same highway rows as the loop
+            // below; see qwen3_attention/trait_impl/verify_rows_hc.rs.
+            if attn_rows
+                && k > 1
+                && !layer.is_ssm_layer()
+                && crate::layers::qwen3_attention::verify_attn_rows_enabled()
+                && let Some(attn) = layer.as_any().and_then(|a| {
+                    a.downcast_ref::<crate::layers::qwen3_attention::Qwen3AttentionLayer>()
+                })
+                && attn.verify_rows_hc_ok()
+            {
+                static SAID_ROWS: std::sync::Once = std::sync::Once::new();
+                SAID_ROWS.call_once(|| {
+                    tracing::info!(
+                        "mHC verify: attention layers run the K-ROW body \
+                         (default on; ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS=0 disables), first pass k={k}"
+                    );
+                });
+                let row_metas: Vec<AttnMetadataDev> = (0..k)
+                    .map(|t| AttnMetadataDev {
+                        positions: attn_metadata.positions.offset(t * VERIFY_POS_STRIDE),
+                        positions_h: attn_metadata.positions_h.offset(t * VERIFY_POS_STRIDE),
+                        positions_w: attn_metadata.positions_w.offset(t * VERIFY_POS_STRIDE),
+                        slot: attn_metadata.slot.offset(t * VERIFY_SLOT_STRIDE),
+                        seq_len: row_seq_lens.offset(t * VERIFY_SEQ_LEN_STRIDE),
+                        block_table: attn_metadata.block_table,
+                        max_blocks_per_seq: attn_metadata.max_blocks_per_seq,
+                        num_seqs: 1,
+                        seq_slot: attn_metadata.seq_slot,
+                        moe_row_adapter: attn_metadata.moe_row_adapter,
+                    })
+                    .collect();
+                let row_lens: Vec<usize> = (0..k)
+                    .map(|t| verify_row_decode_seq_len(base_seq_len, t))
+                    .collect();
+                attn.decode_verify_rows_hc(
+                    hidden,
+                    k,
+                    seq.layer_states[i].as_mut(),
+                    &mut kv_cache,
+                    &row_metas,
+                    &row_lens,
+                    &tokens[..k],
+                    &mut seq.block_table,
+                    &mut seq.disk_block_ids,
+                    &mut seq.disk_last_offloaded_per_layer,
+                    &ctx,
+                    stream,
+                )?;
+                self.hidden_probe_layer("verify_hc", i, 0, hidden, stream);
+                continue;
+            }
             if attn_rows && (ssm_rows || !layer.is_ssm_layer()) {
                 for t in 0..k {
                     let row_meta = AttnMetadataDev {
@@ -903,6 +964,7 @@ impl TransformerModel {
                         moe_row_adapter: attn_metadata.moe_row_adapter,
                     };
                     let row_ctx = ForwardContext {
+                        decode_step: false,
                         buffers: &self.buffers,
                         hc_row_offset: t,
                         gpu: self.gpu.as_ref(),

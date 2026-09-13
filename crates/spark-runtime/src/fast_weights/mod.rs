@@ -100,6 +100,15 @@ pub struct FastSafetensorsLoader {
     /// admits exactly the prefixes the materialize pass will keep packed
     /// and honours the `ATLAS_EXL3_WEIGHT_POOL=0` kill switch.
     pub pool_predicate: Option<PoolPredicate>,
+    /// Skip a multimodal checkpoint's vision tower.
+    ///
+    /// Set by the caller from `ModelWeightLoader::binds_vision_encoder()`:
+    /// false by default, true only when the model's loader is a text-only
+    /// port that will never bind the tower. Reading it anyway costs the full
+    /// tower in unified memory (1.05 GiB/rank on GLM-5.3's checkpoint) from
+    /// load time until `build_model` frees it — which is after the inference
+    /// -buffer preflight has already refused the serve.
+    pub skip_vision: bool,
 }
 
 /// Per-shard loader knobs, read-only across the shard loop.
@@ -119,6 +128,16 @@ pub(crate) struct ShardSink<'a> {
     pub(crate) arenas: &'a mut Vec<WeightArena>,
     pub(crate) offload_logged: &'a mut bool,
     pub(crate) pool_fallback_logged: &'a mut bool,
+}
+
+/// Is this tensor part of a multimodal checkpoint's vision tower?
+///
+/// Same three spellings `build_model`'s unbound-tower reclaim matches, kept
+/// here so the load-time skip and the post-bind free can never disagree.
+pub fn is_vision_tensor(name: &str) -> bool {
+    name.starts_with("model.visual.")
+        || name.starts_with("model.vision")
+        || name.starts_with("visual.")
 }
 
 /// Default tensor-count cap for per-shard `O_DIRECT`. Above this, the fast
@@ -148,6 +167,7 @@ impl FastSafetensorsLoader {
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
             prefetch_shards: false,
             pool_predicate: None,
+            skip_vision: false,
         }
     }
 
@@ -163,6 +183,7 @@ impl FastSafetensorsLoader {
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
             prefetch_shards: false,
             pool_predicate: None,
+            skip_vision: false,
         }
     }
 }
@@ -362,5 +383,67 @@ impl WeightLoader for FastSafetensorsLoader {
             store.adopt_arena(a);
         }
         Ok(store)
+    }
+}
+
+
+#[cfg(test)]
+mod skip_vision_tests {
+    use super::{FastSafetensorsLoader, is_vision_tensor};
+
+    fn loader(skip_vision: bool, ep: usize) -> FastSafetensorsLoader {
+        let mut l = FastSafetensorsLoader::with_ep(0, ep, 288);
+        l.skip_vision = skip_vision;
+        l
+    }
+
+    #[test]
+    fn vision_names_are_recognised() {
+        assert!(is_vision_tensor("model.visual.blocks.0.attn.proj.weight"));
+        assert!(is_vision_tensor(
+            "model.vision_tower.encoder.layer.0.weight"
+        ));
+        assert!(is_vision_tensor("visual.merger.proj.weight"));
+        assert!(!is_vision_tensor(
+            "model.language_model.layers.45.eh_proj.weight"
+        ));
+        // The trap: a text tensor whose name merely CONTAINS "vision".
+        assert!(!is_vision_tensor(
+            "model.language_model.layers.3.mlp.revision.weight"
+        ));
+    }
+
+    #[test]
+    fn skip_vision_drops_only_the_tower() {
+        let l = loader(true, 2);
+        assert!(l.should_skip_tensor("model.visual.blocks.0.attn.proj.weight"));
+        assert!(!l.should_skip_tensor("model.language_model.layers.45.eh_proj.weight"));
+        assert!(!l.should_skip_tensor("lm_head.weight"));
+    }
+
+    #[test]
+    fn skip_vision_applies_without_ep() {
+        // The EP short-circuit must not swallow the vision rule at ep=1.
+        let l = loader(true, 1);
+        assert!(l.should_skip_tensor("model.visual.blocks.0.attn.proj.weight"));
+        assert!(!l.should_skip_tensor("model.layers.0.self_attn.q_proj.weight"));
+    }
+
+    #[test]
+    fn default_loader_keeps_the_tower() {
+        let l = loader(false, 2);
+        assert!(!l.should_skip_tensor("model.visual.blocks.0.attn.proj.weight"));
+        assert!(!FastSafetensorsLoader::new().skip_vision);
+    }
+
+    #[test]
+    fn ep_expert_filtering_is_unchanged_by_the_vision_rule() {
+        let l = loader(true, 2); // ep_rank 0 of 2, 288 experts -> keeps 0..143
+        assert!(
+            !l.should_skip_tensor("model.language_model.layers.4.mlp.experts.7.up_proj.weight")
+        );
+        assert!(
+            l.should_skip_tensor("model.language_model.layers.4.mlp.experts.200.up_proj.weight")
+        );
     }
 }

@@ -46,7 +46,7 @@ impl BlockDiffusionDraftHead {
             && self.markov_w1.is_some()
             && self.markov_w2.is_some()
             && self.scratch.markov_embed.0 != 0
-            && std::env::var("ATLAS_DSPARK_MARKOV").ok().as_deref() != Some("0")
+            && self.levers.dspark_markov
     }
 
     /// True when the confidence head should also run inside the sequential
@@ -54,17 +54,7 @@ impl BlockDiffusionDraftHead {
     /// configured via `ATLAS_DSPARK_CONF_TAU` (0/unset = off, matching the
     /// reference's `threshold <= 0.0 → full block`).
     pub(super) fn confidence_active(&self) -> bool {
-        self.confidence_proj.is_some() && self.scratch.conf_out.0 != 0 && Self::conf_tau() > 0.0
-    }
-
-    /// `ATLAS_DSPARK_CONF_TAU` parsed once per call site. Sigmoid-space
-    /// threshold; the confident prefix ends at the first row whose predicted
-    /// acceptance probability falls below it.
-    pub(super) fn conf_tau() -> f32 {
-        std::env::var("ATLAS_DSPARK_CONF_TAU")
-            .ok()
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(0.0)
+        self.confidence_proj.is_some() && self.scratch.conf_out.0 != 0 && self.levers.conf_tau > 0.0
     }
 
     /// Sequential Markov-biased argmax over the γ block logits. Replaces the
@@ -97,7 +87,7 @@ impl BlockDiffusionDraftHead {
             .markov_w2
             .as_ref()
             .expect("markov_active() checked markov_w2");
-        let anchor_bias = std::env::var("ATLAS_DSPARK_ANCHOR_BIAS").ok().as_deref() != Some("0");
+        let anchor_bias = self.levers.dspark_anchor_bias;
         let conf_on = self.confidence_active();
         let bf16u = 2usize;
 

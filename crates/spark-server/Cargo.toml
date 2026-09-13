@@ -88,7 +88,13 @@ toml = "0.8"
 # order) instead of BTreeMap (sorted). Without this, `Value::from_serialize`
 # re-sorts tool-schema keys before the custom `tojson` filter renders them,
 # defeating the transformers key-order match in the `<tools>` block.
-minijinja = { version = "2", features = ["builtins", "adjacent_loop_items", "json", "preserve_order"] }
+#
+# `loop_controls`: `{% break %}` / `{% continue %}`. Jinja2 itself only has these
+# with the `jinja2.ext.loopcontrols` extension, but transformers enables it, so a
+# published chat template may use them and be perfectly valid upstream. GLM-5.3-Flash
+# does (`chat` line 140) and Atlas refused it at startup with "unknown statement
+# break" — a template Atlas cannot parse blocks the whole server, not just chat.
+minijinja = { version = "2", features = ["builtins", "adjacent_loop_items", "json", "loop_controls", "preserve_order"] }
 # Pure-Rust grammar-constrained decoding (W7: was the C++-backed
 # `xgrammar-rs = "0.1"` patched to `vendor/xgrammar-rs`; now the
 # from-scratch Rust port at `crates/xgrammar`). The crate's lib is

@@ -335,6 +335,7 @@ impl DeepseekV4MtpHead {
             // experts local (force_all_experts), so the no-EP MoE is correct.
             comm: None,
             graph_capture: false,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: ctx.token_ids,
             host_token_ids: None,

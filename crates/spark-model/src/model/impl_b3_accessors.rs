@@ -39,7 +39,101 @@ impl TransformerModel {
         if self.proposer.is_some() {
             tracing::info!("DFlash: replacing existing MTP proposer with BlockDiffusionDraftHead");
         }
+        // 🔴 ANOMALIES A59. `new()` sized `mtp_prefill_hidden` at `max_seq_len` because the
+        // post-construction proposers (V4, GLM-5.3, DFlash) do not exist yet when it runs —
+        // they need the model's owned GPU backend and its shared embed/lm_head. Now that one
+        // is installed, ask it how many rows it can actually be handed and give back the rest.
+        //
+        // Keyed to the trait, not to a model name: a proposer that can follow the target to
+        // the end of the served context returns `max_seq_len` (the default) and nothing
+        // happens. GLM-5.3's drafter is a DSA block capped at `max_dsa_context`, so at
+        // `--max-seq-len 524288` this returns 4.0 GiB of unreachable capture buffer that was
+        // covered by no reserve at all (see `Glm5NextMtpHead::new`).
+        //
+        // Safe here and nowhere later: construction time, no sequence exists, so no capture is
+        // in flight and no `mtp_prefill_capture_len` is live. Shrink only — a proposer must
+        // never be able to GROW a buffer the capture epilogue already bounds-checks against.
+        // 🪤 FREE the old buffer BEFORE allocating the small one. The obvious alloc-then-free
+        // ordering holds both at once, and the peak it creates — 4.3 GB — is exactly the
+        // pressure this is here to remove, on a box that has ~3 GB free at this point.
+        let rows = proposer.prefill_hidden_rows(self.mtp_prefill_capacity);
+        if !self.mtp_prefill_hidden.is_null() && rows < self.mtp_prefill_capacity {
+            let was = self.mtp_prefill_capacity;
+            let bytes = rows * self.config.hidden_size * 2;
+            let old = std::mem::replace(
+                &mut self.mtp_prefill_hidden,
+                spark_runtime::gpu::DevicePtr::NULL,
+            );
+            self.mtp_prefill_capacity = 0;
+            match self.gpu.free(old).and_then(|_| self.gpu.alloc(bytes)) {
+                Ok(smaller) => {
+                    self.mtp_prefill_hidden = smaller;
+                    self.mtp_prefill_capacity = rows;
+                    tracing::info!(
+                        "MTP drafter context: capture buffer rightsized {was} -> {rows} rows \
+                         ({:.0} -> {:.0} MB) — the proposer cannot be handed a position past \
+                         {rows} (A59)",
+                        (was * self.config.hidden_size * 2) as f64 / 1e6,
+                        bytes as f64 / 1e6,
+                    );
+                }
+                // NULL + capacity 0 is the feature's own "off" state: the capture epilogue
+                // and the propose-site coverage check both gate on it, so drafter-prefill
+                // disables and the serve keeps running at plain acceptance. Losing a
+                // throughput feature beats failing a serve over an optimisation.
+                Err(e) => tracing::warn!(
+                    "MTP drafter context: rightsizing the capture buffer failed ({e:#}) — \
+                     drafter prefill and carry are DISABLED for this serve"
+                ),
+            }
+        }
         self.proposer = Some(proposer);
+        self.alloc_batched_verify_buffers();
+    }
+
+    /// Allocate the batched-verify staging buffers if a LATE proposer install
+    /// left them NULL.
+    ///
+    /// `TransformerModel::new` allocates `verify_hidden_stash` and
+    /// `verify_wy_tables` only when a proposer is passed to the CONSTRUCTOR.
+    /// qwen4_exp MTP, GLM-5.3 and DFlash all install theirs afterwards through
+    /// `set_dflash_proposer`, so both stayed NULL — and `can_batch_verify`
+    /// self-gates on `!verify_hidden_stash.is_null()`.
+    ///
+    /// 🪤 The symptom is not an error. The batched verify silently declines
+    /// and every sequence takes the per-sequence loop, which returns the SAME
+    /// answers — so known-answer probes pass at any concurrency and the only
+    /// trace is that speculation does not amortise across sequences. MEASURED
+    /// here: with the highway batched verify enabled and this allocation
+    /// missing, C=2 probes were 4/4 and the path's own one-shot ACTIVE log
+    /// never printed.
+    ///
+    /// Idempotent: re-installing a proposer keeps the existing buffers, whose
+    /// addresses must stay fixed for CUDA-graph stability.
+    fn alloc_batched_verify_buffers(&mut self) {
+        if self.verify_hidden_stash.is_null() {
+            match self
+                .gpu
+                .alloc(crate::layer::VERIFY_WY_TABLE_SEQS * self.config.hidden_size * 2)
+            {
+                Ok(buf) => self.verify_hidden_stash = buf,
+                // Never fail the install: without the stash the batched verify
+                // simply keeps declining, which is the pre-existing behaviour.
+                Err(e) => tracing::warn!("batched-verify hidden stash alloc failed: {e:#}"),
+            }
+        }
+        if self.verify_wy_tables.is_null() && self.config.num_ssm_layers() > 0 {
+            let bytes = self.config.num_ssm_layers() * crate::layer::VERIFY_WY_LAYER_STRIDE_BYTES;
+            match self.gpu.alloc(bytes) {
+                Ok(buf) => {
+                    if let Err(e) = self.gpu.memset(buf, 0, bytes) {
+                        tracing::warn!("batched-verify WY table memset failed: {e:#}");
+                    }
+                    self.verify_wy_tables = buf;
+                }
+                Err(e) => tracing::warn!("batched-verify WY table alloc failed: {e:#}"),
+            }
+        }
     }
 
     /// Take ownership of a loaded qwen4_exp MTP draft module.
@@ -141,6 +235,10 @@ impl TransformerModel {
                  output quality as unproven until the agentic battery runs."
             );
             self.proposer = Some(head.clone());
+            // Late install, same as DFlash's — see `alloc_batched_verify_buffers`.
+            // Without this the batched verify declines SILENTLY on a NULL
+            // stash and speculation never amortises across sequences.
+            self.alloc_batched_verify_buffers();
         }
         self.qwen4_exp_mtp_head = Some(head);
         self.qwen4_exp_mtp_state = shadow_state;

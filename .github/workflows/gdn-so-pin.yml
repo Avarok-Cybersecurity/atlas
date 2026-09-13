@@ -31,7 +31,8 @@ jobs:
   verify-gdn-so-pins:
     name: Verify committed GDN binaries match PINS.sha256
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}

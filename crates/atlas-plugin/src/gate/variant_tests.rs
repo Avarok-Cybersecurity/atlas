@@ -49,15 +49,7 @@ fn plant_variant(root: &Path, model: &str, secs: u64) -> std::path::PathBuf {
     );
     record.target_model = model.to_string();
     record.recorded_at = secs;
-    let gate = GateRecord::from_run(
-        &record,
-        hw(),
-        SHA.to_string(),
-        Vec::new(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.to_string(), Vec::new(), None).unwrap();
     write_record(root, &gate).unwrap()
 }
 
@@ -174,7 +166,6 @@ fn an_unknown_hardware_variant_record_does_not_clobber_the_default() {
         SHA.to_string(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     let dense_path = write_record(root, &gate).unwrap();
@@ -200,7 +191,6 @@ fn an_unknown_hardware_variant_record_does_not_clobber_the_default() {
         SHA.to_string(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     assert_eq!(write_record(root, &gate).unwrap(), default_path);
@@ -250,15 +240,7 @@ fn a_variant_record_is_scored_against_its_own_entry() {
         Verdict::pass("ok"),
     );
     record.target_model = DENSE.to_string();
-    let gate = GateRecord::from_run(
-        &record,
-        hw(),
-        SHA.to_string(),
-        Vec::new(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.to_string(), Vec::new(), None).unwrap();
     // 86.0 clears the MoE floor (84.0) but not the dense one (87.0): only a
     // dense-floor failure proves the dense entry is what it was scored on.
     assert_eq!(

@@ -103,7 +103,7 @@ impl MoeLayer {
         // DIAG (ATLAS_K2_DIAG=1): synchronize checkpoints to localize the K2-verify
         // illegal access (the V4 NVFP4 batch2 verify path is exercised for the first
         // time by MTP). The label of the FIRST failing sync names the bad stage.
-        let k2_diag = std::env::var("ATLAS_K2_DIAG").is_ok_and(|v| v == "1");
+        let k2_diag = ctx.levers.k2_diag;
         if k2_diag {
             ctx.gpu
                 .synchronize(stream)

@@ -153,6 +153,27 @@ pub fn resolve_from_env() -> DrafterContext {
         let prefill_only = std::env::var(PREFILL_ONLY_ENV).ok();
         let cfg = resolve(disable.as_deref(), prefill_only.as_deref());
 
+        // ★ REPORT ONCE. This function is NOT called once at startup — it runs
+        // ~32,500 times in a single `concurrency-sweep`, once per
+        // drafter-context resolution. Every line below was therefore emitted
+        // 32k times: MEASURED at 32,449 `carry=` lines and an 8.1 MB log before
+        // the INERT warning was added, and 32,513 + 32,513 lines and a 19 MB log
+        // after — the warning DOUBLED the log volume of every run.
+        //
+        // These are startup reports by intent ("logs a warning at startup", per
+        // this module's own docs) and by content: they describe a process-wide
+        // configuration that cannot change after the first call. Emitting them
+        // per call was spam in the parent and worse spam once I added to it.
+        REPORTED.call_once(|| report(cfg));
+        cfg
+    }
+}
+
+/// Emitted once by [`resolve_from_env`]; see the note there.
+static REPORTED: std::sync::Once = std::sync::Once::new();
+
+fn report(cfg: DrafterContext) {
+    {
         for name in OBSOLETE_ENVS {
             if let Ok(v) = std::env::var(name) {
                 tracing::warn!(
@@ -162,10 +183,17 @@ pub fn resolve_from_env() -> DrafterContext {
                 );
             }
         }
+        // Report what the runtime will DO, not what the two env vars said.
+        // `carry_armed` is the same predicate the runtime gates on; the
+        // dispatch cap can force the carry off underneath this config, and a
+        // line that printed `carry=ON` in that state is exactly why a
+        // cross-request carry defect was hunted for a night on a lever that
+        // was never running (2026-09-07).
+        let carry_armed = crate::model::mtp_carry::carry_armed(cfg);
         tracing::info!(
             "MTP drafter context: prefill={} carry={} ({}). Disable both with {}=1.",
             on_off(cfg.prefill),
-            on_off(cfg.carry),
+            on_off(carry_armed),
             if cfg == DrafterContext::BOTH {
                 "default"
             } else {
@@ -173,6 +201,15 @@ pub fn resolve_from_env() -> DrafterContext {
             },
             DISABLE_ENV,
         );
+        if cfg.carry && !carry_armed {
+            tracing::warn!(
+                "MTP cross-turn carry is CONFIGURED ON but INERT: the MTP \
+                 dispatch cap is {} (>1), and the carry slot is single-sequence \
+                 by design, so it is force-disabled. Set ATLAS_MTP_MAX_SEQS=1 \
+                 to arm it; leave it unset to keep multi-sequence MTP.",
+                crate::speculative::mtp_max_seqs(),
+            );
+        }
         if cfg.prefill && !cfg.carry {
             tracing::warn!(
                 "{PREFILL_ONLY_ENV}=1: drafter prefill is ON with cross-turn carry \
@@ -181,7 +218,6 @@ pub fn resolve_from_env() -> DrafterContext {
                  of decode saving (net -927 ms/turn, spent on TTFT).",
             );
         }
-        cfg
     }
 }
 

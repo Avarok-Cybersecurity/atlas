@@ -42,6 +42,20 @@ async function get(path) {
   return { res, h: (n) => res.headers.get(n) ?? '' };
 }
 
+/**
+ * Cloudflare Pages CONCATENATES a header re-declared by a later `_headers`
+ * rule rather than replacing it, so a misconfigured file yields
+ * "public, max-age=300, public, max-age=31536000, immutable". Browsers read the
+ * first max-age, so the assets meant to be held for a year are held for five
+ * minutes — and every substring assertion in this file passes anyway, because
+ * both values are present. That is exactly how it shipped once. Assert the
+ * directive appears once.
+ */
+function expectOneMaxAge(label, value) {
+  const n = (value.match(/max-age=/g) ?? []).length;
+  check(`${label}: one max-age, not a concatenation`, n === 1, `${n} in "${value}"`);
+}
+
 function expectSecurityHeaders(label, h) {
   for (const [name, value] of Object.entries(SECURITY)) {
     check(`${label}: ${name}`, h(name).toLowerCase() === value.toLowerCase(), h(name) || 'absent');
@@ -57,6 +71,7 @@ console.log(`checking ${base}`);
   check('document: 200', res.status === 200, `status ${res.status}`);
   check('document: cache-control is short', /max-age=300/.test(h('cache-control')), h('cache-control') || 'absent');
   check('document: not cached forever', !/immutable/.test(h('cache-control')), h('cache-control'));
+  expectOneMaxAge('document', h('cache-control'));
   expectSecurityHeaders('document', h);
 }
 
@@ -72,6 +87,7 @@ console.log(`checking ${base}`);
     check(`asset ${m[0]}: 200`, res.status === 200, `status ${res.status}`);
     check('asset: immutable', /immutable/.test(h('cache-control')), h('cache-control') || 'absent');
     check('asset: year-long max-age', /max-age=31536000/.test(h('cache-control')), h('cache-control'));
+    expectOneMaxAge('asset', h('cache-control'));
     expectSecurityHeaders('asset', h);
   }
 }
@@ -100,6 +116,26 @@ for (const [path, type] of [['/rss.xml', 'application/rss+xml'], ['/sitemap.xml'
 {
   const { res } = await get('/.env');
   check('dotfile: refused', res.status === 404 || res.status === 403, `status ${res.status}`);
+}
+
+/* 6. Every document the sitemap advertises. On nginx the cache policy had a
+      `default` arm, so a new route inherited it; a Pages `_headers` file has no
+      else-branch, and a route added without a rule silently falls back to the
+      host default. This walks what the build itself says it published, so the
+      list cannot drift out of step with the routes. */
+{
+  const xml = await (await fetch(base + '/sitemap.xml')).text();
+  const paths = [...new Set(
+    [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => new URL(m[1]).pathname)
+  )];
+  check('sitemap: lists documents to check', paths.length > 0, `${paths.length} URLs`);
+  for (const path of paths) {
+    const { res, h } = await get(path);
+    const cc = h('cache-control');
+    check(`sitemap ${path}: 200`, res.status === 200, `status ${res.status}`);
+    check(`sitemap ${path}: declares a short cache`, /max-age=300/.test(cc), cc || 'absent');
+    expectOneMaxAge(`sitemap ${path}`, cc);
+  }
 }
 
 console.log(log.join('\n'));

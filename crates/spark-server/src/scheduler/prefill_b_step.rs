@@ -68,6 +68,9 @@ pub fn prefill_request(
     let req_top_logprobs = req.top_logprobs();
     let req_timeout_at = req.timeout_at();
     let grammar_spec = req.take_grammar_spec();
+    // Match the chunked path: include grammar preparation once in service TTFT,
+    // while retaining the existing exclusion of HTTP handling and queue time.
+    let request_start = Instant::now();
     let mut grammar_state = compile_grammar_state(grammar_engine, &grammar_spec, eos_tokens);
     let (prompt_tokens, max_tokens, mut sink, image_pixels, temperature, cancel_flag) = match req {
         InferenceRequest::Streaming {
@@ -103,7 +106,6 @@ pub fn prefill_request(
         ),
     };
 
-    let request_start = Instant::now();
     tracing::info!(
         "Prefilling: {} prompt tokens, max_tokens={max_tokens}",
         prompt_tokens.len(),
@@ -170,6 +172,7 @@ pub fn prefill_request(
             min_tokens: req_min_tokens,
             eos_tokens: eos_tokens.to_vec(),
             finished: true,
+            error: None,
             guard_stop: None,
             param_close_pending: 0,
             sink,
@@ -191,7 +194,8 @@ pub fn prefill_request(
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
             pending_draft_conf: Vec::new(),
-            inside_thinking: req_enable_thinking && think_end_token.is_some(),
+            pending_drafts_lookup: false,
+            inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
             repetition_detection: req_repetition_detection,
@@ -259,6 +263,8 @@ pub fn prefill_request(
         model.ep_broadcast_cmd(0)?; // chunk_start = 0 (non-chunked)
         model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
         model.ep_broadcast_tokens(&prompt_tokens)?;
+        // Vision payload travels with the tokens (see Model::ep_exchange_vision):
+        model.ep_exchange_vision(&prompt_tokens)?;
 
         let logits = model.prefill(&prompt_tokens, &mut seq, 0)?;
         // #131: constrain the FIRST token with the grammar too (and advance
@@ -278,6 +284,11 @@ pub fn prefill_request(
             min_p,
             eos_tokens,
             grammar_state.as_mut(),
+            FirstTokenPolicy::for_birth(
+                req_enable_thinking,
+                think_end_token,
+                tool_call_start_token,
+            ),
             &sched.levers.sampling(),
         )
     })();
@@ -364,6 +375,7 @@ pub fn prefill_request(
             min_tokens: req_min_tokens,
             eos_tokens: eos_tokens.to_vec(),
             finished: true,
+            error: None,
             guard_stop: None,
             param_close_pending: 0,
             sink,
@@ -385,7 +397,8 @@ pub fn prefill_request(
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
             pending_draft_conf: Vec::new(),
-            inside_thinking: req_enable_thinking && think_end_token.is_some(),
+            pending_drafts_lookup: false,
+            inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
             repetition_detection: req_repetition_detection,
@@ -449,6 +462,7 @@ pub fn prefill_request(
         min_tokens: req_min_tokens,
         eos_tokens: eos_tokens.to_vec(),
         finished: false,
+        error: None,
         guard_stop: None,
         param_close_pending: 0,
         sink,
@@ -470,7 +484,9 @@ pub fn prefill_request(
         logit_bias,
         pending_drafts: Vec::new(),
         pending_draft_conf: Vec::new(),
-        inside_thinking: spontaneous_think || (req_enable_thinking && think_end_token.is_some()),
+        pending_drafts_lookup: false,
+        inside_thinking: spontaneous_think
+            || born_inside_thinking(req_enable_thinking, think_end_token),
         enable_thinking: req_enable_thinking,
         thinking_budget: if spontaneous_think {
             Some(spontaneous_think_budget)

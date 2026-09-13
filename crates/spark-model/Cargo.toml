@@ -89,6 +89,42 @@ workspace = true
 # NOTE: the ARM-2 Leg-2 native-MXFP4 (E8M0) numeric gate lives as a real
 # `#[ignore]`d integration test — see crates/spark-model/tests/arm2_leg2_*.rs.
 [[example]]
+name = "kda_gate_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kda_recurrent_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kda_chunk_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kda_conv_contract_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kda_layer_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "dsa_indexer_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "mhc_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "glm5next_ffn_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "glm5next_moe_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_cdh_vblock_microtest"
 required-features = ["cuda", "gpu-examples"]
 
@@ -254,4 +290,34 @@ required-features = ["cuda", "gpu-examples"]
 
 [[example]]
 name = "exl3_reconstruct_parity"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_ffn_batch16_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_oproj_batch_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_ffn_w8a8_microtest"
+required-features = ["cuda", "gpu-examples"]
+# The cuBLASLt-vs-kernel acceptance rule is CPU-testable; see the `tests`
+# module in `examples/common/native_fp8_bf16_compare.rs`, which the example
+# pulls in with `#[path]`.
+test = true
+
+[[example]]
+name = "native_fp8_qkv_batch_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_decode_proj_w8a8_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+# The PREFILL sibling: the SSM out_proj and cache-skip Q/K/V shapes that round 9
+# left on W8A16 (#917/#928). Selector clauses are CPU-tested next to each site.
+name = "native_fp8_prefill_proj_w8a8_microtest"
 required-features = ["cuda", "gpu-examples"]

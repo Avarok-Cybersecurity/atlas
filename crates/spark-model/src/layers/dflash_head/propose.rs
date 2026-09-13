@@ -55,10 +55,7 @@ impl BlockDiffusionDraftHead {
             // Per-model latch (see `ModelStats::dumped`) rather than a static: an
             // operator who sets the flag and then swaps models must still get the
             // dump, instead of it being swallowed by the previous model's shot.
-            if std::env::var("ATLAS_DFLASH_CTX_PARITY_DUMP")
-                .ok()
-                .as_deref()
-                == Some("1")
+            if self.levers.ctx_parity_dump
                 && dstate.ctx_len > 0
                 && ctx.stats.dumped.keyed("dflash_ctx_parity")
             {
@@ -253,10 +250,7 @@ impl BlockDiffusionDraftHead {
         // here. K=gamma/K=4 never set it -> their decode-append is unaffected.
         let eagle_skip = dstate.skip_next_decode_append;
         dstate.skip_next_decode_append = false;
-        let skip_decode_append = std::env::var("ATLAS_DFLASH_DEBUG_NO_DECODE_APPEND")
-            .ok()
-            .as_deref()
-            == Some("1");
+        let skip_decode_append = self.levers.no_decode_append;
         if !skip_decode_append
             && !eagle_skip
             && let Some(latest_ctx) = target_hidden_stack
@@ -296,7 +290,7 @@ impl BlockDiffusionDraftHead {
         // dense_gemv per accumulated ctx row over a 262 MB fc weight. Nothing
         // announced it; the run just got nine times slower. `option_b_defaults_on`
         // exists so the next merge cannot do it silently.
-        let option_b_enabled = super::option_b_enabled();
+        let option_b_enabled = self.levers.option_b;
         let option_b_arg: Option<(DevicePtr, u32)> = if option_b_enabled {
             // Lazy block table init. ctx slots come from precompute over the
             // accumulated target hiddens; γ slots come from the layer body.
@@ -368,10 +362,7 @@ impl BlockDiffusionDraftHead {
             //
             // Escape hatch: ATLAS_DFLASH_DEBUG_FULL_PRECOMPUTE=1 forces a
             // full recompute (committed=0) for A/B accept-rate parity.
-            let force_full = std::env::var("ATLAS_DFLASH_DEBUG_FULL_PRECOMPUTE")
-                .ok()
-                .as_deref()
-                == Some("1");
+            let force_full = self.levers.full_precompute;
             // Clamp watermark defensively: a rewind should have reset it,
             // but never start past ctx_len.
             let committed = if force_full {
@@ -443,7 +434,7 @@ impl BlockDiffusionDraftHead {
             // The think→spec seam (re-probe after a serial stretch) is
             // where a violation would surface. Host-side Vec scan,
             // probe-gated, zero cost when off.
-            if std::env::var("ATLAS_DFLASH_CTXLEN_PROBE").ok().as_deref() == Some("1")
+            if self.levers.ctxlen_probe
                 && let Some(i) = dstate.ctx_positions.windows(2).position(|w| w[1] <= w[0])
             {
                 tracing::warn!(
@@ -464,9 +455,7 @@ impl BlockDiffusionDraftHead {
             // (the bug — likely thinking-mode tokens not appending to ctx).
             // Gated ATLAS_DFLASH_CTXLEN_PROBE=1, rate-limited to ~1/16 steps
             // to avoid log flood.
-            if std::env::var("ATLAS_DFLASH_CTXLEN_PROBE").ok().as_deref() == Some("1")
-                && position.is_multiple_of(16)
-            {
+            if self.levers.ctxlen_probe && position.is_multiple_of(16) {
                 tracing::info!(
                     "DFLASH CTXLEN_PROBE: position={} ctx_len={} q_offset(=ctx_len)={} GAP={} (position - ctx_len; healthy≈prompt_len, BUG if grows unbounded)",
                     position,
@@ -479,10 +468,7 @@ impl BlockDiffusionDraftHead {
             // in the layer body so paged attention only sees the γ K/V
             // we write in-layer. If accept rate is bad even here, the
             // bug is in the cache write/read path, not in precompute.
-            let ablate_no_ctx = std::env::var("ATLAS_DFLASH_OPTION_B_NO_CTX")
-                .ok()
-                .as_deref()
-                == Some("1");
+            let ablate_no_ctx = self.levers.option_b_no_ctx;
             let effective_ctx_count = if ablate_no_ctx {
                 0
             } else {
@@ -535,15 +521,12 @@ impl BlockDiffusionDraftHead {
         // and the WY17 strided layout (inter_stride_floats = h_bytes/4) maps
         // 1:1 to ssm_pool.h_intermediate(layer, slot, i). Override with
         // ATLAS_DFLASH_DRAFT_CAP=N (N=1 to force K=2 path for ablation).
-        let cap: usize = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(self.gamma);
+        let cap = self.levers.draft_cap.unwrap_or(self.gamma);
 
         // ATLAS_DFLASH_VERIFY_TRACE=1: log all γ drafts BEFORE the cap so we
         // can see whether the drafter echoes only at position 0 or across
         // every noise row. Pairs with K2 TRACE in the scheduler.
-        if std::env::var("ATLAS_DFLASH_VERIFY_TRACE").ok().as_deref() == Some("1") {
+        if self.levers.verify_trace {
             tracing::info!(
                 "DFLASH TRACE drafts: token_in={} position={} γ={} drafts_pre_cap={:?}",
                 last_token,

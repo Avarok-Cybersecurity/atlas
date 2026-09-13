@@ -9,7 +9,7 @@
 //! the grant cannot ship half-armed by accident.
 
 use super::amnesty::{AMNESTY_EPOCH, AmnestyEntry, ONE_TIME_AMNESTY, excused_by};
-use super::check::invalidating_paths_with_amnesty;
+use super::check_paths::invalidating_paths_with_amnesty;
 use super::coverage_tests::{any_gate, scratch_repo};
 use super::tests::tempdir;
 use super::{REQUIRED_GATES, read_record, records_newest_first};

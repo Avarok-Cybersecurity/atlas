@@ -143,7 +143,7 @@ pub fn step_verify_k3(
 ) {
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
-        a.finished = true;
+        super::lifecycle::fail_sequence(a, format!("sync_secondary: {e:#}"));
         return;
     }
 
@@ -155,13 +155,13 @@ pub fn step_verify_k3(
     let tokens_k3 = [a.last_token, drafts[0], drafts[1]];
     if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF3) {
         tracing::error!("EP broadcast verify_k3 cmd: {e:#}");
-        a.finished = true;
+        super::lifecycle::fail_sequence(a, format!("EP broadcast verify_k3 cmd: {e:#}"));
         return;
     }
     for &t in &tokens_k3 {
         if let Err(e) = model.ep_broadcast_cmd(t) {
             tracing::error!("EP broadcast verify_k3 token: {e:#}");
-            a.finished = true;
+            super::lifecycle::fail_sequence(a, format!("EP broadcast verify_k3 token: {e:#}"));
             return;
         }
     }
@@ -178,7 +178,7 @@ pub fn step_verify_k3(
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("decode_and_verify_fused (k3): {e:#}");
-                a.finished = true;
+                super::lifecycle::fail_sequence(a, format!("decode_and_verify_fused (k3): {e:#}"));
                 return;
             }
         }
@@ -187,7 +187,7 @@ pub fn step_verify_k3(
             Ok(r) => r.to_vec(),
             Err(e) => {
                 tracing::error!("decode_verify_graphed_k3: {e:#}");
-                a.finished = true;
+                super::lifecycle::fail_sequence(a, format!("decode_verify_graphed_k3: {e:#}"));
                 return;
             }
         }
@@ -195,7 +195,15 @@ pub fn step_verify_k3(
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
     if !dflash_verify_raw_argmax {
-        super::verify_mtp_wide::finish(model, a, sched, &drafts[..2], num_drafts, verify_ctx);
+        super::verify_mtp_wide::finish(
+            model,
+            a,
+            sched,
+            &drafts[..2],
+            num_drafts,
+            verify_ctx,
+            &result_vec,
+        );
         return;
     }
     let (v0_argmax, v1_argmax, v2_argmax) = (result_vec[0], result_vec[1], result_vec[2]);
@@ -315,7 +323,7 @@ pub fn step_verify_k3(
     // EP: always broadcast num_accepted to worker (prevents deadlock on EOS).
     if let Err(e) = model.ep_broadcast_cmd(num_accepted as u32) {
         tracing::error!("EP broadcast verify_k3 result: {e:#}");
-        a.finished = true;
+        super::lifecycle::fail_sequence(a, format!("EP broadcast verify_k3 result: {e:#}"));
         return;
     }
 
@@ -351,7 +359,10 @@ pub fn step_verify_k3(
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 3, 3) {
             // SSM state is no longer trustworthy — terminate, do not continue.
             tracing::error!("commit_accepted_prefix (K=3 accept-3): {e:#}");
-            a.finished = true;
+            super::lifecycle::fail_sequence(
+                a,
+                format!("commit_accepted_prefix (K=3 accept-3): {e:#}"),
+            );
             return;
         }
         if !commit_verify_aux_or_finish(model, a, 3, 3) {
@@ -396,7 +407,10 @@ pub fn step_verify_k3(
         // (num_accepted=2 < k=3): rewind live h_state to intermediate[1].
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 2, 3) {
             tracing::error!("commit_accepted_prefix (K=3 accept-2): {e:#}");
-            a.finished = true;
+            super::lifecycle::fail_sequence(
+                a,
+                format!("commit_accepted_prefix (K=3 accept-2): {e:#}"),
+            );
             return;
         }
         // TWO of three rows committed: the carries must land on row 1, not on
@@ -451,7 +465,10 @@ pub fn step_verify_k3(
         // (num_accepted=1 < k=3): rewind live h_state to intermediate[0].
         if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 3) {
             tracing::error!("commit_accepted_prefix (K=3 accept-1): {e:#}");
-            a.finished = true;
+            super::lifecycle::fail_sequence(
+                a,
+                format!("commit_accepted_prefix (K=3 accept-1): {e:#}"),
+            );
             return;
         }
         if !commit_verify_aux_or_finish(model, a, 1, 3) {

@@ -23,18 +23,32 @@ use std::collections::BTreeMap;
 /// the precise substitution the gate record format exists to make impossible.
 /// So the overrides are a field of their own, and they also land in `command`
 /// so the invocation still replays.
+/// A run measured under `overrides`.
+///
+/// The regime now travels ON the run record and the gate record DERIVES it, so
+/// a test that wants an overridden gate record sets it here — which is also
+/// exactly how the production path builds one. Passing the map beside the
+/// record is no longer expressible, which is the point.
+fn served_with(
+    metrics: BTreeMap<String, f64>,
+    overrides: &BTreeMap<String, String>,
+) -> crate::history::RunRecord {
+    let mut r = run_record(metrics, Verdict::pass("ok"));
+    r.serve_overrides = overrides.clone();
+    r
+}
+
 #[test]
 fn a_run_with_serve_overrides_records_them_and_stays_replayable() {
     let mut overrides = BTreeMap::new();
     overrides.insert("kv_cache_dtype".to_string(), "fp8".to_string());
     overrides.insert("fp8_kv_calibration_tokens".to_string(), "512".to_string());
     let gate = GateRecord::from_run(
-        &run_record(BTreeMap::new(), Verdict::pass("ok")),
+        &served_with(BTreeMap::new(), &overrides),
         hw(),
         SHA.into(),
         Vec::new(),
         Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".to_string()),
-        overrides.clone(),
     )
     .unwrap();
     assert_eq!(gate.serve_overrides, overrides);
@@ -68,7 +82,6 @@ fn a_run_without_overrides_carries_no_override_provenance() {
         SHA.into(),
         Vec::new(),
         Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".to_string()),
-        Default::default(),
     )
     .unwrap();
     assert!(gate.serve_overrides.is_empty());
@@ -102,7 +115,6 @@ fn a_record_missing_a_baseline_serve_pin_fails() {
         SHA.into(),
         Vec::new(),
         Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".into()),
-        Default::default(),
     )
     .unwrap();
     let problems = check_record(&gate, &baseline).expect("must fail");
@@ -134,12 +146,11 @@ fn a_record_with_the_baseline_serve_pin_still_scores_metrics() {
     let mut overrides = BTreeMap::new();
     overrides.insert("ssm_cache_slots".to_string(), "256".to_string());
     let gate = GateRecord::from_run(
-        &run_record(metrics, Verdict::pass("ok")),
+        &served_with(metrics, &overrides),
         hw(),
         SHA.into(),
         Vec::new(),
         Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".into()),
-        overrides,
     )
     .unwrap();
     assert!(check_record(&gate, &baseline).is_none());
@@ -150,12 +161,14 @@ fn a_record_with_an_unpinned_serve_override_fails() {
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".into(), 90.0);
     let gate = GateRecord::from_run(
-        &run_record(metrics, Verdict::pass("ok")),
+        &served_with(
+            metrics,
+            &BTreeMap::from([("kv_cache_dtype".to_string(), "fp8".to_string())]),
+        ),
         hw(),
         SHA.into(),
         Vec::new(),
         None,
-        BTreeMap::from([("kv_cache_dtype".to_string(), "fp8".to_string())]),
     )
     .unwrap();
     let problems = check_record(&gate, &bfcl_baseline()).expect("must fail");
@@ -187,12 +200,11 @@ fn a_record_with_a_different_pin_value_fails() {
     let mut overrides = BTreeMap::new();
     overrides.insert("ssm_cache_slots".to_string(), "16".to_string());
     let gate = GateRecord::from_run(
-        &run_record(metrics, Verdict::pass("ok")),
+        &served_with(metrics, &overrides),
         hw(),
         SHA.into(),
         Vec::new(),
         Some("qwen3.6/qwen3.6-27b-nvfp4-unsloth".into()),
-        overrides,
     )
     .unwrap();
     let problems = check_record(&gate, &baseline).expect("must fail");
@@ -233,7 +245,6 @@ fn a_record_missing_a_baseline_param_pin_fails() {
         SHA.into(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     let problems = check_record(&gate, &baseline).expect("must fail");
@@ -255,15 +266,7 @@ fn a_record_with_the_baseline_param_pin_scores_and_list_rendering_matches() {
     record
         .params
         .insert("concurrencies".into(), "1, 4, 8, 16".into());
-    let gate = GateRecord::from_run(
-        &record,
-        hw(),
-        SHA.into(),
-        Vec::new(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
     assert!(check_record(&gate, &baseline).is_none());
 }
 
@@ -276,15 +279,7 @@ fn a_record_with_a_different_param_pin_value_fails() {
     metrics.insert("overall_accuracy".into(), 90.0);
     let mut record = run_record(metrics, Verdict::pass("ok"));
     record.params.insert("osl".into(), "3 20".into());
-    let gate = GateRecord::from_run(
-        &record,
-        hw(),
-        SHA.into(),
-        Vec::new(),
-        None,
-        Default::default(),
-    )
-    .unwrap();
+    let gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
     let problems = check_record(&gate, &baseline).expect("must fail");
     assert_eq!(
         problems,

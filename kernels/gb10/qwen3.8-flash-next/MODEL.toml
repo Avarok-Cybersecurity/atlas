@@ -282,6 +282,136 @@ min_reasoning_floor_tokens = 0
 honor_eos_inside_thinking = true
 max_thinking_budget = 2048
 
+# ── Named serve preset: the validated NVFP4 two-node configuration ───────────
+#
+#     spark serve qwen3.8-flash-next-nvfp4-tp2-ep2 --rank 0 --master-addr <rank0-ip>
+#     spark serve qwen3.8-flash-next-nvfp4-tp2-ep2 --rank 1 --master-addr <rank0-ip>
+#
+# The topology is IN the name: this preset is two nodes and only two nodes, and
+# a single-node NVFP4 profile would be a different preset with a different
+# sizing envelope rather than this one with `--ep-size 1` bolted on.
+#
+# NVIDIA's ModelOpt NVFP4 quant across TWO GB10s: TP=2 over EP=2 overlapping
+# groups, 128K context x 4 sequences, bf16 KV (the `[behavior]` default, which
+# QSA requires), two MTP drafts, prefix caching on.
+#
+# `rank` and `master_addr` are deliberately NOT defaults — they are the two
+# values that differ per node and per site, so they stay on the command line
+# where an operator cannot inherit someone else's topology by accident. Every
+# other entry is a default the command line or environment overrides.
+#
+# This is the configuration the 2026-09-13 vision and video work was validated
+# on: `vision-fidelity` PASS and `video-fidelity` PASS 14/14 at these settings.
+# Video is the one capability NOT enabled here: `--video-allow-ffmpeg` makes the
+# server exec another program per request, so a deployment acquires that by
+# asking, never by upgrading. Pass the flag to turn the MP4/MOV legs on.
+[[serve_presets]]
+name = "qwen3.8-flash-next-nvfp4-tp2-ep2"
+hf_id = "nvidia/Qwen3.8-Flash-Next-NVFP4"
+description = "Qwen3.8-Flash-Next, NVIDIA ModelOpt NVFP4, TP=2 x EP=2 across two GB10 nodes, bf16 KV, 2 MTP drafts, prefix caching, 4 sequences x 128K — the vision/video gate-passing multi-node profile (2026-09-13: vision-fidelity PASS, video-fidelity PASS 14/14, ~1450-1475 tok/s cold prefill at 8K/11K)."
+
+[serve_presets.flags]
+# Two nodes, tensor-parallel WITHIN the expert-parallel pair (the groups
+# overlap; see the EP=2 notes in bench/qwen4_exp/serve_qwen4exp_128k_mtp.sh).
+world_size = 2
+tp_size = 2
+ep_size = 2
+max_seq_len = 131072
+max_num_seqs = 4
+max_batch_size = 4
+gpu_memory_utilization = 0.65
+ssm_cache_slots = 32
+# `snapshot` rollback: the verify path restores SSM state from a per-row
+# snapshot rather than replaying, which is what the batched verify assumes.
+ssm_rollback_mode = "snapshot"
+# 8K is the GB10 maximum for this model; 16384 is refused. The PLE cap below
+# must stay >= this value.
+max_prefill_tokens = 8192
+request_timeout = 1800
+fast_load_prefetch_shards = true
+enable_prefix_caching = true
+speculative = true
+num_drafts = 2
+mtp_gate = "force"
+default_chat_template_kwargs = '{"reasoning_effort":"low","enable_thinking":true}'
+
+[serve_presets.env]
+# Three long-context caps, each of which fails MID-PREFILL at its own length.
+# QSA is per-sequence and tracks the served context; PLE bounds the prefill
+# CHUNK, not the prompt, so it tracks --max-prefill-tokens and must not be
+# scaled with context (it costs tokens * 10240 * 14 bytes).
+ATLAS_QSA_MAX_TOKENS = "{max_seq_len}"
+ATLAS_PLE_MAX_TOKENS = "9216"
+ATLAS_PLE_CACHE_SLOTS = "4194304"
+ATLAS_EP_PROTOCOL = "v2"
+ATLAS_INTHINK_TOOL_LEAK_OPENERS = "0"
+# GDN weights REQUANTIZED to NVFP4, not kept in BF16.
+#
+# Load-bearing and easy to miss: the code reads `!= Ok("0")`, so UNSET means
+# BF16 — a different weight path with different numerics and a different
+# footprint (measured 49.3 GB pre-KV unset vs 57.1 GB at "0"). Omitting this
+# line is what made the first cut of this preset diverge from the launcher it
+# was copied from, on a config that was otherwise identical down to the
+# rendered argv.
+ATLAS_QWEN4EXP_BF16_GDN = "0"
+# Single-launch CUTLASS grouped NVFP4 MoE for prefill: +34-44% prefill.
+#
+# ⚠ BOTH gates or neither — `..._CUTLASS` alone moves only half the MoE and the
+# halves disagree. The workspace is the kernel's own scratch and is sized with
+# them.
+#
+# This arm is W4A4: it quantizes ACTIVATIONS to NVFP4 as well as weights, so it
+# is NOT bit-identical to the ptrtable (W4A16) path — measured p1 0.85 -> 0.83
+# and about -4% at C=1 for the prefill win. Set all three to their off values
+# together if a workload needs BF16-activation numerics.
+ATLAS_HOLO_MOE_GROUPED_CUTLASS = "1"
+ATLAS_HOLO_MOE_GROUPED_DOWN = "1"
+ATLAS_CUTLASS_WORKSPACE_MB = "512"
+# Skip the dense paged attention for any prefill chunk entirely past the QSA
+# inert bound — those rows are overwritten by the sparse stage anyway, so the
+# dense work was pure waste. Invisible below ~16K and worth +35% at 100K
+# (980 -> 1323 tok/s), which is why it went unnoticed through every short sweep.
+ATLAS_QSA_SKIP_DENSE = "1"
+# MTP on the qwen4_exp verify path, live inside <think> (thinking is on by
+# default for this model, so without SPEC_THINK speculation is inert for most
+# of a reasoning turn).
+ATLAS_QWEN4EXP_MTP = "1"
+ATLAS_QWEN4EXP_MTP_VERIFY = "1"
+ATLAS_DFLASH_SPEC_THINK = "1"
+ATLAS_NO_THINKENDED_GPU_ARGMAX = "1"
+ATLAS_QWEN4EXP_MTP_HC_BATCHED = "1"
+ATLAS_VERIFY_ROW_PROJ = "1"
+# Drafts proposed per rank under EP; the target still VERIFIES every draft, so
+# a rank drift costs acceptance, never correctness.
+ATLAS_EP_MTP = "1"
+ATLAS_LOOKUP_EP = "1"
+ATLAS_LOOKUP_WIDTH = "3"
+
+# ── Cross-sequence batched verify, and the arms that break its parity ────────
+#
+# The batched verify is what makes concurrency pay (C=4 aggregate decode 68.7
+# tok/s with it, 47.6 without). It is also not output-equivalent at batch width
+# >= 4 unless the arms below are switched off: identical temperature-0 requests
+# answer differently at C>=4 and disagree among themselves. Three independent
+# contributors, each divergent on its own and any TWO still divergent — the
+# GDN/SSM arms, the attention/HC/o_proj arms, and D-Cut's depth pruning.
+#
+# All three off costs 1.9% at C=4 (70.0 -> 68.7) and about 3-4% at C=1, and
+# gives byte-identical output at widths 1-8. The real fix is to make each
+# batched arm reproduce its per-row twin bit-for-bit; until then this list is
+# load-bearing and removing any line reintroduces wrong answers under load.
+ATLAS_HC_BATCH_VERIFY = "1"
+ATLAS_MTP_EP_BATCH_VERIFY = "1"
+ATLAS_NO_MTP_DCUT = "1"
+ATLAS_NO_VERIFY_GDN_BATCH = "1"
+ATLAS_NO_VERIFY_ROW_GDN = "1"
+ATLAS_NO_BATCHED_GDN_NORM = "1"
+ATLAS_NO_BATCHED_BA_GATES = "1"
+ATLAS_NO_VERIFY_ROW_HC = "1"
+ATLAS_NO_VERIFY_OUTPROJ_TGEMM = "1"
+ATLAS_HC_ATTN_FFN_BATCHED = "0"
+ATLAS_HC_ATTN_CORE_BATCHED = "0"
+
 # ── Named serve preset: the validated EXL3 configuration ─────────────────────
 #
 #     spark serve qwen3.8-flash-next-exl3

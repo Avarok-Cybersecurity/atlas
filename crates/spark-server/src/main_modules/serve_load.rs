@@ -384,14 +384,75 @@ pub(crate) fn load_model(
 
     let (gpu, free_mem) = serve_phases::init_gpu_backend(&args, &ptx_set)?;
 
+    // 2b. Resolve TP / EP topology and set on model config.
+    //
+    // MUST run BEFORE `preflight_reserve`. `resolve_topology` divides
+    // `num_attention_heads`, `num_key_value_heads`, `linear_num_key_heads` and
+    // `linear_num_value_heads` by `tp_size`, and every SSM/GDN reserve term —
+    // plus nine buffer-arena fields — is derived from exactly those fields.
+    // Sizing the reserve first meant sizing it from the GLOBAL, unsharded
+    // counts while the runtime pools allocate from the TP-local ones: a reserve
+    // inflated by exactly `tp_size` on every SSM term (byte-exact on GLM-5.3 at
+    // `--tp-size 2`: 2380.0 MiB reserved against 1190.0 MiB allocated), taken
+    // straight out of the KV budget.
+    //
+    // This was a latent regression, not a design choice. The head-count divide
+    // arrived with #254 (GDN HeadParallel), which touched only `topology.rs`;
+    // before it nothing here was sharded and the order did not matter.
+    //
+    // Reordering, rather than teaching preflight to divide, is deliberate: the
+    // divide must not be reimplemented in a second place. `resolve_topology`
+    // guards each divide with an `is_multiple_of` bail, so a duplicated divide
+    // would silently truncate (3 heads / 2 = 1 — a 33 % UNDER-reserve, the
+    // dangerous direction). Reordering inherits those guards for free, and it
+    // makes the cheap topology bails fail before the expensive memory gate.
+    //
+    // Safe by inspection: `resolve_topology` takes only `(&args, &mut config)`
+    // and consumes nothing `preflight_reserve` produces, while
+    // `preflight_reserve` needs only `free_mem` and a resolved
+    // `args.num_drafts` — both already established above. At `--tp-size 1` the
+    // whole divide is gated off (`topology.rs`), so this is a byte-exact no-op.
+    spark_runtime::progress::phase(4, "topology");
+    let serve_phases::Topology {
+        world_size,
+        tp_size: _tp_size,
+        ep_size,
+        tp_rank: _tp_rank,
+        ep_rank,
+    } = serve_phases::resolve_topology(&args, &mut config)?;
+
     // ── Pre-load reserve preflight ──
+    //
+    // The four post-load inputs are resolved HERE because they are the
+    // caller's to know (#915 second pass): the device total and the loaded
+    // kernel set come from the backend initialised above, the checkpoint
+    // directory from `resolve_model_dir`, and the KV dtype from the SAME
+    // `resolve_kv_dtype_str` precedence the cache itself uses later in this
+    // function — so preflight's bytes-per-token and the pool's cannot differ.
+    // A `--kv-cache-dtype` that fails to parse is left to the cache's own
+    // error path; the fit falls back to pre-load free memory rather than
+    // failing the boot early with a second, worse-worded copy of it.
+    let (preflight_kv_dtype_str, _) = serve_phases::kv_cache::resolve_kv_dtype_str(
+        args.kv_cache_dtype.as_deref(),
+        ptx_set.behavior.default_kv_dtype,
+    );
+    let post_load_inputs = serve_phases::PostLoadInputs {
+        total_mem: gpu.total_memory().unwrap_or(0),
+        model_dir: &model_dir,
+        kv_dtype: preflight_kv_dtype_str
+            .parse()
+            .unwrap_or(spark_runtime::kv_cache::KvCacheDtype::Bf16),
+        w8a8_prefill_kernels: spark_model::layers::qwen3_attention::w8a8_prefill_kernels_loaded(
+            gpu.as_ref(),
+        ),
+    };
     let serve_phases::ReservePreflight {
         inference_reserve,
         buffer_arena_bytes,
         gdn_two_phase_bytes,
         ssm_prefill_chunk,
         max_batch_tokens_pre,
-    } = serve_phases::preflight_reserve(&args, &config, free_mem)?;
+    } = serve_phases::preflight_reserve(&args, &config, free_mem, &post_load_inputs)?;
     let total_reserve = inference_reserve + buffer_arena_bytes;
 
     // 2a-2. OOM watchdog: background async task that polls GPU memory every 2s.
@@ -409,15 +470,6 @@ pub(crate) fn load_model(
     #[cfg(feature = "cuda")]
     tracing::info!("OOM watchdog started (threshold: 2 GB, interval: 2s)");
 
-    // 2b. Resolve TP / EP topology and set on model config.
-    spark_runtime::progress::phase(4, "topology");
-    let serve_phases::Topology {
-        world_size,
-        tp_size: _tp_size,
-        ep_size,
-        tp_rank: _tp_rank,
-        ep_rank,
-    } = serve_phases::resolve_topology(&args, &mut config)?;
     // FP8 KV calibration precedence (highest wins): an explicit
     // --fp8-kv-calibration-tokens ALWAYS wins — including 0, which
     // force-disables calibration on a model whose MODEL.toml enables it
@@ -993,7 +1045,10 @@ pub(crate) fn load_model(
 
     // Use prefill_budget (which accounts for SSM no-chunking override) instead of raw CLI arg.
     let max_prefill_tokens = prefill_budget;
-    let swap_space_gb = args.swap_space_gb;
+    // Model capability gate, not a flag default: the spill image is KV-only, so
+    // a model whose prefill builds state outside KV must not swap out at all.
+    // Sibling of `build_prefix_cache`'s gate above — same fact, second mechanism.
+    let swap_space_gb = serve_phases::resolve_swap_space_gb(&args, &config);
     let block_size = args.block_size;
 
     // ── --high-speed-swap config validation (PCND: required-when-set) ──

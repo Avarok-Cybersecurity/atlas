@@ -46,6 +46,12 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
         },
         BenchmarkCommand::History(a) => history_cmd(a),
         BenchmarkCommand::Card(a) => super::bench_card::card_cmd(a),
+        BenchmarkCommand::Aggregate(a) => {
+            // Exits with the code so a script can gate on "is this group
+            // complete", the same shape `Run` uses below.
+            let code = super::bench_aggregate::aggregate_cmd(a)?;
+            std::process::exit(code);
+        }
         BenchmarkCommand::Run(a) => {
             let code = run(a).await?;
             // `run` reports its own outcome; the exit code is the machine-
@@ -275,10 +281,19 @@ async fn run(args: RunArgs) -> Result<i32> {
     }
 
     let executor = BenchmarkExecutor::new(tokio::runtime::Handle::current(), store);
+    // The merged baseline + `--serve-override` set: the single authority on
+    // the regime this run was measured under. It goes onto the RunRecord, and
+    // the gate record DERIVES it from there rather than being handed its own
+    // copy — see `GateRecord::from_run`.
+    let serve_overrides = served
+        .as_ref()
+        .map(|s| s.overrides.clone())
+        .unwrap_or_default();
     let request = RunRequest {
         descriptor,
         values,
         target: target.clone(),
+        serve_overrides,
         options: HeadlessOptions {
             poll: std::time::Duration::from_millis(args.poll_ms),
             save: !args.no_save,
@@ -355,17 +370,12 @@ async fn run(args: RunArgs) -> Result<i32> {
         // names no box and still exit 0. Write first, tear down second, and
         // tear down even when the write fails.
         let recipe = served.as_ref().map(|s| s.recipe_id.clone());
-        let serve_overrides = served
-            .as_ref()
-            .map(|s| s.overrides.clone())
-            .unwrap_or_default();
         let (sha_at_start, dirty_at_start) = provenance.unwrap_or_default();
         let written = super::bench_record::write_gate_record(
             &outcome.record,
             &target.base_url,
             &target.model,
             recipe,
-            serve_overrides,
             sha_at_start,
             dirty_at_start,
             match &args.output_image {

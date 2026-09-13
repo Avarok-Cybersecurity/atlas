@@ -514,9 +514,7 @@ impl Qwen3AttentionLayer {
         let (wht_k_dtype, wht_v_dtype) = self.kv_dtype.kv_pair();
         let k_is_turbo = wht_k_dtype.is_wht_rotated();
         let v_is_turbo = wht_v_dtype.is_wht_rotated();
-        let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
         let wht_runtime_active = !weight_pre_rotated && (hd == 128 || hd == 256 || hd == 512);
         if k_is_turbo && wht_runtime_active && self.wht_bf16_k.0 != 0 {
             use spark_runtime::kernel_args::KernelLaunch;
@@ -781,7 +779,7 @@ impl Qwen3AttentionLayer {
             // (grid [2, ceil(n/16)]) so the kernel is badly underutilized.
             // A/B (ISL 1024/8192, C=1): sTTFT 765->747 / 4177->4068 ms = ~2.5%.
             // dense_gemm_tc stays as the fallback when cuBLAS is off.
-            if ctx.dispatch.cublas_gemm {
+            if ctx.dispatch.cublas.attn {
                 ops::cublas_bf16_proj_dense(normed, g_proj.weight, gate_buf, n, nq, h, stream)?;
             } else {
                 ops::dense_gemm_tc(

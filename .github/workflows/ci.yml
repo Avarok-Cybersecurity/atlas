@@ -56,7 +56,8 @@ jobs:
   changes:
     name: classify diff (web-only?)
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -78,6 +79,7 @@ jobs:
       # false` in the same run. `assert-job-outputs-exported.py` now fails CI
       # on any consumer without a matching export.
       is_stack_layer: ${{ steps.stack.outputs.is_stack_layer }}
+      is_stack_upper_layer: ${{ steps.stack.outputs.is_stack_upper_layer }}
       builds_binaries: ${{ steps.classify.outputs.builds_binaries }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -117,6 +119,8 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -uo pipefail
           layer=false
@@ -131,6 +135,43 @@ jobs:
             fi
           fi
           echo "is_stack_layer=$layer" >> "$GITHUB_OUTPUT"
+
+          # ── IS THIS AN UPPER LAYER OF A STACK? ────────────────────────────
+          #
+          # Maintainer decision, 2026-09-12 (tbraun96): "once you form a stack,
+          # start merging everything down into the base of the stack. Once you
+          # hit the base (i.e. a single mega PR), THAT'S the one that needs a
+          # seal and stamp, NOT the items above it. The point of a stack is to
+          # preserve the history of PRs and to allow a clear downwards
+          # squash/merge path into the stack's base."
+          #
+          # So the PR that lands on the default branch is the stack's BASE, and
+          # it is the only one that has to prove anything. Every PR above it
+          # merges DOWNWARD into the layer beneath it and never reaches the
+          # default branch at all.
+          #
+          # `is_stack_layer` above answers the OPPOSITE question -- it is true
+          # when something is stacked ABOVE this PR, which is true of the base.
+          # Using it to skip certification would exempt the one PR that must
+          # certify and burden the ones that never merge to main. Keep it (the
+          # release matrix legitimately wants "does anything depend on me?"),
+          # but do not confuse the two.
+          #
+          # The discriminator is the BASE: a PR whose base is not the default
+          # branch is an upper layer.
+          upper=false
+          if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] \
+             && [ -n "${PR_BASE_REF:-}" ] && [ -n "${DEFAULT_BRANCH:-}" ] \
+             && [ "${PR_BASE_REF}" != "${DEFAULT_BRANCH}" ]; then
+            upper=true
+            echo "base is '$PR_BASE_REF', not '$DEFAULT_BRANCH' — this is an upper layer"
+          fi
+          # FAIL CLOSED, like every other classifier here: a missing base ref, a
+          # missing default branch, or a non-pull_request event all leave this
+          # false, which CERTIFIES. An extra campaign is recoverable; an
+          # uncertified merge to the default branch is not.
+          echo "is_stack_upper_layer=$upper" >> "$GITHUB_OUTPUT"
+          echo "is_stack_upper_layer=$upper"
           echo "is_stack_layer=$layer"
 
 
@@ -151,7 +192,8 @@ jobs:
   stamp:
     name: stamp status
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -166,6 +208,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PR: ${{ github.event.pull_request.number }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -uo pipefail
           # Only a pull_request can be un-stamped. A merge_group entry reached
@@ -173,6 +217,28 @@ jobs:
           if [ "$EVENT" != "pull_request" ]; then
             echo "stamped=true" >>"$GITHUB_OUTPUT"
             echo "$EVENT is not a pull request — the lane runs."
+            exit 0
+          fi
+          # AN UPPER LAYER OF A STACK is never held. Its base is another PR's
+          # head branch, so it cannot reach the default branch — it merges
+          # DOWNWARD into the layer beneath it, and the stack's BASE is the one
+          # PR that gets stamped. Maintainer decision 2026-09-12: "that is the
+          # one that needs a seal and stamp, NOT the items above it."
+          #
+          # This is not just courtesy. `release-matrix` is gated on
+          # `stamped != 'false'`, and its `dry-run summary` is a REQUIRED
+          # context — so holding an upper layer for want of a stamp leaves a
+          # required check that is never CREATED, which reads as permanently
+          # pending rather than as a refusal. A 26-layer stack would need 26
+          # stamp comments purely to emit 26 summaries.
+          #
+          # Both variables must be present and DIFFER; an empty base ref or
+          # default branch falls through and is still held.
+          if [ -n "${PR_BASE_REF:-}" ] && [ -n "${DEFAULT_BRANCH:-}" ] \
+             && [ "$PR_BASE_REF" != "$DEFAULT_BRANCH" ]; then
+            echo "stamped=true" >>"$GITHUB_OUTPUT"
+            echo "base is '$PR_BASE_REF', not '$DEFAULT_BRANCH' — an upper stack \
+          layer is never held; the stack's base carries the stamp."
             exit 0
           fi
           # A Stamp is a check run, so it is bound to the ONE commit it was
@@ -234,7 +300,8 @@ jobs:
   seal:
     name: seal status
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -247,12 +314,29 @@ jobs:
           PR_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUM: ${{ github.event.pull_request.number }}
           MQ_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -uo pipefail
           # A push to main has already landed and a dispatch has no diff to
           # vouch for; neither carries a PR, so there is nothing to seal.
           if [ "$EVENT" != "pull_request" ] && [ "$EVENT" != "merge_group" ]; then
             echo "$EVENT carries no pull request — nothing to seal."
+            exit 0
+          fi
+          # AN UPPER LAYER OF A STACK. Its base is another PR's head branch, so
+          # merging it lands nothing on the default branch — it merges DOWNWARD
+          # into the layer beneath it, and the accumulated history is vouched
+          # for once, at the stack's BASE. Maintainer decision 2026-09-12: "that
+          # is the one that needs a seal and stamp, NOT the items above it."
+          #
+          # Both variables must be present and must DIFFER. An empty base ref or
+          # an empty default branch falls through and still demands a seal, so a
+          # broken event payload cannot buy a PR out of being vouched for.
+          if [ "$EVENT" = "pull_request" ] && [ -n "${PR_BASE_REF:-}" ] \
+             && [ -n "${DEFAULT_BRANCH:-}" ] && [ "$PR_BASE_REF" != "$DEFAULT_BRANCH" ]; then
+            echo "base is '$PR_BASE_REF', not '$DEFAULT_BRANCH' — an upper stack layer \
+          merges downward and is sealed at the stack's base."
             exit 0
           fi
           sha="$PR_SHA"; num="$PR_NUM"
@@ -296,7 +380,8 @@ jobs:
   fmt:
     name: cargo fmt --check
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_RUST_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -322,7 +407,8 @@ jobs:
     # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
     if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_RUST_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -343,7 +429,8 @@ jobs:
   license-headers:
     name: SPDX license headers
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -396,7 +483,8 @@ jobs:
     # exactly that), which is why the rest of the fleet moves only after this
     # one is observed being picked up.
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -407,7 +495,8 @@ jobs:
   kernel-structure:
     name: kernel shadow structure
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -420,6 +509,87 @@ jobs:
       # instead). GPU-free: pure content-hash check, exit 1 on any
       # violation. Stdlib-only; the runner's system python3 suffices.
       - run: python3 scripts/check_kernel_shadows.py
+
+  cross-hardware-reach:
+    # ADVISORY, by maintainer decision 2026-09-11 (tbraun96): "make it an
+    # advisory since AMD is second tier support".
+    #
+    # What that trades away, stated plainly so a later reader does not have to
+    # rediscover it: the reach this check reports is real. `taxon::hardware_of`
+    # is a path prefix, so a `kernels/gb10/common/*.cu` edit reads as gb10-only
+    # while hipcc compiles the same bytes through 105 symlinks. d584c0c50 was
+    # caught ONLY because a release compile leg failed, and a
+    # performance-only leak on AMD has no leg at all. Advisory means that class
+    # of defect can now land; it is accepted because strix/strix-hip are
+    # second-tier targets with no serving receipt, not because the risk is
+    # imaginary.
+    #
+    # The signal stays visible and stays honest: the job still runs on every
+    # PR, still fails closed on rc 2, and still prints the full reach table and
+    # remedies. Nothing `needs:` it, so a red blocks no merge.
+    #
+    # To make it enforcing again, delete `continue-on-error`, drop "advisory"
+    # from the name, and restore the two `release-matrix` references removed in
+    # this commit. Do that when AMD gets a compile leg on PRs.
+    name: cross-hardware kernel reach (CHKI, advisory)
+    continue-on-error: true
+    runs-on: >-
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history: the check reads file bytes at HEAD (symlink
+          # resolution, lexical include walk) and needs the base to diff.
+          fetch-depth: 0
+      # Which hardware compiles the bytes this diff changed? `taxon::hardware_of`
+      # is a path prefix and cannot see that kernels/strix/common/*.cu are 105
+      # symlinks into kernels/gb10/common/, so a gb10 edit reads as gb10-only
+      # while hipcc compiles it verbatim. d584c0c50 was caught ONLY because a
+      # release compile leg failed; a performance-only leak has no leg at all.
+      #
+      # FAIL-CLOSED, unlike classify-diff.sh: that script decides what to SKIP
+      # and must fail open; this decides a VERDICT. rc 2 (cannot see inputs) is
+      # as red as rc 1, the same doctrine as campaign-guard.sh's exit 2. The
+      # script runs RED/GREEN self-fixtures first and refuses to scan if any
+      # rule cannot fire.
+      #
+      # Passing honestly costs one trailer pair, written after running
+      # /oracle_pre_commit_cross_hardware_check. Stdlib python3, no GPU, no cargo.
+      - name: Cross-hardware reach of changed kernel paths
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          # Through the environment, never interpolated into the script text:
+          # the body is attacker-controlled on a fork PR and is read only for a
+          # `Hardware:` / `CHKI-Verdict:` trailer.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          case "${GITHUB_EVENT_NAME}" in
+            pull_request)
+              git fetch --no-tags origin "${PR_BASE_REF}"
+              python3 scripts/check_cross_hardware.py --base "origin/${PR_BASE_REF}" \
+                      --head "${PR_HEAD_SHA}" --merge-base ;;
+            merge_group)
+              python3 scripts/check_cross_hardware.py --base "${MG_BASE_SHA}" --head "${MG_HEAD_SHA}" ;;
+            push)
+              base="${PUSH_BEFORE}"
+              case "$base" in 0000000000000000000000000000000000000000|"") base="${GITHUB_SHA}~1" ;; esac
+              python3 scripts/check_cross_hardware.py --base "$base" --head "${GITHUB_SHA}" ;;
+            *)
+              # No diff to attribute; the self-fixtures and the consumer index
+              # still run, so a tree that cannot be indexed fails here too.
+              python3 scripts/check_cross_hardware.py --paths ;;
+          esac
 
   bench-threshold-prose:
     name: BENCH.toml threshold prose
@@ -444,7 +614,8 @@ jobs:
   harvest-triage:
     name: harvest triage decision table
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -467,6 +638,28 @@ jobs:
       # Exercise release evidence and subprocess failure paths without a GPU.
       - run: python3 -m unittest discover -s tests -p 'test_gate_results*.py' -v
 
+  launch-contract:
+    name: GLM-5.3 launcher EXTRA_ARGS contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # scripts/launch-atlas-glm53-tp2ep2.sh interpolates $EXTRA_ARGS into a
+      # remote shell command. The contract it documents -- simple
+      # space-separated tokens -- was never enforced, so a value carrying `;`,
+      # `$(...)`, a glob or a newline reached the remote shell as syntax. The
+      # validator is a pure function and this is its regression suite: the
+      # accept cases, every rejected injection shape, and the --swap-space-gb
+      # pin the GLM launcher applies on top of the engine's own capability
+      # gate. Shell-only -- no GPU, no model, no network.
+      - name: Shell syntax and the launcher contract suite
+        run: |
+          set -euo pipefail
+          bash -n \
+            scripts/launch-atlas-glm53-tp2ep2.sh \
+            scripts/lib/glm53-launch-safety.sh \
+            scripts/test-launch-atlas-glm53-safety.sh
+          scripts/test-launch-atlas-glm53-safety.sh
+
   test:
     name: cargo test --workspace
     needs: [changes]
@@ -482,7 +675,8 @@ jobs:
     # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
     if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_RUST_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -917,6 +1111,8 @@ jobs:
           # from a sibling repo's tree listing, which is not this repo's data.
           d="__ATLAS_EOF_$RANDOM$RANDOM"
           { printf 'names<<%s\n' "$d"; cat recipes.txt; printf '\n%s\n' "$d"; } >> "$GITHUB_OUTPUT"
+      - name: Test PR body sanitization
+        run: python3 scripts/ci_pr_body_test.py
       - name: Sanitize the PR body
         id: body
         # The body is the author's own statement of intent — evidence the
@@ -936,10 +1132,10 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
+          # Bound output after consuming the input; head can cause SIGPIPE.
           printf '%s' "${PR_BODY:-}" \
             | tr -d '\000-\010\013-\037\177' \
-            | perl -0777 -pe 's/<!--.*?-->//gs' \
-            | head -c 2000 > body.txt
+            | perl -0777 -pe 's/<!--.*?-->//gs; $_ = substr($_, 0, 2000)' > body.txt
           d="__ATLAS_EOF_$RANDOM$RANDOM"
           {
             printf 'text<<%s\n' "$d"
@@ -1330,7 +1526,51 @@ jobs:
     # through.
     if: >-
       ${{ !cancelled() && needs.changes.outputs.web_only != 'true'
-          && needs.stamp.outputs.stamped != 'false' }}
+          && needs.stamp.outputs.stamped != 'false'
+          && needs.changes.outputs.is_stack_upper_layer != 'true' }}
+    # ── ONE CAMPAIGN PER STACK, AT THE BASE ──────────────────────────────────
+    #
+    # Maintainer decision, 2026-09-12 (tbraun96): "once you form a stack, start
+    # merging everything down into the base of the stack. Once you hit the base
+    # (i.e. a single mega PR), THAT'S the one that needs a seal and stamp, NOT
+    # the items above it. The point of a stack is to preserve the history of PRs
+    # and to allow a clear downwards squash/merge path into the stack's base."
+    #
+    # So a stack pays for ONE certification, at its BASE. Before this, a stack
+    # of N layers each touching PERF_PATHS owed N campaigns — twenty-four layers
+    # at ~5 GPU-hours is ~120 GPU-hours for one merge, which is why the practice
+    # had been to compose into one aggregation branch instead. Composing loses
+    # per-PR review, authorship and the ability to drop one constituent.
+    #
+    # ★ THE DISCRIMINATOR IS THE BASE REF, NOT `is_stack_layer`. #1022 shipped
+    # this test against `is_stack_layer` and had it exactly BACKWARDS.
+    # `is_stack_layer` is true when something is stacked ABOVE a PR — which is
+    # true of the stack's base, the one PR that must certify — and false for the
+    # topmost layer, which never merges to the default branch at all. Measured
+    # on stack #1025: #1023 (base `main`) was skipped and passed; #1024 (base
+    # `stack/mega-01-ci-body`) was forced to certify. Both wrong.
+    #
+    # WHY SKIPPING AN UPPER LAYER IS SOUND, and not a hole in branch protection:
+    #
+    #   * An upper layer's base is another PR's head branch, so merging it lands
+    #     nothing on the default branch. Branch protection guards the default
+    #     branch; a PR that cannot reach it has nothing to prove to it.
+    #   * The stack's BASE has base == default branch, so it is never exempt. It
+    #     is the single PR whose merge lands the whole accumulated history, and
+    #     it certifies that tree.
+    #   * The `merge_group` certification below still runs on the MERGED tree.
+    #   * The moment an upper layer is retargeted at the default branch — the
+    #     stack is broken up, or it becomes the base — this flips false and it
+    #     certifies on its own. No PR can reach the default branch unproven.
+    #
+    # `!= 'true'` and not `== 'false'` for the same reason as the two tests
+    # beside it: the classifier fails CLOSED, so an empty or errored output must
+    # RUN the certification rather than wave it through.
+    #
+    # `.github/scripts/certification-selftest.sh` carries the controls: the
+    # BASE never skips, an errored signal runs the gate, a genuine upper layer
+    # does skip, and a skip never excuses a FAILURE.
+    #
     # `!= 'false'`, not `== 'true'`: the stamp job fails OPEN, so an empty output
     # must run the lane rather than hold it. Same shape and same reason as the
     # `web_only` test beside it — five workflows here carry the lesson that a
@@ -1524,7 +1764,8 @@ jobs:
     # which reads as "still running" instead of "the gate said no".
     if: always()
     runs-on: >-
-      ${{ (github.event_name != 'pull_request'
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
            || github.event.pull_request.head.repo.full_name == github.repository)
           && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
           || 'ubuntu-latest' }}
@@ -1535,6 +1776,7 @@ jobs:
           WEB_ONLY: ${{ needs.changes.outputs.web_only }}
           STAMPED: ${{ needs.stamp.outputs.stamped }}
           EXPEDITED: ${{ needs.stamp.outputs.expedited }}
+          IS_STACK_UPPER_LAYER: ${{ needs.changes.outputs.is_stack_upper_layer }}
         run: |
           echo "PR Benchmark Certifications => ${RESULT} (web_only=${WEB_ONLY:-unknown})"
           if [ "${RESULT}" = "success" ]; then exit 0; fi
@@ -1556,6 +1798,28 @@ jobs:
           # branch cannot become a hole in branch protection.
           if [ "${RESULT}" = "skipped" ] && [ "${WEB_ONLY}" = "true" ]; then
             echo "web-only diff: no record's measured inputs were touched — pass."
+            exit 0
+          fi
+          # THE SECOND SKIP THAT IS A PASS: this PR is an UPPER LAYER of a
+          # stack. Its base is another PR's head branch, so merging it lands
+          # nothing on the default branch — it merges DOWNWARD into the layer
+          # beneath it. The certification that matters is the one at the stack's
+          # BASE, which is the single PR whose merge lands the accumulated
+          # history on the default branch.
+          #
+          # Positive on IS_STACK_UPPER_LAYER on purpose, exactly like WEB_ONLY
+          # above: a skip caused by a broken classifier leaves it EMPTY and
+          # falls through to red.
+          #
+          # ★ NOT `IS_STACK_LAYER`. #1022 used that and had it backwards — it is
+          # true for the stack's BASE (something is stacked above it) and false
+          # for the topmost layer. The base is the one PR that must certify.
+          #
+          # Placed ABOVE the stamp hold deliberately: an upper layer needs no
+          # /stamp of its own, and holding it red for want of one is how a
+          # 26-layer stack becomes unmergeable.
+          if [ "${RESULT}" = "skipped" ] && [ "${IS_STACK_UPPER_LAYER}" = "true" ]; then
+            echo "upper layer of a stack: certification is carried by the stack's BASE — pass."
             exit 0
           fi
           # HELD, not failed. Certification never ran because nobody has released

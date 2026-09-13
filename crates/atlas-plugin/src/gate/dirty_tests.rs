@@ -99,7 +99,6 @@ fn a_record_measured_from_a_dirty_tree_fails_the_gate() {
         SHA.into(),
         vec!["crates/spark-model/src/layers/gdn.rs".to_string()],
         None,
-        Default::default(),
     )
     .unwrap();
     gate.recorded_at = 1_785_891_382;
@@ -133,7 +132,6 @@ fn the_field_is_absent_when_clean_and_optional_when_reading() {
         SHA.into(),
         Vec::new(),
         None,
-        Default::default(),
     )
     .unwrap();
     let json = serde_json::to_string(&gate).unwrap();

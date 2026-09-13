@@ -1,0 +1,128 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Releases workflow runs that are stuck before they ever created a job.
+#
+# This is the worst failure shape this pipeline has, because it is INVISIBLE. A
+# run can sit in `queued` having created NO jobs — routed to a runner label
+# nothing answers, or wedged on GitHub's side. With no jobs it publishes no
+# check runs, so every required context it owns reads as *absent* rather than
+# failing: `gh pr checks` reports "0 fail" while the PR cannot merge and nothing
+# anywhere says why. It also holds its ref's concurrency group, so every later
+# run on that ref queues behind it forever — and `gh run cancel` accepts the
+# request and does nothing. Only force-cancel releases it.
+#
+# Not hypothetical: this happened on #975, cost most of an hour, and was found
+# only by noticing a run still had `jobs=0` long after it was created.
+#
+# Like cmd-runner-health.yml, it deliberately runs on a GitHub-hosted runner: it
+# is the thing that notices runs are not starting, so it cannot depend on
+# whatever they were waiting for.
+name: Stuck run watchdog
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      threshold_minutes:
+        description: How long a run may sit with no jobs before it is released
+        required: false
+        default: '25'
+      dry_run:
+        description: List what would be cancelled without cancelling it
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  # force-cancel is a write on the Actions API, and the only reason this needs
+  # more than `contents: read`.
+  actions: write
+
+concurrency:
+  group: stuck-run-watchdog
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Release runs stuck before job creation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Find and release stuck runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # 25 minutes: long enough that a run legitimately waiting on a busy
+          # hosted pool is never touched, short enough that a wedged concurrency
+          # group is released within one working pause.
+          THRESHOLD: ${{ github.event.inputs.threshold_minutes || '25' }}
+          # The schedule must act; a manual invocation defaults to looking only.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
+        run: |
+          set -uo pipefail
+
+          if ! runs=$(gh api "repos/$REPO/actions/runs?status=queued&per_page=100" --jq '[.workflow_runs[] | {id, status, created_at, name}]' 2>&1); then
+            # Fail-safe, same reasoning as cmd-runner-health.yml: acting on a
+            # guess is worse than not acting, because a false "stuck" verdict
+            # force-cancels a healthy run.
+            echo "::warning title=Could not list runs::leaving everything alone. $runs"
+            exit 0
+          fi
+
+          count=$(printf '%s' "$runs" | jq 'length')
+          echo "queued runs: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "nothing queued — nothing to do."
+            exit 0
+          fi
+
+          # Resolve each run's job count. A run WITH jobs is somebody else's
+          # problem. An unresolvable count stays null on purpose: stuck-runs.py
+          # treats null as unknown and skips it, never as zero.
+          enriched='[]'
+          for id in $(printf '%s' "$runs" | jq -r '.[].id'); do
+            if jobs=$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=1" --jq '.total_count' 2>/dev/null); then
+              case "$jobs" in ''|*[!0-9]*) jobs=null ;; esac
+            else
+              jobs=null
+            fi
+            one=$(printf '%s' "$runs" | jq --argjson i "$id" '.[] | select(.id == $i)')
+            enriched=$(printf '%s' "$enriched" | jq --argjson r "$one" --argjson j "$jobs" '. + [$r + {job_count: $j}]')
+          done
+
+          payload=$(jq -n --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson t "$THRESHOLD" --argjson runs "$enriched" '{now: $now, threshold_minutes: $t, runs: $runs}')
+
+          # The script exits non-zero if it cannot read its input. Refusing is
+          # right: a sweep that silently found nothing looks identical to a
+          # healthy repo, which is how a broken guard survives unnoticed.
+          if ! stuck=$(printf '%s' "$payload" | python3 .github/scripts/stuck-runs.py); then
+            echo "::error title=Watchdog could not evaluate the runs::stuck-runs.py refused its input."
+            exit 1
+          fi
+
+          if [ -z "$stuck" ]; then
+            echo "no run has been sitting with zero jobs for more than ${THRESHOLD}m."
+            exit 0
+          fi
+
+          for id in $stuck; do
+            name=$(printf '%s' "$enriched" | jq -r --argjson i "$id" '.[] | select(.id == $i) | .name')
+            url="https://github.com/$REPO/actions/runs/$id"
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "::notice title=Would release a stuck run::$name ($url) has created no jobs for over ${THRESHOLD}m."
+              continue
+            fi
+            # force-cancel, not cancel: an ordinary cancel is ACCEPTED and then
+            # does nothing to a run in this state. That is what made the original
+            # incident take an hour to unpick.
+            if err=$(gh api -X POST "repos/$REPO/actions/runs/$id/force-cancel" 2>&1); then
+              echo "::warning title=Released a stuck run::$name ($url) had created no jobs for over ${THRESHOLD}m and was holding its concurrency group. Force-cancelled."
+            else
+              echo "::error title=Could not release a stuck run::$name ($url): $err"
+            fi
+          done

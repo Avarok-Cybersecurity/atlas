@@ -54,8 +54,27 @@ on:
 permissions:
   contents: read
 
+# `cancel-in-progress: false` is NOT enough on its own, and the reason is
+# subtle. A concurrency group holds at most ONE pending run: when a newer run
+# enters, GitHub cancels the one already queued. Every comment on the PR
+# triggers this workflow — INCLUDING the bot's own replies — so the sequence
+#
+#   /stamp  ->  bot posts "Stamp recorded."  ->  /seal
+#
+# put three runs in one group, and the bot's reply evicted the queued /seal.
+# It was cancelled before its job could evaluate the `if` that would have made
+# it stand down anyway, so the command vanished with NO reply and no failure:
+# posting it again was the only way to notice. Observed twice on #976.
+#
+# So only real commands share the per-PR group. Anything else — a bot reply, an
+# ordinary review comment — gets a throwaway group of its own, keeps the
+# serialisation it never needed, and can no longer evict a command that does.
 concurrency:
-  group: cert-cmd-${{ github.event.issue.number || github.event.pull_request.number }}
+  group: >-
+    ${{ (github.event_name == 'workflow_dispatch'
+         || startsWith(github.event.comment.body, '/'))
+        && format('cert-cmd-{0}', github.event.issue.number || github.event.pull_request.number || github.event.inputs.pr)
+        || format('cert-noop-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
@@ -359,7 +378,9 @@ jobs:
                 rerun_note="
 
           > [!WARNING]
-          > **The $name is recorded, but CI was not re-run.** Re-running [CI run \`$run_id\`](https://github.com/$REPO/actions/runs/$run_id) failed, so certification and the nine release-matrix builds still show the \`skipped\` result they reported before the stamp. Re-run that workflow by hand, or push any commit to this PR.
+          > **The $name is recorded, but CI was not re-run.** Re-running [CI run \`$run_id\`](https://github.com/$REPO/actions/runs/$run_id) failed, so certification and the nine release-matrix builds still show the \`skipped\` result they reported before the stamp. Re-run that workflow **in full**, or push any commit to this PR.
+          >
+          > Re-running only the failed jobs will NOT work, and it looks like it should. \`stamp status\` and \`seal status\` did not fail — they SUCCEEDED while emitting \`false\`, because they ran before the mark existed. Job outputs are fixed for the life of a run, so the gate that reads \`needs.stamp.outputs.stamped\` keeps seeing that stale \`false\` no matter how many times you re-run the gate itself. Only a full re-run recomputes it.
           >
           > This is usually the App missing \`actions: write\`. \`certification-preflight.yml\` probes it.
           >

@@ -43,6 +43,7 @@ fn run_batch(native_fp8: bool, rows: u32) {
     layer.w8a16_gemm_k = KernelHandle(0xF08);
     // Also prove the original native fallback when optional fast kernels are absent.
     layer.w8a16_gemv_batch4_k = KernelHandle(0);
+    layer.w8a16_gemv_batch16_k = KernelHandle(0);
     layer.w8a16_gemm_pipelined_k = KernelHandle(0);
     layer.act_mul = KernelHandle(0xAC7);
     let fp8 = Fp8Weight {
@@ -72,6 +73,9 @@ fn run_batch(native_fp8: bool, rows: u32) {
         profile: false,
         comm: None,
         graph_capture: false,
+        // Prefill shape: `attn_metadata` is None and the FFN under test never
+        // reads the decode scalars this flag guards.
+        decode_step: false,
         gdn_exact_replay: false,
         token_ids: None,
         host_token_ids: None,

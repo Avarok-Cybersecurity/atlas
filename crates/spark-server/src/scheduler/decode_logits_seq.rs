@@ -53,7 +53,13 @@ pub fn process_seq_logits(
     // Raw-logits dump for numerics triage (`ATLAS_DUMP_LOGITS_PATH=/dir`):
     // appends the RAW dequantised row (pre-pipeline, pre-penalty) so it can
     // be compared against the post-pipeline ATLAS_LOGIT_DUMP view.
-    if let Ok(dir) = std::env::var("ATLAS_DUMP_LOGITS_PATH") {
+    // Resolved ONCE. This runs per SEQUENCE per DECODE STEP and only
+    // `LogitsContext` is in scope here — `SchedLevers` is not reachable
+    // without threading a `String` through several types — so this takes the
+    // crate's `OnceLock` idiom rather than the levers struct. The value is a
+    // process constant either way.
+    static DUMP_DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    if let Some(dir) = DUMP_DIR.get_or_init(|| std::env::var("ATLAS_DUMP_LOGITS_PATH").ok()) {
         use std::io::Write;
         let path = std::path::Path::new(&dir).join("logits_seq.bin");
         if let Ok(mut f) = std::fs::OpenOptions::new()

@@ -156,6 +156,7 @@ impl Qwen3SsmLayer {
             && self.gdn_f32_norm_k.0 != 0
             && crate::layers::qwen3_ssm::gdn_fused_norm_enabled();
         let snap = fused_gdn_norm && self.gdn_f32_norm_snap_k.0 != 0;
+
         let f32_conv_base = ctx.buffers.ssm_conv_out_f32();
 
         // FP32 fused verify conv: one launch for all K positions with the

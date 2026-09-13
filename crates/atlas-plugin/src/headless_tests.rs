@@ -86,6 +86,7 @@ fn request(options: HeadlessOptions) -> RunRequest {
         values,
         // Port 1 is reserved and never listening.
         target: TargetEndpoint::new("http://127.0.0.1:1", "unreachable"),
+        serve_overrides: Default::default(),
         options,
     }
 }
@@ -219,6 +220,7 @@ fn an_invalid_parameter_fails_before_anything_runs() {
             descriptor,
             values,
             target: TargetEndpoint::new("http://127.0.0.1:1", "m"),
+            serve_overrides: Default::default(),
             options: HeadlessOptions::cli("v"),
         },
         &mut reporter,
@@ -242,7 +244,15 @@ fn exit_codes_separate_a_broken_harness_from_a_failed_gate() {
     let values = ParamValues::defaults(&descriptor.build().parameters());
     let target = TargetEndpoint::new("http://127.0.0.1:1", "m");
     let mk = |frame| RunOutcome {
-        record: RunRecord::new(descriptor, &values, &target, RunSource::Cli, "v", frame),
+        record: RunRecord::new(
+            descriptor,
+            &values,
+            &target,
+            Default::default(),
+            RunSource::Cli,
+            "v",
+            frame,
+        ),
         saved_to: None,
         cancelled: false,
     };

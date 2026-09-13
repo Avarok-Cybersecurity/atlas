@@ -279,9 +279,37 @@ impl QsaIndexer {
                 gpu.copy_h2d_async(&host_lists, lists, stream)?;
             }
 
-            ops::qsa_prefill_attn(
+            // Tensor-core twin when the geometry matches (hd 256, nq <= 16,
+            // nkv 1 — see `qsa_prefill_attn_tc_ok`). One CTA per row with every
+            // head together, instead of one CTA per (row, head) re-streaming
+            // the same K/V: the scalar kernel measured 23.4% of an 8K prefill
+            // at 1.94 TFLOP/s. ATLAS_QSA_PA_SCALAR=1 forces the original.
+            let pa_tc = self.k_prefill_attn_tc_k.0 != 0
+                && ops::qsa_prefill_attn_tc_ok(nq, self.nkv_attn, self.hd_attn)
+                && std::env::var("ATLAS_QSA_PA_SCALAR").as_deref() != Ok("1");
+            {
+                // Engagement, once: a kernel that never loaded and a lever that
+                // does nothing look identical from throughput alone.
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| {
+                    tracing::info!(
+                        tc = pa_tc,
+                        nq,
+                        nkv = self.nkv_attn,
+                        hd = self.hd_attn,
+                        "QSA prefill attention: {}",
+                        if pa_tc { "TENSOR-CORE (one CTA per row)" } else { "scalar (one CTA per row,head)" }
+                    );
+                });
+            }
+            let pa_kernel = if pa_tc {
+                ops::qsa_prefill_attn_tc
+            } else {
+                ops::qsa_prefill_attn
+            };
+            pa_kernel(
                 gpu,
-                self.k_prefill_attn_k,
+                if pa_tc { self.k_prefill_attn_tc_k } else { self.k_prefill_attn_k },
                 q_roped.offset(first_row * q_row * 2),
                 k_pool,
                 v_pool,

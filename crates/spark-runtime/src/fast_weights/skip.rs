@@ -8,6 +8,8 @@
 //!   1. **EP sharding** — remote experts belong to another rank.
 //!   2. **`skip_activation_scales`** — W4A4 `*.input_scale`, opt-in.
 //!   3. **`skip_mtp`** — `mtp.*` for a loader that builds no MTP head, opt-in.
+//!   4. **`skip_vision`** — the vision tower, for a text-only port that binds
+//!      no vision encoder. Derived from the loader, not opt-in per model.
 //!
 //! Rules 2 and 3 default OFF and are allow-listed per model, because
 //! withholding a tensor a loader DOES read is invisible until the output is
@@ -18,6 +20,11 @@ use crate::weights::parse_expert_index;
 
 impl FastSafetensorsLoader {
     pub(super) fn should_skip_tensor(&self, name: &str) -> bool {
+        // Checked before the EP short-circuit: a text-only port skips the
+        // vision tower at tp/ep 1 too.
+        if self.skip_vision && super::is_vision_tensor(name) {
+            return true;
+        }
         // MTP head weights for a model whose loader does not build one.
         if self.skip_mtp && name.starts_with("mtp.") {
             return true;

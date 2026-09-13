@@ -7,7 +7,7 @@
 //! Split from `concurrency_tests.rs` for the 500-LoC cap. Exact piecewise
 //! copy — no test changed in the move.
 
-use super::verdict::{Floors, sweep_verdict};
+use super::verdict::{Exclusions, Floors, sweep_verdict};
 use super::*;
 use crate::result::VerdictKind;
 
@@ -66,7 +66,7 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
     // adding a rung moves this assertion instead of failing it; the VALUES are
     // pinned because a silent floor change is the thing worth catching.
     let m = ladder(&[
-        ("c1_aggregate_tok_s", 18.6),
+        ("c1_aggregate_tok_s", 21.2),
         ("c2_aggregate_tok_s", 27.7),
         ("c4_aggregate_tok_s", 44.8),
         ("c8_aggregate_tok_s", 60.7),
@@ -80,7 +80,7 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
     assert_eq!(
         floors.per_c,
         vec![
-            (1, 17.5),
+            (1, 20.4),
             (2, 25.0),
             (4, 37.5),
             (8, 48.0),
@@ -91,7 +91,18 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
         ]
     );
     assert_eq!(floors.peak, 109.5);
-    let v = sweep_verdict(&m, 8, 0, 0, 0, 80.0, &floors);
+    let v = sweep_verdict(
+        &m,
+        8,
+        0,
+        Exclusions {
+            vacuous: 0,
+            cache_uncontrolled: 0,
+            non_mtp_arm: 0,
+        },
+        80.0,
+        &floors,
+    );
     assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
     for rung in ["C1", "C2", "C4", "C8", "C16", "C32", "C64", "C128", "peak"] {
         assert!(v.reason.contains(rung), "{}", v.reason);
@@ -115,7 +126,7 @@ fn a_sweep_below_one_floor_fails_naming_the_cell() {
         .1;
     // A hair under the C=8 floor, everything else comfortably clear.
     let m = ladder(&[
-        ("c1_aggregate_tok_s", 18.6),
+        ("c1_aggregate_tok_s", 21.2),
         ("c2_aggregate_tok_s", 27.7),
         ("c4_aggregate_tok_s", 44.8),
         ("c8_aggregate_tok_s", 47.2),
@@ -125,7 +136,18 @@ fn a_sweep_below_one_floor_fails_naming_the_cell() {
         ("c128_aggregate_tok_s", 115.2),
         ("peak_aggregate_tok_s", 115.4),
     ]);
-    let v = sweep_verdict(&m, 8, 0, 0, 0, 80.0, &committed);
+    let v = sweep_verdict(
+        &m,
+        8,
+        0,
+        Exclusions {
+            vacuous: 0,
+            cache_uncontrolled: 0,
+            non_mtp_arm: 0,
+        },
+        80.0,
+        &committed,
+    );
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(v.reason.contains("C=8"), "{}", v.reason);
     assert!(
@@ -135,21 +157,54 @@ fn a_sweep_below_one_floor_fails_naming_the_cell() {
     );
     // Exactly on the floor passes — inclusive, like the BENCH.toml bound.
     let m = ladder(&[("c8_aggregate_tok_s", c8_floor)]);
-    let v = sweep_verdict(&m, 1, 0, 0, 0, 80.0, &floors(0.0, 0.0, c8_floor, 0.0, 0.0));
+    let v = sweep_verdict(
+        &m,
+        1,
+        0,
+        Exclusions {
+            vacuous: 0,
+            cache_uncontrolled: 0,
+            non_mtp_arm: 0,
+        },
+        80.0,
+        &floors(0.0, 0.0, c8_floor, 0.0, 0.0),
+    );
     assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
 }
 
 #[test]
 fn all_floors_zero_keeps_the_info_verdicts() {
     let m = ladder(&[("c1_aggregate_tok_s", 25.5)]);
-    let clean = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &Floors::default());
+    let clean = sweep_verdict(
+        &m,
+        4,
+        0,
+        Exclusions {
+            vacuous: 0,
+            cache_uncontrolled: 0,
+            non_mtp_arm: 0,
+        },
+        80.0,
+        &Floors::default(),
+    );
     assert_eq!(clean.kind, VerdictKind::Info, "{}", clean.reason);
     assert!(
         clean.reason.contains("no request errors"),
         "{}",
         clean.reason
     );
-    let vac = sweep_verdict(&m, 4, 0, 2, 0, 80.0, &Floors::default());
+    let vac = sweep_verdict(
+        &m,
+        4,
+        0,
+        Exclusions {
+            vacuous: 2,
+            cache_uncontrolled: 0,
+            non_mtp_arm: 0,
+        },
+        80.0,
+        &Floors::default(),
+    );
     assert_eq!(vac.kind, VerdictKind::Info, "{}", vac.reason);
     assert!(vac.reason.contains("not comparable"), "{}", vac.reason);
 }
@@ -166,7 +221,18 @@ fn vacuous_cells_fail_a_gating_sweep_regardless_of_the_floors() {
         ("c16_aggregate_tok_s", 999.0),
         ("peak_aggregate_tok_s", 999.0),
     ]);
-    let v = sweep_verdict(&m, 4, 0, 1, 0, 80.0, &floors(24.0, 43.0, 63.0, 94.0, 94.0));
+    let v = sweep_verdict(
+        &m,
+        4,
+        0,
+        Exclusions {
+            vacuous: 1,
+            cache_uncontrolled: 0,
+            non_mtp_arm: 0,
+        },
+        80.0,
+        &floors(24.0, 43.0, 63.0, 94.0, 94.0),
+    );
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(v.reason.contains("INCONCLUSIVE"), "{}", v.reason);
     assert!(v.reason.contains("vacuity floor"), "{}", v.reason);
@@ -178,12 +244,34 @@ fn vacuous_cells_fail_a_gating_sweep_regardless_of_the_floors() {
 fn a_gated_rung_with_no_comparable_cell_fails_as_inconclusive() {
     // C=16 gated but absent from the metrics (its only cell was excluded).
     let m = ladder(&[("c1_aggregate_tok_s", 25.5)]);
-    let v = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &floors(0.0, 0.0, 0.0, 94.0, 0.0));
+    let v = sweep_verdict(
+        &m,
+        4,
+        0,
+        Exclusions {
+            vacuous: 0,
+            cache_uncontrolled: 0,
+            non_mtp_arm: 0,
+        },
+        80.0,
+        &floors(0.0, 0.0, 0.0, 94.0, 0.0),
+    );
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(v.reason.contains("C=16"), "{}", v.reason);
     assert!(v.reason.contains("INCONCLUSIVE"), "{}", v.reason);
     // Same for the peak floor.
-    let v = sweep_verdict(&m, 4, 0, 0, 0, 80.0, &floors(0.0, 0.0, 0.0, 0.0, 94.0));
+    let v = sweep_verdict(
+        &m,
+        4,
+        0,
+        Exclusions {
+            vacuous: 0,
+            cache_uncontrolled: 0,
+            non_mtp_arm: 0,
+        },
+        80.0,
+        &floors(0.0, 0.0, 0.0, 0.0, 94.0),
+    );
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(v.reason.contains("peak"), "{}", v.reason);
 }
@@ -192,7 +280,18 @@ fn a_gated_rung_with_no_comparable_cell_fails_as_inconclusive() {
 fn request_errors_fail_the_sweep_in_both_modes() {
     let m = ladder(&[("c1_aggregate_tok_s", 999.0)]);
     for f in [Floors::default(), floors(24.0, 43.0, 63.0, 94.0, 94.0)] {
-        let v = sweep_verdict(&m, 4, 2, 0, 0, 80.0, &f);
+        let v = sweep_verdict(
+            &m,
+            4,
+            2,
+            Exclusions {
+                vacuous: 0,
+                cache_uncontrolled: 0,
+                non_mtp_arm: 0,
+            },
+            80.0,
+            &f,
+        );
         assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
         assert!(v.reason.contains("2 request(s) failed"), "{}", v.reason);
     }
@@ -207,7 +306,18 @@ fn an_unobserved_warm_cache_cannot_clear_the_gate() {
         ("c16_aggregate_tok_s", 999.0),
         ("peak_aggregate_tok_s", 999.0),
     ]);
-    let v = sweep_verdict(&m, 4, 0, 0, 1, 80.0, &floors(24.0, 43.0, 63.0, 94.0, 94.0));
+    let v = sweep_verdict(
+        &m,
+        4,
+        0,
+        Exclusions {
+            vacuous: 0,
+            cache_uncontrolled: 1,
+            non_mtp_arm: 0,
+        },
+        80.0,
+        &floors(24.0, 43.0, 63.0, 94.0, 94.0),
+    );
 
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(v.reason.contains("cached-prompt fraction"), "{}", v.reason);

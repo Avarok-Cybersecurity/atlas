@@ -44,6 +44,7 @@ mod impl_ngram;
 pub(crate) mod lm_head_exl3;
 pub(crate) mod mtp_carry;
 pub(crate) mod pinned_pack;
+pub(crate) mod seq_memtrace;
 pub(crate) mod ssm_batched_copy;
 pub(crate) mod ssm_pool;
 mod ssm_snapshot;

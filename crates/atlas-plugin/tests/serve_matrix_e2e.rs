@@ -9,6 +9,10 @@
 //! which quietly shrinks coverage, which is the one property this benchmark
 //! exists to guarantee.
 
+// Each test binary uses a different subset of the shared mock's helpers, so
+// what one does not call is dead code in that binary. Same reason, same
+// attribute, as `coherence.rs`.
+#[allow(dead_code)]
 mod mock_endpoint;
 
 use std::sync::Arc;

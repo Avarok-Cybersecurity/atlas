@@ -125,6 +125,18 @@ impl Qwen3SsmLayer {
         ctx: &crate::layer::ForwardContext,
         args: &ConvGdnArgs,
     ) -> Result<bool> {
+        // Replay shares ONE intermediate set across slots, and this arm
+        // launches every sequence at once against a staged pointer table — so
+        // the shared blob would be written concurrently by all of them.
+        // Decline; the caller's per-sequence loop is the safe shape and needs
+        // no second sharing scheme.
+        if states.iter().any(|st| {
+            st.as_any()
+                .downcast_ref::<crate::layer::SsmLayerState>()
+                .is_some_and(|s| !s.replay_inputs.is_empty())
+        }) {
+            return Ok(false);
+        }
         let n = states.len();
         let kk = args.num_tokens;
         // ── Issue #435 route (a), OPT-IN via `--exact-verify`: exact batched
