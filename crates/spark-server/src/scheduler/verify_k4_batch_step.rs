@@ -109,6 +109,11 @@ pub(super) fn step_verify_k4_batched(
         drafts_per_seq.push(d);
     }
 
+    // Positions BEFORE the forward: the diag below compares target tokens
+    // across rows, and that comparison is only meaningful for rows at the same
+    // position. Captured here because the forward advances every seq_len.
+    let positions_before: Vec<usize> = batch.iter().map(|a| a.seq.seq_len).collect();
+
     // ── ONE batched verify forward: R = n*rows rows, weights read once ──
     // Contract (`decode_verify_batched`): on Ok every seq has tokens+=rows
     // and seq_len+=rows (verdict rewind below is caller arithmetic, same as
@@ -210,6 +215,11 @@ pub(super) fn step_verify_k4_batched(
                         }
                     }
                 }
+                // Positions too: "four identical sequences produced different
+                // target tokens" only means something if they were at the SAME
+                // position. Without this the log cannot distinguish a verify
+                // that disagrees with itself from sequences that legitimately
+                // drifted apart on earlier accept counts.
                 tracing::info!(
                     step,
                     n,
@@ -217,6 +227,12 @@ pub(super) fn step_verify_k4_batched(
                     own,
                     off_by_1 = off1,
                     cross,
+                    positions = ?positions_before,
+                    // Per-row draft COUNT. Four identical sequences at the
+                    // same position produced 2,2,2,1 drafts from the very
+                    // first step, which is what desyncs them.
+                    dlens = ?drafts_per_seq.iter().map(|d| d.len()).collect::<Vec<_>>(),
+                    ?ks,
                     drafts0 = ?drafts_per_seq.iter().map(|d| d.first().copied().unwrap_or(0)).collect::<Vec<_>>(),
                     targets0 = ?verdicts.iter().map(|v| v.0.first().copied().unwrap_or(0)).collect::<Vec<_>>(),
                     "MTP draft diag"
@@ -367,6 +383,14 @@ pub(super) fn step_verify_k4_batched(
             };
             match result {
                 Ok(Some(all)) => {
+                    if std::env::var_os("ATLAS_MTP_DRAFT_DIAG").is_some() {
+                        tracing::info!(
+                            ?group,
+                            propose_nd,
+                            returned = ?all.iter().map(|v| v.len()).collect::<Vec<_>>(),
+                            "MTP propose batched"
+                        );
+                    }
                     for (j, &i) in group.iter().enumerate() {
                         if !all[j].is_empty() {
                             batch[i].pending_drafts = all[j].clone();
@@ -391,6 +415,9 @@ pub(super) fn step_verify_k4_batched(
         }
     } else {
         need_fallback = pending.clone();
+    }
+    if !need_fallback.is_empty() && std::env::var_os("ATLAS_MTP_DRAFT_DIAG").is_some() {
+        tracing::info!(?need_fallback, "MTP propose fallback rows");
     }
     for &i in &need_fallback {
         let a = &mut batch[i];

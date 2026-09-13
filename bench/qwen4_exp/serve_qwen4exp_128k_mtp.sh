@@ -279,7 +279,24 @@ export ATLAS_EP_PROTOCOL="${ATLAS_EP_PROTOCOL:-v2}"
 # gates highway models out of `supports_verify_layout` entirely, so MTP loses
 # its benefit even at C=1 (measured 27.8 tok/s against 41.6 with it on).
 export ATLAS_HC_BATCH_VERIFY="${ATLAS_HC_BATCH_VERIFY:-1}"
-export ATLAS_MTP_EP_BATCH_VERIFY="${ATLAS_MTP_EP_BATCH_VERIFY:-1}"
+# ATLAS_MTP_EP_BATCH_VERIFY defaults OFF here, against the throughput.
+#
+# The cross-rank batched verify is not output-equivalent at batch widths >= 4.
+# Reproduce with a ~1.1K-token TEXT prompt, temperature 0, thinking off, fired
+# 1x then 4x concurrently: widths 1, 2 and 3 are byte-identical, width 4 and up
+# answer differently AND disagree among themselves. It is not prefill (the
+# first 8 tokens match), not the lookup drafter, not D-Cut alone, not the
+# verify ROW count (widths 1 at 2/3/4/8/12 rows all agree), and no request ever
+# receives another's content. With this set to 0 every width is byte-identical
+# and `vision-fidelity` PASSES; with it at 1 the C=4 concurrency leg fails
+# deterministically.
+#
+# The cost is real and measured, which is why this is a default and not a
+# removal: C=4 aggregate decode 70.0 tok/s with it on, 47.6 with it off
+# (C=1 is 49.9 either way — the arm only pays at width). Set
+# ATLAS_MTP_EP_BATCH_VERIFY=1 to take that back on a workload that can accept
+# concurrency-dependent output.
+export ATLAS_MTP_EP_BATCH_VERIFY="${ATLAS_MTP_EP_BATCH_VERIFY:-0}"
 
 # ── Lookup drafts under expert parallelism (#1026). ────────────────────────
 # `lookup_gate` refuses under EP, citing a TP=2 x EP=2 bisect from THIS branch

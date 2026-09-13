@@ -1065,6 +1065,25 @@ impl TransformerModel {
                 // Full accept: the verify kernel already wrote the canonical
                 // h_state, so this commit is the no-op the head takes.
                 self.commit_accepted_prefix(seq, k_rows, k_rows)?;
+                // ...and the head ALSO trims the proposer here
+                // (`k4_apply_verdict`, "Full-accept branch trims AFTER the
+                // hidden save"). This arm did not, so on every fully-accepted
+                // step the head advanced its drafter's row accounting and the
+                // worker left stale rows behind. Nothing faults: the next
+                // drafter forward is a collective, so the two ranks then
+                // all-reduce partials computed over different drafter state,
+                // and the pair's drafts stop matching what either rank would
+                // have produced alone.
+                //
+                // Only the BATCHED arm was missing it — both per-sequence arms
+                // above trim on both branches — which is why the symptom was
+                // "output depends on batch width". At C>=2 with the batched
+                // verify on, a ~1K-token prompt answered at temperature 0 gave
+                // different text from the same prompt run alone, with the
+                // concurrent replies disagreeing among themselves; with
+                // ATLAS_MTP_EP_BATCH_VERIFY=0 it was byte-identical at every
+                // width.
+                self.trim_proposer_state(seq, na, 0)?;
             } else {
                 seq.seq_len -= nd - na;
                 for _ in 0..(nd - na) {
