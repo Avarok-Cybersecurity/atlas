@@ -73,15 +73,19 @@ impl Qwen3SsmLayer {
     ) -> Result<()> {
         let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
         // PER-ROW FP8 from the checkpoint (`ATLAS_FP8_ROWWISE=1`), dequantised
-        // once to BF16 — see the matching arm in `trait_prefill_proj.rs` for
-        // why BF16 and not the row-wise FP8 GEMM. First because it is the only
-        // arm that never re-quantises.
+        // once to BF16 into the LEDGERED arena slab — see the matching arm in
+        // `trait_prefill_proj.rs` for why BF16 and not the row-wise FP8 GEMM,
+        // and `rowwise_bf16.rs` for why the bytes are the arena's. First
+        // because it is the only arm that never re-quantises.
         if let Some(ref fp8w) = self.out_proj_fp8w_rowwise {
-            return ops::cublas_bf16_proj(
-                ctx.gpu,
-                ctx.derived,
+            // LEDGERED BF16 weight (`rowwise_bf16.rs`, #917): dequantised once
+            // per layer into `BufferSizes::ssm_rowwise_w_bf16`, so this arm
+            // allocates nothing. The predecessor cached a `gpu.alloc` by
+            // weight pointer, outside the ledger the fitter reads.
+            let w_bf16 = self.rowwise_out_proj_bf16(ctx, fp8w, stream)?;
+            return ops::cublas_bf16_proj_dense(
                 normed_out_buf,
-                fp8w,
+                w_bf16,
                 out_proj_buf,
                 k,
                 h as u32,
@@ -133,6 +137,29 @@ impl Qwen3SsmLayer {
                 value_dim as u32,
                 stream,
             )
+        // W8A8 block-scaled cuBLASLt — 96 of the 112 `w8a16_gemm_pipelined`
+        // launches in the round-9 H100 prefill trace (68.1 ms of its 100.6 ms
+        // at 1193 tokens) were THIS projection, once per GDN layer per chunk,
+        // and nothing in `ATLAS_CUBLAS_GEMM` could reach it. See
+        // `prefill_out_w8a8.rs` for the full receipt and the clause list.
+        // Ahead of the `ATLAS_FP8_W8A8` arm below because both compute the same
+        // W8A8 arithmetic and this one is the faster implementation of it; the
+        // env lever alone (without `ssm` in `ATLAS_CUBLAS_GEMM`) still picks
+        // the in-tree kernel.
+        } else if let Some(ref fp8w) = self.out_proj_fp8w
+            && self.prefill_out_proj_w8a8_selected(ctx, k, h as u32, value_dim as u32, fp8w)
+        {
+            self.log_out_proj_prefill_route(ctx, true);
+            self.prefill_out_proj_w8a8_cublas(
+                ctx,
+                normed_out_buf,
+                fp8w,
+                out_proj_buf,
+                k,
+                h as u32,
+                value_dim as u32,
+                stream,
+            )
         } else if force_w8a8
             && let Some(ref fp8w) = self.out_proj_fp8w
             && self.per_token_group_quant_fp8_k.0 != 0
@@ -174,6 +201,10 @@ impl Qwen3SsmLayer {
         } else if let Some(ref fp8w) = self.out_proj_fp8w
             && self.w8a16_gemm_pipelined_k.0 != 0
         {
+            // The 100.6 ms / 27.31% kernel of the round-9 H100 prefill trace,
+            // 96 of whose 112 launches were this line. The counterpart log says
+            // so out loud, so "no W8A8 line" is never read as "log lost".
+            self.log_out_proj_prefill_route(ctx, false);
             ops::w8a16_gemm_pipelined(
                 ctx.gpu,
                 self.w8a16_gemm_pipelined_k,

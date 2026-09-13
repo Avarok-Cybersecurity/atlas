@@ -66,7 +66,7 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
     // adding a rung moves this assertion instead of failing it; the VALUES are
     // pinned because a silent floor change is the thing worth catching.
     let m = ladder(&[
-        ("c1_aggregate_tok_s", 18.6),
+        ("c1_aggregate_tok_s", 21.2),
         ("c2_aggregate_tok_s", 27.7),
         ("c4_aggregate_tok_s", 44.8),
         ("c8_aggregate_tok_s", 60.7),
@@ -80,7 +80,7 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
     assert_eq!(
         floors.per_c,
         vec![
-            (1, 17.5),
+            (1, 20.4),
             (2, 25.0),
             (4, 37.5),
             (8, 48.0),
@@ -126,7 +126,7 @@ fn a_sweep_below_one_floor_fails_naming_the_cell() {
         .1;
     // A hair under the C=8 floor, everything else comfortably clear.
     let m = ladder(&[
-        ("c1_aggregate_tok_s", 18.6),
+        ("c1_aggregate_tok_s", 21.2),
         ("c2_aggregate_tok_s", 27.7),
         ("c4_aggregate_tok_s", 44.8),
         ("c8_aggregate_tok_s", 47.2),

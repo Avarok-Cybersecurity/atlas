@@ -249,6 +249,63 @@ pub fn gated_rms_norm(
         .launch(stream)
 }
 
+/// Strided gated RMS norm for MULTI-SEQ DECODE: all `(head, sequence)` pairs
+/// in ONE launch instead of one launch per sequence.
+///
+/// WHY (#927). The H100 nsys trace of a batch-16 decode step
+/// (2026-09-11 round 7, `Qwen/Qwen3.8-27B-FP8`, step 43.595 ms) showed
+/// `gated_rms_norm_f32_input` firing **768** times — 48 SSM layers x 16
+/// sequences — for 1.612 ms, i.e. 2.1 us each. At that size it is pure
+/// launch/tail overhead, not work, and it was the ONLY per-layer kernel in the
+/// step still scaling with the row count: `gated_delta_rule_decode_f32_strided`
+/// and `causal_conv1d_update_l2norm_f32_strided` next to it are already at 48.
+/// This entry point makes it 48 too, recovering most of 3.70% of the step.
+///
+/// BIT-IDENTICAL to `gated_rms_norm` at the same addresses: one block per
+/// `(sequence, head)` row either way, same reduction over the same elements in
+/// the same order. Only the base address differs, so no cross-row interaction
+/// is introduced — the same argument `rms_norm_strided` makes.
+///
+/// Strides are in ELEMENTS of each buffer's own type: `input_seq_stride` in
+/// f32, `gate_seq_stride`/`output_seq_stride` in BF16.
+///
+/// Grid: (heads_per_seq, num_seqs, 1)   Block: (min(hidden_size, 1024), 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn gated_rms_norm_strided(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    gate: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    heads_per_seq: u32,
+    num_seqs: u32,
+    hidden_size: u32,
+    gate_stride: u32,
+    eps: f32,
+    group_size: u32,
+    input_seq_stride: u32,
+    gate_seq_stride: u32,
+    output_seq_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([heads_per_seq, num_seqs, 1])
+        .block([hidden_size.min(1024), 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(gate)
+        .arg_ptr(weight.weight)
+        .arg_ptr(output)
+        .arg_u32(hidden_size)
+        .arg_f32(eps)
+        .arg_u32(gate_stride)
+        .arg_u32(group_size)
+        .arg_u32(input_seq_stride)
+        .arg_u32(gate_seq_stride)
+        .arg_u32(output_seq_stride)
+        .launch(stream)
+}
+
 /// Batched gated RMS norm for prefill: all (head, actual_token) pairs in one launch.
 ///
 /// Grid: (heads_per_token, num_actual_tokens, 1)
