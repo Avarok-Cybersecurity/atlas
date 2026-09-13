@@ -13,7 +13,6 @@
 // hidden_size=8192 → 32 blocks × 256 threads, each loads 1 element.
 
 #include <cuda_bf16.h>
-#include <cuda_fp16.h>
 
 extern "C" __global__ void embed_from_argmax(
     const unsigned int* __restrict__ argmax_result,   // [1] token ID on GPU
@@ -125,6 +124,24 @@ extern "C" __global__ void batched_embed_fp8(
     }
 }
 
+// ---------------------------------------------------------------------------
+// NVIDIA ONLY. This file is not a gb10 file: `kernels/strix/common/` and
+// `kernels/strix-hip/common/` both SYMLINK it, so everything below is text AMD
+// would otherwise compile. The decoder uses `__dp4a` and the `__half`
+// intrinsics, and no other gb10 file either AMD tree reaches uses any of them
+// today — this would be the first, on a build with no compile leg on PRs to
+// catch it (cf. the `__syncwarp()` breakage in d584c0c50, found only when a
+// windows-hip release leg failed).
+//
+// Excluding it costs those targets nothing: EXL3 is NVIDIA-only throughout, and
+// no AMD kernel set declares `batched_embed_exl3`. With this guard the
+// preprocessed translation unit AMD compiles is byte-identical to what it
+// compiled before this kernel existed — which is why `cuda_fp16.h` is included
+// HERE rather than beside `cuda_bf16.h` at the top.
+#if !defined(__SCALE__) && !defined(__HIP_PLATFORM_AMD__)
+
+#include <cuda_fp16.h>
+
 // EXL3 `exl3_ngram_trellis` batched embedding gather: rows stored as
 // (1 + ROW_DIM*K/16) little-endian uint16 words — word 0 is the fp16 row
 // scale's bit pattern, the rest a ROW_DIM*K-bit tail-biting trellis ring
@@ -199,3 +216,5 @@ extern "C" __global__ void batched_embed_exl3(
         + __half2float(head_bias[(unsigned long long) head * NGRAM_ROW_DIM + i]);
     output[(unsigned long long) row_idx * NGRAM_ROW_DIM + i] = __float2bfloat16(v);
 }
+
+#endif // !__SCALE__ && !__HIP_PLATFORM_AMD__
