@@ -148,12 +148,11 @@ fn overlay_linear_attn(config: &mut ModelConfig, text: &serde_json::Value) -> Re
     if let Some(v) = g("short_conv_kernel_size") {
         config.linear_conv_kernel_dim = v;
     }
-    match lac.get("gate_lower_bound").and_then(|v| v.as_f64()) {
-        Some(v) => config.linear_gate_lower_bound = v as f32,
-        // Twin omits the key. HF fused_recurrent_kda then gets lower_bound=None
-        // (`-exp(A_log)*softplus`). Leave factory 0.0; kda_from maps that to None.
-        // Production JSON still supplies -5.0. Do not guess.
-        None => {}
+    // Twin omits the key. HF fused_recurrent_kda then gets lower_bound=None
+    // (`-exp(A_log)*softplus`). Leave factory 0.0; kda_from maps that to None.
+    // Production JSON still supplies -5.0. Do not guess.
+    if let Some(v) = lac.get("gate_lower_bound").and_then(|v| v.as_f64()) {
+        config.linear_gate_lower_bound = v as f32;
     }
     config.use_full_rank_gate = lac
         .get("use_full_rank_gate")

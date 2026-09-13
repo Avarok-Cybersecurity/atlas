@@ -134,4 +134,4 @@ Lab gates C0–C7. Workspace tests stay green via feature-flag / ignore on **new
 
 AI-authored working log, per Atlas default. CLA will be checked on extracted topic PRs. **Will not `/stamp` or `/seal` or merge this PR.**
 
-- [x] I have read and agree to the [Contributor License Agreement](../CLA.md).
+- [x] I have read and agree to the [Contributor License Agreement](../../CLA.md).

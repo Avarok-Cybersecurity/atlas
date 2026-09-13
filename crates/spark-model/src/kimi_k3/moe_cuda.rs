@@ -401,7 +401,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn empty_ids_does_not_launch() {
         let gpu = MockGpuBackend::new();
         let k = K3MoeGemmKernels::resolve(&gpu).unwrap();

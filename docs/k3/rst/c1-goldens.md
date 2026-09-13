@@ -19,7 +19,7 @@ Instrument known-bad: host CPU torch + triton = 0 drivers / cpu tensor in Triton
 KNOWN-BAD (observed)
 1. Host `torch 2.12.0+cpu`: `RuntimeError: 0 active drivers`.
 2. CUDA container without `.to(device)`: `Pointer argument cannot be accessed from Triton (cpu tensor?)`.
-3. Missing deps: tiktoken, einops, fla-core (error text: "Plese run pip install -U fla-core").
+3. Missing deps: tiktoken, einops, fla-core (upstream HF message misspells Please).
 4. vLLM image default entrypoint is `vllm`, not bash.
 
 TEST NOTES

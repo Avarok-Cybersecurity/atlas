@@ -223,6 +223,7 @@ pub fn gated_mla_attend(
 
 /// One decode token: optional RoPE, append K/V, SDPA, optional output gate.
 /// Projections stay in `mla_mixer`. CUDA `k3_mla_*` matches this order.
+#[allow(clippy::too_many_arguments)]
 pub fn mla_decode_token(
     q: &mut [f32],
     k: &mut [f32],

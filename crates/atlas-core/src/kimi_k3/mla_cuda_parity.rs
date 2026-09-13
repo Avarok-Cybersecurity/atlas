@@ -15,6 +15,7 @@ fn mla_cu() -> String {
 }
 
 /// CUDA-loop nest of `k3_mla_sdpa_gate_f32` (thread-0, recompute dots).
+#[allow(clippy::too_many_arguments)]
 fn sdpa_gate_cuda_order(
     q: &[f32],
     k: &[f32],
