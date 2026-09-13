@@ -279,9 +279,7 @@ impl TransformerLayer for Qwen3SsmLayer {
         // and those two disagree about which highway row a stream belongs to
         // (the buffer is `[T, hc, H]`). Only `verify_hc.rs`, which runs a
         // uniform K on every layer, may take this path.
-        if self.hc.is_some()
-            && super::trait_decode_batched_hc::hc_batched_verify_enabled()
-        {
+        if self.hc.is_some() && super::trait_decode_batched_hc::hc_batched_verify_enabled() {
             return self.decode_batched_inner_hc(hidden, num_tokens, state, ctx, stream);
         }
         // v1 is C=1 only under an mHC highway: these paths keep their own
@@ -322,9 +320,8 @@ impl TransformerLayer for Qwen3SsmLayer {
         // for the verify axis, the analogue of `trait_decode_multi_seq/hc.rs`
         // for decode).
         if self.hc.is_some() {
-            return self.decode_verify_multi_inner_hc(
-                hidden, n_seqs, ks, states, wy_tables, ctx, stream,
-            );
+            return self
+                .decode_verify_multi_inner_hc(hidden, n_seqs, ks, states, wy_tables, ctx, stream);
         }
         let num_tokens: usize = ks.iter().sum();
         self.decode_batched_inner(

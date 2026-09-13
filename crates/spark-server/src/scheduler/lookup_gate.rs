@@ -122,7 +122,14 @@ mod tests {
         a.last_token = 3;
         // Lookup width 7 exceeds the history here (two tokens follow the
         // match), so the hit needs the width the head would draft at.
-        assert!(!take_lookup_drafts(&mut a, &sched, 2, usize::MAX, false, false));
+        assert!(!take_lookup_drafts(
+            &mut a,
+            &sched,
+            2,
+            usize::MAX,
+            false,
+            false
+        ));
         let mut levers = crate::scheduler::levers::SchedLevers::defaults();
         levers.lookup_min_match = 3;
         levers.lookup_width = 2;
@@ -134,7 +141,14 @@ mod tests {
             crate::scheduler::helpers::WatchdogParams::default(),
         );
         sched.lookup.borrow_mut().set_single_sequence(true);
-        assert!(take_lookup_drafts(&mut a, &sched, 2, usize::MAX, false, false));
+        assert!(take_lookup_drafts(
+            &mut a,
+            &sched,
+            2,
+            usize::MAX,
+            false,
+            false
+        ));
         assert_eq!(a.pending_drafts, vec![4, 5]);
         assert!(a.pending_drafts_lookup);
         assert!(a.pending_draft_conf.is_empty());
@@ -146,12 +160,27 @@ mod tests {
         let t = [1, 2, 3, 4, 5, 9, 1, 2];
         let mut a = seq_with(&t);
         a.last_token = 3;
-        assert!(!take_lookup_drafts(&mut a, &sched, 2, usize::MAX, false, false), "not armed single");
+        assert!(
+            !take_lookup_drafts(&mut a, &sched, 2, usize::MAX, false, false),
+            "not armed single"
+        );
         sched.lookup.borrow_mut().set_single_sequence(true);
-        assert!(!take_lookup_drafts(&mut a, &sched, 2, usize::MAX, true, false), "dflash");
-        assert!(!take_lookup_drafts(&mut a, &sched, 1, usize::MAX, false, false), "K=2 lane");
-        assert!(!take_lookup_drafts(&mut a, &sched, 16, usize::MAX, false, false), "past the wide verify");
-        assert!(!take_lookup_drafts(&mut a, &sched, 2, usize::MAX, false, true), "expert parallel");
+        assert!(
+            !take_lookup_drafts(&mut a, &sched, 2, usize::MAX, true, false),
+            "dflash"
+        );
+        assert!(
+            !take_lookup_drafts(&mut a, &sched, 1, usize::MAX, false, false),
+            "K=2 lane"
+        );
+        assert!(
+            !take_lookup_drafts(&mut a, &sched, 16, usize::MAX, false, false),
+            "past the wide verify"
+        );
+        assert!(
+            !take_lookup_drafts(&mut a, &sched, 2, usize::MAX, false, true),
+            "expert parallel"
+        );
         assert!(a.pending_drafts.is_empty() && !a.pending_drafts_lookup);
     }
 
@@ -171,7 +200,14 @@ mod tests {
         sched.lookup.borrow_mut().set_single_sequence(true);
         let mut a = seq_with(&[1, 2, 3, 4, 5, 9, 1, 2]);
         a.last_token = 3;
-        assert!(!take_lookup_drafts(&mut a, &sched, 2, usize::MAX, false, false));
+        assert!(!take_lookup_drafts(
+            &mut a,
+            &sched,
+            2,
+            usize::MAX,
+            false,
+            false
+        ));
     }
 
     #[test]

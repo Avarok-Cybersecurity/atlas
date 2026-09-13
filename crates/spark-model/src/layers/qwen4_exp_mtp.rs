@@ -367,7 +367,12 @@ impl Qwen4ExpMtpHead {
         // per-sequence path always used. See `draft_bodies_batched`.
         let batch_cap = max_sequences.clamp(1, BATCH_CAP);
         let arena = spark_runtime::buffers::BufferArena::new(
-            config, batch_cap, max_seq_len, 16, batch_cap, gpu,
+            config,
+            batch_cap,
+            max_seq_len,
+            16,
+            batch_cap,
+            gpu,
         )?;
         let free_after = gpu.free_memory().unwrap_or(0);
         tracing::info!(
@@ -549,7 +554,13 @@ impl Qwen4ExpMtpHead {
         // `ATLAS_EXL3_NATIVE` there is no NVFP4 head to fall back to, and the
         // borrowed trellis head is the one the target samples from.
         if let Some(exl3) = self.lm_head_exl3.as_ref() {
-            exl3.project_draft_rows(ctx.gpu, self.buf.batch_h_out, n, self.buf.batch_logits, stream)?;
+            exl3.project_draft_rows(
+                ctx.gpu,
+                self.buf.batch_h_out,
+                n,
+                self.buf.batch_logits,
+                stream,
+            )?;
             return self.batched_argmax(n, vocab, ctx, stream);
         }
         let w = self.lm_head_nvfp4.as_ref().ok_or_else(|| {
@@ -559,7 +570,10 @@ impl Qwen4ExpMtpHead {
         while off < n {
             let take = (n - off).min(8);
             let k = self.w4a16_batchm.kernel(take as u32);
-            anyhow::ensure!(k.0 != 0, "draft_tokens_batched: no batchm tier for {take} rows");
+            anyhow::ensure!(
+                k.0 != 0,
+                "draft_tokens_batched: no batchm tier for {take} rows"
+            );
             ops::w4a16_gemv_batchm(
                 ctx.gpu,
                 k,
@@ -598,8 +612,7 @@ impl Qwen4ExpMtpHead {
         )?;
         let mut b = vec![0u8; n * 4];
         ctx.gpu.copy_d2h(self.buf.batch_tok, &mut b)?;
-        Ok(b
-            .chunks_exact(4)
+        Ok(b.chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect())
     }

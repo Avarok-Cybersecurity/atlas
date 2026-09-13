@@ -586,8 +586,7 @@ impl TransformerModel {
             self.ensure_drafter_context(proposer, seq, &ctx, stream);
         }
         let h = self.config.hidden_size;
-        let hiddens: Vec<spark_runtime::gpu::DevicePtr> = if self.config.model_type == "qwen4_exp"
-        {
+        let hiddens: Vec<spark_runtime::gpu::DevicePtr> = if self.config.model_type == "qwen4_exp" {
             // This proposer's combiner needs the TARGET HIGHWAY row, not the
             // collapsed hidden. `verify_stash_rows[slot]` is the absolute
             // verify row the stash was filled from — the same row the

@@ -278,7 +278,10 @@ mod tests {
     #[test]
     fn every_block_is_visited_exactly_once() {
         for &num_blocks in &[0usize, 33, 64, 65] {
-            let seen: Vec<u32> = restore_order(num_blocks, 1).into_iter().map(|(b, _)| b).collect();
+            let seen: Vec<u32> = restore_order(num_blocks, 1)
+                .into_iter()
+                .map(|(b, _)| b)
+                .collect();
             let expected: Vec<u32> = (0..num_blocks as u32).collect();
             assert_eq!(seen, expected, "{num_blocks} blocks");
         }

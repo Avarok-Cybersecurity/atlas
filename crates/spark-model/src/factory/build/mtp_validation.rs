@@ -21,7 +21,11 @@ mod tests {
     #[test]
     fn active_qwen_mtp_requires_retained_verification_rows() {
         let error = validate_qwen_mtp_verify(true, false).unwrap_err();
-        assert!(error.to_string().contains("ATLAS_QWEN4EXP_MTP_HC_BATCHED=1"));
+        assert!(
+            error
+                .to_string()
+                .contains("ATLAS_QWEN4EXP_MTP_HC_BATCHED=1")
+        );
         validate_qwen_mtp_verify(true, true).unwrap();
     }
 

@@ -412,7 +412,11 @@ mod tests {
         assert!(l.cooperative);
         assert_eq!(l.grid, [48, 1, 1]);
         assert_eq!(l.block, [512, 1, 1]);
-        assert_eq!(l.shared_mem, 90 * 1024, "dynamic smem must survive the route");
+        assert_eq!(
+            l.shared_mem,
+            90 * 1024,
+            "dynamic smem must survive the route"
+        );
         assert_eq!(l.stream, 7);
         assert_eq!(l.args[0], MockArg::Buffer(DevicePtr(0x2000)));
         assert_eq!(l.args[1], MockArg::Bytes(2560i32.to_le_bytes().to_vec()));

@@ -25,10 +25,10 @@ impl MoeLayer {
 
         // Native EXL3 routed experts: see forward_k2 — one generic arm.
         if self.exl3_native_active() {
-        {
-            static SAID: std::sync::Once = std::sync::Once::new();
-            SAID.call_once(|| tracing::info!("forward_k3 arm: EXL3-NATIVE"));
-        }
+            {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| tracing::info!("forward_k3 arm: EXL3-NATIVE"));
+            }
             return self.forward_exl3_decode(input, 3, ctx, stream);
         }
 
@@ -37,10 +37,10 @@ impl MoeLayer {
         // moe_output[3,H]), skipping any no-fold fast path. Install-time gate →
         // graph-safe (graphs drain on rotate/swap). Router adapter refused inside.
         if self.lora.is_some() {
-        {
-            static SAID: std::sync::Once = std::sync::Once::new();
-            SAID.call_once(|| tracing::info!("forward_k3 arm: forward_batched (LoRA)"));
-        }
+            {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| tracing::info!("forward_k3 arm: forward_batched (LoRA)"));
+            }
             return self.forward_batched(input, 3, ctx, stream);
         }
         // BF16 (FP8-dequant-on-load) experts have no fused batch3 kernel.
@@ -50,10 +50,10 @@ impl MoeLayer {
         // batched path, which produces the same moe_output()[3,H]. (SSOT:
         // reuses the decode BF16 kernels via forward_batched.)
         if self.bf16_gate_weight_ptrs.is_some() {
-        {
-            static SAID: std::sync::Once = std::sync::Once::new();
-            SAID.call_once(|| tracing::info!("forward_k3 arm: forward_batched (BF16 experts)"));
-        }
+            {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| tracing::info!("forward_k3 arm: forward_batched (BF16 experts)"));
+            }
             return self.forward_batched(input, 3, ctx, stream);
         }
         // Mixed NVFP4-routed / BF16-shared (Laguna): batch the routed half
@@ -68,9 +68,9 @@ impl MoeLayer {
         {
             {
                 static SAID: std::sync::Once = std::sync::Once::new();
-                SAID.call_once(|| tracing::info!(
-                    "forward_k3 arm: forward_batched (mixed BF16 shared / EP)"
-                ));
+                SAID.call_once(|| {
+                    tracing::info!("forward_k3 arm: forward_batched (mixed BF16 shared / EP)")
+                });
             }
             return self.forward_batched(input, 3, ctx, stream);
         }
@@ -86,10 +86,10 @@ impl MoeLayer {
         // kernel via `e8m0_or` — the same correct path ordinary decode already
         // uses. Mirrors the K=2 guard at the top of `forward_k2`.
         if k3_e8m0_needs_per_token(self.experts_scale_kind) {
-        {
-            static SAID: std::sync::Once = std::sync::Once::new();
-            SAID.call_once(|| tracing::info!("forward_k3 arm: forward_batched (E8M0)"));
-        }
+            {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| tracing::info!("forward_k3 arm: forward_batched (E8M0)"));
+            }
             return self.forward_batched(input, 3, ctx, stream);
         }
 

@@ -17,8 +17,8 @@
 //! `save_hidden_for_mtp`) or the pre-propose stash slot (batched path, whose
 //! phase-3 proposes have already clobbered the live rows).
 
-use super::*;
 use super::verify_k2_step::commit_verify_aux_or_finish;
+use super::*;
 
 /// Source of the accepted-position hidden fed to `run_mtp_propose_multi`.
 #[derive(Clone, Copy)]

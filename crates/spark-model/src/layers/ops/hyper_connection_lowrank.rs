@@ -81,10 +81,15 @@ pub fn hc_pre_lowrank(
     {
         {
             static SAID: std::sync::Once = std::sync::Once::new();
-            SAID.call_once(|| tracing::info!(
-                num_tokens, hidden_size, hc_mult, rank = w.rank,
-                "hc_pre_lowrank arm: DECODE-ROWS"
-            ));
+            SAID.call_once(|| {
+                tracing::info!(
+                    num_tokens,
+                    hidden_size,
+                    hc_mult,
+                    rank = w.rank,
+                    "hc_pre_lowrank arm: DECODE-ROWS"
+                )
+            });
         }
         return hc_pre_rows(
             gpu,
@@ -156,10 +161,15 @@ pub fn hc_pre_lowrank(
         if !hc_decode_split_forced() {
             {
                 static SAID: std::sync::Once = std::sync::Once::new();
-                SAID.call_once(|| tracing::info!(
-                    num_tokens, hidden_size, hc_mult, rank = w.rank,
-                    "hc_pre_lowrank arm: DECODE-GEMM(cuBLASLt)"
-                ));
+                SAID.call_once(|| {
+                    tracing::info!(
+                        num_tokens,
+                        hidden_size,
+                        hc_mult,
+                        rank = w.rank,
+                        "hc_pre_lowrank arm: DECODE-GEMM(cuBLASLt)"
+                    )
+                });
             }
             return hc_pre_gemm(
                 gpu,
@@ -180,10 +190,15 @@ pub fn hc_pre_lowrank(
         }
         {
             static SAID: std::sync::Once = std::sync::Once::new();
-            SAID.call_once(|| tracing::info!(
-                num_tokens, hidden_size, hc_mult, rank = w.rank,
-                "hc_pre_lowrank arm: DECODE-SPLIT"
-            ));
+            SAID.call_once(|| {
+                tracing::info!(
+                    num_tokens,
+                    hidden_size,
+                    hc_mult,
+                    rank = w.rank,
+                    "hc_pre_lowrank arm: DECODE-SPLIT"
+                )
+            });
         }
         return hc_pre_split(
             gpu,
@@ -206,10 +221,15 @@ pub fn hc_pre_lowrank(
     if !scratch.is_null() && !hc_gemm_disabled() {
         {
             static SAID: std::sync::Once = std::sync::Once::new();
-            SAID.call_once(|| tracing::info!(
-                num_tokens, hidden_size, hc_mult, rank = w.rank,
-                "hc_pre_lowrank arm: PREFILL-GEMM"
-            ));
+            SAID.call_once(|| {
+                tracing::info!(
+                    num_tokens,
+                    hidden_size,
+                    hc_mult,
+                    rank = w.rank,
+                    "hc_pre_lowrank arm: PREFILL-GEMM"
+                )
+            });
         }
         return hc_pre_gemm(
             gpu,

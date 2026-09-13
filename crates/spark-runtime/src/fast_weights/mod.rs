@@ -386,7 +386,6 @@ impl WeightLoader for FastSafetensorsLoader {
     }
 }
 
-
 #[cfg(test)]
 mod skip_vision_tests {
     use super::{FastSafetensorsLoader, is_vision_tensor};

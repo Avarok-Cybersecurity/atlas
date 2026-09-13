@@ -185,7 +185,13 @@ impl DraftProposer for Qwen4ExpMtpHead {
         for j in 0..num_drafts {
             // Combine every sequence into its own arena highway row.
             for i in 0..n {
-                self.draft_combine(toks[i], streams[i], self.arena_streams_row(i, hc, h), ctx, stream)?;
+                self.draft_combine(
+                    toks[i],
+                    streams[i],
+                    self.arena_streams_row(i, hc, h),
+                    ctx,
+                    stream,
+                )?;
             }
             // ONE body forward over all n rows.
             {
@@ -195,7 +201,9 @@ impl DraftProposer for Qwen4ExpMtpHead {
                     let st = st
                         .as_any_mut()
                         .downcast_mut::<Qwen4ExpMtpProposerState>()
-                        .ok_or_else(|| anyhow::anyhow!("qwen4_exp MTP: wrong proposer state type"))?;
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("qwen4_exp MTP: wrong proposer state type")
+                        })?;
                     inners.push(&mut st.inner);
                 }
                 let pos_j: Vec<usize> = positions.iter().map(|&p| p + j).collect();

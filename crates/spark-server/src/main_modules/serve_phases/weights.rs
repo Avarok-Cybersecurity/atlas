@@ -465,8 +465,6 @@ fn want_mtp(args: &cli::ServeArgs) -> bool {
     args.speculative || std::env::var("ATLAS_QWEN4EXP_MTP").as_deref() == Ok("1")
 }
 
-
-
 /// Will the model's weight loader bind a vision encoder?
 ///
 /// Unresolvable model types answer `true`: never skip weights on a guess.

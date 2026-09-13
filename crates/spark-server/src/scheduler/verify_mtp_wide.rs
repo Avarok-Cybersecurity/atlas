@@ -371,7 +371,14 @@ pub(super) fn finish(
         return;
     }
     let capacity = model.mtp_slot_draft_capacity(seq.seq.slot_idx);
-    if super::lookup_gate::take_lookup_drafts(seq, sched, num_drafts, capacity, false, model.is_ep()) {
+    if super::lookup_gate::take_lookup_drafts(
+        seq,
+        sched,
+        num_drafts,
+        capacity,
+        false,
+        model.is_ep(),
+    ) {
         return;
     }
     let grammar_mask = super::mtp_grammar_mask_for(seq);

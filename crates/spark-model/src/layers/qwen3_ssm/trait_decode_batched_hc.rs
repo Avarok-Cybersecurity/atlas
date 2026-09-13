@@ -131,11 +131,7 @@ impl Qwen3SsmLayer {
         );
         let hc_row = hc.hc_mult * h * 4;
         anyhow::ensure!(
-            !row_exact
-                || matches!(
-                    ops::HcVariant::of(hc),
-                    ops::HcVariant::LowRank
-                ),
+            !row_exact || matches!(ops::HcVariant::of(hc), ops::HcVariant::LowRank),
             "row-exact mHC verify: the per-row hc_pre passes ONE `comb` for every \
              row, which only the low-rank variant (which never writes it) admits. \
              A Sinkhorn site here would have its rows clobber each other — refuse \
@@ -250,10 +246,9 @@ impl Qwen3SsmLayer {
                 .as_any_mut()
                 .downcast_mut::<crate::layer::SsmLayerState>()
                 .ok_or_else(|| anyhow::anyhow!("PLE host layer state is not SsmLayerState"))?;
-            let st = ssm
-                .ple
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("PLE batched verify before prefill: no seq state"))?;
+            let st = ssm.ple.as_mut().ok_or_else(|| {
+                anyhow::anyhow!("PLE batched verify before prefill: no seq state")
+            })?;
             ple.begin_verify_rows(st);
             for t in 0..num_tokens {
                 ple.forward_row(st, streams.offset(t * hc_row), &host[t..t + 1], ctx, stream)?;
@@ -267,14 +262,7 @@ impl Qwen3SsmLayer {
             }
         }
 
-        super::debug::hc_stage_probe(
-            ctx,
-            "bat_ple",
-            streams,
-            hc.hc_mult * h,
-            true,
-            stream,
-        );
+        super::debug::hc_stage_probe(ctx, "bat_ple", streams, hc.hc_mult * h, true, stream);
 
         // ── GDN sublayer. `hidden` is scratch; the highway is the residual. ──
         hc_pre_rows(&hc.attn)?;
@@ -374,8 +362,9 @@ impl Qwen3SsmLayer {
     ) -> Result<()> {
         let small_m = {
             static SMALL_M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *SMALL_M
-                .get_or_init(|| std::env::var("ATLAS_QWEN4EXP_HC_SMALL_M_FFN").as_deref() != Ok("0"))
+            *SMALL_M.get_or_init(|| {
+                std::env::var("ATLAS_QWEN4EXP_HC_SMALL_M_FFN").as_deref() != Ok("0")
+            })
         };
         // ROW-EXACT (`ForwardContext::gdn_exact_replay`, kill switch
         // ATLAS_NO_VERIFY_ROW_EXACT): every arm below dispatches on ROW COUNT
@@ -428,7 +417,11 @@ impl Qwen3SsmLayer {
                         num_tokens,
                         km_available,
                         "hc small-M FFN at {num_tokens} rows: {}",
-                        if km_available { "Km batched arm" } else { "PREFILL FALLBACK (512-expert loop)" }
+                        if km_available {
+                            "Km batched arm"
+                        } else {
+                            "PREFILL FALLBACK (512-expert loop)"
+                        }
                     );
                 });
             }
@@ -451,7 +444,9 @@ impl Qwen3SsmLayer {
             HcFfnDispatch::K2 => self.ffn.forward_k2(rows, ctx, stream)?,
             HcFfnDispatch::K3 => self.ffn.forward_k3(rows, ctx, stream)?,
             HcFfnDispatch::Km => {
-                let ran = self.ffn.try_forward_km(rows, num_tokens as u32, ctx, stream)?;
+                let ran = self
+                    .ffn
+                    .try_forward_km(rows, num_tokens as u32, ctx, stream)?;
                 anyhow::ensure!(ran, "K=m FFN arm reported available and then declined");
             }
             HcFfnDispatch::NativeBatched => match &self.ffn {
@@ -464,9 +459,7 @@ impl Qwen3SsmLayer {
                 // experts regardless of row count. See the module note.
                 let chunked = {
                     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                    *ON.get_or_init(|| {
-                        std::env::var("ATLAS_HC_FFN_CHUNKED").as_deref() != Ok("0")
-                    })
+                    *ON.get_or_init(|| std::env::var("ATLAS_HC_FFN_CHUNKED").as_deref() != Ok("0"))
                 };
                 // ★ CAPPED at verify widths. This decomposition was measured
                 // (73cb95b43) against the grouped GEMM at 1..24 rows, where the
@@ -489,7 +482,11 @@ impl Qwen3SsmLayer {
                 // (11 rows at C=4 K=2, ~15 at K=3, VERIFY_ROW_CAP is 96) should
                 // change, and no prefill chunk (hundreds to thousands of rows)
                 // should ever land here. See `hc_ffn_chunk_max_rows` for why 64.
-                if chunked && small_m && num_tokens > 3 && num_tokens <= Self::hc_ffn_chunk_max_rows() {
+                if chunked
+                    && small_m
+                    && num_tokens > 3
+                    && num_tokens <= Self::hc_ffn_chunk_max_rows()
+                {
                     let h = ctx.config.hidden_size;
                     let bf16 = 2usize;
                     // Widths, seq-major: 3s then the 1-or-2 remainder.

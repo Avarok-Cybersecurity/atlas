@@ -307,9 +307,7 @@ impl Qwen3SsmLayer {
         // floors, and the 2.4x gap has to be located before it can be closed.
         let phase_timing = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| {
-                std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1")
-            })
+            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
         };
         let mut pt = std::time::Instant::now();
         let (mut p1, mut p23, mut p4, mut p567, mut p8, mut p9) =

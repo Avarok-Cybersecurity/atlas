@@ -227,7 +227,12 @@ impl StagingGuard<'_> {
             .slot
             .as_mut()
             .expect("acquire() installs the blob before returning the guard");
-        debug_assert!(self.len <= b.bytes, "guard len {} > capacity {}", self.len, b.bytes);
+        debug_assert!(
+            self.len <= b.bytes,
+            "guard len {} > capacity {}",
+            self.len,
+            b.bytes
+        );
         // SAFETY: `b.ptr` owns `b.bytes` of live host memory, `self.len` is
         // <= that capacity by construction in both acquire paths, and this
         // guard holds the only reference to it (the Mutex is the exclusion).

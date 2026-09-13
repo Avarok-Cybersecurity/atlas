@@ -298,7 +298,11 @@ impl QsaIndexer {
                         nkv = self.nkv_attn,
                         hd = self.hd_attn,
                         "QSA prefill attention: {}",
-                        if pa_tc { "TENSOR-CORE (one CTA per row)" } else { "scalar (one CTA per row,head)" }
+                        if pa_tc {
+                            "TENSOR-CORE (one CTA per row)"
+                        } else {
+                            "scalar (one CTA per row,head)"
+                        }
                     );
                 });
             }
@@ -309,7 +313,11 @@ impl QsaIndexer {
             };
             pa_kernel(
                 gpu,
-                if pa_tc { self.k_prefill_attn_tc_k } else { self.k_prefill_attn_k },
+                if pa_tc {
+                    self.k_prefill_attn_tc_k
+                } else {
+                    self.k_prefill_attn_k
+                },
                 q_roped.offset(first_row * q_row * 2),
                 k_pool,
                 v_pool,

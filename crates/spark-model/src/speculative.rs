@@ -295,7 +295,6 @@ pub fn hidden_fingerprint(gpu: &dyn GpuBackend, p: DevicePtr, h: usize) -> u64 {
     hash
 }
 
-
 /// Batched multi-sequence MTP verify: `n_seqs` sequences x `ks[i]` rows in ONE
 /// weight sweep.
 ///

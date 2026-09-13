@@ -184,7 +184,11 @@ impl QsaIndexer {
             k_topk_rows_k: crate::layers::try_kernel(gpu, "qsa_indexer", "qsa_topk_rows"),
             k_expand_sel_k: crate::layers::try_kernel(gpu, "qsa_indexer", "qsa_expand_sel"),
             k_prefill_attn_k: gpu.kernel("qsa_indexer", "qsa_prefill_attn")?,
-            k_prefill_attn_tc_k: crate::layers::try_kernel(gpu, "qsa_indexer", "qsa_prefill_attn_tc"),
+            k_prefill_attn_tc_k: crate::layers::try_kernel(
+                gpu,
+                "qsa_indexer",
+                "qsa_prefill_attn_tc",
+            ),
             qk_scratch: gpu.alloc(INGEST_SLAB * qk_width * 2)?,
             q_post: gpu.alloc(n_heads * hd * 4)?,
             scores_dev: gpu.alloc(max_tokens / ratio * 4)?,

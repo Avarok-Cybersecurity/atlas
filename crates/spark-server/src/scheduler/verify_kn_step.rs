@@ -49,9 +49,10 @@ pub(super) fn step_verify_kn(
     // `decode_verify_graphed_kn` on the command, so the head must run the same
     // method below to stay in NCCL lockstep.
     if model.is_ep() {
-        if let Err(e) =
-            model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, spark_model::speculative::EP_CMD_VERIFY_KN)
-        {
+        if let Err(e) = model.ep_broadcast_cmd_for_seq(
+            a.seq.slot_idx as u32,
+            spark_model::speculative::EP_CMD_VERIFY_KN,
+        ) {
             tracing::error!("EP broadcast verify_kn cmd: {e:#}");
             super::lifecycle::fail_sequence(a, format!("EP broadcast verify_kn cmd: {e:#}"));
             return;
@@ -82,7 +83,10 @@ pub(super) fn step_verify_kn(
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
     if rows.len() != k {
-        tracing::error!("decode_verify_graphed_kn returned {} rows, want {k}", rows.len());
+        tracing::error!(
+            "decode_verify_graphed_kn returned {} rows, want {k}",
+            rows.len()
+        );
         a.finished = true;
         return;
     }

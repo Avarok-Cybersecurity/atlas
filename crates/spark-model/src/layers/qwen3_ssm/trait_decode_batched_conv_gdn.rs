@@ -141,7 +141,6 @@ impl Qwen3SsmLayer {
         }
     }
 
-
     /// STAGE 1: whether the fused K=2 MTP-verify epilogue (single-launch
     /// conv1d+L2norm and gated-RMS-norm for both draft positions) should run.
     ///

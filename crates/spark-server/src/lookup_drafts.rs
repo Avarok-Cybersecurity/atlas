@@ -280,7 +280,9 @@ mod tests {
     fn a_long_context_is_one_lookup_per_step() {
         // 100K tokens of noise, then a 64-token block repeated: the second
         // copy drafts the first at every step.
-        let mut t: Vec<u32> = (0..100_000u32).map(|i| i.wrapping_mul(2_654_435_761) % 50_000 + 1_000).collect();
+        let mut t: Vec<u32> = (0..100_000u32)
+            .map(|i| i.wrapping_mul(2_654_435_761) % 50_000 + 1_000)
+            .collect();
         let block: Vec<u32> = (0..64u32).map(|i| 60_000 + i).collect();
         t.extend(&block);
         t.extend(&block[..7]);

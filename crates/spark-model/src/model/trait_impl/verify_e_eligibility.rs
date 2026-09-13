@@ -29,8 +29,6 @@ pub(super) fn hc_batch_verify_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("ATLAS_HC_BATCH_VERIFY").as_deref() == Ok("1"))
 }
 
-
-
 /// `ATLAS_HC_ATTN_FFN_BATCHED` (default on; `=0` restores the per-sequence
 /// FFN). Under the cross-sequence verify the attention layers ran their whole
 /// highway block per sequence; the FFN sublayer is row-wise and

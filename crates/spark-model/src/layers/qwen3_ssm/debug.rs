@@ -127,9 +127,8 @@ pub(super) fn hc_stage_probe(
     stream: u64,
 ) {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let on = *ON.get_or_init(|| {
-        std::env::var("ATLAS_QWEN4EXP_HC_STAGE_PROBE").as_deref() == Ok("1")
-    });
+    let on =
+        *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_HC_STAGE_PROBE").as_deref() == Ok("1"));
     if !on || !ctx.gdn_exact_replay || ctx.graph_capture {
         return;
     }

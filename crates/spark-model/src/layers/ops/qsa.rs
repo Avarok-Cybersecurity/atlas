@@ -336,7 +336,7 @@ const QSA_PA_TC_TB: u32 = 64;
 const QSA_PA_TC_HD: u32 = 256;
 const QSA_PA_TC_M: u32 = 16;
 const QSA_PA_TC_QPAD: u32 = 8;
-const QSA_PA_TC_KPAD: u32 = 2;   // bank-conflict-free K^T store; see qsa_indexer.cu
+const QSA_PA_TC_KPAD: u32 = 2; // bank-conflict-free K^T store; see qsa_indexer.cu
 const QSA_PA_TC_VPAD: u32 = 4;
 const QSA_PA_TC_PPAD: u32 = 8;
 
@@ -355,10 +355,10 @@ pub const QSA_PA_TC_SMEM: u32 = {
     let v = QSA_PA_TC_TB * (QSA_PA_TC_HD + QSA_PA_TC_VPAD) * 2;
     let kv = if kt > v { kt } else { v };
     kv + QSA_PA_TC_M * (QSA_PA_TC_HD + QSA_PA_TC_QPAD) * 2
-       + QSA_PA_TC_M * (QSA_PA_TC_TB + QSA_PA_TC_PPAD) * 2
-       + QSA_PA_TC_M * QSA_PA_TC_TB * 4
-       + 3 * QSA_PA_TC_M * 4
-       + QSA_PA_TC_TB * 4
+        + QSA_PA_TC_M * (QSA_PA_TC_TB + QSA_PA_TC_PPAD) * 2
+        + QSA_PA_TC_M * QSA_PA_TC_TB * 4
+        + 3 * QSA_PA_TC_M * 4
+        + QSA_PA_TC_TB * 4
 };
 
 /// Whether the TC prefill-attention kernel may be used for this geometry.

@@ -176,9 +176,7 @@ impl Qwen3AttentionLayer {
 
         let timing = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| {
-                std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1")
-            })
+            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
         };
         let t0 = std::time::Instant::now();
 
@@ -368,9 +366,7 @@ impl Qwen3AttentionLayer {
         // layers and the residual after the FFN is ~40x the projection floor.
         let phase_timing = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| {
-                std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1")
-            })
+            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
         };
         let mut at = std::time::Instant::now();
         let (mut a1, mut a2, mut a3) = (0u128, 0u128, 0u128);
@@ -894,9 +890,7 @@ impl Qwen3AttentionLayer {
         // ── Phase timing (ATLAS_HC_VERIFY_STAGE_TIMING=1), see module note ──
         let core_timing = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| {
-                std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1")
-            })
+            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
         };
         let mut ct = std::time::Instant::now();
         let (mut c1, mut c2, mut c3, mut c4) = (0u128, 0u128, 0u128, 0u128);

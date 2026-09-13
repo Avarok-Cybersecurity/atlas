@@ -71,7 +71,9 @@ pub(super) fn install_high_speed_swap(
 fn codispatch_window() -> Option<std::time::Duration> {
     admission_window_from(
         std::env::var("ATLAS_PREFILL_CODISPATCH").ok().as_deref(),
-        std::env::var("ATLAS_PREFILL_ADMISSION_WINDOW_MS").ok().as_deref(),
+        std::env::var("ATLAS_PREFILL_ADMISSION_WINDOW_MS")
+            .ok()
+            .as_deref(),
         std::env::var("ATLAS_PREFILL_CODISPATCH_WINDOW_MS")
             .ok()
             .as_deref(),
@@ -449,7 +451,10 @@ mod admission_window_tests {
         );
         // THE POINT: a window WITHOUT arming the batched dispatch, so a
         // scheduling policy has a queue to order.
-        assert_eq!(ms(admission_window_from(None, Some("100"), None)), Some(100));
+        assert_eq!(
+            ms(admission_window_from(None, Some("100"), None)),
+            Some(100)
+        );
         // An explicit window wins over the co-dispatch default, in both
         // directions, so an operator can widen or narrow it per arm.
         assert_eq!(
@@ -460,7 +465,10 @@ mod admission_window_tests {
         assert_eq!(ms(admission_window_from(Some("1"), Some("0"), None)), None);
         // Garbage falls back to the co-dispatch behaviour rather than
         // silently disabling the window.
-        assert_eq!(ms(admission_window_from(Some("1"), Some("abc"), None)), Some(100));
+        assert_eq!(
+            ms(admission_window_from(Some("1"), Some("abc"), None)),
+            Some(100)
+        );
         assert_eq!(ms(admission_window_from(None, Some("abc"), None)), None);
         // `=0` on the co-dispatch flag is not "on" (it is a value flag here).
         assert_eq!(ms(admission_window_from(Some("0"), None, None)), None);

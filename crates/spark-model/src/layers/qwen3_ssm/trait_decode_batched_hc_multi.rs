@@ -77,9 +77,10 @@ impl Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        let hc = self.hc.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("decode_verify_multi_inner_hc without mHC weights")
-        })?;
+        let hc = self
+            .hc
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("decode_verify_multi_inner_hc without mHC weights"))?;
         anyhow::ensure!(
             states.len() == n_seqs && ks.len() == n_seqs,
             "decode_verify_multi_inner_hc: states/ks/n mismatch"
@@ -91,9 +92,7 @@ impl Qwen3SsmLayer {
 
         let stage_timing = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| {
-                std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1")
-            })
+            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
         };
         let mark = |t: &mut std::time::Instant, acc: &mut u128| {
             if stage_timing {
@@ -103,8 +102,15 @@ impl Qwen3SsmLayer {
             }
         };
         let mut tk = std::time::Instant::now();
-        let (mut us_ple, mut us_pre_a, mut us_gdn, mut us_post_a,
-             mut us_pre_f, mut us_ffn, mut us_post_f) = (0u128, 0u128, 0u128, 0u128, 0u128, 0u128, 0u128);
+        let (
+            mut us_ple,
+            mut us_pre_a,
+            mut us_gdn,
+            mut us_post_a,
+            mut us_pre_f,
+            mut us_ffn,
+            mut us_post_f,
+        ) = (0u128, 0u128, 0u128, 0u128, 0u128, 0u128, 0u128);
 
         // Same refusal the other three hc bodies carry: `hc_norm` inside
         // `hc_pre` replaces the fused gate-f32 norm, so ATLAS_FP32_ROUTING
@@ -383,9 +389,7 @@ impl Qwen3SsmLayer {
         // verify (R=6) pads to 8, the arm's worst width.
         let moe_padded = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| {
-                std::env::var("ATLAS_HC_VERIFY_MOE_PADDED").as_deref() == Ok("1")
-            })
+            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_MOE_PADDED").as_deref() == Ok("1"))
         };
         let moe_rows = if moe_padded && !self.ffn.is_none() && rows > 1 {
             let padded = crate::traits::padded_batch_n(rows);

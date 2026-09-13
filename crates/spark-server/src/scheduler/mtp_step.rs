@@ -38,7 +38,10 @@ pub fn step_mtp(
     // GAP. One Instant::now() when disarmed, same cost note as StepTimer.
     let t_step_outer = std::time::Instant::now();
     let single_sequence = active.len() == 1;
-    sched.lookup.borrow_mut().set_single_sequence(single_sequence);
+    sched
+        .lookup
+        .borrow_mut()
+        .set_single_sequence(single_sequence);
     let mut bootstrap_idxs: Vec<usize> = Vec::new();
     let mut verify_idxs: Vec<usize> = Vec::new();
     for (i, a) in active.iter().enumerate() {
@@ -318,7 +321,10 @@ pub fn step_mtp(
                 model.is_ep(),
             )
         {
-            tracing::debug!("lookup bootstrap: tok={tok} → drafts={:?}", a.pending_drafts);
+            tracing::debug!(
+                "lookup bootstrap: tok={tok} → drafts={:?}",
+                a.pending_drafts
+            );
         } else if will_propose {
             match model.run_mtp_propose_multi(
                 tok,

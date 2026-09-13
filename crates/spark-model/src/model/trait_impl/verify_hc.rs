@@ -345,11 +345,14 @@ impl TransformerModel {
             // behaviour this file's fix replaced, so the diagnostic arm
             // reproduces the corruption rather than erroring on a missing row.
             let stash = self.collect_verify_aux_states(seq, stream_d)?;
-            self.stash_verify_aux(seq.slot_idx, VerifyAuxRows {
-                base_pos,
-                k,
-                rows: vec![stash; hc_publish_rows(k).len().max(1)],
-            })?;
+            self.stash_verify_aux(
+                seq.slot_idx,
+                VerifyAuxRows {
+                    base_pos,
+                    k,
+                    rows: vec![stash; hc_publish_rows(k).len().max(1)],
+                },
+            )?;
             out.extend(self.verify_hc_rows(&tokens[1..], seq, stream)?);
             return Ok(out);
         }
@@ -380,11 +383,14 @@ impl TransformerModel {
             }
         }
         if k > 1 {
-            self.stash_verify_aux(seq.slot_idx, VerifyAuxRows {
-                base_pos,
-                k,
-                rows: aux_rows,
-            })?;
+            self.stash_verify_aux(
+                seq.slot_idx,
+                VerifyAuxRows {
+                    base_pos,
+                    k,
+                    rows: aux_rows,
+                },
+            )?;
         }
         Ok(out)
     }
@@ -1057,7 +1063,13 @@ impl TransformerModel {
             // against a serial decode of the same prefix. `lm_head_batched`
             // always writes BF16 here (the FP32-logits buffer is the
             // single-token decode path only).
-            self.logit_probe("verify_hc", t, self.buffers.logits().offset(t * vocab * bf16), false, stream);
+            self.logit_probe(
+                "verify_hc",
+                t,
+                self.buffers.logits().offset(t * vocab * bf16),
+                false,
+                stream,
+            );
         }
         // ONE batched argmax + ONE readback, replacing K single-CTA scans each
         // followed by its own blocking 4-byte `copy_d2h`. Each of those drained
