@@ -14,7 +14,7 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | C0–C7 green. CUDA KDA default serve C1. MXFP4 extra_cu + packed lander + LatentMoE launches E8M0 grouped GEMM when packed. CUDA MLA opt-in (`K3_CUDA_MLA=1`). AttnRes/router/SiTU still host. Do not book. |
+| Phase | C0–C7 green. CUDA KDA+MLA serve C1. Packed LatentMoE launches DSV4 E8M0 GEMM (`0898345`). 0.40B CPU MoE. AttnRes/projections host. Next: 8×B300 CR1–CR3. |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
 | Last session | 2026-09-13 08:30 CDT — LatentMoE packed path launches DSV4 `moe_w4a16_grouped_gemm_ptrtable_e8m0`. |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
