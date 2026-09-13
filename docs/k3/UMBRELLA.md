@@ -16,7 +16,7 @@ Closes #
 | --- | --- |
 | Phase | **C0–C7 green.** C1 8/8 first-token exact on spark2 at `f5a3b99` (p4 `996`, margin 0.412). Twin-omit KDA gate FLA unbounded (`None`). |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
-| Last session | 2026-09-12 |
+| Last session | 2026-09-12 overnight: BoundLayer LinearAttention default CUDA `kda_decode`. spark2 rebuild + aviation/mix=0 still open. |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
 | Official weights downloaded in lab | **no** |
 | Rental booked | **no** |

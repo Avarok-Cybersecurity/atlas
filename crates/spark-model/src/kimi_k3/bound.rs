@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! BF16/FP32 twin layer bind. Decode copies hidden D2H, runs mixer+MLP+AttnRes,
-//! copies H2D. Default mixer is CPU (C1 aviation greedy). `K3_CUDA_KDA=1`
-//! swaps LinearAttention / KDA conv+recurrent onto `kda_decode` CUDA.
+//! copies H2D. LinearAttention / KDA conv+recurrent uses CUDA `kda_decode`
+//! unless `K3_CUDA_KDA=0`. MLA, projections, AttnRes, and MLP stay on the host.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};

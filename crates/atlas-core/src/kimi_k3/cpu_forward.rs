@@ -66,7 +66,7 @@ impl AttnResStream {
 /// Per-layer geometry the GPU wrapper and `forward_token` share.
 ///
 /// `K3BoundLayer::decode` copies hidden D2H, runs this math, copies H2D.
-/// Default mixer is CPU. `K3_CUDA_KDA=1` swaps only KDA conv+recurrent.
+/// LinearAttention injects CUDA conv+recurrent unless `K3_CUDA_KDA=0`.
 pub struct K3LayerCtx<'a> {
     pub kda: &'a KdaConfig,
     pub mla: &'a MlaConfig,

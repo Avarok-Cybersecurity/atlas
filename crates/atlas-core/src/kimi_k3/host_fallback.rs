@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Host-side per-layer decode used by `K3BoundLayer` (copy-out / mixer+MLP+AttnRes / copy-in).
-//! Default mixer is CPU. `K3_CUDA_KDA=1` injects CUDA conv+recurrent only.
+//! LinearAttention CUDA core is injected at BoundLayer; `K3_CUDA_KDA=0` keeps CPU.
 
 use super::cache::{HybridCache, LayerCache};
 use super::cpu_forward::{

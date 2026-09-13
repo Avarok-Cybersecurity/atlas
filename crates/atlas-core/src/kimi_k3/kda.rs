@@ -77,10 +77,10 @@ impl KdaConfig {
     }
 }
 
-/// Serve opt-in for CUDA KDA conv+recurrent. Default off: C1 aviation greedy
-/// stays on the CPU oracle. Only `"1"` enables.
+/// LinearAttention BoundLayer uses CUDA `kda_decode` unless `K3_CUDA_KDA=0`.
+/// Projections, AttnRes, and MLP stay on the host either way.
 pub fn cuda_kda_enabled() -> bool {
-    matches!(std::env::var("K3_CUDA_KDA").as_deref(), Ok("1"))
+    !matches!(std::env::var("K3_CUDA_KDA").as_deref(), Ok("0"))
 }
 
 /// Per-sequence KDA state. Both buffers are FP32, read-modify-write.
@@ -275,28 +275,28 @@ mod tests {
     }
 
     #[test]
-    fn cuda_kda_env_default_off() {
+    fn cuda_kda_env_default_on() {
         if std::env::var_os("K3_CUDA_KDA").is_some() {
             return;
         }
         assert!(
-            !cuda_kda_enabled(),
-            "C1 aviation greedy must not take CUDA KDA unless K3_CUDA_KDA=1"
+            cuda_kda_enabled(),
+            "LinearAttention default is CUDA KDA; K3_CUDA_KDA=0 is the CPU escape"
         );
     }
 
     #[test]
-    fn cuda_kda_env_opt_in() {
-        const THIS: &str = "kimi_k3::kda::tests::cuda_kda_env_opt_in";
+    fn cuda_kda_env_opt_out() {
+        const THIS: &str = "kimi_k3::kda::tests::cuda_kda_env_opt_out";
         const MARKER: &str = "K3_CUDA_KDA_CHILD";
         if std::env::var_os(MARKER).is_some() {
-            assert!(cuda_kda_enabled(), "K3_CUDA_KDA=1 must enable the mixer");
+            assert!(!cuda_kda_enabled(), "K3_CUDA_KDA=0 must keep the CPU mixer");
             return;
         }
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", THIS])
             .env(MARKER, "1")
-            .env("K3_CUDA_KDA", "1")
+            .env("K3_CUDA_KDA", "0")
             .output()
             .unwrap();
         assert!(

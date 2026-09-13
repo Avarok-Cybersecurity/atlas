@@ -17,7 +17,7 @@ ORACLE
 Self-consistency: CUDA V-outer nest (`recurrent_cuda_order`) == `kda_recurrent_step` on twin geometry (H=8, D=32, K=4).
 Source: `kernels/gb10/kimi-k3/bf16/kda_decode.cu` declares `k3_kda_conv_update_f32` + `k3_kda_recurrent_step_f32`, applies `k3_sigmoid(beta[h])`, does **not** contain `KDA_REC_BODY` / `gated_delta_rule` / mamba2.
 Host: `launch_k3_kda_decode_token` looks up module `kda_decode` and launches conv then recurrent (mock contract; real PTX is spark2 nvcc).
-`K3BoundLayer::decode` default is still CPU mixer+MLP+AttnRes. `K3_CUDA_KDA=1` swaps only LinearAttention / KDA conv+recurrent; MLP+AttnRes stay CPU.
+`K3BoundLayer::decode` LinearAttention default is CUDA `launch_k3_kda_decode_token`. `K3_CUDA_KDA=0` keeps the CPU mixer. MLP+AttnRes stay CPU either way.
 Claims: unique stem — not a shadow of `common/kda_recurrent.cu`.
 Known-bad: zero conv weights, skip `sigmoid` on `beta=0`, AttnRes mix=0, and a zero injected KDA core, must diverge.
 
@@ -30,13 +30,13 @@ Source-contract `kda_decode_cu_is_k3_not_gdn_shadow` would fail if the file were
 
 TEST NOTES
 - Mac: `ATLAS_SKIP_BUILD=1 cargo test -p atlas-core --lib kimi_k3`. No nvcc. Numeric compare is the host nest that mirrors the `.cu` loops vs `kda_decode_token` / `kda_recurrent_step`.
-- **Default serve path is CPU.** Mock GPU does not run the `.cu`, so this slice cannot prove CUDA==CPU on C1 aviation greedy. CUDA mixer is behind `K3_CUDA_KDA=1`.
+- **Default LinearAttention decode is CUDA.** Mock GPU does not run the `.cu`, so this slice cannot prove CUDA==CPU on C1 aviation greedy. `K3_CUDA_KDA=0` is the CPU escape (live spark1 serve is still the previous CPU binary until rebuild).
 - BoundLayer mock: KDA + flag launches conv then recurrent; KDA without flag does not look up `kda_decode`; MLA ignores the flag.
 - Twin omit `gate_lower_bound` (FLA unbounded). Gate is an input; this kernel exponentiates log-decay like the CPU ref.
-- spark2: `kda_decode.cu` already nvcc'd. Need a **Rust rebuild** of spark-model/server to pick up BoundLayer wiring. Then on-device `launch_k3_kda_decode_token` vs CPU oracle before flipping the env on serve.
+- spark2: `kda_decode.cu` already nvcc'd. Need a **Rust rebuild** of spark-model/server + recopy `spark-k3` before serve uses CUDA KDA. Then aviation greedy + mix=0.
 
 BUGS
-#N/A this slice for the host oracle + source contract + env-gated BoundLayer wiring. Device numeric vs CPU is parked on spark2.
+#N/A this slice for the host oracle + source contract + BoundLayer CUDA default. Device numeric vs CPU is parked on spark2 rebuild.
 
 STOP
-Charter complete for unique kernel + CPU-parity instrument + known-bads + env-gated BoundLayer mixer. On-device CUDA==CPU parked. Official 1.56 TB out of scope.
+Charter complete for unique kernel + CPU-parity instrument + known-bads + BoundLayer LinearAttention CUDA default. On-device CUDA==CPU and aviation-after-rebuild parked. Official 1.56 TB out of scope.

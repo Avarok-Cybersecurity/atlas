@@ -4,7 +4,7 @@
 //!
 //! Two kernels, one token: conv-4 + SiLU, then L2 q/k + delta-rule.
 //! CPU oracle: [`atlas_core::kimi_k3::kda_decode_token`]. BoundLayer serve
-//! stays on CPU unless `K3_CUDA_KDA=1` (LinearAttention mixer only).
+//! LinearAttention default is this launch (`K3_CUDA_KDA=0` keeps CPU).
 
 use anyhow::{Context, Result, bail};
 use atlas_core::kimi_k3::{KDA_L2_EPS, KdaConfig, KdaState};

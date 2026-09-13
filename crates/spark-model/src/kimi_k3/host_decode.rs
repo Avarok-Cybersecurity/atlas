@@ -2,8 +2,8 @@
 
 //! Copy-out / mixer+MLP+AttnRes / copy-in for [`super::bound::K3BoundLayer`].
 //!
-//! Default: CPU mixer (C1 aviation greedy). `K3_CUDA_KDA=1` on
-//! `MixerKind::Kda` runs conv+recurrent via [`launch_k3_kda_decode_token`].
+//! `MixerKind::Kda` runs conv+recurrent via [`launch_k3_kda_decode_token`]
+//! unless `K3_CUDA_KDA=0`. MLA stays on the CPU mixer.
 
 use std::collections::HashMap;
 
@@ -118,7 +118,8 @@ impl K3BoundLayer {
             return Ok(k);
         }
         let k = K3KdaDecodeKernels::resolve(gpu).context(
-            "K3_CUDA_KDA=1 needs kda_decode PTX (k3_kda_conv_update_f32 / k3_kda_recurrent_step_f32)",
+            "K3 CUDA KDA: kda_decode PTX missing (LinearAttention default). \
+             Set K3_CUDA_KDA=0 for host kda_decode_token",
         )?;
         tracing::info!("K3 LinearAttention decode via CUDA kda_decode");
         Ok(*self.shared.kda_kernels.get_or_init(|| k))

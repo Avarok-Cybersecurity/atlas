@@ -15,7 +15,8 @@ CPU C1 is not a Hopper substitute. 5090 cannot launch SM121.
 
 ## What is **not** green (blocks a useful soak)
 
-- `K3BoundLayer::decode` defaults to a **CPU fallback GPU wrapper**. `K3_CUDA_KDA=1` swaps KDA conv+recurrent onto `kda_decode.cu` (mixer only). Device numeric vs CPU not proven.
+- `K3BoundLayer::decode` LinearAttention default is CUDA `kda_decode` (`K3_CUDA_KDA=0` is the CPU escape). Host still does projections / AttnRes / MLP. **Do not book** until a rebuilt spark1 serve uses that CUDA path (not only the CPU fallback) and C1 aviation greedy still matches.
+- Device numeric CUDA vs CPU on spark2 not proven; spark2 Rust rebuild + recopy `spark-k3` still required
 - MXFP4 GPU grouped GEMM not wired (`refuse_mxfp4`)
 - Official 1.56 TB not downloaded (correct)
 
