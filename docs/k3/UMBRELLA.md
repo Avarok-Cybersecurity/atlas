@@ -34,7 +34,7 @@ S7 (rental soak) is forbidden until every box is green. Each box also needs its 
 **Order is the list. Do not start C(n+1) until C(n) is checked.** Synthetic-only tests do not check a box. Twin means `K3_TWIN` + 0.40B BF16 on spark2.
 
 - [x] C0 config / factory / weight-name map dry-run (no shard download) — spark2 Linux `kimi_k3` + atlas-core parse + known-bads
-- [x] C1 `Kimi-K3-0.40B` greedy through first `[EOS]` × 8. **8/8 first-token exact** (spark2, `f5a3b99`, 38.4s). p4 now `996` `' but'` margin 0.412 vs `60063` `' flies'` (HF CUDA 996=10.75). Twin-omit KDA gate FLA unbounded (`None`), not guessed `-5`. `docs/k3/rst/c1-engine.md`
+- [x] C1 `Kimi-K3-0.40B` greedy through first `[EOS]` × 8. **8/8 first-token** (`f5a3b99`) **and 8/8 until-EOS** (spark2, 360s: 46/44/10/39/13/43/10/15 new). p4 `996`. FLA-unbounded KDA gate. `docs/k3/rst/c1-engine.md`
 - [x] C2 prefill-then-decode vs full-prefill logits on the **C1 twin** (`c2_prefill_decode_logits_match_full_prefill_twin`, spark2 24.5s)
 - [x] C3 prefix-cache hit == no-cache decode on the **C1 twin** (`c3_prefix_cache_hit_matches_nocache_twin`, spark2 42s)
 - [x] C4 MLA KV + KDA state after prefix hit on the **C1 twin** (`c4_hybrid_state_prefix_hit_matches_cold_prefill_twin`, spark2 18.6s)
