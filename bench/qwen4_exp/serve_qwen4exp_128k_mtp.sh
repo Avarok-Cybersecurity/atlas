@@ -279,24 +279,49 @@ export ATLAS_EP_PROTOCOL="${ATLAS_EP_PROTOCOL:-v2}"
 # gates highway models out of `supports_verify_layout` entirely, so MTP loses
 # its benefit even at C=1 (measured 27.8 tok/s against 41.6 with it on).
 export ATLAS_HC_BATCH_VERIFY="${ATLAS_HC_BATCH_VERIFY:-1}"
-# ATLAS_MTP_EP_BATCH_VERIFY defaults OFF here, against the throughput.
+# ── The batched verify is kept, and the arms that break its parity are not. ──
 #
-# The cross-rank batched verify is not output-equivalent at batch widths >= 4.
-# Reproduce with a ~1.1K-token TEXT prompt, temperature 0, thinking off, fired
-# 1x then 4x concurrently: widths 1, 2 and 3 are byte-identical, width 4 and up
-# answer differently AND disagree among themselves. It is not prefill (the
-# first 8 tokens match), not the lookup drafter, not D-Cut alone, not the
-# verify ROW count (widths 1 at 2/3/4/8/12 rows all agree), and no request ever
-# receives another's content. With this set to 0 every width is byte-identical
-# and `vision-fidelity` PASSES; with it at 1 the C=4 concurrency leg fails
-# deterministically.
+# The cross-rank batched verify is not output-equivalent at batch width >= 4:
+# a ~1.1K-token TEXT prompt at temperature 0 answers differently at C>=4 than
+# alone, and the concurrent replies disagree among themselves. It is not a
+# vision bug, not prefill, not the lookup drafter, and not the verify row count
+# (width 1 at 2/3/4/8/12 rows all agree).
 #
-# The cost is real and measured, which is why this is a default and not a
-# removal: C=4 aggregate decode 70.0 tok/s with it on, 47.6 with it off
-# (C=1 is 49.9 either way — the arm only pays at width). Set
-# ATLAS_MTP_EP_BATCH_VERIFY=1 to take that back on a workload that can accept
-# concurrency-dependent output.
-export ATLAS_MTP_EP_BATCH_VERIFY="${ATLAS_MTP_EP_BATCH_VERIFY:-0}"
+# It is not ONE defect either, which is why there is a list here rather than a
+# single switch. Three independent contributors, each measured on its own:
+#
+#   * the GDN/SSM batched arms          (dirty on their own)
+#   * the attention / HC / o_proj arms  (dirty on their own)
+#   * D-Cut's depth pruning             (surfaces at width 8)
+#
+# Turning off any one, or any two, still diverges; all three gives byte-identical
+# output at widths 1-8 and `vision-fidelity` PASSES. The arms below are the ones
+# whose batched form does not reproduce its own per-row twin bit-for-bit — the
+# same class as the batched-GEMV parity defects fixed before, and the real fix is
+# to make each batched arm bit-exact, not to keep this list forever.
+#
+# Crucially this costs almost nothing, because the batched verify's win comes
+# from batching the WEIGHT-BEARING ops across rows, which these switches leave
+# alone. Aggregate decode, measured:
+#
+#   C=4   70.0 tok/s  batched verify, parity arms ON  (WRONG ANSWERS)
+#   C=4   68.7 tok/s  batched verify, parity arms OFF (this config)
+#   C=4   47.6 tok/s  ATLAS_MTP_EP_BATCH_VERIFY=0
+#   C=1   ~49    tok/s in all three — the arm only pays at width.
+#
+# So: keep the verify batched, drop 1.9%, keep the 44% over disabling it, and
+# get correct output. Set any of these to their other value to measure a single
+# arm's contribution.
+export ATLAS_MTP_EP_BATCH_VERIFY="${ATLAS_MTP_EP_BATCH_VERIFY:-1}"
+export ATLAS_NO_MTP_DCUT="${ATLAS_NO_MTP_DCUT:-1}"
+export ATLAS_NO_VERIFY_GDN_BATCH="${ATLAS_NO_VERIFY_GDN_BATCH:-1}"
+export ATLAS_NO_VERIFY_ROW_GDN="${ATLAS_NO_VERIFY_ROW_GDN:-1}"
+export ATLAS_NO_BATCHED_GDN_NORM="${ATLAS_NO_BATCHED_GDN_NORM:-1}"
+export ATLAS_NO_BATCHED_BA_GATES="${ATLAS_NO_BATCHED_BA_GATES:-1}"
+export ATLAS_NO_VERIFY_ROW_HC="${ATLAS_NO_VERIFY_ROW_HC:-1}"
+export ATLAS_NO_VERIFY_OUTPROJ_TGEMM="${ATLAS_NO_VERIFY_OUTPROJ_TGEMM:-1}"
+export ATLAS_HC_ATTN_FFN_BATCHED="${ATLAS_HC_ATTN_FFN_BATCHED:-0}"
+export ATLAS_HC_ATTN_CORE_BATCHED="${ATLAS_HC_ATTN_CORE_BATCHED:-0}"
 
 # ── Lookup drafts under expert parallelism (#1026). ────────────────────────
 # `lookup_gate` refuses under EP, citing a TP=2 x EP=2 bisect from THIS branch
