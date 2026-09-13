@@ -388,6 +388,6 @@ fn grammar_rewind(dropped: usize, history_steps: usize) -> Option<usize> {
 #[path = "rollback_tests.rs"]
 mod rollback_tests;
 
-#[path = "rollback_to_boundary.rs"]
-mod rollback_to_boundary;
-pub use rollback_to_boundary::*;
+#[path = "rollback_boundary.rs"]
+mod rollback_boundary;
+pub use rollback_boundary::*;
