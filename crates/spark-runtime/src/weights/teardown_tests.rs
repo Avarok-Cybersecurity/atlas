@@ -96,3 +96,65 @@ fn teardown_releases_in_reverse_registration_order() {
     assert_eq!(gpu.alloc_count(), 0);
     assert!(teardown.is_empty());
 }
+
+/// #736/#915: a buffer a loader DERIVED from these tensors must be released
+/// here, not left for `AtlasCudaBackend::sweep_unreleased` to reclaim unowned.
+///
+/// The mock backend's live-allocation count is the same instrument the CUDA
+/// ledger is: "every allocation this backend made and nobody released".
+#[test]
+fn releasing_frees_adopted_derived_buffers_too() {
+    let gpu = MockGpuBackend::new();
+    let mut store = store_with(&gpu, 4);
+    // Two derived copies per tensor, the shape the dense loader produces:
+    // a fused concat and its widened block-scale grid.
+    for _ in 0..4 {
+        store
+            .derived()
+            .adopt("fused concat", gpu.alloc(2048).expect("alloc"), 2048);
+        store
+            .derived()
+            .adopt("block scale", gpu.alloc(64).expect("alloc"), 64);
+    }
+    assert_eq!(gpu.alloc_count(), 12);
+    assert_eq!(store.derived().len(), 8);
+    assert_eq!(store.derived().bytes(), 4 * (2048 + 64));
+
+    store.release(&gpu).expect("released");
+    assert_eq!(
+        gpu.alloc_count(),
+        0,
+        "an owned derived buffer must leave nothing for the teardown sweep"
+    );
+    assert!(store.derived().is_empty());
+}
+
+/// The negative control, and the pre-#915 state: a derived buffer nobody
+/// adopted survives `release` and is exactly what the H100 sweep reported as
+/// "28.01 GB ... had no owner".
+#[test]
+fn an_unadopted_derived_buffer_is_what_the_sweep_would_report() {
+    let gpu = MockGpuBackend::new();
+    let mut store = store_with(&gpu, 2);
+    let orphan = gpu.alloc(4096).expect("alloc");
+    store.release(&gpu).expect("released");
+    assert_eq!(
+        gpu.alloc_count(),
+        1,
+        "the orphan outlives teardown — adopt it via `store.derived()`"
+    );
+    gpu.free(orphan).expect("freed");
+}
+
+/// Releasing twice must not double-free an adopted buffer either.
+#[test]
+fn releasing_twice_is_harmless_for_derived_buffers() {
+    let gpu = MockGpuBackend::new();
+    let mut store = store_with(&gpu, 1);
+    store
+        .derived()
+        .adopt("twin", gpu.alloc(128).expect("alloc"), 128);
+    store.release(&gpu).expect("released");
+    store.release(&gpu).expect("released again");
+    assert_eq!(gpu.alloc_count(), 0);
+}

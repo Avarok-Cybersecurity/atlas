@@ -80,7 +80,21 @@ jobs:
       # SSOT for the allowlist: both the pinned action's `allowlist` input
       # below and the merge-queue mirror step read this one value. Keep it
       # here, nowhere else.
-      CLA_ALLOWLIST: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot],atlas-governance-harvester[bot],google-labs-jules,claude,tbraun96,cursoragent
+      # @TheTom, under BOTH logins GitHub maps his commits to. Allowlisted on
+      # tbraun96's instruction, 2026-09-12: "bypass or allowlist TheTom's
+      # accounts to the CLA."
+      #
+      #   TheTom              672332+TheTom@users.noreply.github.com, tturney1@gmail.com
+      #   tturney-psyguardai  tturney@psyguard.ai   (two commits on #995: c43e7ff40, 797ee27c7)
+      #
+      # `TheTom` has signed, so that entry changes nothing today — it is here so
+      # the CLA follows the PERSON rather than whichever `git config user.email`
+      # a machine happened to have. `tturney-psyguardai` is the one that
+      # actually unblocks: #995 is red on it right now.
+      #
+      # The list matches on LOGIN, not email, which is why two entries cover
+      # three addresses.
+      CLA_ALLOWLIST: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot],atlas-governance-harvester[bot],google-labs-jules,claude,tbraun96,cursoragent,TheTom,tturney-psyguardai
     # Scoped to what contributor-assistant actually calls (verified against the
     # action source at the pinned sha):
     #   contents      — git refs/commits that persist signatures/version1/cla.json

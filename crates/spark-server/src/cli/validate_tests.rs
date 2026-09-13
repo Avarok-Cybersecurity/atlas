@@ -234,6 +234,27 @@ fn ssm_rollback_mode_values_and_typos() {
 }
 
 #[test]
+fn ssm_decode_ring_slots_values_and_typos() {
+    // `auto` is the default and must validate: it is what lets preflight size
+    // the ring from free memory instead of refusing the boot (#915).
+    let a = parse(&[]);
+    assert_eq!(a.ssm_decode_ring_slots, "auto");
+    assert!(validate_serve_args(&a).is_ok());
+    for depth in ["0", "1", "2", "4", "8"] {
+        assert!(
+            validate_serve_args(&parse(&["--ssm-decode-ring-slots", depth])).is_ok(),
+            "depth {depth} is inside the ring's range"
+        );
+    }
+    // Above the wired ceiling, and anything non-numeric, is refused through
+    // the model-side parse (SSOT with the publication parse) — never clamped.
+    let err = validate_serve_args(&parse(&["--ssm-decode-ring-slots", "9"])).unwrap_err();
+    assert!(err.contains("--ssm-decode-ring-slots"), "{err}");
+    let err = validate_serve_args(&parse(&["--ssm-decode-ring-slots", "AUTO"])).unwrap_err();
+    assert!(err.contains("auto"), "names the valid values: {err}");
+}
+
+#[test]
 fn a_mistyped_mtp_gate_is_still_caught() {
     // Making the flag optional must not make its typo check optional.
     let err = validate_serve_args(&parse(&["--mtp-gate", "always"])).unwrap_err();

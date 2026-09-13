@@ -224,9 +224,15 @@ pub fn rollback_to_boundary(
     };
 
     // A hybrid model needs the SSM state rewound too — restrict boundary
-    // selection to one with a live snapshot. `has_ssm_layers()` false
-    // (pure attention) keeps the original any-boundary search.
-    let hybrid = model.has_ssm_layers() && a.ssm_rollback_ring.is_enabled();
+    // selection to one with a live snapshot. A DISABLED ring is a DECLINE,
+    // not the pure-attention any-boundary path: depth 0 (spec on, watchdogs
+    // off, or the #915 auto-fit floor) means no snapshot exists, and rewinding
+    // tokens while the recurrent state stays conditioned on the discarded tail
+    // is silent corruption. This is the fail-open the ring's SSOT documents.
+    let hybrid = model.has_ssm_layers();
+    if hybrid && !a.ssm_rollback_ring.is_enabled() {
+        return RollbackOutcome::Fallback(RollbackFallback::NoSsmSnapshot);
+    }
     let (boundary_idx, ssm_slot) = if hybrid {
         match find_last_boundary_with_snapshot(
             &a.output_tokens,
