@@ -30,13 +30,21 @@ Source-contract `kda_decode_cu_is_k3_not_gdn_shadow` would fail if the file were
 
 TEST NOTES
 - Mac: `ATLAS_SKIP_BUILD=1 cargo test -p atlas-core --lib kimi_k3`. No nvcc. Numeric compare is the host nest that mirrors the `.cu` loops vs `kda_decode_token` / `kda_recurrent_step`.
-- **Default LinearAttention decode is CUDA.** Mock GPU does not run the `.cu`, so this slice cannot prove CUDA==CPU on C1 aviation greedy. `K3_CUDA_KDA=0` is the CPU escape (live spark1 serve is still the previous CPU binary until rebuild).
+- **Default LinearAttention decode is CUDA.** Mock GPU does not run the `.cu`, so this slice cannot prove CUDA==CPU on C1 aviation greedy. `K3_CUDA_KDA=0` is the CPU escape.
 - BoundLayer mock: KDA + flag launches conv then recurrent; KDA without flag does not look up `kda_decode`; MLA ignores the flag.
 - Twin omit `gate_lower_bound` (FLA unbounded). Gate is an input; this kernel exponentiates log-decay like the CPU ref.
-- spark2: `kda_decode.cu` already nvcc'd. Need a **Rust rebuild** of spark-model/server + recopy `spark-k3` before serve uses CUDA KDA. Then aviation greedy + mix=0.
+
+TEST NOTES (7661a9a94, spark1 serve)
+- spark2 `cargo build --release -p spark-server --features cuda,nccl` at `7661a9a94`. Recopied `/home/pidtom/k3-lab/bin/spark-k3`. SHA sidecar matches. No `--dangerously-allow-unresolved-kernel-lookups`.
+- CUDA default (unset `K3_CUDA_KDA`): boot live, then first aviation prefill **aborts**. `kernel lookup kda_decode::k3_kda_conv_update_f32 ... failed AFTER the boot audit sealed`. Empty HTTP reply. Process dead.
+- Selected target was `(sm_121, kimi-k3, nvfp4)` (178 modules). Stem lives only at `kernels/gb10/kimi-k3/bf16/kda_decode.cu`. nvfp4 bundle does not ship it.
+- `K3_CUDA_KDA=0`: `/v1/completions` T=0 max_tokens=16 → `'there is no way a bee should be able to fly. Its wings are too'`. Prefill first token **1459**. C1 prefix holds.
+- Known-bad `K3_ATTNRES_MIX=0` (still CPU escape): `'to to to to to to to to to to to to to to to to'`, first token **308**. Mix lever still moves tokens.
 
 BUGS
-#N/A this slice for the host oracle + source contract + BoundLayer CUDA default. Device numeric vs CPU is parked on spark2 rebuild.
+#BUG
+CUDA-default serve is **not** live. nvfp4 target has no `kda_decode` module. Do not book. CPU escape + mix=0 still work.
+#N/A this slice for the host oracle + source contract + BoundLayer CUDA default.
 
 STOP
-Charter complete for unique kernel + CPU-parity instrument + known-bads + BoundLayer LinearAttention CUDA default. On-device CUDA==CPU and aviation-after-rebuild parked. Official 1.56 TB out of scope.
+On-device CUDA default **failed** the boot-audit lookup on spark1 nvfp4 serve. Aviation-after-CUDA-rebuild still parked until the stem is in the nvfp4 bundle (or a bf16 target is selected). Official 1.56 TB out of scope.

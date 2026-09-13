@@ -40,5 +40,11 @@ TEST NOTES (9682f45, F32 embed)
 - `/tokenize` aviation ids `[18805, 308, 799, 5624, 12524, 318, 57195, 11]` = C1.
 - `/v1/completions` temperature=0 max_tokens=16: `'there is no way a bee should be able to fly. Its wings are too'` (747 ms). Matches C1 Bee Movie prefix.
 
+TEST NOTES (7661a9a94, CUDA default vs CPU escape)
+- CUDA default abort: `kda_decode::k3_kda_conv_update_f32` missing on `(kimi-k3, nvfp4)`. Empty reply.
+- `K3_CUDA_KDA=0` same binary: C1 bee-fly prefix **green**, first id 1459.
+- `K3_ATTNRES_MIX=0` + CPU escape: tokens change (`to to to…`, first id 308).
+- Live spark1 :8888 left on CPU escape (C1). CUDA-default-live **no**.
+
 STOP
-HTTP **and** C1 greedy prefix **green** on spark1 CPU-fallback serve. CUDA KDA still parked. Do not treat this as Hopper soak.
+HTTP **and** C1 greedy prefix **green** on spark1 **CPU escape** (`K3_CUDA_KDA=0`). CUDA KDA default is an RST fail (stem not in nvfp4 target). Do not treat this as Hopper soak.
