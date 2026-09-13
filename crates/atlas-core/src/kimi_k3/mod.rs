@@ -22,8 +22,10 @@ pub mod ops;
 pub mod situ;
 
 pub use attnres::{attnres_blend, attnres_mix, attnres_softmax_mix};
-pub use cache::HybridCache;
-pub use cpu_weights::{Ablation, K3CpuModel};
+pub use cache::{HybridCache, LayerCache, MlaKv};
+pub use cpu_bind::{assemble_layer, kda_from, mla_from, moe_from, text_key};
+pub use cpu_forward::{AttnResStream, K3LayerCtx, forward_one_layer, forward_token};
+pub use cpu_weights::{Ablation, K3CpuLayer, K3CpuModel};
 pub use greedy::greedy_decode;
 pub use kda::{KdaConfig, KdaState, kda_decode_token};
 pub use latent_moe::{LatentMoeConfig, latent_moe_forward, sigmoid_topk};
@@ -45,3 +47,5 @@ mod c5;
 mod c6;
 #[cfg(test)]
 mod c7;
+#[cfg(test)]
+mod host_fallback;

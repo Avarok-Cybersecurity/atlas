@@ -19,7 +19,7 @@ Known-bad (instrument failed first):
 
 #NOTES
 - Loader `load_layers` / embed / final_norm / lm_head bind unpacked `.weight` for the twin. Official packed experts stay S5.
-- GPU `TransformerLayer::decode` still refuses (C1 is the atlas-core CPU graph). spark-model tests need Linux (`posix_fallocate`).
+- GPU `TransformerLayer::decode` is a CPU fallback wrapper (copy-out / atlas-core / copy-in), not CUDA KDA. spark-model tests need Linux (`posix_fallocate`).
 - Goldens file is in-tree (`docs/k3/goldens/kimi-k3-0.40b-greedy.json`, 8×128). Engine compare vs HF is skipped without `K3_TWIN` safetensors→`K3CpuModel` ingest (not this slice).
 - Twin names: `language_model.model.layers.*`, 8 experts, no `weight_packed`.
 

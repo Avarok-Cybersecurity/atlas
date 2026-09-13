@@ -34,6 +34,26 @@ impl Default for Ablation {
     }
 }
 
+impl Ablation {
+    /// GPU-wrapper RST hook. `K3_ATTNRES_MIX=0` is the C5 known-bad (mix=0
+    /// is identity skip). `K3_FORCE_EXPERT=0` is the C6 known-bad.
+    ///
+    /// `spark serve` of the 0.40B twin has no Ablation CLI; these env vars
+    /// are how a planted mutant still changes tokens on the host fallback.
+    pub fn from_env() -> Self {
+        let mut a = Self::default();
+        if let Ok(v) = std::env::var("K3_ATTNRES_MIX")
+            && let Ok(m) = v.parse()
+        {
+            a.attnres_mix = m;
+        }
+        if let Ok(v) = std::env::var("K3_FORCE_EXPERT") {
+            a.force_expert = v.parse().ok();
+        }
+        a
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct KdaWeights {
     pub q_proj: Vec<f32>,

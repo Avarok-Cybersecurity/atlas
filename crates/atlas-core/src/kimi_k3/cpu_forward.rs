@@ -3,12 +3,12 @@
 //! One-token K3 CPU forward: AttnRes + mixer + MLP, then logits.
 
 use super::attnres::{attnres_mix, rms_norm};
-use super::cache::{HybridCache, MlaKv};
+use super::cache::{HybridCache, LayerCache, MlaKv};
 use super::cpu_weights::{
     Ablation, DenseMlp, K3CpuLayer, K3CpuModel, KdaWeights, MixerW, MlaWeights, MlpW, MoeWeights,
 };
 use super::kda::{KdaConfig, KdaState, bounded_gate, kda_decode_token};
-use super::latent_moe::latent_moe_forward;
+use super::latent_moe::{LatentMoeConfig, latent_moe_forward};
 use super::mla::{MlaConfig, apply_output_gate, maybe_rope, sdpa_one};
 use super::ops::{embed_token, matvec, matvec_column_tp};
 use super::situ::{sigmoid, situ_glu_vec};
@@ -43,7 +43,7 @@ impl AttnResStream {
         s
     }
 
-    fn mix(&self, query: &[f32], norm_w: &[f32], eps: f32, mix: f32) -> Vec<f32> {
+    pub fn mix(&self, query: &[f32], norm_w: &[f32], eps: f32, mix: f32) -> Vec<f32> {
         attnres_mix(&self.sources(), query, norm_w, eps, mix)
     }
 
@@ -61,6 +61,38 @@ impl AttnResStream {
     }
 }
 
+/// Per-layer geometry the GPU wrapper and `forward_token` share.
+///
+/// `K3BoundLayer::decode` is an explicit **CPU fallback GPU wrapper**: copy
+/// hidden D2H, run [`forward_one_layer`], copy H2D. Not CUDA KDA.
+pub struct K3LayerCtx<'a> {
+    pub kda: &'a KdaConfig,
+    pub mla: &'a MlaConfig,
+    pub moe: &'a LatentMoeConfig,
+    pub situ_beta: f32,
+    pub situ_linear_beta: f32,
+    pub hidden: usize,
+    pub dense_intermediate: usize,
+    pub eps: f32,
+    pub rope_theta: f32,
+}
+
+impl<'a> K3LayerCtx<'a> {
+    pub fn from_model(model: &'a K3CpuModel) -> Self {
+        Self {
+            kda: &model.kda,
+            mla: &model.mla,
+            moe: &model.moe,
+            situ_beta: model.graph.situ_beta,
+            situ_linear_beta: model.graph.situ_linear_beta,
+            hidden: model.graph.hidden,
+            dense_intermediate: model.dense_intermediate,
+            eps: model.eps,
+            rope_theta: model.rope_theta,
+        }
+    }
+}
+
 /// Embed one token and run every decoder layer at `pos`. Updates the hybrid cache.
 /// AttnRes is per-token (layer depth), not carried across the sequence.
 pub fn forward_token(
@@ -73,11 +105,13 @@ pub fn forward_token(
     let embed = embed_token(&model.embed, token, model.graph.hidden, model.vocab);
     let mut stream = AttnResStream::new(model.graph.hidden, model.graph.attn_res_block_size);
     stream.partial.clone_from(&embed);
+    let ctx = K3LayerCtx::from_model(model);
     for layer in &model.layers {
         if ablation.skip_layer == Some(layer.spec.index) {
             continue;
         }
-        forward_layer(model, layer, pos, cache, &mut stream, ablation);
+        let mixer_state = &mut cache.layers[layer.spec.index];
+        forward_one_layer(&ctx, layer, pos, mixer_state, &mut stream, ablation);
     }
     let h = stream.mix(
         &model.output_res_proj,
@@ -93,36 +127,48 @@ pub fn logits(model: &K3CpuModel, h: &[f32]) -> Vec<f32> {
     matvec(&model.lm_head, h, model.vocab, model.graph.hidden)
 }
 
-fn forward_layer(
-    model: &K3CpuModel,
+/// One decoder layer: AttnRes + (KDA|MLA) + MLP. Mutates this layer's
+/// [`LayerCache`] and the token's [`AttnResStream`].
+///
+/// This is the math `K3BoundLayer` runs on the host after copying GPU
+/// hidden to f32. It is not a CUDA KDA kernel.
+pub fn forward_one_layer(
+    ctx: &K3LayerCtx<'_>,
     layer: &K3CpuLayer,
     pos: usize,
-    cache: &mut HybridCache,
+    mixer_state: &mut LayerCache,
     stream: &mut AttnResStream,
     ablation: Ablation,
 ) {
-    let eps = model.eps;
+    let eps = ctx.eps;
     let mix = ablation.attnres_mix;
     let h = stream.mix(&layer.attn_res_proj, &layer.attn_res_norm, eps, mix);
     // Archive the *incoming* prefix (HF), not the post-mixer partial.
     stream.archive_incoming_at_block_start(layer.spec.index);
     let x = rms_norm(&h, &layer.input_norm, eps);
-    let mix_out = match &layer.mixer {
-        MixerW::Kda(w) => {
-            let state = cache.kda_mut(layer.spec.index).expect("KDA cache slot");
-            kda_mixer(w, &x, &model.kda, state, eps, ablation)
+    let mix_out = match (&layer.mixer, mixer_state) {
+        (MixerW::Kda(w), LayerCache::Kda(state)) => kda_mixer(w, &x, ctx.kda, state, eps, ablation),
+        (MixerW::Mla(w), LayerCache::Mla(kv)) => {
+            mla_mixer(w, &x, ctx.mla, kv, pos, ctx.rope_theta, eps, ablation)
         }
-        MixerW::Mla(w) => {
-            let kv = cache.mla_mut(layer.spec.index).expect("MLA cache slot");
-            mla_mixer(w, &x, &model.mla, kv, pos, model.rope_theta, eps, ablation)
-        }
+        _ => panic!(
+            "K3 mixer/state mismatch at layer {} (CPU fallback GPU wrapper)",
+            layer.spec.index
+        ),
     };
     stream.add(&mix_out);
     let h = stream.mix(&layer.mlp_res_proj, &layer.mlp_res_norm, eps, mix);
     let x = rms_norm(&h, &layer.post_norm, eps);
     let mlp_out = match &layer.mlp {
-        MlpW::Dense(w) => dense_mlp(w, &x, model.graph.hidden, model.dense_intermediate, model),
-        MlpW::Moe(w) => moe_mlp(w, &x, model, ablation.force_expert),
+        MlpW::Dense(w) => dense_mlp(
+            w,
+            &x,
+            ctx.hidden,
+            ctx.dense_intermediate,
+            ctx.situ_beta,
+            ctx.situ_linear_beta,
+        ),
+        MlpW::Moe(w) => moe_mlp(w, &x, ctx, ablation.force_expert),
     };
     stream.add(&mlp_out);
 }
@@ -258,31 +304,39 @@ fn pack_mla_kv(kvb: &[f32], k_pe: &[f32], cfg: &MlaConfig) -> (Vec<f32>, Vec<f32
     (k, v)
 }
 
-fn dense_mlp(w: &DenseMlp, x: &[f32], hidden: usize, inter: usize, model: &K3CpuModel) -> Vec<f32> {
+fn dense_mlp(
+    w: &DenseMlp,
+    x: &[f32],
+    hidden: usize,
+    inter: usize,
+    situ_beta: f32,
+    situ_linear_beta: f32,
+) -> Vec<f32> {
     let gate = matvec(&w.gate, x, inter, hidden);
     let up = matvec(&w.up, x, inter, hidden);
-    let mid = situ_glu_vec(
-        &gate,
-        &up,
-        model.graph.situ_beta,
-        model.graph.situ_linear_beta,
-    );
+    let mid = situ_glu_vec(&gate, &up, situ_beta, situ_linear_beta);
     matvec(&w.down, &mid, hidden, inter)
 }
 
-fn moe_mlp(w: &MoeWeights, x: &[f32], model: &K3CpuModel, force: Option<usize>) -> Vec<f32> {
-    let mut logits = matvec(&w.router, x, model.moe.n_routed, model.moe.hidden);
+fn moe_mlp(w: &MoeWeights, x: &[f32], ctx: &K3LayerCtx<'_>, force: Option<usize>) -> Vec<f32> {
+    let mut logits = matvec(&w.router, x, ctx.moe.n_routed, ctx.moe.hidden);
     if let Some(e) = force {
         logits.fill(0.0);
         logits[e] = 8.0;
     }
-    let shared = w
-        .shared
-        .as_ref()
-        .map(|s| dense_mlp(s, x, model.moe.hidden, model.moe.expert_hidden, model));
+    let shared = w.shared.as_ref().map(|s| {
+        dense_mlp(
+            s,
+            x,
+            ctx.moe.hidden,
+            ctx.moe.expert_hidden,
+            ctx.situ_beta,
+            ctx.situ_linear_beta,
+        )
+    });
     let shared_ref = shared.as_deref();
     let (y, _) = latent_moe_forward(
-        x, &w.down, &w.up, &w.norm, &logits, &w.bias, &w.experts, shared_ref, &model.moe, model.eps,
+        x, &w.down, &w.up, &w.norm, &logits, &w.bias, &w.experts, shared_ref, ctx.moe, ctx.eps,
     );
     y
 }

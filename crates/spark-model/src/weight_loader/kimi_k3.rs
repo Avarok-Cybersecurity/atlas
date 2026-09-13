@@ -173,6 +173,8 @@ mod tests {
         };
         put(bf16::text_key(&config, "model.embed_tokens.weight"));
         put(bf16::text_key(&config, "model.norm.weight"));
+        put(bf16::text_key(&config, "model.output_attn_res_proj.weight"));
+        put(bf16::text_key(&config, "model.output_attn_res_norm.weight"));
         put(bf16::text_key(&config, "lm_head.weight"));
         for spec in &graph.layers {
             for k in bf16::layer_keys(

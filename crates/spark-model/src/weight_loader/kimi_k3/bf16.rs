@@ -2,13 +2,17 @@
 
 //! Bind 0.40B BF16 (or FP32) twin tensors. Packed MXFP4 is refused upstream.
 
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
+
 use anyhow::Result;
 use atlas_core::config::ModelConfig;
-use atlas_core::kimi_k3::{K3Graph, MixerKind, MlpKind};
+use atlas_core::kimi_k3::{K3Graph, MixerKind, MlpKind, kda_from, mla_from, moe_from};
+use parking_lot::Mutex;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
-use crate::kimi_k3::bound::K3BoundLayer;
+use crate::kimi_k3::bound::{K3BoundLayer, K3HostShared, WeightMeta};
 use crate::layer::TransformerLayer;
 use crate::weight_map::{DenseWeight, dense};
 
@@ -55,16 +59,48 @@ pub fn load_layers(
     _gpu: &dyn GpuBackend,
 ) -> Result<Vec<Box<dyn TransformerLayer>>> {
     let graph = K3Graph::from_config(config);
+    let out_proj_n = text_key(config, "model.output_attn_res_proj.weight");
+    let out_norm_n = text_key(config, "model.output_attn_res_norm.weight");
+    let out_proj_t = store.get(&out_proj_n)?;
+    let out_norm_t = store.get(&out_norm_n)?;
+    let shared = Arc::new(K3HostShared {
+        config: config.clone(),
+        graph: graph.clone(),
+        kda: kda_from(config),
+        mla: mla_from(config),
+        moe: moe_from(config),
+        output_res_proj: DenseWeight {
+            weight: out_proj_t.ptr,
+        },
+        output_res_norm: DenseWeight {
+            weight: out_norm_t.ptr,
+        },
+        output_res_proj_meta: (out_proj_t.dtype, out_proj_t.num_elements()),
+        output_res_norm_meta: (out_norm_t.dtype, out_norm_t.num_elements()),
+        output_host: OnceLock::new(),
+        attnres: Mutex::new(HashMap::new()),
+    });
     let mut layers: Vec<Box<dyn TransformerLayer>> = Vec::with_capacity(graph.layers.len());
     for spec in &graph.layers {
         let keys = layer_keys(config, spec.index, spec.mixer, spec.mlp, config.num_experts);
         let mut weights = Vec::with_capacity(keys.len());
+        let mut weight_meta = Vec::with_capacity(keys.len());
         for k in &keys {
-            weights.push(dense(store, k)?);
+            let t = store.get(k)?;
+            weights.push(DenseWeight { weight: t.ptr });
+            weight_meta.push(WeightMeta {
+                name: k.clone(),
+                dtype: t.dtype,
+                numel: t.num_elements(),
+            });
         }
         layers.push(Box::new(K3BoundLayer {
             index: spec.index,
+            spec: *spec,
             weights,
+            weight_meta,
+            host: OnceLock::new(),
+            shared: shared.clone(),
         }));
     }
     Ok(layers)

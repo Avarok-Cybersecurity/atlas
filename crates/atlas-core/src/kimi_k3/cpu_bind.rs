@@ -15,7 +15,7 @@ use super::layer::{K3Graph, K3LayerSpec, MixerKind, MlpKind};
 use super::mla::MlaConfig;
 use crate::config::ModelConfig;
 
-pub(super) fn text_key(prefix: &str, rest: &str) -> String {
+pub fn text_key(prefix: &str, rest: &str) -> String {
     let p = prefix.trim_end_matches('.');
     if p.is_empty() {
         rest.to_string()
@@ -24,7 +24,7 @@ pub(super) fn text_key(prefix: &str, rest: &str) -> String {
     }
 }
 
-pub(super) fn kda_from(c: &ModelConfig) -> KdaConfig {
+pub fn kda_from(c: &ModelConfig) -> KdaConfig {
     KdaConfig {
         heads: c.linear_num_key_heads,
         head_dim: c.linear_key_head_dim,
@@ -36,7 +36,7 @@ pub(super) fn kda_from(c: &ModelConfig) -> KdaConfig {
     }
 }
 
-pub(super) fn mla_from(c: &ModelConfig) -> MlaConfig {
+pub fn mla_from(c: &ModelConfig) -> MlaConfig {
     MlaConfig {
         heads: c.num_attention_heads,
         qk_nope_head_dim: c.qk_nope_head_dim,
@@ -49,7 +49,7 @@ pub(super) fn mla_from(c: &ModelConfig) -> MlaConfig {
     }
 }
 
-pub(super) fn moe_from(c: &ModelConfig) -> LatentMoeConfig {
+pub fn moe_from(c: &ModelConfig) -> LatentMoeConfig {
     LatentMoeConfig {
         hidden: c.hidden_size,
         latent: c.moe_latent_size,
@@ -303,7 +303,7 @@ pub(super) fn assemble(
     })
 }
 
-fn assemble_layer(
+pub fn assemble_layer(
     prefix: &str,
     spec: &K3LayerSpec,
     c: &ModelConfig,
