@@ -47,7 +47,12 @@ pub(crate) fn hc_pre_gemm(
         !row_exact || use_cublas,
         "row-exact HC requires decode cuBLAS projections"
     );
-    const SLAB: u32 = 2048;
+    // SSOT with `hc_lowrank_scratch` sizing — a mismatch writes past the arena.
+    // Also the launch multiplier: an 8192 chunk at slab 2048 is four passes of
+    // every slabbed kernel here. ATLAS_HC_GEMM_SLAB overrides both sides.
+    let slab: u32 = spark_runtime::buffers::hc_gemm_slab() as u32;
+    #[allow(non_snake_case)]
+    let SLAB: u32 = slab;
     let hc_dim = (hc_mult * hidden_size) as usize;
     let rank = w.rank as u32;
     // Scratch layout (BF16): normed [L, hc_dim], up_pre [L, hc_dim],
