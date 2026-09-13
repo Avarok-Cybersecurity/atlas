@@ -14,9 +14,9 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | **C0–C7 green.** C1 8/8 first-token exact on spark2 at `f5a3b99` (p4 `996`, margin 0.412). Twin-omit KDA gate FLA unbounded (`None`). |
+| Phase | C0–C7 green. CUDA KDA default serve C1. **Pre-rental still open:** MXFP4 GPU GEMM, CUDA MLA (host today), AttnRes/MLP host. Do not book. |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
-| Last session | 2026-09-12 overnight: nvfp4 ships `kda_decode` (`7238f64bf`). spark1 CUDA-default aviation C1 + mix=0 known-bad. Do not book. |
+| Last session | 2026-09-13 07:45 CDT — restarting pre-rental list (overnight quit too early). |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
 | Official weights downloaded in lab | **no** |
 | Rental booked | **no** |
