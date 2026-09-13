@@ -74,6 +74,9 @@ pub enum BenchmarkCommand {
     Aggregate(AggregateArgs),
     /// Past runs, from `~/.atlas/runs`.
     History(HistoryArgs),
+    /// Run every required gate this commit still owes, and say whether the
+    /// tree is certified when they are done. See `certify --help`.
+    Certify(super::bench_certify::args::CertifyArgs),
     /// Render a shareable result card from a committed gate record.
     ///
     /// Separate from `run --output-image` on purpose: a card can be regenerated

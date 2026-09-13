@@ -198,7 +198,8 @@ gate id is unchanged; what changed is how its number is produced — and since
 2026-09-13 the four members are the **only** thing that produces it: a
 whole-draw record under the gate's own id no longer satisfies the gate, and the
 verdict says so by name if one is all the directory holds. Each group has four
-members that can run at the same time on different boxes:
+members that can run at the same time on different boxes (`spark bench
+certify` runs them for you — see [Certification](certify.md)):
 
 ```
 spark benchmark run bfcl-subset-a --pull-request-gate --hardware gb10   # on dgx1

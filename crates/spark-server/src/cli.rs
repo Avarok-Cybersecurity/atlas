@@ -7,6 +7,7 @@ use clap::Parser;
 pub mod bench_aggregate;
 mod bench_args;
 pub mod bench_card;
+pub mod bench_certify;
 mod bench_gate_check;
 mod bench_print;
 pub mod bench_record;
@@ -48,6 +49,7 @@ pub enum Command {
     /// Start the inference server.
     Serve(ServeArgs),
     /// Run and inspect the benchmark suite, without the dashboard.
+    #[command(visible_alias = "bench")]
     Benchmark(BenchmarkArgs),
     /// Print the serve flag surface as JSON.
     ///
