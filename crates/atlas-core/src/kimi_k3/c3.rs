@@ -141,10 +141,28 @@ fn c3_prefix_cache_hit_matches_nocache_twin() {
         eprintln!("skip C3 twin: no K3_TWIN");
         return;
     };
-    assert_c3(
-        &model,
-        &[18805, 308, 799, 5624, 12524, 318, 57195, 11],
-        "twin",
+    let prefix = super::cpu_load::TWIN_PROMPT0;
+    assert_c3(model, prefix, "twin");
+
+    let clean = prefix_hit_tokens(model, prefix, NEW_TOKENS);
+    let mut cache = HybridCache::from_graph(&model.graph, &model.kda);
+    let mut h = prefill(model, prefix, &mut cache);
+    stomp_kda_conv_slot0(&mut cache, model.kda.conv_kernel);
+    let mut tokens = prefix.to_vec();
+    greedy_from(model, &mut cache, &mut h, &mut tokens, NEW_TOKENS);
+    assert_ne!(
+        tokens, clean,
+        "RST known-bad: twin KDA conv stomp after prefix write must change tokens"
+    );
+
+    let mut cache = HybridCache::from_graph(&model.graph, &model.kda);
+    let mut h = prefill(model, prefix, &mut cache);
+    stomp_mla_kv(&mut cache);
+    let mut tokens = prefix.to_vec();
+    greedy_from(model, &mut cache, &mut h, &mut tokens, NEW_TOKENS);
+    assert_ne!(
+        tokens, clean,
+        "RST known-bad: twin MLA kv stomp after prefix write must change tokens"
     );
 }
 

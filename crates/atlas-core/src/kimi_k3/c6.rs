@@ -5,7 +5,8 @@
 //! Self-consistency / fixture gate (not HF token-exact). Uses the tiny
 //! 0.40B-pattern graph (layer 1 LatentMoE: 2 routed experts, top-k=1).
 
-use super::cpu_weights::{K3CpuModel, MlpW};
+use super::cpu_weights::{Ablation, K3CpuModel, MlpW};
+use super::greedy::greedy_decode;
 use super::latent_moe::{latent_moe_forward, sigmoid_topk};
 
 /// Written in the test file (PRD C6).
@@ -102,21 +103,49 @@ fn c6_twin_force_expert_zero_diverges() {
         eprintln!("skip C6 twin: no K3_TWIN");
         return;
     };
-    let w = first_moe(&model);
+    let w = first_moe(model);
     let h = vec![1.0f32; model.graph.hidden];
     let n = model.moe.n_routed;
     let logits: Vec<f32> = (0..n).map(|i| if i == 1 { 4.0 } else { 0.0 }).collect();
-    let (clean, ids) = latent_moe_forward(
+    let (ids, weights) = sigmoid_topk(&logits, &w.bias, model.moe.top_k);
+    assert_eq!(ids[0], 1, "frozen-gate top-1 is expert 1");
+    assert!(!weights.is_empty());
+    let (clean, mix_ids) = latent_moe_forward(
         &h, &w.down, &w.up, &w.norm, &logits, &w.bias, &w.experts, None, &model.moe, EPS,
     );
-    assert!(!ids.is_empty());
-    let forced: Vec<f32> = (0..n).map(|i| if i == 0 { 8.0 } else { 0.0 }).collect();
+    assert_eq!(mix_ids[0], 1);
+    let forced_logits: Vec<f32> = (0..n).map(|i| if i == 0 { 8.0 } else { 0.0 }).collect();
     let (out, forced_ids) = latent_moe_forward(
-        &h, &w.down, &w.up, &w.norm, &forced, &w.bias, &w.experts, None, &model.moe, EPS,
+        &h,
+        &w.down,
+        &w.up,
+        &w.norm,
+        &forced_logits,
+        &w.bias,
+        &w.experts,
+        None,
+        &model.moe,
+        EPS,
     );
     assert_eq!(forced_ids[0], 0);
-    assert_ne!(forced_ids, ids);
-    assert_ne!(out, clean, "RST: twin force expert 0 changes mix");
+    assert_ne!(forced_ids, mix_ids);
+    assert_ne!(out, clean, "RST: twin frozen-gate mix != force expert 0");
+
+    let prompt = super::cpu_load::TWIN_PROMPT0;
+    let greedy_clean = greedy_decode(model, prompt, 8, Ablation::default());
+    let greedy_forced = greedy_decode(
+        model,
+        prompt,
+        8,
+        Ablation {
+            force_expert: Some(0),
+            ..Ablation::default()
+        },
+    );
+    assert_ne!(
+        greedy_forced, greedy_clean,
+        "RST known-bad: twin force_expert=0 must change greedy tokens"
+    );
 }
 
 // TODO: GPU C6 — fused LatentMoE vs this frozen-gate fixture (same ids + atol).

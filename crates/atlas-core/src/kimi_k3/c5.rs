@@ -7,7 +7,8 @@
 //! (`attnres_mix` on the 0.40B-pattern tiny graph, hidden=4).
 
 use super::attnres::attnres_mix;
-use super::cpu_weights::K3CpuModel;
+use super::cpu_weights::{Ablation, K3CpuModel};
+use super::greedy::greedy_decode;
 
 /// Written in the test file (PRD C5). f32 CPU refs should be tighter.
 const ATOL: f32 = 1e-5;
@@ -90,21 +91,28 @@ fn c5_twin_mix0_is_skip_and_diverges_from_mix1() {
         eprintln!("skip C5 twin: no K3_TWIN");
         return;
     };
-    let h = model.graph.hidden;
-    // One-hot skip vs one-hot block. Uniform query made softmax collapse to skip
-    // (dot 256 vs -256 at hidden=1024) so mix=1 == mix=0 — degenerate fixture.
-    let mut skip = vec![0.0f32; h];
-    let mut block = vec![0.0f32; h];
-    let mut query = vec![0.0f32; h];
-    skip[0] = 1.0;
-    block[1] = 1.0;
-    query[1] = 1.0;
-    let norm = vec![1.0f32; h];
-    let sources = [skip.clone(), block];
-    let mix0 = attnres_mix(&sources, &query, &norm, EPS, 0.0);
-    let mix1 = attnres_mix(&sources, &query, &norm, EPS, 1.0);
-    assert_eq!(mix0, skip, "twin mix=0 is skip");
-    assert_ne!(mix0, mix1, "RST: twin mix=0 vs mix=1");
+    let prompt = super::cpu_load::TWIN_PROMPT0;
+    let mix1 = greedy_decode(model, prompt, 8, Ablation::default());
+    let mix0 = greedy_decode(
+        model,
+        prompt,
+        8,
+        Ablation {
+            attnres_mix: 0.0,
+            ..Ablation::default()
+        },
+    );
+    assert_eq!(
+        mix1[prompt.len()],
+        super::cpu_load::TWIN_PROMPT0_FIRST,
+        "C5 mix=1 must keep C1 first token"
+    );
+    assert_ne!(
+        mix0[prompt.len()],
+        mix1[prompt.len()],
+        "RST known-bad: twin mix=0 must move the first generated token"
+    );
+    assert_ne!(mix0, mix1, "RST known-bad: twin mix=0 greedy != mix=1");
 }
 
 // TODO: GPU C5 — AttnRes kernel vs this frozen residual fixture (same atol).

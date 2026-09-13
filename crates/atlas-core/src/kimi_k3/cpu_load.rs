@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 use memmap2::Mmap;
@@ -63,10 +64,18 @@ impl K3CpuModel {
     }
 }
 
-/// C1–C6 spark2 runs. Missing `K3_TWIN` skips. A present dir that fails to load panics.
+/// Aviation prompt 0 ids through the comma. C1 first generated id is 1459.
 #[cfg(test)]
-pub(super) fn twin_from_env() -> Option<K3CpuModel> {
-    match std::env::var("K3_TWIN") {
+pub(super) const TWIN_PROMPT0: &[u32] = &[18805, 308, 799, 5624, 12524, 318, 57195, 11];
+#[cfg(test)]
+pub(super) const TWIN_PROMPT0_FIRST: u32 = 1459;
+
+/// C1–C6 spark2 runs. Missing `K3_TWIN` skips. A present dir that fails to load panics.
+/// Cached: 0.40B bind is ~tens of seconds; C2–C6 must not reload per test.
+#[cfg(test)]
+pub(super) fn twin_from_env() -> Option<&'static K3CpuModel> {
+    static TWIN: OnceLock<Option<K3CpuModel>> = OnceLock::new();
+    TWIN.get_or_init(|| match std::env::var("K3_TWIN") {
         Ok(p) => {
             let path = Path::new(&p);
             if !path.exists() {
@@ -79,7 +88,8 @@ pub(super) fn twin_from_env() -> Option<K3CpuModel> {
             )
         }
         _ => None,
-    }
+    })
+    .as_ref()
 }
 
 fn is_vision(name: &str) -> bool {

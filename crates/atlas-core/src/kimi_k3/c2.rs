@@ -119,11 +119,23 @@ fn c2_prefill_decode_logits_match_full_prefill_twin() {
         eprintln!("skip C2 twin: no K3_TWIN");
         return;
     };
-    // Golden prompt 0 ids (through the comma). Twin C2, not synthetic.
-    assert_c2(
-        &model,
-        &[18805, 308, 799, 5624, 12524, 318, 57195, 11],
-        "twin",
+    let prompt = super::cpu_load::TWIN_PROMPT0;
+    assert_c2(model, prompt, "twin");
+
+    let (decode, full, next) = c2_pair(model, prompt);
+    assert!(
+        close(&decode, &full, ATOL, RTOL),
+        "C2 twin clean path must hold before known-bad"
+    );
+    let skip = Ablation {
+        skip_layer: Some(0),
+        ..Ablation::default()
+    };
+    let decode_skip = decode_step_logits(model, prompt, next, skip);
+    assert!(
+        !close(&decode_skip, &full, ATOL, RTOL),
+        "RST known-bad: skip layer 0 on twin decode must diverge from full prefill (max_abs={})",
+        max_abs(&decode_skip, &full)
     );
 }
 

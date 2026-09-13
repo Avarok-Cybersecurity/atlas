@@ -160,11 +160,41 @@ fn c4_hybrid_state_prefix_hit_matches_cold_prefill_twin() {
         eprintln!("skip C4 twin: no K3_TWIN");
         return;
     };
-    assert_c4(
-        &model,
-        &[18805, 308, 799, 5624, 12524, 318, 57195, 11],
-        1459,
-        "twin",
+    let prefix = super::cpu_load::TWIN_PROMPT0;
+    let next = super::cpu_load::TWIN_PROMPT0_FIRST;
+    assert_c4(model, prefix, next, "twin");
+
+    let (prefix_cache, mut hit, cold) = prefix_and_hit(model, prefix, next);
+    let kernel = model.kda.conv_kernel;
+    let mut planted = false;
+    for (slot, prefix_slot) in hit.layers.iter_mut().zip(&prefix_cache.layers) {
+        if let (LayerCache::Kda(after), LayerCache::Kda(before)) = (slot, prefix_slot) {
+            plant_kda_conv_wrong_slot(before, after, kernel);
+            planted = true;
+            break;
+        }
+    }
+    assert!(planted, "twin: no KDA slot to plant");
+    assert!(
+        !caches_close(&hit, &cold, ATOL),
+        "RST known-bad: twin wrong KDA conv slot after prefix hit must diverge (max_abs={})",
+        cache_max_abs(&hit, &cold)
+    );
+
+    let (prefix_cache, mut hit, cold) = prefix_and_hit(model, prefix, next);
+    let mut planted = false;
+    for (slot, prefix_slot) in hit.layers.iter_mut().zip(&prefix_cache.layers) {
+        if let (LayerCache::Mla(after), LayerCache::Mla(before)) = (slot, prefix_slot) {
+            plant_mla_kv_wrong_row(before, after);
+            planted = true;
+            break;
+        }
+    }
+    assert!(planted, "twin: no MLA slot to plant");
+    assert!(
+        !caches_close(&hit, &cold, ATOL),
+        "RST known-bad: twin wrong MLA kv row after prefix hit must diverge (max_abs={})",
+        cache_max_abs(&hit, &cold)
     );
 }
 
