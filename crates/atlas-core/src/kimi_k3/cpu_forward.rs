@@ -11,7 +11,7 @@ use super::cpu_weights::{
 };
 use super::kda::{KdaConfig, KdaState, bounded_gate, kda_decode_token};
 use super::latent_moe::{LatentMoeConfig, latent_moe_forward};
-use super::mla::{MlaConfig, apply_output_gate, maybe_rope, sdpa_one};
+use super::mla::{MlaConfig, mla_decode_token};
 use super::ops::{embed_token, matvec, matvec_column_tp};
 use super::situ::{sigmoid, situ_glu_vec};
 
@@ -67,6 +67,7 @@ impl AttnResStream {
 ///
 /// `K3BoundLayer::decode` copies hidden D2H, runs this math, copies H2D.
 /// LinearAttention injects CUDA conv+recurrent unless `K3_CUDA_KDA=0`.
+/// FullAttention injects CUDA gated-NoPE MLA only when `K3_CUDA_MLA=1`.
 pub struct K3LayerCtx<'a> {
     pub kda: &'a KdaConfig,
     pub mla: &'a MlaConfig,
@@ -132,8 +133,9 @@ pub fn logits(model: &K3CpuModel, h: &[f32]) -> Vec<f32> {
 /// One decoder layer: AttnRes + (KDA|MLA) + MLP. Mutates this layer's
 /// [`LayerCache`] and the token's [`AttnResStream`].
 ///
-/// Default KDA core is [`kda_decode_token`]. Serve CUDA mixer injects via
-/// [`forward_one_layer_with_kda_decode`].
+/// Default cores are [`kda_decode_token`] / [`mla_decode_token`]. Serve CUDA
+/// injects via [`forward_one_layer_with_kda_decode`] /
+/// [`forward_one_layer_with_mla_decode`].
 pub fn forward_one_layer(
     ctx: &K3LayerCtx<'_>,
     layer: &K3CpuLayer,
@@ -142,21 +144,46 @@ pub fn forward_one_layer(
     stream: &mut AttnResStream,
     ablation: Ablation,
 ) {
-    forward_one_layer_with_kda_decode(
+    forward_one_layer_with_mixers(
         ctx,
         layer,
         pos,
         mixer_state,
         stream,
         ablation,
-        |x, w, g, b, cfg, st| Ok(kda_decode_token(x, w, g, b, cfg, st)),
+        cpu_kda_core,
+        cpu_mla_core,
     )
-    .expect("K3 CPU kda_decode_token is infallible")
+    .expect("K3 CPU mixer cores are infallible")
+}
+
+fn cpu_kda_core(
+    x: &[f32],
+    w: &[f32],
+    g: &[f32],
+    b: &[f32],
+    cfg: &KdaConfig,
+    st: &mut KdaState,
+) -> Result<Vec<f32>> {
+    Ok(kda_decode_token(x, w, g, b, cfg, st))
+}
+
+fn cpu_mla_core(
+    q: &mut [f32],
+    k: &mut [f32],
+    v: &[f32],
+    g: &[f32],
+    kv: &mut MlaKv,
+    cfg: &MlaConfig,
+    pos: usize,
+    theta: f32,
+) -> Result<Vec<f32>> {
+    Ok(mla_decode_token(q, k, v, g, kv, cfg, pos, theta))
 }
 
 /// Same as [`forward_one_layer`], with a replaceable KDA conv+recurrent core.
 ///
-/// Projections, output gate, MLP, and AttnRes stay on this CPU path.
+/// Projections, MLA, MLP, and AttnRes stay on this CPU path.
 #[allow(clippy::too_many_arguments)]
 pub fn forward_one_layer_with_kda_decode<F>(
     ctx: &K3LayerCtx<'_>,
@@ -165,10 +192,83 @@ pub fn forward_one_layer_with_kda_decode<F>(
     mixer_state: &mut LayerCache,
     stream: &mut AttnResStream,
     ablation: Ablation,
-    mut kda_decode: F,
+    kda_decode: F,
 ) -> Result<()>
 where
     F: FnMut(&[f32], &[f32], &[f32], &[f32], &KdaConfig, &mut KdaState) -> Result<Vec<f32>>,
+{
+    forward_one_layer_with_mixers(
+        ctx,
+        layer,
+        pos,
+        mixer_state,
+        stream,
+        ablation,
+        kda_decode,
+        cpu_mla_core,
+    )
+}
+
+/// Same as [`forward_one_layer`], with a replaceable MLA rope+SDPA+gate core.
+///
+/// Projections, KDA, MLP, and AttnRes stay on this CPU path.
+#[allow(clippy::too_many_arguments)]
+pub fn forward_one_layer_with_mla_decode<F>(
+    ctx: &K3LayerCtx<'_>,
+    layer: &K3CpuLayer,
+    pos: usize,
+    mixer_state: &mut LayerCache,
+    stream: &mut AttnResStream,
+    ablation: Ablation,
+    mla_decode: F,
+) -> Result<()>
+where
+    F: FnMut(
+        &mut [f32],
+        &mut [f32],
+        &[f32],
+        &[f32],
+        &mut MlaKv,
+        &MlaConfig,
+        usize,
+        f32,
+    ) -> Result<Vec<f32>>,
+{
+    forward_one_layer_with_mixers(
+        ctx,
+        layer,
+        pos,
+        mixer_state,
+        stream,
+        ablation,
+        cpu_kda_core,
+        mla_decode,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn forward_one_layer_with_mixers<FK, FM>(
+    ctx: &K3LayerCtx<'_>,
+    layer: &K3CpuLayer,
+    pos: usize,
+    mixer_state: &mut LayerCache,
+    stream: &mut AttnResStream,
+    ablation: Ablation,
+    mut kda_decode: FK,
+    mut mla_decode: FM,
+) -> Result<()>
+where
+    FK: FnMut(&[f32], &[f32], &[f32], &[f32], &KdaConfig, &mut KdaState) -> Result<Vec<f32>>,
+    FM: FnMut(
+        &mut [f32],
+        &mut [f32],
+        &[f32],
+        &[f32],
+        &mut MlaKv,
+        &MlaConfig,
+        usize,
+        f32,
+    ) -> Result<Vec<f32>>,
 {
     let eps = ctx.eps;
     let mix = ablation.attnres_mix;
@@ -180,9 +280,17 @@ where
         (MixerW::Kda(w), LayerCache::Kda(state)) => {
             kda_mixer(w, &x, ctx.kda, state, eps, ablation, &mut kda_decode)?
         }
-        (MixerW::Mla(w), LayerCache::Mla(kv)) => {
-            mla_mixer(w, &x, ctx.mla, kv, pos, ctx.rope_theta, eps, ablation)
-        }
+        (MixerW::Mla(w), LayerCache::Mla(kv)) => mla_mixer(
+            w,
+            &x,
+            ctx.mla,
+            kv,
+            pos,
+            ctx.rope_theta,
+            eps,
+            ablation,
+            &mut mla_decode,
+        )?,
         _ => panic!(
             "K3 mixer/state mismatch at layer {} (CPU fallback GPU wrapper)",
             layer.spec.index
@@ -270,7 +378,7 @@ fn gated_o_norm(core: &[f32], g: &[f32], o_norm: &[f32], head_dim: usize, eps: f
 }
 
 #[allow(clippy::too_many_arguments)]
-fn mla_mixer(
+fn mla_mixer<F>(
     w: &MlaWeights,
     x: &[f32],
     cfg: &MlaConfig,
@@ -279,7 +387,20 @@ fn mla_mixer(
     theta: f32,
     eps: f32,
     ablation: Ablation,
-) -> Vec<f32> {
+    mla_decode: &mut F,
+) -> Result<Vec<f32>>
+where
+    F: FnMut(
+        &mut [f32],
+        &mut [f32],
+        &[f32],
+        &[f32],
+        &mut MlaKv,
+        &MlaConfig,
+        usize,
+        f32,
+    ) -> Result<Vec<f32>>,
+{
     let qk = cfg.qk_head_dim();
     let qa = matvec(&w.q_a, x, cfg.q_lora_rank, x.len());
     let qa = rms_norm(&qa, &w.q_a_ln, eps);
@@ -292,33 +413,15 @@ fn mla_mixer(
     let kvb = matvec(&w.kv_b, &c, kvb_out, cfg.kv_lora_rank);
     let (k, v) = pack_mla_kv(&kvb, pe, cfg);
     let mut k = k;
-    maybe_rope(
-        &mut q,
-        cfg.qk_nope_head_dim,
-        cfg.qk_rope_head_dim,
-        pos,
-        theta,
-        cfg.mla_use_nope,
-    );
-    maybe_rope(
-        &mut k,
-        cfg.qk_nope_head_dim,
-        cfg.qk_rope_head_dim,
-        pos,
-        theta,
-        cfg.mla_use_nope,
-    );
-    kv.append(&k, &v);
     let g = matvec(&w.g_proj, x, cfg.heads * cfg.v_head_dim, x.len());
-    let attn = sdpa_one(&q, &kv.k, &kv.v, kv.seq_len, cfg.heads, qk, cfg.v_head_dim);
-    let attn = apply_output_gate(&attn, &g, cfg.mla_use_output_gate);
-    apply_o_proj(
+    let attn = mla_decode(&mut q, &mut k, &v, &g, kv, cfg, pos, theta)?;
+    Ok(apply_o_proj(
         &w.o_proj,
         &attn,
         x.len(),
         cfg.heads * cfg.v_head_dim,
         ablation,
-    )
+    ))
 }
 
 fn pack_mla_kv(kvb: &[f32], k_pe: &[f32], cfg: &MlaConfig) -> (Vec<f32>, Vec<f32>) {

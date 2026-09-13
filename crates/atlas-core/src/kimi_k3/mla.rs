@@ -8,9 +8,13 @@
 //!
 //! RoPE dims stay in the head (prod 128 nope + 64 rope = 192). NoPE means
 //! those slots are **not rotated**, not that they are dropped.
+//!
+//! CUDA decode is `kernels/gb10/kimi-k3/bf16/mla_decode.cu` (`k3_mla_*`).
+//! BoundLayer FullAttention stays on this CPU path unless `K3_CUDA_MLA=1`.
 
 #![allow(clippy::needless_range_loop)]
 
+use super::cache::MlaKv;
 use super::situ::sigmoid;
 
 #[derive(Clone, Copy, Debug)]
@@ -42,6 +46,27 @@ impl MlaConfig {
     pub fn qk_head_dim(&self) -> usize {
         self.qk_nope_head_dim + self.qk_rope_head_dim
     }
+
+    /// `inference-optimization/Kimi-K3-0.40B` text_config MLA dims.
+    pub fn twin_0_40b() -> Self {
+        Self {
+            heads: 8,
+            qk_nope_head_dim: 64,
+            qk_rope_head_dim: 32,
+            v_head_dim: 64,
+            q_lora_rank: 256,
+            kv_lora_rank: 128,
+            mla_use_nope: true,
+            mla_use_output_gate: true,
+        }
+    }
+}
+
+/// FullAttention BoundLayer uses CUDA `mla_decode` only when `K3_CUDA_MLA=1`.
+/// Unset / `0` keeps this CPU mixer so aviation greedy cannot regress
+/// until spark1 C1 is proven. Opposite polarity from `K3_CUDA_KDA`.
+pub fn cuda_mla_enabled() -> bool {
+    matches!(std::env::var("K3_CUDA_MLA").as_deref(), Ok("1"))
 }
 
 /// Optional RoPE on the rope **slice** of a packed `[nope | rope]` head.
@@ -197,6 +222,47 @@ pub fn gated_mla_attend(
     apply_output_gate(&attn, g, cfg.mla_use_output_gate)
 }
 
+/// One decode token: optional RoPE, append K/V, SDPA, optional output gate.
+/// Projections stay in `mla_mixer`. CUDA `k3_mla_*` matches this order.
+pub fn mla_decode_token(
+    q: &mut [f32],
+    k: &mut [f32],
+    v: &[f32],
+    g: &[f32],
+    kv: &mut MlaKv,
+    cfg: &MlaConfig,
+    pos: usize,
+    theta: f32,
+) -> Vec<f32> {
+    maybe_rope(
+        q,
+        cfg.qk_nope_head_dim,
+        cfg.qk_rope_head_dim,
+        pos,
+        theta,
+        cfg.mla_use_nope,
+    );
+    maybe_rope(
+        k,
+        cfg.qk_nope_head_dim,
+        cfg.qk_rope_head_dim,
+        pos,
+        theta,
+        cfg.mla_use_nope,
+    );
+    kv.append(k, v);
+    let attn = sdpa_one(
+        q,
+        &kv.k,
+        &kv.v,
+        kv.seq_len,
+        cfg.heads,
+        cfg.qk_head_dim(),
+        cfg.v_head_dim,
+    );
+    apply_output_gate(&attn, g, cfg.mla_use_output_gate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +320,63 @@ mod tests {
         let g = vec![0.0, 0.0];
         let out = gated_mla_attend(&mut q, &mut k, &v, &g, 1, &cfg, 0, 10000.0);
         assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn twin_0_40b_geometry() {
+        let t = MlaConfig::twin_0_40b();
+        assert_eq!(t.heads, 8);
+        assert_eq!(t.qk_head_dim(), 96);
+        assert_eq!(t.v_head_dim, 64);
+        assert!(t.mla_use_nope);
+        assert!(t.mla_use_output_gate);
+    }
+
+    #[test]
+    fn decode_token_matches_attend_t1() {
+        let cfg = tiny_cfg(true, true);
+        let mut q = vec![1.0, 0.0, 0.0, 1.0];
+        let mut k = q.clone();
+        let v = vec![0.5, -0.5];
+        let g = vec![0.0, 0.0];
+        let mut q2 = q.clone();
+        let mut k2 = k.clone();
+        let attend = gated_mla_attend(&mut q2, &mut k2, &v, &g, 1, &cfg, 0, 10000.0);
+        let mut kv = MlaKv::default();
+        let dec = mla_decode_token(&mut q, &mut k, &v, &g, &mut kv, &cfg, 0, 10000.0);
+        assert_eq!(attend, dec);
+        assert_eq!(kv.seq_len, 1);
+    }
+
+    #[test]
+    fn cuda_mla_env_default_off() {
+        if std::env::var_os("K3_CUDA_MLA").is_some() {
+            return;
+        }
+        assert!(
+            !cuda_mla_enabled(),
+            "FullAttention default is CPU MLA; K3_CUDA_MLA=1 is opt-in"
+        );
+    }
+
+    #[test]
+    fn cuda_mla_env_opt_in() {
+        const THIS: &str = "kimi_k3::mla::tests::cuda_mla_env_opt_in";
+        const MARKER: &str = "K3_CUDA_MLA_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            assert!(cuda_mla_enabled(), "K3_CUDA_MLA=1 must enable CUDA MLA");
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", THIS])
+            .env(MARKER, "1")
+            .env("K3_CUDA_MLA", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "K3_CUDA_MLA child failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

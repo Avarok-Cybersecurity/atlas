@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! BoundLayer KDA mixer: CUDA `kda_decode` unless `want_cuda_kda` is false.
+//! BoundLayer mixer CUDA flags: KDA unless `want_cuda_kda` is false; MLA
+//! only when `want_cuda_mla` is true.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -16,6 +17,7 @@ use spark_runtime::weights::WeightDtype;
 
 use super::bound::{K3BoundLayer, K3HostShared};
 use super::kda_cuda::{CONV_ENTRY, MODULE, RECURRENT_ENTRY};
+use super::mla_cuda::{MODULE as MLA_MODULE, ROPE_ENTRY, SDPA_ENTRY};
 use super::state::K3CpuFallbackState;
 use crate::layer::{ForwardContext, MoeLoraRoute};
 use crate::layers::ops::{DerivedWeights, GemmDispatch, ModelLevers, ModelStats};
@@ -39,7 +41,7 @@ fn tiny_config(hidden: usize, eps: f32, theta: f32, inter: usize) -> ModelConfig
     c
 }
 
-fn run_layers(steps: &[(usize, bool)]) -> (usize, Vec<(String, String)>) {
+fn run_layers(steps: &[(usize, bool, bool)]) -> (usize, Vec<(String, String)>) {
     let gpu = MockGpuBackend::new();
     let model = K3CpuModel::synthetic_tiny();
     let h = model.graph.hidden;
@@ -57,6 +59,7 @@ fn run_layers(steps: &[(usize, bool)]) -> (usize, Vec<(String, String)>) {
         output_res_norm_meta: (WeightDtype::BF16, h),
         output_host: OnceLock::new(),
         kda_kernels: OnceLock::new(),
+        mla_kernels: OnceLock::new(),
         attnres: Mutex::new(HashMap::new()),
     });
     let hidden = gpu.alloc(h * 2).unwrap();
@@ -90,7 +93,7 @@ fn run_layers(steps: &[(usize, bool)]) -> (usize, Vec<(String, String)>) {
         midchunk_capture: None,
         moe_lora_route: MoeLoraRoute::Fold,
     };
-    for &(layer_idx, want_cuda_kda) in steps {
+    for &(layer_idx, want_cuda_kda, want_cuda_mla) in steps {
         let host = OnceLock::new();
         let _ = host.set(model.layers[layer_idx].clone());
         let layer = K3BoundLayer {
@@ -121,6 +124,7 @@ fn run_layers(steps: &[(usize, bool)]) -> (usize, Vec<(String, String)>) {
                 &ctx,
                 3,
                 want_cuda_kda,
+                want_cuda_mla,
             )
             .unwrap();
     }
@@ -131,17 +135,17 @@ fn run_layers(steps: &[(usize, bool)]) -> (usize, Vec<(String, String)>) {
 fn kda_layer_cpu_escape_does_not_launch_kda_decode() {
     let model = K3CpuModel::synthetic_tiny();
     assert_eq!(model.layers[0].spec.mixer, MixerKind::Kda);
-    let (n, lookups) = run_layers(&[(0, false)]);
+    let (n, lookups) = run_layers(&[(0, false, false)]);
     assert_eq!(n, 0, "CPU mixer must not launch CUDA KDA");
     assert!(
-        lookups.iter().all(|(m, _)| m != MODULE),
-        "CPU path must not look up {MODULE}: {lookups:?}"
+        lookups.iter().all(|(m, _)| m != MODULE && m != MLA_MODULE),
+        "CPU path must not look up CUDA mixers: {lookups:?}"
     );
 }
 
 #[test]
 fn kda_layer_cuda_flag_launches_conv_then_recurrent() {
-    let (n, lookups) = run_layers(&[(0, true)]);
+    let (n, lookups) = run_layers(&[(0, true, false)]);
     assert_eq!(n, 2, "conv then recurrent");
     assert_eq!(
         lookups,
@@ -157,10 +161,35 @@ fn mla_layer_ignores_cuda_kda_flag() {
     let model = K3CpuModel::synthetic_tiny();
     assert_eq!(model.layers[3].spec.mixer, MixerKind::Mla);
     // Layer 0 seeds AttnRes; MLA still must not touch kda_decode.
-    let (n, lookups) = run_layers(&[(0, false), (3, true)]);
-    assert_eq!(n, 0, "MLA mixer stays on CPU");
+    let (n, lookups) = run_layers(&[(0, false, false), (3, true, false)]);
+    assert_eq!(n, 0, "MLA mixer stays on CPU without K3_CUDA_MLA");
     assert!(
-        lookups.iter().all(|(m, _)| m != MODULE),
-        "MLA must not look up {MODULE}: {lookups:?}"
+        lookups.iter().all(|(m, _)| m != MODULE && m != MLA_MODULE),
+        "MLA must not look up CUDA mixers: {lookups:?}"
+    );
+}
+
+#[test]
+fn kda_layer_ignores_cuda_mla_flag() {
+    let (n, lookups) = run_layers(&[(0, false, true)]);
+    assert_eq!(n, 0, "KDA mixer must ignore K3_CUDA_MLA");
+    assert!(
+        lookups.iter().all(|(m, _)| m != MLA_MODULE),
+        "KDA must not look up {MLA_MODULE}: {lookups:?}"
+    );
+}
+
+#[test]
+fn mla_layer_cuda_flag_launches_rope_then_sdpa() {
+    let model = K3CpuModel::synthetic_tiny();
+    assert_eq!(model.layers[3].spec.mixer, MixerKind::Mla);
+    let (n, lookups) = run_layers(&[(0, false, false), (3, false, true)]);
+    assert_eq!(n, 2, "rope then sdpa_gate");
+    assert_eq!(
+        lookups,
+        vec![
+            (MLA_MODULE.to_string(), ROPE_ENTRY.to_string()),
+            (MLA_MODULE.to_string(), SDPA_ENTRY.to_string()),
+        ]
     );
 }

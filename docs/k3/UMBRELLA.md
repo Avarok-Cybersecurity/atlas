@@ -14,9 +14,9 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | C0–C7 green. CUDA KDA default serve C1. **Pre-rental still open:** MXFP4 GPU GEMM, CUDA MLA (host today), AttnRes/MLP host. Do not book. |
+| Phase | C0–C7 green. CUDA KDA default serve C1. MXFP4 extra_cu DSV4 E8M0 GEMM + packed lander (`K3_ALLOW_MXFP4=1`). CUDA MLA opt-in (`K3_CUDA_MLA=1`). AttnRes/MLP/LatentMoE still host. Do not book. |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
-| Last session | 2026-09-13 07:45 CDT — restarting pre-rental list (overnight quit too early). |
+| Last session | 2026-09-13 08:20 CDT — extra_cu DSV4 E8M0 GEMM + CUDA gated-NoPE MLA (`k3_mla_*`) opt-in. |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
 | Official weights downloaded in lab | **no** |
 | Rental booked | **no** |

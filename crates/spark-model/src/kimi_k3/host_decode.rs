@@ -3,14 +3,15 @@
 //! Copy-out / mixer+MLP+AttnRes / copy-in for [`super::bound::K3BoundLayer`].
 //!
 //! `MixerKind::Kda` runs conv+recurrent via [`launch_k3_kda_decode_token`]
-//! unless `K3_CUDA_KDA=0`. MLA stays on the CPU mixer.
+//! unless `K3_CUDA_KDA=0`. `MixerKind::Mla` runs rope+SDPA+gate via
+//! [`launch_k3_mla_decode_token`] only when `K3_CUDA_MLA=1`.
 
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, bail};
 use atlas_core::kimi_k3::{
     Ablation, AttnResStream, K3CpuLayer, K3LayerCtx, MixerKind, assemble_layer, forward_one_layer,
-    forward_one_layer_with_kda_decode,
+    forward_one_layer_with_kda_decode, forward_one_layer_with_mla_decode,
 };
 use half::bf16;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
@@ -18,12 +19,13 @@ use spark_runtime::weights::WeightDtype;
 
 use super::bound::K3BoundLayer;
 use super::kda_cuda::{K3KdaDecodeKernels, launch_k3_kda_decode_token};
+use super::mla_cuda::{K3MlaDecodeKernels, launch_k3_mla_decode_token};
 use super::state::K3CpuFallbackState;
 use crate::layer::{ForwardContext, LayerState};
 
 impl K3BoundLayer {
-    /// `want_cuda_kda` is [`cuda_kda_enabled`] on the serve path. Tests pass it
-    /// explicitly. LinearAttention / KDA only; MLA stays CPU.
+    /// Serve path passes [`cuda_kda_enabled`] / [`cuda_mla_enabled`]. Tests
+    /// pass the flags explicitly.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_host(
         &self,
@@ -34,6 +36,7 @@ impl K3BoundLayer {
         ctx: &ForwardContext,
         stream: u64,
         want_cuda_kda: bool,
+        want_cuda_mla: bool,
     ) -> Result<()> {
         let gpu = ctx.gpu;
         let h = ctx.config.hidden_size;
@@ -54,7 +57,8 @@ impl K3BoundLayer {
             eps: ctx.config.rms_norm_eps as f32,
             rope_theta: ctx.config.rope_theta as f32,
         };
-        let use_cuda = want_cuda_kda && self.spec.mixer == MixerKind::Kda;
+        let use_cuda_kda = want_cuda_kda && self.spec.mixer == MixerKind::Kda;
+        let use_cuda_mla = want_cuda_mla && self.spec.mixer == MixerKind::Mla;
 
         let key = if residual.is_null() { hidden } else { residual };
         {
@@ -77,7 +81,7 @@ impl K3BoundLayer {
             // Prefill already walks tokens in `prefill_default` (one decode per
             // token, KDA/MLA step once). Do not treat this as packed N — looping
             // `seq_len` times would step KDA N times on one hidden row.
-            if use_cuda {
+            if use_cuda_kda {
                 let kernels = self.kda_kernels(gpu)?;
                 forward_one_layer_with_kda_decode(
                     &lctx,
@@ -88,6 +92,21 @@ impl K3BoundLayer {
                     ablation,
                     |x, w, g, b, cfg, kst| {
                         launch_k3_kda_decode_token(gpu, &kernels, x, w, g, b, cfg, kst, stream)
+                    },
+                )?;
+            } else if use_cuda_mla {
+                let kernels = self.mla_kernels(gpu)?;
+                forward_one_layer_with_mla_decode(
+                    &lctx,
+                    layer,
+                    seq_len,
+                    &mut st.cache,
+                    stream_res,
+                    ablation,
+                    |q, k, v, g, kv, cfg, pos, theta| {
+                        launch_k3_mla_decode_token(
+                            gpu, &kernels, q, k, v, g, kv, cfg, pos, theta, stream,
+                        )
                     },
                 )?;
             } else {
@@ -123,6 +142,18 @@ impl K3BoundLayer {
         )?;
         tracing::info!("K3 LinearAttention decode via CUDA kda_decode");
         Ok(*self.shared.kda_kernels.get_or_init(|| k))
+    }
+
+    fn mla_kernels(&self, gpu: &dyn GpuBackend) -> Result<K3MlaDecodeKernels> {
+        if let Some(&k) = self.shared.mla_kernels.get() {
+            return Ok(k);
+        }
+        let k = K3MlaDecodeKernels::resolve(gpu).context(
+            "K3 CUDA MLA: mla_decode PTX missing (FullAttention opt-in). \
+             Unset K3_CUDA_MLA for host mla_decode_token",
+        )?;
+        tracing::info!("K3 FullAttention decode via CUDA mla_decode");
+        Ok(*self.shared.mla_kernels.get_or_init(|| k))
     }
 
     fn host_layer(&self, gpu: &dyn GpuBackend) -> Result<&K3CpuLayer> {
