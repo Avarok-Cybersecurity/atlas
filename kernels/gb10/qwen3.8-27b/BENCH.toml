@@ -220,9 +220,53 @@ measured without proof of speculative engagement is the 2026-08-15 decode \
 flip-flop all over again."""
 
 [benchmarks.metrics.server_decode_tok_s]
-# Median-of-3 server decode rate. The floor of 22.7 is the bound in force —
-# an effective floor of 22.2 tok/s once noise 0.5 is applied by
+# Median-of-3 server decode rate. The floor of 25.0 is the bound in force —
+# an effective floor of 24.5 tok/s once noise 0.5 is applied by
 # scoring::compare.
+#
+# ★ RATCHETED 2026-09-11, 22.7 -> 25.0, from a fresh 12-run set on this
+# entry's own instrument and on dgx2 (spark-43fa) — the SLOWEST box, which is
+# where the superseded bar was drawn from too, so the basis is comparable:
+#
+#     26.3 26.1 26.1 26.2 26.1 26.1 26.1 26.1 26.1 26.1 26.1 26.1
+#     n=12  mean 26.125  sigma 0.062  range 26.1-26.3
+#
+# sigma is quantization-limited (the gate reports one decimal), so the true
+# spread is at most this. 24.5 sits ~26 sigma below the mean, and ~6.2% below
+# it — wider than the mean-minus-5% the sweeps use, so this is a deliberately
+# conservative ratchet rather than the tightest the data allows (that would be
+# 25.3).
+#
+# ★ WHY THE LEVEL MOVED. It is a STEP, not drift: records from 2026-08-23 to
+# 09-07 read 22.4-23.5 and records from 09-08 onward read 26.1-26.3, with
+# accept_len_mean 2.6826 unchanged across the whole span — so this is a
+# wall-clock change, not better speculation.
+#
+# ★ THE CAUSE IS NOT #968, AND AN EARLIER DRAFT OF THIS NOTE SAID IT WAS.
+# Three things in this repository refute it, and they are recorded here so the
+# wrong story is not re-derived:
+#   * f9fd8ca43's own message states "C=1 IS IDENTICAL, AND THAT IS THE
+#     DIAGNOSTIC — parent 18.5 / with bug 18.5". The bug it fixed only bites
+#     when admissions interleave, so it cannot move a serial rung.
+#   * The campaign measured AT f9fd8ca43 reads 22.58 here and C1 18.42 on the
+#     sweep — both PRE-step values, at the very commit credited with the step.
+#     That record was committed in ac736e938 and dropped in 3cfe4d8c45, which
+#     is the only reason "every record from 09-08 reads 26.1-26.3" looked true.
+#     `git show ac736e938:.benchmarks/decode-floor/2026-09-08-f9fd8ca431.json`.
+#   * The DFlash2 ladder stepped on the same day, and that gate is
+#     conflicts_with = "speculative", so an mtp-carry fix cannot reach it.
+#
+# The leading candidate is 7dd531f59 (#965, the GLM-5.3-Flash port), the only
+# code change on the first-parent path through this window; it rewrote the
+# dense_gemv M=1 sites that a 248K-vocab BF16 lm head leans on, which fits a
+# gain that is large serially and vanishes above C=2. STATED AS A CANDIDATE,
+# NOT A FINDING: no A/B across 7dd531f59^ has been run, and this note has
+# already been wrong once about the cause.
+#
+# What the bar does NOT depend on: the step is measured, reproduced 15 times,
+# and 24.5 sits far above the entire pre-step band whatever moved it. The
+# attribution matters for knowing what to protect, not for whether to protect
+# it.
 #
 # ★ RATCHETED 2026-09-06, 21.0 -> 22.7, and this is the FIRST time this
 # entry's own ">=10-run set on this same instrument" rule has actually been
@@ -264,10 +308,10 @@ flip-flop all over again."""
 # and therefore the only box that can certify, the margin is ~1.5 tok/s.
 # Re-cut this floor if a second box is ever registered and is slower.
 #
-# noise 0.5 covers the run-to-run band (observed 0.2 peak-to-peak over the ten
-# runs) and stays under the 5% validate_noise cap (5% of 22.7 = 1.135).
+# noise 0.5 covers the run-to-run band (observed 0.2 peak-to-peak over the
+# twelve runs) and stays under the 5% validate_noise cap (5% of 25.0 = 1.25).
 # Ratchet only from a fresh >=10-run set on this same instrument.
-min = 22.7
+min = 25.0
 noise = 0.5
 [benchmarks.metrics.output_tokens]
 # The driver emits the MINIMUM completion_tokens across the 3 runs, so this

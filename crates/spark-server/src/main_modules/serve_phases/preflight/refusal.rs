@@ -34,6 +34,13 @@ pub(super) struct Refusal {
     pub(super) ring_requested: usize,
     pub(super) ring_slots: usize,
     pub(super) per_seq_blob: usize,
+    /// An explicit `--ssm-decode-ring-slots N` was published before preflight
+    /// ran. Passed IN rather than read from
+    /// `ssm_reserve::published_decode_ring_slots` here, so the refusal text
+    /// is a pure function of its inputs — the publication cell is a process
+    /// `OnceLock` that one caller (or one test) would otherwise seal for
+    /// everyone.
+    pub(super) ring_pinned: bool,
 }
 
 /// Build the refusal error. Pure formatting over already-computed bytes.
@@ -92,10 +99,14 @@ fn ring_note(args: &cli::ServeArgs, r: &Refusal) -> String {
     format!(
         " {} — {}.",
         decode_ring::formula(r.ring_slots, args.max_batch_size, r.per_seq_blob),
-        if spark_model::ssm_reserve::published_decode_ring_slots().is_some() {
+        if r.ring_pinned {
             "an explicit --ssm-decode-ring-slots pins the depth, so it was not shrunk"
         } else {
             "even 0 ring slots does not fit, so shrinking it cannot rescue this boot"
         },
     )
 }
+
+#[cfg(test)]
+#[path = "refusal_tests.rs"]
+mod tests;
