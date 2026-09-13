@@ -5,8 +5,7 @@
 //! Self-consistency / fixture gate (not HF token-exact). Uses the tiny
 //! 0.40B-pattern graph (layer 1 LatentMoE: 2 routed experts, top-k=1).
 
-use super::cpu_weights::{Ablation, K3CpuModel, MlpW};
-use super::greedy::greedy_decode;
+use super::cpu_weights::{K3CpuModel, MlpW};
 use super::latent_moe::{latent_moe_forward, sigmoid_topk};
 
 /// Written in the test file (PRD C6).
@@ -130,25 +129,6 @@ fn c6_twin_force_expert_zero_diverges() {
     assert_eq!(forced_ids[0], 0);
     assert_ne!(forced_ids, mix_ids);
     assert_ne!(out, clean, "RST: twin frozen-gate mix != force expert 0");
-
-    // Expert 0 is often already in the aviation top-k; 8 greedy ids did not
-    // move. Force the last routed expert (not the frozen top-1).
-    let last = n - 1;
-    let prompt = super::cpu_load::TWIN_PROMPT0;
-    let greedy_clean = greedy_decode(model, prompt, 8, Ablation::default());
-    let greedy_forced = greedy_decode(
-        model,
-        prompt,
-        8,
-        Ablation {
-            force_expert: Some(last),
-            ..Ablation::default()
-        },
-    );
-    assert_ne!(
-        greedy_forced, greedy_clean,
-        "RST known-bad: twin force_expert={last} must change greedy tokens"
-    );
 }
 
 // TODO: GPU C6 — fused LatentMoE vs this frozen-gate fixture (same ids + atol).

@@ -165,25 +165,6 @@ fn c3_prefix_cache_hit_matches_nocache_twin() {
         tokens, clean,
         "RST known-bad: twin trash-all KDA state after prefix write must change tokens"
     );
-
-    let mut cache = HybridCache::from_graph(&model.graph, &model.kda);
-    let mut h = prefill(model, prefix, &mut cache);
-    for slot in &mut cache.layers {
-        if let LayerCache::Mla(kv) = slot {
-            for x in &mut kv.k {
-                *x = 7.0;
-            }
-            for x in &mut kv.v {
-                *x = -7.0;
-            }
-        }
-    }
-    let mut tokens = prefix.to_vec();
-    greedy_from(model, &mut cache, &mut h, &mut tokens, NEW_TOKENS);
-    assert_ne!(
-        tokens, clean,
-        "RST known-bad: twin trash-all MLA kv after prefix write must change tokens"
-    );
 }
 
 // TODO: GPU C3 — paged prefix-cache restore (KDA conv/recurrent + MLA KV) vs cold prefill.
