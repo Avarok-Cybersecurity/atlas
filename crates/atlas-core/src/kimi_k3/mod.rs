@@ -26,7 +26,7 @@ pub use attnres::{attnres_blend, attnres_mix, attnres_softmax_mix};
 pub use cache::{HybridCache, LayerCache, MlaKv};
 pub use cpu_bind::{assemble_layer, kda_from, mla_from, moe_from, text_key};
 pub use cpu_forward::{
-    AttnResStream, K3LayerCtx, forward_one_layer, forward_one_layer_with_cores,
+    AttnResStream, HiddenReduce, K3LayerCtx, forward_one_layer, forward_one_layer_with_cores,
     forward_one_layer_with_kda_decode, forward_one_layer_with_mla_decode, forward_token,
 };
 pub use cpu_weights::{Ablation, K3CpuLayer, K3CpuModel};

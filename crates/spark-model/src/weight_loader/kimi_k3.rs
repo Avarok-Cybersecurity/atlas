@@ -19,6 +19,7 @@ mod bf16;
 mod classes;
 mod dry_run;
 mod mxfp4;
+mod tp;
 
 pub use dry_run::{KimiK3DryRun, dry_run_index_json, dry_run_weight_map};
 
@@ -42,7 +43,11 @@ pub fn refuse_mxfp4(store: &WeightStore) -> Result<()> {
 
 impl ModelWeightLoader for KimiK3WeightLoader {
     fn supports_tp(&self) -> bool {
-        false
+        // Q/K/V col-parallel, O/g row/col per mixer, KDA head/channel
+        // companions, dense gate/up/down, expert w1/w3/w2. Embed / RMSNorm /
+        // router stay replicated. `lm_head` stays full — vocab-parallel is
+        // `lmhead_vocab_shard` at GEMV (minimax/glm5_next).
+        true
     }
 
     fn binds_vision_encoder(&self) -> bool {
@@ -109,6 +114,11 @@ mod tests {
     use spark_runtime::weights::{WeightDtype, WeightTensor};
     use std::collections::HashMap;
     use std::process::Command;
+
+    #[test]
+    fn kimi_k3_supports_tp() {
+        assert!(KimiK3WeightLoader.supports_tp());
+    }
 
     #[test]
     fn kimi_k3_does_not_probe_nvfp4_tgemm() {

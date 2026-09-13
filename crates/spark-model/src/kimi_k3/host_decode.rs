@@ -9,12 +9,14 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use atlas_core::kimi_k3::{
-    Ablation, AttnResStream, K3CpuLayer, K3LayerCtx, MixerKind, MlpKind, assemble_layer,
-    forward_one_layer_with_cores, kda_decode_token, mix_routed_experts, mla_decode_token,
+    Ablation, AttnResStream, HiddenReduce, K3CpuLayer, K3LayerCtx, MixerKind, MlpKind,
+    assemble_layer, forward_one_layer_with_cores, kda_decode_token, mix_routed_experts,
+    mla_decode_token,
 };
 use half::bf16;
+use spark_comm::CommBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::WeightDtype;
 
@@ -51,6 +53,10 @@ impl K3BoundLayer {
             let _ = self.moe_kernels(gpu)?;
         }
         let layer = self.host_layer(gpu)?;
+        let tp = ctx.config.tp_world_size.max(1);
+        let comm = ctx.comm;
+        let do_reduce = |v: &mut [f32]| tp_allreduce(gpu, comm, hidden, h, tp, v, stream);
+        let reduce_ref: HiddenReduce<'_> = &do_reduce;
         let lctx = K3LayerCtx {
             kda: &self.shared.kda,
             mla: &self.shared.mla,
@@ -61,6 +67,7 @@ impl K3BoundLayer {
             dense_intermediate: self.shared.config.intermediate_size,
             eps: ctx.config.rms_norm_eps as f32,
             rope_theta: ctx.config.rope_theta as f32,
+            reduce_hidden: Some(reduce_ref),
         };
         let use_cuda_kda = want_cuda_kda && self.spec.mixer == MixerKind::Kda;
         let use_cuda_mla = want_cuda_mla && self.spec.mixer == MixerKind::Mla;
@@ -126,7 +133,7 @@ impl K3BoundLayer {
                     }
                 },
                 |wts, latent, ids, mix_w, cfg| {
-                    if let Some(k) = moe_k {
+                    let mut mixed = if let Some(k) = moe_k {
                         launch_k3_latent_moe_experts(
                             gpu,
                             &k,
@@ -136,10 +143,13 @@ impl K3BoundLayer {
                             mix_w,
                             cfg,
                             stream,
-                        )
+                        )?
                     } else {
-                        Ok(mix_routed_experts(latent, ids, mix_w, &wts.experts, cfg))
-                    }
+                        mix_routed_experts(latent, ids, mix_w, &wts.experts, cfg)
+                    };
+                    // Expert w2 is row-parallel: allreduce latent before RMSNorm+up.
+                    reduce_ref(&mut mixed)?;
+                    Ok(mixed)
                 },
             )?;
         }
@@ -222,6 +232,34 @@ impl K3BoundLayer {
             .context("K3 output_attn_res host")?;
         Ok((&pair.0, &pair.1))
     }
+}
+
+/// Row-parallel mixer `o_proj` / dense MLP `down` / expert `w2` leave a
+/// partial sum. NCCL all-reduce is BF16 (same width as the GPU hidden).
+fn tp_allreduce(
+    gpu: &dyn GpuBackend,
+    comm: Option<&dyn CommBackend>,
+    scratch: DevicePtr,
+    hidden: usize,
+    tp: usize,
+    v: &mut [f32],
+    stream: u64,
+) -> Result<()> {
+    if tp <= 1 || v.is_empty() {
+        return Ok(());
+    }
+    let comm = comm.context("K3 TP: CommBackend required when tp_size > 1")?;
+    ensure!(
+        v.len() <= hidden,
+        "K3 TP allreduce len {} > hidden {hidden}",
+        v.len()
+    );
+    f32_to_hidden(gpu, scratch, v, stream)?;
+    comm.all_reduce_async(scratch.0, v.len() * 2, stream)?;
+    gpu.synchronize(stream)?;
+    let got = hidden_to_f32(gpu, scratch, v.len(), stream)?;
+    v.copy_from_slice(&got);
+    Ok(())
 }
 
 fn bind_layer(layer: &K3BoundLayer, gpu: &dyn GpuBackend) -> Result<K3CpuLayer> {

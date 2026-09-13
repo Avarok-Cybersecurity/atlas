@@ -156,6 +156,32 @@ pub fn shard_dense_weight(
     Ok((DenseWeight { weight: ptr }, n, k))
 }
 
+/// Honour `config.tp_rank` / `config.tp_world_size` when slicing a BF16
+/// `[out, in]` weight. `tp_world_size <= 1` (including the serde-default 0)
+/// is a no-op and returns `src` untouched.
+///
+/// Loaders that return `supports_tp() == true` must call this (or
+/// [`shard_dense_bf16`]) on every column-/row-parallel tensor. See
+/// `weight_loader/minimax.rs` and `weight_loader/kimi_k3`.
+pub fn slice_for_rank(
+    src: DevicePtr,
+    out_dim: usize,
+    in_dim: usize,
+    kind: TpShardKind,
+    config: &ModelConfig,
+    gpu: &dyn GpuBackend,
+) -> Result<(DevicePtr, usize, usize)> {
+    shard_dense_bf16(
+        src,
+        out_dim,
+        in_dim,
+        kind,
+        config.tp_rank,
+        config.tp_world_size.max(1),
+        gpu,
+    )
+}
+
 // ════════════════════════════════════════════════════════════════════
 // Higher-level helpers — DRY across per-architecture weight loaders.
 //

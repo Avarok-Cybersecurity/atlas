@@ -105,13 +105,18 @@ pub fn mix_routed_experts(
             !w1.is_empty(),
             "K3 packed expert {id} has no host w1; CUDA grouped GEMM required"
         );
+        let eh = if cfg.latent == 0 {
+            cfg.expert_hidden
+        } else {
+            w1.len() / cfg.latent
+        };
         let y = expert_situ(
             latent,
             w1,
             w2,
             w3,
             cfg.latent,
-            cfg.expert_hidden,
+            eh,
             cfg.situ_beta,
             cfg.situ_linear_beta,
         );

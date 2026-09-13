@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use atlas_core::config::ModelConfig;
 use atlas_core::kimi_k3::{K3Graph, MixerKind, MlpKind, kda_from, mla_from, moe_from};
 use half::bf16;
@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::{WeightDtype, WeightStore};
 
-use crate::kimi_k3::bound::{K3BoundLayer, K3HostShared, WeightMeta};
+use crate::kimi_k3::bound::{K3BoundLayer, K3HostShared};
 use crate::layer::TransformerLayer;
 use crate::weight_map::{DenseWeight, QuantizedWeight};
 
@@ -53,6 +53,10 @@ pub fn load_lm_head(
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
 ) -> Result<DenseWeight> {
+    // Full `[vocab, hidden]` on every rank. Vocab-parallel GEMV + all-reduce
+    // is `model::impl_a3::lmhead_vocab_shard` (same as minimax / glm5_next).
+    // A load-time column shard would double-split with that offset.
+    let _ = config.tp_world_size;
     let a = text_key(config, "lm_head.weight");
     if store.contains(&a) {
         return dense_for_bf16_engine(store, &a, gpu);
@@ -81,7 +85,7 @@ fn dense_for_bf16_engine(
     Ok(DenseWeight { weight: ptr })
 }
 
-fn f32_le_to_bf16_bytes(raw: &[u8]) -> Vec<u8> {
+pub(super) fn f32_le_to_bf16_bytes(raw: &[u8]) -> Vec<u8> {
     raw.chunks_exact(4)
         .flat_map(|c| {
             let f = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
@@ -106,9 +110,19 @@ mod tests {
 pub fn load_layers(
     store: &WeightStore,
     config: &ModelConfig,
-    _gpu: &dyn GpuBackend,
+    gpu: &dyn GpuBackend,
 ) -> Result<Vec<Box<dyn TransformerLayer>>> {
+    if config.tp_world_size > 1 && store.names().any(|n| n.contains("weight_packed")) {
+        bail!("K3 TP does not slice packed MXFP4 experts (0.40B BF16/FP32 twin only)");
+    }
     let graph = K3Graph::from_config(config);
+    if config.tp_world_size > 1 {
+        tracing::info!(
+            "kimi_k3: TP slice_for_rank rank={}/{}",
+            config.tp_rank,
+            config.tp_world_size
+        );
+    }
     let out_proj_n = text_key(config, "model.output_attn_res_proj.weight");
     let out_norm_n = text_key(config, "model.output_attn_res_norm.weight");
     let out_proj_t = store.get(&out_proj_n)?;
@@ -144,13 +158,9 @@ pub fn load_layers(
                 mxfp4_experts.push((prefix.clone(), quantized_k3_mxfp4_e8m0(store, &prefix)?));
                 continue;
             }
-            let t = store.get(k)?;
-            weights.push(DenseWeight { weight: t.ptr });
-            weight_meta.push(WeightMeta {
-                name: k.clone(),
-                dtype: t.dtype,
-                numel: t.num_elements(),
-            });
+            let (dw, meta) = super::tp::load_sharded(store, k, spec.mixer, spec.mlp, config, gpu)?;
+            weights.push(dw);
+            weight_meta.push(meta);
         }
         layers.push(Box::new(K3BoundLayer {
             index: spec.index,

@@ -3,6 +3,9 @@
 #
 #   HEAD_IP=... WORKER_IP=... MASTER_ADDR=... bash docs/k3/scripts/start-k3-tp2.sh
 #
+# Both ranks need THIS commit's spark-k3 (`supports_tp`). Rebuild on the
+# head and copy `$BIN` to the worker, or point BIN at a shared path.
+#
 # Pin RoCE: NCCL_SOCKET_IFNAME=enp1s0f1np1 NCCL_IB_HCA=rocep1s0f1
 # (enp1s0f0np0 is Down on this lab.)
 set -euo pipefail

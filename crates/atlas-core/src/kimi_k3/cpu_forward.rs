@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 
-use super::attnres::{attnres_mix, rms_norm};
+use super::attnres::rms_norm;
 use super::cache::{HybridCache, LayerCache, MlaKv};
 use super::cpu_weights::{
     Ablation, DenseMlp, K3CpuLayer, K3CpuModel, KdaWeights, MixerW, MlaWeights, MlpW, MoeWeights,
@@ -15,53 +15,11 @@ use super::mla::{MlaConfig, mla_decode_token};
 use super::ops::{embed_token, matvec, matvec_column_tp};
 use super::situ::{sigmoid, situ_glu_vec};
 
-/// Intra-block AttnRes stream (completed blocks + running partial).
-///
-/// Matches HF `KimiDecoderLayer._forward_attn_residual`: mix the incoming
-/// prefix with already-archived blocks, then at `layer_idx % block_size == 0`
-/// archive that incoming prefix and reset the intra-block sum. Layer 0
-/// therefore archives the embedding as its own source, not `embed + mixer`.
-#[derive(Clone, Debug)]
-pub struct AttnResStream {
-    pub completed: Vec<Vec<f32>>,
-    pub partial: Vec<f32>,
-    block_size: usize,
-}
+mod stream;
+pub use stream::AttnResStream;
 
-impl AttnResStream {
-    pub fn new(hidden: usize, block_size: usize) -> Self {
-        Self {
-            completed: Vec::new(),
-            partial: vec![0.0; hidden],
-            block_size: block_size.max(1),
-        }
-    }
-
-    fn sources(&self) -> Vec<Vec<f32>> {
-        // sources[0] is the skip (current prefix). Mix=0 must return this,
-        // not the first archived block.
-        let mut s = vec![self.partial.clone()];
-        s.extend(self.completed.iter().cloned());
-        s
-    }
-
-    pub fn mix(&self, query: &[f32], norm_w: &[f32], eps: f32, mix: f32) -> Vec<f32> {
-        attnres_mix(&self.sources(), query, norm_w, eps, mix)
-    }
-
-    fn add(&mut self, delta: &[f32]) {
-        for (p, d) in self.partial.iter_mut().zip(delta) {
-            *p += *d;
-        }
-    }
-
-    fn archive_incoming_at_block_start(&mut self, layer_idx: usize) {
-        if layer_idx % self.block_size == 0 {
-            self.completed.push(self.partial.clone());
-            self.partial.fill(0.0);
-        }
-    }
-}
+/// After row-parallel `o_proj` / dense MLP `down`. None at TP=1.
+pub type HiddenReduce<'a> = &'a dyn Fn(&mut [f32]) -> Result<()>;
 
 /// Per-layer geometry the GPU wrapper and `forward_token` share.
 ///
@@ -78,6 +36,8 @@ pub struct K3LayerCtx<'a> {
     pub dense_intermediate: usize,
     pub eps: f32,
     pub rope_theta: f32,
+    /// After row-parallel `o_proj` (and dense MLP `down`). None at TP=1.
+    pub reduce_hidden: Option<HiddenReduce<'a>>,
 }
 
 impl<'a> K3LayerCtx<'a> {
@@ -92,6 +52,7 @@ impl<'a> K3LayerCtx<'a> {
             dense_intermediate: model.dense_intermediate,
             eps: model.eps,
             rope_theta: model.rope_theta,
+            reduce_hidden: None,
         }
     }
 }
@@ -295,7 +256,7 @@ where
     // Archive the *incoming* prefix (HF), not the post-mixer partial.
     stream.archive_incoming_at_block_start(layer.spec.index);
     let x = rms_norm(&h, &layer.input_norm, eps);
-    let mix_out = match (&layer.mixer, mixer_state) {
+    let mut mix_out = match (&layer.mixer, mixer_state) {
         (MixerW::Kda(w), LayerCache::Kda(state)) => {
             kda_mixer(w, &x, ctx.kda, state, eps, ablation, &mut kda_decode)?
         }
@@ -315,18 +276,27 @@ where
             layer.spec.index
         ),
     };
+    if let Some(f) = ctx.reduce_hidden {
+        f(&mut mix_out)?;
+    }
     stream.add(&mix_out);
     let h = stream.mix(&layer.mlp_res_proj, &layer.mlp_res_norm, eps, mix);
     let x = rms_norm(&h, &layer.post_norm, eps);
     let mlp_out = match &layer.mlp {
-        MlpW::Dense(w) => dense_mlp(
-            w,
-            &x,
-            ctx.hidden,
-            ctx.dense_intermediate,
-            ctx.situ_beta,
-            ctx.situ_linear_beta,
-        ),
+        MlpW::Dense(w) => {
+            let mut y = dense_mlp(
+                w,
+                &x,
+                ctx.hidden,
+                ctx.dense_intermediate,
+                ctx.situ_beta,
+                ctx.situ_linear_beta,
+            );
+            if let Some(f) = ctx.reduce_hidden {
+                f(&mut y)?;
+            }
+            y
+        }
         MlpW::Moe(w) => moe_mlp_with(w, &x, ctx, ablation.force_expert, &mut moe_experts)?,
     };
     stream.add(&mlp_out);
@@ -471,6 +441,13 @@ fn dense_mlp(
     situ_beta: f32,
     situ_linear_beta: f32,
 ) -> Vec<f32> {
+    // Local intermediate under TP (gate/up column-sharded). `inter` is the
+    // config full width; prefer the weight's own row count.
+    let inter = if hidden == 0 {
+        inter
+    } else {
+        w.gate.len() / hidden
+    };
     let gate = matvec(&w.gate, x, inter, hidden);
     let up = matvec(&w.up, x, inter, hidden);
     let mid = situ_glu_vec(&gate, &up, situ_beta, situ_linear_beta);
@@ -517,31 +494,4 @@ where
         }
     }
     Ok(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn attnres_archives_incoming_at_block_start() {
-        let mut s = AttnResStream::new(2, 4);
-        s.partial = vec![1.0, 2.0];
-        s.archive_incoming_at_block_start(0);
-        assert_eq!(s.completed, vec![vec![1.0, 2.0]]);
-        assert_eq!(s.partial, vec![0.0, 0.0]);
-        s.add(&[0.5, 0.25]);
-        assert_eq!(s.partial, vec![0.5, 0.25]);
-        assert_eq!(
-            s.completed[0],
-            vec![1.0, 2.0],
-            "archive is embed, not embed+mixer"
-        );
-        s.archive_incoming_at_block_start(1);
-        assert_eq!(s.completed.len(), 1, "non-boundary layer must not archive");
-        s.archive_incoming_at_block_start(4);
-        assert_eq!(s.completed.len(), 2);
-        assert_eq!(s.completed[1], vec![0.5, 0.25]);
-        assert_eq!(s.partial, vec![0.0, 0.0]);
-    }
 }
