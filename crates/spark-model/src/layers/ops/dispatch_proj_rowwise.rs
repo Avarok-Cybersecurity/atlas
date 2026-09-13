@@ -10,10 +10,12 @@
 //! ⚠ The GEMM at the end of this path — `fp8_gemm_act_weight_t_rowwise` —
 //! returns NOT_SUPPORTED on sm_121 (measured 2026-08-15, reproduced through the
 //! block-scaled path with `ATLAS_CUBLAS_FP8=1`, so it is the GEMM and not the
-//! weights). The mixed-precision loader therefore routes through
-//! `cublas_bf16_proj` instead; see `weight_loader/qwen35_dense/rowwise_fp8.rs`.
-//! This module stays because the passthrough is what a working per-row FP8
-//! kernel would plug into.
+//! weights). The mixed-precision loader therefore routes through a ONE-TIME
+//! ledgered BF16 dequant instead (`qwen3_ssm/rowwise_bf16.rs`, #917); see
+//! `weight_loader/qwen35_dense/rowwise_fp8.rs`. This module stays because the
+//! passthrough is what a working per-row FP8 kernel would plug into — and it
+//! is the route that would retire that BF16 slab, since a per-row checkpoint
+//! reaches `fp8_gemm_act_weight_t_rowwise` with no conversion and no copy.
 
 // Everything here names its paths explicitly (`super::DerivedWeights`,
 // `crate::weight_map::…`), so this file needs no glob import — unlike

@@ -514,7 +514,9 @@ pub trait Model: Send + Sync {
     /// model keeps no decode-rollback snapshots — appropriate for
     /// pure-attention models and for SSM models when the snapshot pool
     /// has no capacity reserved. SSM models with a populated pool
-    /// override to `ROLLBACK_RESTEER_CAP + 1`.
+    /// override to the depth `ssm_reserve::decode_rollback_ring_slots`
+    /// decided — 8 by default, or whatever `--ssm-decode-ring-slots` /
+    /// preflight's free-memory fit published (#915).
     fn decode_rollback_ring_slots(&self) -> usize {
         0
     }

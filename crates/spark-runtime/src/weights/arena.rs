@@ -154,7 +154,12 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
     }
 
     fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
-        let mut first_error = None;
+        // Derived buffers FIRST (#736/#915): they are re-encodings of the
+        // tensors below and nothing reads one after the other is gone, but
+        // freeing the source a derivation was built from while the derivation
+        // is still listed would make a later failure here impossible to
+        // attribute. Carried over when this impl absorbed main's copy.
+        let mut first_error = self.derived.release(gpu).err();
         // `drain` rather than iterate: the map must not be left holding
         // pointers to memory that is gone, and it makes this idempotent.
         for (name, tensor) in self.weights.drain() {

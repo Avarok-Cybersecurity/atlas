@@ -43,6 +43,7 @@ fn run_batch(native_fp8: bool, rows: u32) {
     layer.w8a16_gemm_k = KernelHandle(0xF08);
     // Also prove the original native fallback when optional fast kernels are absent.
     layer.w8a16_gemv_batch4_k = KernelHandle(0);
+    layer.w8a16_gemv_batch16_k = KernelHandle(0);
     layer.w8a16_gemm_pipelined_k = KernelHandle(0);
     layer.act_mul = KernelHandle(0xAC7);
     let fp8 = Fp8Weight {

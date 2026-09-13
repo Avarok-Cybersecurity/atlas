@@ -191,6 +191,10 @@ impl WeightTensor {
 /// All model weights loaded onto the GPU, keyed by HuggingFace name.
 pub struct WeightStore {
     weights: HashMap<String, WeightTensor>,
+    /// Buffers a loader derived from these tensors — fused concats, transposed
+    /// twins, requants. Owned here so teardown RELEASES them instead of the
+    /// backend sweep reclaiming them unowned (#736, #915); see `derived.rs`.
+    derived: DerivedStore,
     /// Tensors deliberately NOT uploaded, with where they live on disk.
     ///
     /// The n-gram embedding tables of the LongCat / Qwen3.8-Flash-Next family
@@ -254,6 +258,7 @@ impl WeightStore {
             weights,
             deferred: HashMap::new(),
             arenas: std::collections::BTreeMap::new(),
+            derived: DerivedStore::default(),
         }
     }
 
@@ -343,6 +348,15 @@ impl WeightStore {
             count += 1;
         }
         Ok((count, bytes))
+    }
+
+    /// The owner for buffers a loader derives from these tensors.
+    ///
+    /// `&self` because `ModelWeightLoader::load_layers` takes `&WeightStore`;
+    /// the interior `Mutex` is the whole reason `DerivedStore` exists as a
+    /// type rather than a `Vec` field. See `weights/derived.rs`.
+    pub fn derived(&self) -> &DerivedStore {
+        &self.derived
     }
 
     /// Total bytes across all weight tensors on the GPU.
@@ -496,6 +510,8 @@ impl SafetensorsLoader {
 /// `embedders.2` must precede `embedders.10`; a plain lexicographic sort puts
 /// `10` first and silently mis-maps every table after the ninth.
 pub mod adapter;
+mod derived;
+pub use derived::DerivedStore;
 pub mod exl3;
 mod gguf;
 mod loader;
@@ -524,6 +540,12 @@ pub use prefix_detect::auto_detect_weight_prefix;
 // invariant: a store pointer is either a per-tensor allocation base (freed
 // per entry) or an interior view of a `WeightArena` the store owns (freed
 // once, with the arena) — see the module docs.
+//
+// MERGE NOTE: main grew a second copy of this impl here, with a
+// `derived.release()` added in front of the weight drain (#736/#915). Two impls
+// of one trait do not compile, so only one survives — and taking ours whole
+// would have dropped that release silently, which is the whole hazard of a
+// clean-looking merge. The call is carried into `arena.rs` instead.
 mod arena;
 pub use arena::WeightArena;
 

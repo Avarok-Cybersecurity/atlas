@@ -180,6 +180,19 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
             "use snapshot (default, wired) or replay (experimental scaffold).",
         ));
     }
+    // `--ssm-decode-ring-slots`: same SSOT rule — the parse that validates is
+    // the parse `publish_kernel_flags` publishes through (#915).
+    if let Err(why) = spark_model::ssm_reserve::parse_decode_ring_slots(&args.ssm_decode_ring_slots)
+    {
+        v.push(Violation::new(
+            format!(
+                "--ssm-decode-ring-slots '{}' is not a valid value.",
+                args.ssm_decode_ring_slots
+            ),
+            why,
+            "use auto (default: preflight sizes the ring from free memory) or 0..=8.",
+        ));
+    }
     // #435: the exact-verify arm's kernels are FP32 readers, so an FP16
     // h-state pool disables it (`GdnFlags::verify_exact_active`). Honouring
     // `--ssm-h-dtype f16` by SILENTLY ignoring an explicit `--exact-verify`
