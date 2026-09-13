@@ -462,7 +462,9 @@ impl TransformerModel {
             for j in 0..ks[i] {
                 let r = off[i] + j;
                 let pos = seq.seq_len + j;
-                positions[r] = pos as u32;
+                // Rotary position, not the token index (see SequenceState::rope_pos):
+                // the two differ by the vision pad-run gap. Slot/block math keeps `pos`.
+                positions[r] = seq.rope_pos_at(pos);
                 let physical_block = seq.physical_block_for(pos / bs).unwrap_or(0);
                 slots[r] = (physical_block as i64) * (bs as i64) + ((pos % bs) as i64);
                 // Per-row causal clamp: row r attends through its own position.
@@ -800,9 +802,7 @@ impl TransformerModel {
                             // derived from a moving `seq_len` lands one row off.
                             self.pending_verify_span
                                 .lock()
-                                .map_err(|_| {
-                                    anyhow::anyhow!("verify span stash poisoned")
-                                })?
+                                .map_err(|_| anyhow::anyhow!("verify span stash poisoned"))?
                                 .insert(seqs[i].slot_idx, (base_seq_len, ks[i]));
                         }
                         // ── ONE call per sequence, not one per row ──
@@ -1091,7 +1091,10 @@ impl TransformerModel {
             if let Some(t0) = t_head {
                 let _ = self.gpu.synchronize(stream);
                 let us_head = t0.elapsed().as_micros();
-                let n_attn = self.layers.len().saturating_sub(self.config.num_ssm_layers());
+                let n_attn = self
+                    .layers
+                    .len()
+                    .saturating_sub(self.config.num_ssm_layers());
                 let n_ssm = self.config.num_ssm_layers();
                 tracing::info!(
                     r_total,
@@ -1101,7 +1104,11 @@ impl TransformerModel {
                     head_ms = us_head as f64 / 1000.0,
                     attn_layers = n_attn,
                     ssm_layers = n_ssm,
-                    attn_us_per_layer = if n_attn > 0 { us_attn / n_attn as u128 } else { 0 },
+                    attn_us_per_layer = if n_attn > 0 {
+                        us_attn / n_attn as u128
+                    } else {
+                        0
+                    },
                     ssm_us_per_layer = if n_ssm > 0 { us_ssm / n_ssm as u128 } else { 0 },
                     "hc batched verify stage split (SYNCED per layer — split, not total)"
                 );

@@ -94,7 +94,7 @@ impl TransformerModel {
         let meta_base = self.buffers.scratch().offset(32768);
         let max_blocks = self.max_blocks_per_seq;
 
-        let positions: Vec<u32> = (0..k).map(|t| (seq.seq_len + t) as u32).collect();
+        let positions: Vec<u32> = (0..k).map(|t| seq.rope_pos_at(seq.seq_len + t)).collect();
         // SAFETY: `positions` is built one line above by `(0..k).map(..)
         // .collect()`, so `positions.len() == k` exactly (collect on a
         // `Range` yields one element per step) — `k * 4 == size_of_val(&

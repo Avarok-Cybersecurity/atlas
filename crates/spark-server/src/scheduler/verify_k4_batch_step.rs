@@ -337,7 +337,13 @@ pub(super) fn step_verify_k4_batched(
                 continue;
             }
             let tokens: Vec<u32> = group.iter().map(|&i| batch[i].last_token).collect();
-            let positions: Vec<usize> = group.iter().map(|&i| batch[i].seq.seq_len).collect();
+            // Rotary positions for the drafter (SequenceState::rope_pos): after a
+            // vision prompt these run behind the token index, and the MTP head
+            // takes its slot/seq_len from its own state, not from these.
+            let positions: Vec<usize> = group
+                .iter()
+                .map(|&i| batch[i].seq.rope_pos() as usize)
+                .collect();
             let stash_idx: Vec<usize> = group.to_vec();
             let result = {
                 let mut seq_refs: Vec<&mut SequenceState> = Vec::with_capacity(group.len());

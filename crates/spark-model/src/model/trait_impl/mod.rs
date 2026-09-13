@@ -515,7 +515,9 @@ impl Model for TransformerModel {
                     stream,
                 )?
                 .to_vec()),
-            k => anyhow::bail!("decode_verify_graphed_kn: no verify path at K={k} rows on this model"),
+            k => anyhow::bail!(
+                "decode_verify_graphed_kn: no verify path at K={k} rows on this model"
+            ),
         }
     }
     fn can_batch_verify(&self, ks: &[usize]) -> bool {
@@ -1016,6 +1018,9 @@ impl Model for TransformerModel {
     fn ep_broadcast_tokens(&self, tokens: &[u32]) -> Result<Vec<u32>> {
         self.ep_broadcast_tokens_dispatch(tokens)
     }
+    fn ep_exchange_vision(&self, tokens: &[u32]) -> Result<()> {
+        self.ep_exchange_vision_dispatch(tokens)
+    }
     fn default_stream(&self) -> u64 {
         self.default_stream_dispatch()
     }
@@ -1097,9 +1102,8 @@ impl TransformerModel {
         // rather than two builds. Read once: this is a per-checkpoint path and
         // an un-memoised `env::var` here would be its own small regression.
         static BATCHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let batched_enabled = *BATCHED.get_or_init(|| {
-            std::env::var("ATLAS_AUX_COLLECT_BATCHED").as_deref() != Ok("0")
-        });
+        let batched_enabled = *BATCHED
+            .get_or_init(|| std::env::var("ATLAS_AUX_COLLECT_BATCHED").as_deref() != Ok("0"));
 
         // Pass 1 — plan. `bytes == 0` means "this layer has no blob for this
         // sequence" and contributes nothing, matching the old `Ok(None)`.
@@ -1140,7 +1144,11 @@ impl TransformerModel {
         latch.get_or_init(|| {
             tracing::info!(
                 "aux collect ({}): {} — {} batched layer(s), {} legacy, {} B first call",
-                if skip_rewindable { "verify" } else { "snapshot" },
+                if skip_rewindable {
+                    "verify"
+                } else {
+                    "snapshot"
+                },
                 if batched_enabled {
                     "BATCHED (1 sync)"
                 } else {
@@ -1156,7 +1164,9 @@ impl TransformerModel {
         // take the SINGLE sync that replaces one drain per layer.
         let mut blobs: Vec<(u32, Vec<u8>)> = Vec::with_capacity(batched.len() + unbatched.len());
         if total > 0 {
-            let mut guard = self.aux_staging.acquire_at_least(self.gpu.as_ref(), total)?;
+            let mut guard = self
+                .aux_staging
+                .acquire_at_least(self.gpu.as_ref(), total)?;
             {
                 let buf = guard.as_mut_slice();
                 for &(i, off, len) in &batched {
@@ -1179,9 +1189,11 @@ impl TransformerModel {
 
         // Pass 3 — legacy path for anything that did not opt in.
         for &i in &unbatched {
-            if let Some(blob) =
-                self.layers[i].snapshot_aux(seq.layer_states[i].as_ref(), self.gpu.as_ref(), stream)?
-            {
+            if let Some(blob) = self.layers[i].snapshot_aux(
+                seq.layer_states[i].as_ref(),
+                self.gpu.as_ref(),
+                stream,
+            )? {
                 blobs.push((i as u32, blob));
             }
         }

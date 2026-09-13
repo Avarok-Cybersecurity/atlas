@@ -102,7 +102,9 @@ impl TransformerModel {
                     // Upload per-token attention metadata
                     let meta_base = self.buffers.scratch().offset(32768);
                     let max_blocks = seq.block_table.len() as u32;
-                    let pos_val = pos as u32;
+                    // Rotary position; `pos` above stays the token index
+                    // for the block/slot math.
+                    let pos_val = seq.rope_pos_at(pos);
                     self.gpu
                         .copy_h2d_async(&pos_val.to_le_bytes(), meta_base, stream)?;
                     let block_idx = seq

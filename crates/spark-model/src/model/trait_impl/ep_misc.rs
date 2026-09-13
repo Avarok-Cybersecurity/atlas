@@ -81,6 +81,10 @@ impl TransformerModel {
         Ok(())
     }
 
+    pub(super) fn ep_exchange_vision_dispatch(&self, tokens: &[u32]) -> Result<()> {
+        TransformerModel::ep_exchange_vision(self, tokens)
+    }
+
     pub(super) fn ep_broadcast_tokens_dispatch(&self, tokens: &[u32]) -> Result<Vec<u32>> {
         // Delegate to the inherent method (TransformerModel::ep_broadcast_tokens)
         // which handles per-token fallback via ep_broadcast_u32.

@@ -165,7 +165,10 @@ impl TransformerModel {
         let meta_base = self.buffers.scratch().offset(32768);
         let max_blocks = seq.block_table.len() as u32;
 
-        let pos_val = seq.seq_len as u32;
+        // ROTARY position, not the token index: they differ by the pad-run
+        // gap once the prompt contained an image. Slot/block math below
+        // deliberately keeps using `seq.seq_len`.
+        let pos_val = seq.rope_pos();
         self.gpu
             .copy_h2d_async(&pos_val.to_le_bytes(), meta_base, stream)?;
 

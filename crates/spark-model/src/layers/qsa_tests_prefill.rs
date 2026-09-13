@@ -310,15 +310,18 @@ fn tc_prefill_attn_smem_is_two_ctas_per_sm() {
     // KPAD is 2 so the K^T store hits 32 distinct banks; 4 gave a 2-way
     // conflict on every K store and cost 1024 B more.
     assert_eq!(ops::QSA_PA_TC_SMEM, 49_088, "shared-memory layout drifted");
-    assert!(
-        ops::QSA_PA_TC_SMEM <= ops::MAX_DYNAMIC_SMEM,
-        "past the sm_121 opt-in ceiling"
-    );
+    // Both bounds are known at compile time, so assert them at compile time:
+    // a runtime `assert!` over two constants is a lint (the compiler can see
+    // the answer) and, worse, it only fires if someone runs the test. As
+    // `const _`, a layout change that breaks either bound fails the BUILD.
     // 102400 B per SM on GB10; two CTAs is the design point.
-    assert!(
+    const _: () = assert!(
+        ops::QSA_PA_TC_SMEM <= ops::MAX_DYNAMIC_SMEM,
+        "QSA_PA_TC_SMEM is past the sm_121 opt-in ceiling"
+    );
+    const _: () = assert!(
         2 * ops::QSA_PA_TC_SMEM <= 102_400,
-        "only one CTA per SM fits: {} B",
-        ops::QSA_PA_TC_SMEM
+        "QSA_PA_TC_SMEM leaves only one CTA per SM"
     );
 }
 
@@ -347,7 +350,9 @@ fn qsa_prefill_attn_tc_matches_cpu() {
     // row is correct (every head reads the same KV row).
     let (rows, nq, nkv, hd, ratio, topk, bs) =
         (5usize, 12usize, 1usize, 256usize, 4usize, 24usize, 16usize);
-    assert!(ops::qsa_prefill_attn_tc_ok(nq as u32, nkv as u32, hd as u32));
+    assert!(ops::qsa_prefill_attn_tc_ok(
+        nq as u32, nkv as u32, hd as u32
+    ));
     // complete = (pos+1)/ratio must be >= topk so every list entry is a real
     // block, as it is in production (this kernel only runs past the inert bound).
     let first_pos = 101usize; // complete = 25 > topk = 24; tail = 2 at row 0
@@ -457,7 +462,10 @@ fn qsa_prefill_attn_tc_matches_cpu() {
         }
     }
     println!("qsa_prefill_attn_tc vs CPU: worst cos = {worst_cos:.9}");
-    assert!(worst_cos > 0.999, "TC attention kernel diverges: {worst_cos}");
+    assert!(
+        worst_cos > 0.999,
+        "TC attention kernel diverges: {worst_cos}"
+    );
 }
 
 /// Minimal repro for the dense chunk-0 flash zeroing rows past ~1280 at

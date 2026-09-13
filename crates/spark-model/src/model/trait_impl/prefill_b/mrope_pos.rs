@@ -11,6 +11,13 @@
 /// Append the (T, H, W) streams for `chunk_tokens` to the three output
 /// vectors, starting the running position at `start_pos`.
 ///
+/// Returns the running position AFTER the walk — the index the next token
+/// would take. The caller needs it because a vision item consumes far more
+/// TOKENS than it consumes POSITIONS, so the rotary stream and the token
+/// index diverge permanently at the first image and everything afterwards
+/// (later chunks, and every decode step) has to resume from this value
+/// rather than from its own token index.
+///
 /// Matches HF Qwen3-VL's `get_rope_index` / `get_vision_position_ids`:
 ///
 /// - a TEXT token takes `T = H = W = pos` and advances `pos` by one;
@@ -40,7 +47,7 @@ pub(crate) fn build(
     t_out: &mut Vec<u32>,
     h_out: &mut Vec<u32>,
     w_out: &mut Vec<u32>,
-) {
+) -> u32 {
     let is_pad = |tok: u32| tok == image_pad || tok == video_pad;
     let mut pos = start_pos;
     let mut item = grid_base;
@@ -78,6 +85,7 @@ pub(crate) fn build(
             i += 1;
         }
     }
+    pos
 }
 
 #[cfg(test)]

@@ -293,6 +293,8 @@ pub fn start_chunked_prefill(
             model.ep_broadcast_cmd(0)?; // chunk_start
             model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
             model.ep_broadcast_tokens(&prompt_tokens)?;
+            // Vision payload travels with the tokens (see Model::ep_exchange_vision):
+            model.ep_exchange_vision(&prompt_tokens)?;
             Ok(())
         })() {
             let msg = format!("deferred prefill EP broadcast failed: {e:#}");
@@ -384,6 +386,10 @@ pub fn start_chunked_prefill(
         if let Some(s) = vision_slice {
             model.set_vision_slice_base(s.patch_row_offset, s.grid_index_offset, s.num_images);
         }
+        // AFTER the slice base is set, so the worker receives the same bases the
+        // head will splice and walk with. This is the vision prefill path — the
+        // one that was shipping an image to rank 0 only.
+        model.ep_exchange_vision(&prompt_tokens)?;
         let _pt0 = std::time::Instant::now();
         let chunk_res = model.prefill_chunk(
             &prompt_tokens,

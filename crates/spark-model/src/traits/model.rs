@@ -703,9 +703,15 @@ pub trait Model: Send + Sync {
                 .decode_verify_graphed_k3(&[tokens[0], tokens[1], tokens[2]], seq, stream)?
                 .to_vec()),
             4 => Ok(self
-                .decode_verify_graphed_k4(&[tokens[0], tokens[1], tokens[2], tokens[3]], seq, stream)?
+                .decode_verify_graphed_k4(
+                    &[tokens[0], tokens[1], tokens[2], tokens[3]],
+                    seq,
+                    stream,
+                )?
                 .to_vec()),
-            k => anyhow::bail!("decode_verify_graphed_kn: no verify path at K={k} rows on this model"),
+            k => anyhow::bail!(
+                "decode_verify_graphed_kn: no verify path at K={k} rows on this model"
+            ),
         }
     }
 
@@ -1161,6 +1167,15 @@ pub trait Model: Send + Sync {
     /// Uses a single NCCL broadcast instead of per-token broadcasts.
     fn ep_broadcast_tokens(&self, _tokens: &[u32]) -> Result<Vec<u32>> {
         Ok(Vec::new()) // no-op for non-EP models
+    }
+
+    /// EP: hand rank 0's vision embeddings and grids to every other rank.
+    ///
+    /// Must be called on EVERY rank at the same point in the prefill command
+    /// stream — right after the prompt tokens — because it runs a fixed
+    /// sequence of collectives whether or not the prompt has an image.
+    fn ep_exchange_vision(&self, _tokens: &[u32]) -> Result<()> {
+        Ok(()) // no-op for non-EP models
     }
 
     /// Trim the MTP proposer's KV cache after verification.

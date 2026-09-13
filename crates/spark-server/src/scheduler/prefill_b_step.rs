@@ -261,6 +261,8 @@ pub fn prefill_request(
         model.ep_broadcast_cmd(0)?; // chunk_start = 0 (non-chunked)
         model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
         model.ep_broadcast_tokens(&prompt_tokens)?;
+        // Vision payload travels with the tokens (see Model::ep_exchange_vision):
+        model.ep_exchange_vision(&prompt_tokens)?;
 
         let logits = model.prefill(&prompt_tokens, &mut seq, 0)?;
         // #131: constrain the FIRST token with the grammar too (and advance

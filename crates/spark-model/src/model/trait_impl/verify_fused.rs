@@ -99,7 +99,7 @@ impl TransformerModel {
         let max_blocks = self.max_blocks_per_seq;
 
         // Positions: [seq_len, seq_len+1, ..., seq_len+m-1]
-        let positions: Vec<u32> = (0..m).map(|t| (seq.seq_len + t) as u32).collect();
+        let positions: Vec<u32> = (0..m).map(|t| seq.rope_pos_at(seq.seq_len + t)).collect();
         // SAFETY: `positions` is `(0..m).map(..).collect()` on the line above,
         // so `positions.len() == m` exactly and `m * 4 == size_of_val(&
         // positions[..])`. `m` is `tokens.len()` (line 63), not an

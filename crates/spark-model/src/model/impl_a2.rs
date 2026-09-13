@@ -218,6 +218,123 @@ impl TransformerModel {
         }
     }
 
+    /// Share rank 0's vision embeddings — and the grids that place them — with
+    /// every other rank, immediately before a prefill chunk.
+    ///
+    /// Only rank 0 receives the image bytes, so only rank 0 ran the ViT. Every
+    /// other rank embedded the prompt itself and found `<|image_pad|>` where
+    /// the picture should be: it kept the raw placeholder row, and with no
+    /// grids it also built a LINEAR position stream where rank 0 built
+    /// (T, H, W). Under TP the ranks all-reduce every layer, so half of every
+    /// contribution at every image position came from a hidden state with no
+    /// image in it, at the wrong positions. The model still answered
+    /// fluently — it saw a blurred impression of the picture and described it
+    /// with confidence, which is why this survived so long behind checks that
+    /// only ever looked at rank 0.
+    ///
+    /// Wire order, always the same number of collectives on every rank so the
+    /// stream cannot desynchronise: item count, then (when non-zero) the
+    /// flattened `(t_len, gh, gw)` grids, the row count, the slice bases, and
+    /// finally the packed BF16 rows broadcast straight out of one rank's
+    /// `buf_out` into the others' — same buffer, same role, no staging.
+    pub(super) fn ep_exchange_vision(&self, tokens: &[u32]) -> Result<()> {
+        if !self.multi_rank_protocol_active() {
+            return Ok(());
+        }
+        // Gate on THIS prompt's tokens, which every rank already holds
+        // identically, so the ranks agree without a handshake. The gate is not
+        // an optimisation detail: the head never clears its vision state
+        // between requests, so an unconditional exchange would re-broadcast the
+        // last image — or the last VIDEO — on every text-only prefill that
+        // followed it.
+        if !self.tokens_have_vision_pad(tokens) {
+            return Ok(());
+        }
+        let comm = self.comm.as_ref().expect("ep_exchange_vision without comm");
+        let is_head = comm.rank() == 0;
+
+        let grids = if is_head {
+            self.vision_image_grids.lock().clone()
+        } else {
+            Vec::new()
+        };
+        let n_items = self.ep_broadcast_u32(grids.len() as u32)? as usize;
+        if n_items == 0 {
+            if !is_head {
+                self.vision_image_grids.lock().clear();
+                *self.vision_embed_patches.lock() = 0;
+            }
+            return Ok(());
+        }
+
+        let flat: Vec<u32> = if is_head {
+            grids
+                .iter()
+                .flat_map(|&(t, h, w)| [t as u32, h as u32, w as u32])
+                .collect()
+        } else {
+            vec![0u32; n_items * 3]
+        };
+        let flat = self.ep_broadcast_tokens(&flat)?;
+
+        let n_rows = self.ep_broadcast_u32(if is_head {
+            *self.vision_embed_patches.lock() as u32
+        } else {
+            0
+        })? as usize;
+        // Co-dispatch bases travel too: the splice and the MRoPE walk both index
+        // the shared packed buffer through them, and a worker that defaulted to
+        // zero would read another request's rows.
+        let row_base = self.ep_broadcast_u32(if is_head {
+            *self.vision_row_base.lock() as u32
+        } else {
+            0
+        })? as usize;
+        let grid_base = self.ep_broadcast_u32(if is_head {
+            *self.vision_grid_base.lock() as u32
+        } else {
+            0
+        })? as usize;
+        let owned = self.ep_broadcast_u32(if is_head {
+            *self.vision_owned_images.lock() as u32
+        } else {
+            0
+        })? as usize;
+
+        let ve = self
+            .vision_encoder
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("ep_exchange_vision: rank has no vision encoder"))?;
+        // The worker never saw an image, so its ViT scratch is still unallocated
+        // (it is deferred to the first image precisely to keep text-only serving
+        // cheap). Allocate before using `buf_out` as the broadcast destination.
+        ve.scratch_init(self.gpu.as_ref())?;
+        let byte_len = n_rows
+            .checked_mul(ve.out_hidden_size)
+            .and_then(|e| e.checked_mul(2))
+            .ok_or_else(|| anyhow::anyhow!("ep_exchange_vision: row payload overflows"))?;
+        anyhow::ensure!(
+            n_rows <= ve.p_max,
+            "ep_exchange_vision: {n_rows} rows exceed encoder capacity {} — the \
+             broadcast would write past buf_out",
+            ve.p_max
+        );
+        comm.broadcast(ve.scratch().buf_out.0, byte_len, 0)?;
+
+        if !is_head {
+            *self.vision_image_grids.lock() = flat
+                .chunks_exact(3)
+                .map(|c| (c[0] as usize, c[1] as usize, c[2] as usize))
+                .collect();
+            *self.vision_embed_patches.lock() = n_rows;
+            *self.vision_row_base.lock() = row_base;
+            *self.vision_grid_base.lock() = grid_base;
+            *self.vision_owned_images.lock() = owned;
+            self.gpu.synchronize(self.gpu.default_stream())?;
+        }
+        Ok(())
+    }
+
     /// F83 (2026-04-30): all-reduce-min on a single u32 across all
     /// EP ranks. Used by the prefix-cache cache-hit handshake so head
     /// and worker agree on the same `matched_tokens` count even when
@@ -602,6 +719,10 @@ impl TransformerModel {
                 let chunk_start = self.ep_broadcast_u32(0)? as usize;
                 let full_len = self.ep_broadcast_u32(0)? as usize;
                 let full_tokens = self.ep_broadcast_tokens(&vec![0u32; full_len])?;
+                // Receive rank 0's ViT output before embedding: the splice and
+                // the MRoPE walk both read this state, and without it this rank
+                // embeds the raw placeholder token at every image position.
+                self.ep_exchange_vision(&full_tokens)?;
                 // Compute is_last from chunk bounds — must match rank 0's
                 // value so Marconi skip branches are identical (bug #33).
                 let is_last = chunk_start + chunk_len >= full_len;

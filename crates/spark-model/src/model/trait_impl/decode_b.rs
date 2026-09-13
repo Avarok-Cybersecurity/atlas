@@ -330,8 +330,14 @@ impl TransformerModel {
             // SAFETY: Single-threaded scheduler access.
             let stg = unsafe { &mut *self.pinned_staging.get() };
             stg.positions.clear();
+            // Rotary base, not the token index. This mixed path builds only
+            // the scalar T stream (positions_h/_w alias it below), so a
+            // multimodal prompt prefilled here is already degraded; carrying
+            // the delta at least keeps it from ALSO jumping into the gap the
+            // pad run opened.
+            let rope_base = (proc_start as i64 + prefill_seq.mrope_delta).max(0) as u32;
             stg.positions
-                .extend(proc_start as u32..(proc_start + proc_count) as u32);
+                .extend(rope_base..rope_base + proc_count as u32);
 
             if !needs_paged {
                 stg.slots.clear();

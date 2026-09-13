@@ -69,13 +69,28 @@ mod tests {
     }
 
     #[test]
-    fn km_arm_takes_rows_four_to_eight_when_available() {
-        for rows in 4..=8 {
-            assert_eq!(hc_ffn_dispatch(rows, true, false, false, true), HcFfnDispatch::Km);
-            assert_eq!(hc_ffn_dispatch(rows, false, false, false, true), HcFfnDispatch::Prefill);
+    fn km_arm_takes_rows_four_to_sixteen_when_available() {
+        // The arm was widened from 8 to 16 rows when the batch16 GEMV router
+        // landed; the range here is the shipped one, not the original.
+        for rows in 4..=16 {
+            assert_eq!(
+                hc_ffn_dispatch(rows, true, false, false, true),
+                HcFfnDispatch::Km
+            );
+            assert_eq!(
+                hc_ffn_dispatch(rows, false, false, false, true),
+                HcFfnDispatch::Prefill
+            );
         }
-        assert_eq!(hc_ffn_dispatch(9, true, false, false, true), HcFfnDispatch::Prefill);
-        assert_eq!(hc_ffn_dispatch(3, true, false, false, true), HcFfnDispatch::K3);
+        assert_eq!(
+            hc_ffn_dispatch(17, true, false, false, true),
+            HcFfnDispatch::Prefill,
+            "one row past the widened arm falls back to the prefill path"
+        );
+        assert_eq!(
+            hc_ffn_dispatch(3, true, false, false, true),
+            HcFfnDispatch::K3
+        );
         // Native EXL3 replay keeps its four-row arm ahead of Km.
         assert_eq!(
             hc_ffn_dispatch(4, true, true, true, true),
