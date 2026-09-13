@@ -30,6 +30,9 @@ pub struct RemoteRunner {
     pub node: Node,
     /// Distinguishes this campaign's jobs from a previous one's on the node.
     pub run_id: String,
+    /// The anchor as a full 40-hex commit: the node builds THIS, and the
+    /// wire refuses an abbreviation (`ctx.anchor` may be one).
+    pub anchor_full: String,
     pub cancel: Arc<AtomicBool>,
     /// Where fetched files land before placement: `<log_dir>/<node>/<job>/`.
     pub scratch: PathBuf,
@@ -120,7 +123,7 @@ impl GateRunner for RemoteRunner {
         let started = Instant::now();
         let spec = SubmitSpec {
             job_key: self.job_key(unit),
-            sha: ctx.anchor.to_owned(),
+            sha: self.anchor_full.clone(),
             gate: unit.id.to_owned(),
             hardware: ctx.hardware.to_owned(),
             max_run_s: u32::try_from(ctx.deadline.as_secs()).ok(),

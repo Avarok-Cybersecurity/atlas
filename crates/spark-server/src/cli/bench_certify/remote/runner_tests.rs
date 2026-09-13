@@ -147,8 +147,11 @@ impl Atlasctl for Script {
     }
     fn submit(&self, node: &str, spec: &SubmitSpec) -> Result<Result<Submitted, Refusal>> {
         self.calls.lock().unwrap().push(format!(
-            "submit {node} {} {} {}",
-            spec.gate, spec.job_key, spec.hardware
+            "submit {node} {} {} {} sha40={}",
+            spec.gate,
+            spec.job_key,
+            spec.hardware,
+            spec.sha.len() == 40
         ));
         Ok(self.submit.clone())
     }
@@ -219,6 +222,9 @@ fn run(
         atlasctl: script.clone(),
         node: node(built),
         run_id: "r1".into(),
+        // The record names the commit abbreviated; the wire wants the full
+        // 40 hex, which is what the driver resolves before building runners.
+        anchor_full: format!("{:0<40}", s.sha),
         cancel,
         scratch: s.root.join("scratch"),
     };
@@ -267,6 +273,9 @@ fn a_passing_job_is_submitted_followed_fetched_placed_and_classified() {
         "{}",
         calls[0]
     );
+    // The node is told the full commit, never the campaign's abbreviation
+    // (the wire refuses anything but 40 hex; the first real run found this).
+    assert!(calls[0].ends_with("sha40=true"), "{}", calls[0]);
     assert_eq!(calls[1], "attach 10.10.10.2 jb-1-deadbeef from 1");
     assert_eq!(calls[2], "fetch 10.10.10.2 jb-1-deadbeef");
 }
@@ -437,6 +446,7 @@ fn the_deadline_pays_for_a_build_only_on_a_cold_node() {
         atlasctl: Arc::new(Script::new(vec![], vec![])),
         node: node(true),
         run_id: "1a0dc88a8c-1757770000".into(),
+        anchor_full: "1a0dc88a8c9083bb956bd84cafa2cccbdb8e6e18".into(),
         cancel: Arc::new(AtomicBool::new(false)),
         scratch: PathBuf::new(),
     };

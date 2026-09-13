@@ -41,6 +41,13 @@ pub struct BenchmarkArgs {
 }
 
 impl BenchmarkArgs {
+    /// Whether this invocation promises stdout to a script: `certify --json`
+    /// writes one JSON object per line there and nothing else, so the log
+    /// goes to stderr instead.
+    pub fn json_stdout(&self) -> bool {
+        matches!(&self.command, Some(BenchmarkCommand::Certify(c)) if c.json)
+    }
+
     /// Refuse `--pr` without `--pull-request-gate-check`.
     ///
     /// `--pr` exists only to key the gate check's advisory intent lookup;

@@ -152,6 +152,10 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     }
 
     // ── the fleet (--with-nodes) ──
+    // A node builds the anchor from the trusted remote, and the wire names
+    // a commit by its full 40-hex sha; the campaign's own `anchor` may be
+    // the abbreviation `git_sha` prints.
+    let anchor_full = gate::git_rev_parse(&root, &anchor)?;
     let fleet = if args.with_nodes.is_empty() {
         None
     } else {
@@ -159,7 +163,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
         let wanted = remote::node::Wanted {
             hardware: &hardware,
             committed_signers: &facts.committed_signers,
-            anchor: &anchor,
+            anchor: &anchor_full,
             min_free_fraction: preflight::MIN_FREE_FRACTION,
         };
         let f = remote::assemble(
@@ -262,7 +266,8 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
                 remote::atlasctl::SubprocessAtlasctl::locate(args.atlasctl.as_deref())?,
             );
             let run_id = format!("{}-{}", &anchor[..anchor.len().min(10)], now);
-            let runners = remote::runners(f, atlasctl, &run_id, cancel.clone(), &log_dir)?;
+            let runners =
+                remote::runners(f, atlasctl, &run_id, &anchor_full, cancel.clone(), &log_dir)?;
             let shared = remote::Shared {
                 root: &root,
                 anchor: &anchor,

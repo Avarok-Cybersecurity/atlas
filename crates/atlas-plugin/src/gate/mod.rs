@@ -132,6 +132,33 @@ pub fn gate_dir(root: &Path, benchmark_id: &str) -> PathBuf {
     root.join(".benchmarks").join(benchmark_id)
 }
 
+/// The full 40-hex commit id `rev` resolves to in this working tree — what
+/// another machine needs to fetch and build exactly this tree.
+///
+/// # Errors
+/// If `rev` does not resolve, or resolves to something that is not a commit.
+pub fn git_rev_parse(root: &Path, rev: &str) -> Result<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--verify", &format!("{rev}^{{commit}}")])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("running git rev-parse")?;
+    if !out.status.success() {
+        bail!(
+            "{rev:?} does not name a commit in {}: {}",
+            root.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("git rev-parse returned {sha:?}, not a 40-hex commit");
+    }
+    Ok(sha)
+}
+
 /// The short commit id for this working tree. `ATLAS_GATE_SHA` overrides —
 /// the escape hatch for a checkout without git metadata.
 pub fn git_sha(root: &Path) -> Result<String> {

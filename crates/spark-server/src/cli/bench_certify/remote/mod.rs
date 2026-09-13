@@ -95,6 +95,7 @@ pub fn assemble(
 /// The pieces the workers share.
 pub struct Shared<'a> {
     pub root: &'a std::path::Path,
+    /// The anchor as the campaign names it (may be abbreviated).
     pub anchor: &'a str,
     pub hardware: &'a str,
     pub yes: bool,
@@ -109,6 +110,7 @@ pub fn runners(
     fleet: &Fleet,
     atlasctl: Arc<dyn atlasctl::Atlasctl>,
     run_id: &str,
+    anchor_full: &str,
     cancel: Arc<AtomicBool>,
     log_dir: &std::path::Path,
 ) -> Result<Vec<Box<dyn GateRunner + Send>>> {
@@ -129,6 +131,7 @@ pub fn runners(
                     atlasctl: atlasctl.clone(),
                     node: n.clone(),
                     run_id: run_id.to_owned(),
+                    anchor_full: anchor_full.to_owned(),
                     cancel: cancel.clone(),
                     scratch: log_dir.join("remote").join(n.addr.replace([':', '/'], "-")),
                 }))
