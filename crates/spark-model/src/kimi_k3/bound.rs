@@ -2,7 +2,8 @@
 
 //! BF16/FP32 twin layer bind. Decode copies hidden D2H, runs mixer+MLP+AttnRes,
 //! copies H2D. LinearAttention / KDA conv+recurrent uses CUDA `kda_decode`
-//! unless `K3_CUDA_KDA=0`. MLA, projections, AttnRes, and MLP stay on the host.
+//! unless `K3_CUDA_KDA=0`. FullAttention / MLA uses CUDA `mla_decode` only
+//! when `K3_CUDA_MLA=1`. Projections, AttnRes, and MLP stay on the host.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -19,9 +20,10 @@ use spark_runtime::kv_cache::PagedKvCache;
 use spark_runtime::weights::WeightDtype;
 
 use super::kda_cuda::K3KdaDecodeKernels;
+use super::mla_cuda::K3MlaDecodeKernels;
 use super::state::K3CpuFallbackState;
 use crate::layer::{ForwardContext, LayerState, TransformerLayer};
-use crate::weight_map::DenseWeight;
+use crate::weight_map::{DenseWeight, QuantizedWeight};
 
 /// Name + device dtype/numel for a lazy host bind (copy from GPU if needed).
 #[derive(Clone, Debug)]
@@ -45,6 +47,9 @@ pub struct K3HostShared {
     pub output_host: OnceLock<(Vec<f32>, Vec<f32>)>,
     /// Resolved once per loaded model. LinearAttention decode launches these.
     pub kda_kernels: OnceLock<K3KdaDecodeKernels>,
+    /// Resolved once per loaded model. FullAttention decode launches these
+    /// when `K3_CUDA_MLA=1`.
+    pub mla_kernels: OnceLock<K3MlaDecodeKernels>,
     /// AttnRes is per-token across layers. Keyed by this step's `residual`
     /// pointer so prefill (layer-outer, token-inner) still sees the same
     /// stream as CPU `forward_token` (token-outer, layer-inner).
@@ -57,6 +62,9 @@ pub struct K3BoundLayer {
     pub spec: K3LayerSpec,
     pub weights: Vec<DenseWeight>,
     pub weight_meta: Vec<WeightMeta>,
+    /// Packed routed experts landed on DSV4 `quantized_mxfp4_e8m0_pair`.
+    /// Empty for the BF16 twin.
+    pub mxfp4_experts: Vec<(String, QuantizedWeight)>,
     pub host: OnceLock<K3CpuLayer>,
     pub shared: Arc<K3HostShared>,
 }
@@ -130,6 +138,7 @@ impl TransformerLayer for K3BoundLayer {
             ctx,
             stream,
             atlas_core::kimi_k3::cuda_kda_enabled(),
+            atlas_core::kimi_k3::cuda_mla_enabled(),
         )
     }
 

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Kimi K3 weight loader — C1: BF16 0.40B twin bind.
-//! MXFP4 GPU bind is not this slice (`refuse_mxfp4`). CPU unpack reuses DSV4 E8M0.
+//! Packed experts bind to DSV4 E8M0 (`quantized_k3_mxfp4_e8m0`) only when
+//! `K3_ALLOW_MXFP4=1`. Default refuse so an accidental official download
+//! cannot silently land.
 
 use anyhow::{Result, bail};
 use atlas_core::config::ModelConfig;
@@ -28,10 +30,11 @@ impl KimiK3WeightLoader {
     }
 }
 
-/// GPU loader still refuses packed experts. Host unpack is atlas-core + `K3_ALLOW_MXFP4=1`.
-/// TODO(S5 GPU): `quantized_k3_mxfp4_e8m0` → DSV4 `moe_w4a16_grouped_gemm_ptrtable_e8m0`.
+/// Packed experts without `K3_ALLOW_MXFP4=1` refuse. Opt-in lands DSV4 E8M0.
 pub fn refuse_mxfp4(store: &WeightStore) -> Result<()> {
-    if store.names().any(|n| n.contains("weight_packed")) {
+    if store.names().any(|n| n.contains("weight_packed"))
+        && !atlas_core::kimi_k3::mxfp4::allow_mxfp4()
+    {
         bail!("S5 MXFP4 not this slice");
     }
     Ok(())
@@ -105,6 +108,7 @@ mod tests {
     use spark_runtime::gpu::GpuBackend;
     use spark_runtime::weights::{WeightDtype, WeightTensor};
     use std::collections::HashMap;
+    use std::process::Command;
 
     #[test]
     fn kimi_k3_does_not_probe_nvfp4_tgemm() {
@@ -160,6 +164,99 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(err.contains("S5 MXFP4 not this slice"), "{err}");
+    }
+
+    #[test]
+    fn load_allow_mxfp4_lands_packed_experts() {
+        const THIS: &str = "weight_loader::kimi_k3::tests::load_allow_mxfp4_lands_packed_experts";
+        const MARKER: &str = "K3_MXFP4_GPU_ALLOW_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            const TWIN: &str =
+                include_str!("../../../../docs/k3/fixtures/Kimi-K3-0.40B-config.json");
+            let config = parse_config(TWIN).expect("0.40B twin");
+            let gpu = spark_runtime::gpu::mock::MockGpuBackend::new();
+            let graph = atlas_core::kimi_k3::K3Graph::from_config(&config);
+            let mut map = HashMap::new();
+            let mut put = |name: String, shape: Vec<usize>, dtype: WeightDtype| {
+                let n = shape.iter().product::<usize>().max(1);
+                let ptr = gpu.alloc(n.max(4)).unwrap();
+                map.insert(name, WeightTensor { ptr, shape, dtype });
+            };
+            put(
+                bf16::text_key(&config, "model.embed_tokens.weight"),
+                vec![2],
+                WeightDtype::BF16,
+            );
+            put(
+                bf16::text_key(&config, "model.norm.weight"),
+                vec![2],
+                WeightDtype::BF16,
+            );
+            put(
+                bf16::text_key(&config, "model.output_attn_res_proj.weight"),
+                vec![2],
+                WeightDtype::BF16,
+            );
+            put(
+                bf16::text_key(&config, "model.output_attn_res_norm.weight"),
+                vec![2],
+                WeightDtype::BF16,
+            );
+            put(
+                bf16::text_key(&config, "lm_head.weight"),
+                vec![2],
+                WeightDtype::BF16,
+            );
+            let packed_w1 = bf16::text_key(
+                &config,
+                "model.layers.1.block_sparse_moe.experts.0.w1.weight",
+            );
+            for spec in &graph.layers {
+                for k in bf16::layer_keys(
+                    &config,
+                    spec.index,
+                    spec.mixer,
+                    spec.mlp,
+                    config.num_experts,
+                ) {
+                    if k == packed_w1 {
+                        continue;
+                    }
+                    put(k, vec![2], WeightDtype::BF16);
+                }
+            }
+            let prefix = packed_w1.trim_end_matches(".weight");
+            put(
+                format!("{prefix}.weight_packed"),
+                vec![1, 16],
+                WeightDtype::UInt8,
+            );
+            put(
+                format!("{prefix}.weight_scale"),
+                vec![1],
+                WeightDtype::UInt8,
+            );
+            let store = WeightStore::from_map(map);
+            refuse_mxfp4(&store).expect("K3_ALLOW_MXFP4=1 must skip S5 refuse");
+            let loader = KimiK3WeightLoader;
+            let layers = loader
+                .load_layers(&store, &config, &gpu, &[])
+                .expect("packed expert must land on DSV4 E8M0");
+            assert_eq!(layers.len(), 8);
+            return;
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", THIS])
+            .env(MARKER, "1")
+            .env("K3_ALLOW_MXFP4", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "ALLOW child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

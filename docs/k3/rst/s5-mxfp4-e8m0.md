@@ -13,11 +13,12 @@ Known-bad (instrument failed first):
 #NOTES
 - Host SSOT: `atlas_core::mxfp4_e8m0` (extracted from DSV4 `dequant_nvfp4_e8m0_to_bf16`).
 - K3 name map: `.weight_packed` / `.weight_scale` → DSV4 `.weight` / `.scale`.
-- GPU lander wrapper: `quantized_k3_mxfp4_e8m0` → `quantized_mxfp4_e8m0_pair`. GEMM not this slice.
+- GPU lander wrapper: `quantized_k3_mxfp4_e8m0` → `quantized_mxfp4_e8m0_pair`.
+- GEMM: `docs/k3/rst/s5-mxfp4-gemm.md` (`extra_cu` DSV4 `moe_w4a16_grouped_gemm_ptrtable_e8m0`).
 - Do not download official 1.56 TB.
 
 #BUGS
 #N/A this slice for synthetic RST.
 
 STOP
-Charter complete for S5 host map + DSV4 unpack reuse. GPU expert GEMM parked.
+Charter complete for S5 host map + DSV4 unpack reuse. GPU expert GEMM: see s5-mxfp4-gemm.md.

@@ -98,6 +98,7 @@ fn run_layers(steps: &[(usize, bool)]) -> (usize, Vec<(String, String)>) {
             spec: model.layers[layer_idx].spec,
             weights: Vec::new(),
             weight_meta: Vec::new(),
+            mxfp4_experts: Vec::new(),
             host,
             shared: shared.clone(),
         };

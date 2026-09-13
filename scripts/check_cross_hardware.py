@@ -14,9 +14,9 @@ signal has ever been a compile failure:
              targets' benchmark records and forced a full GPU re-measurement.
 
 `gate/taxon.rs::hardware_of()` cannot see any of this — it is a path prefix. This script
-resolves the three real sharing mechanisms (symlinks, `common/` fan-out, `[model]
-kernel_source` redirects, plus symlinked KERNEL.toml/MODEL.toml) and says which hardware
-actually consumes each changed path.
+resolves the sharing mechanisms (symlinks, `common/` fan-out, `[model]
+kernel_source` redirects, `[build].extra_cu`, plus symlinked KERNEL.toml/MODEL.toml)
+and says which hardware actually consumes each changed path.
 
 WHY IT IS FAIL-CLOSED, unlike classify-diff.sh: that script decides what to SKIP and must
 fail open. This one decides a VERDICT. "Cannot see the inputs" (rc 2) is as red as a
@@ -29,7 +29,7 @@ host site pairs with a device constant you moved; and whether a textually-shared
 performance-relevant to a hardware with no benchmark record and no CI box. Reach is provable;
 harm is not.
 """
-import argparse, json, os, subprocess, sys, tempfile
+import argparse, json, os, re, subprocess, sys, tempfile
 from pathlib import Path
 
 HW_SOURCE_EXT = {"gb10": ".cu", "metal": ".metal", "strix": ".cu", "strix-hip": ".cu"}
@@ -47,6 +47,26 @@ def git(*a, cwd=None, check=True):
 def hardware_of(path):
     p = Path(path).parts
     return p[1] if len(p) > 1 and p[0] == "kernels" else None
+
+
+def extra_cu_paths(quant_dir):
+    """`[build].extra_cu = ["rel/path.cu", ...]` from KERNEL.toml, resolved against quant_dir."""
+    kt = quant_dir / "KERNEL.toml"
+    if not kt.exists():
+        return []
+    stripped = []
+    for line in kt.read_text(errors="replace").splitlines():
+        stripped.append(line.split("#", 1)[0])
+    blob = "\n".join(stripped)
+    m = re.search(r"extra_cu\s*=\s*\[(.*?)\]", blob, re.S)
+    if not m:
+        return []
+    out = []
+    for q in re.findall(r'"([^"]+)"', m.group(1)):
+        p = quant_dir / q
+        if p.exists():
+            out.append(p)
+    return out
 
 
 def kernel_source(model_dir):
@@ -122,6 +142,8 @@ def build_index(root):
                     if d.is_dir():
                         for f in sorted(d.glob(f"*{ext}")):
                             merged[f.stem] = f
+                for extra in extra_cu_paths(quant_dir):
+                    merged[extra.stem] = extra
                 seen = set()
                 for f in list(merged.values()):
                     stack = [f]

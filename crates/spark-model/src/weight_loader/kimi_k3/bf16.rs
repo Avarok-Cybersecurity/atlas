@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Bind 0.40B BF16 (or FP32) twin tensors. Packed MXFP4 is refused upstream.
+//! Bind 0.40B BF16 (or FP32) twin tensors. Packed experts land DSV4 E8M0
+//! when `K3_ALLOW_MXFP4=1` (refused upstream otherwise).
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -15,7 +16,9 @@ use spark_runtime::weights::{WeightDtype, WeightStore};
 
 use crate::kimi_k3::bound::{K3BoundLayer, K3HostShared, WeightMeta};
 use crate::layer::TransformerLayer;
-use crate::weight_map::DenseWeight;
+use crate::weight_map::{DenseWeight, QuantizedWeight};
+
+use super::mxfp4::quantized_k3_mxfp4_e8m0;
 
 pub fn text_key(config: &ModelConfig, rest: &str) -> String {
     let p = config.weight_prefix.trim_end_matches('.');
@@ -126,6 +129,7 @@ pub fn load_layers(
         output_res_norm_meta: (out_norm_t.dtype, out_norm_t.num_elements()),
         output_host: OnceLock::new(),
         kda_kernels: OnceLock::new(),
+        mla_kernels: OnceLock::new(),
         attnres: Mutex::new(HashMap::new()),
     });
     let mut layers: Vec<Box<dyn TransformerLayer>> = Vec::with_capacity(graph.layers.len());
@@ -133,7 +137,12 @@ pub fn load_layers(
         let keys = layer_keys(config, spec.index, spec.mixer, spec.mlp, config.num_experts);
         let mut weights = Vec::with_capacity(keys.len());
         let mut weight_meta = Vec::with_capacity(keys.len());
+        let mut mxfp4_experts: Vec<(String, QuantizedWeight)> = Vec::new();
         for k in &keys {
+            if let Some(prefix) = packed_expert_prefix(store, k) {
+                mxfp4_experts.push((prefix.clone(), quantized_k3_mxfp4_e8m0(store, &prefix)?));
+                continue;
+            }
             let t = store.get(k)?;
             weights.push(DenseWeight { weight: t.ptr });
             weight_meta.push(WeightMeta {
@@ -147,11 +156,22 @@ pub fn load_layers(
             spec: *spec,
             weights,
             weight_meta,
+            mxfp4_experts,
             host: OnceLock::new(),
             shared: shared.clone(),
         }));
     }
     Ok(layers)
+}
+
+fn packed_expert_prefix(store: &WeightStore, weight_key: &str) -> Option<String> {
+    let prefix = weight_key.strip_suffix(".weight")?;
+    if !prefix.contains("block_sparse_moe.experts.") {
+        return None;
+    }
+    store
+        .contains(&format!("{prefix}.weight_packed"))
+        .then(|| prefix.to_string())
 }
 
 pub fn layer_keys(

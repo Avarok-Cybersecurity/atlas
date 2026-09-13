@@ -15,9 +15,9 @@ CPU C1 is not a Hopper substitute. 5090 cannot launch SM121.
 
 ## What is **not** green (blocks a useful soak)
 
-- `K3BoundLayer::decode` LinearAttention default is CUDA `kda_decode` (`K3_CUDA_KDA=0` is the CPU escape). Host still does projections / AttnRes / MLP. **Do not book.** spark1 recopy `7238f64bf` CUDA default **matches C1** aviation greedy (nvfp4 ships `kda_decode`); mix=0 still moves tokens.
+- `K3BoundLayer::decode` LinearAttention default is CUDA `kda_decode` (`K3_CUDA_KDA=0` is the CPU escape). FullAttention MLA is CPU unless `K3_CUDA_MLA=1` (opt-in; C1 unproven). Host still does projections / AttnRes / MLP. **Do not book.** spark1 recopy `7238f64bf` CUDA KDA default **matches C1** aviation greedy (nvfp4 ships `kda_decode`); mix=0 still moves tokens.
 - Serve-path token match is not a Hopper soak. Projections / AttnRes / MLP still host.
-- MXFP4 GPU grouped GEMM not wired (`refuse_mxfp4`)
+- MXFP4 GPU grouped GEMM: KERNEL.toml extra_cu + packed lander when `K3_ALLOW_MXFP4=1`. spark2 nvcc still required to compile the extra_cu PTX. K3BoundLayer LatentMoE still host.
 - Official 1.56 TB not downloaded (correct)
 
 ## Box to book (when S6 exits)

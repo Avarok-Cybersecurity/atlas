@@ -1,12 +1,24 @@
-# K3 BF16 twin: unique KDA decode (conv-4 + L2 q/k + sigmoid(beta)).
+# K3 BF16 twin: unique KDA decode + gated-NoPE MLA decode.
 #
-# Stem `kda_decode` does not exist in common/. This is an ADD, not a
-# shadow of common/kda_recurrent.cu, kda_gate.cu, gated_delta_rule*.cu,
-# or mamba2_ssm_decode.cu. Do not copy those files here.
+# Stems `kda_decode` and `mla_decode` do not exist in common/. ADD, not a
+# shadow of GDN, GLM kda_*, qwen3_attention, mla_paged_decode, or
+# glm5next_dsa_mla_decode. Do not copy those files here.
 #
-# GLM KDA (common/kda_*) expects L2 and sigmoid fused upstream and is
-# sized for head_dim=128. The 0.40B twin is heads=8, head_dim=32, conv=4.
-# Host SSOT: crates/atlas-core/src/kimi_k3/kda.rs (`kda_decode_token`).
+# Host SSOT: atlas-core kda.rs (`kda_decode_token`) and mla.rs
+# (`mla_decode_token`). nvfp4 serve bundle symlinks both stems from bf16/.
+#
+# extra_cu compiles DSV4 moe_w4a16_grouped_gemm.cu (module moe_w4a16) so
+# the nvfp4 serve bundle (this file, via symlink) ships E8M0 ptrtable
+# GEMM. Do not copy that file here. Expected handle:
+#   moe_w4a16_grouped_gemm_ptrtable_e8m0
+#   moe_w4a16_grouped_gemm_ptrtable_t_e8m0
+#   moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0
+#   moe_w4a16_fused_gate_up_t_e8m0
+#   moe_w4a16_fused_gate_up_t_k64_e8m0
+# Do not list these under MODEL.toml [expected_absent].
 
 [build]
-# Common KERNEL.toml already merges --fmad=false (CPU mul-add order).
+extra_cu = ["../../deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"]
+
+[modules]
+moe_w4a16_grouped_gemm = "moe_w4a16"

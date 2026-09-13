@@ -8,7 +8,7 @@
 //! dequant stack. CUDA `mx_block_scale<true>` must stay byte-exact with
 //! [`fp8_e8m0_to_f32`].
 //!
-//! TODO(S5 GPU): GB10 GEMM still lives in
+//! GPU GEMM: kimi-k3 `{mxfp4,nvfp4}/KERNEL.toml` `[build].extra_cu` points at
 //! `kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu`
 //! (`moe_w4a16_grouped_gemm_ptrtable_e8m0`). Do not copy it into kimi-k3.
 
