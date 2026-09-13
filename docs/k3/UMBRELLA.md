@@ -14,7 +14,7 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | C0–C6 green. **C7 open** — dummy NCCL o_proj is not 0.40B TP=2. CUDA KDA+MLA default. Packed LatentMoE launches DSV4 E8M0 GEMM. 0.40B CPU MoE. AttnRes/projections host. |
+| Phase | **C0, C1 green. C2–C7 open.** CUDA KDA+MLA default. Packed LatentMoE launches DSV4 E8M0 GEMM. 0.40B CPU MoE. AttnRes/projections host. |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
 | Last session | 2026-09-13 09:07 CDT — CUDA MLA default live on spark1 (`9d6c273`, no env); mix=0 still moves tokens. |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
@@ -33,14 +33,14 @@ S7 (rental soak) is forbidden until every box is green. Each box also needs its 
 
 **Order is the list. Do not start C(n+1) until C(n) is checked.** Synthetic-only tests do not check a box. Twin means `K3_TWIN` + 0.40B BF16 on spark2.
 
-- [x] C0 config / factory / weight-name map dry-run (no shard download) — spark2 Linux `kimi_k3` + atlas-core parse + known-bads
-- [x] C1 `Kimi-K3-0.40B` greedy through first `[EOS]` × 8. **8/8 first-token** (`f5a3b99`) **and 8/8 until-EOS** (spark2, 360s: 46/44/10/39/13/43/10/15 new). p4 `996`. FLA-unbounded KDA gate. `docs/k3/rst/c1-engine.md`
-- [x] C2 prefill-then-decode vs full-prefill logits on the **C1 twin** (`c2_prefill_decode_logits_match_full_prefill_twin`, spark2 24.5s)
-- [x] C3 prefix-cache hit == no-cache decode on the **C1 twin** (`c3_prefix_cache_hit_matches_nocache_twin`, spark2 42s)
-- [x] C4 MLA KV + KDA state after prefix hit on the **C1 twin** (`c4_hybrid_state_prefix_hit_matches_cold_prefill_twin`, spark2 18.6s)
-- [x] C5 AttnRes fixture + twin mix=0 vs mix=1 (`c5_twin_mix0_is_skip_and_diverges_from_mix1`, spark2 14.4s, one-hot fixture)
-- [x] C6 LatentMoE frozen-gate mix + twin force-expert-0 (`c6_twin_force_expert_zero_diverges`, spark2 14.4s)
-- [ ] C7 0.40B twin TP=2 on spark1+spark2 == spark1 TP=1 tokens. Dummy NCCL `o_proj` hidden=7168 `MATCH`/`DROP` is fabric-only (`docs/k3/rst/c7-dummy-tp2.md`) — it does **not** check this box. Live `spark-k3` is still TP=1; `--tp-size 2` refused (`supports_tp` was false). In-tree loader now returns true (`2ed1455`) but that binary was never staged. `docs/k3/rst/c7-k3-tp2.md`
+- [x] C0 config / factory / weight-name map dry-run (no shard download) — official parse + 96-shard map + known-bads. `docs/k3/rst/c0-config-loader.md`
+- [x] C1 `Kimi-K3-0.40B` greedy through first `[EOS]` × 8 vs HF. **8/8 first-token** and **8/8 until-EOS** on spark2 (`f5a3b99`, 360s: 46/44/10/39/13/43/10/15 new). FLA-unbounded KDA gate. `docs/k3/rst/c1-engine.md`
+- [ ] C2 prefill-then-decode vs full-prefill logits on the twin. Synthetic tiny/small passed; twin test exists (`c2_*_twin`) but RST still says HF/GPU C2 open. `docs/k3/rst/c2-c3-cpu.md`
+- [ ] C3 prefix-cache hit == no-cache decode on the twin. Same: synthetic passed, twin test exists, RST not closed.
+- [ ] C4 MLA KV + KDA state after prefix hit on the twin. Synthetic + known-bads passed. RST: stay unchecked until C1-matching / GPU path. `docs/k3/rst/c4-c5-c6-cpu.md`
+- [ ] C5 AttnRes fixture max-abs bound. Recorded fixture on synthetic. Twin “mix=0” test is a one-hot stub, not the model’s AttnRes stream.
+- [ ] C6 LatentMoE frozen-gate mix vs reference. Recorded fixture on synthetic. Twin test is force-expert-0 divergence, not frozen-gate vs HF.
+- [ ] C7 0.40B twin TP=2 on spark1+spark2 == spark1 TP=1 tokens. Dummy NCCL `o_proj` is fabric-only. Live `spark-k3` still refuses `--tp-size 2` (`9d6c273`, `supports_tp` false). `docs/k3/rst/c7-k3-tp2.md`
 
 49M `smol-kimi-k3` is shape-only. It does not satisfy C1.
 

@@ -1,16 +1,16 @@
 # Rental soak — fill after C0–C7 (now)
 
-C0–C6 lab boxes are checked on the 0.40B twin. **C7 is open** until 0.40B TP=2 on spark1+spark2 matches TP=1. Dummy NCCL is not that box.
+Only C0 and C1 are checked. C2–C7 stay open until each RST sheet closes. Dummy NCCL is not C7.
 This file is the soak runbook. Lab twin cannot hold official MXFP4 (~1.56 TB). **Booking 8×B300 is for CR1–CR3**, not for finishing KDA/MLA. 5090 cannot launch SM121.
 
 ## What is green (lab)
 
 | Gate | Evidence |
 | --- | --- |
-| C0 | spark2 `kimi_k3` loader tests + atlas-core parse |
-| C1 | 8/8 first-token vs HF goldens after FLA-unbounded KDA gate (`f5a3b99`). Teacher-force-to-EOS 8/8. Until-EOS greedy re-run in flight. |
-| C2–C6 | twin tests on spark2 |
-| C7 | **open** — dummy NCCL MATCH is fabric-only; 0.40B `--tp-size 2` not run on the Sparks |
+| C0 | official parse + 96-shard map + known-bads (`docs/k3/rst/c0-config-loader.md`) |
+| C1 | 8/8 first-token + 8/8 until-EOS vs HF on spark2 (`f5a3b99`, `docs/k3/rst/c1-engine.md`) |
+| C2–C6 | **open** — synthetic/fixture tests exist; RST sheets not closed |
+| C7 | **open** — dummy NCCL is fabric-only; 0.40B `--tp-size 2` not run on the Sparks |
 
 ## What is green on lab serve (2026-09-13)
 
