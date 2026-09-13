@@ -131,6 +131,9 @@ fn c6_twin_force_expert_zero_diverges() {
     assert_ne!(forced_ids, mix_ids);
     assert_ne!(out, clean, "RST: twin frozen-gate mix != force expert 0");
 
+    // Expert 0 is often already in the aviation top-k; 8 greedy ids did not
+    // move. Force the last routed expert (not the frozen top-1).
+    let last = n - 1;
     let prompt = super::cpu_load::TWIN_PROMPT0;
     let greedy_clean = greedy_decode(model, prompt, 8, Ablation::default());
     let greedy_forced = greedy_decode(
@@ -138,13 +141,13 @@ fn c6_twin_force_expert_zero_diverges() {
         prompt,
         8,
         Ablation {
-            force_expert: Some(0),
+            force_expert: Some(last),
             ..Ablation::default()
         },
     );
     assert_ne!(
         greedy_forced, greedy_clean,
-        "RST known-bad: twin force_expert=0 must change greedy tokens"
+        "RST known-bad: twin force_expert={last} must change greedy tokens"
     );
 }
 

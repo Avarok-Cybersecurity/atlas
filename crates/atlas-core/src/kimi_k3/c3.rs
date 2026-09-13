@@ -145,24 +145,44 @@ fn c3_prefix_cache_hit_matches_nocache_twin() {
     assert_c3(model, prefix, "twin");
 
     let clean = prefix_hit_tokens(model, prefix, NEW_TOKENS);
+    // One-layer slot-0 plant is too weak at twin width (8 greedy ids still
+    // matched). Trash every KDA conv+recurrent and every MLA kv.
     let mut cache = HybridCache::from_graph(&model.graph, &model.kda);
     let mut h = prefill(model, prefix, &mut cache);
-    stomp_kda_conv_slot0(&mut cache, model.kda.conv_kernel);
+    for slot in &mut cache.layers {
+        if let LayerCache::Kda(state) = slot {
+            for x in &mut state.conv {
+                *x = 7.0;
+            }
+            for x in &mut state.recurrent {
+                *x = 7.0;
+            }
+        }
+    }
     let mut tokens = prefix.to_vec();
     greedy_from(model, &mut cache, &mut h, &mut tokens, NEW_TOKENS);
     assert_ne!(
         tokens, clean,
-        "RST known-bad: twin KDA conv stomp after prefix write must change tokens"
+        "RST known-bad: twin trash-all KDA state after prefix write must change tokens"
     );
 
     let mut cache = HybridCache::from_graph(&model.graph, &model.kda);
     let mut h = prefill(model, prefix, &mut cache);
-    stomp_mla_kv(&mut cache);
+    for slot in &mut cache.layers {
+        if let LayerCache::Mla(kv) = slot {
+            for x in &mut kv.k {
+                *x = 7.0;
+            }
+            for x in &mut kv.v {
+                *x = -7.0;
+            }
+        }
+    }
     let mut tokens = prefix.to_vec();
     greedy_from(model, &mut cache, &mut h, &mut tokens, NEW_TOKENS);
     assert_ne!(
         tokens, clean,
-        "RST known-bad: twin MLA kv stomp after prefix write must change tokens"
+        "RST known-bad: twin trash-all MLA kv after prefix write must change tokens"
     );
 }
 
