@@ -274,8 +274,16 @@ mod tests {
         n: usize,
         fill: u16,
     ) {
+        // Mix high bits: a plain wrapping_add(i) repeats every 65536 elems,
+        // which is exactly one K3 TP=2 q_proj shard (128*1024), so rank-0
+        // and rank-1 copies compared equal while the slice was correct.
         let bytes: Vec<u8> = (0..n)
-            .flat_map(|i| (fill.wrapping_add(i as u16)).to_le_bytes())
+            .flat_map(|i| {
+                let v = fill
+                    .wrapping_add(i as u16)
+                    .wrapping_add(((i >> 16) as u16).wrapping_mul(0x9E37));
+                v.to_le_bytes()
+            })
             .collect();
         let ptr = gpu.alloc(bytes.len().max(2)).unwrap();
         if !bytes.is_empty() {

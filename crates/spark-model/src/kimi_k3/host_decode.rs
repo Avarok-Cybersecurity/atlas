@@ -23,7 +23,9 @@ use spark_runtime::weights::WeightDtype;
 use super::bound::K3BoundLayer;
 use super::kda_cuda::{K3KdaDecodeKernels, launch_k3_kda_decode_token};
 use super::mla_cuda::{K3MlaDecodeKernels, launch_k3_mla_decode_token};
-use super::moe_cuda::{K3MoeGemmKernels, launch_k3_latent_moe_experts};
+use super::moe_cuda::{
+    E8M0_ENTRY, K3MoeGemmKernels, MODULE as MOE_MODULE, launch_k3_latent_moe_experts,
+};
 use super::state::K3CpuFallbackState;
 use crate::layer::{ForwardContext, LayerState};
 
@@ -200,10 +202,12 @@ impl K3BoundLayer {
         if let Some(&k) = self.shared.moe_kernels.get() {
             return Ok(k);
         }
-        let k = K3MoeGemmKernels::resolve(gpu).context(
-            "K3 packed LatentMoE: moe_w4a16 E8M0 PTX missing; packed experts \
-             cannot silently run host F32",
-        )?;
+        let k = K3MoeGemmKernels::resolve(gpu).with_context(|| {
+            format!(
+                "K3 packed LatentMoE: {MOE_MODULE}::{E8M0_ENTRY} missing; packed experts \
+                 cannot silently run host F32"
+            )
+        })?;
         tracing::info!("K3 LatentMoE packed experts via CUDA moe_w4a16_grouped_gemm_ptrtable_e8m0");
         Ok(*self.shared.moe_kernels.get_or_init(|| k))
     }
