@@ -88,6 +88,40 @@ pub fn expert_situ(
     matvec(w2, &mid, in_dim, hidden)
 }
 
+/// Mix selected SiTU-GLU experts into latent. Empty `w1` means packed-only
+/// (no host dequant) — CUDA grouped GEMM must have run instead.
+pub fn mix_routed_experts(
+    latent: &[f32],
+    ids: &[usize],
+    weights: &[f32],
+    experts: &[(Vec<f32>, Vec<f32>, Vec<f32>)],
+    cfg: &LatentMoeConfig,
+) -> Vec<f32> {
+    let mut mixed = vec![0.0f32; cfg.latent];
+    for (&id, &w) in ids.iter().zip(weights) {
+        assert!(id < experts.len(), "expert id {id} >= {}", experts.len());
+        let (w1, w2, w3) = &experts[id];
+        assert!(
+            !w1.is_empty(),
+            "K3 packed expert {id} has no host w1; CUDA grouped GEMM required"
+        );
+        let y = expert_situ(
+            latent,
+            w1,
+            w2,
+            w3,
+            cfg.latent,
+            cfg.expert_hidden,
+            cfg.situ_beta,
+            cfg.situ_linear_beta,
+        );
+        for (m, yy) in mixed.iter_mut().zip(y) {
+            *m += w * yy;
+        }
+    }
+    mixed
+}
+
 fn matvec(w: &[f32], x: &[f32], out: usize, inn: usize) -> Vec<f32> {
     assert_eq!(w.len(), out * inn);
     assert_eq!(x.len(), inn);
@@ -118,23 +152,7 @@ pub fn latent_moe_forward(
 ) -> (Vec<f32>, Vec<usize>) {
     let latent = matvec(down, h, cfg.latent, cfg.hidden);
     let (ids, weights) = sigmoid_topk(logits, bias, cfg.top_k);
-    let mut mixed = vec![0.0f32; cfg.latent];
-    for (&id, &w) in ids.iter().zip(&weights) {
-        let (w1, w2, w3) = &experts[id];
-        let y = expert_situ(
-            &latent,
-            w1,
-            w2,
-            w3,
-            cfg.latent,
-            cfg.expert_hidden,
-            cfg.situ_beta,
-            cfg.situ_linear_beta,
-        );
-        for (m, yy) in mixed.iter_mut().zip(y) {
-            *m += w * yy;
-        }
-    }
+    let mut mixed = mix_routed_experts(&latent, &ids, &weights, experts, cfg);
     if cfg.use_norm {
         mixed = rms_norm(&mixed, norm_w, eps);
     }

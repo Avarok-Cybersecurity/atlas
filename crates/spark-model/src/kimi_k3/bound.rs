@@ -3,7 +3,9 @@
 //! BF16/FP32 twin layer bind. Decode copies hidden D2H, runs mixer+MLP+AttnRes,
 //! copies H2D. LinearAttention / KDA conv+recurrent uses CUDA `kda_decode`
 //! unless `K3_CUDA_KDA=0`. FullAttention / MLA uses CUDA `mla_decode` only
-//! when `K3_CUDA_MLA=1`. Projections, AttnRes, and MLP stay on the host.
+//! when `K3_CUDA_MLA=1`. Packed LatentMoE experts launch DSV4
+//! `moe_w4a16_grouped_gemm_ptrtable_e8m0`. Router / down / up / shared / SiTU
+//! stay on the host.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -21,6 +23,7 @@ use spark_runtime::weights::WeightDtype;
 
 use super::kda_cuda::K3KdaDecodeKernels;
 use super::mla_cuda::K3MlaDecodeKernels;
+use super::moe_cuda::K3MoeGemmKernels;
 use super::state::K3CpuFallbackState;
 use crate::layer::{ForwardContext, LayerState, TransformerLayer};
 use crate::weight_map::{DenseWeight, QuantizedWeight};
@@ -50,6 +53,8 @@ pub struct K3HostShared {
     /// Resolved once per loaded model. FullAttention decode launches these
     /// when `K3_CUDA_MLA=1`.
     pub mla_kernels: OnceLock<K3MlaDecodeKernels>,
+    /// Resolved once per loaded model. Packed LatentMoE launches these.
+    pub moe_kernels: OnceLock<K3MoeGemmKernels>,
     /// AttnRes is per-token across layers. Keyed by this step's `residual`
     /// pointer so prefill (layer-outer, token-inner) still sees the same
     /// stream as CPU `forward_token` (token-outer, layer-inner).

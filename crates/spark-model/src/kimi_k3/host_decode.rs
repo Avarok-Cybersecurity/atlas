@@ -4,14 +4,15 @@
 //!
 //! `MixerKind::Kda` runs conv+recurrent via [`launch_k3_kda_decode_token`]
 //! unless `K3_CUDA_KDA=0`. `MixerKind::Mla` runs rope+SDPA+gate via
-//! [`launch_k3_mla_decode_token`] only when `K3_CUDA_MLA=1`.
+//! [`launch_k3_mla_decode_token`] only when `K3_CUDA_MLA=1`. Packed
+//! `MlpKind::LatentMoe` experts launch [`launch_k3_latent_moe_experts`].
 
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, bail};
 use atlas_core::kimi_k3::{
-    Ablation, AttnResStream, K3CpuLayer, K3LayerCtx, MixerKind, assemble_layer, forward_one_layer,
-    forward_one_layer_with_kda_decode, forward_one_layer_with_mla_decode,
+    Ablation, AttnResStream, K3CpuLayer, K3LayerCtx, MixerKind, MlpKind, assemble_layer,
+    forward_one_layer_with_cores, kda_decode_token, mix_routed_experts, mla_decode_token,
 };
 use half::bf16;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
@@ -20,6 +21,7 @@ use spark_runtime::weights::WeightDtype;
 use super::bound::K3BoundLayer;
 use super::kda_cuda::{K3KdaDecodeKernels, launch_k3_kda_decode_token};
 use super::mla_cuda::{K3MlaDecodeKernels, launch_k3_mla_decode_token};
+use super::moe_cuda::{K3MoeGemmKernels, launch_k3_latent_moe_experts};
 use super::state::K3CpuFallbackState;
 use crate::layer::{ForwardContext, LayerState};
 
@@ -45,6 +47,9 @@ impl K3BoundLayer {
             .downcast_mut::<K3CpuFallbackState>()
             .context("K3 decode: expected K3CpuFallbackState (uses_ssm_pool=false)")?;
         let ablation = Ablation::from_env();
+        if !self.mxfp4_experts.is_empty() && self.spec.mlp == MlpKind::LatentMoe {
+            let _ = self.moe_kernels(gpu)?;
+        }
         let layer = self.host_layer(gpu)?;
         let lctx = K3LayerCtx {
             kda: &self.shared.kda,
@@ -59,6 +64,7 @@ impl K3BoundLayer {
         };
         let use_cuda_kda = want_cuda_kda && self.spec.mixer == MixerKind::Kda;
         let use_cuda_mla = want_cuda_mla && self.spec.mixer == MixerKind::Mla;
+        let use_cuda_moe = !self.mxfp4_experts.is_empty() && self.spec.mlp == MlpKind::LatentMoe;
 
         let key = if residual.is_null() { hidden } else { residual };
         {
@@ -81,37 +87,61 @@ impl K3BoundLayer {
             // Prefill already walks tokens in `prefill_default` (one decode per
             // token, KDA/MLA step once). Do not treat this as packed N — looping
             // `seq_len` times would step KDA N times on one hidden row.
-            if use_cuda_kda {
-                let kernels = self.kda_kernels(gpu)?;
-                forward_one_layer_with_kda_decode(
-                    &lctx,
-                    layer,
-                    seq_len,
-                    &mut st.cache,
-                    stream_res,
-                    ablation,
-                    |x, w, g, b, cfg, kst| {
-                        launch_k3_kda_decode_token(gpu, &kernels, x, w, g, b, cfg, kst, stream)
-                    },
-                )?;
-            } else if use_cuda_mla {
-                let kernels = self.mla_kernels(gpu)?;
-                forward_one_layer_with_mla_decode(
-                    &lctx,
-                    layer,
-                    seq_len,
-                    &mut st.cache,
-                    stream_res,
-                    ablation,
-                    |q, k, v, g, kv, cfg, pos, theta| {
-                        launch_k3_mla_decode_token(
-                            gpu, &kernels, q, k, v, g, kv, cfg, pos, theta, stream,
-                        )
-                    },
-                )?;
+            let kda_k = if use_cuda_kda {
+                Some(self.kda_kernels(gpu)?)
             } else {
-                forward_one_layer(&lctx, layer, seq_len, &mut st.cache, stream_res, ablation);
-            }
+                None
+            };
+            let mla_k = if use_cuda_mla {
+                Some(self.mla_kernels(gpu)?)
+            } else {
+                None
+            };
+            let moe_k = if use_cuda_moe {
+                Some(self.moe_kernels(gpu)?)
+            } else {
+                None
+            };
+            forward_one_layer_with_cores(
+                &lctx,
+                layer,
+                seq_len,
+                &mut st.cache,
+                stream_res,
+                ablation,
+                |x, w, g, b, cfg, kst| {
+                    if let Some(k) = kda_k {
+                        launch_k3_kda_decode_token(gpu, &k, x, w, g, b, cfg, kst, stream)
+                    } else {
+                        Ok(kda_decode_token(x, w, g, b, cfg, kst))
+                    }
+                },
+                |q, k, v, g, kv, cfg, pos, theta| {
+                    if let Some(kern) = mla_k {
+                        launch_k3_mla_decode_token(
+                            gpu, &kern, q, k, v, g, kv, cfg, pos, theta, stream,
+                        )
+                    } else {
+                        Ok(mla_decode_token(q, k, v, g, kv, cfg, pos, theta))
+                    }
+                },
+                |wts, latent, ids, mix_w, cfg| {
+                    if let Some(k) = moe_k {
+                        launch_k3_latent_moe_experts(
+                            gpu,
+                            &k,
+                            &self.mxfp4_experts,
+                            latent,
+                            ids,
+                            mix_w,
+                            cfg,
+                            stream,
+                        )
+                    } else {
+                        Ok(mix_routed_experts(latent, ids, mix_w, &wts.experts, cfg))
+                    }
+                },
+            )?;
         }
 
         let n_layers = self.shared.graph.layers.len();
@@ -154,6 +184,18 @@ impl K3BoundLayer {
         )?;
         tracing::info!("K3 FullAttention decode via CUDA mla_decode");
         Ok(*self.shared.mla_kernels.get_or_init(|| k))
+    }
+
+    fn moe_kernels(&self, gpu: &dyn GpuBackend) -> Result<K3MoeGemmKernels> {
+        if let Some(&k) = self.shared.moe_kernels.get() {
+            return Ok(k);
+        }
+        let k = K3MoeGemmKernels::resolve(gpu).context(
+            "K3 packed LatentMoE: moe_w4a16 E8M0 PTX missing; packed experts \
+             cannot silently run host F32",
+        )?;
+        tracing::info!("K3 LatentMoE packed experts via CUDA moe_w4a16_grouped_gemm_ptrtable_e8m0");
+        Ok(*self.shared.moe_kernels.get_or_init(|| k))
     }
 
     fn host_layer(&self, gpu: &dyn GpuBackend) -> Result<&K3CpuLayer> {

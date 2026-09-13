@@ -16,6 +16,7 @@ pub mod latent_moe;
 pub mod layer;
 pub mod mla;
 pub mod mla_cuda;
+pub mod moe_cuda;
 pub mod situ;
 pub mod state;
 
@@ -23,10 +24,12 @@ pub use atlas_core::kimi_k3::{
     Ablation, HybridCache, K3CpuModel, K3Graph, K3LayerSpec, KdaConfig, KdaState, LatentMoeConfig,
     LayerCache, MixerKind, MlaConfig, MlpKind, attnres_blend, attnres_softmax_mix,
     cuda_kda_enabled, cuda_mla_enabled, gated_mla_attend, greedy_decode, kda_decode_token,
-    latent_moe_forward, mla_decode_token, sigmoid_topk, situ_glu, situ_glu_vec, softcap,
+    latent_moe_forward, mix_routed_experts, mla_decode_token, sigmoid_topk, situ_glu, situ_glu_vec,
+    softcap,
 };
 pub use kda_cuda::{K3KdaDecodeKernels, launch_k3_kda_decode_token};
 pub use mla_cuda::{K3MlaDecodeKernels, launch_k3_mla_decode_token};
+pub use moe_cuda::{K3MoeGemmKernels, launch_k3_latent_moe_experts};
 pub use state::K3CpuFallbackState;
 
 #[cfg(test)]

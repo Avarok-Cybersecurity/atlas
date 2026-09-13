@@ -68,4 +68,4 @@ Run **independent charters in parallel** when they do not contend for the same G
 | `docs/k3/rst/c1-cpu-forward.md` | in flight (goldens + twin weights still missing) |
 | `docs/k3/rst/c7-dummy-tp2.md` | in-process dummy TP=2 (spark1+spark2 still open) |
 | `docs/k3/rst/s5-mxfp4-e8m0.md` | host unpack reuses DSV4 E8M0 |
-| `docs/k3/rst/s5-mxfp4-gemm.md` | extra_cu DSV4 `moe_w4a16_grouped_gemm_ptrtable_e8m0`; packed lander when `K3_ALLOW_MXFP4=1` |
+| `docs/k3/rst/s5-mxfp4-gemm.md` | extra_cu DSV4 E8M0 + packed lander + BoundLayer LatentMoE launches GEMM when packed |

@@ -10,7 +10,7 @@ use super::cpu_weights::{
     Ablation, DenseMlp, K3CpuLayer, K3CpuModel, KdaWeights, MixerW, MlaWeights, MlpW, MoeWeights,
 };
 use super::kda::{KdaConfig, KdaState, bounded_gate, kda_decode_token};
-use super::latent_moe::{LatentMoeConfig, latent_moe_forward};
+use super::latent_moe::{LatentMoeConfig, mix_routed_experts, sigmoid_topk};
 use super::mla::{MlaConfig, mla_decode_token};
 use super::ops::{embed_token, matvec, matvec_column_tp};
 use super::situ::{sigmoid, situ_glu_vec};
@@ -133,9 +133,8 @@ pub fn logits(model: &K3CpuModel, h: &[f32]) -> Vec<f32> {
 /// One decoder layer: AttnRes + (KDA|MLA) + MLP. Mutates this layer's
 /// [`LayerCache`] and the token's [`AttnResStream`].
 ///
-/// Default cores are [`kda_decode_token`] / [`mla_decode_token`]. Serve CUDA
-/// injects via [`forward_one_layer_with_kda_decode`] /
-/// [`forward_one_layer_with_mla_decode`].
+/// Default cores are [`kda_decode_token`] / [`mla_decode_token`] / host
+/// [`mix_routed_experts`]. Serve CUDA injects via [`forward_one_layer_with_cores`].
 pub fn forward_one_layer(
     ctx: &K3LayerCtx<'_>,
     layer: &K3CpuLayer,
@@ -144,7 +143,7 @@ pub fn forward_one_layer(
     stream: &mut AttnResStream,
     ablation: Ablation,
 ) {
-    forward_one_layer_with_mixers(
+    forward_one_layer_with_cores(
         ctx,
         layer,
         pos,
@@ -153,6 +152,7 @@ pub fn forward_one_layer(
         ablation,
         cpu_kda_core,
         cpu_mla_core,
+        cpu_moe_core,
     )
     .expect("K3 CPU mixer cores are infallible")
 }
@@ -168,6 +168,7 @@ fn cpu_kda_core(
     Ok(kda_decode_token(x, w, g, b, cfg, st))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cpu_mla_core(
     q: &mut [f32],
     k: &mut [f32],
@@ -197,7 +198,7 @@ pub fn forward_one_layer_with_kda_decode<F>(
 where
     F: FnMut(&[f32], &[f32], &[f32], &[f32], &KdaConfig, &mut KdaState) -> Result<Vec<f32>>,
 {
-    forward_one_layer_with_mixers(
+    forward_one_layer_with_cores(
         ctx,
         layer,
         pos,
@@ -206,6 +207,7 @@ where
         ablation,
         kda_decode,
         cpu_mla_core,
+        cpu_moe_core,
     )
 }
 
@@ -234,7 +236,7 @@ where
         f32,
     ) -> Result<Vec<f32>>,
 {
-    forward_one_layer_with_mixers(
+    forward_one_layer_with_cores(
         ctx,
         layer,
         pos,
@@ -243,11 +245,26 @@ where
         ablation,
         cpu_kda_core,
         mla_decode,
+        cpu_moe_core,
     )
 }
 
+fn cpu_moe_core(
+    w: &MoeWeights,
+    latent: &[f32],
+    ids: &[usize],
+    mix_w: &[f32],
+    cfg: &LatentMoeConfig,
+) -> Result<Vec<f32>> {
+    Ok(mix_routed_experts(latent, ids, mix_w, &w.experts, cfg))
+}
+
+/// Same as [`forward_one_layer`], with replaceable KDA / MLA / routed-expert cores.
+///
+/// Projections, AttnRes, router, down/up, shared experts, and SiTU mix stay here
+/// unless the MoE callback replaces the expert GEMMs.
 #[allow(clippy::too_many_arguments)]
-fn forward_one_layer_with_mixers<FK, FM>(
+pub fn forward_one_layer_with_cores<FK, FM, FE>(
     ctx: &K3LayerCtx<'_>,
     layer: &K3CpuLayer,
     pos: usize,
@@ -256,6 +273,7 @@ fn forward_one_layer_with_mixers<FK, FM>(
     ablation: Ablation,
     mut kda_decode: FK,
     mut mla_decode: FM,
+    mut moe_experts: FE,
 ) -> Result<()>
 where
     FK: FnMut(&[f32], &[f32], &[f32], &[f32], &KdaConfig, &mut KdaState) -> Result<Vec<f32>>,
@@ -269,6 +287,7 @@ where
         usize,
         f32,
     ) -> Result<Vec<f32>>,
+    FE: FnMut(&MoeWeights, &[f32], &[usize], &[f32], &LatentMoeConfig) -> Result<Vec<f32>>,
 {
     let eps = ctx.eps;
     let mix = ablation.attnres_mix;
@@ -308,7 +327,7 @@ where
             ctx.situ_beta,
             ctx.situ_linear_beta,
         ),
-        MlpW::Moe(w) => moe_mlp(w, &x, ctx, ablation.force_expert),
+        MlpW::Moe(w) => moe_mlp_with(w, &x, ctx, ablation.force_expert, &mut moe_experts)?,
     };
     stream.add(&mlp_out);
     Ok(())
@@ -458,7 +477,16 @@ fn dense_mlp(
     matvec(&w.down, &mid, hidden, inter)
 }
 
-fn moe_mlp(w: &MoeWeights, x: &[f32], ctx: &K3LayerCtx<'_>, force: Option<usize>) -> Vec<f32> {
+fn moe_mlp_with<F>(
+    w: &MoeWeights,
+    x: &[f32],
+    ctx: &K3LayerCtx<'_>,
+    force: Option<usize>,
+    experts_fn: &mut F,
+) -> Result<Vec<f32>>
+where
+    F: FnMut(&MoeWeights, &[f32], &[usize], &[f32], &LatentMoeConfig) -> Result<Vec<f32>>,
+{
     let mut logits = matvec(&w.router, x, ctx.moe.n_routed, ctx.moe.hidden);
     if let Some(e) = force {
         logits.fill(0.0);
@@ -474,11 +502,21 @@ fn moe_mlp(w: &MoeWeights, x: &[f32], ctx: &K3LayerCtx<'_>, force: Option<usize>
             ctx.situ_linear_beta,
         )
     });
-    let shared_ref = shared.as_deref();
-    let (y, _) = latent_moe_forward(
-        x, &w.down, &w.up, &w.norm, &logits, &w.bias, &w.experts, shared_ref, ctx.moe, ctx.eps,
-    );
-    y
+    let latent = matvec(&w.down, x, ctx.moe.latent, ctx.moe.hidden);
+    let (ids, weights) = sigmoid_topk(&logits, &w.bias, ctx.moe.top_k);
+    let mixed = experts_fn(w, &latent, &ids, &weights, ctx.moe)?;
+    let mixed = if ctx.moe.use_norm {
+        rms_norm(&mixed, &w.norm, ctx.eps)
+    } else {
+        mixed
+    };
+    let mut out = matvec(&w.up, &mixed, ctx.moe.hidden, ctx.moe.latent);
+    if let Some(s) = shared {
+        for (o, ss) in out.iter_mut().zip(&s) {
+            *o += ss;
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

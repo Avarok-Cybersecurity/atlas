@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! BoundLayer mixer CUDA flags: KDA unless `want_cuda_kda` is false; MLA
-//! only when `want_cuda_mla` is true.
+//! only when `want_cuda_mla` is true. Packed LatentMoE launches E8M0 GEMM.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use atlas_core::config::ModelConfig;
-use atlas_core::kimi_k3::{K3CpuModel, MixerKind};
+use atlas_core::kimi_k3::{K3CpuModel, MixerKind, MlpKind};
 use half::bf16;
 use parking_lot::Mutex;
 use spark_runtime::buffers::BufferArena;
@@ -18,10 +18,11 @@ use spark_runtime::weights::WeightDtype;
 use super::bound::{K3BoundLayer, K3HostShared};
 use super::kda_cuda::{CONV_ENTRY, MODULE, RECURRENT_ENTRY};
 use super::mla_cuda::{MODULE as MLA_MODULE, ROPE_ENTRY, SDPA_ENTRY};
+use super::moe_cuda::{E8M0_ENTRY, MODULE as MOE_MODULE};
 use super::state::K3CpuFallbackState;
 use crate::layer::{ForwardContext, MoeLoraRoute};
 use crate::layers::ops::{DerivedWeights, GemmDispatch, ModelLevers, ModelStats};
-use crate::weight_map::DenseWeight;
+use crate::weight_map::{DenseWeight, QuantizedWeight};
 
 fn tiny_config(hidden: usize, eps: f32, theta: f32, inter: usize) -> ModelConfig {
     let mut c = ModelConfig::qwen3_next_80b_nvfp4();
@@ -41,8 +42,53 @@ fn tiny_config(hidden: usize, eps: f32, theta: f32, inter: usize) -> ModelConfig
     c
 }
 
+fn dummy_qw(gpu: &MockGpuBackend) -> QuantizedWeight {
+    QuantizedWeight {
+        weight: gpu.alloc(8).unwrap(),
+        weight_scale: gpu.alloc(8).unwrap(),
+        weight_scale_2: 1.0,
+        input_scale: DevicePtr::NULL,
+        weight_scale_2_vec: DevicePtr::NULL,
+    }
+}
+
+fn packed_for_layer(
+    gpu: &MockGpuBackend,
+    layer: usize,
+    n_experts: usize,
+) -> Vec<(String, QuantizedWeight)> {
+    let mut v = Vec::new();
+    for e in 0..n_experts {
+        for w in ["w1", "w2", "w3"] {
+            v.push((
+                format!("model.layers.{layer}.block_sparse_moe.experts.{e}.{w}"),
+                dummy_qw(gpu),
+            ));
+        }
+    }
+    v
+}
+
 fn run_layers(steps: &[(usize, bool, bool)]) -> (usize, Vec<(String, String)>) {
+    run_layers_try(steps, None, false).unwrap()
+}
+
+fn run_layers_inner(
+    steps: &[(usize, bool, bool)],
+    packed_layer: Option<usize>,
+) -> (usize, Vec<(String, String)>) {
+    run_layers_try(steps, packed_layer, false).unwrap()
+}
+
+fn run_layers_try(
+    steps: &[(usize, bool, bool)],
+    packed_layer: Option<usize>,
+    deny_moe: bool,
+) -> anyhow::Result<(usize, Vec<(String, String)>)> {
     let gpu = MockGpuBackend::new();
+    if deny_moe {
+        gpu.deny_kernel(MOE_MODULE, E8M0_ENTRY);
+    }
     let model = K3CpuModel::synthetic_tiny();
     let h = model.graph.hidden;
     let config = tiny_config(h, model.eps, model.rope_theta, model.dense_intermediate);
@@ -60,6 +106,7 @@ fn run_layers(steps: &[(usize, bool, bool)]) -> (usize, Vec<(String, String)>) {
         output_host: OnceLock::new(),
         kda_kernels: OnceLock::new(),
         mla_kernels: OnceLock::new(),
+        moe_kernels: OnceLock::new(),
         attnres: Mutex::new(HashMap::new()),
     });
     let hidden = gpu.alloc(h * 2).unwrap();
@@ -101,7 +148,11 @@ fn run_layers(steps: &[(usize, bool, bool)]) -> (usize, Vec<(String, String)>) {
             spec: model.layers[layer_idx].spec,
             weights: Vec::new(),
             weight_meta: Vec::new(),
-            mxfp4_experts: Vec::new(),
+            mxfp4_experts: if packed_layer == Some(layer_idx) {
+                packed_for_layer(&gpu, layer_idx, model.moe.n_routed)
+            } else {
+                Vec::new()
+            },
             host,
             shared: shared.clone(),
         };
@@ -115,20 +166,18 @@ fn run_layers(steps: &[(usize, bool, bool)]) -> (usize, Vec<(String, String)>) {
                 }
             },
         };
-        layer
-            .decode_host(
-                hidden,
-                DevicePtr::NULL,
-                &mut state,
-                0,
-                &ctx,
-                3,
-                want_cuda_kda,
-                want_cuda_mla,
-            )
-            .unwrap();
+        layer.decode_host(
+            hidden,
+            DevicePtr::NULL,
+            &mut state,
+            0,
+            &ctx,
+            3,
+            want_cuda_kda,
+            want_cuda_mla,
+        )?;
     }
-    (gpu.launch_count(), gpu.kernel_lookups_snapshot())
+    Ok((gpu.launch_count(), gpu.kernel_lookups_snapshot()))
 }
 
 #[test]
@@ -191,5 +240,52 @@ fn mla_layer_cuda_flag_launches_rope_then_sdpa() {
             (MLA_MODULE.to_string(), ROPE_ENTRY.to_string()),
             (MLA_MODULE.to_string(), SDPA_ENTRY.to_string()),
         ]
+    );
+}
+
+#[test]
+fn dense_layer_packed_experts_do_not_launch_gemm() {
+    let model = K3CpuModel::synthetic_tiny();
+    assert_eq!(model.layers[0].spec.mlp, MlpKind::Dense);
+    let (n, lookups) = run_layers_inner(&[(0, false, false)], Some(0));
+    assert_eq!(n, 0, "Dense MLP must ignore packed expert tables");
+    assert!(
+        lookups.iter().all(|(m, _)| m != MOE_MODULE),
+        "Dense must not look up {MOE_MODULE}: {lookups:?}"
+    );
+}
+
+#[test]
+fn latent_moe_unpacked_does_not_lookup_gemm() {
+    let model = K3CpuModel::synthetic_tiny();
+    assert_eq!(model.layers[1].spec.mlp, MlpKind::LatentMoe);
+    let (n, lookups) = run_layers(&[(0, false, false), (1, false, false)]);
+    assert_eq!(n, 0, "BF16 twin LatentMoE stays host");
+    assert!(
+        lookups.iter().all(|(m, _)| m != MOE_MODULE),
+        "unpacked MoE must not look up {MOE_MODULE}: {lookups:?}"
+    );
+}
+
+#[test]
+fn latent_moe_packed_launches_three_e8m0_gemms() {
+    let model = K3CpuModel::synthetic_tiny();
+    assert_eq!(model.layers[1].spec.mlp, MlpKind::LatentMoe);
+    let (n, lookups) = run_layers_inner(&[(0, false, false), (1, false, false)], Some(1));
+    assert_eq!(n, 3, "w1, w3, w2 grouped GEMM");
+    assert_eq!(
+        lookups,
+        vec![(MOE_MODULE.to_string(), E8M0_ENTRY.to_string())]
+    );
+}
+
+#[test]
+fn latent_moe_packed_lookup_fail_bails_not_cpu() {
+    let err = run_layers_try(&[(1, false, false)], Some(1), true)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(E8M0_ENTRY) && err.contains("cannot silently run host F32"),
+        "{err}"
     );
 }

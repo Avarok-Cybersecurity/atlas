@@ -423,12 +423,14 @@ fn assemble_moe(
     };
     let mut experts = Vec::with_capacity(moe.n_routed);
     for e in 0..moe.n_routed {
+        let w1k = format!("{lp}.block_sparse_moe.experts.{e}.w1.weight");
+        if !got.contains_key(&text_key(prefix, &w1k)) {
+            // Packed MXFP4: CUDA grouped GEMM owns w1/w2/w3.
+            experts.push((Vec::new(), Vec::new(), Vec::new()));
+            continue;
+        }
         experts.push((
-            pull(
-                got,
-                prefix,
-                &format!("{lp}.block_sparse_moe.experts.{e}.w1.weight"),
-            )?,
+            pull(got, prefix, &w1k)?,
             pull(
                 got,
                 prefix,

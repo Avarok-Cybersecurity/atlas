@@ -14,9 +14,9 @@ Closes #
 
 | Field | Value |
 | --- | --- |
-| Phase | C0–C7 green. CUDA KDA default serve C1. MXFP4 extra_cu DSV4 E8M0 GEMM + packed lander (`K3_ALLOW_MXFP4=1`). CUDA MLA opt-in (`K3_CUDA_MLA=1`). AttnRes/MLP/LatentMoE still host. Do not book. |
+| Phase | C0–C7 green. CUDA KDA default serve C1. MXFP4 extra_cu + packed lander + LatentMoE launches E8M0 grouped GEMM when packed. CUDA MLA opt-in (`K3_CUDA_MLA=1`). AttnRes/router/SiTU still host. Do not book. |
 | Last host | workstation (Mac) + spark1 + spark2 + train (5090) |
-| Last session | 2026-09-13 08:20 CDT — extra_cu DSV4 E8M0 GEMM + CUDA gated-NoPE MLA (`k3_mla_*`) opt-in. |
+| Last session | 2026-09-13 08:30 CDT — LatentMoE packed path launches DSV4 `moe_w4a16_grouped_gemm_ptrtable_e8m0`. |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
 | Official weights downloaded in lab | **no** |
 | Rental booked | **no** |

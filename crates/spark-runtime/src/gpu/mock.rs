@@ -20,6 +20,8 @@ pub struct MockGpuBackend {
     max_allocation_bytes: AtomicUsize,
     launches: Mutex<Vec<MockLaunch>>,
     kernel_lookups: Mutex<Vec<(String, String)>>,
+    /// `kernel(module, func)` returns Err for these pairs (lookup-fail tests).
+    denied_kernels: Mutex<Vec<(String, String)>>,
     /// Copy/sync shape counters. These exist so tests can assert the SHAPE of a
     /// bulk transfer, not just its bytes: the SSM snapshot spill regressed to
     /// 60 blocking `copy_d2h` calls (one full stream drain each, ~400 ms for
@@ -79,6 +81,7 @@ impl MockGpuBackend {
             max_allocation_bytes: AtomicUsize::new(usize::MAX),
             launches: Mutex::new(Vec::new()),
             kernel_lookups: Mutex::new(Vec::new()),
+            denied_kernels: Mutex::new(Vec::new()),
             syncs: AtomicUsize::new(0),
             d2h_blocking: AtomicUsize::new(0),
             d2h_async: AtomicUsize::new(0),
@@ -204,6 +207,13 @@ impl MockGpuBackend {
     /// Module/function pairs requested through `kernel`, in lookup order.
     pub fn kernel_lookups_snapshot(&self) -> Vec<(String, String)> {
         self.kernel_lookups.lock().clone()
+    }
+
+    /// Next `kernel(module, func)` for this pair fails (records the lookup).
+    pub fn deny_kernel(&self, module: &str, func_name: &str) {
+        self.denied_kernels
+            .lock()
+            .push((module.to_owned(), func_name.to_owned()));
     }
 }
 
@@ -417,6 +427,14 @@ impl GpuBackend for MockGpuBackend {
         self.kernel_lookups
             .lock()
             .push((module.to_owned(), func_name.to_owned()));
+        if self
+            .denied_kernels
+            .lock()
+            .iter()
+            .any(|(m, f)| m == module && f == func_name)
+        {
+            anyhow::bail!("Kernel lookup {module}::{func_name}: missing");
+        }
         Ok(KernelHandle(0xDEAD))
     }
 
