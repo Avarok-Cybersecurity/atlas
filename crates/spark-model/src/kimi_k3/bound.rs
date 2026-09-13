@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! BF16/FP32 twin layer bind. Decode is an explicit **CPU fallback GPU
-//! wrapper**: copy hidden D2H, run `atlas_core::kimi_k3` mixer+MLP+AttnRes,
-//! copy H2D. Not CUDA KDA.
+//! BF16/FP32 twin layer bind. Decode copies hidden D2H, runs mixer+MLP+AttnRes,
+//! copies H2D. Default mixer is CPU (C1 aviation greedy). `K3_CUDA_KDA=1`
+//! swaps LinearAttention / KDA conv+recurrent onto `kda_decode` CUDA.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -18,6 +18,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 use spark_runtime::weights::WeightDtype;
 
+use super::kda_cuda::K3KdaDecodeKernels;
 use super::state::K3CpuFallbackState;
 use crate::layer::{ForwardContext, LayerState, TransformerLayer};
 use crate::weight_map::DenseWeight;
@@ -42,6 +43,8 @@ pub struct K3HostShared {
     pub output_res_proj_meta: (WeightDtype, usize),
     pub output_res_norm_meta: (WeightDtype, usize),
     pub output_host: OnceLock<(Vec<f32>, Vec<f32>)>,
+    /// Resolved once per loaded model. LinearAttention decode launches these.
+    pub kda_kernels: OnceLock<K3KdaDecodeKernels>,
     /// AttnRes is per-token across layers. Keyed by this step's `residual`
     /// pointer so prefill (layer-outer, token-inner) still sees the same
     /// stream as CPU `forward_token` (token-outer, layer-inner).
@@ -119,7 +122,15 @@ impl TransformerLayer for K3BoundLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        self.decode_cpu_fallback(hidden, residual, state, seq_len, ctx, stream)
+        self.decode_host(
+            hidden,
+            residual,
+            state,
+            seq_len,
+            ctx,
+            stream,
+            atlas_core::kimi_k3::cuda_kda_enabled(),
+        )
     }
 
     fn alloc_state(&self, _gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {

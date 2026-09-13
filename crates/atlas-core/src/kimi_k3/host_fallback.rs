@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Host-side per-layer decode used by `K3BoundLayer` as an explicit
-//! **CPU fallback GPU wrapper** (copy-out / CPU mixer+MLP+AttnRes / copy-in).
-//! This is not CUDA KDA. GPU `.cu` is a later slice.
+//! Host-side per-layer decode used by `K3BoundLayer` (copy-out / mixer+MLP+AttnRes / copy-in).
+//! Default mixer is CPU. `K3_CUDA_KDA=1` injects CUDA conv+recurrent only.
 
 use super::cache::{HybridCache, LayerCache};
-use super::cpu_forward::{AttnResStream, K3LayerCtx, forward_one_layer, forward_token};
+use super::cpu_forward::{
+    AttnResStream, K3LayerCtx, forward_one_layer, forward_one_layer_with_kda_decode, forward_token,
+};
 use super::cpu_weights::{Ablation, K3CpuModel};
 use super::greedy::greedy_decode;
+use super::kda::kda_decode_token;
 use super::ops::argmax;
 
 fn wrap_token(model: &K3CpuModel, token: u32, pos: usize, cache: &mut HybridCache) -> Vec<f32> {
@@ -26,6 +28,47 @@ fn wrap_token(model: &K3CpuModel, token: u32, pos: usize, cache: &mut HybridCach
             &mut stream,
             Ablation::default(),
         );
+    }
+    stream.mix(
+        &model.output_res_proj,
+        &model.output_res_norm,
+        model.eps,
+        1.0,
+    )
+}
+
+fn wrap_token_kda<F>(
+    model: &K3CpuModel,
+    token: u32,
+    pos: usize,
+    cache: &mut HybridCache,
+    mut kda_decode: F,
+) -> Vec<f32>
+where
+    F: FnMut(
+        &[f32],
+        &[f32],
+        &[f32],
+        &[f32],
+        &super::kda::KdaConfig,
+        &mut super::kda::KdaState,
+    ) -> anyhow::Result<Vec<f32>>,
+{
+    let embed = super::ops::embed_token(&model.embed, token, model.graph.hidden, model.vocab);
+    let mut stream = AttnResStream::new(model.graph.hidden, model.graph.attn_res_block_size);
+    stream.partial.clone_from(&embed);
+    let ctx = K3LayerCtx::from_model(model);
+    for layer in &model.layers {
+        forward_one_layer_with_kda_decode(
+            &ctx,
+            layer,
+            pos,
+            &mut cache.layers[layer.spec.index],
+            &mut stream,
+            Ablation::default(),
+            &mut kda_decode,
+        )
+        .expect("injected KDA core");
     }
     stream.mix(
         &model.output_res_proj,
@@ -66,6 +109,36 @@ fn cpu_fallback_mix0_changes_greedy_tokens() {
     assert_ne!(
         mix0, mix1,
         "RST known-bad: mix=0 must change tokens vs mix=1 (CPU fallback GPU wrapper)"
+    );
+}
+
+#[test]
+fn injected_cpu_kda_core_matches_forward_token() {
+    let model = K3CpuModel::synthetic_tiny();
+    let mut a = HybridCache::from_graph(&model.graph, &model.kda);
+    let mut b = HybridCache::from_graph(&model.graph, &model.kda);
+    let want = wrap_token(&model, 3, 0, &mut a);
+    let got = wrap_token_kda(&model, 3, 0, &mut b, |x, w, g, b, cfg, st| {
+        Ok(kda_decode_token(x, w, g, b, cfg, st))
+    });
+    assert_eq!(
+        got, want,
+        "injecting CPU kda_decode_token must match the default mixer"
+    );
+}
+
+#[test]
+fn injected_zero_kda_core_diverges() {
+    let model = K3CpuModel::synthetic_tiny();
+    let mut a = HybridCache::from_graph(&model.graph, &model.kda);
+    let mut b = HybridCache::from_graph(&model.graph, &model.kda);
+    let want = wrap_token(&model, 3, 0, &mut a);
+    let got = wrap_token_kda(&model, 3, 0, &mut b, |_x, _w, _g, _b, cfg, _st| {
+        Ok(vec![0.0; cfg.qkv_dim()])
+    });
+    assert_ne!(
+        got, want,
+        "RST known-bad: a zero KDA core must move the layer output"
     );
 }
 

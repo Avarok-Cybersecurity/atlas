@@ -24,10 +24,12 @@ pub mod situ;
 pub use attnres::{attnres_blend, attnres_mix, attnres_softmax_mix};
 pub use cache::{HybridCache, LayerCache, MlaKv};
 pub use cpu_bind::{assemble_layer, kda_from, mla_from, moe_from, text_key};
-pub use cpu_forward::{AttnResStream, K3LayerCtx, forward_one_layer, forward_token};
+pub use cpu_forward::{
+    AttnResStream, K3LayerCtx, forward_one_layer, forward_one_layer_with_kda_decode, forward_token,
+};
 pub use cpu_weights::{Ablation, K3CpuLayer, K3CpuModel};
 pub use greedy::greedy_decode;
-pub use kda::{KDA_L2_EPS, KdaConfig, KdaState, kda_decode_token};
+pub use kda::{KDA_L2_EPS, KdaConfig, KdaState, cuda_kda_enabled, kda_decode_token};
 pub use latent_moe::{LatentMoeConfig, latent_moe_forward, sigmoid_topk};
 pub use layer::{K3Graph, K3LayerSpec, MixerKind, MlpKind};
 pub use mla::{MlaConfig, gated_mla_attend};

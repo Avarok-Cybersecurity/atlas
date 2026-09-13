@@ -26,7 +26,7 @@ KNOWN-BAD (instrument)
 On spark serve, plant the same mutant with `K3_ATTNRES_MIX=0` (no Ablation CLI). Drop-weight / `K3_FORCE_EXPERT=0` is the C6 lever.
 
 TEST NOTES
-- This path is an explicit **CPU fallback GPU wrapper**, not CUDA KDA. No `.cu` under `kernels/gb10/kimi-k3/`. `decode_graph_unsupported` stays true.
+- Default path is still the **CPU fallback GPU wrapper**. `K3_CUDA_KDA=1` swaps only the KDA mixer core onto `kda_decode.cu`; MLP+AttnRes stay CPU. `decode_graph_unsupported` stays true.
 - Mac: `ATLAS_SKIP_BUILD=1 cargo test -p atlas-core --lib kimi_k3`. spark-model may not compile on Mac.
 - Prefix-cache: Marconi `snapshot_aux` / `restore_aux` serializes per-layer `LayerCache` (KDA conv/recurrent + MLA KV). Same C3 semantics as the CPU tests.
 - AttnRes is per-token across layers; the wrapper keys the host stream by the residual `DevicePtr` so the model's layer-outer prefill still matches CPU token-outer order.

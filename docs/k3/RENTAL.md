@@ -15,9 +15,8 @@ CPU C1 is not a Hopper substitute. 5090 cannot launch SM121.
 
 ## What is **not** green (blocks a useful soak)
 
-- `K3BoundLayer::decode` is a **CPU fallback GPU wrapper** (copy-out / atlas-core mixer / copy-in), not CUDA KDA. No `.cu` under `kernels/gb10/kimi-k3/bf16/`
+- `K3BoundLayer::decode` defaults to a **CPU fallback GPU wrapper**. `K3_CUDA_KDA=1` swaps KDA conv+recurrent onto `kda_decode.cu` (mixer only). Device numeric vs CPU not proven.
 - MXFP4 GPU grouped GEMM not wired (`refuse_mxfp4`)
-- `spark serve` of 0.40B on spark1 not yet demonstrated (decode no longer bails)
 - Official 1.56 TB not downloaded (correct)
 
 ## Box to book (when S6 exits)

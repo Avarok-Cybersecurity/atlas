@@ -2,6 +2,8 @@
 
 //! One-token K3 CPU forward: AttnRes + mixer + MLP, then logits.
 
+use anyhow::Result;
+
 use super::attnres::{attnres_mix, rms_norm};
 use super::cache::{HybridCache, LayerCache, MlaKv};
 use super::cpu_weights::{
@@ -63,8 +65,8 @@ impl AttnResStream {
 
 /// Per-layer geometry the GPU wrapper and `forward_token` share.
 ///
-/// `K3BoundLayer::decode` is an explicit **CPU fallback GPU wrapper**: copy
-/// hidden D2H, run [`forward_one_layer`], copy H2D. Not CUDA KDA.
+/// `K3BoundLayer::decode` copies hidden D2H, runs this math, copies H2D.
+/// Default mixer is CPU. `K3_CUDA_KDA=1` swaps only KDA conv+recurrent.
 pub struct K3LayerCtx<'a> {
     pub kda: &'a KdaConfig,
     pub mla: &'a MlaConfig,
@@ -130,8 +132,8 @@ pub fn logits(model: &K3CpuModel, h: &[f32]) -> Vec<f32> {
 /// One decoder layer: AttnRes + (KDA|MLA) + MLP. Mutates this layer's
 /// [`LayerCache`] and the token's [`AttnResStream`].
 ///
-/// This is the math `K3BoundLayer` runs on the host after copying GPU
-/// hidden to f32. It is not a CUDA KDA kernel.
+/// Default KDA core is [`kda_decode_token`]. Serve CUDA mixer injects via
+/// [`forward_one_layer_with_kda_decode`].
 pub fn forward_one_layer(
     ctx: &K3LayerCtx<'_>,
     layer: &K3CpuLayer,
@@ -140,6 +142,34 @@ pub fn forward_one_layer(
     stream: &mut AttnResStream,
     ablation: Ablation,
 ) {
+    forward_one_layer_with_kda_decode(
+        ctx,
+        layer,
+        pos,
+        mixer_state,
+        stream,
+        ablation,
+        |x, w, g, b, cfg, st| Ok(kda_decode_token(x, w, g, b, cfg, st)),
+    )
+    .expect("K3 CPU kda_decode_token is infallible")
+}
+
+/// Same as [`forward_one_layer`], with a replaceable KDA conv+recurrent core.
+///
+/// Projections, output gate, MLP, and AttnRes stay on this CPU path.
+#[allow(clippy::too_many_arguments)]
+pub fn forward_one_layer_with_kda_decode<F>(
+    ctx: &K3LayerCtx<'_>,
+    layer: &K3CpuLayer,
+    pos: usize,
+    mixer_state: &mut LayerCache,
+    stream: &mut AttnResStream,
+    ablation: Ablation,
+    mut kda_decode: F,
+) -> Result<()>
+where
+    F: FnMut(&[f32], &[f32], &[f32], &[f32], &KdaConfig, &mut KdaState) -> Result<Vec<f32>>,
+{
     let eps = ctx.eps;
     let mix = ablation.attnres_mix;
     let h = stream.mix(&layer.attn_res_proj, &layer.attn_res_norm, eps, mix);
@@ -147,7 +177,9 @@ pub fn forward_one_layer(
     stream.archive_incoming_at_block_start(layer.spec.index);
     let x = rms_norm(&h, &layer.input_norm, eps);
     let mix_out = match (&layer.mixer, mixer_state) {
-        (MixerW::Kda(w), LayerCache::Kda(state)) => kda_mixer(w, &x, ctx.kda, state, eps, ablation),
+        (MixerW::Kda(w), LayerCache::Kda(state)) => {
+            kda_mixer(w, &x, ctx.kda, state, eps, ablation, &mut kda_decode)?
+        }
         (MixerW::Mla(w), LayerCache::Mla(kv)) => {
             mla_mixer(w, &x, ctx.mla, kv, pos, ctx.rope_theta, eps, ablation)
         }
@@ -171,6 +203,7 @@ pub fn forward_one_layer(
         MlpW::Moe(w) => moe_mlp(w, &x, ctx, ablation.force_expert),
     };
     stream.add(&mlp_out);
+    Ok(())
 }
 
 fn apply_o_proj(w: &[f32], x: &[f32], out: usize, inn: usize, ablation: Ablation) -> Vec<f32> {
@@ -184,14 +217,18 @@ fn apply_o_proj(w: &[f32], x: &[f32], out: usize, inn: usize, ablation: Ablation
     )
 }
 
-fn kda_mixer(
+fn kda_mixer<F>(
     w: &KdaWeights,
     x: &[f32],
     cfg: &KdaConfig,
     state: &mut KdaState,
     eps: f32,
     ablation: Ablation,
-) -> Vec<f32> {
+    kda_decode: &mut F,
+) -> Result<Vec<f32>>
+where
+    F: FnMut(&[f32], &[f32], &[f32], &[f32], &KdaConfig, &mut KdaState) -> Result<Vec<f32>>,
+{
     let qdim = cfg.qkv_dim();
     let q = matvec(&w.q_proj, x, qdim, x.len());
     let k = matvec(&w.k_proj, x, qdim, x.len());
@@ -212,9 +249,9 @@ fn kda_mixer(
     );
     let beta = matvec(&w.b_proj, x, cfg.heads, x.len());
     let g = matvec(&w.g_proj, x, qdim, x.len());
-    let core = kda_decode_token(&qkv, &w.conv, &gate, &beta, cfg, state);
+    let core = kda_decode(&qkv, &w.conv, &gate, &beta, cfg, state)?;
     let gated = gated_o_norm(&core, &g, &w.o_norm, cfg.head_dim, eps);
-    apply_o_proj(&w.o_proj, &gated, x.len(), qdim, ablation)
+    Ok(apply_o_proj(&w.o_proj, &gated, x.len(), qdim, ablation))
 }
 
 fn gated_o_norm(core: &[f32], g: &[f32], o_norm: &[f32], head_dim: usize, eps: f32) -> Vec<f32> {

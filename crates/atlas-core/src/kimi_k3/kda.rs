@@ -77,6 +77,12 @@ impl KdaConfig {
     }
 }
 
+/// Serve opt-in for CUDA KDA conv+recurrent. Default off: C1 aviation greedy
+/// stays on the CPU oracle. Only `"1"` enables.
+pub fn cuda_kda_enabled() -> bool {
+    matches!(std::env::var("K3_CUDA_KDA").as_deref(), Ok("1"))
+}
+
 /// Per-sequence KDA state. Both buffers are FP32, read-modify-write.
 #[derive(Clone, Debug)]
 pub struct KdaState {
@@ -266,6 +272,38 @@ mod tests {
             gate_lower_bound: Some(-5.0),
             use_full_rank_gate: true,
         }
+    }
+
+    #[test]
+    fn cuda_kda_env_default_off() {
+        if std::env::var_os("K3_CUDA_KDA").is_some() {
+            return;
+        }
+        assert!(
+            !cuda_kda_enabled(),
+            "C1 aviation greedy must not take CUDA KDA unless K3_CUDA_KDA=1"
+        );
+    }
+
+    #[test]
+    fn cuda_kda_env_opt_in() {
+        const THIS: &str = "kimi_k3::kda::tests::cuda_kda_env_opt_in";
+        const MARKER: &str = "K3_CUDA_KDA_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            assert!(cuda_kda_enabled(), "K3_CUDA_KDA=1 must enable the mixer");
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", THIS])
+            .env(MARKER, "1")
+            .env("K3_CUDA_KDA", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "K3_CUDA_KDA child failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

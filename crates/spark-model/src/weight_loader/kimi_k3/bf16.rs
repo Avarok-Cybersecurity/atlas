@@ -125,6 +125,7 @@ pub fn load_layers(
         output_res_proj_meta: (out_proj_t.dtype, out_proj_t.num_elements()),
         output_res_norm_meta: (out_norm_t.dtype, out_norm_t.num_elements()),
         output_host: OnceLock::new(),
+        kda_kernels: OnceLock::new(),
         attnres: Mutex::new(HashMap::new()),
     });
     let mut layers: Vec<Box<dyn TransformerLayer>> = Vec::with_capacity(graph.layers.len());
