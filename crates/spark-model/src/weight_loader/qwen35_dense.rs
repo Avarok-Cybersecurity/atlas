@@ -197,8 +197,13 @@ fn ffn_inter(config: &ModelConfig) -> usize {
     }
 }
 
-mod fp8_residency;
+// `pub` (re-exported from `weight_loader/mod.rs`): the pre-load residency
+// PREDICTION in `predicted_residency` is read by spark-server's preflight,
+// and it prices its terms with this module's shape helpers so the prediction
+// and the loader's own tally cannot be two different arithmetics (#915).
+pub mod fp8_residency;
 mod loaders_b;
+pub mod predicted_residency;
 mod rowwise_fp8;
 
 use crate::layers::qwen3_attention::Fp8TwinSet;
