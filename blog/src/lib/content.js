@@ -61,6 +61,12 @@ export const authors = {
     initials: 'RS',
     role: 'Founding Engineer, Atlas',
     bio: 'Tunes Atlas for speed on real hardware, from CUDA kernels to the speculative-decode layer. Holds the single-Spark records this blog reports.'
+  },
+  'alexi-derkatsch': {
+    name: 'Alexi Derkatsch',
+    initials: 'AD',
+    role: 'Systems Engineer, Atlas',
+    bio: 'Works the information path between the engine and the firms that will run it.'
   }
 };
 
