@@ -204,6 +204,46 @@ serially, and nothing downstream reads it as if it did.
 
 ---
 
+## 5c. Records from more than one box: when a Speed-class set may span signers
+
+`spark bench certify --with-nodes` runs one campaign across several machines.
+Correctness-class gates spread freely — the same BFCL gate measured on two
+boxes at one commit returned byte-identical scores, and nothing about the box
+enters the number. Speed-class gates are the opposite case, and the rule that
+governs them is stated here because it is the one place a certification could
+quietly compare numbers that were never comparable.
+
+**The incident the rule encodes.** On 2026-09-06 two GB10s with identical
+model, driver, clock ceiling and memory read 0.66 tok/s apart on one gate at
+one commit — ten times either box's own run-to-run sigma. What differed was
+live state: 65 °C against 89 °C in the chassis, and a thermal clock-event
+reason asserted on the hot one. So "the same hardware" is not a model name.
+
+**The rule.** Two boxes are one box for a Speed-class campaign iff
+`hardware::equivalence::equivalent` says so under `SPEED_SPREAD`: same GPU
+name, same driver major, clock ceiling within 1 %, memory within 5 %, no
+thermal reason asserted on either, hottest chassis zone within 10 °C, and —
+for a record — a valid post-run hardware check. A field either side cannot
+report is `Undecidable`, which is **not** equivalent: the safe answer to "are
+these the same box?" is never "probably".
+
+**Where it is decided, twice, by the same code.** The scheduler asks it before
+spreading, from the nodes' live reports (atlasctl states facts; it decides
+nothing), and either spreads or bundles every Speed unit onto the single node
+with the most headroom, saying why. CI asks it again in `gate::agreement`,
+from the RECORDS' own `hardware` and `hardware_state` captures — so what is
+judged is what was measured, not what a scheduler believed at planning time.
+A Speed set spanning two signers whose records are not equivalent is refused
+with the concrete mismatch (`chassis 65 vs 89 °C (limit 10 °C)`), exactly as
+a set spanning two commits is. A record with no capture at all is equivalent
+to nothing, so a pre-capture record keeps the one-box rule it always had.
+
+**What this does not prove.** Equivalence is judged at capture time on the
+fields the collector can read. It does not make two boxes one box for a
+metric whose sensitivity lies elsewhere — which is why the policy is a named
+constant with the incident beside it, and why a class is part of what a
+record proves rather than a scheduling detail.
+
 ## 6. What to Say in the README Instead
 
 > **What the gate verifies — and what it cannot.**
