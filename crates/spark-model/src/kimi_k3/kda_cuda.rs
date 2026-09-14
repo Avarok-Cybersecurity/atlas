@@ -164,10 +164,10 @@ fn launch_k3_kda_decode_inner(
     if gate.len() != cfg.qkv_dim() || beta.len() != h {
         bail!("k3 kda: gate/beta rank");
     }
-    if let Some(state) = host.as_ref() {
-        if state.conv.len() != cfg.conv_elems() || state.recurrent.len() != cfg.recurrent_elems() {
-            bail!("k3 kda: state rank");
-        }
+    if let Some(state) = host.as_ref()
+        && (state.conv.len() != cfg.conv_elems() || state.recurrent.len() != cfg.recurrent_elems())
+    {
+        bail!("k3 kda: state rank");
     }
     if k == 0 || d == 0 {
         bail!("k3 kda: D and conv_kernel must be > 0");
