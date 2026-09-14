@@ -9,7 +9,8 @@ pub mod kda;
 pub mod kda_cuda;
 
 pub use atlas_core::kimi_k3::{
-    KDA_L2_EPS, KdaConfig, KdaState, cuda_kda_enabled, kda_decode_token, kda_from,
+    HybridCache, K3Graph, KDA_L2_EPS, KdaConfig, KdaState, LayerCache, MixerKind, MlaKv, MlpKind,
+    cuda_kda_enabled, kda_decode_token, kda_from,
 };
 pub use kda_cuda::{
     K3KdaDecodeKernels, KdaDeviceState, launch_k3_kda_decode_token,
