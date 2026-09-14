@@ -163,6 +163,7 @@ fn the_local_node_reads_its_own_state() {
         gpu: "NVIDIA GB10".into(),
         driver: "580.126.09".into(),
         sm_clock_mhz: None,
+        gpu_count: None,
         source: "test".into(),
     };
     let mut st = HardwareState::default();
