@@ -62,9 +62,9 @@ fn normalize_tool_call_arguments(messages: &[serde_json::Value]) -> Vec<serde_js
 
 /// Wraps a HuggingFace tokenizer with Jinja chat template support.
 mod chat_impl;
-pub(crate) mod chat_render;
+mod chat_render;
 mod deepseek_v4;
-pub(crate) mod jinja_helpers;
+mod jinja_helpers;
 mod message_preprocess;
 
 pub(crate) use message_preprocess::{
