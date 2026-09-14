@@ -213,7 +213,7 @@ fn member_problems(root: &Path, member: &str, record: &GateRecord, path: &Path) 
 
 /// The members of `group` a certification at `sha` still OWES: those with no
 /// covering record, and those whose covering record would not count (failed
-/// frame, dirty tree, bad signature). The same two questions [`check_group`]
+/// frame, dirty tree, bad signature). The same two questions `check_group`
 /// asks, so a planner that skips the members not listed here skips exactly
 /// the shards the verdict will accept — a shard is re-measured only when the
 /// gate would refuse it.
