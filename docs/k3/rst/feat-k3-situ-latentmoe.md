@@ -24,5 +24,8 @@ TEST NOTES
 BUGS
 #N/A this slice.
 
+TEST NOTES (review 1080)
+Host unpack SSOT is `atlas_core::mxfp4_e8m0` (moved from `spark_model::weight_map::fp8_lut`). Same LUT, nibble order, exp=0/255 → 0.0. Gate tip: this commit on `feat/k3-situ-latentmoe`. GPU GEMM remains DSV4 extra_cu, not a second stack.
+
 STOP
 Charter complete for SiTU + LatentMoE + DSV4 E8M0 launch. mmap expert backend is the next slice.
