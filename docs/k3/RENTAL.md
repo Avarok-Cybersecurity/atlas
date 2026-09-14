@@ -1,7 +1,16 @@
-# Rental soak — fill after C0–C7 (now)
+# Rental soak — booking packet
+
+| Field | Value |
+| --- | --- |
+| **Ready to book** | **yes** |
+| **Rental booked** | **no** |
+| Box | Prefer **8×B300**. Alternate 16×H200 / 16×B200. Need IB. |
+| Weights | Official `moonshotai/Kimi-K3` MXFP4 (~1.56 TB). Not in lab. |
+| Serve flags | `K3_ALLOW_MXFP4=1`. CUDA KDA+MLA default (`K3_CUDA_KDA=0` / `K3_CUDA_MLA=0` CPU escape). |
+| Do not | `/stamp` the umbrella. Download official shards onto two Sparks. Book to finish KDA/MLA. |
 
 C0–C7 lab boxes are checked on the 0.40B twin (PR #1053). Dummy NCCL is not C7.
-This file is the soak runbook. Lab twin cannot hold official MXFP4 (~1.56 TB). **Booking 8×B300 is for CR1–CR3**, not for finishing KDA/MLA. 5090 cannot launch SM121.
+Lab twin cannot hold official MXFP4. **Booking 8×B300 is for CR1–CR3.** 5090 cannot launch SM121.
 
 ## What is green (lab)
 

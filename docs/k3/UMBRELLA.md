@@ -19,6 +19,7 @@ Closes #
 | Last session | 2026-09-13 — C2–C6 twin on spark2; C7 0.40B TP=2 MATCH + kill rank 1 timeout. |
 | S0 bake-off JSONL | `docs/k3/logs/bakeoff-thinkoff-2026-09-11.jsonl` (not certified) |
 | Official weights downloaded in lab | **no** |
+| Ready to book | **yes** (`docs/k3/RENTAL.md`) |
 | Rental booked | **no** |
 
 ## RST (required each phase)

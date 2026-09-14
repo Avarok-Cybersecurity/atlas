@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
