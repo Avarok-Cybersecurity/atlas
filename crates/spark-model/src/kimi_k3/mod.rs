@@ -11,4 +11,7 @@ pub mod kda_cuda;
 pub use atlas_core::kimi_k3::{
     KDA_L2_EPS, KdaConfig, KdaState, cuda_kda_enabled, kda_decode_token, kda_from,
 };
-pub use kda_cuda::{K3KdaDecodeKernels, launch_k3_kda_decode_token};
+pub use kda_cuda::{
+    K3KdaDecodeKernels, KdaDeviceState, launch_k3_kda_decode_token,
+    launch_k3_kda_decode_token_on_device,
+};

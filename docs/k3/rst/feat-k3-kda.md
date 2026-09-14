@@ -30,5 +30,8 @@ Do not copy GDN/Mamba into this directory. `kda_decode.cu` is a new stem.
 BUGS
 #N/A this slice. Full C1 until-EOS remains the umbrella twin run.
 
+TEST NOTES (review 1076)
+Host `launch_k3_kda_decode_token` still D2H conv/recurrent (CPU oracle). Certified tok/s must use `KdaDeviceState` + `launch_k3_kda_decode_token_on_device` (one D2H: output only). Known-bad: `device_resident_state_skips_conv_recurrent_d2h`.
+
 STOP
 Charter complete for the extracted KDA module. Hybrid cache / MLA / AttnRes / LatentMoE / TP are later feat/k3-* PRs. Do not merge the umbrella.
