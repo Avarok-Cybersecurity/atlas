@@ -23,5 +23,8 @@ TEST NOTES
 BUGS
 #N/A this slice.
 
+TEST NOTES (review 1078)
+Host launch still D2H q/k and re-uploads KV (CPU oracle). Certified tok/s: `MlaDeviceKv` + `launch_k3_mla_decode_token_on_device` (one D2H: output). Known-bad: `device_kv_second_token_d2h_is_output_only`.
+
 STOP
 Charter complete for gated NoPE MLA. AttnRes / LatentMoE / TP later.

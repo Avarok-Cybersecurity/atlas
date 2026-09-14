@@ -21,4 +21,7 @@ pub use kda_cuda::{
     K3KdaDecodeKernels, KdaDeviceState, launch_k3_kda_decode_token,
     launch_k3_kda_decode_token_on_device,
 };
-pub use mla_cuda::{K3MlaDecodeKernels, launch_k3_mla_decode_token};
+pub use mla_cuda::{
+    K3MlaDecodeKernels, MlaDeviceKv, launch_k3_mla_decode_token,
+    launch_k3_mla_decode_token_on_device,
+};
