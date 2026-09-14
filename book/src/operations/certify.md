@@ -98,8 +98,10 @@ kept outside the default directory is selected with
    (`REMOTE/BRANCH`, default HEAD's upstream) is fetched and diffed against
    the anchor over `PERF_PATHS`. A docs-only push is harmless; a perf-path
    push aborts the campaign, names the files, and kills the running child —
-   twenty minutes lost instead of nine hours. A guard that cannot answer
-   aborts too: "could not check" is never "safe".
+   twenty minutes lost instead of nine hours. A guard that cannot answer is
+   retried — up to five checks in a row (~five minutes of a mute network),
+   each one logged — and then aborts: "could not check" is never "safe", but
+   one DNS blip is not a verdict either.
 6. **Policy.** A verdict `FAIL` stops the campaign unless `--keep-going`; a
    retryable harness failure (the child died without writing a record) is
    retried once; a timeout is not; Ctrl-C cancels. A unit's deadline is a
