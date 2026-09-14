@@ -74,6 +74,20 @@ fn invalidating_paths_with(
     if head == record_sha {
         return Some(Vec::new());
     }
+    // A record from a commit that is not on the head's history was not
+    // measured on this tree's lineage, whatever its diff happens to contain;
+    // the doc comment on `record_still_stands` always promised this and the
+    // diff below never checked it (#1086).
+    let ancestry = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["merge-base", "--is-ancestor", record_sha, head])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !ancestry.status.success() {
+        return None;
+    }
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
