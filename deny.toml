@@ -37,6 +37,15 @@ ignore = [
     # but its maintainer stepped away; replacements (e.g. `pastey`)
     # exist but the deps that use it haven't migrated yet.
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; proc-macro is feature-complete and pulled in by transitive deps we don't control" },
+    # TIME-BOXED EXCEPTION to the rule above (a real advisory, not an
+    # unmaintained notice) — owner decision 2026-09-14, issue #1085. rustls
+    # 0.23.37 is transitive (ureq/reqwest) and client-side only here; the
+    # advisory's own text: the handshake transcript stays authenticated, a
+    # network attacker cannot alter or complete a handshake. The bump to
+    # >= 0.23.45 touches Cargo.lock, a PERF_PATH, and lands as the first
+    # commit of the next certified stack's base; this entry is removed in
+    # that same commit. Do not extend this pattern to another advisory.
+    { id = "RUSTSEC-2026-0285", reason = "rustls TLS 1.3 handshake level check; transitive, client-side, transcript still authenticated; bump on the next certified base — issue #1085" },
 ]
 
 [licenses]
