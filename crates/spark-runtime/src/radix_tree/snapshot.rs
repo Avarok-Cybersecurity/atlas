@@ -245,6 +245,13 @@ impl SsmSnapshotIndex {
             if h != entry.prefix_hash {
                 continue;
             }
+            tracing::debug!(
+                "snapshot candidate: id={} tokens={} tail={} sibling={} (matched {matched_tokens})",
+                entry.snapshot_id,
+                entry.token_count,
+                entry.is_tail,
+                entry.is_tail_sibling
+            );
             if best.is_none() || entry.token_count > best.unwrap().1 {
                 best = Some((entry.snapshot_id, entry.token_count));
                 best_idx = Some(i);

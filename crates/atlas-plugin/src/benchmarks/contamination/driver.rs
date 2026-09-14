@@ -55,6 +55,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              solo leg means corrupted state SURVIVED the batch. Zero tolerance — token identity \
              has no noise term to allow for.",
     duration_hint: "~2–5 min",
+    expected_secs: 240,
     updated: "2026-08-09",
     needs_confirmation: false,
     // Determinism under concurrency is a property of the ENGINE, not of a
