@@ -1,0 +1,3 @@
+# K3 mxfp4: same unique kda_decode stem as bf16 (symlink). Packed GEMM later.
+
+[modules]
