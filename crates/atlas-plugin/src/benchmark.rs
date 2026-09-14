@@ -36,6 +36,15 @@ pub struct BenchmarkDescriptor {
     pub detail: &'static str,
     /// Rough wall time at default parameters, e.g. `"~15 min"`.
     pub duration_hint: &'static str,
+    /// Expected wall time at default parameters, in seconds — the SCHEDULING
+    /// input `duration_hint` is the human rendering of.
+    ///
+    /// Declared on every descriptor (PCND: there is no default, and a
+    /// registry test refuses `0` on anything runnable), because a planner that
+    /// parses `"~1.7 h (measured)"` is a second, undeclared source of the same
+    /// number. Refined at run time by the measured `frame.elapsed` of the
+    /// newest completed run in `~/.atlas/runs`, when one exists.
+    pub expected_secs: u64,
     /// When this benchmark's definition last changed, as `YYYY-MM-DD`.
     ///
     /// Not when the code was edited — when the MEASUREMENT changed: new

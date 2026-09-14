@@ -40,6 +40,10 @@ pub(crate) fn resolve_tokenizer_runtime(
     tokenizer: &crate::tokenizer::ChatTokenizer,
     eos_tokens: &mut Vec<u32>,
     supports_thinking: bool,
+    // #918: where the cross-grammar token-mask snapshot lives, so a
+    // restart (or a second server on the same checkpoint) does not pay
+    // the cold mask compile again. See `grammar::mask_cache`.
+    model_dir: &std::path::Path,
 ) -> TokenizerRuntime {
     use crate::{grammar, reasoning_parser};
 
@@ -273,11 +277,14 @@ pub(crate) fn resolve_tokenizer_runtime(
         let model_vocab_size = Some(config.vocab_size);
         match grammar::GrammarEngine::from_tokenizer(tokenizer.inner(), model_vocab_size, &stop_ids)
         {
-            Ok(engine) => {
+            Ok(mut engine) => {
                 tracing::info!(
                     "Grammar engine initialized (vocab_size={}, vocab_type=auto-detected from tokenizer)",
                     engine.vocab_size()
                 );
+                // #918: seed the cross-grammar mask cache from disk and
+                // arm the background saver. Startup, never a request.
+                engine.attach_mask_cache(model_dir);
                 Some(engine)
             }
             Err(e) => {

@@ -3,14 +3,38 @@
 //! that only ever permits is indistinguishable from no rule at all.
 
 use super::agreement::{AddedRecord, Disagreement, check, required_by_class, sensitivity_of};
+use crate::hardware::equivalence::HardwareFingerprint;
 use crate::hardware::policy::Sensitivity;
 
+/// A record with NO hardware capture — the pre-`--with-nodes` shape, and
+/// what a pre-schema record on an old branch still looks like.
 fn rec(gate: &str, sha: &str, signer: &str) -> AddedRecord {
     AddedRecord {
         path: format!(".benchmarks/{gate}/2026-09-06-{sha}.json"),
         benchmark_id: gate.into(),
         git_sha: sha.into(),
         signer: signer.into(),
+        hardware: None,
+    }
+}
+
+/// A healthy GB10 capture at `chassis` °C.
+fn gb10(chassis: f64) -> HardwareFingerprint {
+    HardwareFingerprint {
+        gpu: "NVIDIA GB10".into(),
+        driver_major: Some(580),
+        sm_clock_max_mhz: Some(3_003.0),
+        mem_total_kb: Some(127_601_452),
+        thermal_alert: Some(false),
+        hottest_chassis_c: Some(chassis),
+        postcheck_valid: Some(true),
+    }
+}
+
+fn rec_on(gate: &str, signer: &str, fp: HardwareFingerprint) -> AddedRecord {
+    AddedRecord {
+        hardware: Some(fp),
+        ..rec(gate, "abc123", signer)
     }
 }
 
@@ -92,12 +116,77 @@ fn speed_gates_may_not_span_signers() {
         rec("ttft-cold-gate", "abc123", "dgx2key"),
     ]);
     match &v[..] {
-        [Disagreement::SpeedSigners { gates, signers }] => {
+        [
+            Disagreement::SpeedSigners {
+                gates,
+                signers,
+                mismatches,
+            },
+        ] => {
             assert_eq!(signers.len(), 2, "{signers:?}");
             assert!(gates.contains(&"decode-floor".to_string()), "{gates:?}");
+            assert!(
+                mismatches[0].contains("no hardware capture"),
+                "{mismatches:?}"
+            );
         }
         other => panic!("expected a speed-signer disagreement, got {other:?}"),
     }
+}
+
+/// THE SECOND RELAXATION, bounded by the records. Two signers on two GB10s
+/// whose captures agree are one box; the same two with a 24 °C chassis gap
+/// (the 2026-09-06 incident) are not, and the message says why.
+#[test]
+fn speed_gates_may_span_signers_only_when_the_records_prove_equivalence() {
+    let ok = check(&[
+        rec_on("decode-floor", "dgx2key", gb10(65.0)),
+        rec_on("ttft-cold-gate", "dgx3key", gb10(70.0)),
+        rec_on("ttft-warm-gate", "dgx2key", gb10(66.0)),
+    ]);
+    assert!(ok.is_empty(), "{ok:?}");
+    // NEGATIVE CONTROL: the incident pair.
+    let v = check(&[
+        rec_on("decode-floor", "dgx2key", gb10(65.0)),
+        rec_on("ttft-cold-gate", "dgx3key", gb10(89.0)),
+    ]);
+    match &v[..] {
+        [Disagreement::SpeedSigners { mismatches, .. }] => {
+            assert_eq!(mismatches.len(), 1, "{mismatches:?}");
+            assert!(mismatches[0].contains("chassis 65 vs 89"), "{mismatches:?}");
+            let msg = v[0].to_string();
+            assert!(msg.contains("chassis 65 vs 89"), "{msg}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // NEGATIVE CONTROL: equivalent captures but ONE record's postcheck was
+    // invalid — the number it produced is not trusted across boxes.
+    let mut bad = gb10(66.0);
+    bad.postcheck_valid = Some(false);
+    let v = check(&[
+        rec_on("decode-floor", "dgx2key", gb10(65.0)),
+        rec_on("ttft-cold-gate", "dgx3key", bad),
+    ]);
+    assert!(
+        matches!(&v[..], [Disagreement::SpeedSigners { .. }]),
+        "{v:?}"
+    );
+    // NEGATIVE CONTROL: one side has a capture, the other none.
+    let v = check(&[
+        rec_on("decode-floor", "dgx2key", gb10(65.0)),
+        rec("ttft-cold-gate", "abc123", "dgx3key"),
+    ]);
+    assert!(
+        matches!(&v[..], [Disagreement::SpeedSigners { .. }]),
+        "{v:?}"
+    );
+    // Same signer, wildly different captures: not this rule's business —
+    // one box drifting is the hardware policy's job, not agreement's.
+    let v = check(&[
+        rec_on("decode-floor", "dgx2key", gb10(65.0)),
+        rec_on("ttft-cold-gate", "dgx2key", gb10(89.0)),
+    ]);
+    assert!(v.is_empty(), "{v:?}");
 }
 
 /// A mixed set where only the correctness half spans boxes must still pass —

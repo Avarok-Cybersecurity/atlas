@@ -135,19 +135,39 @@ MLPerf-edge submission rides on 3.6, and nothing here guards it. \
 ★ One discontinuity vs the recorded 3.6 history: `num_drafts = 1` (K=2) was \
 silently discarded before the 2026-08-14 --num-drafts precedence fix, so those \
 3.6 numbers were measured at K=4. Speculative decode is lossless, so ACCURACY \
-is comparable across that boundary; wall and TPOT are not."""
+is comparable across that boundary; wall and TPOT are not. \
+★ CERTIFIED BY FOUR SHARDS SINCE 2026-09-13 (bfcl-subset-a..d at one commit; \
+gate::check_group). A whole-draw record under .benchmarks/bfcl-subset/ no \
+longer satisfies this gate. ★ SCORED OPEN by owner decision: cross-request \
+SSM snapshot reuse stays ON (no --hermetic pin here — contrast \
+kat-equality-gate below, which pins the closed regime as its SUBJECT). The \
+consequence is measured and named: 12 of the 995 answers differ between the \
+whole draw and its four shards (#936, pin e897463b54) — \
+live_irrelevance_2-0-2, live_irrelevance_8-0-8, live_irrelevance_14-2-2, \
+live_irrelevance_15-2-3, live_irrelevance_16-2-4, live_irrelevance_40-2-28, \
+live_irrelevance_47-2-35, live_irrelevance_55-2-43, live_irrelevance_71-2-59, \
+live_irrelevance_79-2-67, live_multiple_57-22-4, live_parallel_multiple_3-2-1 \
+(the list lives in benchmarks::bfcl::sensitive and every run reports \
+known_partition_sensitive). The floors below are therefore cut from the \
+SHARDED aggregate, never from a whole-draw run."""
 
 [benchmarks.metrics.samples]
 # The golden MLPerf draw is exactly 995. A run reporting anything else is not
-# this draw and its score is not comparable — pin both ends.
+# this draw and its score is not comparable — pin both ends. Under the shard
+# rule check_group injects the UNION of the four shards here (~251/249/248/247),
+# so the pin still holds only when all four are present exactly once.
 min = 995.0
 max = 995.0
 
 [benchmarks.metrics.overall_accuracy]
-# Measured 84.22 (2026-08-14, dgx1, golden draw n=995 seed 42, temp 0,
-# recipe qwen3.8/qwen3.8-27b-nvfp4-unsloth-bfcl). Bar set at the measured
-# value less the documented +-0.4 MTP-nondeterminism noise floor.
-min = 83.82
+# SHARDED-OPEN FLOOR, provisional 2026-09-13. The whole-draw measurement was
+# 84.22 (2026-08-14, dgx1) and its bar 83.82; the same draw as four shards on
+# the shipped serve read 83.82 overall (#936, 2026-09-08). Bar = that sharded
+# aggregate less the documented +-0.4 MTP-nondeterminism noise floor. To be
+# CONFIRMED OR RE-CUT from the first certification campaign run under the
+# shard rule (the stack that introduces it) — BENCH.toml is NON_COMPILED, so
+# a re-cut does not void the records it is cut from.
+min = 83.42
 noise = 0.4
 
 [benchmarks.metrics.normalized_single_turn_score]
@@ -167,7 +187,13 @@ noise = 0.4
 # arguments differently). Tracked separately. These bars exist so a regression
 # below TODAY's behaviour is caught; they are not a claim that today's behaviour
 # is correct.
-min = 83.72
+# SHARDED-OPEN FLOOR, provisional 2026-09-13: the whole-draw run read 84.12 and
+# its bar was 83.72; the four-shard aggregate on the shipped serve read 83.36
+# (#936) — normalized moves more than overall under partition because ten of
+# the twelve flipping samples are live_irrelevance, which the normalized score
+# weights heavily. Bar = 83.36 less the 0.4 noise floor; confirm or re-cut from
+# the first sharded campaign, as above.
+min = 82.96
 noise = 0.4
 # --- decode-floor ----------------------------------------------------------
 # The pinned single-user decode-rate floor. REQUIRED
@@ -196,6 +222,13 @@ label = "Qwen3.8-27B dense (NVFP4, unsloth)"
 default = true
 status = "measured"
 note = """\
+BOX RULE (2026-09-13): this is a Speed-class gate; a campaign spread with \
+`spark bench certify --with-nodes` measures it on another box ONLY when that \
+box is equivalent by hardware::equivalence::SPEED_SPREAD (same GPU and driver \
+line, clock ceiling within 1 %, memory within 5 %, no thermal throttle, \
+chassis within 10 °C), decided from the records' own captures — otherwise \
+every Speed unit is bundled on one node. Two GB10s otherwise identical read \
+0.66 tok/s apart at 65 vs 89 °C, ten times this entry's sigma. \
 CALIBRATED 2026-08-15, dgx1, this branch's binary: n=12 runs across 4 driver \
 passes, every run 28.0-28.1 tok/s, mean 28.03, sigma ~0.05. Fingerprint (the \
 instrument these bounds belong to): the DRIVER'S OWN MinHeap fixture, \
@@ -359,6 +392,9 @@ label = "Qwen3.8-27B dense (NVFP4, unsloth)"
 default = true
 status = "measured"
 note = """\
+BOX RULE (2026-09-13): Speed-class; spread across nodes only under \
+hardware::equivalence::SPEED_SPREAD, else bundled — see the decode-floor \
+note and docs/provable-benchmark-work.md §5c. \
 ★ READ FIRST — EVERY LADDER FIGURE IN THIS NOTE IS SUPERSEDED HISTORY, NOT \
 THE BOUNDS IN FORCE. The floors this entry enforces were re-cut 2026-08-30 \
 from the WIDENED instrument (C=1..128 at bs=128, concurrent warm-up); their \
@@ -456,7 +492,22 @@ kv_cache_dtype = "fp8"
 # ⚠ The committed record above was measured with 32 slots; this pin change
 # means that record no longer covers, pending the planned re-record (the
 # floors already carry the "AWAIT RE-CUT" caveat in the note).
-ssm_cache_slots = "8"
+#
+# 2026-09-13: 8 → 32. The sweep WARMS every cell and its warm rule demands a
+# material cached fraction, but a warm request costs 3 snapshot slots across
+# a cell (its tail checkpoint, its finish leaf, and one stale finish leaf an
+# earlier cell left for the same prompt; the redundant exact leaf is no
+# longer saved) and a re-home takes a fresh slot before releasing the old,
+# so a pool holds warm cells only while `slots > 3·C`. With 8 that was C ≤ 2
+# — measured: conc 2 warm TTFT 152 ms, conc 4 896 ms with every request
+# recomputing — and the rule was failing cells it could never hold once the
+# accounting became honest (#1041). 32 slots (4.73 GiB, the ladder's original
+# reserve) hold C ≤ 10: the 1/2/4/8 rungs warm; C ≥ 16 measure cold BY
+# CONSTRUCTION and the sweep says so per cell instead of applying the warm
+# rule (`warm_cache_capable`). The C ≥ 16 floors were cut with no reuse
+# (server TTFT ~900 ms at every rung above 1) so nothing they measure
+# changes; C=2..8 gain their warm TTFT back.
+ssm_cache_slots = "32"
 # The gate's sequences are isl 512 + osl 320 (<900 tokens with template);
 # 4096 leaves >4x headroom while shrinking the per-sequence KV commitment
 # and the max_model_len-sized inference reserve — multiplying available KV
@@ -690,7 +741,11 @@ its own committed history; crossing them is meaningless."""
 # until then this is the honest width.
 max_batch_size = "16"
 kv_cache_dtype = "fp8"
-ssm_cache_slots = "8"
+# 32, with the plain gate (2026-09-13): the one-variable rule — every pin the
+# plain gate carries is carried here identically except the batch cap — and
+# the same warm-capacity arithmetic (`slots > 3·C`; see the plain gate's
+# note). 4.73 GiB beside the drafter fits the bs=16 reserve.
+ssm_cache_slots = "32"
 max_model_len = "4096"
 # --dflash is `conflicts_with = "speculative"` at the clap level, so the
 # recipe this names must not also enable MTP; the two drafters are mutually
@@ -1079,8 +1134,10 @@ no serve_overrides at all and is scored OPEN, which is the regime this gate \
 measures at 36 divergences of 257. So a green says the BFCL workload is \
 order-independent WHEN THE CHANNELS ARE CLOSED, and says nothing about the \
 conditions the committed 84.22 / 84.12 were taken under. Closing that gap \
-means pinning hermetic on bfcl-subset, which would invalidate every \
-whole-draw record on main and is deliberately not done here. That is \
+would mean pinning hermetic on bfcl-subset; the owner's decision (2026-09-13) \
+is the opposite — bfcl-subset is certified by four shards and stays OPEN, with \
+the twelve partition-sensitive samples named in its own note — so the gap is \
+documented rather than closed. That is \
 also why `max_new_tokens` is pinned to BFCL's 1024 and not the driver's old \
 512 — see the MAX_NEW_TOKENS commit. \
 ★ THE BOUNDS BELOW ARE INVARIANTS, NOT MEASURED PERFORMANCE. `diverged` and \

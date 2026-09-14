@@ -46,6 +46,13 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
         },
         BenchmarkCommand::History(a) => history_cmd(a),
         BenchmarkCommand::Card(a) => super::bench_card::card_cmd(a),
+        BenchmarkCommand::Certify(a) => {
+            let code = super::bench_certify::certify_cmd(a).await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         BenchmarkCommand::Aggregate(a) => {
             // Exits with the code so a script can gate on "is this group
             // complete", the same shape `Run` uses below.
@@ -292,8 +299,7 @@ async fn run(args: RunArgs) -> Result<i32> {
     let request = RunRequest {
         descriptor,
         values,
-        target: target.clone(),
-        serve_overrides,
+        target: target.clone().with_serve_overrides(serve_overrides),
         options: HeadlessOptions {
             poll: std::time::Duration::from_millis(args.poll_ms),
             save: !args.no_save,

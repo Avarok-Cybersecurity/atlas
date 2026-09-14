@@ -91,6 +91,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              cannot pass this gate's floor honestly). REQUIRED since 2026-08-15; the \
              floor in force is 22.7, from a 10-run set on the gate's own serve (2026-09-06).",
     duration_hint: "~3–6 min",
+    expected_secs: 180,
     updated: "2026-08-15",
     // The floor in BENCH.toml is measured on the dense Qwen3.8-27B NVFP4
     // checkpoint; the driver measures whatever it is pointed at, but only

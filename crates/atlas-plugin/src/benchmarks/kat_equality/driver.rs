@@ -51,6 +51,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              endpoint as order-independent. Serve it with --hermetic to measure the \
              regime a known-answer test actually requires.",
     duration_hint: "~2x one BFCL leg",
+    expected_secs: 4200,
     updated: "2026-09-09",
     needs_confirmation: false,
     // The invariant is a property of the ENGINE — any served model's replies

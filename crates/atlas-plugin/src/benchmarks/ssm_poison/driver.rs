@@ -79,9 +79,9 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              round 0 would otherwise certify as Invariant), and every replay's first turn \
              must attest a nonzero prefix-cache restore (with caching off, the gate would \
              green-light a path it never exercised). Serves with --serve-override \
-             ssm_cache_slots=256 so the snapshot pool cannot evict mid-run (eviction churn \
-             is noise, not the poisoning class). ~8-10 min.",
+             ssm_cache_slots=256 so the snapshot pool cannot evict mid-run (churn is noise).",
     duration_hint: "~8–10 min",
+    expected_secs: 150,
     updated: "2026-08-13",
     needs_confirmation: false,
     // The invariant is a property of the ENGINE (deterministic replay must
