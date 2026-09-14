@@ -507,6 +507,18 @@ kv_cache_dtype = "fp8"
 # rule (`warm_cache_capable`). The C ≥ 16 floors were cut with no reuse
 # (server TTFT ~900 ms at every rung above 1) so nothing they measure
 # changes; C=2..8 gain their warm TTFT back.
+#
+# 2026-09-14, the count corrected: `3·C` was one leaf per earlier cell, and
+# at C ≥ 8 the warm-up and measured generations drift apart by a token, so
+# an earlier cell leaves TWO stale leaves per prompt it ran. The pool's
+# eviction is session-first, so the overflow takes a whole prompt's tail.
+# Measured twice on this 32-slot pin, same node: C=8 after 1/2/4 lost two,
+# then three, of its eight tails (warm rule INCONCLUSIVE) while C=2/4 held
+# at 97 % cached. The rule is now `slots > Σ(2 + 2·earlier cells the prompt
+# ran in) + C` (`concurrency::slots_needed`): with 32, C=1/2/4 warm (3, 8,
+# 18 needed) and C=8 (38) upward measure cold by construction. C=8's floor
+# was cut cold on the 8-slot pin, so nothing it measures changes; C=2/4
+# keep their warm TTFT (506 / 656 ms, 2026-09-14).
 ssm_cache_slots = "32"
 # The gate's sequences are isl 512 + osl 320 (<900 tokens with template);
 # 4096 leaves >4x headroom while shrinking the per-sequence KV commitment
@@ -743,8 +755,8 @@ max_batch_size = "16"
 kv_cache_dtype = "fp8"
 # 32, with the plain gate (2026-09-13): the one-variable rule — every pin the
 # plain gate carries is carried here identically except the batch cap — and
-# the same warm-capacity arithmetic (`slots > 3·C`; see the plain gate's
-# note). 4.73 GiB beside the drafter fits the bs=16 reserve.
+# the same warm-capacity arithmetic (`concurrency::slots_needed`; see the
+# plain gate's note). 4.73 GiB beside the drafter fits the bs=16 reserve.
 ssm_cache_slots = "32"
 max_model_len = "4096"
 # --dflash is `conflicts_with = "speculative"` at the clap level, so the

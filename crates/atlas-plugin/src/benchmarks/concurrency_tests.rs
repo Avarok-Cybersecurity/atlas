@@ -243,23 +243,39 @@ fn a_vacuous_cell_is_not_comparable_and_an_errored_cell_is_not_either() {
     assert!(!errored.comparable());
 }
 
-/// The warm rule is judged against the pool the server was started with:
-/// a cell the pool cannot hold is cold by construction, not uncontrolled.
+/// The warm rule is judged against the pool the server was started with and
+/// the cells already run on the same prompts: a cell the pool cannot hold is
+/// cold by construction, not uncontrolled.
 #[test]
 fn the_warm_rule_applies_only_where_the_snapshot_pool_can_hold_the_cell() {
-    // 8 slots, 3 per warm request: conc 1..2 hold, conc 3 does not (the
-    // re-home transient needs one spare — strictly greater).
-    assert!(warm_cache_capable(1, Some(8)));
-    assert!(warm_cache_capable(2, Some(8)));
-    assert!(!warm_cache_capable(3, Some(8)));
-    assert!(!warm_cache_capable(128, Some(8)));
-    // The gate's pin: 32 holds C ≤ 10, so the ladder's 1/2/4/8 are warm and
-    // 16 upward measure cold by construction.
-    assert!(warm_cache_capable(8, Some(32)));
-    assert!(!warm_cache_capable(16, Some(32)));
-    assert!(!warm_cache_capable(11, Some(32)));
+    let ladder = [1usize, 2, 4, 8, 16];
+    // What each rung needs after the rungs below it: live pair, two stale
+    // leaves per earlier cell a prompt ran in, one re-home transient each.
+    assert_eq!(slots_needed(1, &[]), 3);
+    assert_eq!(slots_needed(2, &ladder[..1]), 8);
+    assert_eq!(slots_needed(4, &ladder[..2]), 18);
+    assert_eq!(slots_needed(8, &ladder[..3]), 38);
+    // The gate's pin, 32 slots, on the 1/2/4/8/16 ladder: 1, 2 and 4 are
+    // warm; 8 measured cold twice on 2026-09-14 (two and three of eight
+    // tails lost) and is cold by construction here — the reason the count
+    // is two leaves per earlier cell, not one (23 + 8 would have "fit").
+    assert!(warm_cache_capable(1, Some(32), &[]));
+    assert!(warm_cache_capable(2, Some(32), &ladder[..1]));
+    assert!(warm_cache_capable(4, Some(32), &ladder[..2]));
+    assert!(!warm_cache_capable(8, Some(32), &ladder[..3]));
+    assert!(!warm_cache_capable(16, Some(32), &ladder[..4]));
+    // Strictly greater: the last re-home needs its spare.
+    assert!(warm_cache_capable(4, Some(19), &ladder[..2]));
+    assert!(!warm_cache_capable(4, Some(18), &ladder[..2]));
+    // A first cell has no stale leaves: 8 slots hold conc 2 alone (3 + 3 + 2).
+    assert!(warm_cache_capable(2, Some(8), &[]));
+    assert!(!warm_cache_capable(3, Some(8), &[]));
+    // Only cells on the SAME prompts count: a wider earlier cell touched
+    // every prompt of this one, a narrower one only its first prompts.
+    assert_eq!(slots_needed(2, &[4]), 2 + 2 + 2 + 2 + 2);
+    assert_eq!(slots_needed(4, &[2]), (2 + 2) * 2 + 2 * 2 + 4);
     // NEGATIVE CONTROL: an unstated pool is not a waiver — the rule applies.
-    assert!(warm_cache_capable(128, None));
+    assert!(warm_cache_capable(128, None, &ladder));
     // The endpoint reads the override as an integer, or not at all.
     let t = TargetEndpoint::new("http://127.0.0.1:1", "m")
         .with_serve_overrides([("ssm_cache_slots".to_string(), "24".to_string())].into());
