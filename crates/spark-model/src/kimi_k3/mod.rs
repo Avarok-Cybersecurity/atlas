@@ -12,6 +12,7 @@ pub mod latent_moe;
 pub mod mla;
 pub mod mla_cuda;
 pub mod moe_cuda;
+pub mod tp;
 
 pub use atlas_core::kimi_k3::{
     AttnResHub, HybridCache, K3Graph, KDA_L2_EPS, KdaConfig, KdaState, LatentMoeConfig, LayerCache,
@@ -30,3 +31,4 @@ pub use mla_cuda::{
     launch_k3_mla_decode_token_on_device,
 };
 pub use moe_cuda::{K3MoeGemmKernels, launch_k3_latent_moe_experts};
+pub use tp::{supports_tp, tensor_plan};
