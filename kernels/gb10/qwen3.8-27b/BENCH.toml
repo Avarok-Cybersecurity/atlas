@@ -492,7 +492,22 @@ kv_cache_dtype = "fp8"
 # ⚠ The committed record above was measured with 32 slots; this pin change
 # means that record no longer covers, pending the planned re-record (the
 # floors already carry the "AWAIT RE-CUT" caveat in the note).
-ssm_cache_slots = "8"
+#
+# 2026-09-13: 8 → 32. The sweep WARMS every cell and its warm rule demands a
+# material cached fraction, but a warm request costs 3 snapshot slots across
+# a cell (its tail checkpoint, its finish leaf, and one stale finish leaf an
+# earlier cell left for the same prompt; the redundant exact leaf is no
+# longer saved) and a re-home takes a fresh slot before releasing the old,
+# so a pool holds warm cells only while `slots > 3·C`. With 8 that was C ≤ 2
+# — measured: conc 2 warm TTFT 152 ms, conc 4 896 ms with every request
+# recomputing — and the rule was failing cells it could never hold once the
+# accounting became honest (#1041). 32 slots (4.73 GiB, the ladder's original
+# reserve) hold C ≤ 10: the 1/2/4/8 rungs warm; C ≥ 16 measure cold BY
+# CONSTRUCTION and the sweep says so per cell instead of applying the warm
+# rule (`warm_cache_capable`). The C ≥ 16 floors were cut with no reuse
+# (server TTFT ~900 ms at every rung above 1) so nothing they measure
+# changes; C=2..8 gain their warm TTFT back.
+ssm_cache_slots = "32"
 # The gate's sequences are isl 512 + osl 320 (<900 tokens with template);
 # 4096 leaves >4x headroom while shrinking the per-sequence KV commitment
 # and the max_model_len-sized inference reserve — multiplying available KV
@@ -726,7 +741,11 @@ its own committed history; crossing them is meaningless."""
 # until then this is the honest width.
 max_batch_size = "16"
 kv_cache_dtype = "fp8"
-ssm_cache_slots = "8"
+# 32, with the plain gate (2026-09-13): the one-variable rule — every pin the
+# plain gate carries is carried here identically except the batch cap — and
+# the same warm-capacity arithmetic (`slots > 3·C`; see the plain gate's
+# note). 4.73 GiB beside the drafter fits the bs=16 reserve.
+ssm_cache_slots = "32"
 max_model_len = "4096"
 # --dflash is `conflicts_with = "speculative"` at the clap level, so the
 # recipe this names must not also enable MTP; the two drafters are mutually

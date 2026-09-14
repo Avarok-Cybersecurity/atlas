@@ -299,8 +299,7 @@ async fn run(args: RunArgs) -> Result<i32> {
     let request = RunRequest {
         descriptor,
         values,
-        target: target.clone(),
-        serve_overrides,
+        target: target.clone().with_serve_overrides(serve_overrides),
         options: HeadlessOptions {
             poll: std::time::Duration::from_millis(args.poll_ms),
             save: !args.no_save,

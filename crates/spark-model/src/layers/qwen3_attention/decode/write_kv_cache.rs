@@ -465,32 +465,23 @@ impl Qwen3AttentionLayer {
                 kv_cache.cache_stride() as u64,
                 stream,
             ),
-            _ => {
-                // FP8 KV cache
-                if !graph_capture && let Some(ref cal) = self.fp8_calibration {
-                    cal.observe(gpu, k, v, num_tokens, num_kv_heads, head_dim, stream)?;
-                }
-                let (k_scale, v_scale) = self.effective_fp8_scales();
-                ops::reshape_and_cache_fp8(
-                    gpu,
-                    self.reshape_cache_k,
-                    k,
-                    v,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
-                    slot,
-                    num_tokens,
-                    num_kv_heads,
-                    head_dim,
-                    block_size,
-                    k_scale,
-                    v_scale,
-                    key_stride,
-                    value_stride,
-                    kv_cache.cache_stride() as u64,
-                    stream,
-                )
-            }
+            // FP8 KV cache: the calibration window observes the write, then
+            // the write lands (`write_kv_cache_fp8.rs`).
+            _ => self.write_kv_cache_fp8(
+                gpu,
+                k,
+                v,
+                kv_cache,
+                slot,
+                num_tokens,
+                num_kv_heads,
+                head_dim,
+                block_size,
+                key_stride,
+                value_stride,
+                stream,
+                graph_capture,
+            ),
         }
     }
 }
