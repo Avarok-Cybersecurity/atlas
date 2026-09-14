@@ -315,7 +315,7 @@ fn run_one(
     i: usize,
 ) -> RunOutcome {
     let emit = shared.emit;
-    let local_deadline = Duration::from_secs((unit.secs() as f64 * shared.timeout_factor) as u64);
+    let local_deadline = unit.deadline(shared.timeout_factor);
     let deadline = runner::deadline_for(local_deadline, node, BUILD_ALLOWANCE);
     emit.event(
         "start",

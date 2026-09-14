@@ -27,6 +27,7 @@ pub mod card;
 pub mod check;
 mod check_fmt;
 mod check_group;
+pub use check_group::members_owed;
 pub mod check_paths;
 pub mod closure;
 pub mod codeowners;

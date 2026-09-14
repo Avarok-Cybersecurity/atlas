@@ -82,7 +82,8 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     let gates = plan::remaining(&statuses, &args.gates)?;
     let store = ArtifactStore::discover().context("locating ATLAS_HOME")?;
     let measured = |id: &str| measured_secs(&store, id);
-    let units = plan::order_local(plan::units(&gates, &measured)?);
+    let owed = |g: &'static gate::group::BenchmarkGroup| gate::members_owed(&root, g, &anchor);
+    let units = plan::order_local(plan::units(&gates, &measured, &owed)?);
     let hardware = match &args.hardware {
         Some(h) => h.clone(),
         None => {
@@ -298,9 +299,9 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     }
     lock.release_as(
         if summary.aborted.is_some() {
-            "aborted"
+            lockfile::TERMINAL_STATUSES[1]
         } else {
-            "campaign_done"
+            lockfile::TERMINAL_STATUSES[0]
         },
         lockfile::now_unix(),
     )?;

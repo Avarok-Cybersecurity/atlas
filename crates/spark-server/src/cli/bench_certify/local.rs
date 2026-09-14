@@ -13,7 +13,7 @@ use super::args::CertifyArgs;
 use super::runner::{GateRunner, RunCtx, RunOutcome};
 use super::state::Campaign;
 use super::text::{describe, human};
-use super::{BUILD_ALLOWANCE, Emit, GUARD_EVERY, guard, lockfile, runner};
+use super::{Emit, GUARD_EVERY, guard, lockfile, runner};
 
 /// The serial loop: one unit at a time on this box.
 #[allow(clippy::too_many_arguments)]
@@ -69,7 +69,7 @@ pub(super) fn drive_local(
             serde_json::json!({ "unit": unit.id, "expected_secs": unit.secs() }),
         );
         emit.say(&format!("▶ {} (expected ~{})", unit.id, human(unit.secs())));
-        let deadline = Duration::from_secs((unit.secs() as f64 * factor) as u64) + BUILD_ALLOWANCE;
+        let deadline = unit.deadline(factor);
         let ctx = RunCtx {
             root: &root,
             anchor: &anchor,
