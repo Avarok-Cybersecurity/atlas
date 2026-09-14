@@ -73,6 +73,18 @@ pub(super) fn gated(enabled: bool, gpu: &dyn GpuBackend, module: &str, func: &st
     }
 }
 
+/// A resolved handle as an `Option`: `None` when the lookup found nothing.
+///
+/// The shape a target-OWNED kernel is consumed in (#928). A source that exists
+/// only under `kernels/hopper/common` resolves to `KernelHandle(0)` everywhere
+/// else, and a zero handle is not an error there — it is the statement "this
+/// target does not carry that kernel", which the caller answers by keeping its
+/// existing arm. Spelling it as `Option` at the field makes the fallback
+/// impossible to forget at the call site.
+pub(super) fn present(handle: KernelHandle) -> Option<KernelHandle> {
+    (handle.0 != 0).then_some(handle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
