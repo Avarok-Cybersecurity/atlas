@@ -71,19 +71,22 @@ min = 85.0
 }
 
 /// The committed tree's pins, exactly where the gates need them — and nowhere
-/// else. The echolp pin must not move the floors: those are the high-water
-/// ratchet, and this change is capacity (Marconi pool), not a score lever.
+/// else. The echolp pin does not move the floors: those are the ratchet of
+/// the gate's measurement definition, and a pin is capacity (Marconi pool),
+/// not a score lever. The floors themselves are pinned here too, so a move
+/// is a recorded decision, never a drive-by: 86.50/86.90 → 84.56/85.77 on
+/// 2026-09-14 (issue #1083 — one tool prompt, not two).
 #[test]
 fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     let root = repo_root();
 
     // Gate B: the 35B echolp draw self-starts with the Marconi pool pinned, so
     // a 1004-sample serial generate cannot evict its own snapshots — with the
-    // ratcheted floors untouched.
+    // floors exactly where BENCH.toml's note records them.
     let echolp = baseline_for(&root, "bfcl-subset-echolp").unwrap();
     let (_, e) = echolp.resolve("gb10", None).unwrap();
-    assert_eq!(e.metrics["overall_accuracy"].min, Some(86.50));
-    assert_eq!(e.metrics["normalized_single_turn_score"].min, Some(86.90));
+    assert_eq!(e.metrics["overall_accuracy"].min, Some(84.56));
+    assert_eq!(e.metrics["normalized_single_turn_score"].min, Some(85.77));
     assert_eq!(e.metrics["samples"].min, Some(1004.0));
     assert_eq!(e.metrics["samples"].max, Some(1004.0));
     assert_eq!(

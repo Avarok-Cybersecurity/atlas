@@ -322,17 +322,20 @@ fn a_run_with_no_recorded_regime_claims_none() {
     assert!(!gate.command.join(" ").contains("--serve-override"));
 }
 
-/// ★ Oracle: the committed corpus itself — every record in `.benchmarks/` was
-/// written before `Hardware::gpu_count` existed.
+/// ★ Oracle: the committed corpus itself. Every record in `.benchmarks/`
+/// written before `Hardware::gpu_count` existed must still load, and must
+/// load as UNMEASURED — `None`, because reading those as single-GPU would be
+/// inventing a topology reading that was never taken. A record written since
+/// (stack 1089308's campaign, 2026-09-14, was the first) carries the count
+/// its box reported, and that count is a positive number.
 ///
 /// `gpu_count` was added additively (schema stays 1, `#[serde(default)]`,
 /// omitted when absent), following `dataset_fingerprint`. The claim that
 /// buys — that no migration is needed — is only worth anything if a real old
 /// record is read back and still resolves. A hand-written fixture would prove
-/// serde's defaulting, not the corpus's compatibility.
-///
-/// UNMEASURED, not one: the assertion is `None`, because reading these as
-/// single-GPU would be inventing a topology reading that was never taken.
+/// serde's defaulting, not the corpus's compatibility. The split is made on
+/// the record's own text: a file without the key is an old record, whatever
+/// its date.
 #[test]
 fn every_committed_record_still_loads_without_a_gpu_count() {
     let benchmarks = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.benchmarks");
@@ -351,12 +354,21 @@ fn every_committed_record_still_loads_without_a_gpu_count() {
                 continue;
             }
             let loaded = read_record(&path).unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
-            assert_eq!(
-                loaded.hardware.gpu_count,
-                None,
-                "{} carries a width nothing measured",
-                path.display()
-            );
+            let text = std::fs::read_to_string(&path).unwrap();
+            if text.contains("\"gpu_count\"") {
+                assert!(
+                    loaded.hardware.gpu_count.is_some_and(|n| n >= 1),
+                    "{} wrote a gpu_count that is not a measured width",
+                    path.display()
+                );
+            } else {
+                assert_eq!(
+                    loaded.hardware.gpu_count,
+                    None,
+                    "{} carries a width nothing measured",
+                    path.display()
+                );
+            }
             assert_eq!(loaded.schema, 1, "{}", path.display());
             read += 1;
         }
