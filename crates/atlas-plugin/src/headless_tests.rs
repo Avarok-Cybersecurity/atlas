@@ -86,7 +86,6 @@ fn request(options: HeadlessOptions) -> RunRequest {
         values,
         // Port 1 is reserved and never listening.
         target: TargetEndpoint::new("http://127.0.0.1:1", "unreachable"),
-        serve_overrides: Default::default(),
         options,
     }
 }
@@ -220,7 +219,6 @@ fn an_invalid_parameter_fails_before_anything_runs() {
             descriptor,
             values,
             target: TargetEndpoint::new("http://127.0.0.1:1", "m"),
-            serve_overrides: Default::default(),
             options: HeadlessOptions::cli("v"),
         },
         &mut reporter,

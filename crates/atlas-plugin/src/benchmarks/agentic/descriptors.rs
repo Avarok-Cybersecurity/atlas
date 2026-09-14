@@ -59,6 +59,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              'pong') and on PROCESS (did the agent do all six things the prompt asked?), plus \
              wall time. RUNS MODEL-AUTHORED SHELL inside the sandbox directory.",
     duration_hint: "~5 min per iteration",
+    expected_secs: 600,
     updated: "2026-08-14",
     needs_confirmation: true,
     // Gate A's thresholds were measured on the 35B MoE flagship, which stays the

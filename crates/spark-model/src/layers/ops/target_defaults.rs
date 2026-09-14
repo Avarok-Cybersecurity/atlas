@@ -160,6 +160,20 @@ pub fn resolve_batchm_max(default_max: u32, raw: Option<&str>) -> Resolved<u32> 
     }
 }
 
+/// Upper `M` for the W8A8 dense-FFN prefill, per projection shape.
+///
+/// Unlike [`resolve_batchm_max`] a parsed **0 is honoured**, because 0 is a
+/// meaningful operator answer here ("never take the W8A8 arm on this shape")
+/// and silently ignoring it would make `…=0` read as agreement with the
+/// target — the same silent-agreement failure `parse_defaults` panics over.
+/// Anything that is not a u32 falls back to the target's declaration.
+pub fn resolve_max_m(default_max: u32, raw: Option<&str>) -> Resolved<u32> {
+    match raw.and_then(|v| v.trim().parse::<u32>().ok()) {
+        Some(v) => Resolved::env(v),
+        None => Resolved::target(default_max),
+    }
+}
+
 /// Every serving lever this target declares, resolved against the environment.
 ///
 /// Field order is the order the serve log prints them in.
@@ -171,8 +185,21 @@ pub struct TargetLevers {
     pub ssm_batched_recurrent: Resolved<bool>,
     pub gdn_prefill_tc: Resolved<bool>,
     pub ssm_ba_gates_hopper: Resolved<bool>,
+    pub fp8_act_quant_hopper: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
     pub attn_decode_splitk: Resolved<SplitkPolicy>,
+    /// The `w8a16_gemm_m16` tier on the dense-FFN decode arm (#927).
+    pub ffn_m16_tc: Resolved<bool>,
+    /// The `w8a16_gemm_m16` tiers on the decode Q/K/V and o_proj (#927).
+    pub attn_m16_tc: Resolved<bool>,
+    /// The `dense_gemm_m16_bf16` arm on the BF16 decode head (#927).
+    pub lm_head_m16_tc: Resolved<bool>,
+    /// `w8a16_gemv_batch16_ncol{2,4}` on the decode attention projections
+    /// (#927). No serving receipt on any target — off everywhere.
+    pub attn_ncol_gemv: Resolved<bool>,
+    pub ffn_gateup_fused: Resolved<bool>,
+    pub w8a8_prefill_max_m_widening: Resolved<u32>,
+    pub w8a8_prefill_max_m_narrowing: Resolved<u32>,
 }
 
 /// The whole table, as a pure function of the baked declaration and a variable
@@ -189,6 +216,14 @@ pub fn resolve(
         lm_head_batchm_max: resolve_batchm_max(
             defaults.lm_head_batchm_max,
             var("ATLAS_LM_HEAD_BATCHM_MAX").as_deref(),
+        ),
+        w8a8_prefill_max_m_widening: resolve_max_m(
+            defaults.w8a8_prefill_max_m_widening,
+            var("ATLAS_W8A8_PREFILL_MAX_M_WIDENING").as_deref(),
+        ),
+        w8a8_prefill_max_m_narrowing: resolve_max_m(
+            defaults.w8a8_prefill_max_m_narrowing,
+            var("ATLAS_W8A8_PREFILL_MAX_M_NARROWING").as_deref(),
         ),
         // `ATLAS_SSM_BATCHED_RECURRENT` was `== "1"` in `gdn_flags::from_env`;
         // under the 2026-09-11 grammar `=0` now turns it OFF instead of
@@ -221,6 +256,20 @@ pub fn resolve(
             var("ATLAS_SSM_BA_GATES_HOPPER").as_deref(),
             false,
         ),
+        // The Hopper FP8 activation-quant twin (#928, round-16 receipt § 2.1).
+        // Hopper declares it ON. The twin is BIT-IDENTICAL to its gb10 parent,
+        // so the row carries no accuracy question and no `ATLAS_NO_*` legacy
+        // spelling — the lever is new, so there is no older script for a
+        // presence rule to keep faith with. It is also not the whole rule: the
+        // twin is 0.76x-0.95x at M <= 25 for K in {5120, 6144}, so it passes a
+        // CTA-count floor (`layers/ops/fp8_act_quant_floor.rs`) before it takes
+        // a launch. `ATLAS_FP8_ACT_QUANT_HOPPER=0` declines the twin at EVERY
+        // width, which is the A/B.
+        fp8_act_quant_hopper: resolve_toggle(
+            defaults.fp8_act_quant_hopper,
+            var("ATLAS_FP8_ACT_QUANT_HOPPER").as_deref(),
+            false,
+        ),
         // DECLARATION plus the legacy kill switch, and no positive variable:
         // `decode_split_silu` never had one. `ATLAS_NO_DECODE_SPLIT_SILU`
         // stays PRESENCE-gated and unchanged, so every script that predates
@@ -244,6 +293,54 @@ pub fn resolve(
                 Resolved::target(policy)
             }
         },
+        // Two rows for ONE kernel family, because round 6 measured the FFN
+        // arm and the attention arms moving in opposite directions on the same
+        // serve. `ATLAS_M16_TC` is the round-6 umbrella that arms both; it is
+        // folded in HERE rather than in the consumer so that an umbrella can
+        // never DISARM a target's declaration, which would make the recipe
+        // depend on export order.
+        ffn_m16_tc: resolve_toggle(
+            defaults.ffn_m16_tc,
+            var("ATLAS_FFN_M16_TC")
+                .or_else(|| var("ATLAS_M16_TC"))
+                .as_deref(),
+            false,
+        ),
+        attn_m16_tc: resolve_toggle(
+            defaults.attn_m16_tc,
+            var("ATLAS_ATTN_M16_TC")
+                .or_else(|| var("ATLAS_M16_TC"))
+                .as_deref(),
+            false,
+        ),
+        // NOT under `ATLAS_M16_TC`. The umbrella is round 6's, which predates
+        // this arm and never measured it; folding the head in would silently
+        // widen what an old recipe means. Its own variable, or the target's
+        // declaration.
+        lm_head_m16_tc: resolve_toggle(
+            defaults.lm_head_m16_tc,
+            var("ATLAS_LM_HEAD_M16_TC").as_deref(),
+            false,
+        ),
+        // `ATLAS_NO_ATTN_DECODE_BATCH` is the pre-existing kill switch for the
+        // whole batched attention-decode family, and it OUTRANKS both the
+        // declaration and the positive variable: a switch that turns a family
+        // off must not be silently narrowed by a new row underneath it.
+        attn_ncol_gemv: resolve_toggle(
+            defaults.attn_ncol_gemv,
+            var("ATLAS_ATTN_NCOL_GEMV").as_deref(),
+            var("ATLAS_NO_ATTN_DECODE_BATCH").is_some(),
+        ),
+        // DECLARATION plus `ATLAS_FFN_GATEUP_FUSED`, which is the A/B a Hopper
+        // round runs against the new default. `=0` kills the arm and returns
+        // the layer to two cuBLASLt calls; there is no positive spelling that
+        // arms it on a target whose tree lacks `silu_mul_strided.cu`, because
+        // the handle probe would then fail the boot audit closed.
+        ffn_gateup_fused: resolve_toggle(
+            defaults.ffn_gateup_fused,
+            var("ATLAS_FFN_GATEUP_FUSED").as_deref(),
+            false,
+        ),
     }
 }
 
@@ -286,12 +383,25 @@ pub fn summary_line() -> String {
 pub fn format_levers(l: &TargetLevers) -> String {
     let onoff =
         |r: Resolved<bool>| format!("{}{}", if r.value { "on" } else { "off" }, r.source.tag());
+    // `u32::MAX` is the no-cap baseline, not a chosen bound. Printing
+    // 4294967295 in the serve log would read as a decision someone made.
+    let cap = |v: u32| {
+        if v == u32::MAX {
+            "max".to_string()
+        } else {
+            v.to_string()
+        }
+    };
     format!(
         "target defaults ({hw}): sm_count={sms} \
          lm_head_batchm_max={batchm}{batchm_src} \
          ssm_batched_recurrent={recurrent} gdn_prefill_tc={gdn_tc} \
          ssm_ba_gates_hopper={ba_gates} decode_split_silu={silu} \
-         attn_decode_splitk={splitk}{splitk_src}",
+         attn_decode_splitk={splitk}{splitk_src} ffn_m16_tc={ffn_m16_tc} \
+         attn_m16_tc={attn_m16_tc} lm_head_m16_tc={lm_head_m16_tc} \
+         attn_ncol_gemv={attn_ncol_gemv} ffn_gateup_fused={gateup} \
+         fp8_act_quant_hopper={act_quant} \
+         w8a8_prefill_max_m={w8a8_wide}/{w8a8_narrow}{w8a8_src}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
         // at boot against the driver. Printed on this line because the levers
@@ -303,9 +413,20 @@ pub fn format_levers(l: &TargetLevers) -> String {
         recurrent = onoff(l.ssm_batched_recurrent),
         gdn_tc = onoff(l.gdn_prefill_tc),
         ba_gates = onoff(l.ssm_ba_gates_hopper),
+        act_quant = onoff(l.fp8_act_quant_hopper),
         silu = onoff(l.decode_split_silu),
         splitk = l.attn_decode_splitk.value.label(),
         splitk_src = l.attn_decode_splitk.source.tag(),
+        ffn_m16_tc = onoff(l.ffn_m16_tc),
+        attn_m16_tc = onoff(l.attn_m16_tc),
+        lm_head_m16_tc = onoff(l.lm_head_m16_tc),
+        attn_ncol_gemv = onoff(l.attn_ncol_gemv),
+        gateup = onoff(l.ffn_gateup_fused),
+        // Printed as widening/narrowing. `max` reads as "no cap" rather than
+        // 4294967295, which would look like a number someone chose.
+        w8a8_wide = cap(l.w8a8_prefill_max_m_widening.value),
+        w8a8_narrow = cap(l.w8a8_prefill_max_m_narrowing.value),
+        w8a8_src = l.w8a8_prefill_max_m_widening.source.tag(),
     )
 }
 

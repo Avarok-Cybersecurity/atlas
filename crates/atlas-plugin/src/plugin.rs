@@ -33,6 +33,14 @@ pub struct TargetEndpoint {
     pub base_url: String,
     /// The `model` field sent in requests.
     pub model: String,
+    /// The serve overrides the caller started this target under (the merged
+    /// baseline + `--serve-override` set). The ONE authority on the regime a
+    /// run is measured under: the run record derives its `serve_overrides`
+    /// from here, and a benchmark that must know how its server was
+    /// configured (the concurrency sweep asks how many SSM snapshot slots it
+    /// has) reads it here. Empty when the caller did not start the server —
+    /// which is "not stated", never "no overrides".
+    pub serve_overrides: std::collections::BTreeMap<String, String>,
 }
 
 impl TargetEndpoint {
@@ -41,7 +49,25 @@ impl TargetEndpoint {
         Self {
             base_url: base.trim_end_matches('/').to_string(),
             model: model.into(),
+            serve_overrides: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// The same endpoint, with the overrides it was started under.
+    #[must_use]
+    pub fn with_serve_overrides(
+        mut self,
+        serve_overrides: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.serve_overrides = serve_overrides;
+        self
+    }
+
+    /// An override the server was started with, parsed as an integer.
+    /// `None` when it was not stated — a caller must not invent the serve
+    /// default in its place.
+    pub fn serve_override_usize(&self, key: &str) -> Option<usize> {
+        self.serve_overrides.get(key)?.trim().parse().ok()
     }
 
     /// The local server this TUI is attached to.

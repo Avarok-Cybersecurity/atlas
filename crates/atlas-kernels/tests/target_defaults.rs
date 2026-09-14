@@ -58,6 +58,27 @@ fn hopper_declares_what_an_h100_serve_runs_with() {
         "+6% on the serve, md5-identical output to the per-sequence launches"
     );
     assert!(d.decode_split_silu);
+    // The row round 16 adds (#928). ON, and on without an accuracy receipt
+    // because it cannot need one: the twin is bit-identical to its parent, so
+    // the row is a speed claim only. It is also the first row whose arm
+    // carries a width FLOOR — measured 3.30-3.59x at M in {1168, 4576} and
+    // 0.76x-0.95x at M in {16, 17, 25} for K in {5120, 6144} — so `true` here
+    // arms a kernel that still declines its own launch below `2 * sm_count`
+    // CTAs. The row says WHETHER; the floor says WHERE.
+    assert!(
+        d.fp8_act_quant_hopper,
+        "the FP8 activation-quant twin is Hopper's default: 3.30-3.59x and \
+         63.7-68.4% of HBM at prefill widths against the parent's 18.6-19.1%, \
+         bit-identical, with the decode-width loss handled by the CTA floor \
+         rather than by this row (`FP8-ACT-QUANT-ATTRIBUTION.md`)"
+    );
+    // The fused gate+up decode GEMM: ON here and nowhere else, because its
+    // strided-SiLU consumer is a Hopper-owned source and the receipt is a
+    // Hopper one.
+    assert!(
+        d.ffn_gateup_fused,
+        "one cuBLASLt call at N=34816 on the decode band, not two at N=17408"
+    );
     // The one row this target does NOT share with gb10's rule: `auto` picks
     // the split count that fills 132 SMs at the single-stream shape, where
     // `legacy` picked 1 at every batch size from a 48-SM constant (#928).
@@ -65,17 +86,29 @@ fn hopper_declares_what_an_h100_serve_runs_with() {
         d.attn_decode_splitk, "auto",
         "H100 serves paged-decode attention with the occupancy-filling split          count; `legacy` is the rule that gave it 24 CTAs on 132 SMs"
     );
-    // ★ NOT 16. The 16 an H100 recipe exported was measured with the
-    // tensor-core head arm (`dense_gemm_m16_bf16`, #927) also on, where that
-    // arm serves 5..=16 and this band is very nearly inert. The arm is not in
-    // this kernel set, so 16 here would be an unmeasured configuration; the
-    // row moves with the commit that lands the arm. A default is a claim
-    // about a measurement.
-    assert_eq!(
+    assert!(
+        d.attn_m16_tc,
+        "round 9 cell W: +5.26% C=16 aggregate, -6.38% TPOT, against a 0.15% \
+         rep spread"
+    );
+    assert!(
+        !d.ffn_m16_tc,
+        "the same kernel family on the dense-FFN arm measured -5.2% (round 6 \
+         cell J); one kernel, two rows, two verdicts"
+    );
+    assert!(
+        d.lm_head_m16_tc,
+        "round 9 cell Y: +4.09% C=16 aggregate on the BF16 decode head"
+    );
+    // ★ 16, and the arm it was measured beside is in this kernel set — see
+    // `lm_head_m16_tc` above. The pair is the measurement: with the TC arm on,
+    // the band decides only the widths that arm declines. A default is a claim
+    // about a measurement, and this one is round 9 cell Y's.
+    assert_eq!(d.lm_head_batchm_max, 16);
+    assert_ne!(
         d.lm_head_batchm_max,
         baseline("hopper").lm_head_batchm_max,
-        "the band holds at the frozen 8 until the arm it was measured beside \
-         lands"
+        "hopper's band is its own; gb10's frozen 8 stays the baseline"
     );
     // The one row round 13 ADDED to the recipe, and the largest measured win of
     // the campaign: cell T1 against cell A on the same binary, C=1 TTFT
@@ -104,13 +137,34 @@ fn hopper_declares_what_an_h100_serve_runs_with() {
 /// way to keep it that way is for this assertion to be an equality against
 /// [`baseline`] rather than a list somebody has to remember to update.
 #[test]
-fn gb10_declares_the_baseline_and_nothing_else() {
+fn gb10_declares_the_baseline_apart_from_the_measured_w8a8_ceiling() {
+    let d = declared("gb10");
+
+    // The one intended divergence, pinned by value so it cannot drift
+    // silently in either direction. gate/up is WIDENING (N=17408 > K=5120),
+    // down is NARROWING; the crossovers differ by ~6x, which is why there are
+    // two rows. Served receipt, spark-256a 2026-09-11, Qwen3.6-27B-FP8 M=949,
+    // n=5/leg, complete separation: W8A8 3343.3 ms vs W8A16 2560.4 ms.
+    assert_eq!(d.w8a8_prefill_max_m_widening, 64);
+    assert_eq!(d.w8a8_prefill_max_m_narrowing, 384);
+    assert_eq!(baseline("gb10").w8a8_prefill_max_m_widening, u32::MAX);
+    assert_eq!(baseline("gb10").w8a8_prefill_max_m_narrowing, u32::MAX);
+
+    // ...and EVERYTHING ELSE still restates the pre-existing hardcoded
+    // defaults. Asserted as an equality against `baseline` rather than a list
+    // somebody has to remember to update: normalising only the two fields
+    // above keeps a third divergence from slipping in unnoticed.
+    let normalised = Defaults {
+        w8a8_prefill_max_m_widening: u32::MAX,
+        w8a8_prefill_max_m_narrowing: u32::MAX,
+        ..d
+    };
     assert_eq!(
-        declared("gb10"),
+        normalised,
         baseline("gb10"),
-        "kernels/gb10/HARDWARE.toml [defaults] must restate the pre-existing \
-         hardcoded defaults and nothing else — it exists to SAY what GB10 \
-         serves with"
+        "apart from the W8A8 prefill ceiling, kernels/gb10/HARDWARE.toml \
+         [defaults] must restate the pre-existing hardcoded defaults and \
+         nothing else — it exists to SAY what GB10 serves with"
     );
 }
 
@@ -121,6 +175,11 @@ fn gb10_declares_the_baseline_and_nothing_else() {
 fn b200_declares_the_conservative_table_not_hoppers() {
     let d = declared("b200");
     assert_eq!(d, baseline("b200"));
+    assert!(
+        !d.ffn_gateup_fused && declared("hopper").ffn_gateup_fused,
+        "the fused gate+up decode GEMM is ON for Hopper on a Hopper receipt \
+         and OFF here for want of one"
+    );
     assert!(
         !d.ssm_batched_recurrent && declared("hopper").ssm_batched_recurrent,
         "the batched GDN recurrence is ON for Hopper on a Hopper receipt and \
@@ -137,6 +196,13 @@ fn b200_declares_the_conservative_table_not_hoppers() {
         !d.ssm_ba_gates_hopper && declared("hopper").ssm_ba_gates_hopper,
         "the BA-gates twin is Hopper-only source; B200's common/ does not link \
          it, so the row is inert here and must read false"
+    );
+    assert!(
+        !d.fp8_act_quant_hopper && declared("hopper").fp8_act_quant_hopper,
+        "the FP8 activation-quant twin is Hopper-only source; B200's common/ \
+         does not link it, so the row is inert here and must read false — and \
+         its floor is `2 * sm_count` CTAs, which on 148 SMs is a threshold \
+         nobody has measured"
     );
 }
 
@@ -176,6 +242,20 @@ fn every_declaring_target_states_every_lever() {
             "ssm_ba_gates_hopper",
             "decode_split_silu",
             "attn_decode_splitk",
+            "ffn_m16_tc",
+            "attn_m16_tc",
+            "lm_head_m16_tc",
+            "attn_ncol_gemv",
+            "ffn_gateup_fused",
+            // #928, round 16. The first hopper-only boolean: gb10 and b200
+            // declare the row FALSE rather than omitting it, because an
+            // absent row and a deliberate `false` must not look identical.
+            "fp8_act_quant_hopper",
+            // #917. GB10 caps, hopper and b200 declare u32::MAX. The row is
+            // mandatory everywhere for the same reason as the three above: an
+            // absent cap and a deliberate no-cap must not look identical.
+            "w8a8_prefill_max_m_widening",
+            "w8a8_prefill_max_m_narrowing",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
@@ -304,12 +384,16 @@ fn the_generated_constant_names_every_field() {
     assert!(generated.contains("pub const TARGET_DEFAULTS: TargetDefaults = TargetDefaults {"));
     for field in [
         "hw: \"hopper\"",
-        "lm_head_batchm_max: 8",
+        "lm_head_batchm_max: 16",
         "ssm_batched_recurrent: true",
         "gdn_prefill_tc: true",
         "ssm_ba_gates_hopper: true",
+        "fp8_act_quant_hopper: true",
         "decode_split_silu: true",
         "attn_decode_splitk: \"auto\"",
+        "ffn_gateup_fused: true",
+        "w8a8_prefill_max_m_widening: 4294967295",
+        "w8a8_prefill_max_m_narrowing: 4294967295",
     ] {
         assert!(
             generated.contains(field),
@@ -332,8 +416,18 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.ssm_batched_recurrent, declared.ssm_batched_recurrent);
     assert_eq!(baked.gdn_prefill_tc, declared.gdn_prefill_tc);
     assert_eq!(baked.ssm_ba_gates_hopper, declared.ssm_ba_gates_hopper);
+    assert_eq!(baked.fp8_act_quant_hopper, declared.fp8_act_quant_hopper);
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
     assert_eq!(baked.attn_decode_splitk, declared.attn_decode_splitk);
+    assert_eq!(baked.ffn_gateup_fused, declared.ffn_gateup_fused);
+    assert_eq!(
+        baked.w8a8_prefill_max_m_widening,
+        declared.w8a8_prefill_max_m_widening
+    );
+    assert_eq!(
+        baked.w8a8_prefill_max_m_narrowing,
+        declared.w8a8_prefill_max_m_narrowing
+    );
     assert_eq!(
         atlas_kernels::TARGET_SM_COUNT,
         read_sm_count(&kernels_root(), baked.hw),

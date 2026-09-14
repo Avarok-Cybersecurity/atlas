@@ -199,6 +199,9 @@ impl TransformerModel {
         ) {
             self.ssm_snapshots.free(old);
         }
+        if is_prompt_tail {
+            seq.tail_checkpoint_tokens = Some(end_token);
+        }
         tracing::info!(
             "Intermediate SSM checkpoint saved at token {} (snapshot_id {}, block {})",
             end_token,

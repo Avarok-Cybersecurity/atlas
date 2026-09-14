@@ -93,7 +93,7 @@ impl MoeLayer {
         // dense W8A8 GEMM that attention QKV/O proj already use.
         let force_w8a8_sh = ctx.dispatch.fp8_blockscaled_prefill
             && self.fp8_gemm_t_blockscaled_k.0 != 0
-            && self.per_token_group_quant_fp8_k.0 != 0;
+            && self.per_token_group_quant_fp8_k.available();
         let has_shared = shared_inter > 0;
         let bf16_shared = has_shared
             && self.run_bf16_shared_expert(
@@ -474,7 +474,7 @@ impl MoeLayer {
         // per-128 FP32 scale, use new W8A8 grouped GEMM (vLLM-equivalent).
         let force_w8a8 = ctx.dispatch.fp8_blockscaled_prefill
             && self.moe_w8a8_grouped_gemm_k.0 != 0
-            && self.per_token_group_quant_fp8_k.0 != 0;
+            && self.per_token_group_quant_fp8_k.available();
 
         if force_w8a8 && max_m_tiles > 0 {
             // Quant input [num_tokens, h] → input_fp8 + input_a_scale ONCE,
