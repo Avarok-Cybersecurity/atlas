@@ -18,6 +18,7 @@ mod attention_forward_v4;
 mod high_speed_swap;
 mod run_paged_decode;
 mod write_kv_cache;
+mod write_kv_cache_fp8;
 
 impl Qwen3AttentionLayer {
     pub(super) fn effective_fp8_scales(&self) -> (f32, f32) {

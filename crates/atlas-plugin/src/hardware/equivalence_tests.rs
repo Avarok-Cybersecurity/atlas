@@ -31,6 +31,7 @@ fn hw(gpu: &str, driver: &str) -> Hardware {
         gpu: gpu.into(),
         driver: driver.into(),
         sm_clock_mhz: None,
+        gpu_count: None,
         source: "test".into(),
     }
 }
