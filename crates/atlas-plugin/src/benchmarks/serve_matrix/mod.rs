@@ -80,6 +80,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              whatever model is currently serving; the one that was serving when the run started \
              is restored at the end.",
     duration_hint: "~5–10 min per checkpoint",
+    expected_secs: 600,
     updated: "2026-08-02",
     // Every round tears down the model the box is serving. That is a side
     // effect well beyond load on an endpoint, and the operator gets to say so.

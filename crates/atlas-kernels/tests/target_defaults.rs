@@ -137,13 +137,34 @@ fn hopper_declares_what_an_h100_serve_runs_with() {
 /// way to keep it that way is for this assertion to be an equality against
 /// [`baseline`] rather than a list somebody has to remember to update.
 #[test]
-fn gb10_declares_the_baseline_and_nothing_else() {
+fn gb10_declares_the_baseline_apart_from_the_measured_w8a8_ceiling() {
+    let d = declared("gb10");
+
+    // The one intended divergence, pinned by value so it cannot drift
+    // silently in either direction. gate/up is WIDENING (N=17408 > K=5120),
+    // down is NARROWING; the crossovers differ by ~6x, which is why there are
+    // two rows. Served receipt, spark-256a 2026-09-11, Qwen3.6-27B-FP8 M=949,
+    // n=5/leg, complete separation: W8A8 3343.3 ms vs W8A16 2560.4 ms.
+    assert_eq!(d.w8a8_prefill_max_m_widening, 64);
+    assert_eq!(d.w8a8_prefill_max_m_narrowing, 384);
+    assert_eq!(baseline("gb10").w8a8_prefill_max_m_widening, u32::MAX);
+    assert_eq!(baseline("gb10").w8a8_prefill_max_m_narrowing, u32::MAX);
+
+    // ...and EVERYTHING ELSE still restates the pre-existing hardcoded
+    // defaults. Asserted as an equality against `baseline` rather than a list
+    // somebody has to remember to update: normalising only the two fields
+    // above keeps a third divergence from slipping in unnoticed.
+    let normalised = Defaults {
+        w8a8_prefill_max_m_widening: u32::MAX,
+        w8a8_prefill_max_m_narrowing: u32::MAX,
+        ..d
+    };
     assert_eq!(
-        declared("gb10"),
+        normalised,
         baseline("gb10"),
-        "kernels/gb10/HARDWARE.toml [defaults] must restate the pre-existing \
-         hardcoded defaults and nothing else — it exists to SAY what GB10 \
-         serves with"
+        "apart from the W8A8 prefill ceiling, kernels/gb10/HARDWARE.toml \
+         [defaults] must restate the pre-existing hardcoded defaults and \
+         nothing else — it exists to SAY what GB10 serves with"
     );
 }
 
@@ -230,6 +251,11 @@ fn every_declaring_target_states_every_lever() {
             // declare the row FALSE rather than omitting it, because an
             // absent row and a deliberate `false` must not look identical.
             "fp8_act_quant_hopper",
+            // #917. GB10 caps, hopper and b200 declare u32::MAX. The row is
+            // mandatory everywhere for the same reason as the three above: an
+            // absent cap and a deliberate no-cap must not look identical.
+            "w8a8_prefill_max_m_widening",
+            "w8a8_prefill_max_m_narrowing",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
@@ -366,6 +392,8 @@ fn the_generated_constant_names_every_field() {
         "decode_split_silu: true",
         "attn_decode_splitk: \"auto\"",
         "ffn_gateup_fused: true",
+        "w8a8_prefill_max_m_widening: 4294967295",
+        "w8a8_prefill_max_m_narrowing: 4294967295",
     ] {
         assert!(
             generated.contains(field),
@@ -392,6 +420,14 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
     assert_eq!(baked.attn_decode_splitk, declared.attn_decode_splitk);
     assert_eq!(baked.ffn_gateup_fused, declared.ffn_gateup_fused);
+    assert_eq!(
+        baked.w8a8_prefill_max_m_widening,
+        declared.w8a8_prefill_max_m_widening
+    );
+    assert_eq!(
+        baked.w8a8_prefill_max_m_narrowing,
+        declared.w8a8_prefill_max_m_narrowing
+    );
     assert_eq!(
         atlas_kernels::TARGET_SM_COUNT,
         read_sm_count(&kernels_root(), baked.hw),

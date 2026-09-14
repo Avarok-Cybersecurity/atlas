@@ -65,7 +65,7 @@ const POLL: Duration = Duration::from_millis(500);
 /// 0.85 therefore means "nothing else is holding more than ~15 % of this box".
 /// A clean GB10 sits at ~0.94 available and passes; a single 16 GB container
 /// drops it to ~0.81 and is refused — which is the case worth catching.
-const MIN_FREE_FRACTION: f64 = 0.85;
+pub(super) const MIN_FREE_FRACTION: f64 = 0.85;
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 

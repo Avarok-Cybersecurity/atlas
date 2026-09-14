@@ -88,8 +88,8 @@ fn a_non_checkout_errs_rather_than_reporting_a_clean_tree() {
 fn a_record_measured_from_a_dirty_tree_fails_the_gate() {
     let dir = tempdir::Dir::new();
     let root = dir.path();
-    std::fs::create_dir_all(gate_dir(root, "bfcl-subset")).unwrap();
-    write_baseline(root, "bfcl-subset", &bfcl_baseline());
+    std::fs::create_dir_all(gate_dir(root, "ssm-state-poisoning-gate")).unwrap();
+    write_baseline(root, "ssm-state-poisoning-gate", &bfcl_baseline());
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 90.0);
 
@@ -101,6 +101,7 @@ fn a_record_measured_from_a_dirty_tree_fails_the_gate() {
         None,
     )
     .unwrap();
+    gate.benchmark_id = "ssm-state-poisoning-gate".to_string();
     gate.recorded_at = 1_785_891_382;
     write_record(root, &gate).unwrap();
 
@@ -108,7 +109,7 @@ fn a_record_measured_from_a_dirty_tree_fails_the_gate() {
     assert!(gate.verdict_passes());
     assert!(check_record(&gate, &bfcl_baseline()).is_none());
 
-    match &check_gates(root, SHA)["bfcl-subset"] {
+    match &check_gates(root, SHA)["ssm-state-poisoning-gate"] {
         GateStatus::Fail(reasons) => assert_eq!(
             reasons,
             &[format!(

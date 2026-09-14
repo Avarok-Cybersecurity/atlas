@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Extracted piecewise from `tokenizer.rs` (500-LoC cap).
-
 use super::*;
 
 mod deepseek_v4;
