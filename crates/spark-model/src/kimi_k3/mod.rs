@@ -27,7 +27,8 @@ pub use kda_cuda::{
     launch_k3_kda_decode_token_on_device,
 };
 pub use mla_cuda::{
-    K3MlaDecodeKernels, MlaDeviceKv, launch_k3_mla_decode_token, launch_k3_mla_decode_token_on_device,
+    K3MlaDecodeKernels, MlaDeviceKv, launch_k3_mla_decode_token,
+    launch_k3_mla_decode_token_on_device,
 };
 pub use moe_cuda::{K3MoeGemmKernels, launch_k3_latent_moe_experts};
 pub use tp::{supports_tp, tensor_plan};
