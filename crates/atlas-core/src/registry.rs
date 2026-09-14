@@ -272,6 +272,11 @@ impl AtlasRegistry {
 
     /// Look up a raw CUfunction handle with OnceLock caching.
     /// Uses the raw CUDA driver API — no cudarc struct layout dependency.
+    /// Whether a module of this name was loaded for this run.
+    pub fn has_module(&self, module_name: &str) -> bool {
+        self.raw_modules.contains_key(module_name)
+    }
+
     pub fn raw_function_cached(
         &self,
         cache: &OnceLock<RawCudaFunc>,

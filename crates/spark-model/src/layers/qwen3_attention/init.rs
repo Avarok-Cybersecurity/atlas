@@ -266,29 +266,33 @@ impl Qwen3AttentionLayer {
                 "w8a16_gemv_batch4",
                 "w8a16_gemv_batch16_strided",
             ),
-            w8a16_gemm_m16_k: super::super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16"),
-            w8a16_gemm_m16_strided_k: super::super::try_kernel(
+            w8a16_gemm_m16_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemm_m16",
+                "w8a16_gemm_m16",
+            ),
+            w8a16_gemm_m16_strided_k: super::super::try_target_kernel(
                 gpu,
                 "w8a16_gemm_m16",
                 "w8a16_gemm_m16_strided",
             ),
             m16_tc: crate::layers::dense_ffn::m16_tc::m16_tc_levers().attn,
-            w8a16_gemv_ncol2_k: super::super::try_kernel(
+            w8a16_gemv_ncol2_k: super::super::try_target_kernel(
                 gpu,
                 "w8a16_gemv_ncol",
                 "w8a16_gemv_batch16_ncol2",
             ),
-            w8a16_gemv_ncol4_k: super::super::try_kernel(
+            w8a16_gemv_ncol4_k: super::super::try_target_kernel(
                 gpu,
                 "w8a16_gemv_ncol",
                 "w8a16_gemv_batch16_ncol4",
             ),
-            w8a16_gemv_ncol2_strided_k: super::super::try_kernel(
+            w8a16_gemv_ncol2_strided_k: super::super::try_target_kernel(
                 gpu,
                 "w8a16_gemv_ncol",
                 "w8a16_gemv_batch16_ncol2_strided",
             ),
-            w8a16_gemv_ncol4_strided_k: super::super::try_kernel(
+            w8a16_gemv_ncol4_strided_k: super::super::try_target_kernel(
                 gpu,
                 "w8a16_gemv_ncol",
                 "w8a16_gemv_batch16_ncol4_strided",
@@ -507,22 +511,22 @@ impl Qwen3AttentionLayer {
             // probing on a lever the operator can flip at boot would make the
             // handle set depend on the environment — which a CUDA graph
             // capture must not.
-            paged_decode_splitk_hopper_k: present(super::super::try_kernel(
+            paged_decode_splitk_hopper_k: present(super::super::try_target_kernel(
                 gpu,
                 "paged_decode_fp8_splitk_hopper",
                 "paged_decode_attn_splitk_fp8_hopper",
             )),
-            paged_decode_reduce_hopper_k: present(super::super::try_kernel(
+            paged_decode_reduce_hopper_k: present(super::super::try_target_kernel(
                 gpu,
                 "paged_decode_fp8_splitk_hopper",
                 "paged_decode_attn_reduce_fp8_hopper",
             )),
-            paged_decode_splitk_bf16_hopper_k: present(super::super::try_kernel(
+            paged_decode_splitk_bf16_hopper_k: present(super::super::try_target_kernel(
                 gpu,
                 "paged_decode_bf16_splitk_hopper",
                 "paged_decode_attn_splitk_bf16_hopper",
             )),
-            paged_decode_reduce_bf16_hopper_k: present(super::super::try_kernel(
+            paged_decode_reduce_bf16_hopper_k: present(super::super::try_target_kernel(
                 gpu,
                 "paged_decode_bf16_splitk_hopper",
                 "paged_decode_attn_reduce_bf16_hopper",

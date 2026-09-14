@@ -81,7 +81,11 @@ impl Fp8ActQuant {
     pub fn resolve(gpu: &dyn GpuBackend) -> Self {
         Self {
             shared: crate::layers::try_kernel(gpu, FP8_QUANT_MODULE, FP8_QUANT_ENTRY),
-            hopper: crate::layers::try_kernel(gpu, FP8_QUANT_HOPPER_MODULE, FP8_QUANT_HOPPER_ENTRY),
+            hopper: crate::layers::try_target_kernel(
+                gpu,
+                FP8_QUANT_HOPPER_MODULE,
+                FP8_QUANT_HOPPER_ENTRY,
+            ),
         }
     }
 

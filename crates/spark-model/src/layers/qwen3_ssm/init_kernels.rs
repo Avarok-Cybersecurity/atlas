@@ -96,7 +96,7 @@ pub(super) fn gdn_prefill_tc_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
     {
         return KernelHandle(0);
     }
-    crate::layers::try_kernel(
+    crate::layers::try_target_kernel(
         gpu,
         crate::layers::ops::GDN_TC_SPINE_MODULE,
         crate::layers::ops::GDN_TC_SPINE_ENTRY,
@@ -159,9 +159,11 @@ pub(super) fn fused_spine_kernel(gpu: &dyn GpuBackend, tc_spine: KernelHandle) -
 /// (#928). Selected by `[defaults] gdn_prefill_tc`, the same family lever as
 /// [`gdn_prefill_tc_kernel`] above; unlike the spine, the probe is NOT gated on
 /// it, because `gated_delta_rule_fla`'s parent is always loaded and a twin that
-/// is merely absent costs nothing to have looked for.
+/// is merely absent costs nothing to have looked for — on a target that
+/// COMPILES it. A target whose tree lacks the source never issues the lookup
+/// (`try_target_kernel`): the boot audit would count it as a silent fallback.
 pub(super) fn prefill_wu_hopper_k(gpu: &dyn GpuBackend) -> KernelHandle {
-    crate::layers::try_kernel(
+    crate::layers::try_target_kernel(
         gpu,
         "gdn_recompute_wu_hopper",
         "gated_delta_rule_recompute_wu_hopper",
@@ -171,7 +173,7 @@ pub(super) fn prefill_wu_hopper_k(gpu: &dyn GpuBackend) -> KernelHandle {
 /// Prefill kernel 3's twin: the masked `tril(kq).uc` square on tensor cores
 /// (#928). Same family lever and the same reasoning as the `wu` twin above.
 pub(super) fn prefill_fwd_o_hopper_k(gpu: &dyn GpuBackend) -> KernelHandle {
-    crate::layers::try_kernel(
+    crate::layers::try_target_kernel(
         gpu,
         "gdn_fwd_o_hopper",
         "gated_delta_rule_chunk_fwd_o_hopper",
@@ -179,15 +181,16 @@ pub(super) fn prefill_fwd_o_hopper_k(gpu: &dyn GpuBackend) -> KernelHandle {
 }
 
 /// The SSM BA-gates twin: one CTA per token, bit-identical to the gb10 parent
-/// (#928). Hopper-only source, so the lookup MISSES quietly everywhere else and
-/// `ops::ba_gates_pick` keeps the launcher on `ssm_preprocess`'s parent.
+/// (#928). Hopper-only source, so everywhere else the lookup is never issued
+/// (`try_target_kernel`) and `ops::ba_gates_pick` keeps the launcher on
+/// `ssm_preprocess`'s parent.
 ///
 /// NOT gated on `[defaults] ssm_ba_gates_hopper`, unlike the spine probe above:
 /// the parent is always loaded and is always a valid launch, so a twin that is
 /// merely absent costs nothing to have looked for, and the lever is read at the
 /// dispatch site where the token-count guard is read too.
 pub(super) fn ba_gates_hopper_k(gpu: &dyn GpuBackend) -> KernelHandle {
-    crate::layers::try_kernel(
+    crate::layers::try_target_kernel(
         gpu,
         "ssm_ba_gates_hopper",
         "dense_gemm_ba_gates_prefill_hopper",

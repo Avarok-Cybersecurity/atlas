@@ -484,8 +484,12 @@ impl DenseFfnLayer {
             w8a16_gemv_batch4_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch4"),
             w8a16_gemv_batch16_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch16"),
             batch16_enabled: batch16_decode::ffn_batch16_enabled(),
-            w8a16_gemm_m16_k: super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16"),
-            w8a16_gemm_m16_n64_k: super::try_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16_n64"),
+            w8a16_gemm_m16_k: super::try_target_kernel(gpu, "w8a16_gemm_m16", "w8a16_gemm_m16"),
+            w8a16_gemm_m16_n64_k: super::try_target_kernel(
+                gpu,
+                "w8a16_gemm_m16",
+                "w8a16_gemm_m16_n64",
+            ),
             m16_tc: m16_tc::m16_tc_levers().ffn,
             m16_tc_n_tile: m16_tc::m16_tc_levers().ffn_n_tile,
             w8a16_gemm_pipelined_k: super::try_kernel(
@@ -519,7 +523,7 @@ impl DenseFfnLayer {
             // carries it. Gating the lookup on the resolved lever is the fix
             // `ptx_set.rs` prescribes.
             silu_mul_strided_k: if gateup_fused {
-                super::try_kernel(gpu, "silu_mul_strided", "silu_mul_strided")
+                super::try_target_kernel(gpu, "silu_mul_strided", "silu_mul_strided")
             } else {
                 KernelHandle(0)
             },
