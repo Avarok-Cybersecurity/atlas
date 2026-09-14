@@ -179,4 +179,30 @@ mod tests {
         assert_eq!(c1.tp_rank, 1);
         assert_ne!(c0.tp_rank, c1.tp_rank);
     }
+
+    fn round_bf16(x: f32) -> f32 {
+        let bits = atlas_core::numeric::f32_to_bf16(x);
+        atlas_core::numeric::bf16_bytes_to_f32(bits.to_le_bytes())
+    }
+
+    #[test]
+    fn production_7168_bf16_allreduce_rounding_is_measured() {
+        // tp_allreduce stores f32 partials as BF16, NCCL-sums, widens back.
+        // Twin 16/16 held. This is the production-width error, not an assumption.
+        let n = 7168;
+        let a = vec![1.0f32 / 3.0; n];
+        let b = vec![2.0f32 / 3.0; n];
+        let mut max = 0.0f32;
+        for i in 0..n {
+            let f32s = a[i] + b[i];
+            let bfs = round_bf16(a[i]) + round_bf16(b[i]);
+            max = max.max((f32s - bfs).abs());
+        }
+        assert!(max > 0.0, "1/3 is not exact in BF16");
+        assert!(
+            max < 0.01,
+            "7168-wide double BF16 round before NCCL max_abs={max}"
+        );
+        eprintln!("K3 TP BF16 allreduce max_abs @7168 (1/3+2/3) = {max}");
+    }
 }
