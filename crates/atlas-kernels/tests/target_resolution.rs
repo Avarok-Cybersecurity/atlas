@@ -346,6 +346,45 @@ fn qwen36_moe_beltandbraces_tier_resolves_uncontested() {
     );
 }
 
+/// kimi-k3 mxfp4 + nvfp4 compile DSV4's E8M0 grouped GEMM via extra_cu.
+/// Runs under ATLAS_SKIP_BUILD (source + KERNEL.toml, no PTX).
+#[test]
+fn kimi_k3_extra_cu_reuses_dsv4_e8m0_grouped_gemm() {
+    let dsv4 = gb10_dir().join("deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu");
+    let src = std::fs::read_to_string(&dsv4).expect("DSV4 moe_w4a16_grouped_gemm.cu");
+    assert!(
+        src.contains("extern \"C\" __global__ void moe_w4a16_grouped_gemm_ptrtable_e8m0("),
+        "lookup name moe_w4a16_grouped_gemm_ptrtable_e8m0 must exist in DSV4 source"
+    );
+    for quant in ["bf16", "mxfp4", "nvfp4"] {
+        let dir = gb10_dir().join("kimi-k3").join(quant);
+        let toml = std::fs::read_to_string(dir.join("KERNEL.toml")).unwrap();
+        assert!(
+            toml.contains("extra_cu")
+                && toml.contains("deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"),
+            "{quant} KERNEL.toml must extra_cu DSV4 E8M0 grouped GEMM"
+        );
+        assert!(
+            toml.contains("moe_w4a16_grouped_gemm_ptrtable_e8m0"),
+            "{quant} KERNEL.toml must name the E8M0 handle"
+        );
+        let extra = dir.join("../../deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu");
+        assert!(
+            extra.is_file(),
+            "{quant} extra_cu path: {}",
+            extra.display()
+        );
+    }
+    assert!(
+        gb10_dir().join("kimi-k3/bf16/kda_decode.cu").is_file(),
+        "unique KDA stem must stay in bf16/"
+    );
+    assert!(
+        gb10_dir().join("kimi-k3/nvfp4/kda_decode.cu").exists(),
+        "nvfp4 serve bundle must keep kda_decode"
+    );
+}
+
 /// Every `kernel_source` redirect points at a real sibling target that owns
 /// its sources (no chains), and the redirected quant tree exists — the
 /// build-time contract, pinned here for the skip-build runner.

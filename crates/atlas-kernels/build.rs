@@ -69,6 +69,10 @@ struct Target {
     /// Common quant dir (hw_dir/quant/) with shared .cu files.
     common_kernel_dir: Option<PathBuf>,
     extra_flags: Vec<String>,
+    /// Extra `.cu` files from `[build].extra_cu` (paths already canonical).
+    /// Stem-keyed into `collect_cu_files` so they shadow `common/` like a
+    /// file in the quant dir, without copying the source.
+    extra_cu: Vec<PathBuf>,
     module_overrides: HashMap<String, String>,
     /// `(module, kernel)` pairs declared in `[shadow_exempt]` — kernels this
     /// target may drop from `common/` WITHOUT it being drift, each with a
@@ -327,6 +331,7 @@ fn main() {
             target.common_kernel_dir.as_deref(),
             &target.model_kernel_dir,
             source_ext,
+            &target.extra_cu,
         );
         assert!(
             !cu_files.is_empty(),
@@ -398,6 +403,7 @@ fn main() {
             &target.model_kernel_dir,
             source_ext,
             &target.module_overrides,
+            &target.extra_cu,
         );
         // Warning-visible subset: everything except the pairs `common/`
         // declares (with a reason) as superseded in `[shadow_exempt]`. The
@@ -588,6 +594,7 @@ fn closure_attestation(
             target.common_kernel_dir.as_deref(),
             &target.model_kernel_dir,
             compute_target.source_extension(),
+            &target.extra_cu,
         );
         if sources.is_empty() {
             continue;
@@ -1136,6 +1143,11 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             }
             shadow_exempt.sort();
             shadow_exempt.dedup();
+            let extra_cu = if has_model_dir {
+                parse_extra_cu(&model_kernel_dir)
+            } else {
+                Vec::new()
+            };
 
             // Parse sampling presets, behavior, and model_types from MODEL.toml.
             // MODEL.toml is a build INPUT (needles, sampling, behavior are
@@ -1167,6 +1179,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                     None
                 },
                 extra_flags,
+                extra_cu,
                 module_overrides,
                 shadow_exempt,
                 expected_absent,
@@ -1331,8 +1344,9 @@ mod build_parse;
 #[path = "build_shadow.rs"]
 mod build_shadow;
 use build_parse::{
-    parse_behavior, parse_dflash, parse_expected_absent, parse_kernel_source, parse_kernel_toml,
-    parse_match_names, parse_model_types, parse_sampling_presets, parse_shadow_exempt,
+    parse_behavior, parse_dflash, parse_expected_absent, parse_extra_cu, parse_kernel_source,
+    parse_kernel_toml, parse_match_names, parse_model_types, parse_sampling_presets,
+    parse_shadow_exempt,
 };
 use build_shadow::shadowed_missing_symbols;
 
@@ -1344,6 +1358,7 @@ fn collect_cu_files(
     common_dir: Option<&std::path::Path>,
     model_dir: &std::path::Path,
     source_ext: &str,
+    extra_cu: &[PathBuf],
 ) -> Vec<PathBuf> {
     let mut files: HashMap<String, PathBuf> = HashMap::new();
 
@@ -1359,6 +1374,18 @@ fn collect_cu_files(
     for f in find_cu_files(model_dir, source_ext) {
         let stem = f.file_stem().unwrap().to_str().unwrap().to_string();
         files.insert(stem, f);
+    }
+
+    // KERNEL.toml `[build].extra_cu` — compile another target's file by
+    // stem (same shadow rule). Last wins over a same-stem file in the
+    // quant dir.
+    for extra in extra_cu {
+        let stem = extra
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_else(|| panic!("extra_cu {} has no stem", extra.display()))
+            .to_string();
+        files.insert(stem, extra.clone());
     }
 
     let mut result: Vec<PathBuf> = files.into_values().collect();
@@ -1424,6 +1451,7 @@ fn shadowed_dropped_pairs(
     model_dir: &std::path::Path,
     source_ext: &str,
     module_overrides: &HashMap<String, String>,
+    extra_cu: &[PathBuf],
 ) -> Vec<(String, String)> {
     let Some(common) = common_dir else {
         return Vec::new();
@@ -1432,9 +1460,20 @@ fn shadowed_dropped_pairs(
         .into_iter()
         .map(|f| (f.file_stem().unwrap().to_str().unwrap().to_string(), f))
         .collect();
+    let mut model_by_stem: HashMap<String, PathBuf> = find_cu_files(model_dir, source_ext)
+        .into_iter()
+        .map(|f| (f.file_stem().unwrap().to_str().unwrap().to_string(), f))
+        .collect();
+    for extra in extra_cu {
+        let stem = extra
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_else(|| panic!("extra_cu {} has no stem", extra.display()))
+            .to_string();
+        model_by_stem.insert(stem, extra.clone());
+    }
     let mut out = Vec::new();
-    for f in find_cu_files(model_dir, source_ext) {
-        let stem = f.file_stem().unwrap().to_str().unwrap().to_string();
+    for (stem, f) in model_by_stem {
         let Some(common_f) = common_by_stem.get(&stem) else {
             continue;
         };

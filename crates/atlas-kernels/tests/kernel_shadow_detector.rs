@@ -198,6 +198,20 @@ fn modules(v: &toml::Value, out: &mut BTreeMap<String, String>) {
     }
 }
 
+/// `[build].extra_cu` relative paths, resolved against the KERNEL.toml dir.
+fn extra_cu(dir: &Path) -> Vec<PathBuf> {
+    let v = kernel_toml(dir);
+    v.get("build")
+        .and_then(|b| b.get("extra_cu"))
+        .and_then(|a| a.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|x| x.as_str())
+        .map(|s| dir.join(s))
+        .filter(|p| p.is_file())
+        .collect()
+}
+
 /// `[shadow_exempt]` module -> kernels a shadow may omit.
 fn shadow_exempt(v: &toml::Value, out: &mut BTreeSet<(String, String)>) {
     let Some(t) = v.get("shadow_exempt").and_then(|m| m.as_table()) else {
@@ -264,7 +278,9 @@ fn no_model_shadow_drops_a_common_kernel() {
                 shadow_exempt(&common_toml, &mut exempt);
                 shadow_exempt(&model_toml, &mut exempt);
 
-                for shadow in sources(&quant_dir, ext) {
+                let mut shadows = sources(&quant_dir, ext);
+                shadows.extend(extra_cu(&quant_dir));
+                for shadow in shadows {
                     let namesake = common.join(shadow.file_name().unwrap());
                     if !namesake.is_file() {
                         continue; // model-only kernel, shadows nothing

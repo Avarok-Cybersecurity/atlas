@@ -9,6 +9,8 @@ pub mod config;
 pub mod dtype;
 pub mod error;
 pub mod fault;
+pub mod kimi_k3;
+pub mod mxfp4_e8m0;
 pub mod numeric;
 pub mod safetensors;
 pub mod scope;

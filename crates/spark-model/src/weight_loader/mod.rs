@@ -19,6 +19,7 @@ pub mod dflash_loader;
 mod gemma4;
 /// GLM-5.3-Flash tensor accounting (Slice 1: classification only).
 pub mod glm5_next;
+mod kimi_k3;
 mod laguna;
 mod longcat;
 mod minimax;
@@ -42,6 +43,7 @@ mod glm5_next_mtp;
 pub use gemma4::Gemma4WeightLoader;
 pub use glm5_next_load::Glm5NextWeightLoader;
 pub(crate) use glm5_next_mtp::{Glm5NextMtpModule, load_glm5next_mtp_module};
+pub use kimi_k3::{KimiK3DryRun, KimiK3WeightLoader, dry_run_index_json, dry_run_weight_map};
 pub use laguna::LagunaWeightLoader;
 pub use longcat::LongcatWeightLoader;
 pub use minimax::MinimaxM2WeightLoader;

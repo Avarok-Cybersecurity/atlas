@@ -93,7 +93,13 @@ impl TransformerModel {
         // the SSM/attention sites — it picks the 3-deep pipeline variant when
         // present. lm_head launches 1938 CTAs and already sits at ~83% of
         // achievable, so the expected gain here is small; measured, not assumed.
-        let w4a16_gemm_t_kernel = crate::layers::tgemm_kernel(gpu.as_ref());
+        // kimi_k3 is a BF16/FP32 twin (CPU KDA fallback). Probing
+        // `w4a16_gemm_t_p3` is an unresolved lookup on (kimi-k3, sm_121, nvfp4).
+        let w4a16_gemm_t_kernel = if crate::layers::tgemm_probe_ok(&config.model_type) {
+            crate::layers::tgemm_kernel(gpu.as_ref())
+        } else {
+            KernelHandle(0)
+        };
         // Lossless BF16-MMA sibling for lm_head, OPT-IN via ATLAS_LMHEAD_LOSSLESS=1.
         // Measured cost 1.81% at C=16 (129.68 -> 127.33). Default is the faster
         // FP8-activation path because the accuracy question it addresses CANNOT

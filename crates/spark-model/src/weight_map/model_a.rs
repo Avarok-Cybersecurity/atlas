@@ -134,25 +134,44 @@ pub(crate) fn quantized(
 /// consume `weight_scale` as E8M0 bytes and ignore `weight_scale_2`. Asserts
 /// the inferred block size is 32 so a non-MX checkpoint can't slip through.
 pub(crate) fn quantized_mxfp4_e8m0(store: &WeightStore, prefix: &str) -> Result<QuantizedWeight> {
-    let w = store.get(&format!("{prefix}.weight"))?;
+    quantized_mxfp4_e8m0_pair(
+        store,
+        &format!("{prefix}.weight"),
+        &format!("{prefix}.scale"),
+    )
+}
+
+/// Same lander as [`quantized_mxfp4_e8m0`] with explicit packed/scale keys.
+/// K3 official experts: `{prefix}.weight_packed` + `{prefix}.weight_scale`.
+pub(crate) fn quantized_mxfp4_e8m0_pair(
+    store: &WeightStore,
+    weight_key: &str,
+    scale_key: &str,
+) -> Result<QuantizedWeight> {
+    let w = store.get(weight_key)?;
+    ensure!(
+        w.shape.len() >= 2,
+        "{weight_key}: MXFP4 packed wants rank >= 2, got {:?}",
+        w.shape
+    );
     let n = w.shape[0];
     let k_packed = w.shape[1];
     let total_nibbles = n * k_packed * 2;
-    let scale_t = store.get(&format!("{prefix}.scale"))?;
+    let scale_t = store.get(scale_key)?;
     let num_groups = scale_t.num_elements();
     ensure!(
         num_groups > 0 && total_nibbles.is_multiple_of(num_groups),
-        "{prefix}: MXFP4 weight nibbles {total_nibbles} not divisible by E8M0 scale groups {num_groups}"
+        "{weight_key}: MXFP4 weight nibbles {total_nibbles} not divisible by E8M0 scale groups {num_groups}"
     );
     let block = total_nibbles / num_groups;
     ensure!(
         block == 32,
-        "{prefix}: native MXFP4 expects GROUP_SIZE=32, inferred {block} (scale groups {num_groups}) \
+        "{weight_key}: native MXFP4 expects GROUP_SIZE=32, inferred {block} (scale groups {num_groups}) \
          — refusing to land a non-MX checkpoint on the transcode-free path"
     );
     Ok(QuantizedWeight {
-        weight: ptr(store, &format!("{prefix}.weight"))?,
-        weight_scale: ptr(store, &format!("{prefix}.scale"))?,
+        weight: ptr(store, weight_key)?,
+        weight_scale: ptr(store, scale_key)?,
         weight_scale_2: 1.0, // native MXFP4 has no per-tensor global
         input_scale: DevicePtr::NULL,
         // native MXFP4 uses the scalar `weight_scale_2` (E8M0 per-group), not

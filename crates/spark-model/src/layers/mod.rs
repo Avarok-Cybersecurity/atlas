@@ -179,6 +179,12 @@ pub fn tgemm_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
     try_kernel(gpu, "w4a16", "w4a16_gemm_t")
 }
 
+/// Whether [`tgemm_kernel`] should issue its NVFP4 `_p3` / parent lookups.
+/// kimi_k3 is a BF16/FP32 CPU-fallback twin — do not probe `w4a16_gemm_t_p3`.
+pub fn tgemm_probe_ok(model_type: &str) -> bool {
+    model_type != "kimi_k3"
+}
+
 /// Resolve the k64 deep-K tile GEMM, preferring the 3-deep weight-pipeline
 /// variant. **ON by default**; `ATLAS_NO_K64_PIPELINE3` (presence — `=0` is NOT
 /// "off") falls back to the 2-stage parent.

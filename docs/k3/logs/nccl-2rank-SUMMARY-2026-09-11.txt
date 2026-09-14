@@ -1,0 +1,6 @@
+date: 2026-09-11
+transport: NET/IB RoCE (rocep1s0f1 / enp1s0f1np1)
+GDR: 0
+size=16384  time=30.39us  algbw=0.539 GB/s
+size=65536  time=35.86us  algbw=1.827 GB/s
+size=1048576 time=121.43us algbw=8.635 GB/s

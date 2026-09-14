@@ -16,6 +16,8 @@ metal = []
 [dependencies]
 anyhow = { workspace = true }
 cudarc = { workspace = true, optional = true }
+memmap2 = "0.9"
+safetensors = "0.8"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

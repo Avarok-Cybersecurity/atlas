@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! Kimi K3 host graph: CPU references for KDA, gated NoPE MLA, AttnRes,
+//! SiTU-GLU, and LatentMoE.
+//!
+//! K3-DECISION: KDA is a new backend. These refs do not call GDN / Mamba-2
+//! / Qwen3-Next kernels. CUDA: `kda_decode.cu` / `mla_decode.cu` (default;
+//! `K3_CUDA_KDA=0` / `K3_CUDA_MLA=0` CPU escape), packed LatentMoE E8M0 GEMM.
+
+pub mod attnres;
+pub mod cache;
+mod cpu_bind;
+pub mod cpu_forward;
+mod cpu_load;
+pub mod cpu_weights;
+pub mod greedy;
+pub mod kda;
+pub mod latent_moe;
+pub mod layer;
+pub mod mla;
+pub mod mxfp4;
+pub mod ops;
+pub mod situ;
+
+pub use attnres::{attnres_blend, attnres_mix, attnres_softmax_mix};
+pub use cache::{HybridCache, LayerCache, MlaKv};
+pub use cpu_bind::{assemble_layer, kda_from, mla_from, moe_from, text_key};
+pub use cpu_forward::{
+    AttnResStream, HiddenReduce, K3LayerCtx, forward_one_layer, forward_one_layer_with_cores,
+    forward_one_layer_with_kda_decode, forward_one_layer_with_mla_decode, forward_token,
+};
+pub use cpu_weights::{Ablation, K3CpuLayer, K3CpuModel};
+pub use greedy::greedy_decode;
+pub use kda::{KDA_L2_EPS, KdaConfig, KdaState, cuda_kda_enabled, kda_decode_token};
+pub use latent_moe::{LatentMoeConfig, latent_moe_forward, mix_routed_experts, sigmoid_topk};
+pub use layer::{K3Graph, K3LayerSpec, MixerKind, MlpKind};
+pub use mla::{MlaConfig, cuda_mla_enabled, gated_mla_attend, mla_decode_token};
+pub use situ::{situ_glu, situ_glu_vec, softcap};
+
+#[cfg(test)]
+mod c1;
+#[cfg(test)]
+mod c2;
+#[cfg(test)]
+mod c3;
+#[cfg(test)]
+mod c4;
+#[cfg(test)]
+mod c5;
+#[cfg(test)]
+mod c6;
+#[cfg(test)]
+mod c7;
+#[cfg(test)]
+mod host_fallback;
+#[cfg(test)]
+mod kda_cuda_parity;
+#[cfg(test)]
+mod mla_cuda_parity;

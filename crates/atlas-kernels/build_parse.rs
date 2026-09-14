@@ -5,6 +5,7 @@
 // `DflashRaw`) are reachable via `super::`.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use super::{DflashRaw, ModelTypeMatch, SamplingCat};
 
@@ -54,6 +55,57 @@ pub(super) fn parse_kernel_toml(
         .unwrap_or_default();
 
     (extra_flags, module_overrides)
+}
+
+/// Parse `[build].extra_cu` from a KERNEL.toml: extra `.cu` paths compiled
+/// into this target without copying them into the quant dir.
+///
+/// Paths are relative to the KERNEL.toml directory. Used so kimi-k3 can
+/// reuse DeepSeek-V4's `moe_w4a16_grouped_gemm.cu` (E8M0 ptrtable family)
+/// instead of vendoring a second MXFP4 stack. `kernel_source` is the
+/// whole-tree redirect; this is per-file. Chains of extra_cu-to-extra_cu
+/// are allowed only as a real file — canonicalize fails if the path is
+/// missing.
+pub(super) fn parse_extra_cu(kernel_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let path = kernel_dir.join("KERNEL.toml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let toml: toml::Value =
+        toml::from_str(&text).unwrap_or_else(|e| panic!("Bad TOML in {}: {e}", path.display()));
+    let Some(arr) = toml
+        .get("build")
+        .and_then(|b| b.get("extra_cu"))
+        .and_then(|v| v.as_array())
+    else {
+        return Vec::new();
+    };
+    arr.iter()
+        .map(|v| {
+            let s = v.as_str().unwrap_or_else(|| {
+                panic!(
+                    "{}: [build].extra_cu entries must be strings",
+                    path.display()
+                )
+            });
+            assert!(
+                !s.trim().is_empty() && !Path::new(s).is_absolute(),
+                "{}: extra_cu {s:?} must be a non-empty relative path",
+                path.display()
+            );
+            let joined = kernel_dir.join(s);
+            let canon = joined.canonicalize().unwrap_or_else(|e| {
+                panic!("{}: extra_cu {s} does not exist ({e})", path.display())
+            });
+            assert!(
+                canon.is_file(),
+                "{}: extra_cu {s} is not a file",
+                path.display()
+            );
+            println!("cargo:rerun-if-changed={}", canon.display());
+            canon
+        })
+        .collect()
 }
 
 /// Parse `[shadow_exempt]` from a KERNEL.toml: `module = ["kernel", ...]`.
