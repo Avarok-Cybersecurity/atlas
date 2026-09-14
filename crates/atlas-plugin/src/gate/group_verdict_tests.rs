@@ -2,9 +2,11 @@
 //! `check_one`'s group path: four shards produce one verdict, and a partial set
 //! produces none.
 //!
-//! The transition rule is tested as carefully as the aggregation, because it is
-//! the part that can take `main` down: `bfcl-subset` is a REQUIRED context and
-//! every record committed today is a whole-draw one.
+//! Since 2026-09-13 the members are the ONLY path: a whole-draw record under
+//! the group's own id is history, and every per-record rule a plain gate
+//! applies (subject, frame, dirty tree, signature) is applied per member. The
+//! negative controls below each plant one defective member among three clean
+//! ones and expect the group to refuse it by name.
 
 use super::check::check_one;
 use super::tests::{bfcl_baseline, tempdir};
@@ -146,34 +148,184 @@ fn three_shards_do_not_satisfy_the_group() {
     }
 }
 
-/// THE TRANSITION RULE. A whole-draw record under the group's own id still
-/// satisfies it, with no shards present at all. Without this, becoming a group
-/// would turn every record already on main into "4 members missing" and red
-/// every open PR the moment it landed.
+/// ★ THE RULE. A passing whole-draw record under the group's own id, with no
+/// shards present, does NOT satisfy the group — and the verdict names the
+/// record and says why it stopped counting, so nobody bisects a kernel change
+/// looking for what re-opened a gate that was re-opened by policy.
 #[test]
-fn a_whole_draw_record_still_satisfies_the_group() {
+fn a_whole_draw_record_no_longer_satisfies_the_group() {
     let dir = scaffold();
     let root = dir.path();
     super::tests::plant(root, "bfcl-subset", SHA, 1_785_891_382, "PASS");
-    assert!(
-        matches!(check_one(root, "bfcl-subset", SHA), GateStatus::Pass),
-        "{:?}",
-        check_one(root, "bfcl-subset", SHA)
-    );
+    match check_one(root, "bfcl-subset", SHA) {
+        GateStatus::Missing(why) => {
+            assert!(why.contains("4 of its members have no record"), "{why}");
+            assert!(why.contains("whole-draw record(s)"), "{why}");
+            assert!(why.contains("no longer satisfy"), "{why}");
+            assert!(why.contains("2026-09-13"), "{why}");
+        }
+        other => panic!("a whole-draw record must not satisfy the group, got {other:?}"),
+    }
 }
 
-/// And with NO records at all, the group must report like an ordinary gate —
-/// "no gate records committed" — not "your four shards are missing". An author
-/// whose whole-draw record was invalidated needs to know WHAT invalidated it.
+/// With NO records at all the group reports its members as missing and says,
+/// per member, that nothing was ever committed — the plain-gate wording is
+/// gone with the plain-gate path.
 #[test]
-fn an_unsharded_group_with_no_records_reports_like_a_plain_gate() {
+fn an_unsharded_group_with_no_records_names_every_member() {
     let dir = scaffold();
     match check_one(dir.path(), "bfcl-subset", SHA) {
-        GateStatus::Missing(why) => assert!(
-            !why.contains("members have no record"),
-            "should read as a plain gate, got: {why}"
-        ),
+        GateStatus::Missing(why) => {
+            for m in [
+                "bfcl-subset-a",
+                "bfcl-subset-b",
+                "bfcl-subset-c",
+                "bfcl-subset-d",
+            ] {
+                assert!(why.contains(m), "{why}");
+            }
+            assert!(why.contains("no record has ever been committed"), "{why}");
+            assert!(
+                !why.contains("whole-draw"),
+                "no whole-draw record exists: {why}"
+            );
+        }
         other => panic!("expected Missing, got {other:?}"),
+    }
+}
+
+/// A member whose newest record was invalidated names the perf-path files
+/// that did it — the 20-second-fix property the whole-draw arm had.
+#[test]
+fn a_member_invalidated_by_a_perf_path_names_the_file() {
+    let dir = scaffold();
+    let root = dir.path();
+    use super::coverage_tests::scratch_repo;
+    scratch_repo::init(root);
+    scratch_repo::commit(root, "crates/lib.rs", "v1", "kernel v1");
+    let old = scratch_repo::head(root);
+    for m in [
+        "bfcl-subset-a",
+        "bfcl-subset-b",
+        "bfcl-subset-c",
+        "bfcl-subset-d",
+    ] {
+        std::fs::create_dir_all(gate_dir(root, m)).unwrap();
+        plant_shard(root, m, &old, 1_785_891_000, 95, 100);
+    }
+    scratch_repo::commit(root, "crates/lib.rs", "v2", "kernel v2");
+    let head = scratch_repo::head(root);
+    match check_one(root, "bfcl-subset", &head) {
+        GateStatus::Missing(why) => {
+            assert!(why.contains("invalidated by"), "{why}");
+            assert!(why.contains("crates/lib.rs"), "{why}");
+        }
+        other => panic!("expected Missing naming the file, got {other:?}"),
+    }
+}
+
+/// Plant four clean shards, then let the caller break one of them.
+fn four_shards(root: &std::path::Path, secs: u64) {
+    for (i, m) in [
+        "bfcl-subset-a",
+        "bfcl-subset-b",
+        "bfcl-subset-c",
+        "bfcl-subset-d",
+    ]
+    .iter()
+    .enumerate()
+    {
+        std::fs::create_dir_all(gate_dir(root, m)).unwrap();
+        plant_shard(root, m, SHA, secs + i as u64, 95, 100);
+    }
+}
+
+fn rewrite_member(root: &std::path::Path, member: &str, edit: impl FnOnce(&mut GateRecord)) {
+    let path = records_newest_first(root, member).remove(0);
+    let mut r = read_record(&path).unwrap();
+    edit(&mut r);
+    std::fs::write(&path, serde_json::to_string_pretty(&r).unwrap()).unwrap();
+}
+
+/// ★ NEGATIVE CONTROL: a member recorded after the signature cutover with no
+/// `.sig` is refused, by name. Before 2026-09-13 the whole-draw arm ran first
+/// and no shard was ever asked for its signature.
+#[test]
+fn an_unsigned_member_after_the_cutover_fails_the_group() {
+    let dir = scaffold();
+    let root = dir.path();
+    four_shards(root, super::signing::SIGNATURE_REQUIRED_AFTER + 10);
+    match check_one(root, "bfcl-subset", SHA) {
+        GateStatus::Fail(why) => {
+            let joined = why.join(" ");
+            assert!(joined.contains("bfcl-subset-a: "), "{joined}");
+            assert!(joined.contains("no signature"), "{joined}");
+        }
+        other => panic!("an unsigned member must fail the group, got {other:?}"),
+    }
+}
+
+/// ★ NEGATIVE CONTROL: a member measured from a dirty tree does not describe
+/// its own sha, and the group must say so rather than fold it in.
+#[test]
+fn a_dirty_tree_member_fails_the_group() {
+    let dir = scaffold();
+    let root = dir.path();
+    four_shards(root, 1_785_891_000);
+    rewrite_member(root, "bfcl-subset-c", |r| {
+        r.dirty_paths = vec!["crates/spark-model/src/lib.rs".to_string()];
+    });
+    match check_one(root, "bfcl-subset", SHA) {
+        GateStatus::Fail(why) => {
+            let joined = why.join(" ");
+            assert!(
+                joined.contains("bfcl-subset-c: measured from a dirty tree"),
+                "{joined}"
+            );
+            assert!(joined.contains("crates/spark-model/src/lib.rs"), "{joined}");
+        }
+        other => panic!("a dirty member must fail the group, got {other:?}"),
+    }
+}
+
+/// ★ NEGATIVE CONTROL: a member whose run did not complete is a failure with
+/// the run's own reason, not a quarter of a measurement.
+#[test]
+fn a_failed_frame_member_fails_the_group() {
+    let dir = scaffold();
+    let root = dir.path();
+    four_shards(root, 1_785_891_000);
+    rewrite_member(root, "bfcl-subset-b", |r| {
+        r.frame_status = crate::result::RunStatus::Failed;
+        r.verdict_reason = "scorer crashed".to_string();
+    });
+    match check_one(root, "bfcl-subset", SHA) {
+        GateStatus::Fail(why) => {
+            let joined = why.join(" ");
+            assert!(
+                joined.contains("bfcl-subset-b: the run itself failed"),
+                "{joined}"
+            );
+            assert!(joined.contains("scorer crashed"), "{joined}");
+        }
+        other => panic!("a failed member must fail the group, got {other:?}"),
+    }
+}
+
+/// ★ NEGATIVE CONTROL: a member measured on a non-default variant is not the
+/// gate's subject. It is ignored, so the member reads as MISSING — a pass on
+/// the wrong checkpoint is not evidence for the required one.
+#[test]
+fn a_member_on_another_variant_is_not_the_subject() {
+    let dir = scaffold();
+    let root = dir.path();
+    four_shards(root, 1_785_891_000);
+    rewrite_member(root, "bfcl-subset-d", |r| {
+        r.target_model = "some-other/checkpoint".to_string();
+    });
+    match check_one(root, "bfcl-subset", SHA) {
+        GateStatus::Missing(why) => assert!(why.contains("bfcl-subset-d"), "{why}"),
+        other => panic!("an off-subject member must not count, got {other:?}"),
     }
 }
 

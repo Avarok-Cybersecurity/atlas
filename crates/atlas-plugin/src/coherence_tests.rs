@@ -327,10 +327,7 @@ fn serving_nothing_does_not_promise_numbers() {
     // The wrong-model wording ("the run WILL produce numbers; they will just be
     // for a different model") is false when nothing is loaded: every request is
     // refused, so there are no numbers at all.
-    let target = TargetEndpoint {
-        base_url: "http://127.0.0.1:8123".into(),
-        model: "x".into(),
-    };
+    let target = TargetEndpoint::new("http://127.0.0.1:8123", "x");
     let report = Report {
         served_instead: Some(Vec::new()),
         ..Default::default()

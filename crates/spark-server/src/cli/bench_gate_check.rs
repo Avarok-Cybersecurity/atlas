@@ -10,18 +10,15 @@ use atlas_plugin::gate;
 
 use super::bench_run::repo_root;
 
-/// `--pull-request-gate-check`: does THIS commit have a passing record for
-/// every required gate? Prints a line per bench and exits 1 until they all
-/// pass. Pure filesystem reads — fast enough to run on every PR in CI.
-pub(super) fn gate_check_cmd(pr: Option<u64>) -> Result<i32> {
-    let root = repo_root()?;
-    let sha = gate::git_sha(&root)?;
-    let gates = gate::check_gates(&root, &sha);
-    println!("gate check for {sha} ({})", root.display());
+/// Print one line per required gate, in `REQUIRED_GATES` order, and return
+/// the ids that are not `Pass`. Shared with `spark bench certify`, whose final
+/// word is this same table.
+pub(super) fn print_statuses(
+    gates: &std::collections::BTreeMap<String, gate::GateStatus>,
+) -> Vec<&'static str> {
     let mut open = Vec::new();
     for id in gate::REQUIRED_GATES {
-        let status = &gates[id];
-        match status {
+        match &gates[id] {
             gate::GateStatus::Pass => println!("  PASS  {id}"),
             gate::GateStatus::Fail(reasons) => {
                 println!("  FAIL  {id}");
@@ -36,6 +33,18 @@ pub(super) fn gate_check_cmd(pr: Option<u64>) -> Result<i32> {
             }
         }
     }
+    open
+}
+
+/// `--pull-request-gate-check`: does THIS commit have a passing record for
+/// every required gate? Prints a line per bench and exits 1 until they all
+/// pass. Pure filesystem reads — fast enough to run on every PR in CI.
+pub(super) fn gate_check_cmd(pr: Option<u64>) -> Result<i32> {
+    let root = repo_root()?;
+    let sha = gate::git_sha(&root)?;
+    let gates = gate::check_gates(&root, &sha);
+    println!("gate check for {sha} ({})", root.display());
+    let open = print_statuses(&gates);
     // ── ADVISORY: what the classified intent would have asked for ──
     //
     // ★ Printed AFTER the verdict and consulted by nothing. `gate::exit_code`

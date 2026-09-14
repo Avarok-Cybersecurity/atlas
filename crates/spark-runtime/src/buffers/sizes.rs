@@ -7,6 +7,22 @@ use atlas_kernels::attn_splitk;
 
 use super::sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 
+/// The widest `M` the FUSED dense-FFN gate+up decode GEMM serves (#927), and
+/// therefore the row extent `ffn_gate_up_fused` is sized for.
+///
+/// 16 — the top of the decode band. The fused arm is a per-LAUNCH saving, and
+/// the launch overhead it removes is only material while the GEMM is
+/// weight-bandwidth bound; at the prefill widths the same two projections
+/// already run at 68.6% of FP8 peak (nsys round 13, M=4576), where a launch
+/// costs nothing measurable. 16 is also the largest batch H100 round 13
+/// captured (`Captured CUDA graph for batch size 16`).
+///
+/// DECLARED HERE because the arena is sized in this crate and the dispatch
+/// rule lives above it; `spark_model::layers::dense_ffn_gateup_fused` reads
+/// THIS constant rather than restating it, so the band and the buffer cannot
+/// disagree.
+pub const GATEUP_FUSED_MAX_M: usize = 16;
+
 /// Byte sizes of each buffer, derived from ModelConfig.
 #[derive(Debug, Clone)]
 pub struct BufferSizes {
@@ -89,6 +105,20 @@ pub struct BufferSizes {
     /// quantizer's own `[M, K/128]` output stays in `ffn_act_scale` because the
     /// in-tree kernel reads that order. 0 for MoE models, like its siblings.
     pub ffn_act_scale_kmajor: usize,
+    /// `[GATEUP_FUSED_MAX_M, 2 * intermediate]` BF16 output of the FUSED
+    /// dense-FFN gate+up decode GEMM (#927) — the single cuBLASLt call at
+    /// `N = 2 * intermediate` whose row is `[gate | up]`. Its own buffer and
+    /// not a widened `expert_gate_out` because the fused arm serves the DECODE
+    /// band only (5..=16 rows, `layers/dense_ffn_gateup_fused.rs`): sizing it
+    /// for the band is ~2.2 MB at Qwen3.8-27B, sizing `expert_gate_out` for
+    /// `[max_batch_tokens, 2 * inter]` would be ~41 MB of prefill rows the arm
+    /// never writes.
+    ///
+    /// Allocated for every DENSE model rather than behind the lever: the arena
+    /// is built from `ModelConfig` and a target's serving levers are resolved
+    /// above this crate, and 2.2 MB is not worth a second resolution that
+    /// could disagree with the dispatch site's.
+    pub ffn_gate_up_fused: usize,
     /// FP8 block-scaled activation scratch for prefill projections (qkv / o /
     /// ssm-qkvz). Persistent so the W8A8+FP32-epilogue path stops doing a
     /// per-projection cuMemAlloc + cuStreamSynchronize + cuMemFree. 1 byte/elem.
@@ -434,6 +464,18 @@ impl BufferSizes {
         // Sized for the largest projection K = max(hidden, intermediate); the
         // dense_ffn prefill paths pass `h.max(inter)` to the requant kernels.
         // 0 for MoE (num_experts>0) — those never take the dense_ffn MMQ path.
+        // Fused gate+up decode GEMM output (#927): `[ceil16(MAX_M), 2*inter]`
+        // BF16. `ceil16` because `cublas_fp8_proj_prequant` hands cuBLASLt
+        // `ceil16(M)` and the phantom rows are WRITTEN — the same headroom
+        // `expert_gate_out` carries, for the same reason. Dense models only;
+        // MoE never reaches the dense-FFN arm.
+        let ffn_gate_up_fused = if config.num_experts == 0 {
+            let rows = GATEUP_FUSED_MAX_M.div_ceil(16) * 16;
+            rows * 2 * config.intermediate_size * bf16
+        } else {
+            0
+        };
+
         let (ffn_act_q8, ffn_act_a, ffn_act_scale, ffn_act_scale_kmajor) =
             if config.num_experts == 0 {
                 let kmax = h.max(config.intermediate_size);
@@ -617,6 +659,7 @@ impl BufferSizes {
             ffn_act_a,
             ffn_act_scale,
             ffn_act_scale_kmajor,
+            ffn_gate_up_fused,
             fp8_act,
             fp8_act_scale,
             fp8_act_scale_kmajor,
@@ -662,6 +705,7 @@ impl BufferSizes {
             + self.token_ids
             + self.ffn_act_q8
             + self.ffn_act_a
+            + self.ffn_gate_up_fused
             + self.ffn_act_scale
             + self.ffn_act_scale_kmajor
             + self.fp8_act

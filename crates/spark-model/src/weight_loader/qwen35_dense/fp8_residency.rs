@@ -302,6 +302,33 @@ pub fn attn_fp8_twin_bytes(
     b
 }
 
+/// What ONE fused dense-FFN gate+up weight costs: the two `[inter, hidden]`
+/// E4M3 blocks appended along N, plus their two `[inter/128, hidden/128]` FP32
+/// block-scale grids appended the same way (#927).
+///
+/// The sum of the two grids and NOT one grid over the fused N, for the reason
+/// `predicted_residency::ssm_concat_bytes` gives: `ceil` of a sum is not the
+/// sum of the `ceil`s, and the concat copies the two grids side by side.
+///
+/// RESIDENCY-NEUTRAL: `prune_after_load` releases the two `[inter, hidden]`
+/// store tensors this copied, so the same number is also what the checkpoint
+/// gives back. Both sides are priced from this one function.
+pub fn ffn_gateup_fused_bytes(hidden: usize, inter: usize) -> usize {
+    let (w, s) = ffn_gateup_fused_parts(hidden, inter);
+    w + s
+}
+
+/// [`ffn_gateup_fused_bytes`] split into `(weight bytes, scale-grid bytes)` —
+/// the loader adopts the two buffers separately, so it needs the terms rather
+/// than the sum, and taking them from here is what keeps the prediction and
+/// the tally one arithmetic.
+pub fn ffn_gateup_fused_parts(hidden: usize, inter: usize) -> (usize, usize) {
+    (
+        2 * inter * hidden,
+        2 * (inter.div_ceil(128) * hidden.div_ceil(128) * 4),
+    )
+}
+
 /// Running tally of the derived (non-checkpoint) device bytes this loader
 /// allocated, and of the ones it decided not to build.
 ///
@@ -329,6 +356,13 @@ pub struct TwinsBuilt {
     pub attn_nvfp4: bool,
     pub attn_fp8: bool,
     pub ssm_fp8_concat: bool,
+    /// The dense-FFN `[2*inter, hidden]` gate+up concat (#927). Named in the
+    /// summary like the others, and worth naming even though it is residency-
+    /// NEUTRAL: its bytes appear in `kept` while the two store tensors they
+    /// replace disappear from `WeightStore::resident_bytes` at the prune, so a
+    /// reader comparing two serve logs needs to know which of the two numbers
+    /// moved and why.
+    pub ffn_gateup_fused: bool,
 }
 
 impl TwinsBuilt {
@@ -346,6 +380,9 @@ impl TwinsBuilt {
         }
         if self.ssm_fp8_concat {
             parts.push("ssm-qkvz-fp8");
+        }
+        if self.ffn_gateup_fused {
+            parts.push("ffn-gateup-fp8");
         }
         if parts.is_empty() {
             "none".to_owned()

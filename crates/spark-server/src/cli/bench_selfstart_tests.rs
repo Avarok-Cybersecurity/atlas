@@ -226,8 +226,9 @@ fn a_baseline_declared_serve_pin_reaches_the_rendered_serve_args_without_cli_fla
         "the batching pin reached the serve"
     );
     assert_eq!(args.kv_cache_dtype.as_deref(), Some("fp8"));
-    // Marconi pinned at 8 slots (2026-08-16): 1/4 the 32-slot reserve at
-    // 151.5 MiB/slot — see the BENCH.toml serve_overrides comment.
-    assert_eq!(args.ssm_cache_slots, 8);
+    // Marconi pinned at 32 slots (2026-09-13): the sweep's warm rule holds
+    // only while `slots > 3·C` — see the BENCH.toml serve_overrides comment
+    // and `concurrency::warm_cache_capable`.
+    assert_eq!(args.ssm_cache_slots, 32);
     assert_eq!(args.max_seq_len, 4096);
 }
