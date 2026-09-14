@@ -1,5 +1,8 @@
-# K3 BF16: unique kda_decode + mla_decode stems. Not GDN/Mamba/qwen3_attention.
-# Host SSOT: atlas_core kda_decode_token / mla_decode_token.
-# DSV4 E8M0 extra_cu lands in feat/k3-situ-latentmoe.
+# K3 BF16: unique kda_decode + mla_decode stems. extra_cu DSV4 E8M0 GEMM
+# (do not copy that .cu here). Handle: moe_w4a16_grouped_gemm_ptrtable_e8m0
+
+[build]
+extra_cu = ["../../deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"]
 
 [modules]
+moe_w4a16_grouped_gemm = "moe_w4a16"
