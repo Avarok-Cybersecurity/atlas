@@ -139,6 +139,9 @@ mod tests {
         assert_eq!(g.kda_count(), 69);
         assert_eq!(g.mla_count(), 24);
         assert!(g.last_is_mla());
+        // HF 1-based 92 and 93 are both MLA (0-based 91, 92).
+        assert_eq!(g.layers[91].mixer, MixerKind::Mla);
+        assert_eq!(g.layers[92].mixer, MixerKind::Mla);
         assert_eq!(g.attn_res_block_size, 12);
         assert_eq!(g.layers[0].mlp, MlpKind::Dense);
     }
