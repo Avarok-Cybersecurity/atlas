@@ -465,58 +465,23 @@ impl Qwen3AttentionLayer {
                 kv_cache.cache_stride() as u64,
                 stream,
             ),
-            _ => {
-                // FP8 KV cache
-                // #919: `observe` accumulates the amax over the requested
-                // `--fp8-kv-calibration-tokens` window ACROSS requests and,
-                // when the window closes, requantizes the entries the window
-                // wrote — so it needs to know where this write is going. It
-                // runs BEFORE the write below, so `effective_fp8_scales()`
-                // returns exactly the scale this batch is about to be written
-                // with (and every later read dequantizes with).
-                if !graph_capture && let Some(ref cal) = self.fp8_calibration {
-                    let target = crate::layers::fp8_calibration::Fp8KvWriteTarget {
-                        kernel: self.reshape_cache_k,
-                        k_pool: kv_cache.k_pool_ptr(self.attn_layer_idx),
-                        v_pool: kv_cache.v_pool_ptr(self.attn_layer_idx),
-                        block_size,
-                        cache_stride: kv_cache.cache_stride() as u64,
-                        key_stride,
-                        value_stride,
-                        slot,
-                    };
-                    cal.observe(
-                        gpu,
-                        k,
-                        v,
-                        num_tokens,
-                        num_kv_heads,
-                        head_dim,
-                        stream,
-                        &target,
-                    )?;
-                }
-                let (k_scale, v_scale) = self.effective_fp8_scales();
-                ops::reshape_and_cache_fp8(
-                    gpu,
-                    self.reshape_cache_k,
-                    k,
-                    v,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
-                    slot,
-                    num_tokens,
-                    num_kv_heads,
-                    head_dim,
-                    block_size,
-                    k_scale,
-                    v_scale,
-                    key_stride,
-                    value_stride,
-                    kv_cache.cache_stride() as u64,
-                    stream,
-                )
-            }
+            // FP8 KV cache: the calibration window observes the write, then
+            // the write lands (`write_kv_cache_fp8.rs`).
+            _ => self.write_kv_cache_fp8(
+                gpu,
+                k,
+                v,
+                kv_cache,
+                slot,
+                num_tokens,
+                num_kv_heads,
+                head_dim,
+                block_size,
+                key_stride,
+                value_stride,
+                stream,
+                graph_capture,
+            ),
         }
     }
 }
