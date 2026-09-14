@@ -229,6 +229,10 @@ name = "native_ssm_ba_gates_hopper_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "native_fp8_act_quant_hopper_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_wy4_batched_microtest"
 required-features = ["cuda", "gpu-examples"]
 
@@ -293,6 +297,10 @@ name = "w4a16_qg_batch_bitparity_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "native_fp8_ffn_down_gemv_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "native_fp8_ffn_batch16_microtest"
 required-features = ["cuda", "gpu-examples"]
 
@@ -315,6 +323,13 @@ required-features = ["cuda", "gpu-examples"]
 # module in `examples/common/native_fp8_bf16_compare.rs`, which the example
 # pulls in with `#[path]`.
 test = true
+
+# The FUSED gate+up decode GEMM (#927) against the two-GEMM pair. A BYTE
+# equality gate, not a tolerance: splitting N gives independent output columns
+# over the same K with the same block scales.
+[[example]]
+name = "native_fp8_ffn_gateup_fused_microtest"
+required-features = ["cuda", "gpu-examples"]
 
 [[example]]
 name = "native_fp8_qkv_batch_microtest"

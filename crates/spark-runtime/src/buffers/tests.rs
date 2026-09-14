@@ -141,6 +141,11 @@ fn test_buffer_arena_alloc() {
             arena.ffn_act_scale_kmajor(),
             sizes.ffn_act_scale_kmajor,
         ),
+        (
+            "ffn_gate_up_fused",
+            arena.ffn_gate_up_fused(),
+            sizes.ffn_gate_up_fused,
+        ),
         ("fp8_act", arena.fp8_act(), sizes.fp8_act),
         ("fp8_act_scale", arena.fp8_act_scale(), sizes.fp8_act_scale),
         (

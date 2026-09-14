@@ -50,6 +50,7 @@ and published alongside it.
 - [Tool Calling & Streaming](https://docs.atlasinference.io/operations/tools.html)
 - [Multi-GPU & EP=2](https://docs.atlasinference.io/operations/multi-gpu.html)
 - [Benchmarking](https://docs.atlasinference.io/operations/benchmarks.html)
+- [Certification](https://docs.atlasinference.io/operations/certify.html)
 
 ## Part VI — The Project
 

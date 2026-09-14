@@ -104,6 +104,29 @@ pub struct TargetDefaults {
     /// `ATLAS_SSM_BA_GATES_HOPPER=0` is the A/B. Numbers:
     /// `SSM-BA-GATES-ATTRIBUTION.md`.
     pub ssm_ba_gates_hopper: bool,
+    /// `per_token_group_quant_fp8_hopper` serves the per-token FP8 activation
+    /// quantizer with 16 threads per 128-element K-group and **8 groups per
+    /// CTA** (`layers/ops/fp8_act_quant.rs`), in place of its gb10 parent's
+    /// one CTA per group.
+    ///
+    /// TRUE on hopper, false elsewhere. The twin is BIT-IDENTICAL to the
+    /// parent — same `amax / 448.0f`, same `1e-12f` floor, same per-element
+    /// `div.rn.f32`, same saturating E4M3 convert; only the reduction tree
+    /// moves — so the row is purely a speed claim, and it is a claim with a
+    /// WIDTH. `native_fp8_act_quant_hopper_microtest`, 1xH100 80GB HBM3,
+    /// round 16: **3.30-3.59x at M in {1168, 4576}** (63.7-68.4% of HBM
+    /// against the parent's 18.6-19.1%) and **0.76x-0.95x at M in {16, 17, 25}
+    /// for K in {5120, 6144}** — 8 groups per CTA is 8x fewer CTAs, and at
+    /// those M the parent's grid is already under one wave on 132 SMs.
+    ///
+    /// So the row arms a kernel that is also behind a CTA-count floor
+    /// (`layers/ops/fp8_act_quant_floor.rs`): the twin takes a launch only
+    /// when its own grid clears `2 * sm_count` CTAs. `kernels/gb10` and
+    /// `kernels/b200` do not carry the source, so the row is INERT there and
+    /// declared only because the lever list is one list.
+    /// `ATLAS_FP8_ACT_QUANT_HOPPER=0` is the A/B. Numbers:
+    /// `FP8-ACT-QUANT-ATTRIBUTION.md`.
+    pub fp8_act_quant_hopper: bool,
     /// Split SiLU+down on the decode path (`ModelLevers::decode_split_silu`).
     pub decode_split_silu: bool,
     /// How the paged-decode attention path picks its KV split count (#928):
@@ -160,4 +183,31 @@ pub struct TargetDefaults {
     /// has a declared way to be turned on for the measurement that would earn
     /// it, not because it has been shown to pay.
     pub attn_ncol_gemv: bool,
+    /// One fused `[gate | up]` cuBLASLt W8A8 GEMM at `N = 2 * intermediate` on
+    /// the 5..=16-row decode band, instead of two at `N = intermediate`
+    /// (#927). TRUE only on hopper: the arm's strided-SiLU consumer
+    /// (`silu_mul_strided.cu`) is a Hopper-owned source, so the row is inert
+    /// on a target whose tree does not carry it.
+    pub ffn_gateup_fused: bool,
+    /// Upper `M` for the W8A8 block-scaled dense-FFN prefill on a WIDENING
+    /// projection (`n > k`: gate/up). `u32::MAX` = no cap, the baseline.
+    ///
+    /// W8A8 feeds the FP8 tensor cores instead of dequantizing into a BF16
+    /// MMA, and on H100 that is 2.0-3.1x at every M measured — so Hopper
+    /// declares nothing here and keeps the baseline. On sm_121 it is not: W8A8
+    /// throughput is FLAT at ~14 TFLOP/s from M=128 to M=2048 while W8A16
+    /// climbs to ~26 and stays there. A kernel whose throughput does not move
+    /// with M is not compute-bound — it is pinned by the per-token activation
+    /// quantization and its FP32 scale epilogue, which W8A16 never pays. So
+    /// W8A8 wins only while the GEMM is small enough that the quantization is
+    /// not the bill, and where that stops is a property of the ARCH.
+    ///
+    /// Two rows and not one because the crossover is shape-dependent: measured
+    /// 2026-09-11 on spark-256a at the real Qwen3.8-27B dims, gate/up
+    /// (N=17408, K=5120) crosses at M~64-128 and down (N=5120, K=17408) at
+    /// M~384-512.
+    pub w8a8_prefill_max_m_widening: u32,
+    /// Upper `M` for the same path on a NARROWING projection (`n <= k`: down).
+    /// See [`Self::w8a8_prefill_max_m_widening`].
+    pub w8a8_prefill_max_m_narrowing: u32,
 }

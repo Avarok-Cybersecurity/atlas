@@ -188,14 +188,13 @@ impl Qwen3AttentionLayer {
                 "w8a16_gemm_t_m128",
                 "w8a16_gemm_t_m128",
             ),
-            // Spelled through `W8A8_PREFILL_KERNELS` (#915): preflight asks
-            // the backend for the SAME two kernels to predict, before the
-            // load, whether the Q/O FP8 prefill twins will be built.
-            per_token_group_quant_fp8_k: super::super::try_kernel(
-                gpu,
-                super::types_weights::W8A8_PREFILL_KERNELS[0].0,
-                super::types_weights::W8A8_PREFILL_KERNELS[0].1,
-            ),
+            // `Fp8ActQuant` probes the shared quantizer AND the Hopper
+            // twin, which only `kernels/hopper` ships, and carries both
+            // handles so a launcher can never pair one kernel's entry point
+            // with the other's grid. Every target still has the shared one.
+            // The shared name is the one `W8A8_PREFILL_KERNELS[0]` (#915)
+            // spells for preflight, which derives it from the same constants.
+            per_token_group_quant_fp8_k: crate::layers::ops::Fp8ActQuant::resolve(gpu),
             fp8_gemm_t_blockscaled_k: super::super::try_kernel(
                 gpu,
                 super::types_weights::W8A8_PREFILL_KERNELS[1].0,
@@ -753,6 +752,7 @@ impl Qwen3AttentionLayer {
                 && crate::layers::fp8_calibration::dtype_runs_online_fp8_kv_calibration(kv_dtype)
             {
                 Some(Fp8KvCalibration::new(
+                    attn_layer_idx,
                     fp8_calibration_tokens,
                     config.fp8_kv_headroom,
                     gpu,

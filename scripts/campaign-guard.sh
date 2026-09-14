@@ -15,6 +15,9 @@
 #
 #   scripts/campaign-guard.sh <anchor-sha> [remote-ref]
 #
+# Superseded for campaigns by `spark bench certify`, which carries the same
+# check in the binary (cli/bench_certify/guard.rs); kept for CI and ad-hoc use.
+#
 # exit 0  the anchor still describes the branch (unmoved, or moved harmlessly)
 # exit 1  a perf path moved; whatever is running is measuring a dead tree
 # exit 2  the guard could not answer (never treated as "safe to continue")
