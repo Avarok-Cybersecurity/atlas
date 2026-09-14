@@ -84,9 +84,9 @@ fn one_commit_one_signer_is_fine() {
 /// THE RELAXATION OF 2026-09-14 (#1086): two commits are fine when every
 /// record STANDS at the head — a certified commit stays certified for every
 /// successor that touches nothing its gates measure. NEGATIVE CONTROLS: a
-/// record whose commit is not on the head's history is a straggler, and so
-/// is one whose successors touched its gate's perf paths — each named with
-/// its commit and the reason, whatever its class.
+/// record whose commit cannot be judged at all is a straggler, and so is one
+/// whose successors touched its gate's perf paths — each named with its
+/// commit and the reason, whatever its class.
 #[test]
 fn records_may_span_commits_when_each_stands_at_head() {
     let v = check(&[
@@ -97,13 +97,13 @@ fn records_may_span_commits_when_each_stands_at_head() {
     assert!(v.is_empty(), "{v:?}");
 
     let mut off = rec("vision-fidelity", "0ff000", "k1");
-    off.standing = Standing::NotOnHistory;
+    off.standing = Standing::Unknown;
     let v = check(&[rec("bfcl-subset", "abc123", "k1"), off]);
     match &v[..] {
         [Disagreement::Straggler { path, git_sha, why }] => {
             assert!(path.contains("vision-fidelity"), "{path}");
             assert_eq!(git_sha, "0ff000");
-            assert!(why.contains("not on this head's history"), "{why}");
+            assert!(why.contains("cannot be diffed"), "{why}");
         }
         other => panic!("{other:?}"),
     }

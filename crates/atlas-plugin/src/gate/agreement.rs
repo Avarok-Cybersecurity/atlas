@@ -19,11 +19,12 @@
 //! What the commit rule protects is real — a record from an unrelated tree,
 //! or from a commit whose successors changed what the gate measures, must
 //! not ride in — and `check::record_standing` answers exactly that, per
-//! record, per gate: the commit must be on the head's history and the diff
-//! to head must invalidate nothing for that gate. So the rule is now the
-//! owner's formulation: a commit K that is certified stays certified for
-//! every K+n that does not touch a perf path. One commit remains the normal
-//! OUTCOME of a campaign; it is no longer a requirement.
+//! record, per gate, by CONTENT: the diff from the record's commit to the
+//! head must invalidate nothing for that gate (never ancestry — this
+//! repository squash-merges, see `coverage_squash_tests`). So the rule is
+//! now the owner's formulation: a commit K that is certified stays certified
+//! for every K+n that does not touch a perf path. One commit remains the
+//! normal OUTCOME of a campaign; it is no longer a requirement.
 //!
 //! # Why signer agreement is per metric class
 //!
@@ -154,7 +155,7 @@ impl std::fmt::Display for Disagreement {
 
 /// A record's [`Standing`] at `head`, with the coverage its benchmark reads
 /// (a shard reads its own entry or its group's). A benchmark with no
-/// coverage entry cannot be judged and is reported as off-history — the
+/// coverage entry cannot be judged and is reported as unknown — the
 /// fail-closed side.
 pub fn standing_at(root: &std::path::Path, head: &str, record: &super::GateRecord) -> Standing {
     let gate = coverage::find(&record.benchmark_id).or_else(|| {
@@ -162,7 +163,7 @@ pub fn standing_at(root: &std::path::Path, head: &str, record: &super::GateRecor
     });
     match gate {
         Some(gate) => super::check::record_standing(root, head, record, gate),
-        None => Standing::NotOnHistory,
+        None => Standing::Unknown,
     }
 }
 
@@ -187,8 +188,10 @@ pub fn check(added: &[AddedRecord]) -> Vec<Disagreement> {
     for r in added {
         let why = match &r.standing {
             Standing::Stands => continue,
-            Standing::NotOnHistory => {
-                "its commit is not on this head's history (or git could not say)".to_string()
+            Standing::Unknown => {
+                "its commit cannot be diffed against the head (unknown to this repository, \
+                 or git failed)"
+                    .to_string()
             }
             Standing::Invalidated(paths) => format!(
                 "commits since it touched what its gate measures ({})",

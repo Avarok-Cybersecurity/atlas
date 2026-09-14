@@ -6,7 +6,8 @@
 //! registry (each benchmark's `Sensitivity`) and, run from the checkout, the
 //! repository at the PR head — so each record's STANDING at that head is
 //! judged here too, by the same rule the gate check uses
-//! (`gate::record_standing`). The head is `HEAD` of the current directory's
+//! (`gate::record_standing`) — by content, never ancestry, because the
+//! repository squash-merges. The head is `HEAD` of the current directory's
 //! repository, or `RECORD_AGREEMENT_HEAD` when set.
 //!
 //! Exit 0 if they agree, 1 with a GitHub `::error` annotation per disagreement.
@@ -99,7 +100,7 @@ fn main() -> std::process::ExitCode {
         // A record that does not even parse cannot be shown to stand.
         let standing = parsed
             .as_ref()
-            .map_or(Standing::NotOnHistory, |r| standing_at(&root, &head, r));
+            .map_or(Standing::Unknown, |r| standing_at(&root, &head, r));
         println!(
             "  {a:<58} gate={benchmark_id} sha={git_sha} signer={signer} standing={standing:?}"
         );

@@ -119,8 +119,9 @@ pub fn record_standing(
     gate: &super::coverage::GateCoverage,
 ) -> Standing {
     match invalidating_paths(root, sha, &record.git_sha, gate) {
-        // Not an ancestor, or git failed: unchanged fail-closed doctrine.
-        None => Standing::NotOnHistory,
+        // git could not diff the two (a commit this repository does not
+        // have, or git failed): unchanged fail-closed doctrine.
+        None => Standing::Unknown,
         Some(paths) if paths.is_empty() => Standing::Stands,
         Some(paths) => {
             if super::closure::excuses(root, &paths, &record.closure) {
@@ -138,9 +139,11 @@ pub enum Standing {
     /// The diff from the record's commit to the head touches nothing this
     /// gate looks at (or the record's closure excuses what it touches).
     Stands,
-    /// The record's commit is not an ancestor of the head (or git could not
-    /// say): it was not measured on this history.
-    NotOnHistory,
+    /// git could not diff the record's commit against the head — a commit
+    /// this repository does not have, or git failed. Content is the rule,
+    /// never ancestry (this repository squash-merges), so "unknown commit"
+    /// is the only way a record fails to be judged at all.
+    Unknown,
     /// The diff touches these invalidating paths for the record's gate.
     Invalidated(Vec<String>),
 }
