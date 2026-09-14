@@ -8,6 +8,7 @@
 
 pub mod attnres;
 pub mod cache;
+pub mod expert_backend;
 pub mod kda;
 pub mod latent_moe;
 pub mod layer;
@@ -16,6 +17,7 @@ pub mod situ;
 
 pub use attnres::{AttnResHub, attnres_blend, attnres_mix, attnres_softmax_mix};
 pub use cache::{HybridCache, LayerCache, MlaKv};
+pub use expert_backend::{ExpertBackendKind, MmapExpertStore, PrefetchPlanner, kind_from_env};
 pub use kda::{KDA_L2_EPS, KdaConfig, KdaState, cuda_kda_enabled, kda_decode_token, kda_from};
 pub use latent_moe::{
     LatentMoeConfig, latent_moe_forward, mix_routed_experts, moe_from, sigmoid_topk,
