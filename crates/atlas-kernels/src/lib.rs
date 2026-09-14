@@ -36,8 +36,26 @@ pub use behavior_defaults::{
     DEFAULT_EFFORT_CAPPED_AT_CEILING, DEFAULT_MAX_INTER_TOOL_PROSE, DEFAULT_MAX_THINKING_BUDGET,
 };
 
+// The compiled target's SERVING defaults, baked from
+// `kernels/<hw>/HARDWARE.toml` `[defaults]`. The TYPE is hand-written here;
+// the `TARGET_DEFAULTS` and `TARGET_SM_COUNT` consts are generated into the
+// same `target_ptx.rs` the kernel registry lives in — one generated file, one
+// `include!`, one content hash, so there is exactly one thing that can go
+// stale and `ATLAS_KERNEL_SET_HASH` below already covers it.
+mod target_defaults;
+pub use target_defaults::TargetDefaults;
+
+// The paged-decode attention split-K policy (#928). Lives HERE, below
+// spark-model, because two crates need the same answer: the dispatch that
+// picks `num_splits` and the buffer arena that sizes the split-K workspace
+// (`spark-runtime`'s `sizes.rs`). One pure rule, two call sites — a second
+// copy is how the grid comes to index past the allocation.
+pub mod attn_splitk;
+pub use attn_splitk::{MAX_DECODE_SPLITS, SplitkPolicy};
+
 // Auto-generated: per-target PTX constants, ptx_modules() function,
-// and all_ptx_sets() for multi-target builds.
+// all_ptx_sets() for multi-target builds, and `TARGET_DEFAULTS` /
+// `TARGET_SM_COUNT`.
 // NOTE: cargo does NOT track this build-script-generated include! as a
 // recompile trigger, so when build.rs regenerates target_ptx.rs (e.g. the
 // module set changes) this lib can keep a STALE embedded set. Any edit to

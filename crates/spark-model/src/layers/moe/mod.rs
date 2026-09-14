@@ -299,7 +299,7 @@ pub struct MoeLayer {
     // targets/images that don't ship it — dispatch falls back to the dense
     // 3D-grid `moe_w8a8_grouped_gemm_k`.
     moe_w8a8_grouped_gemm_pm4_k: KernelHandle,
-    per_token_group_quant_fp8_k: KernelHandle,
+    per_token_group_quant_fp8_k: ops::Fp8ActQuant,
     /// Fused SiLU·mul + per-token-group FP8 quant (bit-identical replacement
     /// for the `silu_mul` → `per_token_group_quant_fp8` pair on the W8A8
     /// prefill down-path). Optional: handle 0 (e.g. a model shadowing

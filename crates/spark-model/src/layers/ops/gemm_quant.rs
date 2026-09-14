@@ -393,11 +393,33 @@ pub fn w8a16_gemm_pipelined(
 /// [M, K] FP8 E4M3 + a_scale [M, K/128] FP32. Matches vLLM's
 /// `per_token_group_quant_fp8`.
 ///
-/// Grid: (K/128, M, 1)  Block: (128, 1, 1)
+/// Launch geometry is target-specific because the KERNEL is, exactly as it is
+/// for `w8a16_gemm` above: [`Fp8ActQuant`] carries both handles and hands back
+/// the entry point and the grid TOGETHER, so a Hopper handle can never be
+/// launched on the shared kernel's grid. Block is 128 threads in both arms.
+///
+///   shared (`per_token_group_quant_fp8`)        Grid: (M, K/128, 1)
+///   hopper (`per_token_group_quant_fp8_hopper`) Grid: (M, ceil(K/128 / 8), 1)
+///
+/// WHICH of the two runs is `Fp8ActQuant::pick`, and it is width-dependent:
+/// the twin is 3.30-3.59x at prefill M and 0.76x-0.95x at M <= 25 for
+/// K in {5120, 6144} (round-16 receipt SS 2.1), so it takes the launch only
+/// when its own grid clears `2 x sm_count` CTAs. Rule and thresholds:
+/// `layers/ops/fp8_act_quant_floor.rs`. The route line is said ONCE PER
+/// BRANCH from here — this is the single launch site, so a serve log carries
+/// the positive at the first prefill width and the negative at the first
+/// decode width.
+///
+/// M on grid X (max 2^31-1) in both: grid Y stops at 65535 and MoE
+/// `total_expanded` exceeds it. Keep the Hopper arm in lockstep with
+/// `kernels/hopper/common/fp8_act_quant_hopper.cu` — it re-derives its own
+/// group span from `gridDim.y`, so any Y in `1..=K/128` is CORRECT and this
+/// one is merely the fast one. Both kernels emit bit-identical FP8 bytes and
+/// scales (#928; `native_fp8_act_quant_hopper_microtest`).
 #[allow(clippy::too_many_arguments)]
 pub fn per_token_group_quant_fp8(
     gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
+    quant: Fp8ActQuant,
     input_bf16: DevicePtr,
     output_fp8: DevicePtr,
     a_scale: DevicePtr,
@@ -405,10 +427,10 @@ pub fn per_token_group_quant_fp8(
     k: u32,
     stream: u64,
 ) -> Result<()> {
-    // Grid: (M, K/128, 1). Putting M on grid X (max 2^31-1) avoids the
-    // 65535 limit on grid Y for large MoE total_expanded counts.
-    KernelLaunch::new(gpu, kernel)
-        .grid([m, k / 128, 1])
+    let pick = quant.pick(m, k);
+    super::fp8_quant_log(&pick, m, k);
+    KernelLaunch::new(gpu, pick.kernel)
+        .grid(pick.grid)
         .block([128, 1, 1])
         .arg_ptr(input_bf16)
         .arg_ptr(output_fp8)
