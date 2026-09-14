@@ -4,7 +4,7 @@
 //! only. Decode must not D2H/H2D conv, recurrent, or the growing MLA KV.
 
 use anyhow::Result;
-use atlas_core::kimi_k3::{HybridCache, KdaConfig, KdaState, LayerCache, MixerKind};
+use atlas_core::kimi_k3::{HybridCache, KdaConfig, LayerCache};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::kda_cuda::KdaDeviceState;
