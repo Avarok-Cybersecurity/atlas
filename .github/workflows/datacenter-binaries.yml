@@ -1,0 +1,325 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Build the `spark` binary for the datacentre NVIDIA targets — Hopper
+# (sm_90a: H100/H200) and B200 (sm_100a: B200/GB200) — on a GPU-free hosted
+# runner, and upload it as an artifact.
+#
+# WHY. Renting an H100 by the hour and then compiling Atlas on it spends the
+# expensive resource on work that needs no GPU. `nvcc --ptx -arch=sm_90a` is a
+# cross-compile and the kernels travel as PTX embedded in the binary, so the
+# whole thing builds on `ubuntu-latest`. `kernel-compile.yml` already proves
+# nvcc reaches both arches there; this workflow carries that the rest of the
+# way to a linked, downloadable `spark`.
+#
+# The artifact is the fastest path to a binary on a rental box: download,
+# `chmod +x`, run — no toolchain, no cargo, no CUDA install. It is a raw
+# x86_64-linux binary, so the box still needs the NVIDIA driver, a CUDA 13
+# runtime and libnccl2 >= 2.28; docker/hopper/Dockerfile and
+# docker/b200/Dockerfile are the variant that carries those with it.
+#
+# NOT IN THE REQUIRED CHECK SET, and it must not be added to it while it
+# carries a `paths:` filter. Five workflows in this repo record the lesson:
+# a path-filtered required check is never created on a PR outside its paths,
+# so branch protection waits on a check that will never report and the PR is
+# unmergeable. `kernel-compile.yml` is the unfiltered, required half of this
+# story; this one is a filtered, advisory build.
+name: Datacenter binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      hw:
+        description: "Which datacentre target to build"
+        type: choice
+        options: [hopper, b200, both]
+        default: both
+      model:
+        description: >-
+          Kernel model target: '*' for every model under kernels/<hw>/, or one
+          of deepseek-v4-flash, nemotron-3-nano-30b-a3b,
+          nemotron-super-120b-a12b, qwen3.6-35b-a3b, qwen3-next-80b-a3b
+        type: string
+        default: "*"
+  # Filtered, unlike kernel-compile.yml, precisely BECAUSE this is advisory:
+  # a full release link of spark-server is far more expensive than that job's
+  # `cargo build -p atlas-kernels`, and nothing outside these trees can change
+  # what the datacentre binary contains.
+  pull_request:
+    paths:
+      - 'kernels/hopper/**'
+      - 'kernels/b200/**'
+      - 'crates/atlas-kernels/**'
+      - '.github/workflows/datacenter-binaries.yml'
+
+# A second push supersedes the first: this is a long job whose only outputs
+# are a pass/fail and an artifact for the tip.
+concurrency:
+  group: datacenter-binaries-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  # Resolve the dispatch inputs into a matrix. Done in a cheap job rather than
+  # with per-step `if:` guards inside the build so that "build only b200"
+  # SKIPS the hopper leg outright instead of starting a runner, installing a
+  # toolchain and then doing nothing — the same shape release-build.yml's
+  # `validate` job uses.
+  plan:
+    name: resolve targets
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      model: ${{ steps.plan.outputs.model }}
+    steps:
+      - id: plan
+        env:
+          # `inputs.*` is empty on pull_request, so both fall back here.
+          HW: ${{ inputs.hw }}
+          MODEL: ${{ inputs.model }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          hw="${HW:-both}"
+          case "$hw" in
+            hopper) sel='{"include":[{"hw":"hopper","arch":"sm_90a"}]}' ;;
+            b200)   sel='{"include":[{"hw":"b200","arch":"sm_100a"}]}' ;;
+            both)   sel='{"include":[{"hw":"hopper","arch":"sm_90a"},{"hw":"b200","arch":"sm_100a"}]}' ;;
+            *) echo "::error::unknown hw '$hw' — expected hopper | b200 | both"; exit 1 ;;
+          esac
+          # On a PR, build ONE model. kernels/<hw>/<model>/nvfp4 shadows a
+          # `common/` set of 171 sources that every model target shares, so
+          # the other four-fifths of a '*' build recompile the same files with
+          # the same flags and find nothing the first target did not —
+          # kernel-compile.yml's hopper and b200 jobs pick one model for
+          # exactly this reason. A dispatch defaults to '*' because there the
+          # artifact, not the signal, is the point.
+          model="${MODEL:-}"
+          if [ -z "$model" ]; then
+            if [ "$EVENT" = pull_request ]; then
+              model=nemotron-super-120b-a12b
+            else
+              model='*'
+            fi
+          fi
+          echo "matrix=$sel" >> "$GITHUB_OUTPUT"
+          echo "model=$model" >> "$GITHUB_OUTPUT"
+          echo "hw=$hw model=$model" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: spark ${{ matrix.hw }} (${{ matrix.arch }}, x86_64)
+    needs: [plan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    # The CUDA toolkit, not a GPU — the same container kernel-compile.yml
+    # runs nvcc in, so the two workflows cannot drift on toolkit version.
+    # 13.0.2-devel also ships libnccl-dev 2.28.3, which is what lets
+    # `--features cuda,nccl` LINK here with no extra apt work (checked against
+    # the published image config: NV_LIBNCCL_DEV_PACKAGE=libnccl-dev=2.28.3-1
+    # +cuda13.0). The step below asserts that rather than trusting it.
+    container: nvidia/cuda:13.0.2-devel-ubuntu24.04
+    timeout-minutes: 180
+    # Container jobs default to `sh -e {0}`, which on Ubuntu is dash: every
+    # `set -euo pipefail` below would die with "Illegal option -o pipefail".
+    # kernel-compile.yml learned this on its first red run.
+    defaults:
+      run:
+        shell: bash
+    env:
+      # A fresh container has no incremental state to reuse and incremental
+      # artefacts are the largest thing this build writes to a runner disk
+      # that starts with roughly 14 GB free.
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Disk budget
+        run: |
+          set -euo pipefail
+          # release-build.yml frees ~10 GB by deleting the preinstalled SDKs.
+          # THAT DOES NOT WORK FROM A CONTAINER JOB: /usr/share/dotnet and
+          # friends live on the runner host, which is not mounted here (only
+          # the workspace is, at /__w). The removals below are therefore
+          # expected to be no-ops; they are kept so this step stays correct if
+          # the job ever moves off `container:`, and the df lines make a
+          # disk-exhaustion failure legible instead of a mystery link error.
+          before=$(df -Pk . | awk 'NR==2 {print $4}')
+          for d in /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                   /usr/local/share/boost /usr/lib/jvm; do
+            if [ -d "$d" ]; then echo "removing $d"; rm -rf "$d" || true; fi
+          done
+          after=$(df -Pk . | awk 'NR==2 {print $4}')
+          echo "workspace free: $((before / 1024)) MiB -> $((after / 1024)) MiB"
+          df -h . | tail -1
+
+      - name: Install build deps
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          # cmake + libclang: bindgen (xgrammar). libibverbs/librdmacm:
+          # atlas-rdma compiles src/rdma_shim.c against <infiniband/verbs.h> on
+          # every non-macOS target. git: build scripts shell out to it.
+          apt-get install -y -qq --no-install-recommends \
+            curl ca-certificates build-essential pkg-config git cmake \
+            libclang-dev libibverbs-dev librdmacm-dev >/dev/null
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Install Rust
+        run: |
+          set -euo pipefail
+          # rustup via `run:` rather than a toolchain action: this repo pins
+          # every action by SHA and that requirement is transitive, so a
+          # third-party action here would widen the supply-chain surface to
+          # save three lines. Same step kernel-compile.yml runs.
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Check the toolchain the container actually provides
+        id: toolchain
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/cuda/bin:$PATH"
+          nvcc --version | tail -2
+          nvcc_ver=$(nvcc --version | sed -n 's/.*release \([0-9.]*\).*/\1/p' | tail -1)
+          # sm_90a needs CUDA >= 12.8 and sm_100a >= 12.8 as well; this repo
+          # targets 13.0 everywhere. Fail here, not 40 minutes into a build.
+          case "$nvcc_ver" in
+            13.*) ;;
+            *) echo "::error::nvcc $nvcc_ver — this repo targets CUDA 13.0"; exit 1 ;;
+          esac
+          # `--features nccl` makes spark-comm `#[link(name = "nccl")]`, so
+          # libnccl.so (the -dev symlink) must exist to LINK. The version that
+          # matters at RUN time is the host's, but a build against a <2.28
+          # header set would be a lie about ncclMemAlloc symmetric memory, so
+          # assert the floor the runtime images enforce.
+          nccl_ver=$(dpkg-query -W -f='${Version}' libnccl-dev 2>/dev/null || echo none)
+          echo "libnccl-dev: $nccl_ver"
+          [ "$nccl_ver" != none ] || {
+            echo "::error::libnccl-dev absent — the container no longer ships it; add an apt install step"; exit 1; }
+          dpkg --compare-versions "$nccl_ver" ge "2.28" || {
+            echo "::error::libnccl-dev $nccl_ver < 2.28 — symmetric memory APIs unavailable"; exit 1; }
+          { echo "nvcc=$nvcc_ver"; echo "nccl=$nccl_ver"; } >> "$GITHUB_OUTPUT"
+
+      - name: Build spark for ${{ matrix.hw }}
+        env:
+          # ★ ATLAS_SKIP_BUILD is NOT set. That is the whole point: the PTX
+          # for this arch has to be compiled into the binary.
+          ATLAS_TARGET_HW: ${{ matrix.hw }}
+          ATLAS_TARGET_MODEL: ${{ needs.plan.outputs.model }}
+          ATLAS_TARGET_QUANT: nvfp4
+          # The vendored cudarc tops out at 13.1 in its nvcc-version table and
+          # panics on anything newer; every workflow here pins the same value.
+          CUDARC_CUDA_VERSION: "13000"
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/cuda/bin:$PATH"
+          # CUTLASS_HOME / FLASHINFER_HOME are deliberately unset: both side
+          # objects are optional, and the CUTLASS NVFP4 wrappers are gated on
+          # SM120/SM121 support so they compile to nothing for sm_90a and
+          # sm_100a alike. Same choice as docker/{hopper,b200}/Dockerfile.
+          cargo build --release -p spark-server --bin spark \
+            --no-default-features --features cuda,nccl
+
+      - name: Confirm real PTX went into the binary
+        run: |
+          set -euo pipefail
+          # A build that silently skipped kernel compilation would otherwise
+          # pass this job green, which is the failure mode the whole
+          # kernel-compile family exists to remove. The sound assertion is
+          # EXISTENCE of a real generated registry, not absence of a stub:
+          # cargo keeps one out/ per build-script fingerprint and never prunes
+          # the old ones, so "no stub present" fails on a tree that was ever
+          # built with ATLAS_SKIP_BUILD=1.
+          real=$(find target -name 'target_ptx.rs' -exec head -1 {} + 2>/dev/null \
+                   | grep -c 'do not edit' || true)
+          if [ "${real:-0}" -eq 0 ]; then
+            echo "::error::every generated target_ptx.rs is build.rs's SKIP STUB — nvcc was never invoked."
+            exit 1
+          fi
+          ptx=$(find target -name '*.ptx' | wc -l)
+          echo "compiled $ptx PTX module(s) for ${{ matrix.arch }} across $real real target(s)"
+          if [ "$ptx" -lt 50 ]; then
+            echo "::error::only $ptx PTX modules — the build resolved too few targets"
+            exit 1
+          fi
+          echo "ptx_modules=$ptx" >> "$GITHUB_ENV"
+
+      - name: Record the binary
+        id: record
+        run: |
+          set -euo pipefail
+          bin=target/release/spark
+          [ -x "$bin" ] || { echo "::error::$bin missing after a green build"; exit 1; }
+          sha=$(sha256sum "$bin" | cut -d' ' -f1)
+          size=$(stat -c %s "$bin")
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+          # `spark --version` needs libcuda.so.1 at load time: the binary is
+          # linked against the toolkit's stub, whose SONAME is libcuda.so.1,
+          # and a runner with no driver has no such file. Point the loader at
+          # the stub under that name for this one invocation. It is a stub, so
+          # nothing beyond argument parsing could work — which is all
+          # `--version` does. Non-fatal either way: a binary that cannot print
+          # its version on a driverless host is not a build failure, and
+          # saying so is more useful than a red X.
+          mkdir -p /tmp/ldstub
+          # The stub lives at lib64/stubs in this image and at
+          # targets/<arch>/lib/stubs in others (scripts/ci_gpu_stubs.sh names
+          # the second); take whichever exists rather than guessing.
+          stub=$(find /usr/local/cuda -name libcuda.so -path '*stubs*' -print -quit 2>/dev/null || true)
+          [ -n "$stub" ] && ln -sf "$stub" /tmp/ldstub/libcuda.so.1
+          if ver=$(LD_LIBRARY_PATH=/tmp/ldstub:${LD_LIBRARY_PATH:-} "$bin" --version 2>&1); then
+            echo "version: $ver"
+          else
+            ver="(not runnable on this GPU-free runner: $(echo "$ver" | head -1))"
+            echo "::warning::spark --version did not run here — $ver"
+          fi
+
+          mkdir -p dist
+          cp "$bin" dist/spark
+          {
+            echo "atlas spark — datacentre build"
+            echo "git_sha:        ${{ github.sha }}"
+            echo "git_ref:        ${{ github.ref }}"
+            echo "built_by:       .github/workflows/datacenter-binaries.yml"
+            echo "run:            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "target_hw:      ${{ matrix.hw }}"
+            echo "target_arch:    ${{ matrix.arch }}"
+            echo "target_model:   ${{ needs.plan.outputs.model }}"
+            echo "target_quant:   nvfp4"
+            echo "host_target:    x86_64-unknown-linux-gnu"
+            echo "cargo_features: --no-default-features --features cuda,nccl"
+            echo "container:      nvidia/cuda:13.0.2-devel-ubuntu24.04"
+            echo "nvcc:           ${{ steps.toolchain.outputs.nvcc }}"
+            echo "libnccl-dev:    ${{ steps.toolchain.outputs.nccl }} (link time; the host needs libnccl2 >= 2.28 at run time)"
+            echo "ptx_modules:    ${ptx_modules:-unknown}"
+            echo "size_bytes:     $size"
+            echo "sha256:         $sha"
+            echo "spark_version:  $ver"
+            echo
+            echo "This binary carries ${{ matrix.arch }} PTX and nothing else."
+            echo "spark's arch preflight will REFUSE to run it on any other GPU."
+            echo "It needs, on the host: an NVIDIA driver for ${{ matrix.hw }}, a"
+            echo "CUDA 13 runtime, libnccl2 >= 2.28, and libibverbs/librdmacm."
+            echo "First boot should be:"
+            echo "  ./spark serve <model> --check-kernels --no-tui"
+          } > dist/BUILD-INFO.txt
+          ( cd dist && sha256sum spark > spark.sha256 )
+          cat dist/BUILD-INFO.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: spark-${{ matrix.hw }}-x86_64
+          retention-days: 14
+          path: |
+            dist/spark
+            dist/spark.sha256
+            dist/BUILD-INFO.txt
+          if-no-files-found: error

@@ -35,7 +35,25 @@ pub struct Unit {
     pub needs_confirmation: bool,
 }
 
+/// Wall time a self-served gate spends BEFORE its first sample: the child
+/// starts a server and loads a checkpoint, and neither is in the measured
+/// `frame.elapsed` a unit's estimate comes from. Measured 2026-09-13 on a
+/// GB10: ~40 s for a 27B NVFP4 checkpoint already in the page cache, and
+/// stack #1073's third campaign killed `video-fidelity` at 52 s — a 17 s bench
+/// under a `17 × 3` deadline — while its server was still loading. A cold
+/// 35B FP8 load from disk runs to several minutes, hence ten.
+pub const SERVE_ALLOWANCE: std::time::Duration = std::time::Duration::from_secs(600);
+
 impl Unit {
+    /// When to give up on this unit: the serve allowance, then the estimate
+    /// scaled by `timeout_factor` (≥ 1, `CertifyArgs::validate`). The ONE
+    /// spelling of the rule — the local loop and every fleet worker read it,
+    /// so a unit that fits on one box fits on every equivalent one.
+    pub fn deadline(&self, timeout_factor: f64) -> std::time::Duration {
+        SERVE_ALLOWANCE
+            + std::time::Duration::from_secs((self.secs() as f64 * timeout_factor) as u64)
+    }
+
     /// Seconds the scheduler plans with.
     pub fn secs(&self) -> u64 {
         match self.estimate {
@@ -76,24 +94,42 @@ pub fn remaining(
     Ok(chosen)
 }
 
-/// The benchmarks that produce a gate's evidence: its shards for a group, the
-/// gate itself otherwise.
-pub fn expand(gate_id: &'static str) -> Vec<&'static str> {
+/// Which members of a group a certification still owes — injected so the
+/// plan stays pure; the real one is [`gate::members_owed`].
+pub type Owed<'a> = &'a dyn Fn(&'static gate::group::BenchmarkGroup) -> Vec<&'static str>;
+
+/// Every member of a group: the answer when nothing is banked yet.
+pub fn all_members(group: &'static gate::group::BenchmarkGroup) -> Vec<&'static str> {
+    group.members.to_vec()
+}
+
+/// The benchmarks that produce a gate's evidence: the shards a group still
+/// owes, the gate itself otherwise.
+///
+/// A shard the gate would already accept at this commit is not re-measured:
+/// stack #1073's third campaign spent 90 node-minutes re-running three shards
+/// whose records were already banked, because the plan expanded a group to
+/// all four members regardless. `owed` is the gate's own answer to "which
+/// shards count", so what is skipped here is exactly what the verdict will
+/// take.
+pub fn expand(gate_id: &'static str, owed: Owed<'_>) -> Vec<&'static str> {
     match gate::group::find(gate_id) {
-        Some(group) => group.members.to_vec(),
+        Some(group) => owed(group),
         None => vec![gate_id],
     }
 }
 
 /// Units for these gates. `measured(id)` returns `(secs, recorded_at)` of the
-/// newest completed run of `id`, when there is one.
+/// newest completed run of `id`, when there is one; `owed` says which shards
+/// of a group still need a record.
 pub fn units(
     gates: &[&'static str],
     measured: &dyn Fn(&str) -> Option<(u64, u64)>,
+    owed: Owed<'_>,
 ) -> Result<Vec<Unit>> {
     let mut out = Vec::new();
     for gate_id in gates {
-        for id in expand(gate_id) {
+        for id in expand(gate_id, owed) {
             let Some(d) = registry::find(id) else {
                 bail!("{id} is a required gate but not a registered benchmark");
             };

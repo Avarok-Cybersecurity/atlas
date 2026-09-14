@@ -185,6 +185,7 @@ pub fn drive(
             root: shared.root.to_path_buf(),
         };
         let mut last_guard = std::time::Instant::now();
+        let mut poll = guard::Poll::default();
         loop {
             if handles.iter().all(|h| h.is_finished()) {
                 break;
@@ -212,16 +213,19 @@ pub fn drive(
                     Ok(_) => 0,
                     Err(_) => 2,
                 };
-                let bad = !matches!(
-                    result,
-                    Ok(guard::Drift::Unmoved) | Ok(guard::Drift::MovedHarmlessly { .. })
-                );
-                if bad {
-                    let mut b = board.lock().unwrap_or_else(|p| p.into_inner());
-                    if let Some(why) = b.campaign.guard(result) {
-                        shared.emit.say(&format!("ABORT: {why}"));
+                match poll.judge(result) {
+                    guard::Judgement::Fine => {}
+                    guard::Judgement::Blind(n) => shared.emit.say(&format!(
+                        "guard: could not answer ({n} of {} allowed in a row); retrying",
+                        guard::BLIND_TICKS_ALLOWED
+                    )),
+                    guard::Judgement::Stop(result) => {
+                        let mut b = board.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Some(why) = b.campaign.guard(result) {
+                            shared.emit.say(&format!("ABORT: {why}"));
+                        }
+                        shared.cancel.store(true, Ordering::SeqCst);
                     }
-                    shared.cancel.store(true, Ordering::SeqCst);
                 }
             }
             let _ = lock.beat(&running.join(","), guard_rc, super::lockfile::now_unix());
@@ -315,7 +319,7 @@ fn run_one(
     i: usize,
 ) -> RunOutcome {
     let emit = shared.emit;
-    let local_deadline = Duration::from_secs((unit.secs() as f64 * shared.timeout_factor) as u64);
+    let local_deadline = unit.deadline(shared.timeout_factor);
     let deadline = runner::deadline_for(local_deadline, node, BUILD_ALLOWANCE);
     emit.event(
         "start",

@@ -65,6 +65,10 @@ pub struct LockFile {
     pub superseded: Option<serde_json::Value>,
 }
 
+/// The statuses `release_as` writes when a campaign is over. With no live
+/// driver, a lock in one of these is reclaimable at once.
+pub const TERMINAL_STATUSES: [&str; 2] = ["campaign_done", "aborted"];
+
 /// The decision about an existing lock, made from its contents and two
 /// liveness facts supplied by the caller.
 #[derive(Debug, PartialEq, Eq)]
@@ -96,6 +100,18 @@ pub fn classify(existing: &LockFile, driver_alive: bool, now: u64) -> Existing {
     );
     if driver_alive {
         return Existing::Live(format!("{who}: its driver is still running"));
+    }
+    // A campaign that has SAID it is over holds nothing. `release_as` leaves
+    // the file for the post phase to read, and the heartbeat it carries is
+    // the last one the campaign wrote — fresh for an hour after a two-hour
+    // fleet run. Waiting that hour out for a lock whose owner is dead and
+    // whose status is terminal guards nobody; stack #1073's third campaign
+    // was refused by its second's `campaign_done` file.
+    if TERMINAL_STATUSES.contains(&existing.status.as_str()) {
+        return Existing::Stale(format!(
+            "{who}: driver gone and the campaign reported itself {}",
+            existing.status
+        ));
     }
     let beat = existing
         .campaign

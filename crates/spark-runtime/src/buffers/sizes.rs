@@ -3,9 +3,25 @@
 //! Byte sizes for the per-pass GPU buffer arena.
 
 use atlas_core::config::ModelConfig;
-use atlas_core::device::sm121::NUM_SMS;
+use atlas_kernels::attn_splitk;
 
 use super::sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
+
+/// The widest `M` the FUSED dense-FFN gate+up decode GEMM serves (#927), and
+/// therefore the row extent `ffn_gate_up_fused` is sized for.
+///
+/// 16 — the top of the decode band. The fused arm is a per-LAUNCH saving, and
+/// the launch overhead it removes is only material while the GEMM is
+/// weight-bandwidth bound; at the prefill widths the same two projections
+/// already run at 68.6% of FP8 peak (nsys round 13, M=4576), where a launch
+/// costs nothing measurable. 16 is also the largest batch H100 round 13
+/// captured (`Captured CUDA graph for batch size 16`).
+///
+/// DECLARED HERE because the arena is sized in this crate and the dispatch
+/// rule lives above it; `spark_model::layers::dense_ffn_gateup_fused` reads
+/// THIS constant rather than restating it, so the band and the buffer cannot
+/// disagree.
+pub const GATEUP_FUSED_MAX_M: usize = 16;
 
 /// Byte sizes of each buffer, derived from ModelConfig.
 #[derive(Debug, Clone)]
@@ -89,6 +105,20 @@ pub struct BufferSizes {
     /// quantizer's own `[M, K/128]` output stays in `ffn_act_scale` because the
     /// in-tree kernel reads that order. 0 for MoE models, like its siblings.
     pub ffn_act_scale_kmajor: usize,
+    /// `[GATEUP_FUSED_MAX_M, 2 * intermediate]` BF16 output of the FUSED
+    /// dense-FFN gate+up decode GEMM (#927) — the single cuBLASLt call at
+    /// `N = 2 * intermediate` whose row is `[gate | up]`. Its own buffer and
+    /// not a widened `expert_gate_out` because the fused arm serves the DECODE
+    /// band only (5..=16 rows, `layers/dense_ffn_gateup_fused.rs`): sizing it
+    /// for the band is ~2.2 MB at Qwen3.8-27B, sizing `expert_gate_out` for
+    /// `[max_batch_tokens, 2 * inter]` would be ~41 MB of prefill rows the arm
+    /// never writes.
+    ///
+    /// Allocated for every DENSE model rather than behind the lever: the arena
+    /// is built from `ModelConfig` and a target's serving levers are resolved
+    /// above this crate, and 2.2 MB is not worth a second resolution that
+    /// could disagree with the dispatch site's.
+    pub ffn_gate_up_fused: usize,
     /// FP8 block-scaled activation scratch for prefill projections (qkv / o /
     /// ssm-qkvz). Persistent so the W8A8+FP32-epilogue path stops doing a
     /// per-projection cuMemAlloc + cuStreamSynchronize + cuMemFree. 1 byte/elem.
@@ -306,14 +336,32 @@ impl BufferSizes {
         let mamba2_d_inner = config.mamba2_d_inner();
         let max_dim = h.max(mamba2_d_inner);
 
-        // Split-K decode workspace: NUM_SMS * (head_dim + 2) * sizeof(f32).
-        // Partials from split CTAs are stored as [o[head_dim], m, l] per split.
-        // Total slots = num_seqs * num_splits ≤ NUM_SMS, so this is constant ~48 KB.
-        // Read NUM_SMS rather than repeating its value: run_paged_decode derives
-        // num_splits from the same constant, so a literal here is a second source
-        // of truth that under-allocates — silently, into out-of-bounds device
-        // writes — the moment the constant moves.
-        let splitk_workspace = NUM_SMS as usize * (hd + 2) * 4;
+        // Split-K decode workspace: one `[o[head_dim], m, l]` F32 slot per
+        // (sequence, q head, split). The split-K kernel addresses
+        // `((seq * q_heads) + head) * num_splits + split`, so a short
+        // allocation here is an out-of-bounds DEVICE WRITE with no error —
+        // which is why the slot count comes from the same pure function the
+        // dispatch picks `num_splits` with (`atlas_kernels::attn_splitk`,
+        // #928) rather than from a literal restated here.
+        //
+        // The bound is `DecodeMetaLayout::rows()`, not the pinned max batch:
+        // rows is the widest batch the metadata upload accepts and therefore
+        // the real ceiling on `num_seqs`.
+        //
+        // Under the `legacy` policy — every target but Hopper — this is
+        // `sm_count` slots, i.e. the ~48 KB it has always been: that rule
+        // divides the SM count by `q_heads * reference batch`, so the product
+        // can never exceed it. Under `auto` it is `rows * q_heads * splits`
+        // (3.2 MB at the H100 27B shape), which buys the C=1 occupancy the
+        // whole lever is for.
+        let splitk_slots = attn_splitk::workspace_slots(
+            attn_splitk::policy_from_env(),
+            atlas_kernels::TARGET_SM_COUNT,
+            q_heads as u32,
+            decode_meta.rows() as u32,
+            (max_batch_size as u32).max(1),
+        ) as usize;
+        let splitk_workspace = splitk_slots * (hd + 2) * 4;
 
         // The residual stream is always BF16.
         let residual_elem = bf16;
@@ -416,6 +464,18 @@ impl BufferSizes {
         // Sized for the largest projection K = max(hidden, intermediate); the
         // dense_ffn prefill paths pass `h.max(inter)` to the requant kernels.
         // 0 for MoE (num_experts>0) — those never take the dense_ffn MMQ path.
+        // Fused gate+up decode GEMM output (#927): `[ceil16(MAX_M), 2*inter]`
+        // BF16. `ceil16` because `cublas_fp8_proj_prequant` hands cuBLASLt
+        // `ceil16(M)` and the phantom rows are WRITTEN — the same headroom
+        // `expert_gate_out` carries, for the same reason. Dense models only;
+        // MoE never reaches the dense-FFN arm.
+        let ffn_gate_up_fused = if config.num_experts == 0 {
+            let rows = GATEUP_FUSED_MAX_M.div_ceil(16) * 16;
+            rows * 2 * config.intermediate_size * bf16
+        } else {
+            0
+        };
+
         let (ffn_act_q8, ffn_act_a, ffn_act_scale, ffn_act_scale_kmajor) =
             if config.num_experts == 0 {
                 let kmax = h.max(config.intermediate_size);
@@ -599,6 +659,7 @@ impl BufferSizes {
             ffn_act_a,
             ffn_act_scale,
             ffn_act_scale_kmajor,
+            ffn_gate_up_fused,
             fp8_act,
             fp8_act_scale,
             fp8_act_scale_kmajor,
@@ -644,6 +705,7 @@ impl BufferSizes {
             + self.token_ids
             + self.ffn_act_q8
             + self.ffn_act_a
+            + self.ffn_gate_up_fused
             + self.ffn_act_scale
             + self.ffn_act_scale_kmajor
             + self.fp8_act

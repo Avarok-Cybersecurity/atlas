@@ -10,7 +10,7 @@ use spark_runtime::kv_cache::KvCacheDtype;
 // `gate` must be called through a real path, not through a `let`-bound
 // function pointer: coercing a `#[track_caller]` fn to a pointer inserts a shim
 // and the audit would name the shim instead of the dispatch site below.
-use super::init_arch_gates::{ArchProbes, gated as gate};
+use super::init_arch_gates::{ArchProbes, gated as gate, present};
 use super::types::{HeadGateActivation, Qwen3AttentionLayer};
 use crate::layers::FfnComponent;
 use crate::layers::fp8_calibration::Fp8KvCalibration;
@@ -188,14 +188,13 @@ impl Qwen3AttentionLayer {
                 "w8a16_gemm_t_m128",
                 "w8a16_gemm_t_m128",
             ),
-            // Spelled through `W8A8_PREFILL_KERNELS` (#915): preflight asks
-            // the backend for the SAME two kernels to predict, before the
-            // load, whether the Q/O FP8 prefill twins will be built.
-            per_token_group_quant_fp8_k: super::super::try_kernel(
-                gpu,
-                super::types_weights::W8A8_PREFILL_KERNELS[0].0,
-                super::types_weights::W8A8_PREFILL_KERNELS[0].1,
-            ),
+            // `Fp8ActQuant` probes the shared quantizer AND the Hopper
+            // twin, which only `kernels/hopper` ships, and carries both
+            // handles so a launcher can never pair one kernel's entry point
+            // with the other's grid. Every target still has the shared one.
+            // The shared name is the one `W8A8_PREFILL_KERNELS[0]` (#915)
+            // spells for preflight, which derives it from the same constants.
+            per_token_group_quant_fp8_k: crate::layers::ops::Fp8ActQuant::resolve(gpu),
             fp8_gemm_t_blockscaled_k: super::super::try_kernel(
                 gpu,
                 super::types_weights::W8A8_PREFILL_KERNELS[1].0,
@@ -267,6 +266,39 @@ impl Qwen3AttentionLayer {
                 "w8a16_gemv_batch4",
                 "w8a16_gemv_batch16_strided",
             ),
+            w8a16_gemm_m16_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemm_m16",
+                "w8a16_gemm_m16",
+            ),
+            w8a16_gemm_m16_strided_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemm_m16",
+                "w8a16_gemm_m16_strided",
+            ),
+            m16_tc: crate::layers::dense_ffn::m16_tc::m16_tc_levers().attn,
+            w8a16_gemv_ncol2_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol2",
+            ),
+            w8a16_gemv_ncol4_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol4",
+            ),
+            w8a16_gemv_ncol2_strided_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol2_strided",
+            ),
+            w8a16_gemv_ncol4_strided_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol4_strided",
+            ),
+            attn_ncol: super::attn_ncol_gemv::ncol_gemv_enabled()
+                .then(super::attn_ncol_gemv::ncol_gemv_width),
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemm_pipelined_k: super::super::try_kernel(
                 gpu,
@@ -470,6 +502,35 @@ impl Qwen3AttentionLayer {
                 | KvCacheDtype::Turbo3KTurbo8V => None,
                 _ => Some(gpu.kernel("paged_decode_fp8", "paged_decode_attn_reduce_fp8")?),
             },
+            // The Hopper split-K twins (#928). `try_kernel`, not `kernel`: the
+            // sources live only in `kernels/hopper/common`, so on gb10, b200,
+            // strix and metal the lookup returns a zero handle and the dispatch
+            // keeps its existing arm. Resolved unconditionally rather than
+            // behind the `attn_decode_splitk` lever because the FP8 twin is a
+            // drop-in for the gb10 pair whenever split-K runs at all, and
+            // probing on a lever the operator can flip at boot would make the
+            // handle set depend on the environment — which a CUDA graph
+            // capture must not.
+            paged_decode_splitk_hopper_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_fp8_splitk_hopper",
+                "paged_decode_attn_splitk_fp8_hopper",
+            )),
+            paged_decode_reduce_hopper_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_fp8_splitk_hopper",
+                "paged_decode_attn_reduce_fp8_hopper",
+            )),
+            paged_decode_splitk_bf16_hopper_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_bf16_splitk_hopper",
+                "paged_decode_attn_splitk_bf16_hopper",
+            )),
+            paged_decode_reduce_bf16_hopper_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_bf16_splitk_hopper",
+                "paged_decode_attn_reduce_bf16_hopper",
+            )),
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             // Gemma-4 rms-norm uses the absolute formula `out = x * rms * w`.
             rms_norm_f32_in_k: KernelHandle(0),
@@ -695,6 +756,7 @@ impl Qwen3AttentionLayer {
                 && crate::layers::fp8_calibration::dtype_runs_online_fp8_kv_calibration(kv_dtype)
             {
                 Some(Fp8KvCalibration::new(
+                    attn_layer_idx,
                     fp8_calibration_tokens,
                     config.fp8_kv_headroom,
                     gpu,

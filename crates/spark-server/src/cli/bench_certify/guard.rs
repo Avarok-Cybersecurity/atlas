@@ -37,6 +37,57 @@ pub enum Drift {
     PerfPathMoved { head: String, paths: Vec<String> },
 }
 
+/// How many consecutive checks may fail to ANSWER before a poller treats
+/// the silence as a verdict. The guard runs every [`super::GUARD_EVERY`]
+/// (60 s) while a unit is in flight, so this is ~five minutes of a mute
+/// network. Stack 1089308's third campaign was aborted 35 minutes in, three
+/// units at 60-80 %, by ONE `git fetch` that could not resolve github.com
+/// for a moment. "Could not check" is still never "safe": after this many
+/// misses in a row the campaign stops exactly as before — it just does not
+/// stop on the first one.
+pub const BLIND_TICKS_ALLOWED: u32 = 5;
+
+/// What a poller does with one guard result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Judgement {
+    /// The branch still describes the tree; carry on.
+    Fine,
+    /// The guard could not answer, `n` times in a row so far; carry on and
+    /// say so.
+    Blind(u32),
+    /// Hand this to the campaign: it stops.
+    Stop(Result<Drift, String>),
+}
+
+/// The blind budget, owned by whichever loop polls the guard. Pure.
+#[derive(Debug, Default)]
+pub struct Poll {
+    blind: u32,
+}
+
+impl Poll {
+    pub fn judge(&mut self, result: Result<Drift, String>) -> Judgement {
+        match result {
+            Ok(Drift::Unmoved) | Ok(Drift::MovedHarmlessly { .. }) => {
+                self.blind = 0;
+                Judgement::Fine
+            }
+            Ok(moved @ Drift::PerfPathMoved { .. }) => {
+                self.blind = 0;
+                Judgement::Stop(Ok(moved))
+            }
+            Err(e) => {
+                self.blind += 1;
+                if self.blind <= BLIND_TICKS_ALLOWED {
+                    Judgement::Blind(self.blind)
+                } else {
+                    Judgement::Stop(Err(format!("{e} — {} checks in a row", self.blind)))
+                }
+            }
+        }
+    }
+}
+
 /// Ask the two questions. `Err` means the guard could not answer.
 pub fn drift(git: &dyn Git, anchor: &str, remote_ref: &str) -> Result<Drift> {
     let head = git.fetch_head(remote_ref)?;
@@ -175,6 +226,32 @@ mod tests {
                 paths: vec!["crates/spark-model/src/lib.rs".into()]
             }
         );
+    }
+
+    /// A poller retries a mute guard for the blind budget and stops after it;
+    /// any answer resets the run. NEGATIVE CONTROL: a perf-path move stops at
+    /// once, budget or no budget, and the (budget + 1)-th miss stops too.
+    #[test]
+    fn a_poller_tolerates_a_mute_guard_for_the_budget_and_no_longer() {
+        let mut p = Poll::default();
+        for i in 1..=BLIND_TICKS_ALLOWED {
+            assert_eq!(p.judge(Err("dns".into())), Judgement::Blind(i));
+        }
+        assert_eq!(p.judge(Ok(Drift::Unmoved)), Judgement::Fine);
+        assert_eq!(p.judge(Err("dns".into())), Judgement::Blind(1));
+        for _ in 1..BLIND_TICKS_ALLOWED {
+            assert!(matches!(p.judge(Err("dns".into())), Judgement::Blind(_)));
+        }
+        match p.judge(Err("dns".into())) {
+            Judgement::Stop(Err(why)) => assert!(why.contains("6 checks in a row"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        let moved = Drift::PerfPathMoved {
+            head: "b".into(),
+            paths: vec!["crates/x.rs".into()],
+        };
+        let mut fresh = Poll::default();
+        assert_eq!(fresh.judge(Ok(moved.clone())), Judgement::Stop(Ok(moved)));
     }
 
     /// NEGATIVE CONTROL: "could not answer" is an error, never `Unmoved`.

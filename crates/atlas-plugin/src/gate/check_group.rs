@@ -65,29 +65,7 @@ pub(super) fn check_group(
             why_missing.push(why_member_missing(root, member, sha, member_gate));
             continue;
         };
-        // The same per-record rules `check_one` applies to a plain gate. A
-        // group member is a gate record like any other; being one quarter of
-        // the measurement does not exempt it from any of them.
-        if record.frame_status_failed() {
-            problems.push(format!(
-                "{member}: the run itself failed: {}",
-                record.verdict_reason
-            ));
-        }
-        if !record.dirty_paths.is_empty() {
-            problems.push(format!(
-                "{member}: measured from a dirty tree — {} uncommitted invalidation-set \
-                 file(s) when the run started ({}), so the binary was not {}",
-                record.dirty_paths.len(),
-                record.dirty_paths.join(", "),
-                record.git_sha
-            ));
-        }
-        if let Err(why) =
-            super::signing::verify_record(root, &path, &record.git_sha, record.recorded_at)
-        {
-            problems.push(format!("{member}: {why}"));
-        }
+        problems.extend(member_problems(root, member, &record, &path));
         // A member that ran but carries no per-subset tallies cannot be folded
         // in. Counting it as an empty contribution would shrink the union and
         // score the group over fewer samples than the draw.
@@ -203,6 +181,69 @@ fn covering_member(
                 && record_still_stands(root, sha, &r, gate))
             .then_some((r, path))
         })
+}
+
+/// The per-record rules `check_one` applies to a plain gate, asked of one
+/// member. A group member is a gate record like any other; being one quarter
+/// of the measurement does not exempt it from any of them. Empty means the
+/// record counts.
+fn member_problems(root: &Path, member: &str, record: &GateRecord, path: &Path) -> Vec<String> {
+    let mut problems = Vec::new();
+    if record.frame_status_failed() {
+        problems.push(format!(
+            "{member}: the run itself failed: {}",
+            record.verdict_reason
+        ));
+    }
+    if !record.dirty_paths.is_empty() {
+        problems.push(format!(
+            "{member}: measured from a dirty tree — {} uncommitted invalidation-set \
+             file(s) when the run started ({}), so the binary was not {}",
+            record.dirty_paths.len(),
+            record.dirty_paths.join(", "),
+            record.git_sha
+        ));
+    }
+    if let Err(why) = super::signing::verify_record(root, path, &record.git_sha, record.recorded_at)
+    {
+        problems.push(format!("{member}: {why}"));
+    }
+    problems
+}
+
+/// The members of `group` a certification at `sha` still OWES: those with no
+/// covering record, and those whose covering record would not count (failed
+/// frame, dirty tree, bad signature). The same two questions `check_group`
+/// asks, so a planner that skips the members not listed here skips exactly
+/// the shards the verdict will accept — a shard is re-measured only when the
+/// gate would refuse it.
+///
+/// A group with no readable baseline owes every member: nothing can be
+/// judged, so nothing is banked.
+pub fn members_owed(
+    root: &Path,
+    group: &'static super::group::BenchmarkGroup,
+    sha: &str,
+) -> Vec<&'static str> {
+    let Ok(baseline) = read_baseline(root, group.id) else {
+        return group.members.to_vec();
+    };
+    group
+        .members
+        .iter()
+        .copied()
+        .filter(|member| {
+            let Some(gate) =
+                super::coverage::find(member).or_else(|| super::coverage::find(group.id))
+            else {
+                return true;
+            };
+            match covering_member(root, &baseline, member, sha, gate) {
+                Some((record, path)) => !member_problems(root, member, &record, &path).is_empty(),
+                None => true,
+            }
+        })
+        .collect()
 }
 
 /// Why does `member` have no covering record? Names the perf-path files that

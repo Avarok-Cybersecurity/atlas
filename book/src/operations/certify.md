@@ -67,7 +67,9 @@ kept outside the default directory is selected with
 ## What it does, in order
 
 1. **Plan.** `gate::check_gates` at the anchor (HEAD) says which required gates
-   are not `Pass`; a benchmark group expands to its shards; every unit carries
+   are not `Pass`; a benchmark group expands to the shards it still owes —
+   `gate::members_owed`, the verdict's own answer, so a shard the gate already
+   accepts at the anchor is not re-measured; every unit carries
    the descriptor's `expected_secs`, refined by the newest completed run in
    `~/.atlas/runs` when there is one. The local order is the long shard sets
    first (a failure there must not wait five hours to be seen), then the
@@ -80,8 +82,10 @@ kept outside the default directory is selected with
    needs confirmation has `--yes`. Every refusal names its remedy.
 3. **Lock.** `.oracle_should_begin_cert` at the repo root, the v1 schema the
    O.R.A.C.L.E skill and the old shell driver wrote. A live lock (its driver
-   running, or a heartbeat under 30 minutes old) is refused by name; a dead one
-   is archived beside itself and reclaimed.
+   running, or a heartbeat under 30 minutes old) is refused by name; a dead
+   one is archived beside itself and reclaimed — at once when its status says
+   the campaign is over (`campaign_done`, `aborted`), however fresh its last
+   heartbeat.
 4. **Run.** Each unit is a child `spark benchmark run <id> --pull-request-gate
    --hardware <class> [--yes]` — the operator's own command line — with its
    stderr streamed and logged under `.certify/<anchor>/<id>.log`. The evidence
@@ -94,12 +98,17 @@ kept outside the default directory is selected with
    (`REMOTE/BRANCH`, default HEAD's upstream) is fetched and diffed against
    the anchor over `PERF_PATHS`. A docs-only push is harmless; a perf-path
    push aborts the campaign, names the files, and kills the running child —
-   twenty minutes lost instead of nine hours. A guard that cannot answer
-   aborts too: "could not check" is never "safe".
+   twenty minutes lost instead of nine hours. A guard that cannot answer is
+   retried — up to five checks in a row (~five minutes of a mute network),
+   each one logged — and then aborts: "could not check" is never "safe", but
+   one DNS blip is not a verdict either.
 6. **Policy.** A verdict `FAIL` stops the campaign unless `--keep-going`; a
    retryable harness failure (the child died without writing a record) is
-   retried once; a timeout (`expected × --timeout-factor` plus a build
-   allowance) is not; Ctrl-C cancels.
+   retried once; a timeout is not; Ctrl-C cancels. A unit's deadline is a
+   ten-minute serve allowance (the child starts a server and loads a
+   checkpoint before its first sample, none of which is in the measured
+   estimate) plus `expected × --timeout-factor`, plus a build allowance on a
+   node that has not built the anchor.
 7. **Last word.** The gate table for the anchor, then the record-agreement
    rule over every record a commit would add (one commit; one signer across
    the Speed class). `CERTIFIED` requires both.

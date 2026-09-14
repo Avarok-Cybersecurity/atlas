@@ -234,7 +234,7 @@ fn supervise(
                 killed = Some(RunOutcome::TimedOut);
             }
             if killed.is_some() {
-                terminate(&child);
+                terminate(&mut child);
                 kill_at = Some(Instant::now() + Duration::from_secs(30));
             }
         } else if kill_at.is_some_and(|t| Instant::now() > t) {
@@ -247,7 +247,8 @@ fn supervise(
 
 /// SIGTERM the child's whole process group (it may have started a server),
 /// falling back to the child alone.
-fn terminate(child: &std::process::Child) {
+#[cfg(unix)]
+fn terminate(child: &mut std::process::Child) {
     let pid = child.id();
     let _ = std::process::Command::new("kill")
         .args(["-TERM", "--", &format!("-{pid}")])
@@ -257,9 +258,30 @@ fn terminate(child: &std::process::Child) {
         .status();
 }
 
+/// No process groups here: the child alone, and at once — there is no
+/// graceful signal to send first. Certification runs on Linux boxes; this
+/// arm exists so the binary still builds where `spark serve` does.
+#[cfg(not(unix))]
+fn terminate(child: &mut std::process::Child) {
+    let _ = child.kill();
+}
+
+/// Put the child in its own process group so `terminate` can reach the
+/// server it starts. A no-op where process groups do not exist.
+fn in_own_group(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0)
+    }
+    #[cfg(not(unix))]
+    {
+        cmd
+    }
+}
+
 impl GateRunner for LocalChild {
     fn run(&mut self, unit: &Unit, ctx: &RunCtx, on_line: &mut dyn FnMut(&str)) -> RunOutcome {
-        use std::os::unix::process::CommandExt;
         let since = super::lockfile::now_unix();
         let _ = std::fs::create_dir_all(ctx.log_dir);
         let log_path = ctx.log_dir.join(format!("{}.log", unit.id));
@@ -276,14 +298,13 @@ impl GateRunner for LocalChild {
                 };
             }
         };
-        let child = std::process::Command::new(&self.exe)
-            .args(self.argv(unit, ctx))
+        let mut cmd = std::process::Command::new(&self.exe);
+        cmd.args(self.argv(unit, ctx))
             .current_dir(ctx.root)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .process_group(0)
-            .spawn();
+            .stderr(std::process::Stdio::piped());
+        let child = in_own_group(&mut cmd).spawn();
         let child = match child {
             Ok(c) => c,
             Err(e) => {
@@ -299,6 +320,6 @@ impl GateRunner for LocalChild {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "runner_tests.rs"]
 mod runner_tests;

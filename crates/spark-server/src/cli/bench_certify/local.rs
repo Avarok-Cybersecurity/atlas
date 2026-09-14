@@ -13,7 +13,7 @@ use super::args::CertifyArgs;
 use super::runner::{GateRunner, RunCtx, RunOutcome};
 use super::state::Campaign;
 use super::text::{describe, human};
-use super::{BUILD_ALLOWANCE, Emit, GUARD_EVERY, guard, lockfile, runner};
+use super::{Emit, GUARD_EVERY, guard, lockfile, runner};
 
 /// The serial loop: one unit at a time on this box.
 #[allow(clippy::too_many_arguments)]
@@ -42,6 +42,7 @@ pub(super) fn drive_local(
     let git = guard::GitCli { root: root.clone() };
     let guard_ref_for_loop = guard_ref.map(str::to_owned);
     let factor = args.timeout_factor;
+    let mut poll = guard::Poll::default();
 
     while let Some(i) = campaign.next_to_start() {
         let unit = campaign.units[i].clone();
@@ -58,9 +59,18 @@ pub(super) fn drive_local(
                 "guard",
                 serde_json::json!({ "unit": unit.id, "result": format!("{result:?}") }),
             );
-            if let Some(why) = campaign.guard(result) {
-                emit.say(&format!("ABORT: {why}"));
-                break;
+            match poll.judge(result) {
+                guard::Judgement::Fine => {}
+                guard::Judgement::Blind(n) => emit.say(&format!(
+                    "guard: could not answer ({n} of {} allowed in a row); retrying",
+                    guard::BLIND_TICKS_ALLOWED
+                )),
+                guard::Judgement::Stop(result) => {
+                    if let Some(why) = campaign.guard(result) {
+                        emit.say(&format!("ABORT: {why}"));
+                    }
+                    break;
+                }
             }
         }
         lock.beat(unit.id, guard_rc, lockfile::now_unix())?;
@@ -69,7 +79,7 @@ pub(super) fn drive_local(
             serde_json::json!({ "unit": unit.id, "expected_secs": unit.secs() }),
         );
         emit.say(&format!("▶ {} (expected ~{})", unit.id, human(unit.secs())));
-        let deadline = Duration::from_secs((unit.secs() as f64 * factor) as u64) + BUILD_ALLOWANCE;
+        let deadline = unit.deadline(factor);
         let ctx = RunCtx {
             root: &root,
             anchor: &anchor,
@@ -84,6 +94,7 @@ pub(super) fn drive_local(
             Arc::new(std::sync::Mutex::new(None));
         let stop_ticker = Arc::new(AtomicBool::new(false));
         let ticker = guard_ref_for_loop.as_ref().map(|r| {
+            let mut ticker_poll = guard::Poll::default();
             let (r, root, anchor) = (r.clone(), root.clone(), anchor.clone());
             let (cancel, seen, stop) = (cancel.clone(), drift_seen.clone(), stop_ticker.clone());
             std::thread::spawn(move || {
@@ -97,11 +108,7 @@ pub(super) fn drive_local(
                     }
                     waited = Duration::ZERO;
                     let result = guard::drift(&git, &anchor, &r).map_err(|e| format!("{e:#}"));
-                    let bad = !matches!(
-                        result,
-                        Ok(guard::Drift::Unmoved) | Ok(guard::Drift::MovedHarmlessly { .. })
-                    );
-                    if bad {
+                    if let guard::Judgement::Stop(result) = ticker_poll.judge(result) {
                         *seen.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
                         cancel.store(true, Ordering::SeqCst);
                         return;

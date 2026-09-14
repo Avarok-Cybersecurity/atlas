@@ -20,6 +20,9 @@ pub struct MockGpuBackend {
     max_allocation_bytes: AtomicUsize,
     launches: Mutex<Vec<MockLaunch>>,
     kernel_lookups: Mutex<Vec<(String, String)>>,
+    /// Modules a test declares NOT compiled into this build; every other
+    /// module is present, as it always was.
+    absent_modules: Mutex<std::collections::HashSet<String>>,
     /// Copy/sync shape counters. These exist so tests can assert the SHAPE of a
     /// bulk transfer, not just its bytes: the SSM snapshot spill regressed to
     /// 60 blocking `copy_d2h` calls (one full stream drain each, ~400 ms for
@@ -79,6 +82,7 @@ impl MockGpuBackend {
             max_allocation_bytes: AtomicUsize::new(usize::MAX),
             launches: Mutex::new(Vec::new()),
             kernel_lookups: Mutex::new(Vec::new()),
+            absent_modules: Mutex::new(std::collections::HashSet::new()),
             syncs: AtomicUsize::new(0),
             d2h_blocking: AtomicUsize::new(0),
             d2h_async: AtomicUsize::new(0),
@@ -202,6 +206,13 @@ impl MockGpuBackend {
     }
 
     /// Module/function pairs requested through `kernel`, in lookup order.
+    /// Declare a module absent from this build, the way a GB10 image lacks a
+    /// Hopper-owned twin: `has_module` answers false and a lookup against it
+    /// is the caller's mistake.
+    pub fn mark_module_absent(&self, module: &str) {
+        self.absent_modules.lock().insert(module.to_owned());
+    }
+
     pub fn kernel_lookups_snapshot(&self) -> Vec<(String, String)> {
         self.kernel_lookups.lock().clone()
     }
@@ -410,6 +421,10 @@ impl GpuBackend for MockGpuBackend {
 
     fn default_stream(&self) -> u64 {
         0
+    }
+
+    fn has_module(&self, module: &str) -> bool {
+        !self.absent_modules.lock().contains(module)
     }
 
     #[track_caller]
