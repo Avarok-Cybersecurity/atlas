@@ -48,6 +48,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              VACUOUS rather than PASS. Images above the server's encoder capacity report \
              UNMEASURED, never FAIL — that is a deployment setting, not a defect.",
     duration_hint: "~1-2 min",
+    expected_secs: 120,
     updated: "2026-08-14",
     needs_confirmation: false,
     // Vision correctness is a property of the ENGINE plus the checkpoint's own

@@ -48,9 +48,16 @@ pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              the floor VERDICT applies only to the Qwen3.6-27B submission checkpoints — \
              every other checkpoint is judged by its own BENCH.toml thresholds, with the \
              floor kept as table styling for reference. \
-             Downloads bfcl-eval into ~/.atlas/artifacts on first run.",
+             Downloads bfcl-eval into ~/.atlas/artifacts on first run. \
+             ★ CERTIFIED BY FOUR SHARDS (a..d) at one commit — a whole-draw record does \
+             not satisfy the gate (since 2026-09-13). ★ SCORED OPEN: cross-request SSM \
+             snapshot reuse is ON, not --hermetic, so the number is partition- and \
+             order-dependent — 12 of 995 samples are known to answer differently between \
+             the whole draw and its shards (#936); the run warns on each and reports the \
+             count as known_partition_sensitive. Floors are cut from the SHARDED aggregate.",
     duration_hint: "~1.7 h (measured)",
-    updated: "2026-08-15",
+    expected_secs: 6000,
+    updated: "2026-09-13",
     needs_confirmation: false,
     // Gates B and D. B runs on whichever model the PR targets; D on a dense 27B.
     // Qwen3.8-27B joined 2026-08-14 as the incoming dense gate subject, on the
@@ -87,6 +94,7 @@ pub const FULL_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              stays comparable — it just removes the sampling noise, at roughly 3.6× the wall \
              time.",
     duration_hint: "~12 h",
+    expected_secs: 43200,
     updated: "2026-08-15",
     needs_confirmation: false,
     // Gates B and D. B runs on whichever model the PR targets; D on a dense 27B.
@@ -120,9 +128,16 @@ pub const SUBSET_ECHOLP_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              golden one, which moves normalized_single_turn_score by ~1.8 points while leaving \
              overall_accuracy in the same place — so its scores are NOT comparable to the golden \
              draw's, and it carries its own baseline. It exists because the 35B's only recorded \
-             BFCL history is on this draw.",
+             BFCL history is on this draw. \
+             ★ CERTIFIED BY FOUR SHARDS (a..d) at one commit — a whole-draw record does \
+             not satisfy the gate (since 2026-09-13). ★ SCORED OPEN: cross-request SSM \
+             snapshot reuse is ON, not --hermetic, so the number is partition- and \
+             order-dependent — the 12 samples known (on the golden draw) to answer differently between \
+             a whole draw and its shards (#936) share its mechanism; the run warns on each and reports the \
+             count as known_partition_sensitive. Floors are cut from the SHARDED aggregate.",
     duration_hint: "~2.1 h (measured)",
-    updated: "2026-08-15",
+    expected_secs: 7500,
+    updated: "2026-09-13",
     needs_confirmation: false,
     intended_for: Some(crate::benchmark::ModelExpectation {
         families: &["qwen3.6-35b-a3b"],
@@ -161,13 +176,14 @@ pub const SUBSET_ECHOLP_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
 // is worse than none, because the whole reason the split exists is to get a leg
 // under half an hour.
 macro_rules! shard_descriptor {
-    ($konst:ident, $id:literal, $name:literal, $variant:expr, $index:literal, $base:ident, $hint:literal) => {
+    ($konst:ident, $id:literal, $name:literal, $variant:expr, $index:literal, $base:ident, $hint:literal, $secs:literal) => {
         pub const $konst: BenchmarkDescriptor = BenchmarkDescriptor {
             id: $id,
             name: $name,
             summary: $base.summary,
             detail: $base.detail,
             duration_hint: $hint,
+            expected_secs: $secs,
             updated: $base.updated,
             needs_confirmation: false,
             intended_for: $base.intended_for,
@@ -186,7 +202,8 @@ shard_descriptor!(
     Variant::Subset,
     0,
     SUBSET_DESCRIPTOR,
-    "~25 min (measured, one quarter of the draw)"
+    "~25 min (measured, one quarter of the draw)",
+    1500
 );
 shard_descriptor!(
     SUBSET_B,
@@ -195,7 +212,8 @@ shard_descriptor!(
     Variant::Subset,
     1,
     SUBSET_DESCRIPTOR,
-    "~25 min (measured, one quarter of the draw)"
+    "~25 min (measured, one quarter of the draw)",
+    1500
 );
 shard_descriptor!(
     SUBSET_C,
@@ -204,7 +222,8 @@ shard_descriptor!(
     Variant::Subset,
     2,
     SUBSET_DESCRIPTOR,
-    "~25 min (measured, one quarter of the draw)"
+    "~25 min (measured, one quarter of the draw)",
+    1500
 );
 shard_descriptor!(
     SUBSET_D,
@@ -213,7 +232,8 @@ shard_descriptor!(
     Variant::Subset,
     3,
     SUBSET_DESCRIPTOR,
-    "~25 min (measured, one quarter of the draw)"
+    "~25 min (measured, one quarter of the draw)",
+    1500
 );
 shard_descriptor!(
     ECHOLP_A,
@@ -222,7 +242,8 @@ shard_descriptor!(
     Variant::SubsetEcholp,
     0,
     SUBSET_ECHOLP_DESCRIPTOR,
-    "~31 min (one quarter of the draw)"
+    "~31 min (one quarter of the draw)",
+    1900
 );
 shard_descriptor!(
     ECHOLP_B,
@@ -231,7 +252,8 @@ shard_descriptor!(
     Variant::SubsetEcholp,
     1,
     SUBSET_ECHOLP_DESCRIPTOR,
-    "~31 min (one quarter of the draw)"
+    "~31 min (one quarter of the draw)",
+    1900
 );
 shard_descriptor!(
     ECHOLP_C,
@@ -240,7 +262,8 @@ shard_descriptor!(
     Variant::SubsetEcholp,
     2,
     SUBSET_ECHOLP_DESCRIPTOR,
-    "~31 min (one quarter of the draw)"
+    "~31 min (one quarter of the draw)",
+    1900
 );
 shard_descriptor!(
     ECHOLP_D,
@@ -249,5 +272,6 @@ shard_descriptor!(
     Variant::SubsetEcholp,
     3,
     SUBSET_ECHOLP_DESCRIPTOR,
-    "~31 min (one quarter of the draw)"
+    "~31 min (one quarter of the draw)",
+    1900
 );

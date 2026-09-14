@@ -57,6 +57,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              self-verdicts against gate-filled per-rung floors; a sweep with any vacuous \
              cell or request error never passes, whatever the floors say.",
     duration_hint: "~25–90 min",
+    expected_secs: 1560,
     updated: "2026-08-29",
     needs_confirmation: false,
     // A latency/throughput curve is meaningful for any served model; there is
@@ -106,6 +107,7 @@ pub const DFLASH2_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              point where speculation self-limits this measures the base engine and says so \
              rather than pretending otherwise.",
     duration_hint: "~25–90 min",
+    expected_secs: 300,
     updated: "2026-08-29",
     needs_confirmation: false,
     // The drafter is checkpoint-specific — a drafter trained on other weights

@@ -83,9 +83,9 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              the old Python probe printed was a buffering artifact and is not reproduced. \
              Because the warmup primes the Marconi prefix cache and per-session SSM snapshot, \
              the timed TTFT is the warm INTRA-SESSION figure (~50–100 ms) — use the TTFT gates \
-             for controlled cold/warm measurements. A measurement tool: it gates nothing and \
-             stores no baseline.",
+             for controlled cold/warm measurements. A measurement tool: it gates nothing.",
     duration_hint: "~1–3 min",
+    expected_secs: 150,
     updated: "2026-08-15",
     // A speed probe measures whatever it is pointed at; nothing here compares
     // against a checkpoint-specific number.

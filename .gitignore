@@ -163,3 +163,4 @@ bench/qwen4_exp/qwen4exp_forward_golden.npz
 # The certification-state oracle's per-checkout campaign lockfile, and its
 # .stale./.released. rotations. An interlock, never meant to travel.
 /.oracle_should_begin_cert*
+.certify/

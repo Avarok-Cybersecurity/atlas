@@ -34,6 +34,7 @@ pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              becomes one. Reports inline accuracy + OSL only — the SWE-bench Verified leg \
              of the official three-part gate is a separate live-agent workflow, not a leg.",
     duration_hint: "unrunnable — dataset TBD",
+    expected_secs: 0,
     updated: "2026-08-13",
     needs_confirmation: false,
     intended_for: Some(crate::benchmark::ModelExpectation {
