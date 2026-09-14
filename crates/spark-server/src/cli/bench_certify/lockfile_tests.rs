@@ -93,6 +93,33 @@ fn a_dead_driver_with_a_fresh_heartbeat_is_still_live() {
     assert!(err.contains("heartbeat 60 s ago"), "{err}");
 }
 
+/// A finished campaign's lock is reclaimable the moment its driver is gone,
+/// however fresh its last heartbeat; a LIVE driver still holds it.
+#[test]
+fn a_finished_campaign_with_a_dead_driver_is_reclaimed_at_once() {
+    for status in TERMINAL_STATUSES {
+        let root = tmp();
+        let now = 1_789_313_858;
+        {
+            let mut g =
+                LockGuard::claim(&root, owner("first"), campaign(Some(7)), now, &|_| true).unwrap();
+            g.beat("kat-equality-gate", 0, now).unwrap();
+            g.release_as(status, now).unwrap();
+        }
+        // NEGATIVE CONTROL: the driver pid still answers — refused, whatever
+        // the file says.
+        let err = LockGuard::claim(&root, owner("second"), campaign(None), now + 5, &|_| true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("still running"), "{status}: {err}");
+        let g = LockGuard::claim(&root, owner("second"), campaign(Some(9)), now + 5, &|_| {
+            false
+        })
+        .unwrap_or_else(|e| panic!("{status}: {e}"));
+        assert_eq!(g.file().owner.session_id, "second");
+    }
+}
+
 #[test]
 fn a_dead_driver_with_an_old_heartbeat_is_reclaimed_and_archived() {
     let root = tmp();

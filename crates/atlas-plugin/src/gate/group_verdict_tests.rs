@@ -444,3 +444,42 @@ fn four_clean_distinct_shards_still_pass() {
         check_one(root, "bfcl-subset", SHA)
     );
 }
+
+/// `members_owed` is the planner's question — "which shards must a campaign
+/// still run?" — and its answer is exactly the set the verdict would refuse:
+/// a missing member, and a present member whose record does not count.
+/// Anything else being skipped would leave the group un-certifiable; anything
+/// else being run would re-measure a shard the gate already accepts.
+#[test]
+fn members_owed_names_exactly_the_shards_the_verdict_would_refuse() {
+    let group = super::group::find("bfcl-subset").unwrap();
+    let dir = scaffold();
+    let root = dir.path();
+    // Nothing banked: every member.
+    assert_eq!(members_owed(root, group, SHA), group.members);
+    // Four clean shards: nothing owed, and the verdict agrees.
+    four_shards(root, 1_785_891_000);
+    assert!(members_owed(root, group, SHA).is_empty());
+    assert!(matches!(
+        check_one(root, "bfcl-subset", SHA),
+        GateStatus::Pass
+    ));
+    // One shard removed: that one, and only that one.
+    let c = records_newest_first(root, "bfcl-subset-c").remove(0);
+    std::fs::remove_file(&c).unwrap();
+    assert_eq!(members_owed(root, group, SHA), ["bfcl-subset-c"]);
+    // NEGATIVE CONTROL: a member that is PRESENT but would be refused (a
+    // failed frame) is still owed — presence is not enough, the record must
+    // count.
+    rewrite_member(root, "bfcl-subset-b", |r| {
+        r.frame_status = crate::result::RunStatus::Failed;
+    });
+    assert_eq!(
+        members_owed(root, group, SHA),
+        ["bfcl-subset-b", "bfcl-subset-c"]
+    );
+    assert!(matches!(
+        check_one(root, "bfcl-subset", SHA),
+        GateStatus::Missing(_)
+    ));
+}
