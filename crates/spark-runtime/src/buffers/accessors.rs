@@ -138,6 +138,18 @@ impl BufferArena {
     pub fn ffn_act_scale(&self) -> DevicePtr {
         self.ffn_act_scale
     }
+    /// `[ceil16(GATEUP_FUSED_MAX_M), 2 * intermediate]` BF16 output of the
+    /// FUSED dense-FFN gate+up decode GEMM (#927): a row is `[gate | up]`,
+    /// gate at column 0 and up at column `intermediate`. NULL for MoE.
+    pub fn ffn_gate_up_fused(&self) -> DevicePtr {
+        self.ffn_gate_up_fused
+    }
+    /// Allocated byte size of `ffn_gate_up_fused` — the bound the fused arm
+    /// checks the padded `[ceil16(m), 2*inter]` extent against before it can
+    /// select itself.
+    pub fn ffn_gate_up_fused_bytes(&self) -> usize {
+        self.sizes.ffn_gate_up_fused
+    }
     /// Allocated byte size of `ffn_act_a` (debug bounds-check at call sites).
     pub fn ffn_act_a_bytes(&self) -> usize {
         self.sizes.ffn_act_a

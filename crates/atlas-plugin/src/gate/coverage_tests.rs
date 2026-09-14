@@ -124,7 +124,7 @@ fn an_ancestor_record_covers_head_until_a_perf_path_changes() {
     let sha_a = scratch_repo::head(root);
 
     for id in REQUIRED_GATES {
-        plant(root, id, &sha_a, 1_785_891_382, "PASS");
+        plant_required(root, id, &sha_a, 1_785_891_382, "PASS");
     }
 
     // A docs-only commit afterwards: every record still covers head.
@@ -186,8 +186,8 @@ fn the_newest_record_is_the_one_measured_last_not_the_higher_sha() {
     scratch_repo::commit(root, "docs/b.md", "b", "docs only");
     let head = scratch_repo::head(root);
 
-    std::fs::create_dir_all(gate_dir(root, "bfcl-subset")).unwrap();
-    write_baseline(root, "bfcl-subset", &bfcl_baseline());
+    std::fs::create_dir_all(gate_dir(root, "ssm-state-poisoning-gate")).unwrap();
+    write_baseline(root, "ssm-state-poisoning-gate", &bfcl_baseline());
 
     // Same UTC day for both, so only the within-day tie is under test. The
     // PASS is the EARLIER measurement and gets the lexically GREATER sha —
@@ -198,10 +198,16 @@ fn the_newest_record_is_the_one_measured_last_not_the_higher_sha() {
     } else {
         (&sha_b, &sha_a)
     };
-    plant(root, "bfcl-subset", earlier_pass, day, "PASS");
-    plant(root, "bfcl-subset", later_fail, day + 3_600, "FAIL");
+    plant(root, "ssm-state-poisoning-gate", earlier_pass, day, "PASS");
+    plant(
+        root,
+        "ssm-state-poisoning-gate",
+        later_fail,
+        day + 3_600,
+        "FAIL",
+    );
 
-    let ordered = records_newest_first(root, "bfcl-subset");
+    let ordered = records_newest_first(root, "ssm-state-poisoning-gate");
     assert!(
         ordered[0].to_string_lossy().contains(later_fail.as_str()),
         "the record measured last must come first, got {ordered:?}"
@@ -210,7 +216,7 @@ fn the_newest_record_is_the_one_measured_last_not_the_higher_sha() {
     // decides the verdict.
     assert!(record_covers(root, &head, earlier_pass, &any_gate()));
     assert!(record_covers(root, &head, later_fail, &any_gate()));
-    match &check_gates(root, &head)["bfcl-subset"] {
+    match &check_gates(root, &head)["ssm-state-poisoning-gate"] {
         GateStatus::Fail(reasons) => assert_eq!(reasons, &["run verdict is not PASS: ok"]),
         other => panic!("a superseded PASS must not speak for the branch, got {other:?}"),
     }
@@ -296,18 +302,19 @@ fn a_baseline_entry_with_no_thresholds_is_not_a_pass() {
 fn a_failed_frame_fails_the_gate_even_with_passing_numbers() {
     let dir = tempdir::Dir::new();
     let root = dir.path();
-    std::fs::create_dir_all(gate_dir(root, "bfcl-subset")).unwrap();
-    write_baseline(root, "bfcl-subset", &bfcl_baseline());
+    std::fs::create_dir_all(gate_dir(root, "ssm-state-poisoning-gate")).unwrap();
+    write_baseline(root, "ssm-state-poisoning-gate", &bfcl_baseline());
     let mut metrics = BTreeMap::new();
     metrics.insert("overall_accuracy".to_string(), 90.0);
     let mut record = run_record(metrics.clone(), Verdict::fail("scoring crashed"));
     record.frame = frame(RunStatus::Failed, metrics, Verdict::fail("scoring crashed"));
     let mut gate = GateRecord::from_run(&record, hw(), SHA.into(), Vec::new(), None).unwrap();
+    gate.benchmark_id = "ssm-state-poisoning-gate".to_string();
     gate.recorded_at = 1_785_891_382;
     write_record(root, &gate).unwrap();
 
     let gates = check_gates(root, SHA);
-    match &gates["bfcl-subset"] {
+    match &gates["ssm-state-poisoning-gate"] {
         GateStatus::Fail(reasons) => {
             assert_eq!(reasons, &["the run itself failed: scoring crashed"])
         }

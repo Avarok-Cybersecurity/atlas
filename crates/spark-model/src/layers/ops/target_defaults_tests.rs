@@ -22,27 +22,57 @@
 use super::*;
 use atlas_kernels::TargetDefaults;
 
-/// `kernels/gb10/HARDWARE.toml` `[defaults]` — field for field
-/// `build_defaults::baseline`, which is what makes GB10's "unchanged" claim
-/// checkable rather than argued.
+/// `kernels/gb10/HARDWARE.toml` `[defaults]`.
+///
+/// It matched `build_defaults::baseline` field for field until #917: the two
+/// `w8a8_prefill_max_m_*` rows are the first values GB10 declares in order to
+/// DIFFER from the baseline rather than to restate it, on a served receipt
+/// (W8A8 3343.3 ms -> W8A16 2560.4 ms at M=949, -23.4%). Everything else still
+/// agrees on purpose, and `gb10_declares_the_baseline_apart_from_the_measured_w8a8_ceiling`
+/// in `atlas-kernels/tests` pins exactly that split.
 const GB10: TargetDefaults = TargetDefaults {
     hw: "gb10",
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: false,
+    gdn_prefill_tc: false,
+    ssm_ba_gates_hopper: false,
+    fp8_act_quant_hopper: false,
     decode_split_silu: true,
+    attn_decode_splitk: "legacy",
+    ffn_m16_tc: false,
+    attn_m16_tc: false,
+    lm_head_m16_tc: false,
+    attn_ncol_gemv: false,
+    ffn_gateup_fused: false,
+    w8a8_prefill_max_m_widening: 64,
+    w8a8_prefill_max_m_narrowing: 384,
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]`.
 ///
-/// One row differs from GB10's: the batched GDN recurrence, ON, on a Hopper
-/// receipt (+6% on the serve, md5-identical output to the per-sequence
-/// launches). The head band deliberately holds at the frozen 8 — see
-/// `atlas-kernels/tests/target_defaults.rs`.
+/// Four rows differ from GB10's, each on its own Hopper receipt: the batched
+/// GDN recurrence (ON, +6% on the serve, md5-identical output to the
+/// per-sequence launches), `gdn_prefill_tc`, which round 13 added,
+/// `ssm_ba_gates_hopper`, which round 14 did, and the FP8 activation-quant
+/// twin, which round 16 did (#928); its source only `kernels/hopper` carries.
+/// The head band is 16 — see `atlas-kernels/tests/target_defaults.rs`.
 const HOPPER: TargetDefaults = TargetDefaults {
     hw: "hopper",
-    lm_head_batchm_max: 8,
+    lm_head_batchm_max: 16,
     ssm_batched_recurrent: true,
+    gdn_prefill_tc: true,
+    ssm_ba_gates_hopper: true,
+    fp8_act_quant_hopper: true,
     decode_split_silu: true,
+    attn_decode_splitk: "auto",
+    ffn_m16_tc: false,
+    attn_m16_tc: true,
+    lm_head_m16_tc: true,
+    attn_ncol_gemv: false,
+    ffn_gateup_fused: true,
+    // No cap: W8A8 is 2.0-3.1x over W8A16 at every M measured on H100.
+    w8a8_prefill_max_m_widening: u32::MAX,
+    w8a8_prefill_max_m_narrowing: u32::MAX,
 };
 
 fn with(defaults: &TargetDefaults, env: &[(&str, &str)]) -> TargetLevers {
@@ -80,8 +110,25 @@ fn hopper_resolves_its_recipe_from_an_empty_environment() {
          TARGET — an ` (env)` tag here would mean the log credits a prefix \
          nobody typed"
     );
+    assert!(
+        l.gdn_prefill_tc.value,
+        "round 13: the tensor-core GDN prefill family is the H100 default — \
+         C=1 TTFT -39.6%/-44.7%, C=16 aggregate +21.5%/+31.4%, coherency 4/4, \
+         determinism 8/8 x 3"
+    );
+    assert!(
+        l.ssm_ba_gates_hopper.value,
+        "the BA-gates twin is bit-identical to its parent, so it ships on: its \
+         worst case is a null and off it re-reads every activation row 96 \
+         times, once per BA output"
+    );
     assert!(l.decode_split_silu.value);
-    assert_eq!(l.lm_head_batchm_max.value, 8);
+    assert!(
+        l.ssm_ba_gates_hopper.value,
+        "round 14: the BA-gates twin is bit-identical to its parent, so it is \
+         on without an accuracy receipt and its worst case is a null"
+    );
+    assert_eq!(l.lm_head_batchm_max.value, 16);
     assert_eq!(l.hw, "hopper");
 }
 
@@ -95,11 +142,28 @@ fn gb10_with_an_empty_environment_is_todays_behaviour() {
     let l = empty(&GB10);
     assert_eq!(l.lm_head_batchm_max.value, DENSE_GEMV_BATCHM_DECODE_MAX_M);
     assert!(!l.ssm_batched_recurrent.value);
+    assert!(
+        !l.gdn_prefill_tc.value,
+        "the scalar GDN prefill spine stays GB10's default. Round 13 promoted \
+         the tensor-core family on HOPPER, on an H100 receipt; a 48-SM GB10 is \
+         the part the 48-CTA grid nearly fills, so that number does not \
+         transfer by argument and this row waits for a GB10 A/B"
+    );
+    assert!(
+        !l.ssm_ba_gates_hopper.value,
+        "GB10 does not compile the twin at all — the row is declared so the \
+         lever list is one list, not to change anything"
+    );
     assert!(l.decode_split_silu.value);
+    // The one intended GB10 divergence: the measured W8A8 prefill ceiling.
+    assert_eq!(l.w8a8_prefill_max_m_widening.value, 64);
+    assert_eq!(l.w8a8_prefill_max_m_narrowing.value, 384);
     for source in [
         l.lm_head_batchm_max.source,
         l.ssm_batched_recurrent.source,
         l.decode_split_silu.source,
+        l.w8a8_prefill_max_m_widening.source,
+        l.w8a8_prefill_max_m_narrowing.source,
     ] {
         assert_eq!(source, Source::Target);
     }
@@ -140,6 +204,31 @@ fn a_declared_off_lever_is_still_armed_by_the_bare_one() {
     let l = with(&GB10, &[("ATLAS_SSM_BATCHED_RECURRENT", "1")]);
     assert!(l.ssm_batched_recurrent.value);
     assert!(l.ssm_batched_recurrent.from_env());
+}
+
+/// ⚠️ THE POLARITY CHANGE. `ATLAS_GDN_PREFILL_TC` was PRESENCE-gated, so
+/// `=0` used to arm the tensor-core spine; under the 2026-09-11 grammar it
+/// disarms it. Every recipe that ever set this variable set it to `1`
+/// (`GDN-PREFILL-ATTRIBUTION.md`'s A/B), so no existing recipe changes
+/// meaning — but a `=0` that silently re-armed the arm would be an accuracy
+/// change nobody typed, which is what this pins. Since round 13 flipped
+/// `kernels/hopper` to true this spelling is also the FAMILY kill switch —
+/// spine and both remnant twins, which read the same resolved bit
+/// (`ssm_gdn_remnants_tests::the_twins_read_the_spines_resolved_lever`).
+#[test]
+fn the_tensor_core_prefill_spine_reads_zero_as_off_not_as_present() {
+    for off in ["0", "false", "off", "no", "OFF", " 0 "] {
+        let l = with(&GB10, &[("ATLAS_GDN_PREFILL_TC", off)]);
+        assert!(
+            !l.gdn_prefill_tc.value,
+            "`{off}` must disarm the spine, not arm it by being present"
+        );
+        assert!(l.gdn_prefill_tc.from_env());
+    }
+    // …and the bare `=1` the A/B recipes use still arms it.
+    let on = with(&GB10, &[("ATLAS_GDN_PREFILL_TC", "1")]);
+    assert!(on.gdn_prefill_tc.value);
+    assert!(on.gdn_prefill_tc.from_env());
 }
 
 /// The legacy PRESENCE kill switch is unchanged and outranks the declaration.
@@ -201,7 +290,13 @@ fn the_summary_line_names_every_lever_and_flags_the_environment() {
         "sm_count=",
         "lm_head_batchm_max=12 (env)",
         "ssm_batched_recurrent=on",
+        "gdn_prefill_tc=on",
+        "ssm_ba_gates_hopper=on",
+        "fp8_act_quant_hopper=on",
         "decode_split_silu=on",
+        "attn_decode_splitk=auto",
+        "ffn_gateup_fused=on",
+        "w8a8_prefill_max_m=max/max",
     ] {
         assert!(line.contains(field), "missing `{field}` in:\n{line}");
     }
@@ -209,7 +304,69 @@ fn the_summary_line_names_every_lever_and_flags_the_environment() {
     // always means a prefix was typed.
     let clean = format_levers(&empty(&HOPPER));
     assert!(!clean.contains("(env)"), "{clean}");
+    // GB10 keeps the pre-#928 split rule and says so.
+    assert!(
+        format_levers(&empty(&GB10)).contains("attn_decode_splitk=legacy"),
+        "{}",
+        format_levers(&empty(&GB10))
+    );
 }
+
+/// The split-K policy row (#928): declaration first, environment second, and
+/// the resolved value printed in the spelling that reproduces it.
+///
+/// The `=0` rendering is deliberate and is the one an A/B log carries:
+/// `ATLAS_ATTN_DECODE_SPLITK=0` resolves to `Pinned(1)` — one split IS no
+/// split-K — so the line reads `attn_decode_splitk=1 (env)`. The label is the
+/// RESOLVED policy, not the string that was typed, because the number the
+/// grid used is the thing a reader needs.
+#[test]
+fn the_split_k_policy_resolves_and_reports_like_every_other_lever() {
+    assert_eq!(
+        empty(&HOPPER).attn_decode_splitk.value,
+        SplitkPolicy::Auto,
+        "an H100 serve with an empty environment must reach the split count \
+         that fills 132 SMs — the whole content of #928"
+    );
+    assert_eq!(
+        empty(&GB10).attn_decode_splitk.value,
+        SplitkPolicy::Legacy,
+        "GB10 is unchanged"
+    );
+    assert_eq!(empty(&HOPPER).attn_decode_splitk.source, Source::Target);
+
+    // The A/B an H100 round runs against the new default.
+    let off = with(&HOPPER, &[("ATLAS_ATTN_DECODE_SPLITK", "0")]);
+    assert_eq!(off.attn_decode_splitk.value, SplitkPolicy::Pinned(1));
+    assert_eq!(off.attn_decode_splitk.source, Source::Env);
+    assert!(
+        format_levers(&off).contains("attn_decode_splitk=1 (env)"),
+        "{}",
+        format_levers(&off)
+    );
+
+    // …and the one that arms it on a target that declares `legacy`.
+    let on = with(&GB10, &[("ATLAS_ATTN_DECODE_SPLITK", "auto")]);
+    assert_eq!(on.attn_decode_splitk.value, SplitkPolicy::Auto);
+    assert!(
+        format_levers(&on).contains("attn_decode_splitk=auto (env)"),
+        "{}",
+        format_levers(&on)
+    );
+
+    // A typo keeps the DECLARATION rather than guessing: silently resolving a
+    // misspelling to `auto` would arm a geometry change on a card with no
+    // receipt for it.
+    let typo = with(&HOPPER, &[("ATLAS_ATTN_DECODE_SPLITK", "atuo")]);
+    assert_eq!(typo.attn_decode_splitk.value, SplitkPolicy::Auto);
+    assert_eq!(typo.attn_decode_splitk.source, Source::Target);
+}
+
+// The per-lever seam for `fp8_act_quant_hopper` (#928, round 16). A child
+// module, not a sibling, so the row's declaration, override and reported
+// spelling sit together and share the fixtures above instead of copying them.
+#[path = "target_defaults_actquant_tests.rs"]
+mod actquant;
 
 /// A build that read no HARDWARE.toml at all has an empty `hw`, and the line
 /// must still be readable rather than `target defaults (): …`.
@@ -235,3 +392,26 @@ fn the_process_resolution_reads_this_binarys_declaration() {
         "one table, one resolution"
     );
 }
+
+// The M16 tensor-core family (#927): two rows, one kernel, one umbrella. A
+// child module, not a sibling, so the rows share the fixtures above instead of
+// copying them.
+#[path = "target_defaults_m16_tests.rs"]
+mod m16;
+
+/// Hopper's widened band, resolved from the declaration alone — the last line
+/// of the external H100 recipe to become structural.
+#[test]
+fn hopper_resolves_the_widened_head_band_from_its_declaration() {
+    let h = empty(&HOPPER);
+    assert_eq!(h.lm_head_batchm_max.value, 16);
+    assert!(!h.lm_head_batchm_max.from_env());
+    assert_eq!(empty(&GB10).lm_head_batchm_max.value, BASELINE_BATCHM_MAX);
+    assert!(format_levers(&h).contains("lm_head_batchm_max=16"));
+    assert!(!format_levers(&h).contains("lm_head_batchm_max=16 (env)"));
+}
+/// The `ffn_gateup_fused` row (#927) — its own file so each lever's
+/// declaration, override and reported spelling stay in one place, and so this
+/// one stays under the house 500-line cap.
+#[path = "target_defaults_gateup_tests.rs"]
+mod gateup;

@@ -31,7 +31,18 @@ pub(crate) struct Defaults {
     pub hw: String,
     pub lm_head_batchm_max: u32,
     pub ssm_batched_recurrent: bool,
+    pub gdn_prefill_tc: bool,
+    pub ssm_ba_gates_hopper: bool,
+    pub fp8_act_quant_hopper: bool,
     pub decode_split_silu: bool,
+    pub attn_decode_splitk: String,
+    pub ffn_m16_tc: bool,
+    pub attn_m16_tc: bool,
+    pub lm_head_m16_tc: bool,
+    pub attn_ncol_gemv: bool,
+    pub ffn_gateup_fused: bool,
+    pub w8a8_prefill_max_m_widening: u32,
+    pub w8a8_prefill_max_m_narrowing: u32,
 }
 
 /// What a target that declares NO `[defaults]` table gets.
@@ -51,7 +62,28 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         // agree (`target_defaults_tests::the_baseline_band_is_the_frozen_one`).
         lm_head_batchm_max: 8,
         ssm_batched_recurrent: false,
+        gdn_prefill_tc: false,
+        ssm_ba_gates_hopper: false,
+        fp8_act_quant_hopper: false,
         decode_split_silu: true,
+        // `atlas_kernels::attn_splitk::SplitkPolicy::Legacy` — the rule
+        // `run_paged_decode.rs` hardcoded before #928. The baseline is
+        // "unchanged", and on a 48-SM part that rule IS the measured one.
+        attn_decode_splitk: "legacy".to_string(),
+        ffn_m16_tc: false,
+        attn_m16_tc: false,
+        lm_head_m16_tc: false,
+        attn_ncol_gemv: false,
+        // The fused gate+up decode GEMM is Hopper-only today: its
+        // strided-SiLU consumer is a Hopper-owned source, so the row is
+        // INERT anywhere the file is not compiled. OFF is what every
+        // target served before #927.
+        ffn_gateup_fused: false,
+        // No cap. Absence is the correct declaration for every arch on which
+        // W8A8 does not lose to W8A16 at large M, which is every arch that has
+        // not measured otherwise — H100 included (2.0-3.1x at every M).
+        w8a8_prefill_max_m_widening: u32::MAX,
+        w8a8_prefill_max_m_narrowing: u32::MAX,
     }
 }
 
@@ -139,12 +171,32 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             panic!("kernels/{hw}/HARDWARE.toml: [defaults] {key} = {n} is not a u32")
         })
     };
+    let string = |key: &str, v: &toml::Value| -> String {
+        v.as_str()
+            .unwrap_or_else(|| {
+                panic!("kernels/{hw}/HARDWARE.toml: [defaults] {key} must be a string")
+            })
+            .to_string()
+    };
 
     for (key, value) in table {
         match key.as_str() {
             "lm_head_batchm_max" => out.lm_head_batchm_max = unsigned(key, value),
+            "w8a8_prefill_max_m_widening" => out.w8a8_prefill_max_m_widening = unsigned(key, value),
+            "w8a8_prefill_max_m_narrowing" => {
+                out.w8a8_prefill_max_m_narrowing = unsigned(key, value)
+            }
             "ssm_batched_recurrent" => out.ssm_batched_recurrent = boolean(key, value),
+            "gdn_prefill_tc" => out.gdn_prefill_tc = boolean(key, value),
+            "ssm_ba_gates_hopper" => out.ssm_ba_gates_hopper = boolean(key, value),
+            "fp8_act_quant_hopper" => out.fp8_act_quant_hopper = boolean(key, value),
             "decode_split_silu" => out.decode_split_silu = boolean(key, value),
+            "attn_decode_splitk" => out.attn_decode_splitk = string(key, value),
+            "ffn_m16_tc" => out.ffn_m16_tc = boolean(key, value),
+            "attn_m16_tc" => out.attn_m16_tc = boolean(key, value),
+            "lm_head_m16_tc" => out.lm_head_m16_tc = boolean(key, value),
+            "attn_ncol_gemv" => out.attn_ncol_gemv = boolean(key, value),
+            "ffn_gateup_fused" => out.ffn_gateup_fused = boolean(key, value),
             other => panic!(
                 "kernels/{hw}/HARDWARE.toml: [defaults] has no key `{other}`. \
                  The lever list is the field list of `TargetDefaults` \
@@ -172,12 +224,34 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   hw: \"{hw}\",\n\
          \x20   lm_head_batchm_max: {batchm},\n\
          \x20   ssm_batched_recurrent: {batched_recurrent},\n\
+         \x20   gdn_prefill_tc: {gdn_tc},\n\
+         \x20   ssm_ba_gates_hopper: {ba_gates},\n\
+         \x20   fp8_act_quant_hopper: {act_quant},\n\
          \x20   decode_split_silu: {split_silu},\n\
+         \x20   attn_decode_splitk: \"{splitk}\",\n\
+         \x20   ffn_m16_tc: {ffn_m16_tc},\n\
+         \x20   attn_m16_tc: {attn_m16_tc},\n\
+         \x20   lm_head_m16_tc: {lm_head_m16_tc},\n\
+         \x20   attn_ncol_gemv: {attn_ncol_gemv},\n\
+         \x20   ffn_gateup_fused: {gateup_fused},\n\
+         \x20   w8a8_prefill_max_m_widening: {w8a8_wide},\n\
+         \x20   w8a8_prefill_max_m_narrowing: {w8a8_narrow},\n\
          }};\n",
         hw = d.hw,
         batchm = d.lm_head_batchm_max,
         batched_recurrent = d.ssm_batched_recurrent,
+        gdn_tc = d.gdn_prefill_tc,
+        ba_gates = d.ssm_ba_gates_hopper,
+        act_quant = d.fp8_act_quant_hopper,
         split_silu = d.decode_split_silu,
+        splitk = d.attn_decode_splitk,
+        ffn_m16_tc = d.ffn_m16_tc,
+        attn_m16_tc = d.attn_m16_tc,
+        lm_head_m16_tc = d.lm_head_m16_tc,
+        attn_ncol_gemv = d.attn_ncol_gemv,
+        gateup_fused = d.ffn_gateup_fused,
+        w8a8_wide = d.w8a8_prefill_max_m_widening,
+        w8a8_narrow = d.w8a8_prefill_max_m_narrowing,
     )
 }
 

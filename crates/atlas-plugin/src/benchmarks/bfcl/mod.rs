@@ -21,6 +21,7 @@ pub mod dataset;
 pub mod draw;
 pub mod provision;
 pub mod report;
+pub mod sensitive;
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -107,6 +108,8 @@ pub struct Bfcl {
     /// Samples whose request failed at the transport, scored as "no call".
     /// Published as a metric so a group can refuse a degraded member.
     transport_errors: usize,
+    /// Samples scored that are in [`sensitive::KNOWN_PARTITION_SENSITIVE`].
+    known_sensitive_seen: usize,
     /// The served model, captured at `load()` from the target endpoint.
     /// Decides whether the MLPerf floor VERDICT applies (`report.rs`) — the
     /// floor rides on the Qwen3.6-27B submission checkpoints and does not
@@ -182,6 +185,7 @@ impl Bfcl {
             started: None,
             tool_call_samples: 0,
             transport_errors: 0,
+            known_sensitive_seen: 0,
             target_model: None,
             baseline_mins: report::BaselineMins::default(),
         }
@@ -345,6 +349,7 @@ impl Benchmark for Bfcl {
         self.samples.clear();
         self.scores = None;
         self.tool_call_samples = 0;
+        self.known_sensitive_seen = 0;
         Ok(())
     }
 

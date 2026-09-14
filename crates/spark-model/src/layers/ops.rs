@@ -38,8 +38,17 @@ pub mod target_defaults;
 mod dispatch_proj_rowwise;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
+#[path = "ops/fp8_act_quant.rs"]
+mod fp8_act_quant;
+// WHEN the Hopper FP8 act-quant twin runs: the CTA floor, its lever and the
+// route line (#928, round-16 receipt § 2.1). A sibling so neither file crosses
+// the cap.
+#[path = "ops/fp8_act_quant_floor.rs"]
+mod fp8_act_quant_floor;
 #[path = "ops/fp8_gemv_batch.rs"]
 mod fp8_gemv_batch;
+// Tensor-core W8A16 decode GEMM with a 16-row M tile (#927), the ALU-bound
+// `w8a16_gemv_batch16`'s replacement at 5..=16 rows. Behind ATLAS_FFN_M16_TC.
 #[path = "ops/fp8_moe.rs"]
 mod fp8_moe;
 #[path = "ops/fp8_moe_batch_a.rs"]
@@ -56,6 +65,10 @@ pub mod gdn_flashinfer;
 #[cfg(not(unix))]
 #[path = "ops/gdn_flashinfer_absent.rs"]
 pub mod gdn_flashinfer;
+// Tensor-core BF16 decode GEMM with a 16-row M tile — the BF16 LM-head arm
+// (#927/#928). Behind ATLAS_LM_HEAD_M16_TC; SSOT for its launch geometry.
+#[path = "ops/dense_gemm_m16_bf16.rs"]
+mod dense_gemm_m16_bf16;
 #[path = "ops/gemm_dense.rs"]
 mod gemm_dense;
 #[path = "ops/gemm_dense_int8.rs"]
@@ -64,6 +77,12 @@ mod gemm_dense_int8;
 mod gemm_fp4;
 #[path = "ops/model_stats.rs"]
 pub mod model_stats;
+#[path = "ops/w8a16_gemm_m16.rs"]
+mod w8a16_gemm_m16;
+// The bit-exact N-column-blocked sibling of `w8a16_gemv_batch16` (#927),
+// for the attention decode projections. Behind ATLAS_ATTN_NCOL_GEMV.
+#[path = "ops/w8a16_gemv_ncol.rs"]
+mod w8a16_gemv_ncol;
 pub use model_stats::ModelStats;
 
 #[path = "ops/gemm_fp8_prefill.rs"]
@@ -153,6 +172,8 @@ mod qsa;
 mod quant_dispatch;
 #[path = "ops/sampling.rs"]
 mod sampling;
+#[path = "ops/ssm_ba_gates_hopper.rs"]
+mod ssm_ba_gates_hopper;
 #[path = "ops/ssm_gdn_a.rs"]
 mod ssm_gdn_a;
 #[path = "ops/ssm_gdn_a2.rs"]
@@ -163,8 +184,12 @@ mod ssm_gdn_a3;
 mod ssm_gdn_b;
 #[path = "ops/ssm_gdn_batched.rs"]
 mod ssm_gdn_batched;
+#[path = "ops/ssm_gdn_hopper_prefill.rs"]
+mod ssm_gdn_hopper_prefill;
 #[path = "ops/ssm_gdn_snap.rs"]
 mod ssm_gdn_snap;
+#[path = "ops/ssm_gdn_tc_route.rs"]
+mod ssm_gdn_tc_route;
 #[path = "ops/ssm_mamba.rs"]
 mod ssm_mamba;
 #[path = "ops/ssm_preproc.rs"]
@@ -172,10 +197,18 @@ mod ssm_preproc;
 #[path = "ops/ssm_ssd.rs"]
 mod ssm_ssd;
 pub mod token_overlay;
+/// HOST SIMULATION of the Hopper `w8a16_gemv` override's loop order against the
+/// gb10 kernel's, so a GPU-free `cargo test` still judges the one claim the
+/// device microtest cannot make cheaply: that the UNROLL-wide prefetch did not
+/// reorder the FP32 accumulation every batch oracle in the tree compares to.
+#[cfg(test)]
+#[path = "ops/w8a16_gemv_hopper_tests.rs"]
+mod w8a16_gemv_hopper_tests;
 #[path = "ops/wide_prefill.rs"]
 mod wide_prefill;
 
 pub use activations::*;
+pub use dense_gemm_m16_bf16::*;
 pub use derived_weights::{Derivation, DerivedWeights};
 pub use dispatch_config::{CublasScope, GemmDispatch, parse_cublas_scope};
 pub use dispatch_helpers::*;
@@ -183,6 +216,8 @@ pub use dispatch_proj::*;
 pub use dispatch_proj_decode::*;
 pub use dispatch_proj_rowwise::*;
 pub use embeddings::*;
+pub use fp8_act_quant::*;
+pub use fp8_act_quant_floor::*;
 pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;
 pub use fp8_moe_batch_a::*;
@@ -229,13 +264,18 @@ pub use q4k_mmq::*;
 pub use qsa::*;
 pub use quant_dispatch::*;
 pub use sampling::*;
+pub use ssm_ba_gates_hopper::*;
 pub use ssm_gdn_a::*;
 pub use ssm_gdn_a2::*;
 pub use ssm_gdn_a3::*;
 pub use ssm_gdn_b::*;
 pub use ssm_gdn_batched::*;
+pub(crate) use ssm_gdn_hopper_prefill::*;
 pub use ssm_gdn_snap::*;
+pub use ssm_gdn_tc_route::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;
+pub use w8a16_gemm_m16::*;
+pub use w8a16_gemv_ncol::*;
 pub use wide_prefill::*;

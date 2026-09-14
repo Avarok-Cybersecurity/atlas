@@ -300,10 +300,18 @@ pub fn dense_gemv_ba_gates(
 /// Kernel: `dense_gemm_ba_gates_prefill(A, B, A_log, dt_bias, gate_out, M, N, K,
 ///          K_stride, gate_stride, nv, vpg)`
 /// Grid: (ceil(N/4), M_tokens, 1)  Block: (256, 1, 1)
+///
+/// `twin` is the Hopper one-CTA-per-token kernel (#928,
+/// `ssm_ba_gates_hopper`) or `KernelHandle(0)` on every other target.
+/// The choice is made HERE, once, by [`ba_gates_pick`] — the two kernels take
+/// the same arguments and differ only in their grid, so the call sites do not
+/// branch and cannot disagree about the guards. The twin is BIT-IDENTICAL, so
+/// which one ran is a speed question and never a numerics one.
 #[allow(clippy::too_many_arguments)]
 pub fn dense_gemm_ba_gates_prefill(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
+    twin: KernelHandle,
     input: DevicePtr,        // [M, K_stride] activations (BF16)
     ba_weight: &DenseWeight, // [N, K] BA weight (BF16, row-major)
     a_log: DevicePtr,
@@ -318,7 +326,38 @@ pub fn dense_gemm_ba_gates_prefill(
     vheads_per_group: u32,
     stream: u64,
 ) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
+    let requested = ssm_ba_gates_hopper_enabled();
+    let pick = ba_gates_pick(
+        requested,
+        kernel,
+        twin,
+        m,
+        n,
+        k,
+        k_stride,
+        ba_gates_sm_count(gpu),
+    );
+    ba_gates_log(&pick, requested, m);
+    if pick.twin {
+        return dense_gemm_ba_gates_prefill_hopper(
+            gpu,
+            pick.kernel,
+            input,
+            ba_weight,
+            a_log,
+            dt_bias,
+            gate_out,
+            m,
+            n,
+            k,
+            k_stride,
+            gate_stride,
+            nv,
+            vheads_per_group,
+            stream,
+        );
+    }
+    KernelLaunch::new(gpu, pick.kernel)
         .grid([div_ceil(n, 4), m, 1])
         .block([256, 1, 1])
         .arg_ptr(input)

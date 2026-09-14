@@ -27,7 +27,44 @@ behind specific subsystems — see the
   result. Previously only the result was stored, so a number could not be
   attributed to a configuration or reproduced. Pre-existing files still load.
 
+### Added
+- **Six Hopper-owned decode kernels under `kernels/hopper/common`**, declared in
+  that target's `[kernels] overrides`. Three REPLACE their GB10 namesakes — the
+  W8A16 M=1 decode GEMV family, which on an H100 is 71% of the single-stream
+  decode step and was LSU-bound on a shared-memory E4M3 LUT gather rather than
+  bandwidth-bound. The override decodes with `cvt.rn.f16x2.e4m3x2` and keeps
+  four chunk loads in flight: **C=1 TPOT 17.87 → 14.14 ms (−20.9%)** on
+  1×H100 80 GB with `Qwen/Qwen3.8-27B-FP8`, 1.66–2.05× per shape, 2,689 GB/s on
+  the fused gate+up — and **bit-identical**, `unequal=0` on all seven production
+  shapes. GB10's own sources are untouched and still compiled by gb10, b200,
+  strix and strix-hip.
+  Three are ADDITIONS with new stems: `w8a16_gemm_m16.cu`,
+  `dense_gemm_m16_bf16.cu` and `w8a16_gemv_ncol.cu`, the m16n8k16 tensor-core
+  tiers for 5..32-row decode. They are **not** in `kernels/gb10`, so a GB10
+  build does not compile a kernel it has no receipt for.
+
 ### Changed
+- **Five `[defaults]` rows for those tiers, and they do not all say yes.**
+  `attn_m16_tc` and `lm_head_m16_tc` are ON for Hopper (+5.3% and +4.1% C=16
+  aggregate), `ffn_m16_tc` is OFF on a measured LOSS (−5.2%) from the same
+  kernel on a different projection family, and `attn_ncol_gemv` is OFF because
+  no serving A/B exists for it on any target. Hopper's `lm_head_batchm_max`
+  widens 8 → 16, in the same commit as the arm it was measured beside. Every
+  row is off (or the frozen baseline) on GB10 and B200, so neither target's
+  serve changes.
+### Changed
+- **The tensor-core GDN chunked-prefill family is ON by default on Hopper.**
+  `kernels/hopper/HARDWARE.toml` `[defaults] gdn_prefill_tc = true` — the state
+  spine and both Hopper prefill remnant twins. H100 round 13 measured it on one
+  binary against a same-round control: C=1 TTFT 269.1 → 162.4 ms on 1193/256 and
+  889.3 → 491.5 ms on 4593/512, C=16 aggregate +21.5% / +31.4%, coherency 4/4,
+  determinism 8/8 identical over three runs, and nsys pricing the two twins at
+  4.28× (`chunk_fwd_o_hopper`) and 1.60× (`recompute_wu_hopper`) with the shared
+  spine kernel unchanged at 0.99× as the internal control. `kernels/gb10` and
+  `kernels/b200` keep `false` — this is an H100 receipt. `ATLAS_GDN_PREFILL_TC=0`
+  turns the whole family off and `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` keeps the
+  spine while pinning the twins to their parents; both print on the serve's
+  `target defaults (hopper): …` line. Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
 - **Serving defaults are now per-hardware-target and live in the repository.**
   `kernels/<hw>/HARDWARE.toml` gained a `[defaults]` table, baked into the
   binary by `build.rs` as `atlas_kernels::TARGET_DEFAULTS`. A kernel-path lever
@@ -44,7 +81,9 @@ behind specific subsystems — see the
   so `=0` was indistinguishable from absent — which cannot express "off" once a
   target's default can be ON, leaving an operator no way to turn a lever off
   without editing a launch script. `VAR=1` is unchanged, and the `ATLAS_NO_*`
-  kill switches stay presence-gated.
+  kill switches stay presence-gated. `ATLAS_GDN_PREFILL_TC` joins it as
+  `[defaults] gdn_prefill_tc`: it was presence-gated, so `=0` used to mean ON
+  and now means OFF. Every A/B recipe for it set `=1` and is unaffected.
 - `kernels/<hw>/HARDWARE.toml` also gained `[hardware] sm_count`, cross-checked
   at boot against the driver's `CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT`; a
   mismatch logs one warning naming both numbers and serving continues.
