@@ -68,7 +68,7 @@ rule is about the **shape of the bar**, not the engine:
 | bar | example | mode |
 |---|---|---|
 | absolute / exact-match | `agentic-webserver` `followed_directions min = 10.0`, "takes no noise" | **pin `force`** — nondeterminism against a zero-headroom bar is a coin flip, and re-running until it passes is retry-until-green |
-| empirical, measured | `bfcl-subset` `overall_accuracy min = 83.82` — "measured 84.22, less the documented ±0.4 MTP-nondeterminism noise floor" | **run in the mode the bar was measured in** |
+| empirical, measured | `bfcl-subset` `overall_accuracy min = 83.42` — "the four-shard aggregate read 83.82 (#936), less the documented ±0.4 MTP-nondeterminism noise floor" | **run in the mode the bar was measured in** — for the two BFCL gates that mode is four shards, scored open (since 2026-09-13) |
 | wall-clock / throughput | `decode-floor`, `concurrency-sweep` | **leave `auto`** — the arbiter optimises the metric under test; it is part of the product being benchmarked |
 
 The middle row is the one that bites. `bfcl-subset`'s bar already *prices in*

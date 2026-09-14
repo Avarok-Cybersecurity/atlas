@@ -56,6 +56,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              VACUOUS rather than PASS. Legs needing a decoder the server lacks are SKIPPED, \
              never failed — that is a deployment choice.",
     duration_hint: "~1-2 min",
+    expected_secs: 70,
     updated: "2026-08-24",
     needs_confirmation: false,
     intended_for: None,

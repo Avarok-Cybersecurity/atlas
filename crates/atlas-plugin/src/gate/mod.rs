@@ -27,6 +27,7 @@ pub mod card;
 pub mod check;
 mod check_fmt;
 mod check_group;
+pub use check_group::members_owed;
 pub mod check_paths;
 pub mod closure;
 pub mod codeowners;
@@ -130,6 +131,33 @@ pub use coverage::PERF_PATHS;
 /// `.benchmarks/<benchmark_id>` under `root`.
 pub fn gate_dir(root: &Path, benchmark_id: &str) -> PathBuf {
     root.join(".benchmarks").join(benchmark_id)
+}
+
+/// The full 40-hex commit id `rev` resolves to in this working tree — what
+/// another machine needs to fetch and build exactly this tree.
+///
+/// # Errors
+/// If `rev` does not resolve, or resolves to something that is not a commit.
+pub fn git_rev_parse(root: &Path, rev: &str) -> Result<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--verify", &format!("{rev}^{{commit}}")])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("running git rev-parse")?;
+    if !out.status.success() {
+        bail!(
+            "{rev:?} does not name a commit in {}: {}",
+            root.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("git rev-parse returned {sha:?}, not a 40-hex commit");
+    }
+    Ok(sha)
 }
 
 /// The short commit id for this working tree. `ATLAS_GATE_SHA` overrides —

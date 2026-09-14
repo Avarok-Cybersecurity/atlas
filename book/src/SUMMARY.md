@@ -46,6 +46,7 @@
 - [Tool Calling & Streaming](./operations/tools.md)
 - [Multi-GPU & EP=2](./operations/multi-gpu.md)
 - [Benchmarking](./operations/benchmarks.md)
+- [Certification](./operations/certify.md)
 
 # Part VI — The Project
 

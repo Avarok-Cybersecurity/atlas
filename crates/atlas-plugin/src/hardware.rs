@@ -26,6 +26,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod collect;
+pub mod equivalence;
 pub mod ids;
 pub mod parse;
 pub mod policy;

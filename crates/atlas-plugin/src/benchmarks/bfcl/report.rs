@@ -199,6 +199,13 @@ impl Bfcl {
         // Transport failures, always emitted (0 is a measurement, not an
         // absence — an absent key cannot be told from a clean run).
         m.insert("transport_errors".to_string(), self.transport_errors as f64);
+        // How many of the twelve known partition-sensitive samples (#936) this
+        // leg scored. Always emitted: 0 is a measurement. A whole draw sees all
+        // twelve; a shard sees its stride's share.
+        m.insert(
+            "known_partition_sensitive".to_string(),
+            self.known_sensitive_seen as f64,
+        );
         // WHICH shard this record is, from the run itself rather than from the
         // registry. The registry binds an index to an id in a macro; a record
         // states what actually ran, which also catches a mislabelled or
