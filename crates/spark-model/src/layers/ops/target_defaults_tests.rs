@@ -22,15 +22,21 @@
 use super::*;
 use atlas_kernels::TargetDefaults;
 
-/// `kernels/gb10/HARDWARE.toml` `[defaults]` — field for field
-/// `build_defaults::baseline`, which is what makes GB10's "unchanged" claim
-/// checkable rather than argued.
+/// `kernels/gb10/HARDWARE.toml` `[defaults]`.
+///
+/// It matched `build_defaults::baseline` field for field until #917: the two
+/// `w8a8_prefill_max_m_*` rows are the first values GB10 declares in order to
+/// DIFFER from the baseline rather than to restate it, on a served receipt
+/// (W8A8 3343.3 ms -> W8A16 2560.4 ms at M=949, -23.4%). Everything else still
+/// agrees on purpose, and `gb10_declares_the_baseline_apart_from_the_measured_w8a8_ceiling`
+/// in `atlas-kernels/tests` pins exactly that split.
 const GB10: TargetDefaults = TargetDefaults {
     hw: "gb10",
     lm_head_batchm_max: 8,
     ssm_batched_recurrent: false,
     gdn_prefill_tc: false,
     ssm_ba_gates_hopper: false,
+    fp8_act_quant_hopper: false,
     decode_split_silu: true,
     attn_decode_splitk: "legacy",
     ffn_m16_tc: false,
@@ -38,21 +44,25 @@ const GB10: TargetDefaults = TargetDefaults {
     lm_head_m16_tc: false,
     attn_ncol_gemv: false,
     ffn_gateup_fused: false,
+    w8a8_prefill_max_m_widening: 64,
+    w8a8_prefill_max_m_narrowing: 384,
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]`.
 ///
-/// Three rows differ from GB10's, each on its own Hopper receipt: the batched
+/// Four rows differ from GB10's, each on its own Hopper receipt: the batched
 /// GDN recurrence (ON, +6% on the serve, md5-identical output to the
-/// per-sequence launches), `gdn_prefill_tc`, which round 13 added, and
-/// `ssm_ba_gates_hopper`, which round 14 did. The head band deliberately holds
-/// at the frozen 8 — see `atlas-kernels/tests/target_defaults.rs`.
+/// per-sequence launches), `gdn_prefill_tc`, which round 13 added,
+/// `ssm_ba_gates_hopper`, which round 14 did, and the FP8 activation-quant
+/// twin, which round 16 did (#928); its source only `kernels/hopper` carries.
+/// The head band is 16 — see `atlas-kernels/tests/target_defaults.rs`.
 const HOPPER: TargetDefaults = TargetDefaults {
     hw: "hopper",
     lm_head_batchm_max: 16,
     ssm_batched_recurrent: true,
     gdn_prefill_tc: true,
     ssm_ba_gates_hopper: true,
+    fp8_act_quant_hopper: true,
     decode_split_silu: true,
     attn_decode_splitk: "auto",
     ffn_m16_tc: false,
@@ -60,6 +70,9 @@ const HOPPER: TargetDefaults = TargetDefaults {
     lm_head_m16_tc: true,
     attn_ncol_gemv: false,
     ffn_gateup_fused: true,
+    // No cap: W8A8 is 2.0-3.1x over W8A16 at every M measured on H100.
+    w8a8_prefill_max_m_widening: u32::MAX,
+    w8a8_prefill_max_m_narrowing: u32::MAX,
 };
 
 fn with(defaults: &TargetDefaults, env: &[(&str, &str)]) -> TargetLevers {
@@ -142,10 +155,15 @@ fn gb10_with_an_empty_environment_is_todays_behaviour() {
          lever list is one list, not to change anything"
     );
     assert!(l.decode_split_silu.value);
+    // The one intended GB10 divergence: the measured W8A8 prefill ceiling.
+    assert_eq!(l.w8a8_prefill_max_m_widening.value, 64);
+    assert_eq!(l.w8a8_prefill_max_m_narrowing.value, 384);
     for source in [
         l.lm_head_batchm_max.source,
         l.ssm_batched_recurrent.source,
         l.decode_split_silu.source,
+        l.w8a8_prefill_max_m_widening.source,
+        l.w8a8_prefill_max_m_narrowing.source,
     ] {
         assert_eq!(source, Source::Target);
     }
@@ -274,9 +292,11 @@ fn the_summary_line_names_every_lever_and_flags_the_environment() {
         "ssm_batched_recurrent=on",
         "gdn_prefill_tc=on",
         "ssm_ba_gates_hopper=on",
+        "fp8_act_quant_hopper=on",
         "decode_split_silu=on",
         "attn_decode_splitk=auto",
         "ffn_gateup_fused=on",
+        "w8a8_prefill_max_m=max/max",
     ] {
         assert!(line.contains(field), "missing `{field}` in:\n{line}");
     }
@@ -341,6 +361,12 @@ fn the_split_k_policy_resolves_and_reports_like_every_other_lever() {
     assert_eq!(typo.attn_decode_splitk.value, SplitkPolicy::Auto);
     assert_eq!(typo.attn_decode_splitk.source, Source::Target);
 }
+
+// The per-lever seam for `fp8_act_quant_hopper` (#928, round 16). A child
+// module, not a sibling, so the row's declaration, override and reported
+// spelling sit together and share the fixtures above instead of copying them.
+#[path = "target_defaults_actquant_tests.rs"]
+mod actquant;
 
 /// A build that read no HARDWARE.toml at all has an empty `hw`, and the line
 /// must still be readable rather than `target defaults (): …`.

@@ -8,6 +8,7 @@
 //! the rung tables both halves assert on.
 
 use super::*;
+use crate::TargetEndpoint;
 
 fn configured(concs: Vec<i64>, isls: Vec<i64>) -> ConcurrencySweep {
     let mut b = ConcurrencySweep::default();
@@ -240,6 +241,33 @@ fn a_vacuous_cell_is_not_comparable_and_an_errored_cell_is_not_either() {
     assert!(good.comparable());
     assert!(short.vacuous && !short.comparable());
     assert!(!errored.comparable());
+}
+
+/// The warm rule is judged against the pool the server was started with:
+/// a cell the pool cannot hold is cold by construction, not uncontrolled.
+#[test]
+fn the_warm_rule_applies_only_where_the_snapshot_pool_can_hold_the_cell() {
+    // 8 slots, 3 per warm request: conc 1..2 hold, conc 3 does not (the
+    // re-home transient needs one spare — strictly greater).
+    assert!(warm_cache_capable(1, Some(8)));
+    assert!(warm_cache_capable(2, Some(8)));
+    assert!(!warm_cache_capable(3, Some(8)));
+    assert!(!warm_cache_capable(128, Some(8)));
+    // The gate's pin: 32 holds C ≤ 10, so the ladder's 1/2/4/8 are warm and
+    // 16 upward measure cold by construction.
+    assert!(warm_cache_capable(8, Some(32)));
+    assert!(!warm_cache_capable(16, Some(32)));
+    assert!(!warm_cache_capable(11, Some(32)));
+    // NEGATIVE CONTROL: an unstated pool is not a waiver — the rule applies.
+    assert!(warm_cache_capable(128, None));
+    // The endpoint reads the override as an integer, or not at all.
+    let t = TargetEndpoint::new("http://127.0.0.1:1", "m")
+        .with_serve_overrides([("ssm_cache_slots".to_string(), "24".to_string())].into());
+    assert_eq!(t.serve_override_usize("ssm_cache_slots"), Some(24));
+    assert_eq!(t.serve_override_usize("max_model_len"), None);
+    let bad = TargetEndpoint::new("http://127.0.0.1:1", "m")
+        .with_serve_overrides([("ssm_cache_slots".to_string(), "many".to_string())].into());
+    assert_eq!(bad.serve_override_usize("ssm_cache_slots"), None);
 }
 
 #[test]

@@ -63,12 +63,19 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         };
         let git_sha = field(&v, "git_sha").unwrap_or_else(|| "MISSING".into());
+        // The hardware capture, when the record parses as a full GateRecord.
+        // A pre-schema record has none, and is then equivalent to nothing —
+        // the one-box rule applies to it exactly as before.
+        let hardware = atlas_plugin::gate::read_record(path)
+            .ok()
+            .map(|r| atlas_plugin::hardware::equivalence::HardwareFingerprint::from_record(&r));
         println!("  {a:<58} gate={benchmark_id} sha={git_sha} signer={signer}");
         added.push(AddedRecord {
             path: a.clone(),
             benchmark_id,
             git_sha,
             signer,
+            hardware,
         });
     }
 

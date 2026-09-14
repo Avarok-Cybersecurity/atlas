@@ -49,7 +49,8 @@ fn plant_variant(root: &Path, model: &str, secs: u64) -> std::path::PathBuf {
     );
     record.target_model = model.to_string();
     record.recorded_at = secs;
-    let gate = GateRecord::from_run(&record, hw(), SHA.to_string(), Vec::new(), None).unwrap();
+    let mut gate = GateRecord::from_run(&record, hw(), SHA.to_string(), Vec::new(), None).unwrap();
+    gate.benchmark_id = "ssm-state-poisoning-gate".to_string();
     write_record(root, &gate).unwrap()
 }
 
@@ -72,18 +73,18 @@ fn the_variant_slug_is_filename_safe_and_lossy_on_purpose() {
 fn both_variants_records_coexist_for_one_commit_and_day() {
     let dir = tempdir::Dir::new();
     let root = dir.path();
-    write_baseline(root, "bfcl-subset", &two_variant_baseline());
+    write_baseline(root, "ssm-state-poisoning-gate", &two_variant_baseline());
 
     let default_path = plant_variant(root, MODEL, 1_785_891_382);
     let dense_path = plant_variant(root, DENSE, 1_785_891_382 + 60);
 
     assert_eq!(
         default_path,
-        root.join(".benchmarks/bfcl-subset/2026-08-05-b72dad1893.json")
+        root.join(".benchmarks/ssm-state-poisoning-gate/2026-08-05-b72dad1893.json")
     );
     assert_eq!(
         dense_path,
-        root.join(".benchmarks/bfcl-subset/2026-08-05-b72dad1893-unsloth-qwen3.8-27b-nvfp4.json")
+        root.join(".benchmarks/ssm-state-poisoning-gate/2026-08-05-b72dad1893-unsloth-qwen3.8-27b-nvfp4.json")
     );
     assert!(default_path.exists() && dense_path.exists());
     // Each file still says which variant produced it, independent of its name.
@@ -105,7 +106,7 @@ fn lossy_variant_slugs_cannot_overwrite_each_other() {
         .unwrap()
         .models
         .insert(ALIAS.into(), dense);
-    write_baseline(root, "bfcl-subset", &baseline);
+    write_baseline(root, "ssm-state-poisoning-gate", &baseline);
 
     let first = plant_variant(root, DENSE, 1_785_891_382);
     let second = plant_variant(root, ALIAS, 1_785_891_382 + 60);
@@ -120,7 +121,7 @@ fn lossy_variant_slugs_cannot_overwrite_each_other() {
 fn a_variant_rerun_replaces_only_its_own_record() {
     let dir = tempdir::Dir::new();
     let root = dir.path();
-    write_baseline(root, "bfcl-subset", &two_variant_baseline());
+    write_baseline(root, "ssm-state-poisoning-gate", &two_variant_baseline());
     let first = plant_variant(root, DENSE, 1_785_891_382);
     let second = plant_variant(root, DENSE, 1_785_891_382 + 3_600);
     assert_eq!(first, second, "same variant + sha + UTC day = same file");
@@ -136,7 +137,7 @@ fn no_baseline_means_the_legacy_filename() {
     assert_eq!(
         path,
         dir.path()
-            .join(".benchmarks/bfcl-subset/2026-08-05-b72dad1893.json")
+            .join(".benchmarks/ssm-state-poisoning-gate/2026-08-05-b72dad1893.json")
     );
 }
 
@@ -151,7 +152,7 @@ fn no_baseline_means_the_legacy_filename() {
 fn an_unknown_hardware_variant_record_does_not_clobber_the_default() {
     let dir = tempdir::Dir::new();
     let root = dir.path();
-    write_baseline(root, "bfcl-subset", &two_variant_baseline());
+    write_baseline(root, "ssm-state-poisoning-gate", &two_variant_baseline());
     let default_path = plant_variant(root, MODEL, 1_785_891_382);
 
     let mut record = run_record(
@@ -160,7 +161,7 @@ fn an_unknown_hardware_variant_record_does_not_clobber_the_default() {
     );
     record.target_model = DENSE.to_string();
     record.recorded_at = 1_785_891_382 + 60;
-    let gate = GateRecord::from_run(
+    let mut gate = GateRecord::from_run(
         &record,
         crate::hardware::Hardware::unknown(),
         SHA.to_string(),
@@ -168,11 +169,12 @@ fn an_unknown_hardware_variant_record_does_not_clobber_the_default() {
         None,
     )
     .unwrap();
+    gate.benchmark_id = "ssm-state-poisoning-gate".to_string();
     let dense_path = write_record(root, &gate).unwrap();
 
     assert_eq!(
         dense_path,
-        root.join(".benchmarks/bfcl-subset/2026-08-05-b72dad1893-unsloth-qwen3.8-27b-nvfp4.json")
+        root.join(".benchmarks/ssm-state-poisoning-gate/2026-08-05-b72dad1893-unsloth-qwen3.8-27b-nvfp4.json")
     );
     // The default's committed record survives untouched.
     assert_eq!(read_record(&default_path).unwrap().target_model, MODEL);
@@ -185,7 +187,7 @@ fn an_unknown_hardware_variant_record_does_not_clobber_the_default() {
     );
     record.target_model = MODEL.to_string();
     record.recorded_at = 1_785_891_382 + 120;
-    let gate = GateRecord::from_run(
+    let mut gate = GateRecord::from_run(
         &record,
         crate::hardware::Hardware::unknown(),
         SHA.to_string(),
@@ -193,6 +195,7 @@ fn an_unknown_hardware_variant_record_does_not_clobber_the_default() {
         None,
     )
     .unwrap();
+    gate.benchmark_id = "ssm-state-poisoning-gate".to_string();
     assert_eq!(write_record(root, &gate).unwrap(), default_path);
 }
 
@@ -214,17 +217,23 @@ fn a_non_default_variant_record_cannot_discharge_the_required_gate() {
 
     let gates = check_gates(root, SHA);
     assert!(
-        matches!(gates["bfcl-subset"], GateStatus::Pass),
+        matches!(gates["ssm-state-poisoning-gate"], GateStatus::Pass),
         "the OLDER default record still discharges the gate: {:?}",
-        gates["bfcl-subset"]
+        gates["ssm-state-poisoning-gate"]
     );
 
     // Remove the default's record: the dense one alone must read as MISSING,
     // never as a pass for the 35B subject.
-    std::fs::remove_file(record_path(root, "bfcl-subset", 1_785_891_382, SHA)).unwrap();
+    std::fs::remove_file(record_path(
+        root,
+        "ssm-state-poisoning-gate",
+        1_785_891_382,
+        SHA,
+    ))
+    .unwrap();
     let gates = check_gates(root, SHA);
     assert!(matches!(
-        &gates["bfcl-subset"],
+        &gates["ssm-state-poisoning-gate"],
         GateStatus::Missing(reason)
             if reason == "latest record measured the unsloth/Qwen3.8-27B-NVFP4 variant; the required subject on gb10 is Qwen/Qwen3.6-35B-A3B-FP8, which has no covering record"
     ));

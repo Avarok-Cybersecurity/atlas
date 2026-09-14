@@ -28,18 +28,33 @@
 //! `Sensitivity::Correctness` gates, which is measured, not assumed — see
 //! [`super::agreement`].
 //!
-//! # ★ THE SPLIT IS NOT TRANSPARENT ON THE SHIPPED CONFIGURATION (#936)
+//! # ★ FOUR SHARDS AT ONE COMMIT ARE THE ONLY THING THAT SATISFIES A GROUP
+//!
+//! Owner decision, 2026-09-13: sharded certification is ENABLED and REQUIRED
+//! for `bfcl-subset` and `bfcl-subset-echolp`. `check_one` hands every group
+//! id straight to `check_group`; a whole-draw record under the group's own
+//! id is history, not evidence, and the verdict says so by name when one is
+//! all a directory holds. Each member is judged by every rule a plain gate
+//! record is judged by — required subject, completed frame, clean tree,
+//! signature — plus the group rules above.
+//!
+//! # ★ SCORED OPEN, BY DECISION: THE NUMBER IS PARTITION- AND ORDER-DEPENDENT
+//!
+//! The certified regime keeps **cross-request SSM snapshot reuse ON**. It is
+//! not `--hermetic`. That is a choice, made with the consequence measured, and
+//! the consequence is this:
 //!
 //! Everything below makes the ARITHMETIC of a group exact: the shards are a
 //! partition, the tallies sum as integers, the hierarchy is applied once. None
 //! of that makes the MEASUREMENT order-independent, and on the shipped serve it
-//! is not. Measured 2026-09-08 at one commit, one model, temp 0, seed 42:
+//! is not. Measured 2026-09-08 (#936) at one commit, one model, temp 0, seed 42:
 //!
 //! | configuration | whole (995) vs its own 4 shards |
 //! |---|---|
-//! | shipped | **12 samples disagree** |
+//! | shipped (the certified regime) | **12 samples disagree** |
 //! | `ATLAS_NO_TAIL_SPLIT=1` (snapshot producer off) | 4 |
 //! | `ATLAS_MARCONI_MIN_TOKENS=1e8` (consumer off) | 2 |
+//! | `--hermetic` (#981) | 0 |
 //!
 //! The cause is cross-request **SSM snapshot reuse**. A snapshot saved by one
 //! request enters a shared, globally evicted pool (128 slots / 19392 MB on
@@ -47,32 +62,27 @@
 //! be there; restoring at a different depth gives numerically different SSM
 //! state; at a near-tied argmax the emitted token flips. Sharding changes
 //! eviction pressure because it changes run length, so it changes which anchor
-//! a sample gets.
+//! a sample gets. The engine is bit-reproducible for a fixed request ORDER —
+//! two runs of the same shard at the same commit were byte-identical — so this
+//! is entirely an ordering effect, not run-to-run noise.
 //!
-//! The engine is bit-reproducible for a fixed request ORDER — two runs of the
-//! same shard at the same commit were byte-identical — so this is entirely an
-//! ordering effect, not run-to-run noise.
+//! The twelve samples that flipped are named in
+//! [`crate::benchmarks::bfcl::sensitive`]; a run warns on each one it scores
+//! and reports the count as `known_partition_sensitive`. The floors for both
+//! gates are cut from the SHARDED aggregate, never from a whole-draw run, so
+//! the bar and the measurement are taken under the same regime.
 //!
 //! **What this means for anyone extending this module.** A group's aggregate is
 //! exact with respect to its members, and its members are not guaranteed to
 //! reproduce the serial run they stand in for. Do not read a passing group as
-//! evidence that sharding is transparent; that is a separate claim needing its
-//! own measurement, and #936 records it failing by 12 of 995 while the score
-//! cleared its floor by 0.04 and ran 0.76 low.
+//! evidence that sharding is transparent; it is evidence that the four shards,
+//! run as four shards, clear the floors that were cut from four shards.
 //!
-//! **CLOSED 2026-09-10 (#981), and by a different knob than this note first
-//! predicted.** The shipped mechanism is `--hermetic`, not `ssm_cache_slots =
-//! "0"`: the latter closes the SSM snapshot producer only, and measured 4 of
-//! 995 — better, not zero. The residual channel was the radix KV prefix cache,
-//! which has no session key at all. `--hermetic` closes both and gates every
-//! snapshot entry by session, and reaches **0 of 995** — whole draw against its
-//! own four shards, byte-exact per `sample_id`, reproduced on two boxes against
-//! a base arm of 12 of 995 at the same commit.
-//!
-//! The floors did NOT need re-cutting, which this note also predicted wrongly.
-//! Equality does cost score — the whole leg reads 84.22 / 84.12 open and
-//! 83.92 / 84.22 closed — but both clear the committed bars, so the bars stand
-//! and the regime change is carried by the UI's like-for-like band instead.
+//! `--hermetic` remains available (`spark serve --hermetic` closes the prefix
+//! cache, the snapshot pool and the MTP probe; whole vs its own four shards
+//! reads 0 of 995 under it) and is pinned as the SUBJECT of `kat-equality-gate`
+//! only. Equality costs score — 84.22 / 84.12 open, 83.92 / 84.22 closed on
+//! the whole draw — and the owner chose the open number as the certified one.
 
 /// Do the members' recorded shard identities form the partition the group
 /// claims to be?

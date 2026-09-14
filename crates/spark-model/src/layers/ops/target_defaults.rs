@@ -160,6 +160,20 @@ pub fn resolve_batchm_max(default_max: u32, raw: Option<&str>) -> Resolved<u32> 
     }
 }
 
+/// Upper `M` for the W8A8 dense-FFN prefill, per projection shape.
+///
+/// Unlike [`resolve_batchm_max`] a parsed **0 is honoured**, because 0 is a
+/// meaningful operator answer here ("never take the W8A8 arm on this shape")
+/// and silently ignoring it would make `…=0` read as agreement with the
+/// target — the same silent-agreement failure `parse_defaults` panics over.
+/// Anything that is not a u32 falls back to the target's declaration.
+pub fn resolve_max_m(default_max: u32, raw: Option<&str>) -> Resolved<u32> {
+    match raw.and_then(|v| v.trim().parse::<u32>().ok()) {
+        Some(v) => Resolved::env(v),
+        None => Resolved::target(default_max),
+    }
+}
+
 /// Every serving lever this target declares, resolved against the environment.
 ///
 /// Field order is the order the serve log prints them in.
@@ -171,6 +185,7 @@ pub struct TargetLevers {
     pub ssm_batched_recurrent: Resolved<bool>,
     pub gdn_prefill_tc: Resolved<bool>,
     pub ssm_ba_gates_hopper: Resolved<bool>,
+    pub fp8_act_quant_hopper: Resolved<bool>,
     pub decode_split_silu: Resolved<bool>,
     pub attn_decode_splitk: Resolved<SplitkPolicy>,
     /// The `w8a16_gemm_m16` tier on the dense-FFN decode arm (#927).
@@ -183,6 +198,8 @@ pub struct TargetLevers {
     /// (#927). No serving receipt on any target — off everywhere.
     pub attn_ncol_gemv: Resolved<bool>,
     pub ffn_gateup_fused: Resolved<bool>,
+    pub w8a8_prefill_max_m_widening: Resolved<u32>,
+    pub w8a8_prefill_max_m_narrowing: Resolved<u32>,
 }
 
 /// The whole table, as a pure function of the baked declaration and a variable
@@ -199,6 +216,14 @@ pub fn resolve(
         lm_head_batchm_max: resolve_batchm_max(
             defaults.lm_head_batchm_max,
             var("ATLAS_LM_HEAD_BATCHM_MAX").as_deref(),
+        ),
+        w8a8_prefill_max_m_widening: resolve_max_m(
+            defaults.w8a8_prefill_max_m_widening,
+            var("ATLAS_W8A8_PREFILL_MAX_M_WIDENING").as_deref(),
+        ),
+        w8a8_prefill_max_m_narrowing: resolve_max_m(
+            defaults.w8a8_prefill_max_m_narrowing,
+            var("ATLAS_W8A8_PREFILL_MAX_M_NARROWING").as_deref(),
         ),
         // `ATLAS_SSM_BATCHED_RECURRENT` was `== "1"` in `gdn_flags::from_env`;
         // under the 2026-09-11 grammar `=0` now turns it OFF instead of
@@ -229,6 +254,20 @@ pub fn resolve(
         ssm_ba_gates_hopper: resolve_toggle(
             defaults.ssm_ba_gates_hopper,
             var("ATLAS_SSM_BA_GATES_HOPPER").as_deref(),
+            false,
+        ),
+        // The Hopper FP8 activation-quant twin (#928, round-16 receipt § 2.1).
+        // Hopper declares it ON. The twin is BIT-IDENTICAL to its gb10 parent,
+        // so the row carries no accuracy question and no `ATLAS_NO_*` legacy
+        // spelling — the lever is new, so there is no older script for a
+        // presence rule to keep faith with. It is also not the whole rule: the
+        // twin is 0.76x-0.95x at M <= 25 for K in {5120, 6144}, so it passes a
+        // CTA-count floor (`layers/ops/fp8_act_quant_floor.rs`) before it takes
+        // a launch. `ATLAS_FP8_ACT_QUANT_HOPPER=0` declines the twin at EVERY
+        // width, which is the A/B.
+        fp8_act_quant_hopper: resolve_toggle(
+            defaults.fp8_act_quant_hopper,
+            var("ATLAS_FP8_ACT_QUANT_HOPPER").as_deref(),
             false,
         ),
         // DECLARATION plus the legacy kill switch, and no positive variable:
@@ -344,6 +383,15 @@ pub fn summary_line() -> String {
 pub fn format_levers(l: &TargetLevers) -> String {
     let onoff =
         |r: Resolved<bool>| format!("{}{}", if r.value { "on" } else { "off" }, r.source.tag());
+    // `u32::MAX` is the no-cap baseline, not a chosen bound. Printing
+    // 4294967295 in the serve log would read as a decision someone made.
+    let cap = |v: u32| {
+        if v == u32::MAX {
+            "max".to_string()
+        } else {
+            v.to_string()
+        }
+    };
     format!(
         "target defaults ({hw}): sm_count={sms} \
          lm_head_batchm_max={batchm}{batchm_src} \
@@ -351,7 +399,9 @@ pub fn format_levers(l: &TargetLevers) -> String {
          ssm_ba_gates_hopper={ba_gates} decode_split_silu={silu} \
          attn_decode_splitk={splitk}{splitk_src} ffn_m16_tc={ffn_m16_tc} \
          attn_m16_tc={attn_m16_tc} lm_head_m16_tc={lm_head_m16_tc} \
-         attn_ncol_gemv={attn_ncol_gemv} ffn_gateup_fused={gateup}",
+         attn_ncol_gemv={attn_ncol_gemv} ffn_gateup_fused={gateup} \
+         fp8_act_quant_hopper={act_quant} \
+         w8a8_prefill_max_m={w8a8_wide}/{w8a8_narrow}{w8a8_src}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
         // at boot against the driver. Printed on this line because the levers
@@ -363,6 +413,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         recurrent = onoff(l.ssm_batched_recurrent),
         gdn_tc = onoff(l.gdn_prefill_tc),
         ba_gates = onoff(l.ssm_ba_gates_hopper),
+        act_quant = onoff(l.fp8_act_quant_hopper),
         silu = onoff(l.decode_split_silu),
         splitk = l.attn_decode_splitk.value.label(),
         splitk_src = l.attn_decode_splitk.source.tag(),
@@ -371,6 +422,11 @@ pub fn format_levers(l: &TargetLevers) -> String {
         lm_head_m16_tc = onoff(l.lm_head_m16_tc),
         attn_ncol_gemv = onoff(l.attn_ncol_gemv),
         gateup = onoff(l.ffn_gateup_fused),
+        // Printed as widening/narrowing. `max` reads as "no cap" rather than
+        // 4294967295, which would look like a number someone chose.
+        w8a8_wide = cap(l.w8a8_prefill_max_m_widening.value),
+        w8a8_narrow = cap(l.w8a8_prefill_max_m_narrowing.value),
+        w8a8_src = l.w8a8_prefill_max_m_widening.source.tag(),
     )
 }
 

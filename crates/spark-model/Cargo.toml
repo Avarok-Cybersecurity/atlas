@@ -229,6 +229,10 @@ name = "native_ssm_ba_gates_hopper_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "native_fp8_act_quant_hopper_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_wy4_batched_microtest"
 required-features = ["cuda", "gpu-examples"]
 
@@ -290,6 +294,10 @@ required-features = ["cuda", "gpu-examples"]
 
 [[example]]
 name = "w4a16_qg_batch_bitparity_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_ffn_down_gemv_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]

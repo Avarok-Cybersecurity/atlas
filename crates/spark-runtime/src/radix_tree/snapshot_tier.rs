@@ -84,6 +84,14 @@ impl SsmSnapshotIndex {
             if hash_token_prefix(tokens, entry.token_count, adapter_id) != entry.prefix_hash {
                 continue;
             }
+            tracing::debug!(
+                "snapshot candidate: id={} tokens={} tail={} sibling={} tiered={} (matched {matched_tokens})",
+                entry.snapshot_id,
+                entry.token_count,
+                entry.is_tail,
+                entry.is_tail_sibling,
+                entry.tiered
+            );
             if best.is_none() || entry.token_count > best_depth {
                 best = Some(i);
                 best_depth = entry.token_count;

@@ -209,13 +209,13 @@ fn qwen38_committed_mins() -> (f64, f64) {
 #[test]
 fn a_qwen38_run_clearing_its_own_bars_passes() {
     let (overall_min, normalized_min) = qwen38_committed_mins();
-    assert_eq!((overall_min, normalized_min), (83.82, 83.72));
+    assert_eq!((overall_min, normalized_min), (83.42, 82.96));
     let mut b = with_mins(overall_min, normalized_min);
     b.scores = Some(scores(84.22, 84.12));
     let v = b.verdict();
     assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
     // The detail names both values and both bars.
-    for needle in ["84.22", "83.82", "84.12", "83.72"] {
+    for needle in ["84.22", "83.42", "84.12", "82.96"] {
         assert!(v.reason.contains(needle), "{}", v.reason);
     }
 
@@ -223,7 +223,7 @@ fn a_qwen38_run_clearing_its_own_bars_passes() {
     // (Deliberately STRICTER than gate scoring, which allows value + noise
     // >= min: the raw comparison can only fail a sub-noise dip, never
     // green-light a regression.)
-    b.scores = Some(scores(83.82, 83.72));
+    b.scores = Some(scores(83.42, 82.96));
     assert_eq!(b.verdict().kind, VerdictKind::Pass);
 }
 
@@ -231,7 +231,7 @@ fn a_qwen38_run_clearing_its_own_bars_passes() {
 fn a_qwen38_run_below_its_own_bars_fails() {
     let (overall_min, normalized_min) = qwen38_committed_mins();
     let mut b = with_mins(overall_min, normalized_min);
-    b.scores = Some(scores(83.50, 84.12));
+    b.scores = Some(scores(83.10, 84.12));
     let v = b.verdict();
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(
@@ -239,12 +239,12 @@ fn a_qwen38_run_below_its_own_bars_fails() {
         "{}",
         v.reason
     );
-    for needle in ["83.50", "83.82", "84.12", "83.72"] {
+    for needle in ["83.10", "83.42", "84.12", "82.96"] {
         assert!(v.reason.contains(needle), "{}", v.reason);
     }
 
     // Either bar alone fails the run — both floors must clear.
-    b.scores = Some(scores(84.22, 83.50));
+    b.scores = Some(scores(84.22, 82.50));
     assert_eq!(b.verdict().kind, VerdictKind::Fail);
 }
 
@@ -346,6 +346,22 @@ fn reconfiguring_clears_generated_responses() {
     let v = ParamValues::defaults(&b.parameters());
     b.configure(&v).unwrap();
     assert!(b.responses.is_empty() && b.cursor == 0 && b.tool_call_samples == 0);
+}
+
+/// The record carries how many of the twelve known partition-sensitive samples
+/// (#936) a leg scored — always, so an absent key cannot be mistaken for a
+/// clean leg. Zero is a measurement.
+#[test]
+fn the_known_partition_sensitive_count_is_always_a_metric() {
+    let mut b = configured(Variant::Subset);
+    b.scores = Some(scores(84.0, 84.0));
+    assert_eq!(b.metrics().get("known_partition_sensitive"), Some(&0.0));
+    b.known_sensitive_seen = 2;
+    assert_eq!(b.metrics().get("known_partition_sensitive"), Some(&2.0));
+    // Reconfiguring starts a new leg: the count resets with the responses.
+    let v = ParamValues::defaults(&b.parameters());
+    b.configure(&v).unwrap();
+    assert_eq!(b.known_sensitive_seen, 0);
 }
 
 /// The committed baseline pins the draw each variant actually makes.
