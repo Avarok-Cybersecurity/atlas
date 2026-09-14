@@ -9,7 +9,9 @@
 pub mod cache;
 pub mod kda;
 pub mod layer;
+pub mod mla;
 
 pub use cache::{HybridCache, LayerCache, MlaKv};
 pub use kda::{KDA_L2_EPS, KdaConfig, KdaState, cuda_kda_enabled, kda_decode_token, kda_from};
 pub use layer::{K3Graph, K3LayerSpec, MixerKind, MlpKind};
+pub use mla::{MlaConfig, cuda_mla_enabled, gated_mla_attend, mla_decode_token, mla_from};
