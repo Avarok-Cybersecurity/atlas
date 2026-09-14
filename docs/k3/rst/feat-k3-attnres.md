@@ -21,5 +21,8 @@ Umbrella twin: mix=1 first id 1459, mix=0 moves it.
 BUGS
 #N/A this slice.
 
+TEST NOTES (review 1079)
+`AttnResHub::decode` drops the key on `Err` (umbrella `940bd4eeb`). Last-layer success still `remove`s. Known-bad: `hub_drops_entry_on_decode_err`.
+
 STOP
-Charter complete for AttnRes mix. Twin greedy remains umbrella until cpu_forward extract.
+Charter complete for AttnRes mix + hub error path. Twin greedy remains umbrella until cpu_forward extract.

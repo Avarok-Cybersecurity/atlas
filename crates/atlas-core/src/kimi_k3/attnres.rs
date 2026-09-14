@@ -79,6 +79,52 @@ pub fn attnres_mix(
     attnres_blend(skip, &mixed, mix)
 }
 
+/// Stream map keyed by hidden/residual pointer bits (`DevicePtr.0`).
+/// Layer 0 inserts; last layer `remove`s on success. Any `Err` drops the
+/// entry (umbrella `940bd4eeb`).
+#[derive(Debug)]
+pub struct AttnResHub<T> {
+    map: std::collections::HashMap<u64, T>,
+}
+
+impl<T> Default for AttnResHub<T> {
+    fn default() -> Self {
+        Self {
+            map: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl<T> AttnResHub<T> {
+    pub fn insert(&mut self, key: u64, v: T) {
+        self.map.insert(key, v);
+    }
+
+    pub fn get(&self, key: u64) -> Option<&T> {
+        self.map.get(&key)
+    }
+
+    pub fn remove(&mut self, key: u64) -> Option<T> {
+        self.map.remove(&key)
+    }
+
+    pub fn contains(&self, key: u64) -> bool {
+        self.map.contains_key(&key)
+    }
+
+    pub fn decode<R, E>(
+        &mut self,
+        key: u64,
+        f: impl FnOnce(&mut Self) -> Result<R, E>,
+    ) -> Result<R, E> {
+        let r = f(self);
+        if r.is_err() {
+            self.map.remove(&key);
+        }
+        r
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +170,24 @@ mod tests {
             "mix=1 vs recorded fixture max_abs={}",
             max_abs(&m1, &RECORDED_MIX1)
         );
+    }
+
+    #[test]
+    fn hub_drops_entry_on_decode_err() {
+        let mut hub = AttnResHub::default();
+        hub.insert(1, vec![1.0f32]);
+        let err: Result<(), &str> = hub.decode(1, |_| Err("cuda fail"));
+        assert!(err.is_err());
+        assert!(
+            !hub.contains(1),
+            "RST: decode Err must drop the stream (940bd4eeb)"
+        );
+        hub.insert(2, vec![2.0]);
+        hub.decode(2, |h| {
+            h.remove(2);
+            Ok::<(), &str>(())
+        })
+        .unwrap();
+        assert!(!hub.contains(2), "last-layer success still removes");
     }
 }

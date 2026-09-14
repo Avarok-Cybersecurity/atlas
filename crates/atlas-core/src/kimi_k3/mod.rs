@@ -12,7 +12,7 @@ pub mod kda;
 pub mod layer;
 pub mod mla;
 
-pub use attnres::{attnres_blend, attnres_mix, attnres_softmax_mix};
+pub use attnres::{AttnResHub, attnres_blend, attnres_mix, attnres_softmax_mix};
 pub use cache::{HybridCache, LayerCache, MlaKv};
 pub use kda::{KDA_L2_EPS, KdaConfig, KdaState, cuda_kda_enabled, kda_decode_token, kda_from};
 pub use layer::{K3Graph, K3LayerSpec, MixerKind, MlpKind};
