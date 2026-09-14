@@ -1,7 +1,8 @@
-# K3 BF16: unique KDA decode stem. Not a GDN/Mamba/glm5next_kda shadow.
-#
-# Host SSOT: atlas_core::kimi_k3::kda_decode_token.
-# nvfp4/mxfp4 bundles symlink this stem from bf16/.
-# MLA decode and DSV4 E8M0 extra_cu land in later feat/k3-* slices.
+# K3 BF16: unique kda_decode + mla_decode stems. extra_cu DSV4 E8M0 GEMM
+# (do not copy that .cu here). Handle: moe_w4a16_grouped_gemm_ptrtable_e8m0
+
+[build]
+extra_cu = ["../../deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"]
 
 [modules]
+moe_w4a16_grouped_gemm = "moe_w4a16"
