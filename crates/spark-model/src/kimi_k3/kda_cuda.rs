@@ -149,7 +149,7 @@ fn launch_k3_kda_decode_inner(
     gate: &[f32],
     beta: &[f32],
     cfg: &KdaConfig,
-    host: Option<&mut KdaState>,
+    mut host: Option<&mut KdaState>,
     device: Option<&KdaDeviceState>,
     stream: u64,
 ) -> Result<Vec<f32>> {
