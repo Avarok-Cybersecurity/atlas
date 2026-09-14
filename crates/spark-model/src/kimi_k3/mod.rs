@@ -13,7 +13,8 @@ pub mod mla_cuda;
 
 pub use atlas_core::kimi_k3::{
     HybridCache, K3Graph, KDA_L2_EPS, KdaConfig, KdaState, LayerCache, MixerKind, MlaConfig, MlaKv,
-    MlpKind, attnres_blend, attnres_mix, attnres_softmax_mix, cuda_kda_enabled, cuda_mla_enabled,
+    MlpKind, AttnResHub, attnres_blend, attnres_mix, attnres_softmax_mix, cuda_kda_enabled,
+    cuda_mla_enabled,
     gated_mla_attend, kda_decode_token, kda_from, mla_decode_token, mla_from,
 };
 pub use device_cache::{DeviceHybridCache, DeviceLayerCache};
