@@ -1,0 +1,1 @@
+../../../gb10/deepseek-v4-flash/nvfp4/prefill_attn_compressed.cu

@@ -230,6 +230,33 @@ fn cell_is_vacuous(requests: &[RequestEvidence], osl: usize) -> bool {
         .any(|r| (r.completion_tokens as f64) < VACUITY_FLOOR * osl as f64)
 }
 
+/// SSM snapshot slots one warm request costs on the server across a cell:
+/// its tail checkpoint (the anchor a repeat of the same prompt restores
+/// from), its finish leaf, and one STALE finish leaf left by an earlier
+/// cell's measurement of the same prompt — a finish leaf is keyed on
+/// prompt + generated text, and one token of run-to-run drift makes it a
+/// new entry rather than a re-home. The exact prefill-end leaf no longer
+/// takes a slot — see `spark-model`'s `prefill_b::exact_leaf`. Measured
+/// 2026-09-13 on a 24-slot pool: conc 8 (16 live + up to 8 stale) lost four
+/// of its eight tails to LRU during the warm-up round.
+const SLOTS_PER_WARM_REQUEST: usize = 3;
+/// The override key the server's snapshot pool is sized by.
+const SSM_CACHE_SLOTS_KEY: &str = "ssm_cache_slots";
+
+/// Can the server hold every warmed prompt of a `conc`-way cell at once?
+///
+/// `slots` is the pool the server was started with, or `None` when the
+/// serve overrides do not state it — then the answer is `true`, so the warm
+/// rule applies in full: a pool nobody sized is not an excuse.
+///
+/// Strictly greater, not `>=`: a save that re-homes an existing prefix takes
+/// a fresh slot BEFORE the old one is released. Measured 2026-09-13 on an
+/// 8-slot pool: conc 2 held (152 ms warm TTFT), conc 4 did not (896 ms —
+/// every request recomputed).
+fn warm_cache_capable(conc: usize, slots: Option<usize>) -> bool {
+    slots.is_none_or(|slots| slots > SLOTS_PER_WARM_REQUEST * conc)
+}
+
 fn cache_is_uncontrolled(requests: &[RequestEvidence], warmup: usize) -> bool {
     warmup > 0
         && requests.iter().any(|request| {
@@ -526,8 +553,24 @@ impl ConcurrencySweep {
         // usage is the oracle for whether the measured request actually used
         // the warmed prompt. A small shared chat-template prefix is not enough:
         // require a material cached fraction of each measured prompt.
-        let cache_uncontrolled = cache_is_uncontrolled(&requests, self.warmup);
+        // A pool that cannot hold this cell's warmed prompts measures COLD
+        // by construction, and says so instead of failing the warm rule it
+        // could never meet. The rule is judged against what the server was
+        // started with (`TargetEndpoint::serve_overrides`), never a default.
+        let slots = handle.target().serve_override_usize(SSM_CACHE_SLOTS_KEY);
+        let warm_capable = warm_cache_capable(conc, slots);
+        let cache_uncontrolled = warm_capable && cache_is_uncontrolled(&requests, self.warmup);
         handle.info(evidence_line(isl, conc, &requests));
+        if !warm_capable {
+            handle.info(format!(
+                "isl {isl} conc {conc}: cache cold by construction — the server's {} \
+                 snapshot slot(s) cannot hold {} warm request(s) ({} each); the warm \
+                 rule is not applied to this cell",
+                slots.unwrap_or(0),
+                conc,
+                SLOTS_PER_WARM_REQUEST,
+            ));
+        }
         if vacuous {
             handle.warn(format!(
                 "isl {isl} conc {conc}: a request delivered under {:.0}% of the {}-token \

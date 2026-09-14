@@ -250,9 +250,17 @@ pub(crate) fn resolve_kv_cache_config(
                     fp8_kv_scale_count,
                 );
             } else {
+                // #919: this used to read "freezing per-tensor scales on the
+                // first observed tokens", and meant it — the freeze fired on
+                // the first observe, i.e. on the readiness probe. The window is
+                // now accumulated across requests; each attention layer logs
+                // "FP8 KV scales frozen after N tokens (requested M)" when it
+                // closes, which is the line to grep for in a serve log.
                 tracing::info!(
                     "FP8 KV cache with online calibration (checkpoint ships no k/v scales): \
-                     freezing per-tensor scales on the first observed tokens.{}",
+                     accumulating per-tensor K/V amax over the first {} observed tokens \
+                     (across requests, readiness probe included) before freezing the scales.{}",
+                    config.fp8_kv_calibration_tokens,
                     if args.fp8_kv_calibration_tokens.is_none() {
                         " (auto-enabled from MODEL.toml)"
                     } else {

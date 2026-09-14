@@ -114,7 +114,7 @@ impl Proj {
 struct Kernels {
     pipelined: KernelHandle,
     t_m128: KernelHandle,
-    quant: KernelHandle,
+    quant: ops::Fp8ActQuant,
     kmajor: KernelHandle,
 }
 
@@ -307,7 +307,7 @@ fn main() -> Result<()> {
     let k = Kernels {
         pipelined: gpu.kernel("w8a16_gemm_pipelined", "w8a16_gemm_pipelined")?,
         t_m128: gpu.kernel("w8a16_gemm_t_m128", "w8a16_gemm_t_m128")?,
-        quant: gpu.kernel("per_token_group_quant_fp8", "per_token_group_quant_fp8")?,
+        quant: ops::Fp8ActQuant::resolve(&gpu),
         kmajor: gpu.kernel("fp8_scale_transpose", "fp8_act_scale_to_kmajor")?,
     };
     let gate: f64 = std::env::var("ATLAS_W8A8_REL_RMS_GATE")
