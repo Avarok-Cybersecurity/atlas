@@ -25,5 +25,8 @@ Prefill-then-decode logits (C2) still need `cpu_forward` on the umbrella until t
 BUGS
 #N/A this slice.
 
+TEST NOTES (review 1077)
+`DeviceHybridCache::from_host` seeds GPU buffers once (H2D). Decode must use those ptrs. Host `HybridCache` remains prefix snapshot/restore.
+
 STOP
-Charter complete for hybrid cache types + slot mutants. MLA decode / AttnRes / MoE are later PRs.
+Charter complete for hybrid cache types + slot mutants + device-resident seed. MLA decode / AttnRes / MoE are later PRs.

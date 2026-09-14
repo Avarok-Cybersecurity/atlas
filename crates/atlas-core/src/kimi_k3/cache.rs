@@ -3,8 +3,11 @@
 //! Hybrid cache: paged MLA KV + KDA recurrent/conv state.
 //!
 //! Prefix-cache restore reuses C3 CPU semantics: snapshot/restore the
-//! per-layer [`LayerCache`] (KDA conv/recurrent or MLA KV). GPU paging
-//! of MLA is a later slice.
+//! per-layer [`LayerCache`] (KDA conv/recurrent or MLA KV).
+//!
+//! Host bytes are the prefix snapshot. Decode hot path must use
+//! `spark_model::kimi_k3::DeviceHybridCache` (device-resident conv/recurrent
+//! and MLA KV). Per-token D2H/H2D of those buffers is not this cache.
 
 use anyhow::{Context, Result, bail};
 

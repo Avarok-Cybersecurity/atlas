@@ -5,6 +5,7 @@
 //! Math lives in `atlas_core::kimi_k3` so Mac unit tests compile without
 //! spark-storage. CUDA launch: [`kda_cuda`].
 
+pub mod device_cache;
 pub mod kda;
 pub mod kda_cuda;
 
@@ -12,6 +13,7 @@ pub use atlas_core::kimi_k3::{
     HybridCache, K3Graph, KDA_L2_EPS, KdaConfig, KdaState, LayerCache, MixerKind, MlaKv, MlpKind,
     cuda_kda_enabled, kda_decode_token, kda_from,
 };
+pub use device_cache::{DeviceHybridCache, DeviceLayerCache};
 pub use kda_cuda::{
     K3KdaDecodeKernels, KdaDeviceState, launch_k3_kda_decode_token,
     launch_k3_kda_decode_token_on_device,
