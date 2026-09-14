@@ -76,102 +76,111 @@ impl K3BoundLayer {
         let use_cuda_moe = !self.mxfp4_experts.is_empty() && self.spec.mlp == MlpKind::LatentMoe;
 
         let key = if residual.is_null() { hidden } else { residual };
-        {
-            let mut hub = self.shared.attnres.lock();
-            if self.index == 0 {
-                let hidden_f32 = hidden_to_f32(gpu, hidden, h, stream)?;
-                let mut s = AttnResStream::new(h, self.shared.graph.attn_res_block_size);
-                s.partial.clone_from(&hidden_f32);
-                hub.insert(key, s);
-            } else {
-                gpu.synchronize(stream)?;
+        let result = (|| -> Result<()> {
+            {
+                let mut hub = self.shared.attnres.lock();
+                if self.index == 0 {
+                    let hidden_f32 = hidden_to_f32(gpu, hidden, h, stream)?;
+                    let mut s = AttnResStream::new(h, self.shared.graph.attn_res_block_size);
+                    s.partial.clone_from(&hidden_f32);
+                    hub.insert(key, s);
+                } else {
+                    gpu.synchronize(stream)?;
+                }
+                let stream_res = hub.get_mut(&key).with_context(|| {
+                    format!(
+                        "K3 AttnRes missing at layer {} (layer 0 must run)",
+                        self.index
+                    )
+                })?;
+                // `seq_len` is the 0-based *position* (`TransformerLayer::decode`).
+                // Prefill already walks tokens in `prefill_default` (one decode per
+                // token, KDA/MLA step once). Do not treat this as packed N — looping
+                // `seq_len` times would step KDA N times on one hidden row.
+                let kda_k = if use_cuda_kda {
+                    Some(self.kda_kernels(gpu)?)
+                } else {
+                    None
+                };
+                let mla_k = if use_cuda_mla {
+                    Some(self.mla_kernels(gpu)?)
+                } else {
+                    None
+                };
+                let moe_k = if use_cuda_moe {
+                    Some(self.moe_kernels(gpu)?)
+                } else {
+                    None
+                };
+                forward_one_layer_with_cores(
+                    &lctx,
+                    layer,
+                    seq_len,
+                    &mut st.cache,
+                    stream_res,
+                    ablation,
+                    |x, w, g, b, cfg, kst| {
+                        if let Some(k) = kda_k {
+                            launch_k3_kda_decode_token(gpu, &k, x, w, g, b, cfg, kst, stream)
+                        } else {
+                            Ok(kda_decode_token(x, w, g, b, cfg, kst))
+                        }
+                    },
+                    |q, k, v, g, kv, cfg, pos, theta| {
+                        if let Some(kern) = mla_k {
+                            launch_k3_mla_decode_token(
+                                gpu, &kern, q, k, v, g, kv, cfg, pos, theta, stream,
+                            )
+                        } else {
+                            Ok(mla_decode_token(q, k, v, g, kv, cfg, pos, theta))
+                        }
+                    },
+                    |wts, latent, ids, mix_w, cfg| {
+                        let mut mixed = if let Some(k) = moe_k {
+                            launch_k3_latent_moe_experts(
+                                gpu,
+                                &k,
+                                &self.mxfp4_experts,
+                                latent,
+                                ids,
+                                mix_w,
+                                cfg,
+                                stream,
+                            )?
+                        } else {
+                            mix_routed_experts(latent, ids, mix_w, &wts.experts, cfg)
+                        };
+                        // Expert w2 is row-parallel: allreduce latent before RMSNorm+up.
+                        reduce_ref(&mut mixed)?;
+                        Ok(mixed)
+                    },
+                )?;
             }
-            let stream_res = hub.get_mut(&key).with_context(|| {
-                format!(
-                    "K3 AttnRes missing at layer {} (layer 0 must run)",
-                    self.index
-                )
-            })?;
-            // `seq_len` is the 0-based *position* (`TransformerLayer::decode`).
-            // Prefill already walks tokens in `prefill_default` (one decode per
-            // token, KDA/MLA step once). Do not treat this as packed N — looping
-            // `seq_len` times would step KDA N times on one hidden row.
-            let kda_k = if use_cuda_kda {
-                Some(self.kda_kernels(gpu)?)
-            } else {
-                None
-            };
-            let mla_k = if use_cuda_mla {
-                Some(self.mla_kernels(gpu)?)
-            } else {
-                None
-            };
-            let moe_k = if use_cuda_moe {
-                Some(self.moe_kernels(gpu)?)
-            } else {
-                None
-            };
-            forward_one_layer_with_cores(
-                &lctx,
-                layer,
-                seq_len,
-                &mut st.cache,
-                stream_res,
-                ablation,
-                |x, w, g, b, cfg, kst| {
-                    if let Some(k) = kda_k {
-                        launch_k3_kda_decode_token(gpu, &k, x, w, g, b, cfg, kst, stream)
-                    } else {
-                        Ok(kda_decode_token(x, w, g, b, cfg, kst))
-                    }
-                },
-                |q, k, v, g, kv, cfg, pos, theta| {
-                    if let Some(kern) = mla_k {
-                        launch_k3_mla_decode_token(
-                            gpu, &kern, q, k, v, g, kv, cfg, pos, theta, stream,
-                        )
-                    } else {
-                        Ok(mla_decode_token(q, k, v, g, kv, cfg, pos, theta))
-                    }
-                },
-                |wts, latent, ids, mix_w, cfg| {
-                    let mut mixed = if let Some(k) = moe_k {
-                        launch_k3_latent_moe_experts(
-                            gpu,
-                            &k,
-                            &self.mxfp4_experts,
-                            latent,
-                            ids,
-                            mix_w,
-                            cfg,
-                            stream,
-                        )?
-                    } else {
-                        mix_routed_experts(latent, ids, mix_w, &wts.experts, cfg)
-                    };
-                    // Expert w2 is row-parallel: allreduce latent before RMSNorm+up.
-                    reduce_ref(&mut mixed)?;
-                    Ok(mixed)
-                },
-            )?;
-        }
 
-        let n_layers = self.shared.graph.layers.len();
-        let out = if self.index + 1 == n_layers {
-            let (proj, norm) = self.output_res(gpu)?;
-            let mut hub = self.shared.attnres.lock();
-            let stream_res = hub
-                .remove(&key)
-                .context("K3 AttnRes missing at last layer")?;
-            stream_res.mix(proj, norm, lctx.eps, ablation.attnres_mix)
-        } else {
-            let hub = self.shared.attnres.lock();
-            hub.get(&key)
-                .map(|s| s.partial.clone())
-                .context("K3 AttnRes missing after mixer")?
-        };
-        f32_to_hidden(gpu, hidden, &out, stream)?;
-        Ok(())
+            let n_layers = self.shared.graph.layers.len();
+            let out = if self.index + 1 == n_layers {
+                let (proj, norm) = self.output_res(gpu)?;
+                let mut hub = self.shared.attnres.lock();
+                let stream_res = hub
+                    .remove(&key)
+                    .context("K3 AttnRes missing at last layer")?;
+                stream_res.mix(proj, norm, lctx.eps, ablation.attnres_mix)
+            } else {
+                let hub = self.shared.attnres.lock();
+                hub.get(&key)
+                    .map(|s| s.partial.clone())
+                    .context("K3 AttnRes missing after mixer")?
+            };
+            f32_to_hidden(gpu, hidden, &out, stream)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            // Layer 0 inserts; last layer removes on success. A CUDA fail
+            // mid-stack would otherwise leak until the next seq's layer 0
+            // overwrites. Single-seq decode bounds the map; still drop.
+            self.shared.attnres.lock().remove(&key);
+        }
+        result
     }
 
     fn kda_kernels(&self, gpu: &dyn GpuBackend) -> Result<K3KdaDecodeKernels> {
