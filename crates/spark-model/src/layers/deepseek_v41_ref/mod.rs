@@ -259,6 +259,7 @@ pub fn assert_close(what: &str, got: &[f64], want: &[f64], tol: f64) {
 
 pub mod engram;
 pub mod hc;
+pub mod moe;
 
 /// Shared comparison bar for every component's tests.
 #[cfg(test)]
