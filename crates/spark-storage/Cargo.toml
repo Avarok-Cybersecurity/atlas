@@ -67,7 +67,7 @@ path = "examples/long_context_bench.rs"
 # HARDWARE.toml is the SSOT for the SM architecture the predictor kernels
 # compile for; build.rs reads it.
 [build-dependencies]
-toml = "0.8"
+toml = "1.1"
 
 [lints]
 workspace = true
