@@ -428,7 +428,27 @@ pub fn emit_token(
             || crate::grammar::grammar_blocks_stop(a.grammar_state.as_mut(), &a.eos_tokens));
     let legacy_suppresses_eos = a.require_tool_call;
     let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
-    let suppress_eos = grammar_suppresses_eos || legacy_suppresses_eos || min_tokens_suppresses;
+    // Thinking EOS suppression — the twin of decode_logits_step's explicit
+    // `thinking_suppresses_eos` term, which this emit path NEVER HAD (the
+    // grammar term above only covers grammar-armed turns). Invisible on the
+    // Qwen family, whose temp-0 argmax never lands on EOS inside <think>;
+    // Nemotron-3.5-Lightning DOES — its greedy reasoning opens by restating
+    // the prompt and then argmaxes <|im_end|>, which the serial lane
+    // discards (reasoning continues, 2k+ tokens) and this lane previously
+    // honored, ending every speculative thinking turn at ~30 tokens
+    // (found on Lightning + DFlash, 2026-08-25). Same hard-ceiling escape
+    // as the serial twin so generation cannot overrun at the budget edge.
+    let hard_ceiling = crate::scheduler::helpers::hard_ceiling_hit(
+        a.remaining,
+        a.seq.seq_len,
+        sched.limits.max_seq_len,
+    );
+    let thinking_suppresses_eos =
+        crate::scheduler::helpers::eos_suppressed_by_thinking(a.inside_thinking, hard_ceiling);
+    let suppress_eos = grammar_suppresses_eos
+        || legacy_suppresses_eos
+        || min_tokens_suppresses
+        || thinking_suppresses_eos;
 
     if a.eos_tokens.contains(&tok) && !suppress_eos {
         a.finished = true;
