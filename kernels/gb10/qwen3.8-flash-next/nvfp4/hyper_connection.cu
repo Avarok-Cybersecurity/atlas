@@ -997,3 +997,282 @@ extern "C" __global__ void hc_dec_down_v5(
         }
     }
 }
+
+// ─── Fused up-GEMM + mix: `hc_pre_up_mix` (ATLAS_HC_FUSE_UP_MIX=1) ──────────
+//
+// WHY. The bracket is BANDWIDTH-bound, not issue-bound: at the shipped
+// `ATLAS_HC_GEMM_SLAB=8192` it moves ~196 GB per 7.8K-token chunk for 9.9
+// TFLOP — 19.7 bytes/FLOP, ~170 GB/s of this box's 273. No kernel-efficiency
+// work can help; only removing bytes can. `up_pre` is [T, hc*H] BF16 = 161 MB
+// at T=7841: written by the up GEMM and read once by `hc_pre_mix`, 322 MB a
+// call, ~30.8 GB a chunk across 96 sites, purely to hand one kernel's output
+// to the next. This kernel deletes it by doing the mix in the GEMM epilogue.
+//
+// HOW THE FOUR STREAMS MEET IN ONE THREAD. `hc_pre_mix` needs all `hc` streams
+// of ONE output dim together. The stock B-row map (`gn = cta_n + nrow`) spreads
+// a dim's streams across four different CTAs, so the mix cannot be fused. This
+// kernel instead maps the 128 B-rows of a tile as FOUR groups of 32 dims:
+//
+//     gn = (nrow >> 5) * H + blockIdx.x * 32 + (nrow & 31)
+//
+// so one CTA owns 32 output dims x all 4 streams. `up_w` is NOT permuted or
+// re-laid-out — B rows are still whole contiguous K-rows, four runs of 32 —
+// so `hc_dec_up` and every decode arm are untouched.
+//
+// The store in `dense_gemm_bf16_pipelined` is the authority for where a result
+// lands: local column `c = n_tile*8 + tid*2`. Under the interleave
+// `s = c >> 5`, `dloc = c & 31`, and adding 32 to `c` advances `n_tile` by
+// exactly 4 with `tid`, `group_id` and the accumulator slot fixed. So for
+// `q` in 0..3, `acc[q]`, `acc[q+4]`, `acc[q+8]`, `acc[q+12]` are streams 0..3
+// at the SAME `dloc = q*8 + tid*2`, in one thread's registers. No shuffle, no
+// smem staging, no cross-CTA reduction.
+//
+// BIT-IDENTITY, and the one line that carries it. The `__float2bfloat16` on the
+// accumulator BEFORE the sigmoid is load-bearing: it reproduces the BF16
+// `up_pre` store this kernel deletes (`hc_pre_mix` reads `ux[i]` as BF16). The
+// stream sum runs ASCENDING and rounds once at the end, exactly as
+// `hc_pre_mix` does, and this TU is built `--fmad=false` like `common/`. The
+// output is bit-identical, not parity-gated — which is the entire case for the
+// change, so the launcher's test asserts raw bytes, not a cosine.
+//
+// NOT fused here: the injection tail. `hc_pre_mix` also gates `inj_pre` into
+// `inj_out`, which has nothing to do with the up GEMM; `hc_inj_gate` below
+// carries it verbatim.
+#define QHC_UM_M_TILE 128
+#define QHC_UM_N_TILE 128
+#define QHC_UM_K_STEP 32
+#define QHC_UM_K_SUB 16
+#define QHC_UM_K_SUBS (QHC_UM_K_STEP / QHC_UM_K_SUB)
+#define QHC_UM_A_STRIDE (QHC_UM_K_STEP + 8)
+#define QHC_UM_B_STRIDE (QHC_UM_K_STEP + 8)
+#define QHC_UM_WARPS 8
+#define QHC_UM_THREADS (QHC_UM_WARPS * 32)
+#define QHC_UM_N_TILES_PER_WARP (QHC_UM_N_TILE / 8)   // 16
+#define QHC_UM_STAGES 2
+#define QHC_UM_STREAMS 4                              // hc_mult; pinned below
+// The 4x32 = 128 identity is what puts one dim's four streams in one thread.
+// `DM_N_TILE` is `#ifndef`-overridable in common/, so pin the shape here where
+// a `-D` sweep cannot silently change it behind the Rust guard.
+static_assert(QHC_UM_N_TILE == QHC_UM_STREAMS * 32,
+              "hc_pre_up_mix: N-tile must be hc_mult groups of 32 dims");
+static_assert(QHC_UM_N_TILES_PER_WARP == QHC_UM_STREAMS * 4,
+              "hc_pre_up_mix: accumulator quads must be 4 per stream");
+
+__device__ __forceinline__ void qhc_um_cp_async_cg_16(void* smem_ptr, const void* gmem_ptr) {
+    unsigned int s = (unsigned int)__cvta_generic_to_shared(smem_ptr);
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(s), "l"(gmem_ptr));
+}
+__device__ __forceinline__ void qhc_um_cp_async_commit() {
+    asm volatile("cp.async.commit_group;\n" ::);
+}
+template <int N>
+__device__ __forceinline__ void qhc_um_wait_group() {
+    asm volatile("cp.async.wait_group %0;\n" ::"n"(N));
+}
+__device__ __forceinline__ void qhc_um_wait_le(unsigned int n) {
+    switch (n) {
+        case 0:  qhc_um_wait_group<0>(); break;
+        case 1:  qhc_um_wait_group<1>(); break;
+        case 2:  qhc_um_wait_group<2>(); break;
+        default: qhc_um_wait_group<3>(); break;
+    }
+}
+
+// Transcribed from `dm_mma_kstep` (common/dense_gemm_bf16.cu). Identical
+// arithmetic and identical fragment addressing — only the name differs, so the
+// two cannot drift into different rounding.
+__device__ __forceinline__ void qhc_um_mma_kstep(
+    const __nv_bfloat16* smem_A,
+    const __nv_bfloat16* smem_B,
+    float acc[QHC_UM_N_TILES_PER_WARP][4],
+    unsigned int warp_m_offset, unsigned int group_id, unsigned int tid
+) {
+    const unsigned int a_stride = QHC_UM_A_STRIDE;
+    const unsigned int b_stride = QHC_UM_B_STRIDE;
+    const unsigned short* sA = (const unsigned short*)smem_A;
+    const unsigned short* sB = (const unsigned short*)smem_B;
+
+    unsigned int frag_r0 = warp_m_offset + group_id;
+    unsigned int frag_r1 = warp_m_offset + group_id + 8;
+
+    #pragma unroll
+    for (int s = 0; s < QHC_UM_K_SUBS; s++) {
+        const unsigned int k_off = s * QHC_UM_K_SUB;
+        unsigned int frag_c0 = k_off + tid * 2;
+        unsigned int frag_c1 = k_off + tid * 2 + 8;
+
+        unsigned int a0 = *(const unsigned int*)&sA[frag_r0 * a_stride + frag_c0];
+        unsigned int a1 = *(const unsigned int*)&sA[frag_r1 * a_stride + frag_c0];
+        unsigned int a2 = *(const unsigned int*)&sA[frag_r0 * a_stride + frag_c1];
+        unsigned int a3 = *(const unsigned int*)&sA[frag_r1 * a_stride + frag_c1];
+
+        #pragma unroll
+        for (int n_tile = 0; n_tile < QHC_UM_N_TILES_PER_WARP; n_tile++) {
+            unsigned int n_col = n_tile * 8 + group_id;
+            unsigned int k0 = k_off + tid * 2;
+            unsigned int k1 = k_off + tid * 2 + 8;
+
+            unsigned int b0 = *(const unsigned int*)&sB[n_col * b_stride + k0];
+            unsigned int b1 = *(const unsigned int*)&sB[n_col * b_stride + k1];
+
+            asm volatile(
+                "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+                "{%0, %1, %2, %3}, "
+                "{%4, %5, %6, %7}, "
+                "{%8, %9}, "
+                "{%10, %11, %12, %13};"
+                : "=f"(acc[n_tile][0]), "=f"(acc[n_tile][1]),
+                  "=f"(acc[n_tile][2]), "=f"(acc[n_tile][3])
+                : "r"(a0), "r"(a1), "r"(a2), "r"(a3),
+                  "r"(b0), "r"(b1),
+                  "f"(acc[n_tile][0]), "f"(acc[n_tile][1]),
+                  "f"(acc[n_tile][2]), "f"(acc[n_tile][3])
+            );
+        }
+    }
+}
+
+/// `y_out[t,d] = (sum_s sigmoid(bf16(low[t,:] . up_w[s*H+d,:])) * normed[t,s*H+d]) * inv_hc`
+///
+/// Grid: (H/32, ceil(M/128), 1). Block: 256. `up_pre` is never materialised.
+extern "C" __global__ void hc_pre_up_mix(
+    const __nv_bfloat16* __restrict__ low,     // A [M, R]      (post-silu)
+    const __nv_bfloat16* __restrict__ up_w,    // B [hc*H, R]   (unpermuted)
+    const __nv_bfloat16* __restrict__ normed,  //   [M, hc*H]
+    __nv_bfloat16* __restrict__ y_out,         //   [M, H]
+    const unsigned int M,
+    const unsigned int H,
+    const unsigned int R,
+    const float inv_hc
+) {
+    const unsigned int cta_m = blockIdx.y * QHC_UM_M_TILE;
+    const unsigned int dim_base = blockIdx.x * 32u;            // 32 dims per CTA
+    const unsigned int warp_id = threadIdx.x / 32;
+    const unsigned int lane_id = threadIdx.x % 32;
+    const unsigned int warp_m_offset = warp_id * 16;
+    const unsigned int group_id = lane_id >> 2;
+    const unsigned int tid = lane_id & 3;
+    const unsigned int hc_dim = QHC_UM_STREAMS * H;
+
+    __shared__ __align__(16) __nv_bfloat16 smem_A[QHC_UM_STAGES][QHC_UM_M_TILE][QHC_UM_A_STRIDE];
+    __shared__ __align__(16) __nv_bfloat16 smem_B[QHC_UM_STAGES][QHC_UM_N_TILE][QHC_UM_B_STRIDE];
+
+    float acc[QHC_UM_N_TILES_PER_WARP][4];
+    #pragma unroll
+    for (int i = 0; i < QHC_UM_N_TILES_PER_WARP; i++) {
+        acc[i][0] = 0.0f; acc[i][1] = 0.0f; acc[i][2] = 0.0f; acc[i][3] = 0.0f;
+    }
+
+    const unsigned int n_steps = (R + QHC_UM_K_STEP - 1) / QHC_UM_K_STEP;
+    const unsigned int a_chunks = (QHC_UM_M_TILE * QHC_UM_K_STEP) / 8;
+    const unsigned int b_chunks = (QHC_UM_N_TILE * QHC_UM_K_STEP) / 8;
+    const bool k_vec_aligned = (R & 7u) == 0u;
+
+    auto prefetch = [&](unsigned int step, unsigned int stage) {
+        unsigned int k_base = step * QHC_UM_K_STEP;
+
+        #pragma unroll
+        for (unsigned int c = threadIdx.x; c < a_chunks; c += QHC_UM_THREADS) {
+            unsigned int row = (c * 8) / QHC_UM_K_STEP;
+            unsigned int col = (c * 8) % QHC_UM_K_STEP;
+            unsigned int gr = cta_m + row;
+            unsigned int gc = k_base + col;
+            __nv_bfloat16* dst = &smem_A[stage][row][col];
+            if (gr < M && gc + 8 <= R && k_vec_aligned) {
+                qhc_um_cp_async_cg_16(dst, &low[(unsigned long long)gr * R + gc]);
+            } else {
+                #pragma unroll
+                for (unsigned int e = 0; e < 8; e++) {
+                    unsigned int gcol = gc + e;
+                    dst[e] = (gr < M && gcol < R) ? low[(unsigned long long)gr * R + gcol]
+                                                  : __float2bfloat16(0.0f);
+                }
+            }
+        }
+
+        // B rows use the STREAM-INTERLEAVED map, not `cta_n + nrow`.
+        #pragma unroll
+        for (unsigned int c = threadIdx.x; c < b_chunks; c += QHC_UM_THREADS) {
+            unsigned int nrow = (c * 8) / QHC_UM_K_STEP;
+            unsigned int kcol = (c * 8) % QHC_UM_K_STEP;
+            unsigned int dloc = nrow & 31u;
+            unsigned int gn = (nrow >> 5) * H + dim_base + dloc;
+            unsigned int gk = k_base + kcol;
+            __nv_bfloat16* dst = &smem_B[stage][nrow][kcol];
+            bool row_ok = (dim_base + dloc) < H;
+            if (row_ok && gk + 8 <= R && k_vec_aligned) {
+                qhc_um_cp_async_cg_16(dst, &up_w[(unsigned long long)gn * R + gk]);
+            } else {
+                #pragma unroll
+                for (unsigned int e = 0; e < 8; e++) {
+                    unsigned int gke = gk + e;
+                    dst[e] = (row_ok && gke < R) ? up_w[(unsigned long long)gn * R + gke]
+                                                 : __float2bfloat16(0.0f);
+                }
+            }
+        }
+        qhc_um_cp_async_commit();
+    };
+
+    #pragma unroll
+    for (unsigned int p = 0; p < QHC_UM_STAGES - 1; p++) {
+        if (p < n_steps) prefetch(p, p % QHC_UM_STAGES);
+    }
+
+    for (unsigned int step = 0; step < n_steps; step++) {
+        unsigned int cur = step % QHC_UM_STAGES;
+        unsigned int ahead = step + (QHC_UM_STAGES - 1);
+        if (ahead < n_steps) prefetch(ahead, ahead % QHC_UM_STAGES);
+        unsigned int committed = min(n_steps, QHC_UM_STAGES + step);
+        unsigned int target = committed - (step + 1);
+        qhc_um_wait_le(target);
+        __syncthreads();
+        qhc_um_mma_kstep(&smem_A[cur][0][0], &smem_B[cur][0][0],
+                         acc, warp_m_offset, group_id, tid);
+        __syncthreads();
+    }
+
+    // ── Fused mix epilogue ──
+    // `q` selects the 8-dim group; `acc[q + 4*s]` is stream `s` of that group.
+    const unsigned int row0 = cta_m + warp_m_offset + group_id;
+    #pragma unroll
+    for (int q = 0; q < 4; q++) {
+        #pragma unroll
+        for (int rr = 0; rr < 2; rr++) {
+            unsigned int row = row0 + (unsigned int)rr * 8u;
+            if (row >= M) continue;
+            const __nv_bfloat16* nx = normed + (size_t)row * hc_dim;
+            __nv_bfloat16* y = y_out + (size_t)row * H;
+            #pragma unroll
+            for (int cc = 0; cc < 2; cc++) {
+                unsigned int dloc = (unsigned int)q * 8u + tid * 2u + (unsigned int)cc;
+                unsigned int d = dim_base + dloc;
+                if (d >= H) continue;
+                const int slot = rr * 2 + cc;
+                float mixed = 0.0f;
+                #pragma unroll
+                for (int s = 0; s < QHC_UM_STREAMS; s++) {
+                    // bf16() FIRST: reproduces the deleted `up_pre` BF16 store.
+                    float u = (float)__float2bfloat16(acc[q + 4 * s][slot]);
+                    mixed += qhc_sigmoid(u) * (float)nx[(size_t)s * H + d];
+                }
+                y[d] = __float2bfloat16(mixed * inv_hc);
+            }
+        }
+    }
+}
+
+/// The injection tail of `hc_pre_mix`, carried verbatim. One block per token.
+extern "C" __global__ void hc_inj_gate(
+    const __nv_bfloat16* __restrict__ inj_pre,  // [T, hc]
+    float* __restrict__ inj_out,                // [T, hc]
+    const unsigned int hc,
+    const float inv_hc
+) {
+    const unsigned int t = blockIdx.x;
+    const unsigned int tid = threadIdx.x;
+    if (tid < hc) {
+        inj_out[(size_t)t * hc + tid] =
+            2.0f * qhc_sigmoid((float)inj_pre[(size_t)t * hc + tid] * inv_hc);
+    }
+}

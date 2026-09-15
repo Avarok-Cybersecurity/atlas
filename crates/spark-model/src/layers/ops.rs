@@ -108,7 +108,7 @@ mod hyper_connection;
 #[path = "ops/hyper_connection_dispatch.rs"]
 mod hyper_connection_dispatch;
 #[path = "ops/hyper_connection_lowrank.rs"]
-mod hyper_connection_lowrank;
+pub(crate) mod hyper_connection_lowrank;
 #[path = "ops/hyper_connection_lowrank_rows.rs"]
 mod hyper_connection_lowrank_rows;
 #[cfg(test)]

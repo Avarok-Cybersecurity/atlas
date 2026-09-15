@@ -18,7 +18,7 @@
 
 use anyhow::Result;
 #[path = "hyper_connection_lowrank_gemm.rs"]
-mod gemm;
+pub(crate) mod gemm;
 pub(crate) use gemm::hc_pre_gemm;
 
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};

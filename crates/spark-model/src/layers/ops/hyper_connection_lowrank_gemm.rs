@@ -23,6 +23,19 @@ use spark_runtime::kernel_args::KernelLaunch;
 /// `ATLAS_QWEN4EXP_NO_HC_GEMM=1` falls back to the fused kernel (kill switch,
 /// same convention as ATLAS_NO_GDN_FLA).
 #[allow(clippy::too_many_arguments)]
+/// `ATLAS_HC_FUSE_UP_MIX=1`: do the mix in the up-GEMM epilogue so `up_pre`
+/// is never materialised. See `hc_pre_up_mix` in the model's
+/// `hyper_connection.cu` for the stream-interleaved N-tile that makes one
+/// output dim's four streams meet in a single thread's registers.
+///
+/// 161 MB written + 161 MB read per call at T=7841, ~30.8 GB a chunk across
+/// the 96 prefill sites, to hand one kernel's output to the next.
+fn hc_fuse_up_mix() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_HC_FUSE_UP_MIX").as_deref() == Ok("1"))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn hc_pre_gemm(
     gpu: &dyn GpuBackend,
     streams: DevicePtr,
@@ -37,6 +50,47 @@ pub(crate) fn hc_pre_gemm(
     inject: bool,
     use_cublas: bool,
     row_exact: bool,
+    stream: u64,
+) -> Result<()> {
+    hc_pre_gemm_fused(
+        gpu,
+        streams,
+        w,
+        y_out,
+        inj_out,
+        scratch,
+        num_tokens,
+        hidden_size,
+        hc_mult,
+        norm_eps,
+        inject,
+        use_cublas,
+        row_exact,
+        hc_fuse_up_mix(),
+        stream,
+    )
+}
+
+/// `hc_pre_gemm` with the fusion arm passed EXPLICITLY rather than read from
+/// the environment. The env reader is a `OnceLock`, so a single test process
+/// can only ever observe one arm through it — and the whole case for this
+/// change is that the two arms are bit-identical, which takes both in one
+/// process to assert. Production goes through the wrapper above.
+pub(crate) fn hc_pre_gemm_fused(
+    gpu: &dyn GpuBackend,
+    streams: DevicePtr,
+    w: &HcLowRank,
+    y_out: DevicePtr,
+    inj_out: DevicePtr,
+    scratch: DevicePtr,
+    num_tokens: u32,
+    hidden_size: u32,
+    hc_mult: u32,
+    norm_eps: f32,
+    inject: bool,
+    use_cublas: bool,
+    row_exact: bool,
+    fuse_up_mix: bool,
     stream: u64,
 ) -> Result<()> {
     anyhow::ensure!(
@@ -69,6 +123,38 @@ pub(crate) fn hc_pre_gemm(
     let k_silu = gpu.kernel("hyper_connection", "hc_silu_scale")?;
     let k_mix = gpu.kernel("hyper_connection", "hc_pre_mix")?;
     let k_gemm = gpu.kernel("gemm", "dense_gemm_bf16_pipelined")?;
+    // try_kernel, not kernel: a target without the fused pair degrades to the
+    // stock arm instead of refusing to serve.
+    let k_up_mix = crate::layers::try_kernel(gpu, "hyper_connection", "hc_pre_up_mix");
+    let k_inj_gate = crate::layers::try_kernel(gpu, "hyper_connection", "hc_inj_gate");
+    // Every conjunct is load-bearing:
+    //   !use_cublas  - excludes BOTH decode entries (T<=64 and the row-exact
+    //                  batched verify) and ATLAS_HC_PREFILL_CUBLAS.
+    //   inject       - excludes `hc_head_lowrank`, which is the model's FINAL
+    //                  NORM (no `model.norm.weight` in the checkpoint). Worth
+    //                  1/97th of the win and removes a wrong-logits failure
+    //                  mode from the first commit.
+    //   hc_mult == 4 - pins the 4x32=128 N-tile identity the epilogue relies on.
+    //   hidden % 32  - grid.x is hidden/32, and a partial 32-dim group would
+    //                  read up_w rows belonging to the next stream.
+    let fuse = fuse_up_mix
+        && !use_cublas
+        && inject
+        && hc_mult == 4
+        && hidden_size.is_multiple_of(32)
+        && k_up_mix.0 != 0
+        && k_inj_gate.0 != 0;
+    if fuse {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| {
+            tracing::info!(
+                hidden_size,
+                hc_mult,
+                rank,
+                "hc_pre arm: FUSED up-GEMM+mix (up_pre not materialised)"
+            )
+        });
+    }
     let inv_hc = 1.0f32 / hc_mult as f32;
 
     let mut t0 = 0u32;
@@ -122,8 +208,22 @@ pub(crate) fn hc_pre_gemm(
             .arg_f32(inv_hc)
             .launch(stream)?;
 
-        // up_pre = low x up_w^T   [ts, hc_dim]
-        if use_cublas {
+        // up_pre = low x up_w^T   [ts, hc_dim]  — SKIPPED under `fuse`, which
+        // folds this GEMM and the mix below into one launch.
+        if fuse {
+            KernelLaunch::new(gpu, k_up_mix)
+                .grid([hidden_size / 32, ts.div_ceil(128), 1])
+                .block([256, 1, 1])
+                .arg_ptr(low)
+                .arg_ptr(w.up_w)
+                .arg_ptr(normed)
+                .arg_ptr(y_out.offset(t0 as usize * hidden_size as usize * 2))
+                .arg_u32(ts)
+                .arg_u32(hidden_size)
+                .arg_u32(rank)
+                .arg_f32(inv_hc)
+                .launch(stream)?;
+        } else if use_cublas {
             project_rows(
                 gpu,
                 low,
@@ -175,6 +275,21 @@ pub(crate) fn hc_pre_gemm(
                     stream,
                 )?;
             }
+        }
+
+        if fuse {
+            // The mix already happened in the epilogue; only the injection
+            // tail of `hc_pre_mix` is left, carried verbatim by `hc_inj_gate`.
+            KernelLaunch::new(gpu, k_inj_gate)
+                .grid([ts, 1, 1])
+                .block([32, 1, 1])
+                .arg_ptr(inj_pre)
+                .arg_ptr(inj_out.offset(t0 as usize * hc_mult as usize * 4))
+                .arg_u32(hc_mult)
+                .arg_f32(inv_hc)
+                .launch(stream)?;
+            t0 += ts;
+            continue;
         }
 
         KernelLaunch::new(gpu, k_mix)

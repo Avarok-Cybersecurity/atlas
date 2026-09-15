@@ -91,6 +91,15 @@ pub(super) fn download_bf16(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Vec<f
         .collect()
 }
 
+/// Raw device bytes. Bit-identity claims are asserted on THESE, not on decoded
+/// floats: a float compare treats NaN as unequal to itself and would report a
+/// diff that is not one.
+pub(super) fn download_raw(g: &dyn GpuBackend, p: DevicePtr, bytes: usize) -> Vec<u8> {
+    let mut raw = vec![0u8; bytes];
+    g.copy_d2h(p, &mut raw).unwrap();
+    raw
+}
+
 pub(super) fn download_f32(g: &dyn GpuBackend, p: DevicePtr, n: usize) -> Vec<f32> {
     let mut raw = vec![0u8; n * 4];
     g.copy_d2h(p, &mut raw).unwrap();
@@ -449,3 +458,7 @@ fn hc_pre_gemm_matches_reference() {
         tol_for(&want_head),
     );
 }
+
+/// The fused-arm bit-identity check lives in its own file for the 500-LoC cap.
+#[path = "hyper_connection_lowrank_fuse_tests.rs"]
+mod hyper_connection_lowrank_fuse_tests;
