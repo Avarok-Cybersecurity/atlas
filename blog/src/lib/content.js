@@ -16,9 +16,9 @@
  */
 export const cleanSlug = (s) => s.replace(/\.html$/, '');
 
-export const SITE = 'https://blog.atlasinference.io';
-export const MAIN_SITE = 'https://atlasinference.io';
-export const DOCS_SITE = 'https://docs.atlasinference.io';
+export const SITE = 'https://blog.atlascybernetics.ai';
+export const MAIN_SITE = 'https://atlascybernetics.ai';
+export const DOCS_SITE = 'https://docs.atlascybernetics.ai';
 export const githubUrl = 'https://github.com/Avarok-Cybersecurity/atlas';
 // Must match site/src/lib/data.js. An invite code is not derivable from
 // anything, so a wrong one is a dead link that looks entirely plausible.
@@ -27,7 +27,7 @@ export const xUrl = 'https://x.com/AtlasInferenceX';
 
 export const blog = {
   name: 'Atlas blog',
-  kicker: 'blog.atlasinference.io',
+  kicker: 'blog.atlascybernetics.ai',
   title: 'Notes from the inference layer',
   lede:
     'Kernel work, measured benchmarks, and what it takes to run frontier models on hardware you own. ' +
@@ -38,7 +38,7 @@ export const blog = {
 };
 
 /**
- * The four chevron colours carry fixed meanings on atlasinference.io — violet
+ * The four chevron colours carry fixed meanings on atlascybernetics.ai — violet
  * = engine, cyan = silicon, green = verified, gold = community. Categories
  * inherit those meanings rather than inventing a fifth palette.
  */
@@ -90,7 +90,7 @@ export const footerCols = [
   {
     heading: 'Atlas',
     links: [
-      { text: 'atlasinference.io', href: MAIN_SITE },
+      { text: 'atlascybernetics.ai', href: MAIN_SITE },
       { text: 'Documentation', href: DOCS_SITE },
       { text: 'Benchmarks', href: `${MAIN_SITE}/#verified` },
       { text: 'Download', href: `${MAIN_SITE}/#run` }

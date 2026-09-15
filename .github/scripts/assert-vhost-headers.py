@@ -50,9 +50,9 @@ import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 VHOSTS = [
-    "site/deploy/nginx/atlasinference.io.conf",
-    "blog/deploy/nginx/blog.atlasinference.io.conf",
-    "book/deploy/nginx/docs.atlasinference.io.conf",
+    "site/deploy/nginx/atlascybernetics.ai.conf",
+    "blog/deploy/nginx/blog.atlascybernetics.ai.conf",
+    "book/deploy/nginx/docs.atlascybernetics.ai.conf",
 ]
 CORE = ["X-Frame-Options", "X-Content-Type-Options", "Referrer-Policy"]
 ADD_HEADER = re.compile(r"^\s*add_header\s+([A-Za-z0-9-]+)\s+(.*?);\s*$")
