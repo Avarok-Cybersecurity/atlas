@@ -280,8 +280,15 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
                 remote::atlasctl::SubprocessAtlasctl::locate(args.atlasctl.as_deref())?,
             );
             let run_id = format!("{}-{}", &anchor[..anchor.len().min(10)], now);
-            let runners =
-                remote::runners(f, atlasctl, &run_id, &anchor_full, cancel.clone(), &log_dir)?;
+            let runners = remote::runners(
+                f,
+                atlasctl,
+                &run_id,
+                &anchor_full,
+                cancel.clone(),
+                &log_dir,
+                args.no_serve_reuse,
+            )?;
             let shared = remote::Shared {
                 root: &root,
                 anchor: &anchor,

@@ -184,6 +184,23 @@ pub struct LocalChild {
 }
 
 impl LocalChild {
+    /// The extra arguments a local child gets when consecutive units may
+    /// share a server: the child verifies the leased one is what it would
+    /// have started, replaces it otherwise, and leaves it up for the next
+    /// unit; the lease names THIS driver so a dead campaign's server is
+    /// reclaimed by the next (`bench_lease`). Empty under `--no-serve-reuse`.
+    pub fn reuse_args(no_serve_reuse: bool) -> Vec<String> {
+        if no_serve_reuse {
+            vec![]
+        } else {
+            vec![
+                "--serve-reuse".to_string(),
+                "--serve-lease-owner".to_string(),
+                std::process::id().to_string(),
+            ]
+        }
+    }
+
     pub fn argv(&self, unit: &Unit, ctx: &RunCtx) -> Vec<String> {
         let mut v = vec![
             "benchmark".to_string(),

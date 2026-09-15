@@ -113,6 +113,7 @@ pub fn runners(
     anchor_full: &str,
     cancel: Arc<AtomicBool>,
     log_dir: &std::path::Path,
+    no_serve_reuse: bool,
 ) -> Result<Vec<Box<dyn GateRunner + Send>>> {
     let exe = std::env::current_exe().context("locating this binary")?;
     fleet
@@ -124,7 +125,7 @@ pub fn runners(
                     exe: exe.clone(),
                     records: Box::new(RepoRecords),
                     cancel: cancel.clone(),
-                    extra_args: vec![],
+                    extra_args: LocalChild::reuse_args(no_serve_reuse),
                 }))
             } else {
                 Ok(Box::new(runner::RemoteRunner {

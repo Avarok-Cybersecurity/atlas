@@ -195,6 +195,20 @@ fn a_kill_reason_wins_over_everything() {
     assert_eq!(out, RunOutcome::TimedOut);
 }
 
+/// Every local child — the local-only path and the fleet's local node alike —
+/// is told to reuse the leased server and whose lease it is; `--no-serve-reuse`
+/// yields nothing. One spelling, so the two paths cannot disagree (the first
+/// campaign on #1089 ran the fleet path without it).
+#[test]
+fn the_reuse_args_name_this_driver_and_vanish_under_no_serve_reuse() {
+    let me = std::process::id().to_string();
+    assert_eq!(
+        LocalChild::reuse_args(false),
+        ["--serve-reuse", "--serve-lease-owner", me.as_str()]
+    );
+    assert!(LocalChild::reuse_args(true).is_empty());
+}
+
 /// The real reader matches the SHARD, not just the id: two shards of one
 /// group at one commit sit in one directory, and the newest file there is
 /// whichever sibling finished last. Built from a committed record so the

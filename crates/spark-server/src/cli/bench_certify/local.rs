@@ -33,23 +33,11 @@ pub(super) fn drive_local(
     let anchor = anchor.to_owned();
     let hardware = hardware.to_owned();
     let exe = std::env::current_exe().context("locating this binary")?;
-    // Consecutive units that serve one recipe one way share a server: the
-    // child verifies the leased one is what it would have started, replaces
-    // it otherwise, and leaves it up; `certify_cmd` releases it at the end.
-    let extra_args = if args.no_serve_reuse {
-        vec![]
-    } else {
-        vec![
-            "--serve-reuse".to_string(),
-            "--serve-lease-owner".to_string(),
-            std::process::id().to_string(),
-        ]
-    };
     let mut runner = runner::LocalChild {
         exe,
         records: Box::new(runner::RepoRecords),
         cancel: cancel.clone(),
-        extra_args,
+        extra_args: runner::LocalChild::reuse_args(args.no_serve_reuse),
     };
     let git = guard::GitCli { root: root.clone() };
     let guard_ref_for_loop = guard_ref.map(str::to_owned);
