@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
 use atlas_plugin::gate::{self, GateStatus};
+use atlas_plugin::hardware::limits::TimingLimits;
 use atlas_plugin::hardware::policy::Sensitivity;
 use atlas_plugin::registry;
 
@@ -37,6 +38,10 @@ pub struct Unit {
     pub class: Sensitivity,
     pub estimate: Estimate,
     pub needs_confirmation: bool,
+    /// The class's `serve_allowance_s` (`HARDWARE.toml`
+    /// `[benchmarks.limits.timing]`), carried so every deadline reads one
+    /// number from the plan.
+    pub serve_allowance_s: u64,
 }
 
 impl Unit {
@@ -73,22 +78,17 @@ pub fn shard_count(boxes: usize) -> usize {
     if boxes <= 1 { 1 } else { 2 * boxes }
 }
 
-/// Wall time a self-served gate spends BEFORE its first sample: the child
-/// starts a server and loads a checkpoint, and neither is in the measured
-/// `frame.elapsed` a unit's estimate comes from. Measured 2026-09-13 on a
-/// GB10: ~40 s for a 27B NVFP4 checkpoint already in the page cache, and
-/// stack #1073's third campaign killed `video-fidelity` at 52 s — a 17 s bench
-/// under a `17 × 3` deadline — while its server was still loading. A cold
-/// 35B FP8 load from disk runs to several minutes, hence ten.
-pub const SERVE_ALLOWANCE: std::time::Duration = std::time::Duration::from_secs(600);
-
 impl Unit {
-    /// When to give up on this unit: the serve allowance, then the estimate
-    /// scaled by `timeout_factor` (≥ 1, `CertifyArgs::validate`). The ONE
-    /// spelling of the rule — the local loop and every fleet worker read it,
-    /// so a unit that fits on one box fits on every equivalent one.
+    /// When to give up on this unit: the class's serve allowance (what a
+    /// self-served gate spends before its first sample — a server start and
+    /// a checkpoint load, neither in the measured `frame.elapsed`; stack
+    /// #1073's third campaign killed a 17 s bench at 52 s while its server
+    /// loaded), then the estimate scaled by `timeout_factor` (≥ 1,
+    /// `CertifyArgs::validate`). The ONE spelling of the rule — the local
+    /// loop and every fleet worker read it, so a unit that fits on one box
+    /// fits on every equivalent one.
     pub fn deadline(&self, timeout_factor: f64) -> std::time::Duration {
-        SERVE_ALLOWANCE
+        std::time::Duration::from_secs(self.serve_allowance_s)
             + std::time::Duration::from_secs((self.secs() as f64 * timeout_factor) as u64)
     }
 
@@ -176,6 +176,7 @@ pub fn units(
     gates: &[&'static str],
     measured: &dyn Fn(&str) -> Option<(u64, u64)>,
     owed: Owed<'_>,
+    timing: &TimingLimits,
 ) -> Result<Vec<Unit>> {
     let mut out = Vec::new();
     for gate_id in gates {
@@ -189,9 +190,9 @@ pub fn units(
             };
             if let Some((_, n)) = shard {
                 estimate = match estimate {
-                    Estimate::Declared(s) => Estimate::Declared(shard_secs(s, n)),
+                    Estimate::Declared(s) => Estimate::Declared(shard_secs(s, n, timing)),
                     Estimate::Measured { secs, recorded_at } => Estimate::Measured {
-                        secs: shard_secs(secs, n),
+                        secs: shard_secs(secs, n, timing),
                         recorded_at,
                     },
                 };
@@ -203,6 +204,7 @@ pub fn units(
                 class: d.sensitivity,
                 estimate,
                 needs_confirmation: d.needs_confirmation,
+                serve_allowance_s: timing.serve_allowance_s,
             });
         }
     }
@@ -211,21 +213,13 @@ pub fn units(
 
 /// A shard's planning estimate: its share of the whole draw's time plus the
 /// fixed cost every run pays whatever its slice — a server start, a warm-up,
-/// scoring. Measured 2026-09-15 on six-way shards: an echolp sixth of a
-/// 7560 s draw ran 1650-1873 s (share 1260), a 27B sixth of 6120 s ran
-/// 741-940 s (share 1020) — the ÷n share alone under-planned every shard by
-/// 5-10 min and pushed the campaign's ETA out by 20. The constant is the
-/// middle of that spread; the deadline (`Unit::deadline`) scales it by the
-/// timeout factor like any other estimate.
-pub fn shard_secs(whole: u64, n: usize) -> u64 {
-    (whole / n as u64 + SHARD_OVERHEAD_SECS).max(SHARD_FLOOR_SECS)
+/// scoring — floored, both from the class's `[benchmarks.limits.timing]`
+/// (on GB10 420 s and 300 s: a six-way echolp sixth of a 7560 s draw ran
+/// 1650-1873 s against a 1260 s share). The deadline (`Unit::deadline`)
+/// scales the result by the timeout factor like any other estimate.
+pub fn shard_secs(whole: u64, n: usize, timing: &TimingLimits) -> u64 {
+    (whole / n as u64 + timing.shard_overhead_s).max(timing.shard_floor_s)
 }
-
-/// The fixed per-shard cost, see [`shard_secs`].
-pub const SHARD_OVERHEAD_SECS: u64 = 420;
-
-/// The least a shard is planned at, however thin the slice.
-pub const SHARD_FLOOR_SECS: u64 = 300;
 
 /// The order one box runs its units in: the long correctness legs first (a
 /// failure there is the one that must not wait five hours to be seen), then

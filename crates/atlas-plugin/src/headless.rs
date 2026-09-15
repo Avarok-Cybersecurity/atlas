@@ -37,6 +37,10 @@ pub struct HeadlessOptions {
     pub atlas_version: String,
     /// Whether to require a coherent endpoint before measuring.
     pub coherence: CoherencePolicy,
+    /// The box class's temperature ceilings for the hardware pre-check
+    /// (`hardware::limits`), when the caller could read them. `None` records
+    /// that no ceiling was available; it never applies another card's.
+    pub temp_ceilings: Option<crate::hardware::policy::TempCeilings>,
 }
 
 impl HeadlessOptions {
@@ -47,6 +51,7 @@ impl HeadlessOptions {
             source: RunSource::Cli,
             atlas_version: atlas_version.into(),
             coherence: CoherencePolicy::Probe,
+            temp_ceilings: None,
         }
     }
 }
@@ -127,6 +132,7 @@ pub fn run_blocking(
         request.values.clone(),
         request.target.clone(),
         request.options.coherence,
+        request.options.temp_ceilings,
     );
 
     let mut terminal: Option<BenchmarkResult> = None;

@@ -68,6 +68,7 @@ pub fn added_records(root: &Path, anchor: &str, paths: &[PathBuf]) -> Vec<AddedR
                 hardware: Some(
                     atlas_plugin::hardware::equivalence::HardwareFingerprint::from_record(&r),
                 ),
+                hardware_class: r.hardware.gate_key(),
                 standing: agreement::standing_at(root, anchor, &r),
                 benchmark_id: r.benchmark_id,
                 git_sha: r.git_sha,
@@ -99,7 +100,7 @@ pub fn evaluate(root: &Path, anchor: &str) -> Result<Final> {
         .filter(|id| !matches!(statuses.get(*id), Some(GateStatus::Pass)))
         .collect();
     let added = added_records(root, anchor, &untracked_records(root)?);
-    let disagreements = agreement::check(&added);
+    let disagreements = agreement::check(root, &added);
     Ok(Final {
         statuses,
         open,

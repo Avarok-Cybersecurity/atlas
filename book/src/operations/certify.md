@@ -75,18 +75,22 @@ with the concrete mismatch. CI re-checks the same rule from the records'
 own captures (`docs/provable-benchmark-work.md` §5c).
 
 **Cool-down.** Before a node takes another unit its hottest chassis zone
-and the driver's thermal-throttle flag are read. At **80 °C** or above, or
+and the driver's thermal-throttle flag are read. At the class's park line (**80 °C** on GB10) or above, or
 with the throttle asserted, the node is **parked**: it takes nothing until
-it is back at or below **70 °C** with the throttle clear (re-read every
+it is back at or below its resume line (**70 °C**) with the throttle clear (re-read every
 60 s, at most 30 min, then it resumes with a warning), and every transition
 is printed and logged as a `thermal` event. The rest of the fleet keeps
 working — the scheduler is work-conserving, so pending units go wherever a
 node is free; a parked box that hosts the bundled Speed class only delays
 that class. A node that cannot report a temperature is never parked (said
-once); the records' own captures still decide equivalence. The line is
-absolute, not relative to rest: a GB10 rises 26–33 °C over rest under any
-gate (healthy loaded boxes read 55–76 °C on 2026-09-15) and the box behind
-the 0.66 tok/s incident read 89 °C with a driver-reported slowdown.
+once); the records' own captures still decide equivalence. The lines are
+the box class's, from `kernels/<hw>/HARDWARE.toml`
+`[benchmarks.limits.thermal]` — absolute, not relative to rest: a GB10
+rises 26–33 °C over rest under any gate (healthy loaded boxes read 55–76 °C
+on 2026-09-15) and the box behind the 0.66 tok/s incident read 89 °C with a
+driver-reported slowdown. A class that declares no `[benchmarks.limits]`
+cannot be campaigned: the memory floor, the serve/build/shard allowances and
+the equivalence tolerances all come from the same tables.
 `--dangerous-ignore-thermals` turns every park into a warning and lets the
 box keep taking units — the operator's hardware to risk; the records are
 still judged by the equivalence policy at the end, so the flag ignores the

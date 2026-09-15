@@ -66,7 +66,7 @@
 
 use super::check::Standing;
 use super::coverage;
-use crate::hardware::equivalence::{HardwareFingerprint, SPEED_SPREAD, equivalent};
+use crate::hardware::equivalence::{EquivalencePolicy, HardwareFingerprint, equivalent};
 use crate::hardware::policy::Sensitivity;
 use crate::registry;
 
@@ -85,6 +85,9 @@ pub struct AddedRecord {
     /// the record could not be parsed that far — which makes it equivalent
     /// to nothing.
     pub hardware: Option<HardwareFingerprint>,
+    /// The box class the record names (`Hardware::gate_key`), which decides
+    /// whose equivalence policy judges it.
+    pub hardware_class: String,
     /// Where the record stands at the head being certified, by
     /// [`super::check::record_standing`] — computed by the caller, which is
     /// the only party that knows the head and has the repository.
@@ -164,6 +167,10 @@ pub fn standing_at(root: &std::path::Path, head: &str, record: &super::GateRecor
     }
 }
 
+fn policy_for(root: &std::path::Path, class: &str) -> anyhow::Result<Option<EquivalencePolicy>> {
+    EquivalencePolicy::speed_for(root, class)
+}
+
 /// The class a gate's records belong to.
 ///
 /// Reads the registry, never the record: a record that asserted its own class
@@ -175,8 +182,12 @@ pub fn sensitivity_of(benchmark_id: &str) -> Option<Sensitivity> {
 /// Check that the records a PR adds agree with one another.
 ///
 /// Returns every disagreement found rather than the first, so one CI run tells
-/// the operator everything that needs re-measuring.
-pub fn check(added: &[AddedRecord]) -> Vec<Disagreement> {
+/// the operator everything that needs re-measuring. `root` is where the
+/// hardware class's equivalence policy is read from
+/// (`kernels/<hw>/HARDWARE.toml`); a class that declares none makes every
+/// cross-signer Speed pair a mismatch by name — nothing is borrowed from
+/// another card.
+pub fn check(root: &std::path::Path, added: &[AddedRecord]) -> Vec<Disagreement> {
     let mut out = Vec::new();
     if added.is_empty() {
         return out;
@@ -226,13 +237,21 @@ pub fn check(added: &[AddedRecord]) -> Vec<Disagreement> {
                     continue;
                 }
                 let why = match (&a.hardware, &b.hardware) {
-                    (Some(x), Some(y)) => match equivalent(x, y, &SPEED_SPREAD) {
-                        Ok(()) => continue,
-                        Err(m) => m
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join(", "),
+                    (Some(x), Some(y)) => match policy_for(root, &a.hardware_class) {
+                        Ok(Some(policy)) => match equivalent(x, y, &policy) {
+                            Ok(()) => continue,
+                            Err(m) => m
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        },
+                        Ok(None) => format!(
+                            "kernels/{}/HARDWARE.toml declares no [benchmarks.limits.thermal] \
+                             envelope, so two boxes of that class are never one box",
+                            a.hardware_class
+                        ),
+                        Err(e) => format!("{e:#}"),
                     },
                     _ => "a record carries no hardware capture".to_owned(),
                 };

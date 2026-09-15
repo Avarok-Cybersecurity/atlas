@@ -4,11 +4,14 @@
 //! near where it started, and the rest of the fleet keeps working.
 //!
 //! Before a worker takes another unit it reads the node's hottest chassis
-//! zone and the driver's thermal-throttle flag. At [`PARK_AT_C`] or above, or
-//! with the throttle asserted, the node is PARKED: it takes nothing more and
-//! re-reads every [`RECHECK`] until the zone is at or below [`RESUME_AT_C`]
-//! and the throttle is clear (hysteresis, so a box does not flap on the
-//! threshold). Nothing else waits for it — the scheduler is work-conserving,
+//! zone and the driver's thermal-throttle flag. At the class's
+//! `chassis_park_c` or above, or with the throttle asserted, the node is
+//! PARKED: it takes nothing more and re-reads every [`RECHECK`] until the
+//! zone is at or below `chassis_resume_c` and the throttle is clear
+//! (hysteresis, so a box does not flap on the threshold). The two lines are
+//! the target's, from `kernels/<hw>/HARDWARE.toml`
+//! `[benchmarks.limits.thermal]` (`hardware::thermal`), never a constant
+//! named after one card. Nothing else waits for it — the scheduler is work-conserving,
 //! so pending units go to whichever node is free — and a parked box that
 //! hosts the bundled Speed class simply delays that class.
 //!
@@ -42,12 +45,8 @@
 use std::time::Duration;
 
 use super::node::Node;
+use atlas_plugin::hardware::limits::ThermalEnvelope;
 
-/// The hottest chassis zone at which a node is parked, °C. Healthy loaded
-/// GB10s read 55-76 on 2026-09-15; the incident box read 89.
-pub const PARK_AT_C: f64 = 80.0;
-/// The zone a parked node must fall back to before it resumes, °C.
-pub const RESUME_AT_C: f64 = 70.0;
 /// How often a parked node is re-read.
 pub const RECHECK: Duration = Duration::from_secs(60);
 /// The longest a node stays parked. A box that will not cool (ambient rose,
@@ -76,10 +75,11 @@ pub struct Reading {
     pub throttled: Option<bool>,
 }
 
-/// Pure: the hysteresis rule. A throttle flag parks regardless of the
-/// temperature; a missing temperature parks nothing unless the flag is set.
+/// Pure: the hysteresis rule against the class's envelope. A throttle flag
+/// parks regardless of the temperature; a missing temperature parks nothing
+/// unless the flag is set.
 #[must_use]
-pub fn judge(r: Reading, parked: bool) -> Verdict {
+pub fn judge(r: Reading, parked: bool, env: &ThermalEnvelope) -> Verdict {
     let throttled = r.throttled == Some(true);
     let Some(now_c) = r.chassis_c else {
         return if throttled {
@@ -93,9 +93,9 @@ pub fn judge(r: Reading, parked: bool) -> Verdict {
     };
     let hold = throttled
         || if parked {
-            now_c > RESUME_AT_C
+            now_c > env.chassis_resume_c
         } else {
-            now_c >= PARK_AT_C
+            now_c >= env.chassis_park_c
         };
     if hold {
         Verdict::Park { now_c, throttled }
@@ -168,21 +168,28 @@ impl Gate {
         &mut self,
         node: &Node,
         probe: &dyn Probe,
+        envelope: Option<ThermalEnvelope>,
         ignore: bool,
         say: &dyn Fn(&str),
     ) -> bool {
+        // No envelope is reachable only under `--dangerous-ignore-thermals`
+        // (`certify_cmd` refuses otherwise): nothing to judge by, so nothing
+        // is parked, and that was said at plan time.
+        let Some(envelope) = envelope else {
+            return true;
+        };
         let r = probe.read(node);
+        let park_c = envelope.chassis_park_c;
+        let resume_c = envelope.chassis_resume_c;
         let why = |now_c: f64, throttled: bool| {
             if throttled {
                 format!("the driver reports a thermal slowdown (chassis {now_c:.0} °C)")
             } else {
-                format!(
-                    "chassis {now_c:.0} °C (park at {PARK_AT_C:.0}, resume at {RESUME_AT_C:.0})"
-                )
+                format!("chassis {now_c:.0} °C (park at {park_c:.0}, resume at {resume_c:.0})")
             }
         };
         if ignore {
-            match judge(r, self.warned_hot) {
+            match judge(r, self.warned_hot, &envelope) {
                 Verdict::Park { now_c, throttled } => {
                     if !self.warned_hot {
                         self.warned_hot = true;
@@ -198,18 +205,21 @@ impl Gate {
                 Verdict::Ready => {
                     if self.warned_hot {
                         self.warned_hot = false;
-                        say(&format!("{} is back below {RESUME_AT_C:.0} °C", node.addr));
+                        say(&format!(
+                            "{} is back at or below {resume_c:.0} °C",
+                            node.addr
+                        ));
                     }
                 }
                 Verdict::Blind => {}
             }
             return true;
         }
-        match judge(r, self.parked_since.is_some()) {
+        match judge(r, self.parked_since.is_some(), &envelope) {
             Verdict::Ready => {
                 if let Some(since) = self.parked_since.take() {
                     say(&format!(
-                        "cool-down: {} is back at or below {RESUME_AT_C:.0} °C after {} s; resuming",
+                        "cool-down: {} is back at or below {resume_c:.0} °C after {} s; resuming",
                         node.addr,
                         since.elapsed().as_secs()
                     ));
@@ -232,7 +242,7 @@ impl Gate {
                 let since = *self.parked_since.get_or_insert_with(|| {
                     say(&format!(
                         "cool-down: {} parked — {}; nothing more until it is at or below \
-                         {RESUME_AT_C:.0} °C with no throttle — the other boxes keep working",
+                         {resume_c:.0} °C with no throttle — the other boxes keep working",
                         node.addr,
                         why(now_c, throttled)
                     ));

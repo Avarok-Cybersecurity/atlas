@@ -33,7 +33,9 @@ use super::lockfile::LockGuard;
 use super::plan::Unit;
 use super::runner::{GateRunner, LocalChild, RepoRecords, RunCtx, RunOutcome};
 use super::state::{Campaign, Phase};
-use super::{BUILD_ALLOWANCE, Emit, GUARD_EVERY};
+use super::{Emit, GUARD_EVERY};
+use atlas_plugin::hardware::equivalence::EquivalencePolicy;
+use atlas_plugin::hardware::limits::ThermalEnvelope;
 use node::Node;
 use schedule::SpeedMode;
 
@@ -42,6 +44,9 @@ pub struct Fleet {
     pub nodes: Vec<Node>,
     pub rejected: Vec<node::Rejection>,
     pub mode: SpeedMode,
+    /// The class's declared thermal envelope; `None` only under
+    /// `--dangerous-ignore-thermals`.
+    pub envelope: Option<ThermalEnvelope>,
 }
 
 /// Ask every address, admit what qualifies, decide the Speed mode.
@@ -54,6 +59,8 @@ pub fn assemble(
     remote_only: bool,
     wanted: &node::Wanted,
     local_signer: &str,
+    envelope: Option<ThermalEnvelope>,
+    policy: Option<EquivalencePolicy>,
 ) -> Result<Fleet> {
     let rows = atlasctl.nodes(addrs)?;
     let mut nodes = Vec::new();
@@ -85,11 +92,12 @@ pub fn assemble(
                 .join("; ")
         );
     }
-    let mode = schedule::speed_mode(&nodes);
+    let mode = schedule::speed_mode(&nodes, policy);
     Ok(Fleet {
         nodes,
         rejected,
         mode,
+        envelope,
     })
 }
 
@@ -108,6 +116,11 @@ pub struct Shared<'a> {
     pub thermal: &'a dyn thermal::Probe,
     /// `--dangerous-ignore-thermals`: warn instead of parking.
     pub ignore_thermals: bool,
+    /// The class's envelope; `None` (only under the flag) parks nothing.
+    pub envelope: Option<ThermalEnvelope>,
+    /// Build time a node may spend on the anchor before a unit's deadline
+    /// counts (`[benchmarks.limits.timing] build_allowance_s`).
+    pub build_allowance: Duration,
 }
 
 /// One runner per node: this box's child spawner, or a remote driver.
@@ -266,13 +279,19 @@ fn worker(
     loop {
         // A box that warmed past its baseline takes nothing more until it
         // is back near it; the others keep working (`thermal`).
-        if !cool.may_take(node, shared.thermal, shared.ignore_thermals, &|s| {
-            shared.emit.event(
-                "thermal",
-                serde_json::json!({ "node": node.addr, "text": s }),
-            );
-            shared.emit.say(s);
-        }) {
+        if !cool.may_take(
+            node,
+            shared.thermal,
+            shared.envelope,
+            shared.ignore_thermals,
+            &|s| {
+                shared.emit.event(
+                    "thermal",
+                    serde_json::json!({ "node": node.addr, "text": s }),
+                );
+                shared.emit.say(s);
+            },
+        ) {
             let stopped = board
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
@@ -347,7 +366,7 @@ fn run_one(
 ) -> RunOutcome {
     let emit = shared.emit;
     let local_deadline = unit.deadline(shared.timeout_factor);
-    let deadline = runner::deadline_for(local_deadline, node, BUILD_ALLOWANCE);
+    let deadline = runner::deadline_for(local_deadline, node, shared.build_allowance);
     emit.event(
         "start",
         serde_json::json!({ "unit": unit.label(), "node": node.addr, "expected_secs": unit.secs() }),

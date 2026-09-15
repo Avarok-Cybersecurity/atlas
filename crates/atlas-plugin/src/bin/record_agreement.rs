@@ -97,6 +97,9 @@ fn main() -> std::process::ExitCode {
         let hardware = parsed
             .as_ref()
             .map(atlas_plugin::hardware::equivalence::HardwareFingerprint::from_record);
+        let hardware_class = parsed
+            .as_ref()
+            .map_or_else(|| "unknown".to_string(), |r| r.hardware.gate_key());
         // A record that does not even parse cannot be shown to stand.
         let standing = parsed
             .as_ref()
@@ -110,11 +113,12 @@ fn main() -> std::process::ExitCode {
             git_sha,
             signer,
             hardware,
+            hardware_class,
             standing,
         });
     }
 
-    let problems = check(&added);
+    let problems = check(&root, &added);
     if problems.is_empty() {
         println!(
             "all {} added record(s) agree: each stands at {head}, and signer agreement \

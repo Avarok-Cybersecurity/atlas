@@ -36,9 +36,6 @@ use atlas_plugin::{ArtifactStore, TargetEndpoint};
 use super::bench_selfstart::SelfServed;
 use super::bench_serve_plan::ServePlan;
 
-/// How long a leased server may take to name its model. A cold NVFP4 load on
-/// GB10 is minutes, not seconds.
-const BOOT_TIMEOUT: Duration = Duration::from_secs(900);
 const POLL: Duration = Duration::from_millis(500);
 /// SIGTERM, then this long, then SIGKILL.
 const STOP_GRACE: Duration = Duration::from_secs(60);
@@ -202,6 +199,7 @@ async fn start(store: &ArtifactStore, plan: ServePlan, owner_pid: u32) -> Result
     super::bench_selfstart::check_box_is_free_enough(
         serve_args.gpu_memory_utilization,
         &plan.recipe_id,
+        plan.limits.memory.min_free_fraction,
     )?;
     let argv = plan.argv(port)?;
     let exe = std::env::current_exe().context("current_exe")?;
@@ -240,7 +238,8 @@ async fn start(store: &ArtifactStore, plan: ServePlan, owner_pid: u32) -> Result
         plan.model, plan.recipe_id, lease.pid
     );
     let target = TargetEndpoint::local(port, &plan.model);
-    if let Err(e) = await_serving(&target, &plan.model, &mut child).await {
+    let boot_timeout = Duration::from_secs(plan.limits.timing.boot_timeout_s);
+    if let Err(e) = await_serving(&target, &plan.model, &mut child, boot_timeout).await {
         stop(&lease);
         let _ = std::fs::remove_file(lease_path(store));
         return Err(e);
@@ -260,8 +259,9 @@ async fn await_serving(
     target: &TargetEndpoint,
     model: &str,
     child: &mut std::process::Child,
+    boot_timeout: Duration,
 ) -> Result<()> {
-    let deadline = Instant::now() + BOOT_TIMEOUT;
+    let deadline = Instant::now() + boot_timeout;
     loop {
         if let Some(status) = child.try_wait()? {
             bail!(
@@ -276,7 +276,7 @@ async fn await_serving(
         if Instant::now() >= deadline {
             bail!(
                 "{model:?} did not come up within {}s — {last}",
-                BOOT_TIMEOUT.as_secs()
+                boot_timeout.as_secs()
             );
         }
         tokio::time::sleep(POLL).await;

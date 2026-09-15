@@ -21,6 +21,7 @@ fn unit_shard(
         class: Sensitivity::Correctness,
         estimate: Estimate::Declared(10),
         needs_confirmation: false,
+        serve_allowance_s: 600,
     }
 }
 

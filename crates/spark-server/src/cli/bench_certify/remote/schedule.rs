@@ -16,7 +16,7 @@
 //!
 //! Nothing here starts anything; the driver asks [`next_for`] and runs it.
 
-use atlas_plugin::hardware::equivalence::{SPEED_SPREAD, equivalent};
+use atlas_plugin::hardware::equivalence::{EquivalencePolicy, equivalent};
 use atlas_plugin::hardware::policy::Sensitivity;
 
 use super::super::plan::Unit;
@@ -57,7 +57,7 @@ impl SpeedMode {
 ///
 /// Bundling picks the node with the most free memory, then the coolest
 /// chassis — the box most likely to hold its clock for the whole set.
-pub fn speed_mode(nodes: &[Node]) -> SpeedMode {
+pub fn speed_mode(nodes: &[Node], policy: Option<EquivalencePolicy>) -> SpeedMode {
     if nodes.len() <= 1 {
         return SpeedMode::Spread;
     }
@@ -66,9 +66,20 @@ pub fn speed_mode(nodes: &[Node]) -> SpeedMode {
          load on 2026-09-15, and the class never sets the makespan"
             .to_string(),
     ];
+    let Some(policy) = policy else {
+        why.push(
+            "this class declares no thermal envelope, so no two of its boxes are one box \
+             (--dangerous-ignore-thermals)"
+                .to_string(),
+        );
+        return SpeedMode::Bundle {
+            node: bundle_home(nodes),
+            why,
+        };
+    };
     for (i, a) in nodes.iter().enumerate() {
         for b in &nodes[i + 1..] {
-            if let Err(m) = equivalent(&a.hardware, &b.hardware, &SPEED_SPREAD) {
+            if let Err(m) = equivalent(&a.hardware, &b.hardware, &policy) {
                 why.push(format!(
                     "{} vs {}: {}",
                     a.addr,
@@ -81,7 +92,16 @@ pub fn speed_mode(nodes: &[Node]) -> SpeedMode {
             }
         }
     }
-    let node = (0..nodes.len())
+    SpeedMode::Bundle {
+        node: bundle_home(nodes),
+        why,
+    }
+}
+
+/// The box a bundled Speed set goes to: the most free memory, then the
+/// coolest chassis — the one most likely to hold its clock for the set.
+fn bundle_home(nodes: &[Node]) -> usize {
+    (0..nodes.len())
         .max_by(|&x, &y| {
             let fx = nodes[x].free_fraction.unwrap_or(0.0);
             let fy = nodes[y].free_fraction.unwrap_or(0.0);
@@ -94,8 +114,7 @@ pub fn speed_mode(nodes: &[Node]) -> SpeedMode {
                     cy.partial_cmp(&cx).unwrap_or(std::cmp::Ordering::Equal)
                 })
         })
-        .unwrap_or(0);
-    SpeedMode::Bundle { node, why }
+        .unwrap_or(0)
 }
 
 /// The unit `node` should take next: the longest pending unit it may run,
