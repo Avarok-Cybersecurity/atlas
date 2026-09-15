@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::{WeightDtype, WeightStore};
 
-use super::*;
+pub use super::*;
 
 #[path = "ssm_qwen35/dequant_fp8.rs"]
 mod dequant_fp8;
@@ -41,9 +41,26 @@ pub(crate) fn load_ssm_qwen35(
     store: &WeightStore,
     layer_prefix: &str,
     gpu: &dyn GpuBackend,
+    variant: Nvfp4Variant,
+) -> Result<SsmWeightsQwen35> {
+    load_ssm_qwen35_parts(store, layer_prefix, gpu, variant, true, true)
+}
+
+/// [`load_ssm_qwen35`] with the linear projections optional: `load_in_proj`
+/// covers `in_proj_qkv` / `in_proj_z`, `load_out_proj` covers `out_proj`.
+/// `false` leaves the projection as a NULL [`DenseWeight`] — the native-EXL3
+/// GDN arm (`ATLAS_EXL3_NATIVE_DENSE=1`) serves it from the packed trellis
+/// and must not read a `.weight` that was never materialized; the BA/conv/
+/// gate tensors still load exactly as before.
+pub(crate) fn load_ssm_qwen35_parts(
+    store: &WeightStore,
+    layer_prefix: &str,
+    gpu: &dyn GpuBackend,
     // Kept for loader-dispatch signature parity; `dense_auto` routes by the
     // projection's actual on-disk dtype rather than the model-wide variant.
     _variant: Nvfp4Variant,
+    load_in_proj: bool,
+    load_out_proj: bool,
 ) -> Result<SsmWeightsQwen35> {
     let p = format!("{layer_prefix}.linear_attn");
 
@@ -63,10 +80,20 @@ pub(crate) fn load_ssm_qwen35(
             dense_auto(store, &format!("{prefix}.weight"), gpu)
         }
     };
+    // The natively-served linears (skipped): NULL, the FP8-native precedent.
+    let linear = |prefix: &str, load: bool| -> Result<DenseWeight> {
+        if load {
+            load_proj(prefix)
+        } else {
+            Ok(DenseWeight {
+                weight: DevicePtr::NULL,
+            })
+        }
+    };
 
     Ok(SsmWeightsQwen35 {
-        in_proj_qkv: load_proj(&format!("{p}.in_proj_qkv"))?,
-        in_proj_z: load_proj(&format!("{p}.in_proj_z"))?,
+        in_proj_qkv: linear(&format!("{p}.in_proj_qkv"), load_in_proj)?,
+        in_proj_z: linear(&format!("{p}.in_proj_z"), load_in_proj)?,
         in_proj_a: load_proj(&format!("{p}.in_proj_a"))?,
         in_proj_b: load_proj(&format!("{p}.in_proj_b"))?,
         conv1d: dense_auto(store, &format!("{p}.conv1d.weight"), gpu)?,
@@ -76,7 +103,7 @@ pub(crate) fn load_ssm_qwen35(
         dt_bias: dense_keep_f32(store, &format!("{p}.dt_bias"), gpu)?,
         // norm.weight is safe as BF16 (no recurrent amplification)
         norm: dense_f32_safe(store, &format!("{p}.norm.weight"), gpu)?,
-        out_proj: load_proj(&format!("{p}.out_proj"))?,
+        out_proj: linear(&format!("{p}.out_proj"), load_out_proj)?,
     })
 }
 
@@ -84,6 +111,16 @@ pub(crate) fn load_ssm_qwen35(
 ///
 /// Under EP (ep_world_size > 1), only local experts are loaded from the store.
 /// Remote experts get NULL pointers — kernels detect NULL and write zero output.
+/// `force_all_experts`: when true, EVERY routed expert is loaded regardless of
+/// `is_local_expert` — the draft (MTP) module's own MoE, which is REPLICATED on
+/// every EP rank rather than sharded. Its `mtp.*` tensors are not sharded by the
+/// upload, and the draft forward has no all-reduce, so a rank>0 draft would
+/// otherwise route into NULL experts; that mismatch is why MTP was refused under
+/// `ep_world_size > 1`. Replication costs ~1.3 GB/rank (the draft MoE) against
+/// the ~20 GB/rank EP=2 saves, and keeps the latency-critical draft path free of
+/// a collective. Ignored when `skip_routed_experts` is set (the native-EXL3 arm
+/// serves those from packed trellis instead — see `load_moe_qwen4exp_exl3`).
+///
 /// `skip_routed_experts`: when true, routed experts get NULL weights (saves memory
 /// when native FP8 MoE dispatch handles them). Shared expert is always loaded.
 pub(crate) fn load_moe_qwen35(
@@ -97,6 +134,7 @@ pub(crate) fn load_moe_qwen35(
     quantize_k: spark_runtime::gpu::KernelHandle,
     stream: u64,
     skip_routed_experts: bool,
+    force_all_experts: bool,
 ) -> Result<MoeWeights> {
     let p = format!("{layer_prefix}.mlp");
 
@@ -265,7 +303,7 @@ pub(crate) fn load_moe_qwen35(
 
     let mut experts = Vec::with_capacity(num_experts);
     for e in 0..num_experts {
-        if skip_routed_experts || !config.is_local_expert(e) {
+        if skip_routed_experts || !(force_all_experts || config.is_local_expert(e)) {
             experts.push(ExpertWeight::null());
         } else if is_fused {
             experts.push(load_expert_fused(e)?);
@@ -283,10 +321,10 @@ pub(crate) fn load_moe_qwen35(
     // copies remain resident.
     if is_fused {
         if let Ok(w) = store.get(&fused_gate_up_key) {
-            let _ = gpu.free(w.ptr);
+            let _ = store.release_ptr(gpu, w.ptr);
         }
         if let Ok(w) = store.get(&fused_down_key) {
-            let _ = gpu.free(w.ptr);
+            let _ = store.release_ptr(gpu, w.ptr);
         }
     }
 
@@ -300,169 +338,6 @@ pub(crate) fn load_moe_qwen35(
     })
 }
 
-/// Load MoE experts as native FP8 weights (no NVFP4 conversion).
-///
-/// Returns the standard MoeWeights (with NVFP4 gate/shared for compatibility)
-/// PLUS a Vec of Fp8ExpertWeight for native FP8 dispatch.
-pub(crate) fn load_moe_qwen35_fp8_experts(
-    store: &WeightStore,
-    layer_prefix: &str,
-    num_experts: usize,
-    gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
-) -> Result<Vec<Fp8ExpertWeight>> {
-    let p = format!("{layer_prefix}.mlp");
-    let mut fp8_experts = Vec::with_capacity(num_experts);
-
-    for e in 0..num_experts {
-        if config.is_local_expert(e) {
-            let ep = format!("{p}.experts.{e}");
-            fp8_experts.push(Fp8ExpertWeight {
-                gate_proj: load_fp8_block_scaled_as_fp8weight(
-                    store,
-                    &format!("{ep}.gate_proj"),
-                    gpu,
-                )?,
-                up_proj: load_fp8_block_scaled_as_fp8weight(store, &format!("{ep}.up_proj"), gpu)?,
-                down_proj: load_fp8_block_scaled_as_fp8weight(
-                    store,
-                    &format!("{ep}.down_proj"),
-                    gpu,
-                )?,
-            });
-        } else {
-            // Remote-expert placeholder: NULL pointers never dereferenced.
-            // `Fp8BlockScaled` chosen as the format tag because that's the
-            // dominant disk format for Qwen FP8 checkpoints — keeps the
-            // tag consistent with what the routed expert would carry if
-            // it weren't remote.
-            let null_block = Fp8Weight {
-                weight: DevicePtr::NULL,
-                row_scale: DevicePtr::NULL,
-                n: 0,
-                k: 0,
-                scale_format: WeightQuantFormat::Fp8BlockScaled,
-            };
-            fp8_experts.push(Fp8ExpertWeight {
-                gate_proj: null_block,
-                up_proj: null_block,
-                down_proj: null_block,
-            });
-        }
-    }
-
-    // Also load shared expert as FP8
-    let shared_prefix = format!("{p}.shared_expert");
-    let _shared_fp8 = Fp8ExpertWeight {
-        gate_proj: load_fp8_block_scaled_as_fp8weight(
-            store,
-            &format!("{shared_prefix}.gate_proj"),
-            gpu,
-        )?,
-        up_proj: load_fp8_block_scaled_as_fp8weight(
-            store,
-            &format!("{shared_prefix}.up_proj"),
-            gpu,
-        )?,
-        down_proj: load_fp8_block_scaled_as_fp8weight(
-            store,
-            &format!("{shared_prefix}.down_proj"),
-            gpu,
-        )?,
-    };
-
-    Ok(fp8_experts)
-}
-
-/// Load MoE weights for models without shared experts (e.g. Qwen3-VL).
-///
-/// Creates zero-filled dummy shared expert weights so the fused MoE kernels
-/// (which always launch top_k+1 blocks) produce zero contribution from the
-/// shared expert slot. `weight_scale_2 = 0.0` ensures dequant → 0.
-pub(crate) fn load_moe_no_shared(
-    store: &WeightStore,
-    layer_prefix: &str,
-    num_experts: usize,
-    gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
-    variant: Nvfp4Variant,
-) -> Result<MoeWeights> {
-    let p = format!("{layer_prefix}.mlp");
-
-    let gate = dense(store, &format!("{p}.gate.weight"))?;
-
-    // Allocate correctly-sized zero-filled GPU buffers for dummy shared expert.
-    // The fused kernel always runs a shared expert block (blockIdx.y == top_k),
-    // which reads full expert-sized weight matrices. Buffers must match real
-    // expert dimensions or the kernel will read out of bounds (CUDA error 900).
-    // weight_scale_2 = 0.0 ensures dequant → 0 regardless of packed contents.
-    let h = config.hidden_size;
-    let inter = config.moe_intermediate_size;
-    let group_size = 16usize; // NVFP4 quantization group size (matches kernel GROUP_SIZE)
-
-    // gate_proj/up_proj: [inter, h] → packed = inter * h / 2, scale = inter * (h / group_size)
-    let gu_packed_bytes = inter * h / 2;
-    let gu_scale_bytes = inter * (h / group_size);
-    // down_proj: [h, inter] → packed = h * inter / 2, scale = h * (inter / group_size)
-    let d_packed_bytes = h * inter / 2;
-    let d_scale_bytes = h * (inter / group_size);
-
-    let alloc_zero = |size: usize| -> Result<DevicePtr> {
-        let ptr = gpu.alloc(size)?;
-        gpu.memset(ptr, 0, size)?;
-        Ok(ptr)
-    };
-
-    let mk_zero_quant = |packed_sz: usize, scale_sz: usize| -> Result<QuantizedWeight> {
-        Ok(QuantizedWeight {
-            weight: alloc_zero(packed_sz)?,
-            weight_scale: alloc_zero(scale_sz)?,
-            weight_scale_2: 0.0,
-            input_scale: DevicePtr::NULL,
-            weight_scale_2_vec: DevicePtr::NULL,
-        })
-    };
-
-    let shared_expert = ExpertWeight {
-        gate_proj: mk_zero_quant(gu_packed_bytes, gu_scale_bytes)?,
-        up_proj: mk_zero_quant(gu_packed_bytes, gu_scale_bytes)?,
-        down_proj: mk_zero_quant(d_packed_bytes, d_scale_bytes)?,
-    };
-    // Gate weight for shared expert: zero BF16 [hidden_size] → sigmoid(0)=0.5.
-    // Doesn't matter since shared_out is all zeros (0.5 * 0 = 0).
-    let shared_expert_gate = DenseWeight {
-        weight: alloc_zero(h * 2)?,
-    };
-
-    let mut experts = Vec::with_capacity(num_experts);
-    for e in 0..num_experts {
-        if config.is_local_expert(e) {
-            experts.push(ExpertWeight {
-                gate_proj: quantized_auto(
-                    store,
-                    &format!("{p}.experts.{e}.gate_proj"),
-                    gpu,
-                    variant,
-                )?,
-                up_proj: quantized_auto(store, &format!("{p}.experts.{e}.up_proj"), gpu, variant)?,
-                down_proj: quantized_auto(
-                    store,
-                    &format!("{p}.experts.{e}.down_proj"),
-                    gpu,
-                    variant,
-                )?,
-            });
-        } else {
-            experts.push(ExpertWeight::null());
-        }
-    }
-
-    Ok(MoeWeights {
-        gate,
-        shared_expert,
-        shared_expert_gate,
-        experts,
-        router_pre_norm: None,
-        correction_bias: None,
-    })
-}
+#[path = "ssm_qwen35_moe_variants.rs"]
+mod ssm_qwen35_moe_variants;
+pub use ssm_qwen35_moe_variants::*;

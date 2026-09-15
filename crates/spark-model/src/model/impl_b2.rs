@@ -195,7 +195,10 @@ impl TransformerModel {
             let token_0 = self.argmax_on_device(logits, stream)?;
 
             let target_hidden = self.hidden_after_norm();
-            let position = seq.seq_len;
+            // Rotary position for the drafter: the MTP head derives its own
+            // slot and seq_len from its own state, so this argument is
+            // purely rotary and must carry the vision pad-run gap.
+            let position = seq.rope_pos() as usize;
             let ctx = ForwardContext {
                 buffers: &self.buffers,
                 hc_row_offset: 0,

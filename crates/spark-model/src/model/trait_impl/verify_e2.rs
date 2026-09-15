@@ -219,6 +219,16 @@ pub(super) fn record_verify_graph_outcome(n: usize, live_keys: usize, outcome: V
 }
 
 impl TransformerModel {
+    /// EXL3 graph-capture veto for every verify site: the native lm_head and
+    /// native MoE experts launch COOPERATIVELY (grid.sync / spin barriers),
+    /// which is illegal under CUDA graph capture — the arms' own `ensure!`s
+    /// refuse `graph_capture`, so an uncovered site fails loudly mid-serve
+    /// instead of corrupting. False on every non-EXL3 boot, so the sites'
+    /// `use_graphs` terms are byte-identical to before with the gates off.
+    pub(super) fn exl3_graph_veto(&self) -> bool {
+        self.lm_head_exl3.is_some() || self.layers.iter().any(|l| l.exl3_graph_veto())
+    }
+
     /// Batched-verify graph key: each sequence's ssm-pool slot in batch
     /// order — every SSM pointer the graph bakes (h/conv state, rollback
     /// intermediates, WY table contents) is a pure function of this vector;

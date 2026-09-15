@@ -30,7 +30,34 @@ use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 mod state_io;
 
 impl TransformerModel {
-    pub(super) fn cache_sequence_dispatch(&self, seq: &SequenceState) {
+    pub(in crate::model) fn cache_sequence_dispatch(&self, seq: &SequenceState) {
+        // Tell the workers to retire the same sequence. ONLY rank 0 broadcasts:
+        // the worker reaches this function through `EP_CMD_CACHE_SEQ` itself,
+        // and a re-broadcast there would desynchronise the command stream.
+        //
+        // Why this exists: finish-leaf snapshots used to be head-only, because
+        // no worker command mapped to sequence retirement. The head's pool then
+        // carried entries the worker's never had, the two evicted differently,
+        // and the ranks eventually proposed different Marconi anchors — which
+        // is a mismatched collective schedule and hangs both ranks in NCCL.
+        // The cross-rank anchor guard turns that hang into a declined anchor;
+        // THIS is what stops the divergence happening at all.
+        let is_ep_head =
+            self.multi_rank_protocol_active() && self.comm.as_ref().is_some_and(|c| c.rank() == 0);
+        // 🪤 Short-circuit, NOT a tuple match: `ep_broadcast_seq_and_cmd` must
+        // not be evaluated on a worker, or every rank would broadcast and the
+        // command stream would desynchronise.
+        if is_ep_head
+            && let Err(e) = self.ep_broadcast_seq_and_cmd(
+                seq.slot_idx as u32,
+                crate::model::impl_a2::EP_CMD_CACHE_SEQ,
+                self.ep_protocol_v2,
+            )
+        {
+            // Never fail retirement on a broadcast error: the worst case is the
+            // asymmetry we had before, which the anchor guard catches.
+            tracing::warn!("EP cache_sequence broadcast failed: {e:#}");
+        }
         let bs = self.kv_cache.lock().block_size();
         // Only cache if the sequence has block-aligned content worth caching.
         // Sequences shorter than one block have no reusable KV blocks.
@@ -135,6 +162,32 @@ impl TransformerModel {
                 tracing::error!("free_sequence: gpu.synchronize after zero_slot({slot}): {e:#}");
             }
             self.ssm_pool.release_slot(slot);
+            // Drop this sequence's decode-rollback aux blobs with the slot that
+            // keys them. Guarded by the same `slot_to_release` as the SSM half
+            // (NOT the compact-retire path, where the survivor now owns the slot
+            // and `compact_sequence` has already cleared it) so the two halves
+            // of the ring cannot drift.
+            self.decode_aux_ring.forget_slot(slot);
+        }
+
+        // Release per-sequence layer state that is NOT pooled: the QSA indexer
+        // carry (12 full-attention layers x ~61.6 MB at 200K ctx) and the PLE
+        // conv carry. Both are bare `DevicePtr`s inside the layer state, so
+        // dropping `seq.layer_states` reclaims the host structs and leaks the
+        // device buffers — ~739 MB per request, invisible to RSS on unified
+        // memory and reported as N/A by `nvidia-smi`, which is why it read as
+        // "the box is growing" with no process to blame.
+        //
+        // Errors are logged, not propagated: this runs on the teardown path,
+        // and a sequence that cannot free its state is still finished. Bailing
+        // here would strand the KV blocks and prefix refs released below —
+        // trading a leak for a worse one.
+        for (layer_idx, ls) in seq.layer_states.iter_mut().enumerate() {
+            if let Some(layer) = self.layers.get(layer_idx)
+                && let Err(e) = layer.release_state(ls.as_mut(), self.gpu.as_ref())
+            {
+                tracing::error!("free_sequence: release_state(layer {layer_idx}): {e:#}");
+            }
         }
 
         // Release per-sequence layer state that is NOT pooled: the QSA indexer
@@ -462,6 +515,20 @@ impl TransformerModel {
                                     ));
                             }
                         }
+                        // Same re-point for the replay cache: these address
+                        // the OLD slot's rows until this runs, and a rollback
+                        // through them would replay another sequence's tokens.
+                        if !ssm.replay_inputs.is_empty() {
+                            let rows = ssm.replay_inputs.len();
+                            ssm.replay_inputs.clear();
+                            for t in 0..rows {
+                                ssm.replay_inputs.push(self.ssm_pool.replay_input(
+                                    ssm_layer_idx,
+                                    new_slot,
+                                    t,
+                                ));
+                            }
+                        }
                     }
                 }
                 ssm_layer_idx += 1;
@@ -489,6 +556,18 @@ impl TransformerModel {
         // for the ownership-TRANSFER caller (lifecycle swap-out), where the
         // target is owned by the retiring victim and not on the free list.
         self.ssm_pool.claim_specific(new_slot);
+        // The decode-rollback AUX ring is keyed by `(slot_idx, ring_slot)`, so a
+        // slot migration invalidates BOTH ends of this move and neither is a
+        // mere leak:
+        //   - `old_slot` holds this sequence's own entries, which nothing will
+        //     ever look up again (it now saves and restores under `new_slot`).
+        //   - `new_slot` holds the RETIRING sequence's entries. This sequence is
+        //     about to save under the same key, and until it does, a rollback to
+        //     a ring slot the retiree happened to occupy would restore ANOTHER
+        //     sequence's QSA/PLE carry — the aliasing class, not a leak.
+        // Both are stale by construction at exactly this point, so drop both.
+        self.decode_aux_ring.forget_slot(old_slot);
+        self.decode_aux_ring.forget_slot(new_slot);
         if let Some(g) = seq.ssm_slot.as_mut() {
             // Guard owned `old_slot`; drop that ownership before releasing.
             let owned = g.take();

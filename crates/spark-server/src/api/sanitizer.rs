@@ -59,6 +59,12 @@ fn marker_prefix_hold(buf: &str, markers: &tool_parser::LeakMarkers, tag_max: us
     0
 }
 
+/// `ATLAS_NO_STREAM_SANITIZER=1` — see the note in `sanitize_content_chunk`.
+fn no_stream_sanitizer() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_NO_STREAM_SANITIZER").as_deref() == Ok("1"))
+}
+
 pub fn sanitize_content_chunk(
     text: &str,
     tag_scan_buf: &mut String,
@@ -66,6 +72,18 @@ pub fn sanitize_content_chunk(
     inside_envelope: &mut bool,
     markers: &tool_parser::LeakMarkers,
 ) -> String {
+    // `ATLAS_NO_STREAM_SANITIZER=1`: hand the raw stream through untouched.
+    //
+    // The `OrphanOpen` arm below sets `suppressing_param_leak` and warns, and
+    // that is ALL it does — no counter, no terminal state. A model that keeps
+    // emitting orphan tool-call opens is therefore suppressed indefinitely
+    // while generation runs on: measured 350 "orphan tool-call leak" warnings
+    // inside ONE response against a single F11 dedup fire, a loop that only
+    // ended when the operator killed it. Until that arm learns to give up,
+    // this switch is how you see what the model is actually emitting.
+    if no_stream_sanitizer() {
+        return text.to_string();
+    }
     // Fast-path: parser opted out of sanitization (default for Hermes,
     // Gemma4, Mistral, BareJson). Pass the text straight through without
     // buffering, so no tail-retention latency penalty for those deployments.

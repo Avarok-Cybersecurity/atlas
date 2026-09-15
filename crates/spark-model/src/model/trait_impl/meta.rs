@@ -280,6 +280,7 @@ impl TransformerModel {
                     conv_state_checkpoint: None,
                     h_state_intermediates: Vec::new(),
                     conv_state_intermediates: Vec::new(),
+                    replay_inputs: Vec::new(),
                     // A freshly allocated slot has just been zeroed, and zero
                     // is zero in both formats. Which format it then HOLDS is
                     // decided by the pool width, not by the phase: under the
@@ -315,6 +316,17 @@ impl TransformerModel {
                             .conv_state_intermediates
                             .push(self.ssm_pool.conv_intermediate(ssm_layer_idx, slot, t));
                     }
+                    // Replay mode: the per-token STATE snapshots above are not
+                    // allocated; cache the verify-window INPUT rows instead.
+                    // `replay_input` returns NULL in snapshot mode, so this
+                    // leaves the vec empty there rather than pushing nulls.
+                    for t in 0..self.ssm_pool.num_intermediates.saturating_sub(1) {
+                        let row = self.ssm_pool.replay_input(ssm_layer_idx, slot, t);
+                        if row.0 == 0 {
+                            break;
+                        }
+                        ssm_state.replay_inputs.push(row);
+                    }
                 }
 
                 layer_states.push(Box::new(ssm_state));
@@ -347,6 +359,7 @@ impl TransformerModel {
         // every sequence's first decode step.
         let num_attn_layers = self.config.num_attention_layers();
         Ok(SequenceState {
+            mrope_delta: 0,
             adapter_id: 0,
             adapter_slot: -1,          // default: defer to installed active adapter
             acquired_adapter_slot: -1, // Task #25: no ref held until prefill acquires

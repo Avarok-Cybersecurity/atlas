@@ -127,6 +127,15 @@ pub enum QuantWeight {
     /// 2-bit resident. Decode dispatches `q2_0_gemv_vec`; prefill transient-
     /// dequants to BF16 then runs `dense_gemm`. Tier-1c attention path.
     PackedQ2(PackedQ2Weight),
+
+    /// Keep-packed EXL3 QTIP trellis (`ATLAS_EXL3_NATIVE=1`): u16 code stream
+    /// plus exact-f16 suh/svh Hadamard vectors, K bits/weight resident.
+    /// Decoded in-kernel by the fused `exl3_matmul` GEMV/GEMM — COOPERATIVE
+    /// launches that need per-device state (locks buffer, fp16 `A_had`
+    /// rotation scratch, `sm_count`), so like PackedQ2 this variant is
+    /// dispatched at its own sites (`model/lm_head_exl3.rs` for the LM head),
+    /// never through the generic 3-kernel helper below.
+    Exl3(spark_runtime::weights::exl3::Exl3Weight),
 }
 
 impl QuantWeight {
@@ -142,6 +151,7 @@ impl QuantWeight {
             Self::Fp8(w) => w.weight.is_null(),
             Self::Dense(w) => w.weight.is_null(),
             Self::PackedQ2(w) => w.is_null(),
+            Self::Exl3(w) => w.trellis.is_null(),
         }
     }
 
@@ -176,6 +186,14 @@ impl QuantWeight {
             _ => None,
         }
     }
+
+    /// Extract as keep-packed EXL3 trellis, if this weight is that variant.
+    pub fn as_exl3(&self) -> Option<&spark_runtime::weights::exl3::Exl3Weight> {
+        match self {
+            Self::Exl3(w) => Some(w),
+            _ => None,
+        }
+    }
 }
 
 impl From<QuantizedWeight> for QuantWeight {
@@ -199,6 +217,12 @@ impl From<DenseWeight> for QuantWeight {
 impl From<PackedQ2Weight> for QuantWeight {
     fn from(w: PackedQ2Weight) -> Self {
         Self::PackedQ2(w)
+    }
+}
+
+impl From<spark_runtime::weights::exl3::Exl3Weight> for QuantWeight {
+    fn from(w: spark_runtime::weights::exl3::Exl3Weight) -> Self {
+        Self::Exl3(w)
     }
 }
 

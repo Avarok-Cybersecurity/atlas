@@ -78,15 +78,33 @@ pub(super) fn load_layer_sites(
     Ok((site(attn), site(ffn)))
 }
 
-/// The model-level mixer, replicated onto every layer but consumed only by
-/// the last one.
-pub(super) fn load_head(store: &WeightStore, config: &ModelConfig) -> Result<HcHeadWeights> {
-    let prefix = format!("{}.hyper_connection_mixer", super::embed_prefix(config));
-    let lowrank = load_site(store, &prefix, config.hc_lowrank, false)?;
+/// A collapse-only mixer at an ARBITRARY prefix.
+///
+/// The main model's lives at `{weight_prefix}.hyper_connection_mixer`; the MTP
+/// block carries its own at `mtp.hyper_connection_mixer`, same three tensors,
+/// same shapes, still no `block_inject_weight`. `load_site` stays private —
+/// this is the only new door, so nothing outside this module can construct a
+/// site with the wrong `with_inject`.
+pub(super) fn load_head_at(
+    store: &WeightStore,
+    prefix: &str,
+    rank: usize,
+) -> Result<HcHeadWeights> {
+    let lowrank = load_site(store, prefix, rank, false)?;
     Ok(HcHeadWeights {
         hc_fn: DevicePtr::NULL,
         hc_base: DevicePtr::NULL,
         hc_scale: DevicePtr::NULL,
         lowrank: Some(lowrank),
     })
+}
+
+/// The model-level mixer, replicated onto every layer but consumed only by
+/// the last one.
+pub(super) fn load_head(store: &WeightStore, config: &ModelConfig) -> Result<HcHeadWeights> {
+    load_head_at(
+        store,
+        &format!("{}.hyper_connection_mixer", super::embed_prefix(config)),
+        config.hc_lowrank,
+    )
 }

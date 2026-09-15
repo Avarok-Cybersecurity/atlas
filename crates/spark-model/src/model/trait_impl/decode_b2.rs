@@ -68,7 +68,13 @@ impl TransformerModel {
 
             // Place prefill logits after decode logits
             let prefill_logits_ptr = logits.offset(padded_n * v * bf16);
-            if let Some(ref fp8) = self.lm_head_fp8 {
+            if let Some(ref exl3) = self.lm_head_exl3 {
+                // Native EXL3 head (LEADING arm). Destination is logits row
+                // `padded_n` — disjoint from the decode rows 0..padded_n the
+                // batched projection above used, so the row-keyed rotation
+                // scratch is disjoint too (and both run on `stream` anyway).
+                self.lm_head_exl3_project(exl3, prefill_normed, 1, prefill_logits_ptr, stream)?;
+            } else if let Some(ref fp8) = self.lm_head_fp8 {
                 ops::dense_gemv_fp8w(
                     self.gpu.as_ref(),
                     self.dense_gemv_fp8w_kernel,

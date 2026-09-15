@@ -14,21 +14,48 @@ impl PleLayer {
     /// Marconi aux blob: `[hist_len u32][history u32s][conv f32 bytes]`.
     /// The whole per-sequence carry — a prefix hit restoring KV+SSM without
     /// this would run the n-gram hash on the PREVIOUS request's history.
+    /// Byte length of this sequence's blob, computed on the HOST.
+    pub fn aux_blob_len(&self, st: &PleSeqState) -> usize {
+        4 + st.history.len() * 4 + self.conv_bytes()
+    }
+
+    fn conv_bytes(&self) -> usize {
+        self.state_len * self.hc_mult * self.hidden * 4
+    }
+
+    /// Fill `dst` WITHOUT synchronising — header and history host-side, conv
+    /// state ENQUEUED. Single writer of the format; see the QSA twin.
+    pub fn snapshot_aux_into(
+        &self,
+        st: &PleSeqState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+        dst: &mut [u8],
+    ) -> Result<()> {
+        let want = self.aux_blob_len(st);
+        anyhow::ensure!(
+            dst.len() == want,
+            "PLE aux blob: dst is {} B, plan said {want} B",
+            dst.len()
+        );
+        dst[..4].copy_from_slice(&(st.history.len() as u32).to_le_bytes());
+        for (i, t) in st.history.iter().enumerate() {
+            dst[4 + i * 4..8 + i * 4].copy_from_slice(&t.to_le_bytes());
+        }
+        let off = 4 + st.history.len() * 4;
+        gpu.copy_d2h_async(st.conv, &mut dst[off..], stream)?;
+        Ok(())
+    }
+
     pub fn snapshot_aux(
         &self,
         st: &PleSeqState,
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<Vec<u8>> {
-        let conv_bytes = self.state_len * self.hc_mult * self.hidden * 4;
-        let mut blob = Vec::with_capacity(4 + st.history.len() * 4 + conv_bytes);
-        blob.extend_from_slice(&(st.history.len() as u32).to_le_bytes());
-        for t in &st.history {
-            blob.extend_from_slice(&t.to_le_bytes());
-        }
-        let off = blob.len();
-        blob.resize(off + conv_bytes, 0);
-        gpu.copy_d2h_on_stream(st.conv, &mut blob[off..], stream)?;
+        let mut blob = vec![0u8; self.aux_blob_len(st)];
+        self.snapshot_aux_into(st, gpu, stream, &mut blob)?;
+        gpu.synchronize(stream)?;
         Ok(blob)
     }
 
@@ -42,7 +69,7 @@ impl PleLayer {
     ) -> Result<()> {
         anyhow::ensure!(blob.len() >= 4, "PLE aux blob truncated");
         let n = u32::from_le_bytes(blob[..4].try_into().unwrap()) as usize;
-        let conv_bytes = self.state_len * self.hc_mult * self.hidden * 4;
+        let conv_bytes = self.conv_bytes();
         anyhow::ensure!(
             blob.len() == 4 + n * 4 + conv_bytes,
             "PLE aux blob size mismatch"
@@ -118,11 +145,110 @@ impl PleLayer {
         if st.conv.is_null() {
             return Ok(());
         }
-        let r = gpu.free(st.conv);
+        let mut r = gpu.free(st.conv);
         st.conv = DevicePtr(0);
+        // The verify snapshot slots share `conv`'s lifetime and its leak class:
+        // `save_verify_row` above gpu.alloc's one per row and nothing else frees
+        // them. Draining here is what makes this release COMPLETE — freeing
+        // `conv` alone still leaks a conv-sized buffer per verify row per SSM
+        // layer per sequence.
+        for slot in st.verify_conv.drain(..) {
+            if !slot.is_null()
+                && let Err(e) = gpu.free(slot)
+                && r.is_ok()
+            {
+                r = Err(e);
+            }
+        }
+        st.verify_rows.clear();
         st.history.clear();
         st.prestaged_va = None;
         st.last_staged_va = 0;
         r
+    }
+}
+
+// ── Per-row carry checkpoints for the K-row speculative verify ──
+//
+// The mHC K-row verify (`qwen3_ssm/trait_decode_batched_hc.rs`) advances THREE
+// per-row carries in one pass. Two of them already had a mechanism:
+//
+//   * the SSM `h_state`/`conv_state` are written per row into pool
+//     intermediates by the conv+GDN kernels, and
+//   * QSA's `ingested`/`pooled` are contiguous marks, so
+//     `QsaIndexer::align_seq_state` rewinds them to an ABSOLUTE position with
+//     no snapshot at all.
+//
+// PLE was the one with neither. Its conv is a rolling FP32 state and its
+// history is a fixed-length window whose oldest ids have already rolled off,
+// so nothing about it can be reconstructed by truncation — a partial accept
+// left it ADVANCED over the rejected rows, which is the documented corruption
+// class. These three calls give it the same per-row granularity the other two
+// carries have.
+impl PleLayer {
+    /// Start a K-row verify: drop any snapshots a previous verify left. The
+    /// device slots are kept — the next verify reuses them.
+    pub fn begin_verify_rows(&self, st: &mut PleSeqState) {
+        st.verify_rows.clear();
+    }
+
+    /// Record "the carry after row `t`". Called once per row boundary a
+    /// partial accept can land on — rows `0..K-1`, matching `hc_publish_rows`;
+    /// the last row needs none because a full accept keeps the live state.
+    ///
+    /// Stream-ordered, no sync: the token history is host state and is
+    /// cloned; the FP32 conv state is copied device-to-device into slot `t`
+    /// on `stream`. The previous host blob (`copy_d2h_on_stream`) was a
+    /// stream sync per row — see `PleSeqState::verify_rows`.
+    pub fn push_verify_row(
+        &self,
+        st: &mut PleSeqState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let t = st.verify_rows.len();
+        let conv_bytes = self.state_len * self.hc_mult * self.hidden * 4;
+        while st.verify_conv.len() <= t {
+            st.verify_conv.push(gpu.alloc(conv_bytes)?);
+        }
+        gpu.copy_d2d_async(st.conv, st.verify_conv[t], conv_bytes, stream)?;
+        st.verify_rows.push(st.history.clone());
+        Ok(())
+    }
+
+    /// Rewind the carry to the boundary after row `t`, i.e. to a commit of
+    /// `t + 1` rows.
+    ///
+    /// Errors rather than silently no-opping when the row was never recorded:
+    /// a missing snapshot means the carry stays ahead of the sequence, which
+    /// is precisely the silent desync this exists to prevent.
+    pub fn rewind_verify_row(
+        &self,
+        st: &mut PleSeqState,
+        t: usize,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let history = st.verify_rows.get(t).cloned().ok_or_else(|| {
+            anyhow::anyhow!(
+                "PLE verify rewind to row {t}, but only {} row snapshots were \
+                 recorded. The carry would be left ADVANCED over the rejected \
+                 rows — the documented degeneration class — so this refuses.",
+                st.verify_rows.len()
+            )
+        })?;
+        let slot = st
+            .verify_conv
+            .get(t)
+            .copied()
+            .filter(|p| !p.is_null())
+            .ok_or_else(|| {
+                anyhow::anyhow!("PLE verify rewind to row {t}: conv snapshot slot missing")
+            })?;
+        let conv_bytes = self.state_len * self.hc_mult * self.hidden * 4;
+        gpu.copy_d2d_async(slot, st.conv, conv_bytes, stream)?;
+        st.history = history;
+        st.prestaged_va = None;
+        Ok(())
     }
 }

@@ -36,6 +36,7 @@ mod forward_layers;
 mod h_state_ptrs;
 mod midchunk_capture;
 mod prefix_lookup;
+mod prefix_reanchor;
 mod prefix_reserve;
 mod proc_range;
 mod prompt_logprobs;

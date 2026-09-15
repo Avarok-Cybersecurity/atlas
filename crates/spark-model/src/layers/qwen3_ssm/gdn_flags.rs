@@ -232,6 +232,152 @@ pub fn verify_exact_enabled() -> bool {
     flags().verify_exact_active()
 }
 
+/// Does THIS pass have to run its K verify rows as K sequential DECODE rows —
+/// the same kernels, at the same launch geometry, that `decode()` would have
+/// run — instead of the row-count-shaped batched arms?
+///
+/// PURE (SBIO): every input is a parameter, so the decision is decidable
+/// without a GPU, a layer, or a process-global read. Every site that consumes
+/// it MUST read the same predicate: the conv+GDN arm writes the block's final
+/// normed rows itself, so the phase-8 norm has to skip on exactly the same
+/// answer or the rows are normalised twice.
+///
+/// * `exact_verify` — the global `--exact-verify` opt-in, which applies to
+///   every verify body (DFlash, the batched multi-seq verify, this one).
+/// * `pass_exact_replay` — `ForwardContext::gdn_exact_replay`, THIS pass's own
+///   "reproduce the token-sequential recurrence bitwise" contract. The mHC MTP
+///   verify (`model/trait_impl/verify_hc.rs`) is the only `decode_batched`
+///   caller that sets it; every other one passes `false`, so this widens
+///   nothing else.
+/// * `lever` — the kill switch (`ATLAS_NO_VERIFY_ROW_EXACT`), so the row-shaped
+///   arms stay measurable against the batched ones.
+/// * `h_f16` — an FP16 h-state pool. The exact arm's kernels are FP32 readers;
+///   reading an FP16 pool through them is silent garbage, not an error. Same
+///   clause, same reason, as [`GdnFlags::verify_exact_active`].
+pub const fn verify_row_exact_required(
+    exact_verify: bool,
+    pass_exact_replay: bool,
+    lever: bool,
+    h_f16: bool,
+) -> bool {
+    (exact_verify || (pass_exact_replay && lever)) && !h_f16
+}
+
+/// The pass-scoped row-exact verify arms are OPT-IN: `ATLAS_VERIFY_ROW_EXACT`
+/// (PRESENCE, `=0` is NOT "off") arms them; `ATLAS_NO_VERIFY_ROW_EXACT` still
+/// disarms and wins over both. Read once per process. `--exact-verify` is a
+/// separate, wider opt-in and is unaffected.
+///
+/// Polarity flipped 2026-09-05 (was default-ON). The mHC MTP verify was the
+/// only body running the exact chain by default, against the crate's own
+/// rule that exactness is opt-in because of its decode-step cost
+/// (`legacy_wy_verify_is_the_default`). Measured on qwen3.8-flash-next EXL3
+/// 4.05bpw, one GB10, 2 drafts, prefix cache on, 300-token greedy code
+/// prompt, fresh server per arm: chain on 26.56 tok/s, chain off 29.92 tok/s
+/// (+12.6%) with a byte-identical 200-token greedy sample, draft acceptance
+/// 1.47 vs 1.49 accepted/step, and `agentic-webserver` PASS 1/1 on the
+/// disarmed arm (8 turns / 118 s). Per leg: disarming only `hc_pre` bought
+/// nothing (the extra rows' GEMMs hit L2) and lowered acceptance to 1.32;
+/// the GDN leg is where the time was. Records in
+/// `.research/exl3_decode_perf/`.
+fn row_exact_lever() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        row_exact_lever_from(
+            std::env::var_os("ATLAS_VERIFY_ROW_EXACT").is_some(),
+            std::env::var_os("ATLAS_NO_VERIFY_ROW_EXACT").is_some(),
+        )
+    })
+}
+
+/// Pure form of `row_exact_lever` (private): armed only when asked for, and the kill
+/// switch wins over the arm.
+pub const fn row_exact_lever_from(arm: bool, kill: bool) -> bool {
+    arm && !kill
+}
+
+/// [`verify_row_exact_required`] resolved against the process flags, for a pass
+/// whose `ForwardContext::gdn_exact_replay` is `pass_exact_replay`.
+pub fn verify_row_exact_for_pass(pass_exact_replay: bool) -> bool {
+    let f = flags();
+    verify_row_exact_required(
+        f.exact_verify,
+        pass_exact_replay,
+        row_exact_lever(),
+        f.h_f16,
+    )
+}
+
+/// Which stage of the row-exact chain a caller is asking about.
+///
+/// The chain is four independent legs, and each costs differently: the two
+/// `hc_pre` collapses (K cuBLASLt GEMM triples instead of one), the GDN
+/// projections + BA gates (K weight passes instead of one), the conv+GDN
+/// recurrence (the exact per-token chain instead of the WY arms) and the MoE
+/// (K single-row expert passes instead of the fused K=2 one). Naming them
+/// separately is what makes "which leg buys the bit-equality, and what does it
+/// cost" a measurement rather than an argument — each has its own PRESENCE
+/// kill switch. The whole chain is OPT-IN (`ATLAS_VERIFY_ROW_EXACT`, see
+/// `row_exact_lever`); `ATLAS_NO_VERIFY_ROW_EXACT` still disarms all four.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RowExactLeg {
+    /// The two mHC `hc_pre` sites (`ATLAS_NO_VERIFY_ROW_HC`).
+    HcPre,
+    /// GDN QKVZ / out_proj / BA gates. The ONLY leg that is default-OFF, and
+    /// the only one that was MEASURED not to matter: `exl3_gemv` does select
+    /// its kernel instance by row count (`_m0_` at m == 1, `_m1_` at 2..=8),
+    /// but the two agree bit-for-bit on row 0 — the 40-token probe scored
+    /// 38/38 equal verify rows with this leg disarmed and 0/38 with either of
+    /// the other three disarmed. Arm it with `ATLAS_VERIFY_ROW_PROJ=1` if a
+    /// checkpoint ever contradicts that; it costs a second pass over the GDN
+    /// in_proj + out_proj trellises (~29 MB/layer) per extra row.
+    Proj,
+    /// The conv + GDN recurrence and its norm (`ATLAS_NO_VERIFY_ROW_GDN`).
+    ConvGdn,
+    /// The MoE / FFN (`ATLAS_NO_VERIFY_ROW_FFN`).
+    Ffn,
+}
+
+impl RowExactLeg {
+    /// The leg's env knob, and whether that knob DISARMS a default-on leg
+    /// (`true`) or ARMS a default-off one (`false`). PRESENCE-checked either
+    /// way, per the house convention (`=0` is NOT "off").
+    const fn env(self) -> (&'static str, bool) {
+        match self {
+            Self::HcPre => ("ATLAS_NO_VERIFY_ROW_HC", true),
+            Self::Proj => ("ATLAS_VERIFY_ROW_PROJ", false),
+            Self::ConvGdn => ("ATLAS_NO_VERIFY_ROW_GDN", true),
+            Self::Ffn => ("ATLAS_NO_VERIFY_ROW_FFN", true),
+        }
+    }
+}
+
+/// Is `leg` of the row-exact chain armed for a pass with this
+/// `gdn_exact_replay`? The master predicate AND the leg's own kill switch.
+/// Reads are cached per leg, so this is safe inside a layer loop.
+pub fn verify_row_exact_leg(pass_exact_replay: bool, leg: RowExactLeg) -> bool {
+    static LEGS: std::sync::OnceLock<[bool; 4]> = std::sync::OnceLock::new();
+    let on = LEGS.get_or_init(|| {
+        [
+            RowExactLeg::HcPre,
+            RowExactLeg::Proj,
+            RowExactLeg::ConvGdn,
+            RowExactLeg::Ffn,
+        ]
+        .map(|l| {
+            let (name, kill) = l.env();
+            std::env::var_os(name).is_some() != kill
+        })
+    });
+    let idx = match leg {
+        RowExactLeg::HcPre => 0,
+        RowExactLeg::Proj => 1,
+        RowExactLeg::ConvGdn => 2,
+        RowExactLeg::Ffn => 3,
+    };
+    verify_row_exact_for_pass(pass_exact_replay) && on[idx]
+}
+
 /// Batch width at which the multi-seq decode projections switch to the
 /// 128-row M-tile. `None` (kill switch `ATLAS_NO_SSM_M128`, PRESENCE check —
 /// `=0` is NOT "off") keeps the 64-row twin at every width.
@@ -252,114 +398,5 @@ pub(crate) fn ssm_m128_min_m() -> Option<u32> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{GdnFlags, ssm_h_dtype_bits};
-
-    const BASE: GdnFlags = GdnFlags {
-        h_f16: false,
-        h_f16_pool: false,
-        fused_norm: false,
-        batched_recurrent: false,
-        exact_verify: false,
-    };
-
-    /// POSITIVE (the default): with no flags the verify pass runs the legacy
-    /// WY/chunkwise arms, NOT the exact chain. Exact verify became OPT-IN
-    /// (every surveyed production engine ships exactness opt-in; its measured
-    /// decode-step cost here is ~+22-36%), so the #435 divergence is the
-    /// documented default behaviour — this test pins that polarity.
-    #[test]
-    fn legacy_wy_verify_is_the_default() {
-        assert!(
-            !BASE.verify_exact_active(),
-            "default must be the legacy WY arms — exact verify is opt-in"
-        );
-        // Orthogonal flags do not sneak exact mode on.
-        assert!(
-            !GdnFlags {
-                fused_norm: true,
-                batched_recurrent: true,
-                ..BASE
-            }
-            .verify_exact_active()
-        );
-    }
-
-    /// POSITIVE (the opt-in): `--exact-verify` selects the exact chain, alone
-    /// and beside the orthogonal GDN flags.
-    #[test]
-    fn exact_verify_flag_selects_the_exact_chain() {
-        assert!(
-            GdnFlags {
-                exact_verify: true,
-                ..BASE
-            }
-            .verify_exact_active()
-        );
-        assert!(
-            GdnFlags {
-                exact_verify: true,
-                fused_norm: true,
-                batched_recurrent: true,
-                ..BASE
-            }
-            .verify_exact_active()
-        );
-    }
-
-    /// The environment fallback can NEVER turn exact verify on: there is no
-    /// `ATLAS_*` variable for it on purpose (house rule: no new env knobs),
-    /// so a serve that skips `set_from_cli` still defaults to the WY arms.
-    /// Deterministic despite reading the process environment, because only
-    /// the `exact_verify` field is asserted and no variable feeds it.
-    #[test]
-    fn env_fallback_never_enables_exact_verify() {
-        assert!(!GdnFlags::from_env().exact_verify);
-        // Same rule for the stage-3 pool sizing: no env variable feeds it.
-        // `--ssm-h-dtype f16-pool` is the ONLY way to publish it, so a
-        // legacy `ATLAS_SSM_H_FP16=1` script keeps the FP32-sized pool.
-        assert!(!GdnFlags::from_env().h_f16_pool);
-    }
-
-    /// A narrow pool holding FP32 is an out-of-bounds write, not a mode, so
-    /// `h_f16_pool` without `h_f16` must not be expressible from any input.
-    /// This is the ONE decode both the validator and the publisher use, so
-    /// pinning it here pins it for both.
-    #[test]
-    fn the_pool_bit_is_never_set_without_the_dtype_bit() {
-        for (spelling, expected) in [
-            (None, (false, false)),
-            (Some("f32"), (false, false)),
-            (Some("f16"), (true, false)),
-            (Some("f16-pool"), (true, true)),
-            (Some(""), (false, false)),
-            (Some("F16-POOL"), (false, false)),
-            (Some("f16 "), (false, false)),
-        ] {
-            assert_eq!(ssm_h_dtype_bits(spelling), expected, "{spelling:?}");
-        }
-    }
-
-    /// NEGATIVE: an FP16 h-state forces non-exact EVEN WHEN exact was
-    /// requested — the exact arm's FP32 kernels must never read the FP16
-    /// pool. (CLI validation rejects the explicit pair; this is the
-    /// defense-in-depth layer beneath it.)
-    #[test]
-    fn h_f16_forces_non_exact_even_when_requested() {
-        assert!(
-            !GdnFlags {
-                exact_verify: true,
-                h_f16: true,
-                ..BASE
-            }
-            .verify_exact_active()
-        );
-        assert!(
-            !GdnFlags {
-                h_f16: true,
-                ..BASE
-            }
-            .verify_exact_active()
-        );
-    }
-}
+#[path = "gdn_flags_tests.rs"]
+mod tests;

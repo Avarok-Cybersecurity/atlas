@@ -204,6 +204,14 @@ impl TransformerModel {
             self.lm_head_batched(normed, 1, dst, stream)?;
             dst
         };
+        // ATLAS_LOGIT_PROBE=1: see prefill_c — token 0 comes from here.
+        self.logit_probe(
+            "prefill_last",
+            logits_row,
+            logits_ptr,
+            logits_row == 0 && self.decode_logits_fp32(),
+            stream,
+        );
 
         // Per-layer divergence dump: full logits vector + top-10 token IDs.
         if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")

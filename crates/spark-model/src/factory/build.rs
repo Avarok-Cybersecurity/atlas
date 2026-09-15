@@ -3,7 +3,7 @@
 //! `build_model` — entry point that wires up the configured loader,
 //! buffers, KV cache, and (optional) DFlash drafter into a `TransformerModel`.
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use atlas_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::GpuBackend;
@@ -20,6 +20,7 @@ use crate::traits::Model;
 use crate::weight_loader::load_dflash_weights;
 
 mod kv_summary;
+mod mtp_validation;
 
 pub fn build_model(
     mut config: ModelConfig,
@@ -28,8 +29,10 @@ pub fn build_model(
     // weight pointer, and it used to be a local in `startup()` that was dropped
     // once the layers had copied pointers out of it: the memory stayed live
     // with nothing able to free it. The model owns it now, so `teardown` can.
-    // `mut` for `prune_after_load` (Step 3c), which lets a loader drop the
-    // originals of tensors it re-uploaded before the KV budget is computed.
+    // `mut` has TWO reasons now: `prune_after_load` (Step 3c), which lets a
+    // loader drop the originals of tensors it re-uploaded before the KV budget
+    // is computed, and the EXL3 materialization pass below, which rewrites
+    // trellis tensors in place before any loader reads the store.
     mut store: WeightStore,
     gpu: Box<dyn GpuBackend>,
     max_batch_tokens: usize,
@@ -66,6 +69,14 @@ pub fn build_model(
     // encoder-decoder checkpoint). `None` = base model.
     nllb_lora_dir: Option<std::path::PathBuf>,
 ) -> Result<Box<dyn Model>> {
+    let requested_spec = config.model_type == "qwen4_exp"
+        && use_speculative
+        && std::env::var("ATLAS_QWEN4EXP_MTP_VERIFY").as_deref() == Ok("1");
+    mtp_validation::validate_qwen_mtp_verify(
+        requested_spec,
+        requested_spec
+            && crate::layers::qwen3_ssm::trait_decode_batched_hc::hc_batched_verify_enabled(),
+    )?;
     // NLLB / M2M-100 is an encoder-decoder model that cannot be represented by
     // the decoder-only TransformerModel stack. Serve it with the dedicated
     // `NllbGpuModel`, which reads its weights from the standard `store` — this
@@ -98,6 +109,15 @@ pub fn build_model(
     }
     #[cfg(not(feature = "cuda"))]
     let _ = (nllb_lang, nllb_lora_dir);
+
+    // ── Step 0: EXL3 materialization ──
+    // If the checkpoint is EXL3 (QTIP trellis) quantized, rewrite every
+    // trellis linear into loader-consumable tensors (experts -> NVFP4
+    // triplets, the rest -> BF16 dense) BEFORE any loader or quant-format
+    // detection reads the store. No-op on non-EXL3 checkpoints; idempotent
+    // if a caller already materialized. See weight_map/exl3_materialize.rs.
+    crate::weight_map::materialize_exl3(gpu.as_ref(), &mut store)
+        .context("EXL3 checkpoint materialization failed")?;
 
     // ── Step 1: Select weight loader (only model-specific dispatch) ──
     let loader = loader_for_config(&config)?;
@@ -197,6 +217,24 @@ pub fn build_model(
     // Reconciling the two into a single reporter belongs to the M0 telemetry
     // commit, not to this rebase.
     let mut mem = MemTrace::new(gpu.as_ref());
+
+    // ── The native-EXL3 LOADER state's strong holder. ──
+    //
+    // `load_layers` (below) and `load_qwen4_exp_mtp_module` (step 5, further
+    // down this same function) are two different load phases that must be
+    // built against ONE `Exl3LaunchState` — one locks buffer, one host mutex,
+    // one cross-stream fence — plus one dense stage and one MoE state.
+    // `NativeExl3::shared()` anchors that instance only WEAKLY; this binding
+    // is the strong reference that keeps it alive BETWEEN the two phases, and
+    // this function's body is the smallest scope that contains both. Dropped
+    // at the end of the build, which releases the container (never the
+    // launch state / stage / MoE state themselves — the layers own those).
+    //
+    // Held for every model, not just qwen4_exp: the constructor allocates no
+    // device memory and reads only the gate env vars, and gating it on
+    // `model_type` here would put the invariant's lifetime behind a string
+    // comparison in a second place.
+    let _exl3_native_load_state = crate::weight_loader::qwen4_exp::NativeExl3::shared();
     let free_before_layers = gpu.free_memory().unwrap_or(0);
     let mut layers = loader.load_layers(&store, &config, gpu.as_ref(), &attn_layer_dtypes)?;
     let free_after_layers = gpu.free_memory().unwrap_or(0);
@@ -221,7 +259,63 @@ pub fn build_model(
         loader.load_ngram_embedding(&store, &config, gpu.as_ref(), max_batch_tokens)?;
     let final_norm = loader.load_final_norm(&store, &config, gpu.as_ref())?;
     mem.mark("load_final_norm");
-    let lm_head = loader.load_lm_head(&store, &config, gpu.as_ref())?;
+
+    // ── Step 2b: native EXL3 lm_head (ATLAS_EXL3_NATIVE=1) ──
+    // When the materialization pass kept `lm_head` packed (see
+    // `exl3_native_serves` / `exl3_native_supported` — the SAME predicates
+    // re-derived here), resolve the trellis weight now and skip
+    // `load_lm_head` entirely: there is no `lm_head.weight` to load, and the
+    // tied-embedding fallback would silently serve the wrong head. The dense
+    // `lm_head_weight` field is left NULL; the native head is the LEADING
+    // dispatch arm everywhere that field would otherwise be read, and the
+    // guards below refuse the combinations that read it outside those arms.
+    let lm_head_exl3_weight = if crate::weight_map::exl3_native_enabled()
+        && spark_runtime::weights::exl3::is_exl3_linear(&store, "lm_head")
+        && crate::weight_map::exl3_native_serves("lm_head")
+    {
+        let w =
+            spark_runtime::weights::exl3::Exl3Weight::from_store(gpu.as_ref(), &store, "lm_head")
+                .context("EXL3 native: resolving the kept-packed lm_head")?;
+        anyhow::ensure!(
+            crate::weight_map::exl3_native_supported(&w),
+            "EXL3 native: lm_head kept packed but outside the kernel envelope \
+             (K={} cb={:?}) — materialize/build predicate divergence (bug)",
+            w.k_bits,
+            w.cb,
+        );
+        // DFlash shares the BF16/NVFP4/FP8 lm_head pointers with the drafter
+        // tail — all None/NULL on the native path.
+        anyhow::ensure!(
+            dflash_args.is_none(),
+            "ATLAS_EXL3_NATIVE=1 is incompatible with --dflash (the drafter \
+             tail needs a materialized lm_head); unset one of the two"
+        );
+        // The LoRA tied-lm_head logic (impl_lora.rs) reads `lm_head_weight`
+        // directly; adapters cannot fold into a packed trellis head.
+        anyhow::ensure!(
+            lora_weights.is_none(),
+            "ATLAS_EXL3_NATIVE=1 is incompatible with --lora-adapter (LoRA \
+             reads the dense lm_head); unset one of the two"
+        );
+        Some(w)
+    } else {
+        None
+    };
+    let lm_head = if let Some(ref w) = lm_head_exl3_weight {
+        tracing::info!(
+            "lm_head served natively from EXL3 trellis ([{}x{}] K={} cb={:?}); \
+             skipping the dense load",
+            w.in_dim,
+            w.out_dim,
+            w.k_bits,
+            w.cb,
+        );
+        crate::weight_map::DenseWeight {
+            weight: spark_runtime::gpu::DevicePtr::NULL,
+        }
+    } else {
+        loader.load_lm_head(&store, &config, gpu.as_ref())?
+    };
     mem.mark("load_lm_head");
     let mtp_weights = loader.load_mtp_weights_multi(&store, &config, gpu.as_ref())?;
     mem.mark("load_mtp_weights_multi");
@@ -295,35 +389,173 @@ pub fn build_model(
             None
         };
 
-    // Capability warning: user asked for `--speculative` but nothing bound an
-    // MTP head, so speculative decoding will silently no-op.
-    //
-    // 🪤 `mtp_weights` is only the GENERIC (`load_mtp_weights_multi`) path.
-    // GLM-5.3 and DeepSeek-V4 bind architecturally distinct modules above and
-    // leave that vec empty, so testing it alone printed "no MTP weights were
-    // loaded" two lines under "GLM-5.3 MTP draft module loaded (layers.45)".
-    // Every binding path has to be consulted, and when none of them bound
-    // anything the checkpoint still has to be asked whether it SHIPS an MTP
-    // head — "Atlas can't read this layout" and "there is no head here" are
-    // different faults and want different messages.
-    if use_speculative
-        && mtp_weights.is_empty()
-        && glm_mtp_module.is_none()
-        && v4_mtp_module.is_none()
+    // qwen4_exp ships a Track-B MTP block too (mHC + QSA + its own 512-expert
+    // MoE), so `load_mtp_weights` returns None and the real loader is
+    // `qwen4_exp::load_qwen4_exp_mtp_module`. Loaded under `--speculative` OR
+    // ATLAS_QWEN4EXP_MTP=1 — the latter loads and audits the block without
+    // arming anything, which is the only way to measure its cost today.
+    // EVERY rank, since 43f82882d: the draft MoE is loaded with
+    // `force_all_experts = true` and so is REPLICATED per rank rather than
+    // sharded, which is exactly what "the upload never shards `mtp.*`" needs.
+    // This gate used to read `config.ep_rank == 0` with the comment "the MTP
+    // MoE has no force_all_experts path" — that path now exists, and leaving
+    // the gate up made rank 1 skip the whole `mtp.*` namespace, so it warned
+    // "`--speculative` was requested but no MTP weights were loaded", set
+    // has_mtp = false, allocated num_intermediates = 0, and then died in the
+    // first mHC verify with "SSM MTP intermediate buffers not allocated
+    // (need K-1 h + K conv; h_state_intermediates.len()=0)" (2-node EP=2 run,
+    // 2026-09-07).
+    // ⚠ The UPLOAD gate (`want_mtp` in spark-server: --speculative or the env
+    // flag) and this LOAD gate are DIFFERENT predicates — `use_speculative`
+    // also covers --dflash. When they disagree the `mtp.*` tensors were
+    // filtered at upload and every key is absent, which used to fall through
+    // to the Err arm and log "MTP module load FAILED" on every boot with a
+    // message that blamed the wrong thing. Rather than couple the two
+    // predicates across crates, require the tensors to actually BE here: that
+    // is the real precondition, and it stays correct however the flags drift.
+    let mtp_tensors_present = store.contains("mtp.fc_embedding.weight");
+    let qwen4_exp_mtp_module = if config.model_type == "qwen4_exp"
+        && (use_speculative || std::env::var("ATLAS_QWEN4EXP_MTP").as_deref() == Ok("1"))
+        && mtp_tensors_present
     {
-        match crate::mtp_layout::detect_in_store(&store, &config) {
-            None => tracing::warn!(
-                "`--speculative` was requested but this checkpoint ships no MTP head — \
-                 speculative decoding will be disabled. Either drop `--speculative` or \
-                 use a checkpoint that ships one (e.g. `mtp.safetensors`)."
-            ),
-            Some(layout) => tracing::error!(
-                "`--speculative` was requested and this checkpoint DOES ship MTP weights \
-                 ({layout:?}), but no loader bound them for model_type '{}' — speculative \
-                 decoding will be disabled. This is an Atlas capability gap, not a \
-                 checkpoint problem.",
-                config.model_type,
-            ),
+        // The MTP drafter is REPLICATED across TP ranks — it is small, and
+        // sharding it would put collectives inside the one path whose entire
+        // purpose is to be cheaper than a target pass. But `topology.rs` has
+        // already divided the model-wide head counts by tp_size, so handing
+        // `config` straight to the audit makes every drafter attention tensor
+        // read as DOUBLE the expected width (`q_rows = 2 * heads * head_dim`
+        // computed at 12 heads against a checkpoint written at 24), the audit
+        // fails, and — before the `?` below — the failure was swallowed into
+        // `None` and the server booted with speculation silently OFF.
+        //
+        // Restore the full pre-shard counts for the drafter's view. Index
+        // (QSA) heads are deliberately untouched: topology.rs never divides
+        // them either, because indexer_kv_heads=1 cannot shard.
+        let mtp_config = if config.tp_world_size > 1 {
+            let mut c = config.clone();
+            c.num_attention_heads *= config.tp_world_size;
+            c.num_key_value_heads *= config.tp_world_size;
+            c.linear_num_key_heads *= config.tp_world_size;
+            c.linear_num_value_heads *= config.tp_world_size;
+            c.tp_world_size = 1;
+            c.tp_rank = 0;
+            std::borrow::Cow::Owned(c)
+        } else {
+            std::borrow::Cow::Borrowed(&config)
+        };
+        match crate::weight_loader::qwen4_exp::load_qwen4_exp_mtp_module(
+            &store,
+            &mtp_config,
+            gpu.as_ref(),
+        ) {
+            Ok(Some(m)) => {
+                tracing::info!(
+                    "qwen4_exp MTP draft module loaded and audited (num_mtp_modules={})",
+                    config.num_mtp_modules
+                );
+                Some(Box::new(m))
+            }
+            Ok(None) => {
+                tracing::info!("qwen4_exp: config declares no MTP module (num_mtp_modules=0)");
+                None
+            }
+            Err(e) => {
+                // FAIL LOUD when speculation was actually asked for. This used
+                // to log and continue, which is how a TP=2 boot measured a
+                // clean, plausible, entirely wrong -31% decode "cost of TP":
+                // the drafter had failed its shape audit and the server served
+                // correct tokens, one per step, through every gate.
+                if use_speculative {
+                    anyhow::bail!(
+                        "qwen4_exp MTP module load FAILED and speculation was requested \
+                         (--speculative / ATLAS_QWEN4EXP_MTP_VERIFY): {e:#}. Refusing to \
+                         boot into a silently non-speculative server. Unset the \
+                         speculation flags to serve without MTP deliberately."
+                    );
+                }
+                tracing::error!("qwen4_exp MTP module load FAILED: {e:#}");
+                None
+            }
+        }
+    } else {
+        if config.model_type == "qwen4_exp"
+            && (use_speculative || std::env::var("ATLAS_QWEN4EXP_MTP").as_deref() == Ok("1"))
+            && config.ep_rank == 0
+            && !mtp_tensors_present
+        {
+            // Requested, but the weight store has no `mtp.*` — the upload gate
+            // filtered them (e.g. --dflash without --speculative). Name the
+            // real cause and the fix instead of failing.
+            tracing::info!(
+                "qwen4_exp: MTP module requested but no `mtp.*` tensors are \
+                 resident — they were filtered at upload. Pass --speculative \
+                 or ATLAS_QWEN4EXP_MTP=1 so the upload keeps them."
+            );
+        }
+        None
+    };
+
+    // Capability warning: user asked for `--speculative` but the model has no
+    // MTP head bundled, so speculative decoding will silently no-op. Surface
+    // this loudly so the user knows the flag was inert.
+    if use_speculative && mtp_weights.is_empty() {
+        if qwen4_exp_mtp_module.is_some() {
+            // Saying "no MTP weights were loaded" here would be a lie: the
+            // block IS loaded and audited. Whether a proposer gets wired
+            // depends on ATLAS_QWEN4EXP_MTP_VERIFY, so test THAT — via the
+            // same `requested_spec` the arming path uses — instead of firing
+            // on `mtp_weights.is_empty()`, which is ALWAYS true here because
+            // qwen4_exp carries its own module rather than the generic weight
+            // map. That made this warning fire on every `--speculative` boot,
+            // including ones where speculation then ran at p1 0.85; a warning
+            // that cries wolf is worse than none, because it trains the reader
+            // past the boot where it is true.
+            if !requested_spec {
+                tracing::warn!(
+                    "qwen4_exp: the MTP module is loaded and audited, but the \
+                     proposer is NOT armed — speculative decoding stays OFF. Set \
+                     ATLAS_QWEN4EXP_MTP_VERIFY=1 to arm the draft head together \
+                     with the mHC K-row verify path it needs; the two arm together \
+                     because a proposer without that verify path routes the draft \
+                     into `refuse_batched_under_hc` mid-step, which the scheduler \
+                     turns into a truncated response rather than a fallback."
+                );
+            } else {
+                // Armed here; the install path below still reports if the head
+                // itself turns out to be unprojectable.
+                tracing::info!(
+                    "qwen4_exp: MTP module loaded and audited, speculation requested \
+                     and ATLAS_QWEN4EXP_MTP_VERIFY=1 — arming the draft head."
+                );
+            }
+        } else if glm_mtp_module.is_none() && v4_mtp_module.is_none() {
+            // Nothing bound an MTP head anywhere, so speculative decoding will
+            // silently no-op. Surface it loudly.
+            //
+            // 🪤 `mtp_weights` is only the GENERIC (`load_mtp_weights_multi`)
+            // path. qwen4_exp (the arm above), GLM-5.3 and DeepSeek-V4 each
+            // bind architecturally distinct modules and leave that vec empty,
+            // so testing it alone printed "no MTP weights were loaded" two
+            // lines under "GLM-5.3 MTP draft module loaded (layers.45)". EVERY
+            // binding path has to be consulted — which is why qwen4_exp is the
+            // `if` arm and glm/v4 are guarded here — and when none of them
+            // bound anything the checkpoint still has to be asked whether it
+            // SHIPS an MTP head: "Atlas can't read this layout" and "there is
+            // no head here" are different faults wanting different messages.
+            match crate::mtp_layout::detect_in_store(&store, &config) {
+                None => tracing::warn!(
+                    "`--speculative` was requested but this checkpoint ships no MTP head — \
+                     speculative decoding will be disabled. Either drop `--speculative` or \
+                     use a checkpoint that ships one (e.g. `mtp.safetensors`)."
+                ),
+                Some(layout) => tracing::error!(
+                    "`--speculative` was requested and this checkpoint DOES ship MTP weights \
+                     ({layout:?}), but no loader bound them for model_type '{}' — speculative \
+                     decoding will be disabled. This is an Atlas capability gap, not a \
+                     checkpoint problem.",
+                    config.model_type,
+                ),
+            }
         }
     }
     mem.mark("mtp modules (glm/v4)");
@@ -388,14 +620,22 @@ pub fn build_model(
     // ── Step 3: LM-head quantization (NVFP4 / FP8 / BF16-skip) + the
     // draft-only NVFP4 head for MTP — extracted to lm_head_setup.rs
     // (file-size cap; pure code move).
-    let (lm_head_nvfp4, lm_head_fp8, mtp_lm_head_nvfp4) = super::lm_head_setup::setup_lm_heads(
-        &store,
-        &lm_head,
-        &config,
-        gpu.as_ref(),
-        use_speculative,
-        !mtp_weights.is_empty(),
-    )?;
+    let (lm_head_nvfp4, lm_head_fp8, mtp_lm_head_nvfp4) = if lm_head_exl3_weight.is_some() {
+        // Native EXL3 head: nothing to quantize (the dense head is NULL) and
+        // no draft head can be built from it. `--speculative` with MTP
+        // weights would find no NVFP4 draft head and disable itself with the
+        // existing "speculative decoding disabled" warning.
+        (None, None, None)
+    } else {
+        super::lm_head_setup::setup_lm_heads(
+            &store,
+            &lm_head,
+            &config,
+            gpu.as_ref(),
+            use_speculative,
+            !mtp_weights.is_empty(),
+        )?
+    };
 
     // Capture the shared embed + resolved draft NVFP4 head for the DeepSeek-V4
     // MTP proposer BEFORE `embed` / `lm_head_nvfp4` / `mtp_lm_head_nvfp4` are
@@ -551,6 +791,24 @@ pub fn build_model(
                  excluded (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)",
                 gib(ledger_live),
                 gib(used_so_far - ledger_live),
+            );
+            // The residual is co-tenants + page cache (cuMemGetInfo free ==
+            // MemFree on GB10) + whatever the driver charges beyond the
+            // requested bytes. Before the EXL3 weight pool the last term
+            // was ~17.9 GB on 4.05bpw (2 MiB chunk tails behind 296K
+            // per-tensor cuMemAllocs); with the pool it should be ~0, so a
+            // residual well above the known co-tenants is the signal that
+            // per-tensor granularity crept back in. Debug so INFO stays quiet.
+            tracing::debug!(
+                "KV budget ledger detail: cuMemGetInfo used {:.2} GB − ledger {:.2} GB = \
+                 {:.2} GB outside the ledger; weight store holds {} pooled arena(s) = \
+                 {:.2} GB of its {:.2} GB",
+                gib(used_so_far),
+                gib(ledger_live),
+                gib(used_so_far - ledger_live),
+                store.arena_count(),
+                gib(store.pooled_bytes()),
+                gib(store.total_bytes()),
             );
             used_so_far = ledger_live;
         } else if ledger_live > used_so_far {
@@ -924,6 +1182,9 @@ pub fn build_model(
     // shares embed_tokens + lm_head with the target). DenseWeight is Copy
     // so this clones the device pointer cheaply.
     let target_embed_for_dflash = embed.weight;
+    // Same trick for the MTP draft head: it gathers the next-token embedding
+    // from the shared table. `DenseWeight` is Copy, so this is a pointer.
+    let target_embed_for_mtp = embed;
     let target_lm_head_for_dflash = lm_head.weight;
     // NVFP4 lm_head (Copy) shared with the DFlash drafter so its final logits
     // GEMM uses w4a16 instead of a BF16 dense_gemm on NVFP4-packed bytes.
@@ -938,6 +1199,26 @@ pub fn build_model(
         super::lm_head_setup::native_fp8_lm_head_share(&store, &config, gpu.as_ref())?
     } else {
         None
+    };
+
+    // ── Step 6a-bis: native EXL3 lm_head launch state ──
+    // Built while `config`/`buffers`/`gpu` are still in scope (they move into
+    // `new`), installed right after construction. Sized by the logits arena's
+    // ROW CAPACITY: every projection destination is a row range of that
+    // arena, and the fp16 rotation scratch is keyed by destination row (see
+    // model/lm_head_exl3.rs). Allocations here are load-time only.
+    let lm_head_exl3_state = match lm_head_exl3_weight {
+        Some(w) => {
+            let max_rows = buffers.sizes().logits / (config.vocab_size * 2);
+            Some(crate::model::lm_head_exl3::Exl3LmHead::new(
+                gpu.as_ref(),
+                w,
+                config.vocab_size,
+                config.hidden_size,
+                max_rows,
+            )?)
+        }
+        None => None,
     };
 
     let mut model = TransformerModel::new(
@@ -965,7 +1246,18 @@ pub fn build_model(
         vision_encoder,
         ssm_cache_slots,
         ssm_checkpoint_interval,
+        // A bespoke MTP module is present, so the SSM verify pools must exist
+        // even though `mtp_weights` is empty. Known here: the module is loaded
+        // in Step 5 above, before construction.
+        qwen4_exp_mtp_module.is_some(),
     )?;
+
+    // Install the native EXL3 lm_head (post-construction setter — the
+    // `set_dflash_proposer` precedent). Also vetoes decode-graph capture:
+    // cooperative launches cannot be captured.
+    if let Some(head) = lm_head_exl3_state {
+        model.set_lm_head_exl3(head);
+    }
 
     // ── Step 6b: DeepSeek-V4 MTP proposer (optional, post-construction) ──
     //
@@ -994,7 +1286,52 @@ pub fn build_model(
         }
     }
 
-    // ── Step 6c: GLM-5.3 MTP proposer (optional, post-construction) ──
+    // ── Step 6c: qwen4_exp MTP module (optional, post-construction) ──
+    //
+    // Handed to the model so it is not dropped. `DevicePtr` has no `Drop`, so
+    // dropping the module here would leak its quantized MoE and attention
+    // buffers for the process lifetime. No proposer is built from it yet, so
+    // `has_proposer()` stays false and speculation stays off.
+    if let Some(module) = qwen4_exp_mtp_module {
+        // SHADOW MODE builds the draft head, which consumes the module and
+        // allocates its own single-layer KV pool. Off by default: without
+        // ATLAS_QWEN4EXP_MTP_SHADOW the module is just held (unchanged
+        // behaviour), because the head's pool is real memory outside the util
+        // pledge and nothing should pay for it unless it is being measured.
+        // Speculation needs the head installed as the ACTIVE proposer; shadow
+        // needs it held but inert. `ATLAS_QWEN4EXP_MTP_VERIFY=1` is the same
+        // flag the mHC K-row verify path is gated on, so the two arm together
+        // or not at all — a proposer without that verify path would produce
+        // drafts the verify step then refuses on, mid-request.
+        //
+        // ★ The predicate must also check that the draft has a vocab head to
+        // project through. It used to arm on the two flags alone, and the
+        // comment above promised a "speculative disabled" fallback that did
+        // not exist: with no head, `draft_token` failed on EVERY propose, the
+        // scheduler logged an error per decode step, and speculation
+        // degenerated to serial while the startup banner said ARMED. Fall back
+        // cleanly instead — one WARN at load, serial decode after.
+        let arm_spec = requested_spec && model.qwen4_exp_mtp_draft_head_available();
+        if requested_spec && !arm_spec {
+            tracing::warn!(
+                "qwen4_exp MTP: speculation was requested (--speculative +                  ATLAS_QWEN4EXP_MTP_VERIFY=1) but the model exposes NO vocab head                  the draft can project through (no NVFP4 head, and no native EXL3                  trellis head) — the proposer is NOT armed and decoding stays                  SERIAL. Arming anyway would fail every propose, once per decode                  step."
+            );
+        }
+        if crate::layers::qwen4_exp_mtp::shadow_enabled() || arm_spec {
+            if let Err(e) =
+                model.set_qwen4_exp_mtp_head(*module, target_embed_for_mtp, max_seq_len, arm_spec)
+            {
+                tracing::error!(
+                    "qwen4_exp MTP head FAILED to build: {e:#}. \
+                     Serving continues with no MTP."
+                );
+            }
+        } else {
+            model.set_qwen4_exp_mtp(module);
+        }
+    }
+
+    // ── Step 6d: GLM-5.3 MTP proposer (optional, post-construction) ──
     //
     // Built here for the same reason as the V4 head: it needs the model's owned GPU backend and
     // the shared embedding + LM head, neither of which `new()` hands out.

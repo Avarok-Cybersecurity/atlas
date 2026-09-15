@@ -29,6 +29,13 @@ impl MoeLayer {
             "zero-expert MoE routing is not wired on this dispatch variant yet (forward_k2)"
         );
 
+        // Native EXL3 routed experts: the fused NVFP4/FP8/BF16 batch2 kernels
+        // below read pointer tables that hold NULLS when the experts were
+        // kept packed — one generic n-token mgemm arm serves every batch size.
+        if self.exl3_native_active() {
+            return self.forward_exl3_decode(input, 2, ctx, stream);
+        }
+
         // Feature-1: the fused batch2 fast path has no fold hook. When a MoE
         // adapter is RESIDENT (install-time-fixed → graph-safe; graphs drain on
         // rotate/swap), route to the per-row batched fallback which folds

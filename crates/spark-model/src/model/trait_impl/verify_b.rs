@@ -89,7 +89,11 @@ impl TransformerModel {
         let max_blocks = self.max_blocks_per_seq;
 
         // Zero-alloc metadata upload: cast stack arrays to byte slices directly.
-        let positions = [seq.seq_len as u32, (seq.seq_len + 1) as u32];
+        // Rotary positions for the two verify rows.
+        let positions = [
+            seq.rope_pos_at(seq.seq_len),
+            seq.rope_pos_at(seq.seq_len + 1),
+        ];
         // SAFETY: `positions` is the `[u32; 2]` literal on the line above —
         // a fully-initialised local whose size is 2 * 4 = 8, exactly the byte
         // length requested. `u32` is POD (no padding, every bit pattern
@@ -249,7 +253,10 @@ impl TransformerModel {
             // illegal under CUDA graph capture.
             && !hss_engaged
             && !k2_diag_eager
-            && !lora_eager;
+            && !lora_eager
+            // EXL3-native lm_head / MoE experts launch COOPERATIVELY —
+            // illegal under graph capture (same veto as decode_a/decode_a2).
+            && !self.exl3_graph_veto();
 
         // DeepSeek-V4 hash-MoE (first `num_hash_layers`) routes experts by token
         // id via the static tid2eid table, so the verify forward needs the 2

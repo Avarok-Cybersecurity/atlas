@@ -135,8 +135,15 @@ mod from_str_tests {
         for (s, want) in [
             ("F32", FP32),
             ("BF16", BF16),
+            // F16 survives into the store ONLY for the EXL3 Hadamard sign
+            // vectors (.suh/.svh, exempted from the loaders' F16->BF16
+            // conversion because their exact f16 bits are decode inputs);
+            // every other F16 tensor is still converted at disk-load.
+            ("F16", F16),
             ("U8", UInt8),
-            ("I8", UInt8), // packed NVFP4 raw container
+            ("I8", UInt8),   // packed NVFP4 raw container
+            ("I16", UInt16), // EXL3 packed trellis codes (raw bits)
+            ("I32", Int32),  // EXL3 codebook flag scalar
             ("F8_E4M3", FP8E4M3),
             ("F8_E8M0", FP8E8M0),
             ("I64", Int64),
@@ -147,9 +154,6 @@ mod from_str_tests {
                 "dtype {s}"
             );
         }
-        // F16 is converted to BF16 at disk-load; a store (and therefore a
-        // peer manifest) can never contain it, so the wire mapping rejects it.
-        assert!(WeightDtype::from_safetensors_str("F16").is_err());
         assert!(WeightDtype::from_safetensors_str("bogus").is_err());
     }
 

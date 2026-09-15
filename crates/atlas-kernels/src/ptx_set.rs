@@ -12,7 +12,7 @@
 
 use atlas_core::target::KernelTarget;
 
-use super::{ModelBehavior, SamplingPresets};
+use super::{ModelBehavior, SamplingPresets, ServePreset};
 
 /// Declares which `(model_type, hidden_size)` pairs a kernel target supports.
 /// Parsed from `[[model_types]]` in MODEL.toml at build time.
@@ -109,4 +109,10 @@ pub struct TargetPtxSet {
     /// resolve is to gate it on config so it is never issued (see
     /// `qwen3_attention::init_arch_gates`), which removes it from here.
     pub expected_absent: &'static [(&'static str, &'static str)],
+    /// Named serve presets declared in this target's MODEL.toml
+    /// `[[serve_presets]]`: a checkpoint (HF id + revision) with the flag and
+    /// `ATLAS_*` defaults it was validated under. `spark serve <preset.name>`
+    /// resolves through [`crate::preset_named`]. Empty for targets that
+    /// declare none.
+    pub serve_presets: &'static [ServePreset],
 }

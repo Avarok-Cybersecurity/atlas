@@ -286,7 +286,6 @@ pub fn process_decode_logits(
                             timing: timing.clone(),
                         };
                         process_seq_logits(
-                            model,
                             a,
                             &buf,
                             i,
@@ -313,7 +312,6 @@ pub fn process_decode_logits(
                 .enumerate()
                 .map(|(i, a)| {
                     process_seq_logits(
-                        model,
                         a,
                         &buf,
                         i,
@@ -360,6 +358,9 @@ pub fn process_decode_logits(
             && tok == trs
         {
             a.output_tokens.push(tok);
+            crate::metrics::GENERATION_TOKENS_TOTAL.inc();
+            // Permanent diagnostic — see emit_step::emit_token's twin log.
+            tracing::debug!("emit tok={tok} n={}", a.output_tokens.len());
             a.finished = true;
             // Name the cut. Without this the ladder skips its guard rung,
             // budget is untouched, and the turn wires as "stop" -- telling
@@ -586,6 +587,9 @@ pub fn process_decode_logits(
                         "tool-call repetition runaway: model re-opened {MAX_POST_COMPLETION_TOOL_OPENS}+ tool-call blocks after a completed call on a tool_choice=auto turn; ending response (was burning to max_tokens). Sanitizer keeps the first valid call(s)."
                     );
                     a.output_tokens.push(tok);
+                    crate::metrics::GENERATION_TOKENS_TOTAL.inc();
+                    // Permanent diagnostic — see emit_step::emit_token's twin log.
+                    tracing::debug!("emit tok={tok} n={}", a.output_tokens.len());
                     a.tool_call_opened = true;
                     if let Some(ref mut gs) = a.grammar_state {
                         gs.accept_token(tok);
@@ -616,6 +620,9 @@ pub fn process_decode_logits(
         // that spuriously emits `</tool_call>` hard-stops here.
         if tool_call_end_token == Some(tok) && !a.inside_thinking {
             a.output_tokens.push(tok);
+            crate::metrics::GENERATION_TOKENS_TOTAL.inc();
+            // Permanent diagnostic — see emit_step::emit_token's twin log.
+            tracing::debug!("emit tok={tok} n={}", a.output_tokens.len());
             // Fix A (2026-06-05): mark the tool call complete so the EOS-escape
             // gate (below) can lift suppression. Inert unless
             // `tool_eos_escape_enabled()` (default OFF).
@@ -767,6 +774,9 @@ pub fn process_decode_logits(
             // output_tokens for correct token count; the API layer strips the
             // decoded text for blocking responses.
             a.output_tokens.push(tok);
+            crate::metrics::GENERATION_TOKENS_TOTAL.inc();
+            // Permanent diagnostic — see emit_step::emit_token's twin log.
+            tracing::debug!("emit tok={tok} n={}", a.output_tokens.len());
             crate::scheduler::emit_step::update_tool_param_state(a, tok);
             a.finished = true;
         } else if a.eos_tokens.contains(&tok) && suppress_eos {
@@ -841,7 +851,20 @@ pub fn process_decode_logits(
                 "EOS suppressed; model forced to continue"
             );
         } else {
+            // Per-token ledger (debug) — parity mirror of the `TOK` line in
+            // `emit_step::emit_token`, which only the spec/MTP paths reach.
+            // Without a twin here a serial run cannot be diffed against a
+            // speculative run in TOKEN space, only in text.
+            tracing::debug!(
+                "TOK slot={} out_idx={} tok={}",
+                a.seq.slot_idx,
+                a.output_tokens.len(),
+                tok,
+            );
             a.output_tokens.push(tok);
+            crate::metrics::GENERATION_TOKENS_TOTAL.inc();
+            // Permanent diagnostic — see emit_step::emit_token's twin log.
+            tracing::debug!("emit tok={tok} n={}", a.output_tokens.len());
             // SM1 (2026-05-26): drive the tool-body / parameter-body
             // state machine from the non-spec decode path. Previously
             // only spec/verify paths called this (via emit_token),

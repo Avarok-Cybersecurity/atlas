@@ -498,3 +498,52 @@ impl MoeLayer {
         Ok(())
     }
 }
+
+impl MoeLayer {
+    /// Build ONLY the shared expert's Atlas-transposed NVFP4 twins.
+    ///
+    /// qwen4_exp's loader deliberately never builds transposed twins: for the
+    /// 512 ROUTED experts they cost ~7 GB out of the KV budget, so it serves
+    /// the checkpoint-native n-major scales and takes
+    /// `build_cutlass_grouped_sfb`'s n-major fallback. The SHARED expert is
+    /// three weights per layer, ~2.8 MB, and without a transposed twin it
+    /// falls all the way through `run_shared_expert_prefill` to plain
+    /// `w4a16_gemm` — measured at 6.5 TFLOP/s against the routed experts'
+    /// 32.4 TFLOP/s on the same chunk, five times less arithmetic for the
+    /// same 571 ms. This builds just those three so the CUTLASS NVFP4 arm
+    /// has an operand.
+    pub(crate) fn build_shared_nvfp4_transposed(
+        &mut self,
+        gpu: &dyn spark_runtime::gpu::GpuBackend,
+        shared_inter: usize,
+        h: usize,
+    ) -> anyhow::Result<()> {
+        if shared_inter == 0 || self.weights.shared_expert.gate_proj.is_null() {
+            return Ok(());
+        }
+        if self.shared_gate_t.is_some() {
+            return Ok(());
+        }
+        self.shared_gate_t = Some(self.weights.shared_expert.gate_proj.transpose_for_gemm(
+            gpu,
+            shared_inter,
+            h,
+        )?);
+        self.shared_up_t = Some(self.weights.shared_expert.up_proj.transpose_for_gemm(
+            gpu,
+            shared_inter,
+            h,
+        )?);
+        self.shared_down_t = Some(self.weights.shared_expert.down_proj.transpose_for_gemm(
+            gpu,
+            h,
+            shared_inter,
+        )?);
+        tracing::info!(
+            shared_inter,
+            h,
+            "MoE shared expert: built NVFP4 transposed twins for the CUTLASS arm"
+        );
+        Ok(())
+    }
+}

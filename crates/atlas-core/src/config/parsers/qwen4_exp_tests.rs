@@ -59,6 +59,15 @@ const RAW: &str = r#"{
     "ple_embed_dim": 2560,
     "ple_conv_kernel_size": 4,
     "output_gate_type": "sigmoid",
+    "mtp_num_hidden_layers": 1,
+    "mtp_use_dedicated_embeddings": false,
+    "mtp": {
+      "hybrid": true,
+      "layer_types": ["full_attention"],
+      "mtp_use_hidden_state_from_layer": null,
+      "num_hidden_layers": 1,
+      "rope_theta": 10000000
+    },
     "partial_rotary_factor": 0.25,
     "rope_parameters": {
       "mrope_interleaved": true,
@@ -200,6 +209,61 @@ fn layer_types_length_must_match_num_hidden_layers() {
     assert!(err.contains("layer_types has 4 entries"), "{err}");
 }
 
+/// `num_mtp_modules` is the field every MTP module loader short-circuits on.
+/// Left at the factory default 0 it does not matter what the checkpoint
+/// ships — the block is never built.
+#[test]
+fn mtp_module_count_is_parsed() {
+    let c = parse_qwen4_exp(&raw_config()).expect("parse");
+    assert_eq!(c.num_mtp_modules, 1, "text_config.mtp declares one module");
+    assert_eq!(c.mtp_num_hidden_layers, 1, "one layer inside that module");
+}
+
+/// A checkpoint with no `mtp` key must leave speculation OFF, exactly as
+/// before this parser learned the field.
+#[test]
+fn mtp_absent_leaves_speculation_off() {
+    let mut raw = raw_config();
+    raw["text_config"]
+        .as_object_mut()
+        .expect("text_config object")
+        .remove("mtp");
+    let c = parse_qwen4_exp(&raw).expect("parse");
+    assert_eq!(c.num_mtp_modules, 0);
+}
+
+/// The loader builds exactly one MTP body; a two-layer module would have it
+/// build the first and silently drop the second — so it must not be
+/// ADVERTISED. It must also not fail the parse: this runs on every launch,
+/// and refusing here would stop a checkpoint booting AT ALL over an optional
+/// feature nobody asked for. num_mtp_modules == 0 is the absent-key path.
+#[test]
+fn mtp_multi_layer_is_not_advertised_but_still_boots() {
+    let mut raw = raw_config();
+    raw["text_config"]["mtp"]["num_hidden_layers"] = Value::from(2);
+    let c = parse_qwen4_exp(&raw).expect("an unsupported MTP block must not fail the parse");
+    assert_eq!(c.num_mtp_modules, 0);
+}
+
+/// A `linear_attention` MTP body would be assembled from `linear_attn.*` keys
+/// the `mtp.*` namespace does not carry. Same contract as above: decline the
+/// module, boot the model.
+#[test]
+fn mtp_non_full_attention_is_not_advertised_but_still_boots() {
+    let mut raw = raw_config();
+    raw["text_config"]["mtp"]["layer_types"] = Value::from(vec!["linear_attention"]);
+    let c = parse_qwen4_exp(&raw).expect("an unsupported MTP block must not fail the parse");
+    assert_eq!(c.num_mtp_modules, 0);
+}
+
+/// The shipped checkpoint's block IS supported, so it must be advertised —
+/// otherwise the two tests above would pass vacuously.
+#[test]
+fn mtp_supported_block_is_advertised() {
+    let c = parse_qwen4_exp(&raw_config()).expect("parse");
+    assert_eq!(c.num_mtp_modules, 1);
+}
+
 #[test]
 fn missing_text_config_is_refused() {
     let err = parse_qwen4_exp(&serde_json::json!({"model_type": "qwen4_exp"}))
@@ -253,6 +317,10 @@ fn parses_the_real_config_json_when_present() {
     );
     assert_eq!(c.ple_layer_ids, vec![2]);
     assert!(c.vision.is_some());
+    assert_eq!(
+        c.num_mtp_modules, 1,
+        "the shipped config declares one single-layer full-attention MTP block"
+    );
 }
 
 /// Qwen3.8-Flash-Next shipped under `qwen3_8_flash_next` and was later

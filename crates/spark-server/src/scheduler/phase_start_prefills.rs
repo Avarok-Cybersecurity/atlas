@@ -11,6 +11,15 @@ use crate::api::InferenceRequest;
 use crate::grammar::GrammarEngine;
 
 #[allow(clippy::too_many_arguments)]
+/// `ATLAS_PREFILL_CODISPATCH=1` (or `true`): the single end-to-end flag for
+/// cross-request co-dispatch of fresh prompts. Read per call rather than
+/// latched, so the gate line below reports the value actually in force.
+fn codispatch_flag_on() -> bool {
+    std::env::var("ATLAS_PREFILL_CODISPATCH")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 pub(super) fn start_new_requests(
     model: &dyn Model,
     sched: &crate::scheduler::sched_ctx::SchedCtx,
@@ -36,15 +45,35 @@ pub(super) fn start_new_requests(
     // prefill so they batch into one forward via run_batched_prefill_step (which
     // sees prefilling.len() >= 2 → can_batch_prefill_only). Vision excluded: a
     // shared prepare_vision_embed buffer would cross-contaminate stacked streams.
-    let want_codispatch = std::env::var("ATLAS_PREFILL_CODISPATCH")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    let want_codispatch = codispatch_flag_on()
         && chunked
         && new_reqs.len() >= 2
         && active.is_empty()
         && prefilling.is_empty()
         && !model.is_ep()
         && !new_reqs.iter().any(|r| r.has_image_pixels());
+    // One-shot attribution for "why did co-dispatch not batch?". Each of these
+    // five is individually capable of silently keeping every stream on the
+    // per-stream round-robin, which reads as "batched prefill does nothing"
+    // rather than as a gate that never opened — the exact failure the
+    // 2026-09-06 A/B hit (arm_live.txt recorded neither an ARM nor a DECLINED
+    // line because `kernel_batched_eligible` is downstream of this). Same
+    // pattern as the DFlash batched-verify gate line in `mtp_step.rs`.
+    if codispatch_flag_on() {
+        static WHY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        WHY.get_or_init(|| {
+            tracing::info!(
+                new_reqs = new_reqs.len(),
+                active = active.len(),
+                prefilling = prefilling.len(),
+                chunked,
+                is_ep = model.is_ep(),
+                vision = new_reqs.iter().any(|r| r.has_image_pixels()),
+                want_codispatch,
+                "prefill co-dispatch gate (first tick with requests)"
+            );
+        });
+    }
     // VARLEN batched prefill (`--prefill-varlen-batch`): defer chunk-0 whenever
     // there is (or will be) company to batch with — >=2 co-admitted this tick,
     // OR streams already prefilling that a late arrival can join next wave.

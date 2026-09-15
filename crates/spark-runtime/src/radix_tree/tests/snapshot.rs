@@ -123,7 +123,9 @@ fn test_intermediate_snapshot_survives_tree_eviction() {
 
 #[test]
 fn test_partial_suffix_insert_and_lookup() {
-    let tree = RadixTree::new();
+    // Sub-block matching is OPT-IN since it was measured to break warm
+    // determinism; this test is about the arm itself, so ask for it.
+    let tree = RadixTree::with_subblock_matching(true);
     // 20 tokens = 1 full block (16) + 4 partial
     let tokens: Vec<u32> = (0..20).collect();
     let block_table = vec![10, 20]; // block for full + block for partial
@@ -223,7 +225,12 @@ fn test_partial_suffix_eviction_frees_both_blocks() {
 /// the distinct child-supersedes-partial arm.
 #[test]
 fn test_partial_suffix_cleared_when_extended() {
-    let tree = RadixTree::new();
+    // Sub-block matching is OPT-IN on this branch since it was measured to
+    // break warm determinism (92e41bd0b); this test exercises that very arm,
+    // so it must ask for it explicitly — main's `RadixTree::new()` would leave
+    // the arm off and the 20-token lookup below could not be served by the
+    // deeper node.
+    let tree = RadixTree::with_subblock_matching(true);
     // Insert 20 tokens (1 full + a 4-token partial held in block 20).
     let tokens_20: Vec<u32> = (0..20).collect();
     let first = tree.insert(&tokens_20, &[10, 20], &[], 16, 0, 0);
@@ -267,7 +274,9 @@ fn test_partial_suffix_cleared_when_extended() {
 
 #[test]
 fn test_partial_suffix_multi_block_prefix() {
-    let tree = RadixTree::new();
+    // Sub-block matching is OPT-IN since it was measured to break warm
+    // determinism; this test is about the arm itself, so ask for it.
+    let tree = RadixTree::with_subblock_matching(true);
     // 396 tokens = 24 full blocks + 12 partial
     let tokens: Vec<u32> = (0..396).collect();
     let block_table: Vec<u32> = (0..25).collect();
@@ -285,7 +294,9 @@ fn test_partial_suffix_multi_block_prefix() {
 
 #[test]
 fn test_partial_suffix_prefix_match_shorter_lookup() {
-    let tree = RadixTree::new();
+    // Sub-block matching is OPT-IN since it was measured to break warm
+    // determinism; this test is about the arm itself, so ask for it.
+    let tree = RadixTree::with_subblock_matching(true);
     // Insert 31 tokens (1 full block + 15 partial) — simulates prompt+generation
     let tokens_31: Vec<u32> = (0..31).collect();
     tree.insert(&tokens_31, &[10, 20], &[], 16, 0, 0);
@@ -302,7 +313,9 @@ fn test_partial_suffix_prefix_match_shorter_lookup() {
 
 #[test]
 fn test_sub_block_match_via_child_key_prefix() {
-    let tree = RadixTree::new();
+    // Sub-block matching is OPT-IN since it was measured to break warm
+    // determinism; this test is about the arm itself, so ask for it.
+    let tree = RadixTree::with_subblock_matching(true);
     // Insert 35 tokens (2 full blocks + 3 partial) — prompt + generation
     let tokens_35: Vec<u32> = (0..35).collect();
     tree.insert(&tokens_35, &[10, 20, 30], &[], 16, 0, 0);
@@ -334,93 +347,5 @@ fn test_partial_suffix_sub_block_only() {
 
 // ── Task #24: adapter-correct SSM snapshots + base hash byte-identity ──
 
-/// `hash_token_prefix(_, _, 0)` (base sentinel) must reduce EXACTLY to the
-/// pre-#24 token-only FNV-1a value, so base prefix-cache/snapshot hit rates are
-/// unchanged. A non-zero adapter_id must change the hash.
-#[test]
-fn test_hash_token_prefix_base_byte_identical() {
-    let tokens: Vec<u32> = vec![7, 42, 1000, 65535, 3, 0, 128];
-    // Recompute the exact pre-#24 formula inline.
-    let mut expected: u64 = 0xcbf29ce484222325;
-    for &t in &tokens {
-        expected ^= t as u64;
-        expected = expected.wrapping_mul(0x100000001b3);
-    }
-    assert_eq!(
-        hash_token_prefix(&tokens, tokens.len(), 0),
-        expected,
-        "base (adapter_id=0) hash must be byte-identical to the pre-#24 value"
-    );
-    // Any non-zero adapter partitions the key.
-    assert_ne!(
-        hash_token_prefix(&tokens, tokens.len(), 0),
-        hash_token_prefix(&tokens, tokens.len(), 99),
-    );
-    assert_ne!(
-        hash_token_prefix(&tokens, tokens.len(), 7),
-        hash_token_prefix(&tokens, tokens.len(), 9),
-    );
-}
-
-/// The SSM snapshot index must isolate by adapter: a snapshot registered under
-/// adapter A's prefix hash is not found by an adapter-B lookup, but is by an
-/// adapter-A lookup.
-#[test]
-fn test_snapshot_index_adapter_isolation() {
-    let mut idx = SsmSnapshotIndex::new();
-    let tokens: Vec<u32> = (0..16).collect();
-    const A: u64 = 0xAA;
-    const B: u64 = 0xBB;
-
-    // Register under adapter A (the tree computes prefix_hash with A folded in).
-    let ph_a = hash_token_prefix(&tokens, 16, A);
-    idx.insert(ph_a, 42, 0, 16);
-
-    // Adapter B lookup recomputes with B → different hash → miss.
-    assert_eq!(idx.lookup(&tokens, 16, 0, B), None);
-    // Adapter A lookup → hit.
-    assert_eq!(idx.lookup(&tokens, 16, 0, A), Some((42, 16)));
-    // Base lookup → miss (base hash != A hash).
-    assert_eq!(idx.lookup(&tokens, 16, 0, 0), None);
-}
-
-/// End-to-end through the tree API: an SSM snapshot saved under adapter A is
-/// not restored for an adapter-B request, but is for an adapter-A request.
-#[test]
-fn test_ssm_snapshot_adapter_isolation_via_tree() {
-    let tree = RadixTree::new();
-    let tokens: Vec<u32> = (0..32).collect();
-    const A: u64 = 0x55;
-    const B: u64 = 0x66;
-
-    tree.insert_with_snapshot(&tokens, &[10, 20], &[], 16, 42, 0, 0, A);
-    tree.release(&tokens, 16, A);
-
-    // Adapter B: KV misses AND no snapshot restore.
-    let m_b = tree.lookup(&tokens, 16, 0, B);
-    assert!(m_b.is_empty());
-    assert_eq!(m_b.ssm_snapshot, None);
-
-    // Adapter A: KV hit + snapshot restored.
-    let m_a = tree.lookup(&tokens, 16, 0, A);
-    assert_eq!(m_a.matched_tokens, 32);
-    assert_eq!(m_a.ssm_snapshot, Some(42));
-    tree.release(&tokens, 16, A);
-
-    // Give B its OWN KV for the same tokens (disjoint radix root) so B's walk
-    // HITS. Without this, `lookup` short-circuits on `matched_tokens == 0` and
-    // never reaches the snapshot index — so `m_b.ssm_snapshot == None` above is
-    // proved by the tree's root isolation alone and says nothing about whether
-    // the snapshot KEY carries the adapter.
-    tree.insert(&tokens, &[30, 40], &[], 16, 0, B);
-    tree.release(&tokens, 16, B);
-    let m_b2 = tree.lookup(&tokens, 16, 0, B);
-    assert_eq!(m_b2.matched_tokens, 32, "B now has its own cached KV");
-    assert_eq!(m_b2.matched_blocks, vec![30, 40]);
-    assert_eq!(
-        m_b2.ssm_snapshot, None,
-        "A's SSM snapshot must not restore for B even on a B-side KV hit"
-    );
-    assert_eq!(m_b2.ssm_snapshot_tier_key, None);
-    tree.release(&tokens, 16, B);
-}
+#[path = "snapshot_adapter.rs"]
+mod snapshot_adapter;

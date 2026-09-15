@@ -295,6 +295,51 @@ pub fn hidden_fingerprint(gpu: &dyn GpuBackend, p: DevicePtr, h: usize) -> u64 {
     hash
 }
 
+/// Batched multi-sequence MTP verify: `n_seqs` sequences x `ks[i]` rows in ONE
+/// weight sweep.
+///
+/// LIST-SHAPED, like the batched-decode command `0xFFFF_FFE0` and unlike the
+/// per-sequence verify commands `0xFFFF_FFF2..F4`: the preamble `seq_id` is a
+/// sentinel 0 and the real routing is the `seq_ids[N]` payload, so it requires
+/// `ATLAS_EP_PROTOCOL=v2` for the same reason batched decode does.
+///
+/// Wire format, head -> worker, in this order:
+///   `cmd, N, seq_ids[N], ks[N], tokens[sum ks]`
+/// then AFTER the forward, one word per sequence:
+///   `num_accepted[N]`
+///
+/// 🪤 The verdict words are a SECOND broadcast that arrives after the head's
+/// accept walk, not part of the preamble. The worker must run the forward
+/// first and read them after — exactly as the K=3/K=4 arms do — or the two
+/// ranks disagree about how many words are still on the wire.
+pub const EP_CMD_VERIFY_BATCH: u32 = 0xFFFF_FFE1;
+
+/// EP worker command: width-generic per-sequence verify, K rows.
+///
+/// `0xFFFF_FFF2..F4` hardcode one command per width (K=2/3/4), which is why
+/// `verify_kn_step` narrowed to K=4 under expert parallelism — the worker
+/// ranks had no command for anything wider. That cap is what made lookup
+/// drafts (#1026) unable to reach `ATLAS_LOOKUP_WIDTH` on a multi-rank serve:
+/// measured on the copy task at TP=2 x EP=2, proposing width 7 and verifying
+/// K=4 discards four drafts per fire and runs SLOWER (53.31 tok/s) than
+/// proposing width 2 (61.88), which is slower still than it should be.
+///
+/// PER-SEQUENCE, like `0xFFFF_FFF2..F4` and unlike the list-shaped batched
+/// commands: the preamble `seq_id` routes it, so no `ATLAS_EP_PROTOCOL=v2`
+/// requirement beyond what the K=3/K=4 arms already have.
+///
+/// Wire format, head -> worker, in this order:
+///   `cmd, k, tokens[k]`
+/// then AFTER the forward, one word:
+///   num_accepted
+///
+/// ★ `k` IS BROADCAST FIRST, before the tokens. Both ranks derive their loop
+/// count from that one word, so neither can guess wrong about how many words
+/// remain on the wire — the deadlock surface for any new EP path. Same
+/// discipline as the verdict word arriving as a SECOND broadcast after the
+/// forward, not in the preamble.
+pub const EP_CMD_VERIFY_KN: u32 = 0xFFFF_FFF7;
+
 /// EP worker command: run one MTP propose in lockstep with rank 0.
 /// Payload after the code: `last_token`, `position`, `num_drafts` (3 x u32).
 pub const EP_CMD_MTP_PROPOSE: u32 = 0xFFFF_FFF5;

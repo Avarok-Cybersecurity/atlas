@@ -67,6 +67,8 @@ pub(crate) fn parse_qwen4_exp(raw: &Value) -> Result<ModelConfig> {
     // shared loader helpers need no qwen4_exp-specific naming.
     config.weight_prefix = "model.language_model".to_string();
 
+    parse_mtp(text, &mut config)?;
+
     ensure!(
         config.hidden_size > 0,
         "qwen4_exp hidden_size must be non-zero"
@@ -132,6 +134,72 @@ pub(crate) fn parse_qwen4_exp(raw: &Value) -> Result<ModelConfig> {
     );
 
     Ok(config)
+}
+
+/// The MTP (multi-token-prediction) draft block, declared as a NESTED
+/// `text_config.mtp` object rather than the flat `mtp_num_hidden_layers` the
+/// qwen3_5/3_6 family uses.
+///
+/// Sets `num_mtp_modules`, which is the field every MTP module loader
+/// short-circuits on (`deepseek_v4/mtp.rs`: `if config.num_mtp_modules == 0 {
+/// return Ok(None) }`). Without it the block is declared in the checkpoint and
+/// invisible to the engine.
+///
+/// The shape is REFUSED rather than adapted when it is not the single
+/// full-attention layer this checkpoint ships: a `layer_types` naming
+/// `linear_attention` would have the module loader build a GDN body off keys
+/// that do not exist, and >1 layer would have it build one layer and silently
+/// drop the rest. Neither failure looks wrong at load.
+///
+/// An ABSENT `mtp` key leaves `num_mtp_modules` at 0 — speculation stays off,
+/// which is the pre-existing behaviour for every qwen4_exp checkpoint.
+fn parse_mtp(text: &Value, config: &mut ModelConfig) -> Result<()> {
+    let Some(mtp) = text.get("mtp") else {
+        return Ok(());
+    };
+
+    // ⚠ THESE CHECKS MUST NOT FAIL THE PARSE. parse_mtp runs on EVERY
+    // qwen4_exp launch, long before anything knows whether MTP was asked for,
+    // so an `ensure!` here refuses to boot a checkpoint that serves perfectly
+    // well today with its MTP block simply ignored — turning an unsupported
+    // OPTIONAL feature into a hard startup failure. The refusal belongs at
+    // MTP-load time (probe_mtp::ensure_loadable), which only runs when the
+    // module is actually requested. Here we decline to ADVERTISE the module:
+    // leaving num_mtp_modules at 0 is exactly the absent-key path, so
+    // speculation stays off and the main model is untouched.
+    let layers = mtp
+        .get("num_hidden_layers")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let types: Vec<&str> = mtp
+        .get("layer_types")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+
+    // Declining is SILENT here: atlas-core carries no `tracing` dependency,
+    // and adding one to a core crate to narrate an optional-feature opt-out is
+    // the wrong trade. Nothing is lost — the operator only cares when they
+    // actually ask for MTP, and then `probe_mtp::ensure_loadable` refuses by
+    // name with the full reason.
+    //
+    // `layers != 1`: >1 would have the module loader build one layer and
+    // silently drop the rest; 0/missing means the block describes no body.
+    // `types != ["full_attention"]`: a GDN body would be assembled from
+    // `linear_attn.*` keys the `mtp.*` namespace does not carry.
+    if layers != 1 || types != ["full_attention"] {
+        return Ok(());
+    }
+
+    config.num_mtp_modules = 1;
+    // Mirror the nested count onto the flat field. serde already parsed
+    // `text_config.mtp_num_hidden_layers` (=1 in the shipped config), so this
+    // normally re-states it; the nested value wins when the two disagree
+    // because it is the one that describes the block that actually ships.
+    if layers > 0 {
+        config.mtp_num_hidden_layers = layers;
+    }
+    Ok(())
 }
 
 /// mRoPE + partial rotary live under `rope_parameters`, not at text_config

@@ -48,8 +48,20 @@ impl TransformerModel {
             // position — a cache/Marconi skip would leave gaps. Force the
             // full-recompute path (documented perf cost, scoring calls only).
             let reserved = reserved_match.is_some();
-            let mut prefix_match = if self.tokens_have_vision_pad(tokens)
-                || seq.collect_prompt_logprobs.is_some()
+            // A pad-bearing sequence matches its PAD-FREE HEAD here rather
+            // than nothing at all, which is what made a long chat re-prefill
+            // its whole history the moment an image was attached — and again
+            // on every turn afterwards, since those carry the pad too.
+            //
+            // This is enabled on THIS path only. `prefill_a` and `prefill_c`
+            // keep the all-or-nothing gate on purpose: each has its own vision
+            // splice and its own warm re-embed, and neither has been made to
+            // re-apply the splice after the re-embed the way `proc_range` now
+            // is. Opening the gate there would reproduce exactly the silent
+            // blindness this change exists to fix. The helper is shared so
+            // they can be switched over once their splices are fixed.
+            let lookup_tokens = self.prefix_lookup_tokens(tokens);
+            let mut prefix_match = if seq.collect_prompt_logprobs.is_some()
                 || self.mla_prefill_needs_full_recompute()
             {
                 PrefixMatch::empty()
@@ -57,8 +69,12 @@ impl TransformerModel {
                 prefix_match
             } else {
                 self.prefix_cache
-                    .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
+                    .lookup(lookup_tokens, bs, seq.session_hash, seq.adapter_id)
             };
+            debug_assert!(
+                prefix_match.matched_tokens <= lookup_tokens.len(),
+                "prefix match ran past the pad-free head"
+            );
             // F83 (2026-04-30): on EP>1, head and worker have
             // independent local prefix caches whose match counts can
             // diverge (eviction order differences, async insert

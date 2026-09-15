@@ -21,6 +21,12 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // Native EXL3 routed experts (forward_prefill_exl3.rs): delegates for
+        // ALL token counts — every body below reads NVFP4 pointer tables that
+        // hold NULLS for kept-packed experts (silent zero routed output).
+        if self.exl3_native_active() {
+            return self.forward_prefill_exl3(input, num_tokens, ctx, stream);
+        }
         // Native-HIP (gfx1151) has NO ported grouped-GEMM MoE path:
         // moe_fp8_grouped_gemm is a compile stub (kernels/strix-hip/.../
         // moe_fp8_grouped_gemm.cu writes nothing) and the grouped prefill
@@ -227,97 +233,21 @@ impl MoeLayer {
         // delta is installed (ATLAS_LORA_EXPERTS=1).
         self.apply_router_lora_prefill(router_in, gate_logits, n, ctx, stream)?;
 
-        // 2. Batched topK dispatch. DeepSeek-V3 / MiniMax-M2 use sigmoid
-        //    + correction bias (detected via `correction_bias_dev`);
-        //    every other model takes the softmax path (no behavior
-        //    change — this is additive).
+        // 2. Batched topK dispatch — hoisted to forward_prefill_topk.rs on
+        //    the 500-LoC cap; behavior identical.
         let scratch = ctx.buffers.scratch();
         let indices_dev = scratch;
         let weights_dev = scratch.offset(total_expanded as usize * 4);
-        if let Some(tid2eid) = self.tid2eid_dev {
-            // DeepSeek-V4 hash routing (hash_moe layer): static
-            // `tid2eid[token_id]` selection, sqrtsoftplus-weighted.
-            let token_ids = ctx.token_ids.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "DeepSeek-V4 hash-MoE layer requires ForwardContext.token_ids (prefill grouped)"
-                )
-            })?;
-            ops::moe_hash_route_batched(
-                ctx.gpu,
-                self.moe_hash_route_batched_k,
-                gate_logits,
-                tid2eid,
-                token_ids,
-                indices_dev,
-                weights_dev,
-                num_experts,
-                top_k,
-                ctx.config.norm_topk_prob,
-                ctx.config.routed_scaling_factor as f32,
-                n,
-                stream,
-            )?;
-        } else if let Some(bias) = self.correction_bias_dev {
-            // DeepSeek-V4 scores experts with sqrtsoftplus (NOT sigmoid); the
-            // bias selects experts, weights gather pre-bias scores. Other
-            // sigmoid+bias models (DeepSeek-V3 / MiniMax-M2) keep sigmoid.
-            if ctx.config.scoring_func == "sqrtsoftplus" {
-                ops::moe_topk_sqrtsoftplus_batched(
-                    ctx.gpu,
-                    self.moe_topk_sqrtsoftplus_batched_k,
-                    gate_logits,
-                    bias,
-                    indices_dev,
-                    weights_dev,
-                    num_experts,
-                    top_k,
-                    ctx.config.norm_topk_prob,
-                    ctx.config.routed_scaling_factor as f32,
-                    n,
-                    stream,
-                )?;
-            } else if ctx.config.scoring_func == "softmax" {
-                self.router_softmax_bias_batched(
-                    gate_logits,
-                    bias,
-                    indices_dev,
-                    weights_dev,
-                    num_experts,
-                    top_k,
-                    n,
-                    ctx,
-                    stream,
-                )?;
-            } else {
-                ops::moe_topk_sigmoid_batched(
-                    ctx.gpu,
-                    self.moe_topk_sigmoid_batched_k,
-                    gate_logits,
-                    bias,
-                    indices_dev,
-                    weights_dev,
-                    num_experts,
-                    top_k,
-                    ctx.config.norm_topk_prob,
-                    ctx.config.routed_scaling_factor as f32,
-                    n,
-                    stream,
-                )?;
-            }
-        } else {
-            ops::moe_topk_softmax_batched(
-                ctx.gpu,
-                self.moe_topk_batched,
-                gate_logits,
-                indices_dev,
-                weights_dev,
-                num_experts,
-                top_k,
-                ctx.config.norm_topk_prob,
-                n,
-                stream,
-            )?;
-        }
+        self.prefill_topk_dispatch(
+            gate_logits,
+            indices_dev,
+            weights_dev,
+            num_experts,
+            top_k,
+            n,
+            ctx,
+            stream,
+        )?;
         super::dump::dump_expert_ids(ctx.gpu, stream, indices_dev, weights_dev, n, top_k)?;
         prof_step!("topk");
 

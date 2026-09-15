@@ -331,7 +331,7 @@ impl SsmSnapshotPool {
     /// Enqueue the per-layer H2D chunks of `blob` into `snap_slot`. Enqueue
     /// only — the caller owns the single trailing `synchronize`.
     ///
-    /// `blob` is the `SpillStaging` buffer, which IS page-locked when the box
+    /// `blob` is the `PinnedHostStaging` buffer, which IS page-locked when the box
     /// allows it, so these copies are genuinely asynchronous and the bytes are
     /// read after each call returns. That is exactly the contract
     /// `copy_h2d_async_retained` names: the caller holds the `StagingGuard`

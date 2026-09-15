@@ -13,81 +13,12 @@ use crate::layers::FfnComponent;
 mod decode_inner;
 mod multi_seq;
 mod prefill_inner;
+mod verify_rows_hc;
+pub use verify_rows_hc::verify_attn_rows_enabled;
 
-/// Debug: read back BF16 GPU tensor and compute L2 norm + first 4 values.
-pub(super) fn diag_norm(
-    gpu: &dyn GpuBackend,
-    ptr: DevicePtr,
-    n_elements: usize,
-    stream: u64,
-    label: &str,
-) {
-    let _ = gpu.synchronize(stream);
-    let mut buf = vec![0u16; n_elements];
-    // SAFETY: `buf` is `vec![0u16; n_elements]` on the line above, so
-    // `buf.len() == n_elements` and `n_elements * 2 == buf.len() *
-    // size_of::<u16>()` — the span is exactly the Vec's buffer, all of it
-    // zero-initialised. `bytes` is the sole reference derived from `buf` while it
-    // is live: it is dead after the `copy_d2h` below, before `buf.iter()` runs.
-    let bytes =
-        unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, n_elements * 2) };
-    if gpu.copy_d2h(ptr, bytes).is_err() {
-        return;
-    }
-    let vals: Vec<f32> = buf
-        .iter()
-        .map(|&b| f32::from_bits((b as u32) << 16))
-        .collect();
-    let norm: f32 = vals.iter().map(|v| v * v).sum::<f32>().sqrt();
-    let max_abs: f32 = vals.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-    let f4 = if vals.len() >= 4 {
-        format!(
-            "[{:.4},{:.4},{:.4},{:.4}]",
-            vals[0], vals[1], vals[2], vals[3]
-        )
-    } else {
-        format!("{:?}", &vals[..vals.len().min(4)])
-    };
-    tracing::info!("DIAG {label}: norm={norm:.4} max={max_abs:.4} first4={f4} n={n_elements}");
-}
-
-/// Debug: read back FP32 GPU tensor and compute L2 norm + first 4 values.
-/// Used by the DeepSeek-V4 multi-seq decode diagnostic path (post/comb-attn
-/// holographic tensors are FP32). V4-only — no non-V4 caller.
-pub fn diag_norm_f32(
-    gpu: &dyn GpuBackend,
-    ptr: DevicePtr,
-    n_elements: usize,
-    stream: u64,
-    label: &str,
-) {
-    let _ = gpu.synchronize(stream);
-    let mut buf = vec![0f32; n_elements];
-    // SAFETY: `buf` is `vec![0f32; n_elements]` on the line above, so
-    // `buf.len() == n_elements` and `n_elements * 4 == buf.len() *
-    // size_of::<f32>()` — the span is exactly the Vec's buffer, all of it
-    // zero-initialised. `bytes` is the sole reference derived from `buf` while it
-    // is live: it is dead after the `copy_d2h` below, before `buf.iter()` runs.
-    let bytes =
-        unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, n_elements * 4) };
-    if gpu.copy_d2h(ptr, bytes).is_err() {
-        return;
-    }
-    let norm: f32 = buf.iter().map(|v| v * v).sum::<f32>().sqrt();
-    let max_abs: f32 = buf.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-    let f4 = if buf.len() >= 4 {
-        format!("[{:.4},{:.4},{:.4},{:.4}]", buf[0], buf[1], buf[2], buf[3])
-    } else {
-        format!("{:?}", &buf[..buf.len().min(4)])
-    };
-    tracing::info!(
-        "DIAG {label}: norm={norm:.4} max={max_abs:.4} first4={f4} n={n_elements} (FP32)"
-    );
-}
-
-// The `OnceLock<bool>` static that lived here is now
-// `layers::ops::ModelLevers::gemma4_diag`, resolved when the model is built
-// and carried on `ForwardContext`.
+mod diag;
+pub(super) use diag::diag_norm;
+pub use diag::diag_norm_f32;
 
 impl TransformerLayer for Qwen3AttentionLayer {
     fn uses_local_mla_prefill(&self) -> bool {
@@ -95,6 +26,10 @@ impl TransformerLayer for Qwen3AttentionLayer {
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
 
@@ -106,13 +41,78 @@ impl TransformerLayer for Qwen3AttentionLayer {
 
     /// QSA selection does a host top-k per step — never capturable, and a
     /// graph captured on the dense path would replay wrong attention once
-    /// selection activates.
+    /// selection activates. Native EXL3 MoE experts (main FFN or the LongCat
+    /// shortcut MoE) launch cooperatively — same veto.
     fn decode_graph_unsupported(&self) -> bool {
-        self.qsa.is_some()
+        self.qsa.is_some() || self.exl3_graph_veto()
+    }
+
+    fn exl3_graph_veto(&self) -> bool {
+        // Native EXL3 q/k/v/o (ATLAS_EXL3_NATIVE_DENSE=1) are the same
+        // cooperative-launch class as the MoE experts.
+        self.ffn.exl3_native_moe()
+            || self.moe_ffn.as_ref().is_some_and(|f| f.exl3_native_moe())
+            || self.exl3_attn.is_some()
     }
 
     fn has_aux_state(&self) -> bool {
         self.qsa.is_some()
+    }
+
+    /// QSA is a MARK rewind: `align_aux` below moves `ingested`/`pooled` to an
+    /// absolute position and every buffer is written forward from them, so a
+    /// speculative rollback needs no blob from this layer. Snapshotting it
+    /// instead would push `ingested * hd * 2` bytes per layer through the host
+    /// on every verify step. Pairs with `aux_rewind_is_exact`'s doc comment.
+    fn aux_rewind_is_exact(&self) -> bool {
+        true
+    }
+
+    fn snapshot_aux_plan(&self, state: &dyn LayerState) -> crate::layer::AuxSnapshotPlan {
+        use crate::layer::AuxSnapshotPlan as P;
+        let Some(qsa) = self.qsa.as_ref() else {
+            return P::Batched { bytes: 0 };
+        };
+        match state
+            .as_any()
+            .downcast_ref::<crate::layer::AttnLayerState>()
+            .and_then(|a| a.qsa.as_ref())
+        {
+            Some(st) => P::Batched {
+                bytes: qsa.aux_blob_len(st),
+            },
+            // No QSA state yet, or an unexpected state type: report zero bytes
+            // for the former. For the latter, fall back to the legacy path so
+            // it raises the SAME downcast error it always did rather than
+            // silently contributing no blob.
+            None if state.as_any().is::<crate::layer::AttnLayerState>() => P::Batched { bytes: 0 },
+            None => P::Unbatched,
+        }
+    }
+
+    fn snapshot_aux_into(
+        &self,
+        state: &dyn LayerState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+        dst: &mut [u8],
+    ) -> Result<()> {
+        if dst.is_empty() {
+            return Ok(());
+        }
+        let qsa = self
+            .qsa
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("snapshot_aux_into: no QSA indexer"))?;
+        let attn = state
+            .as_any()
+            .downcast_ref::<crate::layer::AttnLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+        let st = attn
+            .qsa
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("snapshot_aux_into: no QSA sequence state"))?;
+        qsa.snapshot_aux_into(st, gpu, stream, dst)
     }
 
     fn snapshot_aux(
@@ -133,6 +133,46 @@ impl TransformerLayer for Qwen3AttentionLayer {
             // Sequence never reached this layer's ingest: nothing to carry.
             None => Ok(None),
         }
+    }
+
+    fn align_aux(
+        &self,
+        state: &mut dyn LayerState,
+        to_pos: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        let Some(qsa) = self.qsa.as_ref() else {
+            return Ok(());
+        };
+        let attn = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::AttnLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+        if let Some(st) = attn.qsa.as_mut() {
+            qsa.align_seq_state(st, to_pos);
+        }
+        Ok(())
+    }
+
+    fn rewind_aux(
+        &self,
+        state: &mut dyn LayerState,
+        rows: usize,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        let Some(qsa) = self.qsa.as_ref() else {
+            return Ok(());
+        };
+        let attn = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::AttnLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+        if let Some(st) = attn.qsa.as_mut() {
+            qsa.rewind_seq_state(st, rows);
+        }
+        Ok(())
     }
 
     fn restore_aux(

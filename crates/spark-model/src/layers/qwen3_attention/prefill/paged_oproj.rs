@@ -25,9 +25,19 @@ impl Qwen3AttentionLayer {
         stream: u64,
     ) -> Result<DevicePtr> {
         let o_out = ctx.buffers.norm_output();
+        // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): packed o_proj GEMM, C
+        // contiguous [n, h]; every arm below reads slots the loader left null
+        // for this layer. Falls through to the LoRA fold + op dump.
+        let native = if let Some(x) = self.exl3_attn_arm(ctx, "prefill o_proj")? {
+            x.o_proj_linear(ctx.gpu, attn_out, o_out, n as usize, stream)?;
+            true
+        } else {
+            false
+        };
         // Keep-packed Q2_0 (Tier-1c): transient-dequant o_proj then dense GEMM.
-        if let Some(r) =
-            self.try_q2_prefill(ctx, self.o_weight.as_ref(), attn_out, o_out, n, stream)
+        if !native
+            && let Some(r) =
+                self.try_q2_prefill(ctx, self.o_weight.as_ref(), attn_out, o_out, n, stream)
         {
             r?;
             return Ok(o_out);
@@ -40,7 +50,9 @@ impl Qwen3AttentionLayer {
             && self.quantize_nvfp4_k.0 != 0
             && ctx.buffers.fp8_act_bytes() >= (n as usize) * (nq as usize) * (hd as usize)
             && std::env::var("ATLAS_ATTN_W4A4").is_ok();
-        if w4a4 {
+        if native {
+            // Native EXL3 arm already wrote `o_out`.
+        } else if w4a4 {
             let kd = nq * hd;
             let a4 = ctx.buffers.fp8_act();
             let a4_sf = a4.offset((n as usize) * (kd as usize) / 2);

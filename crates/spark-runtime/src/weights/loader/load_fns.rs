@@ -123,9 +123,13 @@ pub(super) fn load_sharded(
             let view = tensors.tensor(name)?;
             let shape: Vec<usize> = view.shape().to_vec();
             // F16 shards: convert bytes to BF16 before upload (same length,
-            // different bit layout). WeightDtype stays closed to store dtypes.
+            // different bit layout). Exception: EXL3 Hadamard sign vectors
+            // must keep their exact f16 bits — they are decode INPUTS, and a
+            // BF16 rounding silently changes every reconstructed weight.
             let converted: Vec<u8>;
-            let (data, dtype): (&[u8], _) = if view.dtype() == safetensors::Dtype::F16 {
+            let (data, dtype): (&[u8], _) = if view.dtype() == safetensors::Dtype::F16
+                && !crate::weights::exl3::is_exl3_f16_aux(name)
+            {
                 converted = f16_to_bf16_bytes(view.data());
                 (&converted, WeightDtype::BF16)
             } else {
@@ -210,9 +214,12 @@ pub(super) fn load_single(
             continue;
         }
         let shape: Vec<usize> = view.shape().to_vec();
-        // F16: convert to BF16 at load — see load_sharded above.
+        // F16: convert to BF16 at load — see load_sharded above (same EXL3
+        // sign-vector exemption: exact f16 bits are decode inputs).
         let converted: Vec<u8>;
-        let (data, dtype): (&[u8], _) = if view.dtype() == safetensors::Dtype::F16 {
+        let (data, dtype): (&[u8], _) = if view.dtype() == safetensors::Dtype::F16
+            && !crate::weights::exl3::is_exl3_f16_aux(&name)
+        {
             converted = f16_to_bf16_bytes(view.data());
             (&converted, WeightDtype::BF16)
         } else {

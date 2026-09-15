@@ -256,8 +256,14 @@ pub fn qsa_prefill_attn(
     nkv: u32,
     hd: u32,
     inv_sqrt_d: f32,
+    // Which TC tile the `kernel` handle IS — not which one is wanted. The
+    // kernel carves its arena by hand from the byte count this selects, so a
+    // TB-64 handle launched with the TB-16 size reads past its own shared
+    // memory. The scalar twin ignores it so both can share one fn pointer.
+    wide: bool,
     stream: u64,
 ) -> Result<()> {
+    let _ = wide; // scalar kernel has one tile
     // 8 warps x [hd] acc partials + m/l per warp.
     let smem = (8 * hd + 16) * 4;
     KernelLaunch::new(gpu, kernel)
@@ -278,5 +284,218 @@ pub fn qsa_prefill_attn(
         .arg_u32(nkv)
         .arg_u32(hd)
         .arg_f32(inv_sqrt_d)
+        .launch(stream)
+}
+
+/// Tensor-core `qsa_prefill_attn`: one CTA per QUERY ROW, all `nq` heads
+/// together, `mma.sync.m16n8k16` for both QK^T and PV.
+///
+/// Only valid where the kernel's compile-time tile matches the model:
+/// `hd == 256`, `nq <= 16`, and `nkv == 1` (every head then shares one KV
+/// row, which is what makes one CTA per row correct). [`qsa_prefill_attn_tc_ok`]
+/// is the gate; callers must fall back to [`qsa_prefill_attn`] when it is false.
+#[allow(clippy::too_many_arguments)]
+pub fn qsa_prefill_attn_tc(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    block_table: DevicePtr,
+    lists: DevicePtr,
+    attn_out: DevicePtr,
+    rows: u32,
+    first_pos: u32,
+    topk: u32,
+    ratio: u32,
+    block_size: u32,
+    nq: u32,
+    nkv: u32,
+    hd: u32,
+    inv_sqrt_d: f32,
+    // Which TC tile the `kernel` handle IS — not which one is wanted. The
+    // kernel carves its arena by hand from the byte count this selects, so a
+    // TB-64 handle launched with the TB-16 size reads past its own shared
+    // memory. The scalar twin ignores it so both can share one fn pointer.
+    wide: bool,
+    stream: u64,
+) -> Result<()> {
+    debug_assert!(qsa_prefill_attn_tc_ok(nq, nkv, hd));
+    KernelLaunch::new(gpu, kernel)
+        .grid([rows, 1, 1])
+        .block([256, 1, 1])
+        .shared_mem(if wide {
+            QSA_PA_TC_SMEM_TB16
+        } else {
+            QSA_PA_TC_SMEM
+        })
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(block_table)
+        .arg_ptr(lists)
+        .arg_ptr(attn_out)
+        .arg_u32(first_pos)
+        .arg_u32(topk)
+        .arg_u32(ratio)
+        .arg_u32(block_size)
+        .arg_u32(nq)
+        .arg_u32(nkv)
+        .arg_u32(hd)
+        .arg_f32(inv_sqrt_d)
+        .launch(stream)
+}
+
+/// Tile constants, mirroring `QSA_PATC_*` in `qsa_indexer.cu`.
+/// Tile for the VERIFY entry point (`qsa_prefill_attn_tc`) — all 8 warps busy,
+/// 2 CTAs/SM. Verify launches ~18 CTAs, far fewer than the 48 SMs, so CTAs/SM
+/// is not the binding constraint there and warp utilisation is.
+const QSA_PA_TC_TB: u32 = 64;
+/// Tile for the PREFILL entry point (`qsa_prefill_attn_tc_tb16`) — 5 CTAs/SM.
+/// Prefill has thousands of CTAs, so occupancy dominates the idle warps.
+const QSA_PA_TC_TB16: u32 = 16;
+/// Rows past which the prefill tile wins. The crossover is "enough CTAs to
+/// fill the machine": one CTA per query row, 48 SMs, so a couple of hundred
+/// rows is comfortably past it and verify widths (tens) are comfortably under.
+const QSA_PA_TC_WIDE_ROWS: u32 = 256;
+const QSA_PA_TC_HD: u32 = 256;
+const QSA_PA_TC_M: u32 = 16;
+const QSA_PA_TC_QPAD: u32 = 8;
+// 8, not 2: K is stored ROW-CONTIGUOUS [token][hd] now, not transposed, so
+// this is an alignment pad like VPAD rather than a bank pad. Mirrors
+// QSA_PATC_KPAD in qsa_indexer.cu; the smem test asserts the totals agree.
+const QSA_PA_TC_KPAD: u32 = 8;
+// 8, not 4: the V gather stores 16 B per thread, so V_ROW = HD + VPAD must be
+// a multiple of 8 BF16 (264 = 8*33; 260 is not). K now has this same shape, so
+// both views are TB*(HD+8) and the prefill arena shrank 19712 -> 18944 (still
+// 5 CTAs/SM); the verify arena is unchanged at 49088. Mirrors
+// QSA_PATC_VPAD in qsa_indexer.cu; the smem test asserts they agree.
+const QSA_PA_TC_VPAD: u32 = 8;
+const QSA_PA_TC_PPAD: u32 = 8;
+
+/// Dynamic shared memory the TC kernel carves up. Must equal the kernel's own
+/// layout exactly — one K/V buffer + Q + P + S + (m, l, corr) + token ids.
+///
+/// K and V ALIAS one buffer: they are used in disjoint phases of a tile, and
+/// giving each its own put the CTA at 85_952 B against an SM's 102_400, i.e.
+/// ONE CTA per SM with nothing to hide latency behind (that cut measured
+/// +4.4% end-to-end against a 23.4% profile share). Sharing brings it to
+/// 50_112 B = TWO CTAs per SM. The 49_152 figure is the STATIC limit, which
+/// is why these arrays are dynamic; the sm_121 opt-in ceiling is
+/// [`super::ssm_ssd::MAX_DYNAMIC_SMEM`] (101_376).
+/// Same layout at the prefill tile. Both are asserted against the kernel's own
+/// arithmetic by `tc_prefill_attn_smem_is_five_ctas_per_sm`.
+pub const QSA_PA_TC_SMEM_TB16: u32 = {
+    let kt = QSA_PA_TC_TB16 * (QSA_PA_TC_HD + QSA_PA_TC_KPAD) * 2;
+    let v = QSA_PA_TC_TB16 * (QSA_PA_TC_HD + QSA_PA_TC_VPAD) * 2;
+    let kv = if kt > v { kt } else { v };
+    kv + QSA_PA_TC_M * (QSA_PA_TC_HD + QSA_PA_TC_QPAD) * 2
+        + QSA_PA_TC_M * (QSA_PA_TC_TB16 + QSA_PA_TC_PPAD) * 2
+        + QSA_PA_TC_M * QSA_PA_TC_TB16 * 4
+        + 3 * QSA_PA_TC_M * 4
+};
+
+pub const QSA_PA_TC_SMEM: u32 = {
+    let kt = QSA_PA_TC_TB * (QSA_PA_TC_HD + QSA_PA_TC_KPAD) * 2;
+    let v = QSA_PA_TC_TB * (QSA_PA_TC_HD + QSA_PA_TC_VPAD) * 2;
+    let kv = if kt > v { kt } else { v };
+    kv + QSA_PA_TC_M * (QSA_PA_TC_HD + QSA_PA_TC_QPAD) * 2
+        + QSA_PA_TC_M * (QSA_PA_TC_TB + QSA_PA_TC_PPAD) * 2
+        + QSA_PA_TC_M * QSA_PA_TC_TB * 4
+        + 3 * QSA_PA_TC_M * 4
+};
+
+/// Which of the two TC tiles this launch wants — and therefore BOTH which
+/// entry point and which shared-memory size. One predicate on purpose: the
+/// kernel carves its arena by hand from the byte count the launch passes, so a
+/// handle that disagrees with the size reads past its own arena.
+pub fn qsa_pa_tc_wide(rows: u32) -> bool {
+    rows >= QSA_PA_TC_WIDE_ROWS
+}
+
+/// Whether the TC prefill-attention kernel may be used for this geometry.
+pub fn qsa_prefill_attn_tc_ok(nq: u32, nkv: u32, hd: u32) -> bool {
+    hd == QSA_PA_TC_HD && nq <= QSA_PA_TC_M && nkv == 1
+}
+
+/// Device top-k for prefill selection: `scores [rows, stride]` -> `lists
+/// [rows, topk]` block ids.
+///
+/// Replaces a D2H of every score plus a per-row CPU sort. One block per row,
+/// radix select (4 fixed passes) rather than K argmax passes — K is 512 here,
+/// so the moe_topk approach would be 512 sweeps.
+#[allow(clippy::too_many_arguments)]
+pub fn qsa_topk_rows(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    scores: DevicePtr,
+    lists: DevicePtr,
+    rows: u32,
+    stride: u32,
+    topk: u32,
+    first_pos: u32,
+    ratio: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([rows, 1, 1]) // one block per query row
+        .block([256, 1, 1])
+        .arg_ptr(scores)
+        .arg_ptr(lists)
+        .arg_u32(rows)
+        .arg_u32(stride)
+        .arg_u32(topk)
+        .arg_u32(first_pos)
+        .arg_u32(ratio)
+        .launch(stream)
+}
+
+/// Device sort+expand for DECODE selection: `lists [rows, topk]` block ids
+/// (any order) -> `sel [rows, sel_stride]` token indices, ascending by block,
+/// plus the incomplete tail. Also writes `seq_lens[r] = n_sel` and the
+/// identity block table when those pointers are non-null.
+///
+/// Together with `qsa_topk_rows` this removes every host transfer from the
+/// decode selection: the D2H of the block scores (a stream drain), the H2D of
+/// the expanded selection, and the per-step seq_len / identity-table uploads.
+///
+/// `visible_rows` is optional: null means row r's visible prefix is
+/// `first_pos + r + 1` (the prefill row convention); a non-null `[rows]` array
+/// gives each row its own length, which is what a batched multi-sequence
+/// decode needs.
+#[allow(clippy::too_many_arguments)]
+pub fn qsa_expand_sel(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    lists: DevicePtr,
+    visible_rows: DevicePtr,
+    sel: DevicePtr,
+    seq_lens: DevicePtr,
+    tables: DevicePtr,
+    rows: u32,
+    topk: u32,
+    ratio: u32,
+    first_pos: u32,
+    sel_stride: u32,
+    table_stride: u32,
+    block_size: u32,
+    stream: u64,
+) -> Result<()> {
+    // QSA_EXPAND_MAX_K in the .cu — the shared-memory sort buffer.
+    anyhow::ensure!(topk <= 512, "qsa_expand_sel: topk {topk} > 512");
+    KernelLaunch::new(gpu, kernel)
+        .grid([rows, 1, 1]) // one block per query row
+        .block([256, 1, 1])
+        .arg_ptr(lists)
+        .arg_ptr(visible_rows)
+        .arg_ptr(sel)
+        .arg_ptr(seq_lens)
+        .arg_ptr(tables)
+        .arg_u32(topk)
+        .arg_u32(ratio)
+        .arg_u32(first_pos)
+        .arg_u32(sel_stride)
+        .arg_u32(table_stride)
+        .arg_u32(block_size)
         .launch(stream)
 }

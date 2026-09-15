@@ -465,7 +465,18 @@ impl Qwen3AttentionLayer {
         // Qwen the mixer IS the final norm).
         let is_first_layer = hc.is_first_model_layer;
         let is_last_layer = hc.is_last_model_layer;
-        let hc_streams = ctx.buffers.hc_streams();
+        // The highway is `[T, hc_mult, H]` FP32 and `hc_row_offset` is a ROW
+        // index into it -- the SAME arithmetic `prefill_inner_hc` applies
+        // (prefill_inner.rs:565). A plain decode step is row 0, so this is a
+        // no-op on every existing caller (`hc_row_offset: 0` at all of them;
+        // the one non-zero site, decode_b's mixed step, sets it on the
+        // PREFILL context only). The mHC K-row verify uses it to run
+        // attention as K sequential one-row decode bodies that land on rows
+        // 0..K of the same highway the K-row GDN body wrote.
+        let hc_streams = ctx
+            .buffers
+            .hc_streams()
+            .offset(ctx.hc_row_offset * hc.hc_mult * h * 4);
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
         // Opt-in ONLY (and never under graph capture): `diag_norm` does a

@@ -82,6 +82,10 @@ impl TransformerModel {
                     let token_id_dev = self.buffers.scratch();
                     self.gpu
                         .copy_h2d_async(last_tok_bytes, token_id_dev, stream)?;
+                    // Same re-stage as the partial-skip branch below: row 0 of
+                    // `token_ids()` must be THIS token, not `tokens[chunk_start]`.
+                    self.gpu
+                        .copy_h2d_async(last_tok_bytes, self.buffers.token_ids(), stream)?;
                     if self.has_ngram_embedding() {
                         let last = chunk_start + chunk_len;
                         let cs = last.saturating_sub(self.ngram_lookbehind() + 1);
@@ -126,6 +130,21 @@ impl TransformerModel {
                 let token_ids_dev = self.buffers.scratch();
                 self.gpu
                     .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
+                // RE-STAGE the STABLE `token_ids()` buffer, not just scratch.
+                // Phase 1 (`prefill_b_embed_chunk_at`) staged it with the WHOLE
+                // chunk `[chunk_start, chunk_start+chunk_len)`; a Marconi warm
+                // hit then narrows the pass to `[uncached_start, ...)` here but
+                // used to leave that buffer alone. Every consumer that reads it
+                // by ROW INDEX — PLE's n-gram hash (`ple/layer.rs` falls back to
+                // a D2H of `ctx.token_ids` when `host_token_ids` is None, which
+                // `forward_layers.rs` always is on this path) and hash-MoE's
+                // `tid2eid` — then read row r as token `chunk_start + r` while
+                // the pass is computing token `uncached_start + r`. On a warm
+                // agentic turn that fed PLE the ids from the START of the prompt
+                // instead of the replayed suffix, so the lexical channel and the
+                // attention/SSM channels described DIFFERENT TEXT.
+                self.gpu
+                    .copy_h2d_async(token_ids_bytes, self.buffers.token_ids(), stream)?;
                 if self.has_ngram_embedding() {
                     let cs = uncached_start.saturating_sub(self.ngram_lookbehind());
                     self.embed_tokens_fused(
@@ -147,6 +166,23 @@ impl TransformerModel {
                     )?;
                 }
                 self.scale_embeddings(hidden, uncached_count, stream)?;
+                // RE-APPLY THE VISION SPLICE. The embed above deliberately
+                // overwrites row 0 onward with the uncached suffix, which wipes
+                // the picture phase 1 spliced into the pad rows of the FULL
+                // chunk. Without this the model sees the `<|image_pad|>` vocab
+                // vector where the image should be and answers from the
+                // surrounding text — fluently, confidently, and wrongly.
+                //
+                // Same class as the `token_ids()` re-stage above: anything
+                // phase 1 wrote by ROW INDEX has to be redone for the narrowed
+                // range, or the channels describe different content.
+                self.prefill_b_splice_vision_at(
+                    tokens,
+                    uncached_start,
+                    uncached_count,
+                    hidden,
+                    stream,
+                )?;
                 // Real prefill path: KV written for [uncached_start, end).
                 seq.kv_valid_tokens = seq.kv_valid_tokens.max(uncached_start + uncached_count);
                 Ok(ProcRange::Compute {

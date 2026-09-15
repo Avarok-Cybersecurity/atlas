@@ -18,8 +18,18 @@ use anyhow::{Context, Result, bail};
 /// 1.0 has only `huggingface-cli`, and a reader who typed `hf` and got "command
 /// not found" needs to be told what to type instead, not left guessing.
 fn download_hint(id: &str) -> String {
+    download_hint_at(id, None)
+}
+
+/// [`download_hint`] for a specific revision: `hf download` needs
+/// `--revision` to fetch a non-default branch, and a hint that omits it sends
+/// the user to download the wrong checkpoint.
+fn download_hint_at(id: &str, revision: Option<&str>) -> String {
+    let rev = revision
+        .map(|r| format!(" --revision {r}"))
+        .unwrap_or_default();
     format!(
-        "  hf download {id}\n\
+        "  hf download {id}{rev}\n\
          (`hf` is the huggingface_hub CLI; before 1.0 it was `huggingface-cli`. \
          The dashboard's Library downloads into the same cache.)"
     )
@@ -29,8 +39,24 @@ fn download_hint(id: &str) -> String {
 ///
 /// Resolution order:
 /// 1. If the specifier is an existing directory with `config.json`, use it directly.
-/// 2. Otherwise, treat it as a HuggingFace model ID and look up the local cache.
+/// 2. Otherwise, treat it as a HuggingFace model ID and look up the local cache
+///    at its default revision (`refs/main`).
 pub fn resolve_model_dir(model: &str, cache_dir: Option<&Path>) -> Result<PathBuf> {
+    resolve_model_dir_at(model, None, cache_dir)
+}
+
+/// [`resolve_model_dir`] at a specific HF revision (branch, tag or commit).
+///
+/// A serve preset pins the branch its checkpoint lives on — turboderp's EXL3
+/// repos publish each bit-width as a branch, and the default branch is not the
+/// validated one. `None` is the default revision, byte-for-byte the old
+/// behaviour. A local directory still wins over the cache lookup: a revision
+/// is meaningless for a path and is ignored for one.
+pub fn resolve_model_dir_at(
+    model: &str,
+    revision: Option<&str>,
+    cache_dir: Option<&Path>,
+) -> Result<PathBuf> {
     let as_path = Path::new(model);
     // Accept a local dir that has a config.json OR a bare .gguf (served via the
     // GGUF loader + config-from-metadata path).
@@ -42,14 +68,21 @@ pub fn resolve_model_dir(model: &str, cache_dir: Option<&Path>) -> Result<PathBu
         return Ok(as_path.to_path_buf());
     }
 
-    resolve_from_hf_cache(model, cache_dir)
+    resolve_from_hf_cache(model, revision, cache_dir)
 }
 
 /// Look up a HuggingFace model ID in the local hub cache.
 ///
 /// Cache layout: `{cache_root}/models--{org}--{name}/snapshots/{hash}/`
-/// The active snapshot hash is read from `refs/main`.
-fn resolve_from_hf_cache(model_id: &str, cache_dir: Option<&Path>) -> Result<PathBuf> {
+/// The active snapshot hash is read from `refs/main`, or from
+/// `refs/<revision>` when a revision is given (`hf download --revision` writes
+/// that ref). A revision that is itself a snapshot hash — a commit — is
+/// accepted directly when no ref of that name exists.
+fn resolve_from_hf_cache(
+    model_id: &str,
+    revision: Option<&str>,
+    cache_dir: Option<&Path>,
+) -> Result<PathBuf> {
     let cache_root = resolve_cache_root(cache_dir)?;
 
     // "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4" → "models--nvidia--Qwen3-Next-80B-A3B-Instruct-NVFP4"
@@ -62,29 +95,48 @@ fn resolve_from_hf_cache(model_id: &str, cache_dir: Option<&Path>) -> Result<Pat
              Download it first:\n{}",
             model_id,
             cache_root.display(),
-            download_hint(model_id),
+            download_hint_at(model_id, revision),
         );
     }
 
-    let ref_path = model_cache.join("refs/main");
-    let snapshot_hash = std::fs::read_to_string(&ref_path)
-        .with_context(|| {
-            format!(
-                "No default revision for '{}'. Expected refs/main at {}.\n\
-                 The model may not have been fully downloaded.",
-                model_id,
-                ref_path.display(),
-            )
-        })?
-        .trim()
-        .to_string();
+    let ref_name = revision.unwrap_or("main");
+    let ref_path = model_cache.join("refs").join(ref_name);
+    let snapshot_hash = match std::fs::read_to_string(&ref_path) {
+        Ok(h) => h.trim().to_string(),
+        // No ref by that name: a revision may be a commit hash naming the
+        // snapshot directly. Only for an explicit revision — `refs/main`
+        // missing means an incomplete download, not a commit.
+        Err(_) if revision.is_some() && model_cache.join("snapshots").join(ref_name).is_dir() => {
+            ref_name.to_string()
+        }
+        Err(e) => {
+            return Err(anyhow::Error::new(e).context(match revision {
+                None => format!(
+                    "No default revision for '{}'. Expected refs/main at {}.\n\
+                     The model may not have been fully downloaded.",
+                    model_id,
+                    ref_path.display(),
+                ),
+                Some(rev) => format!(
+                    "Revision '{rev}' of '{}' is not in the HF cache (expected {}, and no \
+                     snapshot directory named '{rev}'). Available refs: {}.\n\
+                     Download that revision:\n{}",
+                    model_id,
+                    ref_path.display(),
+                    list_refs(&model_cache),
+                    download_hint_at(model_id, revision),
+                ),
+            }));
+        }
+    };
 
     let snapshot_dir = model_cache.join("snapshots").join(&snapshot_hash);
     if !snapshot_dir.is_dir() {
         bail!(
             "Snapshot directory not found: {}\n\
-             refs/main points to hash '{}' but that snapshot doesn't exist.",
+             refs/{} points to hash '{}' but that snapshot doesn't exist.",
             snapshot_dir.display(),
+            ref_name,
             snapshot_hash,
         );
     }
@@ -113,6 +165,22 @@ fn resolve_from_hf_cache(model_id: &str, cache_dir: Option<&Path>) -> Result<Pat
             snapshot_dir.display(),
         );
         return Ok(snapshot_dir);
+    }
+
+    // NEVER for an explicit revision: the sibling snapshots of a multi-branch
+    // repo are OTHER checkpoints (turboderp's 2.05 / 3.05 / 4.05 bpw branches
+    // share one cache entry), so "the most recent sibling with weights" would
+    // silently serve a different quant than the one that was pinned.
+    if revision.is_some() {
+        bail!(
+            "Revision '{}' of {} resolved to snapshot {} which has no weight files. \
+             Not falling back to a sibling snapshot: siblings of a pinned revision are \
+             other branches, not this checkpoint. Re-download it:\n{}",
+            ref_name,
+            model_id,
+            snapshot_dir.display(),
+            download_hint_at(model_id, revision),
+        );
     }
 
     tracing::warn!(
@@ -276,6 +344,25 @@ pub(crate) fn find_snapshot_with_weights(snapshots_root: &Path) -> Option<PathBu
     entries.into_iter().max_by_key(|(t, _)| *t).map(|(_, p)| p)
 }
 
+/// The ref names under `refs/` for one cached repo, comma-joined for an error
+/// message — so a wrong-revision error shows the operator the branches that
+/// ARE downloaded (`4.05bpw_h6_ng6`, …) instead of leaving them to `ls`.
+fn list_refs(model_cache: &Path) -> String {
+    let mut names: Vec<String> = std::fs::read_dir(model_cache.join("refs"))
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    if names.is_empty() {
+        "(none)".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
 /// Determine the HF hub cache root directory.
 ///
 /// Precedence (matches official HuggingFace behavior):
@@ -302,146 +389,5 @@ pub(crate) fn resolve_cache_root(cache_dir: Option<&Path>) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    /// Create a mock HF cache structure for testing.
-    fn setup_mock_cache(tmp: &Path, org: &str, name: &str, hash: &str) -> PathBuf {
-        let model_id = format!("{org}/{name}");
-        let dir_name = format!("models--{}", model_id.replace('/', "--"));
-        let model_cache = tmp.join(&dir_name);
-
-        let snapshot_dir = model_cache.join("snapshots").join(hash);
-        fs::create_dir_all(&snapshot_dir).unwrap();
-        fs::create_dir_all(model_cache.join("refs")).unwrap();
-        fs::write(model_cache.join("refs/main"), hash).unwrap();
-        fs::write(snapshot_dir.join("config.json"), "{}").unwrap();
-        // Default mock includes weights; tests that need a metadata-only
-        // snapshot must remove them explicitly via `setup_mock_cache_no_weights`.
-        fs::write(snapshot_dir.join("model.safetensors"), b"weights").unwrap();
-
-        snapshot_dir
-    }
-
-    /// Mock HF cache where the snapshot has only metadata (config + tokenizer)
-    /// but no weight files — mirrors the real-world failure where refs/main
-    /// pointed to a partial sync revision of nvidia/Gemma-4-31B-IT-NVFP4.
-    fn setup_mock_cache_no_weights(tmp: &Path, org: &str, name: &str, hash: &str) -> PathBuf {
-        let model_id = format!("{org}/{name}");
-        let dir_name = format!("models--{}", model_id.replace('/', "--"));
-        let model_cache = tmp.join(&dir_name);
-        let snapshot_dir = model_cache.join("snapshots").join(hash);
-        fs::create_dir_all(&snapshot_dir).unwrap();
-        fs::create_dir_all(model_cache.join("refs")).unwrap();
-        fs::write(model_cache.join("refs/main"), hash).unwrap();
-        fs::write(snapshot_dir.join("config.json"), "{}").unwrap();
-        fs::write(snapshot_dir.join("tokenizer.json"), "{}").unwrap();
-        snapshot_dir
-    }
-
-    #[test]
-    fn resolve_local_directory() {
-        let tmp = tempfile::tempdir().unwrap();
-        fs::write(tmp.path().join("config.json"), "{}").unwrap();
-
-        let result = resolve_model_dir(tmp.path().to_str().unwrap(), None);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), tmp.path());
-    }
-
-    #[test]
-    fn resolve_hf_model_id() {
-        let tmp = tempfile::tempdir().unwrap();
-        let expected = setup_mock_cache(
-            tmp.path(),
-            "nvidia",
-            "Qwen3-Next-80B-A3B-Instruct-NVFP4",
-            "abc123",
-        );
-
-        let result =
-            resolve_model_dir("nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4", Some(tmp.path()));
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), expected);
-    }
-
-    #[test]
-    fn resolve_missing_model_gives_download_hint() {
-        let tmp = tempfile::tempdir().unwrap();
-        let result = resolve_model_dir("nonexistent/model", Some(tmp.path()));
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("not found in HF cache"));
-        assert!(err.contains("hf download"), "{err}");
-        // The old name stays NAMED, not recommended: a box on
-        // huggingface_hub < 1.0 has only `huggingface-cli`.
-        assert!(err.contains("huggingface-cli"), "{err}");
-    }
-
-    #[test]
-    fn resolve_missing_config_json() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir_name = "models--org--model";
-        let snapshot_dir = tmp.path().join(dir_name).join("snapshots/abc");
-        fs::create_dir_all(&snapshot_dir).unwrap();
-        fs::create_dir_all(tmp.path().join(dir_name).join("refs")).unwrap();
-        fs::write(tmp.path().join(dir_name).join("refs/main"), "abc").unwrap();
-
-        let result = resolve_model_dir("org/model", Some(tmp.path()));
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("missing config.json"));
-    }
-
-    #[test]
-    fn cache_dir_arg_takes_precedence() {
-        let custom = tempfile::tempdir().unwrap();
-        let _expected = setup_mock_cache(custom.path(), "org", "model", "hash1");
-
-        let result = resolve_model_dir("org/model", Some(custom.path()));
-        assert!(result.is_ok());
-        assert!(result.unwrap().starts_with(custom.path()));
-    }
-
-    #[test]
-    fn falls_back_to_sibling_snapshot_with_weights() {
-        // refs/main points at a metadata-only snapshot; a sibling snapshot
-        // has the actual weights. Resolver must return the sibling instead
-        // of bailing out (the dual-DGX sweep can't pass --model-from-path).
-        let tmp = tempfile::tempdir().unwrap();
-        let bad =
-            setup_mock_cache_no_weights(tmp.path(), "nvidia", "Gemma-4-31B-IT-NVFP4", "05fa17");
-        // Pre-existing sibling snapshot with safetensors.
-        let model_cache = bad.parent().unwrap().parent().unwrap();
-        let good_hash = "1365cf";
-        let good = model_cache.join("snapshots").join(good_hash);
-        fs::create_dir_all(&good).unwrap();
-        fs::write(good.join("config.json"), "{}").unwrap();
-        fs::write(good.join("model-00001-of-00004.safetensors"), b"shard").unwrap();
-        // Touch the good dir so its mtime is newer than the bad one.
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        fs::write(
-            good.join("model-00001-of-00004.safetensors"),
-            b"shard-newer",
-        )
-        .unwrap();
-
-        let result = resolve_model_dir("nvidia/Gemma-4-31B-IT-NVFP4", Some(tmp.path()));
-        assert!(result.is_ok(), "expected fallback to succeed: {:?}", result);
-        assert_eq!(result.unwrap(), good);
-    }
-
-    #[test]
-    fn bails_when_all_snapshots_lack_weights() {
-        // Resolver should still surface a clear error if the entire cache
-        // entry is metadata-only with no usable sibling.
-        let tmp = tempfile::tempdir().unwrap();
-        setup_mock_cache_no_weights(tmp.path(), "org", "model", "h1");
-        let result = resolve_model_dir("org/model", Some(tmp.path()));
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("no weight files") || err.contains("metadata-only"),
-            "expected weight-files error, got: {err}"
-        );
-        assert!(err.contains("hf download"), "{err}");
-    }
-}
+#[path = "model_resolver_tests.rs"]
+mod tests;

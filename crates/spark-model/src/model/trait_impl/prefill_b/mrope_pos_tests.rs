@@ -255,3 +255,72 @@ fn a_degenerate_grid_is_survivable() {
     assert_eq!(h, t);
     assert_eq!(w, t);
 }
+
+// ── the end position (HF's `rope_deltas`) ────────────────────────────────
+//
+// A vision item spans many pad TOKENS and few POSITIONS, so after one the two
+// counts diverge for the rest of the sequence. `build` reports where the
+// rotary stream ended so decode can resume there; reading the token index
+// instead put every generated token in a gap its own prompt never occupied —
+// 42 positions past the end for one 224x224 image, 182 for a 448x448 one.
+
+fn end_of(tokens: &[u32], grids: &[(usize, usize, usize)], start: u32) -> u32 {
+    let (mut t, mut h, mut w) = (Vec::new(), Vec::new(), Vec::new());
+    build(
+        tokens,
+        grids,
+        0,
+        grids.len(),
+        start,
+        IMG,
+        VID,
+        &mut t,
+        &mut h,
+        &mut w,
+    )
+}
+
+#[test]
+fn text_only_ends_one_past_the_last_token() {
+    let toks = [TXT; 5];
+    assert_eq!(end_of(&toks, &[], 0), 5);
+    assert_eq!(end_of(&toks, &[], 11), 16, "the start offset carries");
+}
+
+#[test]
+fn an_image_ends_far_below_the_token_count() {
+    // 7x7 merged grid = 49 pad tokens between two text tokens, so 51 tokens
+    // in total but only 1 + 7 + 1 = 9 positions.
+    let mut toks = vec![TXT];
+    toks.extend(std::iter::repeat_n(IMG, 49));
+    toks.push(TXT);
+    let end = end_of(&toks, &[(1, 7, 7)], 0);
+    assert_eq!(end, 9);
+    let delta = end as i64 - toks.len() as i64;
+    assert_eq!(delta, -42, "HF rope_deltas for one 224x224 image");
+}
+
+#[test]
+fn a_wide_image_advances_by_its_long_side() {
+    // 4 rows x 9 cols = 36 pads; the advance is max(gh, gw) = 9.
+    let toks: Vec<u32> = std::iter::repeat_n(IMG, 36).collect();
+    assert_eq!(end_of(&toks, &[(1, 4, 9)], 0), 9);
+}
+
+#[test]
+fn a_clip_advances_by_its_temporal_extent_when_that_dominates() {
+    // 12 groups over a 2x2 grid = 48 pads; max(12, 2, 2) = 12.
+    let toks: Vec<u32> = std::iter::repeat_n(VID, 48).collect();
+    assert_eq!(end_of(&toks, &[(12, 2, 2)], 0), 12);
+}
+
+#[test]
+fn two_items_accumulate_their_gaps() {
+    let mut toks = vec![TXT];
+    toks.extend(std::iter::repeat_n(IMG, 49)); // 7x7 -> advances 7
+    toks.extend(std::iter::repeat_n(IMG, 16)); // 4x4 -> advances 4
+    toks.push(TXT);
+    let end = end_of(&toks, &[(1, 7, 7), (1, 4, 4)], 0);
+    assert_eq!(end, 1 + 7 + 4 + 1);
+    assert_eq!(end as i64 - toks.len() as i64, -54);
+}

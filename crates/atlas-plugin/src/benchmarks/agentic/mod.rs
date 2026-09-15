@@ -130,6 +130,13 @@ pub struct AgenticWebserver {
     probed: bool,
 }
 
+/// `ATLAS_AGENTIC_NO_WARM=1` — see the note at the `cargo_target_dir`
+/// assignment for what it costs and why it exists.
+fn no_warm_cache() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_AGENTIC_NO_WARM").as_deref() == Ok("1"))
+}
+
 impl AgenticWebserver {
     fn handle(&self) -> Result<&PluginHandle> {
         self.handle.as_ref().context("benchmark was not loaded")
@@ -177,6 +184,33 @@ impl AgenticWebserver {
         let _ = std::fs::remove_dir_all(&sandbox);
         std::fs::create_dir_all(&sandbox)
             .with_context(|| format!("creating sandbox {}", sandbox.display()))?;
+        // `./target` -> the warm target dir, so the CONVENTIONAL path resolves.
+        //
+        // The warm cache exists to stop each generation cold-compiling the
+        // dependency tree, and it does that by pointing CARGO_TARGET_DIR at a
+        // shared directory. The side effect is that `cargo build` writes the
+        // binary somewhere the agent has no reason to expect: every run reached
+        //
+        //   setsid: failed to execute ./target/debug/ping-pong: No such file
+        //
+        // and then spent turns rediscovering CARGO_TARGET_DIR — "the binary
+        // path is wrong, the target directory is a custom one
+        // (atlas-warm-target)", verbatim from two trajectories. That is the
+        // same class of environmental artifact the warm cache was built to
+        // remove, charged back as turns and therefore as s/turn.
+        //
+        // A symlink restores the convention without giving up the cache. It
+        // cannot manufacture a pass: the scorer builds the sandbox's own source
+        // before it tests anything, so a leftover binary from an earlier
+        // iteration is rebuilt or the run fails for the missing source.
+        #[cfg(unix)]
+        if let Some(dir) = &self.cargo_target_dir {
+            let link = sandbox.join("target");
+            let _ = std::fs::remove_file(&link);
+            if let Err(e) = std::os::unix::fs::symlink(dir, &link) {
+                tracing::debug!("sandbox target symlink: {e}");
+            }
+        }
 
         let cfg = agent::AgentConfig {
             sandbox: sandbox.clone(),
@@ -311,7 +345,36 @@ impl Plugin for AgenticWebserver {
             // behaviour: `run_tier.sh:75-96` warms BOTH profiles up front
             // because a tier drives `cargo test` 141× and the cold dep build
             // "was the entire 92s↔305s wall variance". See [`warm`].
-            self.cargo_target_dir = Some(warm::prepare(&handle).await?);
+            // `ATLAS_AGENTIC_NO_WARM=1`: no shared target dir at all. The
+            // agent then builds in the conventional `./target` inside its own
+            // sandbox — no CARGO_TARGET_DIR redirect and no `target` symlink,
+            // which is the shape this harness had before the warm cache.
+            //
+            // Why anyone would want that: the symlink points every run's
+            // `./target` at ONE shared, already-populated directory, and the
+            // model reads that as "the box is offline / deps are vendored" and
+            // pins itself to `cargo --offline` for the rest of the session.
+            // Measured on a 3-iteration run: the first sandbox after a clear
+            // mentions "offline" ZERO times, the next two 5 and 8, with
+            // `cargo build --offline` and `cargo test --offline` actually
+            // issued. Nothing in Atlas sets `CARGO_NET_OFFLINE` — warm.rs
+            // keeps the network ON deliberately — so the constraint is entirely
+            // the model's own inference, and it turns catastrophic exactly when
+            // a generation pins a dep outside the warm set (BENCH.toml's ~25
+            // turn `BodyExt::collect()` burn only makes sense under that pin).
+            //
+            // ⚠ It is NOT free: the cold dep build is what the warm cache was
+            // built to remove ("the entire 92s↔305s wall variance"), so expect
+            // a slower and much noisier wall. Use it to isolate the offline
+            // inference, not as a new default.
+            self.cargo_target_dir = if no_warm_cache() {
+                tracing::warn!(
+                    "ATLAS_AGENTIC_NO_WARM=1: no shared cargo target dir —                      each sandbox builds cold in its own ./target"
+                );
+                None
+            } else {
+                Some(warm::prepare(&handle).await?)
+            };
             Ok(())
         }
     }

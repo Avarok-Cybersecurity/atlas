@@ -165,7 +165,10 @@ impl TransformerModel {
         let meta_base = self.buffers.scratch().offset(32768);
         let max_blocks = seq.block_table.len() as u32;
 
-        let pos_val = seq.seq_len as u32;
+        // ROTARY position, not the token index: they differ by the pad-run
+        // gap once the prompt contained an image. Slot/block math below
+        // deliberately keeps using `seq.seq_len`.
+        let pos_val = seq.rope_pos();
         self.gpu
             .copy_h2d_async(&pos_val.to_le_bytes(), meta_base, stream)?;
 
@@ -297,7 +300,11 @@ impl TransformerModel {
             && !hss_engaged
             && !dump_step0
             && !lora_eager
-            && !layer_veto;
+            && !layer_veto
+            // The native EXL3 lm_head runs INSIDE decode_forward_body, and its
+            // kernels are cooperative launches — not capturable
+            // (CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED). Eager decode only.
+            && self.lm_head_exl3.is_none();
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -502,6 +509,29 @@ impl TransformerModel {
                         stream,
                     )?;
                 }
+            }
+        }
+
+        // ── MTP SHADOW (ATLAS_QWEN4EXP_MTP_SHADOW=1, default OFF) ──
+        // THIS is the path a qwen4_exp decode actually takes: decode_batch_dispatch
+        // delegates every n == 1 step straight to decode(), so a hook in the
+        // batched path never fires.
+        //
+        // Draft the next token and score the PREVIOUS draft against what the
+        // target just produced. Feeds nothing back — it measures whether the
+        // combiner reading is right before the verify path is built. `hc_streams`
+        // still holds this row's four-stream highway: the last layer's hc_head
+        // READ it and wrote the collapsed hidden elsewhere.
+        if self.qwen4_exp_mtp_head.is_some() {
+            match self.argmax_on_device(self.decode_logits_ptr(), 0) {
+                Ok(actual) => self.qwen4_exp_mtp_shadow_step(
+                    actual,
+                    self.buffers.hc_streams(),
+                    seq.seq_len,
+                    &ctx,
+                    stream,
+                ),
+                Err(e) => tracing::warn!("qwen4_exp MTP shadow: argmax failed: {e:#}"),
             }
         }
 

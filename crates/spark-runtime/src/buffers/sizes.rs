@@ -7,6 +7,32 @@ use atlas_kernels::attn_splitk;
 
 use super::sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 
+/// Token slab the prefill mHC low-rank GEMM path processes at a time.
+///
+/// ★ TWO CRATES MUST AGREE: this sizes `hc_lowrank_scratch` here, and
+/// `layers::ops::hyper_connection_lowrank_gemm` walks the chunk in slabs of
+/// exactly this size. A mismatch silently writes past the arena, so both call
+/// this function rather than each spelling 2048.
+///
+/// It bounds the scratch region, and it also multiplies LAUNCH COUNT: an 8192
+/// chunk at slab 2048 runs four passes of every slabbed kernel, which is why
+/// `dense_gemm_bf16_pipelined` fires 1164 times in an 8K prefill (48 layers x
+/// 4 slabs x ~6 GEMMs) and 9588 times at 64K. Scratch is
+/// `slab * (2*hc_mult*h + rank + hc_mult) * 2` bytes — ~41 KB/token on
+/// qwen4_exp, so 84 MB at 2048 and ~336 MB at 8192.
+///
+/// `ATLAS_HC_GEMM_SLAB=<n>` overrides (clamped 256..=16384).
+pub fn hc_gemm_slab() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("ATLAS_HC_GEMM_SLAB")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .map(|n| n.clamp(256, 16384))
+            .unwrap_or(2048)
+    })
+}
+
 /// The widest `M` the FUSED dense-FFN gate+up decode GEMM serves (#927), and
 /// therefore the row extent `ffn_gate_up_fused` is sized for.
 ///
@@ -635,7 +661,7 @@ impl BufferSizes {
                 //   low BF16 [Ts, rank], inj_pre BF16 [Ts, hc].
                 let t = m.min(64);
                 let split = t * (config.hc_mult * h + config.hc_lowrank) * 4;
-                let ts = m.min(2048);
+                let ts = m.min(hc_gemm_slab());
                 let gemm = ts * (2 * config.hc_mult * h + config.hc_lowrank + config.hc_mult) * 2;
                 split.max(gemm)
             } else {

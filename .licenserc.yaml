@@ -14,4 +14,10 @@ header:
     # Vendored llama.cpp/ggml CUDA MMQ sources (MIT-licensed upstream);
     # third-party material keeps its original license — never stamp AGPL here.
     - 'kernels/gb10/qwen3.6-27b/nvfp4/q4k_vendor/**'
+    # Vendored EXL3 kernels from turboderp's ExLlamaV3, MIT upstream. Same rule
+    # as above and not a judgement call: the header states the licence a file IS
+    # under, so stamping AGPL on someone else's MIT work would be a false claim
+    # about their copyright, not a formality. Each file already carries
+    # `SPDX-License-Identifier: MIT` plus its upstream path and copyright line.
+    - 'kernels/gb10/common/exl3_vendor/**'
   comment: on-failure
