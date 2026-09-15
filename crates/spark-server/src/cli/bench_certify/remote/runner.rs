@@ -9,13 +9,13 @@
 //! failure the campaign will try once more elsewhere, and a cancel here
 //! cancels the job there before returning.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::super::plan::Unit;
-use super::super::runner::{GateRunner, RecordFacts, RunCtx, RunOutcome, classify};
+use super::super::runner::{GateRunner, RunCtx, RunOutcome, classify};
 use super::atlasctl::{Atlasctl, AttachEnd, Exit, StreamEvent, SubmitSpec};
 use super::node::Node;
 use super::place::{Expect, place};
@@ -24,6 +24,9 @@ use super::place::{Expect, place};
 /// is itself a bounded reconnect inside atlasctl; ten of them is a link that
 /// keeps dying, not a blip.
 pub const MAX_REATTACH: u32 = 10;
+
+/// atlasctl's `JobKey` bound: `[A-Za-z0-9._-]{1,64}`.
+pub const JOB_KEY_MAX: usize = 64;
 
 pub struct RemoteRunner {
     pub atlasctl: Arc<dyn Atlasctl>,
@@ -39,9 +42,12 @@ pub struct RemoteRunner {
 }
 
 impl RemoteRunner {
-    /// `certify-<run>-<node>-<gate>`: the same unit on the same node in the
-    /// same campaign is the same job, so a retry after a lost driver
-    /// resumes rather than duplicates.
+    /// `certify-<run>-<node>-<gate>[-s<i>of<n>]`: the same unit on the same
+    /// node in the same campaign is the same job, so a retry after a lost
+    /// driver resumes rather than duplicates. atlasctl caps a key at 64
+    /// characters; when the whole does not fit, the gate's name is cut from
+    /// the FRONT so the shard tail — the part that tells sibling units
+    /// apart — always survives.
     pub fn job_key(&self, unit: &Unit) -> String {
         let node = self.node.node_id.chars().take(8).collect::<String>();
         let node = if node.is_empty() {
@@ -49,8 +55,14 @@ impl RemoteRunner {
         } else {
             node
         };
-        let key = format!("certify-{}-{node}-{}", self.run_id, unit.id);
-        key.chars().take(64).collect()
+        let head = format!("certify-{}-{node}-", self.run_id);
+        let stem = unit.file_stem();
+        let room = JOB_KEY_MAX.saturating_sub(head.chars().count());
+        let tail: String = stem
+            .chars()
+            .skip(stem.chars().count().saturating_sub(room))
+            .collect();
+        format!("{head}{tail}")
     }
 
     fn harness(reason: String, retryable: bool) -> RunOutcome {
@@ -125,6 +137,7 @@ impl GateRunner for RemoteRunner {
             job_key: self.job_key(unit),
             sha: self.anchor_full.clone(),
             gate: unit.id.to_owned(),
+            params: unit.shard_param().into_iter().collect(),
             hardware: ctx.hardware.to_owned(),
             max_run_s: u32::try_from(ctx.deadline.as_secs()).ok(),
             note: format!("spark bench certify run {}", self.run_id),
@@ -233,6 +246,8 @@ impl GateRunner for RemoteRunner {
             &files,
             &Expect {
                 unit_id: unit.id,
+                shard: unit.shard,
+                log_stem: &unit.file_stem(),
                 anchor: ctx.anchor,
                 hardware: ctx.hardware,
             },
@@ -245,27 +260,12 @@ impl GateRunner for RemoteRunner {
                 );
             }
         };
-        let facts = facts_of(&placed.record, unit);
+        let facts = atlas_plugin::gate::read_record(&placed.record)
+            .ok()
+            .filter(|r| r.benchmark_id == unit.id && r.shard() == unit.shard)
+            .map(|r| super::super::runner::facts_of(placed.record.clone(), &r));
         classify(unit, ctx.anchor, exit_code, facts, None)
     }
-}
-
-/// The placed record, as the local classifier reads one.
-fn facts_of(path: &Path, unit: &Unit) -> Option<RecordFacts> {
-    use atlas_plugin::gate;
-    let r = gate::read_record(path).ok()?;
-    if r.benchmark_id != unit.id {
-        return None;
-    }
-    let tallies =
-        atlas_plugin::benchmarks::bfcl::aggregate::tallies_from_metrics(&r.metrics).is_some();
-    Some(RecordFacts {
-        is_shard_with_tallies: r.metrics.contains_key("shard.index") && tallies,
-        verdict_passes: r.verdict_passes(),
-        frame_completed: !r.frame_status_failed(),
-        git_sha: r.git_sha.clone(),
-        path: path.to_path_buf(),
-    })
 }
 
 /// How long a remote unit may take: the local deadline plus a build, unless

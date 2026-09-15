@@ -375,8 +375,4 @@ fn sharding_this_benchmark_would_need_a_per_leg_responses_file() {
          loses its per-turn output. Key the filename by benchmark id, the way \
          `bfcl::exec::responses_file` does, before shipping the shards."
     );
-    assert!(
-        crate::gate::group::member_of("mlperf-agentic-subset").is_none(),
-        "mlperf-agentic-subset is now a group MEMBER — same problem, same fix"
-    );
 }

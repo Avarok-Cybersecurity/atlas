@@ -4,9 +4,20 @@ use super::*;
 use atlas_plugin::hardware::equivalence::HardwareFingerprint;
 
 fn unit(id: &'static str, group: Option<&'static str>, class: Sensitivity, secs: u64) -> Unit {
+    shard_unit(id, group, None, class, secs)
+}
+
+fn shard_unit(
+    id: &'static str,
+    group: Option<&'static str>,
+    shard: Option<(usize, usize)>,
+    class: Sensitivity,
+    secs: u64,
+) -> Unit {
     Unit {
         id,
         group,
+        shard,
         class,
         estimate: Estimate::Declared(secs),
         needs_confirmation: false,
@@ -57,16 +68,18 @@ fn campaign() -> Vec<Unit> {
         ),
         unit("kat-equality-gate", None, Sensitivity::Correctness, 4200),
     ];
-    for s in ["a", "b", "c", "d"] {
-        v.push(unit(
-            Box::leak(format!("bfcl-subset-{s}").into_boxed_str()),
+    for s in 0..4 {
+        v.push(shard_unit(
+            "bfcl-subset",
             Some("bfcl-subset"),
+            Some((s, 4)),
             Sensitivity::Correctness,
             1500,
         ));
-        v.push(unit(
-            Box::leak(format!("bfcl-subset-echolp-{s}").into_boxed_str()),
+        v.push(shard_unit(
+            "bfcl-subset-echolp",
             Some("bfcl-subset-echolp"),
+            Some((s, 4)),
             Sensitivity::Correctness,
             1900,
         ));
@@ -119,9 +132,9 @@ fn next_for_is_longest_first_with_shard_anti_affinity_and_the_speed_rule() {
     // 1560, so the sweep) rather than crowding.
     let e = next_for(1, &units, &pending, &placed, &SpeedMode::Spread).unwrap();
     assert!(
-        units[e].id.starts_with("bfcl-subset-echolp-"),
+        units[e].label().starts_with("bfcl-subset-echolp["),
         "{}",
-        units[e].id
+        units[e].label()
     );
     pending[e] = false;
     placed[e] = Some(1);
@@ -132,7 +145,7 @@ fn next_for_is_longest_first_with_shard_anti_affinity_and_the_speed_rule() {
     );
     // Another node takes the next echolp shard freely.
     let e2 = next_for(0, &units, &pending, &placed, &SpeedMode::Spread).unwrap();
-    assert!(units[e2].id.starts_with("bfcl-subset-echolp-"));
+    assert!(units[e2].label().starts_with("bfcl-subset-echolp["));
     // Bundle on node 0: node 1 never gets a Speed unit, even when only
     // Speed units remain.
     let only_speed: Vec<bool> = units
@@ -204,7 +217,7 @@ fn the_simulation_is_work_conserving_and_near_optimal() {
     for (k, q) in p.queues.iter().enumerate() {
         for &i in q {
             if units[i].class == Sensitivity::Speed {
-                assert_eq!(k, 0, "{} landed on node {k}", units[i].id);
+                assert_eq!(k, 0, "{} landed on node {k}", units[i].label());
             }
         }
     }

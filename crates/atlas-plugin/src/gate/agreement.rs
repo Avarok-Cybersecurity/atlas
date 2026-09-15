@@ -154,14 +154,11 @@ impl std::fmt::Display for Disagreement {
 }
 
 /// A record's [`Standing`] at `head`, with the coverage its benchmark reads
-/// (a shard reads its own entry or its group's). A benchmark with no
-/// coverage entry cannot be judged and is reported as unknown — the
+/// (a shard is a run of its group and reads the group's entry). A benchmark
+/// with no coverage entry cannot be judged and is reported as unknown — the
 /// fail-closed side.
 pub fn standing_at(root: &std::path::Path, head: &str, record: &super::GateRecord) -> Standing {
-    let gate = coverage::find(&record.benchmark_id).or_else(|| {
-        super::group::member_of(&record.benchmark_id).and_then(|g| coverage::find(g.id))
-    });
-    match gate {
+    match coverage::find(&record.benchmark_id) {
         Some(gate) => super::check::record_standing(root, head, record, gate),
         None => Standing::Unknown,
     }

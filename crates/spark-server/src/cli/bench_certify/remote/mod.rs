@@ -113,6 +113,7 @@ pub fn runners(
     anchor_full: &str,
     cancel: Arc<AtomicBool>,
     log_dir: &std::path::Path,
+    no_serve_reuse: bool,
 ) -> Result<Vec<Box<dyn GateRunner + Send>>> {
     let exe = std::env::current_exe().context("locating this binary")?;
     fleet
@@ -124,7 +125,7 @@ pub fn runners(
                     exe: exe.clone(),
                     records: Box::new(RepoRecords),
                     cancel: cancel.clone(),
-                    extra_args: vec![],
+                    extra_args: LocalChild::reuse_args(no_serve_reuse),
                 }))
             } else {
                 Ok(Box::new(runner::RemoteRunner {
@@ -195,14 +196,14 @@ pub fn drive(
                 continue;
             }
             last_guard = std::time::Instant::now();
-            let running: Vec<&'static str> = {
+            let running: Vec<String> = {
                 let b = board.lock().unwrap_or_else(|p| p.into_inner());
                 b.campaign
                     .units
                     .iter()
                     .zip(&b.campaign.phase)
                     .filter(|(_, p)| **p == Phase::Running)
-                    .map(|(u, _)| u.id)
+                    .map(|(u, _)| u.label())
                     .collect()
             };
             let mut guard_rc = 0;
@@ -323,11 +324,11 @@ fn run_one(
     let deadline = runner::deadline_for(local_deadline, node, BUILD_ALLOWANCE);
     emit.event(
         "start",
-        serde_json::json!({ "unit": unit.id, "node": node.addr, "expected_secs": unit.secs() }),
+        serde_json::json!({ "unit": unit.label(), "node": node.addr, "expected_secs": unit.secs() }),
     );
     emit.say(&format!(
         "▶ {} on {} (expected ~{})",
-        unit.id,
+        unit.label(),
         node.addr,
         super::text::human(unit.secs())
     ));
@@ -344,21 +345,21 @@ fn run_one(
         if emit.json {
             emit.event(
                 "line",
-                serde_json::json!({ "unit": unit.id, "node": node.addr, "text": line }),
+                serde_json::json!({ "unit": unit.label(), "node": node.addr, "text": line }),
             );
         } else if line.starts_with("  [") || line.contains("Pass:") || line.contains("Fail:") {
-            eprintln!("  {}@{} {}", unit.id, node.addr, line.trim_end());
+            eprintln!("  {}@{} {}", unit.label(), node.addr, line.trim_end());
         }
     };
     let outcome = runner.run(unit, &ctx, &mut on_line);
     let elapsed = started.elapsed().as_secs();
     emit.event(
         "done",
-        serde_json::json!({ "unit": unit.id, "node": node.addr, "outcome": format!("{outcome:?}"), "elapsed_secs": elapsed }),
+        serde_json::json!({ "unit": unit.label(), "node": node.addr, "outcome": format!("{outcome:?}"), "elapsed_secs": elapsed }),
     );
     emit.say(&format!(
         "■ {} on {} → {} after {}",
-        unit.id,
+        unit.label(),
         node.addr,
         super::text::describe(&outcome),
         super::text::human(elapsed)
@@ -371,7 +372,8 @@ fn run_one(
         b.placed[i] = None;
         emit.say(&format!(
             "retrying {} once (last on {})",
-            unit.id, node.addr
+            unit.label(),
+            node.addr
         ));
     }
     if matches!(outcome, RunOutcome::Cancelled) {

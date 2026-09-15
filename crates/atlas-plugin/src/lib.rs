@@ -57,6 +57,7 @@ pub mod plugin;
 pub mod python;
 pub mod registry;
 pub mod result;
+pub mod serve_identity;
 
 pub use artifacts::ArtifactStore;
 pub use benchmark::{Benchmark, BenchmarkDescriptor};

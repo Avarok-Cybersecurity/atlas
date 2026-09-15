@@ -2142,12 +2142,12 @@ SGSTUB
 import pathlib, sys, re
 t = pathlib.Path(sys.argv[1]).read_text()
 new = re.sub(
-    r'if ! git diff --name-only --diff-filter=AM "\$base"\.\.\.HEAD -- \.benchmarks \\\n'
+    r'if ! git diff --name-only (?:--no-renames )?--diff-filter=AM "\$base"\.\.\.HEAD -- \.benchmarks \\\n'
     r' *> added_all\.txt; then\n.*?\n *exit 1\n *fi\n',
     '', t, count=1, flags=re.S)
 new = new.replace(
     "mapfile -t added < <(grep '\\.json$' added_all.txt || true)",
-    "mapfile -t added < <(git diff --name-only --diff-filter=AM \"$base\"...HEAD "
+    "mapfile -t added < <(git diff --name-only --no-renames --diff-filter=AM \"$base\"...HEAD "
     "-- .benchmarks | grep '\\.json$' || true)", 1)
 assert new != t, "sabotage did not change the step -- it would measure nothing"
 pathlib.Path(sys.argv[2]).write_text(new)

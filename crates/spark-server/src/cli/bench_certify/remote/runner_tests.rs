@@ -11,12 +11,14 @@ use anyhow::Result;
 use atlas_plugin::hardware::equivalence::HardwareFingerprint;
 use atlas_plugin::hardware::policy::Sensitivity;
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::Mutex;
 
 fn unit() -> Unit {
     Unit {
         id: "decode-floor",
         group: None,
+        shard: None,
         class: Sensitivity::Speed,
         estimate: Estimate::Declared(180),
         needs_confirmation: false,
@@ -451,9 +453,23 @@ fn the_deadline_pays_for_a_build_only_on_a_cold_node() {
         scratch: PathBuf::new(),
     };
     let k = r.job_key(&unit());
+    assert_eq!(k, "certify-1a0dc88a8c-1757770000-1730e1be-decode-floor");
+    // A shard's key carries its slice; when the whole does not fit in
+    // atlasctl's 64, the gate name loses its front, never the shard tail —
+    // two shards of one group must never share a key.
+    let shard = |i, n| Unit {
+        id: "bfcl-subset-echolp",
+        group: Some("bfcl-subset-echolp"),
+        shard: Some((i, n)),
+        ..unit()
+    };
+    let a = r.job_key(&shard(13, 16));
+    let b = r.job_key(&shard(13, 1));
+    assert_eq!(a.len(), JOB_KEY_MAX);
+    assert!(a.ends_with("subset-echolp-s13of16"), "{a}");
+    assert_ne!(a, b);
     assert!(
-        k.starts_with("certify-1a0dc88a8c-1757770000-1730e1be-decode-floor"),
-        "{k}"
+        r.job_key(&shard(0, 4))
+            .ends_with("-bfcl-subset-echolp-s0of4")
     );
-    assert!(k.len() <= 64);
 }
