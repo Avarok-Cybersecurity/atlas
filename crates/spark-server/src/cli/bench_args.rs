@@ -344,8 +344,7 @@ mod tests;
 /// `spark benchmark aggregate <group>`.
 #[derive(clap::Args, Debug)]
 pub struct AggregateArgs {
-    /// The GROUP id, e.g. `bfcl-subset`. Not a member id — a shard has no
-    /// aggregate of its own.
+    /// The group id, e.g. `bfcl-subset`.
     pub id: String,
     /// The commit the records must cover. Defaults to HEAD.
     #[arg(long)]

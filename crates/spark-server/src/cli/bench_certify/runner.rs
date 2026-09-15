@@ -44,30 +44,48 @@ pub struct RecordFacts {
 
 /// Where a unit's newest record is read from.
 pub trait Records: Send {
-    /// The newest record for `id` recorded at or after `since` (unix secs).
-    fn newest_since(&self, root: &Path, id: &str, since: u64) -> Option<RecordFacts>;
+    /// The newest record for `id` and this `shard` recorded at or after
+    /// `since` (unix secs). The shard identity is matched, never assumed:
+    /// two shards of one group at one commit land in one directory.
+    fn newest_since(
+        &self,
+        root: &Path,
+        id: &str,
+        shard: Option<(usize, usize)>,
+        since: u64,
+    ) -> Option<RecordFacts>;
 }
 
 /// The real `.benchmarks/<id>/` reader.
 pub struct RepoRecords;
 
 impl Records for RepoRecords {
-    fn newest_since(&self, root: &Path, id: &str, since: u64) -> Option<RecordFacts> {
+    fn newest_since(
+        &self,
+        root: &Path,
+        id: &str,
+        shard: Option<(usize, usize)>,
+        since: u64,
+    ) -> Option<RecordFacts> {
         use atlas_plugin::gate;
-        let path = gate::records_newest_first(root, id).into_iter().next()?;
-        let r = gate::read_record(&path).ok()?;
-        if r.benchmark_id != id || r.recorded_at < since {
-            return None;
-        }
-        let tallies =
-            atlas_plugin::benchmarks::bfcl::aggregate::tallies_from_metrics(&r.metrics).is_some();
-        Some(RecordFacts {
-            is_shard_with_tallies: r.metrics.contains_key("shard.index") && tallies,
-            verdict_passes: r.verdict_passes(),
-            frame_completed: !r.frame_status_failed(),
-            git_sha: r.git_sha.clone(),
-            path,
-        })
+        gate::records_newest_first(root, id)
+            .into_iter()
+            .filter_map(|path| gate::read_record(&path).ok().map(|r| (path, r)))
+            .find(|(_, r)| r.benchmark_id == id && r.shard() == shard && r.recorded_at >= since)
+            .map(|(path, r)| facts_of(path, &r))
+    }
+}
+
+/// The facts the classifier reads, from a parsed record.
+pub fn facts_of(path: PathBuf, r: &atlas_plugin::gate::GateRecord) -> RecordFacts {
+    let tallies =
+        atlas_plugin::benchmarks::bfcl::aggregate::tallies_from_metrics(&r.metrics).is_some();
+    RecordFacts {
+        is_shard_with_tallies: r.shard().is_some() && tallies,
+        verdict_passes: r.verdict_passes(),
+        frame_completed: !r.frame_status_failed(),
+        git_sha: r.git_sha.clone(),
+        path,
     }
 }
 
@@ -111,7 +129,7 @@ pub fn classify(
             reason: format!(
                 "the child exited {} and wrote no record for {} at this commit",
                 exit.map_or("by signal".to_string(), |c| c.to_string()),
-                unit.id
+                unit.label()
             ),
             retryable: exit != Some(0),
         };
@@ -135,7 +153,7 @@ pub fn classify(
     if r.verdict_passes {
         return RunOutcome::Passed { record: r.path };
     }
-    if unit.group.is_some() && r.is_shard_with_tallies {
+    if unit.shard.is_some() && r.is_shard_with_tallies {
         return RunOutcome::MemberDone { record: r.path };
     }
     RunOutcome::VerdictFail {
@@ -177,6 +195,10 @@ impl LocalChild {
         ];
         if ctx.yes {
             v.push("--yes".into());
+        }
+        if let Some(p) = unit.shard_param() {
+            v.push("--param".into());
+            v.push(p);
         }
         v.extend(self.extra_args.iter().cloned());
         v
@@ -284,7 +306,7 @@ impl GateRunner for LocalChild {
     fn run(&mut self, unit: &Unit, ctx: &RunCtx, on_line: &mut dyn FnMut(&str)) -> RunOutcome {
         let since = super::lockfile::now_unix();
         let _ = std::fs::create_dir_all(ctx.log_dir);
-        let log_path = ctx.log_dir.join(format!("{}.log", unit.id));
+        let log_path = ctx.log_dir.join(format!("{}.log", unit.file_stem()));
         let mut log = match std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -315,7 +337,9 @@ impl GateRunner for LocalChild {
             }
         };
         let (exit, killed) = supervise(child, ctx.deadline, &self.cancel, &mut log, on_line);
-        let record = self.records.newest_since(ctx.root, unit.id, since);
+        let record = self
+            .records
+            .newest_since(ctx.root, unit.id, unit.shard, since);
         classify(unit, ctx.anchor, exit, record, killed)
     }
 }

@@ -57,7 +57,7 @@ pub(super) fn drive_local(
             };
             emit.event(
                 "guard",
-                serde_json::json!({ "unit": unit.id, "result": format!("{result:?}") }),
+                serde_json::json!({ "unit": unit.label(), "result": format!("{result:?}") }),
             );
             match poll.judge(result) {
                 guard::Judgement::Fine => {}
@@ -73,12 +73,16 @@ pub(super) fn drive_local(
                 }
             }
         }
-        lock.beat(unit.id, guard_rc, lockfile::now_unix())?;
+        lock.beat(&unit.label(), guard_rc, lockfile::now_unix())?;
         emit.event(
             "start",
-            serde_json::json!({ "unit": unit.id, "expected_secs": unit.secs() }),
+            serde_json::json!({ "unit": unit.label(), "expected_secs": unit.secs() }),
         );
-        emit.say(&format!("▶ {} (expected ~{})", unit.id, human(unit.secs())));
+        emit.say(&format!(
+            "▶ {} (expected ~{})",
+            unit.label(),
+            human(unit.secs())
+        ));
         let deadline = unit.deadline(factor);
         let ctx = RunCtx {
             root: &root,
@@ -119,9 +123,12 @@ pub(super) fn drive_local(
         let started = std::time::Instant::now();
         let mut on_line = |line: &str| {
             if args.json {
-                emit.event("line", serde_json::json!({ "unit": unit.id, "text": line }));
+                emit.event(
+                    "line",
+                    serde_json::json!({ "unit": unit.label(), "text": line }),
+                );
             } else if line.starts_with("  [") || line.contains("Pass:") || line.contains("Fail:") {
-                eprintln!("  {} {}", unit.id, line.trim_end());
+                eprintln!("  {} {}", unit.label(), line.trim_end());
             }
         };
         let outcome = runner.run(&unit, &ctx, &mut on_line);
@@ -132,7 +139,7 @@ pub(super) fn drive_local(
         let elapsed = started.elapsed().as_secs();
         emit.event(
             "done",
-            serde_json::json!({ "unit": unit.id, "outcome": format!("{outcome:?}"), "elapsed_secs": elapsed }),
+            serde_json::json!({ "unit": unit.label(), "outcome": format!("{outcome:?}"), "elapsed_secs": elapsed }),
         );
         emit.say(&format!(
             "■ {} → {} after {}",
@@ -153,10 +160,10 @@ pub(super) fn drive_local(
             outcome,
             RunOutcome::Passed { .. } | RunOutcome::MemberDone { .. }
         ) {
-            lock.done(unit.id)?;
+            lock.done(&unit.label())?;
         }
         if retry {
-            emit.say(&format!("retrying {} once", unit.id));
+            emit.say(&format!("retrying {} once", unit.label()));
         }
     }
     Ok(campaign)

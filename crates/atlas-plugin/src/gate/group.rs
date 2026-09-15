@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Benchmark groups: one gate satisfied by several runs.
 //!
-//! A group is a gate whose measurement is split across N member benchmarks that
-//! can run on different boxes at the same time. The group id is what
-//! `coverage::REQUIRED`, `BENCH.toml` and `pr-taxonomy.json` refer to; the
-//! members are ordinary benchmarks that are NOT required in their own right.
+//! A group is a gate whose measurement is split across N shard runs of the
+//! same benchmark that can run on different boxes at the same time. The
+//! group id is what `coverage::REQUIRED`, `BENCH.toml` and `pr-taxonomy.json`
+//! refer to, and it is the benchmark id every shard runs under.
 //!
 //! Keeping the group id equal to the old single-benchmark id is deliberate:
 //! `bfcl-subset` stays `bfcl-subset`, so `REQUIRED` stays eleven entries, the
@@ -16,7 +16,7 @@
 //! Two rules make the difference between a group that means something and one
 //! that quietly reports a different measurement:
 //!
-//! 1. **All or nothing.** A group with three of four members present is not
+//! 1. **All or nothing.** A group with three of four shards present is not
 //!    75% measured, it is a DIFFERENT measurement — its aggregate is computed
 //!    over a sample set the thresholds were never drawn against. A missing
 //!    shard is a named failure, never a pass.
@@ -28,15 +28,20 @@
 //! `Sensitivity::Correctness` gates, which is measured, not assumed — see
 //! [`super::agreement`].
 //!
-//! # ★ FOUR SHARDS AT ONE COMMIT ARE THE ONLY THING THAT SATISFIES A GROUP
+//! # ★ A COMPLETE PARTITION AT ONE COMMIT IS THE ONLY THING THAT SATISFIES A GROUP
 //!
 //! Owner decision, 2026-09-13: sharded certification is ENABLED and REQUIRED
-//! for `bfcl-subset` and `bfcl-subset-echolp`. `check_one` hands every group
-//! id straight to `check_group`; a whole-draw record under the group's own
-//! id is history, not evidence, and the verdict says so by name when one is
-//! all a directory holds. Each member is judged by every rule a plain gate
-//! record is judged by — required subject, completed frame, clean tree,
-//! signature — plus the group rules above.
+//! for `bfcl-subset` and `bfcl-subset-echolp`; 2026-09-15: the shard COUNT
+//! is not fixed. A shard is the group's own benchmark run with
+//! `--param shard=i/n`, filed under the group; the campaign picks `n` from
+//! the fleet it has (`spark bench certify --shards N`), and the verdict
+//! accepts the newest complete partition the records at the commit form
+//! ([`select_partition`]). `check_one` hands every group id straight to
+//! `check_group`; a whole-draw record under the group's own id is history,
+//! not evidence, and the verdict says so by name when one is all a directory
+//! holds. Each shard is judged by every rule a plain gate record is judged by
+//! — required subject, completed frame, clean tree, signature — plus the
+//! group rules above.
 //!
 //! # ★ SCORED OPEN, BY DECISION: THE NUMBER IS PARTITION- AND ORDER-DEPENDENT
 //!
@@ -73,10 +78,10 @@
 //! the bar and the measurement are taken under the same regime.
 //!
 //! **What this means for anyone extending this module.** A group's aggregate is
-//! exact with respect to its members, and its members are not guaranteed to
+//! exact with respect to its shards, and its shards are not guaranteed to
 //! reproduce the serial run they stand in for. Do not read a passing group as
-//! evidence that sharding is transparent; it is evidence that the four shards,
-//! run as four shards, clear the floors that were cut from four shards.
+//! evidence that sharding is transparent; it is evidence that the shards,
+//! run as that partition, clear the floors that were cut from a sharded run.
 //!
 //! `--hermetic` remains available (`spark serve --hermetic` closes the prefix
 //! cache, the snapshot pool and the MTP probe; whole vs its own four shards
@@ -84,76 +89,133 @@
 //! only. Equality costs score — 84.22 / 84.12 open, 83.92 / 84.22 closed on
 //! the whole draw — and the owner chose the open number as the certified one.
 
-/// Do the members' recorded shard identities form the partition the group
-/// claims to be?
-///
-/// `declared` is one `(index, count)` per member, taken from the MEMBER
-/// RECORDS — what each run says it was — not from the registry, so a
-/// mislabelled or hand-copied record is caught too.
-///
-/// ★ WHY THIS IS NOT REDUNDANT WITH THE `samples` PIN. `samples` is pinned
-/// exactly (min == max == 995) and does catch a missing or duplicated SAMPLE.
-/// It does not catch a duplicated SHARD: if two members both ran index 2, the
-/// union still holds ~995 rows — shard C twice and shard D never — and every
-/// per-subset tally still looks plausible, because the subsets are strided.
-/// The total is right and the sample set is wrong, which is precisely the
-/// silently-wrong green a gate exists to prevent.
-///
-/// Requires: every member declares the same `count`, that count equals the
-/// number of members, and the indices are exactly `0..count` once each.
-pub fn partition_ok(group: &'static str, declared: &[(usize, usize)]) -> Result<(), GroupFault> {
-    let n = declared.len();
-    if let Some(&(_, bad)) = declared.iter().find(|(_, c)| *c != n) {
-        return Err(GroupFault::NotAPartition {
-            group,
-            detail: format!("a member reports {bad} shards but the group has {n} members"),
-        });
-    }
-    let mut seen: Vec<usize> = declared.iter().map(|(i, _)| *i).collect();
-    seen.sort_unstable();
-    let expected: Vec<usize> = (0..n).collect();
-    if seen != expected {
-        return Err(GroupFault::NotAPartition {
-            group,
-            detail: format!("shard indices {seen:?}, expected {expected:?} once each"),
-        });
-    }
-    Ok(())
+/// One shard record, as the partition rule sees it: which slice it measured,
+/// at which commit, when, and the caller's handle to the record (an index
+/// into whatever list the caller holds).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShardRecord {
+    pub index: usize,
+    pub count: usize,
+    pub git_sha: String,
+    pub recorded_at: u64,
+    /// The caller's handle — `check_group` uses the position in its list.
+    pub handle: usize,
 }
 
-/// A gate whose measurement is produced by several member runs.
+/// The chosen partition: its shard count, the one commit it was measured
+/// at, and the caller's handles, one per index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Partition {
+    pub count: usize,
+    pub git_sha: String,
+    pub handles: Vec<usize>,
+}
+
+/// The newest COMPLETE partition among the standing shard records — the
+/// `(count, commit)` for which every index `0..count` has a record measured
+/// at that commit, newest record per index — or why there is none.
+///
+/// The shard count is not declared anywhere: it is whatever the campaign
+/// that measured the draw chose (`spark bench certify --shards N`, sized to
+/// the fleet), and the records SAY what they are (`shard.index` /
+/// `shard.count`, written by the driver from the rows it was handed). So
+/// the verdict reads the records, groups them by count AND commit, and
+/// accepts a group whose indices are all present exactly once. Two complete
+/// partitions (a 4-way and an 8-way, or the same count at two commits that
+/// both still stand) are both valid measurements; the newer one is the
+/// branch's current word, like any other newest-first rule. A partition is
+/// never assembled ACROSS commits: a group is one measurement, and a
+/// re-run shard at a later commit re-opens the group until its siblings
+/// join it there.
+///
+/// ★ WHY THIS IS NOT REDUNDANT WITH THE `samples` PIN. `samples` is pinned
+/// exactly (min == max == 995) and does catch a missing or duplicated
+/// SAMPLE. It does not catch a duplicated SHARD: two records of index 2 and
+/// none of index 3 still hold ~995 rows between them — shard C twice and
+/// shard D never — and every per-subset tally still looks plausible,
+/// because the subsets are strided. The total is right and the sample set
+/// is wrong, which is precisely the silently-wrong green a gate exists to
+/// prevent. Newest-per-index makes a duplicate a re-run, never a double
+/// count.
+pub fn select_partition(
+    group: &'static str,
+    shards: &[ShardRecord],
+) -> Result<Partition, GroupFault> {
+    if shards.is_empty() {
+        return Err(GroupFault::Missing {
+            group,
+            held: Vec::new(),
+        });
+    }
+    let held = held_by(shards);
+    // Every complete partition, ranked by the age of its newest record.
+    let mut complete: Vec<(u64, &PartitionKey, &PerIndex<'_>)> = held
+        .iter()
+        .filter(|(key, per_index)| per_index.len() == key.0)
+        .map(|(key, per_index)| {
+            let newest = per_index.values().map(|s| s.recorded_at).max().unwrap_or(0);
+            (newest, key, per_index)
+        })
+        .collect();
+    complete.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.0.cmp(&a.1.0)));
+    match complete.into_iter().next() {
+        Some((_, (count, git_sha), per_index)) => Ok(Partition {
+            count: *count,
+            git_sha: git_sha.clone(),
+            handles: per_index.values().map(|s| s.handle).collect(),
+        }),
+        None => Err(GroupFault::Missing {
+            group,
+            held: held
+                .iter()
+                .map(|((count, sha), per_index)| {
+                    (*count, sha.clone(), per_index.keys().copied().collect())
+                })
+                .collect(),
+        }),
+    }
+}
+
+/// `(count, commit)`: what a partition is keyed by.
+pub type PartitionKey = (usize, String);
+/// The newest record per index within one partition.
+pub type PerIndex<'a> = std::collections::BTreeMap<usize, &'a ShardRecord>;
+
+/// Per `(count, commit)`, the newest record per index.
+pub fn held_by(shards: &[ShardRecord]) -> std::collections::BTreeMap<PartitionKey, PerIndex<'_>> {
+    let mut held: std::collections::BTreeMap<PartitionKey, PerIndex<'_>> =
+        std::collections::BTreeMap::new();
+    for s in shards {
+        let slot = held
+            .entry((s.count, s.git_sha.clone()))
+            .or_default()
+            .entry(s.index)
+            .or_insert(s);
+        if s.recorded_at > slot.recorded_at {
+            *slot = s;
+        }
+    }
+    held
+}
+
+/// A gate whose measurement is produced by a partition of shard runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BenchmarkGroup {
-    /// The gate id — the one `REQUIRED` and `BENCH.toml` know.
+    /// The gate id — the one `REQUIRED` and `BENCH.toml` know, and the
+    /// benchmark every shard of it is a run of (`--param shard=i/n`).
     pub id: &'static str,
-    /// The member benchmark ids, in shard order. Never required themselves.
-    pub members: &'static [&'static str],
 }
 
 /// Every group.
 ///
 /// The ids here are the GATE ids that `coverage::REQUIRED`, `BENCH.toml` and
 /// `pr-taxonomy.json` already know — deliberately unchanged, so none of those
-/// move. The members are ordinary registered benchmarks that are NOT required
-/// in their own right.
+/// move. A shard is not a benchmark of its own: it is the group's benchmark
+/// run with `--param shard=i/n`, and its record is filed under the group.
 pub const GROUPS: &[BenchmarkGroup] = &[
-    BenchmarkGroup {
-        id: "bfcl-subset",
-        members: &[
-            "bfcl-subset-a",
-            "bfcl-subset-b",
-            "bfcl-subset-c",
-            "bfcl-subset-d",
-        ],
-    },
+    BenchmarkGroup { id: "bfcl-subset" },
     BenchmarkGroup {
         id: "bfcl-subset-echolp",
-        members: &[
-            "bfcl-subset-echolp-a",
-            "bfcl-subset-echolp-b",
-            "bfcl-subset-echolp-c",
-            "bfcl-subset-echolp-d",
-        ],
     },
 ];
 
@@ -162,150 +224,63 @@ pub fn find(id: &str) -> Option<&'static BenchmarkGroup> {
     GROUPS.iter().find(|g| g.id == id)
 }
 
-/// Is this id a MEMBER of some group? Members must never be treated as
-/// required gates in their own right — that would demand eleven-plus records
-/// where the group needs one verdict.
-pub fn member_of(id: &str) -> Option<&'static BenchmarkGroup> {
-    GROUPS.iter().find(|g| g.members.contains(&id))
-}
-
-/// What a member contributed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MemberRecord {
-    /// The member benchmark id.
-    pub id: String,
-    /// The commit it was measured at.
-    pub git_sha: String,
-}
-
 /// Why a group is not satisfied.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GroupFault {
-    /// One or more members have no record at this commit.
+    /// No complete partition at one commit. `held` is what IS there, per
+    /// shard count and commit: the indices with a standing record.
     Missing {
         /// The group.
         group: &'static str,
-        /// Members with no record, in shard order.
-        missing: Vec<&'static str>,
-    },
-    /// Members measured at different commits. A group is ONE measurement.
-    SpansCommits {
-        /// The group.
-        group: &'static str,
-        /// The distinct commits seen, sorted.
-        commits: Vec<String>,
-    },
-    /// A record naming a member this group does not have.
-    Foreign {
-        /// The group.
-        group: &'static str,
-        /// The unexpected member id.
-        id: String,
-    },
-    /// The members' recorded shard identities are not a partition.
-    NotAPartition {
-        /// The group.
-        group: &'static str,
-        /// What was wrong, already phrased for a human.
-        detail: String,
+        /// `(count, commit, indices present)` for every pair seen.
+        held: Vec<(usize, String, Vec<usize>)>,
     },
 }
 
 impl std::fmt::Display for GroupFault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Missing { group, missing } => write!(
+            Self::Missing { group, held } if held.is_empty() => write!(
                 f,
-                "{group} is a benchmark group and {} of its members have no record \
-                 at this commit ({}). A group is satisfied only when EVERY member \
-                 has run: an aggregate over a subset is computed on a sample set \
-                 the thresholds were never drawn against, which is a different \
-                 measurement, not a partial one.",
-                missing.len(),
-                missing.join(", ")
+                "{group} is a benchmark group and has no shard record at this commit. \
+                 A group is satisfied only by a COMPLETE partition of its draw \
+                 (`--param shard=i/n` for every i in 0..n at one commit): an \
+                 aggregate over a subset is computed on a sample set the thresholds \
+                 were never drawn against, which is a different measurement, not a \
+                 partial one."
             ),
-            Self::NotAPartition { group, detail } => write!(
+            Self::Missing { group, held } => write!(
                 f,
-                "{group}'s members did not run a partition of the draw: {detail}. \
-                 Every sample must be measured EXACTLY once. Note the `samples` \
-                 pin cannot catch this on its own — two members running the same \
-                 shard still produce the right row COUNT while one shard is \
-                 measured twice and another not at all."
-            ),
-            Self::SpansCommits { group, commits } => write!(
-                f,
-                "{group}'s members were measured at {} different commits ({}). A \
-                 group is ONE measurement; re-run the stragglers at the head you \
-                 intend to merge.",
-                commits.len(),
-                commits.join(", ")
-            ),
-            Self::Foreign { group, id } => write!(
-                f,
-                "{id:?} is not a member of {group}; refusing to fold it into the \
-                 aggregate."
+                "{group} is a benchmark group and no shard partition is complete at one \
+                 commit: {}. A group is satisfied only by a COMPLETE partition of its \
+                 draw — every index 0..n once, all at one commit — since an aggregate \
+                 over a subset is computed on a sample set the thresholds were never \
+                 drawn against, which is a different measurement, not a partial one; \
+                 and a group is ONE measurement.",
+                held.iter()
+                    .map(|(n, sha, idx)| {
+                        let missing: Vec<String> = (0..*n)
+                            .filter(|i| !idx.contains(i))
+                            .map(|i| i.to_string())
+                            .collect();
+                        format!(
+                            "{n}-way at {} holds {:?}, missing {}",
+                            sha.chars().take(10).collect::<String>(),
+                            idx,
+                            missing.join(",")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
             ),
         }
     }
 }
 
-/// Do these member records satisfy the group's composition rules?
-///
-/// Composition only — whether the aggregate then CLEARS the thresholds is
-/// `scoring::check_record`'s job, on the aggregate this permits building.
-pub fn composition_ok(
-    group: &'static BenchmarkGroup,
-    records: &[MemberRecord],
-) -> Result<(), GroupFault> {
-    for r in records {
-        if !group.members.contains(&r.id.as_str()) {
-            return Err(GroupFault::Foreign {
-                group: group.id,
-                id: r.id.clone(),
-            });
-        }
-    }
-
-    let missing: Vec<&'static str> = group
-        .members
-        .iter()
-        .copied()
-        .filter(|m| !records.iter().any(|r| r.id == *m))
-        .collect();
-    if !missing.is_empty() {
-        return Err(GroupFault::Missing {
-            group: group.id,
-            missing,
-        });
-    }
-
-    let mut commits: Vec<String> = records.iter().map(|r| r.git_sha.clone()).collect();
-    commits.sort();
-    commits.dedup();
-    if commits.len() > 1 {
-        return Err(GroupFault::SpansCommits {
-            group: group.id,
-            commits,
-        });
-    }
-    Ok(())
-}
-
-/// Which id's BENCH.toml entry describes how to RUN this benchmark.
-///
-/// A shard has no entry of its own — it serves exactly what its group serves,
-/// on the same recipe and checkpoint, and differs only in which rows of the
-/// draw it measures. Without this a member cannot be run at all: `serve_for`
-/// resolves the recipe from a baseline keyed on the benchmark id, and
-/// `baseline_for` drops entries with no `metrics`, so giving each shard a
-/// thresholds-less entry would not work either.
-///
-/// Thresholds are a separate question and deliberately NOT inherited: a shard
-/// is judged by nothing, and the group's aggregate is judged by the group's
-/// bars. This answers "what do I serve", not "what must I beat".
+/// Which id's BENCH.toml entry describes how to RUN this benchmark. A shard
+/// is a run of its group's benchmark, so this is the identity function now
+/// that shards have no ids of their own; kept as the one place a future
+/// alias would be resolved.
 pub fn serve_baseline_id(benchmark_id: &str) -> &str {
-    match member_of(benchmark_id) {
-        Some(g) => g.id,
-        None => benchmark_id,
-    }
+    benchmark_id
 }

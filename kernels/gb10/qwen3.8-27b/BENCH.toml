@@ -136,9 +136,11 @@ MLPerf-edge submission rides on 3.6, and nothing here guards it. \
 silently discarded before the 2026-08-14 --num-drafts precedence fix, so those \
 3.6 numbers were measured at K=4. Speculative decode is lossless, so ACCURACY \
 is comparable across that boundary; wall and TPOT are not. \
-★ CERTIFIED BY FOUR SHARDS SINCE 2026-09-13 (bfcl-subset-a..d at one commit; \
-gate::check_group). A whole-draw record under .benchmarks/bfcl-subset/ no \
-longer satisfies this gate. ★ SCORED OPEN by owner decision: cross-request \
+★ CERTIFIED BY SHARDS SINCE 2026-09-13 (gate::check_group): a complete partition \
+of `--param shard=i/n` runs at one commit, any n — the campaign sizes n to its \
+fleet (spark bench certify --shards) and the records say what they are \
+(shard.index / shard.count; filed here as -s<i>of<n>). A whole-draw record under \
+.benchmarks/bfcl-subset/ no longer satisfies this gate. ★ SCORED OPEN by owner decision: cross-request \
 SSM snapshot reuse stays ON (no --hermetic pin here — contrast \
 kat-equality-gate below, which pins the closed regime as its SUBJECT). The \
 consequence is measured and named: 12 of the 995 answers differ between the \
@@ -154,8 +156,8 @@ SHARDED aggregate, never from a whole-draw run."""
 [benchmarks.metrics.samples]
 # The golden MLPerf draw is exactly 995. A run reporting anything else is not
 # this draw and its score is not comparable — pin both ends. Under the shard
-# rule check_group injects the UNION of the four shards here (~251/249/248/247),
-# so the pin still holds only when all four are present exactly once.
+# rule check_group injects the UNION of the partition's shards here, so the pin
+# still holds only when every index 0..n is present exactly once.
 min = 995.0
 max = 995.0
 
@@ -1147,7 +1149,7 @@ measures at 36 divergences of 257. So a green says the BFCL workload is \
 order-independent WHEN THE CHANNELS ARE CLOSED, and says nothing about the \
 conditions the committed 84.22 / 84.12 were taken under. Closing that gap \
 would mean pinning hermetic on bfcl-subset; the owner's decision (2026-09-13) \
-is the opposite — bfcl-subset is certified by four shards and stays OPEN, with \
+is the opposite — bfcl-subset is certified by a partition of shards and stays OPEN, with \
 the twelve partition-sensitive samples named in its own note — so the gap is \
 documented rather than closed. That is \
 also why `max_new_tokens` is pinned to BFCL's 1024 and not the driver's old \

@@ -9,7 +9,8 @@ the same gate table.
 ```
 spark bench certify                     # everything still open, on this box
 spark bench certify --dry-run           # the plan and the preflight, nothing run
-spark bench certify --gates bfcl-subset # one group (its four shards)
+spark bench certify --gates bfcl-subset # one group (the shards it still owes)
+spark bench certify --shards 8          # cut each group's draw eight ways
 spark bench certify --pr 1027 --yes     # a real campaign, agentic gate confirmed
 ```
 
@@ -35,7 +36,17 @@ admitted. This box is a node too, unless `--remote-only`.
 may run (longest-first list scheduling: within 4/3 of optimal, and the same
 rule at plan time and at run time, so `--dry-run`'s makespan is what
 happens). Among equals, a shard whose group already has a shard on that node
-yields to one that does not, so losing a node costs a quarter of a group.
+yields to one that does not, so losing a node costs one shard of a group,
+not the whole of it.
+
+**Shards.** Each benchmark group's draw is cut into `--shards N` slices, run
+as `--param shard=i/N` of the group's own benchmark. The default is two per
+box that will run (so the scheduler has slices to balance around
+`kat-equality-gate`, the longest single unit), and one box alone runs the
+whole draw as `0/1` — a shard costs a server start and a warm-up, and there
+is nothing to balance against. A partition already begun at the anchor is
+finished at its own count whatever `--shards` says, because the verdict never
+assembles a partition across counts or commits.
 
 **Speed-class gates spread only across boxes that are one box.** Before
 anything starts, every pair of admitted nodes is checked by
@@ -68,7 +79,7 @@ kept outside the default directory is selected with
 
 1. **Plan.** `gate::check_gates` at the anchor (HEAD) says which required gates
    are not `Pass`; a benchmark group expands to the shards it still owes —
-   `gate::members_owed`, the verdict's own answer, so a shard the gate already
+   `gate::shards_owed`, the verdict's own answer, so a shard the gate already
    accepts at the anchor is not re-measured; every unit carries
    the descriptor's `expected_secs`, refined by the newest completed run in
    `~/.atlas/runs` when there is one. The local order is the long shard sets
@@ -87,13 +98,14 @@ kept outside the default directory is selected with
    the campaign is over (`campaign_done`, `aborted`), however fresh its last
    heartbeat.
 4. **Run.** Each unit is a child `spark benchmark run <id> --pull-request-gate
-   --hardware <class> [--yes]` — the operator's own command line — with its
-   stderr streamed and logged under `.certify/<anchor>/<id>.log`. The evidence
-   is the record the child leaves in `.benchmarks/<id>/`: it must name the
-   anchor, its frame must have completed, and its verdict must be `PASS` (a
-   shard's verdict is `Info` by design and counts as a completed member only
-   when it carries its shard identity and tallies). Exit codes and printed
-   lines are not evidence.
+   --hardware <class> [--yes] [--param shard=i/n]` — the operator's own
+   command line — with its stderr streamed and logged under
+   `.certify/<anchor>/<id>[-s<i>of<n>].log`. The evidence is the record the
+   child leaves in `.benchmarks/<id>/`: it must name the anchor and, for a
+   shard, the very slice the unit stands for; its frame must have completed,
+   and its verdict must be `PASS` (a shard's verdict is `Info` by design and
+   counts as a completed shard only when it carries its shard identity and
+   tallies). Exit codes and printed lines are not evidence.
 5. **Guard.** Before every unit and every 60 s during one, the guarded branch
    (`REMOTE/BRANCH`, default HEAD's upstream) is fetched and diffed against
    the anchor over `PERF_PATHS`. A docs-only push is harmless; a perf-path

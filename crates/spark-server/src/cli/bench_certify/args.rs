@@ -24,10 +24,15 @@ pub struct CertifyArgs {
     #[arg(long)]
     pub pr: Option<u64>,
     /// Only these gates (comma-separated group/gate ids), each of which must
-    /// still be open. A benchmark group is named by its group id, never by a
-    /// shard; the four shards run in any case.
+    /// still be open. A benchmark group is named by its group id; the shards
+    /// it still owes run in any case.
     #[arg(long, value_delimiter = ',', value_name = "ID,...")]
     pub gates: Vec<String>,
+    /// How many shards to cut each benchmark group's draw into. Default: two
+    /// per box that will run (one box alone runs the whole draw). A partition
+    /// already begun at this commit is finished at its own count regardless.
+    #[arg(long, value_name = "N")]
+    pub shards: Option<usize>,
     /// Print the plan and the preflight verdict, then stop before running.
     #[arg(long, visible_alias = "plan")]
     pub dry_run: bool,
@@ -88,13 +93,10 @@ impl CertifyArgs {
                 self.timeout_factor
             ));
         }
+        if self.shards == Some(0) {
+            return Err("--shards must be at least 1".into());
+        }
         for g in &self.gates {
-            if atlas_plugin::gate::group::member_of(g).is_some() {
-                return Err(format!(
-                    "--gates names the shard {g}; name its group instead — the four shards \
-                     run together and the verdict belongs to the group"
-                ));
-            }
             if !atlas_plugin::gate::REQUIRED_GATES.contains(&g.as_str()) {
                 return Err(format!(
                     "--gates names {g}, which is not a required gate ({})",
@@ -130,10 +132,19 @@ mod tests {
     }
 
     #[test]
-    fn a_shard_id_is_refused_in_favour_of_its_group() {
+    fn a_legacy_shard_id_is_not_a_gate() {
         let mut a = args();
         a.gates = vec!["bfcl-subset-a".into()];
-        assert!(a.validate().unwrap_err().contains("name its group"));
+        assert!(a.validate().unwrap_err().contains("not a required gate"));
+    }
+
+    #[test]
+    fn zero_shards_is_refused_and_one_is_the_whole_draw() {
+        let mut a = args();
+        a.shards = Some(0);
+        assert!(a.validate().unwrap_err().contains("--shards"));
+        a.shards = Some(1);
+        assert_eq!(a.validate(), Ok(()));
     }
 
     #[test]

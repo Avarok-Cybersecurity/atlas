@@ -82,7 +82,10 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     let gates = plan::remaining(&statuses, &args.gates)?;
     let store = ArtifactStore::discover().context("locating ATLAS_HOME")?;
     let measured = |id: &str| measured_secs(&store, id);
-    let owed = |g: &'static gate::group::BenchmarkGroup| gate::members_owed(&root, g, &anchor);
+    let boxes = args.with_nodes.len() + usize::from(!args.remote_only);
+    let wanted = args.shards.unwrap_or_else(|| plan::shard_count(boxes));
+    let owed =
+        |g: &'static gate::group::BenchmarkGroup| gate::shards_owed(&root, g, &anchor, wanted);
     let units = plan::order_local(plan::units(&gates, &measured, &owed)?);
     let hardware = match &args.hardware {
         Some(h) => h.clone(),
@@ -103,9 +106,9 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
         "plan",
         serde_json::json!({
             "anchor": anchor, "hardware": hardware, "guard_ref": guard_ref,
-            "gates": gates, "serial_estimate_secs": serial,
+            "gates": gates, "shards": wanted, "serial_estimate_secs": serial,
             "units": units.iter().map(|u| serde_json::json!({
-                "id": u.id, "group": u.group, "class": format!("{:?}", u.class),
+                "id": u.label(), "group": u.group, "shard": u.shard, "class": format!("{:?}", u.class),
                 "expected_secs": u.secs(),
                 "estimate": match u.estimate {
                     plan::Estimate::Declared(_) => "declared",
@@ -130,6 +133,8 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
         .iter()
         .filter(|u| u.needs_confirmation)
         .map(|u| u.id)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .collect();
     let facts = preflight::gather(
         &root,

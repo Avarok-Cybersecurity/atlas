@@ -86,6 +86,8 @@ fn fixture(tag: &str) -> (Scratch, Vec<FetchedFile>, String) {
 fn expect<'a>(anchor: &'a str) -> Expect<'a> {
     Expect {
         unit_id: "decode-floor",
+        shard: None,
+        log_stem: "decode-floor",
         anchor,
         hardware: "gb10",
     }

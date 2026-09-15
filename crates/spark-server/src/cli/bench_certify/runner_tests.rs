@@ -8,6 +8,7 @@ fn plain() -> Unit {
     Unit {
         id: "decode-floor",
         group: None,
+        shard: None,
         class: Sensitivity::Speed,
         estimate: Estimate::Declared(180),
         needs_confirmation: false,
@@ -16,8 +17,9 @@ fn plain() -> Unit {
 
 fn shard() -> Unit {
     Unit {
-        id: "bfcl-subset-a",
+        id: "bfcl-subset",
         group: Some("bfcl-subset"),
+        shard: Some((0, 4)),
         class: Sensitivity::Correctness,
         estimate: Estimate::Declared(1500),
         needs_confirmation: false,
@@ -193,9 +195,81 @@ fn a_kill_reason_wins_over_everything() {
     assert_eq!(out, RunOutcome::TimedOut);
 }
 
+/// The real reader matches the SHARD, not just the id: two shards of one
+/// group at one commit sit in one directory, and the newest file there is
+/// whichever sibling finished last. Built from a committed record so the
+/// fixture is the shape the driver writes.
+#[test]
+fn the_repo_reader_returns_the_record_of_this_shard_not_the_newest_sibling() {
+    let ws = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let source = atlas_plugin::gate::records_newest_first(ws, "bfcl-subset")
+        .into_iter()
+        .find(|p| p.extension().is_some_and(|e| e == "json"))
+        .expect("a committed bfcl-subset record");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&source).unwrap()).unwrap();
+    let (dir, _) = script("exit 0");
+    let root = dir.path();
+    let gate_dir = root.join(".benchmarks/bfcl-subset");
+    std::fs::create_dir_all(&gate_dir).unwrap();
+    let since = 1_800_000_000;
+    for (i, at) in [(0usize, since + 10), (1, since + 20)] {
+        v["git_sha"] = serde_json::json!(ANCHOR);
+        v["recorded_at"] = serde_json::json!(at);
+        v["metrics"]["shard.index"] = serde_json::json!(i as f64);
+        v["metrics"]["shard.count"] = serde_json::json!(2.0);
+        v["metrics"]["subset.simple_python.hits"] = serde_json::json!(90.0);
+        v["metrics"]["subset.simple_python.n"] = serde_json::json!(100.0);
+        std::fs::write(
+            gate_dir.join(format!("2027-01-01-{ANCHOR}-s{i}of2.json")),
+            serde_json::to_string_pretty(&v).unwrap(),
+        )
+        .unwrap();
+    }
+    let r = RepoRecords;
+    let s0 = r
+        .newest_since(root, "bfcl-subset", Some((0, 2)), since)
+        .unwrap();
+    assert!(
+        s0.path.to_string_lossy().ends_with("-s0of2.json"),
+        "{}",
+        s0.path.display()
+    );
+    assert!(s0.is_shard_with_tallies);
+    let s1 = r
+        .newest_since(root, "bfcl-subset", Some((1, 2)), since)
+        .unwrap();
+    assert!(
+        s1.path.to_string_lossy().ends_with("-s1of2.json"),
+        "{}",
+        s1.path.display()
+    );
+    // NEGATIVE CONTROLS: a slice nobody ran, the whole draw, a record older
+    // than the run.
+    assert_eq!(
+        r.newest_since(root, "bfcl-subset", Some((1, 4)), since),
+        None
+    );
+    assert_eq!(r.newest_since(root, "bfcl-subset", None, since), None);
+    assert_eq!(
+        r.newest_since(root, "bfcl-subset", Some((0, 2)), since + 15),
+        None
+    );
+}
+
 struct Scripted(Option<RecordFacts>);
 impl Records for Scripted {
-    fn newest_since(&self, _: &Path, _: &str, _: u64) -> Option<RecordFacts> {
+    fn newest_since(
+        &self,
+        _: &Path,
+        _: &str,
+        _: Option<(usize, usize)>,
+        _: u64,
+    ) -> Option<RecordFacts> {
         self.0.clone()
     }
 }
@@ -265,6 +339,20 @@ fn the_child_is_supervised_and_its_lines_are_streamed() {
             "--pull-request-gate",
             "--hardware",
             "gb10"
+        ]
+    );
+    // A shard's child is told which slice to run, and nothing else differs.
+    assert_eq!(
+        r.argv(&shard(), &c),
+        [
+            "benchmark",
+            "run",
+            "bfcl-subset",
+            "--pull-request-gate",
+            "--hardware",
+            "gb10",
+            "--param",
+            "shard=0/4"
         ]
     );
     let mut lines = Vec::new();
