@@ -5,7 +5,7 @@
  * From SUMMARY.md rather than by hand, because SUMMARY.md is already the book's
  * table of contents and a second one written by hand goes stale the first time
  * a chapter is added. mdBook copies non-markdown files in `src/` straight to the
- * build output, so this lands at https://docs.atlasinference.io/llms.txt.
+ * build output, so this lands at https://docs.atlascybernetics.ai/llms.txt.
  *
  *   node book/scripts-gen-llms.mjs        # writes book/src/llms.txt
  *   node book/scripts-gen-llms.mjs --check # fails if the file is out of date
@@ -15,7 +15,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const SITE = 'https://docs.atlasinference.io';
+const SITE = 'https://docs.atlascybernetics.ai';
 const summary = readFileSync(resolve(here, 'src/SUMMARY.md'), 'utf8');
 
 // `# Heading` starts a part; `- [Title](path)` (at any indent) is a chapter.
@@ -57,8 +57,8 @@ ${withItems.map((p) => `## ${p.name}\n\n${p.items.join('\n')}`).join('\n\n')}
 
 ## Optional
 
-- [Atlas Inference](https://atlasinference.io): the project site — also at https://atlasinference.io/llms.txt
-- [Engineering blog](https://blog.atlasinference.io): measured notes — also at https://blog.atlasinference.io/llms.txt
+- [Atlas Inference](https://atlascybernetics.ai): the project site — also at https://atlascybernetics.ai/llms.txt
+- [Engineering blog](https://blog.atlascybernetics.ai): measured notes — also at https://blog.atlascybernetics.ai/llms.txt
 - [Source](https://github.com/Avarok-Cybersecurity/atlas): pure Rust and CUDA, AGPL-3.0-only
 - [Recipes](https://github.com/Avarok-Cybersecurity/atlas-recipes): the model SSOT
 - [Discord](https://discord.gg/RQcGakU2jW)

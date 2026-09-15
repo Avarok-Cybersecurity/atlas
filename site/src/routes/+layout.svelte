@@ -40,7 +40,7 @@
   const enginePage = $derived(['/engine', '/engine.html'].includes(page.url.pathname));
   const canonical = $derived(marketingPage ? SITE : `${SITE.replace(/\/$/, '')}${page.url.pathname.replace(/\.html$/, '')}.html`);
 
-  const SITE = 'https://atlasinference.io/';
+  const SITE = 'https://atlascybernetics.ai/';
 
   // One @graph rather than three separate blocks, so the entities can reference
   // each other by @id — that is what lets a search or answer engine tie the
@@ -127,7 +127,7 @@
 </svelte:head>
 
 <!-- The ambient chevron field: one fullscreen triangle, one fragment shader,
-     the same code blog.atlasinference.io renders. It paints the page ground
+     the same code blog.atlascybernetics.ai renders. It paints the page ground
      itself, so `body`'s background sits behind it rather than beside it.
 
      It must stay a DIRECT child of the layout root. A `transform`, `filter`,

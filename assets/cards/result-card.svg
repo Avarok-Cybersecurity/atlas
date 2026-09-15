@@ -150,8 +150,8 @@
   <text x="612" y="714" font-size="13" fill="#C9CCD4" font-family="ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace" clip-path="url(#clip-site)" id="value-site">your-site.dev</text>
   <rect x="812" y="693" width="30" height="32" fill="url(#fadeR)"/>
   </g>
-  <a href="https://atlasinference.io" xlink:href="https://atlasinference.io" target="_blank" rel="noopener">
-  <text x="1136" y="706" font-size="13" fill="#49C3DB" font-weight="600" text-anchor="end">atlasinference.io</text>
+  <a href="https://atlascybernetics.ai" xlink:href="https://atlascybernetics.ai" target="_blank" rel="noopener">
+  <text x="1136" y="706" font-size="13" fill="#49C3DB" font-weight="600" text-anchor="end">atlascybernetics.ai</text>
   </a>
   <text x="1136" y="724" font-size="10.5" fill="#82868F" text-anchor="end">Copyright 2026 Atlas Cybernetics Corp</text>
 </svg>

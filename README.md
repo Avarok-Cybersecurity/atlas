@@ -11,9 +11,9 @@
 </p>
 
 <p align="center">
-  <a href="https://atlasinference.io"><strong>Website</strong></a> ·
-  <a href="https://docs.atlasinference.io"><strong>Docs</strong></a> ·
-  <a href="https://blog.atlasinference.io"><strong>Blog</strong></a> ·
+  <a href="https://atlascybernetics.ai"><strong>Website</strong></a> ·
+  <a href="https://docs.atlascybernetics.ai"><strong>Docs</strong></a> ·
+  <a href="https://blog.atlascybernetics.ai"><strong>Blog</strong></a> ·
   <a href="https://discord.gg/RQcGakU2jW"><strong>Discord</strong></a> ·
   <a href="docs/GB10_DEPLOYMENT_GUIDE.md"><strong>Deployment Guide</strong></a>
 </p>
@@ -38,7 +38,7 @@ Receipts, not adjectives:
 - Our fused Qwen Gated DeltaNet kernel is [merged into Hugging Face Transformers](https://github.com/huggingface/transformers/pull/46423).
 - We sit on the MLCommons Edge-LLM taskforce and [helped shape the MLPerf Inference v6.1 edge agentic benchmark](https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/); our v6.1 submission is in (closed edge division, GB10 and gfx1151 from the same CUDA source), with results under embargo until MLCommons publishes.
 - Every release image passes a serve gate: boot, coherence, tool calls, and throughput within tolerance of a committed baseline. A release that ships slower than its baseline fails the gate.
-- The engineering story is written up in the open on the [Atlas blog](https://blog.atlasinference.io), starting with [the seven tenets behind the engine](https://blog.atlasinference.io/posts/seven-tenets-powering-atlas-inference).
+- The engineering story is written up in the open on the [Atlas blog](https://blog.atlascybernetics.ai), starting with [the seven tenets behind the engine](https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference).
 
 ---
 
@@ -68,7 +68,7 @@ Receipts, not adjectives:
 ### One command
 
 ```bash
-curl -fsSL https://atlasinference.io/install.sh | sh
+curl -fsSL https://atlascybernetics.ai/install.sh | sh
 atlasctl run qwen3.6-35b-a3b-fp8-mtp
 ```
 
@@ -197,7 +197,7 @@ curl http://localhost:8888/v1/chat/completions \
   }'
 ```
 
-Per-model recipes (vision input, video input, multi-node EP=2, single-GPU 122B with the tighter budget) live in [`QUICKSTART.md`](QUICKSTART.md), and the long-form manual is at [docs.atlasinference.io](https://docs.atlasinference.io).
+Per-model recipes (vision input, video input, multi-node EP=2, single-GPU 122B with the tighter budget) live in [`QUICKSTART.md`](QUICKSTART.md), and the long-form manual is at [docs.atlascybernetics.ai](https://docs.atlascybernetics.ai).
 
 > [!NOTE]
 > **Video input requires `ffmpeg` on the host.** Images need nothing extra, and animated GIF decodes in-process — but MP4/MOV, WebM and AVI (H.264, H.265, VP9, AV1) are decoded by running `ffmpeg`, which must be installed and enabled with `--video-allow-ffmpeg`. Atlas deliberately does not link a video decoder; see [`QUICKSTART.md`](QUICKSTART.md) for the recipe and the reasoning. Build-from-source instructions are in [`CONTRIBUTING.md`](CONTRIBUTING.md), and the kernel build pipeline is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#build-pipeline).
@@ -453,7 +453,7 @@ flowchart TB
 
 ## 🧭 Why Atlas Exists
 
-Atlas began as a response to a widely felt problem with Python inference stacks: a shifting ecosystem of dependencies, patches, and cross-dependencies where the workaround that ran your model yesterday needs a nightly branch and a new workaround today. That is how you build a proof of concept, not a software ecosystem. We are grateful to the data scientists who proved what LLMs can do; Atlas is the software engineers taking the torch and building the version designed to withstand the test of time. The full argument is in [Seven Tenets Powering Atlas Inference](https://blog.atlasinference.io/posts/seven-tenets-powering-atlas-inference) on the blog; the short version:
+Atlas began as a response to a widely felt problem with Python inference stacks: a shifting ecosystem of dependencies, patches, and cross-dependencies where the workaround that ran your model yesterday needs a nightly branch and a new workaround today. That is how you build a proof of concept, not a software ecosystem. We are grateful to the data scientists who proved what LLMs can do; Atlas is the software engineers taking the torch and building the version designed to withstand the test of time. The full argument is in [Seven Tenets Powering Atlas Inference](https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference) on the blog; the short version:
 
 | Choice | Why |
 |---|---|
@@ -637,7 +637,7 @@ The action is in [**Discord**](https://discord.gg/RQcGakU2jW) — we are in ther
 - **Add or tune a recipe** in [atlas-recipes](https://github.com/Avarok-Cybersecurity/atlas-recipes) — recipes are the model SSOT.
 - **Write kernels** in Rust and CUDA — hand-tuned attention, MoE, GDN, Mamba-2 for Blackwell. Register-level work, no generic fallbacks.
 - **Docs, triage, ideas** — improve the guides, triage issues, or open a thread in [Discussions](https://github.com/Avarok-Cybersecurity/atlas/discussions).
-- **Follow along** on the [blog](https://blog.atlasinference.io) and on [X @AtlasInferenceX](https://x.com/AtlasInferenceX).
+- **Follow along** on the [blog](https://blog.atlascybernetics.ai) and on [X @AtlasInferenceX](https://x.com/AtlasInferenceX).
 
 Contributor workflow, code standards, and the PR gate contract are in [`CONTRIBUTING.md`](CONTRIBUTING.md). Contributions ship in the Community Edition under AGPLv3, and the [CLA](CLA.md) permits re-licensing for the Enterprise Edition. Please also see the [Code of Conduct](CODE_OF_CONDUCT.md) and the [security policy](SECURITY.md).
 
@@ -664,16 +664,16 @@ The full acknowledgment list is in [`CITATIONS.md`](CITATIONS.md). If you wrote 
 Atlas operates under a **dual-license** model. Both are real, both are intentional, and neither is a teaser for the other.
 
 1. **[Community Edition](LICENSE) — AGPLv3.** Free, open, copyleft. Use it for yourself to run inference on your own hardware, research, hobby projects, side-projects, and/or hosted demos, as examples. If you want to make money from Atlas, purchase a commercial license.
-2. **Enterprise Edition — commercial license.** If you need to ship Atlas inside a closed-source product, run it as a SaaS backend without inheriting the AGPLv3 source-disclosure obligation, or simply want a support relationship with the people who wrote the kernels, [contact us](https://atlasinference.io). Enterprise customers also receive prioritized model and hardware ports.
+2. **Enterprise Edition — commercial license.** If you need to ship Atlas inside a closed-source product, run it as a SaaS backend without inheriting the AGPLv3 source-disclosure obligation, or simply want a support relationship with the people who wrote the kernels, [contact us](https://atlascybernetics.ai). Enterprise customers also receive prioritized model and hardware ports.
 
 This split exists for a single reason: the commercial license keeps us building Atlas full-time, and the AGPL community license keeps the project honest. Contributions are covered by the [CLA](CLA.md), which permits Enterprise re-licensing while you retain ownership of your contribution. What is in this repository is what we run.
 
 ---
 
 <p align="center">
-  <a href="https://atlasinference.io">atlasinference.io</a> ·
-  <a href="https://docs.atlasinference.io">docs.atlasinference.io</a> ·
-  <a href="https://blog.atlasinference.io">blog.atlasinference.io</a>
+  <a href="https://atlascybernetics.ai">atlascybernetics.ai</a> ·
+  <a href="https://docs.atlascybernetics.ai">docs.atlascybernetics.ai</a> ·
+  <a href="https://blog.atlascybernetics.ai">blog.atlascybernetics.ai</a>
 </p>
 
 <sub>The MLPerf name and logo are registered and unregistered trademarks of MLCommons Association in the United States and other countries. All rights reserved. Unauthorized use strictly prohibited. See mlcommons.org for more information.</sub>
