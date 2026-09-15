@@ -226,6 +226,7 @@ impl MoeLayer {
             )?;
         }
         super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
+        super::dump::dump_router_margin(ctx.gpu, stream, gate_logits, n, num_experts, top_k)?;
         prof_step!("gate_gemm");
 
         // Feature-1: fold the router (`mlp.gate`) LoRA delta onto the routing
