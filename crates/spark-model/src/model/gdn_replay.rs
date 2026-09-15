@@ -61,10 +61,20 @@ pub(crate) fn prefill_recurrence_must_be_grid_free(
     has_ssm_layers: bool,
     allow_fla_under_prefix_cache: bool,
 ) -> bool {
+    // ★ The lever frees BOTH sides or neither. It used to free only the cold
+    // pass while `marconi_skip` still pinned the warm replay — which rebuilt
+    // the exact cross-kernel Marconi boundary this module exists to close (the
+    // 3.045e-03 layer-0 step above), and cost the agentic gate 6.225 -> 9.105
+    // s/turn because a replay that cannot match its cold pass cannot be
+    // restored from at all. One kernel family, both sides, or the contract is
+    // not a contract.
+    if allow_fla_under_prefix_cache && prefix_cache_active && has_ssm_layers {
+        return false;
+    }
     if marconi_skip {
         return true;
     }
-    prefix_cache_active && has_ssm_layers && !allow_fla_under_prefix_cache
+    prefix_cache_active && has_ssm_layers
 }
 
 impl super::types::TransformerModel {
@@ -132,6 +142,20 @@ mod tests {
         assert!(decide(true, false, true, false));
     }
 
+    /// The lever's own regression: freeing the cold pass while the warm replay
+    /// stayed pinned is what put two kernel families on either side of a
+    /// restore boundary. Whatever it answers, it must answer the SAME for both.
+    #[test]
+    fn the_fla_lever_frees_both_sides_or_neither() {
+        // Only with the cache ACTIVE is there a restore boundary to be equal
+        // across; without one a warm replay cannot happen, and that asymmetry
+        // is pinned by `a_cold_pass_without_a_prefix_cache_keeps_the_chunked_kernel`.
+        let cold = decide(false, true, true, true);
+        let warm = decide(true, true, true, true);
+        assert_eq!(cold, warm, "the lever must not split cold from warm");
+        assert!(!cold, "with the cache active the lever frees both sides");
+    }
+
     /// Nothing changes for a model with no GDN layers.
     #[test]
     fn a_model_without_ssm_layers_is_unaffected() {
@@ -139,15 +163,26 @@ mod tests {
         assert!(!decide(false, false, false, false));
     }
 
-    /// The kill switch restores the pre-fix split — and only for cold passes.
-    /// It must NOT re-enable FLA for the warm replay, which was already known
-    /// to poison shared prefix-cache blocks (2026-06-10 warm-hit stutter).
+    /// ★ SUPERSEDED CONTRACT, kept as the record of why. This asserted that the
+    /// kill switch freed the cold pass while the warm replay STAYED
+    /// token-sequential, on the strength of the 2026-06-10 warm-hit stutter
+    /// (FLA on a replay poisons shared prefix-cache blocks). But that split IS
+    /// the cross-kernel Marconi boundary this module exists to close, and it is
+    /// not free: with the lever set a warm hit cannot be restored from at all
+    /// ("prefix cache hit ... but no SSM snapshot"), which cost the agentic gate
+    /// 6.225 -> 9.105 s/turn at unchanged turn counts.
+    ///
+    /// The lever now frees BOTH sides, and the 2026-06-10 hazard is checked
+    /// where it shows up instead of asserted here: `ssm-state-poisoning-gate`
+    /// replays conversations and demands they come back byte-identical. If that
+    /// gate fails with the lever on, the chunked recurrence is not replay-equal
+    /// on this model and the lever goes back to diagnostic-only — NOT to the split.
     #[test]
-    fn the_kill_switch_restores_the_split_but_never_unpins_the_replay() {
+    fn the_kill_switch_frees_both_sides_of_the_boundary() {
         assert!(!decide(false, true, true, true), "cold pass returns to FLA");
         assert!(
-            decide(true, true, true, true),
-            "warm replay stays token-sequential regardless of the kill switch"
+            !decide(true, true, true, true),
+            "warm replay takes the SAME kernel family as the cold pass"
         );
     }
 }
