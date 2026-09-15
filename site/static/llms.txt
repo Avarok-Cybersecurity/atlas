@@ -42,7 +42,7 @@ Reproduce: python3 tests/run_all_models.py && python3 tests/gate_results.py --up
 ## Install
 
 ```sh
-curl -fsSL https://atlasinference.io/install.sh | sh
+curl -fsSL https://atlascybernetics.ai/install.sh | sh
 ```
 
 Or without piping to a shell:
@@ -115,9 +115,9 @@ model that has no recipe. Run any of them with `atlasctl run <id>`.
 - Benchmark results: https://github.com/Avarok-Cybersecurity/atlas/blob/main/bench/ladder38/RESULTS.md
 - Discord: https://discord.gg/RQcGakU2jW
 - X: https://x.com/AtlasInferenceX
-- Site: https://atlasinference.io
-- Documentation: https://docs.atlasinference.io — full book, also at /llms.txt
-- Engineering blog: https://blog.atlasinference.io — also at /llms.txt
+- Site: https://atlascybernetics.ai
+- Documentation: https://docs.atlascybernetics.ai — full book, also at /llms.txt
+- Engineering blog: https://blog.atlascybernetics.ai — also at /llms.txt
 
 ## License
 

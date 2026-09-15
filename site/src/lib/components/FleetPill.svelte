@@ -17,7 +17,7 @@
   // reset, and whenever the earlier prompt was dismissed rather than allowed.
   // So the guard held for a first-time visitor and failed for exactly the people
   // who matter: every operator hit "Access other apps and services on this
-  // device" on plain https://atlasinference.io/, before touching anything.
+  // device" on plain https://atlascybernetics.ai/, before touching anything.
   //
   // A permission prompt belongs to the gesture that needs the permission. There
   // is no gesture in a topbar that renders on first paint.

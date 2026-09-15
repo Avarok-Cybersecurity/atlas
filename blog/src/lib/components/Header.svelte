@@ -26,8 +26,8 @@
            accessibility tree as well as the page — so the name has to be on the
            element, or the link has no accessible name at exactly the widths
            where it is only an arrow. -->
-      <a class="btn-ghost" href={MAIN_SITE} aria-label="atlasinference.io">
-        <span class="lbl">atlasinference.io</span>
+      <a class="btn-ghost" href={MAIN_SITE} aria-label="atlascybernetics.ai">
+        <span class="lbl">atlascybernetics.ai</span>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M7 17L17 7M17 7H8M17 7v9" />
         </svg>
