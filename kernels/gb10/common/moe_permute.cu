@@ -92,6 +92,11 @@ extern "C" __global__ void moe_count_experts(
 // Each block handles one original token, accumulates topk expert outputs with weights.
 //
 // Grid: (num_tokens, 1, 1)  Block: (256, 1, 1)
+// Routing entries hoisted into shared memory per token. Beyond this the
+// kernel falls back to re-reading them, so a larger top-k stays CORRECT
+// and merely loses the hoist.
+#define MOE_UNPERM_MAX_TOPK 16
+
 extern "C" __global__ void moe_unpermute_reduce_indexed(
     const __nv_bfloat16* __restrict__ expert_output,  // [total_expanded, hidden_size]
     __nv_bfloat16* __restrict__ output,                // [num_tokens, hidden_size]
@@ -104,11 +109,75 @@ extern "C" __global__ void moe_unpermute_reduce_indexed(
     unsigned int token = blockIdx.x;
     if (token >= num_tokens) return;
 
+    // ── Per-token routing is BLOCK-UNIFORM: hoist it ONCE ──
+    // `token_to_perm` and `topk_weights` depend only on `token`, which is
+    // blockIdx.x, so every thread of the block wants the same `topk` values.
+    // Reading them inside the channel loop re-fetched them once per channel
+    // iteration per k — at hidden 2560 with 256 threads and topk 10 that is
+    // 100 redundant loads per thread of the same 20 values. They are L1 hits,
+    // but they are still 100 issued instructions standing between the loads
+    // that actually move data.
+    //
+    // `hoist` is uniform across the block (it depends only on `topk`), so the
+    // __syncthreads below is not divergent.
+    __shared__ int s_perm[MOE_UNPERM_MAX_TOPK];
+    __shared__ float s_w[MOE_UNPERM_MAX_TOPK];
+    const bool hoist = (topk <= MOE_UNPERM_MAX_TOPK);
+    if (hoist) {
+        for (unsigned int k = threadIdx.x; k < topk; k += blockDim.x) {
+            s_perm[k] = token_to_perm[token * topk + k];
+            s_w[k] = topk_weights[token * topk + k];
+        }
+        __syncthreads();
+    }
+
+    // ── 16-byte channel loop ──
+    // This kernel is PURE DATA MOVEMENT — it reads `topk` expert rows and
+    // writes one token row — so its only job is to saturate bandwidth, and it
+    // was loading ONE BF16 (2 bytes) per thread per k. Measured on
+    // qwen3.8-flash-next at 8K: ~245 MB of traffic a layer against 2.2 ms,
+    // i.e. ~41% of this box's 273 GB/s.
+    //
+    // A uint4 moves 8 BF16 for the same instruction. Same bytes, same
+    // addresses, same order, and the per-channel sum over k is untouched — so
+    // BIT-EXACT by construction, which matters because this feeds the router
+    // weighting and a drift here is a silent output change.
+    //
+    // Alignment is not luck: rows are `hidden_size` apart and the vector path
+    // is gated on hidden_size % 8 == 0, so every row start and every 8-channel
+    // offset is 16-byte aligned. Anything else takes the scalar tail below.
+    if ((hidden_size & 7u) == 0u) {
+        const unsigned int nvec = hidden_size >> 3;
+        for (unsigned int cv = threadIdx.x; cv < nvec; cv += blockDim.x) {
+            float acc[8] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+            for (unsigned int k = 0; k < topk; k++) {
+                const int perm_row = hoist ? s_perm[k] : token_to_perm[token * topk + k];
+                const float w = hoist ? s_w[k] : topk_weights[token * topk + k];
+                const uint4 raw = *reinterpret_cast<const uint4*>(
+                    &expert_output[(size_t)perm_row * hidden_size + (size_t)cv * 8]);
+                const __nv_bfloat16* v = reinterpret_cast<const __nv_bfloat16*>(&raw);
+#pragma unroll
+                for (int e = 0; e < 8; e++) {
+                    acc[e] += w * __bfloat162float(v[e]);
+                }
+            }
+            __nv_bfloat16 out8[8];
+#pragma unroll
+            for (int e = 0; e < 8; e++) {
+                out8[e] = __float2bfloat16(acc[e]);
+            }
+            *reinterpret_cast<uint4*>(
+                &output[(size_t)token * hidden_size + (size_t)cv * 8]) =
+                *reinterpret_cast<const uint4*>(out8);
+        }
+        return;
+    }
+
     for (unsigned int c = threadIdx.x; c < hidden_size; c += blockDim.x) {
         float acc = 0.0f;
         for (unsigned int k = 0; k < topk; k++) {
-            int perm_row = token_to_perm[token * topk + k];
-            float w = topk_weights[token * topk + k];
+            int perm_row = hoist ? s_perm[k] : token_to_perm[token * topk + k];
+            float w = hoist ? s_w[k] : topk_weights[token * topk + k];
             float val = __bfloat162float(expert_output[perm_row * hidden_size + c]);
             acc += w * val;
         }
