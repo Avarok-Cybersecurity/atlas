@@ -165,6 +165,32 @@ impl TransformerModel {
                         stream,
                     )?;
                 }
+                // RE-APPLY THE EMBED OVERLAY, for the same reason the vision
+                // splice below is re-applied and the token_ids() buffer above is
+                // re-staged: phase 1 wrote it over the FULL chunk, this re-embed
+                // just overwrote row 0 onward with the narrowed range, and
+                // anything phase 1 derived BY ROW INDEX has to be redone or the
+                // channels describe different content.
+                //
+                // Without this, a turn that hits a cached prefix silently loses
+                // its vocab overrides for the recomputed suffix — the overridden
+                // ids get their ordinary embed rows instead. Latent today (the
+                // hook early-returns when no overlay is installed), which is why
+                // nothing caught it: no test pairs an overlay with prefix caching.
+                //
+                // ORDER IS LOAD-BEARING and matches phase 1 exactly: gather,
+                // then overlay, then scale. The override row is a RAW embed row
+                // that must also be scaled, so applying it after the scale would
+                // leave it unscaled, and applying it twice would scale it twice.
+                // `token_ids()` was re-staged for the narrowed range immediately
+                // above, so the uniform-active route reads the right ids.
+                self.apply_embed_overlay(
+                    self.buffers.token_ids(),
+                    spark_runtime::gpu::DevicePtr(0),
+                    hidden,
+                    uncached_count as u32,
+                    stream,
+                )?;
                 self.scale_embeddings(hidden, uncached_count, stream)?;
                 // RE-APPLY THE VISION SPLICE. The embed above deliberately
                 // overwrites row 0 onward with the uncached suffix, which wipes
