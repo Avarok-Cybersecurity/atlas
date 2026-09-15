@@ -247,6 +247,22 @@ default_kv_dtype = "bf16"
 # (verified from live emissions, agentic-webserver run 2026-08-27). Without a
 # parser the calls land in content and finish_reason still says tool_calls.
 tool_call_parser = "qwen3_coder"
+# Inter-tool prose budget DISABLED for this model (0 = guard off).
+#
+# The default is 3072, and it guillotines a legitimate turn: a live agentic
+# workload tripped at prose_tokens=3073 against max=3072 on a 3332-token
+# output — by ONE token, mid-reasoning. That is the #328 failure the default
+# was raised from 384 to fix, and it reappears here because this is a THINKING
+# model (the template opens the assistant turn with `<think>` and every agent
+# frontend arms tools on every turn), so several thousand prose tokens between
+# two tool calls is the NORMAL shape of a plan turn, not a wander.
+#
+# The budget's own docs say its residual job is the non-repeating
+# dormant-opener burn, and that REPEATING wander is caught independently by
+# the content-loop and SimHash watchdogs — both of which stay on. So the guard
+# this turns off is the one that cannot tell a long plan from a long burn, and
+# the ones that can are untouched.
+max_inter_tool_prose = 0
 # Qwen3.8-Flash-Next is a THINKING model whose chat template gates
 # EVERYTHING on `enable_thinking is undefined or true`: the default render
 # carries a reasoning-effort system preamble ("Reasoning effort is set to
