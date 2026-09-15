@@ -252,7 +252,7 @@ fn hc_lowrank_matches_reference() {
             tol_gemm(&want_inj),
         );
 
-        super::hyper_connection_lowrank::hc_pre_split(
+        super::hyper_connection_lowrank_head::hc_pre_split(
             g, streams, &w, y_out, inj_out, scratch, t as u32, h as u32, hc as u32, f.eps, true,
             stream,
         )
@@ -291,7 +291,7 @@ fn hc_lowrank_matches_reference() {
     );
 
     // Split arm of the head, tight bound.
-    super::hyper_connection_lowrank::hc_pre_split(
+    super::hyper_connection_lowrank_head::hc_pre_split(
         g,
         streams,
         &w_head,

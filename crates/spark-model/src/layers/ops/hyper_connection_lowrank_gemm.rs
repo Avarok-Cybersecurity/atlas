@@ -8,10 +8,15 @@
 //! (cuBLASLt, where the tile GEMM wastes the machine at M<=64).
 
 use anyhow::Result;
-use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
+use super::super::hyper_connection_post_fold::{HcDeferredPost, hc_stage_fold_shape_ok};
 use crate::layers::qwen3_attention::HcLowRank;
 use spark_runtime::kernel_args::KernelLaunch;
+
+#[path = "hyper_connection_lowrank_proj.rs"]
+mod proj;
+use proj::{gemm_raw, project_rows};
 
 /// LARGE T (prefill): the down/up projections are GEMM-shaped and the fused
 /// kernel ran them as hand-rolled FP32 warp loops at ~4% of the machine —
@@ -65,6 +70,45 @@ pub(crate) fn hc_pre_gemm(
     row_exact: bool,
     stream: u64,
 ) -> Result<()> {
+    hc_pre_gemm_folding(
+        gpu,
+        streams,
+        w,
+        y_out,
+        inj_out,
+        scratch,
+        num_tokens,
+        hidden_size,
+        hc_mult,
+        norm_eps,
+        inject,
+        use_cublas,
+        row_exact,
+        None,
+        stream,
+    )
+}
+
+/// [`hc_pre_gemm`] that may also settle the PREVIOUS site's `hc_post`, folded
+/// into the `hc_pre_stage_bf16_post` entry point.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn hc_pre_gemm_folding(
+    gpu: &dyn GpuBackend,
+    streams: DevicePtr,
+    w: &HcLowRank,
+    y_out: DevicePtr,
+    inj_out: DevicePtr,
+    scratch: DevicePtr,
+    num_tokens: u32,
+    hidden_size: u32,
+    hc_mult: u32,
+    norm_eps: f32,
+    inject: bool,
+    use_cublas: bool,
+    row_exact: bool,
+    deferred: Option<HcDeferredPost>,
+    stream: u64,
+) -> Result<()> {
     hc_pre_gemm_fused(
         gpu,
         streams,
@@ -81,6 +125,7 @@ pub(crate) fn hc_pre_gemm(
         row_exact,
         hc_fuse_up_mix(),
         hc_fuse_down_inj(),
+        deferred,
         stream,
     )
 }
@@ -106,6 +151,7 @@ pub(crate) fn hc_pre_gemm_fused(
     row_exact: bool,
     fuse_up_mix: bool,
     fuse_down_inj: bool,
+    deferred: Option<HcDeferredPost>,
     stream: u64,
 ) -> Result<()> {
     anyhow::ensure!(
@@ -135,6 +181,43 @@ pub(crate) fn hc_pre_gemm_fused(
     let inj_pre = scratch.offset(2 * lay * hc_dim * 2 + lay * w.rank * 2);
 
     let k_stage = gpu.kernel("hyper_connection", "hc_pre_stage_bf16")?;
+    // The SECOND consumer of `hc_post_folds_into_next_pre`'s decision: the site
+    // skipped its `hc_post` on that predicate, so this launch must apply it on
+    // the same one. `hc_stage_fold_shape_ok` is the shared conjunct; the arm
+    // conjunct was settled by `hc_pre_lowrank_folding`, which un-folds rather
+    // than reaching here on an arm that cannot stage.
+    let folded = match deferred {
+        Some(d) => {
+            // `apply()` FIRST, before anything fallible: the bomb in
+            // `HcDeferredPost::drop` exists to catch a residual that silently
+            // went missing, and firing it on top of a real error would bury the
+            // error instead.
+            let (block_out, inj) = d.apply();
+            anyhow::ensure!(
+                hc_stage_fold_shape_ok(hidden_size, hc_mult),
+                "hc_post was folded at a shape hc_pre_stage_bf16_post cannot \
+                 register (hidden {hidden_size}, hc {hc_mult}); the site's predicate \
+                 and this launch disagree"
+            );
+            let k = crate::layers::try_kernel(gpu, "hyper_connection", "hc_pre_stage_bf16_post");
+            anyhow::ensure!(
+                k.0 != 0,
+                "hc_post was folded but hc_pre_stage_bf16_post is not in the module"
+            );
+            {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| {
+                    tracing::info!(
+                        hidden_size,
+                        hc_mult,
+                        "hc_pre arm: FUSED hc_post (highway re-read removed)"
+                    )
+                });
+            }
+            Some((k, block_out, inj))
+        }
+        None => None,
+    };
     let k_silu = gpu.kernel("hyper_connection", "hc_silu_scale")?;
     let k_mix = gpu.kernel("hyper_connection", "hc_pre_mix")?;
     let k_gemm = gpu.kernel("gemm", "dense_gemm_bf16_pipelined")?;
@@ -198,16 +281,43 @@ pub(crate) fn hc_pre_gemm_fused(
         let ts = SLAB.min(num_tokens - t0);
         let streams_s = streams.offset(t0 as usize * hc_dim * 4);
 
-        KernelLaunch::new(gpu, k_stage)
-            .grid([ts, 1, 1])
-            .block([1024, 1, 1])
-            .arg_ptr(streams_s)
-            .arg_ptr(w.norm_w)
-            .arg_ptr(normed)
-            .arg_u32(hidden_size)
-            .arg_u32(hc_mult)
-            .arg_f32(norm_eps)
-            .launch(stream)?;
+        // Block 1024 on BOTH entry points and it must stay there: the per-thread
+        // RMS accumulation order — and therefore the answer — is a function of
+        // blockDim.x.
+        match folded {
+            // The deferred pair MAY alias this collapse's own outputs — `inj`
+            // with `inj_out` certainly does, because both sites write
+            // `ctx.buffers.hc_post()`, and `block_out` with `y_out` could.
+            // Safe, and not by luck: within one slab the stage READS
+            // `[t0, t0+ts)` before `hc_pre_mix`/`hc_pre_up_mix`/`hc_inj_gate`
+            // WRITES the same range, an order the mix cannot escape because it
+            // consumes `normed`; and the slabs partition the token range, so no
+            // later slab can read a range an earlier one overwrote.
+            // `hc_post_folded_into_stage_is_bit_identical` pins this with an
+            // aliased-`inj` arm at a T that crosses the slab.
+            Some((k_stage_post, block_out, inj)) => KernelLaunch::new(gpu, k_stage_post)
+                .grid([ts, 1, 1])
+                .block([1024, 1, 1])
+                .arg_ptr(streams_s)
+                .arg_ptr(w.norm_w)
+                .arg_ptr(normed)
+                .arg_ptr(block_out.offset(t0 as usize * hidden_size as usize * 2))
+                .arg_ptr(inj.offset(t0 as usize * hc_mult as usize * 4))
+                .arg_u32(hidden_size)
+                .arg_u32(hc_mult)
+                .arg_f32(norm_eps)
+                .launch(stream)?,
+            None => KernelLaunch::new(gpu, k_stage)
+                .grid([ts, 1, 1])
+                .block([1024, 1, 1])
+                .arg_ptr(streams_s)
+                .arg_ptr(w.norm_w)
+                .arg_ptr(normed)
+                .arg_u32(hidden_size)
+                .arg_u32(hc_mult)
+                .arg_f32(norm_eps)
+                .launch(stream)?,
+        }
 
         // low_pre = normed x down_w^T   [ts, rank]
         // Under `fuse_di` this same launch also writes `inj_pre`, carried as
@@ -361,79 +471,4 @@ pub(crate) fn hc_pre_gemm_fused(
         t0 += ts;
     }
     Ok(())
-}
-
-/// `ATLAS_HC_DENSE_GEMV=1` (presence) routes decode-shaped rows through the
-/// batched dense GEMV instead of cuBLASLt. OPT-IN, default OFF — measured
-/// 2026-09-05 on qwen3.8-flash-next EXL3 (GB10, 2 drafts, prefix cache on,
-/// fresh server per arm): the GEMV arm was faster per kernel but draft
-/// acceptance fell 1.47 → 1.37 per step and decode 30.36 → 29.05 tok/s;
-/// serial 23.48 → 23.70 (noise). Serial, verify and the MTP draft module
-/// all took the same row-invariant kernel, so this is not a serial/verify
-/// mismatch — the dense GEMV's numerics themselves cost draft agreement.
-/// Kept as an A/B arm; records in .research/exl3_decode_perf/ab_hc_*.
-fn hc_dense_gemv_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_HC_DENSE_GEMV").is_some())
-}
-
-/// Opt-in arm (see [`hc_dense_gemv_enabled`]): decode-shaped rows
-/// (`m <= 8`) through `dense_gemv_bf16_batchm` — one pass over the `[n, k]`
-/// BF16 weight for all rows, bit-identical per row to the M=1 kernel (fixed
-/// K order, `--fmad=false`), one launch and no reduce kernel. Default: the
-/// cuBLASLt path (a kernel per M with split-K + reduce; under the row-exact
-/// contract one M=1 call per row).
-#[allow(clippy::too_many_arguments)]
-fn project_rows(
-    gpu: &dyn GpuBackend,
-    a: DevicePtr,
-    w: DevicePtr,
-    out: DevicePtr,
-    m: u32,
-    n: u32,
-    k: u32,
-    row_exact: bool,
-    stream: u64,
-) -> Result<()> {
-    if m <= 8 && k.is_multiple_of(8) && n.is_multiple_of(4) && hc_dense_gemv_enabled() {
-        let kernel = gpu.kernel("dense_gemv_bf16_batchm", "dense_gemv_bf16_batchm")?;
-        let dw = crate::weight_map::DenseWeight { weight: w };
-        return crate::layers::ops::dense_gemv_batchm(gpu, kernel, a, &dw, out, m, n, k, n, stream);
-    }
-    let batch = if row_exact { 1 } else { m };
-    for row in (0..m).step_by(batch as usize) {
-        crate::layers::ops::cublas_bf16_proj_dense(
-            a.offset(row as usize * k as usize * 2),
-            w,
-            out.offset(row as usize * n as usize * 2),
-            batch,
-            n,
-            k,
-            stream,
-        )?;
-    }
-    Ok(())
-}
-
-fn gemm_raw(
-    gpu: &dyn GpuBackend,
-    kernel: KernelHandle,
-    a: DevicePtr,
-    w: DevicePtr,
-    out: DevicePtr,
-    m: u32,
-    n: u32,
-    k: u32,
-    stream: u64,
-) -> Result<()> {
-    KernelLaunch::new(gpu, kernel)
-        .grid([n.div_ceil(128), m.div_ceil(128), 1])
-        .block([256, 1, 1])
-        .arg_ptr(a)
-        .arg_ptr(w)
-        .arg_ptr(out)
-        .arg_u32(m)
-        .arg_u32(n)
-        .arg_u32(k)
-        .launch(stream)
 }

@@ -820,19 +820,42 @@ impl Qwen3AttentionLayer {
             return Ok(());
         }
 
-        ops::hc_post_site(
+        // INTRA-LAYER FOLD: this `hc_post` and the FFN sublayer's `hc_pre`
+        // below are separated by nothing but debug taps, so the residual add
+        // can ride into that collapse's stage kernel and save the highway a
+        // 321 MB re-read. ONE function decides — the same call answers "skip
+        // the hc_post here" and, through the deferred value, "apply it there".
+        // `taps_inert` is a conjunct because the probes between the two sites
+        // READ the highway.
+        let fold_attn = ops::hc_post_folds_into_next_pre(
             ctx.gpu,
-            self.hc_post_k,
             hc,
-            attn_out,
+            &hc.ffn,
             hc_streams,
-            post,
-            comb,
             hc_streams,
+            ctx.buffers.hc_lowrank_scratch(),
             n,
             h as u32,
-            stream,
-        )?;
+            /* taps_inert */ !diag_this && !crate::layers::ple::dump::taps_armed(),
+        );
+        let deferred = if fold_attn {
+            Some(ops::HcDeferredPost::new(attn_out, post))
+        } else {
+            ops::hc_post_site(
+                ctx.gpu,
+                self.hc_post_k,
+                hc,
+                attn_out,
+                hc_streams,
+                post,
+                comb,
+                hc_streams,
+                n,
+                h as u32,
+                stream,
+            )?;
+            None
+        };
         if diag_this {
             super::diag_norm_f32(
                 ctx.gpu,
@@ -863,10 +886,16 @@ impl Qwen3AttentionLayer {
             stream,
         );
 
+        // Under the fold this stage is empty and the next one carries the
+        // residual add; the split of `hc_post_attn` vs `hc_pre_ffn` moves, the
+        // sum does not.
         astage!("hc_post_attn");
 
         // ── FFN sublayer ──
-        ops::hc_pre_site(
+        // `attn_out` must still hold this layer's attention output here: under
+        // the fold it is read by the stage kernel inside this call, not by the
+        // `hc_post` above. Nothing between the two sites writes it.
+        ops::hc_pre_site_folding(
             ctx.gpu,
             self.hc_pre_k,
             hc_streams,
@@ -879,6 +908,7 @@ impl Qwen3AttentionLayer {
             n,
             h as u32,
             eps,
+            deferred,
             stream,
         )?;
         if diag_this {
