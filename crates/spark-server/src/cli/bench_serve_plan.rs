@@ -25,6 +25,11 @@ pub struct ServePlan {
     /// The merged `[benchmarks.serve_overrides]` pin + `--serve-override` set,
     /// after `--hermetic` expansion: what the record states.
     pub requested: BTreeMap<String, String>,
+    /// The box class the run is for, and its declared limits
+    /// (`kernels/<hw>/HARDWARE.toml` `[benchmarks.limits]`): the memory floor
+    /// a self-start applies and how long a server may take to come up.
+    pub hardware: String,
+    pub limits: atlas_plugin::hardware::limits::Limits,
 }
 
 impl ServePlan {
@@ -71,7 +76,15 @@ pub fn plan_serve(
         model,
         recipe_id,
         entry,
+        hardware,
     } = super::bench_resolve::resolve(&baseline, serve_id, hardware, checkpoint)?;
+    let Some(limits) = atlas_plugin::hardware::limits::limits(&root, &hardware)? else {
+        bail!(
+            "kernels/{hardware}/HARDWARE.toml declares no [benchmarks.limits]: a gate run on this \
+             class has no memory floor to check the box against and no boot timeout for its \
+             server. Measure them and declare the tables (see kernels/gb10/HARDWARE.toml)."
+        );
+    };
 
     let store = atlas_plugin::ArtifactStore::discover()?;
     let index = crate::recipe::fetch::cached(store.root());
@@ -139,5 +152,7 @@ pub fn plan_serve(
         recipe,
         entry,
         requested,
+        hardware,
+        limits,
     })
 }

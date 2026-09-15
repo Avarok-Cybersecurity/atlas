@@ -135,6 +135,7 @@ impl BenchmarkExecutor {
         values: ParamValues,
         target: TargetEndpoint,
         coherence: CoherencePolicy,
+        ceilings: Option<crate::hardware::policy::TempCeilings>,
     ) -> RunHandle {
         let (event_tx, event_rx) = channel();
         let (frame_tx, frame_rx) = channel();
@@ -157,6 +158,7 @@ impl BenchmarkExecutor {
             frames: frame_tx,
             cancel: cancel.clone(),
             finished: finished.clone(),
+            ceilings,
         };
         self.runtime.spawn(task.execute());
         RunHandle {
@@ -181,6 +183,9 @@ struct RunTask {
     cancel: Arc<AtomicBool>,
     finished: Arc<AtomicBool>,
     coherence: CoherencePolicy,
+    /// The box class's temperature ceilings for the pre-run capture, when
+    /// the caller could read them (`hardware::limits`).
+    ceilings: Option<crate::hardware::policy::TempCeilings>,
 }
 
 impl RunTask {
@@ -228,7 +233,7 @@ impl RunTask {
             .ok()?;
         self.handle
             .info(format!("box state: {}", before.one_line()));
-        let report = HardwareStateReport::opened(sensitivity, before);
+        let report = HardwareStateReport::opened(sensitivity, before, self.ceilings);
         if policy::PolicyOptions::from_env().kill_switch {
             // Loud on purpose, and unconditional: an operator who set the kill
             // switch three weeks ago and forgot must see it in the run log of

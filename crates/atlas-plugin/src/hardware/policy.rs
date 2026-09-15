@@ -106,7 +106,7 @@ pub struct Postcheck {
 
 /// The two operator switches, read from the environment in ONE place so the
 /// rules themselves stay pure.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PolicyOptions {
     /// `ATLAS_NO_HW_PRECHECK=1` — never REFUSE. Everything is still collected,
     /// still recorded, and still reported; only the blocking is suppressed,
@@ -117,6 +117,33 @@ pub struct PolicyOptions {
     /// `ATLAS_HW_TEMP_GATE=1` — promote the absolute-temperature ceilings from
     /// recorded to gating. Off until there is a third data point.
     pub absolute_temp_gate: bool,
+    /// The box class's temperature ceilings (`kernels/<hw>/HARDWARE.toml`
+    /// `[benchmarks.limits.thermal]`: `gpu_ceiling_c`, `chassis_park_c`).
+    /// `None` — a class that declares none, or a caller without a repository
+    /// — records that no ceiling was available; it never applies another
+    /// card's.
+    pub ceilings: Option<TempCeilings>,
+}
+
+/// The two absolute-temperature lines a Speed run's pre-run capture is
+/// judged against.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TempCeilings {
+    /// GPU die, °C.
+    pub gpu_c: f64,
+    /// Hottest chassis zone, °C.
+    pub chassis_c: f64,
+}
+
+impl TempCeilings {
+    /// The ceilings a class declares.
+    #[must_use]
+    pub fn of(thermal: &super::limits::ThermalEnvelope) -> Self {
+        Self {
+            gpu_c: thermal.gpu_ceiling_c,
+            chassis_c: thermal.chassis_park_c,
+        }
+    }
 }
 
 /// Env var that suppresses refusal. Named here and read nowhere else.
@@ -124,28 +151,14 @@ pub const KILL_SWITCH_ENV: &str = "ATLAS_NO_HW_PRECHECK";
 /// Env var that opts in to the absolute-temperature ceilings.
 pub const TEMP_GATE_ENV: &str = "ATLAS_HW_TEMP_GATE";
 
-/// GPU die temperature above which a speed number is treated as suspect.
-///
-/// DISABLED by default. The two measured points on 2026-08-15, both GB10,
-/// driver 580.126.09, governor `performance`, persistence on, 3003 MHz
-/// ceiling: dgx1 idled 52–66 °C across its chassis zones and spent 0.05% of an
-/// 11.2-day uptime in SW thermal slowdown; dgx2 sat at 70–89 °C and spent 5.0%
-/// of a 16.1-hour uptime there, plus 228 s of HW thermal slowdown against
-/// dgx1's 0.7 s. 75 °C is the midpoint of that gap and nothing more — there is
-/// no measurement between 66 and 70 °C, so this constant is a hypothesis, not
-/// a finding. Promote it once a third box exists; until then the delta check
-/// does the gating and this is recorded so the third point gets collected.
-pub const GPU_TEMP_CEILING_C: f64 = 75.0;
-
-/// Hottest chassis zone above which a speed number is treated as suspect.
-///
-/// DISABLED by default, same reasoning. dgx1's zones read 65/65/62/59/59/58 °C
-/// and dgx2's 89/88/82/74/71/70 °C on the same benchmark; 80 °C sits inside
-/// dgx2's spread and above all of dgx1's. It is the reading that separated the
-/// boxes when driver, governor, persistence and clock ceiling were identical,
-/// which is why it is recorded on every run even while it gates on none.
-pub const CHASSIS_TEMP_CEILING_C: f64 = 80.0;
-
+/// The absolute-temperature ceilings are the box class's, declared in its
+/// `HARDWARE.toml` (`[benchmarks.limits.thermal]`) and carried in
+/// [`PolicyOptions::ceilings`]. On GB10: die 75 °C — the midpoint between
+/// dgx1's healthy 52-66 and dgx2's 70-89 on 2026-08-15, a hypothesis until
+/// a third box exists, which is why they gate only under `ATLAS_HW_TEMP_GATE`
+/// — and chassis 80 °C, the reading that separated the boxes when driver,
+/// governor, persistence and clock ceiling were identical, and the same line
+/// the certification orchestrator parks a box at.
 /// GPU compute processes, other than this one, that a speed-sensitive run
 /// tolerates.
 ///
@@ -162,6 +175,7 @@ impl PolicyOptions {
         Self {
             kill_switch: flag(KILL_SWITCH_ENV),
             absolute_temp_gate: flag(TEMP_GATE_ENV),
+            ceilings: None,
         }
     }
 }
@@ -234,22 +248,31 @@ pub fn precheck(
     } else {
         Decision::Warn
     };
-    if let Some(t) = before.gpu_temp_c.filter(|t| *t > GPU_TEMP_CEILING_C) {
-        gate(
-            temp_level,
-            format!("GPU die {t:.0} °C is above the {GPU_TEMP_CEILING_C:.0} °C ceiling"),
-        );
-    }
-    if let Some(t) = before
-        .hottest_chassis_c()
-        .filter(|t| *t > CHASSIS_TEMP_CEILING_C)
-    {
-        gate(
-            temp_level,
-            format!(
-                "hottest chassis zone {t:.0} °C is above the {CHASSIS_TEMP_CEILING_C:.0} °C ceiling"
-            ),
-        );
+    match options.ceilings {
+        Some(c) => {
+            if let Some(t) = before.gpu_temp_c.filter(|t| *t > c.gpu_c) {
+                gate(
+                    temp_level,
+                    format!("GPU die {t:.0} °C is above the {:.0} °C ceiling", c.gpu_c),
+                );
+            }
+            if let Some(t) = before.hottest_chassis_c().filter(|t| *t > c.chassis_c) {
+                gate(
+                    temp_level,
+                    format!(
+                        "hottest chassis zone {t:.0} °C is above the {:.0} °C ceiling",
+                        c.chassis_c
+                    ),
+                );
+            }
+        }
+        // Recorded, never gated: a missing ceiling is not a cool box.
+        None => gate(
+            Decision::Warn,
+            "no temperature ceilings are declared for this box class, so the capture's \
+             temperatures were recorded and not judged"
+                .to_string(),
+        ),
     }
 
     // A correctness gate records everything above and blocks on none of it.

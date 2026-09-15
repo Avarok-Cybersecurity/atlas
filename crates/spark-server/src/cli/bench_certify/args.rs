@@ -87,6 +87,13 @@ pub struct CertifyArgs {
     /// instead of one per gate. The record's command line says which.
     #[arg(long)]
     pub no_serve_reuse: bool,
+    /// Take no thermal-security action during the campaign: a box that
+    /// warms past its baseline is NOT parked (cool-down), only warned about,
+    /// and keeps taking units. The records it writes are still judged by the
+    /// equivalence policy at the end, so a bad capture is refused there —
+    /// this flag risks the hardware and the campaign's time, not the verdict.
+    #[arg(long)]
+    pub dangerous_ignore_thermals: bool,
 }
 
 impl CertifyArgs {

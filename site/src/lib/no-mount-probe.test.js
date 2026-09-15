@@ -2,7 +2,7 @@
 //
 // A component must not open a loopback connection while mounting.
 //
-// `new WebSocket('ws://127.0.0.1:34333/ws')` from https://atlasinference.io is a
+// `new WebSocket('ws://127.0.0.1:34333/ws')` from https://atlascybernetics.ai is a
 // public->loopback request, which is Chrome's Local Network Access gate. When
 // that runs in a mount-time `$effect`, the browser asks "Access other apps and
 // services on this device" on first paint, before the visitor has touched

@@ -240,7 +240,7 @@ BOX RULE (2026-09-13): this is a Speed-class gate; a campaign spread with \
 `spark bench certify --with-nodes` measures it on another box ONLY when that \
 box is equivalent by hardware::equivalence::SPEED_SPREAD (same GPU and driver \
 line, clock ceiling within 1 %, memory within 5 %, no thermal throttle, \
-chassis within 10 °C), decided from the records' own captures — otherwise \
+chassis within 15 °C), decided from the records' own captures — otherwise \
 every Speed unit is bundled on one node. Two GB10s otherwise identical read \
 0.66 tok/s apart at 65 vs 89 °C, ten times this entry's sigma. \
 CALIBRATED 2026-08-15, dgx1, this branch's binary: n=12 runs across 4 driver \

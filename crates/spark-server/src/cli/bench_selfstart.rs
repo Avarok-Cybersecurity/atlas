@@ -39,31 +39,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use atlas_plugin::{TargetEndpoint, gate};
 
-/// How long to wait for the endpoint to answer with the model we asked for.
-/// A cold NVFP4 load on GB10 is minutes, not seconds.
-const BOOT_TIMEOUT: Duration = Duration::from_secs(900);
 const POLL: Duration = Duration::from_millis(500);
-
-/// The fraction of this box's memory that must still be available before a
-/// self-start will serve.
-///
-/// The recipe's `gpu_memory_utilization` is honoured VERBATIM — a gate that
-/// quietly serves a different config than the one its thresholds were measured
-/// under is the substitution this whole mode exists to prevent. So this does
-/// NOT judge that number. `gpu_memory_utilization` is an allocator budget, not
-/// resident host RAM, and values up to 0.90 have served fine for a long time on
-/// a clean box.
-///
-/// What actually turns a working utilisation into an OOM freeze is CO-TENANCY:
-/// the recorded incident was two serves plus a heavy Python client on one
-/// unified 121 GB pool, which took SSH with it. Co-tenancy also corrupts the
-/// measurement long before it freezes anything — 16.3 GB of co-tenants was
-/// measured to cost 32 % at C=16 while costing vLLM ~0 %.
-///
-/// 0.85 therefore means "nothing else is holding more than ~15 % of this box".
-/// A clean GB10 sits at ~0.94 available and passes; a single 16 GB container
-/// drops it to ~0.81 and is refused — which is the case worth catching.
-pub(super) const MIN_FREE_FRACTION: f64 = 0.85;
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -179,7 +155,11 @@ pub async fn serve_for(
     let plan = super::bench_serve_plan::plan_serve(benchmark_id, hardware, checkpoint, overrides)?;
     let port = atlas_plugin::benchmarks::agentic::score::free_port()?;
     let serve_args = plan.serve_args(port)?;
-    check_box_is_free_enough(serve_args.gpu_memory_utilization, &plan.recipe_id)?;
+    check_box_is_free_enough(
+        serve_args.gpu_memory_utilization,
+        &plan.recipe_id,
+        plan.limits.memory.min_free_fraction,
+    )?;
 
     // Claimed HERE — immediately before the spawn — and not on entry. Everything
     // above this line can fail without a server ever existing and therefore
@@ -210,6 +190,7 @@ pub async fn serve_for(
         &served.target,
         &model,
         served.server.as_mut().expect("just constructed as Some"),
+        Duration::from_secs(plan.limits.timing.boot_timeout_s),
     )
     .await?;
     eprintln!("gate: endpoint is serving {model}");
@@ -257,7 +238,11 @@ fn claim_start_slot(started: &AtomicBool, shutdown_requested: bool) -> Result<()
 ///
 /// Named remedies, because "not enough memory" without saying what is holding
 /// it sends the reader looking in the wrong place.
-pub(super) fn check_box_is_free_enough(util: f64, recipe_id: &str) -> Result<()> {
+pub(super) fn check_box_is_free_enough(
+    util: f64,
+    recipe_id: &str,
+    min_free_fraction: f64,
+) -> Result<()> {
     let Some((total_gib, avail_gib)) = host_memory_gib() else {
         // No /proc/meminfo (non-Linux, or a container without it). Say so and
         // continue: refusing on a box we cannot measure would block every
@@ -267,7 +252,7 @@ pub(super) fn check_box_is_free_enough(util: f64, recipe_id: &str) -> Result<()>
     };
     eprintln!(
         "{}",
-        headroom_verdict(total_gib, avail_gib, util, recipe_id)?
+        headroom_verdict(total_gib, avail_gib, util, recipe_id, min_free_fraction)?
     );
     Ok(())
 }
@@ -280,9 +265,15 @@ pub(super) fn check_box_is_free_enough(util: f64, recipe_id: &str) -> Result<()>
 ///
 /// Named remedies in the refusal: "not enough memory" without saying what is
 /// holding it sends the reader looking in the wrong place.
-fn headroom_verdict(total_gib: f64, avail_gib: f64, util: f64, recipe_id: &str) -> Result<String> {
+fn headroom_verdict(
+    total_gib: f64,
+    avail_gib: f64,
+    util: f64,
+    recipe_id: &str,
+    min_free_fraction: f64,
+) -> Result<String> {
     let free_fraction = avail_gib / total_gib;
-    if free_fraction < MIN_FREE_FRACTION {
+    if free_fraction < min_free_fraction {
         bail!(
             "this box is not free enough to serve recipe {recipe_id:?}: only {avail_gib:.0} GiB \
              of {total_gib:.0} GiB is available ({:.0} %, below the {:.0} % a self-start \
@@ -293,7 +284,7 @@ fn headroom_verdict(total_gib: f64, avail_gib: f64, util: f64, recipe_id: &str) 
              utilisation into an OOM freeze on unified memory, and it corrupts the measurement \
              well before that.",
             free_fraction * 100.0,
-            MIN_FREE_FRACTION * 100.0,
+            min_free_fraction * 100.0,
         );
     }
     Ok(format!(
@@ -309,7 +300,7 @@ fn headroom_verdict(total_gib: f64, avail_gib: f64, util: f64, recipe_id: &str) 
 /// make this refuse everything.
 ///
 /// A non-positive `MemTotal` reads as UNREADABLE rather than as a reading: the
-/// fraction would be NaN or infinite, and `NaN < MIN_FREE_FRACTION` is false —
+/// fraction would be NaN or infinite, and `NaN < min_free_fraction` is false —
 /// i.e. an unparsable `/proc/meminfo` would silently PASS the preflight it
 /// exists to fail.
 fn host_memory_gib() -> Option<(f64, f64)> {
@@ -337,8 +328,9 @@ async fn await_serving(
     target: &TargetEndpoint,
     model: &str,
     server: &mut tokio::task::JoinHandle<Result<()>>,
+    boot_timeout: Duration,
 ) -> Result<()> {
-    let deadline = Instant::now() + BOOT_TIMEOUT;
+    let deadline = Instant::now() + boot_timeout;
     loop {
         if server.is_finished() {
             // Await the finished task for the REASON it stopped. Reporting only
@@ -370,7 +362,7 @@ async fn await_serving(
         if Instant::now() >= deadline {
             bail!(
                 "{model:?} did not come up within {}s — {last}",
-                BOOT_TIMEOUT.as_secs()
+                boot_timeout.as_secs()
             );
         }
         tokio::time::sleep(POLL).await;

@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use atlas_plugin::hardware::equivalence::EquivalencePolicy;
 use atlas_plugin::{ArtifactStore, gate, history};
 
 use self::args::CertifyArgs;
@@ -40,9 +41,6 @@ use self::text::{SummaryJson, print_plan, print_summary};
 
 /// How often the drift guard runs while a unit is in flight.
 pub const GUARD_EVERY: Duration = Duration::from_secs(60);
-/// Build time allowed on top of a unit's expected duration (a cold box builds
-/// the binary first; a warm one takes a minute).
-pub const BUILD_ALLOWANCE: Duration = Duration::from_secs(1800);
 
 /// Where the campaign's words go: human lines, or one JSON object per line.
 pub struct Emit {
@@ -86,7 +84,6 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     let wanted = args.shards.unwrap_or_else(|| plan::shard_count(boxes));
     let owed =
         |g: &'static gate::group::BenchmarkGroup| gate::shards_owed(&root, g, &anchor, wanted);
-    let units = plan::order_local(plan::units(&gates, &measured, &owed)?);
     let hardware = match &args.hardware {
         Some(h) => h.clone(),
         None => {
@@ -97,6 +94,32 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
             k
         }
     };
+    // The class's limits (`kernels/<hw>/HARDWARE.toml` `[benchmarks.limits]`):
+    // what the cool-down parks at, what makes two boxes one box, the memory
+    // floor, the serve/build/shard allowances. A class that declares none is
+    // not campaigned — nothing is borrowed from another card. The thermal
+    // half alone may be waived by the operator (`--dangerous-ignore-thermals`);
+    // the rest has no waiver, because a deadline or a memory floor from
+    // another card is not a measurement of this one.
+    let Some(limits) = atlas_plugin::hardware::limits::limits(&root, &hardware)? else {
+        bail!(
+            "kernels/{hardware}/HARDWARE.toml declares no [benchmarks.limits]: the campaign has \
+             no thermal envelope, memory floor or timing allowances for this class. Measure them \
+             and declare the tables (see kernels/gb10/HARDWARE.toml)."
+        );
+    };
+    let envelope = if args.dangerous_ignore_thermals {
+        emit.say(
+            "WARNING --dangerous-ignore-thermals: no box is parked this campaign, and no pair of \
+             boxes is refused for its temperature at plan time; the records are still judged by \
+             the equivalence policy at the end",
+        );
+        None
+    } else {
+        Some(limits.thermal)
+    };
+    let build_allowance = Duration::from_secs(limits.timing.build_allowance_s);
+    let units = plan::order_local(plan::units(&gates, &measured, &owed, &limits.timing)?);
     let guard_ref = args
         .guard_ref
         .clone()
@@ -152,6 +175,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
         needs,
         args.yes,
         args.remote_only,
+        limits.memory.min_free_fraction,
     )?;
     let findings = preflight::evaluate(&facts);
     emit.event(
@@ -178,7 +202,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
             hardware: &hardware,
             committed_signers: &facts.committed_signers,
             anchor: &anchor_full,
-            min_free_fraction: preflight::MIN_FREE_FRACTION,
+            min_free_fraction: limits.memory.min_free_fraction,
         };
         let f = remote::assemble(
             &atlasctl,
@@ -186,8 +210,10 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
             args.remote_only,
             &wanted,
             &facts.signer,
+            envelope,
+            envelope.map(|_| EquivalencePolicy::speed(&limits)),
         )?;
-        let plan = remote::schedule::simulate(&units, &f.nodes, &f.mode, BUILD_ALLOWANCE.as_secs());
+        let plan = remote::schedule::simulate(&units, &f.nodes, &f.mode, build_allowance.as_secs());
         emit.event("fleet", remote::fleet_json(&f, &units, &plan));
         if !args.json {
             remote::print_fleet(&f, &units, &plan);
@@ -282,13 +308,17 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
             let run_id = format!("{}-{}", &anchor[..anchor.len().min(10)], now);
             let runners = remote::runners(
                 f,
-                atlasctl,
+                atlasctl.clone(),
                 &run_id,
                 &anchor_full,
                 cancel.clone(),
                 &log_dir,
                 args.no_serve_reuse,
             )?;
+            let thermal = remote::thermal::FleetProbe {
+                atlasctl: atlasctl.clone(),
+            };
+            let envelope = f.envelope;
             let shared = remote::Shared {
                 root: &root,
                 anchor: &anchor,
@@ -298,6 +328,10 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
                 timeout_factor: args.timeout_factor,
                 emit: &emit,
                 cancel: cancel.clone(),
+                thermal: &thermal,
+                ignore_thermals: args.dangerous_ignore_thermals,
+                envelope,
+                build_allowance,
             };
             remote::drive(
                 campaign,
@@ -358,11 +392,35 @@ fn finish(emit: &Emit, root: &Path, anchor: &str, campaign: Option<&Campaign>) -
 }
 
 /// `(secs, recorded_at)` of the newest COMPLETED run of `id` in the history.
+/// The newest completed run of `id`, as WHOLE-DRAW seconds: a shard run
+/// (`--param shard=i/n`) is scaled back up by its count, since the planner
+/// divides by the count it wants. Without this the first campaign after
+/// arbitrary shards planned every shard from the last shard's time divided
+/// by six again — 5 min for a 28 min unit — and the deadline would have
+/// killed them (2026-09-15, caught in a dry run).
 fn measured_secs(store: &ArtifactStore, id: &str) -> Option<(u64, u64)> {
     history::load(store, id)
         .into_iter()
         .find(|r| r.frame.status == atlas_plugin::result::RunStatus::Completed)
-        .map(|r| (r.frame.elapsed.as_secs(), r.recorded_at))
+        .map(|r| {
+            (
+                whole_draw_secs(r.frame.elapsed.as_secs(), &r.params),
+                r.recorded_at,
+            )
+        })
+}
+
+/// `elapsed` of a run scaled to the whole draw: `× n` for `shard=i/n`.
+pub fn whole_draw_secs(elapsed: u64, params: &std::collections::BTreeMap<String, String>) -> u64 {
+    let count = params
+        .get("shard")
+        .and_then(|s| s.split_once('/'))
+        .and_then(|(_, n)| n.trim().parse::<u64>().ok())
+        .filter(|n| *n > 1);
+    match count {
+        Some(n) => elapsed.saturating_mul(n),
+        None => elapsed,
+    }
 }
 
 fn pid_alive(pid: u32) -> bool {

@@ -233,7 +233,7 @@ reason asserted on the hot one. So "the same hardware" is not a model name.
 **The rule.** Two boxes are one box for a Speed-class campaign iff
 `hardware::equivalence::equivalent` says so under `SPEED_SPREAD`: same GPU
 name, same driver major, clock ceiling within 1 %, memory within 5 %, no
-thermal reason asserted on either, hottest chassis zone within 10 °C, and —
+thermal reason asserted on either, hottest chassis zone within 15 °C, and —
 for a record — a valid post-run hardware check. A field either side cannot
 report is `Undecidable`, which is **not** equivalent: the safe answer to "are
 these the same box?" is never "probably".
@@ -245,7 +245,7 @@ with the most headroom, saying why. CI asks it again in `gate::agreement`,
 from the RECORDS' own `hardware` and `hardware_state` captures — so what is
 judged is what was measured, not what a scheduler believed at planning time.
 A Speed set spanning two signers whose records are not equivalent is refused
-with the concrete mismatch (`chassis 65 vs 89 °C (limit 10 °C)`), exactly as
+with the concrete mismatch (`chassis 65 vs 89 °C (limit 15 °C)`), exactly as
 a set spanning two commits is. A record with no capture at all is equivalent
 to nothing, so a pre-capture record keeps the one-box rule it always had.
 

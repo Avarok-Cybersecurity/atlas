@@ -81,6 +81,7 @@ fn the_lease_file_round_trips_and_a_bad_one_is_refused() {
 /// A lease whose owner is dead is released; one whose owner lives is kept.
 /// Pid 1 is always alive; a pid no process has is not.
 #[test]
+#[cfg(target_os = "linux")]
 fn an_orphaned_lease_is_released_and_a_live_one_kept() {
     let dir = std::env::temp_dir().join(format!("serve-lease-orphan-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

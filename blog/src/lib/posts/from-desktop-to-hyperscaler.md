@@ -8,7 +8,7 @@ og-image: /images/og/from-desktop-to-hyperscaler.webp
 author: alexi-derkatsch
 draft: false
 ---
-**[Atlas Inference](https://atlasinference.io)**
+**[Atlas Inference](https://atlascybernetics.ai)**
 
 **Speed. Security. Governance.**
 
@@ -28,7 +28,7 @@ Inference is an infrastructure problem, not a product problem. Demand for AI mee
 
 ![A small desk inference box beside a longer rack blade, same dark metal.](/images/posts/from-desktop-to-hyperscaler/02-owners.webp)
 
-Atlas fits small to medium businesses who own dedicated inference delivery systems. Atlas fits renters, who provide inference over API. From desktop to hyperscaler. The matrix of zero-day model to hardware support is increasing and the open source community is committing without regression in [AI-first](https://blog.atlasinference.io/posts/seven-tenets-powering-atlas-inference) repos.
+Atlas fits small to medium businesses who own dedicated inference delivery systems. Atlas fits renters, who provide inference over API. From desktop to hyperscaler. The matrix of zero-day model to hardware support is increasing and the open source community is committing without regression in [AI-first](https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference) repos.
 
 ## Convert demand into strong market supply
 
@@ -48,7 +48,7 @@ Communication, whether internal or external to the business, speeds up from acti
 
 ![A dense stack of silicon wafers on a rusted iron base.](/images/posts/from-desktop-to-hyperscaler/05-stack.webp)
 
-[More data center per data center](https://blog.atlasinference.io/posts/seven-tenets-powering-atlas-inference) is only part of the story. The best contributors in the field right now commit to the AI-first repo at Atlas, maintain velocity with the lowest number of human reviews conceivable. Open systems with closed loops beat open loops with closed systems every day of the week. While experts are leveraging AI tools now, it's flipping, and AI will begin leveraging them.
+[More data center per data center](https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference) is only part of the story. The best contributors in the field right now commit to the AI-first repo at Atlas, maintain velocity with the lowest number of human reviews conceivable. Open systems with closed loops beat open loops with closed systems every day of the week. While experts are leveraging AI tools now, it's flipping, and AI will begin leveraging them.
 
 What percentage of economic sum are the experts? How many percentage points of the GDP will inference be? Effortless abundance nears.
 

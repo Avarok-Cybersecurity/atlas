@@ -12,6 +12,7 @@ fn plain() -> Unit {
         class: Sensitivity::Speed,
         estimate: Estimate::Declared(180),
         needs_confirmation: false,
+        serve_allowance_s: 600,
     }
 }
 
@@ -23,6 +24,7 @@ fn shard() -> Unit {
         class: Sensitivity::Correctness,
         estimate: Estimate::Declared(1500),
         needs_confirmation: false,
+        serve_allowance_s: 600,
     }
 }
 

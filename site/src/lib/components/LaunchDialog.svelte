@@ -176,7 +176,7 @@
             <p class="ld-place-sub">
               <a
                 class="link"
-                href="https://docs.atlasinference.io/getting-started/troubleshooting.html"
+                href="https://docs.atlascybernetics.ai/getting-started/troubleshooting.html"
                 target="_blank"
                 rel="noopener">Troubleshooting guide</a
               >
@@ -249,7 +249,7 @@
           </p>
           <p class="ld-caution">
             Any web page can show you an install command. Check the address bar
-            says <strong>atlasinference.io</strong> before running one.
+            says <strong>atlascybernetics.ai</strong> before running one.
           </p>
 
         {:else if launch.phase === 'pairing'}
