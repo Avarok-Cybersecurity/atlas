@@ -12,6 +12,7 @@
 // Runtime H/dq/dv/T, not hardcoded.
 
 #include <math.h>
+#include <math_constants.h>
 
 __device__ __forceinline__ float k3_sigmoid(float x) {
     return 1.0f / (1.0f + expf(-x));
@@ -78,7 +79,10 @@ extern "C" __global__ void k3_mla_sdpa_gate_f32(
     }
     const float scale = 1.0f / sqrtf((float)dq);
     const float* qrow = q + h * dq;
-    float m = -INFINITY;
+    // CUDART_INF_F, not INFINITY: MSVC spells INFINITY as a double overflow
+    // expression that nvcc on Windows refuses (error #221-D). Every other
+    // kernel here uses the CUDA constant.
+    float m = -CUDART_INF_F;
     for (unsigned int kj = 0; kj < T; ++kj) {
         const float* krow = k + (kj * H + h) * dq;
         float s = 0.0f;
