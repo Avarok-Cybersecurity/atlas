@@ -43,6 +43,12 @@ pub struct CompletionRequest {
     pub prompt: PromptInput,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: usize,
+    /// Minimum number of tokens to generate before allowing EOS/stop.
+    /// 0 = no minimum (default). Mirrors the chat endpoint; without this,
+    /// a model-sampled EOS token ends the response early even when the
+    /// caller asked for a longer completion.
+    #[serde(default)]
+    pub min_tokens: usize,
     pub temperature: Option<f32>,
     /// Top-k: keep only the k highest-probability tokens before sampling.
     pub top_k: Option<u32>,
@@ -346,4 +352,40 @@ pub struct TokenizeRequest {
 pub struct TokenizeResponse {
     pub tokens: Vec<u32>,
     pub count: usize,
+}
+
+#[cfg(test)]
+mod min_tokens_tests {
+    use super::*;
+
+    fn req_with(json: serde_json::Value) -> CompletionRequest {
+        serde_json::from_value(json).expect("valid CompletionRequest JSON")
+    }
+
+    #[test]
+    fn min_tokens_defaults_to_zero() {
+        // Absent field → 0 (no minimum), preserving legacy behavior.
+        let req = req_with(serde_json::json!({ "model": "m", "prompt": "hi" }));
+        assert_eq!(req.min_tokens, 0);
+    }
+
+    #[test]
+    fn min_tokens_explicit_deserialization() {
+        let req = req_with(serde_json::json!({
+            "model": "m",
+            "prompt": "hi",
+            "min_tokens": 2048
+        }));
+        assert_eq!(req.min_tokens, 2048);
+    }
+
+    #[test]
+    fn min_tokens_zero_is_valid_explicit_value() {
+        let req = req_with(serde_json::json!({
+            "model": "m",
+            "prompt": "hi",
+            "min_tokens": 0
+        }));
+        assert_eq!(req.min_tokens, 0);
+    }
 }
