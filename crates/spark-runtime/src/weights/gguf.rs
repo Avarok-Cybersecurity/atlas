@@ -24,7 +24,8 @@
 
 mod config;
 mod container;
-mod dequant_cpu;
+/// Public for kernel oracles: the CPU reference decoders every GPU dequant is held to.
+pub mod dequant_cpu;
 mod dequant_gpu;
 mod names;
 mod sidecar;
