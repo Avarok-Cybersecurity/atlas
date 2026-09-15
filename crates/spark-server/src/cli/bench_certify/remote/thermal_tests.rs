@@ -85,11 +85,11 @@ fn the_gate_parks_holds_and_resumes_saying_so_once() {
     let said = Mutex::new(Vec::<String>::new());
     let say = |s: &str| said.lock().unwrap().push(s.to_string());
     let mut g = Gate::default();
-    assert!(!g.may_take(&n, &p, &say), "65 over 40: parked");
-    assert!(!g.may_take(&n, &p, &say), "52: still 12 over, hold");
-    assert!(!g.may_take(&n, &p, &say), "47: 7 over, hold");
-    assert!(g.may_take(&n, &p, &say), "44: within 5, resume");
-    assert!(g.may_take(&n, &p, &say));
+    assert!(!g.may_take(&n, &p, false, &say), "65 over 40: parked");
+    assert!(!g.may_take(&n, &p, false, &say), "52: still 12 over, hold");
+    assert!(!g.may_take(&n, &p, false, &say), "47: 7 over, hold");
+    assert!(g.may_take(&n, &p, false, &say), "44: within 5, resume");
+    assert!(g.may_take(&n, &p, false, &say));
     let said = said.lock().unwrap();
     assert_eq!(said.len(), 2, "{said:?}");
     assert!(said[0].contains("parked until"), "{said:?}");
@@ -104,7 +104,38 @@ fn a_node_without_a_baseline_is_never_parked() {
     let said = Mutex::new(Vec::<String>::new());
     let say = |s: &str| said.lock().unwrap().push(s.to_string());
     let mut g = Gate::default();
-    assert!(g.may_take(&n, &p, &say));
-    assert!(g.may_take(&n, &p, &say));
+    assert!(g.may_take(&n, &p, false, &say));
+    assert!(g.may_take(&n, &p, false, &say));
     assert_eq!(said.lock().unwrap().len(), 1);
+}
+
+/// `--dangerous-ignore-thermals`: the same readings park nothing; the hot
+/// spell is warned about once on the way in and cleared once on the way out.
+#[test]
+fn ignoring_thermals_warns_once_and_never_parks() {
+    let n = node(Some(40.0));
+    let p = Scripted(Mutex::new(vec![
+        Some(65.0),
+        Some(70.0),
+        Some(52.0),
+        Some(44.0),
+        Some(44.0),
+    ]));
+    let said = Mutex::new(Vec::<String>::new());
+    let say = |s: &str| said.lock().unwrap().push(s.to_string());
+    let mut g = Gate::default();
+    for _ in 0..5 {
+        assert!(
+            g.may_take(&n, &p, true, &say),
+            "never parked under the flag"
+        );
+    }
+    let said = said.lock().unwrap();
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert!(
+        said[0].contains("WARNING --dangerous-ignore-thermals"),
+        "{said:?}"
+    );
+    assert!(said[0].contains("would be parked"), "{said:?}");
+    assert!(said[1].contains("back within"), "{said:?}");
 }

@@ -302,6 +302,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
                 emit: &emit,
                 cancel: cancel.clone(),
                 thermal: &thermal,
+                ignore_thermals: args.dangerous_ignore_thermals,
             };
             remote::drive(
                 campaign,

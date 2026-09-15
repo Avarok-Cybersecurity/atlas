@@ -24,6 +24,11 @@
 //! A reading that cannot be taken parks nothing: the safety net for a wrong
 //! reading is the record-level check, and a blind probe must not stop a
 //! campaign. It is said, once.
+//!
+//! `--dangerous-ignore-thermals` turns every park into a WARNING and lets
+//! the box keep taking units: the operator has decided the hardware is
+//! theirs to risk. The equivalence policy still judges the records at the
+//! end — the flag ignores the security action, never the evidence.
 
 use std::time::Duration;
 
@@ -99,14 +104,53 @@ impl Probe for FleetProbe {
 pub struct Gate {
     parked_since: Option<std::time::Instant>,
     said_blind: bool,
+    /// Under `ignore`: whether the last reading would have parked, so the
+    /// warning is said on the way in and the all-clear on the way out, not
+    /// on every unit.
+    warned_hot: bool,
 }
 
 impl Gate {
     /// Whether the node may take a unit now, reading the probe. `false`
     /// means the caller should sleep [`RECHECK`] and ask again. Every
-    /// transition is reported through `say`.
-    pub fn may_take(&mut self, node: &Node, probe: &dyn Probe, say: &dyn Fn(&str)) -> bool {
+    /// transition is reported through `say`. With `ignore`
+    /// (`--dangerous-ignore-thermals`) the answer is always `true` and a
+    /// park becomes a warning.
+    pub fn may_take(
+        &mut self,
+        node: &Node,
+        probe: &dyn Probe,
+        ignore: bool,
+        say: &dyn Fn(&str),
+    ) -> bool {
         let now = probe.hottest_chassis_c(node);
+        if ignore {
+            match judge(node.hardware.hottest_chassis_c, now, self.warned_hot) {
+                Verdict::Park { now_c, baseline_c } => {
+                    if !self.warned_hot {
+                        self.warned_hot = true;
+                        say(&format!(
+                            "WARNING --dangerous-ignore-thermals: {} reads {now_c:.0} °C against a \
+                             baseline of {baseline_c:.0} °C and would be parked; continuing on the \
+                             operator's say-so — its records are still judged by the equivalence \
+                             policy",
+                            node.addr
+                        ));
+                    }
+                }
+                Verdict::Ready => {
+                    if self.warned_hot {
+                        self.warned_hot = false;
+                        say(&format!(
+                            "{} is back within {RESUME_WITHIN_C:.0} °C of its baseline",
+                            node.addr
+                        ));
+                    }
+                }
+                Verdict::Blind => {}
+            }
+            return true;
+        }
         match judge(
             node.hardware.hottest_chassis_c,
             now,

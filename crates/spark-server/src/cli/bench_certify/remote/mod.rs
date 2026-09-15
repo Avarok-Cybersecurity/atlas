@@ -106,6 +106,8 @@ pub struct Shared<'a> {
     pub cancel: Arc<AtomicBool>,
     /// Live chassis readings for the cool-down (`thermal`).
     pub thermal: &'a dyn thermal::Probe,
+    /// `--dangerous-ignore-thermals`: warn instead of parking.
+    pub ignore_thermals: bool,
 }
 
 /// One runner per node: this box's child spawner, or a remote driver.
@@ -264,7 +266,7 @@ fn worker(
     loop {
         // A box that warmed past its baseline takes nothing more until it
         // is back near it; the others keep working (`thermal`).
-        if !cool.may_take(node, shared.thermal, &|s| {
+        if !cool.may_take(node, shared.thermal, shared.ignore_thermals, &|s| {
             shared.emit.event(
                 "thermal",
                 serde_json::json!({ "node": node.addr, "text": s }),

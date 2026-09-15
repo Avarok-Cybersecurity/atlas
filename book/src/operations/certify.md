@@ -86,6 +86,10 @@ node that cannot report a temperature is never parked (said once); the
 records' own captures still decide equivalence. The thresholds are the
 operator's cut: a GB10 warms 12–28 °C over rest under a campaign, and the
 box behind the 0.66 tok/s incident sat 24 °C over its peer.
+`--dangerous-ignore-thermals` turns every park into a warning and lets the
+box keep taking units — the operator's hardware to risk; the records are
+still judged by the equivalence policy at the end, so the flag ignores the
+security action, never the evidence.
 
 **Each remote unit** is submitted with an idempotent key
 (`certify-<run>-<node>-<gate>`), followed over a re-attachable stream (a
