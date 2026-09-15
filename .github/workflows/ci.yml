@@ -1697,8 +1697,10 @@ jobs:
           # must come from ONE box; Correctness gates are box-independent (the
           # same BFCL gate on two boxes at one sha returned byte-identical
           # 86.55 / 86.95 / n=1004), so they may span registered signers -- which
-          # is what lets a sharded gate run four ways at once. One COMMIT is
-          # still universal.
+          # is what lets a sharded gate run four ways at once. Records may
+          # span commits since #1086: each must STAND at this head (its
+          # commit on this history, and no perf path of its gate touched
+          # since), judged by the same rule as the gate check.
           #
           # This resolves the @human-review left above: the rule was in bash
           # only because editing crates/ would have invalidated the records of

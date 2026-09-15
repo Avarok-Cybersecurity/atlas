@@ -25,8 +25,9 @@
 import { test, expect } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const DIR = new URL('./components/', import.meta.url).pathname;
+const DIR = fileURLToPath(new URL('./components/', import.meta.url));
 
 /** Source of every `$effect(...)` body in a component, brace-matched. */
 function effectBodies(src) {
@@ -50,7 +51,7 @@ const CONNECTORS = [/\bfleet\s*\.\s*start\s*\(/, /\bagent\s*\.\s*connect\s*\(/, 
 
 test('no shared component opens a loopback connection while mounting', () => {
   const offenders = [];
-  for (const f of readdirSync(DIR).filter((n) => n.endsWith('.svelte'))) {
+  for (const f of readdirSync(DIR, { recursive: true }).filter((n) => n.endsWith('.svelte'))) {
     const src = readFileSync(join(DIR, f), 'utf8');
     for (const body of effectBodies(src)) {
       for (const re of CONNECTORS) {

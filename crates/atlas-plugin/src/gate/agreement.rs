@@ -2,9 +2,29 @@
 //! Do the records a PR ADDS agree with each other?
 //!
 //! Each record is already bound to a commit by its signature. This binds them
-//! to *each other*: without it a PR can present a favourable record measured at
-//! one commit beside another measured at a different commit, each individually
-//! valid and signed.
+//! to *each other* and to the head: without it a PR can present a favourable
+//! record measured at one commit beside another measured at a different
+//! commit, each individually valid and signed.
+//!
+//! # Why "one commit" became "each record stands at head"
+//!
+//! The rule used to demand one `git_sha` across every added record — "ONE
+//! campaign at ONE commit". On 2026-09-14 (stack 1089308) it refused sixteen
+//! records at one commit beside two sweep records re-earned at the next,
+//! where the diff between the two commits was a single file every other gate
+//! excludes: every record STOOD at head by the gate's own rule
+//! (`check::record_still_stands`), and the set was rejected anyway, at the
+//! price of a full fleet campaign that measured nothing new (issue #1086).
+//!
+//! What the commit rule protects is real — a record from an unrelated tree,
+//! or from a commit whose successors changed what the gate measures, must
+//! not ride in — and `check::record_standing` answers exactly that, per
+//! record, per gate, by CONTENT: the diff from the record's commit to the
+//! head must invalidate nothing for that gate (never ancestry — this
+//! repository squash-merges, see `coverage_squash_tests`). So the rule is
+//! now the owner's formulation: a commit K that is certified stays certified
+//! for every K+n that does not touch a perf path. One commit remains the
+//! normal OUTCOME of a campaign; it is no longer a requirement.
 //!
 //! # Why signer agreement is per metric class
 //!
@@ -44,6 +64,7 @@
 //! Every signer must still be committed in `.github/record-signers/`; this
 //! relaxes WHICH keys may appear together, never whether a key is vouched for.
 
+use super::check::Standing;
 use super::coverage;
 use crate::hardware::equivalence::{HardwareFingerprint, SPEED_SPREAD, equivalent};
 use crate::hardware::policy::Sensitivity;
@@ -64,13 +85,23 @@ pub struct AddedRecord {
     /// the record could not be parsed that far — which makes it equivalent
     /// to nothing.
     pub hardware: Option<HardwareFingerprint>,
+    /// Where the record stands at the head being certified, by
+    /// [`super::check::record_standing`] — computed by the caller, which is
+    /// the only party that knows the head and has the repository.
+    pub standing: Standing,
 }
 
 /// Why a set of added records does not hang together.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Disagreement {
-    /// Records measured at more than one commit. Always fatal, every class.
-    Commits(Vec<String>),
+    /// A record that does not stand at the head: measured off this history,
+    /// or at a commit whose successors changed what its gate measures.
+    /// Always fatal, every class.
+    Straggler {
+        path: String,
+        git_sha: String,
+        why: String,
+    },
     /// Speed-class records signed by more than one identity, on boxes the
     /// records themselves do not show to be equivalent.
     SpeedSigners {
@@ -88,13 +119,10 @@ pub enum Disagreement {
 impl std::fmt::Display for Disagreement {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Commits(shas) => write!(
+            Self::Straggler { path, git_sha, why } => write!(
                 f,
-                "records measured at {} different commits ({}). A certification \
-                 is ONE campaign at ONE commit; re-measure the stragglers at the \
-                 head you intend to merge.",
-                shas.len(),
-                shas.join(", ")
+                "{path} was measured at {git_sha} and does not stand at the head: {why}. \
+                 Re-measure it at the head you intend to merge."
             ),
             Self::SpeedSigners {
                 gates,
@@ -125,6 +153,17 @@ impl std::fmt::Display for Disagreement {
     }
 }
 
+/// A record's [`Standing`] at `head`, with the coverage its benchmark reads
+/// (a shard is a run of its group and reads the group's entry). A benchmark
+/// with no coverage entry cannot be judged and is reported as unknown — the
+/// fail-closed side.
+pub fn standing_at(root: &std::path::Path, head: &str, record: &super::GateRecord) -> Standing {
+    match coverage::find(&record.benchmark_id) {
+        Some(gate) => super::check::record_standing(root, head, record, gate),
+        None => Standing::Unknown,
+    }
+}
+
 /// The class a gate's records belong to.
 ///
 /// Reads the registry, never the record: a record that asserted its own class
@@ -143,11 +182,24 @@ pub fn check(added: &[AddedRecord]) -> Vec<Disagreement> {
         return out;
     }
 
-    let mut shas: Vec<String> = added.iter().map(|r| r.git_sha.clone()).collect();
-    shas.sort();
-    shas.dedup();
-    if shas.len() > 1 {
-        out.push(Disagreement::Commits(shas));
+    for r in added {
+        let why = match &r.standing {
+            Standing::Stands => continue,
+            Standing::Unknown => {
+                "its commit cannot be diffed against the head (unknown to this repository, \
+                 or git failed)"
+                    .to_string()
+            }
+            Standing::Invalidated(paths) => format!(
+                "commits since it touched what its gate measures ({})",
+                paths.join(", ")
+            ),
+        };
+        out.push(Disagreement::Straggler {
+            path: r.path.clone(),
+            git_sha: r.git_sha.clone(),
+            why,
+        });
     }
 
     let speed: Vec<&AddedRecord> = added

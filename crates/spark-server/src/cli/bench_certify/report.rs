@@ -56,8 +56,9 @@ pub fn signer_of(record: &Path) -> String {
         .unwrap_or_else(|| "NO_SIDECAR".into())
 }
 
-/// Read the added records into the shape the agreement rule judges.
-pub fn added_records(paths: &[PathBuf]) -> Vec<AddedRecord> {
+/// Read the added records into the shape the agreement rule judges, each
+/// with its standing at `anchor`.
+pub fn added_records(root: &Path, anchor: &str, paths: &[PathBuf]) -> Vec<AddedRecord> {
     paths
         .iter()
         .filter_map(|p| {
@@ -67,6 +68,7 @@ pub fn added_records(paths: &[PathBuf]) -> Vec<AddedRecord> {
                 hardware: Some(
                     atlas_plugin::hardware::equivalence::HardwareFingerprint::from_record(&r),
                 ),
+                standing: agreement::standing_at(root, anchor, &r),
                 benchmark_id: r.benchmark_id,
                 git_sha: r.git_sha,
                 signer: signer_of(p),
@@ -96,7 +98,7 @@ pub fn evaluate(root: &Path, anchor: &str) -> Result<Final> {
         .copied()
         .filter(|id| !matches!(statuses.get(*id), Some(GateStatus::Pass)))
         .collect();
-    let added = added_records(&untracked_records(root)?);
+    let added = added_records(root, anchor, &untracked_records(root)?);
     let disagreements = agreement::check(&added);
     Ok(Final {
         statuses,

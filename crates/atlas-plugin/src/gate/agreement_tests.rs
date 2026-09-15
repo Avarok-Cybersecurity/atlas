@@ -3,6 +3,7 @@
 //! that only ever permits is indistinguishable from no rule at all.
 
 use super::agreement::{AddedRecord, Disagreement, check, required_by_class, sensitivity_of};
+use super::check::Standing;
 use crate::hardware::equivalence::HardwareFingerprint;
 use crate::hardware::policy::Sensitivity;
 
@@ -15,6 +16,7 @@ fn rec(gate: &str, sha: &str, signer: &str) -> AddedRecord {
         git_sha: sha.into(),
         signer: signer.into(),
         hardware: None,
+        standing: Standing::Stands,
     }
 }
 
@@ -79,18 +81,45 @@ fn one_commit_one_signer_is_fine() {
     assert!(v.is_empty(), "{v:?}");
 }
 
-/// Two commits is fatal regardless of class — this half of the rule did NOT
-/// relax, and a test that only exercised the relaxed half would hide that.
+/// THE RELAXATION OF 2026-09-14 (#1086): two commits are fine when every
+/// record STANDS at the head — a certified commit stays certified for every
+/// successor that touches nothing its gates measure. NEGATIVE CONTROLS: a
+/// record whose commit cannot be judged at all is a straggler, and so is one
+/// whose successors touched its gate's perf paths — each named with its
+/// commit and the reason, whatever its class.
 #[test]
-fn two_commits_still_fail_even_for_correctness_gates() {
+fn records_may_span_commits_when_each_stands_at_head() {
     let v = check(&[
         rec("bfcl-subset", "abc123", "k1"),
         rec("vision-fidelity", "def456", "k1"),
+        rec("decode-floor", "def456", "k1"),
     ]);
-    assert!(
-        matches!(&v[..], [Disagreement::Commits(s)] if s.len() == 2),
-        "{v:?}"
-    );
+    assert!(v.is_empty(), "{v:?}");
+
+    let mut off = rec("vision-fidelity", "0ff000", "k1");
+    off.standing = Standing::Unknown;
+    let v = check(&[rec("bfcl-subset", "abc123", "k1"), off]);
+    match &v[..] {
+        [Disagreement::Straggler { path, git_sha, why }] => {
+            assert!(path.contains("vision-fidelity"), "{path}");
+            assert_eq!(git_sha, "0ff000");
+            assert!(why.contains("cannot be diffed"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+
+    let mut stale = rec("decode-floor", "abc123", "k1");
+    stale.standing = Standing::Invalidated(vec!["crates/spark-model/src/x.rs".into()]);
+    let v = check(&[rec("bfcl-subset", "abc123", "k1"), stale]);
+    match &v[..] {
+        [Disagreement::Straggler { why, .. }] => {
+            assert!(why.contains("crates/spark-model/src/x.rs"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // The rendered line carries the remedy.
+    let text = v[0].to_string();
+    assert!(text.contains("Re-measure it at the head"), "{text}");
 }
 
 /// THE RELAXATION. Correctness gates are box-independent — proven by measuring

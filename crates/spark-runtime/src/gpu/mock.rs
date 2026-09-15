@@ -6,6 +6,9 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[path = "mock_counters.rs"]
+mod mock_counters;
+
 #[derive(Debug)]
 pub struct MockAlloc {
     pub bytes: usize,
@@ -23,6 +26,8 @@ pub struct MockGpuBackend {
     /// Modules a test declares NOT compiled into this build; every other
     /// module is present, as it always was.
     absent_modules: Mutex<std::collections::HashSet<String>>,
+    /// `kernel(module, func)` returns Err for these pairs (lookup-fail tests).
+    denied_kernels: Mutex<Vec<(String, String)>>,
     /// Copy/sync shape counters. These exist so tests can assert the SHAPE of a
     /// bulk transfer, not just its bytes: the SSM snapshot spill regressed to
     /// 60 blocking `copy_d2h` calls (one full stream drain each, ~400 ms for
@@ -83,6 +88,7 @@ impl MockGpuBackend {
             launches: Mutex::new(Vec::new()),
             kernel_lookups: Mutex::new(Vec::new()),
             absent_modules: Mutex::new(std::collections::HashSet::new()),
+            denied_kernels: Mutex::new(Vec::new()),
             syncs: AtomicUsize::new(0),
             d2h_blocking: AtomicUsize::new(0),
             d2h_async: AtomicUsize::new(0),
@@ -94,73 +100,6 @@ impl MockGpuBackend {
             d2d_2d_async_streams: Mutex::new(Vec::new()),
             host_pinned_allocs: AtomicUsize::new(0),
         }
-    }
-
-    pub fn alloc_count(&self) -> usize {
-        self.allocs.lock().len()
-    }
-
-    /// Reject individual allocations above `bytes`, for exercising
-    /// production fallback paths without exhausting host memory.
-    pub fn set_max_allocation_bytes(&self, bytes: usize) {
-        self.max_allocation_bytes.store(bytes, Ordering::Relaxed);
-    }
-
-    pub fn launch_count(&self) -> usize {
-        self.launches.lock().len()
-    }
-
-    /// `synchronize` calls so far — a proxy for "full stream drains", the cost
-    /// a batched gather exists to amortize.
-    pub fn sync_count(&self) -> usize {
-        self.syncs.load(Ordering::Relaxed)
-    }
-
-    /// BLOCKING `copy_d2h` calls (each one drains the stream on the real
-    /// backend). A bulk gather must have zero of these.
-    pub fn d2h_blocking_count(&self) -> usize {
-        self.d2h_blocking.load(Ordering::Relaxed)
-    }
-
-    /// `copy_d2h_async` calls (enqueue-only).
-    pub fn d2h_async_count(&self) -> usize {
-        self.d2h_async.load(Ordering::Relaxed)
-    }
-
-    pub fn d2h_async_streams(&self) -> Vec<u64> {
-        self.d2h_async_streams.lock().clone()
-    }
-
-    pub fn sync_d2h_async_counts(&self) -> Vec<(u64, usize)> {
-        self.sync_d2h_async_counts.lock().clone()
-    }
-
-    /// `copy_d2d` + `copy_d2d_async` calls so far — one eager launch each on
-    /// the real backend.
-    pub fn d2d_count(&self) -> usize {
-        self.d2d.load(Ordering::Relaxed)
-    }
-
-    /// `copy_d2d_2d_async` calls so far — one `cudaMemcpy2DAsync` each,
-    /// whatever the row count.
-    pub fn d2d_2d_count(&self) -> usize {
-        self.d2d_2d.load(Ordering::Relaxed)
-    }
-
-    /// Streams supplied to `copy_d2d_async`, in dispatch order.
-    pub fn d2d_async_streams(&self) -> Vec<u64> {
-        self.d2d_async_streams.lock().clone()
-    }
-
-    /// Streams supplied to `copy_d2d_2d_async`, in dispatch order.
-    pub fn d2d_2d_async_streams(&self) -> Vec<u64> {
-        self.d2d_2d_async_streams.lock().clone()
-    }
-
-    /// `alloc_host_pinned` calls — the tripwire for a staging buffer that is
-    /// re-allocated per event instead of reused.
-    pub fn host_pinned_alloc_count(&self) -> usize {
-        self.host_pinned_allocs.load(Ordering::Relaxed)
     }
 
     pub fn read_alloc(&self, ptr: DevicePtr) -> Option<Vec<u8>> {
@@ -215,6 +154,13 @@ impl MockGpuBackend {
 
     pub fn kernel_lookups_snapshot(&self) -> Vec<(String, String)> {
         self.kernel_lookups.lock().clone()
+    }
+
+    /// Next `kernel(module, func)` for this pair fails (records the lookup).
+    pub fn deny_kernel(&self, module: &str, func_name: &str) {
+        self.denied_kernels
+            .lock()
+            .push((module.to_owned(), func_name.to_owned()));
     }
 }
 
@@ -432,6 +378,14 @@ impl GpuBackend for MockGpuBackend {
         self.kernel_lookups
             .lock()
             .push((module.to_owned(), func_name.to_owned()));
+        if self
+            .denied_kernels
+            .lock()
+            .iter()
+            .any(|(m, f)| m == module && f == func_name)
+        {
+            anyhow::bail!("Kernel lookup {module}::{func_name}: missing");
+        }
         Ok(KernelHandle(0xDEAD))
     }
 

@@ -205,6 +205,12 @@ impl LocalChild {
     }
 }
 
+/// How long to wait, after the child exits, for its output readers to reach
+/// EOF before the log is closed. A child's own output is a few hundred lines
+/// and arrives at once; the bound exists for a lingering grandchild (a
+/// self-started server) that keeps the pipes open.
+const READER_DRAIN: Duration = Duration::from_secs(5);
+
 /// Wait for the child while streaming its stderr, enforcing the deadline and
 /// the cancel flag. Returns the exit code, or the reason it was killed.
 fn supervise(
@@ -219,20 +225,22 @@ fn supervise(
     let stderr = child.stderr.take().expect("stderr is piped");
     let stdout = child.stdout.take().expect("stdout is piped");
     let tx2 = tx.clone();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
+    let readers = [
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
             }
-        }
-    });
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx2.send(format!("stdout: {line}")).is_err() {
-                break;
+        }),
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if tx2.send(format!("stdout: {line}")).is_err() {
+                    break;
+                }
             }
-        }
-    });
+        }),
+    ];
     let started = Instant::now();
     let mut killed: Option<RunOutcome> = None;
     let mut kill_at: Option<Instant> = None;
@@ -242,8 +250,17 @@ fn supervise(
             on_line(&line);
         }
         if let Ok(Some(status)) = child.try_wait() {
-            // Drain what arrived after exit.
-            while let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) {
+            // Drain what arrived after exit: the readers finish once the
+            // pipes reach EOF, so wait for THEM rather than for a quiet gap —
+            // a gap is what a loaded box produces while a reader is merely
+            // unscheduled, and a line lost that way made a verdict line
+            // vanish from the log. Bounded, because a server the child
+            // started and left behind holds the pipes open.
+            let drain_until = Instant::now() + READER_DRAIN;
+            while readers.iter().any(|r| !r.is_finished()) && Instant::now() < drain_until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            while let Ok(line) = rx.try_recv() {
                 let _ = writeln!(log, "{line}");
                 on_line(&line);
             }
