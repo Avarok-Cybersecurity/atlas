@@ -185,7 +185,12 @@ def stride_for(n: int, is_int: bool) -> int:
 
 # Captures a sub-module test needs as its INPUT are stored at full resolution (stride 1), so the
 # sub-module can be checked before the layers that would otherwise have to produce that input.
-FULL_CAPTURES = {"L1.engram_in", "L4.engram_in"}
+FULL_CAPTURES = {
+    "L1.engram_in", "L4.engram_in",
+    # layer 0 (plain: no engram, no compression): every input the block scaffold, the MoE and
+    # the ratio-0 attention need, so each can be tested on its own
+    "L0.h_in", "L0.pre_mix_in", "L0.attn_in", "L0.attn_out", "L0.ffn_in", "L0.ffn_out",
+}
 
 
 def emit_tensor(t: torch.Tensor, is_int: bool, name: str = "") -> dict:

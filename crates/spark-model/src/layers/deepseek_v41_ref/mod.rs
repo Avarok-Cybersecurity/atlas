@@ -188,6 +188,21 @@ impl Golden {
         }
     }
 
+    /// One parameter's regeneration rule by name.
+    pub fn weight_meta(&self, name: &str) -> WeightMeta {
+        let m = &self.0["weights_meta"][name];
+        assert!(!m.is_null(), "weights_meta has no '{name}'");
+        WeightMeta {
+            name: name.to_string(),
+            n: m["n"].as_u64().expect("n") as usize,
+            scale: m["scale"].as_f64().expect("scale"),
+            offset: m["offset"].as_f64().expect("offset"),
+            kind: m["kind"].as_str().expect("kind").to_string(),
+            dtype: m["dtype"].as_str().expect("dtype").to_string(),
+            ck: m["ck"].as_f64().expect("ck"),
+        }
+    }
+
     pub fn weights_meta(&self) -> Vec<WeightMeta> {
         self.0["weights_meta"]
             .as_object()
@@ -204,6 +219,21 @@ impl Golden {
             })
             .collect()
     }
+}
+
+/// Regenerate a bf16- or f32-stored parameter exactly as the generator initialised it: the
+/// rule (scale, offset) and the storage dtype both come from `weights_meta`, so no test hard-codes
+/// a rule the generator might change. fp8/e8m0 tables have their own path in `engram`.
+pub fn regen_param(g: &Golden, name: &str) -> Vec<f32> {
+    let m = g.weight_meta(name);
+    assert_eq!(m.kind, "f32", "{name}: regen_param handles f32-kind parameters only");
+    let bf16 = m.dtype == "bfloat16";
+    (0..m.n as u64)
+        .map(|i| {
+            let v = fixed_value(name, i, m.scale, m.offset);
+            if bf16 { to_bf16_rne(v) } else { v }
+        })
+        .collect()
 }
 
 /// Elementwise max-abs comparison that names the worst index and both values.
@@ -228,6 +258,55 @@ pub fn assert_close(what: &str, got: &[f64], want: &[f64], tol: f64) {
 }
 
 pub mod engram;
+pub mod hc;
+
+/// Shared comparison bar for every component's tests.
+#[cfg(test)]
+pub(crate) mod testutil {
+    use super::{GoldenTensor, assert_close, checksum};
+
+    /// Bit-level "exact", allowing only f64 summation-order noise in the checksum.
+    pub const EXACT: f64 = 1e-12;
+    /// One bf16 ulp either side, for outputs the reference rounds to bf16.
+    pub const BF16_CK_REL: f64 = 0.0078125;
+    /// f32 chains with a different accumulation order (the Sinkhorn mixes).
+    pub const F32_TOL: f64 = 1e-4;
+
+    /// Sample elementwise at `tol`, and the whole-tensor checksum against a bound scaled by the
+    /// index-weighted magnitude, so last-bit differences from accumulation order pass while a
+    /// wrong element fails.
+    #[track_caller]
+    pub fn check_capture(what: &str, got: &[f64], g: &GoldenTensor, tol: f64, ck_rel: f64) {
+        assert_eq!(got.len(), g.n, "{what}: numel");
+        let sample: Vec<f64> = got.iter().step_by(g.stride).copied().collect();
+        assert_close(what, &sample, &g.data, tol);
+        let ck = checksum(got.iter().copied());
+        let mag: f64 = got.iter().enumerate().map(|(i, v)| v.abs() * (i as f64 + 1.0)).sum();
+        let bound = ck_rel * mag.max(1.0);
+        assert!(
+            (ck - g.ck).abs() <= bound,
+            "{what}: checksum {ck} vs golden {} (|diff| {:e} > bound {:e})",
+            g.ck,
+            (ck - g.ck).abs(),
+            bound
+        );
+    }
+
+    pub fn bf16_tol(g: &GoldenTensor) -> f64 {
+        let m = g.data.iter().fold(0f64, |a, v| a.max(v.abs()));
+        2.0 * 2f64.powi(-8) * m + 1e-6
+    }
+
+    /// A capture stored at full resolution, as f32 (bf16 values round-trip exactly).
+    pub fn full_f32(g: &GoldenTensor, what: &str) -> Vec<f32> {
+        assert_eq!(g.stride, 1, "{what} must be in FULL_CAPTURES (stride 1)");
+        g.data.iter().map(|&v| v as f32).collect()
+    }
+
+    pub fn as_f64(v: &[f32]) -> Vec<f64> {
+        v.iter().map(|&x| x as f64).collect()
+    }
+}
 
 #[cfg(test)]
 mod tests;

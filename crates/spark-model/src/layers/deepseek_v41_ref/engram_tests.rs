@@ -3,36 +3,9 @@
 
 //! Engram against the golden, one stage at a time, across prefill and both decode steps.
 
-use super::super::{Golden, GoldenTensor, checksum, fixed_int};
+use super::super::testutil::*;
+use super::super::{Golden, checksum, fixed_int};
 use super::*;
-
-/// Sample elementwise at `tol`, and the whole-tensor checksum against a bound scaled by the
-/// index-weighted magnitude, so bf16 last-bit differences from accumulation order pass while a
-/// wrong element fails.
-#[track_caller]
-fn check(what: &str, got: &[f64], g: &GoldenTensor, tol: f64, ck_rel: f64) {
-    assert_eq!(got.len(), g.n, "{what}: numel");
-    let sample: Vec<f64> = got.iter().step_by(g.stride).copied().collect();
-    super::super::assert_close(what, &sample, &g.data, tol);
-    let ck = checksum(got.iter().copied());
-    let mag: f64 = got.iter().enumerate().map(|(i, v)| v.abs() * (i as f64 + 1.0)).sum();
-    let bound = ck_rel * mag.max(1.0);
-    assert!(
-        (ck - g.ck).abs() <= bound,
-        "{what}: checksum {ck} vs golden {} (|diff| {:e} > bound {:e})",
-        g.ck,
-        (ck - g.ck).abs(),
-        bound
-    );
-}
-
-fn bf16_tol(g: &GoldenTensor) -> f64 {
-    let m = g.data.iter().fold(0f64, |a, v| a.max(v.abs()));
-    2.0 * 2f64.powi(-8) * m + 1e-6
-}
-
-const BF16_CK_REL: f64 = 0.0078125; // 2 * 2^-8, one bf16 ulp either side
-const EXACT: f64 = 1e-12;
 
 struct Fx {
     g: Golden,
@@ -98,7 +71,7 @@ fn hash_is_exact_across_prefill_and_both_decode_steps() {
     let hs = hashes(&f);
     for (r, h) in f.regimes.iter().zip(&hs) {
         let got: Vec<f64> = h.iter().map(|&v| v as f64).collect();
-        check(&format!("{r}.engram_hashes"), &got, &f.g.tensor(r, "engram_hashes"), EXACT, EXACT);
+        check_capture(&format!("{r}.engram_hashes"), &got, &f.g.tensor(r, "engram_hashes"), EXACT, EXACT);
         // the per-layer slice the Engram module actually receives
         let nl = f.t.layer_ids.len();
         let cols = f.t.n_hash_cols();
@@ -107,7 +80,7 @@ fn hash_is_exact_across_prefill_and_both_decode_steps() {
             let slice: Vec<f64> = (0..l_tokens)
                 .flat_map(|s| (0..cols).map(move |c| h[(s * nl + li) * cols + c] as f64))
                 .collect();
-            check(&format!("{r}.L{lid}.engram_hash_ids"), &slice, &f.g.tensor(r, &format!("L{lid}.engram_hash_ids")), EXACT, EXACT);
+            check_capture(&format!("{r}.L{lid}.engram_hash_ids"), &slice, &f.g.tensor(r, &format!("L{lid}.engram_hash_ids")), EXACT, EXACT);
         }
     }
 }
@@ -173,7 +146,7 @@ fn table_gather_is_exact() {
             let l_tokens = h.len() / (nl * cols);
             let ids: Vec<i64> = (0..l_tokens).flat_map(|s| (0..cols).map(move |c| h[(s * nl + li) * cols + c])).collect();
             let got: Vec<f64> = embed_rows(&table, f.t.head_dim, &ids).iter().map(|&v| v as f64).collect();
-            check(&format!("{r}.L{lid}.engram_embed"), &got, &f.g.tensor(r, &format!("L{lid}.engram_embed")), EXACT, EXACT);
+            check_capture(&format!("{r}.L{lid}.engram_embed"), &got, &f.g.tensor(r, &format!("L{lid}.engram_embed")), EXACT, EXACT);
         }
     }
 }
@@ -196,7 +169,7 @@ fn projection_matches_within_bf16() {
             let kv = linear_bf16(&emb, l_tokens, in_f, &w, out_f);
             let gt = f.g.tensor(r, &format!("L{lid}.engram_kv"));
             let got: Vec<f64> = kv.iter().map(|&v| v as f64).collect();
-            check(&format!("{r}.L{lid}.engram_kv"), &got, &gt, bf16_tol(&gt), BF16_CK_REL);
+            check_capture(&format!("{r}.L{lid}.engram_kv"), &got, &gt, bf16_tol(&gt), BF16_CK_REL);
         }
     }
 }
@@ -225,7 +198,7 @@ fn full_engram_matches_within_bf16() {
             let out = gate_and_add(&x, &kv, &q, &k, l_tokens, f.hc, f.dim, f.eps);
             let gt = f.g.tensor(r, &format!("L{lid}.engram_out"));
             let got: Vec<f64> = out.iter().map(|&v| v as f64).collect();
-            check(&format!("{r}.L{lid}.engram_out"), &got, &gt, bf16_tol(&gt), BF16_CK_REL);
+            check_capture(&format!("{r}.L{lid}.engram_out"), &got, &gt, bf16_tol(&gt), BF16_CK_REL);
         }
     }
 }
