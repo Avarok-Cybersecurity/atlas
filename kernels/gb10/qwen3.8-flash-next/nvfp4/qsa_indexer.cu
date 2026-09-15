@@ -885,7 +885,20 @@ extern "C" __global__ __launch_bounds__(QSA_EXPAND_THREADS) void qsa_expand_sel(
 // the reference mask, exactly as the scalar kernel's own comment claims.
 //
 // Grid: (rows)  Block: (256) = 8 warps.
-#define QSA_PATC_TB 16          // tokens per tile
+// Tokens per tile, TWO instantiations — the tile trades warp utilisation
+// against CTAs per SM, and the right trade depends on how many CTAs exist.
+//
+// The QK mma maps one 8-token n-tile per warp (`nc = warp*8 + gid`), so TB 64
+// keeps all 8 warps busy and TB 16 leaves 6 idle. But TB also sets the smem
+// footprint: 49088 B = 2 CTAs/SM at 64, 19712 B = 5 CTAs/SM at 16.
+//
+//   PREFILL has 5773 CTAs to schedule, so the occupancy wins outright:
+//   72.8 -> 55.8 ms a layer, +4.3% / +5.6% end-to-end at 8K / 32K.
+//   VERIFY has ~18 rows = ~18 CTAs against 48 SMs, so extra CTAs/SM buy
+//   NOTHING (there are not enough CTAs to place) and the idle warps are pure
+//   loss. That path keeps TB 64.
+#define QSA_PATC_TB_VERIFY 64
+#define QSA_PATC_TB_PREFILL 16
 #define QSA_PATC_HD 256         // head_dim (checked at the call site)
 #define QSA_PATC_M 16           // mma M — nq padded to 16
 #define QSA_PATC_QPAD 8         // sQ row pad: kills an 8-way A-fragment conflict
@@ -901,7 +914,8 @@ extern "C" __global__ __launch_bounds__(QSA_EXPAND_THREADS) void qsa_expand_sel(
 #define QSA_PATC_KPAD 2
 #define QSA_PATC_VPAD 4         // sKV-as-V row pad
 #define QSA_PATC_PPAD 8
-extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
+template <int TB>
+__device__ __forceinline__ void qsa_pa_tc_impl(
     const __nv_bfloat16* __restrict__ q,        // [rows, nq, hd] (roped)
     const __nv_bfloat16* __restrict__ k_cache,  // paged NHD
     const __nv_bfloat16* __restrict__ v_cache,
@@ -917,7 +931,7 @@ extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
     const unsigned int hd,
     const float inv_sqrt_d
 ) {
-    const int TB = QSA_PATC_TB, HD = QSA_PATC_HD, M = QSA_PATC_M;
+    const int HD = QSA_PATC_HD, M = QSA_PATC_M;
     const int KT_ROW = TB + QSA_PATC_KPAD;   // sKV as K^T: [hd][TB+pad]
     const int V_ROW  = HD + QSA_PATC_VPAD;   // sKV as V:   [TB][hd+pad]
     const int Q_ROW  = HD + QSA_PATC_QPAD;
@@ -1138,3 +1152,25 @@ extern "C" __global__ __launch_bounds__(256) void qsa_prefill_attn_tc(
         }
     }
 }
+
+#define QSA_PATC_ENTRY(NAME, TBV)                                              \
+    extern "C" __global__ __launch_bounds__(256) void NAME(                    \
+        const __nv_bfloat16* __restrict__ q,                                   \
+        const __nv_bfloat16* __restrict__ k_cache,                             \
+        const __nv_bfloat16* __restrict__ v_cache,                             \
+        const int* __restrict__ block_table,                                   \
+        const int* __restrict__ lists,                                         \
+        __nv_bfloat16* __restrict__ attn_out,                                  \
+        const unsigned int first_pos, const unsigned int topk,                 \
+        const unsigned int ratio, const unsigned int block_size,               \
+        const unsigned int nq, const unsigned int nkv, const unsigned int hd,  \
+        const float inv_sqrt_d) {                                              \
+        qsa_pa_tc_impl<TBV>(q, k_cache, v_cache, block_table, lists, attn_out, \
+                            first_pos, topk, ratio, block_size, nq, nkv, hd,   \
+                            inv_sqrt_d);                                       \
+    }
+
+// The name the VERIFY path has always called keeps the verify tile, so that
+// path is byte-unchanged from before the prefill tile work.
+QSA_PATC_ENTRY(qsa_prefill_attn_tc, QSA_PATC_TB_VERIFY)
+QSA_PATC_ENTRY(qsa_prefill_attn_tc_tb16, QSA_PATC_TB_PREFILL)

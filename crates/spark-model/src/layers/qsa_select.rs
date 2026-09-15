@@ -344,7 +344,14 @@ impl QsaIndexer {
             pa_kernel(
                 gpu,
                 if pa_tc {
-                    self.k_prefill_attn_tc_k
+                    if ops::qsa_pa_tc_wide(rows as u32) && self.k_prefill_attn_tc16_k.0 != 0 {
+                        // Prefill: thousands of CTAs, so 5 CTAs/SM beats busy warps.
+                        self.k_prefill_attn_tc16_k
+                    } else {
+                        // Verify: ~18 CTAs against 48 SMs — occupancy is not the
+                        // constraint, warp utilisation is. Unchanged tile.
+                        self.k_prefill_attn_tc_k
+                    }
                 } else {
                     self.k_prefill_attn_k
                 },

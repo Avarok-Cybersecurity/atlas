@@ -104,6 +104,8 @@ pub struct QsaIndexer {
     /// `try_kernel`: absent on a target that did not build it, and the
     /// dispatch falls back to the scalar kernel.
     k_prefill_attn_tc_k: KernelHandle,
+    /// Prefill tile (TB 16) twin of the above; see `ops::qsa_pa_tc_wide`.
+    k_prefill_attn_tc16_k: KernelHandle,
 
     qk_scratch: DevicePtr, // [INGEST_SLAB, (n_heads+1)*hd] BF16
     q_post: DevicePtr,     // [n_heads, hd] F32
@@ -188,6 +190,11 @@ impl QsaIndexer {
                 gpu,
                 "qsa_indexer",
                 "qsa_prefill_attn_tc",
+            ),
+            k_prefill_attn_tc16_k: crate::layers::try_kernel(
+                gpu,
+                "qsa_indexer",
+                "qsa_prefill_attn_tc_tb16",
             ),
             qk_scratch: gpu.alloc(INGEST_SLAB * qk_width * 2)?,
             q_post: gpu.alloc(n_heads * hd * 4)?,

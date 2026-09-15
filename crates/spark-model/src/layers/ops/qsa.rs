@@ -313,7 +313,11 @@ pub fn qsa_prefill_attn_tc(
     KernelLaunch::new(gpu, kernel)
         .grid([rows, 1, 1])
         .block([256, 1, 1])
-        .shared_mem(QSA_PA_TC_SMEM)
+        .shared_mem(if qsa_pa_tc_wide(rows) {
+            QSA_PA_TC_SMEM_TB16
+        } else {
+            QSA_PA_TC_SMEM
+        })
         .arg_ptr(q)
         .arg_ptr(k_cache)
         .arg_ptr(v_cache)
@@ -332,7 +336,17 @@ pub fn qsa_prefill_attn_tc(
 }
 
 /// Tile constants, mirroring `QSA_PATC_*` in `qsa_indexer.cu`.
-const QSA_PA_TC_TB: u32 = 16;
+/// Tile for the VERIFY entry point (`qsa_prefill_attn_tc`) — all 8 warps busy,
+/// 2 CTAs/SM. Verify launches ~18 CTAs, far fewer than the 48 SMs, so CTAs/SM
+/// is not the binding constraint there and warp utilisation is.
+const QSA_PA_TC_TB: u32 = 64;
+/// Tile for the PREFILL entry point (`qsa_prefill_attn_tc_tb16`) — 5 CTAs/SM.
+/// Prefill has thousands of CTAs, so occupancy dominates the idle warps.
+const QSA_PA_TC_TB16: u32 = 16;
+/// Rows past which the prefill tile wins. The crossover is "enough CTAs to
+/// fill the machine": one CTA per query row, 48 SMs, so a couple of hundred
+/// rows is comfortably past it and verify widths (tens) are comfortably under.
+const QSA_PA_TC_WIDE_ROWS: u32 = 256;
 const QSA_PA_TC_HD: u32 = 256;
 const QSA_PA_TC_M: u32 = 16;
 const QSA_PA_TC_QPAD: u32 = 8;
@@ -350,6 +364,19 @@ const QSA_PA_TC_PPAD: u32 = 8;
 /// 50_112 B = TWO CTAs per SM. The 49_152 figure is the STATIC limit, which
 /// is why these arrays are dynamic; the sm_121 opt-in ceiling is
 /// [`super::ssm_ssd::MAX_DYNAMIC_SMEM`] (101_376).
+/// Same layout at the prefill tile. Both are asserted against the kernel's own
+/// arithmetic by `tc_prefill_attn_smem_is_five_ctas_per_sm`.
+pub const QSA_PA_TC_SMEM_TB16: u32 = {
+    let kt = QSA_PA_TC_HD * (QSA_PA_TC_TB16 + QSA_PA_TC_KPAD) * 2;
+    let v = QSA_PA_TC_TB16 * (QSA_PA_TC_HD + QSA_PA_TC_VPAD) * 2;
+    let kv = if kt > v { kt } else { v };
+    kv + QSA_PA_TC_M * (QSA_PA_TC_HD + QSA_PA_TC_QPAD) * 2
+        + QSA_PA_TC_M * (QSA_PA_TC_TB16 + QSA_PA_TC_PPAD) * 2
+        + QSA_PA_TC_M * QSA_PA_TC_TB16 * 4
+        + 3 * QSA_PA_TC_M * 4
+        + QSA_PA_TC_TB16 * 4
+};
+
 pub const QSA_PA_TC_SMEM: u32 = {
     let kt = QSA_PA_TC_HD * (QSA_PA_TC_TB + QSA_PA_TC_KPAD) * 2;
     let v = QSA_PA_TC_TB * (QSA_PA_TC_HD + QSA_PA_TC_VPAD) * 2;
@@ -360,6 +387,14 @@ pub const QSA_PA_TC_SMEM: u32 = {
         + 3 * QSA_PA_TC_M * 4
         + QSA_PA_TC_TB * 4
 };
+
+/// Which of the two TC tiles this launch wants — and therefore BOTH which
+/// entry point and which shared-memory size. One predicate on purpose: the
+/// kernel carves its arena by hand from the byte count the launch passes, so a
+/// handle that disagrees with the size reads past its own arena.
+pub fn qsa_pa_tc_wide(rows: u32) -> bool {
+    rows >= QSA_PA_TC_WIDE_ROWS
+}
 
 /// Whether the TC prefill-attention kernel may be used for this geometry.
 pub fn qsa_prefill_attn_tc_ok(nq: u32, nkv: u32, hd: u32) -> bool {

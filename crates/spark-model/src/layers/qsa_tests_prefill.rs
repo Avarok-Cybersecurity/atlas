@@ -312,7 +312,14 @@ fn tc_prefill_attn_smem_is_five_ctas_per_sm() {
     // KPAD is 2 so the K^T store hits 32 distinct banks; 4 gave a 2-way
     // conflict on every K store and cost 1024 B more. TB 16 == block_size, so
     // one token tile is exactly one selected KV block.
-    assert_eq!(ops::QSA_PA_TC_SMEM, 19_712, "shared-memory layout drifted");
+    // Both tiles are pinned: the launch passes one of these byte counts and the
+    // kernel carves its arena from it, so a drift in either is an OOB read.
+    assert_eq!(ops::QSA_PA_TC_SMEM, 49_088, "verify-tile layout drifted");
+    assert_eq!(
+        ops::QSA_PA_TC_SMEM_TB16,
+        19_712,
+        "prefill-tile layout drifted"
+    );
     // Both bounds are known at compile time, so assert them at compile time:
     // a runtime `assert!` over two constants is a lint (the compiler can see
     // the answer) and, worse, it only fires if someone runs the test. As
@@ -323,8 +330,12 @@ fn tc_prefill_attn_smem_is_five_ctas_per_sm() {
         "QSA_PA_TC_SMEM is past the sm_121 opt-in ceiling"
     );
     const _: () = assert!(
-        5 * ops::QSA_PA_TC_SMEM <= 102_400,
-        "QSA_PA_TC_SMEM dropped below five CTAs per SM"
+        2 * ops::QSA_PA_TC_SMEM <= 102_400,
+        "the verify tile dropped below two CTAs per SM"
+    );
+    const _: () = assert!(
+        5 * ops::QSA_PA_TC_SMEM_TB16 <= 102_400,
+        "the prefill tile dropped below five CTAs per SM"
     );
 }
 
