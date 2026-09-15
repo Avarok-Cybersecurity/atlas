@@ -468,6 +468,7 @@ mod gguf;
 mod loader;
 pub mod mlx_int8;
 pub use gguf::dequant_cpu;
+pub use gguf::expert_stream;
 pub use gguf::{GgufLoader, GgufShardSet, config_from_gguf_dir, find_gguf, find_gguf_shards};
 pub(crate) use loader::estimate_load_bytes;
 // Platform-independent: consumed by the unix-only fast-weights (O_DIRECT) path

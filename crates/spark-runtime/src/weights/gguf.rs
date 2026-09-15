@@ -27,6 +27,8 @@ mod container;
 /// Public for kernel oracles: the CPU reference decoders every GPU dequant is held to.
 pub mod dequant_cpu;
 mod dequant_gpu;
+mod expert_lru;
+pub mod expert_stream;
 mod names;
 mod sidecar;
 mod value_transform;
@@ -508,6 +510,10 @@ impl super::WeightLoader for GgufLoader {
 mod deepseek_v41_real_file_test;
 #[cfg(test)]
 mod deepseek_v41_stream_bench_test;
+#[cfg(test)]
+mod deepseek_v41_stream_oracle_test;
+#[cfg(test)]
+mod expert_stream_tests;
 #[cfg(test)]
 mod real_file_test;
 
