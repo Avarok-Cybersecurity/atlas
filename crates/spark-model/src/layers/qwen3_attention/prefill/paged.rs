@@ -34,6 +34,34 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<DevicePtr> {
+        // Sub-stage profiler for the attention block. The layer-level
+        // `astage!("attn_core")` lumps QKV+RoPE+cache, the dense attention
+        // pass, QSA stage-2 and o_proj into one 23.4% bar; ranking a kernel
+        // fix needs the split. Same env var as the other two profilers.
+        static PPROF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static PPROF_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(200);
+        let pprof = *PPROF
+            .get_or_init(|| std::env::var("ATLAS_QWEN4EXP_PREFILL_PROF").as_deref() == Ok("1"))
+            && PPROF_LEFT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) > 0;
+        let mut pt = if pprof {
+            ctx.gpu.synchronize(stream).ok();
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+        macro_rules! pstage {
+            ($name:expr) => {
+                if let Some(t0) = pt.as_mut() {
+                    ctx.gpu.synchronize(stream).ok();
+                    tracing::info!(
+                        "attn-core T={num_tokens} s0={seq_len_start} [{}]: {}us",
+                        $name,
+                        t0.elapsed().as_micros()
+                    );
+                    *t0 = std::time::Instant::now();
+                }
+            };
+        }
         let h = ctx.config.hidden_size as u32;
         let nq = self
             .num_q_heads_override
@@ -492,6 +520,8 @@ impl Qwen3AttentionLayer {
             }
         }
 
+        pstage!("qkv_rope_cache");
+
         // ── 8. Paged Flash Attention for chunk 1+ ── (extracted to paged_attn.rs)
         let attn_out = ctx.buffers.attn_output();
         let inv_sqrt_d = self.effective_attn_scale(hd);
@@ -718,6 +748,8 @@ impl Qwen3AttentionLayer {
             )?;
         }
 
+        pstage!("attn_dense");
+
         // ── 8b. QSA stage-2: per-query prefill selection for CHUNKED
         // prefills (>8K prompts). Same overwrite-the-context hook as the
         // chunk-0 cache-skip path; the paged cache already holds every
@@ -752,6 +784,8 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         }
+
+        pstage!("attn_qsa_sel");
 
         // ── 9. Sigmoid gate × attn_out (gated only) — single batched kernel ──
         if self.gated {
@@ -840,6 +874,7 @@ impl Qwen3AttentionLayer {
 
         // ── 10. O projection GEMM ── (extracted to paged_oproj.rs)
         let o_out = self.prefill_attention_paged_oproj(attn_out, n, h, nq, hd, ctx, stream)?;
+        pstage!("o_proj");
 
         Ok(o_out)
     }

@@ -153,8 +153,34 @@ impl QsaIndexer {
         // First selective GLOBAL position, and its chunk-local row.
         let first_sel_pos = bound.max(seq_start);
         let n_sel_total = total - first_sel_pos;
+        // Phase accounting for stage 2, which the chunk-0 profile put at 77%
+        // of the attention block (919 ms of 1188). Four phases share that bar
+        // and they want very different fixes, so accumulate each across slabs
+        // and log ONE line per call. Same env var as the other profilers.
+        let s2prof = {
+            static P: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *P.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_PREFILL_PROF").as_deref() == Ok("1"))
+        };
+        let mut us_proj = 0u128;
+        let mut us_score = 0u128;
+        let mut us_topk = 0u128;
+        let mut us_attn = 0u128;
+        macro_rules! s2mark {
+            ($acc:expr, $t:expr) => {
+                if s2prof {
+                    gpu.synchronize(stream).ok();
+                    $acc += $t.elapsed().as_micros();
+                    $t = std::time::Instant::now();
+                }
+            };
+        }
+        let mut s2t = std::time::Instant::now();
         let mut slab = 0usize;
         while slab < n_sel_total {
+            if s2prof {
+                gpu.synchronize(stream).ok();
+                s2t = std::time::Instant::now();
+            }
             let rows = ROWS.min(n_sel_total - slab);
             let first_pos = first_sel_pos + slab; // GLOBAL position
             let first_row = first_pos - seq_start; // chunk-local buffer row
@@ -195,6 +221,8 @@ impl QsaIndexer {
                 && self.n_heads == 4
                 && self.hd == 128
                 && std::env::var("ATLAS_QSA_SCORE_SCALAR").as_deref() != Ok("1");
+            s2mark!(us_proj, s2t);
+
             if tc {
                 ops::qsa_score_rows_tc(
                     gpu,
@@ -237,6 +265,7 @@ impl QsaIndexer {
                 static H: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
                 *H.get_or_init(|| std::env::var("ATLAS_QSA_HOST_TOPK").as_deref() == Ok("1"))
             };
+            s2mark!(us_score, s2t);
             if !host_topk && self.k_topk_rows_k.0 != 0 {
                 ops::qsa_topk_rows(
                     gpu,
@@ -284,6 +313,7 @@ impl QsaIndexer {
             // head together, instead of one CTA per (row, head) re-streaming
             // the same K/V: the scalar kernel measured 23.4% of an 8K prefill
             // at 1.94 TFLOP/s. ATLAS_QSA_PA_SCALAR=1 forces the original.
+            s2mark!(us_topk, s2t);
             let pa_tc = self.k_prefill_attn_tc_k.0 != 0
                 && ops::qsa_prefill_attn_tc_ok(nq, self.nkv_attn, self.hd_attn)
                 && std::env::var("ATLAS_QSA_PA_SCALAR").as_deref() != Ok("1");
@@ -335,7 +365,14 @@ impl QsaIndexer {
                 inv_sqrt_d,
                 stream,
             )?;
+            s2mark!(us_attn, s2t);
             slab += rows;
+        }
+        if s2prof {
+            tracing::info!(
+                "qsa-s2 rows={n_sel_total} [qk_proj+qprep]={us_proj}us [score]={us_score}us \
+                 [topk]={us_topk}us [attn]={us_attn}us"
+            );
         }
         if diag {
             let mut sel_last = vec![0u8; q_row * 2];

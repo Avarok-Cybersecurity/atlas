@@ -332,7 +332,7 @@ pub fn qsa_prefill_attn_tc(
 }
 
 /// Tile constants, mirroring `QSA_PATC_*` in `qsa_indexer.cu`.
-const QSA_PA_TC_TB: u32 = 64;
+const QSA_PA_TC_TB: u32 = 16;
 const QSA_PA_TC_HD: u32 = 256;
 const QSA_PA_TC_M: u32 = 16;
 const QSA_PA_TC_QPAD: u32 = 8;

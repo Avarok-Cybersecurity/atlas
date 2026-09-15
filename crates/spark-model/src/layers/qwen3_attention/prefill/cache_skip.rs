@@ -140,6 +140,35 @@ impl Qwen3AttentionLayer {
             None
         };
 
+        // Sub-stage profiler: chunk-0 attention is the `attn_core` bar, and
+        // ranking a kernel fix needs it split into projections / the dense
+        // flash pass / QSA stage-2 / o_proj. Same env var as the layer-level
+        // profilers, so one run attributes the whole model.
+        static CPROF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static CPROF_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(200);
+        let cprof = *CPROF
+            .get_or_init(|| std::env::var("ATLAS_QWEN4EXP_PREFILL_PROF").as_deref() == Ok("1"))
+            && CPROF_LEFT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) > 0;
+        let mut ct = if cprof {
+            ctx.gpu.synchronize(stream).ok();
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+        macro_rules! cstage {
+            ($name:expr) => {
+                if let Some(t0) = ct.as_mut() {
+                    ctx.gpu.synchronize(stream).ok();
+                    tracing::info!(
+                        "attn-core T={num_tokens} [{}]: {}us",
+                        $name,
+                        t0.elapsed().as_micros()
+                    );
+                    *t0 = std::time::Instant::now();
+                }
+            };
+        }
+
         // ── 0. Convert activations BF16 → FP8 once for all Q/K/V projections ──
         // FP8×FP8 GEMM is ~10% faster than BF16×FP8 for Q proj, more than
         // compensating for the 7.6ms conversion cost.
@@ -641,6 +670,8 @@ impl Qwen3AttentionLayer {
             );
         }
 
+        cstage!("qkv_rope_cache");
+
         // ── 8. Flash Attention on contiguous Q/K/V (BR=64 for long sequences) ──
         let attn_out = ctx.buffers.attn_output();
         let inv_sqrt_d = self.effective_attn_scale(hd);
@@ -792,6 +823,8 @@ impl Qwen3AttentionLayer {
             )?;
         }
 
+        cstage!("attn_dense");
+
         // ── 8b. QSA stage-2: per-query prefill selection (Qwen3.8-Flash-
         // Next). Rows past the inert bound get their attention CONTEXT
         // overwritten with attention over exactly their reference-selected
@@ -822,6 +855,8 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         }
+
+        cstage!("attn_qsa_sel");
 
         // ── 9. Sigmoid gate × attn_out (gated only) — single batched kernel ──
         if self.gated {
@@ -921,6 +956,7 @@ impl Qwen3AttentionLayer {
 
         // ── 10. O projection GEMM ── (extracted to paged_oproj.rs)
         let o_out = self.prefill_attention_paged_oproj(attn_out, n, h, nq, hd, ctx, stream)?;
+        cstage!("o_proj");
         aprof!("o_proj", t0);
         Ok(o_out)
     }

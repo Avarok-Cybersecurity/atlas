@@ -302,14 +302,17 @@ fn qsa_prefill_attn_matches_cpu() {
 /// block, and the launch passes a byte count computed on the Rust side. If the
 /// two ever disagree the kernel reads past its own arena — silently, since the
 /// allocation is whatever the launch asked for. Pin the number, and pin that
-/// two CTAs still fit an SM, because the whole point of aliasing K and V was
-/// occupancy (one CTA per SM measured +4.4% against a 23.4% profile share).
+/// the CTAs-per-SM the current tile size is meant to buy, because occupancy is
+/// what this kernel is short of (one CTA per SM measured +4.4% against a 23.4%
+/// profile share; TB 64 -> 16 took 2 CTAs to 5 and the kernel 72.8 -> 55.8 ms
+/// a layer, +4.3% / +5.6% end-to-end at 8K / 32K).
 #[test]
-fn tc_prefill_attn_smem_is_two_ctas_per_sm() {
-    // hd 256, TB 64, M 16, pads 8/2/4/8 — see QSA_PATC_* in qsa_indexer.cu.
+fn tc_prefill_attn_smem_is_five_ctas_per_sm() {
+    // hd 256, TB 16, M 16, pads 8/2/4/8 — see QSA_PATC_* in qsa_indexer.cu.
     // KPAD is 2 so the K^T store hits 32 distinct banks; 4 gave a 2-way
-    // conflict on every K store and cost 1024 B more.
-    assert_eq!(ops::QSA_PA_TC_SMEM, 49_088, "shared-memory layout drifted");
+    // conflict on every K store and cost 1024 B more. TB 16 == block_size, so
+    // one token tile is exactly one selected KV block.
+    assert_eq!(ops::QSA_PA_TC_SMEM, 19_712, "shared-memory layout drifted");
     // Both bounds are known at compile time, so assert them at compile time:
     // a runtime `assert!` over two constants is a lint (the compiler can see
     // the answer) and, worse, it only fires if someone runs the test. As
@@ -320,8 +323,8 @@ fn tc_prefill_attn_smem_is_two_ctas_per_sm() {
         "QSA_PA_TC_SMEM is past the sm_121 opt-in ceiling"
     );
     const _: () = assert!(
-        2 * ops::QSA_PA_TC_SMEM <= 102_400,
-        "QSA_PA_TC_SMEM leaves only one CTA per SM"
+        5 * ops::QSA_PA_TC_SMEM <= 102_400,
+        "QSA_PA_TC_SMEM dropped below five CTAs per SM"
     );
 }
 

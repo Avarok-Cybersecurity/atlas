@@ -885,7 +885,7 @@ extern "C" __global__ __launch_bounds__(QSA_EXPAND_THREADS) void qsa_expand_sel(
 // the reference mask, exactly as the scalar kernel's own comment claims.
 //
 // Grid: (rows)  Block: (256) = 8 warps.
-#define QSA_PATC_TB 64          // tokens per tile
+#define QSA_PATC_TB 16          // tokens per tile
 #define QSA_PATC_HD 256         // head_dim (checked at the call site)
 #define QSA_PATC_M 16           // mma M — nq padded to 16
 #define QSA_PATC_QPAD 8         // sQ row pad: kills an 8-way A-fragment conflict
