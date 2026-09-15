@@ -141,6 +141,12 @@ impl Golden {
             .unwrap_or_else(|| panic!("fixture.{key} is not an integer"))
     }
 
+    pub fn fixture_f64(&self, key: &str) -> f64 {
+        self.0["fixture"][key]
+            .as_f64()
+            .unwrap_or_else(|| panic!("fixture.{key} is not numeric"))
+    }
+
     pub fn lcg_probe(&self) -> Vec<u64> {
         self.0["fixture"]["lcg_probe"]
             .as_array()
@@ -220,6 +226,8 @@ pub fn assert_close(what: &str, got: &[f64], want: &[f64], tol: f64) {
         want[at]
     );
 }
+
+pub mod engram;
 
 #[cfg(test)]
 mod tests;

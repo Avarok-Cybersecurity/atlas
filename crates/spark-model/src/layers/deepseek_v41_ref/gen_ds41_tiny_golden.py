@@ -183,15 +183,22 @@ def stride_for(n: int, is_int: bool) -> int:
     return 1 if n <= cap else _next_prime(-(-n // cap))
 
 
-def emit_tensor(t: torch.Tensor, is_int: bool) -> dict:
+# Captures a sub-module test needs as its INPUT are stored at full resolution (stride 1), so the
+# sub-module can be checked before the layers that would otherwise have to produce that input.
+FULL_CAPTURES = {"L1.engram_in", "L4.engram_in"}
+
+
+def emit_tensor(t: torch.Tensor, is_int: bool, name: str = "") -> dict:
     n = t.numel()
-    stride = stride_for(n, is_int)
+    stride = 1 if name in FULL_CAPTURES else stride_for(n, is_int)
     flat = t.detach().reshape(-1)
     if is_int:
         data = [int(x) for x in flat.tolist()[::stride]]
         c = ck(flat.to(torch.float64))
     else:
-        data = [float(f"{x:.9g}") for x in flat.float().tolist()[::stride]]
+        # full round-trip precision: json.dump writes repr(), so an exact bf16 value like
+        # -0.002197265625 survives, where 9 significant figures would not
+        data = [float(x) for x in flat.float().tolist()[::stride]]
         c = ck(flat.float())
     return dict(shape=list(t.shape), n=n, stride=stride, ck=c, data=data)
 
@@ -332,6 +339,15 @@ def main():
     weights_meta = init_all(model)
     # the final-norm input is the collapsed stream; hook the instance
     model.norm.register_forward_hook(lambda m, i, o: rec("h_final", i[0]))
+    # mid-chain engram captures so a mismatch localises to hash / table / projection / gate
+    for layer in model.layers:
+        if layer.engram is None:
+            continue
+        lid = layer.layer_id
+        layer.engram.embed.register_forward_hook(
+            lambda m, i, o, lid=lid: rec(f"L{lid}.engram_embed", o))
+        layer.engram.wkv.register_forward_hook(
+            lambda m, i, o, lid=lid: rec(f"L{lid}.engram_kv", o))
     install_hooks()
 
     total = PREFILL + 2
@@ -356,11 +372,35 @@ def main():
             "filler": "salt=fnv1a64(name); z=splitmix64(salt ^ (i*0x9E3779B97F4A7C15)); u=(z>>40)/2^24; v=f32((2u-1)*scale+offset)",
             "input_ids_rule": "fixed_ints('input_ids', batch*(prefill_len+2), vocab_size)[b*(prefill_len+2)+t]",
             "lcg_probe": [splitmix64(fnv1a64("probe") ^ ((i * GOLD) & MASK64)) for i in range(8)],
+            # The hash tables are register_buffers (not parameters), and in production they are
+            # READ from the GGUF, never recomputed. Shipped here so the Rust engram consumes given
+            # tables exactly as the loader will; recomputing `multipliers` would mean reproducing
+            # numpy's PCG64 bounded draw, a dependency the real path never has.
+            "engram": {
+                "layer_ids": list(model.engram_layout.layer_ids),
+                "max_ngram_size": model.engram_layout.max_ngram_size,
+                "n_heads": model.engram_layout.n_heads,
+                "head_dim": model.engram_layout.head_dim,
+                "n_hash_cols": (model.engram_layout.max_ngram_size - 1) * model.engram_layout.n_heads,
+                "num_embeddings": list(model.engram_layout.num_embeddings),
+                "pad_id_compressed": int(model.engram_hash.pad_id),
+                "token_map": model.engram_hash.token_map.tolist(),
+                "multipliers": model.engram_hash.multipliers.tolist(),   # [layers][ngram]
+                "primes": model.engram_hash.primes.tolist(),             # [layers][ngram-1][heads]
+                "offsets": model.engram_hash.offsets.tolist(),           # [layers][(ngram-1)*heads]
+                # per-block e8m0 dequant scales of each fp8 table, as floats (all powers of two).
+                # Shipped because production dequantises rows from Q2_K, a different format: the
+                # Rust reference's contract is "dequantised rows in", and the e8m0 rounding rule is
+                # pinned by its own test rather than assumed.
+                "scale_block": 32,
+                "scales": [layer.engram.embed.scale.float().reshape(-1).tolist()
+                           for layer in model.layers if layer.engram is not None],
+            },
         },
         "weights_meta": weights_meta,
     }
     for r in regimes:
-        out[r] = {k: emit_tensor(t, is_int) for k, (t, is_int) in REC[r].items()}
+        out[r] = {k: emit_tensor(t, is_int, k) for k, (t, is_int) in REC[r].items()}
 
     path = os.path.join(HERE, "ds41_tiny_golden.json")
     with open(path, "w") as f:
