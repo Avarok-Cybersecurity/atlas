@@ -147,6 +147,19 @@ impl Golden {
             .unwrap_or_else(|| panic!("fixture.{key} is not numeric"))
     }
 
+    pub fn fixture_i64(&self, key: &str) -> i64 {
+        self.0["fixture"][key].as_i64().unwrap_or_else(|| panic!("fixture.{key} is not an integer"))
+    }
+
+    pub fn fixture_usize_list(&self, key: &str) -> Vec<usize> {
+        self.0["fixture"][key]
+            .as_array()
+            .unwrap_or_else(|| panic!("fixture.{key} is not a list"))
+            .iter()
+            .map(|v| v.as_u64().expect("usize") as usize)
+            .collect()
+    }
+
     pub fn lcg_probe(&self) -> Vec<u64> {
         self.0["fixture"]["lcg_probe"]
             .as_array()
@@ -261,6 +274,8 @@ pub mod engram;
 pub mod hc;
 pub mod moe;
 pub mod attn;
+pub mod compress;
+pub mod model;
 
 /// Shared comparison bar for every component's tests.
 #[cfg(test)]
