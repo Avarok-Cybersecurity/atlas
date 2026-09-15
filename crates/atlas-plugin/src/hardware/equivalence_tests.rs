@@ -48,6 +48,9 @@ fn two_healthy_gb10s_are_one_box_and_the_incident_pair_is_not() {
     assert_eq!(equivalent(&gb10(65.0), &gb10(70.0), &SPEED_SPREAD), Ok(()));
     // 8 °C apart: inside a day's swing on one box.
     assert_eq!(equivalent(&gb10(65.0), &gb10(73.0), &SPEED_SPREAD), Ok(()));
+    // 13 °C apart: the 2026-09-15 fleet under load (55 vs 68 °C), accepted
+    // since the limit went to 15.
+    assert_eq!(equivalent(&gb10(55.0), &gb10(68.0), &SPEED_SPREAD), Ok(()));
     // The 2026-09-06 pair: 65 °C vs 89 °C, and a thermal reason on the hot one.
     let hot =
         HardwareFingerprint::from_live(&hw("NVIDIA GB10", "580.95.05"), &state(89.0, Some(true)));
@@ -56,7 +59,7 @@ fn two_healthy_gb10s_are_one_box_and_the_incident_pair_is_not() {
         why.contains(&Mismatch::ChassisDelta {
             a: 65.0,
             b: 89.0,
-            limit: 10.0
+            limit: 15.0
         }),
         "{why:?}"
     );
@@ -64,8 +67,8 @@ fn two_healthy_gb10s_are_one_box_and_the_incident_pair_is_not() {
         why.contains(&Mismatch::ThermalAlert { a: false, b: true }),
         "{why:?}"
     );
-    // 12 °C alone, no throttle: still refused — the temperature is the signal.
-    let why = equivalent(&gb10(65.0), &gb10(77.0), &SPEED_SPREAD).unwrap_err();
+    // 16 °C alone, no throttle: refused — the temperature is the signal.
+    let why = equivalent(&gb10(65.0), &gb10(81.0), &SPEED_SPREAD).unwrap_err();
     assert_eq!(why.len(), 1, "{why:?}");
     assert!(matches!(why[0], Mismatch::ChassisDelta { .. }));
 }
@@ -132,7 +135,7 @@ fn every_static_field_is_checked_and_every_mismatch_is_named() {
         Mismatch::ChassisDelta {
             a: 1.0,
             b: 2.0,
-            limit: 10.0,
+            limit: 15.0,
         },
         Mismatch::ThermalAlert { a: true, b: true },
         Mismatch::PostcheckInvalid,

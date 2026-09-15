@@ -15,6 +15,7 @@ pub mod place;
 pub mod runner;
 pub mod schedule;
 mod text;
+pub mod thermal;
 pub mod wire;
 pub use text::{fleet_json, print_fleet};
 
@@ -103,6 +104,8 @@ pub struct Shared<'a> {
     pub timeout_factor: f64,
     pub emit: &'a Emit,
     pub cancel: Arc<AtomicBool>,
+    /// Live chassis readings for the cool-down (`thermal`).
+    pub thermal: &'a dyn thermal::Probe,
 }
 
 /// One runner per node: this box's child spawner, or a remote driver.
@@ -257,7 +260,28 @@ fn worker(
     shared: &Shared,
 ) {
     let mut strikes = 0;
+    let mut cool = thermal::Gate::default();
     loop {
+        // A box that warmed past its baseline takes nothing more until it
+        // is back near it; the others keep working (`thermal`).
+        if !cool.may_take(node, shared.thermal, &|s| {
+            shared.emit.event(
+                "thermal",
+                serde_json::json!({ "node": node.addr, "text": s }),
+            );
+            shared.emit.say(s);
+        }) {
+            let stopped = board
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .campaign
+                .stopped();
+            if stopped {
+                return;
+            }
+            std::thread::sleep(thermal::RECHECK);
+            continue;
+        }
         let picked = {
             let mut b = board.lock().unwrap_or_else(|p| p.into_inner());
             if b.campaign.stopped() {

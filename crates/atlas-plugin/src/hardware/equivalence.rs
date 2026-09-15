@@ -100,12 +100,21 @@ pub struct EquivalencePolicy {
 ///   else is a different part or a different firmware.
 /// * memory within 5 %: 128 GB parts read a few hundred MB apart across
 ///   kernels; a different SKU is 30 % away.
-/// * chassis within 10 °C: the 0.66 tok/s incident was a 24 °C gap; 10 °C is
-///   inside the day-to-day range of ONE box between morning and afternoon.
+/// * chassis within 15 °C: the 0.66 tok/s incident was a 24 °C gap. The
+///   limit was 10 °C until 2026-09-15 — a number with no measurement behind
+///   it (owner decision: raise it unless data says otherwise, and none
+///   does). What IS measured: one box swings ~8 °C between morning and
+///   afternoon, and two equivalent GB10s running one campaign read 55 vs
+///   66-68 °C in their records (dgx2 idle-ish, dgx3 after five gates
+///   back-to-back) with no number moving — that 11-13 °C pair was refused at
+///   10 and is the normal spread of a fleet under load. 15 accepts it and
+///   still refuses the incident by a margin; a box that warms past that
+///   mid-campaign is parked by the orchestrator's cool-down instead
+///   (`bench_certify::remote::thermal`).
 pub const SPEED_SPREAD: EquivalencePolicy = EquivalencePolicy {
     clock_spread: 0.01,
     mem_spread: 0.05,
-    chassis_delta_c: 10.0,
+    chassis_delta_c: 15.0,
 };
 
 /// Why two fingerprints are not one box.

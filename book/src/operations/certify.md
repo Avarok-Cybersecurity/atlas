@@ -67,12 +67,25 @@ assembles a partition across counts or commits.
 **Speed-class gates spread only across boxes that are one box.** Before
 anything starts, every pair of admitted nodes is checked by
 `hardware::equivalence` (same GPU and driver line, clock ceiling within 1 %,
-memory within 5 %, no thermal throttle, chassis within 10 °C — the fields
+memory within 5 %, no thermal throttle, chassis within 15 °C — the fields
 that told two "identical" GB10s apart by 0.66 tok/s). If every pair agrees,
 Speed units go anywhere; otherwise they are **bundled** on the node with the
 most headroom and the plan prints `WARNING speed-class gates BUNDLED on …`
 with the concrete mismatch. CI re-checks the same rule from the records'
 own captures (`docs/provable-benchmark-work.md` §5c).
+
+**Cool-down.** Every node is admitted with a baseline — its hottest chassis
+zone at rest. Before a node takes another unit the zone is read again; more
+than 20 °C over its own baseline and the node is **parked**: it takes
+nothing until it is back within 5 °C (re-read every 60 s, at most 30 min,
+then it resumes with a warning), and every transition is printed and
+logged as a `thermal` event. The rest of the fleet keeps working — the
+scheduler is work-conserving, so pending units go wherever a node is free;
+a parked box that hosts the bundled Speed class only delays that class. A
+node that cannot report a temperature is never parked (said once); the
+records' own captures still decide equivalence. The thresholds are the
+operator's cut: a GB10 warms 12–28 °C over rest under a campaign, and the
+box behind the 0.66 tok/s incident sat 24 °C over its peer.
 
 **Each remote unit** is submitted with an idempotent key
 (`certify-<run>-<node>-<gate>`), followed over a re-attachable stream (a

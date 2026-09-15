@@ -282,13 +282,16 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
             let run_id = format!("{}-{}", &anchor[..anchor.len().min(10)], now);
             let runners = remote::runners(
                 f,
-                atlasctl,
+                atlasctl.clone(),
                 &run_id,
                 &anchor_full,
                 cancel.clone(),
                 &log_dir,
                 args.no_serve_reuse,
             )?;
+            let thermal = remote::thermal::FleetProbe {
+                atlasctl: atlasctl.clone(),
+            };
             let shared = remote::Shared {
                 root: &root,
                 anchor: &anchor,
@@ -298,6 +301,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
                 timeout_factor: args.timeout_factor,
                 emit: &emit,
                 cancel: cancel.clone(),
+                thermal: &thermal,
             };
             remote::drive(
                 campaign,
