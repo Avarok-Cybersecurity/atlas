@@ -86,7 +86,15 @@ impl super::types::TransformerModel {
     pub(in crate::model) fn gdn_exact_replay_for_prefill(&self, marconi_skip: bool) -> bool {
         let active = self.prefix_cache.is_active();
         let has_ssm = self.config.num_ssm_layers() > 0;
-        let allow_fla = self.levers.gdn_fla_under_prefix_cache;
+        // ★ The lever only counts when the chunked kernel it frees is actually
+        // LOADED. `ssm-state-poisoning-gate` validated the both-sides contract
+        // with FlashInfer GDN; without the library the same flag would instead
+        // free Atlas's FLA ladder under prefix caching, which is the 2026-06-10
+        // warm-hit stutter and has no such receipt. A preset can therefore ship
+        // the flag safely: on a box without the library it degrades to the
+        // token-sequential contract rather than to an unvalidated one.
+        let allow_fla = self.levers.gdn_fla_under_prefix_cache
+            && crate::layers::ops::gdn_flashinfer::available();
         let grid_free =
             prefill_recurrence_must_be_grid_free(marconi_skip, active, has_ssm, allow_fla);
         // One line per model, so a serve log says which contract is in force.

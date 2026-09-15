@@ -308,7 +308,7 @@ max_thinking_budget = 2048
 [[serve_presets]]
 name = "qwen3.8-flash-next-nvfp4-tp2-ep2"
 hf_id = "nvidia/Qwen3.8-Flash-Next-NVFP4"
-description = "Qwen3.8-Flash-Next, NVIDIA ModelOpt NVFP4, TP=2 x EP=2 across two GB10 nodes, bf16 KV, 2 MTP drafts, prefix caching, 4 sequences x 128K — the vision/video gate-passing multi-node profile (2026-09-13: vision-fidelity PASS, video-fidelity PASS 14/14, ~1450-1475 tok/s cold prefill at 8K/11K)."
+description = "Qwen3.8-Flash-Next, NVIDIA ModelOpt NVFP4, TP=2 x EP=2 across two GB10 nodes, bf16 KV, 2 MTP drafts, prefix caching, 4 sequences x 128K — the vision/video gate-passing multi-node profile (2026-09-13: vision-fidelity PASS, video-fidelity PASS 14/14, ~1450-1475 tok/s cold prefill at 8K/11K). 2026-09-15 prefill profile: 1953/1920 tok/s at 8K/32K (+35%), decode C=1/2/4 43.3/47.7/50.4 (seal 43.6/46.6/49.5), agentic 3/3 at 5.563 s/turn (seal 6.225), ssm-state-poisoning 12/12 byte-identical."
 
 [serve_presets.flags]
 # Two nodes, tensor-parallel WITHIN the expert-parallel pair. The groups
@@ -388,6 +388,49 @@ ATLAS_VERIFY_ROW_PROJ = "1"
 ATLAS_EP_MTP = "1"
 ATLAS_LOOKUP_EP = "1"
 ATLAS_LOOKUP_WIDTH = "3"
+
+# ── Prefill profile (2026-09-15). Measured together on two GB10s, same binary,
+# same preset: prefill 1450 -> 1953 / 1920 tok/s at 8K / 32K (+35%), decode
+# unchanged-to-better at every concurrency (C=1 43.3, C=2 47.7, C=4 50.4
+# against the 2026-09-13 seal's 43.6 / 46.6 / 49.5), agentic 3/3 at 5.563
+# s/turn against the seal's 6.225, and ssm-state-poisoning 12/12 replays
+# byte-identical.
+#
+# ★ `ATLAS_QWEN4EXP_BF16_GDN` stays "0" above and must NOT be raised here. It
+# is worth +2.4% prefill and costs 38% of C=1 decode (26.7 vs 43.3): it keeps
+# the 36 GDN layers' projections BF16, so every DECODE step re-reads double the
+# weight bytes while prefill amortises them over the chunk. See the memory note
+# `qwen4exp-bf16-gdn-decode-trap`.
+
+# The hc collapse's slab. 8192 covers a whole prefill chunk in one pass; the
+# sweep is monotone (8192 1505 > 2048 1435 > 1024 1388 > 512 1253) and it is
+# decode-neutral, which is why it ships and BF16_GDN does not.
+ATLAS_HC_GEMM_SLAB = "8192"
+
+# The MoE shared expert on native CUTLASS NVFP4 instead of w4a16_gemm. It was
+# doing five times less arithmetic than the routed experts in the SAME 571 ms
+# (6.5 vs 32.4 TFLOP/s) because this loader builds no transposed twins; the
+# three shared weights are ~2.8 MB a layer and now get them. Gated on n > 64,
+# so decode never takes it. +10.4% prefill at 8K.
+ATLAS_MOE_SHARED_CUTLASS = "1"
+
+# PLE's two projections on cuBLASLt. WIDE shapes (M=T, N=10240/2560, K=2560),
+# unlike the hc collapse's narrow-N ones where cuBLASLt measured a LOSS.
+ATLAS_PLE_CUBLAS = "1"
+
+# FlashInfer GDN prefill scan, ~11x Atlas's scalar chunk_delta_h. Needs
+# libatlasgdn.so + libcute_dsl_runtime.so on LD_LIBRARY_PATH (ATLAS_GDN_LIB
+# overrides the path); ABSENT, `available()` is false and both flags below
+# degrade to the shipped token-sequential recurrence rather than to anything
+# unvalidated — `gdn_exact_replay_for_prefill` requires the library before it
+# honours the lever, so this pair is safe to ship on a box without it.
+ATLAS_GDN_FLASHINFER = "1"
+# Frees BOTH sides of a Marconi restore boundary onto the chunked kernel. Not
+# one side: freeing only the cold pass is the cross-kernel boundary that
+# measured a 3.045e-03 layer-0 step, and it also left warm hits with no SSM
+# snapshot to restore from ("recomputing all KV"), which cost the agentic gate
+# 6.225 -> 9.105 s/turn. Validated by ssm-state-poisoning-gate, 12/12.
+ATLAS_GDN_FLA_UNDER_PREFIX_CACHE = "1"
 
 # ── Cross-sequence batched verify, and the arms that break its parity ────────
 #
