@@ -393,7 +393,6 @@ pub const QSA_PA_TC_SMEM_TB16: u32 = {
         + QSA_PA_TC_M * (QSA_PA_TC_TB16 + QSA_PA_TC_PPAD) * 2
         + QSA_PA_TC_M * QSA_PA_TC_TB16 * 4
         + 3 * QSA_PA_TC_M * 4
-        + QSA_PA_TC_TB16 * 4
 };
 
 pub const QSA_PA_TC_SMEM: u32 = {
@@ -404,7 +403,6 @@ pub const QSA_PA_TC_SMEM: u32 = {
         + QSA_PA_TC_M * (QSA_PA_TC_TB + QSA_PA_TC_PPAD) * 2
         + QSA_PA_TC_M * QSA_PA_TC_TB * 4
         + 3 * QSA_PA_TC_M * 4
-        + QSA_PA_TC_TB * 4
 };
 
 /// Which of the two TC tiles this launch wants — and therefore BOTH which

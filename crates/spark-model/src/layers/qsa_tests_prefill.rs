@@ -318,17 +318,19 @@ fn tc_prefill_attn_smem_is_five_ctas_per_sm() {
     // the store and the mma read.
     //
     // The prefill tile SHRANK 19712 -> 18944 when K took V's shape (both views
-    // are now TB*(HD+8) = 4224 elems, against the old max(4608, 4160)). Still
-    // 5 CTAs/SM; a 6th would need <= 17066.
+    // are now TB*(HD+8) = 4224 elems, against the old max(4608, 4160)), then
+    // -> 18880 when the per-tile token-id staging array was dropped and the
+    // gathers began resolving token ids inline. Still 5 CTAs/SM; a 6th would
+    // need <= 17066. The verify tile went 49088 -> 48832 for the same reason.
     //
     // NB: a TB-16 token tile is NOT one selected KV block. ratio is 4, so
     // `tok = my_list[t/ratio]*ratio + t%ratio` makes it FOUR distinct blocks.
     // Both tiles are pinned: the launch passes one of these byte counts and the
     // kernel carves its arena from it, so a drift in either is an OOB read.
-    assert_eq!(ops::QSA_PA_TC_SMEM, 49_088, "verify-tile layout drifted");
+    assert_eq!(ops::QSA_PA_TC_SMEM, 48_832, "verify-tile layout drifted");
     assert_eq!(
         ops::QSA_PA_TC_SMEM_TB16,
-        18_944,
+        18_880,
         "prefill-tile layout drifted"
     );
     // Both bounds are known at compile time, so assert them at compile time:

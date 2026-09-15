@@ -957,6 +957,14 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
     const int K_ROW  = HD + QSA_PATC_KPAD;   // sKV as K: [TB][hd+pad]
     const int V_ROW  = HD + QSA_PATC_VPAD;   // sKV as V: [TB][hd+pad]
     const int Q_ROW  = HD + QSA_PATC_QPAD;
+    // First shuffle step of the softmax reductions. Only min(TB,32) lanes ever
+    // hold data (`for c = lane; c < TB; c += 32`), so at TB 16 lanes 16..31
+    // carry the identity: -1e30 for the max and an exact +0.0 for the sum
+    // (`sum` starts at +0.0 and only accumulates __expf results, so it is never
+    // -0.0 and `x + 0.0f == x` bit-for-bit). Starting at TB/2 drops one shuffle
+    // from each of the two reductions, per row, per tile, and is BIT-EXACT.
+    // TB 64 is unchanged at 16.
+    const int RED0 = (TB < 32 ? TB : 32) / 2;
     const int P_ROW  = TB + QSA_PATC_PPAD;
     // Dynamic, not static: static __shared__ is capped at 49152 B. The Rust
     // side's `QSA_PA_TC_SMEM` recomputes this same total from the same tile
@@ -971,7 +979,6 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
     float* sM    = sS_ + (size_t)M * TB;
     float* sL    = sM + M;
     float* sCorr = sL + M;
-    unsigned int* sTok = (unsigned int*)(sCorr + M);
 
     const unsigned int r = blockIdx.x;
     const unsigned int tidx = threadIdx.x, NT = 256;
@@ -1009,17 +1016,13 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
     for (unsigned int t0 = 0; t0 < n_tok; t0 += TB) {
         const unsigned int n_this = min((unsigned int)TB, n_tok - t0);
 
-        // Token ids for this tile, resolved exactly as the scalar kernel does.
-        for (unsigned int j = tidx; j < (unsigned int)TB; j += NT) {
-            unsigned int t = t0 + j, tok = 0u;
-            if (j < n_this) {
-                tok = (t < topk * ratio)
-                    ? (unsigned int)my_list[t / ratio] * ratio + (t % ratio)
-                    : complete * ratio + (t - topk * ratio);
-            }
-            sTok[j] = tok;
-        }
-        __syncthreads();
+        // Token ids are resolved INLINE in the two gathers below, exactly as
+        // the scalar kernel resolves them, instead of being staged through a
+        // shared array. Both gathers give every lane of a warp the SAME j
+        // (j = i/32 with i = warp*32 + lane + s*256, so j = warp + s*8), which
+        // makes `my_list[t/ratio]` a warp-uniform broadcast load out of L1 —
+        // cheaper than an smem round-trip, and it removes a __syncthreads from
+        // every tile of every row.
 
         // ── Phase A: sKV holds K^T. kvh is 0 (nkv == 1 is gated at the call
         // site), so every head shares these rows.
@@ -1030,7 +1033,10 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
             const unsigned int d0 = (i % (unsigned int)(HD / 8)) * 8u;
             uint4 kv = make_uint4(0u, 0u, 0u, 0u);   // 8 BF16 zeros
             if (j < n_this) {
-                unsigned int tok = sTok[j];
+                const unsigned int t = t0 + j;
+                const unsigned int tok = (t < topk * ratio)
+                    ? (unsigned int)my_list[t / ratio] * ratio + (t % ratio)
+                    : complete * ratio + (t - topk * ratio);
                 unsigned long long off =
                     (unsigned long long)(unsigned int)block_table[tok / block_size] * page_stride
                     + (unsigned long long)(tok % block_size) * row_elems;
@@ -1098,7 +1104,7 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
             for (unsigned int c = lane; c < (unsigned int)TB; c += 32)
                 mx = fmaxf(mx, sS_[(size_t)row * TB + c]);
 #pragma unroll
-            for (int o2 = 16; o2 > 0; o2 >>= 1) mx = fmaxf(mx, __shfl_down_sync(0xFFFFFFFFu, mx, o2));
+            for (int o2 = RED0; o2 > 0; o2 >>= 1) mx = fmaxf(mx, __shfl_down_sync(0xFFFFFFFFu, mx, o2));
             mx = __shfl_sync(0xFFFFFFFFu, mx, 0);
             const float m_old = sM[row];
             const float m_new = fmaxf(m_old, mx);
@@ -1109,7 +1115,7 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
                 sum += p;
             }
 #pragma unroll
-            for (int o2 = 16; o2 > 0; o2 >>= 1) sum += __shfl_down_sync(0xFFFFFFFFu, sum, o2);
+            for (int o2 = RED0; o2 > 0; o2 >>= 1) sum += __shfl_down_sync(0xFFFFFFFFu, sum, o2);
             sum = __shfl_sync(0xFFFFFFFFu, sum, 0);   // every lane must reach this
             if (lane == 0) {
                 const float corr = __expf(m_old - m_new);
@@ -1130,7 +1136,14 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
                 o[nt][2] *= c1; o[nt][3] *= c1;
             }
         }
-        __syncthreads();   // everyone is done reading K^T before V overwrites it
+        // NO __syncthreads here. It used to read "everyone is done reading K^T
+        // before V overwrites it", but that is already guaranteed: every read
+        // of sKV-as-K happens in the QK mma, and the barrier after the S store
+        // above is a full barrier no warp passes until its mma and store are
+        // done. Between that barrier and this point the only work is the
+        // softmax (sS_ -> sP_/sM/sL/sCorr) and the output rescale, neither of
+        // which touches sKV — and the barrier after the V gather still orders
+        // sP_ and sKV against the PV mma that reads both.
 
         // ── Phase B: sKV now holds V, natural [token][dim].
         //
@@ -1157,7 +1170,10 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
             const unsigned int d0 = (i % (unsigned int)(HD / 8)) * 8u;
             uint4 vv = make_uint4(0u, 0u, 0u, 0u);   // 8 BF16 zeros
             if (j < n_this) {
-                unsigned int tok = sTok[j];
+                const unsigned int t = t0 + j;
+                const unsigned int tok = (t < topk * ratio)
+                    ? (unsigned int)my_list[t / ratio] * ratio + (t % ratio)
+                    : complete * ratio + (t - topk * ratio);
                 unsigned long long off =
                     (unsigned long long)(unsigned int)block_table[tok / block_size] * page_stride
                     + (unsigned long long)(tok % block_size) * row_elems;
