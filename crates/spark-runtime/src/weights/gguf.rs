@@ -506,6 +506,8 @@ impl super::WeightLoader for GgufLoader {
 #[cfg(test)]
 mod deepseek_v41_real_file_test;
 #[cfg(test)]
+mod deepseek_v41_stream_bench_test;
+#[cfg(test)]
 mod real_file_test;
 
 #[cfg(all(test, feature = "cuda"))]
