@@ -912,7 +912,15 @@ extern "C" __global__ __launch_bounds__(QSA_EXPAND_THREADS) void qsa_expand_sel(
 // It is also 1024 B smaller. (sQ keeps pad 8 for the same class of reason on
 // its A-fragment read; V is stored row-contiguous and does not care.)
 #define QSA_PATC_KPAD 2
-#define QSA_PATC_VPAD 4         // sKV-as-V row pad
+// sKV-as-V row pad. 8, not 4, and the reason is ALIGNMENT, not banks: the V
+// gather below stores 16 B (8 BF16) per thread, so `j*V_ROW + d0` must be a
+// multiple of 8 elements. 260 is not (260 = 8*32 + 4), 264 = 8*33 is. It is
+// FREE: sKV is sized by the K^T view (HD*KT_ROW), which dominates the V view
+// at BOTH tile sizes — 256*18 = 4608 > 16*264 = 4224, and 256*66 = 16896 =
+// 64*264 — so QSA_PA_TC_SMEM and QSA_PA_TC_SMEM_TB16 do not move and the
+// 5-CTAs/SM prefill design point is untouched. (V is stored row-contiguous, so
+// unlike KPAD this pad was never doing bank work.)
+#define QSA_PATC_VPAD 8
 #define QSA_PATC_PPAD 8
 template <int TB>
 __device__ __forceinline__ void qsa_pa_tc_impl(
@@ -1093,17 +1101,41 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
         __syncthreads();   // everyone is done reading K^T before V overwrites it
 
         // ── Phase B: sKV now holds V, natural [token][dim].
-        for (unsigned int i = tidx; i < (unsigned int)(TB * HD); i += NT) {
-            unsigned int j = i / HD, d = i % HD;
-            __nv_bfloat16 vv = __float2bfloat16(0.0f);
+        //
+        // 16-byte vectorized: one uint4 (8 BF16) per thread per step instead of
+        // one BF16. That is an 8x cut in global-load INSTRUCTIONS for exactly
+        // the same bytes in exactly the same order — bit-exact by construction,
+        // not a numerics change. (The old form issued 32 two-byte loads per
+        // thread per tile; TB*HD/NT = 16 steps became 2.)
+        //
+        // Both addresses are 16-B aligned, and neither is luck:
+        //   global — `off` is a multiple of row_elems (nkv*hd = 256 elems =
+        //            512 B; nkv == 1 is gated at the call site) and `d0` a
+        //            multiple of 8 elems;
+        //   smem   — V_ROW = HD + VPAD = 264 = 8*33, which is why VPAD is 8.
+        //
+        // The K gather above is deliberately NOT vectorized: it stores
+        // TRANSPOSED (sKV[d*KT_ROW + j]), so widening the load changes the
+        // lane->address map from stride 18 elems (banks 9*lane mod 32, all 32
+        // distinct) to stride 144 (banks 8*lane mod 32, only 4 distinct) — an
+        // 8-way store conflict on every K tile. Vectorizing K needs the KPAD
+        // derivation above redone for the new map; V needs nothing.
+        static_assert(QSA_PATC_HD % 8 == 0,
+                      "V gather loads 8 BF16 per thread");
+        static_assert((QSA_PATC_HD + QSA_PATC_VPAD) % 8 == 0,
+                      "V_ROW must be a multiple of 8 BF16 for the 16-B smem store");
+        for (unsigned int i = tidx; i < (unsigned int)(TB * (HD / 8)); i += NT) {
+            const unsigned int j = i / (unsigned int)(HD / 8);
+            const unsigned int d0 = (i % (unsigned int)(HD / 8)) * 8u;
+            uint4 vv = make_uint4(0u, 0u, 0u, 0u);   // 8 BF16 zeros
             if (j < n_this) {
                 unsigned int tok = sTok[j];
                 unsigned long long off =
                     (unsigned long long)(unsigned int)block_table[tok / block_size] * page_stride
                     + (unsigned long long)(tok % block_size) * row_elems;
-                vv = v_cache[off + d];
+                vv = *reinterpret_cast<const uint4*>(&v_cache[off + d0]);
             }
-            sKV[(size_t)j * V_ROW + d] = vv;
+            *reinterpret_cast<uint4*>(&sKV[(size_t)j * V_ROW + d0]) = vv;
         }
         __syncthreads();
 

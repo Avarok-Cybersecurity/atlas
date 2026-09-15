@@ -362,7 +362,11 @@ const QSA_PA_TC_HD: u32 = 256;
 const QSA_PA_TC_M: u32 = 16;
 const QSA_PA_TC_QPAD: u32 = 8;
 const QSA_PA_TC_KPAD: u32 = 2; // bank-conflict-free K^T store; see qsa_indexer.cu
-const QSA_PA_TC_VPAD: u32 = 4;
+// 8, not 4: the V gather stores 16 B per thread, so V_ROW = HD + VPAD must be
+// a multiple of 8 BF16 (264 = 8*33; 260 is not). Free — sKV is sized by the
+// K^T view at both tile sizes, so neither constant below moves. Mirrors
+// QSA_PATC_VPAD in qsa_indexer.cu; the smem test asserts they agree.
+const QSA_PA_TC_VPAD: u32 = 8;
 const QSA_PA_TC_PPAD: u32 = 8;
 
 /// Dynamic shared memory the TC kernel carves up. Must equal the kernel's own
