@@ -176,6 +176,22 @@ fn warn_if_signer_is_not_committed(root: &std::path::Path) {
 #[path = "bench_provenance_tests.rs"]
 mod provenance_tests;
 
+/// The box class's temperature ceilings for the hardware pre-check, from
+/// `kernels/<hw>/HARDWARE.toml` `[benchmarks.limits.thermal]` — the class
+/// named by `--hardware`, else the probed one. `None` (no repository here, or
+/// a class that declares none) is recorded on the run as "not judged".
+fn temp_ceilings(hardware: Option<&str>) -> Option<atlas_plugin::hardware::policy::TempCeilings> {
+    let root = repo_root().ok()?;
+    let class = match hardware {
+        Some(h) => h.to_string(),
+        None => atlas_plugin::hardware::Hardware::probe().gate_key(),
+    };
+    atlas_plugin::hardware::limits::limits(&root, &class)
+        .ok()
+        .flatten()
+        .map(|l| atlas_plugin::hardware::policy::TempCeilings::of(&l.thermal))
+}
+
 fn store() -> Result<ArtifactStore> {
     ArtifactStore::discover()
 }
@@ -322,6 +338,7 @@ async fn run(args: RunArgs) -> Result<i32> {
             } else {
                 atlas_plugin::CoherencePolicy::Probe
             },
+            temp_ceilings: temp_ceilings(args.hardware.as_deref()),
         },
     };
 

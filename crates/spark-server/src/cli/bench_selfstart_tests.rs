@@ -56,7 +56,8 @@ fn a_clean_box_serves_at_the_recipes_utilisation() {
     // ~0.94 available is what a clean GB10 reads. The line must repeat the
     // recipe's utilisation VERBATIM: this check exists to refuse co-tenants,
     // never to second-guess the config the thresholds were measured under.
-    let line = headroom_verdict(121.0, 114.0, 0.90, "qwen3.6/27b").expect("a clean box passes");
+    let line =
+        headroom_verdict(121.0, 114.0, 0.90, "qwen3.6/27b", 0.85).expect("a clean box passes");
     assert!(line.contains("0.90"), "{line}");
     assert!(line.contains("94 %"), "{line}");
 }
@@ -66,7 +67,7 @@ fn a_co_tenanted_box_is_refused_with_the_remedies() {
     // 16 GB of co-tenants on a 121 GB unified pool: measured to cost Atlas 32 %
     // at C=16 while costing vLLM ~0, so this corrupts the measurement long
     // before it OOM-freezes the box.
-    let err = headroom_verdict(121.0, 98.0, 0.90, "qwen3.6/27b").expect_err("refused");
+    let err = headroom_verdict(121.0, 98.0, 0.90, "qwen3.6/27b", 0.85).expect_err("refused");
     let msg = format!("{err:#}");
     assert!(msg.contains("qwen3.6/27b"), "names the recipe: {msg}");
     assert!(msg.contains("docker ps"), "names a remedy: {msg}");
@@ -82,8 +83,8 @@ fn the_threshold_itself_is_inclusive() {
     // Exactly at the line passes; a hair under does not. Stated because the
     // constant is the whole of the check.
     let total = 100.0;
-    assert!(headroom_verdict(total, total * MIN_FREE_FRACTION, 0.9, "r").is_ok());
-    assert!(headroom_verdict(total, total * MIN_FREE_FRACTION - 0.1, 0.9, "r").is_err());
+    assert!(headroom_verdict(total, total * 0.85, 0.9, "r", 0.85).is_ok());
+    assert!(headroom_verdict(total, total * 0.85 - 0.1, 0.9, "r", 0.85).is_err());
 }
 
 // ── Teardown ──

@@ -14,9 +14,9 @@ const root = new URL('../../../', import.meta.url);
 const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
 
 const HOSTS = {
-  site: 'https://atlasinference.io',
-  blog: 'https://blog.atlasinference.io',
-  docs: 'https://docs.atlasinference.io'
+  site: 'https://atlascybernetics.ai',
+  blog: 'https://blog.atlascybernetics.ai',
+  docs: 'https://docs.atlascybernetics.ai'
 };
 
 /** The generated marketing-site file, and the generated book file. */

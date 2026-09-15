@@ -3,6 +3,13 @@
 //! The two-phase report: what it holds, and what it refuses to claim.
 
 use super::*;
+
+fn gb10_ceilings() -> Option<policy::TempCeilings> {
+    Some(policy::TempCeilings {
+        gpu_c: 75.0,
+        chassis_c: 80.0,
+    })
+}
 use crate::hardware::policy::{Decision, Validity};
 use crate::hardware::state::{GpuComputeApp, ThrottleActive, ThrottleCounters};
 
@@ -41,7 +48,7 @@ fn state(sw_thermal_us: u64, apps: usize) -> HardwareState {
 
 #[test]
 fn opening_stamps_the_perf_class_and_the_precheck() {
-    let r = HardwareStateReport::opened(Sensitivity::Speed, state(0, 1));
+    let r = HardwareStateReport::opened(Sensitivity::Speed, state(0, 1), gb10_ceilings());
     assert_eq!(r.perf_class, "gb10@dgx2");
     assert_eq!(r.precheck.decision, Decision::Proceed);
     assert!(!r.refuses());
@@ -52,13 +59,13 @@ fn opening_stamps_the_perf_class_and_the_precheck() {
 /// failure as a hardware fault blames the box for the wrong thing.
 #[test]
 fn an_unclosed_report_is_not_invalid() {
-    let r = HardwareStateReport::opened(Sensitivity::Speed, state(0, 1));
+    let r = HardwareStateReport::opened(Sensitivity::Speed, state(0, 1), gb10_ceilings());
     assert!(!r.invalidated());
 }
 
 #[test]
 fn closing_computes_the_delta_and_the_validity() {
-    let mut r = HardwareStateReport::opened(Sensitivity::Speed, state(0, 1));
+    let mut r = HardwareStateReport::opened(Sensitivity::Speed, state(0, 1), gb10_ceilings());
     let mut after = state(12_000_000, 1);
     after.captured_at = 1_692;
     r.close(after);
@@ -69,7 +76,7 @@ fn closing_computes_the_delta_and_the_validity() {
 
 #[test]
 fn a_clean_run_closes_valid() {
-    let mut r = HardwareStateReport::opened(Sensitivity::Speed, state(0, 1));
+    let mut r = HardwareStateReport::opened(Sensitivity::Speed, state(0, 1), gb10_ceilings());
     let mut after = state(0, 1);
     after.captured_at = 1_692;
     r.close(after);
@@ -79,7 +86,7 @@ fn a_clean_run_closes_valid() {
 
 #[test]
 fn concerns_come_out_in_phase_order() {
-    let mut r = HardwareStateReport::opened(Sensitivity::Speed, state(0, 3));
+    let mut r = HardwareStateReport::opened(Sensitivity::Speed, state(0, 3), gb10_ceilings());
     assert!(r.refuses());
     let pre = r.concerns().len();
     assert!(pre > 0);
@@ -105,7 +112,7 @@ fn concerns_come_out_in_phase_order() {
 /// to survive the trip verbatim — before, after, delta and both verdicts.
 #[test]
 fn the_report_round_trips_through_the_record_json() {
-    let mut r = HardwareStateReport::opened(Sensitivity::Speed, state(0, 1));
+    let mut r = HardwareStateReport::opened(Sensitivity::Speed, state(0, 1), gb10_ceilings());
     let mut after = state(5, 1);
     after.captured_at = 1_692;
     r.close(after);

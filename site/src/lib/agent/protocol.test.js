@@ -18,7 +18,7 @@ import {
 // The remedy is now the CALLER's to supply, because only the caller knows
 // which machine the visitor is on. These tests pass the unix line except
 // where they are specifically about a Windows visitor.
-const UNIX = 'curl -fsSL https://atlasinference.io/install.sh | sh';
+const UNIX = 'curl -fsSL https://atlascybernetics.ai/install.sh | sh';
 
 test('a token check answers "no" for junk instead of throwing', () => {
   for (const junk of [undefined, null, 42, {}, [], true]) {

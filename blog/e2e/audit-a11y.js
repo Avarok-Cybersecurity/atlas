@@ -96,7 +96,7 @@
 
   // link-in-text-block: a link inside running text must differ from that text
   // by more than colour — either >=3:1 against the surrounding text, or a
-  // non-colour affordance. This is the audit that took atlasinference.io's
+  // non-colour affordance. This is the audit that took atlascybernetics.ai's
   // accessibility score to 0.96 after the palette moved: --accent #BE9DF8 sits
   // at 1.62:1 against --t3 #82868F, and the links carried text-decoration:none.
   const bare = [];

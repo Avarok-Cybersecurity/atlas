@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::super::super::plan::{Estimate, Unit};
 use super::*;
-use atlas_plugin::hardware::equivalence::HardwareFingerprint;
+use atlas_plugin::hardware::equivalence::{EquivalencePolicy, HardwareFingerprint};
+
+fn gb10_policy() -> Option<EquivalencePolicy> {
+    Some(EquivalencePolicy {
+        clock_spread: 0.01,
+        mem_spread: 0.05,
+        chassis_delta_c: 15.0,
+    })
+}
 
 fn unit(id: &'static str, group: Option<&'static str>, class: Sensitivity, secs: u64) -> Unit {
     shard_unit(id, group, None, class, secs)
@@ -21,6 +29,7 @@ fn shard_unit(
         class,
         estimate: Estimate::Declared(secs),
         needs_confirmation: false,
+        serve_allowance_s: 600,
     }
 }
 
@@ -87,34 +96,62 @@ fn campaign() -> Vec<Unit> {
     v
 }
 
+/// One node spreads (there is nothing to bundle); two or more always
+/// bundle, equivalent at rest or not — the 2026-09-15 campaign spread over
+/// two boxes that were 43/40 °C at plan time and 55/68 °C in the records.
 #[test]
-fn speed_mode_spreads_over_equivalent_boxes_and_bundles_otherwise() {
-    assert_eq!(speed_mode(&[node("a", 65.0, 0.9, true)]), SpeedMode::Spread);
+fn speed_mode_bundles_on_more_than_one_box_whatever_they_look_like_at_rest() {
     assert_eq!(
-        speed_mode(&[node("a", 65.0, 0.9, true), node("b", 70.0, 0.9, true)]),
+        speed_mode(&[node("a", 65.0, 0.9, true)], gb10_policy()),
         SpeedMode::Spread
     );
+    // Equivalent at rest: still bundled, and the reason says why.
+    match speed_mode(
+        &[node("a", 65.0, 0.9, true), node("b", 70.0, 0.9, true)],
+        gb10_policy(),
+    ) {
+        SpeedMode::Bundle { why, .. } => {
+            assert_eq!(why.len(), 1, "{why:?}");
+            assert!(why[0].contains("under load"), "{why:?}");
+        }
+        other => panic!("{other:?}"),
+    }
     // The incident pair: bundled on the box with more free memory, and the
-    // warning names the field.
-    let m = speed_mode(&[node("a", 65.0, 0.80, true), node("b", 89.0, 0.90, true)]);
+    // mismatch is named beside the default reason.
+    let m = speed_mode(
+        &[node("a", 65.0, 0.80, true), node("b", 89.0, 0.90, true)],
+        gb10_policy(),
+    );
     match m {
         SpeedMode::Bundle { node, why } => {
             assert_eq!(node, 1, "more free memory wins");
-            assert!(why[0].contains("chassis 65 vs 89"), "{why:?}");
+            assert!(why[1].contains("chassis 65 vs 89"), "{why:?}");
         }
         other => panic!("{other:?}"),
     }
     // Equal memory: the cooler box.
-    let m = speed_mode(&[node("a", 65.0, 0.9, true), node("b", 89.0, 0.9, true)]);
+    let m = speed_mode(
+        &[node("a", 65.0, 0.9, true), node("b", 89.0, 0.9, true)],
+        gb10_policy(),
+    );
     assert!(matches!(m, SpeedMode::Bundle { node: 0, .. }), "{m:?}");
     // NEGATIVE CONTROL: a node that cannot report its thermal state is not
     // equivalent to anything, even to an identical one.
     let mut blind = node("c", 65.0, 0.9, true);
     blind.hardware.hottest_chassis_c = None;
     assert!(matches!(
-        speed_mode(&[node("a", 65.0, 0.9, true), blind]),
+        speed_mode(&[node("a", 65.0, 0.9, true), blind], gb10_policy()),
         SpeedMode::Bundle { .. }
     ));
+    // No envelope (--dangerous-ignore-thermals on an unmeasured class):
+    // bundled, and the reason says why.
+    match speed_mode(
+        &[node("a", 65.0, 0.9, true), node("b", 66.0, 0.9, true)],
+        None,
+    ) {
+        SpeedMode::Bundle { why, .. } => assert!(why[1].contains("no thermal envelope"), "{why:?}"),
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
