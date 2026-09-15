@@ -136,7 +136,11 @@ pub fn find_gguf_shards(first: &Path) -> Result<GgufShardSet> {
     for i in 1..count {
         let p = dir.join(format!("{stem}-{:05}-of-{count:05}.gguf", i + 1));
         if !p.exists() {
-            bail!("GGUF split: shard {} of {count} missing: {}", i + 1, p.display());
+            bail!(
+                "GGUF split: shard {} of {count} missing: {}",
+                i + 1,
+                p.display()
+            );
         }
         let (_f2, _m2, g2) = sidecar::open_gguf(&p)
             .with_context(|| format!("GGUF split: failed to open shard {}", p.display()))?;
@@ -500,9 +504,9 @@ impl super::WeightLoader for GgufLoader {
 }
 
 #[cfg(test)]
-mod real_file_test;
-#[cfg(test)]
 mod deepseek_v41_real_file_test;
+#[cfg(test)]
+mod real_file_test;
 
 #[cfg(all(test, feature = "cuda"))]
 mod gpu_validate_test;

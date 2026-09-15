@@ -154,7 +154,11 @@ fn deepseek_v41_every_tensor_name_translates() {
     );
     // 3 stacked expert projections per block x 40 blocks.
     assert_eq!(stacks, 120, "stacked expert tensors");
-    assert_eq!(direct + stacks, total, "every name is Direct or ExpertStack");
+    assert_eq!(
+        direct + stacks,
+        total,
+        "every name is Direct or ExpertStack"
+    );
 }
 
 /// The tensors that exist on only SOME layers appear exactly as often as the

@@ -40,7 +40,10 @@ impl GgufMeta for GgufFile {
     fn get_u64_arr(&self, key: &str) -> Option<Vec<u64>> {
         let arr = GgufFile::get(self, key)?.as_array()?;
         arr.iter()
-            .map(|v| v.as_u64().or_else(|| v.as_i64().and_then(|i| u64::try_from(i).ok())))
+            .map(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_i64().and_then(|i| u64::try_from(i).ok()))
+            })
             .collect()
     }
     /// Float array, every element widened to f64. Same all-or-nothing rule.

@@ -425,7 +425,9 @@ pub fn is_keep_packed_proj(hf: &str) -> bool {
 fn translate_deepseek41(gguf_name: &str) -> Option<GgufName> {
     // Top-level tensors.
     match gguf_name {
-        "token_embd.weight" => return Some(GgufName::Direct(format!("{HF_PREFIX}.embed_tokens.weight"))),
+        "token_embd.weight" => {
+            return Some(GgufName::Direct(format!("{HF_PREFIX}.embed_tokens.weight")));
+        }
         "output_norm.weight" => return Some(GgufName::Direct(format!("{HF_PREFIX}.norm.weight"))),
         "output.weight" => return Some(GgufName::Direct("lm_head.weight".to_string())),
         _ => {}
