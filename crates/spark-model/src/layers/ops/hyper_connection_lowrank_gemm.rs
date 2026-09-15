@@ -35,6 +35,19 @@ fn hc_fuse_up_mix() -> bool {
     *V.get_or_init(|| std::env::var("ATLAS_HC_FUSE_UP_MIX").as_deref() == Ok("1"))
 }
 
+/// `ATLAS_HC_FUSE_DOWN_INJ=1`: append the injection projection to the down
+/// GEMM as extra output columns instead of launching it separately. See
+/// `hc_down_inj` in the model's `hyper_connection.cu`.
+///
+/// The injection GEMM is N=4 on a 128-wide N-tile: 62 CTAs each streaming a
+/// 2.6 MB A-tile with 96.9% of the MMA masked, ~15.4 GB a chunk across the 96
+/// prefill sites for four numbers per token. Folding it into the down GEMM's
+/// half-empty third column tile is free — ceil(324/128) == ceil(320/128).
+fn hc_fuse_down_inj() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_HC_FUSE_DOWN_INJ").as_deref() == Ok("1"))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn hc_pre_gemm(
     gpu: &dyn GpuBackend,
@@ -67,6 +80,7 @@ pub(crate) fn hc_pre_gemm(
         use_cublas,
         row_exact,
         hc_fuse_up_mix(),
+        hc_fuse_down_inj(),
         stream,
     )
 }
@@ -91,6 +105,7 @@ pub(crate) fn hc_pre_gemm_fused(
     use_cublas: bool,
     row_exact: bool,
     fuse_up_mix: bool,
+    fuse_down_inj: bool,
     stream: u64,
 ) -> Result<()> {
     anyhow::ensure!(
@@ -155,6 +170,27 @@ pub(crate) fn hc_pre_gemm_fused(
             )
         });
     }
+    // Same fail-soft shape as the pair above: a target without the fused
+    // down+inject kernel degrades to two launches instead of refusing to serve.
+    let k_down_inj = crate::layers::try_kernel(gpu, "hyper_connection", "hc_down_inj");
+    //   !use_cublas - excludes BOTH decode entries, as above.
+    //   inject      - the whole point is folding the injection rows in; with
+    //                 no injection there is nothing to fold and `inject_w` is
+    //                 NULL (`hc_head_lowrank`).
+    // No hc_mult/hidden constraint: unlike `hc_pre_up_mix` this kernel keeps
+    // the stock B-row map, so it is shape-generic in N0 and NI.
+    let fuse_di = fuse_down_inj && !use_cublas && inject && k_down_inj.0 != 0;
+    if fuse_di {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| {
+            tracing::info!(
+                rank,
+                hc_mult,
+                n_total = rank + hc_mult,
+                "hc_pre arm: FUSED down+inject GEMM (separate inject launch removed)"
+            )
+        });
+    }
     let inv_hc = 1.0f32 / hc_mult as f32;
 
     let mut t0 = 0u32;
@@ -174,7 +210,23 @@ pub(crate) fn hc_pre_gemm_fused(
             .launch(stream)?;
 
         // low_pre = normed x down_w^T   [ts, rank]
-        if use_cublas {
+        // Under `fuse_di` this same launch also writes `inj_pre`, carried as
+        // output columns [rank, rank+hc) of one N=324 GEMM.
+        if fuse_di {
+            KernelLaunch::new(gpu, k_down_inj)
+                .grid([(rank + hc_mult).div_ceil(128), ts.div_ceil(128), 1])
+                .block([256, 1, 1])
+                .arg_ptr(normed)
+                .arg_ptr(w.down_w)
+                .arg_ptr(w.inject_w)
+                .arg_ptr(low)
+                .arg_ptr(inj_pre)
+                .arg_u32(ts)
+                .arg_u32(rank)
+                .arg_u32(hc_mult)
+                .arg_u32(hc_dim as u32)
+                .launch(stream)?;
+        } else if use_cublas {
             project_rows(
                 gpu,
                 normed,
@@ -248,8 +300,9 @@ pub(crate) fn hc_pre_gemm_fused(
                 stream,
             )?;
         }
-        if inject {
-            // inj_pre = normed x inject_w^T   [ts, hc]
+        if inject && !fuse_di {
+            // inj_pre = normed x inject_w^T   [ts, hc]  (already done above
+            // when `fuse_di`, as the tail columns of the down GEMM).
             if use_cublas {
                 project_rows(
                     gpu,

@@ -406,11 +406,16 @@ ATLAS_LOOKUP_EP = "1"
 ATLAS_LOOKUP_WIDTH = "3"
 
 # ── Prefill profile (2026-09-15). Measured together on two GB10s, same binary,
-# same preset: prefill 1450 -> 1953 / 1920 tok/s at 8K / 32K (+35%), decode
-# unchanged-to-better at every concurrency (C=1 43.3, C=2 47.7, C=4 50.4
+# same preset: prefill 1450 -> 2106 / 2053 tok/s at 8K / 32K (+45% / +42%),
+# decode unchanged-to-better at every concurrency (C=1 43.3, C=2 47.7, C=4 50.4
 # against the 2026-09-13 seal's 43.6 / 46.6 / 49.5), agentic 3/3 at 5.563
 # s/turn against the seal's 6.225, and ssm-state-poisoning 12/12 replays
 # byte-identical.
+#
+# The last two steps of that ladder are the hc bracket fusions at the bottom of
+# this block (1953 -> 2041 -> 2106 at 8K). Both are BIT-IDENTICAL byte removals,
+# not approximations, so they cost nothing in output fidelity and nothing in
+# decode. Everything above them is a kernel-routing or work-skipping choice.
 #
 # ★ `ATLAS_QWEN4EXP_BF16_GDN` stays "0" above and must NOT be raised here. It
 # is worth +2.4% prefill and costs 38% of C=1 decode (26.7 vs 43.3): it keeps
@@ -447,6 +452,40 @@ ATLAS_GDN_FLASHINFER = "1"
 # snapshot to restore from ("recomputing all KV"), which cost the agentic gate
 # 6.225 -> 9.105 s/turn. Validated by ssm-state-poisoning-gate, 12/12.
 ATLAS_GDN_FLA_UNDER_PREFIX_CACHE = "1"
+
+# ── The hc bracket fusions: both remove BYTES and are BIT-IDENTICAL ──────────
+#
+# The bracket is bandwidth-bound, not issue-bound: at the slab above it moves
+# ~196 GB per 7.8K chunk for 9.9 TFLOP — 19.7 bytes/FLOP, ~170 GB/s of this
+# box's 273. That is why cuBLASLt measured a LOSS here and why the slab sweep
+# is monotone: no kernel-efficiency work can help, only removing bytes.
+#
+# Both arms are byte-exact against the stock path, asserted on RAW BYTES by
+# `hc_pre_gemm_fused_up_mix_is_bit_identical` (T=288 so grid.y=3 with a partial
+# final tile, all four arm combinations driven in ONE process because the env
+# readers are OnceLocks). Neither is parity-gated — bit-identity is the whole
+# case for them, so a non-zero diff is a revert, not a tolerance discussion.
+#
+# Both exclude every decode entry via `!use_cublas`, so decode is untouched by
+# construction (measured C=1/2/4 unchanged).
+
+# Do the stream mix in the up-GEMM epilogue so `up_pre` [T, hc*H] BF16 is never
+# materialised: 161 MB written + 161 MB read per call at T=7841, ~30.8 GB a
+# chunk across the 96 prefill sites, purely to hand one kernel's output to the
+# next. Needs the stream-interleaved N-tile (4 groups of 32 dims) that puts one
+# output dim's four streams in a single thread's registers.
+ATLAS_HC_FUSE_UP_MIX = "1"
+
+# Fold the injection projection into the down GEMM as output columns
+# [rank, rank+hc). Alone it is N=4 on a 128-wide N-tile: 62 CTAs each streaming
+# a 2.6 MB A-tile with 96.9% of the MMA masked, ~15.4 GB a chunk for four
+# numbers per token. Free in tiles — ceil(324/128) == ceil(320/128) == 3.
+ATLAS_HC_FUSE_DOWN_INJ = "1"
+
+# Measured together, SAME BINARY, warm server, median of 5, ranges disjoint:
+#            up_mix only        both fused
+#   8K       2041 (2038-2044)   2106 (2096-2121)   +3.2%
+#   32K      1995 (1989-1999)   2053 (2045-2067)   +2.9%
 
 # ── Cross-sequence batched verify, and the arms that break its parity ────────
 #

@@ -69,9 +69,11 @@ fn hc_pre_gemm_fused_up_mix_is_bit_identical() {
     // stock arm against itself and pass for the wrong reason.
     let k_um = crate::layers::try_kernel(g, "hyper_connection", "hc_pre_up_mix");
     let k_ig = crate::layers::try_kernel(g, "hyper_connection", "hc_inj_gate");
+    let k_di = crate::layers::try_kernel(g, "hyper_connection", "hc_down_inj");
     assert!(
-        k_um.0 != 0 && k_ig.0 != 0,
-        "hc_pre_up_mix / hc_inj_gate missing from the module — this test would be vacuous"
+        k_um.0 != 0 && k_ig.0 != 0 && k_di.0 != 0,
+        "hc_pre_up_mix / hc_inj_gate / hc_down_inj missing from the module — \
+         the fused arms would silently degrade and this test would be vacuous"
     );
 
     let streams = upload(g, &lcg_f32(big_t * hc_dim, 0x51ED));
@@ -91,7 +93,13 @@ fn hc_pre_gemm_fused_up_mix_is_bit_identical() {
     let inj_a = g.alloc(big_t * hc * 4).unwrap();
     let inj_b = g.alloc(big_t * hc * 4).unwrap();
 
-    for (fuse, y, inj) in [(false, y_a, inj_a), (true, y_b, inj_b)] {
+    // Reference arm first, then EVERY fused combination against it. Running
+    // all four in one process is the whole point: the env readers are
+    // `OnceLock`s, so a process can only ever observe a single arm through the
+    // production wrapper. The `both` arm is what ships, but the two singles
+    // are here so a failure says WHICH fusion broke rather than just "the
+    // fused path".
+    let go = |up: bool, di: bool, y, inj| {
         crate::layers::ops::hyper_connection_lowrank::gemm::hc_pre_gemm_fused(
             g,
             streams,
@@ -106,31 +114,44 @@ fn hc_pre_gemm_fused_up_mix_is_bit_identical() {
             /* inject */ true,
             /* use_cublas */ false,
             /* row_exact */ false,
-            fuse,
+            up,
+            di,
             stream,
         )
         .unwrap();
         g.synchronize(stream).unwrap();
-    }
+    };
 
+    go(false, false, y_a, inj_a);
     let ya = download_raw(g, y_a, big_t * h * 2);
-    let yb = download_raw(g, y_b, big_t * h * 2);
     let ia = download_raw(g, inj_a, big_t * hc * 4);
-    let ib = download_raw(g, inj_b, big_t * hc * 4);
-
-    let ydiff = ya.iter().zip(&yb).filter(|(x, y)| x != y).count();
-    let idiff = ia.iter().zip(&ib).filter(|(x, y)| x != y).count();
-    println!(
-        "fused-vs-stock (T={big_t}): y bytes differing {ydiff}/{}, inj {idiff}/{}",
-        ya.len(),
-        ia.len()
-    );
-    // A run where BOTH outputs are all-zero would pass vacuously; prove the
-    // stock arm actually wrote something first.
+    // A run where the reference output is all zeros would pass vacuously.
     assert!(
         ya.iter().any(|&b| b != 0),
         "stock arm produced an all-zero y_out — the comparison would be vacuous"
     );
-    assert_eq!(ydiff, 0, "fused mix is not bit-identical in y_out");
-    assert_eq!(idiff, 0, "fused arm changed inj_out");
+    assert!(
+        ia.iter().any(|&b| b != 0),
+        "stock arm produced an all-zero inj_out — the comparison would be vacuous"
+    );
+
+    for (up, di, name) in [
+        (true, false, "up_mix"),
+        (false, true, "down_inj"),
+        (true, true, "both"),
+    ] {
+        go(up, di, y_b, inj_b);
+        let yb = download_raw(g, y_b, big_t * h * 2);
+        let ib = download_raw(g, inj_b, big_t * hc * 4);
+
+        let ydiff = ya.iter().zip(&yb).filter(|(x, y)| x != y).count();
+        let idiff = ia.iter().zip(&ib).filter(|(x, y)| x != y).count();
+        println!(
+            "{name} vs stock (T={big_t}): y bytes differing {ydiff}/{}, inj {idiff}/{}",
+            ya.len(),
+            ia.len()
+        );
+        assert_eq!(ydiff, 0, "{name}: not bit-identical in y_out");
+        assert_eq!(idiff, 0, "{name}: not bit-identical in inj_out");
+    }
 }
