@@ -207,6 +207,21 @@ pub struct ModelLevers {
     /// tail shows it, so both directions must stay reachable. Graph capture
     /// forces it off regardless — the bound is read back from device memory.
     pub moe_prefill_exact_tiles: Option<bool>,
+    /// `ATLAS_MOE_ROW_HIST=1` — DIAGNOSTIC. Log the per-expert row
+    /// distribution once per layer per prefill chunk.
+    ///
+    /// MoE is the prefill wall (37.9% of an 8K prefill, 2026-09-15) and it is
+    /// COMPUTE-bound, not bandwidth-bound: 19.3 TFLOP/rank against a 597 ms
+    /// floor at this box's demonstrated 32.4 TFLOP/s, measured ~1287 ms — so
+    /// ~46% of the achievable rate, with only ~111 ms of weight bytes to
+    /// remove. That makes it a TILE-EFFICIENCY problem, and the distribution
+    /// below is what says which kind.
+    ///
+    /// `grid.y` is sized from the MAX rows over experts and every expert
+    /// launches that many M-tiles (with an early return), so a skewed router
+    /// is paid by ALL of them. This reports both halves: how many tiles are
+    /// launched versus how many hold real rows, and how full those are.
+    pub moe_row_hist: bool,
     /// `ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR=<n>` — cap the per-expert tile
     /// bound at n times the average when exact tiles are off. `None` (unset
     /// or `0`) means the worst case.

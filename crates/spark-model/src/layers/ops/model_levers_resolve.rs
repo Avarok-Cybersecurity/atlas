@@ -103,6 +103,7 @@ pub(super) fn from_values(
         prefill_v2: !present("ATLAS_DISABLE_PREFILL_V2"),
         moe_grouped_cutlass: opt_in(value("ATLAS_HOLO_MOE_GROUPED_CUTLASS").as_deref()),
         moe_grouped_down: opt_in(value("ATLAS_HOLO_MOE_GROUPED_DOWN").as_deref()),
+        moe_row_hist: opt_in(value("ATLAS_MOE_ROW_HIST").as_deref()),
         moe_prefill_exact_tiles: match value("ATLAS_MOE_PREFILL_EXACT_TILES").as_deref() {
             Some("0") => Some(false),
             Some("1") => Some(true),

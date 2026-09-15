@@ -83,10 +83,23 @@ impl MoeLayer {
                 .copy_d2h_on_stream(expert_offsets, &mut offsets, stream)?;
             let mut prev = 0u32;
             let mut max_rows = 0u32;
+            // The per-expert counts are ALREADY on the host here, so the
+            // distribution costs nothing to report beyond the Vec.
+            let mut hist: Vec<u32> = Vec::new();
+            if ctx.levers.moe_row_hist {
+                hist.reserve(ne);
+            }
             for raw in offsets.chunks_exact(4).skip(1) {
                 let cur = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
-                max_rows = max_rows.max(cur.saturating_sub(prev));
+                let rows = cur.saturating_sub(prev);
+                max_rows = max_rows.max(rows);
+                if ctx.levers.moe_row_hist {
+                    hist.push(rows);
+                }
                 prev = cur;
+            }
+            if ctx.levers.moe_row_hist {
+                log_moe_row_hist(&hist, worst_case_m_tiles);
             }
             max_rows.div_ceil(64).max(1).min(worst_case_m_tiles)
         } else {
@@ -500,4 +513,49 @@ impl MoeLayer {
 
         Ok(())
     }
+}
+
+/// DIAGNOSTIC for `ATLAS_MOE_ROW_HIST=1`: where MoE's tile budget actually goes.
+///
+/// The grouped GEMM launches `grid.y = ceil(max_rows / 64)` M-tiles for EVERY
+/// expert and early-returns the ones past that expert's own row count. So the
+/// cost has two independent leaks and this separates them:
+///
+///   SKEW  — one busy expert raises grid.y for all `ne` of them. `launched`
+///           versus `needed` is that ratio.
+///   TAIL  — an expert with a handful of rows still runs a whole 64-row tile.
+///           `fill` is how much of the launched tile area holds real rows.
+///
+/// A skew problem is fixed by bounding grid.y per expert; a tail problem is
+/// fixed by a smaller M-tile or by merging light experts. They point at
+/// different work, which is why guessing between them is not good enough.
+fn log_moe_row_hist(rows: &[u32], worst_case_m_tiles: u32) {
+    if rows.is_empty() {
+        return;
+    }
+    const M_TILE: u32 = 64;
+    let ne = rows.len() as u32;
+    let total: u64 = rows.iter().map(|&r| r as u64).sum();
+    let max = rows.iter().copied().max().unwrap_or(0);
+    let needed: u64 = rows.iter().map(|&r| r.div_ceil(M_TILE) as u64).sum();
+    let grid_y = max.div_ceil(M_TILE).max(1).min(worst_case_m_tiles) as u64;
+    let launched = grid_y * ne as u64;
+    let mut sorted = rows.to_vec();
+    sorted.sort_unstable();
+    let pct = |p: usize| sorted[(sorted.len() - 1) * p / 100];
+    let empty = rows.iter().filter(|&&r| r == 0).count();
+    let under_tile = rows.iter().filter(|&&r| r > 0 && r < M_TILE).count();
+    // `fill` is of the tiles that hold rows at all; `launched/needed` is the
+    // skew tax on top of that.
+    let fill = total as f64 / (needed.max(1) * M_TILE as u64) as f64 * 100.0;
+    tracing::info!(
+        "moe-row-hist ne={ne} rows={total} mean={:.0} max={max} p50={} p90={} p99={} \
+         empty={empty} under{M_TILE}={under_tile} | tiles needed={needed} launched={launched} \
+         skew={:.2}x fill={fill:.0}%",
+        total as f64 / ne as f64,
+        pct(50),
+        pct(90),
+        pct(99),
+        launched as f64 / needed.max(1) as f64,
+    );
 }
