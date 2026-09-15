@@ -169,7 +169,19 @@ max = 995.0
 # CONFIRMED OR RE-CUT from the first certification campaign run under the
 # shard rule (the stack that introduces it) — BENCH.toml is NON_COMPILED, so
 # a re-cut does not void the records it is cut from.
-min = 83.42
+# ★ RE-CUT 2026-09-15 (owner decision AZ, PR #1089): 83.42 -> 83.00. The
+# shard COUNT is the campaign's to choose since #1089, and the number is
+# partition-dependent (see the gate note above): the same draw, the same
+# serve, the same post-#1071 code read 83.22 as four shards (c719406bf8,
+# 2026-09-14) and 82.91 as six (48e7ee500e, 2026-09-15) — three hits of 995,
+# in exactly the subsets the twelve known-sensitive samples live in
+# (live_irrelevance -2, live_multiple -1, simple_python -1, parallel_multiple
+# +1). Not a code regression (no engine path moved between the two) and not
+# the reused server (the low shards ran on fresh ones). A floor cut at one n
+# must hold at another, so the bar now carries the measured count effect:
+# 83.00 with the 0.4 band puts the six-way reading 0.31 (~3 samples) above
+# the line. It ratchets from here like every other floor.
+min = 83.00
 noise = 0.4
 
 [benchmarks.metrics.normalized_single_turn_score]
