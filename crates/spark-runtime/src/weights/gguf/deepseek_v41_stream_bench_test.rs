@@ -55,7 +55,12 @@ fn block_geom(t: DqType) -> (usize, usize) {
 /// Raw bytes of expert `e` inside a stacked `[k, n, experts]` tensor (GGUF dims innermost-first).
 fn expert_slice<'a>(l: &'a Located, e: usize) -> (&'a [u8], usize) {
     let dims = &l.info.dims;
-    assert_eq!(dims.len(), 3, "{}: expected a stacked 3-D expert tensor", l.info.name);
+    assert_eq!(
+        dims.len(),
+        3,
+        "{}: expected a stacked 3-D expert tensor",
+        l.info.name
+    );
     let (k, n, experts) = (dims[0], dims[1], dims[2]);
     assert!(e < experts);
     let (qk, bb) = block_geom(dq_type(l));
@@ -69,7 +74,11 @@ fn expert_slice<'a>(l: &'a Located, e: usize) -> (&'a [u8], usize) {
 #[test]
 #[ignore = "requires the on-disk DeepSeek-V4.1-Flash Q2_K shards"]
 fn deepseek_v41_stream_one_expert() {
-    let names = ["blk.3.ffn_gate_exps.weight", "blk.3.ffn_up_exps.weight", "blk.3.ffn_down_exps.weight"];
+    let names = [
+        "blk.3.ffn_gate_exps.weight",
+        "blk.3.ffn_up_exps.weight",
+        "blk.3.ffn_down_exps.weight",
+    ];
     let located: Vec<Located> = names.iter().map(|n| locate(n)).collect();
     let mut total_bytes = 0usize;
     let mut total_elems = 0usize;
@@ -111,13 +120,35 @@ fn deepseek_v41_stream_one_expert() {
         );
     }
     let per_token_instances = 6 * 40;
-    println!("ONE EXPERT (layer 3, expert {e}): {} bytes = {:.2} MiB on disk, {} elements", total_bytes, total_bytes as f64 / 1048576.0, total_elems);
-    println!("  first touch (page-in) {:.1} ms  -> {:.2} GB/s", first_touch_ms, total_bytes as f64 / first_touch_ms / 1e6);
+    println!(
+        "ONE EXPERT (layer 3, expert {e}): {} bytes = {:.2} MiB on disk, {} elements",
+        total_bytes,
+        total_bytes as f64 / 1048576.0,
+        total_elems
+    );
+    println!(
+        "  first touch (page-in) {:.1} ms  -> {:.2} GB/s",
+        first_touch_ms,
+        total_bytes as f64 / first_touch_ms / 1e6
+    );
     println!("  second touch (cached) {:.1} ms", second_touch_ms);
-    println!("  CPU dequant to BF16    {:.1} ms  -> {:.1} Melem/s single-thread", dequant_ms, total_elems as f64 / dequant_ms / 1e3);
+    println!(
+        "  CPU dequant to BF16    {:.1} ms  -> {:.1} Melem/s single-thread",
+        dequant_ms,
+        total_elems as f64 / dequant_ms / 1e3
+    );
     println!("PER TOKEN at 6 experts x 40 layers = {per_token_instances} instances:");
-    println!("  bytes {:.2} GiB; page-in {:.2} s; single-thread dequant {:.1} s", total_bytes as f64 * per_token_instances as f64 / 1073741824.0, first_touch_ms * per_token_instances as f64 / 1e3, dequant_ms * per_token_instances as f64 / 1e3);
-    assert_eq!(total_bytes, 46_080 * (84 + 84 + 110), "expert bytes: 46,080 blocks each of Q2_K, Q2_K, Q3_K");
+    println!(
+        "  bytes {:.2} GiB; page-in {:.2} s; single-thread dequant {:.1} s",
+        total_bytes as f64 * per_token_instances as f64 / 1073741824.0,
+        first_touch_ms * per_token_instances as f64 / 1e3,
+        dequant_ms * per_token_instances as f64 / 1e3
+    );
+    assert_eq!(
+        total_bytes,
+        46_080 * (84 + 84 + 110),
+        "expert bytes: 46,080 blocks each of Q2_K, Q2_K, Q3_K"
+    );
 }
 
 #[test]
@@ -127,9 +158,19 @@ fn deepseek_v41_stream_engram_rows() {
     let (qk, bb) = block_geom(dq_type(&l));
     let head_dim = l.info.dims[0];
     let rows = l.info.dims[1];
-    assert_eq!((qk, bb, head_dim), (256, 84, 256), "one Q2_K block per engram row");
+    assert_eq!(
+        (qk, bb, head_dim),
+        (256, 84, 256),
+        "one Q2_K block per engram row"
+    );
     let base = l.gguf.tensor_abs_offset(&l.info);
-    println!("engram table layer 1: {} rows x {} = {:.2} GiB on disk, {:.2} GiB as BF16", rows, head_dim, (rows * bb) as f64 / 1073741824.0, (rows * head_dim * 2) as f64 / 1073741824.0);
+    println!(
+        "engram table layer 1: {} rows x {} = {:.2} GiB on disk, {:.2} GiB as BF16",
+        rows,
+        head_dim,
+        (rows * bb) as f64 / 1073741824.0,
+        (rows * head_dim * 2) as f64 / 1073741824.0
+    );
     // deterministic pseudo-random rows, spread over the whole table
     let mut x = 0x9E37_79B9_7F4A_7C15u64;
     let mut pick = || {
@@ -151,6 +192,9 @@ fn deepseek_v41_stream_engram_rows() {
         }
         let ms = t0.elapsed().as_secs_f64() * 1e3;
         std::hint::black_box(acc);
-        println!("  gather+dequant {n:>5} random rows: {ms:.1} ms  ({:.3} ms/row, first touch)", ms / n as f64);
+        println!(
+            "  gather+dequant {n:>5} random rows: {ms:.1} ms  ({:.3} ms/row, first touch)",
+            ms / n as f64
+        );
     }
 }
