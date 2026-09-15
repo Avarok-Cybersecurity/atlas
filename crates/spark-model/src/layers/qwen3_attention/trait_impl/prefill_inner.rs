@@ -573,6 +573,37 @@ impl Qwen3AttentionLayer {
             std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
         let diag_this = diag_all;
 
+        // Stage profiler, the ATTENTION-layer twin of the GDN path's
+        // (`qwen3_ssm/trait_prefill_hc.rs`). Same env var, same serialize-at-
+        // seams shape, so one profiled run attributes the WHOLE model: the
+        // GDN profiler covers 36 of 48 layers and the other 12 were a blind
+        // spot worth 36% of prefill.
+        static APROF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static APROF_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(200);
+        let aprof = *APROF
+            .get_or_init(|| std::env::var("ATLAS_QWEN4EXP_PREFILL_PROF").as_deref() == Ok("1"))
+            && APROF_LEFT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) > 0;
+        let alx = self.attn_layer_idx;
+        let mut at = if aprof {
+            ctx.gpu.synchronize(stream).ok();
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+        macro_rules! astage {
+            ($name:expr) => {
+                if let Some(t0) = at.as_mut() {
+                    ctx.gpu.synchronize(stream).ok();
+                    tracing::info!(
+                        "attn-prefill A{alx} T={num_tokens} [{}]: {}us",
+                        $name,
+                        t0.elapsed().as_micros()
+                    );
+                    *t0 = std::time::Instant::now();
+                }
+            };
+        }
+
         if is_first_layer {
             ops::hc_expand(
                 ctx.gpu,
@@ -662,6 +693,8 @@ impl Qwen3AttentionLayer {
                 .copy_d2d_async(hidden, normed, num_tokens * h * 2, stream)?;
         }
 
+        astage!("hc_pre_attn");
+
         // QSA indexer ingest: park this chunk's raw indexer keys (the
         // indexer consumes the same block input the attention does). Decode
         // steps select against these; prefill queries beyond the inert bound
@@ -670,6 +703,7 @@ impl Qwen3AttentionLayer {
             let st = crate::layers::qwen3_attention::helpers::qsa_seq_state(qsa, state, ctx.gpu)?;
             qsa.prefill_ingest(st, normed, num_tokens, seq_len_start, ctx.gpu, stream)?;
         }
+        astage!("qsa_ingest");
 
         if batched_meta.is_some() && seq_len_start == 0 {
             anyhow::bail!(
@@ -705,6 +739,7 @@ impl Qwen3AttentionLayer {
                 stream,
             )?
         };
+        astage!("attn_core");
 
         if ctx.config.tp_world_size > 1
             && let Some(comm) = ctx.comm
@@ -828,6 +863,8 @@ impl Qwen3AttentionLayer {
             stream,
         );
 
+        astage!("hc_post_attn");
+
         // ── FFN sublayer ──
         ops::hc_pre_site(
             ctx.gpu,
@@ -889,6 +926,8 @@ impl Qwen3AttentionLayer {
                 .copy_d2d_async(hidden, normed2, num_tokens * h * 2, stream)?;
         }
 
+        astage!("hc_pre_ffn");
+
         // Small-M FFN (see the twin in qwen3_ssm/trait_prefill_hc.rs): at K=2/3
         // rows this body is a speculative verify. The grouped-GEMM MoE streams
         // every expert regardless of row count; the fused K=2/K=3 kernels do the
@@ -926,6 +965,8 @@ impl Qwen3AttentionLayer {
                 .forward_prefill(normed2, num_tokens, ctx, stream)
                 .map_err(|e| anyhow::anyhow!("ffn.forward_prefill (HC) failed: {e}"))?,
         }
+
+        astage!("moe");
 
         let dense_out = ctx.buffers.moe_output();
 

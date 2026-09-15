@@ -46,6 +46,19 @@ pub(crate) fn hc_decode_split_forced() -> bool {
     *V.get_or_init(|| std::env::var("ATLAS_HC_DECODE_SPLIT").as_deref() == Ok("1"))
 }
 
+/// `ATLAS_HC_PREFILL_CUBLAS=1`: route the large-T collapse's three low-rank
+/// projections through cuBLASLt instead of `dense_gemm_bf16_pipelined` — the
+/// move that took DECODE's collapse from 254/265 to 122/131 us a layer.
+///
+/// ★ MEASURED A LOSS, kept as the escape hatch that records it: 1488 / 1431
+/// vs 1507 / 1489 tok/s at 8K / 32K (qwen4_exp NVFP4, TP=2 x EP=2, engagement
+/// confirmed by `cublas=true` on the arm line). At large M the tile GEMM is in
+/// its regime; the decode precedent does NOT transfer. Default stays off.
+fn hc_prefill_cublas() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_HC_PREFILL_CUBLAS").as_deref() == Ok("1"))
+}
+
 /// Collapse the `hc_mult` streams to one, and emit the per-stream injection
 /// weights the matching [`hc_post_lowrank`] needs.
 ///
@@ -227,6 +240,7 @@ pub fn hc_pre_lowrank(
                     hidden_size,
                     hc_mult,
                     rank = w.rank,
+                    cublas = hc_prefill_cublas(),
                     "hc_pre_lowrank arm: PREFILL-GEMM"
                 )
             });
@@ -243,7 +257,7 @@ pub fn hc_pre_lowrank(
             hc_mult,
             norm_eps,
             /* inject */ true,
-            /* use_cublas */ false,
+            /* use_cublas */ hc_prefill_cublas(),
             /* row_exact */ false,
             stream,
         );
@@ -358,7 +372,7 @@ pub fn hc_head_lowrank(
             hc_mult,
             norm_eps,
             /* inject */ false,
-            /* use_cublas */ false,
+            /* use_cublas */ hc_prefill_cublas(),
             /* row_exact */ false,
             stream,
         );
