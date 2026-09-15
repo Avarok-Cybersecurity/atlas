@@ -376,30 +376,24 @@ impl PleLayer {
         // the pipelined one wants [ceil(n,128), ceil(m,128)] block 256.
         // Handing the pipelined kernel to the scalar launcher reads far out of
         // bounds and produced NaN through the whole highway.
-        ops::dense_gemm_bf16_pipelined(
-            gpu,
-            self.gemm_k,
-            self.emb,
-            &self.key_proj,
-            self.key,
-            num_tokens as u32,
-            c as u32,
-            self.hidden as u32,
-            stream,
-        )
-        .context("PLE key_proj")?;
-        ops::dense_gemm_bf16_pipelined(
-            gpu,
-            self.gemm_k,
-            self.emb,
-            &self.value_proj,
-            self.value,
-            num_tokens as u32,
-            self.hidden as u32,
-            self.hidden as u32,
-            stream,
-        )
-        .context("PLE value_proj")?;
+        // `ATLAS_PLE_CUBLAS=1`: both projections on cuBLASLt instead of the
+        // in-tree tile GEMM. These are WIDE (M=T, N=10240/2560, K=2560) — a
+        // different regime from the hc collapse's narrow-N shapes (K=10240 ->
+        // N=320), where cuBLASLt measured a LOSS. PLE is one layer but its
+        // key_proj alone is 411 GFLOP at a 7.8K chunk.
+        static PLE_CUBLAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let cublas =
+            *PLE_CUBLAS.get_or_init(|| std::env::var("ATLAS_PLE_CUBLAS").as_deref() == Ok("1"));
+        let proj = |w: &crate::weight_map::DenseWeight, out: DevicePtr, n: u32| -> Result<()> {
+            let (m, k) = (num_tokens as u32, self.hidden as u32);
+            if cublas {
+                ops::cublas_bf16_proj_dense(self.emb, w.weight, out, m, n, k, stream)
+            } else {
+                ops::dense_gemm_bf16_pipelined(gpu, self.gemm_k, self.emb, w, out, m, n, k, stream)
+            }
+        };
+        proj(&self.key_proj, self.key, c as u32).context("PLE key_proj")?;
+        proj(&self.value_proj, self.value, self.hidden as u32).context("PLE value_proj")?;
 
         ops::ple_gate(
             gpu,
