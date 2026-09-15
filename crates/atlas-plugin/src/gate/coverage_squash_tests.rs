@@ -47,7 +47,7 @@ fn a_record_survives_its_pr_being_squash_merged() {
     scratch_repo::commit(root, "crates/feature.rs", "// the change", "the feature");
     let branch_tip = scratch_repo::head(root);
     for id in REQUIRED_GATES {
-        plant(root, id, &branch_tip, 1_785_891_382, "PASS");
+        plant_required(root, id, &branch_tip, 1_785_891_382, "PASS");
     }
 
     // The squash: main gets the SAME file contents under a brand-new commit
@@ -92,7 +92,7 @@ fn an_unrelated_commit_that_differs_is_still_not_covered() {
     scratch_repo::commit(root, "crates/feature.rs", "// version A", "feature A");
     let branch_tip = scratch_repo::head(root);
     for id in REQUIRED_GATES {
-        plant(root, id, &branch_tip, 1_785_891_382, "PASS");
+        plant_required(root, id, &branch_tip, 1_785_891_382, "PASS");
     }
 
     // Same path, DIFFERENT contents: not the code that was measured.

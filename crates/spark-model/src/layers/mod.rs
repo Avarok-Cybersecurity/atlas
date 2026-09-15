@@ -315,16 +315,8 @@ pub fn moe_grouped_decode_for(n: usize) -> bool {
 #[path = "moe_grouped_decode_tests.rs"]
 mod moe_grouped_decode_tests;
 
-#[track_caller]
-pub fn try_kernel(gpu: &dyn GpuBackend, module: &str, func: &str) -> KernelHandle {
-    match gpu.kernel(module, func) {
-        Ok(h) => h,
-        Err(_) => {
-            tracing::debug!("Optional kernel '{module}::{func}' not loaded");
-            KernelHandle(0)
-        }
-    }
-}
+mod kernel_probe;
+pub use kernel_probe::{try_kernel, try_target_kernel};
 
 /// FFN component: MoE (expert routing), dense SwiGLU, or None (standalone attention).
 #[allow(clippy::large_enum_variant)]

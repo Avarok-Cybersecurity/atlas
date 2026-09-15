@@ -21,6 +21,9 @@ pub(super) fn hw() -> Hardware {
         gpu: "NVIDIA GB10".to_string(),
         driver: "580.126.09".to_string(),
         sm_clock_mhz: Some(2405.0),
+        // Single-card, like every committed record. The multi-GPU case has its
+        // own fixture in `override_tests`.
+        gpu_count: Some(1),
         source: "nvidia-smi".to_string(),
     }
 }
@@ -228,11 +231,14 @@ fn check_record_refuses_a_cross_hardware_comparison() {
         gpu: "AMD Instinct MI300X".to_string(),
         ..Hardware::default()
     };
+    // The key is `mi300x` rather than the normalised `instinctmi300x` since
+    // the SKU table (`hardware::ids`) started answering for this part. The
+    // refusal is what this test pins, and it is unchanged: an AMD record still
+    // resolves to NO gb10 entry, and still says so naming both sides.
     assert_eq!(
         check_record(&gate, &bfcl_baseline()),
         Some(vec![
-            "no baseline for hardware \"instinctmi300x\"; this benchmark has entries for [gb10]"
-                .into()
+            "no baseline for hardware \"mi300x\"; this benchmark has entries for [gb10]".into()
         ])
     );
 }
@@ -343,6 +349,34 @@ pub(super) fn plant(root: &Path, id: &str, sha: &str, secs: u64, verdict: &str) 
     write_record(root, &gate).unwrap();
 }
 
+/// Plant what SATISFIES a required gate at `sha`: a plain record for a plain
+/// gate, and — since a group is satisfied only by its members — four shard
+/// records carrying tallies and shard identity for a group id. The shard
+/// records model what `report.rs` writes, so a fixture that reads as a group
+/// pass here is the shape a real campaign produces.
+pub(super) fn plant_required(root: &Path, id: &str, sha: &str, secs: u64, verdict: &str) {
+    let Some(group) = super::group::find(id) else {
+        return plant(root, id, sha, secs, verdict);
+    };
+    for (index, member) in group.members.iter().enumerate() {
+        std::fs::create_dir_all(gate_dir(root, member)).unwrap();
+        let mut metrics = BTreeMap::new();
+        metrics.insert("overall_accuracy".to_string(), 90.0);
+        metrics.insert("subset.simple_python.hits".to_string(), 95.0);
+        metrics.insert("subset.simple_python.n".to_string(), 100.0);
+        metrics.insert("shard.index".to_string(), index as f64);
+        metrics.insert("shard.count".to_string(), group.members.len() as f64);
+        metrics.insert("transport_errors".to_string(), 0.0);
+        let record = run_record(metrics, Verdict::pass("ok"));
+        let mut gate =
+            GateRecord::from_run(&record, hw(), sha.to_string(), Vec::new(), None).unwrap();
+        gate.benchmark_id = (*member).to_string();
+        gate.verdict = Some(verdict.to_string());
+        gate.recorded_at = secs + index as u64;
+        write_record(root, &gate).unwrap();
+    }
+}
+
 #[test]
 fn check_gates_reports_each_required_bench() {
     let dir = tempdir::Dir::new();
@@ -352,7 +386,7 @@ fn check_gates_reports_each_required_bench() {
         write_baseline(root, id, &bfcl_baseline());
     }
     // Passing record for this sha.
-    plant(root, "bfcl-subset", SHA, 1_785_891_382, "PASS");
+    plant(root, "ssm-state-poisoning-gate", SHA, 1_785_891_382, "PASS");
     // Record for ANOTHER sha.
     plant(root, "ttft-warm-gate", "aaaaaaaaaa", 1_785_891_382, "PASS");
     // Failing record for this sha.
@@ -372,7 +406,7 @@ fn check_gates_reports_each_required_bench() {
         })
         .collect();
     let mut expected: BTreeMap<_, _> = REQUIRED_GATES.map(|id| (id, "Missing")).into();
-    expected.insert("bfcl-subset", "Pass");
+    expected.insert("ssm-state-poisoning-gate", "Pass");
     expected.insert("agentic-webserver", "Fail");
     assert_eq!(actual, expected);
     assert!(matches!(

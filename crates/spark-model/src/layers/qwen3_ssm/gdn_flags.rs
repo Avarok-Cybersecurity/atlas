@@ -87,7 +87,19 @@ impl GdnFlags {
     pub fn verify_exact_active(self) -> bool {
         self.exact_verify && !self.h_f16
     }
-    /// The legacy environment reading, used when the CLI never set anything.
+    /// The reading used when the CLI never set anything: the compiled
+    /// target's declaration, with the environment overriding.
+    ///
+    /// `batched_recurrent` takes its DEFAULT from
+    /// `kernels/<hw>/HARDWARE.toml` `[defaults] ssm_batched_recurrent` —
+    /// `hopper` declares it ON (+6% on the serve, md5-identical output to the
+    /// per-sequence launches), `gb10` and `b200` declare it OFF, unchanged. It
+    /// used to be `ATLAS_SSM_BATCHED_RECURRENT=1` in an H100 launch script
+    /// outside this repository, which is the structure the 2026-09-11
+    /// maintainer review asked for. `ATLAS_SSM_BATCHED_RECURRENT` still
+    /// overrides, and `=0` now means OFF rather than reading as absent (see
+    /// `layers::ops::target_defaults`); everything that ever set it set it
+    /// to `1`.
     ///
     /// `ATLAS_SSM_H_FP16` stays PRESENCE-gated here on purpose: that is how
     /// every script and ledger in the campaign wrote it, and silently changing
@@ -101,7 +113,9 @@ impl GdnFlags {
             // narrowing lands; only unit tests exercise the sizing.
             h_f16_pool: false,
             fused_norm: std::env::var("ATLAS_GDN_FUSED_NORM").as_deref() == Ok("1"),
-            batched_recurrent: std::env::var("ATLAS_SSM_BATCHED_RECURRENT").as_deref() == Ok("1"),
+            batched_recurrent: crate::layers::ops::target_defaults::resolved()
+                .ssm_batched_recurrent
+                .value,
             // No legacy environment variable on purpose (house rule: CLI flags
             // or defaults, no new env knobs). Default = the legacy WY arms;
             // exact verify is CLI-opt-in only (`--exact-verify`).

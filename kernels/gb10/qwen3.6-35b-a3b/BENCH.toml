@@ -159,17 +159,37 @@ than merely recorded. Self-start pins ssm_cache_slots=256 via [benchmarks.serve_
 own Marconi snapshots; the flagship recipe leaves the pool at its default 16. That is \
 capacity, not a score lever — the floors below stay the ratchet — but check_record demands \
 the pin on the record, so records measured before the pin stop covering and the next gate \
-run re-records under the declared config."""
+run re-records under the declared config. ★ CERTIFIED BY FOUR SHARDS SINCE 2026-09-13 \
+(bfcl-subset-echolp-a..d at one commit; gate::check_group) — a whole-draw record no longer \
+satisfies this gate. ★ SCORED OPEN by owner decision: cross-request SSM snapshot reuse stays \
+ON; on the golden draw that partition dependence is measured at 12 of 995 (#936; the twelve \
+are named in benchmarks::bfcl::sensitive and in the bfcl-subset note), and this draw shares \
+the mechanism. ★ NO SHARDED MEASUREMENT OF THIS DRAW EXISTS YET: the floors below are the \
+whole-draw ratchet carried forward PROVISIONALLY, and the first campaign run under the shard \
+rule (the stack that introduces it) either confirms them or re-cuts them here with the \
+reason recorded — the ssm_cache_slots=256 pin was sized for one serial 1004-sample generate, \
+and a 251-sample shard sits inside it with more room, so the aggregate is expected at or \
+above the whole-draw number, not below it. ★ RE-CUT 2026-09-14 (owner decision, issue #1083, \
+discussion #1084): overall 86.50 -> 84.56, normalized 86.90 -> 85.77 — the first sharded \
+measurement, 84.96/86.17 at 45cd3b1550, minus the 0.40 band. The reason is RECORDED, as \
+this note demands: until #1043/#1071 Atlas sent this checkpoint its tool prompt TWICE (the \
+template's and its own injected one) and the duplicate was worth +1.5 on the aggregate, \
++2.8 on shard c — proven by a same-node control, 45cd3b1550 with only #1071 reverted, \
+scoring shard c 87.60/87.49 to the hundredth of the pre-#1071 record. Duplicating a prompt \
+is not a solution; one tool prompt is the definition from here, and these floors are that \
+definition's ratchet. DO NOT recover them by re-adding the second prompt. They rise with \
+the next receipt that beats them (a better SINGLE prompt is measurement-definition work \
+and gets its own campaign)."""
 
 [benchmarks.serve_overrides]
 ssm_cache_slots = "256"
 
 [benchmarks.metrics.normalized_single_turn_score]
-min = 86.90
+min = 85.77
 noise = 0.4
 
 [benchmarks.metrics.overall_accuracy]
-min = 86.50
+min = 84.56
 noise = 0.4
 
 [benchmarks.metrics.samples]

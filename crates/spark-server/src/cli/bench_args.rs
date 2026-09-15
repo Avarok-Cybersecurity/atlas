@@ -41,6 +41,13 @@ pub struct BenchmarkArgs {
 }
 
 impl BenchmarkArgs {
+    /// Whether this invocation promises stdout to a script: `certify --json`
+    /// writes one JSON object per line there and nothing else, so the log
+    /// goes to stderr instead.
+    pub fn json_stdout(&self) -> bool {
+        matches!(&self.command, Some(BenchmarkCommand::Certify(c)) if c.json)
+    }
+
     /// Refuse `--pr` without `--pull-request-gate-check`.
     ///
     /// `--pr` exists only to key the gate check's advisory intent lookup;
@@ -74,6 +81,9 @@ pub enum BenchmarkCommand {
     Aggregate(AggregateArgs),
     /// Past runs, from `~/.atlas/runs`.
     History(HistoryArgs),
+    /// Run every required gate this commit still owes, and say whether the
+    /// tree is certified when they are done. See `certify --help`.
+    Certify(super::bench_certify::args::CertifyArgs),
     /// Render a shareable result card from a committed gate record.
     ///
     /// Separate from `run --output-image` on purpose: a card can be regenerated
@@ -145,6 +155,12 @@ pub struct RunArgs {
     /// when a benchmark has thresholds for more than one box class. With a
     /// single entry it is inferred; with several, omitting it is an error
     /// rather than a guess.
+    ///
+    /// The value must be a registered box class
+    /// (`atlas_plugin::hardware::ids::KNOWN_HARDWARE_IDS`). A registered class
+    /// this benchmark has never been measured on is refused by saying exactly
+    /// that — it is the state every hardware port is in until its first record
+    /// lands, and it must not read as a misspelling.
     #[arg(long)]
     pub hardware: Option<String>,
     /// Which model VARIANT of the benchmark to run, as the checkpoint id its

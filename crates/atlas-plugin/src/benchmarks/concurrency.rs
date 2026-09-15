@@ -57,6 +57,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              self-verdicts against gate-filled per-rung floors; a sweep with any vacuous \
              cell or request error never passes, whatever the floors say.",
     duration_hint: "~25–90 min",
+    expected_secs: 1560,
     updated: "2026-08-29",
     needs_confirmation: false,
     // A latency/throughput curve is meaningful for any served model; there is
@@ -106,6 +107,7 @@ pub const DFLASH2_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              point where speculation self-limits this measures the base engine and says so \
              rather than pretending otherwise.",
     duration_hint: "~25–90 min",
+    expected_secs: 300,
     updated: "2026-08-29",
     needs_confirmation: false,
     // The drafter is checkpoint-specific — a drafter trained on other weights
@@ -226,6 +228,62 @@ fn cell_is_vacuous(requests: &[RequestEvidence], osl: usize) -> bool {
     requests
         .iter()
         .any(|r| (r.completion_tokens as f64) < VACUITY_FLOOR * osl as f64)
+}
+
+/// SSM snapshot slots one warm request holds LIVE on the server through a
+/// cell: its tail checkpoint (the anchor a repeat of the same prompt restores
+/// from) and its finish leaf. The exact prefill-end leaf no longer takes a
+/// slot — see `spark-model`'s `prefill_b::exact_leaf`.
+const LIVE_SLOTS_PER_WARM_REQUEST: usize = 2;
+/// STALE finish leaves an EARLIER cell of the same sweep leaves behind for a
+/// prompt it also ran: a finish leaf is keyed on prompt + generated text, and
+/// the warm-up round's and the measured round's generations drift apart by a
+/// token at C ≥ 8 (batch-dependent numerics; the "C=8 truncation" of
+/// 2026-08), so each earlier cell can leave TWO leaves, not one. The pool's
+/// eviction is session-first (`radix_tree/snapshot.rs`), so when the pool
+/// overflows it drops the stalest prompt's tail with its leaves, and that
+/// prompt's measured request recomputes.
+///
+/// Measured 2026-09-14 on a 32-slot pool, twice, same node: conc 8 after the
+/// 1/2/4 cells — 23 live+stale by the one-leaf count, which would fit — lost
+/// two, then three, of its eight tails. Counting two leaves per earlier cell
+/// (38) says it cannot fit, which is what happened. Measured 2026-09-13 on a
+/// 24-slot pool: conc 8 lost four of eight.
+const STALE_LEAVES_PER_EARLIER_CELL: usize = 2;
+/// Slots the pool must hold for a `conc`-way cell to keep every warmed
+/// prompt through its measured round: each prompt's live pair, the stale
+/// leaves of every earlier cell that ran the same prompt (`earlier` is those
+/// cells' concurrencies; prompt `i` ran in each one wider than `i`), and one
+/// re-home transient per in-flight request — a save that re-homes an
+/// existing prefix takes a fresh slot BEFORE the old one is released.
+///
+/// The bias is deliberate: a cell judged cold by construction that happens
+/// to hit warm anyway loses nothing (it is measured either way; only the
+/// warm rule is skipped), while a cell judged warm that a session-first
+/// eviction turns cold fails the gate with nothing wrong in the engine. On
+/// an 8-slot pool conc 2 measured warm on 2026-09-13 and this rule calls it
+/// cold by construction; the gates pin 32 slots, where it is moot.
+fn slots_needed(conc: usize, earlier: &[usize]) -> usize {
+    (0..conc)
+        .map(|i| {
+            let stale_cells = earlier.iter().filter(|&&c| c > i).count();
+            LIVE_SLOTS_PER_WARM_REQUEST + STALE_LEAVES_PER_EARLIER_CELL * stale_cells
+        })
+        .sum::<usize>()
+        + conc
+}
+const SSM_CACHE_SLOTS_KEY: &str = "ssm_cache_slots";
+
+/// Can the server hold every warmed prompt of a `conc`-way cell at once?
+///
+/// `slots` is the pool the server was started with, or `None` when the
+/// serve overrides do not state it — then the answer is `true`, so the warm
+/// rule applies in full: a pool nobody sized is not an excuse.
+///
+/// Strictly greater, not `>=`: the last re-home still needs its spare slot.
+/// `earlier` are the concurrencies of the cells already run on these prompts.
+fn warm_cache_capable(conc: usize, slots: Option<usize>, earlier: &[usize]) -> bool {
+    slots.is_none_or(|slots| slots > slots_needed(conc, earlier))
 }
 
 fn cache_is_uncontrolled(requests: &[RequestEvidence], warmup: usize) -> bool {
@@ -524,8 +582,30 @@ impl ConcurrencySweep {
         // usage is the oracle for whether the measured request actually used
         // the warmed prompt. A small shared chat-template prefix is not enough:
         // require a material cached fraction of each measured prompt.
-        let cache_uncontrolled = cache_is_uncontrolled(&requests, self.warmup);
+        // A pool that cannot hold this cell's warmed prompts measures COLD
+        // by construction, and says so instead of failing the warm rule it
+        // could never meet. The rule is judged against what the server was
+        // started with (`TargetEndpoint::serve_overrides`), never a default.
+        let slots = handle.target().serve_override_usize(SSM_CACHE_SLOTS_KEY);
+        let earlier: Vec<usize> = self.cells[..self.cursor]
+            .iter()
+            .filter(|(i, _)| *i == isl)
+            .map(|(_, c)| *c)
+            .collect();
+        let warm_capable = warm_cache_capable(conc, slots, &earlier);
+        let cache_uncontrolled = warm_capable && cache_is_uncontrolled(&requests, self.warmup);
         handle.info(evidence_line(isl, conc, &requests));
+        if !warm_capable {
+            handle.info(format!(
+                "isl {isl} conc {conc}: cache cold by construction — the server's {} \
+                 snapshot slot(s) cannot hold {} warm request(s) after the {:?} cell(s) \
+                 ({} needed); the warm rule is not applied to this cell",
+                slots.unwrap_or(0),
+                conc,
+                earlier,
+                slots_needed(conc, &earlier),
+            ));
+        }
         if vacuous {
             handle.warn(format!(
                 "isl {isl} conc {conc}: a request delivered under {:.0}% of the {}-token \

@@ -243,6 +243,12 @@ impl TransformerModel {
             (0, false)
         };
         seq.marconi_skip_to = kv_write_start;
+        // #919: `cached_tokens` counts reused KV, not matched-then-discarded KV.
+        seq.reused_prefix_tokens = crate::model::trait_impl::prefix_reuse::reused_prefix_tokens(
+            matched,
+            kv_write_start,
+            marconi_skip,
+        );
 
         // Allocate all KV blocks upfront for the full sequence.
         let blocks_needed = (total_len - 1) / bs + 1;

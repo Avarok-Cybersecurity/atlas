@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! `record_agreement <record.json>...` — do the records a PR adds agree?
 //!
-//! Invoked from `.github/workflows/ci.yml`'s "One PR, one commit, one signer"
-//! step. The workflow collects the added files (it has git and the working
-//! tree); this decides the verdict (it has the registry, and therefore each
-//! benchmark's `Sensitivity`).
+//! Invoked from `.github/workflows/ci.yml`'s record-agreement step. The
+//! workflow collects the added files; this decides the verdict: it has the
+//! registry (each benchmark's `Sensitivity`) and, run from the checkout, the
+//! repository at the PR head — so each record's STANDING at that head is
+//! judged here too, by the same rule the gate check uses
+//! (`gate::record_standing`) — by content, never ancestry, because the
+//! repository squash-merges. The head is `HEAD` of the current directory's
+//! repository, or `RECORD_AGREEMENT_HEAD` when set.
 //!
 //! Exit 0 if they agree, 1 with a GitHub `::error` annotation per disagreement.
 
 use std::path::Path;
 
-use atlas_plugin::gate::agreement::{AddedRecord, check};
+use atlas_plugin::gate::Standing;
+use atlas_plugin::gate::agreement::{AddedRecord, check, standing_at};
 
 fn field(v: &serde_json::Value, key: &str) -> Option<String> {
     v.get(key).and_then(|x| x.as_str()).map(str::to_owned)
@@ -34,6 +39,28 @@ fn main() -> std::process::ExitCode {
         println!("this PR adds no records — nothing to agree on.");
         return std::process::ExitCode::SUCCESS;
     }
+
+    let root = match std::env::current_dir()
+        .ok()
+        .and_then(|d| atlas_plugin::gate::git_rev_parse_toplevel(&d).ok())
+    {
+        Some(r) => r,
+        None => {
+            println!("::error title=No repository::record_agreement must run inside the checkout");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let head = match std::env::var("RECORD_AGREEMENT_HEAD")
+        .ok()
+        .or_else(|| atlas_plugin::gate::git_sha(&root).ok())
+    {
+        Some(h) => h,
+        None => {
+            println!("::error title=No head::cannot resolve the head to judge standing against");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    println!("head {head}");
 
     let mut added = Vec::new();
     for a in &args {
@@ -63,19 +90,34 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         };
         let git_sha = field(&v, "git_sha").unwrap_or_else(|| "MISSING".into());
-        println!("  {a:<58} gate={benchmark_id} sha={git_sha} signer={signer}");
+        // The hardware capture, when the record parses as a full GateRecord.
+        // A pre-schema record has none, and is then equivalent to nothing —
+        // the one-box rule applies to it exactly as before.
+        let parsed = atlas_plugin::gate::read_record(path).ok();
+        let hardware = parsed
+            .as_ref()
+            .map(atlas_plugin::hardware::equivalence::HardwareFingerprint::from_record);
+        // A record that does not even parse cannot be shown to stand.
+        let standing = parsed
+            .as_ref()
+            .map_or(Standing::Unknown, |r| standing_at(&root, &head, r));
+        println!(
+            "  {a:<58} gate={benchmark_id} sha={git_sha} signer={signer} standing={standing:?}"
+        );
         added.push(AddedRecord {
             path: a.clone(),
             benchmark_id,
             git_sha,
             signer,
+            hardware,
+            standing,
         });
     }
 
     let problems = check(&added);
     if problems.is_empty() {
         println!(
-            "all {} added record(s) agree: one commit, and signer agreement \
+            "all {} added record(s) agree: each stands at {head}, and signer agreement \
              holds for every speed-class gate.",
             added.len()
         );

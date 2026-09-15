@@ -263,6 +263,13 @@ pub trait GpuBackend: Send + Sync {
     #[track_caller]
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle>;
 
+    /// Whether `module` is compiled into this backend at all — the question
+    /// to ask BEFORE looking up a kernel that only some targets carry. A
+    /// lookup that fails is recorded by the boot audit as a dispatch site on
+    /// a silent fallback path; a target that never built the source has no
+    /// such site, so it must not issue the lookup.
+    fn has_module(&self, module: &str) -> bool;
+
     /// This backend's memoized kernel handles and scratch allocations.
     ///
     /// Required rather than defaulted: an op that memoizes a `KernelHandle`

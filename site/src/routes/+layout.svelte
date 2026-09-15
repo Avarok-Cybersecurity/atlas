@@ -36,11 +36,9 @@
   // the deploy target serves files literally — no extension guessing, no
   // directory index outside the document root. A canonical of `/control` named
   // a URL that answers 500, which is worse than naming none.
-  const canonical = $derived(
-    page.url.pathname === '/'
-      ? SITE
-      : `${SITE.replace(/\/$/, '')}${page.url.pathname}.html`
-  );
+  const marketingPage = $derived(['/', '/index.html'].includes(page.url.pathname));
+  const enginePage = $derived(['/engine', '/engine.html'].includes(page.url.pathname));
+  const canonical = $derived(marketingPage ? SITE : `${SITE.replace(/\/$/, '')}${page.url.pathname.replace(/\.html$/, '')}.html`);
 
   const SITE = 'https://atlasinference.io/';
 
@@ -96,7 +94,7 @@
       },
       {
         '@type': 'FAQPage',
-        '@id': `${SITE}#faq`,
+        '@id': `${SITE}engine.html#faq`,
         isPartOf: { '@id': `${SITE}#site` },
         mainEntity: faq.items.map((item) => ({
           '@type': 'Question',
@@ -112,7 +110,10 @@
   // early and spill the rest of the page's markup into the document. Escaping
   // it as \u003c keeps the JSON parseable and identical in value to consumers.
   // (Writing that tag literally in this comment would end THIS block, too.)
-  const ldjson = JSON.stringify(graph).replace(/</g, '\\u003c');
+  const ldjson = $derived(JSON.stringify({
+    ...graph,
+    '@graph': graph['@graph'].filter(entity => entity['@type'] !== 'FAQPage' || enginePage)
+  }).replace(/</g, '\\u003c'));
 </script>
 
 <svelte:head>
@@ -121,6 +122,7 @@
        title while its own two <meta>s came through -- the page head renders,
        only its title is discarded. Every route owns its own title instead. -->
   <link rel="canonical" href={canonical} />
+  <meta property="og:url" content={canonical} />
   {@html `<script type="application/ld+json">${ldjson}<\/script>`}
 </svelte:head>
 
@@ -132,7 +134,7 @@
      `perspective`, `will-change` or `contain: paint` on any ancestor would
      make that ancestor the containing block for fixed-position descendants,
      and the background would start scrolling with the content. -->
-<ChevronField />
+{#if !marketingPage}<ChevronField />{/if}
 
 <!-- The brand vector, defined once and <use>d by the nav and the footer. -->
 <AtlasLockup kind="defs" />

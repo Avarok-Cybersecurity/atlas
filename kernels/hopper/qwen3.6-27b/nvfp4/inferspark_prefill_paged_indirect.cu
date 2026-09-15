@@ -1,0 +1,1 @@
+../../../gb10/qwen3.6-27b/nvfp4/inferspark_prefill_paged_indirect.cu

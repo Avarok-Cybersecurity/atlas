@@ -27,6 +27,10 @@ fn resolve(values: &[(&str, &str)]) -> ModelLevers {
         0,
         crate::model::drafter_context::DrafterContext::BOTH,
         0.0,
+        // The compiled target's `[defaults] decode_split_silu`. Every target
+        // declares it ON; `target_defaults_tests` grades the declaration, this
+        // file grades the kill switch against it.
+        true,
     )
 }
 
@@ -205,6 +209,7 @@ fn externally_resolved_shadow_and_drafter_values_are_carried() {
         7,
         crate::model::drafter_context::DrafterContext::OFF,
         0.42,
+        true,
     );
     assert_eq!(d.shadow_topk, 7);
     assert_eq!(

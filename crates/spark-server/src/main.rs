@@ -129,15 +129,24 @@ async fn main() -> Result<()> {
         Command::DumpServeOptions | Command::SyncRecipes | Command::Doctor => true,
     };
 
+    // `bench certify --json` promises one JSON object per line on stdout and
+    // nothing else there; the log keeps its exact layout but moves to stderr
+    // for that one entry point.
+    let logs_to_stderr = matches!(
+        &cli.command,
+        Command::Benchmark(b) if b.json_stdout()
+    );
     let tui_channels = if tui::plain_mode(no_tui) {
         // The pre-TUI init, byte-for-byte: this exact fmt layout is the
         // contract every benchmark driver and gate script greps.
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "info".into()),
-            )
-            .init();
+        let fmt = tracing_subscriber::fmt().with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        );
+        if logs_to_stderr {
+            fmt.with_writer(std::io::stderr).init();
+        } else {
+            fmt.init();
+        }
         None
     } else {
         let (progress_tx, progress_rx) = std::sync::mpsc::channel();

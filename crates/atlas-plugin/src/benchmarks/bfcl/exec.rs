@@ -53,6 +53,19 @@ impl Bfcl {
         if has_tool_calls {
             self.tool_call_samples += 1;
         }
+        // Visible where the number is produced: this sample is one of the
+        // twelve whose answer depends on what ran before it (#936). The
+        // certified regime keeps cross-request snapshot reuse on by decision,
+        // so this is information, not a defect of the run.
+        if super::sensitive::is_known(&sample.sample_id) {
+            self.known_sensitive_seen += 1;
+            handle.warn(one_line(format!(
+                "sample {} is KNOWN partition-sensitive (#936): its answer can differ \
+                 between the whole draw and a shard because of cross-request SSM \
+                 snapshot reuse",
+                sample.sample_id
+            )));
+        }
         self.responses.push(json!({
             "sample_id": sample.sample_id,
             "subset": sample.subset,

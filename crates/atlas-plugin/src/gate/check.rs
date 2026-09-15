@@ -105,12 +105,47 @@ pub(super) fn record_still_stands(
     record: &GateRecord,
     gate: &super::coverage::GateCoverage,
 ) -> bool {
+    matches!(record_standing(root, sha, record, gate), Standing::Stands)
+}
+
+/// Where a record measured at its own commit stands relative to `sha`: the
+/// ONE answer both the gate verdict (`record_still_stands`) and the record
+/// agreement rule (`agreement::check`) read, so a record can never be "still
+/// covering" for one and "a straggler" for the other.
+pub fn record_standing(
+    root: &Path,
+    sha: &str,
+    record: &GateRecord,
+    gate: &super::coverage::GateCoverage,
+) -> Standing {
     match invalidating_paths(root, sha, &record.git_sha, gate) {
-        // Not an ancestor, or git failed: unchanged fail-closed doctrine.
-        None => false,
-        Some(paths) if paths.is_empty() => true,
-        Some(paths) => super::closure::excuses(root, &paths, &record.closure),
+        // git could not diff the two (a commit this repository does not
+        // have, or git failed): unchanged fail-closed doctrine.
+        None => Standing::Unknown,
+        Some(paths) if paths.is_empty() => Standing::Stands,
+        Some(paths) => {
+            if super::closure::excuses(root, &paths, &record.closure) {
+                Standing::Stands
+            } else {
+                Standing::Invalidated(paths)
+            }
+        }
     }
+}
+
+/// A record's standing at a head, from its own commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Standing {
+    /// The diff from the record's commit to the head touches nothing this
+    /// gate looks at (or the record's closure excuses what it touches).
+    Stands,
+    /// git could not diff the record's commit against the head — a commit
+    /// this repository does not have, or git failed. Content is the rule,
+    /// never ancestry (this repository squash-merges), so "unknown commit"
+    /// is the only way a record fails to be judged at all.
+    Unknown,
+    /// The diff touches these invalidating paths for the record's gate.
+    Invalidated(Vec<String>),
 }
 
 /// The full gate verdict for `sha`: every required bench, in order.
@@ -170,7 +205,7 @@ pub(super) fn record_is_for(record: &GateRecord, benchmark_id: &str, path: &Path
 /// A record from a box class the baseline does not know passes through: it has
 /// no declared default to differ from, and `check_record` already hard-fails
 /// it by name ("no baseline for hardware …"), which is the honest verdict.
-fn record_is_required_subject(
+pub(super) fn record_is_required_subject(
     baseline: &GateBaseline,
     record: &GateRecord,
     benchmark_id: &str,
@@ -194,30 +229,18 @@ fn record_is_required_subject(
 }
 
 pub(super) fn check_one(root: &Path, benchmark_id: &str, sha: &str) -> GateStatus {
-    // A GROUP may be satisfied EITHER by a whole-draw record under its own id —
-    // the way every gate worked before the shard split, and the way every
-    // record committed on main today was produced — OR by all of its members.
+    // ★ A GROUP IS SATISFIED ONLY BY ITS MEMBERS (2026-09-13).
     //
-    // Falling back rather than replacing is not politeness, it is the
-    // difference between a transition and an outage. `bfcl-subset` is a
-    // REQUIRED context: if becoming a group invalidated the whole-draw records
-    // already on main, every open PR would go red the moment this landed and
-    // stay red until someone ran a sharded campaign. Six tests in this file
-    // caught exactly that by writing a whole-draw record and expecting a
-    // verdict.
-    // The group path is taken only once sharding has actually STARTED — i.e.
-    // some member has a record on disk. Otherwise this falls through to the
-    // ordinary gate, which knows how to say "no covering record" and, crucially,
-    // WHICH perf-path files invalidated the last one. Reporting "your four
-    // shards are missing" to someone whose whole-draw record was invalidated by
-    // a kernel change would replace a 20-second fix with a bisect.
-    if let Some(group) = super::group::find(benchmark_id)
-        && !has_covering_record(root, benchmark_id, sha)
-        && group
-            .members
-            .iter()
-            .any(|m| !records_newest_first(root, m).is_empty())
-    {
+    // Until this date a group could also be satisfied by a whole-draw record
+    // under its own id — the transition rule that let `bfcl-subset` become a
+    // group without turning every open PR red. That transition is over: the
+    // owner's decision is that the two BFCL gates are certified by their four
+    // shards, and by nothing else, so a whole-draw record in the group's
+    // directory is history, not evidence. The member path is the only path;
+    // `check_group` says which member is missing and, for the newest shard
+    // that stopped covering, WHICH perf-path files re-opened it — the same
+    // 20-second-fix property the whole-draw arm below has always had.
+    if let Some(group) = super::group::find(benchmark_id) {
         return super::check_group::check_group(root, group, sha);
     }
     let Some(gate) = super::coverage::find(benchmark_id) else {
@@ -403,24 +426,3 @@ pub fn exit_code(statuses: &BTreeMap<String, GateStatus>) -> i32 {
 #[cfg(test)]
 #[path = "check_tests.rs"]
 mod check_tests;
-
-/// Is there a covering record under this id itself? Used to decide whether a
-/// group still has a whole-draw measurement, before falling back to its shards.
-///
-/// Deliberately the same three predicates `check_one` uses, so "covering" means
-/// one thing in this file.
-fn has_covering_record(root: &Path, benchmark_id: &str, sha: &str) -> bool {
-    let Some(gate) = super::coverage::find(benchmark_id) else {
-        return false;
-    };
-    let Ok(baseline) = read_baseline(root, benchmark_id) else {
-        return false;
-    };
-    records_newest_first(root, benchmark_id).iter().any(|path| {
-        read_record(path).is_ok_and(|r| {
-            record_is_for(&r, benchmark_id, path)
-                && record_is_required_subject(&baseline, &r, benchmark_id, path)
-                && record_still_stands(root, sha, &r, gate)
-        })
-    })
-}

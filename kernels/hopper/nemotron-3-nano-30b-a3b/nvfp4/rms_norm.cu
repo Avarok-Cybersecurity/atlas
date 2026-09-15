@@ -1,0 +1,1 @@
+../../../gb10/nemotron-3-nano-30b-a3b/nvfp4/rms_norm.cu

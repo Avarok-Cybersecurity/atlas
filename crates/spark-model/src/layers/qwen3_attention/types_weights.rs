@@ -287,7 +287,10 @@ impl Fp8TwinSet {
 /// the Q and O FP8 prefill twins will be built. A name typo'd in one of the
 /// three would mis-predict ~1.5 GB of residency on the 27B in silence.
 pub const W8A8_PREFILL_KERNELS: [(&str, &str); 2] = [
-    ("per_token_group_quant_fp8", "per_token_group_quant_fp8"),
+    (
+        crate::layers::ops::FP8_QUANT_MODULE,
+        crate::layers::ops::FP8_QUANT_ENTRY,
+    ),
     ("fp8_gemm_t_blockscaled", "fp8_gemm_t_blockscaled"),
 ];
 

@@ -1,0 +1,147 @@
+# Hopper target: kernel set inherited from gb10 via symlink; expected_absent
+# NOT yet harvested on Hopper hardware (`spark serve --check-kernels`).
+# Every other table below is gb10's, copied verbatim — sampling and behaviour
+# are checkpoint properties, not device properties. The [expected_absent]
+# tables are NOT: they were harvested on GB10 and are carried here only so
+# the target parses. Re-harvest them on an H100/H200 before trusting a
+# startup kernel audit on this hardware.
+[model]
+name = "deepseek-v4-flash"
+hf_id = "RedHatAI/DeepSeek-V4-Flash-NVFP4-FP8"
+params = "284B"
+active_params = "13B"
+architecture = "MLA + MoE + mHC + Hybrid Attention (CSA/HCA)"
+
+layers_total = 43
+layers_full_attention = 43
+
+hidden_dim = 4096
+head_dim = 512
+q_heads = 64
+kv_heads = 1
+intermediate_size = 2048
+
+vocab_size = 129280
+max_position_embeddings = 131072
+rope_theta = 160000
+partial_rotary_factor = 0.125
+
+# MLA-specific
+kv_lora_rank = 512
+q_lora_rank = 1024
+o_lora_rank = 1024
+v_head_dim = 512
+qk_rope_head_dim = 64
+qk_nope_head_dim = 448
+
+# MoE
+num_experts = 256
+num_shared_experts = 1
+moe_intermediate_size = 2048
+top_k = 6
+
+# MTP (Multi-Module Token Prediction)
+mtp_layers = 5
+
+# Hyper-Connections (mHC)
+hc_mult = 4
+hc_sinkhorn_iters = 20
+hc_eps = 1e-6
+
+# YaRN RoPE scaling
+yarn_factor = 16.0
+yarn_beta_fast = 32.0
+yarn_beta_slow = 1.0
+yarn_original_max_position_embeddings = 65536
+
+[[model_types]]
+model_type = "deepseek_v4"
+
+# DeepSeek V4 Flash uses hybrid attention (CSA/HCA) with compress_ratios.
+# Currently falls back to full_attention; hybrid support is pending.
+# o_lora_rank > 0 distinguishes Flash from V3/V4-Pro.
+
+# Recommended sampling (DeepSeek V4 family defaults).
+[sampling.thinking]
+temperature = 1.0
+top_p = 1.0
+top_k = 0
+presence_penalty = 0.0
+
+[sampling.coding]
+temperature = 1.0
+top_p = 1.0
+top_k = 0
+presence_penalty = 0.0
+
+[sampling.general]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[behavior]
+# Content-loop watchdog: enabled for DeepSeek V4 to prevent failure modes.
+enable_loop_watchdog = true
+# Thinking is controlled by template; V4 supports reasoning traces.
+thinking_default = false
+
+# KV cache dtype: FP8 matches Hugging Face reference (vLLM/SGLang use --kv-cache-dtype=fp8)
+# The checkpoint is FP8/NVFP4 quantized; BF16 KV cache causes dtype mismatch and garbage output.
+# This is the critical fix for the gibberish output issue.
+default_kv_dtype = "fp8"
+fp8_kv_calibration_tokens = 256
+
+# ── expected_absent ────────────────────────────────────────────────────────
+# Harvested 2026-08-04 from an EP=2 `--check-kernels` run (rank 0 dgx1 /
+# rank 1 dgx3, identical report on both ranks): 217 lookups, 9 unresolved,
+# kernel_set_hash 9f8b7ef7be96. Every entry below names the dispatch site
+# that probes the handle and the resolved fallback it falls back to; none
+# are silenced speculatively.
+
+[expected_absent.prefill_attn]
+inferspark_prefill_512tc = """
+Tensor-core HDIM=512 prefill, an instantiation of the shared
+`inferspark_prefill` at BC=16. `ops::wide_prefill_kernel` probes for it on every
+target whose `wide_head_dim` gate is on, and this model trips that gate through
+`kv_lora_rank = 512` rather than through genuinely 512-wide attention heads.
+
+NOT APPLICABLE HERE, and not merely unshipped. This target's 512 path is MLA with
+a per-head attention sink, launched by `prefill_attention_512_sink` against a
+TWELVE-parameter `inferspark_prefill_512` (the shared tensor-core kernel takes
+eleven, and a signature mismatch makes cuLaunchKernel read past the caller's
+argument array — a host segfault with no CUDA error). Wiring the TC kernel into
+the MLA path is separate work with its own correctness argument.
+
+The probe falls back to the scalar `inferspark_prefill_512`, which IS shipped
+here, so behaviour is unchanged."""
+
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = """
+3-deep weight-pipeline twin shipped ONLY in qwen3.6-27b's shadow.
+layers::tgemm_kernel probes it, then falls back to w4a16_gemm_t, which
+resolves here. UNMEASURED for this target's shapes — candidate, not loss."""
+w4a16_gemm_t_k64_p3 = "Same family; layers::k64_kernel falls back to the required w4a16_gemm_t_k64 (resolves here)."
+w4a16_gemm_t_k64_n64_p3 = "Narrow-N deep-K twin; layers::k64_n64_kernel returns 0-handle when absent, dispatch gates on handle != 0 before firing."
+w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin of w4a16_gemm_t_m128; prefill_weights gates on handle != 0, falls back through the resolved w4a16 m128 path."
+
+[expected_absent.w4a4]
+w4a4_gemm_mfast = """
+Shipped only in nemotron-labs-3-puzzle-75b-a9b's shadow. The attention
+W4A4 prefill path is additionally OPT-IN ONLY (ATLAS_ATTN_W4A4 env) and
+dispatch gates on handle != 0 (paged_qkv.rs:49, paged_oproj.rs:32), so
+the resolved w4a16 arms serve these shapes. UNMEASURED."""
+
+[expected_absent.moe_w4a16]
+moe_w4a16_fused_gate_up_t_k64_fp4 = "FUSED-FP4 gate_up (Holo-3.1 family); forward_prefill_routed gates on gateup_fp4 && handle != 0 before firing."
+moe_w4a16_fused_gate_up_t_k64_m128 = "M=128 Block-D variant shipped only in minimax-m2-229b; forward_prefill_routed gates on nvfp4_gate_up_m128 && handle != 0, falls through to M=64 (resolves)."
+moe_w4a16_down_t_k64_fp4 = "FP4 down-projection twin; forward_prefill_routed gates on down_fp4 && handle != 0."
+
+[expected_absent.paged_decode_attn_fp8_512]
+paged_decode_attn_fp8 = """
+HDIM>256 generic FP8-KV decode arm. Probe is issued because MLA sets
+wide_head_dim (kv_lora_rank 512 > 0), but DeepSeek-V4-Flash decode runs
+the compressed-MLA path instead: run_paged_decode.rs routes
+KvCacheDtype::Fp8 with the V4-Flash rope config to
+mla_paged_decode_fp8 (resolves here) BEFORE the generic arms, so this
+handle can never fire as served."""

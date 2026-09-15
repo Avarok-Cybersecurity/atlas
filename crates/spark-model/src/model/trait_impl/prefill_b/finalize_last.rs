@@ -326,6 +326,35 @@ impl TransformerModel {
                 );
                 super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
             }
+        } else if self.ssm_snapshots.is_enabled()
+            && let super::exact_leaf::ExactLeaf::Redundant { tail, replay } =
+                super::exact_leaf::exact_leaf(
+                    seq.tail_checkpoint_tokens,
+                    tokens.len(),
+                    bs,
+                    super::exact_leaf::marconi_exact_enabled(),
+                )
+        {
+            // The tail checkpoint saved during this prefill covers every
+            // restore this leaf could serve; the KV goes into the radix on
+            // its own and the pool slot stays free for an anchor that is
+            // reachable. See `exact_leaf.rs` for the measurement.
+            tracing::debug!(
+                "exact leaf not saved for {} tokens: tail checkpoint at {tail} covers it \
+                 (replay {replay} tokens)",
+                tokens.len()
+            );
+            if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
+                let acquired = self.prefix_cache.insert(
+                    tokens,
+                    &seq.block_table,
+                    &seq.disk_block_ids,
+                    bs,
+                    seq.cached_prefix_tokens,
+                    seq.adapter_id,
+                );
+                super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
+            }
         } else if self.ssm_snapshots.is_enabled() {
             if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
                 self.ssm_pool.debug_state_checksum(

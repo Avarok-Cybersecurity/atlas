@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::layers::ops::{
-    DecodeW8a8Plan, DecodeW8a8Scratch, decode_w8a8_selected, parse_cublas_scope,
+    self, DecodeW8a8Plan, DecodeW8a8Scratch, decode_w8a8_selected, parse_cublas_scope,
 };
 use crate::weight_map::WeightQuantFormat;
 use spark_runtime::gpu::{DevicePtr, KernelHandle};
@@ -26,7 +26,7 @@ fn scratch() -> DecodeW8a8Scratch {
         act_scale_bytes: 1 << 20,
         act_scale_kmajor: DevicePtr(0x3000),
         act_scale_kmajor_bytes: 1 << 20,
-        quant_k: KernelHandle(0xA1),
+        quant_k: ops::Fp8ActQuant::shared_only(KernelHandle(0xA1)),
         scale_kmajor_k: KernelHandle(0xA2),
     }
 }

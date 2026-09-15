@@ -71,19 +71,22 @@ min = 85.0
 }
 
 /// The committed tree's pins, exactly where the gates need them — and nowhere
-/// else. The echolp pin must not move the floors: those are the high-water
-/// ratchet, and this change is capacity (Marconi pool), not a score lever.
+/// else. The echolp pin does not move the floors: those are the ratchet of
+/// the gate's measurement definition, and a pin is capacity (Marconi pool),
+/// not a score lever. The floors themselves are pinned here too, so a move
+/// is a recorded decision, never a drive-by: 86.50/86.90 → 84.56/85.77 on
+/// 2026-09-14 (issue #1083 — one tool prompt, not two).
 #[test]
 fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     let root = repo_root();
 
     // Gate B: the 35B echolp draw self-starts with the Marconi pool pinned, so
     // a 1004-sample serial generate cannot evict its own snapshots — with the
-    // ratcheted floors untouched.
+    // floors exactly where BENCH.toml's note records them.
     let echolp = baseline_for(&root, "bfcl-subset-echolp").unwrap();
     let (_, e) = echolp.resolve("gb10", None).unwrap();
-    assert_eq!(e.metrics["overall_accuracy"].min, Some(86.50));
-    assert_eq!(e.metrics["normalized_single_turn_score"].min, Some(86.90));
+    assert_eq!(e.metrics["overall_accuracy"].min, Some(84.56));
+    assert_eq!(e.metrics["normalized_single_turn_score"].min, Some(85.77));
     assert_eq!(e.metrics["samples"].min, Some(1004.0));
     assert_eq!(e.metrics["samples"].max, Some(1004.0));
     assert_eq!(
@@ -113,10 +116,12 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     // shared agentic recipe is a serial reproduction config (batch 1, bf16 KV,
     // 256 Marconi slots, 32K context) that strangles a concurrency instrument.
     // lm_head_dtype is deliberately absent — the recipe's bf16 head is a
-    // correctness pin, not a throughput knob. Marconi is pinned at 8 slots
-    // (2026-08-16): concurrency serving does not replay long shared prefixes,
-    // so 8 retains the warm-prefix value at 1/4 the 32-slot reserve
-    // (151.5 MiB/slot — see the BENCH.toml comment for the byte math).
+    // correctness pin, not a throughput knob. Marconi is pinned at 32 slots
+    // (2026-09-13, back from the 8 of 2026-08-16): the sweep WARMS every
+    // cell and a warm request costs 3 slots across a cell, so its warm rule
+    // holds only while `slots > 3·C` — 32 keeps the 1/2/4/8 rungs warm and
+    // the sweep declares C ≥ 16 cold by construction (see the BENCH.toml
+    // comment and `concurrency::warm_cache_capable`).
     let sweep = baseline_for(&root, "concurrency-sweep").unwrap();
     let (_, c) = sweep.resolve("gb10", None).unwrap();
     for (key, want) in [
@@ -125,7 +130,7 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         // scale up.
         ("max_batch_size", "128"),
         ("kv_cache_dtype", "fp8"),
-        ("ssm_cache_slots", "8"),
+        ("ssm_cache_slots", "32"),
         ("max_model_len", "4096"),
     ] {
         assert_eq!(
@@ -159,7 +164,7 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         // cannot be quietly raised into a serve that will not boot.
         ("max_batch_size", "16"),
         ("kv_cache_dtype", "fp8"),
-        ("ssm_cache_slots", "8"),
+        ("ssm_cache_slots", "32"),
         ("max_model_len", "4096"),
         ("dflash", "true"),
         ("draft_model", "incoai/Qwen3.8-27B-DFlash2"),

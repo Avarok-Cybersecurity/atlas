@@ -416,6 +416,10 @@ impl GpuBackend for AtlasCudaBackend {
         }
     }
 
+    fn has_module(&self, module: &str) -> bool {
+        self.registry().has_module(module)
+    }
+
     fn copy_h2d_async(&self, src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
         h2d_enqueue(src, dst, stream)?;
         // The trait promises the caller may drop `src` right now. From PAGEABLE
