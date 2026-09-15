@@ -233,3 +233,18 @@ fn local_order_puts_groups_first_then_speed_shortest_first() {
     let again = order_local(units(&gate::REQUIRED_GATES, &|_| None, &fresh_partition(4)).unwrap());
     assert_eq!(ids, again.iter().map(Unit::label).collect::<Vec<_>>());
 }
+
+/// A measured shard run is scaled back to the whole draw before the planner
+/// divides it again; a whole run, or a shard of one, is left alone.
+#[test]
+fn a_measured_shard_run_is_scaled_to_the_whole_draw() {
+    use super::super::whole_draw_secs;
+    let mut p = std::collections::BTreeMap::new();
+    assert_eq!(whole_draw_secs(300, &p), 300);
+    p.insert("shard".to_string(), "4/6".to_string());
+    assert_eq!(whole_draw_secs(300, &p), 1800);
+    p.insert("shard".to_string(), "0/1".to_string());
+    assert_eq!(whole_draw_secs(300, &p), 300);
+    p.insert("shard".to_string(), "inherit".to_string());
+    assert_eq!(whole_draw_secs(300, &p), 300);
+}

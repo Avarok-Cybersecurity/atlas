@@ -362,11 +362,35 @@ fn finish(emit: &Emit, root: &Path, anchor: &str, campaign: Option<&Campaign>) -
 }
 
 /// `(secs, recorded_at)` of the newest COMPLETED run of `id` in the history.
+/// The newest completed run of `id`, as WHOLE-DRAW seconds: a shard run
+/// (`--param shard=i/n`) is scaled back up by its count, since the planner
+/// divides by the count it wants. Without this the first campaign after
+/// arbitrary shards planned every shard from the last shard's time divided
+/// by six again — 5 min for a 28 min unit — and the deadline would have
+/// killed them (2026-09-15, caught in a dry run).
 fn measured_secs(store: &ArtifactStore, id: &str) -> Option<(u64, u64)> {
     history::load(store, id)
         .into_iter()
         .find(|r| r.frame.status == atlas_plugin::result::RunStatus::Completed)
-        .map(|r| (r.frame.elapsed.as_secs(), r.recorded_at))
+        .map(|r| {
+            (
+                whole_draw_secs(r.frame.elapsed.as_secs(), &r.params),
+                r.recorded_at,
+            )
+        })
+}
+
+/// `elapsed` of a run scaled to the whole draw: `× n` for `shard=i/n`.
+pub fn whole_draw_secs(elapsed: u64, params: &std::collections::BTreeMap<String, String>) -> u64 {
+    let count = params
+        .get("shard")
+        .and_then(|s| s.split_once('/'))
+        .and_then(|(_, n)| n.trim().parse::<u64>().ok())
+        .filter(|n| *n > 1);
+    match count {
+        Some(n) => elapsed.saturating_mul(n),
+        None => elapsed,
+    }
 }
 
 fn pid_alive(pid: u32) -> bool {
