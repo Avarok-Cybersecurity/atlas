@@ -46,6 +46,21 @@ pub fn step_verify_k3(
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
     dflash_verify_raw_argmax: bool,
 ) {
+    // `ATLAS_MTP_TIMING=1` summary for the K=3 path — the SHIPPED config.
+    //
+    // The identical hole `verify_k4_step` documents, one rung down. The
+    // per-phase `record()` calls already fire here (the picks route through
+    // `verify_pipeline_helper`), but nothing called `step_done`, so the
+    // accumulators filled and no summary was ever emitted. K=4 got the guard
+    // when `--num-drafts 3` was the shipped config; the preset now ships
+    // `num_drafts = 2`, which dispatches HERE, so the instrument stopped
+    // covering what we actually serve. A 2000-token probe produced zero
+    // timing lines.
+    //
+    // A Drop guard rather than hand-placed calls, for the reason given there:
+    // the accept branches and early error returns would drift out of date.
+    let _step_timer = crate::scheduler::mtp_timing::StepTimer::new(&sched.timing, a.seq.seq_len);
+
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
         super::lifecycle::fail_sequence(a, format!("sync_secondary: {e:#}"));
