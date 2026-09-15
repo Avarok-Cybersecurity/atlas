@@ -482,10 +482,39 @@ ATLAS_HC_FUSE_UP_MIX = "1"
 # numbers per token. Free in tiles — ceil(324/128) == ceil(320/128) == 3.
 ATLAS_HC_FUSE_DOWN_INJ = "1"
 
+# Fold the INTRA-LAYER hc_post into the next hc_pre stage kernel. hc_post is
+# in-place on the streams tensor, so unfused each site reads the highway, writes
+# it, and then the stage kernel reads it AGAIN: ~1164 MB/site against ~843 fused,
+# i.e. ~321 MB/site removed. Applied to the 48 of 96 prefill pairs where the next
+# hc_pre is in the SAME function (attn->FFN and GDN->MoE) = ~15.4 GB a chunk.
+#
+# The OTHER 48 are deliberately untouched. Those cross the layer loop, the
+# attn/ssm file boundary, the PLE in-place highway add, the hc_expand seed and
+# the hc_head flush, so folding them turns the pending residual into engine state
+# threaded through the layer loop with a defined answer for every early return
+# and every rollback path — a fail-open hazard for the same win per site.
+#
+# Decode is untouched BY CONSTRUCTION: no decode site passes a deferred post.
+# Measured C=1/2/4 per-stream 44.8 / 26.6 / 14.1, flat.
+#
+# Bit-identical, asserted on the HIGHWAY ITSELF (not just y_out/inj_out, since
+# the highway is what hc_post writes): 0 of 92,078,080 bytes differ at T=2248,
+# which crosses the 2048 slab and leaves a partial 128-row M-tile, in four arms
+# including the aliased-inj shape production actually uses.
+ATLAS_HC_FUSE_POST = "1"
+
 # Measured together, SAME BINARY, warm server, median of 5, ranges disjoint:
-#            up_mix only        both fused
-#   8K       2041 (2038-2044)   2106 (2096-2121)   +3.2%
-#   32K      1995 (1989-1999)   2053 (2045-2067)   +2.9%
+#            up_mix only        both fused         + hc_post fold
+#   8K       2041 (2038-2044)   2106 (2096-2121)   2473 (2462-2496)
+#   32K      1995 (1989-1999)   2053 (2045-2067)   2486 (2482-2501)
+#
+# The hc_post column is against its own same-binary control (2374 / 2417), so
+# +4.2% / +2.9% — larger than the 1.4-1.9% it was sized at. The occupancy worry
+# did NOT materialise: the fold entry uses 40 registers against the stock 32, so
+# at block 1024 it is 1 CTA/SM where the stock entry gets 2, and the traffic
+# removed still wins. The stock entry's PTX is byte-identical before and after
+# (FOLD is a template parameter, not a runtime flag, precisely so the 48 sites
+# that do NOT fold pay nothing).
 
 # ── Cross-sequence batched verify, and the arms that break its parity ────────
 #
