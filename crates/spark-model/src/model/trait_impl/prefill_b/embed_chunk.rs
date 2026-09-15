@@ -253,8 +253,9 @@ impl TransformerModel {
                 if self.gpu.copy_d2h(hidden_dst, &mut host).is_ok() {
                     let _ = std::fs::write(&path, &host);
                     tracing::info!(
-                        "ATLAS_SPLICE_DUMP: {chunk_len} x {h} ({elem_bytes} B/elem), \
-                             {img_idx} pads spliced of {pending} encoder rows -> {path}"
+                        "ATLAS_SPLICE_DUMP: start={chunk_start} rows={chunk_len} x {h} \
+                             ({elem_bytes} B/elem), {img_idx} pads spliced of {pending} \
+                             encoder rows -> {path}"
                     );
                 }
             }
