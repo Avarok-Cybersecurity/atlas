@@ -39,8 +39,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use atlas_plugin::{TargetEndpoint, gate};
 
-use super::bench_resolve::Resolved;
-
 /// How long to wait for the endpoint to answer with the model we asked for.
 /// A cold NVFP4 load on GB10 is minutes, not seconds.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(900);
@@ -93,6 +91,24 @@ pub struct SelfServed {
 }
 
 impl SelfServed {
+    /// A server this process did NOT start and will not stop: the leased one
+    /// `bench_lease` verified is the server this run would have started.
+    /// `shutdown()` and `Drop` have nothing to tear down.
+    pub fn external(
+        target: TargetEndpoint,
+        recipe_id: String,
+        overrides: BTreeMap<String, String>,
+        baseline_entry: gate::ModelBaseline,
+    ) -> Self {
+        Self {
+            target,
+            recipe_id,
+            overrides,
+            baseline_entry,
+            server: None,
+        }
+    }
+
     /// Stop the server and WAIT for it to be gone.
     ///
     /// ★ Call this AFTER the gate record is written, never before. The record's
@@ -152,92 +168,18 @@ impl Drop for SelfServed {
 /// baseline entry declares (the operator wins a clash) and the merged set is
 /// returned in [`SelfServed::overrides`], so the gate record names the config
 /// that actually ran rather than the recipe it started from — baseline pins
-/// included, since `check_record` demands them on the record.
+/// included, since `check_record` demands them on the record. The resolution
+/// itself is `bench_serve_plan::plan_serve`, shared with `bench_lease`.
 pub async fn serve_for(
     benchmark_id: &str,
     hardware: Option<&str>,
     checkpoint: Option<&str>,
     overrides: BTreeMap<String, String>,
 ) -> Result<SelfServed> {
-    let root = super::bench_run::repo_root()?;
-    // A shard serves what its GROUP serves — same recipe, same checkpoint —
-    // and differs only in which rows it measures. Without this a member cannot
-    // be run at all.
-    let serve_id = gate::group::serve_baseline_id(benchmark_id);
-    let baseline = gate::read_baseline(&root, serve_id)?;
-    let Resolved {
-        model,
-        recipe_id,
-        entry,
-    } = super::bench_resolve::resolve(&baseline, serve_id, hardware, checkpoint)?;
-
-    let store = atlas_plugin::ArtifactStore::discover()?;
-    let index = crate::recipe::fetch::cached(store.root());
-    let recipe = index
-        .recipes
-        .iter()
-        .find(|r| r.id == recipe_id)
-        .with_context(|| {
-            format!(
-                "recipe {recipe_id:?} is not in the local index ({} cached). The index is read \
-                 from {}/atlas-recipes/index.json.{} Populate it with:\n    spark sync-recipes\n\
-                 (this used to say \"open the TUI Library once\", which a CI runner, a \
-                 container, or a machine reached over ssh cannot do.)",
-                index.recipes.len(),
-                store.root().display(),
-                // Why the index is empty, when the index layer knows. Without
-                // it an index that exists and cannot be READ -- a `$HOME`
-                // owned by another uid is the measured case -- reads as one
-                // that was never written, and `sync-recipes` is the wrong
-                // remedy: it fetches from GitHub and then fails on the same
-                // unwritable path, having spent the round trip to say so.
-                index
-                    .offline
-                    .as_deref()
-                    .map(|why| format!(" That index could not be used: {why}."))
-                    .unwrap_or_default()
-            )
-        })?;
-
-    // The baseline and the recipe must agree on the checkpoint, or the run
-    // would be scored against thresholds measured on a different one — the
-    // exact substitution `check_record` refuses after the fact. Catch it before
-    // spending a model load on it.
-    if recipe.model != model {
-        bail!(
-            "recipe {recipe_id:?} serves {:?} but {benchmark_id}'s baseline is defined on \
-             {model:?}. Scoring one checkpoint against another's thresholds is not a lenient \
-             comparison, it is a meaningless one.",
-            recipe.model
-        );
-    }
-
+    let plan = super::bench_serve_plan::plan_serve(benchmark_id, hardware, checkpoint, overrides)?;
     let port = atlas_plugin::benchmarks::agentic::score::free_port()?;
-    // `--hermetic` expands into the keys it closes BEFORE the recipe renders,
-    // so a recipe default that turns one of them on does not produce a command
-    // line contradicting itself. See `cli::hermetic::CLOSED_KEYS`.
-    let requested = crate::cli::hermetic::expand(gate::merge_serve_overrides(
-        entry.serve_overrides.clone(),
-        overrides,
-    ));
-    let mut overrides = requested.clone();
-    overrides.insert("port".to_string(), port.to_string());
-    let serve_args = recipe.serve_args(&overrides).with_context(|| {
-        format!("rendering serve args from recipe {recipe_id:?} (port override {port})")
-    })?;
-    if !requested.is_empty() {
-        let shown = requested
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        tracing::warn!(
-            "serving recipe {recipe_id} with OVERRIDES: {shown} — this run does not measure the \
-             recipe as pinned; the gate record will say so"
-        );
-    }
-
-    check_box_is_free_enough(serve_args.gpu_memory_utilization, &recipe_id)?;
+    let serve_args = plan.serve_args(port)?;
+    check_box_is_free_enough(serve_args.gpu_memory_utilization, &plan.recipe_id)?;
 
     // Claimed HERE — immediately before the spawn — and not on entry. Everything
     // above this line can fail without a server ever existing and therefore
@@ -246,7 +188,11 @@ pub async fn serve_for(
     // worked.
     claim_start_slot(&STARTED, crate::tui::shutdown::requested())?;
 
-    eprintln!("gate: serving {model} from recipe {recipe_id} on port {port}");
+    let model = plan.model;
+    eprintln!(
+        "gate: serving {model} from recipe {} on port {port}",
+        plan.recipe_id
+    );
     let server =
         tokio::spawn(async move { crate::main_modules::serve::serve(serve_args, None).await });
 
@@ -255,9 +201,9 @@ pub async fn serve_for(
     // detaches the task and leaves the model resident.
     let mut served = SelfServed {
         target: TargetEndpoint::local(port, &model),
-        recipe_id,
-        overrides: requested,
-        baseline_entry: entry,
+        recipe_id: plan.recipe_id,
+        overrides: plan.requested,
+        baseline_entry: plan.entry,
         server: Some(server),
     };
     await_serving(
@@ -311,7 +257,7 @@ fn claim_start_slot(started: &AtomicBool, shutdown_requested: bool) -> Result<()
 ///
 /// Named remedies, because "not enough memory" without saying what is holding
 /// it sends the reader looking in the wrong place.
-fn check_box_is_free_enough(util: f64, recipe_id: &str) -> Result<()> {
+pub(super) fn check_box_is_free_enough(util: f64, recipe_id: &str) -> Result<()> {
     let Some((total_gib, avail_gib)) = host_memory_gib() else {
         // No /proc/meminfo (non-Linux, or a container without it). Say so and
         // continue: refusing on a box we cannot measure would block every

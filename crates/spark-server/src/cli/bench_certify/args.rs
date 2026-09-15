@@ -79,6 +79,14 @@ pub struct CertifyArgs {
     /// The `atlasctl` binary to drive nodes with. Default: the one on PATH.
     #[arg(long, value_name = "PATH")]
     pub atlasctl: Option<PathBuf>,
+    /// Start a fresh server for every unit on this box instead of keeping
+    /// one up across consecutive units that serve the same recipe the same
+    /// way (`spark benchmark run --serve-reuse`). Reuse is the default: a
+    /// unit measures against the server it would have started — same
+    /// binary, same rendering, verified — and pays for one model load
+    /// instead of one per gate. The record's command line says which.
+    #[arg(long)]
+    pub no_serve_reuse: bool,
 }
 
 impl CertifyArgs {

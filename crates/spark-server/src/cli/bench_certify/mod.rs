@@ -136,6 +136,14 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
+    // A server a dead campaign left leased on this box is ours to stop, and
+    // it would otherwise read as "another spark process" below.
+    if let Some(l) = super::bench_lease::release_if_orphaned(&store)? {
+        emit.say(&format!(
+            "released the leased server of a campaign that is gone (pid {}, port {}, {})",
+            l.pid, l.port, l.model
+        ));
+    }
     let facts = preflight::gather(
         &root,
         &anchor,
@@ -294,6 +302,13 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
             )?
         }
     };
+    // Whatever the last unit left serving is not needed any more.
+    if let Some(l) = super::bench_lease::release(&store)? {
+        emit.say(&format!(
+            "released the leased server (pid {}, port {}, {})",
+            l.pid, l.port, l.model
+        ));
+    }
     let summary = campaign.summary();
     emit.event(
         "summary",

@@ -77,6 +77,13 @@
 //! gates are cut from the SHARDED aggregate, never from a whole-draw run, so
 //! the bar and the measurement are taken under the same regime.
 //!
+//! Since 2026-09-15 a campaign may also run consecutive shards on one box
+//! against ONE server (`spark benchmark run --serve-reuse`, verified to be
+//! the server the shard would have started), so a later shard can find the
+//! snapshot pool warm from an earlier one — the same mechanism, one more
+//! ordering the number depends on; the record's command line says when it
+//! applied.
+//!
 //! **What this means for anyone extending this module.** A group's aggregate is
 //! exact with respect to its shards, and its shards are not guaranteed to
 //! reproduce the serial run they stand in for. Do not read a passing group as

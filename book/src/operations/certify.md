@@ -39,6 +39,22 @@ happens). Among equals, a shard whose group already has a shard on that node
 yields to one that does not, so losing a node costs one shard of a group,
 not the whole of it.
 
+**One server per recipe, not per unit.** A unit on this box runs as
+`spark benchmark run … --serve-reuse`: instead of loading the checkpoint in
+its own process it takes the server the previous unit left running — if,
+and only if, that server is the one it would have started itself. The
+server answers `GET /serve-config` with two digests, of its binary and of
+the arguments it was started with; the unit renders its own recipe with its
+own overrides (a hermetic `kat-equality-gate` and an open `bfcl-subset` are
+different renderings) and compares. A match is reused; anything else is
+stopped and replaced; a unit never takes a server this mode did not start
+(`<ATLAS_HOME>/serve-lease.json` names the one it may). The campaign stops
+the last one when it ends, and a lease whose campaign died is stopped by
+the next campaign before its preflight. `--no-serve-reuse` restores a fresh
+server per unit; `spark benchmark serve-release` stops a leased server by
+hand. Every record's command line carries `--serve-reuse` when it applied,
+so a number measured on a warm server says so.
+
 **Shards.** Each benchmark group's draw is cut into `--shards N` slices, run
 as `--param shard=i/N` of the group's own benchmark. The default is two per
 box that will run (so the scheduler has slices to balance around

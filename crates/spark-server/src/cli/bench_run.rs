@@ -45,6 +45,10 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
             None => bench_print::print_suite(a.format),
         },
         BenchmarkCommand::History(a) => history_cmd(a),
+        BenchmarkCommand::ServeRelease => {
+            let code = super::bench_lease::release_cmd()?;
+            std::process::exit(code);
+        }
         BenchmarkCommand::Card(a) => super::bench_card::card_cmd(a),
         BenchmarkCommand::Certify(a) => {
             let code = super::bench_certify::certify_cmd(a).await?;
@@ -236,7 +240,15 @@ async fn run(args: RunArgs) -> Result<i32> {
     // it down; the ones that can happen first, should. (`SelfServed::drop`
     // covers the ones that cannot.)
     let store = store()?;
-    let served = if args.pull_request_gate {
+    let served = if args.pull_request_gate && args.serve_reuse {
+        let plan = super::bench_serve_plan::plan_serve(
+            &args.id,
+            args.hardware.as_deref(),
+            args.checkpoint.as_deref(),
+            super::bench_resolve::parse_serve_overrides(&args.serve_override)?,
+        )?;
+        Some(super::bench_lease::acquire(plan, args.serve_lease_owner).await?)
+    } else if args.pull_request_gate {
         Some(
             super::bench_selfstart::serve_for(
                 &args.id,
