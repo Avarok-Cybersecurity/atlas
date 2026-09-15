@@ -213,5 +213,17 @@ pub(super) fn build_moe(
         moe.build_cutlass_grouped_sfb(gpu, config, stream)?;
     }
 
+    // ATLAS_MOE_SHARED_CUTLASS: the shared expert's CUTLASS NVFP4 arm needs a
+    // transposed twin, which this loader otherwise never builds (see
+    // `build_shared_nvfp4_transposed`). Three weights a layer, so it is paid
+    // only when the arm is armed.
+    if std::env::var("ATLAS_MOE_SHARED_CUTLASS").as_deref() == Ok("1") {
+        moe.build_shared_nvfp4_transposed(
+            gpu,
+            config.shared_expert_intermediate_size,
+            config.hidden_size,
+        )?;
+    }
+
     Ok(FfnComponent::Moe(moe))
 }

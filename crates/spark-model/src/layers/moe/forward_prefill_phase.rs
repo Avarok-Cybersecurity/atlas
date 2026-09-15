@@ -19,6 +19,25 @@ impl MoeLayer {
     /// shared expert). Launching kernels with N=0 returns
     /// CUDA_ERROR_INVALID_VALUE (grid.x=0).
     #[allow(clippy::too_many_arguments)]
+    /// `ATLAS_MOE_SHARED_CUTLASS=1`: run the shared expert's three projections
+    /// on the same native CUTLASS NVFP4 (W4A4) path the ROUTED experts already
+    /// use, instead of `w4a16_gemm_n128`.
+    ///
+    /// Measured on qwen4_exp (7.8K chunk, 48 layers, TP=2 x EP=2): the routed
+    /// experts do 18.5 TFLOP in 571 ms (32.4 TFLOP/s) while the shared expert
+    /// does 3.70 TFLOP in the SAME 571 ms (6.5 TFLOP/s) — five times less
+    /// arithmetic for the same wall clock, because W4A16 dequantises to BF16
+    /// and gives up the FP4 tensor cores. The shared expert was 40.4% of the
+    /// whole MoE block on that profile.
+    ///
+    /// W4A4 quantises the ACTIVATIONS, so this is not bit-exact — the same
+    /// trade the routed experts already ship with under
+    /// ATLAS_HOLO_MOE_GROUPED_CUTLASS. Opt-in until it has agentic receipts.
+    fn shared_cutlass_enabled() -> bool {
+        static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *V.get_or_init(|| std::env::var("ATLAS_MOE_SHARED_CUTLASS").as_deref() == Ok("1"))
+    }
+
     pub(super) fn run_shared_expert_prefill(
         &self,
         input: DevicePtr,
@@ -86,28 +105,49 @@ impl MoeLayer {
         } else if let (Some(sg), Some(su), Some(_sd)) =
             (&self.shared_gate_t, &self.shared_up_t, &self.shared_down_t)
         {
-            ops::w4a16_gemm_n128(
-                ctx.gpu,
-                self.w4a16_gemm_t,
-                input,
-                sg,
-                shared_gate_out,
-                n,
-                shared_inter,
-                h,
-                aux,
-            )?;
-            ops::w4a16_gemm_n128(
-                ctx.gpu,
-                self.w4a16_gemm_t,
-                input,
-                su,
-                shared_up_out,
-                n,
-                shared_inter,
-                h,
-                aux,
-            )?;
+            // CUTLASS NVFP4 arm. `shared_*_t` are already the transposed
+            // layout `cutlass_nvfp4_proj` wants (built by
+            // `transpose_for_gemm`), so this is a swap, not a repack. Gated on
+            // n > 64 like the routed grouped GEMM: below that the pack and
+            // launch cost more than the tensor cores save.
+            if Self::shared_cutlass_enabled() && n > 64 {
+                {
+                    static SAID: std::sync::Once = std::sync::Once::new();
+                    SAID.call_once(|| {
+                        tracing::info!(
+                            n,
+                            shared_inter,
+                            h,
+                            "MoE shared expert: CUTLASS NVFP4 (W4A4)"
+                        )
+                    });
+                }
+                ops::cutlass_nvfp4_proj(ctx, input, sg, shared_gate_out, n, shared_inter, h, aux)?;
+                ops::cutlass_nvfp4_proj(ctx, input, su, shared_up_out, n, shared_inter, h, aux)?;
+            } else {
+                ops::w4a16_gemm_n128(
+                    ctx.gpu,
+                    self.w4a16_gemm_t,
+                    input,
+                    sg,
+                    shared_gate_out,
+                    n,
+                    shared_inter,
+                    h,
+                    aux,
+                )?;
+                ops::w4a16_gemm_n128(
+                    ctx.gpu,
+                    self.w4a16_gemm_t,
+                    input,
+                    su,
+                    shared_up_out,
+                    n,
+                    shared_inter,
+                    h,
+                    aux,
+                )?;
+            }
         } else {
             ops::w4a16_gemm(
                 ctx.gpu,
@@ -156,17 +196,30 @@ impl MoeLayer {
                 aux,
             )?;
         } else if let Some(sd) = &self.shared_down_t {
-            ops::w4a16_gemm_n128(
-                ctx.gpu,
-                self.w4a16_gemm_t,
-                shared_gate_out,
-                sd,
-                shared_down_out,
-                n,
-                h,
-                shared_inter,
-                aux,
-            )?;
+            if Self::shared_cutlass_enabled() && n > 64 {
+                ops::cutlass_nvfp4_proj(
+                    ctx,
+                    shared_gate_out,
+                    sd,
+                    shared_down_out,
+                    n,
+                    h,
+                    shared_inter,
+                    aux,
+                )?;
+            } else {
+                ops::w4a16_gemm_n128(
+                    ctx.gpu,
+                    self.w4a16_gemm_t,
+                    shared_gate_out,
+                    sd,
+                    shared_down_out,
+                    n,
+                    h,
+                    shared_inter,
+                    aux,
+                )?;
+            }
         } else {
             ops::w4a16_gemm(
                 ctx.gpu,
