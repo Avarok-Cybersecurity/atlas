@@ -89,6 +89,7 @@ fn qsa_prefill_attn_tc_matches_cpu() {
         nkv as u32,
         hd as u32,
         scale,
+        false, // this test loads `qsa_prefill_attn_tc` — the TB-64 tile
         stream,
     )
     .unwrap();

@@ -336,6 +336,13 @@ impl QsaIndexer {
                     );
                 });
             }
+            // ONE decision, so the size always describes the handle. `wide` is
+            // true only when the TB-16 entry point actually loaded, so a
+            // missing kernel degrades to the TB-64 tile AND its size.
+            //   Prefill: thousands of CTAs, so 5 CTAs/SM beats busy warps.
+            //   Verify:  ~18 CTAs against 48 SMs — occupancy is not the
+            //            constraint, warp utilisation is. Unchanged tile.
+            let wide = ops::qsa_pa_tc_wide(rows as u32) && self.k_prefill_attn_tc16_k.0 != 0;
             let pa_kernel = if pa_tc {
                 ops::qsa_prefill_attn_tc
             } else {
@@ -343,17 +350,12 @@ impl QsaIndexer {
             };
             pa_kernel(
                 gpu,
-                if pa_tc {
-                    if ops::qsa_pa_tc_wide(rows as u32) && self.k_prefill_attn_tc16_k.0 != 0 {
-                        // Prefill: thousands of CTAs, so 5 CTAs/SM beats busy warps.
-                        self.k_prefill_attn_tc16_k
-                    } else {
-                        // Verify: ~18 CTAs against 48 SMs — occupancy is not the
-                        // constraint, warp utilisation is. Unchanged tile.
-                        self.k_prefill_attn_tc_k
-                    }
-                } else {
+                if !pa_tc {
                     self.k_prefill_attn_k
+                } else if wide {
+                    self.k_prefill_attn_tc16_k
+                } else {
+                    self.k_prefill_attn_tc_k
                 },
                 q_roped.offset(first_row * q_row * 2),
                 k_pool,
@@ -370,6 +372,7 @@ impl QsaIndexer {
                 self.nkv_attn,
                 self.hd_attn,
                 inv_sqrt_d,
+                wide,
                 stream,
             )?;
             s2mark!(us_attn, s2t);

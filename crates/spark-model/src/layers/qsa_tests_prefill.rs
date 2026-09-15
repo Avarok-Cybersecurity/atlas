@@ -242,6 +242,7 @@ fn qsa_prefill_attn_matches_cpu() {
         nkv as u32,
         hd as u32,
         scale,
+        false, // scalar kernel: one tile, flag ignored
         stream,
     )
     .unwrap();

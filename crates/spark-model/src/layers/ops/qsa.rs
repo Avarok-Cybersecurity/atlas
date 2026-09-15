@@ -256,8 +256,14 @@ pub fn qsa_prefill_attn(
     nkv: u32,
     hd: u32,
     inv_sqrt_d: f32,
+    // Which TC tile the `kernel` handle IS — not which one is wanted. The
+    // kernel carves its arena by hand from the byte count this selects, so a
+    // TB-64 handle launched with the TB-16 size reads past its own shared
+    // memory. The scalar twin ignores it so both can share one fn pointer.
+    wide: bool,
     stream: u64,
 ) -> Result<()> {
+    let _ = wide; // scalar kernel has one tile
     // 8 warps x [hd] acc partials + m/l per warp.
     let smem = (8 * hd + 16) * 4;
     KernelLaunch::new(gpu, kernel)
@@ -307,13 +313,18 @@ pub fn qsa_prefill_attn_tc(
     nkv: u32,
     hd: u32,
     inv_sqrt_d: f32,
+    // Which TC tile the `kernel` handle IS — not which one is wanted. The
+    // kernel carves its arena by hand from the byte count this selects, so a
+    // TB-64 handle launched with the TB-16 size reads past its own shared
+    // memory. The scalar twin ignores it so both can share one fn pointer.
+    wide: bool,
     stream: u64,
 ) -> Result<()> {
     debug_assert!(qsa_prefill_attn_tc_ok(nq, nkv, hd));
     KernelLaunch::new(gpu, kernel)
         .grid([rows, 1, 1])
         .block([256, 1, 1])
-        .shared_mem(if qsa_pa_tc_wide(rows) {
+        .shared_mem(if wide {
             QSA_PA_TC_SMEM_TB16
         } else {
             QSA_PA_TC_SMEM
