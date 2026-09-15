@@ -48,7 +48,78 @@ pub(crate) fn build(
     h_out: &mut Vec<u32>,
     w_out: &mut Vec<u32>,
 ) -> u32 {
+    walk(
+        chunk_tokens,
+        grids,
+        grid_base,
+        grid_hi,
+        start_pos,
+        image_pad,
+        video_pad,
+        Some((t_out, h_out, w_out)),
+    )
+    .0
+}
+
+/// The same walk as [`build`], but emitting nothing — used to DERIVE the state
+/// at an arbitrary point in the token stream.
+///
+/// Returns `(pos, item, pad_rows)`: the rotary position the next token would
+/// take, the index of the next unconsumed vision item, and how many pad tokens
+/// (equivalently, encoder rows) were consumed.
+///
+/// This exists because a prefix-cache hit narrows a prefill pass to a suffix,
+/// and EVERYTHING that phase 1 derived by walking from the start of the prompt
+/// then has to be re-derived for the narrowed range: the rotary anchor, which
+/// vision item comes next, and which encoder row the splice should start from.
+/// Deriving it here rather than trusting carried state matters — on a warm
+/// chunk-0 vision prefill `seq.mrope_delta` is 0 because the SequenceState is
+/// fresh, so the carried value silently degenerates to the token index and the
+/// three streams describe different tokens than the rows being computed.
+///
+/// One function owns the rule so the anchor and the splice seed cannot drift
+/// apart; hand-rolling a second pad counter anywhere is how that happens.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn advance(
+    tokens: &[u32],
+    grids: &[(usize, usize, usize)],
+    grid_base: usize,
+    grid_hi: usize,
+    start_pos: u32,
+    image_pad: u32,
+    video_pad: u32,
+) -> (u32, usize, usize) {
+    walk(
+        tokens, grids, grid_base, grid_hi, start_pos, image_pad, video_pad, None,
+    )
+}
+
+/// Encoder rows consumed by `tokens` — one per vision pad token.
+///
+/// The splice indexes the encoder's packed output, which is ordered over the
+/// WHOLE prompt, so a narrowed range must seed its row index with this rather
+/// than restarting at 0.
+pub(crate) fn pad_rows_before(tokens: &[u32], image_pad: u32, video_pad: u32) -> usize {
+    tokens
+        .iter()
+        .filter(|&&t| t == image_pad || t == video_pad)
+        .count()
+}
+
+/// Shared body. `out` present => append the three streams; absent => derive only.
+#[allow(clippy::too_many_arguments)]
+fn walk(
+    chunk_tokens: &[u32],
+    grids: &[(usize, usize, usize)],
+    grid_base: usize,
+    grid_hi: usize,
+    start_pos: u32,
+    image_pad: u32,
+    video_pad: u32,
+    mut out: Option<(&mut Vec<u32>, &mut Vec<u32>, &mut Vec<u32>)>,
+) -> (u32, usize, usize) {
     let is_pad = |tok: u32| tok == image_pad || tok == video_pad;
+    let mut pad_rows = 0usize;
     let mut pos = start_pos;
     let mut item = grid_base;
     let mut i = 0usize;
@@ -66,10 +137,13 @@ pub(crate) fn build(
                 let within = k % plane;
                 let row = (within / gw.max(1)) as u32;
                 let col = (within % gw.max(1)) as u32;
-                t_out.push(base + g);
-                h_out.push(base + row);
-                w_out.push(base + col);
+                if let Some((t_out, h_out, w_out)) = out.as_mut() {
+                    t_out.push(base + g);
+                    h_out.push(base + row);
+                    w_out.push(base + col);
+                }
             }
+            pad_rows += run_len;
             // The item's extent on EVERY axis, so the next text token starts
             // clear of all three streams. A long clip can exceed its own
             // spatial extent, which is why t_len joins the max rather than
@@ -78,14 +152,16 @@ pub(crate) fn build(
             i += run_len;
             item += 1;
         } else {
-            t_out.push(pos);
-            h_out.push(pos);
-            w_out.push(pos);
+            if let Some((t_out, h_out, w_out)) = out.as_mut() {
+                t_out.push(pos);
+                h_out.push(pos);
+                w_out.push(pos);
+            }
             pos += 1;
             i += 1;
         }
     }
-    pos
+    (pos, item, pad_rows)
 }
 
 #[cfg(test)]

@@ -166,6 +166,23 @@ impl TransformerModel {
                     )?;
                 }
                 self.scale_embeddings(hidden, uncached_count, stream)?;
+                // RE-APPLY THE VISION SPLICE. The embed above deliberately
+                // overwrites row 0 onward with the uncached suffix, which wipes
+                // the picture phase 1 spliced into the pad rows of the FULL
+                // chunk. Without this the model sees the `<|image_pad|>` vocab
+                // vector where the image should be and answers from the
+                // surrounding text — fluently, confidently, and wrongly.
+                //
+                // Same class as the `token_ids()` re-stage above: anything
+                // phase 1 wrote by ROW INDEX has to be redone for the narrowed
+                // range, or the channels describe different content.
+                self.prefill_b_splice_vision_at(
+                    tokens,
+                    uncached_start,
+                    uncached_count,
+                    hidden,
+                    stream,
+                )?;
                 // Real prefill path: KV written for [uncached_start, end).
                 seq.kv_valid_tokens = seq.kv_valid_tokens.max(uncached_start + uncached_count);
                 Ok(ProcRange::Compute {

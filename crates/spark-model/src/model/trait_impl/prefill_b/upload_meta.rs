@@ -69,8 +69,19 @@ impl TransformerModel {
         &self,
         tokens: &[u32],
         seq: &mut SequenceState,
-        chunk_start: usize,
-        chunk_len: usize,
+        // DELIBERATELY UNUSED. This function is now PROC-RELATIVE throughout:
+        // every stream it builds and uploads covers
+        // [proc_start, proc_start + proc_count), which is the range actually
+        // being computed. It used to walk the CHUNK range and upload the first
+        // proc_count of it, which is the same thing only until a prefix-cache
+        // hit narrows the pass — after that the uploaded positions described
+        // tokens [chunk_start, chunk_start + proc_count) while the rows being
+        // computed were [proc_start, ...). The parameters stay in the signature
+        // because four callers pass them and because a future caller may need
+        // the chunk extent for something legitimately chunk-shaped; they must
+        // not creep back into the position or vision arithmetic.
+        _chunk_start: usize,
+        _chunk_len: usize,
         proc_start: usize,
         proc_count: usize,
         effective_seq_len_start: usize,
@@ -126,30 +137,52 @@ impl TransformerModel {
                 // token at a time.
                 let (pad_id, video_pad_id) = self.vision_pad_ids();
                 let is_pad = |tok: u32| tok == pad_id || tok == video_pad_id;
-                let chunk_tokens = &tokens[chunk_start..chunk_start + chunk_len];
+                // THE PROC SLICE, not the chunk slice. These are the same
+                // range until a prefix-cache hit narrows the pass, and then
+                // they are not: the streams below are uploaded with
+                // `put_prefix_at(.., proc_count)`, so building them over the
+                // full chunk uploads positions describing tokens
+                // [chunk_start, chunk_start+proc_count) while the rows actually
+                // being computed are [proc_start, proc_start+proc_count).
+                let chunk_tokens = &tokens[proc_start..proc_start + proc_count];
                 let have_vision = !grids.is_empty() && chunk_tokens.iter().copied().any(is_pad);
-
-                // Resume the rotary stream where the last chunk left it, not
-                // at this chunk's TOKEN index. They are the same number until
-                // the first image and never again.
-                let current_pos: u32 = (proc_start as i64 + seq.mrope_delta).max(0) as u32;
+                // Co-dispatch: this request owns grids[grid_base .. grid_base+owned]
+                // of the shared packed vision_image_grids (0/all for legacy).
+                let grid_base = *self.vision_grid_base.lock();
+                let owned = *self.vision_owned_images.lock();
+                let grid_hi = if owned > 0 {
+                    (grid_base + owned).min(grids.len())
+                } else {
+                    grids.len()
+                };
+                // DERIVE the rotary anchor and the next unconsumed vision item
+                // by walking everything before this pass, rather than trusting
+                // `seq.mrope_delta`. On a warm chunk-0 vision prefill that
+                // field is 0 (the SequenceState is fresh), so
+                // `proc_start + delta` silently degenerates to the token index
+                // — right only while the pass starts at token 0. `advance`
+                // owns the same rule `build` walks, so the two cannot drift.
+                //
+                // Hoisted above the branch because the no-pads-here-but-an-
+                // image-came-earlier case below needs exactly the same anchor,
+                // and used to take it from the carried delta instead.
+                let (anchor_pos, item_cursor, _pads_before) = mrope_pos::advance(
+                    &tokens[..proc_start],
+                    &grids,
+                    grid_base,
+                    grid_hi,
+                    0,
+                    pad_id,
+                    video_pad_id,
+                );
                 if have_vision {
                     stg.positions.clear();
-                    // Co-dispatch: this request owns grids[grid_base .. grid_base+owned]
-                    // of the shared packed vision_image_grids (0/all for legacy).
-                    let grid_base = *self.vision_grid_base.lock();
-                    let owned = *self.vision_owned_images.lock();
-                    let grid_hi = if owned > 0 {
-                        (grid_base + owned).min(grids.len())
-                    } else {
-                        grids.len()
-                    };
                     let end_pos = mrope_pos::build(
                         chunk_tokens,
                         &grids,
-                        grid_base,
+                        item_cursor,
                         grid_hi,
-                        current_pos,
+                        anchor_pos,
                         pad_id,
                         video_pad_id,
                         &mut stg.positions,
@@ -159,7 +192,7 @@ impl TransformerModel {
                     // HF's `rope_deltas`, carried on the sequence: the gap
                     // between where the rotary stream ends and where the token
                     // stream ends. Decode and every later chunk add it back.
-                    seq.mrope_delta = end_pos as i64 - (chunk_start + chunk_tokens.len()) as i64;
+                    seq.mrope_delta = end_pos as i64 - (proc_start + chunk_tokens.len()) as i64;
                     // ATLAS_MROPE_DUMP: the three streams exactly as they are
                     // about to be uploaded. A position rule can be right on
                     // paper and still ship wrong values — this is the only
@@ -182,14 +215,20 @@ impl TransformerModel {
                             stg.positions.len()
                         );
                     }
-                } else if seq.mrope_delta != 0 {
+                } else if anchor_pos != proc_start as u32 {
                     // A later chunk of a prompt whose image sat in an earlier
                     // one. No pads here, but the rotary stream is already
                     // behind the token index and must stay behind — rebuilding
                     // from `proc_start` would silently jump it forward.
+                    //
+                    // The condition is now "the derived anchor disagrees with
+                    // the token index", which is the actual property that
+                    // matters, rather than `seq.mrope_delta != 0` — that field
+                    // is 0 on a fresh SequenceState even when an image DID
+                    // precede this pass, which is exactly the warm-prefix case.
                     stg.positions.clear();
                     stg.positions
-                        .extend(current_pos..current_pos + proc_count as u32);
+                        .extend(anchor_pos..anchor_pos + proc_count as u32);
                     stg.positions_h.extend_from_slice(&stg.positions);
                     stg.positions_w.extend_from_slice(&stg.positions);
                 } else {

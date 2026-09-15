@@ -79,8 +79,41 @@ impl TransformerModel {
     }
 
     pub(super) fn tokens_have_vision_pad(&self, tokens: &[u32]) -> bool {
+        self.first_vision_pad_index(tokens).is_some()
+    }
+
+    /// Index of the first vision pad in `tokens`, if any.
+    ///
+    /// The prefix cache needs the POSITION, not just the presence. Every image
+    /// expands to the SAME pad token id, so a token-keyed radix tree cannot
+    /// tell two images apart and must never match ACROSS a pad — but that
+    /// ambiguity begins AT the first pad. Everything before it is ordinary
+    /// text with plain sequential MRoPE positions (the image has not happened
+    /// yet), so that head is what this chat's earlier text-only turns already
+    /// inserted, and is safe to reuse.
+    pub(super) fn first_vision_pad_index(&self, tokens: &[u32]) -> Option<usize> {
         let (image, video) = self.vision_pad_ids();
-        tokens.iter().any(|&t| t == image || t == video)
+        tokens.iter().position(|&t| t == image || t == video)
+    }
+
+    /// The slice of `tokens` the prefix cache may key on: everything before the
+    /// first vision pad.
+    ///
+    /// ONE function owns this rule so the lookup and the probes that PREDICT
+    /// the lookup cannot drift — they already had, before this: the three
+    /// full-prefill paths each re-derived "has a pad => match nothing" while
+    /// the `peek_matched_tokens` probes that size the batched arena derived
+    /// nothing and happily reported a match the real lookup then refused.
+    ///
+    /// A pad at index 0 yields an empty slice, which the radix walk answers
+    /// with zero matched blocks, so the all-or-nothing case needs no special
+    /// handling. The insert side stays vision-gated, so no pad-bearing sequence
+    /// ever enters the tree; this only reads back what pad-free turns put there.
+    pub(super) fn prefix_lookup_tokens<'a>(&self, tokens: &'a [u32]) -> &'a [u32] {
+        match self.first_vision_pad_index(tokens) {
+            Some(cut) => &tokens[..cut],
+            None => tokens,
+        }
     }
 
     /// Whether `--high-speed-swap` has slid this sequence's rolling window, so
