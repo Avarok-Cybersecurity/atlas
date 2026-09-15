@@ -752,7 +752,32 @@ impl Qwen3AttentionLayer {
                 );
             }
             let tp2 = std::time::Instant::now();
-            ops::prefill_attention_64(
+            // ── PARTIAL dense skip ──
+            // QSA stage 2 (section 8b) OVERWRITES every row past the inert
+            // bound, so the dense pass only has to produce rows BELOW it. The
+            // dense cost is quadratic in the rows it covers, so at a 7.8K
+            // chunk with a ~2035 bound this drops ~93% of the pass while the
+            // rows that survive stay bit-identical.
+            //
+            // The existing whole-chunk `skip_dense_attn` cannot fire here: it
+            // needs `seq_len_start >= inert_bound`, and this body is chunk 0.
+            // Conditions are the same strict set, because a wrong skip leaves
+            // attn_out UNINITIALISED rather than wrong-but-plausible: stage 2
+            // must be armed (`prefill_select_active` mirrors the
+            // ATLAS_QSA_NO_PREFILL_SELECT kill switch), it must actually run
+            // (`num_tokens > inert_bound`, its own guard in section 8b), and
+            // single-stream only (8b refuses batched metadata).
+            let dense_q_rows = match self.qsa.as_ref() {
+                Some(q)
+                    if batched_meta.is_none()
+                        && q.prefill_select_active()
+                        && num_tokens > q.inert_bound() =>
+                {
+                    (q.inert_bound() as u32).min(flash_seq_len)
+                }
+                _ => flash_seq_len,
+            };
+            ops::prefill_attention_64_qrows(
                 ctx.gpu,
                 self.prefill_attn_64_k,
                 q_contiguous,
@@ -760,6 +785,7 @@ impl Qwen3AttentionLayer {
                 v_contiguous,
                 attn_out,
                 flash_seq_len,
+                dense_q_rows,
                 flash_batch,
                 nq,
                 nkv,
