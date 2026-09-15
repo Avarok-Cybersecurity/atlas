@@ -35,6 +35,23 @@ pub trait GgufMeta {
     fn get_str(&self, key: &str) -> Option<&str>;
     /// Length of an array metadata value (e.g. `tokenizer.ggml.tokens`).
     fn get_arr_len(&self, key: &str) -> Option<usize>;
+    /// An integer array metadata value, every element widened to u64.
+    ///
+    /// DEFAULTS TO `None` so existing implementors keep compiling: a reader
+    /// that has not implemented it reports "absent", which every caller here
+    /// already handles. DeepSeek-V4.1 is the first arch that needs real array
+    /// VALUES rather than a length (`attention.compress_ratios`,
+    /// `engram.layer_ids`, `engram.{multipliers,primes,offsets}`), so a reader
+    /// that returns `None` here simply cannot build a V4.1 config.
+    fn get_u64_arr(&self, _key: &str) -> Option<Vec<u64>> {
+        None
+    }
+    /// A float array metadata value, every element widened to f64. Defaults to
+    /// `None` for the same reason as [`GgufMeta::get_u64_arr`].
+    /// DeepSeek-V4.1 needs it for `swiglu_clamp_exp` / `swiglu_clamp_shexp`.
+    fn get_f64_arr(&self, _key: &str) -> Option<Vec<f64>> {
+        None
+    }
 }
 
 /// Inputs to [`config_from_gguf`]: the metadata accessor plus two facts the
@@ -71,9 +88,14 @@ fn arch_to_model_type(arch: &str) -> Result<(&'static str, bool)> {
         "qwen3moe" => ("qwen3_5_moe", false),
         // gemma family: GeGLU, ungated Q, embedding scale + logit softcap.
         "gemma" | "gemma2" | "gemma3" | "gemma4" => ("gemma4", false),
+        // DeepSeek-V4.1 Flash. MLA + 384-expert MoE + mHC + shared compressed
+        // attention + engram. Its GGUF ships no dense `feed_forward_length`
+        // (every FFN is MoE or the shared expert), so the required-key handling
+        // below treats that key as optional for MoE arches.
+        "deepseek41" => ("deepseek_v41", false),
         other => bail!(
             "GGUF general.architecture '{other}' has no Atlas model_type mapping. \
-             Supported GGUF arches: llama, qwen2, qwen3, qwen3moe, gemma/gemma2/gemma3/gemma4."
+             Supported GGUF arches: llama, qwen2, qwen3, qwen3moe, gemma/gemma2/gemma3/gemma4, deepseek41."
         ),
     })
 }
@@ -98,7 +120,16 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
     // ── Core dimensions (required) ──
     let hidden_size = req_u64("embedding_length")? as usize;
     let num_hidden_layers = req_u64("block_count")? as usize;
-    let intermediate_size = req_u64("feed_forward_length")? as usize;
+    // `feed_forward_length` is the DENSE FFN width. A pure-MoE arch may not ship
+    // it at all (DeepSeek-V4.1 has only `expert_feed_forward_length`), so it is
+    // required only when the file declares no experts. Resolving to 0 for a MoE
+    // file is correct: nothing dispatches a dense FFN there.
+    let has_experts = meta.get_u64(&k("expert_count")).unwrap_or(0) > 0;
+    let intermediate_size = match meta.get_u64(&k("feed_forward_length")) {
+        Some(v) => v as usize,
+        None if has_experts => 0,
+        None => bail!("GGUF metadata missing required key '{arch}.feed_forward_length'"),
+    };
     let num_attention_heads = req_u64("attention.head_count")? as usize;
 
     // GQA: kv head count defaults to full MHA (== attention heads) when the key
@@ -262,6 +293,118 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
             ),
             None => 0.0,
         };
+    }
+
+    // ── DeepSeek-V4.1 post-parse fixups ──
+    //
+    // Everything below comes from the `deepseek41.*` metadata namespace. None
+    // of it is derivable from the generic decoder fields above, and a V4.1
+    // graph built without it is silently wrong rather than loudly broken, so
+    // every key here is REQUIRED and absence is an error.
+    if model_type == "deepseek_v41" {
+        let req = |suffix: &str| -> Result<u64> {
+            meta.get_u64(&k(suffix))
+                .with_context(|| format!("DeepSeek-V4.1 GGUF missing '{arch}.{suffix}'"))
+        };
+        let req_arr = |suffix: &str| -> Result<Vec<u64>> {
+            meta.get_u64_arr(&k(suffix))
+                .with_context(|| format!("DeepSeek-V4.1 GGUF missing array '{arch}.{suffix}'"))
+        };
+
+        // MLA geometry. `attention.key_length` already became head_dim above.
+        config.q_lora_rank = req("attention.q_lora_rank")? as usize;
+        config.o_lora_rank = req("attention.output_lora_rank")? as usize;
+        config.o_groups = req("attention.output_group_count")? as usize;
+        config.kv_lora_rank = req("attention.value_length")? as usize;
+        // Partial RoPE: only `rope.dimension_count` of head_dim is rotated.
+        config.rotary_dim = req("rope.dimension_count")? as usize;
+
+        // Sparse attention: the indexer, and the per-layer compression ladder.
+        config.index_n_heads = req("attention.indexer.head_count")? as usize;
+        config.index_head_dim = req("attention.indexer.key_length")? as usize;
+        config.index_topk = req("attention.indexer.top_k")? as usize;
+        config.compress_ratios = req_arr("attention.compress_ratios")?
+            .into_iter()
+            .map(|v| v as usize)
+            .collect();
+        // 🪤 NOT a per-block array: V4.1 ships 43 entries for 40 blocks (the
+        // three DSpark stages carry their own ratio). Do not assume
+        // `compress_ratios.len() == num_hidden_layers`.
+        if config.compress_ratios.len() < num_hidden_layers {
+            bail!(
+                "DeepSeek-V4.1: '{arch}.attention.compress_ratios' has {} entries, fewer than \
+                 block_count ({num_hidden_layers})",
+                config.compress_ratios.len()
+            );
+        }
+        config.compress_rope_theta = meta
+            .get_f64(&k("attention.compress_rope_freq_base"))
+            .context("DeepSeek-V4.1 GGUF missing 'attention.compress_rope_freq_base'")?
+            as f32;
+
+        // Hyper-connections (mHC).
+        config.hc_mult = req("hyper_connection.count")? as usize;
+        config.hc_sinkhorn_iters = req("hyper_connection.sinkhorn_iterations")? as usize;
+        config.hc_eps = meta
+            .get_f64(&k("hyper_connection.epsilon"))
+            .context("DeepSeek-V4.1 GGUF missing 'hyper_connection.epsilon'")?
+            as f32;
+
+        // MoE routing. `expert_gating_func` is ggml's enum; V4.1 uses
+        // sqrt-softplus. Refuse an unknown value rather than defaulting to
+        // softmax, which would route to the wrong experts and still generate
+        // fluent-looking text.
+        config.n_routed_experts = num_experts;
+        config.norm_topk_prob = req("expert_weights_norm")? != 0;
+        config.routed_scaling_factor = meta
+            .get_f64(&k("expert_weights_scale"))
+            .context("DeepSeek-V4.1 GGUF missing 'expert_weights_scale'")?;
+        config.scoring_func = match req("expert_gating_func")? {
+            4 => "sqrtsoftplus".to_string(),
+            other => bail!(
+                "DeepSeek-V4.1: unsupported '{arch}.expert_gating_func' ({other}); \
+                 only 4 (sqrt-softplus) is implemented"
+            ),
+        };
+        config.num_hash_layers = meta.get_u64(&k("hash_layer_count")).unwrap_or(0) as usize;
+
+        // SwiGLU clamp. Shipped per-layer; Atlas carries one scalar, so require
+        // the array to be uniform rather than silently taking element 0.
+        if let Some(clamps) = meta.get_f64_arr(&k("swiglu_clamp_exp")) {
+            let first = clamps.first().copied().unwrap_or(0.0);
+            if clamps.iter().any(|v| (v - first).abs() > f64::EPSILON) {
+                bail!(
+                    "DeepSeek-V4.1: '{arch}.swiglu_clamp_exp' is not uniform across layers; \
+                     ModelConfig carries a single `swiglu_limit`"
+                );
+            }
+            config.swiglu_limit = first as f32;
+        }
+
+        // Engram. Absent `num_embeddings` in the GGUF (unlike the HF config):
+        // the table geometry is carried by `offsets`, and row counts are read
+        // from the engram tensor shapes at load time.
+        config.engram_layer_ids = req_arr("engram.layer_ids")?
+            .into_iter()
+            .map(|v| v as usize)
+            .collect();
+        if !config.engram_layer_ids.is_empty() {
+            config.engram_max_ngram_size = req("engram.max_ngram_size")? as usize;
+            config.engram_n_heads = req("engram.head_count")? as usize;
+            config.engram_head_dim = req("engram.key_length")? as usize;
+            config.engram_pad_token_id = req("engram.pad_id")? as u32;
+            config.engram_multipliers = req_arr("engram.multipliers")?;
+            config.engram_primes = req_arr("engram.primes")?;
+            config.engram_offsets = req_arr("engram.offsets")?;
+            // `engram.token_map` is 129,280 entries and is read directly by the
+            // engram module at load time, not carried in ModelConfig.
+            if meta.get_arr_len(&k("engram.token_map")).unwrap_or(0) != vocab_size {
+                bail!(
+                    "DeepSeek-V4.1: '{arch}.engram.token_map' length does not match vocab_size \
+                     ({vocab_size})"
+                );
+            }
+        }
     }
 
     // Reuse the shared quantization-config + validation pass.

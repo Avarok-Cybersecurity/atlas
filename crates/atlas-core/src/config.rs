@@ -535,6 +535,72 @@ pub struct ModelConfig {
     #[serde(default)]
     pub num_hash_layers: usize,
 
+    // ── DeepSeek-V4.1: shared compressed attention ──
+    /// RoPE base used by the compressor, distinct from `rope_theta`
+    /// (`deepseek41.attention.compress_rope_freq_base`). 0.0 = not set.
+    #[serde(default)]
+    pub compress_rope_theta: f32,
+    /// Layers that PRODUCE the compressed KV consumed by every other layer.
+    /// V4.1 ships `[2, 8, 14, 20]`: four producers for forty blocks, which is
+    /// why its KV cache is ~2.25 KiB/token at FP8 rather than per-layer.
+    /// Empty = every layer produces its own KV (V4 behaviour).
+    #[serde(default)]
+    pub kv_source_layer_ids: Vec<usize>,
+    /// Layers that PRODUCE indexer keys, shared the same way
+    /// (`[2, 8, 14, 20, 24, 28, 32, 36]` on V4.1). Empty = per-layer.
+    #[serde(default)]
+    pub index_source_layer_ids: Vec<usize>,
+    /// Layer whose output drives the candidate prefilter. `None` = no
+    /// prefilter. V4.1 uses layer 20.
+    #[serde(default)]
+    pub candidate_source_layer_id: Option<usize>,
+    /// Candidate prefilter: blocks kept by the top-k. 0 = no prefilter.
+    #[serde(default)]
+    pub candidate_topk_blocks: usize,
+    /// Candidate prefilter: tokens per block. 0 = no prefilter.
+    #[serde(default)]
+    pub candidate_block_size: usize,
+
+    // ── DeepSeek-V4.1: engram ──
+    /// Blocks carrying an engram hash table. V4.1 ships `[1, 14]`.
+    /// Empty = no engram (V4 has none at all).
+    #[serde(default)]
+    pub engram_layer_ids: Vec<usize>,
+    /// Rows in each engram table, one entry per `engram_layer_ids` entry.
+    /// V4.1: `[384006168, 384016682]` — 768M rows total, ~60 GiB at Q2_K.
+    /// These tables CANNOT be resident and are the reason the model needs a
+    /// row cache rather than a load.
+    #[serde(default)]
+    pub engram_num_embeddings: Vec<u64>,
+    /// Longest n-gram hashed into the table (V4.1: 4).
+    #[serde(default)]
+    pub engram_max_ngram_size: usize,
+    /// Logical vocab the hash is taken over, BEFORE compression (V4.1: 16000000).
+    #[serde(default)]
+    pub engram_vocab_size: usize,
+    /// Engram attention heads (V4.1: 8).
+    #[serde(default)]
+    pub engram_n_heads: usize,
+    /// Per-head engram dimension (V4.1: 256). A resident row is
+    /// `engram_head_dim` BF16 values = 512 B, against 84 B on disk at Q2_K.
+    #[serde(default)]
+    pub engram_head_dim: usize,
+    /// Pad id used by the engram hash (V4.1: 2). Distinct from the tokenizer's.
+    #[serde(default)]
+    pub engram_pad_token_id: u32,
+    /// Compressed vocab the token_map projects into (V4.1: 99092).
+    #[serde(default)]
+    pub engram_compressed_vocab_size: usize,
+    /// Engram hash multipliers (V4.1: 8 values).
+    #[serde(default)]
+    pub engram_multipliers: Vec<u64>,
+    /// Engram hash primes (V4.1: 48 values).
+    #[serde(default)]
+    pub engram_primes: Vec<u64>,
+    /// Engram per-slot table offsets (V4.1: 48 values).
+    #[serde(default)]
+    pub engram_offsets: Vec<u64>,
+
     // ── YaRN RoPE scaling (Mistral Small 4) ──
     /// YaRN scaling factor (`yarn.factor`). 0.0 = YaRN disabled, use plain RoPE.
     #[serde(default)]
