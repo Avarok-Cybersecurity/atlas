@@ -40,13 +40,32 @@ impl SpeedMode {
     }
 }
 
-/// Decide the Speed mode for these nodes.
+/// Decide the Speed mode for these nodes: one node is trivially Spread;
+/// more than one is always Bundle.
 ///
-/// One node is trivially Spread. Bundling picks the node with the most free
-/// memory, then the coolest chassis — the box most likely to hold its clock
-/// for the whole set.
+/// ★ Why Bundle even when the boxes are equivalent NOW. Equivalence at plan
+/// time is measured at rest, and the records are judged by what the boxes
+/// were UNDER LOAD (`gate::agreement` compares each record's own capture):
+/// on 2026-09-15 dgx2 and dgx3 read 43 and 40 °C at plan time, the
+/// campaign spread the Speed class, and the records read 55 vs 66-68 °C —
+/// past the 10 °C limit — so a clean 21-unit campaign was refused and one
+/// gate had to be re-measured. Spreading buys nothing worth that: the whole
+/// Speed class is ~40 min and never the critical path (kat-equality alone
+/// is ~58 min), so bundling costs no wall time. The equivalence policy stays
+/// where it matters — the verdict — and `why` records whether the boxes
+/// looked alike, for the operator's eye.
+///
+/// Bundling picks the node with the most free memory, then the coolest
+/// chassis — the box most likely to hold its clock for the whole set.
 pub fn speed_mode(nodes: &[Node]) -> SpeedMode {
-    let mut why = Vec::new();
+    if nodes.len() <= 1 {
+        return SpeedMode::Spread;
+    }
+    let mut why = vec![
+        "the Speed class runs on one box by default: equivalence at rest did not hold under \
+         load on 2026-09-15, and the class never sets the makespan"
+            .to_string(),
+    ];
     for (i, a) in nodes.iter().enumerate() {
         for b in &nodes[i + 1..] {
             if let Err(m) = equivalent(&a.hardware, &b.hardware, &SPEED_SPREAD) {
@@ -61,9 +80,6 @@ pub fn speed_mode(nodes: &[Node]) -> SpeedMode {
                 ));
             }
         }
-    }
-    if why.is_empty() {
-        return SpeedMode::Spread;
     }
     let node = (0..nodes.len())
         .max_by(|&x, &y| {

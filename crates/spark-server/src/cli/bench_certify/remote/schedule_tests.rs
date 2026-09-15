@@ -87,20 +87,27 @@ fn campaign() -> Vec<Unit> {
     v
 }
 
+/// One node spreads (there is nothing to bundle); two or more always
+/// bundle, equivalent at rest or not — the 2026-09-15 campaign spread over
+/// two boxes that were 43/40 °C at plan time and 55/68 °C in the records.
 #[test]
-fn speed_mode_spreads_over_equivalent_boxes_and_bundles_otherwise() {
+fn speed_mode_bundles_on_more_than_one_box_whatever_they_look_like_at_rest() {
     assert_eq!(speed_mode(&[node("a", 65.0, 0.9, true)]), SpeedMode::Spread);
-    assert_eq!(
-        speed_mode(&[node("a", 65.0, 0.9, true), node("b", 70.0, 0.9, true)]),
-        SpeedMode::Spread
-    );
+    // Equivalent at rest: still bundled, and the reason says why.
+    match speed_mode(&[node("a", 65.0, 0.9, true), node("b", 70.0, 0.9, true)]) {
+        SpeedMode::Bundle { why, .. } => {
+            assert_eq!(why.len(), 1, "{why:?}");
+            assert!(why[0].contains("under load"), "{why:?}");
+        }
+        other => panic!("{other:?}"),
+    }
     // The incident pair: bundled on the box with more free memory, and the
-    // warning names the field.
+    // mismatch is named beside the default reason.
     let m = speed_mode(&[node("a", 65.0, 0.80, true), node("b", 89.0, 0.90, true)]);
     match m {
         SpeedMode::Bundle { node, why } => {
             assert_eq!(node, 1, "more free memory wins");
-            assert!(why[0].contains("chassis 65 vs 89"), "{why:?}");
+            assert!(why[1].contains("chassis 65 vs 89"), "{why:?}");
         }
         other => panic!("{other:?}"),
     }

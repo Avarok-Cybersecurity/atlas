@@ -128,11 +128,11 @@ fn a_group_expands_only_to_the_shards_it_still_owes() {
 #[test]
 fn a_shards_estimate_is_the_groups_share_floored_and_its_param_names_the_slice() {
     let whole = units(&["bfcl-subset"], &|_| Some((6000, 1)), &fresh_partition(1)).unwrap();
-    assert_eq!(whole[0].secs(), 6000);
+    assert_eq!(whole[0].secs(), 6000 + SHARD_OVERHEAD_SECS);
     assert_eq!(whole[0].shard_param().as_deref(), Some("shard=0/1"));
     assert_eq!(whole[0].file_stem(), "bfcl-subset-s0of1");
     let four = units(&["bfcl-subset"], &|_| Some((6000, 1)), &fresh_partition(4)).unwrap();
-    assert_eq!(four[3].secs(), 1500);
+    assert_eq!(four[3].secs(), 1500 + SHARD_OVERHEAD_SECS);
     assert_eq!(four[3].shard_param().as_deref(), Some("shard=3/4"));
     assert_eq!(four[3].label(), "bfcl-subset[3/4]");
     // Declared estimates divide the same way.
@@ -140,7 +140,7 @@ fn a_shards_estimate_is_the_groups_share_floored_and_its_param_names_the_slice()
     let declared = atlas_plugin::registry::find("bfcl-subset")
         .unwrap()
         .expected_secs;
-    assert_eq!(eight[0].secs(), (declared / 8).max(SHARD_FLOOR_SECS));
+    assert_eq!(eight[0].secs(), declared / 8 + SHARD_OVERHEAD_SECS);
     // The floor: a hundred-way split is not a hundred one-minute runs.
     let thin = units(
         &["bfcl-subset"],
@@ -148,7 +148,17 @@ fn a_shards_estimate_is_the_groups_share_floored_and_its_param_names_the_slice()
         &fresh_partition(100),
     )
     .unwrap();
-    assert_eq!(thin[0].secs(), SHARD_FLOOR_SECS);
+    assert_eq!(
+        thin[0].secs(),
+        (60 + SHARD_OVERHEAD_SECS).max(SHARD_FLOOR_SECS)
+    );
+    // The overhead is what a six-way echolp shard measured: share 1260 s,
+    // wall 1650-1873 s.
+    assert!(
+        (1650..=1873).contains(&shard_secs(7560, 6)),
+        "{}",
+        shard_secs(7560, 6)
+    );
     // A plain gate has no shard, no param, and its stem is its id.
     let plain = units(&["decode-floor"], &|_| None, &fresh_partition(4)).unwrap();
     assert_eq!(plain[0].shard_param(), None);

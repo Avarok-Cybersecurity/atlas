@@ -169,10 +169,9 @@ pub fn expand(
 
 /// Units for these gates. `measured(id)` returns `(secs, recorded_at)` of the
 /// newest completed run of `id`, when there is one; `owed` says which shards
-/// of a group still need a record. A shard's estimate is the group's
-/// (declared or measured for the whole draw) divided by its count, floored
-/// at [`SHARD_FLOOR_SECS`]: a server start and a warm-up do not shrink with
-/// the slice.
+/// of a group still need a record. A shard's estimate is [`shard_secs`] of
+/// the group's (declared or measured for the whole draw): its share plus
+/// the fixed cost a server start and a warm-up add to every slice.
 pub fn units(
     gates: &[&'static str],
     measured: &dyn Fn(&str) -> Option<(u64, u64)>,
@@ -190,11 +189,9 @@ pub fn units(
             };
             if let Some((_, n)) = shard {
                 estimate = match estimate {
-                    Estimate::Declared(s) => {
-                        Estimate::Declared((s / n as u64).max(SHARD_FLOOR_SECS))
-                    }
+                    Estimate::Declared(s) => Estimate::Declared(shard_secs(s, n)),
                     Estimate::Measured { secs, recorded_at } => Estimate::Measured {
-                        secs: (secs / n as u64).max(SHARD_FLOOR_SECS),
+                        secs: shard_secs(secs, n),
                         recorded_at,
                     },
                 };
@@ -212,9 +209,22 @@ pub fn units(
     Ok(out)
 }
 
-/// The least a shard is planned at, however thin the slice: a server start,
-/// a warm-up and the fixed per-run overhead. Measured 2026-09-14: a quarter
-/// of the 27B draw ran 1181-1534 s, an echolp quarter 2516-2698 s.
+/// A shard's planning estimate: its share of the whole draw's time plus the
+/// fixed cost every run pays whatever its slice — a server start, a warm-up,
+/// scoring. Measured 2026-09-15 on six-way shards: an echolp sixth of a
+/// 7560 s draw ran 1650-1873 s (share 1260), a 27B sixth of 6120 s ran
+/// 741-940 s (share 1020) — the ÷n share alone under-planned every shard by
+/// 5-10 min and pushed the campaign's ETA out by 20. The constant is the
+/// middle of that spread; the deadline (`Unit::deadline`) scales it by the
+/// timeout factor like any other estimate.
+pub fn shard_secs(whole: u64, n: usize) -> u64 {
+    (whole / n as u64 + SHARD_OVERHEAD_SECS).max(SHARD_FLOOR_SECS)
+}
+
+/// The fixed per-shard cost, see [`shard_secs`].
+pub const SHARD_OVERHEAD_SECS: u64 = 420;
+
+/// The least a shard is planned at, however thin the slice.
 pub const SHARD_FLOOR_SECS: u64 = 300;
 
 /// The order one box runs its units in: the long correctness legs first (a

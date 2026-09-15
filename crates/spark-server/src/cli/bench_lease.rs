@@ -85,8 +85,11 @@ fn write(store: &ArtifactStore, lease: &Lease) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
+/// Read from procfs; where there is none (this binary builds on Windows and
+/// macOS) no pid is ever alive, so a lease is never taken — and never
+/// signalled — there: the feature is inert rather than wrong.
 fn pid_alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
+    cfg!(target_os = "linux") && Path::new(&format!("/proc/{pid}")).exists()
 }
 
 /// What this process would want a reused server to be: the plan's own
