@@ -9,7 +9,7 @@ use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 
-use super::hyper_connection_lowrank::hc_variant_down;
+use super::hyper_connection_lowrank_head::hc_variant_down;
 use crate::layers::qwen3_attention::HcLowRank;
 
 /// Decode-shaped (T <= 8) collapse that reads every low-rank weight row ONCE

@@ -43,6 +43,15 @@ fn dump_dir() -> Option<&'static str> {
     .as_deref()
 }
 
+/// Whether any tap in this module can fire.
+///
+/// Consulted by the `hc_post` fold predicate: folding moves a site's residual
+/// add PAST the tap that sits between the two sites, so an armed tap would
+/// report a stale highway. A bisect tap that lies is worse than a slow one.
+pub fn taps_armed() -> bool {
+    dump_dir().is_some()
+}
+
 /// One-shot: refuse to overwrite a tap that already exists.
 ///
 /// `SSM_LAYER_CALL_COUNTER` is a global that never resets, so the second

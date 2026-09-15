@@ -509,10 +509,53 @@ extern "C" __global__ void hc_pre_finish(
 // reference module computes in BF16, so this is parity-gated the same way as
 // every other collapse variant (probe cosine vs the FP32 fused path).
 
-extern "C" __global__ void hc_pre_stage_bf16(
-    const float* __restrict__ streams,
+// ── Registered-head bound for the folding stage core ──
+// The FOLD instantiation stashes each thread's `upd` values in registers so the
+// write loop never re-reads `streams`. `QHC_STAGE_MULT` x `QHC_STAGE_SLOTS`
+// floats per thread (12 at the shipping shape) covers hc <= 4 and
+// H <= 3*blockDim.x; anything wider falls back to re-reading `streams`, which is
+// CORRECT (the folded write and the read are separated by the RMS loop's
+// trailing __syncthreads, and block `t` owns row `t` entirely) and merely gives
+// up the saved read. `hc_stage_fold_shape_ok` in
+// `hyper_connection_lowrank_gemm.rs` holds production to the registered shape.
+//
+// The register file is why this is a TEMPLATE rather than a runtime `if`: the
+// array would be allocated on both paths and take the stock
+// `hc_pre_stage_bf16` from 32 to 39 registers, which at block 1024 is 2 blocks
+// per SM down to 1. The 48 cross-layer sites this change does NOT fold still
+// run the stock entry, and they must not pay for the folded one.
+#define QHC_STAGE_MULT 4
+#define QHC_STAGE_SLOTS 3
+
+// Shared core for `hc_pre_stage_bf16` and `hc_pre_stage_bf16_post` — the same
+// body, with the deferred `hc_post` residual applied when `block_out`/`inj`
+// are non-null. Two entry points rather than one nullable argument so nsys can
+// count engagement and a target lacking the fused entry degrades cleanly; same
+// shape as `qhc_collapse` serving `hc_pre` and `hc_head` above.
+//
+// THE FUSION: unfused, `hc_post` reads the [T, hc*H] FP32 highway and writes it
+// back, then this kernel reads it AGAIN to norm it — 321 MB re-read per site at
+// the shipping chunk. Folding the residual add into the RMS pass and keeping
+// `upd` in registers for the write loop removes that read entirely.
+//
+// BIT-EXACTNESS, the whole point:
+//  * `res[i] + xd * wv[s2]` is written exactly as `hc_post` writes it, and this
+//    target builds with `--fmad=false` (KERNEL.toml), so neither form can
+//    contract to an FMA and drift from the other.
+//  * The register value and the value `hc_post` would have round-tripped
+//    through global memory are the same FP32 bits, so `acc += v*v` accumulates
+//    the identical sequence in the identical per-thread order.
+//  * The write loop is re-mapped from a flat `i = tid; i < hc_dim` stride to
+//    the SAME (s2, d) iteration the RMS loop uses. That changes WHICH THREAD
+//    writes WHICH element and no value: `smem_rms[s2] == smem_rms[i / H]` and
+//    `hc_norm_w[i]` is indexed identically.
+template <bool FOLD>
+__device__ __forceinline__ void qhc_pre_stage_core(
+    float* __restrict__ streams,                  // [T, hc*H] FP32; in place when folding
     const __nv_bfloat16* __restrict__ hc_norm_w,
-    __nv_bfloat16* __restrict__ normed_out,    // [T, hc*H] BF16
+    __nv_bfloat16* __restrict__ normed_out,       // [T, hc*H] BF16
+    const __nv_bfloat16* __restrict__ block_out,  // [T, H], null unless FOLD
+    const float* __restrict__ inj,                // [T, hc], null unless FOLD
     const unsigned int hidden_size,
     const unsigned int hc,
     const float eps
@@ -521,8 +564,10 @@ extern "C" __global__ void hc_pre_stage_bf16(
     const unsigned int tid = threadIdx.x;
     const unsigned int H = hidden_size;
     const unsigned int hc_dim = hc * H;
-    const float* x = streams + (size_t)t * hc_dim;
+    float* x = streams + (size_t)t * hc_dim;
     __nv_bfloat16* out = normed_out + (size_t)t * hc_dim;
+    const __nv_bfloat16* b = (block_out != nullptr) ? block_out + (size_t)t * H : nullptr;
+    const float* w = (inj != nullptr) ? inj + (size_t)t * hc : nullptr;
 
     __shared__ float smem_rms[QHC_MAX_MULT];
     __shared__ float smem_red[QHC_WBLOCK / 32];
@@ -530,11 +575,38 @@ extern "C" __global__ void hc_pre_stage_bf16(
     const unsigned int warp = tid >> 5;
     const unsigned int warps = blockDim.x >> 5;
 
+    // Registered only at the shipping shape; see the QHC_STAGE_* note above.
+    const bool reg = FOLD && (hc <= QHC_STAGE_MULT) && (H <= QHC_STAGE_SLOTS * blockDim.x);
+    float upd[FOLD ? QHC_STAGE_MULT * QHC_STAGE_SLOTS : 1];
+
     for (unsigned int s2 = 0; s2 < hc; ++s2) {
-        const float* xs = x + (size_t)s2 * H;
+        float* xs = x + (size_t)s2 * H;
+        const float wv = FOLD ? w[s2] : 0.0f;
         float acc = 0.0f;
-        for (unsigned int d = tid; d < H; d += blockDim.x) {
+        // Registered head: the first QHC_STAGE_SLOTS strides, in the SAME order
+        // the original flat loop visited them, so `acc` accumulates identically.
+        // Under !FOLD this whole block folds back into that flat loop.
+        if (FOLD) {
+            #pragma unroll
+            for (unsigned int k = 0; k < QHC_STAGE_SLOTS; ++k) {
+                const unsigned int d = tid + k * blockDim.x;
+                if (d < H) {
+                    float v = xs[d] + (float)b[d] * wv;   // == hc_post's expression
+                    xs[d] = v;
+                    if (reg) upd[s2 * QHC_STAGE_SLOTS + k] = v;
+                    acc += v * v;
+                }
+            }
+        }
+        // Tail: empty at the shipping shape (H=2560, block=1024 -> 3 strides).
+        // Under !FOLD `head` is zero, so this IS the stock flat loop.
+        const unsigned int head = FOLD ? QHC_STAGE_SLOTS * blockDim.x : 0u;
+        for (unsigned int d = tid + head; d < H; d += blockDim.x) {
             float v = xs[d];
+            if (FOLD) {
+                v = v + (float)b[d] * wv;
+                xs[d] = v;
+            }
             acc += v * v;
         }
         #pragma unroll
@@ -550,10 +622,58 @@ extern "C" __global__ void hc_pre_stage_bf16(
         }
         __syncthreads();
     }
+    if (reg) {
+        for (unsigned int s2 = 0; s2 < hc; ++s2) {
+            const float rms = smem_rms[s2];
+            #pragma unroll
+            for (unsigned int k = 0; k < QHC_STAGE_SLOTS; ++k) {
+                const unsigned int d = tid + k * blockDim.x;
+                if (d < H) {
+                    const unsigned int i = s2 * H + d;
+                    out[i] = __float2bfloat16(
+                        upd[s2 * QHC_STAGE_SLOTS + k] * rms * (1.0f + (float)hc_norm_w[i]));
+                }
+            }
+        }
+        return;
+    }
+    // The stock write loop: !FOLD always, and FOLD at a shape too wide to
+    // register. Correct on the folded path too — the RMS loop's trailing
+    // __syncthreads orders this block's own write of `x` before this read, and
+    // no other block touches row `t`.
     for (unsigned int i = tid; i < hc_dim; i += blockDim.x) {
         out[i] = __float2bfloat16(
             x[i] * smem_rms[i / H] * (1.0f + (float)hc_norm_w[i]));
     }
+}
+
+extern "C" __global__ void hc_pre_stage_bf16(
+    const float* __restrict__ streams,
+    const __nv_bfloat16* __restrict__ hc_norm_w,
+    __nv_bfloat16* __restrict__ normed_out,    // [T, hc*H] BF16
+    const unsigned int hidden_size,
+    const unsigned int hc,
+    const float eps
+) {
+    qhc_pre_stage_core<false>(const_cast<float*>(streams), hc_norm_w, normed_out,
+                              nullptr, nullptr, hidden_size, hc, eps);
+}
+
+// `hc_pre_stage_bf16` with the PREVIOUS site's `hc_post` folded in: the
+// residual add lands on `streams` in place (exactly what the skipped `hc_post`
+// would have written there) and feeds this stage's RMS from registers.
+extern "C" __global__ void hc_pre_stage_bf16_post(
+    float* __restrict__ streams,                 // [T, hc*H] FP32, IN PLACE
+    const __nv_bfloat16* __restrict__ hc_norm_w,
+    __nv_bfloat16* __restrict__ normed_out,      // [T, hc*H] BF16
+    const __nv_bfloat16* __restrict__ block_out, // [T, H] — deferred site's block output
+    const float* __restrict__ inj,               // [T, hc] — deferred site's injection vector
+    const unsigned int hidden_size,
+    const unsigned int hc,
+    const float eps
+) {
+    qhc_pre_stage_core<true>(streams, hc_norm_w, normed_out, block_out, inj,
+                             hidden_size, hc, eps);
 }
 
 // low = silu(low_pre * inv_hc), elementwise in place over n = T*rank.
