@@ -902,24 +902,38 @@ extern "C" __global__ __launch_bounds__(QSA_EXPAND_THREADS) void qsa_expand_sel(
 #define QSA_PATC_HD 256         // head_dim (checked at the call site)
 #define QSA_PATC_M 16           // mma M — nq padded to 16
 #define QSA_PATC_QPAD 8         // sQ row pad: kills an 8-way A-fragment conflict
-// sKV-as-K^T row pad. 2, not 4, and the reason is the STORE, not the size.
-// The gather reads k_cache coalesced but writes sKV[d*KT_ROW + j], striding by
-// KT_ROW across consecutive d. Bank = (d*(TB+KPAD) + j)/2 mod 32, so the pad
-// decides the stride in banks:
-//   KPAD 4 -> 68 elems -> d*34 mod 32 = d*2 -> banks 0,2,..30: 32 lanes into
-//             16 banks, a 2-way conflict on every K store of every tile;
-//   KPAD 2 -> 66 elems -> d*33 mod 32 = d   -> 32 lanes into 32 banks, none.
-// It is also 1024 B smaller. (sQ keeps pad 8 for the same class of reason on
-// its A-fragment read; V is stored row-contiguous and does not care.)
-#define QSA_PATC_KPAD 2
+// sKV-as-K row pad. K is stored ROW-CONTIGUOUS [token][hd] — the same shape as
+// V — so this is now the same pad as VPAD, for the same alignment reason.
+//
+// It used to be K-transposed [hd][token] with pad 2, chosen so the transposed
+// store hit 32 distinct banks (row stride 33 elems -> d*33 mod 32 = d). That
+// layout cost more than it saved, on BOTH sides:
+//   STORE — a transposed store cannot be widened, so the gather was stuck at
+//           one 2-byte load per thread per step (32 load instructions per
+//           thread per tile). Widening it UNDER the transpose is worse still:
+//           lane stride becomes 144 elems -> banks 8*lane mod 32 -> 4 distinct
+//           -> an 8-way store conflict.
+//   READ  — the QK mma wants B as [n][k] = [token][hd] with the packed pair
+//           CONSECUTIVE IN k. Transposed, those two neighbours sat a whole row
+//           apart, so every B fragment was two 16-bit loads plus a shift/or.
+// Row-contiguous fixes both: the gather vectorizes to 16 B/thread exactly like
+// V, and the B fragment becomes ONE 32-bit load of two adjacent elements.
+// Bank check on that read: elem = nc*K_ROW + k0, nc = warp*8 + gid, k0 = d0 +
+// tid*2, so word = gid*(K_ROW/2) + tid + C and K_ROW/2 = 132 == 4 (mod 32) ->
+// word = 4*gid + tid + C. gid is 0..7 and tid 0..3, so the warp's 32 lanes
+// cover all 32 banks exactly once — conflict-free, against 16 banks before.
+// (sQ keeps pad 8 for the same class of reason on its A-fragment read.)
+#define QSA_PATC_KPAD 8
 // sKV-as-V row pad. 8, not 4, and the reason is ALIGNMENT, not banks: the V
 // gather below stores 16 B (8 BF16) per thread, so `j*V_ROW + d0` must be a
 // multiple of 8 elements. 260 is not (260 = 8*32 + 4), 264 = 8*33 is. It is
-// FREE: sKV is sized by the K^T view (HD*KT_ROW), which dominates the V view
-// at BOTH tile sizes — 256*18 = 4608 > 16*264 = 4224, and 256*66 = 16896 =
-// 64*264 — so QSA_PA_TC_SMEM and QSA_PA_TC_SMEM_TB16 do not move and the
-// 5-CTAs/SM prefill design point is untouched. (V is stored row-contiguous, so
-// unlike KPAD this pad was never doing bank work.)
+// CHEAP: K and V now share this shape, so sKV is TB*(HD+8) for both views.
+// That is 4224 elems at TB 16 against the old max(4608, 4160) = 4608, so the
+// prefill tile SHRINKS 19712 -> 18944 B — still 5 CTAs/SM (5*18944 = 94720 of
+// 102400; a 6th would need <= 17066). The verify tile is unchanged at 49088,
+// where the old transposed view (256*66) and the new one (64*264) are both
+// 16896. (V is stored row-contiguous, so unlike the OLD KPAD this pad never
+// did bank work — it is pure alignment.)
 #define QSA_PATC_VPAD 8
 #define QSA_PATC_PPAD 8
 template <int TB>
@@ -940,17 +954,17 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
     const float inv_sqrt_d
 ) {
     const int HD = QSA_PATC_HD, M = QSA_PATC_M;
-    const int KT_ROW = TB + QSA_PATC_KPAD;   // sKV as K^T: [hd][TB+pad]
-    const int V_ROW  = HD + QSA_PATC_VPAD;   // sKV as V:   [TB][hd+pad]
+    const int K_ROW  = HD + QSA_PATC_KPAD;   // sKV as K: [TB][hd+pad]
+    const int V_ROW  = HD + QSA_PATC_VPAD;   // sKV as V: [TB][hd+pad]
     const int Q_ROW  = HD + QSA_PATC_QPAD;
     const int P_ROW  = TB + QSA_PATC_PPAD;
     // Dynamic, not static: static __shared__ is capped at 49152 B. The Rust
     // side's `QSA_PA_TC_SMEM` recomputes this same total from the same tile
     // constants — keep the two in step.
     extern __shared__ unsigned char smem_raw[];
-    __nv_bfloat16* sKV = (__nv_bfloat16*)smem_raw;          // K^T, then V
-    const size_t KV_ELEMS = (size_t)HD * KT_ROW > (size_t)TB * V_ROW
-                          ? (size_t)HD * KT_ROW : (size_t)TB * V_ROW;
+    __nv_bfloat16* sKV = (__nv_bfloat16*)smem_raw;          // K, then V
+    const size_t KV_ELEMS = (size_t)TB * K_ROW > (size_t)TB * V_ROW
+                          ? (size_t)TB * K_ROW : (size_t)TB * V_ROW;
     __nv_bfloat16* sQ_ = sKV + KV_ELEMS;                    // M*(HD+QPAD)
     __nv_bfloat16* sP_ = sQ_ + (size_t)M * Q_ROW;           // M*(TB+PPAD)
     float* sS_   = (float*)(sP_ + (size_t)M * P_ROW);       // M*TB
@@ -1009,17 +1023,20 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
 
         // ── Phase A: sKV holds K^T. kvh is 0 (nkv == 1 is gated at the call
         // site), so every head shares these rows.
-        for (unsigned int i = tidx; i < (unsigned int)(TB * HD); i += NT) {
-            unsigned int j = i / HD, d = i % HD;
-            __nv_bfloat16 kv = __float2bfloat16(0.0f);
+        static_assert((QSA_PATC_HD + QSA_PATC_KPAD) % 8 == 0,
+                      "K_ROW must be a multiple of 8 BF16 for the 16-B smem store");
+        for (unsigned int i = tidx; i < (unsigned int)(TB * (HD / 8)); i += NT) {
+            const unsigned int j = i / (unsigned int)(HD / 8);
+            const unsigned int d0 = (i % (unsigned int)(HD / 8)) * 8u;
+            uint4 kv = make_uint4(0u, 0u, 0u, 0u);   // 8 BF16 zeros
             if (j < n_this) {
                 unsigned int tok = sTok[j];
                 unsigned long long off =
                     (unsigned long long)(unsigned int)block_table[tok / block_size] * page_stride
                     + (unsigned long long)(tok % block_size) * row_elems;
-                kv = k_cache[off + d];
+                kv = *reinterpret_cast<const uint4*>(&k_cache[off + d0]);
             }
-            sKV[(size_t)d * KT_ROW + j] = kv;
+            *reinterpret_cast<uint4*>(&sKV[j * (unsigned int)K_ROW + d0]) = kv;
         }
         __syncthreads();
 
@@ -1038,8 +1055,23 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
                 unsigned int a2 = ((unsigned int)sA[fr0*Q_ROW+fc1+1]<<16) | (unsigned int)sA[fr0*Q_ROW+fc1];
                 unsigned int a3 = ((unsigned int)sA[fr1*Q_ROW+fc1+1]<<16) | (unsigned int)sA[fr1*Q_ROW+fc1];
                 unsigned int k0 = d0 + tid * 2, k1 = k0 + 8;
-                unsigned int b0 = ((unsigned int)sB[(k0+1)*KT_ROW+nc]<<16) | (unsigned int)sB[k0*KT_ROW+nc];
-                unsigned int b1 = ((unsigned int)sB[(k1+1)*KT_ROW+nc]<<16) | (unsigned int)sB[k1*KT_ROW+nc];
+                // B is [n][k] = [token][hd] and the mma's packed pair is
+                // consecutive in k, so these are two ADJACENT elements: one
+                // aligned 32-bit load each (k0/k1 even, K_ROW even).
+                // nc RUNS PAST TB. The mma always computes 8 n-columns per
+                // warp, so nc = warp*8 + gid reaches 63 even at TB 16, and the
+                // store below is what drops col >= TB. Under the old
+                // [hd][token] layout those stray columns were a small read
+                // into the neighbouring sQ_ region — benign garbage that was
+                // then discarded. Row-contiguous they index by ROW instead:
+                // 63*264 = 16632 elems against a 4224-elem view, i.e. past the
+                // end of the whole dynamic smem allocation (an illegal
+                // address, observed as CUDA 700). Clamp the row; every value
+                // it produces for nc >= TB is discarded anyway.
+                const unsigned int nrow = (nc < (unsigned int)TB) ? nc : 0u;
+                const unsigned int brow = nrow * (unsigned int)K_ROW;
+                unsigned int b0 = *reinterpret_cast<const unsigned int*>(&sB[brow + k0]);
+                unsigned int b1 = *reinterpret_cast<const unsigned int*>(&sB[brow + k1]);
                 asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
                     :"=f"(acc[0]),"=f"(acc[1]),"=f"(acc[2]),"=f"(acc[3])
                     :"r"(a0),"r"(a1),"r"(a2),"r"(a3),"r"(b0),"r"(b1),
@@ -1114,12 +1146,8 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
         //            multiple of 8 elems;
         //   smem   — V_ROW = HD + VPAD = 264 = 8*33, which is why VPAD is 8.
         //
-        // The K gather above is deliberately NOT vectorized: it stores
-        // TRANSPOSED (sKV[d*KT_ROW + j]), so widening the load changes the
-        // lane->address map from stride 18 elems (banks 9*lane mod 32, all 32
-        // distinct) to stride 144 (banks 8*lane mod 32, only 4 distinct) — an
-        // 8-way store conflict on every K tile. Vectorizing K needs the KPAD
-        // derivation above redone for the new map; V needs nothing.
+        // The K gather above has the same shape for the same reason — see the
+        // QSA_PATC_KPAD note for why K stopped being stored transposed.
         static_assert(QSA_PATC_HD % 8 == 0,
                       "V gather loads 8 BF16 per thread");
         static_assert((QSA_PATC_HD + QSA_PATC_VPAD) % 8 == 0,
@@ -1135,7 +1163,7 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
                     + (unsigned long long)(tok % block_size) * row_elems;
                 vv = *reinterpret_cast<const uint4*>(&v_cache[off + d0]);
             }
-            *reinterpret_cast<uint4*>(&sKV[(size_t)j * V_ROW + d0]) = vv;
+            *reinterpret_cast<uint4*>(&sKV[j * (unsigned int)V_ROW + d0]) = vv;
         }
         __syncthreads();
 
@@ -1185,8 +1213,16 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
     }
 }
 
-#define QSA_PATC_ENTRY(NAME, TBV)                                              \
-    extern "C" __global__ __launch_bounds__(256) void NAME(                    \
+// MINCTA is the occupancy each tile is actually sized for, and it is passed to
+// __launch_bounds__ so ptxas budgets registers to match instead of guessing:
+// 65536/(256*MINCTA) is 51 registers at 5 and 128 at 2. Without the second
+// argument the TB-64 tile came out at 48 registers WITH 24 B of spill stores
+// and 92 B of spill loads once K moved to the row-contiguous layout (the
+// gather went from 64 scalar steps to 8 uint4 steps, which the compiler
+// unrolls into far more live state). Pinning it to its real 2 CTAs/SM removes
+// the spill outright. The prefill tile needs 40 and has 51, so it is unbound.
+#define QSA_PATC_ENTRY(NAME, TBV, MINCTA)                                      \
+    extern "C" __global__ __launch_bounds__(256, MINCTA) void NAME(            \
         const __nv_bfloat16* __restrict__ q,                                   \
         const __nv_bfloat16* __restrict__ k_cache,                             \
         const __nv_bfloat16* __restrict__ v_cache,                             \
@@ -1204,5 +1240,5 @@ __device__ __forceinline__ void qsa_pa_tc_impl(
 
 // The name the VERIFY path has always called keeps the verify tile, so that
 // path is byte-unchanged from before the prefill tile work.
-QSA_PATC_ENTRY(qsa_prefill_attn_tc, QSA_PATC_TB_VERIFY)
-QSA_PATC_ENTRY(qsa_prefill_attn_tc_tb16, QSA_PATC_TB_PREFILL)
+QSA_PATC_ENTRY(qsa_prefill_attn_tc, QSA_PATC_TB_VERIFY, 2)
+QSA_PATC_ENTRY(qsa_prefill_attn_tc_tb16, QSA_PATC_TB_PREFILL, 5)

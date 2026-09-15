@@ -24,7 +24,6 @@ fn qsa_prefill_attn_tc_matches_cpu() {
         spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
-    let k = g.kernel("qsa_indexer", "qsa_prefill_attn_tc").unwrap();
 
     // nkv = 1 and nq = 12: the TP=2 rank shape, and the reason one CTA per
     // row is correct (every head reads the same KV row).
@@ -71,82 +70,96 @@ fn qsa_prefill_attn_tc_matches_cpu() {
     let out_dev = g.alloc(rows * nq * hd * 2).unwrap();
     let scale = 1.0 / (hd as f32).sqrt();
 
-    ops::qsa_prefill_attn_tc(
-        g,
-        k,
-        q_dev,
-        k_dev,
-        v_dev,
-        table,
-        lists_dev,
-        out_dev,
-        rows as u32,
-        first_pos as u32,
-        topk as u32,
-        ratio as u32,
-        bs as u32,
-        nq as u32,
-        nkv as u32,
-        hd as u32,
-        scale,
-        false, // this test loads `qsa_prefill_attn_tc` — the TB-64 tile
-        stream,
-    )
-    .unwrap();
-    g.synchronize(stream).unwrap();
-    let got = dl_bf16(g, out_dev, rows * nq * hd);
+    // BOTH tiles, against the same CPU reference. Until 2026-09-15 this test
+    // only ever loaded `qsa_prefill_attn_tc` (TB 64) — the VERIFY tile — so the
+    // TB-16 tile that actually serves prefill had NO correctness test at all.
+    // That gap hid a real one: `nc = warp*8 + gid` reaches 63 regardless of TB,
+    // so at TB 16 the QK mma indexes n-columns past the tile and the store
+    // drops them. When K moved to a row-contiguous layout that stray index
+    // became a row index and ran off the end of smem (CUDA 700). The TB-64 arm
+    // could not see it, because at TB 64 nc never exceeds the tile.
+    for (kname, tb16) in [
+        ("qsa_prefill_attn_tc", false),
+        ("qsa_prefill_attn_tc_tb16", true),
+    ] {
+        let k = g.kernel("qsa_indexer", kname).unwrap();
+        ops::qsa_prefill_attn_tc(
+            g,
+            k,
+            q_dev,
+            k_dev,
+            v_dev,
+            table,
+            lists_dev,
+            out_dev,
+            rows as u32,
+            first_pos as u32,
+            topk as u32,
+            ratio as u32,
+            bs as u32,
+            nq as u32,
+            nkv as u32,
+            hd as u32,
+            scale,
+            tb16,
+            stream,
+        )
+        .unwrap();
+        g.synchronize(stream).unwrap();
+        let got = dl_bf16(g, out_dev, rows * nq * hd);
 
-    let group = nq / nkv;
-    let mut worst_cos = 1.0f64;
-    for r in 0..rows {
-        let pos = first_pos + r;
-        let complete = (pos + 1) / ratio;
-        let tail = (pos + 1) - complete * ratio;
-        let mut toks: Vec<usize> = lists_host[r * topk..(r + 1) * topk]
-            .iter()
-            .flat_map(|&b| (0..ratio).map(move |i| b as usize * ratio + i))
-            .collect();
-        toks.extend(complete * ratio..complete * ratio + tail);
-        for h in 0..nq {
-            let kvh = h / group;
-            let qv: Vec<f32> = (0..hd)
-                .map(|d| unbf(q_host[(r * nq + h) * hd + d]))
-                .collect();
-            let scores: Vec<f32> = toks
+        let group = nq / nkv;
+        let mut worst_cos = 1.0f64;
+        for r in 0..rows {
+            let pos = first_pos + r;
+            let complete = (pos + 1) / ratio;
+            let tail = (pos + 1) - complete * ratio;
+            let mut toks: Vec<usize> = lists_host[r * topk..(r + 1) * topk]
                 .iter()
-                .map(|&t| {
+                .flat_map(|&b| (0..ratio).map(move |i| b as usize * ratio + i))
+                .collect();
+            toks.extend(complete * ratio..complete * ratio + tail);
+            for h in 0..nq {
+                let kvh = h / group;
+                let qv: Vec<f32> = (0..hd)
+                    .map(|d| unbf(q_host[(r * nq + h) * hd + d]))
+                    .collect();
+                let scores: Vec<f32> = toks
+                    .iter()
+                    .map(|&t| {
+                        let base = (t * nkv + kvh) * hd;
+                        (0..hd).map(|d| qv[d] * unbf(k_host[base + d])).sum::<f32>() * scale
+                    })
+                    .collect();
+                let m = scores.iter().cloned().fold(f32::MIN, f32::max);
+                let exps: Vec<f32> = scores.iter().map(|s| (s - m).exp()).collect();
+                let l: f32 = exps.iter().sum();
+                let mut refv = vec![0.0f32; hd];
+                for (i, &t) in toks.iter().enumerate() {
                     let base = (t * nkv + kvh) * hd;
-                    (0..hd).map(|d| qv[d] * unbf(k_host[base + d])).sum::<f32>() * scale
-                })
-                .collect();
-            let m = scores.iter().cloned().fold(f32::MIN, f32::max);
-            let exps: Vec<f32> = scores.iter().map(|s| (s - m).exp()).collect();
-            let l: f32 = exps.iter().sum();
-            let mut refv = vec![0.0f32; hd];
-            for (i, &t) in toks.iter().enumerate() {
-                let base = (t * nkv + kvh) * hd;
-                let w = exps[i] / l;
-                for d in 0..hd {
-                    refv[d] += w * unbf(v_host[base + d]);
+                    let w = exps[i] / l;
+                    for d in 0..hd {
+                        refv[d] += w * unbf(v_host[base + d]);
+                    }
                 }
+                let gv = &got[(r * nq + h) * hd..(r * nq + h + 1) * hd];
+                let dot: f64 = gv
+                    .iter()
+                    .zip(&refv)
+                    .map(|(a, b)| *a as f64 * *b as f64)
+                    .sum();
+                let ng: f64 = gv.iter().map(|a| (*a as f64).powi(2)).sum::<f64>().sqrt();
+                let nr: f64 = refv.iter().map(|a| (*a as f64).powi(2)).sum::<f64>().sqrt();
+                let cos = dot / (ng * nr).max(1e-30);
+                worst_cos = worst_cos.min(cos);
             }
-            let gv = &got[(r * nq + h) * hd..(r * nq + h + 1) * hd];
-            let dot: f64 = gv
-                .iter()
-                .zip(&refv)
-                .map(|(a, b)| *a as f64 * *b as f64)
-                .sum();
-            let ng: f64 = gv.iter().map(|a| (*a as f64).powi(2)).sum::<f64>().sqrt();
-            let nr: f64 = refv.iter().map(|a| (*a as f64).powi(2)).sum::<f64>().sqrt();
-            let cos = dot / (ng * nr).max(1e-30);
-            worst_cos = worst_cos.min(cos);
         }
+        println!("{kname} vs CPU: worst cos = {worst_cos:.9}");
+        assert!(
+            worst_cos > 0.999,
+            "{kname}: TC attention kernel diverges: {worst_cos}"
+        );
     }
-    println!("qsa_prefill_attn_tc vs CPU: worst cos = {worst_cos:.9}");
-    assert!(
-        worst_cos > 0.999,
-        "TC attention kernel diverges: {worst_cos}"
-    );
 }
 
 /// Minimal repro for the dense chunk-0 flash zeroing rows past ~1280 at

@@ -361,10 +361,14 @@ const QSA_PA_TC_WIDE_ROWS: u32 = 256;
 const QSA_PA_TC_HD: u32 = 256;
 const QSA_PA_TC_M: u32 = 16;
 const QSA_PA_TC_QPAD: u32 = 8;
-const QSA_PA_TC_KPAD: u32 = 2; // bank-conflict-free K^T store; see qsa_indexer.cu
+// 8, not 2: K is stored ROW-CONTIGUOUS [token][hd] now, not transposed, so
+// this is an alignment pad like VPAD rather than a bank pad. Mirrors
+// QSA_PATC_KPAD in qsa_indexer.cu; the smem test asserts the totals agree.
+const QSA_PA_TC_KPAD: u32 = 8;
 // 8, not 4: the V gather stores 16 B per thread, so V_ROW = HD + VPAD must be
-// a multiple of 8 BF16 (264 = 8*33; 260 is not). Free — sKV is sized by the
-// K^T view at both tile sizes, so neither constant below moves. Mirrors
+// a multiple of 8 BF16 (264 = 8*33; 260 is not). K now has this same shape, so
+// both views are TB*(HD+8) and the prefill arena shrank 19712 -> 18944 (still
+// 5 CTAs/SM); the verify arena is unchanged at 49088. Mirrors
 // QSA_PATC_VPAD in qsa_indexer.cu; the smem test asserts they agree.
 const QSA_PA_TC_VPAD: u32 = 8;
 const QSA_PA_TC_PPAD: u32 = 8;
@@ -382,7 +386,7 @@ const QSA_PA_TC_PPAD: u32 = 8;
 /// Same layout at the prefill tile. Both are asserted against the kernel's own
 /// arithmetic by `tc_prefill_attn_smem_is_five_ctas_per_sm`.
 pub const QSA_PA_TC_SMEM_TB16: u32 = {
-    let kt = QSA_PA_TC_HD * (QSA_PA_TC_TB16 + QSA_PA_TC_KPAD) * 2;
+    let kt = QSA_PA_TC_TB16 * (QSA_PA_TC_HD + QSA_PA_TC_KPAD) * 2;
     let v = QSA_PA_TC_TB16 * (QSA_PA_TC_HD + QSA_PA_TC_VPAD) * 2;
     let kv = if kt > v { kt } else { v };
     kv + QSA_PA_TC_M * (QSA_PA_TC_HD + QSA_PA_TC_QPAD) * 2
@@ -393,7 +397,7 @@ pub const QSA_PA_TC_SMEM_TB16: u32 = {
 };
 
 pub const QSA_PA_TC_SMEM: u32 = {
-    let kt = QSA_PA_TC_HD * (QSA_PA_TC_TB + QSA_PA_TC_KPAD) * 2;
+    let kt = QSA_PA_TC_TB * (QSA_PA_TC_HD + QSA_PA_TC_KPAD) * 2;
     let v = QSA_PA_TC_TB * (QSA_PA_TC_HD + QSA_PA_TC_VPAD) * 2;
     let kv = if kt > v { kt } else { v };
     kv + QSA_PA_TC_M * (QSA_PA_TC_HD + QSA_PA_TC_QPAD) * 2
