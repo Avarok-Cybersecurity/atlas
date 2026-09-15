@@ -3,7 +3,7 @@ use super::*;
 use atlas_plugin::hardware::equivalence::HardwareFingerprint;
 use std::sync::Mutex;
 
-fn node(baseline: Option<f64>) -> Node {
+fn node() -> Node {
     Node {
         addr: "10.10.10.3".into(),
         name: "dgx3".into(),
@@ -15,7 +15,7 @@ fn node(baseline: Option<f64>) -> Node {
             sm_clock_max_mhz: Some(3003.0),
             mem_total_kb: Some(127_601_400),
             thermal_alert: Some(false),
-            hottest_chassis_c: baseline,
+            hottest_chassis_c: Some(40.0),
             postcheck_valid: None,
         },
         free_fraction: Some(0.95),
@@ -24,83 +24,144 @@ fn node(baseline: Option<f64>) -> Node {
     }
 }
 
-/// The rule, with its hysteresis: park past +20 over baseline, resume only
-/// within +5 — and the band between is "hold what you were doing".
-#[test]
-fn park_past_twenty_over_resume_within_five() {
-    assert_eq!(judge(Some(40.0), Some(59.0), false), Verdict::Ready);
-    assert_eq!(
-        judge(Some(40.0), Some(60.0), false),
-        Verdict::Ready,
-        "the line is exclusive"
-    );
-    assert!(matches!(
-        judge(Some(40.0), Some(61.0), false),
-        Verdict::Park { .. }
-    ));
-    // Parked: 50 is still 10 over — hold; 45 is within 5 — go.
-    assert!(matches!(
-        judge(Some(40.0), Some(50.0), true),
-        Verdict::Park { .. }
-    ));
-    assert_eq!(judge(Some(40.0), Some(45.0), true), Verdict::Ready);
-    // Not parked and in the band: keep working.
-    assert_eq!(judge(Some(40.0), Some(50.0), false), Verdict::Ready);
-    // The 2026-09-15 pair: dgx3 at 68 against a 40 baseline is parked;
-    // dgx2 at 55 against 43 is not.
-    assert!(matches!(
-        judge(Some(40.0), Some(68.0), false),
-        Verdict::Park { .. }
-    ));
-    assert_eq!(judge(Some(43.0), Some(55.0), false), Verdict::Ready);
+fn r(c: f64) -> Reading {
+    Reading {
+        chassis_c: Some(c),
+        throttled: Some(false),
+    }
 }
 
-/// NEGATIVE CONTROL: a reading that cannot be taken parks nothing.
+/// The rule, with its hysteresis: park at 80, resume at or below 70, and
+/// the band between is "hold what you were doing". A loaded GB10 at 65-76
+/// (2026-09-15) is working, not parked; the incident box at 89 is.
+#[test]
+fn park_at_eighty_resume_at_seventy() {
+    assert_eq!(
+        judge(r(76.0), false),
+        Verdict::Ready,
+        "a loaded box keeps working"
+    );
+    assert_eq!(judge(r(79.9), false), Verdict::Ready);
+    assert!(
+        matches!(judge(r(80.0), false), Verdict::Park { .. }),
+        "the line is inclusive"
+    );
+    assert!(
+        matches!(judge(r(89.0), false), Verdict::Park { .. }),
+        "the incident box"
+    );
+    // Parked: 75 is still above 70 — hold; 70 — go.
+    assert!(matches!(judge(r(75.0), true), Verdict::Park { .. }));
+    assert_eq!(judge(r(70.0), true), Verdict::Ready);
+    // Not parked and in the band: keep working.
+    assert_eq!(judge(r(75.0), false), Verdict::Ready);
+}
+
+/// The driver's thermal-slowdown flag parks at ANY temperature, and holds a
+/// parked node until it clears — the temperature alone does not release it.
+#[test]
+fn a_throttle_flag_parks_and_holds_whatever_the_temperature() {
+    let hot = Reading {
+        chassis_c: Some(60.0),
+        throttled: Some(true),
+    };
+    assert!(matches!(
+        judge(hot, false),
+        Verdict::Park {
+            throttled: true,
+            ..
+        }
+    ));
+    assert!(matches!(
+        judge(hot, true),
+        Verdict::Park {
+            throttled: true,
+            ..
+        }
+    ));
+    let flag_only = Reading {
+        chassis_c: None,
+        throttled: Some(true),
+    };
+    assert!(matches!(
+        judge(flag_only, false),
+        Verdict::Park {
+            throttled: true,
+            ..
+        }
+    ));
+}
+
+/// NEGATIVE CONTROL: no temperature and no flag parks nothing.
 #[test]
 fn a_blind_reading_never_parks() {
-    assert_eq!(judge(None, Some(99.0), false), Verdict::Blind);
-    assert_eq!(judge(Some(40.0), None, true), Verdict::Blind);
+    let blind = Reading {
+        chassis_c: None,
+        throttled: None,
+    };
+    assert_eq!(judge(blind, false), Verdict::Blind);
+    assert_eq!(judge(blind, true), Verdict::Blind);
+    let unknown_flag = Reading {
+        chassis_c: Some(99.0),
+        throttled: None,
+    };
+    assert!(
+        matches!(
+            judge(unknown_flag, false),
+            Verdict::Park {
+                throttled: false,
+                ..
+            }
+        ),
+        "temperature alone still parks"
+    );
 }
 
-struct Scripted(Mutex<Vec<Option<f64>>>);
+struct Scripted(Mutex<Vec<Reading>>);
 impl Probe for Scripted {
-    fn hottest_chassis_c(&self, _: &Node) -> Option<f64> {
+    fn read(&self, _: &Node) -> Reading {
         let mut v = self.0.lock().unwrap();
         if v.len() > 1 { v.remove(0) } else { v[0] }
     }
 }
 
 /// The gate parks on the first hot reading, holds through the band, resumes
-/// near baseline, and says each transition exactly once.
+/// at the line, and says each transition exactly once.
 #[test]
 fn the_gate_parks_holds_and_resumes_saying_so_once() {
-    let n = node(Some(40.0));
+    let n = node();
     let p = Scripted(Mutex::new(vec![
-        Some(65.0),
-        Some(52.0),
-        Some(47.0),
-        Some(44.0),
-        Some(44.0),
+        r(84.0),
+        r(78.0),
+        r(72.0),
+        r(70.0),
+        r(70.0),
     ]));
     let said = Mutex::new(Vec::<String>::new());
     let say = |s: &str| said.lock().unwrap().push(s.to_string());
     let mut g = Gate::default();
-    assert!(!g.may_take(&n, &p, false, &say), "65 over 40: parked");
-    assert!(!g.may_take(&n, &p, false, &say), "52: still 12 over, hold");
-    assert!(!g.may_take(&n, &p, false, &say), "47: 7 over, hold");
-    assert!(g.may_take(&n, &p, false, &say), "44: within 5, resume");
+    assert!(!g.may_take(&n, &p, false, &say), "84: parked");
+    assert!(!g.may_take(&n, &p, false, &say), "78: hold");
+    assert!(!g.may_take(&n, &p, false, &say), "72: hold");
+    assert!(g.may_take(&n, &p, false, &say), "70: resume");
     assert!(g.may_take(&n, &p, false, &say));
     let said = said.lock().unwrap();
     assert_eq!(said.len(), 2, "{said:?}");
-    assert!(said[0].contains("parked until"), "{said:?}");
+    assert!(
+        said[0].contains("parked") && said[0].contains("chassis 84"),
+        "{said:?}"
+    );
     assert!(said[1].contains("resuming"), "{said:?}");
 }
 
-/// A node with no baseline is never parked, and told once.
+/// A node that reports nothing is never parked, and told once.
 #[test]
-fn a_node_without_a_baseline_is_never_parked() {
-    let n = node(None);
-    let p = Scripted(Mutex::new(vec![Some(99.0)]));
+fn a_node_that_reports_nothing_is_never_parked() {
+    let n = node();
+    let p = Scripted(Mutex::new(vec![Reading {
+        chassis_c: None,
+        throttled: None,
+    }]));
     let said = Mutex::new(Vec::<String>::new());
     let say = |s: &str| said.lock().unwrap().push(s.to_string());
     let mut g = Gate::default();
@@ -113,13 +174,13 @@ fn a_node_without_a_baseline_is_never_parked() {
 /// spell is warned about once on the way in and cleared once on the way out.
 #[test]
 fn ignoring_thermals_warns_once_and_never_parks() {
-    let n = node(Some(40.0));
+    let n = node();
     let p = Scripted(Mutex::new(vec![
-        Some(65.0),
-        Some(70.0),
-        Some(52.0),
-        Some(44.0),
-        Some(44.0),
+        r(84.0),
+        r(88.0),
+        r(75.0),
+        r(70.0),
+        r(70.0),
     ]));
     let said = Mutex::new(Vec::<String>::new());
     let say = |s: &str| said.lock().unwrap().push(s.to_string());
@@ -137,5 +198,5 @@ fn ignoring_thermals_warns_once_and_never_parks() {
         "{said:?}"
     );
     assert!(said[0].contains("would be parked"), "{said:?}");
-    assert!(said[1].contains("back within"), "{said:?}");
+    assert!(said[1].contains("back below"), "{said:?}");
 }

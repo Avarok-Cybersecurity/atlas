@@ -74,18 +74,19 @@ most headroom and the plan prints `WARNING speed-class gates BUNDLED on …`
 with the concrete mismatch. CI re-checks the same rule from the records'
 own captures (`docs/provable-benchmark-work.md` §5c).
 
-**Cool-down.** Every node is admitted with a baseline — its hottest chassis
-zone at rest. Before a node takes another unit the zone is read again; more
-than 20 °C over its own baseline and the node is **parked**: it takes
-nothing until it is back within 5 °C (re-read every 60 s, at most 30 min,
-then it resumes with a warning), and every transition is printed and
-logged as a `thermal` event. The rest of the fleet keeps working — the
-scheduler is work-conserving, so pending units go wherever a node is free;
-a parked box that hosts the bundled Speed class only delays that class. A
-node that cannot report a temperature is never parked (said once); the
-records' own captures still decide equivalence. The thresholds are the
-operator's cut: a GB10 warms 12–28 °C over rest under a campaign, and the
-box behind the 0.66 tok/s incident sat 24 °C over its peer.
+**Cool-down.** Before a node takes another unit its hottest chassis zone
+and the driver's thermal-throttle flag are read. At **80 °C** or above, or
+with the throttle asserted, the node is **parked**: it takes nothing until
+it is back at or below **70 °C** with the throttle clear (re-read every
+60 s, at most 30 min, then it resumes with a warning), and every transition
+is printed and logged as a `thermal` event. The rest of the fleet keeps
+working — the scheduler is work-conserving, so pending units go wherever a
+node is free; a parked box that hosts the bundled Speed class only delays
+that class. A node that cannot report a temperature is never parked (said
+once); the records' own captures still decide equivalence. The line is
+absolute, not relative to rest: a GB10 rises 26–33 °C over rest under any
+gate (healthy loaded boxes read 55–76 °C on 2026-09-15) and the box behind
+the 0.66 tok/s incident read 89 °C with a driver-reported slowdown.
 `--dangerous-ignore-thermals` turns every park into a warning and lets the
 box keep taking units — the operator's hardware to risk; the records are
 still judged by the equivalence policy at the end, so the flag ignores the

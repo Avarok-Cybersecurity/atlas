@@ -3,14 +3,23 @@
 //! Cool-down: a box that warms up mid-campaign is parked until it is back
 //! near where it started, and the rest of the fleet keeps working.
 //!
-//! Every node is admitted with a baseline — the hottest chassis zone at rest,
-//! at plan time. Before a worker takes another unit it reads the zone again.
-//! Past [`PARK_ABOVE_BASELINE_C`] over its own baseline the node is PARKED:
-//! it takes nothing more and re-reads every [`RECHECK`] until the zone is
-//! back within [`RESUME_WITHIN_C`] of baseline (hysteresis, so a box does not
-//! flap on the threshold). Nothing else waits for it — the scheduler is
-//! work-conserving, so pending units go to whichever node is free — and a
-//! parked box that hosts the bundled Speed class simply delays that class.
+//! Before a worker takes another unit it reads the node's hottest chassis
+//! zone and the driver's thermal-throttle flag. At [`PARK_AT_C`] or above, or
+//! with the throttle asserted, the node is PARKED: it takes nothing more and
+//! re-reads every [`RECHECK`] until the zone is at or below [`RESUME_AT_C`]
+//! and the throttle is clear (hysteresis, so a box does not flap on the
+//! threshold). Nothing else waits for it — the scheduler is work-conserving,
+//! so pending units go to whichever node is free — and a parked box that
+//! hosts the bundled Speed class simply delays that class.
+//!
+//! ★ Absolute, not relative to the box's rest temperature. The first cut
+//! parked at +20 °C over the plan-time baseline, and the first campaign under
+//! it parked both remote boxes after their first unit: a GB10 rises 26-33 °C
+//! over rest under any gate (43 → 76, 39 → 65 on 2026-09-15) and needs a
+//! long idle to come back within 5 — "close to baseline" is where a box is
+//! only when it is not working. What is abnormal is a box in throttle
+//! territory: the 0.66 tok/s incident was a chassis at 89 °C with the driver
+//! reporting a thermal slowdown; every healthy loaded box today read 55-76.
 //!
 //! Why: the 2026-09-15 campaign spread its Speed class over two boxes that
 //! were 43/40 °C at plan time and 55/68 °C in the records — one had run
@@ -34,10 +43,11 @@ use std::time::Duration;
 
 use super::node::Node;
 
-/// Degrees over its own plan-time baseline at which a node is parked.
-pub const PARK_ABOVE_BASELINE_C: f64 = 20.0;
-/// Degrees over baseline a parked node must fall back to before it resumes.
-pub const RESUME_WITHIN_C: f64 = 5.0;
+/// The hottest chassis zone at which a node is parked, °C. Healthy loaded
+/// GB10s read 55-76 on 2026-09-15; the incident box read 89.
+pub const PARK_AT_C: f64 = 80.0;
+/// The zone a parked node must fall back to before it resumes, °C.
+pub const RESUME_AT_C: f64 = 70.0;
 /// How often a parked node is re-read.
 pub const RECHECK: Duration = Duration::from_secs(60);
 /// The longest a node stays parked. A box that will not cool (ambient rose,
@@ -51,26 +61,44 @@ pub const MAX_PARK: Duration = Duration::from_secs(30 * 60);
 pub enum Verdict {
     /// Take one.
     Ready,
-    /// Wait: `now_c` against `baseline_c`, and how far it has to fall.
-    Park { now_c: f64, baseline_c: f64 },
-    /// No reading (either side); take one, and say so.
+    /// Wait: the reading, and whether the driver reports a thermal throttle.
+    Park { now_c: f64, throttled: bool },
+    /// No temperature reading; take one, and say so.
     Blind,
 }
 
-/// Pure: the hysteresis rule.
+/// One live reading of a node.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Reading {
+    /// The hottest chassis zone, °C.
+    pub chassis_c: Option<f64>,
+    /// The driver's thermal-slowdown flag, when it could be read.
+    pub throttled: Option<bool>,
+}
+
+/// Pure: the hysteresis rule. A throttle flag parks regardless of the
+/// temperature; a missing temperature parks nothing unless the flag is set.
 #[must_use]
-pub fn judge(baseline_c: Option<f64>, now_c: Option<f64>, parked: bool) -> Verdict {
-    let (Some(baseline_c), Some(now_c)) = (baseline_c, now_c) else {
-        return Verdict::Blind;
+pub fn judge(r: Reading, parked: bool) -> Verdict {
+    let throttled = r.throttled == Some(true);
+    let Some(now_c) = r.chassis_c else {
+        return if throttled {
+            Verdict::Park {
+                now_c: f64::NAN,
+                throttled,
+            }
+        } else {
+            Verdict::Blind
+        };
     };
-    let over = now_c - baseline_c;
-    let hold = if parked {
-        over > RESUME_WITHIN_C
-    } else {
-        over > PARK_ABOVE_BASELINE_C
-    };
+    let hold = throttled
+        || if parked {
+            now_c > RESUME_AT_C
+        } else {
+            now_c >= PARK_AT_C
+        };
     if hold {
-        Verdict::Park { now_c, baseline_c }
+        Verdict::Park { now_c, throttled }
     } else {
         Verdict::Ready
     }
@@ -78,8 +106,8 @@ pub fn judge(baseline_c: Option<f64>, now_c: Option<f64>, parked: bool) -> Verdi
 
 /// Where a node's live chassis reading comes from.
 pub trait Probe: Send + Sync {
-    /// The hottest chassis zone now, °C, or `None` when it cannot be read.
-    fn hottest_chassis_c(&self, node: &Node) -> Option<f64>;
+    /// The node's chassis temperature and throttle flag now.
+    fn read(&self, node: &Node) -> Reading;
 }
 
 /// The real probe: this box through `HardwareState`, a remote node through
@@ -89,13 +117,33 @@ pub struct FleetProbe {
 }
 
 impl Probe for FleetProbe {
-    fn hottest_chassis_c(&self, node: &Node) -> Option<f64> {
+    fn read(&self, node: &Node) -> Reading {
         if node.local {
-            return atlas_plugin::hardware::HardwareState::collect().hottest_chassis_c();
+            let s = atlas_plugin::hardware::HardwareState::collect();
+            return Reading {
+                chassis_c: s.hottest_chassis_c(),
+                throttled: s.throttle_active.thermal(),
+            };
         }
-        let rows = self.atlasctl.nodes(std::slice::from_ref(&node.addr)).ok()?;
-        let row = rows.iter().find(|r| r.node == node.addr)?;
-        super::node::fingerprint_of(row.info.as_ref()?).hottest_chassis_c
+        let blind = Reading {
+            chassis_c: None,
+            throttled: None,
+        };
+        let Ok(rows) = self.atlasctl.nodes(std::slice::from_ref(&node.addr)) else {
+            return blind;
+        };
+        let Some(info) = rows
+            .iter()
+            .find(|r| r.node == node.addr)
+            .and_then(|r| r.info.as_ref())
+        else {
+            return blind;
+        };
+        let fp = super::node::fingerprint_of(info);
+        Reading {
+            chassis_c: fp.hottest_chassis_c,
+            throttled: fp.thermal_alert,
+        }
     }
 }
 
@@ -123,46 +171,46 @@ impl Gate {
         ignore: bool,
         say: &dyn Fn(&str),
     ) -> bool {
-        let now = probe.hottest_chassis_c(node);
+        let r = probe.read(node);
+        let why = |now_c: f64, throttled: bool| {
+            if throttled {
+                format!("the driver reports a thermal slowdown (chassis {now_c:.0} °C)")
+            } else {
+                format!(
+                    "chassis {now_c:.0} °C (park at {PARK_AT_C:.0}, resume at {RESUME_AT_C:.0})"
+                )
+            }
+        };
         if ignore {
-            match judge(node.hardware.hottest_chassis_c, now, self.warned_hot) {
-                Verdict::Park { now_c, baseline_c } => {
+            match judge(r, self.warned_hot) {
+                Verdict::Park { now_c, throttled } => {
                     if !self.warned_hot {
                         self.warned_hot = true;
                         say(&format!(
-                            "WARNING --dangerous-ignore-thermals: {} reads {now_c:.0} °C against a \
-                             baseline of {baseline_c:.0} °C and would be parked; continuing on the \
-                             operator's say-so — its records are still judged by the equivalence \
-                             policy",
-                            node.addr
+                            "WARNING --dangerous-ignore-thermals: {} would be parked — {}; \
+                             continuing on the operator's say-so — its records are still judged \
+                             by the equivalence policy",
+                            node.addr,
+                            why(now_c, throttled)
                         ));
                     }
                 }
                 Verdict::Ready => {
                     if self.warned_hot {
                         self.warned_hot = false;
-                        say(&format!(
-                            "{} is back within {RESUME_WITHIN_C:.0} °C of its baseline",
-                            node.addr
-                        ));
+                        say(&format!("{} is back below {RESUME_AT_C:.0} °C", node.addr));
                     }
                 }
                 Verdict::Blind => {}
             }
             return true;
         }
-        match judge(
-            node.hardware.hottest_chassis_c,
-            now,
-            self.parked_since.is_some(),
-        ) {
+        match judge(r, self.parked_since.is_some()) {
             Verdict::Ready => {
                 if let Some(since) = self.parked_since.take() {
                     say(&format!(
-                        "cool-down: {} is back within {RESUME_WITHIN_C:.0} °C of its baseline \
-                         ({:.0} °C) after {} s; resuming",
+                        "cool-down: {} is back at or below {RESUME_AT_C:.0} °C after {} s; resuming",
                         node.addr,
-                        node.hardware.hottest_chassis_c.unwrap_or(f64::NAN),
                         since.elapsed().as_secs()
                     ));
                 }
@@ -180,21 +228,22 @@ impl Gate {
                 self.parked_since = None;
                 true
             }
-            Verdict::Park { now_c, baseline_c } => {
+            Verdict::Park { now_c, throttled } => {
                 let since = *self.parked_since.get_or_insert_with(|| {
                     say(&format!(
-                        "cool-down: {} reads {now_c:.0} °C against a baseline of {baseline_c:.0} °C \
-                         (> {PARK_ABOVE_BASELINE_C:.0} °C over); parked until it is within \
-                         {RESUME_WITHIN_C:.0} °C — the other boxes keep working",
-                        node.addr
+                        "cool-down: {} parked — {}; nothing more until it is at or below \
+                         {RESUME_AT_C:.0} °C with no throttle — the other boxes keep working",
+                        node.addr,
+                        why(now_c, throttled)
                     ));
                     std::time::Instant::now()
                 });
                 if since.elapsed() >= MAX_PARK {
                     say(&format!(
-                        "cool-down: {} still reads {now_c:.0} °C after {} s parked; resuming \
-                         anyway — its records are judged by the equivalence policy like any other",
+                        "cool-down: {} still {} after {} s parked; resuming anyway — its records \
+                         are judged by the equivalence policy like any other",
                         node.addr,
+                        why(now_c, throttled),
                         since.elapsed().as_secs()
                     ));
                     self.parked_since = None;
