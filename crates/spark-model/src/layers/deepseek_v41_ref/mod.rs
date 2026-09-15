@@ -148,7 +148,9 @@ impl Golden {
     }
 
     pub fn fixture_i64(&self, key: &str) -> i64 {
-        self.0["fixture"][key].as_i64().unwrap_or_else(|| panic!("fixture.{key} is not an integer"))
+        self.0["fixture"][key]
+            .as_i64()
+            .unwrap_or_else(|| panic!("fixture.{key} is not an integer"))
     }
 
     pub fn fixture_usize_list(&self, key: &str) -> Vec<usize> {
@@ -181,7 +183,10 @@ impl Golden {
     pub fn tensor(&self, regime: &str, name: &str) -> GoldenTensor {
         let t = &self.0[regime][name];
         assert!(!t.is_null(), "missing capture {regime}.{name}");
-        let as_usize = |k: &str| t[k].as_u64().unwrap_or_else(|| panic!("{regime}.{name}.{k}")) as usize;
+        let as_usize = |k: &str| {
+            t[k].as_u64()
+                .unwrap_or_else(|| panic!("{regime}.{name}.{k}")) as usize
+        };
         GoldenTensor {
             shape: t["shape"]
                 .as_array()
@@ -239,7 +244,10 @@ impl Golden {
 /// a rule the generator might change. fp8/e8m0 tables have their own path in `engram`.
 pub fn regen_param(g: &Golden, name: &str) -> Vec<f32> {
     let m = g.weight_meta(name);
-    assert_eq!(m.kind, "f32", "{name}: regen_param handles f32-kind parameters only");
+    assert_eq!(
+        m.kind, "f32",
+        "{name}: regen_param handles f32-kind parameters only"
+    );
     let bf16 = m.dtype == "bfloat16";
     (0..m.n as u64)
         .map(|i| {
@@ -252,7 +260,13 @@ pub fn regen_param(g: &Golden, name: &str) -> Vec<f32> {
 /// Elementwise max-abs comparison that names the worst index and both values.
 #[track_caller]
 pub fn assert_close(what: &str, got: &[f64], want: &[f64], tol: f64) {
-    assert_eq!(got.len(), want.len(), "{what}: length {} vs {}", got.len(), want.len());
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "{what}: length {} vs {}",
+        got.len(),
+        want.len()
+    );
     let mut worst = 0.0f64;
     let mut at = 0usize;
     for (i, (g, w)) in got.iter().zip(want).enumerate() {
@@ -270,12 +284,12 @@ pub fn assert_close(what: &str, got: &[f64], want: &[f64], tol: f64) {
     );
 }
 
-pub mod engram;
-pub mod hc;
-pub mod moe;
 pub mod attn;
 pub mod compress;
+pub mod engram;
+pub mod hc;
 pub mod model;
+pub mod moe;
 
 /// Shared comparison bar for every component's tests.
 #[cfg(test)]
@@ -298,7 +312,11 @@ pub(crate) mod testutil {
         let sample: Vec<f64> = got.iter().step_by(g.stride).copied().collect();
         assert_close(what, &sample, &g.data, tol);
         let ck = checksum(got.iter().copied());
-        let mag: f64 = got.iter().enumerate().map(|(i, v)| v.abs() * (i as f64 + 1.0)).sum();
+        let mag: f64 = got
+            .iter()
+            .enumerate()
+            .map(|(i, v)| v.abs() * (i as f64 + 1.0))
+            .sum();
         let bound = ck_rel * mag.max(1.0);
         assert!(
             (ck - g.ck).abs() <= bound,

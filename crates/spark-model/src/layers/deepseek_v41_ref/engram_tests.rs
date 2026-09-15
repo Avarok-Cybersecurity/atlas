@@ -24,11 +24,22 @@ fn fx() -> Fx {
     let regimes = g.regimes();
     let vocab = g.fixture_u64("vocab_size");
     let prefill = g.fixture_u64("prefill_len") as usize;
-    let ids: Vec<i64> = (0..(prefill + 2) as u64).map(|i| fixed_int("input_ids", i, vocab) as i64).collect();
+    let ids: Vec<i64> = (0..(prefill + 2) as u64)
+        .map(|i| fixed_int("input_ids", i, vocab) as i64)
+        .collect();
     let dim = g.fixture_u64("dim") as usize;
     let hc = g.fixture_u64("hc_mult") as usize;
     let eps = g.fixture_f64("norm_eps") as f32;
-    Fx { g, t, regimes, ids, prefill, dim, hc, eps }
+    Fx {
+        g,
+        t,
+        regimes,
+        ids,
+        prefill,
+        dim,
+        hc,
+        eps,
+    }
 }
 
 /// Runs the hash state through all three regimes, returning per-regime `[L, layers, cols]`.
@@ -52,7 +63,11 @@ fn tables_match_the_fixture_geometry() {
     // rows == sum of that layer's primes, the identity Tier 2 proved on the real file
     for (li, rows) in f.t.num_embeddings.iter().enumerate() {
         let sum: i64 = f.t.primes[li].iter().flatten().sum();
-        assert_eq!(*rows as i64, sum, "layer {} rows vs sum of primes", f.t.layer_ids[li]);
+        assert_eq!(
+            *rows as i64, sum,
+            "layer {} rows vs sum of primes",
+            f.t.layer_ids[li]
+        );
     }
     // offsets are the exclusive prefix sums of the flattened primes
     for (li, offs) in f.t.offsets.iter().enumerate() {
@@ -71,7 +86,13 @@ fn hash_is_exact_across_prefill_and_both_decode_steps() {
     let hs = hashes(&f);
     for (r, h) in f.regimes.iter().zip(&hs) {
         let got: Vec<f64> = h.iter().map(|&v| v as f64).collect();
-        check_capture(&format!("{r}.engram_hashes"), &got, &f.g.tensor(r, "engram_hashes"), EXACT, EXACT);
+        check_capture(
+            &format!("{r}.engram_hashes"),
+            &got,
+            &f.g.tensor(r, "engram_hashes"),
+            EXACT,
+            EXACT,
+        );
         // the per-layer slice the Engram module actually receives
         let nl = f.t.layer_ids.len();
         let cols = f.t.n_hash_cols();
@@ -80,7 +101,13 @@ fn hash_is_exact_across_prefill_and_both_decode_steps() {
             let slice: Vec<f64> = (0..l_tokens)
                 .flat_map(|s| (0..cols).map(move |c| h[(s * nl + li) * cols + c] as f64))
                 .collect();
-            check_capture(&format!("{r}.L{lid}.engram_hash_ids"), &slice, &f.g.tensor(r, &format!("L{lid}.engram_hash_ids")), EXACT, EXACT);
+            check_capture(
+                &format!("{r}.L{lid}.engram_hash_ids"),
+                &slice,
+                &f.g.tensor(r, &format!("L{lid}.engram_hash_ids")),
+                EXACT,
+                EXACT,
+            );
         }
     }
 }
@@ -110,8 +137,15 @@ fn e4m3_encoder_round_trips_the_fixture_tables() {
         if w.kind != "fp8" {
             continue;
         }
-        let ck = checksum((0..w.n as u64).map(|i| e4m3_to_f32(f32_to_e4m3_rne(fixed_value(&w.name, i, w.scale, w.offset))) as f64));
-        assert!((ck - w.ck).abs() <= 1e-9 * w.ck.abs().max(1.0), "{}: {ck} vs {}", w.name, w.ck);
+        let ck = checksum((0..w.n as u64).map(|i| {
+            e4m3_to_f32(f32_to_e4m3_rne(fixed_value(&w.name, i, w.scale, w.offset))) as f64
+        }));
+        assert!(
+            (ck - w.ck).abs() <= 1e-9 * w.ck.abs().max(1.0),
+            "{}: {ck} vs {}",
+            w.name,
+            w.ck
+        );
         checked += 1;
     }
     assert_eq!(checked, 2);
@@ -127,7 +161,10 @@ fn e8m0_rounding_rule_matches_torch() {
         for (i, want) in f.t.scales[li].iter().enumerate() {
             let raw = fixed_value(&name, i as u64, 1.0, 1.0);
             let got = f32_to_e8m0_rne(raw);
-            assert_eq!(got, *want, "layer {lid} scale[{i}]: raw {raw} -> {got}, torch gave {want}");
+            assert_eq!(
+                got, *want,
+                "layer {lid} scale[{i}]: raw {raw} -> {got}, torch gave {want}"
+            );
             n += 1;
         }
     }
@@ -144,9 +181,20 @@ fn table_gather_is_exact() {
             let nl = f.t.layer_ids.len();
             let cols = f.t.n_hash_cols();
             let l_tokens = h.len() / (nl * cols);
-            let ids: Vec<i64> = (0..l_tokens).flat_map(|s| (0..cols).map(move |c| h[(s * nl + li) * cols + c])).collect();
-            let got: Vec<f64> = embed_rows(&table, f.t.head_dim, &ids).iter().map(|&v| v as f64).collect();
-            check_capture(&format!("{r}.L{lid}.engram_embed"), &got, &f.g.tensor(r, &format!("L{lid}.engram_embed")), EXACT, EXACT);
+            let ids: Vec<i64> = (0..l_tokens)
+                .flat_map(|s| (0..cols).map(move |c| h[(s * nl + li) * cols + c]))
+                .collect();
+            let got: Vec<f64> = embed_rows(&table, f.t.head_dim, &ids)
+                .iter()
+                .map(|&v| v as f64)
+                .collect();
+            check_capture(
+                &format!("{r}.L{lid}.engram_embed"),
+                &got,
+                &f.g.tensor(r, &format!("L{lid}.engram_embed")),
+                EXACT,
+                EXACT,
+            );
         }
     }
 }
@@ -164,12 +212,20 @@ fn projection_matches_within_bf16() {
             let nl = f.t.layer_ids.len();
             let cols = f.t.n_hash_cols();
             let l_tokens = h.len() / (nl * cols);
-            let ids: Vec<i64> = (0..l_tokens).flat_map(|s| (0..cols).map(move |c| h[(s * nl + li) * cols + c])).collect();
+            let ids: Vec<i64> = (0..l_tokens)
+                .flat_map(|s| (0..cols).map(move |c| h[(s * nl + li) * cols + c]))
+                .collect();
             let emb = embed_rows(&table, f.t.head_dim, &ids);
             let kv = linear_bf16(&emb, l_tokens, in_f, &w, out_f);
             let gt = f.g.tensor(r, &format!("L{lid}.engram_kv"));
             let got: Vec<f64> = kv.iter().map(|&v| v as f64).collect();
-            check_capture(&format!("{r}.L{lid}.engram_kv"), &got, &gt, bf16_tol(&gt), BF16_CK_REL);
+            check_capture(
+                &format!("{r}.L{lid}.engram_kv"),
+                &got,
+                &gt,
+                bf16_tol(&gt),
+                BF16_CK_REL,
+            );
         }
     }
 }
@@ -189,7 +245,9 @@ fn full_engram_matches_within_bf16() {
             let nl = f.t.layer_ids.len();
             let cols = f.t.n_hash_cols();
             let l_tokens = h.len() / (nl * cols);
-            let ids: Vec<i64> = (0..l_tokens).flat_map(|s| (0..cols).map(move |c| h[(s * nl + li) * cols + c])).collect();
+            let ids: Vec<i64> = (0..l_tokens)
+                .flat_map(|s| (0..cols).map(move |c| h[(s * nl + li) * cols + c]))
+                .collect();
             let emb = embed_rows(&table, f.t.head_dim, &ids);
             let kv = linear_bf16(&emb, l_tokens, in_f, &w, out_f);
             let xin = f.g.tensor(r, &format!("L{lid}.engram_in"));
@@ -198,7 +256,13 @@ fn full_engram_matches_within_bf16() {
             let out = gate_and_add(&x, &kv, &q, &k, l_tokens, f.hc, f.dim, f.eps);
             let gt = f.g.tensor(r, &format!("L{lid}.engram_out"));
             let got: Vec<f64> = out.iter().map(|&v| v as f64).collect();
-            check_capture(&format!("{r}.L{lid}.engram_out"), &got, &gt, bf16_tol(&gt), BF16_CK_REL);
+            check_capture(
+                &format!("{r}.L{lid}.engram_out"),
+                &got,
+                &gt,
+                bf16_tol(&gt),
+                BF16_CK_REL,
+            );
         }
     }
 }

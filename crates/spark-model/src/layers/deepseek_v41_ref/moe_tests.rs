@@ -26,7 +26,11 @@ fn fx() -> Fx {
         route_scale: g.fixture_f64("route_scale") as f32,
         swiglu_limit: g.fixture_f64("swiglu_limit") as f32,
     };
-    Fx { regimes: g.regimes(), cfg, g }
+    Fx {
+        regimes: g.regimes(),
+        cfg,
+        g,
+    }
 }
 
 struct Params {
@@ -42,9 +46,19 @@ fn params(f: &Fx) -> Params {
         gate_w: p("gate.weight"),
         gate_bias: p("gate.bias"),
         experts: (0..f.cfg.n_routed)
-            .map(|e| (p(&format!("experts.{e}.w1.weight")), p(&format!("experts.{e}.w2.weight")), p(&format!("experts.{e}.w3.weight"))))
+            .map(|e| {
+                (
+                    p(&format!("experts.{e}.w1.weight")),
+                    p(&format!("experts.{e}.w2.weight")),
+                    p(&format!("experts.{e}.w3.weight")),
+                )
+            })
             .collect(),
-        shared: (p("shared_experts.w1.weight"), p("shared_experts.w2.weight"), p("shared_experts.w3.weight")),
+        shared: (
+            p("shared_experts.w1.weight"),
+            p("shared_experts.w2.weight"),
+            p("shared_experts.w3.weight"),
+        ),
     }
 }
 
@@ -52,7 +66,11 @@ fn weights(p: &Params) -> MoeWeights<'_> {
     MoeWeights {
         gate_w: &p.gate_w,
         gate_bias: &p.gate_bias,
-        experts: p.experts.iter().map(|(a, b, c)| (a.as_slice(), b.as_slice(), c.as_slice())).collect(),
+        experts: p
+            .experts
+            .iter()
+            .map(|(a, b, c)| (a.as_slice(), b.as_slice(), c.as_slice()))
+            .collect(),
         shared: (&p.shared.0, &p.shared.1, &p.shared.2),
     }
 }
@@ -66,7 +84,10 @@ fn params_have_the_expected_geometry() {
     assert_eq!(p.gate_w.len(), n * dim);
     assert_eq!(p.gate_bias.len(), n);
     for (w1, w2, w3) in &p.experts {
-        assert_eq!((w1.len(), w2.len(), w3.len()), (inter * dim, dim * inter, inter * dim));
+        assert_eq!(
+            (w1.len(), w2.len(), w3.len()),
+            (inter * dim, dim * inter, inter * dim)
+        );
     }
     assert_eq!(p.shared.0.len(), inter * dim);
     assert!((f.cfg.route_scale - 1.5).abs() < 1e-6 && (f.cfg.swiglu_limit - 10.0).abs() < 1e-6);
@@ -85,11 +106,20 @@ fn routing_matches_exactly() {
         let got_idx: Vec<f64> = idx.iter().map(|&i| i as f64).collect();
         check_capture(&format!("{r}.L0.moe_indices"), &got_idx, &gi, EXACT, EXACT);
         let gw = f.g.tensor(r, "L0.moe_weights");
-        check_capture(&format!("{r}.L0.moe_weights"), &as_f64(&wt), &gw, F32_TOL, F32_TOL);
+        check_capture(
+            &format!("{r}.L0.moe_weights"),
+            &as_f64(&wt),
+            &gw,
+            F32_TOL,
+            F32_TOL,
+        );
         // renormalised top-k times route_scale sums to route_scale per token
         for t in 0..tokens {
             let s: f32 = wt[t * f.cfg.topk..(t + 1) * f.cfg.topk].iter().sum();
-            assert!((s - f.cfg.route_scale).abs() < 1e-5, "{r} token {t}: weights sum {s}");
+            assert!(
+                (s - f.cfg.route_scale).abs() < 1e-5,
+                "{r} token {t}: weights sum {s}"
+            );
         }
     }
 }
@@ -104,7 +134,13 @@ fn ffn_output_matches_within_bf16() {
         let tokens = x.len() / f.cfg.dim;
         let (y, _, _) = moe(&x, tokens, &w, &f.cfg);
         let gt = f.g.tensor(r, "L0.ffn_out");
-        check_capture(&format!("{r}.L0.ffn_out"), &as_f64(&y), &gt, bf16_tol(&gt), BF16_CK_REL);
+        check_capture(
+            &format!("{r}.L0.ffn_out"),
+            &as_f64(&y),
+            &gt,
+            bf16_tol(&gt),
+            BF16_CK_REL,
+        );
     }
 }
 
@@ -116,9 +152,30 @@ fn shared_expert_alone_is_not_the_answer() {
     let r = &f.regimes[0];
     let x = full_f32(&f.g.tensor(r, "L0.ffn_in"), "L0.ffn_in");
     let tokens = x.len() / f.cfg.dim;
-    let shared = expert(&x, &p.shared.0, &p.shared.1, &p.shared.2, tokens, f.cfg.dim, f.cfg.inter, f.cfg.swiglu_limit, None);
+    let shared = expert(
+        &x,
+        &p.shared.0,
+        &p.shared.1,
+        &p.shared.2,
+        tokens,
+        f.cfg.dim,
+        f.cfg.inter,
+        f.cfg.swiglu_limit,
+        None,
+    );
     let gt = f.g.tensor(r, "L0.ffn_out");
-    let sample: Vec<f64> = shared.iter().step_by(gt.stride).map(|&v| v as f64).collect();
-    let diff = sample.iter().zip(&gt.data).map(|(a, b)| (a - b).abs()).fold(0f64, f64::max);
-    assert!(diff > bf16_tol(&gt), "shared expert alone already matches ffn_out; the routed path is untested");
+    let sample: Vec<f64> = shared
+        .iter()
+        .step_by(gt.stride)
+        .map(|&v| v as f64)
+        .collect();
+    let diff = sample
+        .iter()
+        .zip(&gt.data)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0f64, f64::max);
+    assert!(
+        diff > bf16_tol(&gt),
+        "shared expert alone already matches ffn_out; the routed path is untested"
+    );
 }

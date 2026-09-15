@@ -61,13 +61,21 @@ pub fn gate(
         let xt = &x[t * dim..(t + 1) * dim];
         let scores: Vec<f32> = (0..n_routed)
             .map(|e| {
-                let s: f32 = xt.iter().zip(&w[e * dim..(e + 1) * dim]).map(|(a, b)| a * b).sum();
+                let s: f32 = xt
+                    .iter()
+                    .zip(&w[e * dim..(e + 1) * dim])
+                    .map(|(a, b)| a * b)
+                    .sum();
                 softplus(s / gate_temp).sqrt()
             })
             .collect();
         // the bias picks experts but does not scale them
         let mut order: Vec<usize> = (0..n_routed).collect();
-        order.sort_by(|&a, &b| (scores[b] + bias[b]).partial_cmp(&(scores[a] + bias[a])).expect("finite scores"));
+        order.sort_by(|&a, &b| {
+            (scores[b] + bias[b])
+                .partial_cmp(&(scores[a] + bias[a]))
+                .expect("finite scores")
+        });
         let picked = &order[..topk];
         let mut wt: Vec<f32> = picked.iter().map(|&e| scores[e]).collect();
         if norm_topk_prob && topk > 1 {
@@ -141,9 +149,23 @@ pub struct MoeCfg {
 
 /// `MoE.forward` (single rank). Returns (`y[tokens, dim]` bf16 values, routing `weights`,
 /// routing `indices`).
-pub fn moe(x: &[f32], tokens: usize, w: &MoeWeights, c: &MoeCfg) -> (Vec<f32>, Vec<f32>, Vec<usize>) {
+pub fn moe(
+    x: &[f32],
+    tokens: usize,
+    w: &MoeWeights,
+    c: &MoeCfg,
+) -> (Vec<f32>, Vec<f32>, Vec<usize>) {
     let (weights, indices) = gate(
-        x, w.gate_w, w.gate_bias, tokens, c.dim, c.n_routed, c.topk, c.gate_temp, c.norm_topk_prob, c.route_scale,
+        x,
+        w.gate_w,
+        w.gate_bias,
+        tokens,
+        c.dim,
+        c.n_routed,
+        c.topk,
+        c.gate_temp,
+        c.norm_topk_prob,
+        c.route_scale,
     );
     let mut y = vec![0f32; tokens * c.dim];
     for (e, (w1, w2, w3)) in w.experts.iter().enumerate() {
@@ -161,8 +183,21 @@ pub fn moe(x: &[f32], tokens: usize, w: &MoeWeights, c: &MoeCfg) -> (Vec<f32>, V
         if rows.is_empty() {
             continue;
         }
-        let xs: Vec<f32> = rows.iter().flat_map(|&t| x[t * c.dim..(t + 1) * c.dim].iter().copied()).collect();
-        let out = expert(&xs, w1, w2, w3, rows.len(), c.dim, c.inter, c.swiglu_limit, Some(&rw));
+        let xs: Vec<f32> = rows
+            .iter()
+            .flat_map(|&t| x[t * c.dim..(t + 1) * c.dim].iter().copied())
+            .collect();
+        let out = expert(
+            &xs,
+            w1,
+            w2,
+            w3,
+            rows.len(),
+            c.dim,
+            c.inter,
+            c.swiglu_limit,
+            Some(&rw),
+        );
         for (i, &t) in rows.iter().enumerate() {
             for d in 0..c.dim {
                 y[t * c.dim + d] += out[i * c.dim + d];

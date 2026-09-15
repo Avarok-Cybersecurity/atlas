@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+pub mod deepseek_v41_ref;
 pub mod deepseek_v4_mtp;
 pub mod dense_ffn;
 pub mod dflash_head;
@@ -13,7 +14,6 @@ pub mod glm5next_dsa_ref;
 pub mod glm5next_kda;
 /// GLM-5.3-Flash KDA CPU reference (Slice 2 design artifact -- not a production forward path).
 pub mod glm5next_kda_ref;
-pub mod deepseek_v41_ref;
 /// GLM-5.3-Flash composite decoder layer -- mixer (KDA|DSA) + MLP (dense|MoE) + mHC.
 pub mod glm5next_layer;
 /// GLM-5.3-Flash MLP production surface -- dense FFN + routed NVFP4 MoE (TP + EP sharded).

@@ -5,9 +5,9 @@
 //! Each test walks one capture family across every layer and regime so a failure names the first
 //! layer that diverged.
 
+use super::super::engram::EngramTables;
 use super::super::testutil::*;
 use super::super::{Golden, fixed_int};
-use super::super::engram::EngramTables;
 use super::*;
 
 struct Fx {
@@ -24,21 +24,44 @@ fn fx() -> Fx {
     let c = ModelCfg::from_golden(&g);
     let t = EngramTables::from_golden(&g);
     let prefill = g.fixture_u64("prefill_len") as usize;
-    let ids: Vec<i64> = (0..(prefill + 2) as u64).map(|i| fixed_int("input_ids", i, c.vocab as u64) as i64).collect();
-    Fx { regimes: g.regimes(), ids, prefill, g, c, t }
+    let ids: Vec<i64> = (0..(prefill + 2) as u64)
+        .map(|i| fixed_int("input_ids", i, c.vocab as u64) as i64)
+        .collect();
+    Fx {
+        regimes: g.regimes(),
+        ids,
+        prefill,
+        g,
+        c,
+        t,
+    }
 }
 
 fn run_all(f: &Fx) -> Vec<(String, StepTrace)> {
     let w = ModelWeights::from_golden(&f.g, &f.c, &f.t);
     let mut st = ModelState::new(&f.c, &f.t);
     let p = f.prefill;
-    let chunks = [(&f.ids[..p], 0usize), (&f.ids[p..p + 1], p), (&f.ids[p + 1..p + 2], p + 1)];
-    f.regimes.iter().zip(chunks).map(|(r, (ids, start))| (r.clone(), forward(ids, start, &f.c, &w, &mut st, &f.t))).collect()
+    let chunks = [
+        (&f.ids[..p], 0usize),
+        (&f.ids[p..p + 1], p),
+        (&f.ids[p + 1..p + 2], p + 1),
+    ];
+    f.regimes
+        .iter()
+        .zip(chunks)
+        .map(|(r, (ids, start))| (r.clone(), forward(ids, start, &f.c, &w, &mut st, &f.t)))
+        .collect()
 }
 
 fn check_bf16(g: &Golden, r: &str, name: &str, got: &[f32]) {
     let gt = g.tensor(r, name);
-    check_capture(&format!("{r}.{name}"), &as_f64(got), &gt, bf16_tol(&gt), BF16_CK_REL);
+    check_capture(
+        &format!("{r}.{name}"),
+        &as_f64(got),
+        &gt,
+        bf16_tol(&gt),
+        BF16_CK_REL,
+    );
 }
 
 fn check_f32(g: &Golden, r: &str, name: &str, got: &[f32]) {
@@ -57,13 +80,32 @@ fn config_and_geometry() {
     let f = fx();
     assert_eq!(f.c.n_layers, 6);
     assert_eq!(f.c.ratios, vec![0, 0, 2, 2, 1, 1]);
-    assert_eq!((f.c.kv_sources.clone(), f.c.index_sources.clone(), f.c.cand_src), (vec![2, 4], vec![2, 4, 5], 4));
+    assert_eq!(
+        (
+            f.c.kv_sources.clone(),
+            f.c.index_sources.clone(),
+            f.c.cand_src
+        ),
+        (vec![2, 4], vec![2, 4, 5], 4)
+    );
     let w = ModelWeights::from_golden(&f.g, &f.c, &f.t);
     assert_eq!(w.embed.len(), f.c.vocab * f.c.dim);
     assert_eq!(w.head.len(), f.c.vocab * f.c.dim);
-    assert!(w.layers[1].engram.is_some() && w.layers[4].engram.is_some() && w.layers[0].engram.is_none());
-    assert!(w.layers[2].comp_wgate.is_some() && w.layers[4].comp_wgate.is_none() && w.layers[5].comp_wkv.is_none());
-    assert!(w.layers[5].idx_wq_b.is_some() && w.layers[5].idx_wk.is_none() && w.layers[3].idx_wq_b.is_none());
+    assert!(
+        w.layers[1].engram.is_some()
+            && w.layers[4].engram.is_some()
+            && w.layers[0].engram.is_none()
+    );
+    assert!(
+        w.layers[2].comp_wgate.is_some()
+            && w.layers[4].comp_wgate.is_none()
+            && w.layers[5].comp_wkv.is_none()
+    );
+    assert!(
+        w.layers[5].idx_wq_b.is_some()
+            && w.layers[5].idx_wk.is_none()
+            && w.layers[3].idx_wq_b.is_none()
+    );
 }
 
 #[test]
@@ -106,7 +148,11 @@ fn every_layer_attention_matches() {
             check_bf16(&f.g, &r, &p("attn_in"), &lt.attn_in);
             check_bf16(&f.g, &r, &p("sa_q"), &lt.attn.q);
             check_bf16(&f.g, &r, &p("sa_kv"), &lt.attn.kv_rows);
-            assert_eq!(f.g.tensor(&r, &p("sa_topk_idxs")).shape[2], lt.attn.topk, "{r}.L{l}: topk width");
+            assert_eq!(
+                f.g.tensor(&r, &p("sa_topk_idxs")).shape[2],
+                lt.attn.topk,
+                "{r}.L{l}: topk width"
+            );
             check_int(&f.g, &r, &p("sa_topk_idxs"), &lt.attn.idx);
             check_bf16(&f.g, &r, &p("sa_o"), &lt.attn.o);
             check_bf16(&f.g, &r, &p("attn_out"), &lt.attn.out);
@@ -136,13 +182,21 @@ fn shared_slots_match_after_each_source_layer() {
             }
             let tk = format!("shared.L{l}.topk_idxs");
             if has(&tk) {
-                assert_eq!(f.g.tensor(&r, &tk).shape[2], lt.shared_topk_w, "{r}.{tk}: width");
+                assert_eq!(
+                    f.g.tensor(&r, &tk).shape[2],
+                    lt.shared_topk_w,
+                    "{r}.{tk}: width"
+                );
                 check_int(&f.g, &r, &tk, &lt.shared_topk);
             }
             let cd = format!("shared.L{l}.candidates");
             if has(&cd) {
                 let v: Vec<i32> = lt.shared_cand.iter().map(|&b| b as i32).collect();
-                assert_eq!(f.g.tensor(&r, &cd).shape[2], lt.shared_cand_w, "{r}.{cd}: width");
+                assert_eq!(
+                    f.g.tensor(&r, &cd).shape[2],
+                    lt.shared_cand_w,
+                    "{r}.{cd}: width"
+                );
                 check_int(&f.g, &r, &cd, &v);
             }
         }
@@ -159,7 +213,12 @@ fn every_layer_ffn_and_block_output_match() {
             check_f32(&f.g, &r, &p("ffn_post"), &lt.ffn_post);
             check_f32(&f.g, &r, &p("ffn_comb"), &lt.ffn_comb);
             check_bf16(&f.g, &r, &p("ffn_in"), &lt.ffn_in);
-            check_int(&f.g, &r, &p("moe_indices"), &lt.moe_indices.iter().map(|&i| i as i64).collect::<Vec<_>>());
+            check_int(
+                &f.g,
+                &r,
+                &p("moe_indices"),
+                &lt.moe_indices.iter().map(|&i| i as i64).collect::<Vec<_>>(),
+            );
             check_f32(&f.g, &r, &p("moe_weights"), &lt.moe_weights);
             check_bf16(&f.g, &r, &p("ffn_out"), &lt.ffn_out);
             check_bf16(&f.g, &r, &p("h_out"), &lt.h_out);
@@ -176,7 +235,13 @@ fn final_collapse_norm_and_logits_match() {
         check_bf16(&f.g, &r, "head_in", &s.head_in);
         let gt = f.g.tensor(&r, "logits_full");
         // f32 logits from bf16 inputs: allow bf16-scale noise from accumulation order
-        check_capture(&format!("{r}.logits_full"), &as_f64(&s.logits), &gt, bf16_tol(&gt), BF16_CK_REL);
+        check_capture(
+            &format!("{r}.logits_full"),
+            &as_f64(&s.logits),
+            &gt,
+            bf16_tol(&gt),
+            BF16_CK_REL,
+        );
         assert_eq!(s.logits.len(), s.tokens * f.c.vocab);
     }
 }

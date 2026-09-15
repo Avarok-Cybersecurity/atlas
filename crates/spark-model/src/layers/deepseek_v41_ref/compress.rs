@@ -47,7 +47,10 @@ pub fn to_e2m1_rne(y: f32) -> f32 {
 /// `amax / 6` (amax floored at `6 * 2^-126`), values to e2m1, dequantised back to bf16.
 pub fn fp4_quant_e8m0_inplace(x: &mut [f32], block: usize) {
     for blk in x.chunks_mut(block) {
-        let amax = blk.iter().fold(0f32, |a, v| a.max(v.abs())).max(6.0 * 2f32.powi(-126));
+        let amax = blk
+            .iter()
+            .fold(0f32, |a, v| a.max(v.abs()))
+            .max(6.0 * 2f32.powi(-126));
         let s = pow2_ceil(amax / FP4_MAX);
         for v in blk.iter_mut() {
             *v = to_bf16_rne(to_e2m1_rne((*v / s).clamp(-FP4_MAX, FP4_MAX)) * s);
@@ -59,7 +62,10 @@ pub fn fp4_quant_e8m0_inplace(x: &mut [f32], block: usize) {
 /// `amax / 6` rounded through e4m3, values to e2m1, dequantised back to bf16.
 pub fn fp4_quant_e4m3_inplace(x: &mut [f32], block: usize) {
     for blk in x.chunks_mut(block) {
-        let amax = blk.iter().fold(0f32, |a, v| a.max(v.abs())).max(6.0 * 2f32.powi(-9));
+        let amax = blk
+            .iter()
+            .fold(0f32, |a, v| a.max(v.abs()))
+            .max(6.0 * 2f32.powi(-9));
         let s = e4m3_to_f32(f32_to_e4m3_rne(amax / FP4_MAX));
         for v in blk.iter_mut() {
             *v = to_bf16_rne(to_e2m1_rne((*v / s).clamp(-FP4_MAX, FP4_MAX)) * s);
@@ -69,10 +75,23 @@ pub fn fp4_quant_e4m3_inplace(x: &mut [f32], block: usize) {
 
 /// `precompute_freqs_cis` WITH YaRN (`original_seq_len > 0`), as the compress layers build it
 /// from `compress_rope_theta`. `[seqlen][dim/2]` of (cos, sin).
-pub fn yarn_freqs_cis(dim: usize, seqlen: usize, original_seq_len: usize, base: f32, factor: f32, beta_fast: f32, beta_slow: f32) -> Vec<(f32, f32)> {
+pub fn yarn_freqs_cis(
+    dim: usize,
+    seqlen: usize,
+    original_seq_len: usize,
+    base: f32,
+    factor: f32,
+    beta_fast: f32,
+    beta_slow: f32,
+) -> Vec<(f32, f32)> {
     let half = dim / 2;
-    let mut freqs: Vec<f32> = (0..half).map(|k| 1.0 / base.powf((2 * k) as f32 / dim as f32)).collect();
-    let corrected = |rot: f64| -> f64 { dim as f64 * (original_seq_len as f64 / (rot * 2.0 * std::f64::consts::PI)).ln() / (2.0 * (base as f64).ln()) };
+    let mut freqs: Vec<f32> = (0..half)
+        .map(|k| 1.0 / base.powf((2 * k) as f32 / dim as f32))
+        .collect();
+    let corrected = |rot: f64| -> f64 {
+        dim as f64 * (original_seq_len as f64 / (rot * 2.0 * std::f64::consts::PI)).ln()
+            / (2.0 * (base as f64).ln())
+    };
     let low = corrected(beta_fast as f64).floor().max(0.0) as f32;
     let high = (corrected(beta_slow as f64).ceil()).min((dim - 1) as f64) as f32;
     for (i, f) in freqs.iter_mut().enumerate() {
@@ -95,7 +114,11 @@ pub fn linear_f32(x: &[f32], w: &[f32], rows: usize, in_dim: usize, out_dim: usi
     let mut y = vec![0f32; rows * out_dim];
     for i in 0..rows {
         for o in 0..out_dim {
-            y[i * out_dim + o] = x[i * in_dim..(i + 1) * in_dim].iter().zip(&w[o * in_dim..(o + 1) * in_dim]).map(|(a, b)| a * b).sum();
+            y[i * out_dim + o] = x[i * in_dim..(i + 1) * in_dim]
+                .iter()
+                .zip(&w[o * in_dim..(o + 1) * in_dim])
+                .map(|(a, b)| a * b)
+                .sum();
         }
     }
     y
@@ -116,15 +139,34 @@ pub struct CompressorState {
 
 impl CompressorState {
     pub fn new(ratio: usize, hd: usize) -> Self {
-        CompressorState { kv_state: vec![0f32; ratio * hd], score_state: vec![f32::NEG_INFINITY; ratio * hd] }
+        CompressorState {
+            kv_state: vec![0f32; ratio * hd],
+            score_state: vec![f32::NEG_INFINITY; ratio * hd],
+        }
     }
 }
 
 /// `Compressor.forward`: the pre-RoPE latent `[groups][hd]` (bf16 values), or `None` while a
 /// group is still filling up in decode.
-pub fn compressor(x: &[f32], seqlen: usize, start_pos: usize, ratio: usize, dim: usize, hd: usize, w: &CompressorWeights, st: &mut CompressorState, eps: f32) -> Option<Vec<f32>> {
+pub fn compressor(
+    x: &[f32],
+    seqlen: usize,
+    start_pos: usize,
+    ratio: usize,
+    dim: usize,
+    hd: usize,
+    w: &CompressorWeights,
+    st: &mut CompressorState,
+    eps: f32,
+) -> Option<Vec<f32>> {
     if ratio == 1 {
-        return Some(rms_norm(&linear_bf16(x, w.wkv, seqlen, dim, hd), w.norm, seqlen, hd, eps));
+        return Some(rms_norm(
+            &linear_bf16(x, w.wkv, seqlen, dim, hd),
+            w.norm,
+            seqlen,
+            hd,
+            eps,
+        ));
     }
     let kv = linear_f32(x, w.wkv, seqlen, dim, hd);
     let score = linear_f32(x, w.wgate.expect("wgate at ratio > 1"), seqlen, dim, hd);
@@ -132,7 +174,9 @@ pub fn compressor(x: &[f32], seqlen: usize, start_pos: usize, ratio: usize, dim:
         // softmax over the `ratio` members per dimension, then the weighted sum
         let mut out = vec![0f32; hd];
         for d in 0..hd {
-            let m = (0..ratio).map(|r| scg[r * hd + d]).fold(f32::NEG_INFINITY, f32::max);
+            let m = (0..ratio)
+                .map(|r| scg[r * hd + d])
+                .fold(f32::NEG_INFINITY, f32::max);
             let ex: Vec<f32> = (0..ratio).map(|r| (scg[r * hd + d] - m).exp()).collect();
             let sum: f32 = ex.iter().sum();
             out[d] = (0..ratio).map(|r| kvg[r * hd + d] * (ex[r] / sum)).sum();
@@ -149,7 +193,14 @@ pub fn compressor(x: &[f32], seqlen: usize, start_pos: usize, ratio: usize, dim:
         if seqlen < ratio {
             return None;
         }
-        (0..cutoff / ratio).flat_map(|g| pool(&kv[g * ratio * hd..(g + 1) * ratio * hd], &score[g * ratio * hd..(g + 1) * ratio * hd])).collect()
+        (0..cutoff / ratio)
+            .flat_map(|g| {
+                pool(
+                    &kv[g * ratio * hd..(g + 1) * ratio * hd],
+                    &score[g * ratio * hd..(g + 1) * ratio * hd],
+                )
+            })
+            .collect()
     } else {
         let slot = start_pos % ratio;
         st.kv_state[slot * hd..(slot + 1) * hd].copy_from_slice(&kv);
@@ -200,7 +251,6 @@ pub struct IndexerCfg {
     pub eps: f32,
 }
 
-
 /// The index SET torch's CPU `topk(k, largest=True)` returns for `vals`, ties included. For the
 /// row lengths here (`k * 64 > n`) torch runs `std::nth_element` on (value, index) pairs with a
 /// descending comparator and returns the first `k` pairs, so among equal values (the indexer's
@@ -211,8 +261,16 @@ pub struct IndexerCfg {
 pub fn torch_cpu_topk_set(vals: &[f32], k: usize) -> Vec<usize> {
     let n = vals.len();
     assert!(k <= n && k > 0);
-    assert!(k * 64 > n, "torch takes the partial_sort branch for k*64 <= n; not emulated");
-    let mut q: Vec<(f32, usize)> = vals.iter().copied().enumerate().map(|(i, v)| (v, i)).collect();
+    assert!(
+        k * 64 > n,
+        "torch takes the partial_sort branch for k*64 <= n; not emulated"
+    );
+    let mut q: Vec<(f32, usize)> = vals
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(i, v)| (v, i))
+        .collect();
     // comp(x, y): x before y when x is NaN and y is not, or x.value > y.value
     let comp = |x: &(f32, usize), y: &(f32, usize)| (x.0.is_nan() && !y.0.is_nan()) || x.0 > y.0;
     let nth = k - 1;
@@ -228,7 +286,13 @@ pub fn torch_cpu_topk_set(vals: &[f32], k: usize) -> Vec<usize> {
         // __move_median_to_first(first, first+1, mid, last-1)
         let (a, b, c) = (first + 1, mid, last - 1);
         let r = if comp(&q[a], &q[b]) {
-            if comp(&q[b], &q[c]) { b } else if comp(&q[a], &q[c]) { c } else { a }
+            if comp(&q[b], &q[c]) {
+                b
+            } else if comp(&q[a], &q[c]) {
+                c
+            } else {
+                a
+            }
         } else if comp(&q[a], &q[c]) {
             a
         } else if comp(&q[b], &q[c]) {
@@ -282,13 +346,24 @@ pub fn torch_cpu_topk_set(vals: &[f32], k: usize) -> Vec<usize> {
 
 /// `select_candidate_blocks`: `logits[queries][width]` with unreachable positions at -inf;
 /// `compress_lens[q]`. Returns the keep mask `[queries][width]`.
-pub fn select_candidate_blocks(logits: &[f32], queries: usize, width: usize, compress_lens: &[usize], topk_blocks: usize, block: usize) -> Vec<bool> {
+pub fn select_candidate_blocks(
+    logits: &[f32],
+    queries: usize,
+    width: usize,
+    compress_lens: &[usize],
+    topk_blocks: usize,
+    block: usize,
+) -> Vec<bool> {
     let nb = (width + block - 1) / block;
     let mut keep = vec![false; queries * width];
     for q in 0..queries {
         let row = &logits[q * width..(q + 1) * width];
         let mut scores: Vec<f32> = (0..nb)
-            .map(|b| (b * block..((b + 1) * block).min(width)).map(|i| row[i]).fold(f32::NEG_INFINITY, f32::max))
+            .map(|b| {
+                (b * block..((b + 1) * block).min(width))
+                    .map(|i| row[i])
+                    .fold(f32::NEG_INFINITY, f32::max)
+            })
             .collect();
         // the block holding this query's newest position is pinned in
         let last = (compress_lens[q] as i64 - 1).div_euclid(block as i64);
@@ -330,8 +405,18 @@ pub fn indexer(
 
     if let (Some(lat), Some(cache)) = (latent, k_cache) {
         let groups = lat.len() / c.hd;
-        let mut k = rms_norm(&linear_bf16(lat, w.wk.expect("wk"), groups, c.hd, ihd), w.k_norm.expect("k_norm"), groups, ihd, c.eps);
-        let pos: Vec<usize> = if start_pos == 0 { (0..groups).map(|g| g * ratio).collect() } else { vec![start_pos + 1 - ratio] };
+        let mut k = rms_norm(
+            &linear_bf16(lat, w.wk.expect("wk"), groups, c.hd, ihd),
+            w.k_norm.expect("k_norm"),
+            groups,
+            ihd,
+            c.eps,
+        );
+        let pos: Vec<usize> = if start_pos == 0 {
+            (0..groups).map(|g| g * ratio).collect()
+        } else {
+            vec![start_pos + 1 - ratio]
+        };
         apply_rotary(&mut k, ihd, rd, &pos, fc, false);
         fp4_quant_e8m0_inplace(&mut k, FP4_BLOCK);
         let at = start_pos / ratio;
@@ -340,14 +425,19 @@ pub fn indexer(
     }
 
     let mut q = linear_bf16(qr, w.wq_b, seqlen, c.q_rank, nh * ihd);
-    let head_pos: Vec<usize> = (0..seqlen).flat_map(|t| std::iter::repeat(start_pos + t).take(nh)).collect();
+    let head_pos: Vec<usize> = (0..seqlen)
+        .flat_map(|t| std::iter::repeat(start_pos + t).take(nh))
+        .collect();
     apply_rotary(&mut q, ihd, rd, &head_pos, fc, false);
     fp4_quant_e8m0_inplace(&mut q, FP4_BLOCK);
 
     let width = end_pos / ratio;
     let index_k = &shared.index_k[..width * ihd];
     let wscale = (ihd as f32).powf(-0.5) * (nh as f32).powf(-0.5);
-    let weights: Vec<f32> = linear_bf16(x, w.weights_proj, seqlen, c.dim, nh).into_iter().map(|v| to_bf16_rne(v * wscale)).collect();
+    let weights: Vec<f32> = linear_bf16(x, w.weights_proj, seqlen, c.dim, nh)
+        .into_iter()
+        .map(|v| to_bf16_rne(v * wscale))
+        .collect();
 
     // index_score[q][t] = sum_h bf16(relu(bf16(q_h . k_t)) * weights[h]), each stage bf16
     let mut score = vec![0f32; seqlen * width];
@@ -363,7 +453,11 @@ pub fn indexer(
             score[t * width + p] = to_bf16_rne(acc);
         }
     }
-    let compress_lens: Vec<usize> = if start_pos == 0 { (0..seqlen).map(|t| (t + 1) / ratio).collect() } else { vec![end_pos / ratio; seqlen] };
+    let compress_lens: Vec<usize> = if start_pos == 0 {
+        (0..seqlen).map(|t| (t + 1) / ratio).collect()
+    } else {
+        vec![end_pos / ratio; seqlen]
+    };
     if start_pos == 0 {
         for t in 0..seqlen {
             for p in compress_lens[t]..width {
@@ -372,7 +466,14 @@ pub fn indexer(
         }
     }
     if is_candidate_source {
-        shared.candidates = select_candidate_blocks(&score, seqlen, width, &compress_lens, c.cand_topk_blocks, c.cand_block);
+        shared.candidates = select_candidate_blocks(
+            &score,
+            seqlen,
+            width,
+            &compress_lens,
+            c.cand_topk_blocks,
+            c.cand_block,
+        );
         shared.cand_width = width;
     } else if uses_candidates {
         for i in 0..seqlen * width {
@@ -388,7 +489,11 @@ pub fn indexer(
         let mut picked = torch_cpu_topk_set(row, topk);
         picked.sort_unstable();
         for i in picked {
-            out.push(if i < compress_lens[t] { (i + offset) as i32 } else { -1 });
+            out.push(if i < compress_lens[t] {
+                (i + offset) as i32
+            } else {
+                -1
+            });
         }
     }
     (out, topk)
@@ -423,9 +528,21 @@ impl LayerAttnState {
         let groups = if c.ratio > 0 { max_seq / c.ratio } else { 0 };
         LayerAttnState {
             window: vec![0f32; c.window * c.head_dim],
-            compressor: if c.is_kv_source { Some(CompressorState::new(c.ratio.max(1), c.head_dim)) } else { None },
-            compress_kv_cache: if c.is_kv_source { Some(vec![0f32; groups * c.head_dim]) } else { None },
-            k_cache: if c.is_kv_source { Some(vec![0f32; groups * index_hd]) } else { None },
+            compressor: if c.is_kv_source {
+                Some(CompressorState::new(c.ratio.max(1), c.head_dim))
+            } else {
+                None
+            },
+            compress_kv_cache: if c.is_kv_source {
+                Some(vec![0f32; groups * c.head_dim])
+            } else {
+                None
+            },
+            k_cache: if c.is_kv_source {
+                Some(vec![0f32; groups * index_hd])
+            } else {
+                None
+            },
         }
     }
 }
@@ -456,13 +573,28 @@ pub fn attention_any(
 ) -> CompAttnRun {
     let (hd, rd, nh) = (c.head_dim, c.rope_dim, c.n_heads);
     let pos: Vec<usize> = (0..seqlen).map(|t| start_pos + t).collect();
-    let head_pos: Vec<usize> = pos.iter().flat_map(|&p| std::iter::repeat(p).take(nh)).collect();
+    let head_pos: Vec<usize> = pos
+        .iter()
+        .flat_map(|&p| std::iter::repeat(p).take(nh))
+        .collect();
 
-    let qr = rms_norm(&linear_bf16(x, w.wq_a, seqlen, c.dim, c.q_rank), w.q_norm, seqlen, c.q_rank, c.eps);
+    let qr = rms_norm(
+        &linear_bf16(x, w.wq_a, seqlen, c.dim, c.q_rank),
+        w.q_norm,
+        seqlen,
+        c.q_rank,
+        c.eps,
+    );
     let mut q = linear_bf16(&qr, w.wq_b, seqlen, c.q_rank, nh * hd);
     apply_rotary(&mut q, hd, rd, &head_pos, fc, false);
 
-    let mut kv = rms_norm(&linear_bf16(x, w.wkv, seqlen, c.dim, hd), w.kv_norm, seqlen, hd, c.eps);
+    let mut kv = rms_norm(
+        &linear_bf16(x, w.wkv, seqlen, c.dim, hd),
+        w.kv_norm,
+        seqlen,
+        hd,
+        c.eps,
+    );
     apply_rotary(&mut kv, hd, rd, &pos, fc, false);
     act_quant_inplace(&mut kv);
     let win = c.window;
@@ -488,7 +620,17 @@ pub fn attention_any(
         let offset = kv_rows.len() / hd;
         let compress_len = (start_pos + seqlen) / ratio;
         let latent = if c.is_kv_source {
-            let r = compressor(x, seqlen, start_pos, ratio, c.dim, hd, comp.expect("compressor weights"), st.compressor.as_mut().expect("compressor state"), c.eps);
+            let r = compressor(
+                x,
+                seqlen,
+                start_pos,
+                ratio,
+                c.dim,
+                hd,
+                comp.expect("compressor weights"),
+                st.compressor.as_mut().expect("compressor state"),
+                c.eps,
+            );
             shared.compress_kv = st.compress_kv_cache.as_ref().expect("cache").clone();
             r
         } else {
@@ -500,14 +642,33 @@ pub fn attention_any(
         } else if compress_len == 0 {
             (Vec::new(), 0)
         } else {
-            let r = indexer(x, &qr, latent.as_deref(), seqlen, start_pos, offset, ratio, icfg, idxw.expect("indexer weights"), fc, st.k_cache.as_mut(), shared, c.is_candidate_source, c.uses_candidates);
+            let r = indexer(
+                x,
+                &qr,
+                latent.as_deref(),
+                seqlen,
+                start_pos,
+                offset,
+                ratio,
+                icfg,
+                idxw.expect("indexer weights"),
+                fc,
+                st.k_cache.as_mut(),
+                shared,
+                c.is_candidate_source,
+                c.uses_candidates,
+            );
             shared.topk_idxs = r.0.clone();
             shared.topk = r.1;
             r
         };
         if let Some(mut lat) = latent {
             let groups = lat.len() / hd;
-            let lpos: Vec<usize> = if start_pos == 0 { (0..groups).map(|g| g * ratio).collect() } else { vec![start_pos + 1 - ratio] };
+            let lpos: Vec<usize> = if start_pos == 0 {
+                (0..groups).map(|g| g * ratio).collect()
+            } else {
+                vec![start_pos + 1 - ratio]
+            };
             apply_rotary(&mut lat, hd, rd, &lpos, fc, false);
             fp4_quant_e4m3_inplace(&mut lat, LATENT_BLOCK);
             let cache = st.compress_kv_cache.as_mut().expect("cache");
@@ -537,12 +698,20 @@ pub fn attention_any(
             let ov = &o[t * nh * hd + g * gw..t * nh * hd + (g + 1) * gw];
             for r in 0..c.o_rank {
                 let wr = &w.wo_a[(g * c.o_rank + r) * gw..(g * c.o_rank + r + 1) * gw];
-                og[(t * c.groups + g) * c.o_rank + r] = to_bf16_rne(ov.iter().zip(wr).map(|(a, b)| a * b).sum());
+                og[(t * c.groups + g) * c.o_rank + r] =
+                    to_bf16_rne(ov.iter().zip(wr).map(|(a, b)| a * b).sum());
             }
         }
     }
     let out = linear_bf16(&og, w.wo_b, seqlen, c.groups * c.o_rank, c.dim);
-    CompAttnRun { q, kv_rows, idx, topk, o: o_sa, out }
+    CompAttnRun {
+        q,
+        kv_rows,
+        idx,
+        topk,
+        o: o_sa,
+        out,
+    }
 }
 
 #[cfg(test)]

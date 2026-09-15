@@ -10,10 +10,13 @@
 
 use super::attn::{AttnWeights, freqs_cis};
 use super::compress::{
-    CompAttnCfg, CompAttnRun, CompressorWeights, IndexerCfg, IndexerWeights, LayerAttnState, SharedRuntime, attention_any,
-    yarn_freqs_cis,
+    CompAttnCfg, CompAttnRun, CompressorWeights, IndexerCfg, IndexerWeights, LayerAttnState,
+    SharedRuntime, attention_any, yarn_freqs_cis,
 };
-use super::engram::{EngramTables, NgramHashState, embed_rows, gate_and_add, regen_bf16_matrix, regen_bf16_qk, regen_table};
+use super::engram::{
+    EngramTables, NgramHashState, embed_rows, gate_and_add, regen_bf16_matrix, regen_bf16_qk,
+    regen_table,
+};
 use super::hc::{hc_mixes, hc_post, hc_pre, rms_norm};
 use super::moe::{MoeCfg, MoeWeights, moe};
 use super::{Golden, regen_param};
@@ -193,13 +196,21 @@ impl ModelWeights {
                 let ac = c.attn_cfg(l);
                 let has_comp = ac.is_kv_source;
                 let has_idx = ac.is_index_source;
-                let engram = t.layer_ids.iter().position(|&x| x == l).map(|hi| EngramWeights {
-                    table: regen_table(t, hi),
-                    wkv: regen_bf16_matrix(&format!("layers.{l}.engram.wkv.weight"), c.dim * (c.hc + 1), t.n_hash_cols() * t.head_dim),
-                    q: regen_bf16_qk(&format!("layers.{l}.engram.q_weight"), c.hc * c.dim),
-                    k: regen_bf16_qk(&format!("layers.{l}.engram.k_weight"), c.hc * c.dim),
-                    hash_index: hi,
-                });
+                let engram = t
+                    .layer_ids
+                    .iter()
+                    .position(|&x| x == l)
+                    .map(|hi| EngramWeights {
+                        table: regen_table(t, hi),
+                        wkv: regen_bf16_matrix(
+                            &format!("layers.{l}.engram.wkv.weight"),
+                            c.dim * (c.hc + 1),
+                            t.n_hash_cols() * t.head_dim,
+                        ),
+                        q: regen_bf16_qk(&format!("layers.{l}.engram.q_weight"), c.hc * c.dim),
+                        k: regen_bf16_qk(&format!("layers.{l}.engram.k_weight"), c.hc * c.dim),
+                        hash_index: hi,
+                    });
                 LayerWeights {
                     hc_attn_fn: p("hc_attn_fn"),
                     hc_attn_scale: p("hc_attn_scale"),
@@ -227,14 +238,29 @@ impl ModelWeights {
                     gate_w: p("ffn.gate.weight"),
                     gate_bias: p("ffn.gate.bias"),
                     experts: (0..c.moe.n_routed)
-                        .map(|e| (p(&format!("ffn.experts.{e}.w1.weight")), p(&format!("ffn.experts.{e}.w2.weight")), p(&format!("ffn.experts.{e}.w3.weight"))))
+                        .map(|e| {
+                            (
+                                p(&format!("ffn.experts.{e}.w1.weight")),
+                                p(&format!("ffn.experts.{e}.w2.weight")),
+                                p(&format!("ffn.experts.{e}.w3.weight")),
+                            )
+                        })
                         .collect(),
-                    shared: (p("ffn.shared_experts.w1.weight"), p("ffn.shared_experts.w2.weight"), p("ffn.shared_experts.w3.weight")),
+                    shared: (
+                        p("ffn.shared_experts.w1.weight"),
+                        p("ffn.shared_experts.w2.weight"),
+                        p("ffn.shared_experts.w3.weight"),
+                    ),
                     engram,
                 }
             })
             .collect();
-        ModelWeights { embed: regen_param(g, "embed.weight"), norm: regen_param(g, "norm.weight"), head: regen_param(g, "head.weight"), layers }
+        ModelWeights {
+            embed: regen_param(g, "embed.weight"),
+            norm: regen_param(g, "norm.weight"),
+            head: regen_param(g, "head.weight"),
+            layers,
+        }
     }
 }
 
@@ -249,14 +275,24 @@ impl<'a> ModelState<'a> {
     pub fn new(c: &ModelCfg, t: &'a EngramTables) -> Self {
         ModelState {
             hash: NgramHashState::new(t, 1, c.max_seq),
-            layers: (0..c.n_layers).map(|l| LayerAttnState::new(&c.attn_cfg(l), c.max_seq, c.index_hd)).collect(),
+            layers: (0..c.n_layers)
+                .map(|l| LayerAttnState::new(&c.attn_cfg(l), c.max_seq, c.index_hd))
+                .collect(),
             shared: SharedRuntime::default(),
             fcs: (0..c.n_layers)
                 .map(|l| {
                     if c.ratios[l] == 0 {
                         freqs_cis(c.rope_dim, c.max_seq, c.rope_theta)
                     } else {
-                        yarn_freqs_cis(c.rope_dim, c.max_seq, c.orig_seq, c.compress_rope_theta, c.rope_factor, c.beta_fast, c.beta_slow)
+                        yarn_freqs_cis(
+                            c.rope_dim,
+                            c.max_seq,
+                            c.orig_seq,
+                            c.compress_rope_theta,
+                            c.rope_factor,
+                            c.beta_fast,
+                            c.beta_slow,
+                        )
                     }
                 })
                 .collect(),
@@ -300,14 +336,36 @@ pub struct StepTrace {
 }
 
 /// `Transformer.forward` for one chunk (`[seqlen]` ids at `start_pos`), text only.
-pub fn forward(ids: &[i64], start_pos: usize, c: &ModelCfg, w: &ModelWeights, st: &mut ModelState, t: &EngramTables) -> StepTrace {
+pub fn forward(
+    ids: &[i64],
+    start_pos: usize,
+    c: &ModelCfg,
+    w: &ModelWeights,
+    st: &mut ModelState,
+    t: &EngramTables,
+) -> StepTrace {
     let (dim, hc, s) = (c.dim, c.hc, ids.len());
     let hashes = st.hash.forward(ids, s, start_pos);
     let (nl, cols) = (t.layer_ids.len(), t.n_hash_cols());
 
-    let embed: Vec<f32> = ids.iter().flat_map(|&id| w.embed[id as usize * dim..(id as usize + 1) * dim].iter().copied()).collect();
-    let mut h: Vec<f32> = (0..s).flat_map(|tk| std::iter::repeat(embed[tk * dim..(tk + 1) * dim].to_vec()).take(hc).flatten()).collect();
-    let mut pre_mix: Vec<f32> = (0..s).flat_map(|_| (0..hc).map(|cpy| if cpy == 0 { 1.0 } else { 0.0 })).collect();
+    let embed: Vec<f32> = ids
+        .iter()
+        .flat_map(|&id| {
+            w.embed[id as usize * dim..(id as usize + 1) * dim]
+                .iter()
+                .copied()
+        })
+        .collect();
+    let mut h: Vec<f32> = (0..s)
+        .flat_map(|tk| {
+            std::iter::repeat(embed[tk * dim..(tk + 1) * dim].to_vec())
+                .take(hc)
+                .flatten()
+        })
+        .collect();
+    let mut pre_mix: Vec<f32> = (0..s)
+        .flat_map(|_| (0..hc).map(|cpy| if cpy == 0 { 1.0 } else { 0.0 }))
+        .collect();
     let icfg = c.indexer_cfg();
     let mut traces = Vec::with_capacity(c.n_layers);
 
@@ -316,7 +374,9 @@ pub fn forward(ids: &[i64], start_pos: usize, c: &ModelCfg, w: &ModelWeights, st
         let hs = &hashes;
         let engram_out = lw.engram.as_ref().map(|e| {
             let hi = e.hash_index;
-            let ids_l: Vec<i64> = (0..s).flat_map(|tk| (0..cols).map(move |cc| hs[(tk * nl + hi) * cols + cc])).collect();
+            let ids_l: Vec<i64> = (0..s)
+                .flat_map(|tk| (0..cols).map(move |cc| hs[(tk * nl + hi) * cols + cc]))
+                .collect();
             let emb = embed_rows(&e.table, t.head_dim, &ids_l);
             let in_f = cols * t.head_dim;
             let kv = super::engram::linear_bf16(&emb, s, in_f, &e.wkv, dim * (hc + 1));
@@ -327,21 +387,89 @@ pub fn forward(ids: &[i64], start_pos: usize, c: &ModelCfg, w: &ModelWeights, st
         let h_in = h.clone();
         let pre_mix_in = pre_mix.clone();
 
-        let (attn_pre, attn_post, attn_comb) = hc_mixes(&h, s, hc, dim, &lw.hc_attn_fn, &lw.hc_attn_scale, &lw.hc_attn_base, c.iters, c.hc_eps, c.eps);
-        let attn_in = rms_norm(&hc_pre(&h, &pre_mix, s, hc, dim), &lw.attn_norm, s, dim, c.eps);
-        let aw = AttnWeights { sink: &lw.sink, wq_a: &lw.wq_a, q_norm: &lw.q_norm, wq_b: &lw.wq_b, wkv: &lw.wkv, kv_norm: &lw.kv_norm, wo_a: &lw.wo_a, wo_b: &lw.wo_b };
-        let comp = lw.comp_wkv.as_ref().map(|wkv| CompressorWeights { wkv, wgate: lw.comp_wgate.as_deref(), norm: lw.comp_norm.as_deref().expect("comp norm") });
-        let idxw = lw.idx_wq_b.as_ref().map(|wq_b| IndexerWeights { wq_b, weights_proj: lw.idx_weights_proj.as_deref().expect("weights_proj"), wk: lw.idx_wk.as_deref(), k_norm: lw.idx_k_norm.as_deref() });
+        let (attn_pre, attn_post, attn_comb) = hc_mixes(
+            &h,
+            s,
+            hc,
+            dim,
+            &lw.hc_attn_fn,
+            &lw.hc_attn_scale,
+            &lw.hc_attn_base,
+            c.iters,
+            c.hc_eps,
+            c.eps,
+        );
+        let attn_in = rms_norm(
+            &hc_pre(&h, &pre_mix, s, hc, dim),
+            &lw.attn_norm,
+            s,
+            dim,
+            c.eps,
+        );
+        let aw = AttnWeights {
+            sink: &lw.sink,
+            wq_a: &lw.wq_a,
+            q_norm: &lw.q_norm,
+            wq_b: &lw.wq_b,
+            wkv: &lw.wkv,
+            kv_norm: &lw.kv_norm,
+            wo_a: &lw.wo_a,
+            wo_b: &lw.wo_b,
+        };
+        let comp = lw.comp_wkv.as_ref().map(|wkv| CompressorWeights {
+            wkv,
+            wgate: lw.comp_wgate.as_deref(),
+            norm: lw.comp_norm.as_deref().expect("comp norm"),
+        });
+        let idxw = lw.idx_wq_b.as_ref().map(|wq_b| IndexerWeights {
+            wq_b,
+            weights_proj: lw.idx_weights_proj.as_deref().expect("weights_proj"),
+            wk: lw.idx_wk.as_deref(),
+            k_norm: lw.idx_k_norm.as_deref(),
+        });
         let ac = c.attn_cfg(l);
-        let attn = attention_any(&attn_in, s, start_pos, &aw, comp.as_ref(), idxw.as_ref(), &icfg, &ac, &st.fcs[l], &mut st.layers[l], &mut st.shared);
+        let attn = attention_any(
+            &attn_in,
+            s,
+            start_pos,
+            &aw,
+            comp.as_ref(),
+            idxw.as_ref(),
+            &icfg,
+            &ac,
+            &st.fcs[l],
+            &mut st.layers[l],
+            &mut st.shared,
+        );
         let h_mid = hc_post(&attn.out, &h, &attn_post, &attn_comb, s, hc, dim);
 
-        let (ffn_pre, ffn_post, ffn_comb) = hc_mixes(&h_mid, s, hc, dim, &lw.hc_ffn_fn, &lw.hc_ffn_scale, &lw.hc_ffn_base, c.iters, c.hc_eps, c.eps);
-        let ffn_in = rms_norm(&hc_pre(&h_mid, &attn_pre, s, hc, dim), &lw.ffn_norm, s, dim, c.eps);
+        let (ffn_pre, ffn_post, ffn_comb) = hc_mixes(
+            &h_mid,
+            s,
+            hc,
+            dim,
+            &lw.hc_ffn_fn,
+            &lw.hc_ffn_scale,
+            &lw.hc_ffn_base,
+            c.iters,
+            c.hc_eps,
+            c.eps,
+        );
+        let ffn_in = rms_norm(
+            &hc_pre(&h_mid, &attn_pre, s, hc, dim),
+            &lw.ffn_norm,
+            s,
+            dim,
+            c.eps,
+        );
         let mw = MoeWeights {
             gate_w: &lw.gate_w,
             gate_bias: &lw.gate_bias,
-            experts: lw.experts.iter().map(|(a, b, cc)| (a.as_slice(), b.as_slice(), cc.as_slice())).collect(),
+            experts: lw
+                .experts
+                .iter()
+                .map(|(a, b, cc)| (a.as_slice(), b.as_slice(), cc.as_slice()))
+                .collect(),
             shared: (&lw.shared.0, &lw.shared.1, &lw.shared.2),
         };
         let (ffn_out, moe_weights, moe_indices) = moe(&ffn_in, s, &mw, &c.moe);
@@ -380,10 +508,21 @@ pub fn forward(ids: &[i64], start_pos: usize, c: &ModelCfg, w: &ModelWeights, st
     let mut logits = vec![0f32; s * c.vocab];
     for tk in 0..s {
         for v in 0..c.vocab {
-            logits[tk * c.vocab + v] = head_in[tk * dim..(tk + 1) * dim].iter().zip(&w.head[v * dim..(v + 1) * dim]).map(|(a, b)| a * b).sum();
+            logits[tk * c.vocab + v] = head_in[tk * dim..(tk + 1) * dim]
+                .iter()
+                .zip(&w.head[v * dim..(v + 1) * dim])
+                .map(|(a, b)| a * b)
+                .sum();
         }
     }
-    StepTrace { tokens: s, embed, layers: traces, h_final, head_in, logits }
+    StepTrace {
+        tokens: s,
+        embed,
+        layers: traces,
+        h_final,
+        head_in,
+        logits,
+    }
 }
 
 #[cfg(test)]

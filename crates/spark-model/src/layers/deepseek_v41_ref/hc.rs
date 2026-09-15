@@ -29,10 +29,23 @@ fn sigmoid(x: f32) -> f32 {
 
 /// `ds41_ref_shims.hc_split_sinkhorn` for one token. `mixes`: `[(2 + hc) * hc]`. Returns
 /// (`pre[hc]`, `post[hc]`, `comb[hc * hc]` row-major `[j][k]`), all f32.
-pub fn split_sinkhorn(mixes: &[f32], scale: &[f32], base: &[f32], hc: usize, iters: usize, eps: f32) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    let pre: Vec<f32> = (0..hc).map(|j| sigmoid(mixes[j] * scale[0] + base[j]) + eps).collect();
-    let post: Vec<f32> = (0..hc).map(|j| 2.0 * sigmoid(mixes[hc + j] * scale[1] + base[hc + j])).collect();
-    let mut comb: Vec<f32> = (0..hc * hc).map(|i| mixes[2 * hc + i] * scale[2] + base[2 * hc + i]).collect();
+pub fn split_sinkhorn(
+    mixes: &[f32],
+    scale: &[f32],
+    base: &[f32],
+    hc: usize,
+    iters: usize,
+    eps: f32,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let pre: Vec<f32> = (0..hc)
+        .map(|j| sigmoid(mixes[j] * scale[0] + base[j]) + eps)
+        .collect();
+    let post: Vec<f32> = (0..hc)
+        .map(|j| 2.0 * sigmoid(mixes[hc + j] * scale[1] + base[hc + j]))
+        .collect();
+    let mut comb: Vec<f32> = (0..hc * hc)
+        .map(|i| mixes[2 * hc + i] * scale[2] + base[2 * hc + i])
+        .collect();
     // row softmax + eps
     for j in 0..hc {
         let row = &mut comb[j * hc..(j + 1) * hc];
@@ -86,13 +99,26 @@ pub fn hc_mixes(
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
     let n = hc * dim;
     let mix_hc = (2 + hc) * hc;
-    let (mut pre, mut post, mut comb) = (Vec::with_capacity(tokens * hc), Vec::with_capacity(tokens * hc), Vec::with_capacity(tokens * hc * hc));
+    let (mut pre, mut post, mut comb) = (
+        Vec::with_capacity(tokens * hc),
+        Vec::with_capacity(tokens * hc),
+        Vec::with_capacity(tokens * hc * hc),
+    );
     for t in 0..tokens {
         let xf = &x[t * n..(t + 1) * n];
         // one RMS over the whole flattened hc*dim stream, per token
-        let rsqrt = (xf.iter().map(|v| v * v).sum::<f32>() / n as f32 + norm_eps).sqrt().recip();
+        let rsqrt = (xf.iter().map(|v| v * v).sum::<f32>() / n as f32 + norm_eps)
+            .sqrt()
+            .recip();
         let mixes: Vec<f32> = (0..mix_hc)
-            .map(|m| hc_fn[m * n..(m + 1) * n].iter().zip(xf).map(|(a, b)| a * b).sum::<f32>() * rsqrt)
+            .map(|m| {
+                hc_fn[m * n..(m + 1) * n]
+                    .iter()
+                    .zip(xf)
+                    .map(|(a, b)| a * b)
+                    .sum::<f32>()
+                    * rsqrt
+            })
             .collect();
         let (p, q, c) = split_sinkhorn(&mixes, scale, base, hc, iters, hc_eps);
         pre.extend(p);
@@ -118,7 +144,15 @@ pub fn hc_pre(x: &[f32], pre: &[f32], tokens: usize, hc: usize, dim: usize) -> V
 }
 
 /// `Block.hc_post`: `y[k][d] = post[k] * x[d] + sum_j comb[j][k] * residual[j][d]`, to bf16.
-pub fn hc_post(x: &[f32], residual: &[f32], post: &[f32], comb: &[f32], tokens: usize, hc: usize, dim: usize) -> Vec<f32> {
+pub fn hc_post(
+    x: &[f32],
+    residual: &[f32],
+    post: &[f32],
+    comb: &[f32],
+    tokens: usize,
+    hc: usize,
+    dim: usize,
+) -> Vec<f32> {
     let mut y = vec![0f32; tokens * hc * dim];
     for t in 0..tokens {
         for k in 0..hc {
@@ -139,7 +173,9 @@ pub fn rms_norm(x: &[f32], w: &[f32], tokens: usize, dim: usize, eps: f32) -> Ve
     let mut y = vec![0f32; tokens * dim];
     for t in 0..tokens {
         let row = &x[t * dim..(t + 1) * dim];
-        let rsqrt = (row.iter().map(|v| v * v).sum::<f32>() / dim as f32 + eps).sqrt().recip();
+        let rsqrt = (row.iter().map(|v| v * v).sum::<f32>() / dim as f32 + eps)
+            .sqrt()
+            .recip();
         for d in 0..dim {
             y[t * dim + d] = to_bf16_rne(w[d] * (row[d] * rsqrt));
         }

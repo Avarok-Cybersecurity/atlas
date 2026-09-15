@@ -57,7 +57,9 @@ pub fn act_quant_inplace(x: &mut [f32]) {
 /// ratio-0 layers use: `[seqlen][dim/2]` of (cos, sin).
 pub fn freqs_cis(dim: usize, seqlen: usize, base: f32) -> Vec<(f32, f32)> {
     let half = dim / 2;
-    let freqs: Vec<f32> = (0..half).map(|k| 1.0 / base.powf((2 * k) as f32 / dim as f32)).collect();
+    let freqs: Vec<f32> = (0..half)
+        .map(|k| 1.0 / base.powf((2 * k) as f32 / dim as f32))
+        .collect();
     let mut out = Vec::with_capacity(seqlen * half);
     for p in 0..seqlen {
         for &f in &freqs {
@@ -70,7 +72,14 @@ pub fn freqs_cis(dim: usize, seqlen: usize, base: f32) -> Vec<(f32, f32)> {
 
 /// `apply_rotary_emb` on the last `rope_dim` elements of each `row_len`-wide row of `x`, row `r`
 /// at position `pos[r]`; adjacent pairs are complex numbers, multiplied in f32, written back bf16.
-pub fn apply_rotary(x: &mut [f32], row_len: usize, rope_dim: usize, pos: &[usize], fc: &[(f32, f32)], inverse: bool) {
+pub fn apply_rotary(
+    x: &mut [f32],
+    row_len: usize,
+    rope_dim: usize,
+    pos: &[usize],
+    fc: &[(f32, f32)],
+    inverse: bool,
+) {
     let half = rope_dim / 2;
     for (r, &p) in pos.iter().enumerate() {
         let row = &mut x[r * row_len + row_len - rope_dim..(r + 1) * row_len];
@@ -102,14 +111,29 @@ pub fn window_topk_idxs(win: usize, seqlen: usize, start_pos: usize) -> (Vec<i32
     } else {
         let oldest = start_pos % win + 1;
         let order = (oldest..win).chain(0..oldest);
-        (order.map(|i| if i > start_pos { -1 } else { i as i32 }).collect(), win)
+        (
+            order
+                .map(|i| if i > start_pos { -1 } else { i as i32 })
+                .collect(),
+            win,
+        )
     }
 }
 
 /// `sparse_attn` (kernel.py:310-405, shim form): per query and head, softmax over the gathered
 /// rows plus the sink (denominator only), all in f32; output bf16. `q`: `[s][h][d]`,
 /// `kv`: `[rows][d]`, `idx`: `[s][topk]`.
-pub fn sparse_attn(q: &[f32], kv: &[f32], sink: &[f32], idx: &[i32], s: usize, h: usize, d: usize, topk: usize, scale: f32) -> Vec<f32> {
+pub fn sparse_attn(
+    q: &[f32],
+    kv: &[f32],
+    sink: &[f32],
+    idx: &[i32],
+    s: usize,
+    h: usize,
+    d: usize,
+    topk: usize,
+    scale: f32,
+) -> Vec<f32> {
     let mut o = vec![0f32; s * h * d];
     for t in 0..s {
         let ids = &idx[t * topk..(t + 1) * topk];
@@ -183,7 +207,9 @@ pub struct WindowCache {
 
 impl WindowCache {
     pub fn new(c: &AttnCfg) -> Self {
-        WindowCache { slots: vec![0f32; c.window * c.head_dim] }
+        WindowCache {
+            slots: vec![0f32; c.window * c.head_dim],
+        }
     }
 }
 
@@ -200,18 +226,41 @@ pub struct AttnRun {
 
 /// `Attention.forward` for a ratio-0 layer. `x`: `[seqlen][dim]` bf16 values; `fc` from
 /// [`freqs_cis`] over `max_seq_len`. Mutates `cache` exactly as the reference's ring buffer.
-pub fn attention(x: &[f32], seqlen: usize, start_pos: usize, w: &AttnWeights, c: &AttnCfg, fc: &[(f32, f32)], cache: &mut WindowCache) -> AttnRun {
+pub fn attention(
+    x: &[f32],
+    seqlen: usize,
+    start_pos: usize,
+    w: &AttnWeights,
+    c: &AttnCfg,
+    fc: &[(f32, f32)],
+    cache: &mut WindowCache,
+) -> AttnRun {
     let (hd, rd, nh) = (c.head_dim, c.rope_dim, c.n_heads);
     let pos: Vec<usize> = (0..seqlen).map(|t| start_pos + t).collect();
 
     // q: low-rank, normed, rotated
-    let qr = rms_norm(&linear_bf16(x, w.wq_a, seqlen, c.dim, c.q_rank), w.q_norm, seqlen, c.q_rank, c.eps);
+    let qr = rms_norm(
+        &linear_bf16(x, w.wq_a, seqlen, c.dim, c.q_rank),
+        w.q_norm,
+        seqlen,
+        c.q_rank,
+        c.eps,
+    );
     let mut q = linear_bf16(&qr, w.wq_b, seqlen, c.q_rank, nh * hd);
-    let head_pos: Vec<usize> = pos.iter().flat_map(|&p| std::iter::repeat(p).take(nh)).collect();
+    let head_pos: Vec<usize> = pos
+        .iter()
+        .flat_map(|&p| std::iter::repeat(p).take(nh))
+        .collect();
     apply_rotary(&mut q, hd, rd, &head_pos, fc, false);
 
     // kv: one latent row per token, normed, rotated, fp8 round trip
-    let mut kv = rms_norm(&linear_bf16(x, w.wkv, seqlen, c.dim, hd), w.kv_norm, seqlen, hd, c.eps);
+    let mut kv = rms_norm(
+        &linear_bf16(x, w.wkv, seqlen, c.dim, hd),
+        w.kv_norm,
+        seqlen,
+        hd,
+        c.eps,
+    );
     apply_rotary(&mut kv, hd, rd, &pos, fc, false);
     act_quant_inplace(&mut kv);
 
@@ -249,12 +298,20 @@ pub fn attention(x: &[f32], seqlen: usize, start_pos: usize, w: &AttnWeights, c:
             let ov = &o[t * nh * hd + g * gw..t * nh * hd + (g + 1) * gw];
             for r in 0..c.o_rank {
                 let wr = &w.wo_a[(g * c.o_rank + r) * gw..(g * c.o_rank + r + 1) * gw];
-                og[(t * c.groups + g) * c.o_rank + r] = to_bf16_rne(ov.iter().zip(wr).map(|(a, b)| a * b).sum());
+                og[(t * c.groups + g) * c.o_rank + r] =
+                    to_bf16_rne(ov.iter().zip(wr).map(|(a, b)| a * b).sum());
             }
         }
     }
     let out = linear_bf16(&og, w.wo_b, seqlen, c.groups * c.o_rank, c.dim);
-    AttnRun { q, kv_rows, idx, topk, o: o_sa, out }
+    AttnRun {
+        q,
+        kv_rows,
+        idx,
+        topk,
+        o: o_sa,
+        out,
+    }
 }
 
 #[cfg(test)]

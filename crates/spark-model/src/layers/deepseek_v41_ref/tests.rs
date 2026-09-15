@@ -27,7 +27,10 @@ fn splitmix_probe_matches_python() {
     let want = g.lcg_probe();
     assert_eq!(want.len(), 8);
     let got: Vec<u64> = (0..8).map(|i| fixed_raw("probe", i)).collect();
-    assert_eq!(got, want, "splitmix64/fnv1a64 stream diverges from the generator");
+    assert_eq!(
+        got, want,
+        "splitmix64/fnv1a64 stream diverges from the generator"
+    );
 }
 
 #[test]
@@ -38,7 +41,9 @@ fn input_ids_regenerate_bit_exact() {
     let prefill = g.fixture_u64("prefill_len") as usize;
     let batch = g.fixture_u64("batch") as usize;
     let total = batch * (prefill + 2);
-    let ids: Vec<f64> = (0..total as u64).map(|i| fixed_int("input_ids", i, vocab) as f64).collect();
+    let ids: Vec<f64> = (0..total as u64)
+        .map(|i| fixed_int("input_ids", i, vocab) as f64)
+        .collect();
 
     let p = g.tensor(&regimes[0], "input_ids");
     assert_eq!(p.stride, 1, "int captures are stored densely");
@@ -84,8 +89,15 @@ fn every_capture_sample_length_is_consistent() {
             let t = g.tensor(&r, &name);
             let numel: usize = t.shape.iter().product();
             assert_eq!(numel, t.n, "{r}.{name}: shape/n disagree");
-            assert_eq!(t.data.len(), t.n.div_ceil(t.stride), "{r}.{name}: sample length");
-            assert!(t.data.iter().all(|x| x.is_finite()), "{r}.{name}: non-finite sample");
+            assert_eq!(
+                t.data.len(),
+                t.n.div_ceil(t.stride),
+                "{r}.{name}: sample length"
+            );
+            assert!(
+                t.data.iter().all(|x| x.is_finite()),
+                "{r}.{name}: non-finite sample"
+            );
             assert!(t.ck.is_finite(), "{r}.{name}: non-finite checksum");
         }
     }
@@ -96,15 +108,39 @@ fn every_capture_the_graph_will_be_checked_against_is_present() {
     let g = Golden::load();
     let r = &g.regimes()[0];
     let have = g.capture_names(r);
-    let mut want: Vec<String> = ["input_ids", "embed", "engram_hashes", "h_final", "head_in", "logits_full"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut want: Vec<String> = [
+        "input_ids",
+        "embed",
+        "engram_hashes",
+        "h_final",
+        "head_in",
+        "logits_full",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     for l in 0..6 {
         for s in [
-            "h_in", "pre_mix_in", "attn_pre", "attn_post", "attn_comb", "attn_in", "sa_q", "sa_kv",
-            "sa_topk_idxs", "sa_o", "attn_out", "ffn_pre", "ffn_post", "ffn_comb", "ffn_in",
-            "moe_weights", "moe_indices", "ffn_out", "h_out", "pre_mix_out",
+            "h_in",
+            "pre_mix_in",
+            "attn_pre",
+            "attn_post",
+            "attn_comb",
+            "attn_in",
+            "sa_q",
+            "sa_kv",
+            "sa_topk_idxs",
+            "sa_o",
+            "attn_out",
+            "ffn_pre",
+            "ffn_post",
+            "ffn_comb",
+            "ffn_in",
+            "moe_weights",
+            "moe_indices",
+            "ffn_out",
+            "h_out",
+            "pre_mix_out",
         ] {
             want.push(format!("L{l}.{s}"));
         }
@@ -115,9 +151,15 @@ fn every_capture_the_graph_will_be_checked_against_is_present() {
         }
     }
     for s in [
-        "shared.L2.compress_kv", "shared.L2.index_k", "shared.L2.topk_idxs",
-        "shared.L4.candidates", "shared.L4.compress_kv", "shared.L4.index_k", "shared.L4.topk_idxs",
-        "shared.L5.topk_idxs", "shared.L5.candidates",
+        "shared.L2.compress_kv",
+        "shared.L2.index_k",
+        "shared.L2.topk_idxs",
+        "shared.L4.candidates",
+        "shared.L4.compress_kv",
+        "shared.L4.index_k",
+        "shared.L4.topk_idxs",
+        "shared.L5.topk_idxs",
+        "shared.L5.candidates",
     ] {
         want.push(s.to_string());
     }
@@ -128,7 +170,11 @@ fn every_capture_the_graph_will_be_checked_against_is_present() {
     // the ratio-1 source gives 12
     assert_eq!(g.tensor(r, "shared.L2.compress_kv").shape, vec![1, 6, 32]);
     assert_eq!(g.tensor(r, "shared.L4.compress_kv").shape, vec![1, 12, 32]);
-    assert_eq!(g.tensor(r, "engram_hashes").shape, vec![1, 12, 2, 6], "[B, L, n_engram_layers, (ngram-1)*heads]");
+    assert_eq!(
+        g.tensor(r, "engram_hashes").shape,
+        vec![1, 12, 2, 6],
+        "[B, L, n_engram_layers, (ngram-1)*heads]"
+    );
     assert_eq!(g.tensor(r, "logits_full").shape, vec![1, 12, 64]);
 }
 

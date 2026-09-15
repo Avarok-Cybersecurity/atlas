@@ -30,8 +30,18 @@ fn fx() -> Fx {
         window: g.fixture_u64("window_size") as usize,
         eps: g.fixture_f64("norm_eps") as f32,
     };
-    let fc = freqs_cis(cfg.rope_dim, g.fixture_u64("max_seq_len") as usize, g.fixture_f64("rope_theta") as f32);
-    Fx { regimes: g.regimes(), cfg, fc, prefill_len: g.fixture_u64("prefill_len") as usize, g }
+    let fc = freqs_cis(
+        cfg.rope_dim,
+        g.fixture_u64("max_seq_len") as usize,
+        g.fixture_f64("rope_theta") as f32,
+    );
+    Fx {
+        regimes: g.regimes(),
+        cfg,
+        fc,
+        prefill_len: g.fixture_u64("prefill_len") as usize,
+        g,
+    }
 }
 
 struct Params {
@@ -60,12 +70,24 @@ fn params(f: &Fx) -> Params {
 }
 
 fn weights(p: &Params) -> AttnWeights<'_> {
-    AttnWeights { sink: &p.sink, wq_a: &p.wq_a, q_norm: &p.q_norm, wq_b: &p.wq_b, wkv: &p.wkv, kv_norm: &p.kv_norm, wo_a: &p.wo_a, wo_b: &p.wo_b }
+    AttnWeights {
+        sink: &p.sink,
+        wq_a: &p.wq_a,
+        q_norm: &p.q_norm,
+        wq_b: &p.wq_b,
+        wkv: &p.wkv,
+        kv_norm: &p.kv_norm,
+        wo_a: &p.wo_a,
+        wo_b: &p.wo_b,
+    }
 }
 
 /// Run every regime in order through one cache; returns (regime, start_pos, run).
 fn run_all(f: &Fx, w: &AttnWeights) -> Vec<(String, usize, AttnRun)> {
-    assert_eq!(f.regimes[0], "prefill12", "regimes must start with the prefill");
+    assert_eq!(
+        f.regimes[0], "prefill12",
+        "regimes must start with the prefill"
+    );
     let mut cache = WindowCache::new(&f.cfg);
     let mut start = 0usize;
     let mut out = Vec::new();
@@ -85,14 +107,25 @@ fn params_have_the_expected_geometry() {
     let f = fx();
     let p = params(&f);
     let c = &f.cfg;
-    assert_eq!((c.dim, c.n_heads, c.head_dim, c.rope_dim, c.q_rank, c.o_rank, c.groups, c.window), (64, 4, 32, 8, 16, 16, 2, 8));
+    assert_eq!(
+        (
+            c.dim, c.n_heads, c.head_dim, c.rope_dim, c.q_rank, c.o_rank, c.groups, c.window
+        ),
+        (64, 4, 32, 8, 16, 16, 2, 8)
+    );
     assert_eq!(p.sink.len(), c.n_heads);
     assert_eq!(p.wq_a.len(), c.q_rank * c.dim);
     assert_eq!(p.wq_b.len(), c.n_heads * c.head_dim * c.q_rank);
     assert_eq!(p.wkv.len(), c.head_dim * c.dim);
-    assert_eq!(p.wo_a.len(), c.groups * c.o_rank * (c.n_heads * c.head_dim / c.groups));
+    assert_eq!(
+        p.wo_a.len(),
+        c.groups * c.o_rank * (c.n_heads * c.head_dim / c.groups)
+    );
     assert_eq!(p.wo_b.len(), c.dim * c.groups * c.o_rank);
-    assert_eq!(c.head_dim, FP8_BLOCK, "the fp8 block must cover one latent row");
+    assert_eq!(
+        c.head_dim, FP8_BLOCK,
+        "the fp8 block must cover one latent row"
+    );
 }
 
 #[test]
@@ -115,10 +148,22 @@ fn query_and_kv_rows_match_within_bf16() {
     let w = weights(&p);
     for (r, _, run) in run_all(&f, &w) {
         let gq = f.g.tensor(&r, "L0.sa_q");
-        check_capture(&format!("{r}.L0.sa_q"), &as_f64(&run.q), &gq, bf16_tol(&gq), BF16_CK_REL);
+        check_capture(
+            &format!("{r}.L0.sa_q"),
+            &as_f64(&run.q),
+            &gq,
+            bf16_tol(&gq),
+            BF16_CK_REL,
+        );
         // prefill: the chunk's own rows; decode: the whole ring, so this checks the cache too
         let gk = f.g.tensor(&r, "L0.sa_kv");
-        check_capture(&format!("{r}.L0.sa_kv"), &as_f64(&run.kv_rows), &gk, bf16_tol(&gk), BF16_CK_REL);
+        check_capture(
+            &format!("{r}.L0.sa_kv"),
+            &as_f64(&run.kv_rows),
+            &gk,
+            bf16_tol(&gk),
+            BF16_CK_REL,
+        );
     }
 }
 
@@ -129,7 +174,13 @@ fn sparse_attention_output_matches_within_bf16() {
     let w = weights(&p);
     for (r, _, run) in run_all(&f, &w) {
         let go = f.g.tensor(&r, "L0.sa_o");
-        check_capture(&format!("{r}.L0.sa_o"), &as_f64(&run.o), &go, bf16_tol(&go), BF16_CK_REL);
+        check_capture(
+            &format!("{r}.L0.sa_o"),
+            &as_f64(&run.o),
+            &go,
+            bf16_tol(&go),
+            BF16_CK_REL,
+        );
     }
 }
 
@@ -140,7 +191,13 @@ fn attention_output_matches_within_bf16() {
     let w = weights(&p);
     for (r, _, run) in run_all(&f, &w) {
         let gt = f.g.tensor(&r, "L0.attn_out");
-        check_capture(&format!("{r}.L0.attn_out"), &as_f64(&run.out), &gt, bf16_tol(&gt), BF16_CK_REL);
+        check_capture(
+            &format!("{r}.L0.attn_out"),
+            &as_f64(&run.out),
+            &gt,
+            bf16_tol(&gt),
+            BF16_CK_REL,
+        );
     }
 }
 
