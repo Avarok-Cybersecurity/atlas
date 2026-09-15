@@ -79,9 +79,10 @@ extern "C" __global__ void k3_mla_sdpa_gate_f32(
     }
     const float scale = 1.0f / sqrtf((float)dq);
     const float* qrow = q + h * dq;
-    // CUDART_INF_F, not INFINITY: MSVC spells INFINITY as a double overflow
-    // expression that nvcc on Windows refuses (error #221-D). Every other
-    // kernel here uses the CUDA constant.
+    // -CUDART_INF_F, not -INFINITY: MSVC's nvcc rejects the negated macro with
+    // "floating-point value does not fit in required floating-point type"
+    // (#221-D), which is what broke the windows-x86_64-nvidia-cuda leg of the
+    // release matrix. Same idiom as the other kernels in this tree.
     float m = -CUDART_INF_F;
     for (unsigned int kj = 0; kj < T; ++kj) {
         const float* krow = k + (kj * H + h) * dq;
