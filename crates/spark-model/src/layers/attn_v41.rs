@@ -227,6 +227,10 @@ pub struct AttnV41Run {
 
 struct Kernels {
     gemm: KernelHandle,
+    /// `dense_gemv_bf16` for the single-token step: the tiled GEMM spends
+    /// 15 of its 16 rows idle at m = 1 (326 us a launch on GB10 vs the
+    /// GEMV's bandwidth-bound pass over the same `[N, K]` weight)
+    gemv: KernelHandle,
     rmsnorm_bf16: KernelHandle,
     rmsnorm_f32: KernelHandle,
     rope: KernelHandle,
@@ -311,6 +315,7 @@ impl AttnV41 {
         );
         let k = Kernels {
             gemm: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16")?,
+            gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
             rmsnorm_bf16: gpu.kernel(MODULE, "attn_v41_rmsnorm_bf16")?,
             rmsnorm_f32: gpu.kernel(MODULE, "attn_v41_rmsnorm_f32")?,
             rope: gpu.kernel(MODULE, "attn_v41_rope")?,
@@ -388,6 +393,18 @@ impl AttnV41 {
         kk: usize,
         stream: u64,
     ) -> Result<()> {
+        if m == 1 {
+            return ops::dense_gemv(
+                gpu,
+                self.k.gemv,
+                a,
+                &DenseWeight { weight: w },
+                c,
+                n as u32,
+                kk as u32,
+                stream,
+            );
+        }
         ops::dense_gemm(
             gpu,
             self.k.gemm,

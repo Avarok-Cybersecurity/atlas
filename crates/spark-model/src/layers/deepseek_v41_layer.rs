@@ -481,18 +481,27 @@ impl DeepSeekV41Layer {
                 .map(|t| t.elapsed().as_secs_f64() * 1e3)
                 .unwrap_or(0.0);
             let mo = *rt.step_moe.lock().unwrap();
+            // one guard at a time: two `lru.lock()` temporaries in a single
+            // statement deadlock on the std Mutex (the first guard lives to the
+            // end of the statement)
+            let (resident, n_slots) = {
+                let lru = rt.lru.lock().unwrap();
+                (lru.resident(), lru.n_slots())
+            };
+            let attn_ms = *rt.step_attn_ms.lock().unwrap();
+            let engram_ms = *rt.step_engram_ms.lock().unwrap();
             tracing::info!(
                 "DS41 step: {m} tok pos {start_pos}: total {total:.0} ms = attn {:.0} + engram {:.0} + moe(route {:.0} fetch {:.0} compute {:.0}) ms; experts hit {} miss {} read {:.2} GiB; cache {}/{} resident",
-                *rt.step_attn_ms.lock().unwrap(),
-                *rt.step_engram_ms.lock().unwrap(),
+                attn_ms,
+                engram_ms,
                 mo.route_ms,
                 mo.fetch_ms,
                 mo.compute_ms,
                 mo.hits,
                 mo.misses,
                 mo.bytes_read as f64 / 1073741824.0,
-                rt.lru.lock().unwrap().resident(),
-                rt.lru.lock().unwrap().n_slots()
+                resident,
+                n_slots
             );
         }
         if self.idx + 1 == rt.n_layers {
