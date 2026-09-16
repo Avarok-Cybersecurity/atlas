@@ -68,6 +68,8 @@ struct Kernels {
     /// bf16 shared expert at m = 1 (the tiled GEMM idles 15 of 16 rows)
     gemv: KernelHandle,
     gemm_f32out: KernelHandle,
+    /// router logits at m <= 8: strict-order GEMV, bit-identical to gemm_f32out
+    router_gemv: KernelHandle,
     q8_rows: KernelHandle,
     mmvq_q2k: KernelHandle,
     mmvq_q3k: KernelHandle,
@@ -190,6 +192,7 @@ impl MoeV41 {
                 gemm: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16")?,
                 gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
                 gemm_f32out: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16_f32out")?,
+                router_gemv: gpu.kernel(MODULE, "moe_v41_router_gemv_f32out")?,
                 q8_rows: gpu.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16")?,
                 mmvq_q2k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k")?,
                 mmvq_q3k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q3_k")?,
@@ -263,9 +266,24 @@ impl MoeV41 {
             "moe_v41: {m} tokens outside 1..={}",
             c.max_tokens
         );
-        KernelLaunch::new(gpu, self.k.gemm_f32out)
-            .grid([(c.n_routed as u32).div_ceil(16), (m as u32).div_ceil(16), 1])
-            .block([16, 16, 1])
+        // the gate at decode: one thread per logit in strict k order (the same
+        // numbers as the tiled kernel, one pass over the gate rows)
+        let (kernel, grid, block) = if m <= 8 {
+            (
+                self.k.router_gemv,
+                [(c.n_routed as u32).div_ceil(128), m as u32, 1],
+                [128, 1, 1],
+            )
+        } else {
+            (
+                self.k.gemm_f32out,
+                [(c.n_routed as u32).div_ceil(16), (m as u32).div_ceil(16), 1],
+                [16, 16, 1],
+            )
+        };
+        KernelLaunch::new(gpu, kernel)
+            .grid(grid)
+            .block(block)
             .arg_ptr(x)
             .arg_ptr(w.gate_w)
             .arg_ptr(self.logits)

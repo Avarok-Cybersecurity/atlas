@@ -64,3 +64,50 @@ extern "C" __global__ void moe_v41_scatter_add(
     const __nv_bfloat16* s = src + (size_t)r * dim;
     for (unsigned int d = threadIdx.x; d < dim; d += blockDim.x) dst[d] += __bfloat162float(s[d]);
 }
+
+// Router logits at decode: one thread per (token, expert) output, strict
+// k = 0..K-1 accumulation in fp32 with the same expression as
+// dense_gemm_bf16_f32out, so the logits are bit-identical to the tiled kernel
+// (the router-numerics pin) while every gate row is read once instead of the
+// 16x16 tile idling 15 of its rows at m = 1. K is a multiple of 8 (dim = 5120):
+// 8 bf16 per 16-byte load, consumed in order.
+//
+// Grid: (ceil(N/128), M, 1)  Block: (128, 1, 1)
+extern "C" __global__ void moe_v41_router_gemv_f32out(
+    const __nv_bfloat16* __restrict__ A,  // [M, K] row-major
+    const __nv_bfloat16* __restrict__ B,  // [N, K] row-major
+    float* __restrict__ C,                // [M, N] row-major, FP32
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    const unsigned int n = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned int t = blockIdx.y;
+    if (n >= N || t >= M) return;
+    const __nv_bfloat16* a = A + (unsigned long long)t * K;
+    const __nv_bfloat16* b = B + (unsigned long long)n * K;
+    const uint4* a4 = (const uint4*)a;
+    const uint4* b4 = (const uint4*)b;
+    float acc = 0.0f;
+    const unsigned int k8n = K / 8;
+    for (unsigned int k8 = 0; k8 < k8n; ++k8) {
+        const uint4 av = a4[k8];
+        const uint4 bv = b4[k8];
+        const unsigned int ar[4] = {av.x, av.y, av.z, av.w};
+        const unsigned int br[4] = {bv.x, bv.y, bv.z, bv.w};
+        #pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            __nv_bfloat16 alo, ahi, blo, bhi;
+            *(unsigned short*)&alo = (unsigned short)(ar[i] & 0xFFFFu);
+            *(unsigned short*)&ahi = (unsigned short)(ar[i] >> 16);
+            *(unsigned short*)&blo = (unsigned short)(br[i] & 0xFFFFu);
+            *(unsigned short*)&bhi = (unsigned short)(br[i] >> 16);
+            acc += __bfloat162float(alo) * __bfloat162float(blo);
+            acc += __bfloat162float(ahi) * __bfloat162float(bhi);
+        }
+    }
+    for (unsigned int k = k8n * 8; k < K; ++k) {
+        acc += __bfloat162float(a[k]) * __bfloat162float(b[k]);
+    }
+    C[(unsigned long long)t * N + n] = acc;
+}
