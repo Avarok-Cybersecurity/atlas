@@ -2,7 +2,7 @@
   "posts": [
     {
       "slug": "dflash2-single-spark-record",
-      "title": "DFLASH-2: the fastest single-machine numbers Atlas has produced",
+      "title": "DFLASH-2: the fastest single-machine numbers Avarok has produced",
       "published_at": "2026-09-01",
       "topics": ["engineering", "benchmarks"],
       "urls": {
@@ -14,7 +14,7 @@
     },
     {
       "slug": "seven-tenets-powering-atlas-inference",
-      "title": "Seven Tenets Powering Atlas Inference Accelerated Workloads",
+      "title": "Seven Tenets Powering Avarok Inference Accelerated Workloads",
       "published_at": "2026-08-31",
       "topics": ["engineering", "design"],
       "urls": {
@@ -26,7 +26,7 @@
     },
     {
       "slug": "from-desktop-to-hyperscaler",
-      "title": "Atlas is the inference engine from desktop to hyperscaler",
+      "title": "Avarok is the inference engine from desktop to hyperscaler",
       "published_at": "2026-09-11",
       "topics": ["design", "engineering"],
       "urls": {
