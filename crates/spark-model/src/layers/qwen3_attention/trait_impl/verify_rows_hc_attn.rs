@@ -62,12 +62,20 @@ impl Qwen3AttentionLayer {
         //   QSA selection active for seq 0 on the ingest-only batched ms path
         //   (seq_len 2051, inert bound 2051)
         //
-        // Nine of those in one agentic run, every one at the inert bound. It
-        // fails CLOSED — refusing beats serving dense-past-budget, which is a
+        // Nine of those on one boot, EVERY ONE at seq_len exactly 2051 — the
+        // step a sequence CROSSES the bound, not a per-batch event. It fails
+        // CLOSED — refusing beats serving dense-past-budget, which is a
         // different model from the reference — so output stayed correct and the
-        // gate still passed 3/3. But the arm errors and falls back on every
-        // QSA-active batch, so it delivers nothing at real context: s/turn 6.09
-        // against a 6.00 baseline.
+        // gate still passed 3/3.
+        //
+        // 🪤 Do not read more into the nine than they carry: refusing on every
+        // QSA-active verify step would have produced hundreds over a four-minute
+        // run. What is established is that it refuses AT THE TRANSITION and
+        // falls back; what fraction of the run then used the arm is unknown, and
+        // the log that would have settled it was overwritten by the next boot.
+        // So the 6.09 s/turn from that gate is a valid QUALITY result and NOT a
+        // performance datum for this arm. The valid one is ISL 400, where QSA is
+        // inert and the refusal never fires: +4.9% C=4, 0 errors.
         //
         // To lift this for real, the CALLER's batched-core path needs the
         // select+attend body (`ms_qsa_phase_paged_decode`) the way 043bb5cab
