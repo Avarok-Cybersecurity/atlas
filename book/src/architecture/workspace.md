@@ -107,7 +107,7 @@ docker/
 └── docker-guide.md                        build + run instructions
 ```
 
-The multi-model `Dockerfile` at `docker/gb10/Dockerfile` is what ships as `avarok/avarok-gb10:latest`. Per-model Dockerfiles exist for operators who want a smaller image containing only one target — the kernel registry still uses `KernelTarget` at runtime, but only one target set is baked in.
+The multi-model `Dockerfile` at `docker/gb10/Dockerfile` is what ships as `avarok/atlas-gb10:latest`. Per-model Dockerfiles exist for operators who want a smaller image containing only one target — the kernel registry still uses `KernelTarget` at runtime, but only one target set is baked in.
 
 ## Docs, design records, history, releases
 

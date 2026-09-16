@@ -20,7 +20,7 @@ This caches to `~/.cache/huggingface/hub/` (~22 GB).
 ## 2. Pull the Docker image
 
 ```bash
-docker pull avarok/avarok-qwen3.5-35b-a3b-alpha
+docker pull avarok/atlas-qwen3.5-35b-a3b-alpha
 ```
 
 ## 3. Run
@@ -28,7 +28,7 @@ docker pull avarok/avarok-qwen3.5-35b-a3b-alpha
 ```bash
 docker run --gpus all --ipc=host -p 8888:8888 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-qwen3.5-35b-a3b-alpha \
+  avarok/atlas-qwen3.5-35b-a3b-alpha \
   serve Kbenkhaled/Qwen3.5-35B-A3B-NVFP4 \
   --speculative --kv-cache-dtype nvfp4 --mtp-quantization nvfp4 \
   --scheduling-policy slai --max-seq-len 131072

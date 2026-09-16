@@ -65,7 +65,7 @@ Demo adapter lives at **`MonumentalSystems/Holo-3.1-0.8B-lora-demo`** (private).
 ## 3. Serving in Docker on a GB10 node
 
 Reuse a prebuilt Avarok GB10 image for the CUDA/nccl/cudart/cublasLt runtime libs
-(`avarok/avarok-gb10:dev` has all three in the ldconfig cache), and bind-mount a
+(`avarok/atlas-gb10:dev` has all three in the ldconfig cache), and bind-mount a
 LoRA-capable `spark` binary + the adapter + the host model cache. Run **detached**.
 
 ```bash
@@ -77,7 +77,7 @@ docker run -d --name avarok-lora --gpus all --network host \
   -v /path/to/spark:/usr/local/bin/spark:ro \
   -v /path/to/adapter-dir:/adapter:ro \
   -v /tank/hf/hub:/root/.cache/huggingface/hub:ro \
-  avarok/avarok-gb10:dev \
+  avarok/atlas-gb10:dev \
   serve Hcompany/Holo-3.1-0.8B --lora-adapter demo=/adapter --max-lora-rank 64 \
   --port 8877 --bind 0.0.0.0 --gpu-memory-utilization 0.15
 ```

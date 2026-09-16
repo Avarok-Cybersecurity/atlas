@@ -60,7 +60,7 @@ On a Linux laptop with no `nvcc`, the crate would fail to build without this. Th
 
 ## Per-target PTX bytes — sizes and counts
 
-Rough numbers for the default multi-model build at `avarok/avarok-gb10:latest`:
+Rough numbers for the default multi-model build at `avarok/atlas-gb10:latest`:
 
 | Target | # kernels | PTX bytes (approx) |
 |---|---:|---:|

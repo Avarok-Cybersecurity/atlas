@@ -2,7 +2,7 @@
 
 Run state-of-the-art language models on a single NVIDIA DGX Spark (GB10).
 
-**Docker image:** `avarok/avarok-gb10:latest`
+**Docker image:** `avarok/atlas-gb10:latest`
 **API:** OpenAI-compatible (`/v1/chat/completions`, `/v1/models`)
 **Default port:** 8888
 
@@ -108,7 +108,7 @@ sudo docker run -d \
   --name avarok-27b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve Kbenkhaled/Qwen3.5-27B-NVFP4 \
     --port 8888 \
     --max-seq-len 8192 \
@@ -129,7 +129,7 @@ sudo docker run -d \
   --name avarok-vl-30b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4 \
     --port 8888 \
     --max-seq-len 32768 \
@@ -225,7 +225,7 @@ sudo docker run -d \
   --name avarok-nemotron \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4 \
     --port 8888 \
     --max-seq-len 8192 \
@@ -246,7 +246,7 @@ sudo docker run -d \
   --name avarok-35b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
     --port 8888 \
     --max-seq-len 8192 \
@@ -269,7 +269,7 @@ sudo docker run -d \
   --name avarok-80b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
     --port 8888 \
     --max-seq-len 8192 \
@@ -298,7 +298,7 @@ serve cleanly. KV cache holds ~35K tokens (16K per slot × 4 slots, with overlap
 sudo docker run -d --name avarok \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
     --port 8888 \
     --max-seq-len 16384 \
@@ -342,7 +342,7 @@ sudo docker run -d \
   --name avarok-122b-r0 \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
     --port 8888 \
     --rank 0 --world-size 2 \
@@ -362,7 +362,7 @@ sudo docker run -d \
   --name avarok-122b-r1 \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
     --port 8889 \
     --rank 1 --world-size 2 \
@@ -498,7 +498,7 @@ sudo docker run -d \
   --name avarok-35b-tools \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
     --port 8888 \
     --max-seq-len 8192 \

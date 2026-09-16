@@ -1,7 +1,7 @@
 recipe_version: "2"
 model: Sehyo/Qwen3.5-122B-A10B-NVFP4
 runtime: avarok
-container: avarok/avarok-gb10:latest
+container: avarok/atlas-gb10:latest
 max_nodes: 1
 
 metadata:

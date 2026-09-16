@@ -1,7 +1,7 @@
 recipe_version: "2"
 model: Qwen/Qwen3.6-35B-A3B-FP8
 runtime: avarok
-container: avarok/avarok-gb10:latest
+container: avarok/atlas-gb10:latest
 max_nodes: 1
 
 metadata:

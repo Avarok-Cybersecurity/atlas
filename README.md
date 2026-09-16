@@ -23,7 +23,7 @@
   <img alt="AMD supported" src="https://img.shields.io/badge/AMD-ED1C24?style=flat-square&logo=amd&logoColor=white">
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPLv3-yellow?style=flat-square"></a>
   <img alt="Pure Rust runtime" src="https://img.shields.io/badge/runtime-pure%20Rust-orange?style=flat-square">
-  <a href="https://hub.docker.com/r/avarok/avarok-gb10"><img alt="Docker Hub: avarok/avarok-gb10" src="https://img.shields.io/badge/Docker%20Hub-avarok%2Favarok--gb10-2496ED?style=flat-square&logo=docker&logoColor=white"></a>
+  <a href="https://hub.docker.com/r/avarok/atlas-gb10"><img alt="Docker Hub: avarok/atlas-gb10" src="https://img.shields.io/badge/Docker%20Hub-avarok%2Favarok--gb10-2496ED?style=flat-square&logo=docker&logoColor=white"></a>
   <a href="https://discord.gg/RQcGakU2jW"><img alt="Discord member count" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FRQcGakU2jW%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&label=discord&suffix=%20members&style=flat-square&logo=discord&logoColor=white&color=5865F2"></a>
 </p>
 
@@ -89,7 +89,7 @@ Omit the model ID and `serve` boots into the Library — pick a model and recipe
 docker run -it --rm --network host --gpus all --ipc=host \
   -v "${HOME}/.cache/huggingface:/root/.cache/huggingface" \
   -v "${HOME}/.avarok:/root/.avarok" \
-  avarok/avarok-gb10:latest serve
+  avarok/atlas-gb10:latest serve
 ```
 
 - `-it` — the TUI needs a real terminal to render (and Esc to quit).
@@ -107,12 +107,12 @@ docker run -it --rm --network host --gpus all --ipc=host \
 35 B params, 3 B active, GDN + attention + 256-expert MoE, MRoPE-positioned vision tower (text-only here).
 
 ```bash
-docker pull avarok/avarok-gb10:latest
+docker pull avarok/atlas-gb10:latest
 
 sudo docker run -d --name avarok \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve Qwen/Qwen3.6-35B-A3B-FP8 \
     --port 8888 \
     --max-seq-len 65536 \
@@ -143,7 +143,7 @@ The fastest model in the matrix on a single Spark.
 sudo docker run -d --name avarok \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
     --port 8888 \
     --max-seq-len 65536 \
@@ -166,7 +166,7 @@ The 122B NVFP4 weights + Avarok runtime overhead leave only ~2 GB for KV cache o
 sudo docker run -d --name avarok \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
     --port 8888 \
     --max-seq-len 16384 \

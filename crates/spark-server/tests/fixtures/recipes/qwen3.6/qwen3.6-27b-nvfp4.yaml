@@ -1,7 +1,7 @@
 recipe_version: "2"
 model: nvidia/Qwen3.6-27B-NVFP4
 runtime: avarok
-container: avarok/avarok-gb10:dev
+container: avarok/atlas-gb10:dev
 max_nodes: 1
 
 metadata:
@@ -45,7 +45,7 @@ metadata:
       85.8 ms, 1.38x end-to-end wall. Those numbers belong to the unsloth
       checkpoint, not this one — see qwen3.6-27b-nvfp4-unsloth.
 
-    REQUIRES avarok/avarok-gb10:dev (>= 2026-07-10T19:18Z), which carries
+    REQUIRES avarok/atlas-gb10:dev (>= 2026-07-10T19:18Z), which carries
     the SSM snapshot-eviction fix (avarok#287). Before it, deep
     conversations froze the warm-restore anchor and replayed up to 18.6k
     tokens/turn through the GDN layers (TTFT tail to 40 s). :latest lags —

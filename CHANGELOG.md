@@ -166,7 +166,7 @@ targeting NVIDIA GB10 (DGX Spark, SM121) with twelve hand-tuned
   Qwen3.6 / Qwen3-Next / Qwen3-VL / Gemma-4 / Mistral-Small-4 /
   MiniMax-M2.7 / Nemotron-H families.
 - mdBook documentation at `book/src/`, rustdoc at `target/doc/`,
-  Docker image `avarok/avarok-gb10:latest`.
+  Docker image `avarok/atlas-gb10:latest`.
 
 ### Engineering notes
 

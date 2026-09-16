@@ -34,7 +34,7 @@ Start a server:
 sudo docker run -d --name avarok-35b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
     --max-seq-len 8192 --kv-cache-dtype nvfp4 \
     --scheduling-policy slai \

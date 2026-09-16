@@ -6,7 +6,7 @@ origin      https://github.com/Avarok-Cybersecurity/atlas.git   # the fork we sh
 monumental  https://github.com/MonumentalSystems/avarok.git       # upstream
 ```
 Sync direction: **upstream `monumental/main` → fork `origin/main`.** Never the
-reverse without intent. `sparkrun` recipes and `avarok/avarok-gb10` are built from
+reverse without intent. `sparkrun` recipes and `avarok/atlas-gb10` are built from
 `origin`.
 
 ## `/avarok-release sync-pr` — the loop

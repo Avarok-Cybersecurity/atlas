@@ -1,6 +1,6 @@
 ---
 name: avarok-release
-description: The Avarok build → verify → image → publish pipeline, plus the upstream-sync PR automation. Turns a merged commit into a serve-matrix-verified `avarok/avarok-gb10` image that users can pull. Use when cutting an image, closing the main→:latest staleness gap, wiring the release gate, or auto-syncing the fork and opening a MODEL.toml enablement PR. Codifies the REAL commands, containers, tags, and gates already in-tree — it does not invent a new release system.
+description: The Avarok build → verify → image → publish pipeline, plus the upstream-sync PR automation. Turns a merged commit into a serve-matrix-verified `avarok/atlas-gb10` image that users can pull. Use when cutting an image, closing the main→:latest staleness gap, wiring the release gate, or auto-syncing the fork and opening a MODEL.toml enablement PR. Codifies the REAL commands, containers, tags, and gates already in-tree — it does not invent a new release system.
 argument-hint: <build | verify | image | publish | gate | sync-pr> [target]
 allowed-tools: Bash, Read, Write, Grep, Glob, Agent, Edit
 ---
@@ -8,7 +8,7 @@ allowed-tools: Bash, Read, Write, Grep, Glob, Agent, Edit
 # /avarok-release — Avarok build → verify → ship pipeline
 
 One entry point for turning **merged code into a pullable, verified image**. The
-gap this closes: today `avarok/avarok-gb10:latest` is cut by hand on a GB10 build
+gap this closes: today `avarok/atlas-gb10:latest` is cut by hand on a GB10 build
 host and drifts weeks behind `main` because nothing rebuilds/re-verifies/re-tags on merge.
 This skill makes each stage explicit, gated, and reproducible so a new image can
 ship in minutes with proof it works.
@@ -20,7 +20,7 @@ stage passed its written bar.**
 |-------|--------------------|----------|------|
 | **1. Build** | Does the target(s) compile into one `spark` binary? | `spark` (PTX embedded) | `docker/gb10/Dockerfile`, `crates/avarok-kernels/build.rs` |
 | **2. Verify** | Does every model×quant boot, stay coherent, and hold the signals? | pass/fail verdict + results JSON | `tests/run_all_models.py`, `references/verify-matrix.md` |
-| **3. Image** | Package the *verified* binary, tag it to its exact source. | `avarok/avarok-gb10:<sha>` (+ `.tar` via `docker save`) | `docker/gb10/Dockerfile`, `references/pipeline.md` |
+| **3. Image** | Package the *verified* binary, tag it to its exact source. | `avarok/atlas-gb10:<sha>` (+ `.tar` via `docker save`) | `docker/gb10/Dockerfile`, `references/pipeline.md` |
 | **4. Publish** | Make it pullable — **human-gated push** (never automated). | pushed `:sha`/`:dev`/`:latest` + recorded shipped SHA | maintainer runs `docker push`; `references/pipeline.md` |
 
 **Iron rule of this skill: no image is tagged shippable until the serve matrix
@@ -34,7 +34,7 @@ an invisible false-green). `tests/test_gate_results.py` locks this behavior in.
 
 **Two hard constraints, honored everywhere in this skill:**
 - **Never advance the shippable surface without a human gate.** No `docker push`
-  of any `avarok/avarok-gb10` tag and no moving of `:latest`/`:dev`/`:nightly` — the
+  of any `avarok/atlas-gb10` tag and no moving of `:latest`/`:dev`/`:nightly` — the
   pipeline builds, verifies, tags, and `docker save`s, and *prepares* the final
   `docker push` for a maintainer to run (Stage 4 stops there). What ships to users
   is a human decision on a verified artifact. **Additive git pushes are fine:**
@@ -103,8 +103,8 @@ source. **Refuses if Stage 2 didn't pass for this SHA.**
 SHA=$(git rev-parse --short=7 HEAD)
 docker build -f docker/gb10/Dockerfile \
   --build-arg AVAROK_GIT_SHA="$SHA" \
-  -t avarok/avarok-gb10:"$SHA" .
-docker save avarok/avarok-gb10:"$SHA" | zstd -o avarok-gb10-"$SHA".tar.zst   # offline distribution
+  -t avarok/atlas-gb10:"$SHA" .
+docker save avarok/atlas-gb10:"$SHA" | zstd -o avarok-gb10-"$SHA".tar.zst   # offline distribution
 ```
 
 - Tag with the **git SHA first** — it is the only identifier that answers "is
@@ -124,13 +124,13 @@ maintainer to run (or `docker save`s for offline transfer).
 ```bash
 # Prepared for the maintainer to execute (all three moving tags advance together
 # onto the same verified SHA — see references/pipeline.md §Publish):
-docker tag avarok/avarok-gb10:$SHA avarok/avarok-gb10:nightly
-docker tag avarok/avarok-gb10:$SHA avarok/avarok-gb10:dev
-docker tag avarok/avarok-gb10:$SHA avarok/avarok-gb10:latest
-docker push avarok/avarok-gb10:$SHA && \
-  docker push avarok/avarok-gb10:nightly && \
-  docker push avarok/avarok-gb10:dev && \
-  docker push avarok/avarok-gb10:latest
+docker tag avarok/atlas-gb10:$SHA avarok/atlas-gb10:nightly
+docker tag avarok/atlas-gb10:$SHA avarok/atlas-gb10:dev
+docker tag avarok/atlas-gb10:$SHA avarok/atlas-gb10:latest
+docker push avarok/atlas-gb10:$SHA && \
+  docker push avarok/atlas-gb10:nightly && \
+  docker push avarok/atlas-gb10:dev && \
+  docker push avarok/atlas-gb10:latest
 ```
 
 After the maintainer pushes, record the shipped SHA (so "what's in `:latest`?"
@@ -177,5 +177,5 @@ remotes, the CLA allowlist cleanup, and the CI-green preflight: `references/pr-a
   iteration isn't done until `/avarok-release verify` passes on the resulting image.
 - **`avarok-recipes`** is where a winning serve config lands as a recipe; this
   pipeline ships the *engine* those recipes pin
-  (`container: avarok/avarok-gb10:latest`). Keeping the image fresh is what keeps
+  (`container: avarok/atlas-gb10:latest`). Keeping the image fresh is what keeps
   every `sparkrun run @avarok/*` honest.

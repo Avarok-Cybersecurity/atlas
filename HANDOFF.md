@@ -145,7 +145,7 @@ cce57d93  the concurrency campaign (245 files)
 
 ## 3. Benchmark gates — ALL PASS
 
-Image: **`avarok/avarok-gb10:7241a95`** (id `c52999044e25`, binary 75,939,392 B = all-target `AVAROK_TARGET_MODEL="*"` build).
+Image: **`avarok/atlas-gb10:7241a95`** (id `c52999044e25`, binary 75,939,392 B = all-target `AVAROK_TARGET_MODEL="*"` build).
 
 | gate | result | box | notes |
 |---|---|---|---|
@@ -388,7 +388,7 @@ Checked rc=0 (unresolved=0) against weights on dgx1/dgx3:
 | step3p7-flash | stepfun-ai Step-3.7-Flash-NVFP4, **EP=2** (dgx2 rank0 ↔ dgx3 rank1; identical both ranks, hash a1a4f6b0f249) — weights must be the **per-expert split** from `scripts/preprocess_step3p7_experts.py` (504 fused → 145,152 per-expert tensors); the fused checkpoint defeats the EP-aware pre-flight (estimates full 120 GB → OOM bail) | 35 |
 | qwen3.5-27b | Kbenkhaled/Qwen3.5-27B-NVFP4 via a **single-target build** (`AVAROK_TARGET_MODEL=qwen3.5-27b`, hash fdf6bfaf23db, dgx1) — the standard multi-target build routes this checkpoint to `qwen3.6-27b` (exact `(qwen3_5, 5120)` match beats this target's wildcard `(qwen3_5, None)`), so that leg was checked separately there (2026-08-03, hash 6a0211057c4a). This target's own set is smaller (no nvfp4_mmq/q4k/w4a4/w4a16_v2 sources). Includes the standard four GDN f16/half-register/smem honesty-note arms | 33 |
 
-**EP=2 harvest recipe** (used for all three oversized targets): docker `avarok/avarok-gb10:7241a95`
+**EP=2 harvest recipe** (used for all three oversized targets): docker `avarok/atlas-gb10:7241a95`
 with `--gpus all --ipc=host --network host --device=/dev/infiniband --cap-add=IPC_LOCK
 --cap-add=SYS_NICE --ulimit memlock=-1 --security-opt seccomp=unconfined` + RoCEv2 NCCL env
 (`enp1s0f1np1`/`rocep1s0f1`, GID 3, Simple/Ring, BUFFSIZE 32M), the dev binary bind-mounted over

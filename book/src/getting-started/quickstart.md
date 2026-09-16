@@ -9,7 +9,7 @@ sudo docker run -d \
   --name avarok-35b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
     --port 8888 \
     --max-seq-len 8192 \

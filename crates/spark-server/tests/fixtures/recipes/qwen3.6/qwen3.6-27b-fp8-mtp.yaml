@@ -3,7 +3,7 @@ model: Qwen/Qwen3.6-27B-FP8
 runtime: avarok
 # :dev, NOT :latest — load-bearing, see description. On :latest this model
 # serves at 5 tok/s no matter what num_drafts says (MTP buys nothing there).
-container: avarok/avarok-gb10:dev
+container: avarok/atlas-gb10:dev
 max_nodes: 1
 
 metadata:

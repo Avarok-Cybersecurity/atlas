@@ -14,9 +14,9 @@ Since Avarok is pre-1.0 and under aggressive development, semantic versioning do
 |---|---|
 | Release notes folder | [`docs/releases/`](https://github.com/Avarok-Cybersecurity/atlas/tree/main/docs/releases) |
 | GitHub Releases | `https://github.com/Avarok-Cybersecurity/atlas/releases` (if tagged) |
-| Docker Hub | `https://hub.docker.com/r/avarok/avarok-gb10/tags` |
+| Docker Hub | `https://hub.docker.com/r/avarok/atlas-gb10/tags` |
 
-The multi-model Docker image always tracks the latest alpha at `avarok/avarok-gb10:latest`. Specific versions are tagged as `avarok/avarok-gb10:alpha-2.44` etc.
+The multi-model Docker image always tracks the latest alpha at `avarok/atlas-gb10:latest`. Specific versions are tagged as `avarok/atlas-gb10:alpha-2.44` etc.
 
 ## Recent themes
 

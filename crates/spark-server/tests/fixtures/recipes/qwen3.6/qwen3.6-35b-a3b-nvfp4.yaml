@@ -1,7 +1,7 @@
 recipe_version: "2"
 model: nvidia/Qwen3.6-35B-A3B-NVFP4
 runtime: avarok
-container: avarok/avarok-gb10:dev
+container: avarok/atlas-gb10:dev
 max_nodes: 1
 
 metadata:
@@ -24,7 +24,7 @@ metadata:
     num_drafts is pinned to 1 deliberately. `speculative: true` on its own
     does NOT select an MTP depth — it falls back to MODEL.toml's
     `default_num_drafts`, so pin it explicitly. Re-measured on this
-    checkpoint against avarok/avarok-gb10:dev, N=10, single sequence,
+    checkpoint against avarok/atlas-gb10:dev, N=10, single sequence,
     400-token greedy generation (2026-07-12):
 
       K=1     116.5 tok/s  (median; min 105.3, max 116.9)  <-- optimum
@@ -48,7 +48,7 @@ metadata:
     disable_tool_grammar true is mandatory for parallel tool calls —
     grammar-constraining collapses them to 0.00 on BFCL.
 
-    Requires avarok/avarok-gb10:dev (>= 2026-07-10T19:18Z), which carries
+    Requires avarok/atlas-gb10:dev (>= 2026-07-10T19:18Z), which carries
     the SSM snapshot-eviction fix (avarok#287). Without it, deep multi-turn
     conversations freeze the warm-restore anchor and replay up to 18.6k
     tokens/turn through the GDN layers (TTFT tail to 40 s).

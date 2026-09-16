@@ -16,7 +16,7 @@ Other NVIDIA GPUs (H100, B200) and other vendors (AMD, Apple, Intel) are on the 
 ## Pull the image
 
 ```bash
-docker pull avarok/avarok-gb10:latest
+docker pull avarok/atlas-gb10:latest
 ```
 
 The image contains the Rust release binary, all 22 PTX module sets, tokenizer dependencies, and the `nvidia-container-runtime` library surfaces. No Python, no CUDA toolkit.
@@ -71,9 +71,9 @@ The build system reads `kernels/gb10/HARDWARE.toml` for architecture flags, enum
 ## Verify the install
 
 ```bash
-docker run --rm --gpus all avarok/avarok-gb10:latest --version
+docker run --rm --gpus all avarok/atlas-gb10:latest --version
 # → spark 1.0.0-beta-preview   (the workspace version in Cargo.toml)
-docker run --rm --gpus all avarok/avarok-gb10:latest --help | head -20
+docker run --rm --gpus all avarok/atlas-gb10:latest --help | head -20
 ```
 
 If `--version` errors with "no compatible GPU", the `nvidia-container-toolkit` is not picking up the device. Check `docker info | grep -i runtime` and `nvidia-smi` on the host.

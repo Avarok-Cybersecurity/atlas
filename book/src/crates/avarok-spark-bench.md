@@ -38,7 +38,7 @@ The canonical shapes live in `bench/` at the repo root (the harness loads JSON f
 
 ```bash
 # Start a server somewhere
-docker run -d ... avarok/avarok-gb10:latest serve <model>
+docker run -d ... avarok/atlas-gb10:latest serve <model>
 
 # In another terminal
 export AVAROK_BENCH_URL=http://localhost:8888

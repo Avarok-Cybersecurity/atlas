@@ -37,7 +37,7 @@ Throughput figures are p50 single-request decode on a short prompt (`max_tokens 
 
 ## Per-model serve commands
 
-Every command below uses `avarok/avarok-gb10:latest`, `--network host --gpus all --ipc=host`, and the `-v ~/.cache/huggingface:/root/.cache/huggingface` volume mount — omitted here for readability. Full copy-pasteable commands are in [`QUICKSTART.md`](https://github.com/Avarok-Cybersecurity/atlas/blob/main/QUICKSTART.md).
+Every command below uses `avarok/atlas-gb10:latest`, `--network host --gpus all --ipc=host`, and the `-v ~/.cache/huggingface:/root/.cache/huggingface` volume mount — omitted here for readability. Full copy-pasteable commands are in [`QUICKSTART.md`](https://github.com/Avarok-Cybersecurity/atlas/blob/main/QUICKSTART.md).
 
 ### Qwen3.5-35B-A3B (flagship)
 ```

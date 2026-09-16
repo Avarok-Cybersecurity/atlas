@@ -61,7 +61,7 @@ sudo docker run -d --name avarok-122b-r0 \
   -e NCCL_IB_HCA=mlx5_0 -e NCCL_IB_DISABLE=0 \
   -e NCCL_NET_GDR_LEVEL=5 -e NCCL_NVLS_ENABLE=0 \
   -e GLOO_SOCKET_IFNAME=enp1s0f0np0 \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
     --port 8888 \
     --rank 0 --world-size 2 \
@@ -84,7 +84,7 @@ sudo docker run -d --name avarok-122b-r1 \
   -e NCCL_IB_HCA=mlx5_0 -e NCCL_IB_DISABLE=0 \
   -e NCCL_NET_GDR_LEVEL=5 -e NCCL_NVLS_ENABLE=0 \
   -e GLOO_SOCKET_IFNAME=enp1s0f0np0 \
-  avarok/avarok-gb10:latest \
+  avarok/atlas-gb10:latest \
   serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
     --port 8889 \
     --rank 1 --world-size 2 \

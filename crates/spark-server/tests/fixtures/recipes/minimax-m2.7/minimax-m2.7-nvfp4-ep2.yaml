@@ -1,7 +1,7 @@
 recipe_version: "2"
 model: lukealonso/MiniMax-M2.7-NVFP4
 runtime: avarok
-container: avarok/avarok-gb10:latest
+container: avarok/atlas-gb10:latest
 min_nodes: 2
 max_nodes: 2
 
@@ -26,7 +26,7 @@ defaults:
   ep_size: 2
   # 12288 (not 16384) — at gpu_memory_utilization 0.90 the head only fits
   # 13120 KV tokens (820 blocks × 16) after weights + MoE setup on
-  # avarok/avarok-gb10:latest (3.0.0). Live-validated 2026-05-08 on the
+  # avarok/atlas-gb10:latest (3.0.0). Live-validated 2026-05-08 on the
   # 10.10.10.1/10.10.10.2 GB10 pair.
   max_model_len: 12288
   max_batch_size: 1
