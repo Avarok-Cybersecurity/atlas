@@ -131,7 +131,7 @@ pub fn suggest_rank(rows: usize, cols: usize, fraction: f32) -> usize {
 /// ```text
 /// offset  size  field
 /// ────────────────────────────────────
-/// 0       8     magic = b"AVAROKLQE"
+/// 0       8     magic = b"ATLASLQE"
 /// 8       4     format version (u32 little-endian) — currently 1
 /// 12      4     rank          (u32 LE)
 /// 16      4     rows          (u32 LE)
@@ -149,7 +149,7 @@ pub fn suggest_rank(rows: usize, cols: usize, fraction: f32) -> usize {
 /// representation), no compression. Files are produced by the
 /// offline calibration script (TBD `scripts/lqer_compute.py`)
 /// alongside the regular weight checkpoint.
-const LQER_MAGIC: &[u8; 8] = b"AVAROKLQE";
+const LQER_MAGIC: &[u8; 8] = b"ATLASLQE";
 const LQER_VERSION: u32 = 1;
 
 /// Errors from LQER file I/O. Each variant names the failed
@@ -168,7 +168,7 @@ impl std::fmt::Display for LqerLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(e) => write!(f, "io: {e}"),
-            Self::BadMagic => write!(f, "bad magic — expected AVAROKLQE"),
+            Self::BadMagic => write!(f, "bad magic — expected ATLASLQE"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported version: {v}"),
             Self::Truncated { expected, got } => {
                 write!(f, "truncated: expected {expected} bytes, got {got}")
