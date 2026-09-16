@@ -6,7 +6,7 @@
       "published_at": "2026-09-01",
       "topics": ["engineering", "benchmarks"],
       "urls": {
-        "blog": "https://blog.atlasinference.io/posts/dflash2-single-spark-record",
+        "blog": "https://blog.atlascybernetics.ai/posts/dflash2-single-spark-record",
         "devto": null,
         "medium": null,
         "x": null
@@ -18,7 +18,7 @@
       "published_at": "2026-08-31",
       "topics": ["engineering", "design"],
       "urls": {
-        "blog": "https://blog.atlasinference.io/posts/seven-tenets-powering-atlas-inference",
+        "blog": "https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference",
         "devto": null,
         "medium": null,
         "x": null
@@ -30,7 +30,7 @@
       "published_at": "2026-09-11",
       "topics": ["design", "engineering"],
       "urls": {
-        "blog": "https://blog.atlasinference.io/posts/from-desktop-to-hyperscaler",
+        "blog": "https://blog.atlascybernetics.ai/posts/from-desktop-to-hyperscaler",
         "devto": null,
         "medium": null,
         "x": null

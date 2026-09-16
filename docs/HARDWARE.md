@@ -151,6 +151,20 @@ requires:
    `compute_capability` back to the directory name, so an operator whose GPU
    fails the arch preflight is told which target to rebuild.
 
+   **Benchmark limits** (`[benchmarks.limits.{thermal,memory,timing,equivalence}]`,
+   `atlas_plugin::hardware::limits`): what `spark bench certify` and the
+   record policies judge a box of this class by — the chassis temperature it
+   is parked at and resumed at, the chassis delta and clock/memory spreads
+   under which two boxes are "one box" for a Speed record, the die ceiling a
+   Speed capture is suspect above, the free-memory floor a self-start needs,
+   and the serve/boot/shard/build allowances a campaign plans with. These are
+   measured facts about the class (see `kernels/gb10/HARDWARE.toml` for the
+   GB10's, each with its measurement beside it), never copied from another
+   card: a target that declares none cannot be campaigned or self-served for a
+   gate until someone measures them, and its Speed records from two boxes
+   never agree. Every sub-table is required once the section exists. The file
+   is a closure input, so changing a limit re-opens every gate on the target.
+
 2. **Kernel sources**: `kernels/<new-hw>/common/` for the shared set and
    `kernels/<new-hw>/<model>/<quant>/` for per-model shadows. If the new
    target starts out compiling another target's sources unchanged, share them

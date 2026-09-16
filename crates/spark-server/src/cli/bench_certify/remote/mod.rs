@@ -15,6 +15,7 @@ pub mod place;
 pub mod runner;
 pub mod schedule;
 mod text;
+pub mod thermal;
 pub mod wire;
 pub use text::{fleet_json, print_fleet};
 
@@ -32,7 +33,9 @@ use super::lockfile::LockGuard;
 use super::plan::Unit;
 use super::runner::{GateRunner, LocalChild, RepoRecords, RunCtx, RunOutcome};
 use super::state::{Campaign, Phase};
-use super::{BUILD_ALLOWANCE, Emit, GUARD_EVERY};
+use super::{Emit, GUARD_EVERY};
+use atlas_plugin::hardware::equivalence::EquivalencePolicy;
+use atlas_plugin::hardware::limits::ThermalEnvelope;
 use node::Node;
 use schedule::SpeedMode;
 
@@ -41,6 +44,9 @@ pub struct Fleet {
     pub nodes: Vec<Node>,
     pub rejected: Vec<node::Rejection>,
     pub mode: SpeedMode,
+    /// The class's declared thermal envelope; `None` only under
+    /// `--dangerous-ignore-thermals`.
+    pub envelope: Option<ThermalEnvelope>,
 }
 
 /// Ask every address, admit what qualifies, decide the Speed mode.
@@ -53,6 +59,8 @@ pub fn assemble(
     remote_only: bool,
     wanted: &node::Wanted,
     local_signer: &str,
+    envelope: Option<ThermalEnvelope>,
+    policy: Option<EquivalencePolicy>,
 ) -> Result<Fleet> {
     let rows = atlasctl.nodes(addrs)?;
     let mut nodes = Vec::new();
@@ -84,11 +92,12 @@ pub fn assemble(
                 .join("; ")
         );
     }
-    let mode = schedule::speed_mode(&nodes);
+    let mode = schedule::speed_mode(&nodes, policy);
     Ok(Fleet {
         nodes,
         rejected,
         mode,
+        envelope,
     })
 }
 
@@ -103,6 +112,15 @@ pub struct Shared<'a> {
     pub timeout_factor: f64,
     pub emit: &'a Emit,
     pub cancel: Arc<AtomicBool>,
+    /// Live chassis readings for the cool-down (`thermal`).
+    pub thermal: &'a dyn thermal::Probe,
+    /// `--dangerous-ignore-thermals`: warn instead of parking.
+    pub ignore_thermals: bool,
+    /// The class's envelope; `None` (only under the flag) parks nothing.
+    pub envelope: Option<ThermalEnvelope>,
+    /// Build time a node may spend on the anchor before a unit's deadline
+    /// counts (`[benchmarks.limits.timing] build_allowance_s`).
+    pub build_allowance: Duration,
 }
 
 /// One runner per node: this box's child spawner, or a remote driver.
@@ -113,6 +131,7 @@ pub fn runners(
     anchor_full: &str,
     cancel: Arc<AtomicBool>,
     log_dir: &std::path::Path,
+    no_serve_reuse: bool,
 ) -> Result<Vec<Box<dyn GateRunner + Send>>> {
     let exe = std::env::current_exe().context("locating this binary")?;
     fleet
@@ -124,7 +143,7 @@ pub fn runners(
                     exe: exe.clone(),
                     records: Box::new(RepoRecords),
                     cancel: cancel.clone(),
-                    extra_args: vec![],
+                    extra_args: LocalChild::reuse_args(no_serve_reuse),
                 }))
             } else {
                 Ok(Box::new(runner::RemoteRunner {
@@ -195,14 +214,14 @@ pub fn drive(
                 continue;
             }
             last_guard = std::time::Instant::now();
-            let running: Vec<&'static str> = {
+            let running: Vec<String> = {
                 let b = board.lock().unwrap_or_else(|p| p.into_inner());
                 b.campaign
                     .units
                     .iter()
                     .zip(&b.campaign.phase)
                     .filter(|(_, p)| **p == Phase::Running)
-                    .map(|(u, _)| u.id)
+                    .map(|(u, _)| u.label())
                     .collect()
             };
             let mut guard_rc = 0;
@@ -256,7 +275,34 @@ fn worker(
     shared: &Shared,
 ) {
     let mut strikes = 0;
+    let mut cool = thermal::Gate::default();
     loop {
+        // A box that warmed past its baseline takes nothing more until it
+        // is back near it; the others keep working (`thermal`).
+        if !cool.may_take(
+            node,
+            shared.thermal,
+            shared.envelope,
+            shared.ignore_thermals,
+            &|s| {
+                shared.emit.event(
+                    "thermal",
+                    serde_json::json!({ "node": node.addr, "text": s }),
+                );
+                shared.emit.say(s);
+            },
+        ) {
+            let stopped = board
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .campaign
+                .stopped();
+            if stopped {
+                return;
+            }
+            std::thread::sleep(thermal::RECHECK);
+            continue;
+        }
         let picked = {
             let mut b = board.lock().unwrap_or_else(|p| p.into_inner());
             if b.campaign.stopped() {
@@ -320,14 +366,14 @@ fn run_one(
 ) -> RunOutcome {
     let emit = shared.emit;
     let local_deadline = unit.deadline(shared.timeout_factor);
-    let deadline = runner::deadline_for(local_deadline, node, BUILD_ALLOWANCE);
+    let deadline = runner::deadline_for(local_deadline, node, shared.build_allowance);
     emit.event(
         "start",
-        serde_json::json!({ "unit": unit.id, "node": node.addr, "expected_secs": unit.secs() }),
+        serde_json::json!({ "unit": unit.label(), "node": node.addr, "expected_secs": unit.secs() }),
     );
     emit.say(&format!(
         "▶ {} on {} (expected ~{})",
-        unit.id,
+        unit.label(),
         node.addr,
         super::text::human(unit.secs())
     ));
@@ -344,21 +390,21 @@ fn run_one(
         if emit.json {
             emit.event(
                 "line",
-                serde_json::json!({ "unit": unit.id, "node": node.addr, "text": line }),
+                serde_json::json!({ "unit": unit.label(), "node": node.addr, "text": line }),
             );
         } else if line.starts_with("  [") || line.contains("Pass:") || line.contains("Fail:") {
-            eprintln!("  {}@{} {}", unit.id, node.addr, line.trim_end());
+            eprintln!("  {}@{} {}", unit.label(), node.addr, line.trim_end());
         }
     };
     let outcome = runner.run(unit, &ctx, &mut on_line);
     let elapsed = started.elapsed().as_secs();
     emit.event(
         "done",
-        serde_json::json!({ "unit": unit.id, "node": node.addr, "outcome": format!("{outcome:?}"), "elapsed_secs": elapsed }),
+        serde_json::json!({ "unit": unit.label(), "node": node.addr, "outcome": format!("{outcome:?}"), "elapsed_secs": elapsed }),
     );
     emit.say(&format!(
         "■ {} on {} → {} after {}",
-        unit.id,
+        unit.label(),
         node.addr,
         super::text::describe(&outcome),
         super::text::human(elapsed)
@@ -371,7 +417,8 @@ fn run_one(
         b.placed[i] = None;
         emit.say(&format!(
             "retrying {} once (last on {})",
-            unit.id, node.addr
+            unit.label(),
+            node.addr
         ));
     }
     if matches!(outcome, RunOutcome::Cancelled) {

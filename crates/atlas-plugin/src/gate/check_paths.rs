@@ -74,6 +74,11 @@ fn invalidating_paths_with(
     if head == record_sha {
         return Some(Vec::new());
     }
+    // CONTENT, never ancestry: this repository squash-merges, so a record's
+    // commit is never an ancestor of the commit its PR became on main, and
+    // asking `merge-base --is-ancestor` here once turned main red for every
+    // record a landed PR had paid for (`coverage_squash_tests`). Two trees
+    // that agree on every perf path are the same measurement.
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root)

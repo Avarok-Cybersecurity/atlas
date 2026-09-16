@@ -52,7 +52,7 @@ pub(super) fn print_plan(
     for u in units {
         eprintln!(
             "  {:<28} {:>8}  {:?}{}",
-            u.id,
+            u.label(),
             human(u.secs()),
             u.class,
             match u.estimate {
@@ -82,10 +82,10 @@ pub(super) fn print_summary(s: &state::Summary) {
 
 #[derive(serde::Serialize)]
 pub(super) struct SummaryJson {
-    passed: Vec<&'static str>,
-    member_done: Vec<&'static str>,
-    failed: Vec<(&'static str, String)>,
-    skipped: Vec<(&'static str, String)>,
+    passed: Vec<String>,
+    member_done: Vec<String>,
+    failed: Vec<(String, String)>,
+    skipped: Vec<(String, String)>,
     aborted: Option<String>,
 }
 

@@ -322,6 +322,20 @@ pub fn read_baseline(root: &Path, benchmark_id: &str) -> Result<GateBaseline> {
 }
 
 impl GateRecord {
+    /// Which slice of a group's draw this record measured — `(index, count)`
+    /// from the `shard.index` / `shard.count` metrics the driver writes — or
+    /// `None` for a whole-draw run. The metrics are the SSOT; the filename
+    /// only mirrors them so two shards at one commit on one day do not
+    /// collide.
+    pub fn shard(&self) -> Option<(usize, usize)> {
+        let index = *self.metrics.get("shard.index")?;
+        let count = *self.metrics.get("shard.count")?;
+        if index.fract() != 0.0 || count.fract() != 0.0 || count < 1.0 || index >= count {
+            return None;
+        }
+        Some((index as usize, count as usize))
+    }
+
     /// Build a gate record from what a finished run leaves behind. The
     /// hardware fingerprint comes from the serving endpoint's `/hardware` —
     /// the box that did the inference, not the box running this CLI.

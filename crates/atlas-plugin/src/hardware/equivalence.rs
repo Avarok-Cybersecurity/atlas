@@ -94,19 +94,32 @@ pub struct EquivalencePolicy {
     pub chassis_delta_c: f64,
 }
 
-/// The policy for spreading Speed-class gates.
-///
-/// * clock ceiling within 1 %: two GB10s report 3003 MHz exactly; anything
-///   else is a different part or a different firmware.
-/// * memory within 5 %: 128 GB parts read a few hundred MB apart across
-///   kernels; a different SKU is 30 % away.
-/// * chassis within 10 °C: the 0.66 tok/s incident was a 24 °C gap; 10 °C is
-///   inside the day-to-day range of ONE box between morning and afternoon.
-pub const SPEED_SPREAD: EquivalencePolicy = EquivalencePolicy {
-    clock_spread: 0.01,
-    mem_spread: 0.05,
-    chassis_delta_c: 10.0,
-};
+impl EquivalencePolicy {
+    /// The policy for spreading Speed-class gates on one hardware class,
+    /// from the class's declared limits (`kernels/<hw>/HARDWARE.toml`
+    /// `[benchmarks.limits.equivalence]` + `.thermal`): clock and memory
+    /// spreads, and the chassis delta — on GB10 1 %, 5 % and 15 °C (the
+    /// 0.66 tok/s incident was a 24 °C gap; a fleet under load spreads
+    /// 11-13 °C with no number moving, 2026-09-15). The numbers are the
+    /// target's, declared beside its other facts, because another card's
+    /// sensors and envelope are another card's.
+    #[must_use]
+    pub fn speed(limits: &super::limits::Limits) -> Self {
+        Self {
+            clock_spread: limits.equivalence.clock_spread,
+            mem_spread: limits.equivalence.mem_spread,
+            chassis_delta_c: limits.thermal.chassis_equivalence_delta_c,
+        }
+    }
+
+    /// The policy for `hardware`, when its limits are declared.
+    ///
+    /// # Errors
+    /// A malformed `HARDWARE.toml`.
+    pub fn speed_for(root: &std::path::Path, hardware: &str) -> anyhow::Result<Option<Self>> {
+        Ok(super::limits::limits(root, hardware)?.map(|l| Self::speed(&l)))
+    }
+}
 
 /// Why two fingerprints are not one box.
 #[derive(Clone, Debug, PartialEq)]

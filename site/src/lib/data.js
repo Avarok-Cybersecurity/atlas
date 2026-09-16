@@ -22,7 +22,7 @@
 // --- canonical links ---------------------------------------------------------
 export const githubUrl = 'https://github.com/Avarok-Cybersecurity/atlas';
 export const discordUrl = 'https://discord.gg/RQcGakU2jW';
-export const blogUrl = 'https://blog.atlasinference.io';
+export const blogUrl = 'https://blog.atlascybernetics.ai';
 export const xUrl = 'https://x.com/AtlasInferenceX';
 export const xHandle = '@AtlasInferenceX';
 export const redditUrl = 'https://www.reddit.com/r/LocalLLaMA/comments/1rmvxo3/';
@@ -40,7 +40,7 @@ export const issuesUrl = `${githubUrl}/issues`;
 export const goodFirstIssuesUrl =
   'https://github.com/Avarok-Cybersecurity/atlas/labels/good%20first%20issue';
 // Single source of truth for contact addresses (footer + reach-out section).
-export const contactEmails = ['thomas@atlasinference.io'];
+export const contactEmails = ['thomas@atlascybernetics.ai'];
 
 // third-party artifacts (link-or-cut, each verified live July 2026)
 export const transformersPrUrl = 'https://github.com/huggingface/transformers/pull/46423';
@@ -75,11 +75,11 @@ export const flagshipRecipe = 'qwen3.6-35b-a3b-fp8-mtp';
 export const quickInstall = 'cargo install atlasctl';
 /// Where install.sh is served from. One authority: the join one-liner in
 /// `joincommand.js` builds on this too, and a second copy is how the two drift.
-export const installerUrl = 'https://atlasinference.io/install.sh';
+export const installerUrl = 'https://atlascybernetics.ai/install.sh';
 /// The Windows counterpart. Windows visitors were shown the `curl … | sh` line
 /// too, which cannot run there: PowerShell has no `sh`, and Git Bash reaches
 /// install.sh only to be refused by it.
-export const powershellInstallerUrl = 'https://atlasinference.io/install.ps1';
+export const powershellInstallerUrl = 'https://atlascybernetics.ai/install.ps1';
 /// The shell one-liner, and the prerendered default. `currentInstall()` in
 /// `$lib/install/host.svelte.js` is what a page should print once it knows
 /// which machine it is talking to.
@@ -477,7 +477,7 @@ export const faq = {
     },
     {
       q: 'How do I install it?',
-      a: 'One command: curl -fsSL https://atlasinference.io/install.sh | sh. It downloads a prebuilt atlasctl, verifies its checksum, and installs to ~/.local/bin. If you would rather not pipe curl to a shell, cargo install atlasctl does the same thing from source.'
+      a: 'One command: curl -fsSL https://atlascybernetics.ai/install.sh | sh. It downloads a prebuilt atlasctl, verifies its checksum, and installs to ~/.local/bin. If you would rather not pipe curl to a shell, cargo install atlasctl does the same thing from source.'
     },
     {
       q: 'Which models can I run?',

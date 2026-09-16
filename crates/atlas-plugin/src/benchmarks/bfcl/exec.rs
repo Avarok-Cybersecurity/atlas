@@ -131,15 +131,14 @@ impl Bfcl {
 /// an aggregate that matches is what made an earlier reading of this bug wrong.
 /// A per-sample diff needs both sides to still exist.
 /// ★ THE SHARD IS PART OF THE KEY, and the benchmark id alone is NOT enough.
-/// `Bfcl::descriptor()` returns `self.variant.descriptor()`, and a shard carries
-/// the BASE variant plus a `shard` field — so `bfcl-subset-a` reports the id
-/// `bfcl-subset`, exactly like the group and like its three siblings. Keying on
-/// the id alone therefore left all five legs writing one filename, which is the
-/// collision this function exists to prevent.
+/// A shard is the group's own benchmark run with `--param shard=i/n`, so it
+/// reports the group's id exactly like every sibling. Keying on the id alone
+/// therefore left every leg writing one filename, which is the collision this
+/// function exists to prevent.
 ///
 /// Caught by running it, not by reasoning about it: the first sharded leg after
 /// the id-only fix reported "wrote no per-sample output", because the harness
-/// looked for `responses-bfcl-subset-a.jsonl` and the leg had written
+/// looked for the shard's file and the leg had written
 /// `responses-bfcl-subset.jsonl` on top of the whole draw's.
 pub(super) fn responses_file(benchmark_id: &str, shard: Option<super::dataset::Shard>) -> String {
     match shard {

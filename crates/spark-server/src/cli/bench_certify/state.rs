@@ -36,10 +36,10 @@ pub struct Campaign {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
-    pub passed: Vec<&'static str>,
-    pub member_done: Vec<&'static str>,
-    pub failed: Vec<(&'static str, String)>,
-    pub skipped: Vec<(&'static str, String)>,
+    pub passed: Vec<String>,
+    pub member_done: Vec<String>,
+    pub failed: Vec<(String, String)>,
+    pub skipped: Vec<(String, String)>,
     pub aborted: Option<String>,
 }
 
@@ -95,7 +95,7 @@ impl Campaign {
                 if !self.keep_going {
                     self.stop_rest(format!(
                         "stopped after {} failed its verdict (pass --keep-going to run on)",
-                        self.units[i].id
+                        self.units[i].label()
                     ));
                 }
             }
@@ -110,7 +110,7 @@ impl Campaign {
                 if !self.keep_going {
                     self.stop_rest(format!(
                         "stopped after {} could not be run",
-                        self.units[i].id
+                        self.units[i].label()
                     ));
                 }
             }
@@ -118,7 +118,7 @@ impl Campaign {
                 self.phase[i] = Phase::Failed("timed out".into());
                 self.fail_seen = true;
                 if !self.keep_going {
-                    self.stop_rest(format!("stopped after {} timed out", self.units[i].id));
+                    self.stop_rest(format!("stopped after {} timed out", self.units[i].label()));
                 }
             }
             RunOutcome::Cancelled => {
@@ -178,10 +178,10 @@ impl Campaign {
         };
         for (u, p) in self.units.iter().zip(&self.phase) {
             match p {
-                Phase::Passed => s.passed.push(u.id),
-                Phase::MemberDone => s.member_done.push(u.id),
-                Phase::Failed(r) => s.failed.push((u.id, r.clone())),
-                Phase::Skipped(r) => s.skipped.push((u.id, r.clone())),
+                Phase::Passed => s.passed.push(u.label()),
+                Phase::MemberDone => s.member_done.push(u.label()),
+                Phase::Failed(r) => s.failed.push((u.label(), r.clone())),
+                Phase::Skipped(r) => s.skipped.push((u.label(), r.clone())),
                 Phase::Pending | Phase::Running => {}
             }
         }

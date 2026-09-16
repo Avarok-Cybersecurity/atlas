@@ -111,6 +111,28 @@ fn the_verdict_gates_on_both_mlperf_floors() {
     assert_eq!(b.verdict().kind, VerdictKind::Pass);
 }
 
+/// A shard's slice is not judged against a whole-draw floor: the same
+/// scores that FAIL a whole run are `Info` on a shard, naming the slice and
+/// deferring to the group; and a slice that would PASS is `Info` too, so the
+/// child never exits 2 (or 0-as-pass) on a quarter of a measurement.
+/// NEGATIVE CONTROL: the same object without a shard still fails.
+#[test]
+fn a_shards_verdict_is_info_and_defers_to_the_group() {
+    let mut b = on_model(Variant::Subset, "unsloth/Qwen3.6-27B-NVFP4");
+    b.shard = Some(dataset::Shard { index: 3, count: 6 });
+    b.scores = Some(scores(80.12, 82.0));
+    let v = b.verdict();
+    assert_eq!(v.kind, VerdictKind::Info, "{}", v.reason);
+    assert!(v.reason.contains("shard 3/6"), "{}", v.reason);
+    assert!(v.reason.contains("80.12"), "{}", v.reason);
+    assert!(v.reason.contains("group's verdict"), "{}", v.reason);
+    b.scores = Some(scores(90.0, 90.0));
+    assert_eq!(b.verdict().kind, VerdictKind::Info);
+    b.shard = None;
+    b.scores = Some(scores(80.12, 82.0));
+    assert_eq!(b.verdict().kind, VerdictKind::Fail);
+}
+
 #[test]
 fn the_verdict_always_states_the_measured_values_and_the_floor() {
     let mut b = on_model(Variant::Subset, "centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf");
@@ -209,13 +231,15 @@ fn qwen38_committed_mins() -> (f64, f64) {
 #[test]
 fn a_qwen38_run_clearing_its_own_bars_passes() {
     let (overall_min, normalized_min) = qwen38_committed_mins();
-    assert_eq!((overall_min, normalized_min), (83.42, 82.96));
+    // Re-cut 2026-09-15 (PR #1089): the shard count is the campaign's, and
+    // the number moves with it; see the BENCH.toml note.
+    assert_eq!((overall_min, normalized_min), (83.00, 82.96));
     let mut b = with_mins(overall_min, normalized_min);
     b.scores = Some(scores(84.22, 84.12));
     let v = b.verdict();
     assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
     // The detail names both values and both bars.
-    for needle in ["84.22", "83.42", "84.12", "82.96"] {
+    for needle in ["84.22", "83.00", "84.12", "82.96"] {
         assert!(v.reason.contains(needle), "{}", v.reason);
     }
 
@@ -223,7 +247,7 @@ fn a_qwen38_run_clearing_its_own_bars_passes() {
     // (Deliberately STRICTER than gate scoring, which allows value + noise
     // >= min: the raw comparison can only fail a sub-noise dip, never
     // green-light a regression.)
-    b.scores = Some(scores(83.42, 82.96));
+    b.scores = Some(scores(83.00, 82.96));
     assert_eq!(b.verdict().kind, VerdictKind::Pass);
 }
 
@@ -231,7 +255,7 @@ fn a_qwen38_run_clearing_its_own_bars_passes() {
 fn a_qwen38_run_below_its_own_bars_fails() {
     let (overall_min, normalized_min) = qwen38_committed_mins();
     let mut b = with_mins(overall_min, normalized_min);
-    b.scores = Some(scores(83.10, 84.12));
+    b.scores = Some(scores(82.90, 84.12));
     let v = b.verdict();
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(
@@ -239,7 +263,7 @@ fn a_qwen38_run_below_its_own_bars_fails() {
         "{}",
         v.reason
     );
-    for needle in ["83.10", "83.42", "84.12", "82.96"] {
+    for needle in ["82.90", "83.00", "84.12", "82.96"] {
         assert!(v.reason.contains(needle), "{}", v.reason);
     }
 

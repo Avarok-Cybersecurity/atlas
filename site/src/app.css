@@ -5,7 +5,7 @@
    is spent there; the rest stays disciplined. Theme is committed dark.
    ========================================================================== */
 /* The :root token block lives in web-shared/atlas-tokens.css, which the blog
-   imports too. One copy, so atlasinference.io and blog.atlasinference.io
+   imports too. One copy, so atlascybernetics.ai and blog.atlascybernetics.ai
    cannot drift apart. Property-specific rules stay below. */
 @import '../../web-shared/atlas-tokens.css';
 
