@@ -57,7 +57,7 @@
 
 <nav>
   <div class="nav-inner">
-    <a class="nav-logo" href="/" aria-label="Avarok home">
+    <a class="nav-logo" href="/" aria-label="Avarok home" data-sveltekit-reload>
       <AtlasLockup kind="horizontal" width={135} label="Avarok" />
     </a>
     <div class="nav-links">

@@ -21,6 +21,12 @@
     if (destination) window.location.replace(destination);
   }
   afterNavigate(({ to }) => { if (to) forwardLegacyFragment(to.url); });
+  function goHome(e) {
+    if (window.location.pathname !== '/' && window.location.pathname !== '/index.html') return;
+    e.preventDefault();
+    if (window.location.hash) history.replaceState(null, '', window.location.pathname);
+    window.scrollTo(0, 0);
+  }
 </script>
 
 <svelte:window onhashchange={() => forwardLegacyFragment(window.location)} />
@@ -28,7 +34,7 @@
 <div class="marketing" style={brandStyle}>
     <a class="m-skip-link" href="#main">Skip to content</a>
     <header class="m-header">
-      <a class="m-brand" href="#main" aria-label="Avarok home">
+      <a class="m-brand" href="/" aria-label="Avarok home" onclick={goHome}>
         <img class="m-logo-onlight" src="/brand/logo-horizontal.svg" width="166" height="41" alt="Avarok" />
         <img class="m-logo-ondark" src="/brand/logo-horizontal-ondark.svg" width="166" height="41" alt="" />
       </a>
@@ -77,7 +83,7 @@
       </section>
     </main>
     <footer class="m-footer">
-      <div class="m-footer-main"><div><a class="m-brand" href="#main" aria-label="Avarok home"><img class="m-logo-onlight" src="/brand/logo-full.svg" width="253" height="72" alt="Avarok Inference Engine"/><img class="m-logo-ondark" src="/brand/logo-full-ondark.svg" width="253" height="72" alt=""/></a><p>Intelligence, on your terms.</p></div><div class="m-footer-links"><div><span>BUILD</span><a href={ENGINE} data-sveltekit-reload>Engine and benchmarks</a><a href={CONTROL} data-sveltekit-reload>Fleet Manager</a><a href={GUIDE} target="_blank" rel="noreferrer">Documentation</a><a href={REPO} target="_blank" rel="noreferrer">GitHub</a><a href={`${ENGINE}#verified`} target="_blank" rel="noreferrer">Benchmarks</a></div><div><span>CONNECT</span><a href={discordUrl} target="_blank" rel="noreferrer">Discord</a><a href={blogUrl} target="_blank" rel="noreferrer">The Avarok blog</a><a href={`mailto:${contactEmails[0]}`}>Let’s talk <Icon name="ArrowUpRight" size={13}/></a></div></div></div>
+      <div class="m-footer-main"><div><a class="m-brand" href="/" aria-label="Avarok home" onclick={goHome}><img class="m-logo-onlight" src="/brand/logo-full.svg" width="253" height="72" alt="Avarok Inference Engine"/><img class="m-logo-ondark" src="/brand/logo-full-ondark.svg" width="253" height="72" alt=""/></a><p>Intelligence, on your terms.</p></div><div class="m-footer-links"><div><span>BUILD</span><a href={ENGINE} data-sveltekit-reload>Engine and benchmarks</a><a href={CONTROL} data-sveltekit-reload>Fleet Manager</a><a href={GUIDE} target="_blank" rel="noreferrer">Documentation</a><a href={REPO} target="_blank" rel="noreferrer">GitHub</a><a href={`${ENGINE}#verified`} target="_blank" rel="noreferrer">Benchmarks</a></div><div><span>CONNECT</span><a href={discordUrl} target="_blank" rel="noreferrer">Discord</a><a href={blogUrl} target="_blank" rel="noreferrer">The Avarok blog</a><a href={`mailto:${contactEmails[0]}`}>Let’s talk <Icon name="ArrowUpRight" size={13}/></a></div></div></div>
       <div class="m-footer-bottom"><span>Avarok · Built in the open.</span><span>Community Edition · AGPL-3.0</span><a href="#main">Back to top ↑</a></div>
     </footer>
   <noscript>

@@ -62,7 +62,7 @@
 
 <header class="cmd" aria-label="Fleet command strip">
   <div class="cmd-left">
-    <a class="cmd-mark" href="/" aria-label="Avarok home">
+    <a class="cmd-mark" href="/" aria-label="Avarok home" data-sveltekit-reload>
       <img src="/favicon.svg" alt="" width="20" height="20" />
       <span>Avarok</span>
     </a>
