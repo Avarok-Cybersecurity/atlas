@@ -151,6 +151,10 @@ impl Atlasctl for SubprocessAtlasctl {
             "--note",
             &spec.note,
         ];
+        for p in &spec.params {
+            args.push("--param");
+            args.push(p);
+        }
         if let Some(m) = &max_run {
             args.push("--max-run-s");
             args.push(m);

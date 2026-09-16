@@ -350,31 +350,54 @@ pub(super) fn plant(root: &Path, id: &str, sha: &str, secs: u64, verdict: &str) 
 }
 
 /// Plant what SATISFIES a required gate at `sha`: a plain record for a plain
-/// gate, and — since a group is satisfied only by its members — four shard
-/// records carrying tallies and shard identity for a group id. The shard
-/// records model what `report.rs` writes, so a fixture that reads as a group
-/// pass here is the shape a real campaign produces.
+/// gate, and — since a group is satisfied only by a complete partition —
+/// [`PLANTED_SHARDS`] shard records carrying tallies and shard identity under
+/// the group's own id. The shard records model what `report.rs` writes, so a
+/// fixture that reads as a group pass here is the shape a real campaign
+/// produces.
 pub(super) fn plant_required(root: &Path, id: &str, sha: &str, secs: u64, verdict: &str) {
-    let Some(group) = super::group::find(id) else {
+    if super::group::find(id).is_none() {
         return plant(root, id, sha, secs, verdict);
-    };
-    for (index, member) in group.members.iter().enumerate() {
-        std::fs::create_dir_all(gate_dir(root, member)).unwrap();
-        let mut metrics = BTreeMap::new();
-        metrics.insert("overall_accuracy".to_string(), 90.0);
-        metrics.insert("subset.simple_python.hits".to_string(), 95.0);
-        metrics.insert("subset.simple_python.n".to_string(), 100.0);
-        metrics.insert("shard.index".to_string(), index as f64);
-        metrics.insert("shard.count".to_string(), group.members.len() as f64);
-        metrics.insert("transport_errors".to_string(), 0.0);
-        let record = run_record(metrics, Verdict::pass("ok"));
-        let mut gate =
-            GateRecord::from_run(&record, hw(), sha.to_string(), Vec::new(), None).unwrap();
-        gate.benchmark_id = (*member).to_string();
-        gate.verdict = Some(verdict.to_string());
-        gate.recorded_at = secs + index as u64;
-        write_record(root, &gate).unwrap();
     }
+    for index in 0..PLANTED_SHARDS {
+        plant_shard(
+            root,
+            id,
+            (index, PLANTED_SHARDS),
+            sha,
+            secs + index as u64,
+            verdict,
+        );
+    }
+}
+
+/// How many ways `plant_required` splits a group: three, so no fixture can
+/// pass by matching the historical four by accident.
+pub(super) const PLANTED_SHARDS: usize = 3;
+
+/// One shard record of `group` at `sha`, with tallies and shard identity.
+pub(super) fn plant_shard(
+    root: &Path,
+    group: &str,
+    shard: (usize, usize),
+    sha: &str,
+    secs: u64,
+    verdict: &str,
+) {
+    std::fs::create_dir_all(gate_dir(root, group)).unwrap();
+    let mut metrics = BTreeMap::new();
+    metrics.insert("overall_accuracy".to_string(), 90.0);
+    metrics.insert("subset.simple_python.hits".to_string(), 95.0);
+    metrics.insert("subset.simple_python.n".to_string(), 100.0);
+    metrics.insert("shard.index".to_string(), shard.0 as f64);
+    metrics.insert("shard.count".to_string(), shard.1 as f64);
+    metrics.insert("transport_errors".to_string(), 0.0);
+    let record = run_record(metrics, Verdict::pass("ok"));
+    let mut gate = GateRecord::from_run(&record, hw(), sha.to_string(), Vec::new(), None).unwrap();
+    gate.benchmark_id = group.to_string();
+    gate.verdict = Some(verdict.to_string());
+    gate.recorded_at = secs;
+    write_record(root, &gate).unwrap();
 }
 
 #[test]

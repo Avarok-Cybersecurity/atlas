@@ -1,4 +1,4 @@
-# Cloudflare Pages equivalent of book/deploy/nginx/docs.atlasinference.io.conf.
+# Cloudflare Pages equivalent of book/deploy/nginx/docs.atlascybernetics.ai.conf.
 #
 # Cache-Control is NOT on `/*`: Pages concatenates a header a later rule
 # re-declares rather than replacing it, and a browser reads the first max-age —

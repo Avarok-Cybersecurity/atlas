@@ -221,6 +221,25 @@ impl Bfcl {
         let Some(s) = &self.scores else {
             return Verdict::info("not scored");
         };
+        // A shard is one slice of the draw. Its slice against a floor cut for
+        // the WHOLE draw is not a verdict — a sixth of 995 samples swings by
+        // several points between slices (80.1 to 85.7 on one campaign) while
+        // the aggregate moves by tenths — so it reports what it measured and
+        // leaves the word to the group (`gate::check_group`, which sums the
+        // per-subset tallies below and judges the union once). A per-slice
+        // PASS/FAIL here made the child exit 2 on a healthy slice and put a
+        // misleading word on a record the gate never reads.
+        if let Some(shard) = self.shard {
+            return Verdict::info(format!(
+                "shard {}/{} — overall {:.2} · normalized {:.2} · n={} on this slice; the \
+                 group's verdict is the aggregate over the whole partition",
+                shard.index,
+                shard.count,
+                s.overall_accuracy,
+                s.normalized_single_turn_score,
+                s.total_samples
+            ));
+        }
         floor_verdict(self.target_model.as_deref(), s, self.baseline_mins)
     }
 }

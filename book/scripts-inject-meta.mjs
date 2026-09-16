@@ -22,7 +22,7 @@
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
-const ORIGIN = 'https://docs.atlasinference.io';
+const ORIGIN = 'https://docs.atlascybernetics.ai';
 const BOOK = 'The Atlas Book';
 const root = process.argv[2];
 if (!root) {
@@ -94,7 +94,7 @@ for (const file of pages) {
     description,
     url: canonical,
     isPartOf: { '@type': 'WebSite', name: BOOK, url: `${ORIGIN}/` },
-    publisher: { '@type': 'Organization', name: 'Atlas Inference', url: 'https://atlasinference.io/' }
+    publisher: { '@type': 'Organization', name: 'Atlas Inference', url: 'https://atlascybernetics.ai/' }
     // JSON.stringify does not escape "<", so a closing script tag anywhere in a
     // chapter's prose would end the block early and spill markup into the page.
   }).replace(/</g, '\\u003c');

@@ -15,10 +15,6 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use atlas_plugin::gate;
 
-/// The threshold `bench_selfstart` applies before serving: the same number,
-/// read from the same place, so certify cannot pass a box the child refuses.
-pub const MIN_FREE_FRACTION: f64 = super::super::bench_selfstart::MIN_FREE_FRACTION;
-
 /// What was observed.
 #[derive(Clone, Debug, Default)]
 pub struct PreflightFacts {
@@ -32,6 +28,10 @@ pub struct PreflightFacts {
     pub other_spark_pids: Vec<u32>,
     /// `MemAvailable / MemTotal`; `None` when `/proc/meminfo` is unreadable.
     pub free_fraction: Option<f64>,
+    /// The class's floor for it (`HARDWARE.toml` `[benchmarks.limits.memory]`)
+    /// — the same number the child's self-start applies, so certify cannot
+    /// pass a box the child refuses.
+    pub min_free_fraction: f64,
     pub guard_ref: Option<String>,
     pub no_guard: bool,
     pub needs_confirmation_units: Vec<&'static str>,
@@ -97,12 +97,12 @@ pub fn evaluate(f: &PreflightFacts) -> Vec<Finding> {
     }
     match f.free_fraction {
         _ if f.remote_only => {}
-        Some(frac) if frac < MIN_FREE_FRACTION => out.push(Finding(format!(
+        Some(frac) if frac < f.min_free_fraction => out.push(Finding(format!(
             "only {:.0} % of host memory is available; a self-start needs {:.0} % — \
              something else is holding memory (check `nvidia-smi --query-compute-apps` \
              and `sudo docker ps`)",
             frac * 100.0,
-            MIN_FREE_FRACTION * 100.0
+            f.min_free_fraction * 100.0
         ))),
         Some(_) => {}
         None => out.push(Finding(
@@ -135,6 +135,7 @@ pub fn gather(
     needs_confirmation_units: Vec<&'static str>,
     yes: bool,
     remote_only: bool,
+    min_free_fraction: f64,
 ) -> Result<PreflightFacts> {
     let head = gate::git_sha(root)?;
     let dirty_perf_paths = gate::dirty_perf_paths(root)?;
@@ -159,6 +160,7 @@ pub fn gather(
         atlas_home_writable,
         other_spark_pids: other_spark_pids(),
         free_fraction: free_fraction(),
+        min_free_fraction,
         guard_ref,
         no_guard,
         needs_confirmation_units,
@@ -218,6 +220,7 @@ mod tests {
             atlas_home_writable: true,
             other_spark_pids: vec![],
             free_fraction: Some(0.95),
+            min_free_fraction: 0.85,
             guard_ref: Some("avarok/main".into()),
             no_guard: false,
             needs_confirmation_units: vec![],
@@ -311,13 +314,16 @@ mod tests {
         assert!(evaluate(&f).is_empty());
     }
 
-    /// The free-memory bar is the child's bar, not a second one.
+    /// The free-memory bar is the class's declared floor, inclusive.
     #[test]
-    fn the_memory_threshold_is_the_self_start_threshold() {
+    fn the_memory_threshold_is_the_declared_floor() {
         let mut f = clean();
-        f.free_fraction = Some(MIN_FREE_FRACTION);
+        f.free_fraction = Some(f.min_free_fraction);
         assert!(evaluate(&f).is_empty());
-        f.free_fraction = Some(MIN_FREE_FRACTION - 0.001);
+        f.free_fraction = Some(f.min_free_fraction - 0.001);
         assert_eq!(evaluate(&f).len(), 1);
+        // Another class, another floor: the same reading passes at 0.5.
+        f.min_free_fraction = 0.5;
+        assert!(evaluate(&f).is_empty());
     }
 }

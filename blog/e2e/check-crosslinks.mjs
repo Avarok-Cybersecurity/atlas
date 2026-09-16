@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Every fragment the blog points at on atlasinference.io must exist there.
+ * Every fragment the blog points at on atlascybernetics.ai must exist there.
  *
  *   bun blog/e2e/check-crosslinks.mjs [site-build-dir] [blog-build-dir]
  *
@@ -18,7 +18,7 @@ import { join, relative, sep } from 'node:path';
 
 const siteDir = process.argv[2] ?? 'site/build';
 const blogDir = process.argv[3] ?? 'blog/build';
-const MAIN = 'https://atlasinference.io';
+const MAIN = 'https://atlascybernetics.ai';
 
 const walk = (dir) =>
   readdirSync(dir).flatMap((e) => {

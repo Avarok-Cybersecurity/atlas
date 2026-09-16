@@ -529,6 +529,62 @@ async fn get_models(target: &TargetEndpoint, timeout: Duration) -> Result<String
         .with_context(|| format!("reading models from {}", target.base_url))
 }
 
+/// `GET <path>` and parse the FIRST JSON value of the reply (Atlas answers
+/// chunked, so the raw body carries framing after the document).
+pub async fn get_json(
+    target: &TargetEndpoint,
+    path: &str,
+    timeout: Duration,
+) -> Result<serde_json::Value> {
+    let (host, port) = target.host_port()?;
+    let fut = async {
+        let mut sock = TcpStream::connect((host.as_str(), port)).await?;
+        let req =
+            format!("GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
+        sock.write_all(req.as_bytes()).await?;
+        let mut body = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = sock.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&buf[..n]);
+            if body.len() > 1 << 20 {
+                break;
+            }
+        }
+        anyhow::Ok(String::from_utf8_lossy(&body).into_owned())
+    };
+    let raw = tokio::time::timeout(timeout, fut)
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "{} did not answer {path} within {:?}",
+                target.base_url,
+                timeout
+            )
+        })?
+        .with_context(|| format!("reading {path} from {}", target.base_url))?;
+    let status = raw
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+    let start = raw
+        .find('{')
+        .with_context(|| format!("{path} returned no JSON (status {status})"))?;
+    let doc: serde_json::Value = serde_json::Deserializer::from_str(&raw[start..])
+        .into_iter()
+        .next()
+        .with_context(|| format!("{path} returned an empty body"))?
+        .with_context(|| format!("{path} did not return JSON"))?;
+    if status != 200 {
+        anyhow::bail!("{path} answered {status}: {doc}");
+    }
+    Ok(doc)
+}
+
 /// `GET /hardware` — the serving box's hardware fingerprint.
 ///
 /// Fetched from the endpoint rather than probed locally because a benchmark

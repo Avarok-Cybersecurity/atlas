@@ -224,6 +224,24 @@ pub async fn hardware() -> Response {
     Json(hw).into_response()
 }
 
+/// GET /serve-config — the digests that say WHICH server this is: the bytes
+/// of its binary and the arguments it was started with. Digests, never the
+/// arguments (an argv can carry `--auth-token`). A benchmark that would
+/// rather reuse a running server than start its own compares these against
+/// what it would have started — see `cli::bench_lease`.
+pub async fn serve_config() -> Response {
+    let id =
+        tokio::task::spawn_blocking(|| atlas_plugin::serve_identity::this_process().clone()).await;
+    match id {
+        Ok(id) => Json(id).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
 /// POST /tokenize — tokenize text or chat messages, return token IDs and count.
 pub async fn tokenize(
     CurrentModel(state): CurrentModel,

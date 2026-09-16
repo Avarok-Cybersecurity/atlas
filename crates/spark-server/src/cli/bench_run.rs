@@ -45,6 +45,10 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
             None => bench_print::print_suite(a.format),
         },
         BenchmarkCommand::History(a) => history_cmd(a),
+        BenchmarkCommand::ServeRelease => {
+            let code = super::bench_lease::release_cmd()?;
+            std::process::exit(code);
+        }
         BenchmarkCommand::Card(a) => super::bench_card::card_cmd(a),
         BenchmarkCommand::Certify(a) => {
             let code = super::bench_certify::certify_cmd(a).await?;
@@ -172,6 +176,22 @@ fn warn_if_signer_is_not_committed(root: &std::path::Path) {
 #[path = "bench_provenance_tests.rs"]
 mod provenance_tests;
 
+/// The box class's temperature ceilings for the hardware pre-check, from
+/// `kernels/<hw>/HARDWARE.toml` `[benchmarks.limits.thermal]` — the class
+/// named by `--hardware`, else the probed one. `None` (no repository here, or
+/// a class that declares none) is recorded on the run as "not judged".
+fn temp_ceilings(hardware: Option<&str>) -> Option<atlas_plugin::hardware::policy::TempCeilings> {
+    let root = repo_root().ok()?;
+    let class = match hardware {
+        Some(h) => h.to_string(),
+        None => atlas_plugin::hardware::Hardware::probe().gate_key(),
+    };
+    atlas_plugin::hardware::limits::limits(&root, &class)
+        .ok()
+        .flatten()
+        .map(|l| atlas_plugin::hardware::policy::TempCeilings::of(&l.thermal))
+}
+
 fn store() -> Result<ArtifactStore> {
     ArtifactStore::discover()
 }
@@ -236,7 +256,15 @@ async fn run(args: RunArgs) -> Result<i32> {
     // it down; the ones that can happen first, should. (`SelfServed::drop`
     // covers the ones that cannot.)
     let store = store()?;
-    let served = if args.pull_request_gate {
+    let served = if args.pull_request_gate && args.serve_reuse {
+        let plan = super::bench_serve_plan::plan_serve(
+            &args.id,
+            args.hardware.as_deref(),
+            args.checkpoint.as_deref(),
+            super::bench_resolve::parse_serve_overrides(&args.serve_override)?,
+        )?;
+        Some(super::bench_lease::acquire(plan, args.serve_lease_owner).await?)
+    } else if args.pull_request_gate {
         Some(
             super::bench_selfstart::serve_for(
                 &args.id,
@@ -310,6 +338,7 @@ async fn run(args: RunArgs) -> Result<i32> {
             } else {
                 atlas_plugin::CoherencePolicy::Probe
             },
+            temp_ceilings: temp_ceilings(args.hardware.as_deref()),
         },
     };
 
