@@ -236,7 +236,8 @@ html[data-theme="dark"] .marketing .m-hero-art img.m-hero-ondark {
     font-size: clamp(62px, 6.6vw, 104px);
     font-weight: 450;
     line-height: 1.04;
-    letter-spacing: -0.072em;
+    /* Tight, but not so tight that Arial's r runs into the m in "terms". */
+    letter-spacing: -0.05em;
     margin: 0 0 25px;
   }
   h1 em {
