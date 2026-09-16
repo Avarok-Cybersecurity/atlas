@@ -34,21 +34,20 @@
   const variants = ladder.series.filter((s) => s.role === 'variant');
   const plotted = [subject, ...variants, ...baselines];
 
-  const COLOR = {
-    avarok: 'var(--accent)',
-    'avarok-dflash2': 'var(--accent)',
+  // Series are styled by role, not by id: the ids come from the published
+  // bench manifest (bench/ladder38/published.json), which is a recorded
+  // measurement and keeps whatever engine name it was recorded under, so a
+  // lookup keyed on the brand name silently loses the subject line when the
+  // two drift. Only the baselines are told apart by id.
+  const BASELINE_COLOR = {
     'vllm-mtp': 'var(--t2)',
     'vllm-nospec': 'var(--t3, var(--t2))'
   };
-  // The DFlash2 variant shares the Avarok hue and is told apart by its dash:
-  // it is the same engine on the same weights, so a second colour would say
-  // "different subject". Same reasoning as gate-variants.js on the dashboard.
-  const DASH = {
-    avarok: null,
-    'avarok-dflash2': '5 4',
-    'vllm-mtp': null,
-    'vllm-nospec': '5 4'
-  };
+  const colorOf = (s) => (s.role === 'baseline' ? BASELINE_COLOR[s.id] ?? 'var(--t2)' : 'var(--accent)');
+  // A variant shares the subject hue and is told apart by its dash: it is the
+  // same engine on the same weights, so a second colour would say "different
+  // subject". Same reasoning as gate-variants.js on the dashboard.
+  const dashOf = (s) => (s.role === 'variant' || s.id === 'vllm-nospec' ? '5 4' : null);
 
   const cs = ladder.concurrencies;
   const allV = plotted.flatMap((s) => s.rungs.map((r) => r.tok_s));
@@ -96,8 +95,8 @@
         {#each plotted as s}
           <span class="cl-key">
             <svg class="cl-swatch" viewBox="0 0 22 8" aria-hidden="true">
-              <line x1="1" y1="4" x2="21" y2="4" stroke={COLOR[s.id]} stroke-width="2.5"
-                stroke-dasharray={DASH[s.id]} stroke-linecap="round" />
+              <line x1="1" y1="4" x2="21" y2="4" stroke={colorOf(s)} stroke-width="2.5"
+                stroke-dasharray={dashOf(s)} stroke-linecap="round" />
             </svg>
             <span>{s.label}</span>
             {#if s.parity === 'unmatched'}<span class="cl-tag">config differs</span>{/if}
@@ -121,13 +120,13 @@
         </text>
 
         {#each plotted as s}
-          <path d={path(s.rungs)} fill="none" stroke={COLOR[s.id]}
+          <path d={path(s.rungs)} fill="none" stroke={colorOf(s)}
             stroke-width={s.role === 'subject' ? 2.6 : 1.8}
-            stroke-dasharray={DASH[s.id]} stroke-linejoin="round" stroke-linecap="round"
+            stroke-dasharray={dashOf(s)} stroke-linejoin="round" stroke-linecap="round"
             opacity={s.role === 'subject' ? 1 : 0.75} />
           {#each s.rungs as r}
             <circle cx={x(r.c)} cy={y(r.tok_s)} r={s.role === 'subject' ? 3.6 : 2.6}
-              fill={COLOR[s.id]} opacity={s.role === 'subject' ? 1 : 0.75}>
+              fill={colorOf(s)} opacity={s.role === 'subject' ? 1 : 0.75}>
               <title>{s.label} · C={r.c} · {fmtV(r.tok_s)} tok/s · mean of {r.reps} reps</title>
             </circle>
           {/each}
