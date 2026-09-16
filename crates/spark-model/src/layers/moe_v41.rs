@@ -283,8 +283,8 @@ impl MoeV41 {
         let (kernel, grid, block) = if m <= 8 {
             (
                 self.k.router_gemv,
-                [(c.n_routed as u32).div_ceil(128), m as u32, 1],
-                [128, 1, 1],
+                [(c.n_routed as u32).div_ceil(64), m as u32, 1],
+                [64, 1, 1],
             )
         } else {
             (

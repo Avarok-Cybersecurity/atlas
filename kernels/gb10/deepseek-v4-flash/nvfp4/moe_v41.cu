@@ -72,7 +72,7 @@ extern "C" __global__ void moe_v41_scatter_add(
 // 16x16 tile idling 15 of its rows at m = 1. K is a multiple of 8 (dim = 5120):
 // 8 bf16 per 16-byte load, consumed in order.
 //
-// Grid: (ceil(N/128), M, 1)  Block: (128, 1, 1)
+// Grid: (ceil(N/64), M, 1)  Block: (64, 1, 1)
 extern "C" __global__ void moe_v41_router_gemv_f32out(
     const __nv_bfloat16* __restrict__ A,  // [M, K] row-major
     const __nv_bfloat16* __restrict__ B,  // [N, K] row-major
@@ -90,7 +90,31 @@ extern "C" __global__ void moe_v41_router_gemv_f32out(
     const uint4* b4 = (const uint4*)b;
     float acc = 0.0f;
     const unsigned int k8n = K / 8;
-    for (unsigned int k8 = 0; k8 < k8n; ++k8) {
+    // Eight 16-byte pairs in flight per trip (64 weights), all loads issued
+    // before any add; the adds then run in strict k order, so the sum is the
+    // same bits as the one-load-at-a-time loop.
+    const unsigned int k64n = k8n / 8;
+    for (unsigned int k64 = 0; k64 < k64n; ++k64) {
+        uint4 av[8], bv[8];
+        #pragma unroll
+        for (int u = 0; u < 8; ++u) { av[u] = a4[k64 * 8 + u]; bv[u] = b4[k64 * 8 + u]; }
+        #pragma unroll
+        for (int u = 0; u < 8; ++u) {
+            const unsigned int ar[4] = {av[u].x, av[u].y, av[u].z, av[u].w};
+            const unsigned int br[4] = {bv[u].x, bv[u].y, bv[u].z, bv[u].w};
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                __nv_bfloat16 alo, ahi, blo, bhi;
+                *(unsigned short*)&alo = (unsigned short)(ar[i] & 0xFFFFu);
+                *(unsigned short*)&ahi = (unsigned short)(ar[i] >> 16);
+                *(unsigned short*)&blo = (unsigned short)(br[i] & 0xFFFFu);
+                *(unsigned short*)&bhi = (unsigned short)(br[i] >> 16);
+                acc += __bfloat162float(alo) * __bfloat162float(blo);
+                acc += __bfloat162float(ahi) * __bfloat162float(bhi);
+            }
+        }
+    }
+    for (unsigned int k8 = k64n * 8; k8 < k8n; ++k8) {
         const uint4 av = a4[k8];
         const uint4 bv = b4[k8];
         const unsigned int ar[4] = {av.x, av.y, av.z, av.w};
