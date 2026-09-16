@@ -24,6 +24,7 @@ pub mod glm5next_mtp_head;
 /// GLM-5.3-Flash 45-layer text-model skeleton (Slice 9 -- topology, wiring, structural binding).
 pub mod glm5next_skeleton;
 pub mod moe;
+pub mod moe_v41;
 pub mod mtp_head;
 pub(crate) mod mtp_meta;
 pub mod mtp_multi;
