@@ -339,7 +339,20 @@ impl TransformerModel {
             // path degrades output quality (cache-ON ws ~23% vs cache-OFF ~60% with
             // give-ups already eliminated). If ws climbs with this set, that path
             // is the residual bug.
+            //
+            // A105: `local_proposal`'s `bypass_exact` already refuses to
+            // propose an exact (snap_tok == matched == total) restore when
+            // `!exact_enabled`, so this probe's raw-field exactness check can
+            // only ever agree with an already-happened restore when
+            // `exact_enabled` is true — at which point `!exact_enabled` below
+            // is false and the probe doesn't fire either way. So today this
+            // branch is unreachable whenever `restore.is_some()`. Rather than
+            // rely on that chain staying true across future edits to
+            // `local_proposal`, gate on `restore.is_none()` explicitly: this
+            // probe may only ever act on a `skip` that did NOT come from a
+            // rank-agreed restore, never flip one that did.
             if skip
+                && restore.is_none()
                 && prefix_match.ssm_snapshot_tokens == matched
                 && matched == total
                 && !super::exact_leaf::marconi_exact_enabled()
@@ -401,6 +414,18 @@ impl TransformerModel {
             // than a plain recompute. `eff_snapshot_tokens` makes the skip point
             // equal the restored state depth.
             let snap_tok = restore.map_or(0, |(_, t)| t);
+            // A105: for SSM sequences, `skip` here must be exactly the
+            // rank-agreed restore outcome — nothing between the restore
+            // arm above and here may flip it (the CBD probe is gated off
+            // whenever `restore.is_some()`, see above). This does not hold
+            // for non-SSM sequences: F82's cache-hit skip sets `skip = true`
+            // with no snapshot/restore concept at all, by design.
+            debug_assert!(
+                !has_ssm || skip == restore.is_some(),
+                "A105: skip ({skip}) diverged from the rank-agreed restore outcome \
+                 ({}) for an SSM sequence — something flipped skip after the vote",
+                restore.is_some()
+            );
             let skip_tokens = snap_agree::skip_point(skip, snap_tok, matched, total, has_ssm);
             seq.marconi_skip_to = skip_tokens;
             // #919: report what was REUSED, not what the lookup matched. The
