@@ -2,7 +2,7 @@
 <script>
   // Region A of the bridge: 48px of who-and-how-bad.
   //
-  // Left, identity and trust: the Atlas mark (the way back to the site the
+  // Left, identity and trust: the Avarok mark (the way back to the site the
   // rest of this surface deliberately is not), the connection chip, and the
   // trust counts — vouched counted apart from paired, because second-hand
   // identity must never wear a verified pin's clothes.
@@ -61,9 +61,9 @@
 
 <header class="cmd" aria-label="Fleet command strip">
   <div class="cmd-left">
-    <a class="cmd-mark" href="/" aria-label="Atlas home">
+    <a class="cmd-mark" href="/" aria-label="Avarok home">
       <img src="/favicon.svg" alt="" width="20" height="20" />
-      <span>Atlas</span>
+      <span>Avarok</span>
     </a>
     <span class="cmd-chip" class:cmd-chip-amber={fleet.controlOnly}>
       {fleet.controlOnly ? 'control-only' : 'live'}

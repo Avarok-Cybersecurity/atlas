@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-full-ondark.svg">
     <source media="(prefers-color-scheme: light)" srcset="assets/brand/logo-full.svg">
-    <img src="assets/brand/logo-full-ondark.svg" alt="Atlas Inference Engine" width="660">
+    <img src="assets/brand/logo-full-ondark.svg" alt="Avarok Inference Engine" width="660">
   </picture>
 </h1>
 
@@ -28,17 +28,17 @@
 </p>
 
 <p align="center">
-  <a href="assets/atlas-demo.mp4"><img alt="Terminal demo of Atlas serving a model on a DGX Spark — click for the full-quality MP4" src="assets/atlas-demo.gif" width="820" /></a>
+  <a href="assets/atlas-demo.mp4"><img alt="Terminal demo of Avarok serving a model on a DGX Spark — click for the full-quality MP4" src="assets/atlas-demo.gif" width="820" /></a>
 </p>
 
-**Atlas** is an open-source **LLM inference engine** written in pure **Rust and CUDA**. It serves an **OpenAI-compatible server** (plus Anthropic and Responses APIs) from a single ~75 MB binary — no Python, no PyTorch, no runtime compilation — with hand-tuned **CUDA kernels** per (hardware × model × quantization) target, **NVFP4 and FP8 quantization**, **speculative decoding** (MTP draft heads and DFlash block diffusion), radix-tree prefix caching, and expert parallelism across nodes. It is verified today on the NVIDIA **DGX Spark** (**GB10**, **Blackwell** SM121), compiles the same CUDA source for AMD Strix Halo (gfx1151) through [SCALE](https://docs.scale-lang.com/stable/), and on the published GB10 concurrency ladder it out-serves vLLM at every rung from C=1 to C=128 — [conditions below](#performance).
+**Avarok** is an open-source **LLM inference engine** written in pure **Rust and CUDA**. It serves an **OpenAI-compatible server** (plus Anthropic and Responses APIs) from a single ~75 MB binary — no Python, no PyTorch, no runtime compilation — with hand-tuned **CUDA kernels** per (hardware × model × quantization) target, **NVFP4 and FP8 quantization**, **speculative decoding** (MTP draft heads and DFlash block diffusion), radix-tree prefix caching, and expert parallelism across nodes. It is verified today on the NVIDIA **DGX Spark** (**GB10**, **Blackwell** SM121), compiles the same CUDA source for AMD Strix Halo (gfx1151) through [SCALE](https://docs.scale-lang.com/stable/), and on the published GB10 concurrency ladder it out-serves vLLM at every rung from C=1 to C=128 — [conditions below](#performance).
 
 Receipts, not adjectives:
 
 - Our fused Qwen Gated DeltaNet kernel is [merged into Hugging Face Transformers](https://github.com/huggingface/transformers/pull/46423).
 - We sit on the MLCommons Edge-LLM taskforce and [helped shape the MLPerf Inference v6.1 edge agentic benchmark](https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/); our v6.1 submission is in (closed edge division, GB10 and gfx1151 from the same CUDA source), with results under embargo until MLCommons publishes.
 - Every release image passes a serve gate: boot, coherence, tool calls, and throughput within tolerance of a committed baseline. A release that ships slower than its baseline fails the gate.
-- The engineering story is written up in the open on the [Atlas blog](https://blog.atlascybernetics.ai), starting with [the seven tenets behind the engine](https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference).
+- The engineering story is written up in the open on the [Avarok blog](https://blog.atlascybernetics.ai), starting with [the seven tenets behind the engine](https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference).
 
 ---
 

@@ -193,7 +193,7 @@ export const audit = [
   {
     state: 'open',
     risk: 'Fleet drift over time',
-    answer: 'A fleet-wide shift cost Atlas 4.2% and vLLM 2.2% at C=32. The margin narrowed and held; the differential is published rather than the favourable snapshot.'
+    answer: 'A fleet-wide shift cost Avarok 4.2% and vLLM 2.2% at C=32. The margin narrowed and held; the differential is published rather than the favourable snapshot.'
   },
   {
     state: 'open',

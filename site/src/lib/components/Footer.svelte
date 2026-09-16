@@ -8,12 +8,12 @@
 <footer>
   <div class="footer-inner">
     <div class="footer-brand">
-      <div class="flogo"><AtlasLockup kind="full" label="Atlas Inference Engine" /></div>
+      <div class="flogo"><AtlasLockup kind="full" label="Avarok Inference Engine" /></div>
       <p>{footer.tagline}</p>
       <p class="lic">{footer.license}</p>
       <div class="footer-social">
-        <a href={discordUrl} aria-label="Atlas on Discord" target="_blank" rel="noopener"><DiscordIcon size={20} /></a>
-        <a href={xUrl} aria-label="Atlas on X" target="_blank" rel="noopener"><XIcon size={17} /></a>
+        <a href={discordUrl} aria-label="Avarok on Discord" target="_blank" rel="noopener"><DiscordIcon size={20} /></a>
+        <a href={xUrl} aria-label="Avarok on X" target="_blank" rel="noopener"><XIcon size={17} /></a>
       </div>
     </div>
 
@@ -42,7 +42,7 @@
   </div>
 
   <div class="footer-legal">
-    <div>© Atlas Inference · Pure Rust + CUDA · Community Edition AGPLv3.</div>
+    <div>© Avarok Inference · Pure Rust + CUDA · Community Edition AGPLv3.</div>
     <div class="tm">{mlperfTrademark}</div>
   </div>
 </footer>

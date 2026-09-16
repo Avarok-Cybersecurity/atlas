@@ -214,7 +214,7 @@ jobs:
             echo "entry's \`note\` field."
           } > notes.md
           gh release create "$BUILD" \
-            --title "Atlas $BUILD" \
+            --title "Avarok $BUILD" \
             --notes-file notes.md \
             --prerelease \
             --target "$SHA" \

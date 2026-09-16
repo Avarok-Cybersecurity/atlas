@@ -32,13 +32,12 @@
   // Route-aware: a hardcoded canonical meant /control emitted two of them,
   // which is the same as emitting none.
   //
-  // The `.html` matters. adapter-static writes a sub-page to `<name>.html`, and
-  // the deploy target serves files literally — no extension guessing, no
-  // directory index outside the document root. A canonical of `/control` named
-  // a URL that answers 500, which is worse than naming none.
+  // Canonicals are extensionless. Cloudflare Pages pretty-URLs /engine (200)
+  // and 308s /engine.html → /engine, so a canonical ending in .html names a
+  // redirect. adapter-static still writes engine.html as the file.
   const marketingPage = $derived(['/', '/index.html'].includes(page.url.pathname));
   const enginePage = $derived(['/engine', '/engine.html'].includes(page.url.pathname));
-  const canonical = $derived(marketingPage ? SITE : `${SITE.replace(/\/$/, '')}${page.url.pathname.replace(/\.html$/, '')}.html`);
+  const canonical = $derived(marketingPage ? SITE : `${SITE.replace(/\/$/, '')}${page.url.pathname.replace(/\.html$/, '')}`);
 
   const SITE = 'https://atlascybernetics.ai/';
 
@@ -56,7 +55,7 @@
       {
         '@type': 'Organization',
         '@id': `${SITE}#org`,
-        name: 'Atlas Inference',
+        name: 'Avarok Inference',
         url: SITE,
         logo: `${SITE}icon-512.png`,
         description: tagline,
@@ -66,7 +65,7 @@
         '@type': 'WebSite',
         '@id': `${SITE}#site`,
         url: SITE,
-        name: 'Atlas Inference',
+        name: 'Avarok Inference',
         description: tagline,
         inLanguage: 'en',
         publisher: { '@id': `${SITE}#org` }
@@ -74,8 +73,8 @@
       {
         '@type': 'SoftwareApplication',
         '@id': `${SITE}#app`,
-        name: 'Atlas Inference Engine',
-        alternateName: 'Atlas',
+        name: 'Avarok Inference Engine',
+        alternateName: 'Avarok',
         applicationCategory: 'DeveloperApplication',
         applicationSubCategory: 'LLM inference engine',
         operatingSystem: 'Linux',
@@ -94,7 +93,7 @@
       },
       {
         '@type': 'FAQPage',
-        '@id': `${SITE}engine.html#faq`,
+        '@id': `${SITE}engine#faq`,
         isPartOf: { '@id': `${SITE}#site` },
         mainEntity: faq.items.map((item) => ({
           '@type': 'Question',

@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Atlas Inference Engine",
-  "short_name": "Atlas",
+  "name": "Avarok Inference Engine",
+  "short_name": "Avarok",
   "description": "Pure Rust inference, from the device in your hand to the datacenter rack.",
   "lang": "en",
   "dir": "ltr",
@@ -11,8 +11,8 @@
   "display_override": ["window-controls-overlay", "standalone"],
   "orientation": "any",
   "categories": ["developer", "productivity", "utilities"],
-  "theme_color": "#0F1216",
-  "background_color": "#0F1216",
+  "theme_color": "#FFFFFF",
+  "background_color": "#FFFFFF",
   "icons": [
     {
       "src": "/icon-192.png",

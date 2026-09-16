@@ -162,7 +162,7 @@ jobs:
             esac
           }
 
-          check /         'Atlas, pure Rust inference'
+          check /         'Avarok, pure Rust inference'
           # The URL the site actually links to. adapter-static writes this
           # route to control.html, and the deploy target serves files
           # literally, so this is the spelling that resolves.

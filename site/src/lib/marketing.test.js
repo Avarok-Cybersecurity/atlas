@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, test } from "bun:test";
-import { benchmarkHighlight, legacyEngineDestination } from "./marketing.js";
+import { benchmarkHighlight, ENGINE, legacyEngineDestination } from "./marketing.js";
+
+test("the public developer URL is extensionless /engine", () => {
+  expect(ENGINE).toBe("/engine");
+});
 
 const data = {
   rows: [
@@ -58,14 +62,14 @@ test("missing or invalid evidence cannot turn into a marketing claim", () => {
   }
 });
 test("legacy technical fragments keep their precise destination and query", () => {
-  expect(legacyEngineDestination("#faq", "?ref=docs")).toBe("/engine.html?ref=docs#faq");
-  expect(legacyEngineDestination("#hardware", "")).toBe("/engine.html#hardware");
-  expect(legacyEngineDestination("#%66aq", "")).toBe("/engine.html#faq");
+  expect(legacyEngineDestination("#faq", "?ref=docs")).toBe("/engine?ref=docs#faq");
+  expect(legacyEngineDestination("#hardware", "")).toBe("/engine#hardware");
+  expect(legacyEngineDestination("#%66aq", "")).toBe("/engine#faq");
   for (const hash of [
     "#verified",
     "#models",
     "#run",
-    "#why-atlas",
+    "#why-avarok",
     "#not-a-section",
     "#%E0%A4%A",
   ]) {

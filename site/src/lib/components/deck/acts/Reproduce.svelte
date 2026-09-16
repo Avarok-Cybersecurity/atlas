@@ -49,10 +49,11 @@
         vLLM badly, so it was replaced and the old column kept in view rather than deleted.
       </p>
       <p class="lead">
-        The published table therefore carries two baselines: the matched one we claim against, and
-        the unmatched one, labelled as such. At C=128 the unmatched configuration is actually
-        <em>faster</em> than the matched one — vLLM's speculation costs it throughput at high
-        concurrency — so we claim against whichever is stronger at each rung.
+        The published table therefore carries two baselines: the matched MTP configuration we
+        claim against, and the unmatched no-speculation leg, labelled as such. At C=128 the
+        unmatched configuration is actually <em>faster</em> than the matched one (vLLM's
+        speculation costs it throughput at high concurrency), so it is plotted, not scored.
+        The headline ratio stays against the matched fingerprint.
       </p>
     </div>
     <aside class="quote at" style="--n: 2">
@@ -157,7 +158,7 @@
       `  --kv-cache-dtype fp8 --enable-prefix-caching \\`,
       `  --speculative-config '{"method":"mtp","num_speculative_tokens":3}'`
     ]}
-    note="num_speculative_tokens 3 is K=4 — the same draft width Atlas runs. Context 2048 and batch cap 128 are the pinned pair; changing either invalidates the comparison in both directions."
+    note="num_speculative_tokens 3 is K=4 — the same draft width Avarok runs. Context 2048 and batch cap 128 are the pinned pair; changing either invalidates the comparison in both directions."
   />
 </Slide>
 
@@ -169,7 +170,7 @@
         whole certified configuration, rendered from the record the harness wrote."
 >
   <Cmd
-    label="Atlas — round-11 flags, complete"
+    label="Avarok — round-11 flags, complete"
     lines={[...serve.env.map((l) => `${l} \\`), ...serve.cli.map((l, i, a) => (i < a.length - 1 ? `${l} \\` : l))]}
     note="Do not trim this. Six of these are kernel and scheduling knobs whose defaults are the OPPOSITE of the certified values — ssm-h-dtype, gdn-fused-norm, ssm-batched-recurrent, ssm-tail-midchunk, mtp-gate and prefill-varlen-batch — and serving without them measures a different engine. An abridged version of this command, run on 2026-08-26, landed 4.7% under the published ladder at C=1 and 14% under at C=4, the gap widening with concurrency exactly as those knobs predict. With the full command the same box reproduced every rung to within 2.2%."
   />

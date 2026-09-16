@@ -105,7 +105,7 @@
 </script>
 
 <svelte:window {onkeydown} />
-<svelte:head><title>{title} · Atlas</title></svelte:head>
+<svelte:head><title>{title} · Avarok</title></svelte:head>
 
 <div class="dk" style="--sx: var(--ch-{act})">
   <p class="dk-live" aria-live="polite">Slide {index + 1} of {total}</p>
@@ -148,7 +148,7 @@
   </div>
 
   <div class="dk-chrome">
-    <a class="dk-mark" href="/" aria-label="Atlas home"><Chevrons /></a>
+    <a class="dk-mark" href="/" aria-label="Avarok home"><Chevrons /></a>
     <span class="dk-stamp mono">{stamp}</span>
     <span class="dk-count mono">{String(index + 1).padStart(2, '0')} / {String(total).padStart(2, '0')}</span>
   </div>

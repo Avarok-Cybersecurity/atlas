@@ -56,8 +56,8 @@
 
 <nav>
   <div class="nav-inner">
-    <a class="nav-logo" href="/" aria-label="Atlas home">
-      <AtlasLockup kind="horizontal" width={122} label="Atlas" />
+    <a class="nav-logo" href="/" aria-label="Avarok home">
+      <AtlasLockup kind="horizontal" width={135} label="Avarok" />
     </a>
     <div class="nav-links">
       {#each nav.links as l}

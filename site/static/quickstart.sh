@@ -12,7 +12,7 @@ set -eu
 printf '\033[1;33m[atlas]\033[0m %s\n' "quickstart.sh has been replaced." >&2
 cat >&2 <<'MSG'
 
-  Atlas is now launched with `atlasctl`, which replaces sparkrun.
+  Avarok is now launched with `atlasctl`, which replaces sparkrun.
 
   Install it with:
 
@@ -22,8 +22,8 @@ cat >&2 <<'MSG'
 
       irm https://atlascybernetics.ai/install.ps1 | iex
 
-  Why the change: sparkrun redirects the Atlas recipe registry to a repository
-  Atlas does not control, and marks it trusted — which lets recipe-supplied
+  Why the change: sparkrun redirects the Avarok recipe registry to a repository
+  Avarok does not control, and marks it trusted — which lets recipe-supplied
   shell commands run on your host. If you have sparkrun installed, run
   `atlasctl doctor` after installing, or see:
 

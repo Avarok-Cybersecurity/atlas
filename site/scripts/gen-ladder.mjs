@@ -12,10 +12,11 @@
 //   exactly). The median and the rep spread are emitted alongside so the page
 //   can show how tight each rung was rather than asking for trust.
 //
-// Ratios are taken against the BEST vLLM configuration at each rung, not the
-//   matched one. At C=128 vLLM's no-speculation leg (390.42) beats its own MTP
-//   leg (358.57), and quoting the MTP number there would inflate our margin
-//   from 1.22x to 1.33x. The matched-parity ratio is emitted too, labelled.
+// Headline ratios are against the MATCHED-parity baseline (vLLM + MTP, same
+//   ctx, KV, speculation). An unmatched vLLM-no-spec leg exists and is plotted;
+//   it is a different fingerprint (bf16 KV, ctx 4096, no speculation) and is
+//   not the published denominator. ratio_vs_fastest keeps the old "fastest
+//   vLLM at this rung" number for anyone who wants it.
 //
 // Hard-fails on a missing file, a missing rung, or a rung whose reps are empty:
 //   a silently-dropped rung would render as a shorter ladder that still looks
@@ -112,10 +113,10 @@ if (!matched) die('no matched-parity baseline');
 
 // `variant`: another configuration of the SUBJECT engine (e.g. a different
 // drafter). Drawn on the chart, and deliberately absent from `rows`,
-// `ratio_vs_best`, `wins` and `summary` below: the published claim is Atlas
-// against the best vLLM at each rung, and admitting a second Atlas
+// `ratio_vs_best`, `wins` and `summary` below: the published claim is Avarok
+// against the matched vLLM baseline, and admitting a second Avarok
 // configuration would change what that number means. A variant is evidence
-// about Atlas, not evidence about the comparison.
+// about Avarok, not evidence about the comparison.
 //
 // It IS held to the same rung coverage as a baseline, for the same reason: a
 // line that stops partway along a log2 axis reads as a measurement, not as a
@@ -143,16 +144,17 @@ const rows = subject.rungs.map((row) => {
     if (!r) die(`baseline ${b.id} is missing rung C=${row.c}`);
     return { id: b.id, label: b.label, parity: b.parity, tok_s: r.tok_s };
   });
-  const best = perBaseline.reduce((a, b) => (b.tok_s > a.tok_s ? b : a));
+  const fastest = perBaseline.reduce((a, b) => (b.tok_s > a.tok_s ? b : a));
   const m = perBaseline.find((b) => b.id === matched.id);
   return {
     c: row.c,
     atlas: row.tok_s,
     baselines: perBaseline,
-    best_baseline_id: best.id,
-    ratio_vs_best: r3(row.tok_s / best.tok_s),
+    best_baseline_id: m.id,
+    ratio_vs_best: r3(row.tok_s / m.tok_s),
     ratio_vs_matched: r3(row.tok_s / m.tok_s),
-    wins: row.tok_s > best.tok_s
+    ratio_vs_fastest: r3(row.tok_s / fastest.tok_s),
+    wins: row.tok_s > m.tok_s
   };
 });
 
@@ -187,8 +189,8 @@ const out = {
     rungs: rows.length,
     won: rows.filter((r) => r.wins).length,
     all_won: rows.every((r) => r.wins),
-    min_ratio: r3(Math.min(...rows.map((r) => r.ratio_vs_best))),
-    max_ratio: r3(Math.max(...rows.map((r) => r.ratio_vs_best)))
+    min_ratio: r3(Math.min(...rows.map((r) => r.ratio_vs_matched))),
+    max_ratio: r3(Math.max(...rows.map((r) => r.ratio_vs_matched)))
   }
 };
 

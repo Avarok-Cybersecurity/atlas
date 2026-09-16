@@ -11,10 +11,13 @@ import { readFileSync } from 'node:fs';
  * files, leaving the chrome the old violet #14111f above a #0F1216 page.
  */
 const tokens = readFileSync(new URL('../../../web-shared/atlas-tokens.css', import.meta.url), 'utf8');
-const bg = tokens.match(/--bg:\s*(#[0-9a-fA-F]{6})/)?.[1];
+const bg = tokens.match(/:root\s*\{[\s\S]*?--bg:\s*(#[0-9a-fA-F]{6})/)?.[1];
+const lightBg = tokens.match(/\[data-theme="light"\]\s*\{[\s\S]*?--bg:\s*(#[0-9a-fA-F]{6})/)?.[1];
 
 test('the token file defines --bg (so the comparisons below are not vacuous)', () => {
   expect(bg).toMatch(/^#[0-9a-fA-F]{6}$/);
+  expect(lightBg).toMatch(/^#[0-9a-fA-F]{6}$/);
+  expect(lightBg.toLowerCase()).not.toBe(bg.toLowerCase());
 });
 
 test('the PWA manifest agrees with the page it frames', () => {
@@ -24,19 +27,20 @@ test('the PWA manifest agrees with the page it frames', () => {
   // #0F1216 page. theme_color is the window chrome; background_color is the
   // splash. Both are hand-written — a manifest cannot read a CSS custom
   // property — which is exactly why they need pinning.
+  // Light-only for now: chrome matches [data-theme="light"] --bg.
   const manifest = JSON.parse(readFileSync(new URL('../../static/site.webmanifest', import.meta.url), 'utf8'));
-  expect(manifest.theme_color?.toLowerCase()).toBe(bg.toLowerCase());
-  expect(manifest.background_color?.toLowerCase()).toBe(bg.toLowerCase());
+  expect(manifest.theme_color?.toLowerCase()).toBe(lightBg.toLowerCase());
+  expect(manifest.background_color?.toLowerCase()).toBe(lightBg.toLowerCase());
 });
 
 for (const [label, rel] of [
   ['marketing site', '../../src/app.html'],
   ['blog', '../../../blog/src/app.html']
 ]) {
-  test(`${label}: theme-color equals --bg`, () => {
+  test(`${label}: theme-color equals light --bg`, () => {
     const html = readFileSync(new URL(rel, import.meta.url), 'utf8');
     const m = html.match(/<meta\s+name="theme-color"\s+content="(#[0-9a-fA-F]{6})"/);
     expect(m, `${label}: no theme-color meta found`).not.toBeNull();
-    expect(m[1].toLowerCase()).toBe(bg.toLowerCase());
+    expect(m[1].toLowerCase()).toBe(lightBg.toLowerCase());
   });
 }

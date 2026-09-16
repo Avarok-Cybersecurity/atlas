@@ -1,7 +1,7 @@
 [book]
-title = "The Atlas Book"
-authors = ["Atlas Contributors"]
-description = "A comprehensive guide to Atlas — pure-Rust LLM inference for hyperoptimized (Hardware, Model, Quantization) kernel targets."
+title = "The Avarok Book"
+authors = ["Avarok Contributors"]
+description = "A comprehensive guide to Avarok — pure-Rust LLM inference for hyperoptimized (Hardware, Model, Quantization) kernel targets."
 language = "en"
 multilingual = false
 src = "src"

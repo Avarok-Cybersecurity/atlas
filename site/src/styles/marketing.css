@@ -1,24 +1,44 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 .marketing {
-  --background: #fff;
-  --foreground: var(--atlas-ink);
-  --primary: var(--atlas-ink);
-  --primary-foreground: #fff;
+  --background: var(--bg);
+  --foreground: var(--t1);
+  --primary: var(--t1);
+  --primary-foreground: var(--bg);
   --border: #e1e4eb;
-  --ring: var(--atlas-ink);
+  --ring: var(--t1);
   --muted: #f7f7f9;
-  --muted-foreground: #616979;
-  --card: #fff;
-  --card-foreground: var(--atlas-ink);
-  --popover: #fff;
-  --popover-foreground: var(--atlas-ink);
+  --muted-foreground: var(--t3);
+  --card: var(--bg);
+  --card-foreground: var(--t1);
+  --popover: var(--bg);
+  --popover-foreground: var(--t1);
   --accent: #f7f7f9;
-  --accent-foreground: var(--atlas-ink);
+  --accent-foreground: var(--t1);
   --secondary: #f7f7f9;
-  --secondary-foreground: var(--atlas-ink);
+  --secondary-foreground: var(--t1);
   --input: #dce1ec;
   --destructive: #c92d37;
   --radius: 0.5rem;
+}
+html[data-theme="dark"] .marketing {
+  --border: #303338;
+  --muted: #141821;
+  --muted-foreground: var(--t3);
+  --accent: #20242c;
+  --accent-foreground: var(--atlas-cyan);
+  --secondary: #20242c;
+  --secondary-foreground: var(--t1);
+  --input: #30353d;
+}
+html[data-theme="dark"] .marketing .m-brand img.m-logo-onlight {
+  display: none;
+}
+html[data-theme="dark"] .marketing .m-brand img.m-logo-ondark {
+  display: block;
+}
+html[data-theme="dark"] .marketing .m-hero-art img {
+  mix-blend-mode: screen;
+  opacity: 0.92;
 }
 .marketing .m-dark {
   --background: var(--atlas-ink);
@@ -65,7 +85,7 @@
   }
   a:focus-visible,
   button:focus-visible {
-    outline: 3px solid var(--atlas-ink);
+    outline: 3px solid var(--t1);
     outline-offset: 5px;
   }
   ::selection {
@@ -78,7 +98,7 @@
     left: 20px;
     padding: 14px;
     z-index: 100;
-    background: white;
+    background: var(--background);
   }
   .m-skip-link:focus {
     top: 10px;
@@ -92,7 +112,7 @@
     border-bottom: 1px solid var(--border);
     position: relative;
     z-index: 20;
-    background: white;
+    background: var(--background);
     gap: 30px;
   }
   .m-brand {
@@ -103,14 +123,23 @@
   }
   .m-brand img {
     display: block;
-    width: 150px;
+    width: 166px;
     height: auto;
+  }
+  .m-brand img.m-logo-ondark {
+    display: none;
+  }
+  .m-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
   }
   .m-header nav {
     display: flex;
     gap: 34px;
     align-items: center;
-    font-size: 14px;
+    font-size: 16px;
   }
   .m-header nav a {
     display: flex;
@@ -130,7 +159,7 @@
     padding: 18px 24px;
     border: 1px solid transparent;
     border-radius: 7px;
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 500;
     transition:
       background 0.2s,
@@ -149,16 +178,16 @@
     background: var(--atlas-cyan);
   }
   .m-button-dark {
-    background: var(--atlas-ink);
-    color: white;
+    background: var(--t1);
+    color: var(--bg);
   }
   .m-button-dark:hover {
-    background: #30363f;
+    background: var(--t2);
   }
   .m-nav-cta {
     padding: 13px 19px;
     gap: 20px;
-    font-size: 14px;
+    font-size: 16px;
   }
   .m-hero {
     min-height: 640px;
@@ -176,7 +205,7 @@
   }
   .m-eyebrow {
     font-family: "SFMono-Regular", monospace;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.5;
     letter-spacing: 0.075em;
@@ -185,10 +214,10 @@
     display: inline-flex;
     gap: 11px;
     align-items: center;
-    border-bottom: 1px solid #dce3ef;
+    border-bottom: 1px solid var(--border);
     padding-bottom: 10px;
     margin-bottom: 30px;
-    font-size: 12px;
+    font-size: 13px;
   }
   .m-status-dot {
     width: 6px;
@@ -205,15 +234,15 @@
     margin: 0 0 25px;
   }
   h1 em {
-    color: var(--atlas-ink);
+    color: var(--t1);
     font-weight: 450;
     font-style: normal;
     box-shadow: inset 0 -0.12em 0 var(--atlas-purple);
   }
   .m-hero-description {
-    font-size: 18px;
+    font-size: 20px;
     line-height: 1.7;
-    max-width: 420px;
+    max-width: 460px;
     color: var(--atlas-gray-text);
     margin: 0 0 30px;
     letter-spacing: -0.02em;
@@ -227,7 +256,7 @@
     display: inline-flex;
     align-items: center;
     gap: 13px;
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 500;
     transition: color 0.2s;
   }
@@ -237,7 +266,7 @@
     align-items: center;
     gap: 9px;
     font-family: "SFMono-Regular", monospace;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--atlas-gray-text);
   }
   .m-hero-note span {
@@ -270,10 +299,10 @@
     align-items: center;
     gap: 13px;
     font:
-      12px/1.4 "SFMono-Regular",
+      13px/1.4 "SFMono-Regular",
       monospace;
     letter-spacing: 0.07em;
-    color: #5d677e;
+    color: var(--t3);
     z-index: 3;
   }
   .m-crosshair {
@@ -291,18 +320,18 @@
     gap: 24px;
     border-top: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
-    background: white;
+    background: var(--background);
   }
   .m-ecosystem p {
     font:
-      12px/1.7 "SFMono-Regular",
+      13px/1.7 "SFMono-Regular",
       monospace;
     color: var(--atlas-gray-text);
     letter-spacing: 0.045em;
   }
   .m-ecosystem p strong {
     font-weight: 400;
-    color: #262d39;
+    color: var(--t1);
   }
   .m-model-name {
     display: flex;
@@ -311,10 +340,10 @@
     font-size: 25px;
     font-weight: 600;
     letter-spacing: -0.07em;
-    color: #5a6272;
+    color: var(--t2);
   }
   .m-model-name span {
-    font-size: 20px;
+    font-size: 22px;
   }
   .m-gemma {
     font-weight: 450;
@@ -324,13 +353,13 @@
   }
   .m-nemotron {
     display: block;
-    font-size: 17px;
+    font-size: 19px;
     line-height: 1.2;
     letter-spacing: -0.04em;
   }
   .m-nemotron small {
     display: block;
-    font-size: 12px;
+    font-size: 13px;
     letter-spacing: 0.13em;
     font-weight: 450;
   }
@@ -339,7 +368,7 @@
     align-items: center;
     gap: 12px;
     max-width: 160px;
-    font-size: 14px;
+    font-size: 16px;
     color: var(--atlas-gray-text);
   }
   @media (min-width: 1700px) {
@@ -387,14 +416,14 @@
       gap: 16px;
     }
     .m-brand img {
-      width: 124px;
+      width: 138px;
     }
     .m-header nav {
       display: none;
     }
     .m-nav-cta {
       padding: 12px 14px;
-      font-size: 14px;
+      font-size: 16px;
       gap: 9px;
     }
     .m-hero {
@@ -406,7 +435,7 @@
       max-width: 100%;
     }
     .m-hero-announcement {
-      font-size: 12px;
+      font-size: 13px;
       margin-bottom: 27px;
       letter-spacing: 0;
     }
@@ -414,7 +443,7 @@
       font-size: clamp(53px, 12.5vw, 83px);
     }
     .m-hero-description {
-      font-size: 16px;
+      font-size: 18px;
       line-height: 1.65;
       max-width: 340px;
     }
@@ -422,12 +451,12 @@
       gap: 20px;
     }
     .m-hero-actions .m-button {
-      font-size: 14px;
+      font-size: 16px;
       padding: 16px;
       gap: 14px;
     }
     .m-text-link {
-      font-size: 14px;
+      font-size: 16px;
       gap: 7px;
     }
     .m-hero-note {
@@ -445,7 +474,7 @@
     .m-art-caption {
       bottom: 17px;
       right: 6%;
-      font-size: 12px;
+      font-size: 13px;
     }
     .m-caption-index {
       display: none;
@@ -455,13 +484,13 @@
       gap: 24px 18px;
     }
     .m-model-name {
-      font-size: 19px;
+      font-size: 21px;
     }
     .m-nemotron {
-      font-size: 14px;
+      font-size: 16px;
     }
     .m-nemotron small {
-      font-size: 12px;
+      font-size: 13px;
     }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -485,7 +514,7 @@
     margin-bottom: 60px;
   }
   .m-section-label {
-    color: var(--atlas-ink);
+    color: var(--t1);
     margin: 0 0 28px;
   }
   .m-section h2 {
@@ -499,10 +528,10 @@
     color: var(--atlas-gray-text);
   }
   .m-section-intro {
-    font-size: 17px;
+    font-size: 19px;
     line-height: 1.7;
     color: var(--atlas-gray-text);
-    width: 320px;
+    width: 360px;
     max-width: 40%;
     margin: 0 0 4px;
   }
@@ -526,38 +555,38 @@
   .m-benefit-top {
     display: flex;
     justify-content: space-between;
-    color: var(--atlas-ink);
+    color: var(--t1);
     margin-bottom: 52px;
   }
   .m-benefit-top span {
     font:
-      12px "SFMono-Regular",
+      13px "SFMono-Regular",
       monospace;
     color: var(--atlas-gray-text);
   }
   .m-benefits h3 {
-    font-size: 23px;
+    font-size: 25px;
     line-height: 1.2;
     font-weight: 500;
     letter-spacing: -0.04em;
     margin: 0 0 15px;
   }
   .m-benefits p {
-    font-size: 16px;
+    font-size: 18px;
     line-height: 1.7;
     color: var(--atlas-gray-text);
-    max-width: 335px;
+    max-width: 360px;
     margin: 0 0 25px;
   }
   .m-benefits a {
     display: flex;
     align-items: center;
     gap: 10px;
-    font-size: 14px;
+    font-size: 16px;
     margin-top: auto;
   }
   .m-benefits a:hover {
-    color: var(--atlas-ink);
+    color: var(--t1);
   }
   .m-possibilities {
     background: var(--atlas-ink);
@@ -598,7 +627,7 @@
     flex: none;
     color: var(--atlas-wordmark-dark);
     padding: 17px 0;
-    font-size: 14px;
+    font-size: 16px;
     gap: 10px;
     border: 0;
     border-radius: 0;
@@ -634,7 +663,7 @@
     margin: 0 0 22px;
   }
   .m-scenario-copy p {
-    font-size: 16px;
+    font-size: 18px;
     line-height: 1.75;
     color: var(--atlas-wordmark-dark);
     max-width: 410px;
@@ -652,7 +681,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 12px;
+    font-size: 13px;
     color: #c6ceda;
   }
   .m-scenario-copy li svg {
@@ -674,7 +703,7 @@
     justify-content: space-between;
     gap: 10px;
     font:
-      12px "SFMono-Regular",
+      13px "SFMono-Regular",
       monospace;
     color: var(--atlas-wordmark-dark);
     letter-spacing: 0.035em;
@@ -696,7 +725,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 15px;
-    font-size: 14px;
+    font-size: 16px;
     padding: 20px;
     border-radius: 8px 8px 0 8px;
     margin-left: 30px;
@@ -706,7 +735,7 @@
     display: flex;
     gap: 10px;
     align-items: center;
-    font-size: 14px;
+    font-size: 16px;
     color: #f7f7f9;
   }
   .m-engine-dot {
@@ -728,7 +757,7 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    font-size: 13px;
+    font-size: 15px;
     color: var(--atlas-wordmark-dark);
   }
   .m-flow-check {
@@ -751,7 +780,7 @@
     border: 1px solid #373c45;
     border-radius: 7px;
     padding: 18px 15px;
-    font-size: 14px;
+    font-size: 16px;
   }
   .m-workflow-result svg:last-child {
     margin-left: auto;
@@ -764,13 +793,13 @@
     gap: 25px;
     color: var(--atlas-wordmark-dark);
     font:
-      12px "SFMono-Regular",
+      13px "SFMono-Regular",
       monospace;
   }
   .m-bottom-note {
     margin-left: auto;
     font-family: Arial, sans-serif;
-    font-size: 14px;
+    font-size: 16px;
   }
   .m-evidence {
     display: grid;
@@ -781,14 +810,14 @@
     padding-bottom: 120px;
   }
   .m-evidence-copy > p:not(.m-eyebrow) {
-    font-size: 17px;
+    font-size: 19px;
     line-height: 1.75;
     color: var(--atlas-gray-text);
     max-width: 390px;
     margin: 27px 0;
   }
   .m-evidence-card {
-    border-left: 1px solid #dfe4ee;
+    border-left: 1px solid var(--border);
     padding-left: 40px;
   }
   .m-evidence-kicker {
@@ -796,7 +825,7 @@
     align-items: center;
     gap: 10px;
     font:
-      12px "SFMono-Regular",
+      13px "SFMono-Regular",
       monospace;
     color: var(--atlas-gray-text);
   }
@@ -805,7 +834,7 @@
     letter-spacing: -0.08em;
     font-weight: 450;
     line-height: 1.25;
-    color: var(--atlas-ink);
+    color: var(--t1);
     margin: 12px 0 4px;
   }
   .m-big-number > span {
@@ -813,7 +842,7 @@
     margin-left: 5px;
   }
   .m-evidence-card h3 {
-    font-size: 20px;
+    font-size: 22px;
     letter-spacing: -0.035em;
     font-weight: 450;
     max-width: 320px;
@@ -829,7 +858,7 @@
     gap: 15px;
     align-items: center;
     font:
-      12px "SFMono-Regular",
+      13px "SFMono-Regular",
       monospace;
   }
   .m-benchmark-bars b {
@@ -837,7 +866,7 @@
     padding: 10px 12px;
     color: var(--atlas-ink);
     background: var(--atlas-purple);
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 400;
     border-radius: 2px;
   }
@@ -846,7 +875,7 @@
     color: #5e626a;
   }
   .m-benchmark-note {
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.65;
     color: var(--atlas-gray-text);
     margin: 20px 0 0;
@@ -913,7 +942,7 @@
     gap: 25px;
   }
   .m-start-bottom p {
-    font-size: 19px;
+    font-size: 21px;
     color: var(--atlas-wordmark-dark);
     line-height: 1.55;
     margin: 0;
@@ -935,7 +964,7 @@
     display: flex;
     align-items: center;
     gap: 9px;
-    font-size: 14px;
+    font-size: 16px;
   }
   .m-github-link:hover {
     text-decoration: underline;
@@ -948,7 +977,7 @@
     margin-top: 47px;
     padding-top: 23px;
     color: var(--atlas-wordmark-dark);
-    font-size: 12px;
+    font-size: 13px;
   }
   .m-start-fineprint span {
     display: flex;
@@ -971,7 +1000,7 @@
     margin-left: -26px;
   }
   .m-footer-main .m-brand img {
-    width: 244px;
+    width: 253px;
   }
   .m-workflow-engine img {
     display: block;
@@ -980,7 +1009,7 @@
     flex-shrink: 0;
   }
   .m-footer-main p {
-    font-size: 14px;
+    font-size: 16px;
     color: var(--atlas-gray-text);
     margin-top: 8px;
   }
@@ -993,11 +1022,11 @@
     flex-direction: column;
     gap: 15px;
     min-width: 150px;
-    font-size: 14px;
+    font-size: 16px;
   }
   .m-footer-links > div > span {
     font:
-      12px "SFMono-Regular",
+      13px "SFMono-Regular",
       monospace;
     color: var(--atlas-gray-text);
     margin-bottom: 9px;
@@ -1008,7 +1037,7 @@
     gap: 5px;
   }
   .m-footer-links a:hover {
-    color: var(--atlas-ink);
+    color: var(--t1);
   }
   .m-footer-bottom {
     display: flex;
@@ -1018,7 +1047,7 @@
     border-top: 1px solid #e5e8ef;
     padding-top: 23px;
     color: var(--atlas-gray-text);
-    font-size: 12px;
+    font-size: 13px;
   }
   @media (min-width: 1700px) {
     .m-section,
@@ -1032,7 +1061,7 @@
       gap: 25px;
     }
     .m-scenario-tab {
-      font-size: 13px;
+      font-size: 15px;
     }
     .m-scenario-tab svg:last-child {
       display: none;
@@ -1051,7 +1080,7 @@
       gap: 20px;
     }
     .m-workflow-top {
-      font-size: 12px;
+      font-size: 13px;
     }
     .m-workflow-top > span:last-child {
       display: none;
@@ -1060,7 +1089,7 @@
       gap: 26px;
     }
     .m-benefits h3 {
-      font-size: 21px;
+      font-size: 23px;
     }
     .m-footer-links {
       gap: 40px;
@@ -1077,7 +1106,7 @@
     .m-section-intro {
       max-width: 100%;
       width: 100%;
-      font-size: 16px;
+      font-size: 18px;
       margin-top: 24px;
     }
     .m-section h2 {
@@ -1106,7 +1135,7 @@
       align-items: stretch;
     }
     .m-scenario-tab {
-      font-size: 12px;
+      font-size: 13px;
       white-space: normal;
       flex-direction: column;
       gap: 8px;
@@ -1126,24 +1155,24 @@
       max-width: none;
     }
     .m-scenario-copy li {
-      font-size: 13px;
+      font-size: 15px;
     }
     .m-workflow {
       padding: 20px;
     }
     .m-workflow-top {
-      font-size: 12px;
+      font-size: 13px;
     }
     .m-workflow li {
-      font-size: 14px;
+      font-size: 16px;
     }
     .m-workflow-result {
-      font-size: 14px;
+      font-size: 16px;
     }
     .m-possibilities-bottom {
       gap: 12px;
       flex-wrap: wrap;
-      font-size: 12px;
+      font-size: 13px;
     }
     .m-possibilities-bottom svg {
       width: 12px;
@@ -1172,7 +1201,7 @@
       padding: 30px 6%;
     }
     .m-start-top p {
-      font-size: 12px;
+      font-size: 13px;
     }
     .m-start-top {
       margin-bottom: 40px;
@@ -1187,7 +1216,7 @@
       gap: 28px;
     }
     .m-start-bottom p {
-      font-size: 17px;
+      font-size: 19px;
     }
     .m-start-bottom > div {
       align-items: flex-start;
@@ -1235,7 +1264,7 @@
       order: 3;
       justify-content: space-between;
       width: 100%;
-      font-size: 13px;
+      font-size: 15px;
       padding: 0 0 16px;
       gap: 12px;
     }
@@ -1248,7 +1277,7 @@
       gap: 20px;
     }
     .m-hero-copy .m-hero-announcement {
-      font-size: 12px;
+      font-size: 13px;
       letter-spacing: 0;
     }
     .m-hero {
@@ -1279,8 +1308,8 @@
     gap: 20px;
     flex-wrap: wrap;
     padding: 24px 7%;
-    background: white;
-    color: var(--atlas-ink);
+    background: var(--background);
+    color: var(--t1);
   }
 
   .m-dark a:focus-visible,

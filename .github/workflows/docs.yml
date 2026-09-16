@@ -198,7 +198,7 @@ jobs:
           cat > book/output/api/index.html <<'EOF'
           <!DOCTYPE html>
           <html><head><meta charset="utf-8">
-          <title>Atlas API Reference</title>
+          <title>Avarok API Reference</title>
           <meta http-equiv="refresh" content="0; url=atlas_core/index.html">
           </head><body>
           <p>Redirecting to <a href="atlas_core/index.html">atlas_core</a>…</p>

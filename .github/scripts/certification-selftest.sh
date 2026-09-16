@@ -2284,7 +2284,7 @@ case "\$url" in
   */control.html) printf '<title>Control plane</title>' ;;
   */install.sh)   printf '#!/bin/sh\nexit 0\n' ;;
   */install.ps1)  printf '# atlas installer\n' ;;
-  *)              printf '<title>Atlas, pure Rust inference</title>' ;;
+  *)              printf '<title>Avarok, pure Rust inference</title>' ;;
 esac
 exit 0
 STUB

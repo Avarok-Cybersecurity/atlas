@@ -239,7 +239,7 @@
 
         {:else if launch.phase === 'guide'}
           <p>
-            Atlas runs on your hardware, not ours. This page can start a model for
+            Avarok runs on your hardware, not ours. This page can start a model for
             you once a small local agent is listening.
           </p>
           <InstallSteps />

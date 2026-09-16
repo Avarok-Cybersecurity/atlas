@@ -1,4 +1,4 @@
-/* Concurrency ladder (ConcurrencyLadder.svelte) — Atlas vs vLLM, C=1..128.
+/* Concurrency ladder (ConcurrencyLadder.svelte) — Avarok vs vLLM, C=1..128.
    Global classes rather than component-scoped styles, matching the rest of the
    site, so mobile.css stays the single source of truth for viewport rules.
    Chart primitives (.gc-grid, .gc-axis) are reused from dashboard.css. */

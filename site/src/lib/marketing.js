@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import palette from "../../../assets/brand/tokens/brand.json";
+import { ENGINE } from "./data.js";
 
-export const ENGINE = "/engine.html";
+export { ENGINE };
 const { chevron, ground, ui, wordmark, tagline } = palette.color;
 export const brandStyle = Object.entries({
   purple: chevron.one,
@@ -9,8 +10,8 @@ export const brandStyle = Object.entries({
   green: chevron.threeUpper,
   gold: chevron.threeLower,
   ink: ground.dark,
-  paper: ground.light,
-  "gray-text": ui.grayText,
+  paper: 'var(--bg)',
+  "gray-text": 'var(--t3)',
   "wordmark-dark": wordmark.onDark,
   "tagline-dark": tagline.onDark,
 })
@@ -19,14 +20,14 @@ export const brandStyle = Object.entries({
 
 export const legacySections = [
   { id: "proof", label: "Project milestones" },
-  { id: "news", label: "Atlas news" },
+  { id: "news", label: "Avarok news" },
   { id: "hardware", label: "Verified hardware" },
   { id: "community", label: "Community" },
   { id: "contribute", label: "Contribute" },
   { id: "roadmap", label: "Roadmap" },
   { id: "mission", label: "Mission" },
   { id: "faq", label: "Frequently asked questions" },
-  { id: "reach", label: "Contact Atlas" },
+  { id: "reach", label: "Contact Avarok" },
 ];
 
 export function legacyEngineDestination(hash, search) {
