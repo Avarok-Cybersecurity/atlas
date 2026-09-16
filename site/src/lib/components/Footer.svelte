@@ -37,7 +37,7 @@
 
   <div class="footer-member">
     <a href={nvidiaInceptionUrl} target="_blank" rel="noopener noreferrer">
-      <img src="/nvidia-inception.webp" alt="NVIDIA Inception Program member" width="280" height="114" loading="lazy" />
+      <img src="/nvidia-inception.webp" alt="NVIDIA Inception Program member" width="280" height="102" loading="lazy" />
     </a>
   </div>
 
