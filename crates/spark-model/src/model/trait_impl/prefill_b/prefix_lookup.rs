@@ -101,18 +101,43 @@ impl TransformerModel {
             if ep_active && !reserved {
                 let local = prefix_match.matched_tokens as u32;
                 let agreed = self.ep_min_u32(local)? as usize;
-                if agreed < prefix_match.matched_tokens {
-                    self.prefix_cache.release(tokens, bs, seq.adapter_id);
-                    if agreed > 0 {
-                        prefix_match = self.prefix_cache.lookup(
-                            &tokens[..agreed],
-                            bs,
-                            seq.session_hash,
-                            seq.adapter_id,
-                        );
-                    } else {
-                        prefix_match = spark_runtime::prefix_cache::PrefixMatch::empty();
-                    }
+                // 🔴 SYMMETRY IS LOAD-BEARING, and it is why this release +
+                // re-lookup is UNCONDITIONAL rather than gated on
+                // `agreed < local`. Restored from 78404282b, which #1074
+                // (659c8df74) dropped when it replaced this file wholesale.
+                //
+                // The snapshot index evicts by LRU over `last_access`, a
+                // LOGICAL counter bumped once per `lookup` — there is no
+                // wall-clock in it. Eviction is therefore a pure function of the
+                // OPERATION SEQUENCE, and two ranks issuing the same sequence
+                // hold the same pool.
+                //
+                // Gating this block on `agreed < local` runs the extra `lookup`
+                // on ONLY the rank that matched more. That one extra bump drifts
+                // the ranks' access counters apart, LRU then picks different
+                // victims, the pools stop agreeing, and the ranks eventually
+                // propose DIFFERENT Marconi anchors — different SSM replay
+                // lengths, mismatched collectives, both GPUs pinned in an NCCL
+                // spin at 96% util / ~15 W with their logs frozen.
+                // (Measured twice on qwen3.8-flash-next 2026-09-16: rank0 6848
+                // vs rank1 6768, and rank0 9089 vs rank1 8928. Originally on a
+                // GLM EXL3-K2 run: 3128 vs 3120.)
+                //
+                // When `agreed == local` the re-lookup returns the match this
+                // rank already had, so this costs one host-side radix walk per
+                // chunk-0 prefill and changes no result.
+                self.prefix_cache.release(tokens, bs, seq.adapter_id);
+                prefix_match = if agreed > 0 {
+                    self.prefix_cache.lookup(
+                        &tokens[..agreed],
+                        bs,
+                        seq.session_hash,
+                        seq.adapter_id,
+                    )
+                } else {
+                    spark_runtime::prefix_cache::PrefixMatch::empty()
+                };
+                if agreed < local as usize {
                     tracing::info!(
                         "F83 EP-cache-sync: local_matched={local} agreed_matched={agreed} \
                          (cap to min across ranks)"
@@ -189,6 +214,66 @@ impl TransformerModel {
             let (eff_snapshot, eff_snapshot_tokens) =
                 self.eff_ssm_snapshot(&prefix_match, seq.session_hash, stream);
 
+            // ── Agree the anchor across ranks, or NOBODY restores ──
+            //
+            // `matched` is already agreed above, but the Marconi SSM anchor is
+            // NOT: it is chosen from each rank's own snapshot pool, and the
+            // eligibility test below reads rank-LOCAL state (`has_hidden`,
+            // `aux`, `session_matches`) plus the spill-tier fault-in. Two ranks
+            // can therefore hold the same `matched` and still resume from
+            // different tokens, which is a different SSM replay length on each
+            // and a mismatched collective immediately after.
+            //
+            // A min would NOT do here, and that is the whole reason
+            // `ep_all_agree_u32` exists: the anchor SELECTS A RESOURCE, so the
+            // rank holding the minimum would restore while a rank that proposed
+            // something larger has no such snapshot to fall back to.
+            //
+            // So: propose what this rank WOULD use (0 = "I would not restore"),
+            // and restore only if every rank proposed the same value. The
+            // predicate is duplicated from the `skip` test below deliberately —
+            // the proposal must be exactly what this rank would do, and any
+            // drift between the two is itself a divergence.
+            //
+            // 🪤 UNCONDITIONAL on multi-rank, exactly like the `matched` sync:
+            // every rank must reach the rooted broadcasts or the ones that do
+            // hang waiting for a peer that never arrives. `ep_all_agree_u32`
+            // returns true immediately when the world is single-rank.
+            let local_decision: u32 = match eff_snapshot {
+                Some(snap_id) => {
+                    let snap_tok = eff_snapshot_tokens;
+                    let ewh = snap_tok == matched
+                        && matched == total
+                        && !self.ssm_snapshots.has_hidden(snap_id);
+                    let bypass = snap_tok == matched
+                        && matched == total
+                        && !super::exact_leaf::marconi_exact_enabled();
+                    let eligible = snap_tok >= crate::model::mtp_carry::marconi_min_tokens()
+                        && snap_tok > 0
+                        && matched <= total
+                        && !ewh
+                        && !bypass
+                        && (!prefix_match.ssm_snapshot_is_tail
+                            || self
+                                .ssm_snapshots
+                                .session_matches(snap_id, seq.session_hash))
+                        && (!self.requires_aux_state()
+                            || self.ssm_snapshots.aux(snap_id).is_some());
+                    if eligible { snap_tok as u32 } else { 0 }
+                }
+                None => 0,
+            };
+            let eff_snapshot = if self.ep_all_agree_u32(local_decision)? {
+                eff_snapshot
+            } else {
+                tracing::info!(
+                    "Marconi anchor DISAGREES across ranks (this rank decided {}); \
+                     declining on every rank and recomputing — correct and slow \
+                     beats a mismatched collective",
+                    local_decision,
+                );
+                None
+            };
             let mut skip = if let Some(snap_id) = eff_snapshot {
                 let snap_tok = eff_snapshot_tokens;
                 // Exact full-prompt hit on a hiddenless snapshot (finish
