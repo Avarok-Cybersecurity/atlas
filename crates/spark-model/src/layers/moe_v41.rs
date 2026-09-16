@@ -6,8 +6,8 @@
 //! The routed experts never leave their Q2_K / Q3_K blocks: per token the
 //! router picks `topk` of 384, the [`ExpertLru`] gathers those experts' raw
 //! slices into its device-visible slots (misses read from the SSD), and each
-//! expert runs as three K-quant GEMVs on the raw blocks (`kquant_mmvq_q2_k` for
-//! gate and up, `kquant_mmvq_q3_k` for down) with the activation quantised to
+//! expert runs as three K-quant GEMVs on the raw blocks (`kquant_mmvq_q2_k_w` for
+//! gate and up, `kquant_mmvq_q3_k_w` for down) with the activation quantised to
 //! q8_1 in between. The shared expert every token goes through is resident bf16
 //! and runs on the dense GEMM.
 //!
@@ -29,7 +29,8 @@ use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
 use crate::layers::ops::{
     self, KQUANT_MODULE, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, ResidentMat, kquant_mmq_act_bytes,
-    kquant_mmq_gemm, kquant_mmvq, kquant_mmvq_experts, kquant_q8_1_rows, kquant_q8_1_rows_bytes,
+    kquant_mmq_gemm, kquant_mmvq_experts_w, kquant_mmvq_w, kquant_q8_1_rows,
+    kquant_q8_1_rows_bytes,
 };
 use crate::weight_map::DenseWeight;
 
@@ -202,10 +203,10 @@ impl MoeV41 {
                 gemm_f32out: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16_f32out")?,
                 router_gemv: gpu.kernel(MODULE, "moe_v41_router_gemv_f32out")?,
                 q8_rows: gpu.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16")?,
-                mmvq_q2k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k")?,
-                mmvq_q3k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q3_k")?,
-                mmvq_q2k_experts: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_experts")?,
-                mmvq_q3k_experts: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q3_k_experts")?,
+                mmvq_q2k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_w")?,
+                mmvq_q3k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q3_k_w")?,
+                mmvq_q2k_experts: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_experts_w")?,
+                mmvq_q3k_experts: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q3_k_experts_w")?,
                 swiglu: gpu.kernel(MODULE, "moe_v41_swiglu")?,
                 accumulate: gpu.kernel(MODULE, "moe_v41_accumulate")?,
                 finish: gpu.kernel(MODULE, "moe_v41_finish")?,
@@ -389,7 +390,7 @@ impl MoeV41 {
             let table = |which: usize| DevicePtr(self.ptrs_dev.0 + (which * ne * 8) as u64);
             kquant_q8_1_rows(gpu, self.k.q8_rows, x, self.a_q8, 1, c.dim as u32, stream)?;
             for (which, out) in [(0usize, self.gate_out), (1, self.up_out)] {
-                kquant_mmvq_experts(
+                kquant_mmvq_experts_w(
                     gpu,
                     self.k.mmvq_q2k_experts,
                     table(which),
@@ -421,7 +422,7 @@ impl MoeV41 {
                 c.inter as u32,
                 stream,
             )?;
-            kquant_mmvq_experts(
+            kquant_mmvq_experts_w(
                 gpu,
                 self.k.mmvq_q3k_experts,
                 table(2),
@@ -466,7 +467,7 @@ impl MoeV41 {
                     c.dim as u32,
                     stream,
                 )?;
-                kquant_mmvq(
+                kquant_mmvq_w(
                     gpu,
                     self.k.mmvq_q2k,
                     slot.gate,
@@ -477,7 +478,7 @@ impl MoeV41 {
                     r as u32,
                     stream,
                 )?;
-                kquant_mmvq(
+                kquant_mmvq_w(
                     gpu,
                     self.k.mmvq_q2k,
                     slot.up,
@@ -545,7 +546,7 @@ impl MoeV41 {
                     c.inter as u32,
                     stream,
                 )?;
-                kquant_mmvq(
+                kquant_mmvq_w(
                     gpu,
                     self.k.mmvq_q3k,
                     slot.down,
@@ -623,11 +624,11 @@ impl MoeV41 {
                 ),
                 ResidentMat::Q2K(b) if m <= 8 => {
                     kquant_q8_1_rows(gpu, self.k.q8_rows, a, a_q8, mu, ku, stream)?;
-                    kquant_mmvq(gpu, self.k.mmvq_q2k, b, a_q8, out, nu, ku, mu, stream)
+                    kquant_mmvq_w(gpu, self.k.mmvq_q2k, b, a_q8, out, nu, ku, mu, stream)
                 }
                 ResidentMat::Q3K(b) if m <= 8 => {
                     kquant_q8_1_rows(gpu, self.k.q8_rows, a, a_q8, mu, ku, stream)?;
-                    kquant_mmvq(gpu, self.k.mmvq_q3k, b, a_q8, out, nu, ku, mu, stream)
+                    kquant_mmvq_w(gpu, self.k.mmvq_q3k, b, a_q8, out, nu, ku, mu, stream)
                 }
                 ResidentMat::Q2K(b) => {
                     ops::quantize_act_q8_1(gpu, self.k.quant_d2s6, a, a_q8, mu, ku, stream)?;

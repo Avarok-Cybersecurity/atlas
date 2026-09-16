@@ -166,6 +166,72 @@ pub fn kquant_mmvq_experts(
         .launch(stream)
 }
 
+/// `kquant_mmvq_*_w`: the warp-per-row GEMV (four rows a block, no shared
+/// memory), same arguments as [`kquant_mmvq`].
+pub fn kquant_mmvq_w(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    w_blocks: DevicePtr,
+    y_q8: DevicePtr,
+    out_bf16: DevicePtr,
+    n: u32,
+    k: u32,
+    m: u32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(m >= 1 && m <= 8, "kquant_mmvq_w: m={m} outside 1..=8");
+    anyhow::ensure!(
+        k % QK_K == 0,
+        "kquant_mmvq_w: k={k} is not a multiple of {QK_K}"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 4), 1, 1])
+        .block([32, 4, 1])
+        .arg_ptr(w_blocks)
+        .arg_ptr(y_q8)
+        .arg_ptr(out_bf16)
+        .arg_u32(k)
+        .arg_u32(n)
+        .arg_u32(m)
+        .launch(stream)
+}
+
+/// `kquant_mmvq_*_experts_w`: the warp-per-row expert batch, same arguments
+/// as [`kquant_mmvq_experts`].
+pub fn kquant_mmvq_experts_w(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    vxs: DevicePtr,
+    y_q8: DevicePtr,
+    out_bf16: DevicePtr,
+    n: u32,
+    k: u32,
+    m: u32,
+    n_experts: u32,
+    y_stride_bytes: u32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(
+        m >= 1 && m <= 8,
+        "kquant_mmvq_experts_w: m={m} outside 1..=8"
+    );
+    anyhow::ensure!(
+        k % QK_K == 0,
+        "kquant_mmvq_experts_w: k={k} is not a multiple of {QK_K}"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 4), n_experts, 1])
+        .block([32, 4, 1])
+        .arg_ptr(vxs)
+        .arg_ptr(y_q8)
+        .arg_ptr(out_bf16)
+        .arg_u32(k)
+        .arg_u32(n)
+        .arg_u32(m)
+        .arg_u32(y_stride_bytes)
+        .launch(stream)
+}
+
 pub fn kquant_mmq_gemm(
     gpu: &dyn GpuBackend,
     kernel_nc: KernelHandle,
