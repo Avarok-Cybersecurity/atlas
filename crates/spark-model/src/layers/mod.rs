@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 pub mod attn_v41;
+pub mod deepseek_v41_layer;
 pub mod deepseek_v41_ref;
 pub mod deepseek_v4_mtp;
 pub mod dense_ffn;

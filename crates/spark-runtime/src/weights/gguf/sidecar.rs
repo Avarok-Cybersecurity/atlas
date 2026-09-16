@@ -70,6 +70,7 @@ pub fn est_bf16(gguf: &container::GgufFile, arch: &str) -> usize {
     let is_clip = value_transform::is_clip(arch);
     gguf.tensors
         .iter()
+        .filter(|t| !(arch == "deepseek41" && names::deepseek41_deferred_name(&t.name).is_some()))
         .filter(|t| {
             (is_clip && value_transform::vision_patch_frame(&t.name).is_some())
                 || !matches!(
@@ -106,6 +107,8 @@ pub fn load_pass(
     q2_variant: container::Q2Group,
     weights: &mut HashMap<String, WeightTensor>,
     skipped: &mut usize,
+    shard_path: &std::path::Path,
+    deferred: &mut HashMap<String, crate::weights::DeferredTensor>,
 ) -> Result<()> {
     // Patch-embed temporal-frame fan-in state (clip only).
     let vpatch = if value_transform::is_clip(arch) {
@@ -144,6 +147,22 @@ pub fn load_pass(
             continue;
         }
 
+        if arch == "deepseek41"
+            && let Some(store_name) = names::deepseek41_deferred_name(&tensor.name)
+        {
+            let mut hf_shape: Vec<usize> = tensor.dims.clone();
+            hf_shape.reverse();
+            deferred.insert(
+                store_name,
+                crate::weights::DeferredTensor {
+                    path: shard_path.to_path_buf(),
+                    offset: gguf.tensor_abs_offset(tensor) as u64,
+                    shape: hf_shape,
+                    dtype: WeightDtype::BF16,
+                },
+            );
+            continue;
+        }
         let target = match names::translate(&tensor.name, arch) {
             Some(names::GgufName::Drop) | None => continue,
             Some(t) => t,

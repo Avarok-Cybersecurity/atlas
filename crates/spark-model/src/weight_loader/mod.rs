@@ -15,6 +15,7 @@
 //!   - `gemma4`: Gemma-4 (pure attention, GeGLU, sliding + full attention)
 
 pub(crate) mod deepseek_v4;
+pub(crate) mod deepseek_v41;
 pub mod dflash_loader;
 mod gemma4;
 /// GLM-5.3-Flash tensor accounting (Slice 1: classification only).

@@ -101,6 +101,11 @@ impl ShardFiles {
         &self.shards[shard].file
     }
 
+    /// The parsed header of `shard` (shard 0 carries the model metadata).
+    pub fn header(&self, shard: usize) -> &GgufFile {
+        &self.shards[shard].gguf
+    }
+
     /// `(shard, tensor, absolute byte offset)` of a tensor by GGUF name.
     pub fn locate(&self, name: &str) -> Option<(usize, &TensorInfo, u64)> {
         self.shards.iter().enumerate().find_map(|(i, s)| {

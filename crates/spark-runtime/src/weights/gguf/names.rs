@@ -422,6 +422,25 @@ pub fn is_keep_packed_proj(hf: &str) -> bool {
 ///     layers even in this text-only quant (the file is tagged
 ///     `image-text-to-text`). It is mapped rather than dropped so a later
 ///     multimodal path does not have to re-convert the checkpoint.
+/// DeepSeek-V4.1 tensors that are NEVER uploaded: the routed expert stacks
+/// (40 x 3 x 384 x 12.22 MiB) and the two ~30 GiB engram tables. They are
+/// recorded as deferred with their on-disk location and served by
+/// `expert_stream` (pread into a device-visible cache / rows on demand).
+/// Returns the store name the loader looks them up under.
+pub fn deepseek41_deferred_name(gguf_name: &str) -> Option<String> {
+    let rest = gguf_name.strip_prefix("blk.")?;
+    let (layer, tail) = rest.split_once('.')?;
+    let layer: usize = layer.parse().ok()?;
+    let lp = format!("{HF_PREFIX}.layers.{layer}");
+    Some(match tail {
+        "ffn_gate_exps.weight" => format!("{lp}.ffn.experts_stack.gate"),
+        "ffn_up_exps.weight" => format!("{lp}.ffn.experts_stack.up"),
+        "ffn_down_exps.weight" => format!("{lp}.ffn.experts_stack.down"),
+        "engram_embd.weight" => format!("{lp}.engram.embd"),
+        _ => return None,
+    })
+}
+
 fn translate_deepseek41(gguf_name: &str) -> Option<GgufName> {
     // Top-level tensors.
     match gguf_name {

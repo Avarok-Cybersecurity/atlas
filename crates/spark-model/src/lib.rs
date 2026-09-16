@@ -75,7 +75,10 @@ pub fn model_type_ships_vanilla_norm_weights(model_type: &str) -> bool {
     // picks the kernel for the MODEL-LEVEL final norm (`model/impl_a1.rs`), which is applied
     // outside any layer, so omitting GLM here silently normalises the final hidden state with
     // the `(1 + w)` offset and corrupts every token's logits. Nothing about the shapes says so.
-    matches!(model_type, "deepseek_v4" | "laguna" | "glm5_next")
+    matches!(
+        model_type,
+        "deepseek_v4" | "deepseek_v41" | "laguna" | "glm5_next"
+    )
 }
 
 /// Must chunked prefill run as a SINGLE chunk for this model?

@@ -83,3 +83,14 @@ thinking_default = false
 # The latent KV row is fp8 e4m3 in the reference (act_quant with the ue8m0
 # power-of-two scale), so fp8 is the reference's own cache dtype here.
 default_kv_dtype = "fp8"
+
+# ── expected_absent ────────────────────────────────────────────────────────
+# From the first --check-kernels run on the real shards (2026-09-16): one
+# lookup, the generic model's w4a16 deep-pipeline probe, same situation as
+# deepseek-v4-flash (the kernel set IS that tree via kernel_source).
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = """
+3-deep weight-pipeline twin shipped ONLY in qwen3.6-27b's shadow. The generic
+model constructor probes it (model/impl_a1.rs), then falls back to
+w4a16_gemm_t, which resolves here. V4.1 never dispatches a w4a16 GEMM: its
+attention and MoE run on the attn_v41 / kquant_moe / moe_v41 kernels."""

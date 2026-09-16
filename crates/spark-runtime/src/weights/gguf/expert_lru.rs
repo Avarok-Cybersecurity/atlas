@@ -34,6 +34,10 @@ pub struct PinnedArena {
     bytes: usize,
 }
 
+// SAFETY: a page-locked region with no thread affinity; the owner serialises access.
+unsafe impl Send for PinnedArena {}
+unsafe impl Sync for PinnedArena {}
+
 impl PinnedArena {
     /// `alloc_host_pinned` zero-fills, so a large arena costs one memset at
     /// load. The device alias is what the kernels are handed.
