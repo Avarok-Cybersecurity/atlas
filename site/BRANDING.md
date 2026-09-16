@@ -5,7 +5,7 @@ The homepage uses the supplied Avarok brand kit: unmodified vector lockups, lave
 - Navigation: horizontal lockup, 166 px on desktop and 138 px on mobile, with clear space.
 - Footer: full Avarok Inference Engine lockup, 253 px wide, with clear space.
 - Small engine illustration: the compact mark, appropriate below 48 px.
-- Hero: original AI-generated glass artwork refined to the supplied palette. It is decorative and has an empty alternative text.
+- Hero: original AI-generated glass artwork refined to the supplied palette. It is decorative and has an empty alternative text. The light theme multiplies the render onto the page; the dark theme swaps in `avarok-hero-dark.webp`, a re-toned derivative of the same render (lightness inverted in Lab with hue kept, mids lifted, chroma raised, and the ground levelled to the dark `--bg`), because no blend mode can lift a white ground off a dark page. Regenerate it if the dark `--bg` token changes.
 - UI icons: Lucide icon data with its ISC/MIT notice retained in `src/lib/components/marketing/icons.LICENSE`.
 
 Brand vector masters and palette live in `assets/brand/` at the repository root. `static/brand/` links to the masters so the website ships the same bytes.

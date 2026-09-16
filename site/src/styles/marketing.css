@@ -23,9 +23,21 @@ html[data-theme="dark"] .marketing .m-brand img.m-logo-onlight {
 html[data-theme="dark"] .marketing .m-brand img.m-logo-ondark {
   display: block;
 }
-html[data-theme="dark"] .marketing .m-hero-art img {
-  mix-blend-mode: screen;
-  opacity: 0.92;
+/* The hero render sits on a near-white ground and is multiplied onto the
+   light theme. No blend mode lifts that ground off a dark page (screen leaves
+   white white, multiply goes black), so dark mode swaps in a re-toned
+   derivative of the same render whose ground is levelled to the dark --bg,
+   the way the lockups swap. The dark image is lazy so a light-theme visit
+   never fetches it. */
+.marketing .m-hero-art img.m-hero-ondark {
+  display: none;
+}
+html[data-theme="dark"] .marketing .m-hero-art img.m-hero-onlight {
+  display: none;
+}
+html[data-theme="dark"] .marketing .m-hero-art img.m-hero-ondark {
+  display: block;
+  mix-blend-mode: normal;
 }
 .marketing .m-dark {
   --background: var(--avarok-ink);

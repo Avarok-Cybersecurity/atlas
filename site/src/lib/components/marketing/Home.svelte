@@ -46,7 +46,7 @@
     </header>
     <main id="main">
       <section class="m-hero">
-        <div class="m-hero-art"><img src="/brand/avarok-hero.png" alt="" fetchpriority="high" width="1536" height="1024" /></div>
+        <div class="m-hero-art"><img class="m-hero-onlight" src="/brand/avarok-hero.png" alt="" fetchpriority="high" width="1536" height="1024" /><img class="m-hero-ondark" src="/brand/avarok-hero-dark.webp" alt="" loading="lazy" decoding="async" width="1536" height="1024" /></div>
         <div class="m-hero-copy">
           <a class="m-eyebrow m-hero-announcement" href={REPO} target="_blank" rel="noreferrer"><span class="m-status-dot"/> OPEN SOURCE. OPEN POSSIBILITIES. <Icon name="ArrowUpRight" size={13}/></a>
           <h1>Intelligence,<br/>on your <em>terms.</em></h1>
