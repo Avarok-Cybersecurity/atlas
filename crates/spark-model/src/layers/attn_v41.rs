@@ -181,6 +181,11 @@ impl AttnV41LayerState {
         })
     }
 
+    /// The window ring, bf16 `[window, hd]`: a pointer a captured decode step bakes.
+    pub fn window(&self) -> DevicePtr {
+        self.window
+    }
+
     pub fn free(self, gpu: &dyn GpuBackend) -> Result<()> {
         gpu.free(self.window)?;
         if let Some((a, b)) = self.comp_state {
@@ -258,6 +263,8 @@ struct Kernels {
     slice_cols: KernelHandle,
     scatter_cols: KernelHandle,
     scale_bf16: KernelHandle,
+    /// the decode step's window ring write with the slot read on the device
+    ring_put: KernelHandle,
 }
 
 /// The attention runtime: kernels, RoPE tables, and workspaces for up to
@@ -297,6 +304,11 @@ pub struct AttnV41 {
     iw_raw: DevicePtr,
     iw: DevicePtr,
     score: DevicePtr,
+    /// What the graph-captured decode step last uploaded into `pos` /
+    /// `head_pos` (the position) and `idx_dev` (the padded selection), so a
+    /// step re-uploads only what changed. `None` = unknown, upload.
+    decode_pos: Option<usize>,
+    decode_idx: Option<Vec<i32>>,
 }
 
 fn upload_f32(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {
@@ -309,6 +321,13 @@ fn upload_f32(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {
 fn upload_i32(gpu: &dyn GpuBackend, dst: DevicePtr, v: &[i32]) -> Result<()> {
     let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
     gpu.copy_h2d(&bytes, dst)
+}
+
+/// Stream-ordered upload from a transient host vector (staged by the driver,
+/// no stream drain), for the per-token inputs of the captured decode step.
+fn upload_i32_async(gpu: &dyn GpuBackend, dst: DevicePtr, v: &[i32], stream: u64) -> Result<()> {
+    let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+    gpu.copy_h2d_async(&bytes, dst, stream)
 }
 
 fn at(p: DevicePtr, byte_off: usize) -> DevicePtr {
@@ -350,6 +369,7 @@ impl AttnV41 {
             slice_cols: gpu.kernel(MODULE, "attn_v41_slice_cols")?,
             scatter_cols: gpu.kernel(MODULE, "attn_v41_scatter_cols")?,
             scale_bf16: gpu.kernel(MODULE, "attn_v41_scale_bf16")?,
+            ring_put: gpu.kernel(MODULE, "attn_v41_ring_put")?,
         };
         let plain = freqs_cis(cfg.rope_dim, cfg.max_seq, cfg.rope_theta);
         let yarn = yarn_freqs_cis(
@@ -406,6 +426,8 @@ impl AttnV41 {
             iw_raw: alloc(m * nhi * 2)?,
             iw: alloc(m * nhi * 2)?,
             score: alloc(m * max_width * 4)?,
+            decode_pos: None,
+            decode_idx: None,
             cfg,
             k,
             fc_plain,
@@ -892,6 +914,269 @@ impl AttnV41 {
         Ok((out, topk))
     }
 
+    /// q (low-rank, normed, up-projected, rotated) and kv (one latent row per
+    /// token, normed, rotated, fp8) from the normed input `x`. Device work
+    /// only: the positions are read from `pos` / `head_pos`.
+    fn q_kv_projections(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &AttnV41LayerWeights,
+        x: DevicePtr,
+        m: usize,
+        yarn: bool,
+        stream: u64,
+    ) -> Result<()> {
+        let c = &self.cfg;
+        let (nh, hd, dim) = (c.n_heads, c.head_dim, c.dim);
+        self.gemm(gpu, x, w.wq_a, self.qr_raw, m, c.q_rank, dim, stream)?;
+        self.rmsnorm(
+            gpu,
+            false,
+            self.qr_raw,
+            w.q_norm,
+            self.qr,
+            m,
+            c.q_rank,
+            stream,
+        )?;
+        self.gemm(gpu, self.qr, w.wq_b, self.q, m, nh * hd, c.q_rank, stream)?;
+        self.rope(gpu, self.q, self.head_pos, m * nh, hd, yarn, false, stream)?;
+        self.gemm(gpu, x, w.wkv, self.kv_raw, m, hd, dim, stream)?;
+        self.rmsnorm(gpu, false, self.kv_raw, w.kv_norm, self.kv, m, hd, stream)?;
+        self.rope(gpu, self.kv, self.pos, m, hd, yarn, false, stream)?;
+        self.act_quant(gpu, self.kv, m * hd, stream)
+    }
+
+    /// Sparse attention over the selection in `idx_dev` (`topk` entries a
+    /// token, -1 = absent), the inverse rotation and the grouped output
+    /// projection into `self.out`. Device work only.
+    #[allow(clippy::too_many_arguments)]
+    fn attend_and_project(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &AttnV41LayerWeights,
+        rows_a: DevicePtr,
+        rows_a_len: usize,
+        rows_b: Option<DevicePtr>,
+        topk: usize,
+        m: usize,
+        yarn: bool,
+        stream: u64,
+    ) -> Result<()> {
+        let c = &self.cfg;
+        let (nh, hd, dim) = (c.n_heads, c.head_dim, c.dim);
+        // sparse attention with the sink, then the inverse rotation
+        let scale = (hd as f32).powf(-0.5);
+        KernelLaunch::new(gpu, self.k.sparse_attn)
+            .grid([m as u32, nh as u32, 1])
+            .block([256, 1, 1])
+            .arg_ptr(self.q)
+            .arg_ptr(rows_a)
+            .arg_ptr(rows_b.unwrap_or(rows_a))
+            .arg_u32(rows_a_len as u32)
+            .arg_ptr(self.idx_dev)
+            .arg_ptr(w.sink)
+            .arg_ptr(self.o)
+            .arg_u32(nh as u32)
+            .arg_u32(hd as u32)
+            .arg_u32(topk as u32)
+            .arg_f32(scale)
+            .launch(stream)?;
+        // `run.o` is the pre-rotation output (the reference's `sa_o`); the
+        // inverse rotation runs on a copy
+        let o_copy = self.o_rot;
+        gpu.copy_d2d_async(self.o, o_copy, m * nh * hd * 2, stream)?;
+        self.rope(gpu, o_copy, self.head_pos, m * nh, hd, yarn, true, stream)?;
+
+        // grouped low-rank output projection: og[t, g*o_rank + r] = o_g . wo_a[g*o_rank + r]
+        let gw = c.gw();
+        for g in 0..c.groups {
+            KernelLaunch::new(gpu, self.k.slice_cols)
+                .grid([m as u32, 1, 1])
+                .block([256, 1, 1])
+                .arg_ptr(o_copy)
+                .arg_ptr(self.slice_in)
+                .arg_u32((nh * hd) as u32)
+                .arg_u32((g * gw) as u32)
+                .arg_u32(gw as u32)
+                .launch(stream)?;
+            self.gemm(
+                gpu,
+                self.slice_in,
+                w.wo_a.at_rows(g * c.o_rank, gw),
+                self.slice_out,
+                m,
+                c.o_rank,
+                gw,
+                stream,
+            )?;
+            KernelLaunch::new(gpu, self.k.scatter_cols)
+                .grid([m as u32, 1, 1])
+                .block([256, 1, 1])
+                .arg_ptr(self.slice_out)
+                .arg_ptr(self.og)
+                .arg_u32((c.groups * c.o_rank) as u32)
+                .arg_u32((g * c.o_rank) as u32)
+                .arg_u32(c.o_rank as u32)
+                .launch(stream)?;
+        }
+        self.gemm(
+            gpu,
+            self.og,
+            w.wo_b,
+            self.out,
+            m,
+            dim,
+            c.groups * c.o_rank,
+            stream,
+        )?;
+        Ok(())
+    }
+
+    /// Can this layer's single-token step be captured into a CUDA graph?
+    /// The kv and index sources compute the position's compressor group and
+    /// the index top-k on the host in the middle of the forward (position
+    /// parity, a score download); every other layer is kernels and copies
+    /// from end to end once its per-token inputs are read from the device.
+    pub fn decode_capturable(&self, w: &AttnV41LayerWeights) -> bool {
+        !w.role.is_kv_source && !w.role.is_index_source
+    }
+
+    /// The `topk` a captured step launches `sparse_attn` with: the widest
+    /// selection the layer can ever see, so the launch argument is constant
+    /// and the selection is padded with -1 (which the kernel skips: a padded
+    /// entry adds a zero to the denominator sum and nothing to the output,
+    /// so the result is the eager step's bit for bit).
+    pub fn decode_fixed_topk(&self, w: &AttnV41LayerWeights) -> usize {
+        let c = &self.cfg;
+        if w.role.ratio > 0 {
+            (c.window + c.index_topk).min(2048)
+        } else {
+            c.window
+        }
+    }
+
+    /// Forget what the captured decode step last uploaded; the next
+    /// [`Self::decode_prep`] re-uploads. Call after any eager `forward` (it
+    /// writes `pos` / `head_pos` / `idx_dev` for itself) and at a new step.
+    pub fn invalidate_decode_uploads(&mut self) {
+        self.decode_pos = None;
+        self.decode_idx = None;
+    }
+
+    /// The HOST half of a capturable layer's single-token step at `start_pos`:
+    /// the position into `pos` / `head_pos` and the padded selection (window
+    /// slots, then the shared index selection, then -1) into `idx_dev`, each
+    /// only when it differs from what is already there. Returns the compressed
+    /// rows the captured `sparse_attn` reads (`None` on ratio-0 layers) — a
+    /// pointer the graph bakes, for the caller to verify on every replay.
+    pub fn decode_prep(
+        &mut self,
+        w: &AttnV41LayerWeights,
+        shared: &SharedV41,
+        gpu: &dyn GpuBackend,
+        start_pos: usize,
+        stream: u64,
+    ) -> Result<Option<DevicePtr>> {
+        let c = &self.cfg;
+        ensure!(
+            self.decode_capturable(w),
+            "attn_v41: decode_prep on a kv/index source layer"
+        );
+        ensure!(
+            start_pos >= 1 && start_pos < c.max_seq,
+            "attn_v41: position {start_pos} outside the decode range 1..{}",
+            c.max_seq
+        );
+        if self.decode_pos != Some(start_pos) {
+            let p = start_pos as i32;
+            upload_i32_async(gpu, self.pos, &[p], stream)?;
+            upload_i32_async(gpu, self.head_pos, &vec![p; c.n_heads], stream)?;
+            self.decode_pos = Some(start_pos);
+        }
+        let fixed = self.decode_fixed_topk(w);
+        let (mut idx, topk) = window_topk_idxs(c.window, 1, start_pos);
+        debug_assert_eq!(topk, c.window);
+        let rows_b = if w.role.ratio > 0 {
+            ensure!(
+                shared.topk_idxs.len() == shared.topk,
+                "attn_v41: shared index selection is {} for one token x {}",
+                shared.topk_idxs.len(),
+                shared.topk
+            );
+            idx.extend_from_slice(&shared.topk_idxs);
+            Some(
+                shared
+                    .compress_kv
+                    .context("compressed layer before any kv source published")?,
+            )
+        } else {
+            None
+        };
+        ensure!(
+            idx.len() <= fixed,
+            "attn_v41: selection {} exceeds the fixed {fixed}",
+            idx.len()
+        );
+        idx.resize(fixed, -1);
+        if self.decode_idx.as_deref() != Some(&idx[..]) {
+            upload_i32_async(gpu, self.idx_dev, &idx, stream)?;
+            self.decode_idx = Some(idx);
+        }
+        Ok(rows_b)
+    }
+
+    /// The DEVICE half of a capturable layer's single-token step: the
+    /// projections, the window ring write at `pos % window` (slot read on
+    /// the device), sparse attention over the padded selection and the output
+    /// projection into the returned buffer. No host work, no per-token
+    /// scalar arguments: capturable into a CUDA graph and replayed for any
+    /// position once `decode_prep` has updated `pos` / `head_pos` / `idx_dev`.
+    pub fn decode_body(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &AttnV41LayerWeights,
+        st: &AttnV41LayerState,
+        x: DevicePtr,
+        rows_b: Option<DevicePtr>,
+        stream: u64,
+    ) -> Result<DevicePtr> {
+        let c = &self.cfg;
+        ensure!(
+            self.decode_capturable(w),
+            "attn_v41: decode_body on a kv/index source layer"
+        );
+        ensure!(
+            (w.role.ratio > 0) == rows_b.is_some(),
+            "attn_v41: compressed rows {} on a ratio-{} layer",
+            if rows_b.is_some() { "given" } else { "missing" },
+            w.role.ratio
+        );
+        let yarn = w.role.ratio > 0;
+        self.q_kv_projections(gpu, w, x, 1, yarn, stream)?;
+        KernelLaunch::new(gpu, self.k.ring_put)
+            .grid([1, 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(self.kv)
+            .arg_ptr(st.window)
+            .arg_ptr(self.pos)
+            .arg_u32(c.window as u32)
+            .arg_u32(c.head_dim as u32)
+            .launch(stream)?;
+        self.attend_and_project(
+            gpu,
+            w,
+            st.window,
+            c.window,
+            rows_b,
+            self.decode_fixed_topk(w),
+            1,
+            yarn,
+            stream,
+        )?;
+        Ok(self.out)
+    }
+
     /// One layer's attention for `m` tokens at `start_pos`: `x` is the normed
     /// input `[m, dim]` bf16; the output is `[m, dim]` bf16 in `run.out`.
     pub fn forward(
@@ -917,7 +1202,7 @@ impl AttnV41 {
             start_pos + m,
             c.max_seq
         );
-        let (nh, hd, dim) = (c.n_heads, c.head_dim, c.dim);
+        let (nh, hd) = (c.n_heads, c.head_dim);
         let yarn = w.role.ratio > 0;
         let pos: Vec<i32> = (0..m).map(|t| (start_pos + t) as i32).collect();
         let hpos: Vec<i32> = pos
@@ -927,26 +1212,7 @@ impl AttnV41 {
         upload_i32(gpu, self.pos, &pos)?;
         upload_i32(gpu, self.head_pos, &hpos)?;
 
-        // q: low-rank, normed, up-projected, rotated
-        self.gemm(gpu, x, w.wq_a, self.qr_raw, m, c.q_rank, dim, stream)?;
-        self.rmsnorm(
-            gpu,
-            false,
-            self.qr_raw,
-            w.q_norm,
-            self.qr,
-            m,
-            c.q_rank,
-            stream,
-        )?;
-        self.gemm(gpu, self.qr, w.wq_b, self.q, m, nh * hd, c.q_rank, stream)?;
-        self.rope(gpu, self.q, self.head_pos, m * nh, hd, yarn, false, stream)?;
-
-        // kv: one latent row per token, normed, rotated, fp8
-        self.gemm(gpu, x, w.wkv, self.kv_raw, m, hd, dim, stream)?;
-        self.rmsnorm(gpu, false, self.kv_raw, w.kv_norm, self.kv, m, hd, stream)?;
-        self.rope(gpu, self.kv, self.pos, m, hd, yarn, false, stream)?;
-        self.act_quant(gpu, self.kv, m * hd, stream)?;
+        self.q_kv_projections(gpu, w, x, m, yarn, stream)?;
 
         // the window ring (stream-ordered copies, no host sync)
         let win = c.window;
@@ -1063,71 +1329,7 @@ impl AttnV41 {
         );
         upload_i32(gpu, self.idx_dev, &idx)?;
 
-        // sparse attention with the sink, then the inverse rotation
-        let scale = (hd as f32).powf(-0.5);
-        KernelLaunch::new(gpu, self.k.sparse_attn)
-            .grid([m as u32, nh as u32, 1])
-            .block([256, 1, 1])
-            .arg_ptr(self.q)
-            .arg_ptr(rows_a)
-            .arg_ptr(rows_b.unwrap_or(rows_a))
-            .arg_u32(rows_a_len as u32)
-            .arg_ptr(self.idx_dev)
-            .arg_ptr(w.sink)
-            .arg_ptr(self.o)
-            .arg_u32(nh as u32)
-            .arg_u32(hd as u32)
-            .arg_u32(topk as u32)
-            .arg_f32(scale)
-            .launch(stream)?;
-        // `run.o` is the pre-rotation output (the reference's `sa_o`); the
-        // inverse rotation runs on a copy
-        let o_copy = self.o_rot;
-        gpu.copy_d2d_async(self.o, o_copy, m * nh * hd * 2, stream)?;
-        self.rope(gpu, o_copy, self.head_pos, m * nh, hd, yarn, true, stream)?;
-
-        // grouped low-rank output projection: og[t, g*o_rank + r] = o_g . wo_a[g*o_rank + r]
-        let gw = c.gw();
-        for g in 0..c.groups {
-            KernelLaunch::new(gpu, self.k.slice_cols)
-                .grid([m as u32, 1, 1])
-                .block([256, 1, 1])
-                .arg_ptr(o_copy)
-                .arg_ptr(self.slice_in)
-                .arg_u32((nh * hd) as u32)
-                .arg_u32((g * gw) as u32)
-                .arg_u32(gw as u32)
-                .launch(stream)?;
-            self.gemm(
-                gpu,
-                self.slice_in,
-                w.wo_a.at_rows(g * c.o_rank, gw),
-                self.slice_out,
-                m,
-                c.o_rank,
-                gw,
-                stream,
-            )?;
-            KernelLaunch::new(gpu, self.k.scatter_cols)
-                .grid([m as u32, 1, 1])
-                .block([256, 1, 1])
-                .arg_ptr(self.slice_out)
-                .arg_ptr(self.og)
-                .arg_u32((c.groups * c.o_rank) as u32)
-                .arg_u32((g * c.o_rank) as u32)
-                .arg_u32(c.o_rank as u32)
-                .launch(stream)?;
-        }
-        self.gemm(
-            gpu,
-            self.og,
-            w.wo_b,
-            self.out,
-            m,
-            dim,
-            c.groups * c.o_rank,
-            stream,
-        )?;
+        self.attend_and_project(gpu, w, rows_a, rows_a_len, rows_b, topk, m, yarn, stream)?;
         // no host sync here: everything downstream runs on the same stream,
         // and the routing download in the MoE block drains it before any
         // expert slot can be rewritten
@@ -1142,6 +1344,12 @@ impl AttnV41 {
             o: self.o,
             out: self.out,
         })
+    }
+
+    /// The layer output buffer, bf16 `[max_tokens, dim]`: a pointer a captured
+    /// decode step bakes.
+    pub fn out_ptr(&self) -> DevicePtr {
+        self.out
     }
 
     pub fn free(self, gpu: &dyn GpuBackend) -> Result<()> {
