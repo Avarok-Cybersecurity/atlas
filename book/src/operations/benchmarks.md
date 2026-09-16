@@ -195,56 +195,53 @@ run the pieces on different boxes, merge, score once.
 
 `bfcl-subset` and `bfcl-subset-echolp` are therefore **benchmark groups**. The
 gate id is unchanged; what changed is how its number is produced — and since
-2026-09-13 the four members are the **only** thing that produces it: a
-whole-draw record under the gate's own id no longer satisfies the gate, and the
-verdict says so by name if one is all the directory holds. Each group has four
-members that can run at the same time on different boxes (`spark bench
-certify` runs them for you — see [Certification](certify.md)):
+2026-09-13 a complete partition of **shards** is the **only** thing that
+produces it: a whole-draw record under the gate's own id no longer satisfies
+the gate, and the verdict says so by name if one is all the directory holds.
+A shard is the group's own benchmark run with `--param shard=i/n`; its record
+is filed under the group with `-s<i>of<n>` in the name and carries
+`shard.index` / `shard.count` in its metrics. The shard **count is not
+fixed**: the campaign picks `n` for the fleet it has — `spark bench certify`
+defaults to two shards per box, and one box alone runs the whole draw as
+`0/1` — and the verdict accepts the newest complete partition the records at
+one commit form, whatever its `n`. A partition begun at this commit is
+finished at its own count (`gate::shards_owed`), never restarted at another.
 
 ```
-spark benchmark run bfcl-subset-a --pull-request-gate --hardware gb10   # on dgx1
-spark benchmark run bfcl-subset-b --pull-request-gate --hardware gb10   # on dgx2
-...
+spark benchmark run bfcl-subset --pull-request-gate --hardware gb10 --param shard=0/2   # on dgx1
+spark benchmark run bfcl-subset --pull-request-gate --hardware gb10 --param shard=1/2   # on dgx2
 spark benchmark aggregate bfcl-subset      # what the group scores, and what is missing
+spark bench certify --shards 6             # or let the campaign choose and place them
 ```
 
-Selection is a **stride within each subset** — row `i` goes to shard `i % 4` —
+Selection is a **stride within each subset** — row `i` goes to shard `i % n` —
 so every shard gets a proportional slice of every subset, and a 16-row subset
-does not vanish from three of them.
-
-For an ad-hoc split at any N, use the `shard` parameter rather than the
-registered members:
-
-```
-spark benchmark run bfcl-subset --model <served-model> --param shard=3/9
-```
+does not vanish from most of them.
 
 The index is **0-based**, so the whole draw is `0/1` and `1/1` is refused (it is
-index 1 of one shard). The default is `inherit`, which leaves whatever the
-benchmark id already selects — the whole draw, or a registered member's own
-quarter. Setting it to `0/1` on `bfcl-subset-a` would run the whole draw under a
-member's name, which is why `inherit` and not `0/1` is the default.
+index 1 of one shard). Run by hand without `--param shard`, the benchmark
+measures the whole draw and writes a whole-draw record — fine for a
+measurement, not evidence for the gate.
 
 #### What the group refuses, and why
 
 Merging counts is only sound if the parts really are the draw, so a group is
-judged only when four conditions hold. Each of these was a way to get a
+judged only when these conditions hold. Each of these was a way to get a
 **passing number for a measurement that never happened**:
 
 | Refusal | What it catches |
 |---|---|
-| a member has no record at this commit | three shards is not 75 % measured, it is a different sample set |
-| members measured at different commits | a group is ONE measurement |
-| the shard indices are not `0..3` once each | two members running the same shard — the row count is still right, and one shard was measured twice while another never ran |
-| a member reports transport failures | those samples were scored as "made no call", which is the *correct* answer across the irrelevance subsets, so a degraded shard can raise the aggregate while measuring less |
-| a member is off-subject, failed, dirty or unsigned | the per-record rules a plain gate applies — required checkpoint, completed frame, clean tree, verified `.sig` — apply to every member; a quarter of a measurement is not exempt |
+| no complete partition at one commit | n-1 shards is not (n-1)/n measured, it is a different sample set; and a partition is never assembled across commits — a group is ONE measurement, so a shard re-run at a newer commit re-opens the group until its siblings join it there |
+| the shard indices are not `0..n` once each | two records of the same shard — the row count is still right, and one shard was measured twice while another never ran; the newest record per index counts, so a duplicate is a re-run, never a stand-in |
+| a shard reports transport failures | those samples were scored as "made no call", which is the *correct* answer across the irrelevance subsets, so a degraded shard can raise the aggregate while measuring less |
+| a shard is off-subject, failed, dirty or unsigned | the per-record rules a plain gate applies — required checkpoint, completed frame, clean tree, verified `.sig` — apply to every shard; a slice of a measurement is not exempt |
 
-The third deserves emphasis: the `samples` threshold is pinned exactly
+The second deserves emphasis: the `samples` threshold is pinned exactly
 (`min == max == 995`) and **cannot** catch a duplicated shard, because the
 duplicate still contributes the right number of rows.
 
 Aggregation is over **counts, never scores**. `score.py` weights
-hierarchically, so the mean of four shard scores is not the whole-set value; the
+hierarchically, so the mean of shard scores is not the whole-set value; the
 group sums each subset's `(hits, n)` integers and applies the hierarchy once.
 
 #### The number is partition-dependent, and that is the certified regime

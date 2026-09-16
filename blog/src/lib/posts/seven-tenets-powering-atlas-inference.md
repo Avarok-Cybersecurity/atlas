@@ -10,7 +10,7 @@ draft: false
 ---
 _Special note to readers: this is our first post. As a long-time writer, before AI became notorious for using em dashes, I wrote at great length on topics ranging from philosophy, programming, theology, cybernetics, and more. As a writer, I use em dashes relatively frequently to help make sentences flow better and draw attention to nuance. If something is AI-generated, we will let you know. We believe the human element is special; the spirit of writing ought not to be rendered vanquished by AI._
 
-**[Atlas Inference](https://atlasinference.io)**
+**[Atlas Inference](https://atlascybernetics.ai)**
 
 ![A polished silicon wafer leaning against a block of rusted iron.](/images/posts/seven-tenets-powering-atlas-inference/00-rust-silicon.webp)
 

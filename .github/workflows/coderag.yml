@@ -23,7 +23,7 @@ name: CodeRAG
 #
 # Fallback if Pages ever misbehaves: ship the same two files through the site's
 # existing rsync deploy (site.yml) so they are served same-origin from
-# atlasinference.io — same bytes, and no CORS in play at all.
+# atlascybernetics.ai — same bytes, and no CORS in play at all.
 
 on:
   push:

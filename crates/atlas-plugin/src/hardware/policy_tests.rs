@@ -12,8 +12,16 @@
 use super::*;
 use crate::hardware::state::{GpuComputeApp, ThermalZone, ThrottleActive};
 
+/// The GB10 ceilings (die 75, chassis 80), as the committed HARDWARE.toml
+/// declares them.
 fn options() -> PolicyOptions {
-    PolicyOptions::default()
+    PolicyOptions {
+        ceilings: Some(TempCeilings {
+            gpu_c: 75.0,
+            chassis_c: 80.0,
+        }),
+        ..PolicyOptions::default()
+    }
 }
 
 /// dgx1: cool, unthrottled, one model resident.
@@ -188,12 +196,50 @@ fn absolute_temperature_is_recorded_by_default_and_gates_only_on_opt_in() {
     );
 }
 
+/// The ceilings come from the class's declared limits — dgx1 idled 52-66 °C,
+/// dgx2 sat at 70-89 °C, both lines live between those clusters — and a
+/// class that declares none records that, never borrowing GB10's.
 #[test]
-fn the_documented_ceilings_are_the_measured_ones() {
-    // dgx1 idled 52-66 C, dgx2 sat at 70-89 C. Both constants live between
-    // those two clusters; pinned so a silent edit shows up as a test change.
-    assert_eq!(GPU_TEMP_CEILING_C, 75.0);
-    assert_eq!(CHASSIS_TEMP_CEILING_C, 80.0);
+fn the_ceilings_are_the_declared_ones_and_none_is_recorded_not_borrowed() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let l = crate::hardware::limits::limits(root, "gb10")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        TempCeilings::of(&l.thermal),
+        TempCeilings {
+            gpu_c: 75.0,
+            chassis_c: 80.0
+        }
+    );
+    let mut s = healthy();
+    s.gpu_temp_c = Some(89.0);
+    let none = precheck(
+        Sensitivity::Speed,
+        &s,
+        PolicyOptions {
+            ceilings: None,
+            absolute_temp_gate: true,
+            ..PolicyOptions::default()
+        },
+    );
+    assert_eq!(none.decision, Decision::Warn, "{:?}", none.concerns);
+    assert!(
+        none.concerns
+            .iter()
+            .any(|c| c.contains("no temperature ceilings are declared")),
+        "{:?}",
+        none.concerns
+    );
+    assert!(
+        !none.concerns.iter().any(|c| c.contains("above the")),
+        "{:?}",
+        none.concerns
+    );
 }
 
 /// ★ The kill switch suppresses the REFUSAL and nothing else. It says loudly
@@ -345,7 +391,8 @@ fn no_option_is_on_unless_it_was_asked_for() {
         PolicyOptions::default(),
         PolicyOptions {
             kill_switch: false,
-            absolute_temp_gate: false
+            absolute_temp_gate: false,
+            ceilings: None,
         }
     );
 }

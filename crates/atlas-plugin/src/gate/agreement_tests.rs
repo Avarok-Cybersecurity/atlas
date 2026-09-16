@@ -3,6 +3,7 @@
 //! that only ever permits is indistinguishable from no rule at all.
 
 use super::agreement::{AddedRecord, Disagreement, check, required_by_class, sensitivity_of};
+use super::check::Standing;
 use crate::hardware::equivalence::HardwareFingerprint;
 use crate::hardware::policy::Sensitivity;
 
@@ -15,7 +16,19 @@ fn rec(gate: &str, sha: &str, signer: &str) -> AddedRecord {
         git_sha: sha.into(),
         signer: signer.into(),
         hardware: None,
+        hardware_class: "gb10".into(),
+        standing: Standing::Stands,
     }
+}
+
+/// The repository root: the GB10 envelope the policy is read from is the
+/// committed one, so these tests judge by the same number CI does.
+fn root() -> &'static std::path::Path {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
 }
 
 /// A healthy GB10 capture at `chassis` °C.
@@ -66,31 +79,64 @@ fn the_required_gates_split_the_way_the_rule_assumes() {
 
 #[test]
 fn an_empty_set_agrees_with_itself() {
-    assert!(check(&[]).is_empty());
+    assert!(check(root(), &[]).is_empty());
 }
 
 /// One commit, one signer, mixed classes — the ordinary passing shape.
 #[test]
 fn one_commit_one_signer_is_fine() {
-    let v = check(&[
-        rec("decode-floor", "abc123", "k1"),
-        rec("bfcl-subset", "abc123", "k1"),
-    ]);
+    let v = check(
+        root(),
+        &[
+            rec("decode-floor", "abc123", "k1"),
+            rec("bfcl-subset", "abc123", "k1"),
+        ],
+    );
     assert!(v.is_empty(), "{v:?}");
 }
 
-/// Two commits is fatal regardless of class — this half of the rule did NOT
-/// relax, and a test that only exercised the relaxed half would hide that.
+/// THE RELAXATION OF 2026-09-14 (#1086): two commits are fine when every
+/// record STANDS at the head — a certified commit stays certified for every
+/// successor that touches nothing its gates measure. NEGATIVE CONTROLS: a
+/// record whose commit cannot be judged at all is a straggler, and so is one
+/// whose successors touched its gate's perf paths — each named with its
+/// commit and the reason, whatever its class.
 #[test]
-fn two_commits_still_fail_even_for_correctness_gates() {
-    let v = check(&[
-        rec("bfcl-subset", "abc123", "k1"),
-        rec("vision-fidelity", "def456", "k1"),
-    ]);
-    assert!(
-        matches!(&v[..], [Disagreement::Commits(s)] if s.len() == 2),
-        "{v:?}"
+fn records_may_span_commits_when_each_stands_at_head() {
+    let v = check(
+        root(),
+        &[
+            rec("bfcl-subset", "abc123", "k1"),
+            rec("vision-fidelity", "def456", "k1"),
+            rec("decode-floor", "def456", "k1"),
+        ],
     );
+    assert!(v.is_empty(), "{v:?}");
+
+    let mut off = rec("vision-fidelity", "0ff000", "k1");
+    off.standing = Standing::Unknown;
+    let v = check(root(), &[rec("bfcl-subset", "abc123", "k1"), off]);
+    match &v[..] {
+        [Disagreement::Straggler { path, git_sha, why }] => {
+            assert!(path.contains("vision-fidelity"), "{path}");
+            assert_eq!(git_sha, "0ff000");
+            assert!(why.contains("cannot be diffed"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+
+    let mut stale = rec("decode-floor", "abc123", "k1");
+    stale.standing = Standing::Invalidated(vec!["crates/spark-model/src/x.rs".into()]);
+    let v = check(root(), &[rec("bfcl-subset", "abc123", "k1"), stale]);
+    match &v[..] {
+        [Disagreement::Straggler { why, .. }] => {
+            assert!(why.contains("crates/spark-model/src/x.rs"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // The rendered line carries the remedy.
+    let text = v[0].to_string();
+    assert!(text.contains("Re-measure it at the head"), "{text}");
 }
 
 /// THE RELAXATION. Correctness gates are box-independent — proven by measuring
@@ -98,11 +144,14 @@ fn two_commits_still_fail_even_for_correctness_gates() {
 /// so two signers is allowed, which is what makes a sharded gate parallelisable.
 #[test]
 fn correctness_gates_may_span_two_signers() {
-    let v = check(&[
-        rec("bfcl-subset", "abc123", "dgx1key"),
-        rec("bfcl-subset-echolp", "abc123", "dgx2key"),
-        rec("vision-fidelity", "abc123", "dgx3key"),
-    ]);
+    let v = check(
+        root(),
+        &[
+            rec("bfcl-subset", "abc123", "dgx1key"),
+            rec("bfcl-subset-echolp", "abc123", "dgx2key"),
+            rec("vision-fidelity", "abc123", "dgx3key"),
+        ],
+    );
     assert!(v.is_empty(), "correctness may span boxes, got {v:?}");
 }
 
@@ -111,10 +160,13 @@ fn correctness_gates_may_span_two_signers() {
 /// comparing numbers that were never comparable.
 #[test]
 fn speed_gates_may_not_span_signers() {
-    let v = check(&[
-        rec("decode-floor", "abc123", "dgx1key"),
-        rec("ttft-cold-gate", "abc123", "dgx2key"),
-    ]);
+    let v = check(
+        root(),
+        &[
+            rec("decode-floor", "abc123", "dgx1key"),
+            rec("ttft-cold-gate", "abc123", "dgx2key"),
+        ],
+    );
     match &v[..] {
         [
             Disagreement::SpeedSigners {
@@ -139,17 +191,23 @@ fn speed_gates_may_not_span_signers() {
 /// (the 2026-09-06 incident) are not, and the message says why.
 #[test]
 fn speed_gates_may_span_signers_only_when_the_records_prove_equivalence() {
-    let ok = check(&[
-        rec_on("decode-floor", "dgx2key", gb10(65.0)),
-        rec_on("ttft-cold-gate", "dgx3key", gb10(70.0)),
-        rec_on("ttft-warm-gate", "dgx2key", gb10(66.0)),
-    ]);
+    let ok = check(
+        root(),
+        &[
+            rec_on("decode-floor", "dgx2key", gb10(65.0)),
+            rec_on("ttft-cold-gate", "dgx3key", gb10(70.0)),
+            rec_on("ttft-warm-gate", "dgx2key", gb10(66.0)),
+        ],
+    );
     assert!(ok.is_empty(), "{ok:?}");
     // NEGATIVE CONTROL: the incident pair.
-    let v = check(&[
-        rec_on("decode-floor", "dgx2key", gb10(65.0)),
-        rec_on("ttft-cold-gate", "dgx3key", gb10(89.0)),
-    ]);
+    let v = check(
+        root(),
+        &[
+            rec_on("decode-floor", "dgx2key", gb10(65.0)),
+            rec_on("ttft-cold-gate", "dgx3key", gb10(89.0)),
+        ],
+    );
     match &v[..] {
         [Disagreement::SpeedSigners { mismatches, .. }] => {
             assert_eq!(mismatches.len(), 1, "{mismatches:?}");
@@ -163,29 +221,38 @@ fn speed_gates_may_span_signers_only_when_the_records_prove_equivalence() {
     // invalid — the number it produced is not trusted across boxes.
     let mut bad = gb10(66.0);
     bad.postcheck_valid = Some(false);
-    let v = check(&[
-        rec_on("decode-floor", "dgx2key", gb10(65.0)),
-        rec_on("ttft-cold-gate", "dgx3key", bad),
-    ]);
+    let v = check(
+        root(),
+        &[
+            rec_on("decode-floor", "dgx2key", gb10(65.0)),
+            rec_on("ttft-cold-gate", "dgx3key", bad),
+        ],
+    );
     assert!(
         matches!(&v[..], [Disagreement::SpeedSigners { .. }]),
         "{v:?}"
     );
     // NEGATIVE CONTROL: one side has a capture, the other none.
-    let v = check(&[
-        rec_on("decode-floor", "dgx2key", gb10(65.0)),
-        rec("ttft-cold-gate", "abc123", "dgx3key"),
-    ]);
+    let v = check(
+        root(),
+        &[
+            rec_on("decode-floor", "dgx2key", gb10(65.0)),
+            rec("ttft-cold-gate", "abc123", "dgx3key"),
+        ],
+    );
     assert!(
         matches!(&v[..], [Disagreement::SpeedSigners { .. }]),
         "{v:?}"
     );
     // Same signer, wildly different captures: not this rule's business —
     // one box drifting is the hardware policy's job, not agreement's.
-    let v = check(&[
-        rec_on("decode-floor", "dgx2key", gb10(65.0)),
-        rec_on("ttft-cold-gate", "dgx2key", gb10(89.0)),
-    ]);
+    let v = check(
+        root(),
+        &[
+            rec_on("decode-floor", "dgx2key", gb10(65.0)),
+            rec_on("ttft-cold-gate", "dgx2key", gb10(89.0)),
+        ],
+    );
     assert!(v.is_empty(), "{v:?}");
 }
 
@@ -193,12 +260,15 @@ fn speed_gates_may_span_signers_only_when_the_records_prove_equivalence() {
 /// otherwise the relaxation is unusable in the very campaign shape it exists for.
 #[test]
 fn a_mixed_set_is_judged_per_class_not_as_a_whole() {
-    let v = check(&[
-        rec("decode-floor", "abc123", "dgx1key"),
-        rec("ttft-warm-gate", "abc123", "dgx1key"),
-        rec("bfcl-subset", "abc123", "dgx2key"),
-        rec("vision-fidelity", "abc123", "dgx3key"),
-    ]);
+    let v = check(
+        root(),
+        &[
+            rec("decode-floor", "abc123", "dgx1key"),
+            rec("ttft-warm-gate", "abc123", "dgx1key"),
+            rec("bfcl-subset", "abc123", "dgx2key"),
+            rec("vision-fidelity", "abc123", "dgx3key"),
+        ],
+    );
     assert!(v.is_empty(), "{v:?}");
 }
 
@@ -207,7 +277,7 @@ fn a_mixed_set_is_judged_per_class_not_as_a_whole() {
 /// rule by naming a gate that does not exist.
 #[test]
 fn an_unknown_benchmark_is_refused_rather_than_assumed_correctness() {
-    let v = check(&[rec("not-a-real-gate", "abc123", "k1")]);
+    let v = check(root(), &[rec("not-a-real-gate", "abc123", "k1")]);
     assert!(
         matches!(&v[..], [Disagreement::UnknownBenchmark(id)] if id == "not-a-real-gate"),
         "{v:?}"
@@ -216,10 +286,13 @@ fn an_unknown_benchmark_is_refused_rather_than_assumed_correctness() {
 
 #[test]
 fn the_message_names_the_gates_that_must_be_redone() {
-    let v = check(&[
-        rec("decode-floor", "abc123", "k1"),
-        rec("ttft-cold-gate", "abc123", "k2"),
-    ]);
+    let v = check(
+        root(),
+        &[
+            rec("decode-floor", "abc123", "k1"),
+            rec("ttft-cold-gate", "abc123", "k2"),
+        ],
+    );
     let msg = v[0].to_string();
     assert!(msg.contains("decode-floor"), "{msg}");
     assert!(msg.contains("ttft-cold-gate"), "{msg}");
@@ -234,4 +307,29 @@ fn sensitivity_comes_from_the_registry_not_the_record() {
         Some(Sensitivity::Correctness)
     );
     assert_eq!(sensitivity_of("nope"), None);
+}
+
+/// NEGATIVE CONTROL: a class whose HARDWARE.toml declares no
+/// `[benchmarks.limits.thermal]` makes every cross-signer Speed pair a
+/// mismatch, by name — GB10's numbers are not borrowed for an H100.
+#[test]
+fn a_class_without_an_envelope_never_lets_two_signers_agree() {
+    let mut a = rec("decode-floor", "abc", "sig-a");
+    let mut b = rec("ttft-warm-gate", "abc", "sig-b");
+    a.hardware = Some(gb10(65.0));
+    b.hardware = Some(gb10(66.0));
+    assert!(
+        check(root(), &[a.clone(), b.clone()]).is_empty(),
+        "gb10 declares one"
+    );
+    a.hardware_class = "hopper".into();
+    b.hardware_class = "hopper".into();
+    let v = check(root(), &[a, b]);
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(
+        v[0].to_string()
+            .contains("declares no [benchmarks.limits.thermal]"),
+        "{}",
+        v[0]
+    );
 }

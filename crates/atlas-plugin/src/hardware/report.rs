@@ -43,8 +43,19 @@ pub struct HardwareStateReport {
 
 impl HardwareStateReport {
     /// Open a report with the pre-run capture and its verdict.
-    pub fn opened(sensitivity: Sensitivity, before: HardwareState) -> Self {
-        let precheck = policy::precheck(sensitivity, &before, policy::PolicyOptions::from_env());
+    pub fn opened(
+        sensitivity: Sensitivity,
+        before: HardwareState,
+        ceilings: Option<policy::TempCeilings>,
+    ) -> Self {
+        let precheck = policy::precheck(
+            sensitivity,
+            &before,
+            policy::PolicyOptions {
+                ceilings,
+                ..policy::PolicyOptions::from_env()
+            },
+        );
         Self {
             sensitivity,
             perf_class: before.machine.perf_class(),

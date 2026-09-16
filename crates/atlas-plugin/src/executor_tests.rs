@@ -211,6 +211,7 @@ async fn executor_runs_the_lifecycle_and_always_cleans_up() {
         ParamValues::default(),
         TargetEndpoint::local(1, "unused"),
         CoherencePolicy::Skip,
+        None,
     );
 
     tokio::time::timeout(Duration::from_secs(10), async {
