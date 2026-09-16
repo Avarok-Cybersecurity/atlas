@@ -226,6 +226,40 @@ impl Qwen3AttentionLayer {
         // equivalence into a checked invariant per row below.
         let expect_sel = selection_active_rows(qsa.inert_bound(), seq_lens, n);
 
+        // ── select-vs-attend split (ATLAS_HC_VERIFY_STAGE_TIMING=1) ──
+        //
+        // WHY THIS EXISTS. The verify attention core's per-row paged decode is
+        // ~470 us of a ~1000 us core at C=4 / ISL 2000 (measured 2026-09-16),
+        // i.e. roughly 12% of the whole verify forward and the largest remaining
+        // decode stage. 157 us per row is ~20x what the data movement costs
+        // (~2 MB of gathered K/V at 273 GB/s = ~8 us), so the time is going
+        // somewhere other than the attention math — but "select" and "attend"
+        // are one call from the outside, and they want OPPOSITE fixes:
+        //
+        //   * attend-dominated -> batch the k attends into one launch, which
+        //     needs PER-ROW gather scratch (today `s.k_scratch` is SHARED and
+        //     must be consumed before the next row's select overwrites it).
+        //   * select-dominated -> batching attends buys nothing; the indexer's
+        //     block scoring is the target instead.
+        //
+        // Guessing wrong costs a scratch-allocation change for no gain, so
+        // measure first.
+        let qsa_timing = {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
+        };
+        let (mut sel_us, mut att_us, mut timed_rows) = (0u128, 0u128, 0usize);
+        let mut qt = std::time::Instant::now();
+        macro_rules! qmark {
+            ($acc:expr) => {
+                if qsa_timing {
+                    let _ = fwd.gpu.synchronize(stream);
+                    $acc += qt.elapsed().as_micros();
+                    qt = std::time::Instant::now();
+                }
+            };
+        }
+
         for (i, state) in states.iter_mut().enumerate().take(n) {
             // Padding rows (`seq_len == 0`) are skipped before the indexer
             // carry is lazily allocated — see the ingest loop above. Their
@@ -241,6 +275,10 @@ impl Qwen3AttentionLayer {
             let out_i = attn_out.offset(i * q_dim as usize * bf16);
             let table_i = meta.block_table.offset(i * mbps as usize * 4);
 
+            if qsa_timing {
+                let _ = fwd.gpu.synchronize(stream);
+                qt = std::time::Instant::now();
+            }
             let st = crate::layers::qwen3_attention::helpers::qsa_seq_state(qsa, *state, fwd.gpu)?;
             let sel = qsa.decode_select(
                 st,
@@ -254,6 +292,7 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
 
+            qmark!(sel_us);
             // A row past the bound that came back with no selection would be
             // served DENSE past the budget — a different model from the
             // reference, and precisely the divergence the old `ensure!` on
@@ -313,6 +352,22 @@ impl Qwen3AttentionLayer {
                     fwd.levers.max_decode_seqs,
                     stream,
                 )?,
+            }
+            qmark!(att_us);
+            timed_rows += 1;
+        }
+        if qsa_timing && timed_rows > 0 {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static CALLS: AtomicUsize = AtomicUsize::new(0);
+            let call = CALLS.fetch_add(1, Ordering::Relaxed);
+            if call.is_multiple_of(512) && call > 0 {
+                tracing::info!(
+                    call,
+                    rows = timed_rows,
+                    select_us = sel_us as u64,
+                    attend_us = att_us as u64,
+                    "QSA per-row select vs attend (synced per phase; one call over {timed_rows} rows)"
+                );
             }
         }
         Ok(attn_out)
