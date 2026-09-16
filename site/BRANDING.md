@@ -10,7 +10,7 @@ The homepage uses the supplied Avarok brand kit: unmodified vector lockups, lave
 
 Brand vector masters and palette live in `assets/brand/` at the repository root. `static/brand/` links to the masters so the website ships the same bytes.
 
-The homepage introduces Avarok and links to `/engine` (`https://atlascybernetics.ai/engine`) for the complete benchmarks, recipes, installation, and chat tools. `/control.html` and `/diligence.html` retain their existing functionality. Existing homepage fragments for verified performance, models, and getting started remain useful summaries. Other technical fragments forward to the matching engine section, with ordinary links available when JavaScript is disabled.
+The homepage introduces Avarok and links to `/engine` (`https://atlascybernetics.ai/engine`) for the complete benchmarks, recipes, installation, and chat tools. `/control` and `/diligence` retain their existing functionality. Existing homepage fragments for verified performance, models, and getting started remain useful summaries. Other technical fragments forward to the matching engine section, with ordinary links available when JavaScript is disabled.
 
 The performance highlight is calculated from `ladder.generated.json`, including its fastest published baseline at the highest measured concurrency. It does not contain independent throughput numbers or assume future results will show an improvement.
 

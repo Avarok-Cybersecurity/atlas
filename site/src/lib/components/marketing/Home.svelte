@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script>
   import { afterNavigate } from '$app/navigation';
-  import { githubUrl as REPO, guideUrl as GUIDE, discordUrl, blogUrl, contactEmails } from '$lib/data.js';
+  import { githubUrl as REPO, guideUrl as GUIDE, discordUrl, blogUrl, contactEmails, CONTROL } from '$lib/data.js';
   import ladder from '$lib/ladder.generated.json';
   import models from '$lib/models.generated.json';
   import { benchmarkHighlight, legacyEngineDestination, legacySections, brandStyle, ENGINE } from '$lib/marketing.js';
@@ -75,7 +75,7 @@
       </section>
     </main>
     <footer class="m-footer">
-      <div class="m-footer-main"><div><a class="m-brand" href="#main" aria-label="Avarok home"><img class="m-logo-onlight" src="/brand/logo-full.svg" width="253" height="72" alt="Avarok Inference Engine"/><img class="m-logo-ondark" src="/brand/logo-full-ondark.svg" width="253" height="72" alt=""/></a><p>Intelligence, on your terms.</p></div><div class="m-footer-links"><div><span>BUILD</span><a href={ENGINE} data-sveltekit-reload>Engine and benchmarks</a><a href="/control.html" data-sveltekit-reload>Fleet Manager</a><a href={GUIDE} target="_blank" rel="noreferrer">Documentation</a><a href={REPO} target="_blank" rel="noreferrer">GitHub</a><a href={`${ENGINE}#verified`} target="_blank" rel="noreferrer">Benchmarks</a></div><div><span>CONNECT</span><a href={discordUrl} target="_blank" rel="noreferrer">Discord</a><a href={blogUrl} target="_blank" rel="noreferrer">The Avarok blog</a><a href={`mailto:${contactEmails[0]}`}>Let’s talk <Icon name="ArrowUpRight" size={13}/></a></div></div></div>
+      <div class="m-footer-main"><div><a class="m-brand" href="#main" aria-label="Avarok home"><img class="m-logo-onlight" src="/brand/logo-full.svg" width="253" height="72" alt="Avarok Inference Engine"/><img class="m-logo-ondark" src="/brand/logo-full-ondark.svg" width="253" height="72" alt=""/></a><p>Intelligence, on your terms.</p></div><div class="m-footer-links"><div><span>BUILD</span><a href={ENGINE} data-sveltekit-reload>Engine and benchmarks</a><a href={CONTROL} data-sveltekit-reload>Fleet Manager</a><a href={GUIDE} target="_blank" rel="noreferrer">Documentation</a><a href={REPO} target="_blank" rel="noreferrer">GitHub</a><a href={`${ENGINE}#verified`} target="_blank" rel="noreferrer">Benchmarks</a></div><div><span>CONNECT</span><a href={discordUrl} target="_blank" rel="noreferrer">Discord</a><a href={blogUrl} target="_blank" rel="noreferrer">The Avarok blog</a><a href={`mailto:${contactEmails[0]}`}>Let’s talk <Icon name="ArrowUpRight" size={13}/></a></div></div></div>
       <div class="m-footer-bottom"><span>Avarok · Built in the open.</span><span>Community Edition · AGPL-3.0</span><a href="#main">Back to top ↑</a></div>
     </footer>
   <noscript>

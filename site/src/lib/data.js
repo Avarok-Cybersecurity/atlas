@@ -24,6 +24,7 @@
 // Pages pretty-URLs /engine (200) and 308s /engine.html → /engine. Vite
 // preview serves /engine from that file too. Do not put .html in hrefs.
 export const ENGINE = '/engine';
+export const CONTROL = '/control';
 export const githubUrl = 'https://github.com/Avarok-Cybersecurity/atlas';
 export const discordUrl = 'https://discord.gg/RQcGakU2jW';
 export const blogUrl = 'https://blog.atlascybernetics.ai';
@@ -135,12 +136,7 @@ export const nav = {
     { text: 'Hardware', href: `${ENGINE}#hardware` },
     { text: 'Models', href: `${ENGINE}#models` },
     { text: 'Start Avarok', href: `${ENGINE}#run` },
-    // `.html`, not `/control`. adapter-static writes this route to
-    // control.html, and the nginx origin serves files literally: no extension
-    // guessing, and no directory index outside the document root. Pages already
-    // pretty-URLs /control; the origin standby does not, so this stays
-    // control.html until that vhost matches the engine pretty-URL rewrite.
-    { text: 'Control', href: '/control.html' },
+    { text: 'Control', href: CONTROL },
     { text: 'Blog', href: blogUrl }
   ],
   menuLabel: 'Menu',

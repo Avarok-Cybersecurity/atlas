@@ -32,14 +32,7 @@
   // are counts, and the page they link to holds the rest.
   import { fleet } from '$lib/agent/fleet.svelte.js';
   import { summarize } from '$lib/agent/summary.js';
-
-  // `.html`, not `/control`. adapter-static writes this route to control.html,
-  // and the deploy target serves files literally: it does not try the
-  // extension, and it has no directory index outside the document root. So
-  // /control is the SPA fallback and /control/ is a 500. This is the URL that
-  // resolves. If the server ever gains `try_files $uri $uri.html`, this becomes
-  // '/control'.
-  const CONTROL = '/control.html';
+  import { CONTROL } from '$lib/data.js';
 
   const view = $derived(summarize(fleet));
 </script>
