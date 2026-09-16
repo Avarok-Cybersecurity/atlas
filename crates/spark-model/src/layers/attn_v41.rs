@@ -39,7 +39,7 @@ use crate::layers::deepseek_v41_ref::compress::{
 };
 use crate::layers::ops;
 use crate::layers::ops::{
-    KQUANT_MODULE, Q2K_MMQ_SMEM, kquant_mmq_act_bytes, kquant_mmq_gemm, kquant_mmvq,
+    KQUANT_MODULE, Q2K_MMQ_SMEM, kquant_mmq_act_bytes, kquant_mmq_gemm, kquant_mmvq_w,
     kquant_q8_1_rows, kquant_q8_1_rows_bytes,
 };
 use crate::weight_map::DenseWeight;
@@ -242,7 +242,7 @@ struct Kernels {
     /// the K-quant path for `AttnMat::Q2K`: q8_1 row quant + GEMV at m <= 8,
     /// D2S6 tile quant + MMQ above
     q8_rows: KernelHandle,
-    mmvq_q2k: KernelHandle,
+    mmvq_q2k_w: KernelHandle,
     quant_d2s6: KernelHandle,
     mmq_q2k_nc: KernelHandle,
     mmq_q2k_wc: KernelHandle,
@@ -334,7 +334,7 @@ impl AttnV41 {
             gemm: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16")?,
             gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
             q8_rows: gpu.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16")?,
-            mmvq_q2k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k")?,
+            mmvq_q2k_w: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_w")?,
             quant_d2s6: gpu.kernel(KQUANT_MODULE, "atlas_q8_1_quantize_d2s6_bf16")?,
             mmq_q2k_nc: gpu.kernel(KQUANT_MODULE, "atlas_q2_k_mmq128_nc")?,
             mmq_q2k_wc: gpu.kernel(KQUANT_MODULE, "atlas_q2_k_mmq128_wc")?,
@@ -431,9 +431,9 @@ impl AttnV41 {
                 let (m, n, kk) = (m as u32, n as u32, kk as u32);
                 if m <= 8 {
                     kquant_q8_1_rows(gpu, self.k.q8_rows, a, self.a_q8, m, kk, stream)?;
-                    return kquant_mmvq(
+                    return kquant_mmvq_w(
                         gpu,
-                        self.k.mmvq_q2k,
+                        self.k.mmvq_q2k_w,
                         blocks,
                         self.a_q8,
                         c,
