@@ -288,8 +288,7 @@ impl DeepSeekV41Layer {
         rt.rows.read_rows(self.idx, &row_ids, &mut raw)?;
         let engram = rt.engram.lock().unwrap();
         engram.rows_from_q2k(gpu, &raw, row_ids.len(), stream)?;
-        engram.apply(gpu, self.idx, streams, m, stream)?;
-        gpu.synchronize(stream)
+        engram.apply(gpu, self.idx, streams, m, stream)
     }
 
     /// One block for `m` tokens at `start_pos`, on the highway.

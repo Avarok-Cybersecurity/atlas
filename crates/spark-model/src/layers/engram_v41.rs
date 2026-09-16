@@ -242,6 +242,8 @@ pub struct EngramV41 {
     pub eps: f32,
     pub max_tokens: usize,
     gemm_k: KernelHandle,
+    /// the projection at one token: bandwidth-bound GEMV, not the 16x16 tile
+    gemv_k: KernelHandle,
     gate_k: KernelHandle,
     dequant_k: KernelHandle,
     layers: Vec<EngramLayerWeights>,
@@ -276,6 +278,7 @@ impl EngramV41 {
             eps,
             max_tokens,
             gemm_k: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16")?,
+            gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             gate_k: gpu.kernel(GATE_MODULE, "engram_v41_gate")?,
             dequant_k: gpu.kernel(DEQUANT_MODULE, "dequant_q2_k_to_bf16")?,
             layers: Vec::new(),
@@ -339,7 +342,7 @@ impl EngramV41 {
             "engram: {} raw bytes for {n_rows} rows",
             raw_blocks.len()
         );
-        gpu.copy_h2d(raw_blocks, self.raw)?;
+        gpu.copy_h2d_async(raw_blocks, self.raw, stream)?;
         KernelLaunch::new(gpu, self.dequant_k)
             .grid([n_rows as u32, 1, 1])
             .block([256, 1, 1])
@@ -395,17 +398,30 @@ impl EngramV41 {
             .layer(layer)
             .with_context(|| format!("engram: layer {layer} has no weights"))?;
         let wkv = DenseWeight { weight: w.wkv };
-        ops::dense_gemm(
-            gpu,
-            self.gemm_k,
-            self.rows,
-            &wkv,
-            self.kv,
-            tokens as u32,
-            self.out_features() as u32,
-            self.in_features() as u32,
-            stream,
-        )?;
+        if tokens == 1 {
+            ops::dense_gemv(
+                gpu,
+                self.gemv_k,
+                self.rows,
+                &wkv,
+                self.kv,
+                self.out_features() as u32,
+                self.in_features() as u32,
+                stream,
+            )?;
+        } else {
+            ops::dense_gemm(
+                gpu,
+                self.gemm_k,
+                self.rows,
+                &wkv,
+                self.kv,
+                tokens as u32,
+                self.out_features() as u32,
+                self.in_features() as u32,
+                stream,
+            )?;
+        }
         KernelLaunch::new(gpu, self.gate_k)
             .grid([tokens as u32, self.hc as u32, 1])
             .block([256, 1, 1])
