@@ -159,14 +159,16 @@ a { color: var(--accent); }
    enter it, so the divider sits just outside that margin rather than inside a
    flex gap. The negative margin-left cancels the clear space against the
    shell's own padding, so the mark optically aligns with the content below. */
-.brand { display: flex; align-items: center; gap: 0; text-decoration: none; color: var(--text-1); flex: none; margin-left: -15px; }
+.brand { display: flex; align-items: center; gap: 0; color: var(--text-1); flex: none; margin-left: -15px; }
+.brand-mark { display: flex; align-items: center; text-decoration: none; color: inherit; }
 .brand-div { width: 1px; height: 19px; background: var(--line-hard); margin-right: 14px; }
 .brand-sub {
   font-family: var(--mono); font-size: 12.5px; font-weight: 500;
   letter-spacing: .11em; text-transform: uppercase; color: var(--text-3);
+  text-decoration: none;
   transition: color var(--dur) var(--ease);
 }
-.brand:hover .brand-sub { color: var(--text-2); }
+.brand-sub:hover { color: var(--text-2); }
 
 /* The links are full bar height, so the current-page underline can be pinned
    to `bottom: 0` and land exactly on the header's hairline. Offsetting a

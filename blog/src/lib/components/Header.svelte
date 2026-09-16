@@ -6,15 +6,19 @@
   import ThemeToggle from '$shared/components/ThemeToggle.svelte';
 
   const current = (href) => navCurrent(page.url.pathname, href);
+  // Local review runs the marketing site on :5173. Production always uses MAIN_SITE.
+  const landing = import.meta.env.DEV ? 'http://127.0.0.1:5173/' : MAIN_SITE;
 </script>
 
 <header class="hdr">
   <div class="hdr-in">
-    <a class="brand" href="/" aria-label="Avarok blog, home">
-      <AtlasLockup kind="horizontal" label="Avarok" />
+    <div class="brand">
+      <a class="brand-mark" href={landing} aria-label="Avarok home">
+        <AtlasLockup kind="horizontal" label="Avarok" />
+      </a>
       <span class="brand-div" aria-hidden="true"></span>
-      <span class="brand-sub">Blog</span>
-    </a>
+      <a class="brand-sub" href="/" aria-current={current('/') ? 'page' : undefined}>Blog</a>
+    </div>
 
     <nav class="nav" aria-label="Categories">
       {#each nav as l}
