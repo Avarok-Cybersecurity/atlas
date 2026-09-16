@@ -67,13 +67,13 @@ fn rand_bf16(n: usize, seed: u32, scale: f32) -> Vec<f32> {
         .collect()
 }
 
-fn q8_emulate(x: &[f32]) -> Vec<f32> {
+fn q8_emulate_block(x: &[f32], block: usize) -> Vec<f32> {
     let mut out = vec![0f32; x.len()];
-    for (i, chunk) in x.chunks(32).enumerate() {
+    for (i, chunk) in x.chunks(block).enumerate() {
         let amax = chunk.iter().fold(0f32, |a, v| a.max(v.abs()));
         let d = amax / 127.0;
         for (j, &v) in chunk.iter().enumerate() {
-            out[i * 32 + j] = if amax == 0.0 {
+            out[i * block + j] = if amax == 0.0 {
                 0.0
             } else {
                 (v / d).round() * d
@@ -136,6 +136,18 @@ fn backend() -> spark_runtime::cuda_backend::AtlasCudaBackend {
 #[test]
 #[ignore = "requires a CUDA GB10 + the deepseek-v4-flash kernel target"]
 fn streamed_moe_matches_the_emulated_numerics_and_the_reference() {
+    run_case(TOKENS);
+}
+
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "requires a CUDA GB10 + the deepseek-v4-flash kernel target"]
+fn streamed_moe_prefill_groups_take_the_mmq_arm() {
+    run_case(40);
+}
+
+#[cfg(feature = "cuda")]
+fn run_case(tokens: usize) {
     use spark_runtime::gpu::GpuBackend;
     use spark_runtime::weights::expert_stream::PinnedArena;
     let gpu = backend();
@@ -150,7 +162,7 @@ fn streamed_moe_matches_the_emulated_numerics_and_the_reference() {
         norm_topk_prob: true,
         route_scale: 1.5,
         swiglu_limit: 10.0,
-        max_tokens: TOKENS,
+        max_tokens: tokens,
     };
     // experts: gate/up Q2_K [INTER, DIM], down Q3_K [DIM, INTER]
     let ex = Experts {
@@ -181,7 +193,7 @@ fn streamed_moe_matches_the_emulated_numerics_and_the_reference() {
     let s1 = rand_bf16(INTER * DIM, 0x81, 0.05);
     let s2 = rand_bf16(DIM * INTER, 0x82, 0.05);
     let s3 = rand_bf16(INTER * DIM, 0x83, 0.05);
-    let x = rand_bf16(TOKENS * DIM, 0x99, 1.0);
+    let x = rand_bf16(tokens * DIM, 0x99, 1.0);
 
     let up = |v: &[f32]| {
         let b = bf16_bytes(v);
@@ -204,9 +216,9 @@ fn streamed_moe_matches_the_emulated_numerics_and_the_reference() {
     let mut lru = ExpertLru::new(arena.host(), arena.dev(), arena.bytes(), layout).unwrap();
 
     let (out_dev, weights, indices) = moe
-        .forward(g, &lw, &mut lru, &ex, x_dev, TOKENS, 2, stream)
+        .forward(g, &lw, &mut lru, &ex, x_dev, tokens, 2, stream)
         .unwrap();
-    let mut ob = vec![0u8; TOKENS * DIM * 2];
+    let mut ob = vec![0u8; tokens * DIM * 2];
     g.copy_d2h(out_dev, &mut ob).unwrap();
     let got: Vec<f32> = ob
         .chunks_exact(2)
@@ -215,7 +227,7 @@ fn streamed_moe_matches_the_emulated_numerics_and_the_reference() {
 
     // oracle 1: routing = the reference gate on f32 logits
     let (ref_w, ref_i) = ref_gate(
-        &x, &gate_w, &gate_bias, TOKENS, DIM, N_ROUTED, TOPK, 1.0, true, 1.5,
+        &x, &gate_w, &gate_bias, tokens, DIM, N_ROUTED, TOPK, 1.0, true, 1.5,
     );
     assert_eq!(
         indices, ref_i,
@@ -235,12 +247,20 @@ fn streamed_moe_matches_the_emulated_numerics_and_the_reference() {
     );
 
     // oracle 2: the production numerics emulated on the CPU
-    let mut acc = vec![0f32; TOKENS * DIM];
-    for t in 0..TOKENS {
-        let xq = q8_emulate(&x[t * DIM..(t + 1) * DIM]);
+    // group sizes decide the arm: <= 8 rows = the decode GEMV (q8 block 32
+    // everywhere), larger = the MMQ arm (D2S6: block 64 for the Q2_K gate/up,
+    // D4: block 32 for the Q3_K down)
+    let mut group_size = vec![0usize; N_ROUTED];
+    for &e in &indices {
+        group_size[e] += 1;
+    }
+    let mut acc = vec![0f32; tokens * DIM];
+    for t in 0..tokens {
         for kk in 0..TOPK {
             let e = indices[t * TOPK + kk];
             let rw = weights[t * TOPK + kk];
+            let mmq = group_size[e] > 8;
+            let xq = q8_emulate_block(&x[t * DIM..(t + 1) * DIM], if mmq { 64 } else { 32 });
             let gt = gemm_bf16(&xq, &w1[e], 1, DIM, INTER);
             let ut = gemm_bf16(&xq, &w3[e], 1, DIM, INTER);
             let h: Vec<f32> = (0..INTER)
@@ -250,7 +270,7 @@ fn streamed_moe_matches_the_emulated_numerics_and_the_reference() {
                     bf16r((g_ / (1.0 + (-g_).exp())) * u * rw)
                 })
                 .collect();
-            let hq = q8_emulate(&h);
+            let hq = q8_emulate_block(&h, 32);
             let d = gemm_bf16(&hq, &w2[e], 1, INTER, DIM);
             for j in 0..DIM {
                 acc[t * DIM + j] += d[j];
@@ -258,7 +278,7 @@ fn streamed_moe_matches_the_emulated_numerics_and_the_reference() {
         }
     }
     let shared = crate::layers::deepseek_v41_ref::moe::expert(
-        &x, &s1, &s2, &s3, TOKENS, DIM, INTER, 10.0, None,
+        &x, &s1, &s2, &s3, tokens, DIM, INTER, 10.0, None,
     );
     let want: Vec<f32> = acc.iter().zip(&shared).map(|(a, s)| bf16r(a + s)).collect();
     let max = want.iter().fold(0f32, |a, v| a.max(v.abs()));
@@ -299,7 +319,7 @@ fn streamed_moe_matches_the_emulated_numerics_and_the_reference() {
         route_scale: 1.5,
         swiglu_limit: 10.0,
     };
-    let (ref_y, _, _) = ref_moe(&x, TOKENS, &rw, &rc);
+    let (ref_y, _, _) = ref_moe(&x, tokens, &rw, &rc);
     let mut worst_ref = 0f32;
     for (a, b) in got.iter().zip(&ref_y) {
         worst_ref = worst_ref.max((a - b).abs());

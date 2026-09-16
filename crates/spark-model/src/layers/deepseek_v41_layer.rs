@@ -87,6 +87,11 @@ pub struct V41Runtime {
     pub comb_s: DevicePtr,
     pub attn_in: DevicePtr,
     pub max_tokens: usize,
+    /// per-step totals across layers, printed by the last layer when ATLAS_DS41_DIAG=1
+    pub step_moe: Mutex<crate::layers::moe_v41::MoeV41Timing>,
+    pub step_attn_ms: Mutex<f64>,
+    pub step_engram_ms: Mutex<f64>,
+    pub step_start: Mutex<Option<std::time::Instant>>,
 }
 
 // SAFETY: every raw device/host pointer here names memory the runtime owns
@@ -339,11 +344,19 @@ impl DeepSeekV41Layer {
                 stream,
             )?;
         }
+        if self.idx == 0 {
+            *rt.step_start.lock().unwrap() = Some(std::time::Instant::now());
+            *rt.step_moe.lock().unwrap() = Default::default();
+            *rt.step_attn_ms.lock().unwrap() = 0.0;
+            *rt.step_engram_ms.lock().unwrap() = 0.0;
+        }
+        let te = std::time::Instant::now();
         if let Some(hi) = self.engram_index
             && !std::env::var("ATLAS_DS41_NO_ENGRAM").is_ok_and(|v| v == "1")
         {
             self.engram(hi, streams, m, start_pos, ctx, stream)?;
         }
+        *rt.step_engram_ms.lock().unwrap() += te.elapsed().as_secs_f64() * 1e3;
         let diag = diag_on();
         if diag {
             gpu.synchronize(stream)?;
@@ -378,6 +391,7 @@ impl DeepSeekV41Layer {
             rt.norm_eps,
             stream,
         )?;
+        let ta = std::time::Instant::now();
         let attn_out = {
             let attn = rt.attn.lock().unwrap();
             let mut shared = rt.shared.lock().unwrap();
@@ -393,6 +407,7 @@ impl DeepSeekV41Layer {
             )?;
             run.out
         };
+        *rt.step_attn_ms.lock().unwrap() += ta.elapsed().as_secs_f64() * 1e3;
         if diag {
             gpu.synchronize(stream)?;
             tracing::info!(
@@ -441,6 +456,7 @@ impl DeepSeekV41Layer {
                 rt.reader_threads,
                 stream,
             )?;
+            rt.step_moe.lock().unwrap().add(&moe.last.get());
             out
         };
         if diag {
@@ -457,6 +473,28 @@ impl DeepSeekV41Layer {
         gpu.synchronize(stream)?;
         gpu.copy_d2d(rt.pre_f, rt.pre_prev, m * hc * 4)?;
 
+        if self.idx + 1 == rt.n_layers && diag_on() {
+            let total = rt
+                .step_start
+                .lock()
+                .unwrap()
+                .map(|t| t.elapsed().as_secs_f64() * 1e3)
+                .unwrap_or(0.0);
+            let mo = *rt.step_moe.lock().unwrap();
+            tracing::info!(
+                "DS41 step: {m} tok pos {start_pos}: total {total:.0} ms = attn {:.0} + engram {:.0} + moe(route {:.0} fetch {:.0} compute {:.0}) ms; experts hit {} miss {} read {:.2} GiB; cache {}/{} resident",
+                *rt.step_attn_ms.lock().unwrap(),
+                *rt.step_engram_ms.lock().unwrap(),
+                mo.route_ms,
+                mo.fetch_ms,
+                mo.compute_ms,
+                mo.hits,
+                mo.misses,
+                mo.bytes_read as f64 / 1073741824.0,
+                rt.lru.lock().unwrap().resident(),
+                rt.lru.lock().unwrap().n_slots()
+            );
+        }
         if self.idx + 1 == rt.n_layers {
             // no learned head on V4.1: the final collapse uses the last ffn pre
             self.collapse(gpu, streams, rt.pre_prev, hidden, m, stream)?;

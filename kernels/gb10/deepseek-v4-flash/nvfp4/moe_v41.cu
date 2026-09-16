@@ -43,3 +43,24 @@ extern "C" __global__ void moe_v41_finish(
     const unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = __float2bfloat16(acc[i]);
 }
+
+// out[r, :] = x[rows[r], :] for r < n_rows (bf16 rows of `dim`). Grid: (n_rows). Block: 256.
+extern "C" __global__ void moe_v41_gather_rows(
+    const __nv_bfloat16* __restrict__ x, const int* __restrict__ rows,
+    __nv_bfloat16* __restrict__ out, const unsigned int dim) {
+    const unsigned int r = blockIdx.x;
+    const __nv_bfloat16* src = x + (size_t)rows[r] * dim;
+    __nv_bfloat16* dst = out + (size_t)r * dim;
+    for (unsigned int d = threadIdx.x; d < dim; d += blockDim.x) dst[d] = src[d];
+}
+
+// acc[rows[r], :] += src[r, :] (f32 += bf16). Rows of one group are distinct
+// tokens, so no two blocks touch the same acc row. Grid: (n_rows). Block: 256.
+extern "C" __global__ void moe_v41_scatter_add(
+    float* __restrict__ acc, const __nv_bfloat16* __restrict__ src,
+    const int* __restrict__ rows, const unsigned int dim) {
+    const unsigned int r = blockIdx.x;
+    float* dst = acc + (size_t)rows[r] * dim;
+    const __nv_bfloat16* s = src + (size_t)r * dim;
+    for (unsigned int d = threadIdx.x; d < dim; d += blockDim.x) dst[d] += __bfloat162float(s[d]);
+}

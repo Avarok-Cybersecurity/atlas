@@ -351,6 +351,10 @@ impl ModelWeightLoader for DeepSeekV41WeightLoader {
             attn_cfg: attn_cfg.clone(),
             moe_cfg,
             max_tokens,
+            step_moe: Mutex::new(Default::default()),
+            step_attn_ms: Mutex::new(0.0),
+            step_engram_ms: Mutex::new(0.0),
+            step_start: Mutex::new(None),
         });
 
         // ── kernels shared by every layer ──
