@@ -17,7 +17,7 @@ export const RERANK_MODEL = 'nvidia/llama-nemotron-rerank-vl-1b-v2:free';
 export const CHAT_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b:free';
 // Attribution headers OpenRouter asks apps to send.
 export const APP_TITLE = 'Atlas Ask the Codebase';
-export const SITE_ORIGIN = 'https://atlasinference.io';
+export const SITE_ORIGIN = 'https://atlascybernetics.ai';
 // Retry policy for the shared free-tier capacity (ResourceExhausted bursts).
 export const OR_MAX_ATTEMPTS = 3;
 export const OR_RETRY_BASE_MS = 700;

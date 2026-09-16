@@ -116,6 +116,7 @@ async fn a_failed_probe_warns_but_still_runs_the_benchmark() {
             source: atlas_plugin::RunSource::Cli,
             atlas_version: "test".into(),
             coherence: CoherencePolicy::Probe,
+            temp_ceilings: None,
         },
     };
 

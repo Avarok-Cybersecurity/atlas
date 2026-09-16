@@ -174,7 +174,7 @@ jobs:
           cmp web-shared/atlas-tokens.css book/output/theme/css/atlas-tokens.css
           grep -q 'content="#0F1216"' book/theme/head.hbs
           grep -q -- '--bg: #0F1216' book/output/theme/css/atlas-tokens.css
-          grep -q 'property="og:image" content="https://docs.atlasinference.io/og-image.png"' \
+          grep -q 'property="og:image" content="https://docs.atlascybernetics.ai/og-image.png"' \
             book/output/index.html
           grep -q 'rel="canonical"' book/output/getting-started/quickstart.html
           test -s book/output/og-image.png
@@ -213,7 +213,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # Cloudflare Pages is what docs.atlasinference.io resolves to, so this is the
+  # Cloudflare Pages is what docs.atlascybernetics.ai resolves to, so this is the
   # job that publishes. The rsync to avarok follows as its own job and cannot
   # block it: the origin went down once and took the docs with it, and with both
   # legs in one job that outage would also have stopped the edge deploy that
@@ -230,7 +230,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: production-docs
-      url: https://docs.atlasinference.io/
+      url: https://docs.atlascybernetics.ai/
     steps:
       - name: Check deploy secret presence
         id: cf_check
@@ -264,7 +264,7 @@ jobs:
       # `--branch=main` is load-bearing: a deployment on any other branch gets a
       # preview URL and does NOT move the custom domain, which fails silently as
       # "the deploy went green and the docs are stale".
-      - name: Publish docs.atlasinference.io
+      - name: Publish docs.atlascybernetics.ai
         if: steps.cf_check.outputs.configured == 'true'
         env:
           CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -293,7 +293,7 @@ jobs:
     needs: build
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
-    # The origin no longer serves docs.atlasinference.io, so a failure here means
+    # The origin no longer serves docs.atlascybernetics.ai, so a failure here means
     # the standby is stale, not that the docs are down.
     continue-on-error: true
     steps:

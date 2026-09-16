@@ -92,6 +92,9 @@ pub(super) struct Resolved {
     pub recipe_id: String,
     /// The resolved variant's thresholds/note/label, verbatim.
     pub entry: gate::ModelBaseline,
+    /// The box class the entry is for — whose `HARDWARE.toml` limits the
+    /// serve is judged by.
+    pub hardware: String,
 }
 
 /// Pick the (model, recipe) a gate run should serve.
@@ -158,6 +161,7 @@ pub(super) fn resolve(
         model,
         recipe_id,
         entry: entry.clone(),
+        hardware: hw_key,
     })
 }
 

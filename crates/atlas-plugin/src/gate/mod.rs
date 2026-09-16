@@ -27,7 +27,7 @@ pub mod card;
 pub mod check;
 mod check_fmt;
 mod check_group;
-pub use check_group::members_owed;
+pub use check_group::shards_owed;
 pub mod check_paths;
 pub mod closure;
 pub mod codeowners;
@@ -35,6 +35,7 @@ pub mod coverage;
 pub mod hermetic;
 pub mod record;
 mod record_path;
+pub use record_path::shard_suffix;
 pub mod scoring;
 pub mod signing;
 pub mod taxon;
@@ -51,7 +52,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 
 pub use check::{
-    Comparison, GateStatus, check_gates, check_record, compare, record_covers, records_newest_first,
+    Comparison, GateStatus, Standing, check_gates, check_record, compare, record_covers,
+    record_standing, records_newest_first,
 };
 pub use record::{
     Bound, GateBaseline, GateRecord, HardwareBaseline, ModelBaseline, date_of,
@@ -158,6 +160,28 @@ pub fn git_rev_parse(root: &Path, rev: &str) -> Result<String> {
         bail!("git rev-parse returned {sha:?}, not a 40-hex commit");
     }
     Ok(sha)
+}
+
+/// The repository root that contains `dir`, from git itself.
+///
+/// # Errors
+/// If `dir` is not inside a git working tree.
+pub fn git_rev_parse_toplevel(dir: &Path) -> Result<PathBuf> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("running git rev-parse --show-toplevel")?;
+    if !out.status.success() {
+        bail!(
+            "{} is not inside a git working tree: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))
 }
 
 /// The short commit id for this working tree. `ATLAS_GATE_SHA` overrides —
@@ -330,6 +354,9 @@ mod signing_tests;
 #[cfg(test)]
 #[path = "amnesty_tests.rs"]
 mod amnesty_tests;
+#[cfg(test)]
+#[path = "standing_tests.rs"]
+mod standing_tests;
 
 #[cfg(test)]
 #[path = "dirty_tests.rs"]

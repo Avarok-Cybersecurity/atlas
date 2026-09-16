@@ -105,12 +105,47 @@ pub(super) fn record_still_stands(
     record: &GateRecord,
     gate: &super::coverage::GateCoverage,
 ) -> bool {
+    matches!(record_standing(root, sha, record, gate), Standing::Stands)
+}
+
+/// Where a record measured at its own commit stands relative to `sha`: the
+/// ONE answer both the gate verdict (`record_still_stands`) and the record
+/// agreement rule (`agreement::check`) read, so a record can never be "still
+/// covering" for one and "a straggler" for the other.
+pub fn record_standing(
+    root: &Path,
+    sha: &str,
+    record: &GateRecord,
+    gate: &super::coverage::GateCoverage,
+) -> Standing {
     match invalidating_paths(root, sha, &record.git_sha, gate) {
-        // Not an ancestor, or git failed: unchanged fail-closed doctrine.
-        None => false,
-        Some(paths) if paths.is_empty() => true,
-        Some(paths) => super::closure::excuses(root, &paths, &record.closure),
+        // git could not diff the two (a commit this repository does not
+        // have, or git failed): unchanged fail-closed doctrine.
+        None => Standing::Unknown,
+        Some(paths) if paths.is_empty() => Standing::Stands,
+        Some(paths) => {
+            if super::closure::excuses(root, &paths, &record.closure) {
+                Standing::Stands
+            } else {
+                Standing::Invalidated(paths)
+            }
+        }
     }
+}
+
+/// A record's standing at a head, from its own commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Standing {
+    /// The diff from the record's commit to the head touches nothing this
+    /// gate looks at (or the record's closure excuses what it touches).
+    Stands,
+    /// git could not diff the record's commit against the head — a commit
+    /// this repository does not have, or git failed. Content is the rule,
+    /// never ancestry (this repository squash-merges), so "unknown commit"
+    /// is the only way a record fails to be judged at all.
+    Unknown,
+    /// The diff touches these invalidating paths for the record's gate.
+    Invalidated(Vec<String>),
 }
 
 /// The full gate verdict for `sha`: every required bench, in order.

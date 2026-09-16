@@ -49,8 +49,7 @@ pub use report::{
 
 mod descriptors;
 pub use descriptors::{
-    ECHOLP_A, ECHOLP_B, ECHOLP_C, ECHOLP_D, ECHOLP_METADATA, FULL_DESCRIPTOR, FULL_METADATA,
-    SUBSET_A, SUBSET_B, SUBSET_C, SUBSET_D, SUBSET_DESCRIPTOR, SUBSET_ECHOLP_DESCRIPTOR,
+    ECHOLP_METADATA, FULL_DESCRIPTOR, FULL_METADATA, SUBSET_DESCRIPTOR, SUBSET_ECHOLP_DESCRIPTOR,
     SUBSET_METADATA,
 };
 
@@ -293,17 +292,16 @@ impl Benchmark for Bfcl {
                 "shard",
                 "Shard",
                 "Run one Nth of the draw, as `index/count` with a 0-based index \
-                 (`2/7`; the whole draw is `0/1`). `inherit` runs whatever this \
-                 benchmark id already selects: the whole draw, or — for a \
-                 registered shard member like `bfcl-subset-a` — its own quarter.",
+                 (`2/7`; the whole draw is `0/1`). This is how a certification \
+                 splits the gate across boxes: `spark bench certify` picks the count \
+                 from its fleet and runs every index; `gate::group` recombines the \
+                 records. `inherit` runs whatever the constructor selected — the \
+                 whole draw for this id.",
                 ParamKind::Text,
-                // ★ THE DEFAULT IS `inherit`, NOT `0/1`. The registered shard
-                // members set their slice in the constructor, and a default
-                // that meant "the whole draw" would overwrite it on every
-                // `configure` — which the TUI and every gate run call — turning
-                // all four members into four copies of the whole draw. The
-                // union would be 4 x 995 rows with every sample scored four
-                // times. See
+                // ★ THE DEFAULT IS `inherit`, NOT `0/1`: a constructor-selected
+                // slice (`Bfcl::sharded`) must survive `configure`, which the TUI
+                // and every gate run call, or it would be overwritten with the
+                // whole draw. See
                 // `a_shard_member_keeps_its_slice_under_default_parameters`.
                 //
                 // A word rather than an empty string because `ParamKind::Text`

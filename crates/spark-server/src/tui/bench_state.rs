@@ -370,6 +370,9 @@ impl BenchState {
             self.values.clone(),
             self.target.clone(),
             self.coherence,
+            // The dashboard has no repository to read a class's limits from;
+            // the capture is recorded, not judged, and the record says so.
+            None,
         ));
         self.view = View::Run;
         Ok(())

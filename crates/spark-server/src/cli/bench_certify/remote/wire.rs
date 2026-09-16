@@ -199,6 +199,8 @@ pub struct SubmitSpec {
     pub job_key: String,
     pub sha: String,
     pub gate: String,
+    /// `k=v` pairs the node passes on as `--param`; a shard's `shard=i/n`.
+    pub params: Vec<String>,
     pub hardware: String,
     pub max_run_s: Option<u32>,
     pub note: String,
