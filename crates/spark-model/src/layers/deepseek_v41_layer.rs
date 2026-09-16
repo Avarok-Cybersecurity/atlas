@@ -73,6 +73,8 @@ pub struct V41Runtime {
     pub step_hashes: Mutex<Option<Vec<i64>>>,
     /// The delayed `pre` mix `[max_tokens, hc]` f32 on the device.
     pub pre_prev: DevicePtr,
+    /// `[max_tokens, (2 + hc) * hc]` f32 scratch for the hc mixes (dot -> finish)
+    pub mixes_s: DevicePtr,
     pub reader_threads: usize,
     pub n_layers: usize,
     pub hc_mult: usize,
@@ -127,7 +129,8 @@ pub struct DeepSeekV41Layer {
     pub ffn_norm: DenseWeight,
     pub k_hc_expand: KernelHandle,
     pub k_hc_post: KernelHandle,
-    pub k_mixes: KernelHandle,
+    pub k_mixes_dot: KernelHandle,
+    pub k_mixes_finish: KernelHandle,
     pub k_collapse: KernelHandle,
     pub k_rms_norm: KernelHandle,
 }
@@ -174,20 +177,30 @@ impl DeepSeekV41Layer {
         stream: u64,
     ) -> Result<()> {
         let rt = &self.rt;
-        KernelLaunch::new(gpu, self.k_mixes)
-            .grid([m as u32, 1, 1])
+        let mix_hc = (2 + rt.hc_mult) * rt.hc_mult;
+        // one block per (token, mix) for the 24 dot products over hc * H, then
+        // the tiny epilogue; bit-identical to the one-block hc_v41_mixes
+        KernelLaunch::new(gpu, self.k_mixes_dot)
+            .grid([m as u32, mix_hc as u32, 1])
             .block([256, 1, 1])
             .arg_ptr(streams)
             .arg_ptr(site.hc_fn)
+            .arg_ptr(rt.mixes_s)
+            .arg_u32(rt.hidden as u32)
+            .arg_u32(rt.hc_mult as u32)
+            .arg_f32(rt.norm_eps)
+            .launch(stream)?;
+        KernelLaunch::new(gpu, self.k_mixes_finish)
+            .grid([m as u32, 1, 1])
+            .block([32, 1, 1])
+            .arg_ptr(rt.mixes_s)
             .arg_ptr(site.hc_scale)
             .arg_ptr(site.hc_base)
             .arg_ptr(pre)
             .arg_ptr(post)
             .arg_ptr(comb)
-            .arg_u32(rt.hidden as u32)
             .arg_u32(rt.hc_mult as u32)
             .arg_u32(rt.sinkhorn_iters as u32)
-            .arg_f32(rt.norm_eps)
             .arg_f32(rt.hc_eps)
             .launch(stream)
     }

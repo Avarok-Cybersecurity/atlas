@@ -110,6 +110,83 @@ extern "C" __global__ void hc_v41_mixes(
     }
 }
 
+// The same mixes, spread over the GPU: one block per (token, mix). Each block
+// recomputes the stream rms with the identical strided loop and block
+// reduction (so the bits match hc_v41_mixes), takes its one dot product, and
+// writes mixes[t][m] = acc * rsq. Grid: (T, mix_hc). Block: 256.
+extern "C" __global__ void hc_v41_mixes_dot(
+    const float* __restrict__ streams, // [T, hc, H]
+    const float* __restrict__ hc_fn,   // [mix_hc, hc*H]
+    float* __restrict__ mixes_out,     // [T, mix_hc]
+    const unsigned int hidden_size,
+    const unsigned int hc_mult,
+    const float norm_eps) {
+    const unsigned int t = blockIdx.x;
+    const unsigned int m = blockIdx.y;
+    const unsigned int tid = threadIdx.x;
+    const unsigned int hc = hc_mult;
+    const unsigned int n = hc * hidden_size;
+    const unsigned int mix_hc = (2 + hc) * hc;
+    __shared__ float red[HCV_BLOCK];
+    const float* x = streams + (size_t)t * n;
+    float ss = 0.0f;
+    for (unsigned int i = tid; i < n; i += HCV_BLOCK) ss += x[i] * x[i];
+    ss = hcv_block_sum(ss, red);
+    const float rsq = rsqrtf(ss / (float)n + norm_eps);
+    const float* w = hc_fn + (size_t)m * n;
+    float acc = 0.0f;
+    for (unsigned int i = tid; i < n; i += HCV_BLOCK) acc += w[i] * x[i];
+    acc = hcv_block_sum(acc, red);
+    if (tid == 0) mixes_out[(size_t)t * mix_hc + m] = acc * rsq;
+}
+
+// The epilogue of hc_v41_mixes on the precomputed mixes: sigmoids, the row
+// softmax, the sinkhorn passes. Grid: (T). Block: 32 (thread 0 works).
+extern "C" __global__ void hc_v41_mixes_finish(
+    const float* __restrict__ mixes_in, // [T, mix_hc]
+    const float* __restrict__ hc_scale, // [3]
+    const float* __restrict__ hc_base,  // [mix_hc]
+    float* __restrict__ pre,            // [T, hc]
+    float* __restrict__ post,           // [T, hc]
+    float* __restrict__ comb,           // [T, hc, hc]
+    const unsigned int hc_mult,
+    const unsigned int sinkhorn_iters,
+    const float hc_eps) {
+    const unsigned int t = blockIdx.x;
+    if (threadIdx.x != 0) return;
+    const unsigned int hc = hc_mult;
+    const unsigned int mix_hc = (2 + hc) * hc;
+    const float* mixes = mixes_in + (size_t)t * mix_hc;
+    float c[HCV_MAX_HC * HCV_MAX_HC];
+    for (unsigned int j = 0; j < hc; ++j) {
+        pre[(size_t)t * hc + j] = hcv_sigmoid(mixes[j] * hc_scale[0] + hc_base[j]) + hc_eps;
+        post[(size_t)t * hc + j] = 2.0f * hcv_sigmoid(mixes[hc + j] * hc_scale[1] + hc_base[hc + j]);
+    }
+    for (unsigned int i = 0; i < hc * hc; ++i) c[i] = mixes[2 * hc + i] * hc_scale[2] + hc_base[2 * hc + i];
+    for (unsigned int j = 0; j < hc; ++j) {
+        float m = -INFINITY;
+        for (unsigned int k = 0; k < hc; ++k) m = fmaxf(m, c[j * hc + k]);
+        float sum = 0.0f;
+        for (unsigned int k = 0; k < hc; ++k) { c[j * hc + k] = expf(c[j * hc + k] - m); sum += c[j * hc + k]; }
+        for (unsigned int k = 0; k < hc; ++k) c[j * hc + k] = c[j * hc + k] / sum + hc_eps;
+    }
+    for (unsigned int it = 0; it < sinkhorn_iters; ++it) {
+        if (it > 0) {
+            for (unsigned int j = 0; j < hc; ++j) {
+                float s = 0.0f;
+                for (unsigned int k = 0; k < hc; ++k) s += c[j * hc + k];
+                for (unsigned int k = 0; k < hc; ++k) c[j * hc + k] /= s + hc_eps;
+            }
+        }
+        for (unsigned int k = 0; k < hc; ++k) {
+            float s = 0.0f;
+            for (unsigned int j = 0; j < hc; ++j) s += c[j * hc + k];
+            for (unsigned int j = 0; j < hc; ++j) c[j * hc + k] /= s + hc_eps;
+        }
+    }
+    for (unsigned int i = 0; i < hc * hc; ++i) comb[(size_t)t * hc * hc + i] = c[i];
+}
+
 // Grid: (T). Block: 256.
 extern "C" __global__ void hc_v41_collapse(
     const float* __restrict__ streams, // [T, hc, H]

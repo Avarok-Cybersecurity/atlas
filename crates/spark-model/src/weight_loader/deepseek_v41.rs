@@ -363,6 +363,7 @@ impl ModelWeightLoader for DeepSeekV41WeightLoader {
             shared: Mutex::new(SharedV41::default()),
             step_hashes: Mutex::new(None),
             pre_prev: alloc_f32(max_tokens * hc)?,
+            mixes_s: alloc_f32(max_tokens * (2 + hc) * hc)?,
             reader_threads,
             n_layers,
             hc_mult: hc,
@@ -387,7 +388,8 @@ impl ModelWeightLoader for DeepSeekV41WeightLoader {
         // ── kernels shared by every layer ──
         let k_hc_expand = gpu.kernel("hyper_connection", "hc_expand")?;
         let k_hc_post = gpu.kernel("hyper_connection", "hc_post")?;
-        let k_mixes = gpu.kernel("hc_v41", "hc_v41_mixes")?;
+        let k_mixes_dot = gpu.kernel("hc_v41", "hc_v41_mixes_dot")?;
+        let k_mixes_finish = gpu.kernel("hc_v41", "hc_v41_mixes_finish")?;
         let k_collapse = gpu.kernel("hc_v41", "hc_v41_collapse")?;
         // V4.1 norm weights are plain (`w * x_normed`); the shared `rms_norm`
         // kernel applies the zero-centered `(1 + w)` convention, so every
@@ -516,7 +518,8 @@ impl ModelWeightLoader for DeepSeekV41WeightLoader {
                 },
                 k_hc_expand,
                 k_hc_post,
-                k_mixes,
+                k_mixes_dot,
+                k_mixes_finish,
                 k_collapse,
                 k_rms_norm,
             }));
@@ -702,20 +705,30 @@ mod real_file_tests {
             g.alloc(m * hc * 4).unwrap(),
             g.alloc(m * hc * hc * 4).unwrap(),
         );
-        KernelLaunch::new(g, g.kernel("hc_v41", "hc_v41_mixes").unwrap())
-            .grid([m as u32, 1, 1])
+        let mix_hc = (2 + hc) * hc;
+        let mixes_d = g.alloc(m * mix_hc * 4).unwrap();
+        KernelLaunch::new(g, g.kernel("hc_v41", "hc_v41_mixes_dot").unwrap())
+            .grid([m as u32, mix_hc as u32, 1])
             .block([256, 1, 1])
             .arg_ptr(streams)
             .arg_ptr(site.hc_fn)
+            .arg_ptr(mixes_d)
+            .arg_u32(dim as u32)
+            .arg_u32(hc as u32)
+            .arg_f32(eps)
+            .launch(stream)
+            .unwrap();
+        KernelLaunch::new(g, g.kernel("hc_v41", "hc_v41_mixes_finish").unwrap())
+            .grid([m as u32, 1, 1])
+            .block([32, 1, 1])
+            .arg_ptr(mixes_d)
             .arg_ptr(site.hc_scale)
             .arg_ptr(site.hc_base)
             .arg_ptr(pre_d)
             .arg_ptr(post_d)
             .arg_ptr(comb_d)
-            .arg_u32(dim as u32)
             .arg_u32(hc as u32)
             .arg_u32(config.hc_sinkhorn_iters as u32)
-            .arg_f32(eps)
             .arg_f32(config.hc_eps)
             .launch(stream)
             .unwrap();
