@@ -66,12 +66,26 @@ impl fmt::Display for Verdict {
 /// the probe rather than of the matcher.
 pub fn reply_matches(reply: &str, want_all: &[&str], want_none: &[&str]) -> bool {
     let hay = reply.to_lowercase();
-    want_all
-        .iter()
-        .all(|term| crate::benchmarks::first_standalone_term(&hay, term).is_some())
-        && !want_none
-            .iter()
-            .any(|term| crate::benchmarks::first_standalone_term(&hay, term).is_some())
+    let contains_term = |term: &str| {
+        if !term.is_empty() && term.chars().all(|ch| ch.is_ascii_digit()) {
+            // The HD fixture's printed label is "07_hd_1280x720". Its 1280 is
+            // a complete number even though it touches an underscore.
+            hay.match_indices(term).any(|(at, _)| {
+                !hay[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|ch| ch.is_ascii_digit())
+                    && !hay[at + term.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| ch.is_ascii_digit())
+            })
+        } else {
+            crate::benchmarks::first_standalone_term(&hay, term).is_some()
+        }
+    };
+    want_all.iter().all(|term| contains_term(term))
+        && !want_none.iter().any(|term| contains_term(term))
 }
 
 /// Fold the legs into one verdict.
