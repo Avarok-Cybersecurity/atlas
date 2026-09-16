@@ -1,5 +1,6 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script>
+  import { onMount } from 'svelte';
   import { afterNavigate } from '$app/navigation';
   import { githubUrl as REPO, guideUrl as GUIDE, discordUrl, blogUrl, contactEmails, CONTROL } from '$lib/data.js';
   import ladder from '$lib/ladder.generated.json';
@@ -11,6 +12,40 @@
   import '../../../styles/marketing.css';
 
   const benchmark = benchmarkHighlight(ladder);
+  // The hero is one image. Its source is picked from data-theme rather than
+  // from CSS, so a page load fetches the render it is going to show and not
+  // both of them. The light render is multiplied onto a near-white ground and
+  // the dark one is a re-toned derivative levelled to the dark --bg.
+  const HERO_LIGHT = '/brand/avarok-hero.webp';
+  const HERO_DARK = '/brand/avarok-hero-dark.webp';
+  const heroSrc = theme => (theme === 'dark' ? HERO_DARK : HERO_LIGHT);
+  // Svelte has no way to put a raw script element in markup, so the parse time
+  // pick ships as literal html. On a prerendered load it runs while the parser
+  // is still on the hero, which is why the image carries no src of its own and
+  // the head preload is the only fetch. On a client side navigation the html
+  // arrives through innerHTML and the script does not run, so onMount below
+  // sets the same source a second time.
+  const heroPick =
+    `<script>(function(){var i=document.getElementById('m-hero-img');` +
+    `if(i)i.src=document.documentElement.getAttribute('data-theme')==='dark'` +
+    `?'${HERO_DARK}':'${HERO_LIGHT}';})()<\/script>`;
+  onMount(() => {
+    const img = document.getElementById('m-hero-img');
+    if (!img) return;
+    // A theme flip after load swaps the source. The second render is fetched
+    // at that moment, which is the cost of never fetching it on a load that
+    // does not show it.
+    const sync = () => {
+      const next = heroSrc(document.documentElement.getAttribute('data-theme'));
+      if (!img.src.endsWith(next)) img.src = next;
+    };
+    sync();
+    // theme.js flips the attribute without announcing it, so the attribute is
+    // what we watch.
+    const watcher = new MutationObserver(sync);
+    watcher.observe(document.documentElement, { attributeFilter: ['data-theme'] });
+    return () => watcher.disconnect();
+  });
   const featuredModels = models.filter(model => ['Qwen', 'Gemma', 'Mistral', 'Nemotron'].includes(model.vendor));
   function forwardLegacyFragment({ hash, search }) {
     if (hash === '#why-avarok') {
@@ -46,7 +81,7 @@
     </header>
     <main id="main">
       <section class="m-hero">
-        <div class="m-hero-art"><img class="m-hero-onlight" src="/brand/avarok-hero.png" alt="" fetchpriority="high" width="1536" height="1024" /><img class="m-hero-ondark" src="/brand/avarok-hero-dark.webp" alt="" loading="lazy" decoding="async" width="1536" height="1024" /></div>
+        <div class="m-hero-art"><img id="m-hero-img" class="m-hero-img" alt="" width="1536" height="1024" fetchpriority="high" decoding="async" />{@html heroPick}<noscript><img class="m-hero-img" src="/brand/avarok-hero-dark.webp" alt="" width="1536" height="1024" /></noscript></div>
         <div class="m-hero-copy">
           <a class="m-eyebrow m-hero-announcement" href={REPO} target="_blank" rel="noreferrer"><span class="m-status-dot"/> OPEN SOURCE. OPEN POSSIBILITIES. <Icon name="ArrowUpRight" size={13}/></a>
           <h1>Intelligence,<br/>on your <em>terms.</em></h1>

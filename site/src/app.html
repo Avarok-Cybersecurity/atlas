@@ -3,14 +3,28 @@
   <head>
     <script>
       (function () {
+        // apply also queues the hero fetch, because the home page hero is a
+        // single image whose source is only known once the theme is settled.
+        // Starting the preload here puts the request at the point in the head
+        // where the preload scanner would have found an eager src.
+        function apply(t) {
+          document.documentElement.setAttribute('data-theme', t);
+          if (location.pathname !== '/' && location.pathname !== '/index.html') return;
+          var l = document.createElement('link');
+          l.rel = 'preload';
+          l.as = 'image';
+          l.setAttribute('fetchpriority', 'high');
+          l.href = t === 'dark' ? '/brand/avarok-hero-dark.webp' : '/brand/avarok-hero.webp';
+          document.head.appendChild(l);
+        }
         try {
           var t = localStorage.getItem('avarok-theme');
           if (t !== 'light' && t !== 'dark') {
             t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
           }
-          document.documentElement.setAttribute('data-theme', t);
+          apply(t);
         } catch (e) {
-          document.documentElement.setAttribute('data-theme', 'dark');
+          apply('dark');
         }
       })();
     </script>

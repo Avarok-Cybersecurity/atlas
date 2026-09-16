@@ -25,18 +25,13 @@ html[data-theme="dark"] .marketing .m-brand img.m-logo-ondark {
 }
 /* The hero render sits on a near-white ground and is multiplied onto the
    light theme. No blend mode lifts that ground off a dark page (screen leaves
-   white white, multiply goes black), so dark mode swaps in a re-toned
-   derivative of the same render whose ground is levelled to the dark --bg,
-   the way the lockups swap. The dark image is lazy so a light-theme visit
-   never fetches it. */
-.marketing .m-hero-art img.m-hero-ondark {
-  display: none;
-}
-html[data-theme="dark"] .marketing .m-hero-art img.m-hero-onlight {
-  display: none;
-}
-html[data-theme="dark"] .marketing .m-hero-art img.m-hero-ondark {
-  display: block;
+   white white, multiply goes black), so dark mode shows a re-toned derivative
+   of the same render whose ground is levelled to the dark --bg. That is one
+   image element, not two: the boot script in app.html preloads the render the
+   theme calls for and the inline pick in Home.svelte gives the element its
+   source while the page parses, so a load fetches one render. All CSS has
+   left to do is drop the multiply the dark render does not want. */
+html[data-theme="dark"] .marketing .m-hero-art img {
   mix-blend-mode: normal;
 }
 .marketing .m-dark {
