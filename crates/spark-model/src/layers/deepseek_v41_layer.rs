@@ -470,8 +470,7 @@ impl DeepSeekV41Layer {
             );
         }
         self.hc_post(gpu, moe_out, streams, rt.post_s, rt.comb_s, m, stream)?;
-        gpu.synchronize(stream)?;
-        gpu.copy_d2d(rt.pre_f, rt.pre_prev, m * hc * 4)?;
+        gpu.copy_d2d_async(rt.pre_f, rt.pre_prev, m * hc * 4, stream)?;
 
         if self.idx + 1 == rt.n_layers && diag_on() {
             let total = rt

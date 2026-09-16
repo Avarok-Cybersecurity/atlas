@@ -647,9 +647,18 @@ impl AttnV41 {
             let remainder = m % ratio;
             let cutoff = m - remainder;
             if remainder > 0 {
-                gpu.synchronize(stream)?;
-                gpu.copy_d2d(at(self.ckv, cutoff * row), kv_state, remainder * row)?;
-                gpu.copy_d2d(at(self.cscore, cutoff * row), score_state, remainder * row)?;
+                gpu.copy_d2d_async(
+                    at(self.ckv, cutoff * row),
+                    kv_state,
+                    remainder * row,
+                    stream,
+                )?;
+                gpu.copy_d2d_async(
+                    at(self.cscore, cutoff * row),
+                    score_state,
+                    remainder * row,
+                    stream,
+                )?;
             }
             if m < ratio {
                 return Ok(None);
@@ -657,9 +666,8 @@ impl AttnV41 {
             (self.ckv, self.cscore, cutoff / ratio)
         } else {
             let slot = start_pos % ratio;
-            gpu.synchronize(stream)?;
-            gpu.copy_d2d(self.ckv, at(kv_state, slot * row), row)?;
-            gpu.copy_d2d(self.cscore, at(score_state, slot * row), row)?;
+            gpu.copy_d2d_async(self.ckv, at(kv_state, slot * row), row, stream)?;
+            gpu.copy_d2d_async(self.cscore, at(score_state, slot * row), row, stream)?;
             if (start_pos + 1) % ratio != 0 {
                 return Ok(None);
             }
@@ -752,11 +760,11 @@ impl AttnV41 {
             )?;
             self.rope(gpu, self.ik, self.grp_pos, groups, ihd, true, false, stream)?;
             self.fp4_quant(gpu, self.ik, groups * ihd, FP4_BLOCK, false, stream)?;
-            gpu.synchronize(stream)?;
-            gpu.copy_d2d(
+            gpu.copy_d2d_async(
                 self.ik,
                 at(cache, (start_pos / ratio) * ihd * 2),
                 groups * ihd * 2,
+                stream,
             )?;
             shared.index_k = Some(cache);
         }
@@ -939,24 +947,33 @@ impl AttnV41 {
         self.rmsnorm(gpu, false, self.kv_raw, w.kv_norm, self.kv, m, hd, stream)?;
         self.rope(gpu, self.kv, self.pos, m, hd, yarn, false, stream)?;
         self.act_quant(gpu, self.kv, m * hd, stream)?;
-        gpu.synchronize(stream)?;
 
-        // the window ring
+        // the window ring (stream-ordered copies, no host sync)
         let win = c.window;
         let row = hd * 2;
         let (rows_a, rows_a_len) = if start_pos == 0 {
             if m <= win {
-                gpu.copy_d2d(self.kv, st.window, m * row)?;
+                gpu.copy_d2d_async(self.kv, st.window, m * row, stream)?;
             } else {
                 let cutoff = m % win;
                 let tail = at(self.kv, (m - win) * row);
-                gpu.copy_d2d(tail, at(st.window, cutoff * row), (win - cutoff) * row)?;
-                gpu.copy_d2d(at(tail, (win - cutoff) * row), st.window, cutoff * row)?;
+                gpu.copy_d2d_async(
+                    tail,
+                    at(st.window, cutoff * row),
+                    (win - cutoff) * row,
+                    stream,
+                )?;
+                gpu.copy_d2d_async(
+                    at(tail, (win - cutoff) * row),
+                    st.window,
+                    cutoff * row,
+                    stream,
+                )?;
             }
             (self.kv, m)
         } else {
             let slot = start_pos % win;
-            gpu.copy_d2d(self.kv, at(st.window, slot * row), row)?;
+            gpu.copy_d2d_async(self.kv, at(st.window, slot * row), row, stream)?;
             (st.window, win)
         };
         let (mut idx, mut topk) = window_topk_idxs(win, m, start_pos);
@@ -1012,11 +1029,11 @@ impl AttnV41 {
                     stream,
                 )?;
                 self.fp4_quant(gpu, self.latent, groups * hd, LATENT_BLOCK, true, stream)?;
-                gpu.synchronize(stream)?;
-                gpu.copy_d2d(
+                gpu.copy_d2d_async(
                     self.latent,
                     at(cache, (start_pos / ratio) * row),
                     groups * row,
+                    stream,
                 )?;
                 shared.compress_kv = Some(cache);
                 shared.compress_len = shared.compress_len.max(start_pos / ratio + groups);
@@ -1065,9 +1082,8 @@ impl AttnV41 {
             .launch(stream)?;
         // `run.o` is the pre-rotation output (the reference's `sa_o`); the
         // inverse rotation runs on a copy
-        gpu.synchronize(stream)?;
         let o_copy = self.o_rot;
-        gpu.copy_d2d(self.o, o_copy, m * nh * hd * 2)?;
+        gpu.copy_d2d_async(self.o, o_copy, m * nh * hd * 2, stream)?;
         self.rope(gpu, o_copy, self.head_pos, m * nh, hd, yarn, true, stream)?;
 
         // grouped low-rank output projection: og[t, g*o_rank + r] = o_g . wo_a[g*o_rank + r]
