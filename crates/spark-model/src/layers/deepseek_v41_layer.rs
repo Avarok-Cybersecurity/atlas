@@ -27,17 +27,22 @@
 //! attention is shared ACROSS layers (four kv sources write, forty read), which
 //! no per-layer state can express, so one runtime object is shared by all
 //! forty layers through an `Arc` and guarded by mutexes. One sequence at a
-//! time; multi-sequence decode and CUDA-graph capture are declined through the
-//! layer hooks.
+//! time; multi-sequence decode and the MODEL-level CUDA graph are declined
+//! through the layer hooks. The layer captures its own single-token step
+//! instead (`ATLAS_DS41_GRAPH=1`, see [`GraphMode`]): the host work in the
+//! middle of every layer (the routing download and the expert fetch; on the
+//! twelve kv/index source layers also the compressor group and the index
+//! top-k) splits the step into graph segments with the host spans between.
 //!
 //! Routed experts never sit in HBM: the cache is a page-locked, device-visible
 //! arena the GPU reads in place (`ExpertLru` + `ExpertSliceMap`), filled by
 //! pread from the seven shards; the engram tables are read by row (`EngramRowReader`).
 
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, Result, ensure};
-use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
+use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 use spark_runtime::weights::expert_stream::{
     EngramRowReader, ExpertLru, ExpertSliceMap, PinnedArena,
@@ -94,6 +99,73 @@ pub struct V41Runtime {
     pub step_attn_ms: Mutex<f64>,
     pub step_engram_ms: Mutex<f64>,
     pub step_start: Mutex<Option<std::time::Instant>>,
+    /// Set when a capture failed: every segment from then on runs eagerly
+    /// (graphs already captured keep replaying; they are valid).
+    pub graph_disabled: AtomicBool,
+}
+
+/// How the single-token step runs. `ATLAS_DS41_GRAPH_ORACLE=1` runs every
+/// layer BOTH ways and compares the highway bit for bit; `ATLAS_DS41_GRAPH=1`
+/// replays the captured segments; anything else is the eager step. Read once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphMode {
+    Off,
+    On,
+    Oracle,
+}
+
+pub fn graph_mode() -> GraphMode {
+    static MODE: OnceLock<GraphMode> = OnceLock::new();
+    *MODE.get_or_init(|| {
+        let is_one = |k: &str| std::env::var(k).is_ok_and(|v| v == "1");
+        if is_one("ATLAS_DS41_GRAPH_ORACLE") {
+            GraphMode::Oracle
+        } else if is_one("ATLAS_DS41_GRAPH") {
+            GraphMode::On
+        } else {
+            GraphMode::Off
+        }
+    })
+}
+
+/// The pointers a layer's captured segments bake that are not the runtime's
+/// own (those live as long as the runtime). Checked on every replay: a
+/// different set means the graphs describe other buffers and are recaptured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Baked {
+    hidden: DevicePtr,
+    streams: DevicePtr,
+    normed: DevicePtr,
+    window: DevicePtr,
+    /// the kv source's latent cache the captured `sparse_attn` reads
+    rows_b: Option<DevicePtr>,
+    attn_out: DevicePtr,
+    moe_out: DevicePtr,
+}
+
+/// One layer's captured single-token step, per sequence (it bakes the
+/// sequence's window ring and the kv source's cache).
+///
+/// Segment A = the attention site's mixes, collapse and norm, the attention
+/// (capturable layers only), `hc_post`, the ffn site's mixes, collapse and
+/// norm, the router GEMV. On the twelve kv/index source layers the attention
+/// runs eagerly between `a[0]` (through the norm) and `a[1]` (from `hc_post`).
+/// Host span: the routing download, the expert fetch, the plan uploads.
+/// Segment B = the expert compute, `hc_post`, the delayed-mix copy, and on
+/// the last layer the final collapse.
+struct LayerGraphs {
+    a: [Option<GraphHandle>; 2],
+    b: Option<GraphHandle>,
+    baked: Baked,
+}
+
+impl LayerGraphs {
+    fn destroy(self, gpu: &dyn GpuBackend) -> Result<()> {
+        for g in self.a.into_iter().chain([self.b]).flatten() {
+            gpu.destroy_graph(g)?;
+        }
+        Ok(())
+    }
 }
 
 // SAFETY: every raw device/host pointer here names memory the runtime owns
@@ -104,6 +176,7 @@ unsafe impl Sync for V41Runtime {}
 
 pub struct V41LayerState {
     pub attn: AttnV41LayerState,
+    graphs: Option<LayerGraphs>,
 }
 
 impl LayerState for V41LayerState {
@@ -339,6 +412,9 @@ impl DeepSeekV41Layer {
                 rt.hasher.lock().unwrap().reset();
                 *rt.step_hashes.lock().unwrap() = None;
             }
+            // a new step: the captured step's device-side position and
+            // selection are stale
+            rt.attn.lock().unwrap().invalidate_decode_uploads();
             // the initial pre-mix is one-hot on stream 0
             let mut onehot = vec![0u8; m * hc * 4];
             for t in 0..m {
@@ -378,6 +454,35 @@ impl DeepSeekV41Layer {
                 diag_rms_f32(gpu, streams, hc * h)
             );
         }
+
+        // the single-token step at a position > 0 is the captured one; prefill
+        // (m > 1, or the one-token prompt at position 0) stays eager
+        let mode = graph_mode();
+        let graph = mode != GraphMode::Off && m == 1 && start_pos > 0 && !gpu.debug_sync_kernels();
+        match (graph, mode) {
+            (false, _) => self.step_eager(hidden, m, start_pos, st, ctx, stream),
+            (true, GraphMode::Oracle) => self.step_oracle(hidden, start_pos, st, ctx, stream),
+            (true, _) => self.step_graph(hidden, start_pos, st, ctx, stream),
+        }
+    }
+
+    /// The eager step after the engram: every launch issued from the host,
+    /// the attention and the MoE with their host work inline. This is the
+    /// path `ATLAS_DS41_GRAPH` unset (or `0`) takes, and prefill always.
+    fn step_eager(
+        &self,
+        hidden: DevicePtr,
+        m: usize,
+        start_pos: usize,
+        st: &mut V41LayerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let rt = &self.rt;
+        let gpu = ctx.gpu;
+        let streams = ctx.buffers.hc_streams();
+        let (h, hc) = (rt.hidden, rt.hc_mult);
+        let diag = diag_on();
 
         // attention
         self.mixes(
@@ -484,43 +589,431 @@ impl DeepSeekV41Layer {
         self.hc_post(gpu, moe_out, streams, rt.post_s, rt.comb_s, m, stream)?;
         gpu.copy_d2d_async(rt.pre_f, rt.pre_prev, m * hc * 4, stream)?;
 
-        if self.idx + 1 == rt.n_layers && diag_on() {
-            let total = rt
-                .step_start
-                .lock()
-                .unwrap()
-                .map(|t| t.elapsed().as_secs_f64() * 1e3)
-                .unwrap_or(0.0);
-            let mo = *rt.step_moe.lock().unwrap();
-            // one guard at a time: two `lru.lock()` temporaries in a single
-            // statement deadlock on the std Mutex (the first guard lives to the
-            // end of the statement)
-            let (resident, n_slots) = {
-                let lru = rt.lru.lock().unwrap();
-                (lru.resident(), lru.n_slots())
-            };
-            let attn_ms = *rt.step_attn_ms.lock().unwrap();
-            let engram_ms = *rt.step_engram_ms.lock().unwrap();
-            tracing::info!(
-                "DS41 step: {m} tok pos {start_pos}: total {total:.0} ms = attn {:.0} + engram {:.0} + moe(route {:.0} fetch {:.0} compute {:.0}) ms; experts hit {} miss {} read {:.2} GiB; cache {}/{} resident",
-                attn_ms,
-                engram_ms,
-                mo.route_ms,
-                mo.fetch_ms,
-                mo.compute_ms,
-                mo.hits,
-                mo.misses,
-                mo.bytes_read as f64 / 1073741824.0,
-                resident,
-                n_slots
-            );
-        }
         if self.idx + 1 == rt.n_layers {
+            self.step_line(m, start_pos, "eager");
             // no learned head on V4.1: the final collapse uses the last ffn pre
             self.collapse(gpu, streams, rt.pre_prev, hidden, m, stream)?;
             gpu.synchronize(stream)?;
         }
         Ok(())
+    }
+
+    /// Segment A's opening: the attention site's mixes, the delayed-pre
+    /// collapse and the attention norm into `normed`. Device work only.
+    fn seg_attn_in(
+        &self,
+        gpu: &dyn GpuBackend,
+        streams: DevicePtr,
+        hidden: DevicePtr,
+        normed: DevicePtr,
+        stream: u64,
+    ) -> Result<()> {
+        let rt = &self.rt;
+        self.mixes(
+            gpu,
+            &self.hc_attn,
+            streams,
+            rt.pre_a,
+            rt.post_s,
+            rt.comb_s,
+            1,
+            stream,
+        )?;
+        self.collapse(gpu, streams, rt.pre_prev, hidden, 1, stream)?;
+        ops::rms_norm(
+            gpu,
+            self.k_rms_norm,
+            hidden,
+            &self.attn_norm,
+            normed,
+            1,
+            rt.hidden as u32,
+            rt.norm_eps,
+            stream,
+        )
+    }
+
+    /// Segment A's close: `hc_post` of the attention, the ffn site's mixes,
+    /// the collapse, the ffn norm into `normed`, the router GEMV into the MoE's
+    /// logits. Device work only.
+    fn seg_ffn_in(
+        &self,
+        gpu: &dyn GpuBackend,
+        moe: &MoeV41,
+        attn_out: DevicePtr,
+        streams: DevicePtr,
+        hidden: DevicePtr,
+        normed: DevicePtr,
+        stream: u64,
+    ) -> Result<()> {
+        let rt = &self.rt;
+        self.hc_post(gpu, attn_out, streams, rt.post_s, rt.comb_s, 1, stream)?;
+        self.mixes(
+            gpu,
+            &self.hc_ffn,
+            streams,
+            rt.pre_f,
+            rt.post_s,
+            rt.comb_s,
+            1,
+            stream,
+        )?;
+        self.collapse(gpu, streams, rt.pre_a, hidden, 1, stream)?;
+        ops::rms_norm(
+            gpu,
+            self.k_rms_norm,
+            hidden,
+            &self.ffn_norm,
+            normed,
+            1,
+            rt.hidden as u32,
+            rt.norm_eps,
+            stream,
+        )?;
+        moe.route_launch(gpu, &self.moe_w, normed, 1, stream)
+    }
+
+    /// Segment B: the expert compute from the staged plan, `hc_post`, the
+    /// delayed-mix copy, and on the last layer the final collapse. Device
+    /// work only.
+    fn seg_ffn_out(
+        &self,
+        gpu: &dyn GpuBackend,
+        moe: &MoeV41,
+        ne: usize,
+        streams: DevicePtr,
+        hidden: DevicePtr,
+        normed: DevicePtr,
+        stream: u64,
+    ) -> Result<()> {
+        let rt = &self.rt;
+        let moe_out = moe.compute_m1(gpu, &self.moe_w, normed, ne, stream)?;
+        self.hc_post(gpu, moe_out, streams, rt.post_s, rt.comb_s, 1, stream)?;
+        gpu.copy_d2d_async(rt.pre_f, rt.pre_prev, rt.hc_mult * 4, stream)?;
+        if self.idx + 1 == rt.n_layers {
+            // no learned head on V4.1: the final collapse uses the last ffn pre
+            self.collapse(gpu, streams, rt.pre_prev, hidden, 1, stream)?;
+        }
+        Ok(())
+    }
+
+    /// Replay `slot`'s graph, or capture `body` into it (and run it) on the
+    /// first pass. A capture that cannot begin or end runs `body` eagerly and
+    /// disables further captures; an error INSIDE the body ends the capture
+    /// (so the stream is usable again) and propagates.
+    fn run_segment(
+        &self,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+        slot: &mut Option<GraphHandle>,
+        body: impl Fn() -> Result<()>,
+    ) -> Result<()> {
+        let rt = &self.rt;
+        if let Some(g) = slot {
+            return gpu.launch_graph(*g, stream);
+        }
+        if rt.graph_disabled.load(Ordering::Relaxed) {
+            return body();
+        }
+        if let Err(e) = gpu.begin_capture(stream) {
+            tracing::warn!(
+                "DS41 L{}: CUDA graph begin_capture failed ({e:#}); running eagerly and disabling capture",
+                self.idx
+            );
+            rt.graph_disabled.store(true, Ordering::Relaxed);
+            return body();
+        }
+        if let Err(e) = body() {
+            gpu.abort_capture_if_active(stream);
+            let msg = format!("{e:#}");
+            let poison = msg.contains("status 900")
+                || msg.contains("status 901")
+                || msg.contains("STREAM_CAPTURE");
+            if !poison {
+                return Err(e.context(format!("DS41 L{} under CUDA graph capture", self.idx)));
+            }
+            // a capture RECORDS: nothing ran yet, so the eager body is the step
+            tracing::warn!(
+                "DS41 L{}: segment failed under capture ({msg}); running eagerly and disabling capture",
+                self.idx
+            );
+            rt.graph_disabled.store(true, Ordering::Relaxed);
+            return body();
+        }
+        match gpu.end_capture(stream) {
+            Ok(g) => {
+                *slot = Some(g);
+                gpu.launch_graph(g, stream)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "DS41 L{}: CUDA graph end_capture failed ({e:#}); running eagerly and disabling capture",
+                    self.idx
+                );
+                rt.graph_disabled.store(true, Ordering::Relaxed);
+                body()
+            }
+        }
+    }
+
+    /// The captured single-token step: segment A (replayed or captured),
+    /// the host span (routing download, expert fetch, plan uploads), segment
+    /// B. Bit for bit the eager step: the kernels and their arguments are the
+    /// same, the per-token inputs (position, selection, expert pointers,
+    /// routing weights) are read from device buffers the host refills before
+    /// each replay, and `sparse_attn` runs at a fixed, -1-padded `topk`.
+    fn step_graph(
+        &self,
+        hidden: DevicePtr,
+        start_pos: usize,
+        st: &mut V41LayerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let rt = &self.rt;
+        let gpu = ctx.gpu;
+        let streams = ctx.buffers.hc_streams();
+        let normed = ctx.buffers.norm_output();
+        let h = rt.hidden;
+        let diag = diag_on();
+        let V41LayerState {
+            attn: st_attn,
+            graphs,
+        } = st;
+
+        let ta = std::time::Instant::now();
+        let mut attn = rt.attn.lock().unwrap();
+        let mut shared = rt.shared.lock().unwrap();
+        let moe = rt.moe.lock().unwrap();
+        let capturable = attn.decode_capturable(&self.attn_w);
+        // the host half of the attention: position and padded selection onto
+        // the device (only what changed since the last upload)
+        let rows_b = if capturable {
+            attn.decode_prep(&self.attn_w, &shared, gpu, start_pos, stream)?
+        } else {
+            None
+        };
+        let baked = Baked {
+            hidden,
+            streams,
+            normed,
+            window: st_attn.window(),
+            rows_b,
+            attn_out: attn.out_ptr(),
+            moe_out: moe.out_ptr(),
+        };
+        if let Some(g) = graphs
+            && g.baked != baked
+        {
+            tracing::warn!(
+                "DS41 L{}: captured step bakes other buffers ({:?} vs {:?}); recapturing",
+                self.idx,
+                g.baked,
+                baked
+            );
+            if let Some(g) = graphs.take() {
+                g.destroy(gpu)?;
+            }
+        }
+        let graphs = graphs.get_or_insert(LayerGraphs {
+            a: [None, None],
+            b: None,
+            baked,
+        });
+
+        // ── segment A ──
+        if capturable {
+            let attn_ref: &AttnV41 = &attn;
+            let st_ref: &AttnV41LayerState = st_attn;
+            self.run_segment(gpu, stream, &mut graphs.a[0], || {
+                self.seg_attn_in(gpu, streams, hidden, normed, stream)?;
+                let attn_out =
+                    attn_ref.decode_body(gpu, &self.attn_w, st_ref, normed, rows_b, stream)?;
+                self.seg_ffn_in(gpu, &moe, attn_out, streams, hidden, normed, stream)
+            })?;
+        } else {
+            self.run_segment(gpu, stream, &mut graphs.a[0], || {
+                self.seg_attn_in(gpu, streams, hidden, normed, stream)
+            })?;
+            // a kv/index source: the compressor group and the index top-k
+            // are host work in the middle of the attention, so it runs eagerly
+            let run = attn.forward(
+                gpu,
+                &self.attn_w,
+                st_attn,
+                &mut shared,
+                normed,
+                1,
+                start_pos,
+                stream,
+            )?;
+            // it wrote pos / head_pos / idx_dev for itself
+            attn.invalidate_decode_uploads();
+            let attn_out = run.out;
+            self.run_segment(gpu, stream, &mut graphs.a[1], || {
+                self.seg_ffn_in(gpu, &moe, attn_out, streams, hidden, normed, stream)
+            })?;
+        }
+        *rt.step_attn_ms.lock().unwrap() += ta.elapsed().as_secs_f64() * 1e3;
+        if diag {
+            gpu.synchronize(stream)?;
+            tracing::info!(
+                "DS41 L{} attn: out rms {:.4}; ffn: in rms {:.4} normed rms {:.4} ({})",
+                self.idx,
+                diag_rms_bf16(gpu, attn.out_ptr(), h),
+                diag_rms_bf16(gpu, hidden, h),
+                diag_rms_bf16(gpu, normed, h),
+                if capturable {
+                    "graph"
+                } else {
+                    "graph+eager attention"
+                }
+            );
+        }
+        drop(shared);
+        drop(attn);
+
+        // ── the host span ──
+        let stage = {
+            let mut lru = rt.lru.lock().unwrap();
+            moe.stage_m1(
+                gpu,
+                &self.moe_w,
+                &mut lru,
+                &rt.slices,
+                rt.reader_threads,
+                stream,
+            )?
+        };
+
+        // ── segment B ──
+        let tb = std::time::Instant::now();
+        let ne = stage.ne;
+        self.run_segment(gpu, stream, &mut graphs.b, || {
+            self.seg_ffn_out(gpu, &moe, ne, streams, hidden, normed, stream)
+        })?;
+        if diag {
+            gpu.synchronize(stream)?;
+            tracing::info!(
+                "DS41 L{} ffn: out rms {:.4} (graph)",
+                self.idx,
+                diag_rms_bf16(gpu, moe.out_ptr(), h)
+            );
+        }
+        let mut timing = stage.timing;
+        timing.compute_ms = tb.elapsed().as_secs_f64() * 1e3;
+        rt.step_moe.lock().unwrap().add(&timing);
+        drop(moe);
+
+        if self.idx + 1 == rt.n_layers {
+            self.step_line(1, start_pos, "graph");
+            gpu.synchronize(stream)?;
+        }
+        Ok(())
+    }
+
+    /// `ATLAS_DS41_GRAPH_ORACLE=1`: the captured step, then the highway put
+    /// back and the eager step, and the two outputs (the streams, the delayed
+    /// mix, the collapsed hidden) compared bit for bit. Diagnostics: every
+    /// layer runs twice.
+    fn step_oracle(
+        &self,
+        hidden: DevicePtr,
+        start_pos: usize,
+        st: &mut V41LayerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let rt = &self.rt;
+        let gpu = ctx.gpu;
+        let streams = ctx.buffers.hc_streams();
+        let (h, hc) = (rt.hidden, rt.hc_mult);
+        let d2h = |p: DevicePtr, n: usize| -> Result<Vec<u8>> {
+            let mut b = vec![0u8; n];
+            gpu.copy_d2h(p, &mut b)?;
+            Ok(b)
+        };
+        gpu.synchronize(stream)?;
+        let streams0 = d2h(streams, hc * h * 4)?;
+        let pre0 = d2h(rt.pre_prev, hc * 4)?;
+
+        self.step_graph(hidden, start_pos, st, ctx, stream)?;
+        gpu.synchronize(stream)?;
+        let streams_g = d2h(streams, hc * h * 4)?;
+        let pre_g = d2h(rt.pre_prev, hc * 4)?;
+        let hidden_g = d2h(hidden, h * 2)?;
+
+        gpu.copy_h2d(&streams0, streams)?;
+        gpu.copy_h2d(&pre0, rt.pre_prev)?;
+        self.step_eager(hidden, 1, start_pos, st, ctx, stream)?;
+        gpu.synchronize(stream)?;
+        let streams_e = d2h(streams, hc * h * 4)?;
+        let pre_e = d2h(rt.pre_prev, hc * 4)?;
+        let hidden_e = d2h(hidden, h * 2)?;
+
+        let diff = |a: &[u8], b: &[u8], w: usize| {
+            a.chunks(w).zip(b.chunks(w)).filter(|(x, y)| x != y).count()
+        };
+        let ds = diff(&streams_g, &streams_e, 4);
+        let dp = diff(&pre_g, &pre_e, 4);
+        // the collapsed hidden is the layer's output only on the last layer;
+        // elsewhere it is the ffn input scratch, which both paths write
+        let dh = diff(&hidden_g, &hidden_e, 2);
+        if ds + dp + dh == 0 {
+            tracing::info!(
+                "DS41 GRAPH ORACLE L{} pos {start_pos}: graph == eager (streams {} f32, pre {} f32, hidden {} bf16)",
+                self.idx,
+                hc * h,
+                hc,
+                h
+            );
+        } else {
+            tracing::error!(
+                "DS41 GRAPH ORACLE L{} pos {start_pos}: MISMATCH streams {ds}/{} pre {dp}/{} hidden {dh}/{}",
+                self.idx,
+                hc * h,
+                hc,
+                h
+            );
+        }
+        Ok(())
+    }
+
+    /// The per-step diagnostic line (`ATLAS_DS41_DIAG=1`), from the last layer.
+    fn step_line(&self, m: usize, start_pos: usize, how: &str) {
+        if !diag_on() {
+            return;
+        }
+        let rt = &self.rt;
+        let total = rt
+            .step_start
+            .lock()
+            .unwrap()
+            .map(|t| t.elapsed().as_secs_f64() * 1e3)
+            .unwrap_or(0.0);
+        let mo = *rt.step_moe.lock().unwrap();
+        // one guard at a time: two `lru.lock()` temporaries in a single
+        // statement deadlock on the std Mutex (the first guard lives to the
+        // end of the statement)
+        let (resident, n_slots) = {
+            let lru = rt.lru.lock().unwrap();
+            (lru.resident(), lru.n_slots())
+        };
+        let attn_ms = *rt.step_attn_ms.lock().unwrap();
+        let engram_ms = *rt.step_engram_ms.lock().unwrap();
+        tracing::info!(
+            "DS41 step ({how}): {m} tok pos {start_pos}: total {total:.0} ms = attn {:.0} + engram {:.0} + moe(route {:.0} fetch {:.0} compute {:.0}) ms; experts hit {} miss {} read {:.2} GiB; cache {}/{} resident",
+            attn_ms,
+            engram_ms,
+            mo.route_ms,
+            mo.fetch_ms,
+            mo.compute_ms,
+            mo.hits,
+            mo.misses,
+            mo.bytes_read as f64 / 1073741824.0,
+            resident,
+            n_slots
+        );
     }
 }
 
@@ -564,7 +1057,18 @@ impl crate::layer::TransformerLayer for DeepSeekV41Layer {
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
         Ok(Box::new(V41LayerState {
             attn: AttnV41LayerState::new(gpu, &self.rt.attn_cfg, self.role)?,
+            graphs: None,
         }))
+    }
+
+    /// The captured segments bake this sequence's buffers; they go with it.
+    fn release_state(&self, state: &mut dyn LayerState, gpu: &dyn GpuBackend) -> Result<()> {
+        if let Some(st) = state.as_any_mut().downcast_mut::<V41LayerState>()
+            && let Some(g) = st.graphs.take()
+        {
+            g.destroy(gpu)?;
+        }
+        Ok(())
     }
 
     fn decode_graph_unsupported(&self) -> bool {
