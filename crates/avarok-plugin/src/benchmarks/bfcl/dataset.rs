@@ -174,8 +174,10 @@ mod tests {
     use super::*;
 
     fn write(name: &str, rows: &[(&str, usize)]) -> std::path::PathBuf {
-        let p =
-            std::env::temp_dir().join(format!("avarok-bfcl-ds-{name}-{}.jsonl", std::process::id()));
+        let p = std::env::temp_dir().join(format!(
+            "avarok-bfcl-ds-{name}-{}.jsonl",
+            std::process::id()
+        ));
         let mut text = String::new();
         for (subset, n) in rows {
             for i in 0..*n {

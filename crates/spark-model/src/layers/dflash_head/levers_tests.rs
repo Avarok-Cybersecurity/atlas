@@ -137,7 +137,10 @@ fn dspark_shift_defers_to_the_checkpoint_unless_spelled() {
         Some(false)
     );
     // Anything else is not an override — the drafter config still decides.
-    assert_eq!(resolve(&[("AVAROK_DSPARK_SHIFT", "yes")]).dspark_shift, None);
+    assert_eq!(
+        resolve(&[("AVAROK_DSPARK_SHIFT", "yes")]).dspark_shift,
+        None
+    );
 }
 
 #[test]

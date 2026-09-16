@@ -96,8 +96,10 @@ async fn a_failed_probe_warns_but_still_runs_the_benchmark() {
     )
     .await;
     let requests = mock.requests.clone();
-    let dir =
-        std::env::temp_dir().join(format!("avarok-coherence-{:?}", std::thread::current().id()));
+    let dir = std::env::temp_dir().join(format!(
+        "avarok-coherence-{:?}",
+        std::thread::current().id()
+    ));
     std::fs::create_dir_all(&dir).expect("scratch");
 
     let descriptor = registry::find("concurrency-sweep").expect("registered");

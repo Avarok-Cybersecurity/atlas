@@ -117,7 +117,9 @@ impl ModelWeightLoader for LongcatWeightLoader {
             tracing::info!("LongCat: AVAROK_NVFP4_MLA=0 — MLA projections stay BF16");
         }
         if super::longcat::ffn::bf16_dense_ffn() {
-            tracing::info!("LongCat: AVAROK_LONGCAT_BF16_FFN=1 — per-sublayer dense FFN stays BF16");
+            tracing::info!(
+                "LongCat: AVAROK_LONGCAT_BF16_FFN=1 — per-sublayer dense FFN stays BF16"
+            );
         }
         let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
         let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;

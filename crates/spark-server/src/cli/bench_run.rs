@@ -355,12 +355,12 @@ async fn run(args: RunArgs) -> Result<i32> {
     let outcome = tokio::task::spawn_blocking(move || {
         let mut reporter = bench_print::StdoutReporter::new(quiet);
         let mut silent = SilentReporter;
-        let reporter: &mut dyn avarok_plugin::headless::RunReporter = if format == OutputFormat::Json
-        {
-            &mut silent // JSON on stdout must not be interleaved with progress
-        } else {
-            &mut reporter
-        };
+        let reporter: &mut dyn avarok_plugin::headless::RunReporter =
+            if format == OutputFormat::Json {
+                &mut silent // JSON on stdout must not be interleaved with progress
+            } else {
+                &mut reporter
+            };
         run_blocking(
             &executor,
             request,

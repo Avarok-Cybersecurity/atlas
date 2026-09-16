@@ -293,7 +293,8 @@ fn decode_client_salt() -> Result<u64> {
 /// (model-blind). Total over all inputs.
 pub(crate) fn derive_decode_ns_salted(fp: u64, salt: u64) -> NonZeroU64 {
     let base = NonZeroU64::new(mix64(fp, avarok_kernels::DECODE_DOMAIN)).unwrap_or_else(|| {
-        NonZeroU64::new(avarok_kernels::DECODE_DOMAIN).expect("DECODE_DOMAIN is a non-zero constant")
+        NonZeroU64::new(avarok_kernels::DECODE_DOMAIN)
+            .expect("DECODE_DOMAIN is a non-zero constant")
     });
     NonZeroU64::new(mix64(base.get(), salt)).unwrap_or(base)
 }

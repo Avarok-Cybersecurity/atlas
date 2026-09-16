@@ -218,7 +218,8 @@ fn threshold_params_derive_from_the_variant_and_yield_to_an_explicit_param() {
     // Explicit --param wins untouched.
     let explicit = vec![("wall_budget_s".to_string(), "1234".to_string())];
     let mut values =
-        avarok_plugin::ParamValues::from_overrides(&specs, vec![("wall_budget_s", "1234")]).unwrap();
+        avarok_plugin::ParamValues::from_overrides(&specs, vec![("wall_budget_s", "1234")])
+            .unwrap();
     let applied = apply_threshold_params(descriptor, &specs, &mut values, &entry, &explicit)
         .expect("applies");
     assert!(applied.is_empty(), "stated intent is never overridden");
@@ -337,7 +338,8 @@ fn a_paired_metric_with_both_bounds_is_a_loud_error_not_a_guess() {
     // no bound at all.
     let explicit = vec![("wall_budget_s".to_string(), "1234".to_string())];
     let mut values =
-        avarok_plugin::ParamValues::from_overrides(&specs, vec![("wall_budget_s", "1234")]).unwrap();
+        avarok_plugin::ParamValues::from_overrides(&specs, vec![("wall_budget_s", "1234")])
+            .unwrap();
     let applied = apply_threshold_params(descriptor, &specs, &mut values, &entry, &explicit)
         .expect("explicit param sidesteps the ambiguous bound");
     assert!(applied.is_empty());

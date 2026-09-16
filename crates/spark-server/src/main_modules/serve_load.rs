@@ -1045,7 +1045,9 @@ pub(crate) fn load_model(
     let sched_levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
     sched_levers.set_loop_watchdog(crate::scheduler::resolve_content_loop_watchdog(
         ptx_set.behavior.enable_loop_watchdog,
-        std::env::var("AVAROK_CONTENT_LOOP_WATCHDOG").ok().as_deref(),
+        std::env::var("AVAROK_CONTENT_LOOP_WATCHDOG")
+            .ok()
+            .as_deref(),
         args.content_loop_watchdog,
     ));
     // The run's snapshot cell, shared with the dashboard for the same reason

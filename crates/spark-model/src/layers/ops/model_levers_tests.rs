@@ -86,7 +86,10 @@ fn the_opt_out_lever_is_on_by_default_and_every_opt_in_is_off() {
 #[test]
 fn exact_one_opt_ins_map_to_their_own_fields() {
     let cases = [
-        ("AVAROK_KV_POISON", [true, false, false, false, false, false]),
+        (
+            "AVAROK_KV_POISON",
+            [true, false, false, false, false, false],
+        ),
         (
             "AVAROK_GDN_BATCHED_FLA",
             [false, true, false, false, false, false],

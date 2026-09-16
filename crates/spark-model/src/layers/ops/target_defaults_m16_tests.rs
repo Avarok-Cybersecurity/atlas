@@ -47,7 +47,10 @@ fn the_m16_umbrella_arms_the_ffn_arm_too() {
     // The narrow variable WINS when both are set, so `AVAROK_FFN_M16_TC=0
     // AVAROK_M16_TC=1` means what it reads as rather than depending on export
     // order.
-    let narrow_off = with(&HOPPER, &[("AVAROK_FFN_M16_TC", "0"), ("AVAROK_M16_TC", "1")]);
+    let narrow_off = with(
+        &HOPPER,
+        &[("AVAROK_FFN_M16_TC", "0"), ("AVAROK_M16_TC", "1")],
+    );
     assert!(!narrow_off.ffn_m16_tc.value);
 }
 
@@ -57,7 +60,8 @@ fn the_m16_umbrella_arms_the_ffn_arm_too() {
 fn the_serve_line_names_the_ffn_tensor_core_row() {
     assert!(format_levers(&empty(&HOPPER)).contains("ffn_m16_tc=off"));
     assert!(
-        format_levers(&with(&HOPPER, &[("AVAROK_FFN_M16_TC", "1")])).contains("ffn_m16_tc=on (env)")
+        format_levers(&with(&HOPPER, &[("AVAROK_FFN_M16_TC", "1")]))
+            .contains("ffn_m16_tc=on (env)")
     );
 }
 

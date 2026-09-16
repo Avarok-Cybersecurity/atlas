@@ -241,7 +241,8 @@ pub fn mtp_catchup_enabled() -> bool {
 /// Force-off in multi-seq MTP mode: the refeed label space is single-sequence
 /// (see [`mtp_multi_seq_mode`]).
 pub fn mtp_refeed_accepted_enabled() -> bool {
-    std::env::var("AVAROK_MTP_REFEED_ACCEPTED").ok().as_deref() == Some("1") && !mtp_multi_seq_mode()
+    std::env::var("AVAROK_MTP_REFEED_ACCEPTED").ok().as_deref() == Some("1")
+        && !mtp_multi_seq_mode()
 }
 
 /// Deliberate off-by-N perturbation of the re-feed's ring LABEL

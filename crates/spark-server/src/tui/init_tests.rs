@@ -108,7 +108,9 @@ fn the_tee_path_follows_its_environment_override_when_one_is_set() {
             );
             assert!(name.ends_with(".log"), "{name}");
             assert!(
-                p.parent().expect("a parent").ends_with(".cache/avarok/logs"),
+                p.parent()
+                    .expect("a parent")
+                    .ends_with(".cache/avarok/logs"),
                 "{}",
                 p.display()
             );

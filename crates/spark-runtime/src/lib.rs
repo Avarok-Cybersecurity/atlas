@@ -162,8 +162,12 @@ pub fn ssm_tail_midchunk_enabled() -> bool {
     // all (see `prepare_midchunk_capture`, which now refuses the plan off
     // `avarok_scale`). "flag-off byte-identical" held; it just was not evidence
     // that flag-ON was correct.
-    *SSM_TAIL_MIDCHUNK
-        .get_or_init(|| !matches!(std::env::var("AVAROK_SSM_TAIL_MIDCHUNK").as_deref(), Ok("0")))
+    *SSM_TAIL_MIDCHUNK.get_or_init(|| {
+        !matches!(
+            std::env::var("AVAROK_SSM_TAIL_MIDCHUNK").as_deref(),
+            Ok("0")
+        )
+    })
 }
 
 #[cfg(test)]

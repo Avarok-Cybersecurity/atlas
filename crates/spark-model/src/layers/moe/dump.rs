@@ -275,6 +275,10 @@ pub fn dump_moe_out(
     }
     gpu.synchronize(stream)?;
     let (mag, first5) = last_tok_stats(gpu, output, n as usize, h as usize);
-    tracing::info!("AVAROK_MOE_OUT last_tok: |x|={:.4} first5={:?}", mag, first5);
+    tracing::info!(
+        "AVAROK_MOE_OUT last_tok: |x|={:.4} first5={:?}",
+        mag,
+        first5
+    );
     Ok(())
 }

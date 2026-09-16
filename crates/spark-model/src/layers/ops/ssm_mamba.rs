@@ -384,8 +384,8 @@ pub fn conv1d_update_prefill(
     // order is unchanged. Block (32,8) keeps a warp spanning channels so the
     // [t*stride + ch] loads stay coalesced; 8 tokens per thread give a rolling
     // window (11 input reads per 8 outputs instead of 32).
-    let tp =
-        std::env::var("AVAROK_CONV1D_TP").ok().as_deref() != Some("0") && conv1d_prefill_tp_k.0 != 0;
+    let tp = std::env::var("AVAROK_CONV1D_TP").ok().as_deref() != Some("0")
+        && conv1d_prefill_tp_k.0 != 0;
     let (k, grid, block) = if tp {
         (
             conv1d_prefill_tp_k,

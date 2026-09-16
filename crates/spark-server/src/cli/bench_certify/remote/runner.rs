@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use super::super::plan::Unit;
 use super::super::runner::{GateRunner, RunCtx, RunOutcome, classify};
-use super::avarokctl::{Avarokctl, AttachEnd, Exit, StreamEvent, SubmitSpec};
+use super::avarokctl::{AttachEnd, Avarokctl, Exit, StreamEvent, SubmitSpec};
 use super::node::Node;
 use super::place::{Expect, place};
 

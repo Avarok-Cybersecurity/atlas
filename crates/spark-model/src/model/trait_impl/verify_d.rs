@@ -174,7 +174,10 @@ impl TransformerModel {
         // AVAROK_DFLASH_DEBUG_NO_GRAPH=1 forces eager (no graph capture) so
         // CUDA_LAUNCH_BLOCKING=1 reports the exact failing kernel — used
         // to localize K=γ illegal-address crashes downstream of SSM.
-        let force_eager = std::env::var("AVAROK_DFLASH_DEBUG_NO_GRAPH").ok().as_deref() == Some("1");
+        let force_eager = std::env::var("AVAROK_DFLASH_DEBUG_NO_GRAPH")
+            .ok()
+            .as_deref()
+            == Some("1");
         // AVAROK_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         let use_graphs = self.comm.is_none()

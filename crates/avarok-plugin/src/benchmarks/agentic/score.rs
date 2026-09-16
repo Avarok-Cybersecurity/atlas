@@ -169,8 +169,10 @@ pub async fn webserver_test(
     // mislabeled as a generic 'didn't respond' timeout". `/ping did not answer`
     // was this benchmark's most common failure string while the cause was
     // invisible.
-    let err_log =
-        std::env::temp_dir().join(format!("avarok-ws-stderr-{}-{port}.log", std::process::id()));
+    let err_log = std::env::temp_dir().join(format!(
+        "avarok-ws-stderr-{}-{port}.log",
+        std::process::id()
+    ));
     // `create_new`, because the name of this file is predictable and the thing
     // whose code we are about to run may still have processes in the sandbox.
     // `create` would follow a symlink planted at that path and truncate whatever

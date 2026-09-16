@@ -120,10 +120,12 @@ pub fn ncol_gemv_enabled() -> bool {
 /// presence lever would make `AVAROK_ATTN_NCOL_GEMV=0` mean "on, 2 columns".
 pub fn ncol_gemv_width() -> NcolWidth {
     static W: std::sync::OnceLock<NcolWidth> = std::sync::OnceLock::new();
-    *W.get_or_init(|| match std::env::var("AVAROK_ATTN_NCOL_WIDTH").as_deref() {
-        Ok("4") => NcolWidth::Four,
-        _ => NcolWidth::Two,
-    })
+    *W.get_or_init(
+        || match std::env::var("AVAROK_ATTN_NCOL_WIDTH").as_deref() {
+            Ok("4") => NcolWidth::Four,
+            _ => NcolWidth::Two,
+        },
+    )
 }
 
 /// The whole selection rule, as a pure function of the row count, the resolved

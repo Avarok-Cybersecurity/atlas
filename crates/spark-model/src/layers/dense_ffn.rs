@@ -466,7 +466,11 @@ impl DenseFfnLayer {
             nvfp4_mmq64_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_mmq64_wc"),
             nvfp4_quant_act_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_quantize_bf16"),
             nvfp4_repack_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_repack"),
-            nvfp4_silu_scaled_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_silu_mul_scaled"),
+            nvfp4_silu_scaled_k: super::try_kernel(
+                gpu,
+                "nvfp4_mmq",
+                "avarok_nvfp4_silu_mul_scaled",
+            ),
             nvfp4_silu_quant_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_silu_mul_quant"),
             nvfp4_scale_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_scale_bf16"),
             fp4mmq_gate: std::sync::OnceLock::new(),

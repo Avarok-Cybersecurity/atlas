@@ -147,7 +147,10 @@ fn an_override_replaces_rather_than_appends() {
 #[test]
 fn an_unknown_override_is_refused_by_the_clap_round_trip() {
     let all = all();
-    let r = all.iter().find(|r| r.is_avarok()).expect("an avarok recipe");
+    let r = all
+        .iter()
+        .find(|r| r.is_avarok())
+        .expect("an avarok recipe");
     let overrides = BTreeMap::from([("nonsense".to_string(), "1".to_string())]);
     let err = format!("{:#}", r.serve_args(&overrides).expect_err("refused"));
     assert!(err.contains("nonsense"), "names the bad key: {err}");

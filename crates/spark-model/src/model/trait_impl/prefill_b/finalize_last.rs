@@ -222,7 +222,11 @@ impl TransformerModel {
                 .collect();
             let lbytes: Vec<u8> = logit_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
             std::fs::create_dir_all(&dir).ok();
-            std::fs::write(std::path::Path::new(&dir).join("avarok_logits.bin"), &lbytes).ok();
+            std::fs::write(
+                std::path::Path::new(&dir).join("avarok_logits.bin"),
+                &lbytes,
+            )
+            .ok();
             let mut idx: Vec<usize> = (0..logit_vals.len()).collect();
             idx.sort_by(|&a, &b| logit_vals[b].partial_cmp(&logit_vals[a]).unwrap());
             let top: Vec<(usize, f32)> = idx.iter().take(10).map(|&i| (i, logit_vals[i])).collect();

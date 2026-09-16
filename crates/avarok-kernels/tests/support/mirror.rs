@@ -139,7 +139,10 @@ fn no_overrides() -> BTreeSet<String> {
 }
 
 fn tmp_root(line: u32) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("avarok-hopper-mirror-{}-{line}", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "avarok-hopper-mirror-{}-{line}",
+        std::process::id()
+    ))
 }
 
 /// A dangling symlink must FAIL `mirror_faults`. Without this the whole

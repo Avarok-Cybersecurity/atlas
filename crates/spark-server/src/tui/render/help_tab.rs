@@ -45,7 +45,10 @@ fn draw_guide(f: &mut Frame, _app: &App, area: Rect) {
     };
     let mut lines = vec![
         Line::from(Span::styled(
-            format!("  Avarok {} — github.com/{repo}", crate::cli::AVAROK_VERSION),
+            format!(
+                "  Avarok {} — github.com/{repo}",
+                crate::cli::AVAROK_VERSION
+            ),
             theme::text(),
         )),
         Line::from(""),

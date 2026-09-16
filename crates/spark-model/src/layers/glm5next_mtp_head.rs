@@ -464,7 +464,8 @@ impl Glm5NextMtpHead {
         }
         let gpu = ctx.gpu;
         let dbg = crate::speculative::mtp_refeed_debug();
-        let prefill_full = std::env::var("AVAROK_GLM_MTP_PREFILL_FULL").ok().as_deref() == Some("1");
+        let prefill_full =
+            std::env::var("AVAROK_GLM_MTP_PREFILL_FULL").ok().as_deref() == Some("1");
         let mut kv = self.kv_cache.lock();
         let Glm5NextMtpProposerState {
             dsa,

@@ -232,8 +232,10 @@ fn a_hanging_decoder_is_killed_at_timeout() {
 
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir =
-        std::env::temp_dir().join(format!("avarok-hanging-ffmpeg-{}-{seq}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "avarok-hanging-ffmpeg-{}-{seq}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let binary = dir.join("hanging-ffmpeg");
     std::fs::write(&binary, "#!/bin/sh\nexec sleep 10\n").unwrap();

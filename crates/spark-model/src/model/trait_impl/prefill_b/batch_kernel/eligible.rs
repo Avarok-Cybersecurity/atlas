@@ -32,13 +32,16 @@ pub(in crate::model) fn config_is_mla(config: &ModelConfig) -> bool {
 /// is the single end-to-end flag for cross-request co-dispatch of fresh prompts,
 /// whose every stream starts at chunk_start==0).
 pub(super) fn first_chunk_batched_enabled() -> bool {
-    ["AVAROK_Q12_BATCHED_FIRST_CHUNK", "AVAROK_PREFILL_CODISPATCH"]
-        .iter()
-        .any(|k| {
-            std::env::var(k)
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false)
-        })
+    [
+        "AVAROK_Q12_BATCHED_FIRST_CHUNK",
+        "AVAROK_PREFILL_CODISPATCH",
+    ]
+    .iter()
+    .any(|k| {
+        std::env::var(k)
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
 }
 
 impl TransformerModel {

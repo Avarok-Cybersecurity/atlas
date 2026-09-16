@@ -887,7 +887,8 @@ mod inter_tool_prose_tests {
         // served model got 384 — production reads the KERNELS-side default
         // through `from_behavior`, not the constant. Assert the RESOLVED
         // value, i.e. what `handle_content_token` actually compares against.
-        let p = WatchdogParams::from_behavior(&avarok_kernels::ModelBehavior::default(), None, None);
+        let p =
+            WatchdogParams::from_behavior(&avarok_kernels::ModelBehavior::default(), None, None);
         assert!(
             p.max_inter_tool_prose >= 2048,
             "resolved inter-tool prose budget must fit a plan/analysis turn \
@@ -977,7 +978,8 @@ mod content_loop_override_tests {
 
     #[test]
     fn unset_override_keeps_the_historical_constants() {
-        let p = WatchdogParams::from_behavior(&avarok_kernels::ModelBehavior::default(), None, None);
+        let p =
+            WatchdogParams::from_behavior(&avarok_kernels::ModelBehavior::default(), None, None);
         assert_eq!(p.content_loop_min_repeats, None);
         assert!(p.content_loop_params(None).is_none());
     }

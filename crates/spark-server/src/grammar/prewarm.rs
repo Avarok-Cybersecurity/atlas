@@ -183,7 +183,11 @@ pub(super) fn overlap_enabled_for_serve() -> bool {
 fn overlap_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        overlap_from_env(std::env::var("AVAROK_GRAMMAR_ASYNC_PREWARM").ok().as_deref())
+        overlap_from_env(
+            std::env::var("AVAROK_GRAMMAR_ASYNC_PREWARM")
+                .ok()
+                .as_deref(),
+        )
     })
 }
 

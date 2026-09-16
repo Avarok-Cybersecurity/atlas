@@ -195,7 +195,9 @@ fn an_unset_control_is_recorded_as_the_default_the_scheduler_would_apply() {
     // to infer a difference that did not exist.
     let resolved = resolve_perf_env(|_| None);
     assert_eq!(
-        resolved.get("AVAROK_PREFILL_CODISPATCH").map(String::as_str),
+        resolved
+            .get("AVAROK_PREFILL_CODISPATCH")
+            .map(String::as_str),
         Some("0")
     );
     assert_eq!(
@@ -223,7 +225,9 @@ fn a_set_control_wins_and_an_empty_one_does_not() {
         _ => None,
     });
     assert_eq!(
-        resolved.get("AVAROK_PREFILL_CODISPATCH").map(String::as_str),
+        resolved
+            .get("AVAROK_PREFILL_CODISPATCH")
+            .map(String::as_str),
         Some("1")
     );
     assert_eq!(

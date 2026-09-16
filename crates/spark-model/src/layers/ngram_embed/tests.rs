@@ -66,8 +66,9 @@ fn ngram_gpu_matches_golden() {
     let meta: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(format!("{dir}/meta.json")).unwrap())
             .unwrap();
-    let gpu = spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())
-        .expect("CUDA backend");
+    let gpu =
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())
+            .expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
 
     let toks: Vec<u32> = meta["tokens"]
@@ -321,8 +322,9 @@ fn cached_table_matches_resident_table() {
     let meta: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(format!("{dir}/meta.json")).unwrap())
             .unwrap();
-    let gpu = spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())
-        .expect("CUDA backend");
+    let gpu =
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())
+            .expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
 

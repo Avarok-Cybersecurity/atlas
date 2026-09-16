@@ -3,7 +3,7 @@
 //! answer turns into, in the campaign's own outcome vocabulary.
 use super::super::super::plan::{Estimate, Unit};
 use super::super::avarokctl::{
-    Avarokctl, AttachEnd, ErrorObj, Exit, FetchedFile, NodeRow, Refusal, StreamEvent, SubmitSpec,
+    AttachEnd, Avarokctl, ErrorObj, Exit, FetchedFile, NodeRow, Refusal, StreamEvent, SubmitSpec,
     Submitted,
 };
 use super::*;
