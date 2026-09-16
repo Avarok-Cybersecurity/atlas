@@ -59,6 +59,23 @@ html[data-theme="dark"] .marketing .m-hero-art img.m-hero-ondark {
   --input: #30353d;
 }
 
+/* Travel for the hero light sweep. The band starts clear of the right edge,
+   crosses in a tenth of the cycle and then parks off the left edge for the
+   remaining nine tenths, so the art is unlit almost all of the time and the
+   glint reads as an event rather than a loop. Shared by the object glint and
+   the floor shimmer. See .m-hero-art::after and .m-hero-art::before. */
+@keyframes m-hero-sweep {
+  0% {
+    transform: translateX(40%);
+  }
+  10% {
+    transform: translateX(-40%);
+  }
+  100% {
+    transform: translateX(-40%);
+  }
+}
+
 .marketing {
   * {
     box-sizing: border-box;
@@ -297,6 +314,101 @@ html[data-theme="dark"] .marketing .m-hero-art img.m-hero-ondark {
     object-fit: cover;
     object-position: 60% 50%;
     mix-blend-mode: multiply;
+  }
+  /* A soft diagonal band that crosses the render from right to left every few
+     seconds, so the glass ring and the ribbons look like they catch a light
+     passing the camera. It is a pseudo element rather than a third image, so
+     it costs no bytes and animates on transform alone.
+
+     Overlay is the blend that survives both themes. It leaves near black and
+     near white backdrops essentially where they are and only lifts mid tones,
+     so the light theme's white ground and the dark theme's levelled #0F1216
+     ground stay put while the glass and the ribbons brighten. isolation on
+     .m-hero-art keeps that blend inside the art group, so the band resolves
+     against the two hero images instead of the page behind them, and the
+     group's own left edge mask trims the sweep exactly as it trims the art.
+
+     The box is wider than the group and offset left so the band has somewhere
+     off screen to enter from and exit to; only the transform moves. */
+  .m-hero-art {
+    isolation: isolate;
+  }
+  /* The same light crossing the floor the ribbons sit on. A vertical mask
+     keeps it in the bottom of the frame where the reflection lives, so the
+     ribbons themselves are lit by ::after alone and the shimmer never rides
+     up onto the ring. The band is wider and weaker than the object glint and
+     it is blurred, because a reflection off a soft floor scatters rather than
+     returning a sharp highlight.
+
+     It runs on the same keyframes and duration, offset by a beat, so the
+     floor catches the light just after the object does, the way a real
+     reflection lags the thing it reflects. */
+  .m-hero-art::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    right: auto;
+    left: -60%;
+    width: 220%;
+    pointer-events: none;
+    background: linear-gradient(
+      110deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0) 40%,
+      rgba(255, 255, 255, 0.28) 50%,
+      rgba(255, 255, 255, 0) 60%,
+      transparent 100%
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 60%,
+      #000 78%,
+      #000 100%
+    );
+    filter: blur(10px);
+    mix-blend-mode: overlay;
+    transform: translateX(40%);
+    will-change: transform;
+    animation-name: m-hero-sweep;
+    animation-duration: 16s;
+    animation-iteration-count: infinite;
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+    animation-delay: 0.35s;
+  }
+  .m-hero-art::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    right: auto;
+    left: -60%;
+    width: 220%;
+    pointer-events: none;
+    background: linear-gradient(
+      110deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0) 44%,
+      rgba(255, 255, 255, 0.45) 50%,
+      rgba(255, 255, 255, 0) 56%,
+      transparent 100%
+    );
+    mix-blend-mode: overlay;
+    transform: translateX(40%);
+    will-change: transform;
+    animation-name: m-hero-sweep;
+    animation-duration: 16s;
+    animation-iteration-count: infinite;
+    /* Eased at both ends and quick through the middle, which is how a
+       specular highlight behaves as a light swings past. */
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+  /* The blanket reduce rule further down stops the animations; both bands
+     would otherwise sit frozen over the art, so take them out of the picture
+     too. */
+  @media (prefers-reduced-motion: reduce) {
+    .m-hero-art::before,
+    .m-hero-art::after {
+      display: none;
+    }
   }
   .m-art-caption {
     position: absolute;
