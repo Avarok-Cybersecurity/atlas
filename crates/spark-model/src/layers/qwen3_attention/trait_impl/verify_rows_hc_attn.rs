@@ -323,6 +323,8 @@ impl Qwen3AttentionLayer {
         };
         let mut ct = std::time::Instant::now();
         let (mut c1, mut c2, mut c3, mut c4) = (0u128, 0u128, 0u128, 0u128);
+        // c5 = the TP all-reduce alone, split out of c4 (which was o_proj + AR).
+        let mut c5 = 0u128;
         let cphase = |t: &mut std::time::Instant, acc: &mut u128| {
             if core_timing {
                 let _ = ctx.gpu.synchronize(stream);
@@ -439,14 +441,25 @@ impl Qwen3AttentionLayer {
             cphase(&mut ct, &mut c3);
         }
         let o_out = self.ms_phase_o_proj(&c, attn_out)?;
+        cphase(&mut ct, &mut c4);
         // TP reduction — see `verify_attn_post_hc` for why it must land here,
         // before the caller's post-attention norm reads these rows.
+        //
+        // ── SPLIT OUT OF c4 (ATLAS_HC_VERIFY_STAGE_TIMING=1) ──
+        // c4 measured 157-460 us at C=4 / ISL 2000 — ~36% of the attention core,
+        // nearly as much as the per-row paged decode. o_proj is a small GEMM and
+        // this collective is k*h*2 = 15 KB, which on a 200 Gbit link is pure
+        // latency and should be tens of us, not hundreds. A 3x spread across
+        // calls points at RANK SKEW — rank 0 blocking until rank 1 arrives —
+        // rather than at the wire, and those want completely different fixes
+        // (rebalance vs. batch/overlap the collective). Timing them apart is the
+        // only way to tell, and c4 lumped them.
         if ctx.config.tp_world_size > 1
             && let Some(comm) = ctx.comm
         {
             comm.all_reduce_async(o_out.0, k * h * 2, stream)?;
         }
-        cphase(&mut ct, &mut c4);
+        cphase(&mut ct, &mut c5);
         if core_timing {
             use std::sync::atomic::{AtomicUsize, Ordering};
             static CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -459,6 +472,7 @@ impl Qwen3AttentionLayer {
                     c2_paged_us = c2 as u64,
                     c3_qsa_us = c3 as u64,
                     c4_oproj_us = c4 as u64,
+                    c5_allreduce_us = c5 as u64,
                     "attention core phase split (ONE sequence, synced per phase)"
                 );
             }
