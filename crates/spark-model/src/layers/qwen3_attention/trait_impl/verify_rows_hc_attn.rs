@@ -291,11 +291,12 @@ impl Qwen3AttentionLayer {
         // See `verify_attn_pre_hc`: the TP term guarded a MISSING REDUCTION,
         // not a wrong computation, and this body now reduces its own o_proj
         // over all k rows before returning.
-        if !verify_attn_rows_qkv_enabled()
-            || k < 2
-            || self.mla.is_some()
-            || self.ms_qsa_selection_active(row_seq_lens, k)
-        {
+        // ★ `ms_qsa_selection_active` NO LONGER DECLINES. Selection-active rows
+        // now take the select+attend body below, so this arm engages above the
+        // QSA inert bound (index_topk + ratio - 1 = 2051 on this card) — which
+        // is every context the agentic harness actually serves. Before this the
+        // arm was inert for real workloads and only helped short prompts.
+        if !verify_attn_rows_qkv_enabled() || k < 2 || self.mla.is_some() {
             return Ok(None);
         }
         static SAID: std::sync::Once = std::sync::Once::new();
@@ -358,32 +359,85 @@ impl Qwen3AttentionLayer {
             qkv_buf: c.qkv_buf.offset(t * c.per_seq_qkv),
             seq_slot: c.seq_slot,
         };
-        for t in (0..k).rev() {
-            let out = self.ms_phase_paged_decode(&row_view(t), kv_cache, row_metas[t])?;
-            if t > 0 {
-                ctx.gpu
-                    .copy_d2d_async(out, attn_out.offset(t * q_row), q_row, stream)?;
-            } else {
-                anyhow::ensure!(
-                    out == attn_out,
-                    "paged decode row 0 must land in attn_output() row 0"
-                );
-            }
-        }
-        cphase(&mut ct, &mut c2);
-        if self.qsa.is_some() {
+        // ── Attention per row: two orderings, and they CONFLICT ──
+        //
+        // The inert path walks rows DESCENDING because row 0's output IS
+        // `attn_out` row 0 — the shared scratch every row writes — so doing row
+        // 0 last leaves it in place and costs no copy.
+        //
+        // The QSA-active path CANNOT do that. `decode_select` asserts
+        // `pos == st.ingested`, so row t's key must be ingested before row t+1
+        // selects: the walk must be ASCENDING, and ingest must be interleaved
+        // with attend rather than swept afterwards. Pre-ingesting all k rows and
+        // then attending would be worse than wrong-ordered — it would make rows
+        // t+1.. visible to row t's selection, i.e. attention over future tokens.
+        //
+        // So the ascending path stashes row 0 in spare `attn_out` capacity past
+        // the live rows and restores it once the walk is done.
+        let qsa_active = self.ms_qsa_selection_active(row_seq_lens, k);
+        if qsa_active {
+            // `attn_output` is sized `max_batch_tokens` rows (buffers/sizes.rs:538)
+            // and k here is a draft width (3), so row k is spare. Assert rather
+            // than assume: a k that reached capacity would silently corrupt the
+            // row it landed on.
+            let cap_rows = ctx.buffers.attn_output_bytes() / q_row;
+            anyhow::ensure!(
+                cap_rows > k,
+                "QSA-active batched verify needs a spare attn_output row for the                  row-0 stash: k={k} rows but capacity is {cap_rows}"
+            );
+            let stash = attn_out.offset(k * q_row);
             for t in 0..k {
                 let mut states: [&mut (dyn LayerState + 'static); 1] = [&mut *state];
-                self.ms_qsa_ingest_only(
+                let out = self.ms_qsa_phase_paged_decode(
                     &row_view(t),
                     &mut states,
                     &row_seq_lens[t..t + 1],
                     kv_cache,
                     row_metas[t],
                 )?;
+                let dst = if t == 0 { stash } else { attn_out.offset(t * q_row) };
+                ctx.gpu.copy_d2d_async(out, dst, q_row, stream)?;
             }
+            ctx.gpu.copy_d2d_async(stash, attn_out, q_row, stream)?;
+            static SAID_QSA: std::sync::Once = std::sync::Once::new();
+            SAID_QSA.call_once(|| {
+                tracing::info!(
+                    rows = k,
+                    "mHC verify: QSA-ACTIVE rows on the BATCHED attention arm                      (ascending select+attend per row, row 0 stashed); the arm no                      longer declines above the inert bound"
+                );
+            });
+            cphase(&mut ct, &mut c2);
+            cphase(&mut ct, &mut c3);
+        } else {
+            for t in (0..k).rev() {
+                let out = self.ms_phase_paged_decode(&row_view(t), kv_cache, row_metas[t])?;
+                if t > 0 {
+                    ctx.gpu
+                        .copy_d2d_async(out, attn_out.offset(t * q_row), q_row, stream)?;
+                } else {
+                    anyhow::ensure!(
+                        out == attn_out,
+                        "paged decode row 0 must land in attn_output() row 0"
+                    );
+                }
+            }
+            cphase(&mut ct, &mut c2);
+            if self.qsa.is_some() {
+                // Inert rows still have to be INGESTED every step or the raw-key
+                // cache desyncs from the sequence.
+                for t in 0..k {
+                    let mut states: [&mut (dyn LayerState + 'static); 1] = [&mut *state];
+                    self.ms_qsa_ingest_only(
+                        &row_view(t),
+                        &mut states,
+                        &row_seq_lens[t..t + 1],
+                        kv_cache,
+                        row_metas[t],
+                    )?;
+                }
+            }
+            cphase(&mut ct, &mut c3);
         }
-        cphase(&mut ct, &mut c3);
         let o_out = self.ms_phase_o_proj(&c, attn_out)?;
         // TP reduction — see `verify_attn_post_hc` for why it must land here,
         // before the caller's post-attention norm reads these rows.

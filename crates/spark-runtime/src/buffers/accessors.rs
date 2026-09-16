@@ -34,6 +34,14 @@ impl BufferArena {
     pub fn attn_output(&self) -> DevicePtr {
         self.attn_output
     }
+    /// Allocated byte size of `attn_output`. Same purpose as
+    /// [`Self::qkv_output_bytes`]: the QSA-active batched VERIFY arm stashes its
+    /// row 0 in a row PAST the live rows, which is in-bounds only while the
+    /// buffer holds it. Asserted rather than assumed — a k that reached capacity
+    /// would silently corrupt whatever row the stash landed on.
+    pub fn attn_output_bytes(&self) -> usize {
+        self.sizes.attn_output
+    }
     pub fn gate_logits(&self) -> DevicePtr {
         self.gate_logits
     }

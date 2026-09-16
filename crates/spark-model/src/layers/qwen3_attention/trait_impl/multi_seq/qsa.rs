@@ -157,7 +157,11 @@ impl Qwen3AttentionLayer {
     ///
     /// Writes the standard contiguous `[n, nq*hd]` `attn_output()` buffer, so
     /// `ms_phase_o_proj` downstream is unchanged.
-    pub(super) fn ms_qsa_phase_paged_decode<'a, 'b: 'a>(
+    // Widened from `pub(super)`: the batched VERIFY arm
+    // (`verify_rows_hc_attn.rs`) needs the same select+attend body, and it
+    // lives in `trait_impl`, not in `multi_seq`. Same visibility as its
+    // sibling `ms_qsa_ingest_only`.
+    pub(in crate::layers::qwen3_attention) fn ms_qsa_phase_paged_decode<'a, 'b: 'a>(
         &self,
         c: &MultiSeqCtx<'_>,
         states: &'a mut [&'b mut (dyn LayerState + 'static)],
