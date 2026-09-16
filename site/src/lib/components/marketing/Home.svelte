@@ -7,6 +7,7 @@
   import { benchmarkHighlight, legacyEngineDestination, legacySections, brandStyle, ENGINE } from '$lib/marketing.js';
   import Icon from './Icon.svelte';
   import Possibilities from './Possibilities.svelte';
+  import ThemeToggle from '$shared/components/ThemeToggle.svelte';
   import '../../../styles/marketing.css';
 
   const benchmark = benchmarkHighlight(ladder);
@@ -33,6 +34,7 @@
       </a>
       <nav aria-label="Main navigation"><a href="#why-avarok">Why Avarok</a><a href="#possibilities">Possibilities</a><a href={ENGINE} data-sveltekit-reload>Developers <Icon name="ArrowUpRight" size={13}/></a></nav>
       <div class="m-header-actions">
+        <ThemeToggle />
         <a class="m-button m-button-dark m-nav-cta" href="#start">Start building <Icon name="ArrowUpRight" size={16}/></a>
       </div>
     </header>

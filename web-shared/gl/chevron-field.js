@@ -265,6 +265,19 @@ export function createChevronField(canvas, fragmentSource, opts = {}) {
   return {
     setScroll(v) { scroll = v; if (!running()) draw(); },
     setDensity(v) { density = v; if (!running()) draw(); },
+    setTokens(next = {}) {
+      if (dead || !prog) return;
+      for (const k of REQUIRED_COLORS) {
+        if (next[k] != null && !HEX.test(next[k])) return;
+      }
+      gl.useProgram(prog);
+      if (next.c1) gl.uniform3fv(uniforms.u_c1, rgb(next.c1));
+      if (next.c2) gl.uniform3fv(uniforms.u_c2, rgb(next.c2));
+      if (next.c3u) gl.uniform3fv(uniforms.u_c3u, rgb(next.c3u));
+      if (next.c3l) gl.uniform3fv(uniforms.u_c3l, rgb(next.c3l));
+      if (next.ground) gl.uniform3fv(uniforms.u_ground, rgb(next.ground));
+      if (!running()) draw();
+    },
     get running() { return !!raf; },
 
     /** Draw a single frame at an explicit time. Used for the frozen

@@ -39,10 +39,10 @@
   .theme-toggle-sun {
     display: none;
   }
-  :global(html[data-theme='dark']) .theme-toggle-sun {
+  :global(html:not([data-theme='light'])) .theme-toggle-sun {
     display: block;
   }
-  :global(html[data-theme='dark']) .theme-toggle-moon {
+  :global(html:not([data-theme='light'])) .theme-toggle-moon {
     display: none;
   }
 </style>

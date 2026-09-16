@@ -1,6 +1,6 @@
 # Avarok website branding
 
-The homepage uses the supplied Avarok brand kit: unmodified vector lockups, lavender/cyan/green/gold accents, and the kit's UI gray for body text. The site is light-only for now (`data-theme="light"`). Dark tokens and the toggle are parked, not deleted. The kit's JSON palette is imported by `src/lib/marketing.js`; the existing shared engineering and blog tokens remain in place.
+The homepage uses the supplied Avarok brand kit: unmodified vector lockups, lavender/cyan/green/gold accents, and the kit's UI gray for body text. Light and dark themes share the chevron hues and swap ground/ink; `data-theme` is set before first paint from `localStorage` (`avarok-theme`) or `prefers-color-scheme`. The kit's JSON palette is imported by `src/lib/marketing.js`; the existing shared engineering and blog tokens remain in place.
 
 - Navigation: horizontal lockup, 166 px on desktop and 138 px on mobile, with clear space.
 - Footer: full Avarok Inference Engine lockup, 253 px wide, with clear space.

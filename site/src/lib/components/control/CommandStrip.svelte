@@ -23,6 +23,7 @@
   import { CADENCES } from '$lib/agent/cadence.js';
   import { placeholdersFor } from '$lib/agent/placeholders.js';
   import ComingSoon from './ComingSoon.svelte';
+  import ThemeToggle from '$shared/components/ThemeToggle.svelte';
 
   let { fleet, onselect, cadence, oncadence, vitals = true, onvitals, onhelp } = $props();
 
@@ -145,6 +146,7 @@
 
     <!-- The keyboard map's click-and-touch door: keys are a faster way in,
          never the only one. -->
+    <ThemeToggle />
     <button
       type="button"
       class="cmd-help mono"

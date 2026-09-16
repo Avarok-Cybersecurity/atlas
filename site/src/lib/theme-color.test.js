@@ -27,20 +27,25 @@ test('the PWA manifest agrees with the page it frames', () => {
   // #0F1216 page. theme_color is the window chrome; background_color is the
   // splash. Both are hand-written — a manifest cannot read a CSS custom
   // property — which is exactly why they need pinning.
-  // Light-only for now: chrome matches [data-theme="light"] --bg.
   const manifest = JSON.parse(readFileSync(new URL('../../static/site.webmanifest', import.meta.url), 'utf8'));
-  expect(manifest.theme_color?.toLowerCase()).toBe(lightBg.toLowerCase());
-  expect(manifest.background_color?.toLowerCase()).toBe(lightBg.toLowerCase());
+  expect(manifest.theme_color?.toLowerCase()).toBe(bg.toLowerCase());
+  expect(manifest.background_color?.toLowerCase()).toBe(bg.toLowerCase());
 });
 
 for (const [label, rel] of [
   ['marketing site', '../../src/app.html'],
   ['blog', '../../../blog/src/app.html']
 ]) {
-  test(`${label}: theme-color equals light --bg`, () => {
+  test(`${label}: theme-color equals --bg`, () => {
     const html = readFileSync(new URL(rel, import.meta.url), 'utf8');
     const m = html.match(/<meta\s+name="theme-color"\s+content="(#[0-9a-fA-F]{6})"/);
     expect(m, `${label}: no theme-color meta found`).not.toBeNull();
+    expect(m[1].toLowerCase()).toBe(bg.toLowerCase());
+  });
+  test(`${label}: light theme-color equals light --bg`, () => {
+    const html = readFileSync(new URL(rel, import.meta.url), 'utf8');
+    const m = html.match(/<meta\s+name="theme-color"\s+content="(#[0-9a-fA-F]{6})"\s+media="\(prefers-color-scheme: light\)"/);
+    expect(m, `${label}: no light theme-color meta found`).not.toBeNull();
     expect(m[1].toLowerCase()).toBe(lightBg.toLowerCase());
   });
 }

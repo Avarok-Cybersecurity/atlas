@@ -3,6 +3,7 @@
   import { nav, githubUrl, MAIN_SITE, navCurrent } from '$lib/content.js';
   import GithubIcon from './GithubIcon.svelte';
   import AtlasLockup from '$shared/components/AtlasLockup.svelte';
+  import ThemeToggle from '$shared/components/ThemeToggle.svelte';
 
   const current = (href) => navCurrent(page.url.pathname, href);
 </script>
@@ -22,6 +23,7 @@
     </nav>
 
     <div class="hdr-right">
+      <ThemeToggle />
       <!-- The label is display:none below 460px, which removes it from the
            accessibility tree as well as the page — so the name has to be on the
            element, or the link has no accessible name at exactly the widths

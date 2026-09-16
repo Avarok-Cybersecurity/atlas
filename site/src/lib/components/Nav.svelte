@@ -9,6 +9,7 @@
   import GithubIcon from './GithubIcon.svelte';
   import ChatLatticeIcon from './ChatLatticeIcon.svelte';
   import FleetPill from './FleetPill.svelte';
+  import ThemeToggle from '$shared/components/ThemeToggle.svelte';
   import { preloadChat, prefetchWasmOnIdle } from '../chat/warmup.js';
 
   let open = $state(false);
@@ -66,6 +67,7 @@
       <a class="nav-star-btn" href={githubUrl} target="_blank" rel="noopener">
         <GithubIcon size={15} /> Star <span class="nav-star-count">{stars.count}</span>
       </a>
+      <ThemeToggle />
       <button
         type="button"
         class="nav-chat-btn"
@@ -102,6 +104,7 @@
       <a class="nav-drawer-link" href={l.href} tabindex={open ? 0 : -1} onclick={() => (open = false)}>{l.text}</a>
     {/each}
     <div class="nav-drawer-foot">
+      <ThemeToggle />
       <a class="nav-star-btn" href={githubUrl} target="_blank" rel="noopener" tabindex={open ? 0 : -1}>
         <GithubIcon size={15} /> Star <span class="nav-star-count">{stars.count}</span>
       </a>

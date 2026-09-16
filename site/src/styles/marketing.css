@@ -4,31 +4,18 @@
   --foreground: var(--t1);
   --primary: var(--t1);
   --primary-foreground: var(--bg);
-  --border: #e1e4eb;
   --ring: var(--t1);
-  --muted: #f7f7f9;
+  --muted: var(--bg2);
   --muted-foreground: var(--t3);
-  --card: var(--bg);
   --card-foreground: var(--t1);
   --popover: var(--bg);
   --popover-foreground: var(--t1);
-  --accent: #f7f7f9;
   --accent-foreground: var(--t1);
-  --secondary: #f7f7f9;
+  --secondary: var(--bg2);
   --secondary-foreground: var(--t1);
-  --input: #dce1ec;
-  --destructive: #c92d37;
+  --input: var(--border-strong);
+  --destructive: var(--red);
   --radius: 0.5rem;
-}
-html[data-theme="dark"] .marketing {
-  --border: #303338;
-  --muted: #141821;
-  --muted-foreground: var(--t3);
-  --accent: #20242c;
-  --accent-foreground: var(--atlas-cyan);
-  --secondary: #20242c;
-  --secondary-foreground: var(--t1);
-  --input: #30353d;
 }
 html[data-theme="dark"] .marketing .m-brand img.m-logo-onlight {
   display: none;
@@ -134,6 +121,13 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     align-items: center;
     gap: 12px;
     flex-shrink: 0;
+  }
+  .m-header-actions :global(.theme-toggle) {
+    width: 40px;
+    height: 40px;
+    background: var(--background);
+    color: var(--foreground);
+    border-color: var(--border);
   }
   .m-header nav {
     display: flex;
@@ -272,7 +266,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   .m-hero-note span {
     width: 5px;
     height: 5px;
-    border: 1px solid #7b8494;
+    border: 1px solid var(--t3);
     border-radius: 50%;
   }
   .m-hero-art {
@@ -871,8 +865,8 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     border-radius: 2px;
   }
   .m-benchmark-bars > div + div b {
-    background: #ececef;
-    color: #5e626a;
+    background: var(--vllm);
+    color: var(--t2);
   }
   .m-benchmark-note {
     font-size: 13px;
@@ -1044,7 +1038,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     align-items: center;
     justify-content: space-between;
     gap: 20px;
-    border-top: 1px solid #e5e8ef;
+    border-top: 1px solid var(--border);
     padding-top: 23px;
     color: var(--atlas-gray-text);
     font-size: 13px;
@@ -1188,7 +1182,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     .m-evidence-card {
       padding: 30px 0 0;
       border-left: none;
-      border-top: 1px solid #dfe4ee;
+      border-top: 1px solid var(--border);
     }
     .m-big-number {
       font-size: 100px;

@@ -54,7 +54,7 @@
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
-  color-scheme: dark;
+  /* color-scheme comes from atlas-tokens.css so light/dark follow data-theme. */
 
   /* --- Editorial aliases over the shared tokens. -------------------------
      These are names, not new values: every one resolves to a shared token or
