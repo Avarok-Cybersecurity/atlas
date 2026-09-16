@@ -5,7 +5,7 @@
 //! Bridges Avarok's native packed-QKV + interleaved gate/beta buffers to the AOT-exported
 //! FlashInfer chunked gated-delta-rule scan (tensor-core, ~11× the scalar FLA `chunk_delta_h`
 //! at the Holo shape — see `3rdparty_patches/gdn_aot/STATUS.md`). The C-ABI shim
-//! (`avarok_gdn_prefill_packed`) takes Avarok's exact native pointers: it deinterleaves
+//! (`atlas_gdn_prefill_packed`) takes Avarok's exact native pointers: it deinterleaves
 //! gate/beta in-shim and reads q/k/v straight out of the packed buffer via `conv_dim`
 //! strides (no copy). Avarok's `gate` is already linear α (the kernel does the `logf`),
 //! so there is NO gate-space conversion.
@@ -35,8 +35,8 @@ const RTLD_NOW: c_int = 2;
 // entry points in `3rdparty_patches/gdn_aot/gdn_shim.cpp`, and the `transmute`s
 // in `lib()` are sound only while they match argument-for-argument:
 //
-//   void avarok_gdn_load();
-//   int  avarok_gdn_prefill_packed_managed(
+//   void atlas_gdn_load();
+//   int  atlas_gdn_prefill_packed_managed(
 //            void* qkv, void* gate_beta, void* output, void* h_state,
 //            float scale, int total_seqlen, int nk, int nv, int kd, int vd,
 //            int conv_dim, int gb_stride, int num_seqs, void* stream);
@@ -101,7 +101,7 @@ fn lib() -> Option<&'static Lib> {
     //   * LIFETIME: the handle `h` is intentionally never `dlclose`d and never
     //     escapes as a droppable value, so the mapping is leaked for the process
     //     lifetime and the two fn pointers can never dangle. `OnceLock` runs this
-    //     at most once, so `avarok_gdn_load()` (which loads the cubin module onto
+    //     at most once, so `atlas_gdn_load()` (which loads the cubin module onto
     //     the device) is called exactly once, as the shim's `g_loaded` expects.
     LIB.get_or_init(|| unsafe {
         let path = std::env::var("AVAROK_GDN_LIB").unwrap_or_else(|_| "libatlasgdn.so".to_string());
@@ -111,8 +111,8 @@ fn lib() -> Option<&'static Lib> {
             tracing::warn!("AVAROK_GDN_FLASHINFER: dlopen('{path}') failed — falling back to FLA");
             return None;
         }
-        let load = dlsym(h, c"avarok_gdn_load".as_ptr());
-        let prefill = dlsym(h, c"avarok_gdn_prefill_packed_managed".as_ptr());
+        let load = dlsym(h, c"atlas_gdn_load".as_ptr());
+        let prefill = dlsym(h, c"atlas_gdn_prefill_packed_managed".as_ptr());
         if load.is_null() || prefill.is_null() {
             tracing::warn!("AVAROK_GDN_FLASHINFER: symbols not found in lib — falling back to FLA");
             return None;
@@ -206,7 +206,7 @@ pub fn flashinfer_gdn_prefill(
     };
 
     if ret != 0 {
-        bail!("avarok_gdn_prefill_packed_managed returned {ret}");
+        bail!("atlas_gdn_prefill_packed_managed returned {ret}");
     }
     Ok(())
 }

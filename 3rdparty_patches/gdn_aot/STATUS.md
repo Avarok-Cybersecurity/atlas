@@ -65,10 +65,10 @@ g++ -O2 gdn_harness.cpp -o h -I. -I/usr/local/cuda/include ./gdn_holo.so -lcudar
 LD_LIBRARY_PATH=/usr/local/cuda-13.2/compat:<cute_lib>:/usr/local/cuda/lib64 CUTE_DSL_ARCH=sm_121a ./h
 
 ## STEP 3 DONE 2026-06-30 — Rust FFI -> shim -> AOT kernel is BIT-EXACT ✅
-`gdn_shim.cpp` wraps the header's static-inline funcs into extern "C" `avarok_gdn_load` + `avarok_gdn_prefill`
+`gdn_shim.cpp` wraps the header's static-inline funcs into extern "C" `atlas_gdn_load` + `atlas_gdn_prefill`
 (shape-generic, head_dim D=128 fixed). Built into `libatlasgdn.so` (bundles gdn_holo_0.o + cute runtime).
 `gdn_rs.rs` is a pure-Rust harness (raw cudart + avarokgdn FFI, no cudarc) that loads ref IO, calls the kernel,
-compares: **avarok_gdn_prefill ret=0, max_abs_err=0.000000, cos=1.000000.** Full chain Rust->C shim->AOT GDN proven.
+compares: **atlas_gdn_prefill ret=0, max_abs_err=0.000000, cos=1.000000.** Full chain Rust->C shim->AOT GDN proven.
 Build/run (gx10):
   g++ -O2 -fPIC -shared gdn_shim.cpp gdn_holo_0.o -o libatlasgdn.so -I. -I/usr/local/cuda/include -lcudart -L<cute> -lcute_dsl_runtime -Wl,-rpath,<cute>
   rustc -O gdn_rs.rs -o gdn_rs -L. -L/usr/local/cuda/lib64 -L<cute>
@@ -90,7 +90,7 @@ So the adapter is pure layout:
 - gate/beta: deinterleave Avarok [gate(nv)|beta(nv)] fp32 (stride 2nv) -> contiguous alpha,beta[T,nv]
   via cudaMemcpy2DAsync (in-shim).
 - output: Avarok contiguous [T,value_dim] -> o strides{nv*vd, vd}.
-New shim entry `avarok_gdn_prefill_packed(qkv,gate_beta,output,h_state,init_state,tensormaps,cu,
+New shim entry `atlas_gdn_prefill_packed(qkv,gate_beta,output,h_state,init_state,tensormaps,cu,
   scale,total,nk,nv,kd,vd,conv_dim,gb_stride,num_seqs,stream)` takes Avarok's EXACT native pointers.
 gdn_harness_packed.cpp packs the ref IO into Avarok layout -> **bit-exact (max_abs_err=0, cos=1.0).**
 => Avarok call site becomes trivial: hand over the pointers prefill_gdn_full_inner already has
@@ -98,7 +98,7 @@ gdn_harness_packed.cpp packs the ref IO into Avarok layout -> **bit-exact (max_a
 
 ## STEP 4 remaining
 - Avarok Rust binding: dlopen libatlasgdn.so (no build.rs link-time dep) OR build.rs link; call
-  avarok_gdn_prefill_packed from prefill_gdn_full_inner behind AVAROK_GDN_FLASHINFER=1 (FLA fallback).
+  atlas_gdn_prefill_packed from prefill_gdn_full_inner behind AVAROK_GDN_FLASHINFER=1 (FLA fallback).
 - STATE-CARRY layout: validated single-call full-sequence (init_state=0). Multi-chunk prefill carries
   h_state across outer chunks -> verify FI state layout == Avarok h_state ([nv,kd,vd]) for the carry
   (FI test transposes state; check before enabling chunked).
@@ -112,7 +112,7 @@ DIAGNOSTIC CHAIN (all confirmed):
 2. The garbage was a DTYPE mismatch: export/harness used fp16, but Avarok GDN q/k/v/o are BF16. The fp16
    kernel read bf16 bits as fp16 -> garbage. FIX: re-export with torch.bfloat16 (gdn_export.py), relink.
 3. Also fixed an async use-after-free (binding freed tensormaps/init/cu before the async kernel ran) ->
-   managed shim entry avarok_gdn_prefill_packed_managed caches scratch internally (no per-call alloc/free/sync).
+   managed shim entry atlas_gdn_prefill_packed_managed caches scratch internally (no per-call alloc/free/sync).
 RESULT (holo35b, same binary, A/B via AVAROK_GDN_FLASHINFER 1 vs 0):
 - PREFILL CORRECT: first token matches FLA ("The first 6 planets...").
 - PREFILL SPEEDUP: 2K 3806->4945 (1.30x), 4K 3938->5291 (1.34x), C=8 up to 1.46x. (11x is the

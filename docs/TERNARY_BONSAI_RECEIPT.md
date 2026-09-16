@@ -29,7 +29,7 @@ Coherent throughout. Both wins are orthogonal: native-Q2 cuts **weight bandwidth
 |---|---|
 | Container | `avarok-gb10:b12x-ready` (cargo/rustc, CUDA 13.2, `libcute_dsl_runtime.so`, `CUTE_DSL_ARCH=sm_121a`, FlashInfer at `/opt/flashinfer`) |
 | Binary | Host-built `spark` **runs as-is in the container** (glibc 2.39 both, cudart.so.13 soname-compat). No in-container rebuild needed for the production stack. |
-| GDN-FI AOT lib | `3rdparty_patches/gdn_aot/libatlasgdn.so` (prebuilt; syms `avarok_gdn_load`, `avarok_gdn_prefill_packed_managed`; transpose handoff fixed) |
+| GDN-FI AOT lib | `3rdparty_patches/gdn_aot/libatlasgdn.so` (prebuilt; syms `atlas_gdn_load`, `atlas_gdn_prefill_packed_managed`; transpose handoff fixed) |
 | Model files | `/tank/hf/hub/models--prism-ml--Ternary-Bonsai-27B-gguf/.../` (Q2_0 backbone + mmproj) |
 
 Build (only needed if changing code): all targets, no nccl —
