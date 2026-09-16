@@ -202,7 +202,7 @@ impl ModelWeightLoader for DeepSeekV41WeightLoader {
         let max_seq =
             env_usize("ATLAS_DS41_MAX_SEQ", 8192).min(config.max_position_embeddings.max(1));
         let max_tokens = env_usize("ATLAS_DS41_MAX_TOKENS", 2048).min(max_seq);
-        let cache_gib = env_usize("ATLAS_DS41_EXPERT_CACHE_GIB", 48);
+        let cache_gib = env_usize("ATLAS_DS41_EXPERT_CACHE_GIB", 88);
         let reader_threads = env_usize("ATLAS_DS41_READER_THREADS", 8);
         let ratios: Vec<usize> = config
             .compress_ratios
