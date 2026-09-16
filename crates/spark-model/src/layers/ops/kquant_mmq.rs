@@ -17,6 +17,29 @@ pub const KQUANT_MODULE: &str = "kquant_moe";
 /// Bytes per 256-value super-block on disk.
 pub const Q2K_BLOCK_BYTES: usize = 84;
 pub const Q3K_BLOCK_BYTES: usize = 110;
+
+/// A resident `[N, K]` row-major projection as the GGUF path left it on the
+/// device: expanded bf16, or the raw `Q2_K` / `Q3_K` blocks
+/// (`WeightDtype::Q2K` / `Q3K`) for the K-quant GEMV (m <= 8, q8_1 rows) and
+/// MMQ (tensor cores, D2S6 / D4 tiles) kernels.
+#[derive(Clone, Copy, Debug)]
+pub enum ResidentMat {
+    Bf16(DevicePtr),
+    Q2K(DevicePtr),
+    Q3K(DevicePtr),
+}
+
+impl ResidentMat {
+    /// The sub-matrix starting `rows` rows in (each row `k` weights long).
+    pub fn at_rows(self, rows: usize, k: usize) -> ResidentMat {
+        let at = |p: DevicePtr, off: usize| DevicePtr(p.0 + off as u64);
+        match self {
+            ResidentMat::Bf16(p) => ResidentMat::Bf16(at(p, rows * k * 2)),
+            ResidentMat::Q2K(p) => ResidentMat::Q2K(at(p, rows * (k / 256) * Q2K_BLOCK_BYTES)),
+            ResidentMat::Q3K(p) => ResidentMat::Q3K(at(p, rows * (k / 256) * Q3K_BLOCK_BYTES)),
+        }
+    }
+}
 /// Dynamic shared memory for the 128x128 MMQ tile on the MMA path (`mmq_get_nbytes_shared`
 /// with MMQ_TILE_NE_K = 32): ids 512 B + tile_x (128 rows x tile_x_k ints) + tile_y (128 x 144 B).
 /// Q2_K tile_x_k = 2*32 + 32 + 4 = 100; Q3_K = 2*32 + 16 + 4 = 84.

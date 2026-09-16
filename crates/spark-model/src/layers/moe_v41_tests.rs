@@ -205,9 +205,9 @@ fn run_case(tokens: usize) {
         layer: 7,
         gate_w: up(&gate_w),
         gate_bias: gate_bias.clone(),
-        shared_w1: up(&s1),
-        shared_w2: up(&s2),
-        shared_w3: up(&s3),
+        shared_w1: ResidentMat::Bf16(up(&s1)),
+        shared_w2: ResidentMat::Bf16(up(&s2)),
+        shared_w3: ResidentMat::Bf16(up(&s3)),
     };
     let x_dev = up(&x);
     let moe = MoeV41::new(g, cfg.clone()).unwrap();

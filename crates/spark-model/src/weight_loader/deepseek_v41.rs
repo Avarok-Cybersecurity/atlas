@@ -33,12 +33,13 @@ use spark_runtime::weights::{WeightDtype, WeightStore};
 
 use crate::layer::TransformerLayer;
 use crate::layers::attn_v41::{
-    AttnMat, AttnV41, AttnV41Cfg, AttnV41LayerWeights, CompressorWeightsGpu, IndexerWeightsGpu,
-    LayerRole, SharedV41,
+    AttnV41, AttnV41Cfg, AttnV41LayerWeights, CompressorWeightsGpu, IndexerWeightsGpu, LayerRole,
+    SharedV41,
 };
 use crate::layers::deepseek_v41_layer::{DeepSeekV41Layer, V41Runtime};
 use crate::layers::engram_v41::{EngramHashTables, EngramHasher, EngramLayerWeights, EngramV41};
 use crate::layers::moe_v41::{MoeV41, MoeV41Cfg, MoeV41LayerWeights};
+use crate::layers::ops::ResidentMat;
 use crate::layers::qwen3_attention::HcSiteWeights;
 use crate::weight_loader::ModelWeightLoader;
 use crate::weight_map::{DenseWeight, MtpWeights, dense_auto};
@@ -66,14 +67,15 @@ fn bf16_ptr(store: &WeightStore, name: &str) -> Result<DevicePtr> {
     Ok(t.ptr)
 }
 
-/// An attention projection as the GGUF path left it: bf16 (expanded on load)
-/// or raw Q2_K blocks (`WeightDtype::Q2K`, the resident K-quant path).
-fn attn_mat(store: &WeightStore, name: &str) -> Result<AttnMat> {
+/// A resident projection as the GGUF path left it: bf16 (expanded on load)
+/// or raw Q2_K / Q3_K blocks (`WeightDtype::Q2K` / `Q3K`, the K-quant path).
+fn resident_mat(store: &WeightStore, name: &str) -> Result<ResidentMat> {
     let t = store.get(name)?;
     match t.dtype {
-        WeightDtype::BF16 => Ok(AttnMat::Bf16(t.ptr)),
-        WeightDtype::Q2K => Ok(AttnMat::Q2K(t.ptr)),
-        d => anyhow::bail!("{name}: expected bf16 or Q2_K, got {d:?}"),
+        WeightDtype::BF16 => Ok(ResidentMat::Bf16(t.ptr)),
+        WeightDtype::Q2K => Ok(ResidentMat::Q2K(t.ptr)),
+        WeightDtype::Q3K => Ok(ResidentMat::Q3K(t.ptr)),
+        d => anyhow::bail!("{name}: expected bf16, Q2_K or Q3_K, got {d:?}"),
     }
 }
 
@@ -95,13 +97,18 @@ fn download_f32(gpu: &dyn GpuBackend, store: &WeightStore, name: &str) -> Result
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect())
         }
-        WeightDtype::Q2K => {
+        WeightDtype::Q2K | WeightDtype::Q3K => {
             use spark_runtime::weights::dequant_cpu::{GgmlType, dequant_to_f32};
+            let gt = if t.dtype == WeightDtype::Q2K {
+                GgmlType::Q2K
+            } else {
+                GgmlType::Q3K
+            };
             let mut b = vec![0u8; t.byte_size()];
             gpu.copy_d2h(t.ptr, &mut b)?;
             let mut out = vec![0f32; n];
-            dequant_to_f32(GgmlType::Q2K, &b, n, &mut out)
-                .with_context(|| format!("{name}: CPU dequant of the resident Q2_K blocks"))?;
+            dequant_to_f32(gt, &b, n, &mut out)
+                .with_context(|| format!("{name}: CPU dequant of the resident {gt:?} blocks"))?;
             Ok(out)
         }
         other => anyhow::bail!("{name}: cannot widen {other:?} to f32"),
@@ -458,18 +465,18 @@ impl ModelWeightLoader for DeepSeekV41WeightLoader {
             let attn_w = AttnV41LayerWeights {
                 role,
                 sink: f32_ptr(gpu, store, &format!("{lp}.attn.attn_sink"), nh)?,
-                wq_a: attn_mat(store, &format!("{lp}.attn.wq_a.weight"))?,
+                wq_a: resident_mat(store, &format!("{lp}.attn.wq_a.weight"))?,
                 q_norm: f32_ptr(
                     gpu,
                     store,
                     &format!("{lp}.attn.q_norm.weight"),
                     config.q_lora_rank,
                 )?,
-                wq_b: attn_mat(store, &format!("{lp}.attn.wq_b.weight"))?,
-                wkv: attn_mat(store, &format!("{lp}.attn.wkv.weight"))?,
+                wq_b: resident_mat(store, &format!("{lp}.attn.wq_b.weight"))?,
+                wkv: resident_mat(store, &format!("{lp}.attn.wkv.weight"))?,
                 kv_norm: f32_ptr(gpu, store, &format!("{lp}.attn.kv_norm.weight"), head_dim)?,
-                wo_a: attn_mat(store, &format!("{lp}.attn.wo_a.weight"))?,
-                wo_b: attn_mat(store, &format!("{lp}.attn.wo_b.weight"))?,
+                wo_a: resident_mat(store, &format!("{lp}.attn.wo_a.weight"))?,
+                wo_b: resident_mat(store, &format!("{lp}.attn.wo_b.weight"))?,
                 comp,
                 idx,
             };
@@ -487,9 +494,9 @@ impl ModelWeightLoader for DeepSeekV41WeightLoader {
                 layer: l as u32,
                 gate_w: bf16_ptr(store, &format!("{lp}.ffn.gate.weight"))?,
                 gate_bias,
-                shared_w1: bf16_ptr(store, &format!("{lp}.ffn.shared_experts.w1"))?,
-                shared_w2: bf16_ptr(store, &format!("{lp}.ffn.shared_experts.w2"))?,
-                shared_w3: bf16_ptr(store, &format!("{lp}.ffn.shared_experts.w3"))?,
+                shared_w1: resident_mat(store, &format!("{lp}.ffn.shared_experts.w1"))?,
+                shared_w2: resident_mat(store, &format!("{lp}.ffn.shared_experts.w2"))?,
+                shared_w3: resident_mat(store, &format!("{lp}.ffn.shared_experts.w3"))?,
             };
             let engram_index = rt.tables.hash_index(l);
             layers.push(Box::new(DeepSeekV41Layer {
@@ -852,7 +859,7 @@ mod real_file_tests {
         let attn_w = AttnV41LayerWeights {
             role,
             sink: f32_ptr(g, &store, &format!("{lp}.attn.attn_sink"), nh).unwrap(),
-            wq_a: attn_mat(&store, &format!("{lp}.attn.wq_a.weight")).unwrap(),
+            wq_a: resident_mat(&store, &format!("{lp}.attn.wq_a.weight")).unwrap(),
             q_norm: f32_ptr(
                 g,
                 &store,
@@ -860,11 +867,11 @@ mod real_file_tests {
                 config.q_lora_rank,
             )
             .unwrap(),
-            wq_b: attn_mat(&store, &format!("{lp}.attn.wq_b.weight")).unwrap(),
-            wkv: attn_mat(&store, &format!("{lp}.attn.wkv.weight")).unwrap(),
+            wq_b: resident_mat(&store, &format!("{lp}.attn.wq_b.weight")).unwrap(),
+            wkv: resident_mat(&store, &format!("{lp}.attn.wkv.weight")).unwrap(),
             kv_norm: f32_ptr(g, &store, &format!("{lp}.attn.kv_norm.weight"), hd).unwrap(),
-            wo_a: attn_mat(&store, &format!("{lp}.attn.wo_a.weight")).unwrap(),
-            wo_b: attn_mat(&store, &format!("{lp}.attn.wo_b.weight")).unwrap(),
+            wo_a: resident_mat(&store, &format!("{lp}.attn.wo_a.weight")).unwrap(),
+            wo_b: resident_mat(&store, &format!("{lp}.attn.wo_b.weight")).unwrap(),
             comp: None,
             idx: None,
         };
@@ -1013,9 +1020,9 @@ mod real_file_tests {
             layer: 0,
             gate_w: bf16_ptr(&store, &format!("{lp}.ffn.gate.weight")).unwrap(),
             gate_bias: gate_bias.clone(),
-            shared_w1: bf16_ptr(&store, &format!("{lp}.ffn.shared_experts.w1")).unwrap(),
-            shared_w2: bf16_ptr(&store, &format!("{lp}.ffn.shared_experts.w2")).unwrap(),
-            shared_w3: bf16_ptr(&store, &format!("{lp}.ffn.shared_experts.w3")).unwrap(),
+            shared_w1: resident_mat(&store, &format!("{lp}.ffn.shared_experts.w1")).unwrap(),
+            shared_w2: resident_mat(&store, &format!("{lp}.ffn.shared_experts.w2")).unwrap(),
+            shared_w3: resident_mat(&store, &format!("{lp}.ffn.shared_experts.w3")).unwrap(),
         };
         let arena = PinnedArena::alloc(g, 64 * lay.bytes).unwrap();
         let mut lru = ExpertLru::new(arena.host(), arena.dev(), arena.bytes(), lay).unwrap();

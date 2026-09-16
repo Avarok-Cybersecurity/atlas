@@ -39,29 +39,14 @@ use crate::layers::deepseek_v41_ref::compress::{
 };
 use crate::layers::ops;
 use crate::layers::ops::{
-    KQUANT_MODULE, Q2K_BLOCK_BYTES, Q2K_MMQ_SMEM, kquant_mmq_act_bytes, kquant_mmq_gemm,
-    kquant_mmvq, kquant_q8_1_rows, kquant_q8_1_rows_bytes,
+    KQUANT_MODULE, Q2K_MMQ_SMEM, kquant_mmq_act_bytes, kquant_mmq_gemm, kquant_mmvq,
+    kquant_q8_1_rows, kquant_q8_1_rows_bytes,
 };
 use crate::weight_map::DenseWeight;
 
-/// An attention projection on the device, `[N, K]` row-major: expanded bf16
-/// (the tiled GEMM / GEMV) or the GGUF's raw `Q2_K` blocks (K-quant GEMV at
-/// m <= 8, MMQ tensor-core GEMM above, activations quantised to q8_1 first).
-#[derive(Clone, Copy, Debug)]
-pub enum AttnMat {
-    Bf16(DevicePtr),
-    Q2K(DevicePtr),
-}
-
-impl AttnMat {
-    /// The sub-matrix starting `rows` rows in (each row `k` weights long).
-    pub fn at_rows(self, rows: usize, k: usize) -> AttnMat {
-        match self {
-            AttnMat::Bf16(p) => AttnMat::Bf16(at(p, rows * k * 2)),
-            AttnMat::Q2K(p) => AttnMat::Q2K(at(p, rows * (k / 256) * Q2K_BLOCK_BYTES)),
-        }
-    }
-}
+/// An attention projection on the device: bf16 or the GGUF's raw `Q2_K`
+/// blocks (`Q3_K` is never an attention type here and is refused).
+pub use crate::layers::ops::ResidentMat as AttnMat;
 
 const MODULE: &str = "attn_v41";
 const GEMM_MODULE: &str = "gemm";
@@ -441,6 +426,7 @@ impl AttnV41 {
     ) -> Result<()> {
         let w = match w {
             AttnMat::Bf16(p) => p,
+            AttnMat::Q3K(_) => anyhow::bail!("attention projections are never Q3_K"),
             AttnMat::Q2K(blocks) => {
                 let (m, n, kk) = (m as u32, n as u32, kk as u32);
                 if m <= 8 {

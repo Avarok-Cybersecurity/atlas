@@ -28,8 +28,8 @@ use spark_runtime::kernel_args::KernelLaunch;
 use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
 use crate::layers::ops::{
-    self, KQUANT_MODULE, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, kquant_mmq_act_bytes, kquant_mmq_gemm,
-    kquant_mmvq, kquant_q8_1_rows, kquant_q8_1_rows_bytes,
+    self, KQUANT_MODULE, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, ResidentMat, kquant_mmq_act_bytes,
+    kquant_mmq_gemm, kquant_mmvq, kquant_q8_1_rows, kquant_q8_1_rows_bytes,
 };
 use crate::weight_map::DenseWeight;
 
@@ -56,14 +56,17 @@ pub struct MoeV41LayerWeights {
     pub gate_w: DevicePtr,
     /// f32 `[n_routed]`, host: the selection runs on the CPU
     pub gate_bias: Vec<f32>,
-    /// bf16 `[inter, dim]`, `[dim, inter]`, `[inter, dim]`
-    pub shared_w1: DevicePtr,
-    pub shared_w2: DevicePtr,
-    pub shared_w3: DevicePtr,
+    /// `[inter, dim]`, `[dim, inter]`, `[inter, dim]`: bf16 or the GGUF's
+    /// Q2_K (w1, w3) / Q3_K (w2) blocks on the routed experts' kernels
+    pub shared_w1: ResidentMat,
+    pub shared_w2: ResidentMat,
+    pub shared_w3: ResidentMat,
 }
 
 struct Kernels {
     gemm: KernelHandle,
+    /// bf16 shared expert at m = 1 (the tiled GEMM idles 15 of 16 rows)
+    gemv: KernelHandle,
     gemm_f32out: KernelHandle,
     q8_rows: KernelHandle,
     mmvq_q2k: KernelHandle,
@@ -185,6 +188,7 @@ impl MoeV41 {
             last: std::cell::Cell::new(MoeV41Timing::default()),
             k: Kernels {
                 gemm: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16")?,
+                gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
                 gemm_f32out: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16_f32out")?,
                 q8_rows: gpu.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16")?,
                 mmvq_q2k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k")?,
@@ -483,22 +487,82 @@ impl MoeV41 {
                 .arg_u32(c.dim as u32)
                 .launch(stream)?;
         }
-        // shared expert, dense bf16
-        let dense = |a: DevicePtr, wt: DevicePtr, out: DevicePtr, n: usize, kdim: usize| {
-            ops::dense_gemm(
-                gpu,
-                self.k.gemm,
-                a,
-                &DenseWeight { weight: wt },
-                out,
-                m as u32,
-                n as u32,
-                kdim as u32,
-                stream,
-            )
+        // shared expert: bf16 (GEMV / tiled GEMM) or the GGUF's K-quant
+        // blocks on the routed experts' kernels (GEMV at m <= 8, MMQ above)
+        let kq = |a: DevicePtr,
+                  a_q8: DevicePtr,
+                  wt: ResidentMat,
+                  out: DevicePtr,
+                  n: usize,
+                  kdim: usize|
+         -> Result<()> {
+            let (mu, nu, ku) = (m as u32, n as u32, kdim as u32);
+            match wt {
+                ResidentMat::Bf16(p) if m == 1 => ops::dense_gemv(
+                    gpu,
+                    self.k.gemv,
+                    a,
+                    &DenseWeight { weight: p },
+                    out,
+                    nu,
+                    ku,
+                    stream,
+                ),
+                ResidentMat::Bf16(p) => ops::dense_gemm(
+                    gpu,
+                    self.k.gemm,
+                    a,
+                    &DenseWeight { weight: p },
+                    out,
+                    mu,
+                    nu,
+                    ku,
+                    stream,
+                ),
+                ResidentMat::Q2K(b) if m <= 8 => {
+                    kquant_q8_1_rows(gpu, self.k.q8_rows, a, a_q8, mu, ku, stream)?;
+                    kquant_mmvq(gpu, self.k.mmvq_q2k, b, a_q8, out, nu, ku, mu, stream)
+                }
+                ResidentMat::Q3K(b) if m <= 8 => {
+                    kquant_q8_1_rows(gpu, self.k.q8_rows, a, a_q8, mu, ku, stream)?;
+                    kquant_mmvq(gpu, self.k.mmvq_q3k, b, a_q8, out, nu, ku, mu, stream)
+                }
+                ResidentMat::Q2K(b) => {
+                    ops::quantize_act_q8_1(gpu, self.k.quant_d2s6, a, a_q8, mu, ku, stream)?;
+                    kquant_mmq_gemm(
+                        gpu,
+                        self.k.mmq_q2k_nc,
+                        self.k.mmq_q2k_wc,
+                        a_q8,
+                        b,
+                        out,
+                        mu,
+                        nu,
+                        ku,
+                        Q2K_MMQ_SMEM,
+                        stream,
+                    )
+                }
+                ResidentMat::Q3K(b) => {
+                    ops::quantize_act_q8_1(gpu, self.k.quant_d4, a, a_q8, mu, ku, stream)?;
+                    kquant_mmq_gemm(
+                        gpu,
+                        self.k.mmq_q3k_nc,
+                        self.k.mmq_q3k_wc,
+                        a_q8,
+                        b,
+                        out,
+                        mu,
+                        nu,
+                        ku,
+                        Q3K_MMQ_SMEM,
+                        stream,
+                    )
+                }
+            }
         };
-        dense(x, w.shared_w1, self.sg, c.inter, c.dim)?;
-        dense(x, w.shared_w3, self.su, c.inter, c.dim)?;
+        kq(x, self.a_q8, w.shared_w1, self.sg, c.inter, c.dim)?;
+        kq(x, self.a_q8, w.shared_w3, self.su, c.inter, c.dim)?;
         self.launch_n(gpu, self.k.swiglu, m * c.inter, stream, |l| {
             l.arg_ptr(self.sg)
                 .arg_ptr(self.su)
@@ -508,7 +572,7 @@ impl MoeV41 {
                 .arg_u32(c.inter as u32)
                 .arg_f32(c.swiglu_limit)
         })?;
-        dense(self.sh, w.shared_w2, self.sd, c.dim, c.inter)?;
+        kq(self.sh, self.h_q8, w.shared_w2, self.sd, c.dim, c.inter)?;
         self.launch_n(gpu, self.k.accumulate, m * c.dim, stream, |l| {
             l.arg_ptr(self.acc)
                 .arg_ptr(self.sd)
