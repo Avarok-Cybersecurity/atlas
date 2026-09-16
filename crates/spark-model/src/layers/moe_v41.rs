@@ -29,7 +29,7 @@ use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
 use crate::layers::ops::{
     self, KQUANT_MODULE, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, ResidentMat, kquant_mmq_act_bytes,
-    kquant_mmq_gemm, kquant_mmvq, kquant_q8_1_rows, kquant_q8_1_rows_bytes,
+    kquant_mmq_gemm, kquant_mmvq, kquant_mmvq_experts, kquant_q8_1_rows, kquant_q8_1_rows_bytes,
 };
 use crate::weight_map::DenseWeight;
 
@@ -73,6 +73,9 @@ struct Kernels {
     q8_rows: KernelHandle,
     mmvq_q2k: KernelHandle,
     mmvq_q3k: KernelHandle,
+    /// the single-token arm: every routed expert in one launch a projection
+    mmvq_q2k_experts: KernelHandle,
+    mmvq_q3k_experts: KernelHandle,
     swiglu: KernelHandle,
     accumulate: KernelHandle,
     finish: KernelHandle,
@@ -126,6 +129,8 @@ pub struct MoeV41 {
     /// `[m * topk]` i32 token rows and f32 routing weights, group-major
     rows_dev: DevicePtr,
     weight_dev: DevicePtr,
+    /// gate / up / down block pointers of the token's experts, `3 * topk`
+    ptrs_dev: DevicePtr,
     sg: DevicePtr,
     su: DevicePtr,
     sh: DevicePtr,
@@ -196,6 +201,8 @@ impl MoeV41 {
                 q8_rows: gpu.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16")?,
                 mmvq_q2k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k")?,
                 mmvq_q3k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q3_k")?,
+                mmvq_q2k_experts: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_experts")?,
+                mmvq_q3k_experts: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q3_k_experts")?,
                 swiglu: gpu.kernel(MODULE, "moe_v41_swiglu")?,
                 accumulate: gpu.kernel(MODULE, "moe_v41_accumulate")?,
                 finish: gpu.kernel(MODULE, "moe_v41_finish")?,
@@ -224,6 +231,7 @@ impl MoeV41 {
             down_out: alloc(m * cfg.dim * 2)?,
             rows_dev: alloc(m * cfg.topk * 4)?,
             weight_dev: alloc(m * cfg.topk * 4)?,
+            ptrs_dev: alloc(3 * cfg.topk * 8)?,
             sg: alloc(m * cfg.inter * 2)?,
             su: alloc(m * cfg.inter * 2)?,
             sh: alloc(m * cfg.inter * 2)?,
@@ -359,7 +367,80 @@ impl MoeV41 {
         gpu.copy_h2d_async(&rows_host, self.rows_dev, stream)?;
         gpu.copy_h2d_async(&w_host, self.weight_dev, stream)?;
         gpu.memset_async(self.acc, 0, m * c.dim * 4, stream)?;
-        for &(a0, off, r) in &plan {
+        if m == 1 {
+            // the single-token arm: the token is every expert's activation, so
+            // quantise it once and run each projection as one launch over the
+            // experts (pointer table), the routing weight folded in at the
+            // SwiGLU and the expert rows summed into `acc` in plan order, the
+            // same order and the same per-row math as the loop below
+            let ne = plan.len();
+            let mut ptrs: Vec<u8> = Vec::with_capacity(3 * ne * 8);
+            for which in 0..3 {
+                for &(a0, _, _) in &plan {
+                    let slot = slots[a0];
+                    let p = [slot.gate, slot.up, slot.down][which];
+                    ptrs.extend_from_slice(&p.0.to_le_bytes());
+                }
+            }
+            gpu.copy_h2d_async(&ptrs, self.ptrs_dev, stream)?;
+            let table = |which: usize| DevicePtr(self.ptrs_dev.0 + (which * ne * 8) as u64);
+            kquant_q8_1_rows(gpu, self.k.q8_rows, x, self.a_q8, 1, c.dim as u32, stream)?;
+            for (which, out) in [(0usize, self.gate_out), (1, self.up_out)] {
+                kquant_mmvq_experts(
+                    gpu,
+                    self.k.mmvq_q2k_experts,
+                    table(which),
+                    self.a_q8,
+                    out,
+                    c.inter as u32,
+                    c.dim as u32,
+                    1,
+                    ne as u32,
+                    0,
+                    stream,
+                )?;
+            }
+            self.launch_n(gpu, self.k.swiglu, ne * c.inter, stream, |l| {
+                l.arg_ptr(self.gate_out)
+                    .arg_ptr(self.up_out)
+                    .arg_ptr(self.weight_dev)
+                    .arg_ptr(self.h)
+                    .arg_u32(ne as u32)
+                    .arg_u32(c.inter as u32)
+                    .arg_f32(c.swiglu_limit)
+            })?;
+            kquant_q8_1_rows(
+                gpu,
+                self.k.q8_rows,
+                self.h,
+                self.h_q8,
+                ne as u32,
+                c.inter as u32,
+                stream,
+            )?;
+            kquant_mmvq_experts(
+                gpu,
+                self.k.mmvq_q3k_experts,
+                table(2),
+                self.h_q8,
+                self.down_out,
+                c.dim as u32,
+                c.inter as u32,
+                1,
+                ne as u32,
+                kquant_q8_1_rows_bytes(1, c.inter as u32) as u32,
+                stream,
+            )?;
+            KernelLaunch::new(gpu, self.k.scatter_add)
+                .grid([ne as u32, 1, 1])
+                .block([256, 1, 1])
+                .arg_ptr(self.acc)
+                .arg_ptr(self.down_out)
+                .arg_ptr(self.rows_dev)
+                .arg_u32(c.dim as u32)
+                .launch(stream)?;
+        }
+        for &(a0, off, r) in plan.iter().filter(|_| m > 1) {
             let slot = slots[a0];
             let rows_ptr = DevicePtr(self.rows_dev.0 + (off * 4) as u64);
             let w_ptr = DevicePtr(self.weight_dev.0 + (off * 4) as u64);

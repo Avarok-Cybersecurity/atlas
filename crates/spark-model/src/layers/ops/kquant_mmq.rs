@@ -131,6 +131,41 @@ pub fn kquant_mmvq(
 /// `out[m][n]` (bf16) = `A_q8[m][k]` x `W[n][k]`. `a_q8` must be in the type's MMQ
 /// q8_1 layout (D2S6 for Q2_K, D4 for Q3_K); `smem` is the matching `*_MMQ_SMEM`.
 #[allow(clippy::too_many_arguments)]
+/// `kquant_mmvq_*_experts`: one launch over `n_experts` experts whose block
+/// pointers sit in the device table `vxs` (`n_experts` pointers). The
+/// activation for expert `e` is `y_q8 + e * y_stride_bytes` (0 = shared), its
+/// output `out_bf16 + e * m * n`. Same per-row math as [`kquant_mmvq`].
+pub fn kquant_mmvq_experts(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    vxs: DevicePtr,
+    y_q8: DevicePtr,
+    out_bf16: DevicePtr,
+    n: u32,
+    k: u32,
+    m: u32,
+    n_experts: u32,
+    y_stride_bytes: u32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(m >= 1 && m <= 8, "kquant_mmvq_experts: m={m} outside 1..=8");
+    anyhow::ensure!(
+        k % QK_K == 0,
+        "kquant_mmvq_experts: k={k} is not a multiple of {QK_K}"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([n, n_experts, 1])
+        .block([32, 4, 1])
+        .arg_ptr(vxs)
+        .arg_ptr(y_q8)
+        .arg_ptr(out_bf16)
+        .arg_u32(k)
+        .arg_u32(n)
+        .arg_u32(m)
+        .arg_u32(y_stride_bytes)
+        .launch(stream)
+}
+
 pub fn kquant_mmq_gemm(
     gpu: &dyn GpuBackend,
     kernel_nc: KernelHandle,

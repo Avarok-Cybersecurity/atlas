@@ -175,3 +175,28 @@ extern "C" __global__ void __launch_bounds__(128) kquant_mmvq_q3_k(
     const char* x_row = (const char*)vx + (size_t)blockIdx.x * (ncols_x / QK_K) * sizeof(block_q3_K);
     kq_mmvq<GGML_TYPE_Q3_K>(x_row, (const block_q8_1*)vy, dst, (int)ncols_x, (int)nrows_x, (int)m);
 }
+
+// Batched over experts for the single-token step: blockIdx.y picks the expert,
+// whose blocks come from the pointer table `vxs`; its activation is
+// `vy + blockIdx.y * y_stride_bytes` (0 = one activation shared by every
+// expert, the token itself) and its output `dst + blockIdx.y * m * nrows_x`.
+// The per-row math is kq_mmvq unchanged, so each expert's numbers match the
+// one-expert launch bit for bit; the six launches a projection become one.
+//
+// Grid: (nrows_x, n_experts, 1)  Block: (32, KQ_NWARPS, 1)
+extern "C" __global__ void __launch_bounds__(128) kquant_mmvq_q2_k_experts(
+        const void* const* __restrict__ vxs, const void* __restrict__ vy, __nv_bfloat16* __restrict__ dst,
+        unsigned int ncols_x, unsigned int nrows_x, unsigned int m, unsigned int y_stride_bytes) {
+    const unsigned int e = blockIdx.y;
+    const char* x_row = (const char*)vxs[e] + (size_t)blockIdx.x * (ncols_x / QK_K) * sizeof(block_q2_K);
+    const block_q8_1* y = (const block_q8_1*)((const char*)vy + (size_t)e * y_stride_bytes);
+    kq_mmvq<GGML_TYPE_Q2_K>(x_row, y, dst + (size_t)e * m * nrows_x, (int)ncols_x, (int)nrows_x, (int)m);
+}
+extern "C" __global__ void __launch_bounds__(128) kquant_mmvq_q3_k_experts(
+        const void* const* __restrict__ vxs, const void* __restrict__ vy, __nv_bfloat16* __restrict__ dst,
+        unsigned int ncols_x, unsigned int nrows_x, unsigned int m, unsigned int y_stride_bytes) {
+    const unsigned int e = blockIdx.y;
+    const char* x_row = (const char*)vxs[e] + (size_t)blockIdx.x * (ncols_x / QK_K) * sizeof(block_q3_K);
+    const block_q8_1* y = (const block_q8_1*)((const char*)vy + (size_t)e * y_stride_bytes);
+    kq_mmvq<GGML_TYPE_Q3_K>(x_row, y, dst + (size_t)e * m * nrows_x, (int)ncols_x, (int)nrows_x, (int)m);
+}
