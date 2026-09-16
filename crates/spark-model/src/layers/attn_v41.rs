@@ -1128,7 +1128,9 @@ impl AttnV41 {
             c.groups * c.o_rank,
             stream,
         )?;
-        gpu.synchronize(stream)?;
+        // no host sync here: everything downstream runs on the same stream,
+        // and the routing download in the MoE block drains it before any
+        // expert slot can be rewritten
         Ok(AttnV41Run {
             q: self.q,
             rows_a,

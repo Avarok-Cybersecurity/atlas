@@ -114,6 +114,8 @@ impl MoeV41Timing {
 pub struct MoeV41 {
     /// The last forward's timing.
     pub last: std::cell::Cell<MoeV41Timing>,
+    /// sync at the end of the forward so the step timer reads GPU time (diag only)
+    timing_sync: bool,
     pub cfg: MoeV41Cfg,
     k: Kernels,
     logits: DevicePtr,
@@ -193,6 +195,7 @@ impl MoeV41 {
         let alloc = |bytes: usize| gpu.alloc(bytes.max(16));
         Ok(MoeV41 {
             last: std::cell::Cell::new(MoeV41Timing::default()),
+            timing_sync: std::env::var("ATLAS_DS41_DIAG").is_ok_and(|v| v == "1"),
             k: Kernels {
                 gemm: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16")?,
                 gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
@@ -682,7 +685,10 @@ impl MoeV41 {
                 .arg_ptr(self.out)
                 .arg_u32((m * c.dim) as u32)
         })?;
-        gpu.synchronize(stream)?;
+        if self.timing_sync {
+            // ATLAS_DS41_DIAG=1: make compute_ms the GPU time, not the launch time
+            gpu.synchronize(stream)?;
+        }
         self.last.set(MoeV41Timing {
             route_ms: (t1 - t0).as_secs_f64() * 1e3,
             fetch_ms: (t2 - t1).as_secs_f64() * 1e3,
