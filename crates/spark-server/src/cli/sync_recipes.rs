@@ -91,8 +91,10 @@ pub fn run() -> Result<()> {
     }
 
     println!(
-        "recipe index written to {}/avarok-recipes/index.json",
-        root.display()
+        "recipe index written to {}",
+        crate::recipe::fetch::cache_dir(root)
+            .join("index.json")
+            .display()
     );
     println!(
         "  {} recipe(s), tree {}",

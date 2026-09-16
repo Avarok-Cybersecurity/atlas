@@ -154,7 +154,11 @@ pub fn check_recipes() -> Finding {
             "fix `home` first.",
         );
     };
-    let index = h.root.join("avarok-recipes").join("index.json");
+    // Through `cache_dir`, not a hardcoded name: on a box that predates the
+    // rename the index is under `atlas-recipes`, and doctor reporting "no
+    // recipe index" for a machine that has a complete one is precisely the
+    // false alarm this command exists to eliminate.
+    let index = crate::recipe::fetch::cache_dir(&h.root).join("index.json");
     match std::fs::read_to_string(&index) {
         Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
             Ok(v) => {

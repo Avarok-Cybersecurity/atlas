@@ -24,9 +24,12 @@ pub struct ArtifactStore {
 
 impl ArtifactStore {
     /// Resolve the Avarok home. `AVAROK_HOME` wins when set (the escape hatch for
-    /// a read-only or shared `$HOME`); otherwise `$HOME/.avarok`. A missing
+    /// a read-only or shared `$HOME`); otherwise `$HOME/.avarok`, or the
+    /// pre-rename `$HOME/.atlas` on a box that still has one. A missing
     /// `$HOME` is an error, not a fallback to `/tmp` — a benchmark silently
     /// provisioning several GB somewhere unexpected is worse than a clear stop.
+    ///
+    /// See [`AvarokHome::resolve`] for the full rule.
     pub fn discover() -> Result<Self> {
         Ok(Self {
             root: AvarokHome::resolve()?.root,
@@ -81,6 +84,9 @@ pub enum HomeSource {
     Env,
     /// Derived from `$HOME`.
     HomeDefault,
+    /// Derived from `$HOME`, but pointing at the directory this home had
+    /// before the ATLAS to AVAROK rename. See [`AvarokHome::resolve`].
+    LegacyHomeDefault,
 }
 
 impl HomeSource {
@@ -89,6 +95,9 @@ impl HomeSource {
         match self {
             Self::Env => "from AVAROK_HOME",
             Self::HomeDefault => "default, $HOME/.avarok",
+            Self::LegacyHomeDefault => {
+                "pre-rename default, $HOME/.atlas (rename it to ~/.avarok to end this fallback)"
+            }
         }
     }
 }
@@ -148,26 +157,23 @@ impl std::fmt::Display for HomeFault {
 }
 
 impl AvarokHome {
-    /// Resolve without touching the filesystem.
+    /// Resolve from the environment, probing the filesystem only for whether a
+    /// directory is already there.
+    ///
+    /// `AVAROK_HOME` wins, then `$HOME/.avarok`, with one exception: a box
+    /// installed before the ATLAS to AVAROK rename keeps its state in
+    /// `$HOME/.atlas`, so when `$HOME/.avarok` does not exist and
+    /// `$HOME/.atlas` is a directory, the old one is resolved instead. That
+    /// directory holds the certification signing identity, `artifacts/` and
+    /// `runs/`; ignoring it would mint a second signer and re-provision every
+    /// benchmark on a machine that had already done both.
+    ///
+    /// Beyond the `is_dir()` probe this creates nothing, moves nothing and
+    /// writes nothing. Migrating is the operator's call, and `mv ~/.atlas
+    /// ~/.avarok` is what ends the fallback: doing it here would relocate
+    /// several GB as a side effect of reading a path.
     pub fn resolve() -> Result<Self> {
-        if let Some(explicit) = std::env::var_os("AVAROK_HOME") {
-            let root = PathBuf::from(explicit);
-            if root.as_os_str().is_empty() {
-                bail!("AVAROK_HOME is set but empty");
-            }
-            return Ok(Self {
-                root,
-                source: HomeSource::Env,
-            });
-        }
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|h| !h.as_os_str().is_empty())
-            .context("neither AVAROK_HOME nor HOME is set — cannot place ~/.avarok")?;
-        Ok(Self {
-            root: home.join(".avarok"),
-            source: HomeSource::HomeDefault,
-        })
+        resolve_from(std::env::var_os("AVAROK_HOME"), std::env::var_os("HOME"))
     }
 
     /// Can this process actually use the home? `None` means yes.
@@ -184,6 +190,46 @@ impl AvarokHome {
     pub fn describe(&self) -> String {
         format!("{} ({})", self.root.display(), self.source.describe())
     }
+}
+
+/// [`AvarokHome::resolve`] over explicit inputs, so the rules can be tested.
+///
+/// Pure over the ENVIRONMENT for the reason `gate::record::resolve_perf_env`
+/// gives: `set_var` is unsafe and process-global, and a test that mutated
+/// `HOME` could race another test's read and produce exactly the intermittent
+/// this crate works to make impossible. The filesystem probe stays real,
+/// because which directory already exists IS the question being asked.
+fn resolve_from(
+    avarok_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<AvarokHome> {
+    if let Some(explicit) = avarok_home {
+        let root = PathBuf::from(explicit);
+        if root.as_os_str().is_empty() {
+            bail!("AVAROK_HOME is set but empty");
+        }
+        return Ok(AvarokHome {
+            root,
+            source: HomeSource::Env,
+        });
+    }
+    let home = home
+        .map(PathBuf::from)
+        .filter(|h| !h.as_os_str().is_empty())
+        .context("neither AVAROK_HOME nor HOME is set — cannot place ~/.avarok")?;
+    let root = home.join(".avarok");
+    // Only while the current name is absent: once `~/.avarok` exists it always
+    // wins, so a migrated box never reads the directory it left behind.
+    if !root.exists() && home.join(".atlas").is_dir() {
+        return Ok(AvarokHome {
+            root: home.join(".atlas"),
+            source: HomeSource::LegacyHomeDefault,
+        });
+    }
+    Ok(AvarokHome {
+        root,
+        source: HomeSource::HomeDefault,
+    })
 }
 
 fn check_usable(root: &Path) -> Option<HomeFault> {
@@ -353,6 +399,93 @@ mod tests {
         assert!(write_asset_bytes(&dir, "image.bin", &bytes).unwrap());
         assert!(!write_asset_bytes(&dir, "image.bin", &bytes).unwrap());
         assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    /// A scratch `$HOME` with a chosen set of home directories already in it.
+    ///
+    /// Passed to `resolve_from` rather than exported through `set_var`, so
+    /// these four cases run concurrently with the rest of the suite and with
+    /// each other.
+    fn home_with(tag: &str, dirs: &[&str]) -> PathBuf {
+        let home = tmp(tag);
+        for d in dirs {
+            std::fs::create_dir_all(home.join(d)).unwrap();
+        }
+        home
+    }
+
+    fn resolved(home: &Path) -> AvarokHome {
+        resolve_from(None, Some(home.as_os_str().to_owned())).unwrap()
+    }
+
+    /// (a) The pre-rename directory is what an upgraded box actually has, and
+    /// it holds the signing identity. Resolving past it to an empty
+    /// `~/.avarok` would mint a second signer, which is the failure the
+    /// `HomeSource` doc records as having cost seven re-measured gates.
+    #[test]
+    fn a_box_with_only_the_pre_rename_home_resolves_to_it() {
+        let home = home_with("legacy-only", &[".atlas"]);
+        let got = resolved(&home);
+        assert_eq!(got.root, home.join(".atlas"));
+        assert_eq!(got.source, HomeSource::LegacyHomeDefault);
+        assert!(
+            got.describe().contains(".avarok"),
+            "the operator must be told how to end the fallback: {}",
+            got.describe()
+        );
+    }
+
+    /// (b) Once the current directory exists it wins, so a box that migrated
+    /// (or that ran a new build once) never reads the leftover directory, and
+    /// the two can never be live at the same time.
+    #[test]
+    fn the_current_home_wins_when_both_are_present() {
+        let home = home_with("both", &[".atlas", ".avarok"]);
+        let got = resolved(&home);
+        assert_eq!(got.root, home.join(".avarok"));
+        assert_eq!(got.source, HomeSource::HomeDefault);
+    }
+
+    /// (c) A fresh install has neither, and must land on the current name.
+    #[test]
+    fn a_fresh_box_with_neither_home_gets_the_current_default() {
+        let home = home_with("neither", &[]);
+        let got = resolved(&home);
+        assert_eq!(got.root, home.join(".avarok"));
+        assert_eq!(got.source, HomeSource::HomeDefault);
+    }
+
+    /// (d) The explicit escape hatch outranks both, including when a
+    /// pre-rename directory is sitting right there. An operator who named a
+    /// root gets that root.
+    #[test]
+    fn avarok_home_wins_over_a_pre_rename_directory() {
+        let home = home_with("env-wins", &[".atlas"]);
+        let explicit = home.join("elsewhere");
+        let got = resolve_from(
+            Some(explicit.as_os_str().to_owned()),
+            Some(home.as_os_str().to_owned()),
+        )
+        .unwrap();
+        assert_eq!(got.root, explicit);
+        assert_eq!(got.source, HomeSource::Env);
+    }
+
+    /// `resolve_from` reads the filesystem and MUST NOT write to it: the whole
+    /// point of the fallback is that nobody's `~/.atlas` moves by surprise.
+    #[test]
+    fn resolving_creates_nothing() {
+        let home = home_with("no-side-effects", &[".atlas"]);
+        let _ = resolved(&home);
+        assert!(
+            !home.join(".avarok").exists(),
+            "resolve must not create the home it names"
+        );
+        let entries: Vec<_> = std::fs::read_dir(&home)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries.len(), 1, "expected only .atlas, got {entries:?}");
     }
 
     #[test]

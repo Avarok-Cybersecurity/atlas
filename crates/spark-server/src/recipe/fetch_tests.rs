@@ -350,3 +350,52 @@ fn an_index_that_was_never_written_is_still_an_ordinary_empty_store() {
         index.offline
     );
 }
+
+/// The current directory is what a box gets once it has one.
+#[test]
+fn the_cache_dir_is_the_current_name_when_it_exists() {
+    let dir = Dir::new("cache-current");
+    std::fs::create_dir_all(dir.0.join(CACHE)).expect("current");
+    assert_eq!(cache_dir(&dir.0), dir.0.join(CACHE));
+}
+
+/// A box that synced before the rename keeps reading the index it already has.
+///
+/// Without this the rename alone empties the Library on every installed
+/// machine, and `sync-recipes` becomes mandatory to get back to where the box
+/// already was.
+#[test]
+fn the_cache_dir_falls_back_to_the_pre_rename_name() {
+    let dir = Dir::new("cache-legacy");
+    std::fs::create_dir_all(dir.0.join(LEGACY_CACHE)).expect("legacy");
+    assert_eq!(cache_dir(&dir.0), dir.0.join(LEGACY_CACHE));
+
+    // And the fallback is a real read, not just a path: an index written under
+    // the old name is served through `cached`.
+    seed(&dir, unix_now());
+    let index = cached(&dir.0);
+    assert_eq!(
+        index.recipes.len(),
+        1,
+        "a pre-rename cache must still render, got: {:?}",
+        index.offline
+    );
+}
+
+/// Both present means the box has migrated (or a new build already synced),
+/// so the leftover directory must never win.
+#[test]
+fn the_current_cache_dir_wins_over_the_pre_rename_one() {
+    let dir = Dir::new("cache-both");
+    std::fs::create_dir_all(dir.0.join(CACHE)).expect("current");
+    std::fs::create_dir_all(dir.0.join(LEGACY_CACHE)).expect("legacy");
+    assert_eq!(cache_dir(&dir.0), dir.0.join(CACHE));
+}
+
+/// Neither present is a fresh box, which must land on the current name so the
+/// first sync writes the new directory rather than recreating the old one.
+#[test]
+fn a_fresh_store_uses_the_current_cache_dir() {
+    let dir = Dir::new("cache-neither");
+    assert_eq!(cache_dir(&dir.0), dir.0.join(CACHE));
+}

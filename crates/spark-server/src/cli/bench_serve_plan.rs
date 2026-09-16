@@ -95,11 +95,15 @@ pub fn plan_serve(
         .with_context(|| {
             format!(
                 "recipe {recipe_id:?} is not in the local index ({} cached). The index is read \
-                 from {}/avarok-recipes/index.json.{} Populate it with:\n    spark sync-recipes\n\
+                 from {}.{} Populate it with:\n    spark sync-recipes\n\
                  (this used to say \"open the TUI Library once\", which a CI runner, a \
                  container, or a machine reached over ssh cannot do.)",
                 index.recipes.len(),
-                store.root().display(),
+                // Named through `cache_dir` so the path printed is the path
+                // read, including on a box that predates the rename.
+                crate::recipe::fetch::cache_dir(store.root())
+                    .join("index.json")
+                    .display(),
                 // Why the index is empty, when the index layer knows. Without
                 // it an index that exists and cannot be READ -- a `$HOME`
                 // owned by another uid is the measured case -- reads as one
