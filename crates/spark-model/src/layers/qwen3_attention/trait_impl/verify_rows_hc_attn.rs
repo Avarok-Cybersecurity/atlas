@@ -42,10 +42,18 @@ impl Qwen3AttentionLayer {
         stream: u64,
     ) -> Result<Option<MultiSeqCtx<'a>>> {
         let r: usize = ks.iter().sum();
+        // ★ THE `tp_world_size > 1` TERM IS GONE. It was never about the
+        // projections being wrong under TP — it was that this arm ends at
+        // `ms_phase_o_proj` and never reduced, while the per-row twin reduces
+        // each row inline right after `attention_forward`. `verify_attn_post_hc`
+        // now issues that reduction over all R rows at once, so the arm is
+        // TP-correct and the term has nothing left to guard.
+        //
+        // `ms_qsa_selection_active` STAYS: the select+attend path is not wired
+        // into this arm yet, so at ISL >= 2051 (inert_bound) it still declines.
         if !verify_attn_rows_qkv_enabled()
             || r < 2
             || self.mla.is_some()
-            || ctx.config.tp_world_size > 1
             || self.ms_qsa_selection_active(all_row_seq_lens, r)
         {
             return Ok(None);
@@ -218,6 +226,28 @@ impl Qwen3AttentionLayer {
             .ok_or_else(|| anyhow::anyhow!("verify_attn_post_hc on a layer without mHC"))?;
         let attn_out = ctx.buffers.attn_output();
         let o_out = self.ms_phase_o_proj(c, attn_out)?;
+        // ── TP reduction for the batched arm ──
+        //
+        // o_proj is the ROW-split half of tensor parallelism, so every rank
+        // holds a partial sum here and they must be summed before ANYTHING
+        // reads them. That "anything" is immediate: the post-attention norm
+        // directly below would otherwise normalise a partial, and `hc_post_site`
+        // would fold it into the highway — silently wrong hidden states rather
+        // than a crash.
+        //
+        // One collective over all R rows: `ms_phase_o_proj` documents that
+        // "o_out rows are h BF16 elements apart", i.e. R contiguous rows, so
+        // `c.n * h * 2` bytes is exactly the batch. The per-row twin issues R
+        // of these; this issues 1.
+        //
+        // Symmetric by construction: both ranks run this same unconditional
+        // code with the same `c.n`, so neither can issue a collective the other
+        // does not.
+        if ctx.config.tp_world_size > 1
+            && let Some(comm) = ctx.comm
+        {
+            comm.all_reduce_async(o_out.0, c.n * h * 2, stream)?;
+        }
         if let Some(ref post_norm) = self.post_attn_out_norm {
             ops::rms_norm(
                 ctx.gpu,
@@ -258,10 +288,12 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<Option<DevicePtr>> {
+        // See `verify_attn_pre_hc`: the TP term guarded a MISSING REDUCTION,
+        // not a wrong computation, and this body now reduces its own o_proj
+        // over all k rows before returning.
         if !verify_attn_rows_qkv_enabled()
             || k < 2
             || self.mla.is_some()
-            || ctx.config.tp_world_size > 1
             || self.ms_qsa_selection_active(row_seq_lens, k)
         {
             return Ok(None);
@@ -353,6 +385,13 @@ impl Qwen3AttentionLayer {
         }
         cphase(&mut ct, &mut c3);
         let o_out = self.ms_phase_o_proj(&c, attn_out)?;
+        // TP reduction — see `verify_attn_post_hc` for why it must land here,
+        // before the caller's post-attention norm reads these rows.
+        if ctx.config.tp_world_size > 1
+            && let Some(comm) = ctx.comm
+        {
+            comm.all_reduce_async(o_out.0, k * h * 2, stream)?;
+        }
         cphase(&mut ct, &mut c4);
         if core_timing {
             use std::sync::atomic::{AtomicUsize, Ordering};
