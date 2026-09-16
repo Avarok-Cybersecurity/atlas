@@ -163,6 +163,15 @@ impl ModelConfig {
             engram_multipliers: Vec::new(),
             engram_primes: Vec::new(),
             engram_offsets: Vec::new(),
+            attn_res_block_size: 0,
+            use_full_rank_gate: false,
+            mla_use_nope: false,
+            mla_use_output_gate: false,
+            latent_moe_use_norm: false,
+            hidden_act: String::new(),
+            activation_situ_beta: 0.0,
+            activation_situ_linear_beta: 0.0,
+            n_shared_experts: 0,
         }
     }
 }

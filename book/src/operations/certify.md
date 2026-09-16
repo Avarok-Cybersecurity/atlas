@@ -9,7 +9,8 @@ the same gate table.
 ```
 spark bench certify                     # everything still open, on this box
 spark bench certify --dry-run           # the plan and the preflight, nothing run
-spark bench certify --gates bfcl-subset # one group (its four shards)
+spark bench certify --gates bfcl-subset # one group (the shards it still owes)
+spark bench certify --shards 8          # cut each group's draw eight ways
 spark bench certify --pr 1027 --yes     # a real campaign, agentic gate confirmed
 ```
 
@@ -35,17 +36,65 @@ admitted. This box is a node too, unless `--remote-only`.
 may run (longest-first list scheduling: within 4/3 of optimal, and the same
 rule at plan time and at run time, so `--dry-run`'s makespan is what
 happens). Among equals, a shard whose group already has a shard on that node
-yields to one that does not, so losing a node costs a quarter of a group.
+yields to one that does not, so losing a node costs one shard of a group,
+not the whole of it.
+
+**One server per recipe, not per unit.** A unit on this box runs as
+`spark benchmark run … --serve-reuse`: instead of loading the checkpoint in
+its own process it takes the server the previous unit left running — if,
+and only if, that server is the one it would have started itself. The
+server answers `GET /serve-config` with two digests, of its binary and of
+the arguments it was started with; the unit renders its own recipe with its
+own overrides (a hermetic `kat-equality-gate` and an open `bfcl-subset` are
+different renderings) and compares. A match is reused; anything else is
+stopped and replaced; a unit never takes a server this mode did not start
+(`<ATLAS_HOME>/serve-lease.json` names the one it may). The campaign stops
+the last one when it ends, and a lease whose campaign died is stopped by
+the next campaign before its preflight. `--no-serve-reuse` restores a fresh
+server per unit; `spark benchmark serve-release` stops a leased server by
+hand. Every record's command line carries `--serve-reuse` when it applied,
+so a number measured on a warm server says so.
+
+**Shards.** Each benchmark group's draw is cut into `--shards N` slices, run
+as `--param shard=i/N` of the group's own benchmark. The default is two per
+box that will run (so the scheduler has slices to balance around
+`kat-equality-gate`, the longest single unit), and one box alone runs the
+whole draw as `0/1` — a shard costs a server start and a warm-up, and there
+is nothing to balance against. A partition already begun at the anchor is
+finished at its own count whatever `--shards` says, because the verdict never
+assembles a partition across counts or commits.
 
 **Speed-class gates spread only across boxes that are one box.** Before
 anything starts, every pair of admitted nodes is checked by
 `hardware::equivalence` (same GPU and driver line, clock ceiling within 1 %,
-memory within 5 %, no thermal throttle, chassis within 10 °C — the fields
+memory within 5 %, no thermal throttle, chassis within 15 °C — the fields
 that told two "identical" GB10s apart by 0.66 tok/s). If every pair agrees,
 Speed units go anywhere; otherwise they are **bundled** on the node with the
 most headroom and the plan prints `WARNING speed-class gates BUNDLED on …`
 with the concrete mismatch. CI re-checks the same rule from the records'
 own captures (`docs/provable-benchmark-work.md` §5c).
+
+**Cool-down.** Before a node takes another unit its hottest chassis zone
+and the driver's thermal-throttle flag are read. At the class's park line (**80 °C** on GB10) or above, or
+with the throttle asserted, the node is **parked**: it takes nothing until
+it is back at or below its resume line (**70 °C**) with the throttle clear (re-read every
+60 s, at most 30 min, then it resumes with a warning), and every transition
+is printed and logged as a `thermal` event. The rest of the fleet keeps
+working — the scheduler is work-conserving, so pending units go wherever a
+node is free; a parked box that hosts the bundled Speed class only delays
+that class. A node that cannot report a temperature is never parked (said
+once); the records' own captures still decide equivalence. The lines are
+the box class's, from `kernels/<hw>/HARDWARE.toml`
+`[benchmarks.limits.thermal]` — absolute, not relative to rest: a GB10
+rises 26–33 °C over rest under any gate (healthy loaded boxes read 55–76 °C
+on 2026-09-15) and the box behind the 0.66 tok/s incident read 89 °C with a
+driver-reported slowdown. A class that declares no `[benchmarks.limits]`
+cannot be campaigned: the memory floor, the serve/build/shard allowances and
+the equivalence tolerances all come from the same tables.
+`--dangerous-ignore-thermals` turns every park into a warning and lets the
+box keep taking units — the operator's hardware to risk; the records are
+still judged by the equivalence policy at the end, so the flag ignores the
+security action, never the evidence.
 
 **Each remote unit** is submitted with an idempotent key
 (`certify-<run>-<node>-<gate>`), followed over a re-attachable stream (a
@@ -68,7 +117,7 @@ kept outside the default directory is selected with
 
 1. **Plan.** `gate::check_gates` at the anchor (HEAD) says which required gates
    are not `Pass`; a benchmark group expands to the shards it still owes —
-   `gate::members_owed`, the verdict's own answer, so a shard the gate already
+   `gate::shards_owed`, the verdict's own answer, so a shard the gate already
    accepts at the anchor is not re-measured; every unit carries
    the descriptor's `expected_secs`, refined by the newest completed run in
    `~/.atlas/runs` when there is one. The local order is the long shard sets
@@ -87,13 +136,14 @@ kept outside the default directory is selected with
    the campaign is over (`campaign_done`, `aborted`), however fresh its last
    heartbeat.
 4. **Run.** Each unit is a child `spark benchmark run <id> --pull-request-gate
-   --hardware <class> [--yes]` — the operator's own command line — with its
-   stderr streamed and logged under `.certify/<anchor>/<id>.log`. The evidence
-   is the record the child leaves in `.benchmarks/<id>/`: it must name the
-   anchor, its frame must have completed, and its verdict must be `PASS` (a
-   shard's verdict is `Info` by design and counts as a completed member only
-   when it carries its shard identity and tallies). Exit codes and printed
-   lines are not evidence.
+   --hardware <class> [--yes] [--param shard=i/n]` — the operator's own
+   command line — with its stderr streamed and logged under
+   `.certify/<anchor>/<id>[-s<i>of<n>].log`. The evidence is the record the
+   child leaves in `.benchmarks/<id>/`: it must name the anchor and, for a
+   shard, the very slice the unit stands for; its frame must have completed,
+   and its verdict must be `PASS` (a shard's verdict is `Info` by design and
+   counts as a completed shard only when it carries its shard identity and
+   tallies). Exit codes and printed lines are not evidence.
 5. **Guard.** Before every unit and every 60 s during one, the guarded branch
    (`REMOTE/BRANCH`, default HEAD's upstream) is fetched and diffed against
    the anchor over `PERF_PATHS`. A docs-only push is harmless; a perf-path

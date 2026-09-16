@@ -29,6 +29,13 @@ pub fn record_path(root: &Path, benchmark_id: &str, unix_secs: u64, sha: &str) -
     gate_dir(root, benchmark_id).join(format!("{}-{sha}.json", date_of(unix_secs)))
 }
 
+/// The filename tail that keeps one shard's record apart from its siblings:
+/// `-s<index>of<count>`, 0-based like the `--param shard=i/n` that ran it.
+/// Empty for a whole-draw run.
+pub fn shard_suffix(shard: Option<(usize, usize)>) -> String {
+    shard.map_or(String::new(), |(i, n)| format!("-s{i}of{n}"))
+}
+
 /// A readable filename-safe, deliberately lossy checkpoint slug.
 pub fn variant_slug(model: &str) -> String {
     let mut out = String::with_capacity(model.len());
@@ -61,14 +68,16 @@ fn variant_file_slug(baseline: &GateBaseline, model: &str) -> String {
     format!("{slug}-{}", &digest[..16])
 }
 
-/// The record path keyed by benchmark, declared variant, day, and commit.
+/// The record path keyed by benchmark, declared variant, day, commit — and
+/// shard, when the record is one slice of a group's draw: `n` shards of one
+/// gate at one commit on one day would otherwise be one filename.
 pub fn record_path_for(root: &Path, record: &GateRecord) -> PathBuf {
-    let legacy = record_path(
-        root,
-        &record.benchmark_id,
-        record.recorded_at,
-        &record.git_sha,
-    );
+    let shard = shard_suffix(record.shard());
+    let legacy = gate_dir(root, &record.benchmark_id).join(format!(
+        "{}-{}{shard}.json",
+        date_of(record.recorded_at),
+        record.git_sha
+    ));
     let Ok(baseline) = super::bench::baseline_for(root, &record.benchmark_id) else {
         return legacy;
     };
@@ -87,7 +96,7 @@ pub fn record_path_for(root: &Path, record: &GateRecord) -> PathBuf {
         legacy
     } else {
         gate_dir(root, &record.benchmark_id).join(format!(
-            "{}-{}-{}.json",
+            "{}-{}-{}{shard}.json",
             date_of(record.recorded_at),
             record.git_sha,
             variant_file_slug(&baseline, &record.target_model)

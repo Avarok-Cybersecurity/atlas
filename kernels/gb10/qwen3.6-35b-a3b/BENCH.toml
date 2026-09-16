@@ -159,9 +159,9 @@ than merely recorded. Self-start pins ssm_cache_slots=256 via [benchmarks.serve_
 own Marconi snapshots; the flagship recipe leaves the pool at its default 16. That is \
 capacity, not a score lever — the floors below stay the ratchet — but check_record demands \
 the pin on the record, so records measured before the pin stop covering and the next gate \
-run re-records under the declared config. ★ CERTIFIED BY FOUR SHARDS SINCE 2026-09-13 \
-(bfcl-subset-echolp-a..d at one commit; gate::check_group) — a whole-draw record no longer \
-satisfies this gate. ★ SCORED OPEN by owner decision: cross-request SSM snapshot reuse stays \
+run re-records under the declared config. ★ CERTIFIED BY SHARDS SINCE 2026-09-13 \
+(gate::check_group: a complete partition of `--param shard=i/n` runs at one commit, any n; \
+the campaign sizes n to its fleet) — a whole-draw record no longer satisfies this gate. ★ SCORED OPEN by owner decision: cross-request SSM snapshot reuse stays \
 ON; on the golden draw that partition dependence is measured at 12 of 995 (#936; the twelve \
 are named in benchmarks::bfcl::sensitive and in the bfcl-subset note), and this draw shares \
 the mechanism. ★ NO SHARDED MEASUREMENT OF THIS DRAW EXISTS YET: the floors below are the \

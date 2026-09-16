@@ -4,8 +4,8 @@ import { describe, expect, it } from 'bun:test';
 import { detectOs, installCommandFor } from './platform.js';
 
 const URLS = {
-  shellUrl: 'https://atlasinference.io/install.sh',
-  powershellUrl: 'https://atlasinference.io/install.ps1',
+  shellUrl: 'https://atlascybernetics.ai/install.sh',
+  powershellUrl: 'https://atlascybernetics.ai/install.ps1',
 };
 
 describe('detectOs', () => {
@@ -69,7 +69,7 @@ describe('installCommandFor', () => {
   it('hands everyone else the shell installer', () => {
     for (const os of ['macos', 'linux', 'unknown']) {
       const { command } = installCommandFor(os, URLS);
-      expect(command).toBe('curl -fsSL https://atlasinference.io/install.sh | sh');
+      expect(command).toBe('curl -fsSL https://atlascybernetics.ai/install.sh | sh');
     }
   });
 

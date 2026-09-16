@@ -386,7 +386,7 @@
               {/if}
               <p class="ctl-safety">
                 Any web page can show you an install command. Check the address bar says
-                <strong>atlasinference.io</strong> before running one.
+                <strong>atlascybernetics.ai</strong> before running one.
               </p>
             </div>
           {/if}
