@@ -8,6 +8,7 @@ pub mod capabilities;
 pub mod compute;
 pub mod config;
 pub mod dtype;
+pub mod env_compat;
 pub mod error;
 pub mod fault;
 pub mod kimi_k3;

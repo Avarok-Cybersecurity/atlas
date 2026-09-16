@@ -78,8 +78,37 @@ pub(crate) use crate::main_modules::AppState;
 /// Re-export for convenience in api.rs / anthropic.rs.
 pub type ModelBehavior = avarok_kernels::ModelBehavior;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // FIRST statement, before the runtime, any subscriber, any GPU context and
+    // any spawned thread: mirroring copies `ATLAS_*` onto `AVAROK_*` with
+    // `setenv`, which is only sound while this process is single threaded. The
+    // CLI that launches the server still exports the legacy names, and every
+    // `AVAROK_*` read downstream happens after this point.
+    // See `avarok_core::env_compat` for the removal conditions.
+    let mirrored_legacy_env = avarok_core::env_compat::mirror_legacy_env();
+    if !mirrored_legacy_env.is_empty() {
+        // Plain stderr on purpose: no subscriber exists yet, and this line must
+        // survive both the plain and the TUI startup paths.
+        eprintln!(
+            "spark: mirrored {} legacy ATLAS_* variables onto AVAROK_* \
+             (set AVAROK_* directly; the ATLAS_* names are deprecated)",
+            mirrored_legacy_env.len()
+        );
+    }
+
+    // The runtime is built here rather than by `#[tokio::main]`, which is the
+    // only difference from the previous entry point. That attribute builds the
+    // multi-threaded runtime BEFORE the first statement of the async body, so
+    // the worker threads would already be alive when the mirror above calls
+    // `setenv`. Flags match the attribute's defaults exactly: multi-threaded,
+    // `enable_all`, default worker count.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(serve_main())
+}
+
+async fn serve_main() -> Result<()> {
     // Parse BEFORE subscriber install so the TUI gate can see `--no-tui`.
     // clap emits no tracing events, so plain-mode output is unchanged.
     let cli = Cli::parse();
