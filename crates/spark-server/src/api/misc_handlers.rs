@@ -81,18 +81,18 @@ pub async fn metrics_handler() -> impl IntoResponse {
     let _ = write!(
         text,
         "\
-        # HELP avarok_prefix_cache_hits_total Prefix cache lookups that found cached blocks\n\
-        # TYPE avarok_prefix_cache_hits_total counter\n\
-        avarok_prefix_cache_hits_total {hits}\n\
-        # HELP avarok_prefix_cache_misses_total Prefix cache lookups with no match\n\
-        # TYPE avarok_prefix_cache_misses_total counter\n\
-        avarok_prefix_cache_misses_total {misses}\n\
-        # HELP avarok_prefix_cache_hit_tokens_total Tokens reused from prefix cache\n\
-        # TYPE avarok_prefix_cache_hit_tokens_total counter\n\
-        avarok_prefix_cache_hit_tokens_total {hit_tokens}\n\
-        # HELP avarok_prefix_cache_hit_rate Prefix cache hit rate (0-1)\n\
-        # TYPE avarok_prefix_cache_hit_rate gauge\n\
-        avarok_prefix_cache_hit_rate {hit_rate:.4}\n"
+        # HELP atlas_prefix_cache_hits_total Prefix cache lookups that found cached blocks\n\
+        # TYPE atlas_prefix_cache_hits_total counter\n\
+        atlas_prefix_cache_hits_total {hits}\n\
+        # HELP atlas_prefix_cache_misses_total Prefix cache lookups with no match\n\
+        # TYPE atlas_prefix_cache_misses_total counter\n\
+        atlas_prefix_cache_misses_total {misses}\n\
+        # HELP atlas_prefix_cache_hit_tokens_total Tokens reused from prefix cache\n\
+        # TYPE atlas_prefix_cache_hit_tokens_total counter\n\
+        atlas_prefix_cache_hit_tokens_total {hit_tokens}\n\
+        # HELP atlas_prefix_cache_hit_rate Prefix cache hit rate (0-1)\n\
+        # TYPE atlas_prefix_cache_hit_rate gauge\n\
+        atlas_prefix_cache_hit_rate {hit_rate:.4}\n"
     );
 
     // Entropy monitoring (global atomics from spark-runtime sampler)
@@ -112,23 +112,23 @@ pub async fn metrics_handler() -> impl IntoResponse {
     let _ = write!(
         text,
         "\
-        # HELP avarok_kernel_lookups_unresolved Kernel lookups that did not resolve for the live model\n\
-        # TYPE avarok_kernel_lookups_unresolved gauge\n\
-        avarok_kernel_lookups_unresolved {unresolved}\n"
+        # HELP atlas_kernel_lookups_unresolved Kernel lookups that did not resolve for the live model\n\
+        # TYPE atlas_kernel_lookups_unresolved gauge\n\
+        atlas_kernel_lookups_unresolved {unresolved}\n"
     );
 
     let _ = write!(
         text,
         "\
-        # HELP avarok_token_entropy_last Most recent per-token entropy (nats)\n\
-        # TYPE avarok_token_entropy_last gauge\n\
-        avarok_token_entropy_last {entropy:.4}\n\
-        # HELP avarok_low_entropy_tokens_total Tokens with entropy below 0.3\n\
-        # TYPE avarok_low_entropy_tokens_total counter\n\
-        avarok_low_entropy_tokens_total {low_entropy}\n\
-        # HELP avarok_low_entropy_ratio Fraction of tokens with entropy below 0.3\n\
-        # TYPE avarok_low_entropy_ratio gauge\n\
-        avarok_low_entropy_ratio {low_ratio:.4}\n"
+        # HELP atlas_token_entropy_last Most recent per-token entropy (nats)\n\
+        # TYPE atlas_token_entropy_last gauge\n\
+        atlas_token_entropy_last {entropy:.4}\n\
+        # HELP atlas_low_entropy_tokens_total Tokens with entropy below 0.3\n\
+        # TYPE atlas_low_entropy_tokens_total counter\n\
+        atlas_low_entropy_tokens_total {low_entropy}\n\
+        # HELP atlas_low_entropy_ratio Fraction of tokens with entropy below 0.3\n\
+        # TYPE atlas_low_entropy_ratio gauge\n\
+        atlas_low_entropy_ratio {low_ratio:.4}\n"
     );
 
     (

@@ -41,7 +41,7 @@ static SEALED: AtomicBool = AtomicBool::new(false);
 /// `--dangerously-allow-unresolved-kernel-lookups`, as handed to [`seal`].
 static ALLOW_UNRESOLVED: AtomicBool = AtomicBool::new(false);
 /// Unresolved lookups for the live model: the gate's count, plus any late
-/// miss recorded after the seal. Exported as `avarok_kernel_lookups_unresolved`.
+/// miss recorded after the seal. Exported as `atlas_kernel_lookups_unresolved`.
 static UNRESOLVED: AtomicU64 = AtomicU64::new(0);
 /// One-shot latch so a late miss inside a hot loop warns once, not per token.
 static LATE_WARNED: AtomicBool = AtomicBool::new(false);
@@ -100,7 +100,7 @@ fn late_miss(module: &str, func: &str, site: &'static Location<'static>) {
                  because --dangerously-allow-unresolved-kernel-lookups was passed. \
                  Performance may be seriously degraded. We recommend you open a GitHub issue \
                  and/or open a PR to solve this issue. \
-                 (avarok_kernel_lookups_unresolved counts every occurrence.)",
+                 (atlas_kernel_lookups_unresolved counts every occurrence.)",
                 site.file(),
                 site.line(),
             );
@@ -142,7 +142,7 @@ pub fn unseal() {
 }
 
 /// Unresolved kernel lookups for the live model. Exported on `/metrics` as
-/// `avarok_kernel_lookups_unresolved` so a gate can assert `== 0` without
+/// `atlas_kernel_lookups_unresolved` so a gate can assert `== 0` without
 /// parsing logs.
 pub fn unresolved_lookups() -> u64 {
     UNRESOLVED.load(Ordering::Relaxed)
