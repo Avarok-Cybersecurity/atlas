@@ -179,6 +179,27 @@ pub fn load_pass(
         // memory win. Excludes GDN reorder tensors via `!value_transform::needs`
         // (a column reorder would split blocks). Non-id-42 and non-FFN tensors,
         // and the flag-off default, are untouched below.
+        // DeepSeek-V4.1 attention projections stay Q2_K (ggml type 10) on
+        // the device; ATLAS_DS41_ATTN_BF16=1 restores the bf16 expansion.
+        if arch == "deepseek41"
+            && id == 10
+            && let names::GgufName::Direct(ref hf_name) = target
+            && names::is_v41_q2k_resident(hf_name)
+            && !std::env::var("ATLAS_DS41_ATTN_BF16").is_ok_and(|v| v == "1")
+        {
+            let ptr = gpu.alloc(raw.len())?;
+            gpu.copy_h2d(raw, ptr)?;
+            weights.insert(
+                hf_name.clone(),
+                WeightTensor {
+                    ptr,
+                    shape: hf_shape,
+                    dtype: WeightDtype::Q2K,
+                },
+            );
+            continue;
+        }
+
         if native_q2
             && id == 42
             && let names::GgufName::Direct(ref hf_name) = target

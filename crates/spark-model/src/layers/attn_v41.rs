@@ -38,7 +38,30 @@ use crate::layers::deepseek_v41_ref::compress::{
     FP4_BLOCK, LATENT_BLOCK, select_candidate_blocks, torch_cpu_topk_set, yarn_freqs_cis,
 };
 use crate::layers::ops;
+use crate::layers::ops::{
+    KQUANT_MODULE, Q2K_BLOCK_BYTES, Q2K_MMQ_SMEM, kquant_mmq_act_bytes, kquant_mmq_gemm,
+    kquant_mmvq, kquant_q8_1_rows, kquant_q8_1_rows_bytes,
+};
 use crate::weight_map::DenseWeight;
+
+/// An attention projection on the device, `[N, K]` row-major: expanded bf16
+/// (the tiled GEMM / GEMV) or the GGUF's raw `Q2_K` blocks (K-quant GEMV at
+/// m <= 8, MMQ tensor-core GEMM above, activations quantised to q8_1 first).
+#[derive(Clone, Copy, Debug)]
+pub enum AttnMat {
+    Bf16(DevicePtr),
+    Q2K(DevicePtr),
+}
+
+impl AttnMat {
+    /// The sub-matrix starting `rows` rows in (each row `k` weights long).
+    pub fn at_rows(self, rows: usize, k: usize) -> AttnMat {
+        match self {
+            AttnMat::Bf16(p) => AttnMat::Bf16(at(p, rows * k * 2)),
+            AttnMat::Q2K(p) => AttnMat::Q2K(at(p, rows * (k / 256) * Q2K_BLOCK_BYTES)),
+        }
+    }
+}
 
 const MODULE: &str = "attn_v41";
 const GEMM_MODULE: &str = "gemm";
@@ -114,17 +137,17 @@ pub struct AttnV41LayerWeights {
     pub role: LayerRole,
     /// f32 `[n_heads]`
     pub sink: DevicePtr,
-    pub wq_a: DevicePtr,
+    pub wq_a: AttnMat,
     /// f32 `[q_rank]`
     pub q_norm: DevicePtr,
-    pub wq_b: DevicePtr,
-    pub wkv: DevicePtr,
+    pub wq_b: AttnMat,
+    pub wkv: AttnMat,
     /// f32 `[hd]`
     pub kv_norm: DevicePtr,
     /// `[groups * o_rank, gw]`
-    pub wo_a: DevicePtr,
+    pub wo_a: AttnMat,
     /// `[dim, groups * o_rank]`
-    pub wo_b: DevicePtr,
+    pub wo_b: AttnMat,
     pub comp: Option<CompressorWeightsGpu>,
     pub idx: Option<IndexerWeightsGpu>,
 }
@@ -231,6 +254,13 @@ struct Kernels {
     /// 15 of its 16 rows idle at m = 1 (326 us a launch on GB10 vs the
     /// GEMV's bandwidth-bound pass over the same `[N, K]` weight)
     gemv: KernelHandle,
+    /// the K-quant path for `AttnMat::Q2K`: q8_1 row quant + GEMV at m <= 8,
+    /// D2S6 tile quant + MMQ above
+    q8_rows: KernelHandle,
+    mmvq_q2k: KernelHandle,
+    quant_d2s6: KernelHandle,
+    mmq_q2k_nc: KernelHandle,
+    mmq_q2k_wc: KernelHandle,
     rmsnorm_bf16: KernelHandle,
     rmsnorm_f32: KernelHandle,
     rope: KernelHandle,
@@ -253,6 +283,8 @@ pub struct AttnV41 {
     fc_plain: DevicePtr,
     fc_yarn: DevicePtr,
     // workspaces
+    /// q8_1 activations for the Q2_K projections (plain rows or MMQ tiles)
+    a_q8: DevicePtr,
     qr_raw: DevicePtr,
     qr: DevicePtr,
     q: DevicePtr,
@@ -316,6 +348,11 @@ impl AttnV41 {
         let k = Kernels {
             gemm: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16")?,
             gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
+            q8_rows: gpu.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16")?,
+            mmvq_q2k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k")?,
+            quant_d2s6: gpu.kernel(KQUANT_MODULE, "atlas_q8_1_quantize_d2s6_bf16")?,
+            mmq_q2k_nc: gpu.kernel(KQUANT_MODULE, "atlas_q2_k_mmq128_nc")?,
+            mmq_q2k_wc: gpu.kernel(KQUANT_MODULE, "atlas_q2_k_mmq128_wc")?,
             rmsnorm_bf16: gpu.kernel(MODULE, "attn_v41_rmsnorm_bf16")?,
             rmsnorm_f32: gpu.kernel(MODULE, "attn_v41_rmsnorm_f32")?,
             rope: gpu.kernel(MODULE, "attn_v41_rope")?,
@@ -347,7 +384,16 @@ impl AttnV41 {
         let max_width = cfg.max_seq;
         let max_topk = cfg.window + cfg.index_topk;
         let alloc = |bytes: usize| gpu.alloc(bytes.max(16));
+        let kmax = cfg
+            .dim
+            .max(cfg.q_rank)
+            .max(cfg.gw())
+            .max(cfg.groups * cfg.o_rank);
         Ok(AttnV41 {
+            a_q8: alloc(
+                kquant_q8_1_rows_bytes(8, kmax as u32)
+                    .max(kquant_mmq_act_bytes(m as u32, kmax as u32)),
+            )?,
             qr_raw: alloc(m * cfg.q_rank * 2)?,
             qr: alloc(m * cfg.q_rank * 2)?,
             q: alloc(m * nh * hd * 2)?,
@@ -386,13 +432,47 @@ impl AttnV41 {
         &self,
         gpu: &dyn GpuBackend,
         a: DevicePtr,
-        w: DevicePtr,
+        w: AttnMat,
         c: DevicePtr,
         m: usize,
         n: usize,
         kk: usize,
         stream: u64,
     ) -> Result<()> {
+        let w = match w {
+            AttnMat::Bf16(p) => p,
+            AttnMat::Q2K(blocks) => {
+                let (m, n, kk) = (m as u32, n as u32, kk as u32);
+                if m <= 8 {
+                    kquant_q8_1_rows(gpu, self.k.q8_rows, a, self.a_q8, m, kk, stream)?;
+                    return kquant_mmvq(
+                        gpu,
+                        self.k.mmvq_q2k,
+                        blocks,
+                        self.a_q8,
+                        c,
+                        n,
+                        kk,
+                        m,
+                        stream,
+                    );
+                }
+                ops::quantize_act_q8_1(gpu, self.k.quant_d2s6, a, self.a_q8, m, kk, stream)?;
+                return kquant_mmq_gemm(
+                    gpu,
+                    self.k.mmq_q2k_nc,
+                    self.k.mmq_q2k_wc,
+                    self.a_q8,
+                    blocks,
+                    c,
+                    m,
+                    n,
+                    kk,
+                    Q2K_MMQ_SMEM,
+                    stream,
+                );
+            }
+        };
         if m == 1 {
             return ops::dense_gemv(
                 gpu,
@@ -538,7 +618,16 @@ impl AttnV41 {
         let hd = c.head_dim;
         let ratio = w.role.ratio;
         if ratio == 1 {
-            self.gemm(gpu, x, comp.kv, self.latent_raw, m, hd, c.dim, stream)?;
+            self.gemm(
+                gpu,
+                x,
+                AttnMat::Bf16(comp.kv),
+                self.latent_raw,
+                m,
+                hd,
+                c.dim,
+                stream,
+            )?;
             self.rmsnorm(
                 gpu,
                 false,
@@ -650,7 +739,16 @@ impl AttnV41 {
         if let (Some(groups), Some(cache)) = (latent_groups, st.index_k) {
             let wk = iw.wk.context("kv source without index wk")?;
             let k_norm = iw.k_norm.context("kv source without index k_norm")?;
-            self.gemm(gpu, self.latent, wk, self.ik_raw, groups, ihd, hd, stream)?;
+            self.gemm(
+                gpu,
+                self.latent,
+                AttnMat::Bf16(wk),
+                self.ik_raw,
+                groups,
+                ihd,
+                hd,
+                stream,
+            )?;
             self.rmsnorm(
                 gpu,
                 false,
@@ -683,7 +781,7 @@ impl AttnV41 {
         self.gemm(
             gpu,
             self.qr,
-            iw.wq_b,
+            AttnMat::Bf16(iw.wq_b),
             self.iq,
             m,
             nhi * ihd,
@@ -706,7 +804,16 @@ impl AttnV41 {
         )?;
         self.fp4_quant(gpu, self.iq, m * nhi * ihd, FP4_BLOCK, false, stream)?;
         // head weights: bf16(bf16(x . wproj) * ihd^-0.5 * nh^-0.5)
-        self.gemm(gpu, x, iw.weights_proj, self.iw_raw, m, nhi, c.dim, stream)?;
+        self.gemm(
+            gpu,
+            x,
+            AttnMat::Bf16(iw.weights_proj),
+            self.iw_raw,
+            m,
+            nhi,
+            c.dim,
+            stream,
+        )?;
         let wscale = (ihd as f32).powf(-0.5) * (nhi as f32).powf(-0.5);
         KernelLaunch::new(gpu, self.k.scale_bf16)
             .grid([((m * nhi) as u32).div_ceil(256), 1, 1])
@@ -992,7 +1099,7 @@ impl AttnV41 {
             self.gemm(
                 gpu,
                 self.slice_in,
-                at(w.wo_a, g * c.o_rank * gw * 2),
+                w.wo_a.at_rows(g * c.o_rank, gw),
                 self.slice_out,
                 m,
                 c.o_rank,

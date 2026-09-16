@@ -195,13 +195,13 @@ fn gpu_attention_matches_the_reference_on_every_layer_and_regime() {
         weights.push(AttnV41LayerWeights {
             role,
             sink: up_f32(g, &lw.sink),
-            wq_a: up_bf16(g, &lw.wq_a),
+            wq_a: AttnMat::Bf16(up_bf16(g, &lw.wq_a)),
             q_norm: up_f32(g, &lw.q_norm),
-            wq_b: up_bf16(g, &lw.wq_b),
-            wkv: up_bf16(g, &lw.wkv),
+            wq_b: AttnMat::Bf16(up_bf16(g, &lw.wq_b)),
+            wkv: AttnMat::Bf16(up_bf16(g, &lw.wkv)),
             kv_norm: up_f32(g, &lw.kv_norm),
-            wo_a: up_bf16(g, &lw.wo_a),
-            wo_b: up_bf16(g, &lw.wo_b),
+            wo_a: AttnMat::Bf16(up_bf16(g, &lw.wo_a)),
+            wo_b: AttnMat::Bf16(up_bf16(g, &lw.wo_b)),
             comp,
             idx,
         });

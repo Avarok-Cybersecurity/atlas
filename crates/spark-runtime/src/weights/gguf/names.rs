@@ -380,6 +380,18 @@ fn translate_layer_sub(layer: usize, sub: &str) -> Option<GgufName> {
 ///     `!value_transform::needs(hf)` as a belt-and-suspenders guard.
 ///
 /// Pure + name-only, so it is unit-testable without a GPU or a real GGUF.
+/// DeepSeek-V4.1 attention projections that stay `Q2_K` on the device
+/// (`WeightDtype::Q2K`) instead of expanding to bf16 on load: the layer runs
+/// them on the K-quant GEMV (decode) and MMQ (prefill) kernels, 0.33 instead
+/// of 2 bytes a weight resident and read every token.
+pub fn is_v41_q2k_resident(hf: &str) -> bool {
+    hf.ends_with(".attn.wq_a.weight")
+        || hf.ends_with(".attn.wq_b.weight")
+        || hf.ends_with(".attn.wkv.weight")
+        || hf.ends_with(".attn.wo_a.weight")
+        || hf.ends_with(".attn.wo_b.weight")
+}
+
 pub fn is_keep_packed_proj(hf: &str) -> bool {
     hf.ends_with(".mlp.gate_proj.weight")
         || hf.ends_with(".mlp.up_proj.weight")
