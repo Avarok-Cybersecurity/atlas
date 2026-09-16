@@ -172,13 +172,86 @@ impl Qwen3AttentionLayer {
                 &row_ctx,
                 stream,
             )?;
-            if ctx.config.tp_world_size > 1
-                && let Some(comm) = ctx.comm
-            {
-                comm.all_reduce_async(attn_out.0, h * 2, stream)?;
-            }
+            // The TP reduction used to sit HERE, between the forward and the
+            // copy. It is now hoisted below — see the note there for why that
+            // is bit-exact and why the collective count stays symmetric.
             ctx.gpu
                 .copy_d2d_async(attn_out, hidden.offset(t * h * 2), h * 2, stream)?;
+        }
+        // ── TP reduction, HOISTED out of the row loop ──
+        //
+        // Measured 2026-09-15 (ATLAS_HC_VERIFY_STAGE_TIMING=1, C=4, ISL 2000):
+        // the attention CORE is 61.3% of an attention layer and attention
+        // layers are 41.9% of the verify forward, so this loop is ~26% of the
+        // whole forward. The per-row reduce made it k separate 5 KB
+        // collectives per attention layer per sequence — 96 in a C=4 step
+        // (12 layers x 4 seqs x 3 rows) — on a link where a 5 KB message is
+        // pure latency.
+        //
+        // ★ AND EACH ONE WAS A STALL, not just a message. `all_reduce_async`
+        // on the 2-rank path (`nccl_backend/comm_impl.rs:45-55`) records an
+        // event, runs the comm on its own stream, then makes the COMPUTE
+        // stream wait on it — so the copy, and the next row's
+        // `attention_forward`, could not start until that row's reduce landed.
+        // k-1 of those stalls per layer per sequence are now gone.
+        //
+        // Correctness: every row's output lands at `hidden.offset(t * h * 2)`
+        // and the rows are contiguous (the same `k * h * 2` extent the
+        // block-input-norm copy above uses), so reducing `k * h * 2` bytes
+        // once covers exactly the same elements. `hidden` is WRITE-ONLY across
+        // the loop — each row reads its own `normed` row, never `hidden` — so
+        // deferring the reduction cannot be observed by a later row, and the
+        // `rms_norm` below is the first reader either way.
+        //
+        // ★ BIT-EXACT, and not merely "reassociated the same way": with
+        // `world_size == 2` each element of the result is ONE addition of the
+        // same two partial values, so there is no grouping for NCCL to vary
+        // regardless of the algorithm it picks for the larger message. This is
+        // categorically unlike the batched GEMM arms in MODEL.toml, which
+        // change accumulation order and therefore change answers.
+        //
+        // ★ THE COLLECTIVE COUNT STAYS SYMMETRIC ACROSS RANKS. Both ranks run
+        // this same unconditional code with the same `k`, so both go k -> 1
+        // together. The hang hazard documented in `decode_route.rs` is a
+        // CONDITIONAL gate whose predicate can differ per rank; this is not
+        // that. `batched_out.is_some()` short-circuits the loop on both ranks
+        // alike, and that arm does its own reduction.
+        //
+        // `ATLAS_NO_VERIFY_ROW_AR_HOIST=1` restores the per-row reduce, so the
+        // arms can be A/B'd on one boot without a rebuild.
+        if batched_out.is_none()
+            && ctx.config.tp_world_size > 1
+            && let Some(comm) = ctx.comm
+        {
+            static PER_ROW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let per_row = *PER_ROW.get_or_init(|| {
+                std::env::var("ATLAS_NO_VERIFY_ROW_AR_HOIST").as_deref() == Ok("1")
+            });
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                if per_row {
+                    tracing::info!(
+                        rows = k,
+                        "verify row all-reduce: PER-ROW ({k} collectives of {} B per attention \
+                         layer per sequence; ATLAS_NO_VERIFY_ROW_AR_HOIST=1 is set)",
+                        h * 2
+                    );
+                } else {
+                    tracing::info!(
+                        rows = k,
+                        "verify row all-reduce: HOISTED (1 collective of {} B after the row \
+                         loop, was {k}; set ATLAS_NO_VERIFY_ROW_AR_HOIST=1 to restore per-row)",
+                        k * h * 2
+                    );
+                }
+            });
+            if per_row {
+                for t in 0..k {
+                    comm.all_reduce_async(hidden.offset(t * h * 2).0, h * 2, stream)?;
+                }
+            } else {
+                comm.all_reduce_async(hidden.0, k * h * 2, stream)?;
+            }
         }
         if let Some(ref post_norm) = self.post_attn_out_norm {
             ops::rms_norm(
