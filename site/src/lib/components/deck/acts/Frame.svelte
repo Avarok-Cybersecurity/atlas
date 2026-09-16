@@ -154,7 +154,7 @@
     font-size: 0.85em;
     letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: var(--sx);
+    color: var(--sx-text);
     margin-bottom: 0.9em;
   }
   .cover-title {
@@ -194,7 +194,7 @@
     grid-row: span 2;
     font-size: 1.5em;
     font-weight: 700;
-    color: var(--sx);
+    color: var(--sx-text);
     opacity: 0.75;
   }
   .q strong {

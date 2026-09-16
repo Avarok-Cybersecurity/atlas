@@ -264,7 +264,7 @@
     font-size: 0.74em;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--sx);
+    color: var(--sx-text);
     margin-bottom: 0.6em;
   }
   .ask p {
@@ -291,7 +291,7 @@
     font-size: 0.74em;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--sx);
+    color: var(--sx-text);
   }
   .notes span:last-child {
     color: var(--t2);
@@ -353,7 +353,7 @@
   .stats b {
     font-size: 1.35em;
     font-weight: 700;
-    color: var(--sx);
+    color: var(--sx-text);
     line-height: 1;
   }
   .stats span {
@@ -384,7 +384,7 @@
     content: '›';
     position: absolute;
     left: 0;
-    color: var(--sx);
+    color: var(--sx-text);
   }
   .grid3 code {
     color: var(--t1);

@@ -197,7 +197,7 @@
     font-size: 0.74em;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--sx);
+    color: var(--sx-text);
     margin-bottom: 0.6em;
   }
   .side p {

@@ -345,6 +345,11 @@ a { color: var(--accent); }
   background: color-mix(in srgb, var(--accent-tech) 12%, transparent);
   color: color-mix(in srgb, var(--accent-tech) 78%, white);
 }
+/* Mixing the cyan toward white lifts it off a dark ground; on paper it does the
+   opposite and leaves #71D0E3 at 1.5:1 over its own tint. Inline code is small
+   text, so the light theme reads the darkened chevron twin instead. The chip
+   behind it keeps the 12% fill either way. */
+[data-theme="light"] .prose :not(pre) > code { color: var(--ch-cyan-text); }
 .prose blockquote {
   margin: 34px 0; padding: 2px 0 2px 22px;
   border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
@@ -359,8 +364,8 @@ a { color: var(--accent); }
   border-radius: 9px; font-size: 16px; line-height: 1.58;
 }
 .callout p { margin: 0; }
-.callout .ci { width: 18px; height: 18px; margin-top: 3px; color: var(--co, var(--accent-warn)); flex: none; }
-.callout .ct { display: block; font-family: var(--mono); font-size: 11px; letter-spacing: .11em; text-transform: uppercase; color: var(--co, var(--accent-warn)); margin-bottom: 5px; }
+.callout .ci { width: 18px; height: 18px; margin-top: 3px; color: var(--co-text, var(--ch-gold-text)); flex: none; }
+.callout .ct { display: block; font-family: var(--mono); font-size: 11px; letter-spacing: .11em; text-transform: uppercase; color: var(--co-text, var(--ch-gold-text)); margin-bottom: 5px; }
 
 .codeblock { margin: 32px 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg-1); }
 .cb-bar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--bg-sunk); border-bottom: 1px solid var(--line-soft); }

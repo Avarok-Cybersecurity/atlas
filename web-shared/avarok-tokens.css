@@ -61,6 +61,15 @@
   --ch-green:  #12B981;
   --ch-gold:   #EFB338;
   --sx: var(--ch-violet);
+  /* The same four hues, for use as TEXT. Identical to the fill in the dark
+     theme, darkened in the light theme so small text clears WCAG AA on white,
+     on --bg2 and on --card-2. A fill keeps the fill token; only a colour that
+     lands on a glyph reaches for the -text twin. */
+  --ch-violet-text: var(--ch-violet);
+  --ch-cyan-text:   var(--ch-cyan);
+  --ch-green-text:  var(--ch-green);
+  --ch-gold-text:   var(--ch-gold);
+  --sx-text: var(--ch-violet-text);
   /* type */
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
@@ -84,15 +93,28 @@
   --border-strong: #C9CDD6;
   --t1: #0F1216;
   --t2: #3A4049;
-  --t3: #73767D;
+  /* 5.26 on --bg, 4.83 on --bg2, 4.61 on --card-2. The previous #73767D was
+     4.2 on white, which the accessibility gate reads as a failure wherever it
+     lands on small text. */
+  --t3: #696C72;
+  /* Chevron text. Lightness lowered, hue and saturation held, so the mark's
+     colour survives the move to paper. Each clears 4.6:1 on white, on --bg2
+     and on --card-2. The fill hues above are untouched: on a fill the ink is
+     --bg, and it is the fill that has to stay the mark's own. */
+  --ch-violet-text: #8040F1;
+  --ch-cyan-text:   #1B7587;
+  --ch-green-text:  #0C7A55;
+  --ch-gold-text:   #8F640C;
   --accent: #662AF4;
   --accent-fill: #662AF4;
   --accent-fill-hover: #560DD3;
   --accent-deep: #4C1D95;
   --accent-soft: rgba(102, 42, 244, 0.10);
-  --green: #0B8A62;
+  /* 5.38 on --bg, 4.61 over its own 12% chip; #0B8A62 read 3.73 on the chip. */
+  --green: #0A7956;
   --green-soft: rgba(11, 138, 98, 0.12);
-  --amber: #B07A12;
+  /* 5.26 on --bg, 4.61 on --card-2; #B07A12 read 3.26 on --card-2. */
+  --amber: #90640F;
   --red: #C92D37;
   --red-soft: rgba(201, 45, 55, 0.10);
   --vllm: #C5CAD3;
