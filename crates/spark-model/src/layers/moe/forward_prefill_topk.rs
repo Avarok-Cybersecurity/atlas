@@ -17,6 +17,7 @@ impl MoeLayer {
     pub(super) fn prefill_topk_dispatch(
         &self,
         gate_logits: DevicePtr,
+        fp32_logits: bool,
         indices_dev: DevicePtr,
         weights_dev: DevicePtr,
         num_experts: u32,
@@ -96,9 +97,15 @@ impl MoeLayer {
                 )?;
             }
         } else {
+            // Same wrapper, same arguments — only the kernel handle and the
+            // logit dtype differ, so the f32 arm adds no new call path.
             ops::moe_topk_softmax_batched(
                 ctx.gpu,
-                self.moe_topk_batched,
+                if fp32_logits {
+                    self.moe_topk_batched_f32
+                } else {
+                    self.moe_topk_batched
+                },
                 gate_logits,
                 indices_dev,
                 weights_dev,

@@ -70,6 +70,7 @@ pub(super) fn from_values(
         moe_union_stats: opt_in(value("ATLAS_MOE_UNION_STATS").as_deref()),
         fp32_routing: opt_in(value("ATLAS_FP32_ROUTING").as_deref()),
         fp32_gate: opt_in(value("ATLAS_FP32_GATE").as_deref()),
+        moe_prefill_fp32_routing: opt_in(value("ATLAS_MOE_PREFILL_FP32_ROUTING").as_deref()),
         frankenstein_decode_via_prefill: opt_in(
             value("ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL").as_deref(),
         ),

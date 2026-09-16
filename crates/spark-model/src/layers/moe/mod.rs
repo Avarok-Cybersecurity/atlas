@@ -68,6 +68,9 @@ pub struct MoeLayer {
     moe_weighted_sum_blend: KernelHandle,
     residual_add: KernelHandle,
     moe_topk_batched: KernelHandle,
+    /// FP32-logit sibling of `moe_topk_batched`. `try_kernel`: a target
+    /// without it leaves the FP32 routing arm inert rather than refusing.
+    moe_topk_batched_f32: KernelHandle,
     // K=2 fused MoE kernel handles
     moe_expert_gate_up_shared_batch2: KernelHandle,
     moe_expert_silu_down_shared_batch2: KernelHandle,

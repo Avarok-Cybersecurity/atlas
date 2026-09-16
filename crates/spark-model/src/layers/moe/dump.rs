@@ -317,6 +317,7 @@ pub fn dump_router_margin(
     n: u32,
     num_experts: u32,
     top_k: u32,
+    fp32_logits: bool,
 ) -> Result<()> {
     if std::env::var("ATLAS_MOE_ROUTER_MARGIN").ok().as_deref() != Some("1") {
         return Ok(());
@@ -327,31 +328,53 @@ pub fn dump_router_margin(
     gpu.synchronize(stream)?;
     let ne = num_experts as usize;
     let k = top_k as usize;
-    let mut raw = vec![0u8; n as usize * ne * 2];
+    // ULPs are a property of the STORED type, so the same token can be an exact
+    // tie in BF16 and a comfortable gap in F32 — which is precisely what this
+    // has to be able to show, with one metric across both arms.
+    let esz = if fp32_logits { 4usize } else { 2usize };
+    let mut raw = vec![0u8; n as usize * ne * esz];
     let _ = gpu.copy_d2h(gate_logits, &mut raw);
 
     // Total-order key: for IEEE floats, positives are monotonic in their bit
-    // pattern and negatives are reversed. This maps both onto one increasing
-    // u16 so the ULP distance is a plain subtraction.
-    let key = |b: u16| -> u16 { if b & 0x8000 != 0 { !b } else { b | 0x8000 } };
+    // pattern and negatives are reversed. Mapping both onto one increasing
+    // unsigned makes the ULP distance a plain subtraction, with no float
+    // arithmetic of our own to muddy the measurement. Widened to u32 so the two
+    // dtypes share one path; BF16 keys just occupy the low 16 bits.
+    let key32 = |b: u32| -> u32 {
+        if b & 0x8000_0000 != 0 {
+            !b
+        } else {
+            b | 0x8000_0000
+        }
+    };
+    let key16 = |b: u16| -> u32 { (if b & 0x8000 != 0 { !b } else { b | 0x8000 }) as u32 };
 
     let mut ties = 0usize;
     let mut le: [usize; 5] = [0; 5]; // gap <= 0,1,2,4,8 ULPs
     let mut min_gap = u32::MAX;
     let mut sum_gap = 0u64;
-    let mut row: Vec<u16> = Vec::with_capacity(ne);
+    let mut row: Vec<u32> = Vec::with_capacity(ne);
     for t in 0..n as usize {
         row.clear();
-        row.extend(
-            raw[t * ne * 2..(t + 1) * ne * 2]
-                .chunks_exact(2)
-                .map(|c| key(u16::from_le_bytes([c[0], c[1]]))),
-        );
+        let bytes = &raw[t * ne * esz..(t + 1) * ne * esz];
+        if fp32_logits {
+            row.extend(
+                bytes
+                    .chunks_exact(4)
+                    .map(|c| key32(u32::from_le_bytes([c[0], c[1], c[2], c[3]]))),
+            );
+        } else {
+            row.extend(
+                bytes
+                    .chunks_exact(2)
+                    .map(|c| key16(u16::from_le_bytes([c[0], c[1]]))),
+            );
+        }
         // Partial select: only the k/k+1 boundary matters, so this is O(ne)
         // rather than a full sort per token.
         let (_, kth, rest) = row.select_nth_unstable_by(k - 1, |a, b| b.cmp(a));
-        let kth = *kth as u32;
-        let next = *rest.iter().max().unwrap_or(&0) as u32;
+        let kth = *kth;
+        let next = *rest.iter().max().unwrap_or(&0);
         let gap = kth.saturating_sub(next);
         sum_gap += gap as u64;
         min_gap = min_gap.min(gap);
@@ -366,9 +389,10 @@ pub fn dump_router_margin(
     }
     let tot = n as f64;
     tracing::info!(
-        "moe-router-margin n={n} topk={top_k} ties={ties} ({:.3}%) min_gap={min_gap} \
+        "moe-router-margin dtype={} n={n} topk={top_k} ties={ties} ({:.3}%) min_gap={min_gap} \
          mean_gap={:.1} | flippable at <=1ulp {} ({:.3}%)  <=2 {} ({:.3}%)  \
          <=4 {} ({:.3}%)  <=8 {} ({:.3}%)",
+        if fp32_logits { "f32" } else { "bf16" },
         ties as f64 / tot * 100.0,
         sum_gap as f64 / tot,
         le[1],

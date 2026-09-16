@@ -185,6 +185,56 @@ impl MoeLayer {
         super::dump::dump_gate_input(ctx.gpu, stream, router_in, n, h)?;
         // 1. Gate GEMM: [N, H] × [H, num_experts] → [N, num_experts]
         let gate_logits = ctx.buffers.gate_logits();
+        // ── FP32 prefill routing (ATLAS_MOE_PREFILL_FP32_ROUTING=1) ──
+        // Top-k is DISCRETE, so selection only changes if a perturbation
+        // exceeds the k-th/(k+1)-th logit gap. With BF16 logits that gap is
+        // ~1 ULP on average and 23-48% of tokens are an EXACT TIE
+        // (ATLAS_MOE_ROUTER_MARGIN=1), which is why the router GEMM is pinned:
+        // any kernel change reorders ties. Widening the logits is the way out.
+        //
+        // The post-top-k aliasing of `gate_logits` as scratch (sorted ids /
+        // offsets / token_to_perm, below) is UNTOUCHED — the f32 logits live in
+        // their own buffer, so the arena layout and every other consumer of
+        // `gate_logits` are unaffected.
+        //
+        // Every conjunct is load-bearing: the hash-routing, correction-bias and
+        // NVFP4-gate paths each score experts differently and are out of scope.
+        let fp32_route = ctx.levers.moe_prefill_fp32_routing
+            && self.dense_gemm_f32out.0 != 0
+            && self.moe_topk_batched_f32.0 != 0
+            && self.gate_nvfp4.is_none()
+            && self.correction_bias_dev.is_none()
+            && self.tid2eid_dev.is_none();
+        let route_logits = if fp32_route {
+            ctx.buffers.gate_logits_f32()
+        } else {
+            gate_logits
+        };
+        {
+            static WHY: std::sync::Once = std::sync::Once::new();
+            WHY.call_once(|| {
+                tracing::info!(
+                    lever = ctx.levers.moe_prefill_fp32_routing,
+                    gemm_f32out = self.dense_gemm_f32out.0 != 0,
+                    topk_f32 = self.moe_topk_batched_f32.0 != 0,
+                    no_gate_nvfp4 = self.gate_nvfp4.is_none(),
+                    no_corr_bias = self.correction_bias_dev.is_none(),
+                    no_tid2eid = self.tid2eid_dev.is_none(),
+                    active = fp32_route,
+                    "MoE prefill FP32-routing preconditions"
+                )
+            });
+        }
+        if fp32_route {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                tracing::info!(
+                    num_experts,
+                    top_k,
+                    "MoE prefill routing arm: FP32 logits through top-k"
+                )
+            });
+        }
         if let Some(fp8) = self.gate_fp8 {
             ops::fp8_gemm_n128(
                 ctx.gpu,
@@ -225,8 +275,33 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        if fp32_route {
+            // f32-out GEMM. NOTE this also changes WHICH kernel runs: the
+            // dedicated scalar router kernel only writes BF16, so precision and
+            // kernel move together here and a quality delta cannot be
+            // attributed to precision alone.
+            ops::dense_gemm(
+                ctx.gpu,
+                self.dense_gemm_f32out,
+                router_in,
+                &self.weights.gate,
+                route_logits,
+                n,
+                num_experts,
+                h,
+                stream,
+            )?;
+        }
         super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
-        super::dump::dump_router_margin(ctx.gpu, stream, gate_logits, n, num_experts, top_k)?;
+        super::dump::dump_router_margin(
+            ctx.gpu,
+            stream,
+            route_logits,
+            n,
+            num_experts,
+            top_k,
+            fp32_route,
+        )?;
         prof_step!("gate_gemm");
 
         // Feature-1: fold the router (`mlp.gate`) LoRA delta onto the routing
@@ -240,7 +315,8 @@ impl MoeLayer {
         let indices_dev = scratch;
         let weights_dev = scratch.offset(total_expanded as usize * 4);
         self.prefill_topk_dispatch(
-            gate_logits,
+            route_logits,
+            fp32_route,
             indices_dev,
             weights_dev,
             num_experts,

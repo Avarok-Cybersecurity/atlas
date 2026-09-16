@@ -63,6 +63,7 @@ impl MoeLayer {
             moe_weighted_sum_blend: gpu.kernel("moe_expert_gemv", "moe_weighted_sum_blend")?,
             residual_add: gpu.kernel("residual_add", "bf16_residual_add")?,
             moe_topk_batched: gpu.kernel("moe_topk", "moe_topk_softmax_batched")?,
+            moe_topk_batched_f32: try_kernel(gpu, "moe_topk", "moe_topk_softmax_batched_f32"),
             moe_expert_gate_up_shared_batch2: gpu
                 .kernel("moe_fused_batch2", "moe_expert_gate_up_shared_batch2")?,
             moe_expert_silu_down_shared_batch2: gpu
