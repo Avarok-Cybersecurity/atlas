@@ -48,6 +48,45 @@ impl Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<DevicePtr> {
+        // Sub-stage profiler for the GDN block, under the SAME env var as the
+        // enclosing hc-prefill timer so one flag gives the whole picture.
+        //
+        // WHY: the 2026-09-15 profile puts `gdn_block` at 822 ms = 20.0% of an
+        // 8K prefill, second only to MoE — and it was a SINGLE opaque leaf, so
+        // there was no way to tell whether the recurrence, the projections or
+        // the conv dominate it. Those want completely different fixes. Every
+        // stage that has been opened this session turned out to have a
+        // different bound (QSA instruction-count, hc bytes, MoE tile/plumbing),
+        // so guessing which one this is has a poor track record.
+        //
+        // PROF_LEFT caps the logged calls the way the enclosing timer does: the
+        // syncs cost ~21% and a whole prefill of them is neither needed nor
+        // wanted.
+        static GPROF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static GPROF_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(400);
+        let gprof = *GPROF
+            .get_or_init(|| std::env::var("ATLAS_QWEN4EXP_PREFILL_PROF").as_deref() == Ok("1"))
+            && GPROF_LEFT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) > 0;
+        let mut gt = if gprof {
+            ctx.gpu.synchronize(stream).ok();
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+        macro_rules! gstage {
+            ($name:expr) => {
+                if let Some(t0) = gt.as_mut() {
+                    ctx.gpu.synchronize(stream).ok();
+                    tracing::info!(
+                        "gdn-block L{ssm_layer_idx} T={num_tokens} [{}]: {}us",
+                        $name,
+                        t0.elapsed().as_micros()
+                    );
+                    *t0 = std::time::Instant::now();
+                }
+            };
+        }
+
         let h = ctx.config.hidden_size;
         let eps = ctx.config.rms_norm_eps as f32;
         let k = num_tokens as u32;
@@ -143,6 +182,7 @@ impl Qwen3SsmLayer {
             None
         };
 
+        gstage!("qkvz_proj");
         // ── 4+5. Fused BA GEMM + GDN gates (token-parallel) ──
         // Replaces dense_gemm([M,K]×[N,K]) + compute_gdn_gates.
         // Vectorized uint4 loads, warp shuffle reduction, inline sigmoid/exp.
@@ -189,6 +229,7 @@ impl Qwen3SsmLayer {
             None
         };
 
+        gstage!("ba_gates");
         // ── 6. Batched conv1d for all N tokens (sequential per-channel in registers) ──
         // Reuse ssm_qkvz buffer for conv output (safe: deinterleave is done)
         let conv_out_buf = ctx.buffers.ssm_qkvz();
@@ -251,6 +292,7 @@ impl Qwen3SsmLayer {
             None
         };
 
+        gstage!("conv1d");
         // ── 7. Batched L2 norm on Q,K for all N tokens ──
         // Q,K are the first 2*key_dim elements of each token's conv_out.
         // Stride between tokens in conv_out = conv_dim.
@@ -286,6 +328,7 @@ impl Qwen3SsmLayer {
             None
         };
 
+        gstage!("l2_norm_qk");
         // ── 8. GDN prefill via WY4-persistent kernel ──
         // Processes 4 tokens per iteration with WY algebraic correction, keeping
         // H state in shared memory for the entire sequence. 4× fewer sequential
@@ -355,6 +398,7 @@ impl Qwen3SsmLayer {
             None
         };
 
+        gstage!("recurrence");
         // ── 9. Gated RMS norm (batched: all tokens × heads in one launch) ──
         let normed_out_buf = conv_out_buf;
         let z_base = deinterleaved.offset((key_dim * 2 + value_dim) * bf16);
@@ -405,12 +449,17 @@ impl Qwen3SsmLayer {
             stream,
         );
 
+        gstage!("gated_rms_norm");
         // ── 10. Output projection GEMM: [N, 4096] × [4096, 2048] → [N, 2048] ──
         let out_proj_buf = ctx.buffers.moe_output();
         self.prefill_out_proj_dispatch(ctx, normed_out_buf, out_proj_buf, k, h, value_dim, stream)?;
+        gstage!("out_proj");
         // GDN HeadParallel: reduce the row-parallel partial out_proj across TP
         // ranks (num_tokens × h BF16) before the residual add. No-op at tp=1.
         self.ssm_tp_all_reduce(out_proj_buf, normed_out_buf, num_tokens, ctx, stream)?;
+        // Split from out_proj deliberately: a GEMM and a collective want
+        // completely different fixes, and together they are ~38% of the block.
+        gstage!("tp_allreduce");
         // ATLAS_GDN_DUMP hook: SSM out_proj output — drift attribution.
         super::debug::maybe_dump_gdn_buf(
             ctx.gpu,
