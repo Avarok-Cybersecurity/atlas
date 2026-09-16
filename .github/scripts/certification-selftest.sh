@@ -141,19 +141,19 @@ mkdir -p "$TMP/wf/.github/workflows"; cp .github/scripts/assert-cmd-runner-safe.
 # CONTROL x3: each shape that would let a fork run code on our hardware.
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request: { types: [opened] } }
-jobs: { j: { runs-on: avarok-cmd, steps: [{ uses: actions/checkout@v4, with: { ref: main } }] } }
+jobs: { j: { runs-on: atlas-cmd, steps: [{ uses: actions/checkout@v4, with: { ref: main } }] } }
 Y
 want_rc 1 "control: pull_request trigger on the command runner" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request_target: { types: [opened] } }
-jobs: { j: { runs-on: [self-hosted, avarok-cmd], steps: [{ uses: actions/checkout@v4, with: { ref: "${{ github.event.pull_request.head.sha }}" } }] } }
+jobs: { j: { runs-on: [self-hosted, atlas-cmd], steps: [{ uses: actions/checkout@v4, with: { ref: "${{ github.event.pull_request.head.sha }}" } }] } }
 Y
 want_rc 1 "control: checks out the PR head on the command runner" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { issue_comment: { types: [created] } }
-jobs: { j: { runs-on: avarok-cmd, steps: [{ uses: actions/checkout@v4 }] } }
+jobs: { j: { runs-on: atlas-cmd, steps: [{ uses: actions/checkout@v4 }] } }
 Y
 want_rc 1 "control: checkout with no explicit ref on the command runner" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
@@ -162,7 +162,7 @@ want_rc 1 "control: checkout with no explicit ref on the command runner" \
 # same-repo comparison in `runs-on`. These three controls are that property.
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request: { types: [opened] } }
-jobs: { j: { runs-on: avarok-pr-cheap, steps: [{ uses: actions/checkout@v4 }] } }
+jobs: { j: { runs-on: atlas-pr-cheap, steps: [{ uses: actions/checkout@v4 }] } }
 Y
 want_rc 1 "control: cheap pool on pull_request with no same-repo guard" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
@@ -178,7 +178,7 @@ cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request: { types: [opened] } }
 jobs:
   j:
-    runs-on: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'avarok-pr-cheap' || 'ubuntu-latest' }}"
+    runs-on: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'atlas-pr-cheap' || 'ubuntu-latest' }}"
     steps: [{ uses: actions/checkout@v4, with: { ref: "${{ github.event.pull_request.head.sha }}" } }]
 Y
 want_rc 1 "control: cheap pool guarded but checking out a fork ref" \
