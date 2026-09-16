@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas W4A16 GEMM v2 — qwen3.6-27b shadow kernel.
+// Avarok W4A16 GEMM v2 — qwen3.6-27b shadow kernel.
 //
 // PROVENANCE: byte-copy of the proven minimax-m2-229b / step3p7-flash
 // `w4a16_gemm_v2.cu` (md5 63519fe1, identical in both dirs) with ONE
@@ -31,7 +31,7 @@
 // bit-identical to v1 (microtest 100% on 8 shapes incl. K-tail) but
 // MEASURED SLOWER — 0.78-0.82x of v1 (v1: 58-74 TFLOP/s; v2: 46-57).
 // The extra warps do not pay at these shapes/toolchain. Kept in the PTX set
-// as an OPT-IN A/B arm only (ATLAS_W4A16_VARIANT=v2); nothing auto-activates
+// as an OPT-IN A/B arm only (AVAROK_W4A16_VARIANT=v2); nothing auto-activates
 // it — see layers/mod.rs w4a16_v2_kernel.
 //
 // ptxas @ sm_121a -O3 --fmad=false (2026-07-30): 80 registers, 30,336 B smem,

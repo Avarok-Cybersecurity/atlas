@@ -8,11 +8,11 @@ host went down and took both properties with it.
 
 | Project | Serves | pages.dev |
 | --- | --- | --- |
-| `atlas-site` | `atlascybernetics.ai` | `atlas-site-80h.pages.dev` |
-| `atlas-blog` | `blog.atlascybernetics.ai` | `atlas-blog-3ja.pages.dev` |
+| `avarok-site` | `atlascybernetics.ai` | `avarok-site-80h.pages.dev` |
+| `avarok-blog` | `blog.atlascybernetics.ai` | `avarok-blog-3ja.pages.dev` |
 
 Both are **Direct Upload** projects, not Pages' git integration. The build in
-`.github/workflows/site.yml` needs an `atlas-recipes` checkout and a GitHub
+`.github/workflows/site.yml` needs an `avarok-recipes` checkout and a GitHub
 token, and it carries four gates a Pages-native build would bypass — the
 flagship-recipe check, the per-route `<title>` checks on both properties, and
 the blog/site cross-link check. CI builds, CI uploads the gated output.
@@ -70,7 +70,7 @@ happily, which reads like a bug and is not one.
 
 ## atlasinference.io -> atlascybernetics.ai
 
-`atlasinference.io` is a legacy hostname on the same `atlas-site` Pages
+`atlasinference.io` is a legacy hostname on the same `avarok-site` Pages
 project. It still answers 200 with the marketing site, including
 `/engine`. The public developer URL is `https://atlascybernetics.ai/engine`.
 

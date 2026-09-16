@@ -3,7 +3,7 @@
 //! Borrowing parameters from another recipe, from inside the Config form.
 //!
 //! Some models have no recipe; others have one whose settings the user does
-//! not want. `b` lists the loadable donors — the same Atlas single-node set,
+//! not want. `b` lists the loadable donors — the same Avarok single-node set,
 //! family matches first, that `lib_start` offers as starting points, through
 //! the same `ranked_donors`, because two copies of that filter is how one of
 //! them ends up offering a vLLM donor — and applies the chosen recipe's

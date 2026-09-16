@@ -190,7 +190,7 @@ pub fn emit_token(
             // refused token (root cause of the opencode webserver_ok gap).
             // Instead, DISENGAGE the grammar for the remainder of this response
             // and continue decoding UNCONSTRAINED — exactly what vLLM (the 10/10
-            // reference) does by parsing tools post-hoc. Atlas's server-side
+            // reference) does by parsing tools post-hoc. Avarok's server-side
             // tool parser still extracts tool calls from the emitted text, so
             // the structural guarantee is gracefully traded for turn survival.
             tracing::warn!(
@@ -348,9 +348,9 @@ pub fn emit_token(
                 content_tokens = a.content_tokens,
                 output_len = a.output_tokens.len(),
                 "Content-loop watchdog fired in MTP/emit path (period-{}…{} repeat); ending response. \
-                 Tune via --content-loop-min-repeats / ATLAS_CONTENT_LOOP_MIN_REPEATS, per-request \
+                 Tune via --content-loop-min-repeats / AVAROK_CONTENT_LOOP_MIN_REPEATS, per-request \
                  repetition_detection, or disarm via --content-loop-watchdog false / \
-                 ATLAS_CONTENT_LOOP_WATCHDOG=0",
+                 AVAROK_CONTENT_LOOP_WATCHDOG=0",
                 CONTENT_LOOP_PERIOD_MIN,
                 CONTENT_LOOP_PERIOD_MAX,
             );
@@ -390,7 +390,7 @@ pub fn emit_token(
                     output_len = a.output_tokens.len(),
                     "Inter-tool prose budget exhausted in MTP/emit path; ending response \
                      (no tool call after budget — would otherwise burn to max_tokens); \
-                     raise via --max-inter-tool-prose / ATLAS_MAX_INTER_TOOL_PROSE / \
+                     raise via --max-inter-tool-prose / AVAROK_MAX_INTER_TOOL_PROSE / \
                      MODEL.toml [behavior].max_inter_tool_prose (0 disables)"
                 );
                 a.guard_stop = Some(GUARD_STOP_INTER_TOOL_PROSE);
@@ -405,7 +405,7 @@ pub fn emit_token(
     // forever — trapping the model into a hallucinated-transcript runaway. When
     // enabled and a tool call has completed (and we're not inside a tool body /
     // thinking), lift the grammar suppression so the model's natural EOS ends the
-    // turn. Inert unless ATLAS_TOOL_EOS_ESCAPE=1.
+    // turn. Inert unless AVAROK_TOOL_EOS_ESCAPE=1.
     let eos_escape = sched.levers.tool_eos_escape
         && a.tool_call_completed
         && !a.inside_tool_body
@@ -504,7 +504,7 @@ fn send_stream_event(a: &ActiveSeq, event: StreamEvent) -> bool {
 /// `output_tokens` and streamed through [`send_stream_event`] (so blocking and
 /// streaming responses agree); they intentionally exceed `max_tokens` by the
 /// bounded close length, mirroring a graceful EOS. No-op when disabled
-/// (`ATLAS_GRAMMAR_BUDGET_CLOSE=0`), inside `<think>`, or when no bounded close
+/// (`AVAROK_GRAMMAR_BUDGET_CLOSE=0`), inside `<think>`, or when no bounded close
 /// is found — all of which fall back to the prior plain length-stop.
 pub(crate) fn emit_grammar_close(a: &mut ActiveSeq) {
     if a.inside_thinking || !grammar_budget_close_enabled() {

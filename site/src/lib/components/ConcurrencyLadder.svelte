@@ -35,8 +35,8 @@
   const plotted = [subject, ...variants, ...baselines];
 
   const COLOR = {
-    atlas: 'var(--accent)',
-    'atlas-dflash2': 'var(--accent)',
+    avarok: 'var(--accent)',
+    'avarok-dflash2': 'var(--accent)',
     'vllm-mtp': 'var(--t2)',
     'vllm-nospec': 'var(--t3, var(--t2))'
   };
@@ -44,8 +44,8 @@
   // it is the same engine on the same weights, so a second colour would say
   // "different subject". Same reasoning as gate-variants.js on the dashboard.
   const DASH = {
-    atlas: null,
-    'atlas-dflash2': '5 4',
+    avarok: null,
+    'avarok-dflash2': '5 4',
     'vllm-mtp': null,
     'vllm-nospec': '5 4'
   };
@@ -153,7 +153,7 @@
           {#each ladder.rows as row}
             <tr>
               <th scope="row" class="mono">{row.c}</th>
-              <td class="mono cl-win">{fmtV(row.atlas)}</td>
+              <td class="mono cl-win">{fmtV(row.avarok)}</td>
               {#each row.baselines as b}
                 <td class="mono" class:cl-best={b.id === row.best_baseline_id}>{fmtV(b.tok_s)}</td>
               {/each}

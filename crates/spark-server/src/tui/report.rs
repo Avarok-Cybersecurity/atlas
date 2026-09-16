@@ -25,7 +25,7 @@ use std::time::Duration;
 
 /// The official build's identity. PUBLIC by design — the client_id travels in
 /// every device-flow POST — but still identity: forks override with
-/// `ATLAS_REPORT_CLIENT_ID` / `ATLAS_REPORT_REPO` rather than shipping issues
+/// `AVAROK_REPORT_CLIENT_ID` / `AVAROK_REPORT_REPO` rather than shipping issues
 /// into the upstream tracker.
 pub const OFFICIAL_CLIENT_ID: &str = "Iv23liAv6nlb4RaYaJSp";
 pub const OFFICIAL_REPO: &str = "Avarok-Cybersecurity/atlas";
@@ -33,7 +33,7 @@ pub const OFFICIAL_REPO: &str = "Avarok-Cybersecurity/atlas";
 /// Hidden marker a repo Action keys the `tui-report` label on. The API
 /// silently DROPS `labels` sent by users without push access, so the app
 /// cannot set the label itself — the body carries the signal instead.
-pub const MARKER: &str = "<!-- atlas-tui-report -->";
+pub const MARKER: &str = "<!-- avarok-tui-report -->";
 
 pub const DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 pub const TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
@@ -47,7 +47,7 @@ pub fn issues_url(repo: &str) -> String {
 /// cannot drift apart in wording.
 pub const NETWORK_FAILED: &str = "could not reach github.com — check network and retry (s)";
 
-pub const NOT_CONFIGURED: &str = "issue reporting is not configured for this build (set ATLAS_REPORT_CLIENT_ID / ATLAS_REPORT_REPO)";
+pub const NOT_CONFIGURED: &str = "issue reporting is not configured for this build (set AVAROK_REPORT_CLIENT_ID / AVAROK_REPORT_REPO)";
 
 // ── Secrets ──
 
@@ -92,8 +92,8 @@ pub struct Target {
 /// identity.
 pub fn target() -> Result<Target, &'static str> {
     target_from(
-        std::env::var("ATLAS_REPORT_CLIENT_ID").ok(),
-        std::env::var("ATLAS_REPORT_REPO").ok(),
+        std::env::var("AVAROK_REPORT_CLIENT_ID").ok(),
+        std::env::var("AVAROK_REPORT_REPO").ok(),
     )
 }
 
@@ -373,9 +373,9 @@ pub struct Composed {
 /// no commit stamp, not wonder whether the reporter deleted the line.
 pub fn env_line(model: &str, engine_ready: bool) -> String {
     format!(
-        "Atlas {} · {} · {}/{} · model: {} · engine ready: {engine_ready}",
-        crate::cli::ATLAS_VERSION,
-        option_env!("ATLAS_BUILD_COMMIT").unwrap_or("commit unknown"),
+        "Avarok {} · {} · {}/{} · model: {} · engine ready: {engine_ready}",
+        crate::cli::AVAROK_VERSION,
+        option_env!("AVAROK_BUILD_COMMIT").unwrap_or("commit unknown"),
         std::env::consts::OS,
         std::env::consts::ARCH,
         if model.is_empty() { "none" } else { model },

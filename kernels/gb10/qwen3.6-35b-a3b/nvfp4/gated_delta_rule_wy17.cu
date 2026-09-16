@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas WY-Chunkwise Gated Delta Rule — K=17 verification (DFlash γ+1).
+// Avarok WY-Chunkwise Gated Delta Rule — K=17 verification (DFlash γ+1).
 //
 // Generalization of gated_delta_rule_wy4.cu to K=17 tokens. DFlash uses
 // γ=16 drafts per step plus 1 prefix-bonus position, so the K=γ verify
@@ -108,7 +108,7 @@ extern "C" __global__ void gated_delta_rule_wy17(
         #pragma unroll
         for (int s = 0; s < t; s++) {
             float p = (tid < k_dim) ? sk[t][tid] * sk[s][tid] : 0.0f;
-            float r = atlas_block_reduce_sum(p, smem_warp, tid);
+            float r = avarok_block_reduce_sum(p, smem_warp, tid);
             if (tid == 0) {
                 kd_flat[t * (t - 1) / 2 + s] = r;
             }

@@ -121,7 +121,7 @@ pub(crate) async fn require_auth_middleware(
 }
 
 /// Per-identity rate-limit middleware. When the limiter is enabled via
-/// `ATLAS_RATE_LIMIT_RPM` / `ATLAS_RATE_LIMIT_TPM`, admission is checked
+/// `AVAROK_RATE_LIMIT_RPM` / `AVAROK_RATE_LIMIT_TPM`, admission is checked
 /// before dispatching to the handler; denied requests short-circuit with
 /// 429 + OpenAI error body + `retry-after` header.
 ///
@@ -226,7 +226,7 @@ pub(crate) async fn rate_limit_middleware(
 /// the rate limiter already set.
 ///
 /// They are a FALLBACK, not an override. The call site's comment used to read
-/// "Atlas does not enforce rate limits" and the loop used `insert`, which was
+/// "Avarok does not enforce rate limits" and the loop used `insert`, which was
 /// true when written and became false when the limiter landed: this layer runs
 /// outside `rate_limit_middleware`, so it overwrote the real numbers with
 /// "unlimited, nothing used, no reset" on every response. A client honouring
@@ -243,7 +243,7 @@ fn apply_compat_stubs(headers: &mut axum::http::HeaderMap) {
         ("x-ratelimit-limit-tokens", "1000000000"),
         ("x-ratelimit-remaining-tokens", "999999999"),
         ("x-ratelimit-reset-tokens", "0s"),
-        ("openai-organization", "atlas-local"),
+        ("openai-organization", "avarok-local"),
         ("openai-version", "2026-01-01"),
     ] {
         let name = HeaderName::from_static(k);
@@ -343,7 +343,7 @@ pub(crate) async fn gpu_fault_middleware(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    match fault_rejection(req.uri().path(), atlas_core::fault::global().fault()) {
+    match fault_rejection(req.uri().path(), avarok_core::fault::global().fault()) {
         None => next.run(req).await,
         Some((code, body)) => (code, axum::Json(body)).into_response(),
     }

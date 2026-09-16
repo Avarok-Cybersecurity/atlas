@@ -29,7 +29,7 @@
 //!      `rel_rms` here is therefore ~2-2.6% — 3e-2 is one notch of headroom
 //!      over the floor, not a loose tolerance, and cosine (~0.9997 there) is
 //!      the robust metric. Same floor `native_fp8_ffn_w8a8_microtest` states
-//!      for the dense FFN. `ATLAS_W8A8_REL_RMS_GATE` overrides it.
+//!      for the dense FFN. `AVAROK_W8A8_REL_RMS_GATE` overrides it.
 //!
 //!   2. THE PHANTOM ROWS. cuBLASLt is handed `ceil16(M) = 16` at every rung of
 //!      this band and WRITES rows `m..16`; with the strided Q/K/V output those
@@ -49,13 +49,13 @@
 //!
 //! Run (H100): `cargo run --release -p spark-model --features
 //! cuda,gpu-examples --example native_fp8_decode_proj_w8a8_microtest`. The
-//! example calls cuBLASLt directly, so `ATLAS_CUBLAS_GEMM` is not required
+//! example calls cuBLASLt directly, so `AVAROK_CUBLAS_GEMM` is not required
 //! here — the serve spelling is printed at the end for copy-paste.
 
 use anyhow::{Result, ensure};
 use half::bf16;
 use spark_model::layers::ops;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use std::time::Instant;
 
@@ -244,14 +244,14 @@ fn run_w8a8(
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let k = Kernels {
         batch16: gpu.kernel("w8a16_gemv_batch4", "w8a16_gemv_batch16")?,
         batch16_strided: gpu.kernel("w8a16_gemv_batch4", "w8a16_gemv_batch16_strided")?,
         quant: ops::Fp8ActQuant::resolve(&gpu),
         kmajor: gpu.kernel("fp8_scale_transpose", "fp8_act_scale_to_kmajor")?,
     };
-    let gate: f64 = std::env::var("ATLAS_W8A8_REL_RMS_GATE")
+    let gate: f64 = std::env::var("AVAROK_W8A8_REL_RMS_GATE")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(REL_RMS_GATE);
@@ -494,7 +494,7 @@ fn main() -> Result<()> {
         "\nALL PASS: Qwen3.8-27B decode projections at M in {ROWS:?} — W8A8 cuBLASLt within \
          cosine {COSINE_GATE} / rel_rms {gate:.1e} of the batch16 GEMV, strided gaps intact, \
          phantom rows finite and confined to their own slots.\n\
-         Serve spelling: ATLAS_CUBLAS_GEMM=ffn,ssm,attn (ATLAS_NO_W8A8_DECODE_PROJ reverts)."
+         Serve spelling: AVAROK_CUBLAS_GEMM=ffn,ssm,attn (AVAROK_NO_W8A8_DECODE_PROJ reverts)."
     );
     Ok(())
 }

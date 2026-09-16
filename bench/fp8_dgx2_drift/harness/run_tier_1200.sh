@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Run N opencode probes sequentially against the currently-running Atlas
+# Run N opencode probes sequentially against the currently-running Avarok
 # container (and optionally a remote vLLM via SSH tunnel) and score each one.
-# Intended for statistical comparison of Atlas drift-mitigation tiers
+# Intended for statistical comparison of Avarok drift-mitigation tiers
 # (N≥10 per tier required to overcome the FP8 per-run variance).
 #
 # Usage:
 #   ./run_tier.sh <tier-name> <N>
-#     [--container <name>]          (default atlas-qwen-final)
+#     [--container <name>]          (default avarok-qwen-final)
 #     [--split-dgx]                  (run N/2 locally + N/2 on dgx2 via tunnel)
 #     [--remote-api <URL>]           (default http://localhost:8889/v1)
 #     [--cosine-mode]                (use cosine_run.py diagnostic instead of opencode)
@@ -35,7 +35,7 @@ TIER="$1"
 N="$2"
 shift 2
 
-CONTAINER="atlas-qwen-final"
+CONTAINER="avarok-qwen-final"
 SPLIT_DGX=0
 REMOTE_API="http://localhost:8889/v1"
 COSINE_MODE=0
@@ -97,14 +97,14 @@ if [[ "${SKIP_WARMUP}" == "0" ]]; then
     exit 3
   fi
   if ! curl -sS -m 5 "${LOCAL_API}/models" >/dev/null 2>&1; then
-    echo "FATAL: atlas /v1/models not responding on localhost:8888" >&2
+    echo "FATAL: avarok /v1/models not responding on localhost:8888" >&2
     exit 3
   fi
-  warmup_endpoint "${LOCAL_API}" "local-atlas"
+  warmup_endpoint "${LOCAL_API}" "local-avarok"
 
   if [[ "${SPLIT_DGX}" == "1" ]]; then
     if ! curl -sS -m 5 "${REMOTE_API}/models" >/dev/null 2>&1; then
-      echo "FATAL: remote vLLM/atlas /v1/models not responding at ${REMOTE_API}" >&2
+      echo "FATAL: remote vLLM/avarok /v1/models not responding at ${REMOTE_API}" >&2
       echo "       (expected an SSH tunnel: ssh -L 8889:localhost:8888 claude@10.10.10.2)" >&2
       exit 3
     fi
@@ -118,7 +118,7 @@ fi
 # bit-identical token sequence for every run, enabling prefix-cache reuse,
 # and (b) removes tokenization noise that would otherwise confound the
 # A/B comparison between tiers.
-PROMPT='Please create a pure rust Axum project here in the current working directory. Just have a ping/pong endpoint. The server MUST bind to the port from the ATLAS_HARNESS_PORT env var (default 3001) — use `let port: u16 = std::env::var("ATLAS_HARNESS_PORT").unwrap_or_else(|_| "3001".to_string()).parse().unwrap();` then bind to `0.0.0.0:port`. Add tests, run them and prove all tests pass, then run the server and use curl to prove it works. Finally, tear down the server.'
+PROMPT='Please create a pure rust Axum project here in the current working directory. Just have a ping/pong endpoint. The server MUST bind to the port from the AVAROK_HARNESS_PORT env var (default 3001) — use `let port: u16 = std::env::var("AVAROK_HARNESS_PORT").unwrap_or_else(|_| "3001".to_string()).parse().unwrap();` then bind to `0.0.0.0:port`. Add tests, run them and prove all tests pass, then run the server and use curl to prove it works. Finally, tear down the server.'
 
 # ── Per-iteration runner ───────────────────────────────────────────
 run_one() {
@@ -130,11 +130,11 @@ run_one() {
   local TARGET="/tmp/harness-${TIER}-r${i}"
   local OC_JSON="/tmp/harness-${TIER}-r${i}.json"
   local OC_ERR="/tmp/harness-${TIER}-r${i}.err"
-  local ATLAS_LOG="/tmp/harness-${TIER}-r${i}.atlas.log"
+  local AVAROK_LOG="/tmp/harness-${TIER}-r${i}.avarok.log"
   local OUT_JSON="${RUNS_DIR}/run_${TIER}_${i}.json"
 
-  rm -rf "${TARGET}" "${OC_JSON}" "${OC_ERR}" "${ATLAS_LOG}"
-  : > "${ATLAS_LOG}"  # empty by default; populated below if local
+  rm -rf "${TARGET}" "${OC_JSON}" "${OC_ERR}" "${AVAROK_LOG}"
+  : > "${AVAROK_LOG}"  # empty by default; populated below if local
   # opencode's --dir is the agent's cwd; we pre-create it so opencode can
   # write into it on the first tool call.
   mkdir -p "${TARGET}"
@@ -144,30 +144,30 @@ run_one() {
   local START_TS END_TS START_TS_INT
   START_TS=$(date +%s.%N)
   # opencode has its own internal timeout; we cap at 6 min as a hard ceiling.
-  # ATLAS_HARNESS_PORT is exposed both to opencode (so the model can read it
+  # AVAROK_HARNESS_PORT is exposed both to opencode (so the model can read it
   # to write port-reading Rust) AND to score_run.py (so it can curl the right port).
   # --dir sets opencode's working directory; the model sees only "current
   # working directory" in the prompt, never the absolute path.
-  ATLAS_HARNESS_PORT=3001 \
+  AVAROK_HARNESS_PORT=3001 \
   ${extra_env} \
     timeout 1200 opencode run --dangerously-skip-permissions --dir "${TARGET}" --format json \
     "${PROMPT}" > "${OC_JSON}" 2> "${OC_ERR}" || true
   END_TS=$(date +%s.%N)
 
-  # Atlas log window for THIS run only (local only).
+  # Avarok log window for THIS run only (local only).
   if [[ "${label}" == "local" ]]; then
     START_TS_INT=${START_TS%.*}
-    sudo docker logs "${CONTAINER}" --since "${START_TS_INT}" 2>&1 > "${ATLAS_LOG}" || true
+    sudo docker logs "${CONTAINER}" --since "${START_TS_INT}" 2>&1 > "${AVAROK_LOG}" || true
   fi
 
-  ATLAS_HARNESS_PORT=3001 \
+  AVAROK_HARNESS_PORT=3001 \
     python3 "${HARNESS_DIR}/score_run.py" \
     --tier "${TIER}" \
     --run "${i}" \
     --target "${TARGET}" \
     --opencode-json "${OC_JSON}" \
     --opencode-stderr "${OC_ERR}" \
-    --atlas-log-window "${ATLAS_LOG}" \
+    --avarok-log-window "${AVAROK_LOG}" \
     --probe-start-ts "${START_TS}" \
     --probe-end-ts "${END_TS}" \
     --webserver-port 3001 \

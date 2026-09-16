@@ -1,14 +1,14 @@
-# Contributing to Atlas
+# Contributing to Avarok
 
-WE thank you for your interest in Atlas! This document explains how to contribute effectively.
+WE thank you for your interest in Avarok! This document explains how to contribute effectively.
 
 ## Philosophy
 
-Atlas follows the **AI Kernel HyperCompiling** philosophy: for every `(Hardware, Model_q)` tuple, there exists a set of kernels producing the highest performance such that it performs at the hardware's theoretical peak. Contributions should align with this — we value specialization over generalization.
+Avarok follows the **AI Kernel HyperCompiling** philosophy: for every `(Hardware, Model_q)` tuple, there exists a set of kernels producing the highest performance such that it performs at the hardware's theoretical peak. Contributions should align with this — we value specialization over generalization.
 
 ### AI-First Codebase
 
-Atlas is an **AI-first codebase**. We're reversing the conventional logic:
+Avarok is an **AI-first codebase**. We're reversing the conventional logic:
 
 - **All PRs are expected to be AI-generated.** Use the best AI tools available to write your kernels, Rust code, and benchmarks.
 - **Human-written code must be justified.** If you submit code written without AI assistance, you must explicitly denote which parts are human-authored and explain why a human wrote it better than an AI could.
@@ -40,17 +40,17 @@ hardware. CI runs all of these on a standard `ubuntu-latest` runner:
 
 ```bash
 # Rust correctness — no GPU, no nvcc required.
-# ATLAS_SKIP_BUILD=1 makes atlas-kernels emit a stub instead of invoking
+# AVAROK_SKIP_BUILD=1 makes avarok-kernels emit a stub instead of invoking
 # nvcc; CUDARC_CUDA_VERSION short-circuits cudarc's `nvcc --version` probe.
 # Both are needed. These are exactly what ci.yml sets workflow-wide.
-ATLAS_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo check --workspace
-ATLAS_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
-ATLAS_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo test --workspace
+AVAROK_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo check --workspace
+AVAROK_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
+AVAROK_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo test --workspace
 cargo fmt --all -- --check          # formatting
 ```
 
-`scripts/check.sh` wraps the same idea, but it exports `SKIP_ATLAS_BUILD`, and
-`crates/atlas-kernels/build.rs` matches on `ATLAS_SKIP_BUILD` only — so the
+`scripts/check.sh` wraps the same idea, but it exports `SKIP_AVAROK_BUILD`, and
+`crates/avarok-kernels/build.rs` matches on `AVAROK_SKIP_BUILD` only — so the
 wrapper does **not** currently skip the PTX build. Use the explicit env vars
 above until the script is fixed.
 
@@ -78,7 +78,7 @@ cargo test -p spark-server --release -- --ignored
 python3 tests/run_all_models.py
 
 # Microbenchmarks (single GPU).
-cargo bench -p atlas-spark-bench
+cargo bench -p avarok-spark-bench
 ```
 
 CI enforces (all GPU-free): `fmt`, `clippy`, `cargo test --workspace`
@@ -102,8 +102,8 @@ compiles and is hygienic; it does *not* boot a model. An image is only
 the coherence gate). Deploying on GB10? Read
 [`docs/GB10_DEPLOYMENT_GUIDE.md`](docs/GB10_DEPLOYMENT_GUIDE.md) for the model
 compatibility matrix, quant selection, and known-issue workarounds. Cutting an
-image? The build → verify → publish pipeline is the `atlas-release` skill
-(`.claude/skills/atlas-release/`).
+image? The build → verify → publish pipeline is the `avarok-release` skill
+(`.claude/skills/avarok-release/`).
 
 #### Coverage
 
@@ -123,8 +123,8 @@ COVERAGE_HTML=1 scripts/coverage.sh lcov.info  # ...plus target/llvm-cov/html/
 `scripts/coverage.sh` is the single source of truth for the invocation and for
 the exclusion list — CI calls the same script, so a local number and a CI
 number cannot drift. Excluded: `build.rs`, build-script-generated PTX,
-vendored `cudarc`, the pure-FFI crates (`atlas-kernels`, `cufile-sys`,
-`spark-comm`, `atlas-rdma/src/verbs.rs`), the `layers/ops/` kernel-launch
+vendored `cudarc`, the pure-FFI crates (`avarok-kernels`, `cufile-sys`,
+`spark-comm`, `avarok-rdma/src/verbs.rs`), the `layers/ops/` kernel-launch
 wrappers, and test/bench/example harnesses. All of those are unreachable
 without a GB10, so counting them would measure the runner, not the test suite.
 **Adding an exclusion requires a rationale comment next to it** — that list is
@@ -139,7 +139,7 @@ Practical note: the workspace total is dominated by `crates/spark-model`, which
 is overwhelmingly CUDA kernel dispatch a CPU-only runner cannot execute — it
 measured **5%** of ~61k lines when this job was added (2026-08-06), against a
 workspace total of **33%**. Well-tested host-side crates sit far higher in the
-same run (`xgrammar` 87%, `atlas-plugin` 75%, `atlas-core` 54%). Read the
+same run (`xgrammar` 87%, `avarok-plugin` 75%, `avarok-core` 54%). Read the
 workspace number as a trend line, not a grade; the coverage that actually
 moves is host-side logic — config/weight-map parsing, the scheduler's state
 machine, the tool parser and grammar compiler, the tokenizer/chat-template
@@ -174,15 +174,15 @@ Each hardware × model × quantization combination is a self-contained body of w
    declaration exists to prevent. The check reports each target's override list.
 2. Declare the target's SERVING levers in `kernels/<hardware>/HARDWARE.toml`
    `[defaults]`, and its `[hardware] sm_count`. `build.rs` bakes them into
-   `atlas_kernels::TARGET_DEFAULTS` / `TARGET_SM_COUNT` and every resolver in
+   `avarok_kernels::TARGET_DEFAULTS` / `TARGET_SM_COUNT` and every resolver in
    `spark-model` reads the declaration before the environment, so a target's
    measured configuration is a reviewable file rather than a launch script.
-   `crates/atlas-kernels/build_defaults.rs` panics on an unknown key. Adding a
+   `crates/avarok-kernels/build_defaults.rs` panics on an unknown key. Adding a
    LEVER is one commit across four places — the `TargetDefaults` field, the
    parse arm, the resolver and every target's table — and that commit is the one
    landing the arm which reads it.
-3. Register them in the appropriate `crates/atlas-*` kernel crate
-4. Add benchmark shapes to `crates/atlas-spark-bench/`
+3. Register them in the appropriate `crates/avarok-*` kernel crate
+4. Add benchmark shapes to `crates/avarok-spark-bench/`
 5. Demonstrate speedup over the baseline (PyTorch, cuBLAS, etc.)
 
 ### Kernel Optimization
@@ -195,7 +195,7 @@ Profile existing kernels and submit improvements. Every PR should include:
 
 ### Benchmark Coverage
 
-Add new shapes and configurations to `crates/atlas-spark-bench/`. More data points help us find optimization opportunities.
+Add new shapes and configurations to `crates/avarok-spark-bench/`. More data points help us find optimization opportunities.
 
 ### Bug Reports
 
@@ -280,7 +280,7 @@ Invariants an agent must not violate:
 
 ### Authorship, and why we ask
 
-Atlas is an **AI-first codebase**, and the PR template's Authorship field is not
+Avarok is an **AI-first codebase**, and the PR template's Authorship field is not
 bookkeeping — it is the measurement. We expect essentially every PR to be
 AI-generated, and we are tracking the exceptions on purpose.
 

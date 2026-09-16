@@ -42,7 +42,7 @@ pub enum WeightDtype {
     /// Keep-packed PrismML ternary Q2_0 (ggml id 42): raw on-disk blocks stay
     /// 2-bit in VRAM (fp16 scale + 2-bit codes per group of `group` elements),
     /// dequantized in-kernel by the native `q2_0_gemv` decode path. Only
-    /// produced by the GGUF loader under `ATLAS_GGUF_NATIVE_Q2=1`. Its byte
+    /// produced by the GGUF loader under `AVAROK_GGUF_NATIVE_Q2=1`. Its byte
     /// footprint is NOT a per-element size (2-bit codes + an inline scale per
     /// group), so [`WeightDtype::byte_size`] returns 0 for this variant and the
     /// real size is computed in [`WeightTensor::byte_size`] (shape + group).
@@ -363,7 +363,7 @@ pub struct SafetensorsLoader {
     /// ModelOpt NVFP4 checkpoints ship one 0-dim F32 scalar per quantized
     /// projection. On a 512-expert model that is ~74k four-byte allocations,
     /// each taking a full allocation granule — GBs of padding for values
-    /// Atlas never reads, because it serves w4a16 (BF16 activations) and the
+    /// Avarok never reads, because it serves w4a16 (BF16 activations) and the
     /// NVFP4 loader already treats the key as optional.
     ///
     /// OPT-IN: `step3p7` reads this key on its own path, so it must stay off
@@ -494,7 +494,7 @@ pub use prefix_detect::auto_detect_weight_prefix;
 /// a shared block into this map. (Fused per-expert views DO exist — see
 /// `weight_loader/step3p7.rs:93` — but they live in the layer structs that own
 /// the fused allocation, not here, so this cannot double-free them.)
-impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
+impl avarok_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
     fn label(&self) -> &'static str {
         "weight store"
     }

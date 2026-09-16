@@ -1,14 +1,14 @@
 recipe_version: "2"
 model: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
-runtime: atlas
-container: avarok/atlas-gb10:latest
+runtime: avarok
+container: avarok/avarok-gb10:latest
 max_nodes: 1
 
 metadata:
   description: |
     Nemotron-3-Nano-30B-A3B — NVIDIA hybrid Mamba-2 + MoE + Attention
     (52 layers in `MEMEMEM*EMEMEMEM*...` pattern, 128 experts top-6,
-    sigmoid routing). ~88-100 tok/s decode per the Atlas performance
+    sigmoid routing). ~88-100 tok/s decode per the Avarok performance
     table (FP8 KV). No MTP support.
   maintainer: avarok
   category: agent

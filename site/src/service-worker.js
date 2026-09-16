@@ -13,7 +13,7 @@ import { build, files, version } from '$service-worker';
 // nothing declared here was reachable from a test.
 import { shouldPrecache, strategyFor } from '$lib/sw/strategy.js';
 
-const CACHE = `atlas-site-${version}`;
+const CACHE = `avarok-site-${version}`;
 
 // The og-image is fetched by social scrapers, never by visitors — don't spend
 // visitors' disk/bandwidth pre-caching it. /lattice/ (the 763 KB LatticeDB

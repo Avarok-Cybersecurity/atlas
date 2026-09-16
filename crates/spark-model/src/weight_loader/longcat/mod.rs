@@ -3,15 +3,15 @@
 //! LongCat-Flash(-Lite) weight loader — the backbone behind the n-gram
 //! embeddings (`longcat_flash_ngram`).
 //!
-//! Architecture (HF `modeling_longcat_flash.py`), and how it maps onto Atlas:
+//! Architecture (HF `modeling_longcat_flash.py`), and how it maps onto Avarok:
 //!
 //! - Each CHECKPOINT layer is a dual-sublayer "shortcut" block: two MLA
 //!   attentions, two dense SwiGLU MLPs, and ONE shortcut MoE whose output is
 //!   computed on sublayer 1's post-attention normed input but added at the END
-//!   of sublayer 2. Atlas serves each SUBLAYER as one `Qwen3AttentionLayer`
+//!   of sublayer 2. Avarok serves each SUBLAYER as one `Qwen3AttentionLayer`
 //!   (`num_hidden_layers` is already 2x at parse), with the shortcut carried
 //!   between the pair via `set_shortcut_moe` / `set_shortcut_carry_in`.
-//! - MLA is the DeepSeek-lineage q-LoRA form Atlas already serves; the two
+//! - MLA is the DeepSeek-lineage q-LoRA form Avarok already serves; the two
 //!   LongCat deltas (interleaved rope, sqrt LoRA scaling) fold into the
 //!   WEIGHTS at load (see `prep`), so the runtime is unchanged.
 //! - The MoE router is softmax + `e_score_correction_bias` over
@@ -30,7 +30,7 @@ mod ngram;
 mod prep;
 
 use anyhow::{Context, Result};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -104,20 +104,20 @@ impl ModelWeightLoader for LongcatWeightLoader {
             config.zero_expert_num,
         );
 
-        // Same measurement lever the Mistral MLA loader has: ATLAS_NVFP4_MLA=0
+        // Same measurement lever the Mistral MLA loader has: AVAROK_NVFP4_MLA=0
         // keeps the MLA projections in BF16, which separates "the port's math
         // is wrong" from "4-bit quantization of these projections is lossy".
-        let disable_nvfp4_mla = std::env::var("ATLAS_NVFP4_MLA")
+        let disable_nvfp4_mla = std::env::var("AVAROK_NVFP4_MLA")
             .map(|v| {
                 let v = v.trim().to_ascii_lowercase();
                 matches!(v.as_str(), "0" | "false" | "no" | "off")
             })
             .unwrap_or(false);
         if disable_nvfp4_mla {
-            tracing::info!("LongCat: ATLAS_NVFP4_MLA=0 — MLA projections stay BF16");
+            tracing::info!("LongCat: AVAROK_NVFP4_MLA=0 — MLA projections stay BF16");
         }
         if super::longcat::ffn::bf16_dense_ffn() {
-            tracing::info!("LongCat: ATLAS_LONGCAT_BF16_FFN=1 — per-sublayer dense FFN stays BF16");
+            tracing::info!("LongCat: AVAROK_LONGCAT_BF16_FFN=1 — per-sublayer dense FFN stays BF16");
         }
         let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
         let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;
@@ -418,7 +418,7 @@ impl ModelWeightLoader for LongcatWeightLoader {
         _gpu: &dyn GpuBackend,
     ) -> Result<Option<MtpWeights>> {
         // The checkpoint ships `model.mtp.*`, but the MTP head shape is not
-        // the Qwen-style one Atlas builds. Ignored (matches HF's own
+        // the Qwen-style one Avarok builds. Ignored (matches HF's own
         // `_keys_to_ignore_on_load_unexpected = [r"model\\.mtp.*"]`).
         Ok(None)
     }

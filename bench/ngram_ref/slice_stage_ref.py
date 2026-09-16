@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Per-SUBLAYER reference intermediates for layer 0, to bisect the Atlas
-LongCat backbone against `ATLAS_OP_DUMP` output.
+"""Per-SUBLAYER reference intermediates for layer 0, to bisect the Avarok
+LongCat backbone against `AVAROK_OP_DUMP` output.
 
 Emits, for the LAST token of the 16-token fixture (the slice `dump_bf16`
 hooks record exactly that row), the four stage vectors of each of the two

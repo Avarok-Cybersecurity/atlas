@@ -14,7 +14,7 @@
 //!
 //! This module ships the **embedding-agnostic retrieval primitive**.
 //! The actual embedding model (e5-small, BGE-small, text-embedding-3-
-//! small) is provided via the [`Embedder`] trait — Atlas can plug in
+//! small) is provided via the [`Embedder`] trait — Avarok can plug in
 //! candle, ONNX-runtime, or a remote API at production time.
 //!
 //! ## Design notes
@@ -29,7 +29,7 @@
 
 use std::collections::HashSet;
 
-/// Embedding interface — Atlas integrators plug their preferred
+/// Embedding interface — Avarok integrators plug their preferred
 /// embedding model in here. All embeddings must be the SAME
 /// dimension for cosine similarity to be meaningful.
 pub trait Embedder {

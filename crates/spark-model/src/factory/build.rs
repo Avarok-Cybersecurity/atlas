@@ -4,7 +4,7 @@
 //! buffers, KV cache, and (optional) DFlash drafter into a `TransformerModel`.
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
@@ -135,7 +135,7 @@ pub fn build_model(
     // capture-layer indices from the drafter's `dflash_config.target_layer_ids`
     // so `TransformerModel::new` allocates the 5×hidden_size capture buffer.
     //
-    // The drafter's `target_layer_ids` are used DIRECTLY as Atlas capture
+    // The drafter's `target_layer_ids` are used DIRECTLY as Avarok capture
     // indices. An earlier implementation subtracted 1 from each id on HF
     // `output_hidden_states` reasoning; measurement on the z-lab drafters
     // shows that adjustment feeds the drafter hidden states one layer early
@@ -304,7 +304,7 @@ pub fn build_model(
     // loaded" two lines under "GLM-5.3 MTP draft module loaded (layers.45)".
     // Every binding path has to be consulted, and when none of them bound
     // anything the checkpoint still has to be asked whether it SHIPS an MTP
-    // head — "Atlas can't read this layout" and "there is no head here" are
+    // head — "Avarok can't read this layout" and "there is no head here" are
     // different faults and want different messages.
     if use_speculative
         && mtp_weights.is_empty()
@@ -320,7 +320,7 @@ pub fn build_model(
             Some(layout) => tracing::error!(
                 "`--speculative` was requested and this checkpoint DOES ship MTP weights \
                  ({layout:?}), but no loader bound them for model_type '{}' — speculative \
-                 decoding will be disabled. This is an Atlas capability gap, not a \
+                 decoding will be disabled. This is an Avarok capability gap, not a \
                  checkpoint problem.",
                 config.model_type,
             ),
@@ -495,7 +495,7 @@ pub fn build_model(
     // co-tenants against our --gpu-memory-utilization budget, so a low util
     // needlessly starves the KV pool (vs vLLM, whose util is self-relative).
     //
-    // We want the KV pool sized against Atlas's OWN footprint (weights +
+    // We want the KV pool sized against Avarok's OWN footprint (weights +
     // buffers), excluding co-tenants. Two ways to find that footprint:
     //
     //   1. AUTO via LEDGER (default, preferred): the alloc ledger's live
@@ -503,7 +503,7 @@ pub fn build_model(
     //      (issue #740). The former free-memory delta (baseline-at-init
     //      minus free-now) counted OS page cache against us on unified
     //      memory: streaming ~20 GB of safetensors depresses MemFree
-    //      without being an allocation Atlas owns, inflating "Atlas-own"
+    //      without being an allocation Avarok owns, inflating "Avarok-own"
     //      by tens of GB on a cold-cache boot and refusing serves with
     //      >100 GB actually available. The ledger is immune to page-cache
     //      noise, co-tenant churn, and mid-load sampling by construction.
@@ -516,14 +516,14 @@ pub fn build_model(
     //      `set_baseline_free_bytes` to have run (it does under the real
     //      server; absent under the mock backend → we skip it).
     //
-    //   3. MANUAL override: ATLAS_KV_EXTERNAL_RESERVE_GB=<co-tenant GB> still
+    //   3. MANUAL override: AVAROK_KV_EXTERNAL_RESERVE_GB=<co-tenant GB> still
     //      wins when explicitly set (>0), for operators who want to RESERVE
     //      headroom for co-tenants that will arrive LATER (the auto measures
     //      only see current state).
     //
     // The `.min(actual_free - reserve)` clamp below still guarantees a physical
     // fit regardless of which path set `used_so_far`.
-    let manual_reserve_gb = std::env::var("ATLAS_KV_EXTERNAL_RESERVE_GB")
+    let manual_reserve_gb = std::env::var("AVAROK_KV_EXTERNAL_RESERVE_GB")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|&gb| gb > 0.0);
@@ -531,9 +531,9 @@ pub fn build_model(
         let ext = (gb * 1024.0 * 1024.0 * 1024.0) as usize;
         let discounted = used_so_far.saturating_sub(ext);
         tracing::info!(
-            "ATLAS_KV_EXTERNAL_RESERVE_GB={gb} (manual override): discounting \
+            "AVAROK_KV_EXTERNAL_RESERVE_GB={gb} (manual override): discounting \
              external/co-tenant memory from KV budget — used_so_far {:.1} GB → \
-             Atlas-own {:.1} GB",
+             Avarok-own {:.1} GB",
             gib(used_so_far),
             gib(discounted),
         );
@@ -546,9 +546,9 @@ pub fn build_model(
         // disagree — fall through to raw rather than oversize the pool.
         if ledger_live > 0 && ledger_live <= used_so_far {
             tracing::info!(
-                "KV budget self-relative (ledger): Atlas-own {:.1} GB live in \
+                "KV budget self-relative (ledger): Avarok-own {:.1} GB live in \
                  the alloc ledger; {:.1} GB of co-tenant/page-cache use \
-                 excluded (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)",
+                 excluded (set AVAROK_KV_EXTERNAL_RESERVE_GB to override)",
                 gib(ledger_live),
                 gib(used_so_far - ledger_live),
             );
@@ -586,7 +586,7 @@ pub fn build_model(
         }
     } else if let Some(baseline) = spark_runtime::gpu::baseline_free_bytes() {
         // AUTO: bytes this process consumed since context init.
-        let atlas_own = baseline.saturating_sub(actual_free);
+        let avarok_own = baseline.saturating_sub(actual_free);
         // The free-delta above charges the weight loader's TRANSIENT
         // footprint — checkpoint mapping/staging still resident at this
         // instant — as if it were permanent. On a 27B NVFP4 load the delta
@@ -608,7 +608,7 @@ pub fn build_model(
             .map(|e| e.saturating_sub(actual_free))
             .unwrap_or(0);
         let known_own = store.total_bytes().saturating_add(build_own);
-        let settled = atlas_own.min(known_own);
+        let settled = avarok_own.min(known_own);
         // Sanity-gate: baseline must be ≥ free-now, the charge positive and
         // no larger than total used (co-tenants can't be negative). If a
         // co-tenant *freed* memory during our load, baseline > free-now
@@ -618,18 +618,18 @@ pub fn build_model(
         if settled > 0 && settled <= used_so_far {
             tracing::info!(
                 "KV budget self-relative (auto): baseline-free {:.1} GB − free-now \
-                 {:.1} GB = {:.1} GB measured; charging settled Atlas-own {:.1} GB \
+                 {:.1} GB = {:.1} GB measured; charging settled Avarok-own {:.1} GB \
                  (weights {:.1} GB + build allocs {:.1} GB, loader transient \
                  {:.1} GB released from the charge); co-tenants {:.1} GB excluded \
-                 (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)",
+                 (set AVAROK_KV_EXTERNAL_RESERVE_GB to override)",
                 gib(baseline),
                 gib(actual_free),
-                gib(atlas_own),
+                gib(avarok_own),
                 gib(settled),
                 gib(store.total_bytes()),
                 gib(build_own),
-                gib(atlas_own.saturating_sub(settled)),
-                gib(used_so_far - atlas_own.min(used_so_far)),
+                gib(avarok_own.saturating_sub(settled)),
+                gib(used_so_far - avarok_own.min(used_so_far)),
             );
             used_so_far = settled;
         } else {
@@ -663,7 +663,7 @@ pub fn build_model(
             // FP8 drafter weights are default-ON, so `.is_some()` made the
             // KV budget under-reserve by the mirror size on the default path.
             let fp8_mirrors =
-                if std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0") {
+                if std::env::var("AVAROK_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0") {
                     a.drafter_store.total_bytes() / 2
                 } else {
                     0
@@ -810,9 +810,9 @@ pub fn build_model(
             // above: one spare block per sequence plus the dummy slot the
             // OOB-safe paged kernels read.
             //
-            // Kill switch: `ATLAS_KV_POOL_UNCLAMPED` (presence — `=0` is NOT
+            // Kill switch: `AVAROK_KV_POOL_UNCLAMPED` (presence — `=0` is NOT
             // "off") restores the budget-driven pool.
-            let n = if prefix_cache.is_active() || std::env::var("ATLAS_KV_POOL_UNCLAMPED").is_ok()
+            let n = if prefix_cache.is_active() || std::env::var("AVAROK_KV_POOL_UNCLAMPED").is_ok()
             {
                 budget_blocks
             } else {
@@ -829,7 +829,7 @@ pub fn build_model(
                          ({} seq x {} blocks/seq + {} spare + 1 dummy); \
                          {:.2} GB not allocated (prefix caching inactive, so surplus \
                          blocks are unreachable). Restore with --enable-prefix-caching \
-                         or ATLAS_KV_POOL_UNCLAMPED.",
+                         or AVAROK_KV_POOL_UNCLAMPED.",
                         budget_blocks,
                         clamped,
                         max_batch_size,
@@ -880,11 +880,11 @@ pub fn build_model(
         // record for the native bs=32 rung) downgrades the hard error to a
         // warning: the scheduler admits up to max_batch_size and the pool fills on
         // demand (a genuinely over-long burst gets back-pressured by the block
-        // allocator, not a boot-time refusal). Kill switch: ATLAS_KV_OVERCOMMIT=0
+        // allocator, not a boot-time refusal). Kill switch: AVAROK_KV_OVERCOMMIT=0
         // (or =false) restores the boot-time hard refusal. Value is parsed, not
         // presence-checked.
         let overcommit = !matches!(
-            std::env::var("ATLAS_KV_OVERCOMMIT").as_deref(),
+            std::env::var("AVAROK_KV_OVERCOMMIT").as_deref(),
             Ok("0") | Ok("false")
         );
         if overcommit {
@@ -905,7 +905,7 @@ pub fn build_model(
                  but --max-batch-size={} was requested. \
                  KV pool has {} block(s) of {} tokens each; each sequence needs {} block(s). \
                  Try --max-seq-len {} (keeps max_batch_size={}), reduce --max-batch-size, \
-                 or unset ATLAS_KV_OVERCOMMIT=0 to allow on-demand paged allocation (default).",
+                 or unset AVAROK_KV_OVERCOMMIT=0 to allow on-demand paged allocation (default).",
                 max_concurrent,
                 max_seq_len,
                 max_batch_size,

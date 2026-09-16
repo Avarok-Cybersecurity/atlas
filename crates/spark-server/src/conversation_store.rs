@@ -12,14 +12,14 @@
 //!   2. Appends the new turn's items (user input + assistant output)
 //!      back to the conversation after completion.
 //!
-//! Atlas stores conversations in-memory with an LRU+TTL bound, mirroring
+//! Avarok stores conversations in-memory with an LRU+TTL bound, mirroring
 //! the [`crate::response_store`] design but keyed on `conv_<uuid>`.
 //! Persistence (filesystem) is a natural follow-up; the public API
 //! already hides the backend so that's a drop-in swap.
 //!
 //! Items are stored as raw `serde_json::Value` so we can round-trip the
 //! OpenAI wire format (input_items, function_call, function_call_output,
-//! reasoning, …) without coupling to Atlas's internal message schema.
+//! reasoning, …) without coupling to Avarok's internal message schema.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -56,14 +56,14 @@ pub const MAX_ITEMS_PER_INSERT: usize = 20;
 
 impl ConversationStore {
     /// # Errors
-    /// When `ATLAS_CONVERSATION_MAX_ENTRIES` or
-    /// `ATLAS_CONVERSATION_TTL_SECONDS` is set to something that is not a
+    /// When `AVAROK_CONVERSATION_MAX_ENTRIES` or
+    /// `AVAROK_CONVERSATION_TTL_SECONDS` is set to something that is not a
     /// whole number in range — rather than silently serving the default the
     /// operator did not ask for.
     pub fn from_env() -> Result<Arc<Self>, String> {
         let max_entries = crate::env_config::parse_min(
-            "ATLAS_CONVERSATION_MAX_ENTRIES",
-            std::env::var("ATLAS_CONVERSATION_MAX_ENTRIES")
+            "AVAROK_CONVERSATION_MAX_ENTRIES",
+            std::env::var("AVAROK_CONVERSATION_MAX_ENTRIES")
                 .ok()
                 .as_deref(),
             1_usize,
@@ -71,8 +71,8 @@ impl ConversationStore {
         )?
         .unwrap_or(10_000);
         let ttl_secs = crate::env_config::parse_min(
-            "ATLAS_CONVERSATION_TTL_SECONDS",
-            std::env::var("ATLAS_CONVERSATION_TTL_SECONDS")
+            "AVAROK_CONVERSATION_TTL_SECONDS",
+            std::env::var("AVAROK_CONVERSATION_TTL_SECONDS")
                 .ok()
                 .as_deref(),
             1_u64,

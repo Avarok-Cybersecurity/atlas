@@ -31,15 +31,15 @@ pub use validate::validate_serve_args;
 ///
 /// Read from `Cargo.toml` rather than written out here, so the version a build
 /// reports and the version it was packaged as cannot drift. Anything that needs
-/// to record which Atlas produced an artifact should use this rather than
+/// to record which Avarok produced an artifact should use this rather than
 /// re-deriving it.
-pub const ATLAS_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const AVAROK_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser, Debug)]
 #[command(
     name = "spark",
-    version = ATLAS_VERSION,
-    about = "Atlas Spark — pure Rust LLM inference server"
+    version = AVAROK_VERSION,
+    about = "Avarok Spark — pure Rust LLM inference server"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -78,9 +78,9 @@ pub enum Command {
     ///
     /// Every finding here is a condition that has cost hours and used to
     /// present as the same symptom — `recipe "..." is not in the local index
-    /// (0 cached)` — whatever the real cause was: an `~/.atlas` owned by another
+    /// (0 cached)` — whatever the real cause was: an `~/.avarok` owned by another
     /// uid, a `sync-recipes` that was never run, or a signing identity minted
-    /// into a scratch ATLAS_HOME whose key nobody committed.
+    /// into a scratch AVAROK_HOME whose key nobody committed.
     ///
     /// Exits non-zero when anything is wrong, so a provisioning script can gate
     /// on it.
@@ -98,8 +98,8 @@ mod version_tests {
         let err = Cli::try_parse_from(["spark", "--version"]).expect_err("exits early");
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
         assert!(
-            err.to_string().contains(ATLAS_VERSION),
-            "`--version` printed {:?}, which does not carry {ATLAS_VERSION}",
+            err.to_string().contains(AVAROK_VERSION),
+            "`--version` printed {:?}, which does not carry {AVAROK_VERSION}",
             err.to_string()
         );
     }
@@ -108,7 +108,7 @@ mod version_tests {
     fn the_reported_version_is_the_cargo_version() {
         // The point of reading it from Cargo.toml: a release bump moves both or
         // neither. A literal here could silently disagree with the package.
-        assert_eq!(ATLAS_VERSION, env!("CARGO_PKG_VERSION"));
-        assert!(!ATLAS_VERSION.is_empty());
+        assert_eq!(AVAROK_VERSION, env!("CARGO_PKG_VERSION"));
+        assert!(!AVAROK_VERSION.is_empty());
     }
 }

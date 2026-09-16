@@ -32,7 +32,7 @@ fn transformer_layer_has_exactly_one_release_hook() {
 
 /// L2: no environment variable may gate the release chokepoint.
 ///
-/// `ATLAS_GLM_DSA_STATE_LEAK` wrapped the whole loop and restored the leak when present. A
+/// `AVAROK_GLM_DSA_STATE_LEAK` wrapped the whole loop and restored the leak when present. A
 /// model-named env switch that disables an engine invariant is the anti-pattern upstream has
 /// been deleting; the paired A/B it existed for is recorded in the commit history, and a
 /// future control arm is built from the parent commit, not from a runtime flag.
@@ -48,7 +48,7 @@ fn the_release_chokepoint_has_no_env_escape_hatch() {
          switched off is not an invariant"
     );
     assert_eq!(
-        SEQUENCE_RS.matches("ATLAS_GLM_DSA_STATE_LEAK").count(),
+        SEQUENCE_RS.matches("AVAROK_GLM_DSA_STATE_LEAK").count(),
         0,
         "the DSA leak switch must stay deleted"
     );

@@ -14,50 +14,50 @@
    `LEG_DONE|_DONE|SERVE_DIED|Traceback|CUDA error|out of memory`).
 
 ## Configuration of record
-- Box: dgx1. Model: 27B (Atlas: `centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf`; vLLM: same checkpoint if it
+- Box: dgx1. Model: 27B (Avarok: `centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf`; vLLM: same checkpoint if it
   loads, else `nvidia/Qwen3.6-27B-NVFP4` — the leg json records which).
-- Atlas serve: golden flags + `--max-batch-size 16`, fifo scheduling (SLAI starves prefill at load),
-  env incl. `ATLAS_MTP_GATE_FORCE=1`. Binary: pushed tip of PR #369.
+- Avarok serve: golden flags + `--max-batch-size 16`, fifo scheduling (SLAI starves prefill at load),
+  env incl. `AVAROK_MTP_GATE_FORCE=1`. Binary: pushed tip of PR #369.
 - vLLM serve: `sparkrun-eugr-vllm:latest` (vLLM 0.23.1rc1.dev207), `--max-num-seqs 128`,
   `--max-model-len 32768`, util 0.85.
-- Synthetic scoreboard: `bench/bench-atlas-concurrency.py`, C=[1,2,4,8,16], default 4 ISL/OSL
+- Synthetic scoreboard: `bench/bench-avarok-concurrency.py`, C=[1,2,4,8,16], default 4 ISL/OSL
   regimes (≤4096); agentic-harness `target_concurrency` sweep follows as a second driver.
 
 ## Log (appended by drivers)
 5048fa13d69c2870420a8b9050f54221  conc_sweep/spark_phaseA_baseline
-- 2026-07-25T18:13:50Z LEG atlas_synth SERVE_DIED
-- CONFIG CHANGE after first atlas_synth SERVE_DIED: --max-batch-size 16 + slots 128 + nd=3 needs
+- 2026-07-25T18:13:50Z LEG avarok_synth SERVE_DIED
+- CONFIG CHANGE after first avarok_synth SERVE_DIED: --max-batch-size 16 + slots 128 + nd=3 needs
   ~52G of SSM reservations (seq-state 14.2G + rollback ring 18.9G + Marconi 18.9G) + 17.5G weights
-  before ANY KV — preflight refusal territory at util 0.70. New atlas C-config: --max-batch-size 20
+  before ANY KV — preflight refusal territory at util 0.70. New avarok C-config: --max-batch-size 20
   (headroom over C=16; pool-boundary exhaustion KILLS requests) + --ssm-cache-slots 32 (synthetic
   sweep has no multi-turn reuse; 4.7G) = 46.2G SSM. Driver now captures a deathlog on serve failure.
 - 2026-07-25T19:15:28Z LEG vllm_synth DONE on centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf -> results/vllm_synth.json
 - 2026-07-25T19:15:34Z PHASEA_DONE
-- 2026-07-25T19:17:44Z LEG atlas_synth SERVE_DIED (deathlog: conc_sweep/atlas_synth.deathlog)
+- 2026-07-25T19:17:44Z LEG avarok_synth SERVE_DIED (deathlog: conc_sweep/avarok_synth.deathlog)
 - 2026-07-25T19:17:47Z PHASEA_DONE
-- SECOND atlas_synth death, deathlog decisive: "39.7 GB consumed + 50.5 GB inference reserve =
+- SECOND avarok_synth death, deathlog decisive: "39.7 GB consumed + 50.5 GB inference reserve =
   90.2 GB committed" vs 85.2 budget at bs=20/nd=3. Fix: bs=16 (saves ~8.3G: seq-state 3.6 + ring
   4.7) AND --max-seq-len 4096 (the sweep's regimes cap at ISL+OSL=2048; 32768 was inflating
   max_blocks_per_seq metadata and KV expectations for no benefit). nd=3 kept for C=1 K=4 fairness.
 51fc31d43a6e59aec8e9eaced56a02b2  conc_sweep/spark_phaseB
 5048fa13d69c2870420a8b9050f54221  conc_sweep/spark_phaseA_baseline
-- 2026-07-25T22:10:42Z LEG atlas_synth DONE -> results/atlas_synth.json
+- 2026-07-25T22:10:42Z LEG avarok_synth DONE -> results/avarok_synth.json
 - 2026-07-25T22:10:46Z PHASE A compare written -> results/compare.txt
 - 2026-07-25T22:10:46Z PHASEA_DONE
-- 2026-07-26T00:40:49Z LEG atlasB_nographs DONE -> results/atlasB_nographs.json
-- 2026-07-26T02:57:30Z LEG atlasB_graphs DONE -> results/atlasB_graphs.json
+- 2026-07-26T00:40:49Z LEG avarokB_nographs DONE -> results/avarokB_nographs.json
+- 2026-07-26T02:57:30Z LEG avarokB_graphs DONE -> results/avarokB_graphs.json
 - 2026-07-26T02:57:34Z PHASEB_DONE
-- 2026-07-26T18:21:44Z LEG atlasC_perseq DONE -> results/atlasC_perseq.json
-- 2026-07-26T21:07:11Z LEG atlasC_batched DONE -> results/atlasC_batched.json
+- 2026-07-26T18:21:44Z LEG avarokC_perseq DONE -> results/avarokC_perseq.json
+- 2026-07-26T21:07:11Z LEG avarokC_batched DONE -> results/avarokC_batched.json
 - 2026-07-26T21:07:15Z PHASEC_DONE
-- 2026-07-27T02:57:15Z LEG atlasD_kmarm DONE -> results/atlasD_kmarm.json
-- 2026-07-27T05:32:37Z LEG atlasD_kmarm_graphs DONE -> results/atlasD_kmarm_graphs.json
+- 2026-07-27T02:57:15Z LEG avarokD_kmarm DONE -> results/avarokD_kmarm.json
+- 2026-07-27T05:32:37Z LEG avarokD_kmarm_graphs DONE -> results/avarokD_kmarm_graphs.json
 - 2026-07-27T05:32:41Z PHASED_DONE
 
 ## 2026-07-27 — the n=16 step decomposed (this is where the gap lives)
 
-Instruments: `ATLAS_MS_PROFILE` (branch split), `ATLAS_SSM_MS_PROFILE` (mixer vs FFN inside the SSM
-layers), `ATLAS_SSM_DETAIL_PROFILE` (mixer stages). Config: phase-D binary, bs=16, fifo, slots 32.
+Instruments: `AVAROK_MS_PROFILE` (branch split), `AVAROK_SSM_MS_PROFILE` (mixer vs FFN inside the SSM
+layers), `AVAROK_SSM_DETAIL_PROFILE` (mixer stages). Config: phase-D binary, bs=16, fifo, slots 32.
 
 **Step at n=16 = 264.9 ms** (vLLM's is 94 ms):
 
@@ -78,8 +78,8 @@ measured the symptom (SSM time linear in n) without being able to name the cause
 **The recurrent inner is bandwidth-bound, not launch-bound.** 43 us per sequence per layer for
 6 MB of FP32 h_state traffic (3 MB read + 3 MB write) = ~140 GB/s, about half of LPDDR5X peak.
 Batching its launches therefore cannot help much, and measurement agrees:
-`ATLAS_SSM_BATCHED_RECURRENT` + `ATLAS_GDN_FUSED_NORM` = **+2.6% at C=16** (53.7 → 55.1 tok/s),
-coherence preserved. `ATLAS_GDN_FUSED_CONV` adds nothing on top. This confirms the older
+`AVAROK_SSM_BATCHED_RECURRENT` + `AVAROK_GDN_FUSED_NORM` = **+2.6% at C=16** (53.7 → 55.1 tok/s),
+coherence preserved. `AVAROK_GDN_FUSED_CONV` adds nothing on top. This confirms the older
 "batched-recurrent +1-2%" null was not an artifact of the FFN masking it.
 
 **Both FFN and GDN run at ~2x their own bandwidth floor**, and the whole step is ~4x the roofline
@@ -92,13 +92,13 @@ mixer (35%) and attention (21%) — not one hotspot.
 |---|---|---|
 | phase-D tip | 53.7 | |
 | + batched recurrent + fused norm | 55.1 | +2.6%, coherence OK |
-| + FFN NVFP4 MMQ (drop `ATLAS_NO_FFN_NVFP4_MMQ`) | 61.2 | +11.3%, C=1 neutral, output identical |
+| + FFN NVFP4 MMQ (drop `AVAROK_NO_FFN_NVFP4_MMQ`) | 61.2 | +11.3%, C=1 neutral, output identical |
 
 MMQ re-measured 3x per leg (the 11% was N=1): MMQ off 55.0 / 54.8 / 54.8 (mean 54.9), MMQ on
 61.4 / 59.1 / 61.2 (mean 60.6) = **+10.4%, ranges do not overlap**. The MMQ legs also completed the
 full 16x192 tokens twice, where the frozen config always truncated to 2977.
 
-`ATLAS_NO_FFN_NVFP4_MMQ` is a PRESENCE flag: `=0` does NOT enable MMQ, the variable must be absent.
+`AVAROK_NO_FFN_NVFP4_MMQ` is a PRESENCE flag: `=0` does NOT enable MMQ, the variable must be absent.
 
 **Not a km-arm regression:** the balanced/prefill regime failures are the pre-existing KV
 pool-exhaustion wedge tracked in open PR #373 ("decode alloc fails, scheduler livelocks in
@@ -123,13 +123,13 @@ apparent "C=2 slower than C=1" is entirely 25.5 -> 20.6 from spec going away.
 
 **Two consequences that should steer everything after this:**
 
-1. **Atlas non-spec at C=1 is 14.1 tok/s; vLLM at C=1 is 14.2.** Identical. At batch 1 both engines
+1. **Avarok non-spec at C=1 is 14.1 tok/s; vLLM at C=1 is 14.2.** Identical. At batch 1 both engines
    sit on the same bandwidth-bound floor, and 100% of our 1.93x C=1 win is MTP speculative decoding.
    We have no baseline decode advantage to fall back on.
 2. **Scaling, normalised to each engine's own C=1 non-spec throughput:**
    vLLM: 1.0x -> 1.96x -> 3.75x -> 6.96x -> 11.9x  (C=1,2,4,8,16)
-   Atlas: 1.0x -> 1.46x -> 2.60x -> ~3.9x -> ~4.3x
-   vLLM scales nearly linearly to C=8; Atlas saturates around 4.3x. The gap is a BATCHING-EFFICIENCY
+   Avarok: 1.0x -> 1.46x -> 2.60x -> ~3.9x -> ~4.3x
+   vLLM scales nearly linearly to C=8; Avarok saturates around 4.3x. The gap is a BATCHING-EFFICIENCY
    gap, and it is already visible at C=2 (1.46x where 2.0x is available).
 
 **Therefore the two levers with real headroom are:**
@@ -139,7 +139,7 @@ apparent "C=2 slower than C=1" is entirely 25.5 -> 20.6 from spec going away.
 
 ## 2026-07-27 — CONFIRMED on hardware: the SSM-layer FFN reads its weights TWICE above n=8
 
-Zero-edit probe (`ATLAS_SSM_MS_PROFILE=1`, one serve, drove C=4/8/16, 9168 samples per n):
+Zero-edit probe (`AVAROK_SSM_MS_PROFILE=1`, one serve, drove C=4/8/16, 9168 samples per n):
 
 | n | mixer us/layer | FFN us/layer | FFN us per seq |
 |---|---|---|---|
@@ -159,7 +159,7 @@ CONFIRMED without touching a line of source.
 **Size of the prize:** ~1000 us/layer x 48 layers = **~48 ms off a 264.9 ms step (~18%)**, i.e.
 C=16 roughly 60 -> 73 tok/s, stacking with the MMQ lever. The fix is an added dispatch arm routing
 `n>8 && ffn.is_dense()` to `forward_prefill` (the NVFP4 MMQ path the ATTENTION layers already use —
-`multi_seq/ffn.rs:135`), behind an `ATLAS_NO_SSM_FFN_PREFILL` kill switch. n<=8 must keep
+`multi_seq/ffn.rs:135`), behind an `AVAROK_NO_SSM_FFN_PREFILL` kill switch. n<=8 must keep
 `forward_km`: the recorded crossover says GEMV still wins at M=4. C=1 cannot be affected (n=1 never
 enters this arm).
 
@@ -167,7 +167,7 @@ enters this arm).
 
 `trait_decode_multi_seq.rs`: added an `n > 8 && ffn.is_dense()` arm routing to `forward_prefill`
 (weights read ONCE) above the chunked batch-8 GEMV arm. Direct twin of the attention ladder's
-"WIDE-VERIFY BATCHED DENSE FFN" branch. Default ON, kill switch `ATLAS_NO_SSM_FFN_PREFILL=1`
+"WIDE-VERIFY BATCHED DENSE FFN" branch. Default ON, kill switch `AVAROK_NO_SSM_FFN_PREFILL=1`
 (strict `== "1"`, not a presence check).
 
 3 reps per cell, stacked on the Tier-1 env set (MMQ on + batched recurrent + fused norm):
@@ -191,7 +191,7 @@ vLLM 168.9. Ratio 0.35x -> **0.47x**.
 `step_mtp` already takes `&mut [ActiveSeq]` and is index-correct over it, and no `active[0]`
 assumption survives in the MTP verify path — so the `active.len() == 1` gate was the ONLY thing
 stopping multi-seq speculation. Replaced with `active.len() <= mtp_max_seqs()`
-(`ATLAS_MTP_MAX_SEQS`, default 2).
+(`AVAROK_MTP_MAX_SEQS`, default 2).
 
 This runs MTP PER SEQUENCE: n verify forwards of M=K+1 each, i.e. n weight sweeps per step instead
 of one. It therefore only pays where the extra accepted tokens outweigh the extra sweeps.
@@ -222,7 +222,7 @@ MLPerf-edge runs target_concurrency=1, so the golden submission path is unaffect
    Model trait. NOTE the shape already exists: `prefill_batch_chunk(&mut [PrefillSlice])` does n
    sequences x variable tokens. Batched verify is that shape plus (a) per-seq SSM state in, not
    fresh, (b) logits at EVERY position, (c) per-seq rollback. Build on it rather than from scratch.
-2. Mixer tensor-core projections (`ATLAS_SSM_TC_PROJ`, ssm_batched.rs) — qkvz/out_proj still run
+2. Mixer tensor-core projections (`AVAROK_SSM_TC_PROJ`, ssm_batched.rs) — qkvz/out_proj still run
    scalar batch-16 GEMV at 2.3-3.0 TFLOP/s, 5-7x off the weight-stream floor. Est +10%.
 3. LM head at n>=2 off the base `w4a16_gemm` (floor ~2.6 ms vs 20 ms today). Est +5-6%.
 4. Host sampling: b1_margin gate-after-scan, f2 softmax when inert, batch-wide argmax poison.
@@ -230,7 +230,7 @@ MLPerf-edge runs target_concurrency=1, so the golden submission path is unaffect
 ## 2026-07-27 — correctness fix (self-inflicted) + FFN crossover is n=5, not n=9
 
 ### BUG I INTRODUCED, now fixed
-Flipping `ATLAS_MTP_MAX_SEQS` to 2 exposed that the spec-eligibility predicate reads
+Flipping `AVAROK_MTP_MAX_SEQS` to 2 exposed that the spec-eligibility predicate reads
 `inside_thinking`, `post_think_emitted`, `suppress_tool_call` and `disable_mtp` from **`active[0]`
 only** (`scheduler/mod.rs`). These are PER-SEQUENCE properties: at n=2, sequence 1 would be
 speculated even when its own `suppress_tool_call`/`disable_mtp` said it must not be. Now
@@ -240,7 +240,7 @@ path is unchanged by construction. Verified: tool calls still emit correctly wit
 Same commit fixes the MTP gate's throughput accounting: `emitted` was
 `active[0].seq_len - before`, counting ONE sequence's tokens while timing a step that produced n
 sequences' worth — under-reporting MTP throughput by ~n and biasing the gate toward serial decode.
-Now summed over all active sequences. (Inert under `ATLAS_MTP_GATE_FORCE=1`, which the benchmarks
+Now summed over all active sequences. (Inert under `AVAROK_MTP_GATE_FORCE=1`, which the benchmarks
 set, but wrong for anyone who doesn't.)
 
 ### The FFN tile-GEMM crossover is n=5
@@ -256,7 +256,7 @@ GEMM is simply better per pass from n=5 up. n=4 regresses, so the GEMV genuinely
 ### Sweep with everything landed
 | C | 1 | 2 | 4 | 8 | 16 |
 |---|---|---|---|---|---|
-| Atlas | 25.5 | 25.3 | 37.9 | **57.9** | **79.5** |
+| Avarok | 25.5 | 25.3 | 37.9 | **57.9** | **79.5** |
 | vLLM | 14.2 | 27.8 | 53.3 | 98.8 | 168.9 |
 | ratio | **1.80x** | 0.91x | 0.71x | 0.59x | 0.47x |
 
@@ -266,10 +266,10 @@ The five background agents converged on ONE root cause, from vLLM's installed so
 **vLLM never lets M influence kernel selection.** Marlin runs `mma` tensor cores even at M=1
 (`gptq_marlin.cu`: `thread_m_blocks = min(ceil(M/16), 4)`, no GEMV path at all), and the CUTLASS
 FP4 SM120 path has one fixed 128x128x128 tile. So its weight cost is FLAT from M=1 to M=16.
-Atlas instead dispatches BY M into a scalar-FMA GEMV ladder whose runtime is proportional to M.
+Avarok instead dispatches BY M into a scalar-FMA GEMV ladder whose runtime is proportional to M.
 That single design difference is the marginal-cost gap.
 
-`ATLAS_SSM_TC_PROJ` routes the mixer's qkvz/out_proj onto `w4a16_gemm_t` (M64/N128 FP8-MMA tile
+`AVAROK_SSM_TC_PROJ` routes the mixer's qkvz/out_proj onto `w4a16_gemm_t` (M64/N128 FP8-MMA tile
 GEMM). Cost to implement: two dispatch arms. The transposed NVFP4 twins `qkvz_nvfp4_t` /
 `out_proj_nvfp4_t` are ALREADY built at load and already used by the SSM PREFILL path — no repack,
 no new kernel, no new buffer, no extra VRAM.
@@ -287,7 +287,7 @@ assume one transfers.
 **ACCURACY DEBT (tracked, not yet paid — per the standing "no gates until parity" directive):**
 `w4a16_gemm_t` is W4A8 (E4M3 activations) where the GEMV is W4A16, so it CAN move a greedy token.
 It is the production SSM prefill path for these same two weights and the coherence smoke is
-identical, but a BFCL gate is owed before merge. Same debt applies to `ATLAS_MTP_MAX_SEQS=2`.
+identical, but a BFCL gate is owed before merge. Same debt applies to `AVAROK_MTP_MAX_SEQS=2`.
 
 ## Scoreboard
 | C | session start | now | vLLM | ratio |
@@ -300,7 +300,7 @@ identical, but a BFCL gate is owed before merge. Same debt applies to `ATLAS_MTP
 
 ## Next, from the agents (ranked, all with file:line in their reports)
 1. **LM head kernel** — `decode_a2.rs:429` calls `w4a16_gemm` unconditionally; its M64 tile wastes
-   75% of the MMA at M=16, giving a FLAT ~20 ms/step against a 2.65 ms roofline. Atlas ALREADY owns
+   75% of the MMA at M=16, giving a FLAT ~20 ms/step against a 2.65 ms roofline. Avarok ALREADY owns
    `w4a16_gemv_batch4/8` and the MTP verify path (`impl_a3.rs:160-192`) already routes M<=8 there
    with a comment measuring the same 19.3 ms. Est **10-17 ms**, ~10 lines. Cheapest item on the board.
 2. **GDN third h_state pass** — `_f32_norm`/`_f32_conv_norm`/`_f32_strided*` re-read all of H after
@@ -319,7 +319,7 @@ Same root cause as the mixer and the FFN, third instance: the decode head called
 data at padded_n=16, so it ran at ~1/7 of the weight-stream floor — and being FLAT in n, it sat in
 the FIXED term at every batch size, which is why C=4 gained most.
 
-Atlas already owned the fix: the MTP verify path (`impl_a3.rs`) routes M<=8 to the batched GEMV
+Avarok already owned the fix: the MTP verify path (`impl_a3.rs`) routes M<=8 to the batched GEMV
 with an nsys note measuring **19.3 ms for the GEMM vs ~2.5 ms** for the GEMV streaming the same
 636 MB once. The decode head never dispatched there, and the MODEL level had no batch16 handle at
 all (the SSM mixer carries one) — so there was no arm above 8 even if it had.
@@ -346,10 +346,10 @@ C=16 has gone 59.9 -> 92.1 tok/s (**+54%**) this session; the vLLM ratio 0.35x -
 C=4 is now within 13% of vLLM.
 
 ## The pattern, stated plainly
-Every win this session is the SAME bug in a different place: **Atlas dispatches by M into a
+Every win this session is the SAME bug in a different place: **Avarok dispatches by M into a
 scalar-FMA GEMV/chunked path where a tensor-core tile GEMM was already available and already used
 elsewhere in the tree.** FFN (+30%), mixer projections (+9%), lm_head (+22/12/6%). vLLM never makes
-this choice — Marlin issues mma at M=1. Anywhere Atlas still selects a kernel BY M is a suspect.
+this choice — Marlin issues mma at M=1. Anywhere Avarok still selects a kernel BY M is a suspect.
 
 ## Remaining, ranked
 1. GDN third h_state pass (norm clamp re-reads H after writing it) — ~8.4 ms/step at n=16,
@@ -376,7 +376,7 @@ not the model — the "collapse the double read via the algebraic identity" item
 return ~1-2%, not the ~5% its traffic arithmetic suggests, and it is token-equal-not-bit-identical,
 so it is now a poor trade. DEPRIORITISED.
 
-### Re-measured decomposition at n=16 (eager, ATLAS_MS_PROFILE, 190 samples)
+### Re-measured decomposition at n=16 (eager, AVAROK_MS_PROFILE, 190 samples)
 | block | before all fixes | now | change |
 |---|---|---|---|
 | TOTAL | 264.9 ms | **150.4 ms** | -43% |
@@ -405,7 +405,7 @@ out_proj 13.5 ms**. qkvz fell 678 -> 313 us/layer from the tensor-core arm, as i
 ### Scoreboard
 | C | 1 | 2 | 4 | 8 | 16 |
 |---|---|---|---|---|---|
-| Atlas | 25.5 | 24.4 | 46.1 | 65.5 | **93.2** |
+| Avarok | 25.5 | 24.4 | 46.1 | 65.5 | **93.2** |
 | vLLM | 14.2 | 27.8 | 53.3 | 98.8 | 168.9 |
 | ratio | **1.80x** | 0.88x | 0.87x | 0.66x | **0.55x** |
 
@@ -416,11 +416,11 @@ Analysis said the FFN's MMQ tile is hard-wired to `mmq_x=128`, so at M=16 it iss
 arithmetic predicted 41.1 ms against a 42.0 ms measurement, an almost exact fit, and therefore
 +7-12% at C=16 from sizing the tile to the batch.
 
-Implemented: `atlas_nvfp4_mmq{16,32}_{nc,wc}` instantiations of the SAME template (mmq_x is a free
+Implemented: `avarok_nvfp4_mmq{16,32}_{nc,wc}` instantiations of the SAME template (mmq_x is a free
 template parameter; the vendored MMA path's granularity is 8), `nvfp4_mmq_gemm_tiled` with the smem
 size DERIVED from the vendor layout (the derivation reproduces the previously-hardcoded 57856 at
 mmq_x=128, which is the check that it matches), dispatch by m in dense_ffn, kill switch
-`ATLAS_NO_MMQ_SMALL_TILE=1`. Verified the new entries really compiled (present in t0__nvfp4_mmq.ptx).
+`AVAROK_NO_MMQ_SMALL_TILE=1`. Verified the new entries really compiled (present in t0__nvfp4_mmq.ptx).
 
 **MEASURED FLAT.** 2 reps/cell, output SHA identical (`981ca449...`):
 | C | 128 tile | M-sized tile |
@@ -468,7 +468,7 @@ that, two cheaper things settled it:
 the remaining ~2,000 calls cannot beat what graphs get for free. **The attention pipeline rewrite is
 retired** — do not re-open it without new evidence.
 
-`ATLAS_DECODE_GRAPHS_MULTISEQ` is now DEFAULT-ON (`ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1` disables). Its
+`AVAROK_DECODE_GRAPHS_MULTISEQ` is now DEFAULT-ON (`AVAROK_NO_DECODE_GRAPHS_MULTISEQ=1` disables). Its
 own comment had said "opt-in until soaked; flip the default once validated" — this is that
 validation, and it is exactly the pattern `feedback_good_defaults_not_flags` exists to catch.
 
@@ -557,8 +557,8 @@ The adjudication argued the attention leg is OVER-counted (verify rows share a s
 n=8xK=4 streams 8 KVs not 32 => +5-15 ms, not +31), which would put the budget in the BUILD band —
 and still killed, because:
 
-**Atlas C=1 non-spec is 14.1 tok/s; vLLM C=1 is 14.2. PER-SEQUENCE PARITY on identical silicon.
-Yet vLLM scales 11.9x to C=16 where Atlas scales 6.8x.** The whole C=8/C=16 deficit is
+**Avarok C=1 non-spec is 14.1 tok/s; vLLM C=1 is 14.2. PER-SEQUENCE PARITY on identical silicon.
+Yet vLLM scales 11.9x to C=16 where Avarok scales 6.8x.** The whole C=8/C=16 deficit is
 batch-scaling efficiency — pure software, un-diagnosed. Fixing it lifts EVERY cell. Fused verify
 even optimistically flips C=4 and maybe C=8 while C=16 stays lost (~131 vs 168.9), and it would be
 built against a substrate the scaling fix moves (base step, attention batch behaviour, GDN
@@ -610,7 +610,7 @@ Floor at 230 GB/s = 37.2 ms. Measured ~57 ms => **1.53x over floor, ~20 ms recov
 The FFN block is RE-OPENED. (The earlier MMQ-tile null result stands as a null for THAT lever,
 not as proof the block is at its floor.)
 
-### Full step budget at C=16, eager, 190 samples/point (ATLAS_MS_PROFILE + ATLAS_SSM_DETAIL)
+### Full step budget at C=16, eager, 190 samples/point (AVAROK_MS_PROFILE + AVAROK_SSM_DETAIL)
 Instrumented forward 152.1 ms; actual step ~167 ms (graphs on) => host leg ~20 ms.
 
 | block                | measured | floor @achieved | ratio | recoverable |
@@ -627,16 +627,16 @@ Total traffic per decode step at n=16 = **18.4 GB** (FFN 8.56 + GDN state r+w 4.
 2.77 + KV 1.05 + attn weights 0.59 + lm_head 0.64). At achieved bandwidth that is **~82 ms/step
 = a 195 tok/s roofline at C=16**.
 - vLLM 168.9 tok/s = 94.7 ms/step = **87% of roofline** -> vLLM is essentially AT the memory wall.
-- Atlas 95.9 tok/s = 167 ms/step = **49% of roofline**.
+- Avarok 95.9 tok/s = 167 ms/step = **49% of roofline**.
 **To beat vLLM we need <=94 ms/step.** The six prizes above sum to more than the 73 ms required,
 so the target is arithmetically reachable without inventing a new algorithm. No single lever
 does it; this is a six-front grind, and NONE of the six is at its floor.
 
 ### Instrument trap (cost one full measurement cycle)
-`ATLAS_MS_PROFILE` forces eager, but `ATLAS_SSM_MS_PROFILE` / `ATLAS_SSM_DETAIL_PROFILE` only
+`AVAROK_MS_PROFILE` forces eager, but `AVAROK_SSM_MS_PROFILE` / `AVAROK_SSM_DETAIL_PROFILE` only
 skip during graph CAPTURE. Once multi-seq CUDA graphs became default-on, the step REPLAYS the
 graph and the Rust-side SSM timers never execute => zero profile lines, silently. Always pass
-`ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1` with the SSM profilers. (Same class as the ATLAS_MTP_TIMING
+`AVAROK_NO_DECODE_GRAPHS_MULTISEQ=1` with the SSM profilers. (Same class as the AVAROK_MTP_TIMING
 K=2-only trap: an instrument existing != an instrument covering your config.)
 
 ### Weighting trap
@@ -649,17 +649,17 @@ the layer count.
 
 `nsys profile --trace=cuda --cuda-graph-trace=node` on a native serve, real C=16 drive at
 97.5 tok/s (matches the committed baseline, so the profiled run is representative).
-Report: /tmp/atlas_prof3.nsys-rep. Invocation that WORKS: plain `nsys profile` + SIGTERM to
+Report: /tmp/avarok_prof3.nsys-rep. Invocation that WORKS: plain `nsys profile` + SIGTERM to
 the spark PID. `--delay/--duration` produced no report; `--cpuctxsw` is invalid on
 `nsys launch`; the driver script's port must match the serve's.
 
 | kernel                                   | %GPU | inst/step | avg     | ms/step | vs floor |
 |------------------------------------------|------|-----------|---------|---------|----------|
-| atlas_nvfp4_mmq16_nc (FFN)               | 35.5 | 154       | 283 us  | 43.6    | 1.29x    |
+| avarok_nvfp4_mmq16_nc (FFN)               | 35.5 | 154       | 283 us  | 43.6    | 1.29x    |
 | **w4a16_gemm_t_k64 (projections)**       | 26.6 | 129       | 255 us  | **32.9**| **2.1x** |
 | gated_delta_rule_decode_f32_strided_norm | 19.2 | 48        | 613 us  | 29.4    | 1.31x    |
 | **w4a16_gemv_batch16 (lm_head)**         | 6.3  | 1         | 9.68 ms | **9.7** | **3.5x** |
-| atlas_nvfp4_mmq32_nc                     | 3.6  | 16        | 276 us  | 4.4     | --       |
+| avarok_nvfp4_mmq32_nc                     | 3.6  | 16        | 276 us  | 4.4     | --       |
 | rope_forward                             | 0.8  | 256       | 4.5 us  | 1.2     | fan-out  |
 | rms_norm                                 | 0.5  | 414       | 1.5 us  | 0.6     | fan-out  |
 | **paged_decode_attn**                    | 0.4  | 16        | 42.6 us | **0.68**| --       |
@@ -667,7 +667,7 @@ the spark PID. `--delay/--duration` produced no report; `--cpuctxsw` is invalid 
 ### ★ THE ATTENTION LEVER IS DEAD — DO NOT RE-OPEN
 `paged_decode_attn` is **0.68 ms/step, 0.4% of GPU time**. The GQA 6x-KV-re-read fold, the
 per-position shuffle-chain rewrite, the split-KV work — ALL of it targets 0.4% of the GPU.
-The 38.5 ms that ATLAS_MS_PROFILE attributes to "attention layers" is those layers' FFN
+The 38.5 ms that AVAROK_MS_PROFILE attributes to "attention layers" is those layers' FFN
 (~12 ms) + their projections (~16 ms) + fan-out; the attention kernel itself is noise.
 This killed three successive sizings of that lever (19 ms -> 3 ms -> 1 ms -> 0).
 
@@ -752,7 +752,7 @@ CTAs < 48 you cannot fill one per SM no matter the residency.
 3. M_TILE=16 + warp-over-N repartition: smem 39.1 -> 25.3 KiB => 3 CTAs/SM. ~3.6 ms,
    bit-identical, qkvz only. Does nothing for out_proj/k/v.
 4. Persistent/stream-K: ~10-12 ms but high risk; split-K first. Note `mul_mat_q_stream_k_fixup`
-   exists (`q4k_vendor/mmq.cuh:3789`) but Atlas bypasses it with `fixup=false`, justified as
+   exists (`q4k_vendor/mmq.cuh:3789`) but Avarok bypasses it with `fixup=false`, justified as
    "prefill has thousands of tiles >> 48 SMs" -- that rationale is decode-blind and INVERTS
    at M=16.
 
@@ -767,7 +767,7 @@ blocks the BFCL run needed to discharge split-K's numerical debt.
 - `2db1b349` **fused q|k|v into ONE N=14336 GEMM writing qkv_buf DIRECTLY.** 3 GEMMs
   (96/8/8 CTAs) -> 1 (112 CTAs), AND the 48-copy per-layer scatter deleted (`per_seq_qkv`
   already equalled the fused row width). 4 reps/leg, byte-identical: **97.80 -> 99.38 tok/s
-  (+1.6%), sigma 0.09, distributions disjoint.** Kill switch ATLAS_NO_FUSED_QKV=1.
+  (+1.6%), sigma 0.09, distributions disjoint.** Kill switch AVAROK_NO_FUSED_QKV=1.
   ★ `n > 8` is REQUIRED: `wide_verify_gemm` early-returns on the batched-GEMV arms for m<=8
   using the BASE weight and ignoring `w_t`, so a fused N reads past q_proj. An earlier build
   without the gate produced truncated output + HTTP 500s — caught by BYTE-IDENTITY, not by
@@ -838,7 +838,7 @@ neutral the pipeline reduces to the raw argmax modulo those two ids — so: run 
 (64-byte D2H), and if a returned token lands on a masked id, fall THROUGH and redo the step on
 the host. `THINK_MASK_FALLBACKS` counts those.
 Measured 3 reps/leg, byte-identical: **99.60 -> 102.00 tok/s, sigma 0.26 -> 0.17, disjoint.**
-Kill switch `ATLAS_NO_THINKENDED_GPU_ARGMAX=1`.
+Kill switch `AVAROK_NO_THINKENDED_GPU_ARGMAX=1`.
 ★ TRAP hit while writing it: the first version returned `Vec::new()` from the fall-back arm,
 which emits NO tokens and stalls every sequence. The fast path must yield an `Option` so
 "needs the host pipeline after all" genuinely falls through.
@@ -883,7 +883,7 @@ SIX hypotheses eliminated, all by measurement:
    `weight_scale [248320, 320]`, K=5120, N = 1940x128 exactly).
 3. pointer misalignment — NO: every arena buffer is its own `gpu.alloc()`
    (`buffers.rs:134-147`), i.e. a separate cuMemAlloc at 256-B alignment.
-4. CUDA-graph interaction — NO: faults identically with `ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1`.
+4. CUDA-graph interaction — NO: faults identically with `AVAROK_NO_DECODE_GRAPHS_MULTISEQ=1`.
 5. unguarded epilogue store overrunning `logits` at M_TILE=64 (48 spare rows x 496,640 B =
    23.8 MB, which WOULD explain why only the widest N faults) — NO: the store is explicitly
    guarded, `if (r0 < M && c0 < N)`.
@@ -921,7 +921,7 @@ well-occupied; expected ~5 ms.
 
 ## 2026-07-27 (late) — FFN MMQ BLOCK OPENED: under-fill REFUTED, occupancy hint NULL
 
-The FFN (`atlas_nvfp4_mmq16_nc`) is the largest single block: **192 inst/step, 54.3 ms,
+The FFN (`avarok_nvfp4_mmq16_nc`) is the largest single block: **192 inst/step, 54.3 ms,
 35.5% of GPU time**. Grid is `[div_ceil(N,128), div_ceil(M,16), 1]`, block 256, so at decode
 M=16 `gridDim.y == 1` and gate/up (N=17408) launch **136 CTAs** while down (N=5120) launches
 **40 CTAs on 48 SMs**. That looked like the same under-fill as the projections.
@@ -941,7 +941,7 @@ sitting unused — do NOT integrate it on under-fill grounds; the measurement sa
 
 ### Occupancy hint: NULL, reverted
 Dynamic smem is `4*(mmq_x + pad256(mmq_x*36) + 128*76)` = **41.06 KiB at mmq_x=16**, 43.1 KiB
-at 32, vs 100 KiB/SM on sm_121 — so TWO CTAs fit, yet every Atlas entry carried
+at 32, vs 100 KiB/SM on sm_121 — so TWO CTAs fit, yet every Avarok entry carried
 `__launch_bounds__(256, 1)`. Raised the four small-M entries to `(256, 2)` (mmq128 needs
 56.5 KiB and must stay at 1). Measured C=16, 4 reps, byte-identical:
 control 102.4/102.0 (mean 102.20) vs 102.8/102.4/102.5/102.2 (mean 102.48) — **+0.27%, ranges
@@ -954,7 +954,7 @@ block_nvfp4's real 36 bytes per 64 weights). There is **no structural defect** h
 capability, no wrong dispatch, no under-fill — unlike every other win this session. Closing
 the remaining ~23% means real inner-loop work inside vendored llama MMQ (dequant/scale ALU
 overlap with the cp.async weight stream), worth ~6.7 ms. That is a genuine project, not a
-dispatch fix, and it is the code path Atlas owns least.
+dispatch fix, and it is the code path Avarok owns least.
 
 ## 2026-07-27 (night) — OVERNIGHT BASELINE + a measurement artifact worth knowing
 
@@ -987,7 +987,7 @@ launches/step were on the slowest kernel available for a full day.
 Measured, 4 reps/leg, warmup discarded, byte-identical:
 OLD 103.4/103.1/102.6 = **103.03** -> NEW 106.7/106.5/106.8/106.1 = **106.53**, disjoint.
 ★ RULE: a threshold measured on two shapes does NOT generalise to a third. Added
-`ATLAS_W4A16_K64_MIN_K=<n>` so any A/B can pin a prior threshold exactly.
+`AVAROK_W4A16_K64_MIN_K=<n>` so any A/B can pin a prior threshold exactly.
 ★ `_m128` is faster still at K=5120 (272.4 / 262.8) — a further ~0.6 ms is available.
 
 ### GDN single-pass register-resident decode: **REGRESSION -11.6%, REVERTED**
@@ -1014,8 +1014,8 @@ budget is its own), or with a smaller tile (e.g. hreg[64] and two passes over ha
 | `w4a16_gemm_t` | 128 | ssm_qkvz N=16384 K=5120 | 311.6 us | **151.4** |
 | `w4a16_gemm_t` | 112 | attn qkv fused N=14336 K=5120 | 296.5 us | **139.2** |
 | **`w4a16_gemm_t_k64`** | **40** | **out_proj / o_proj N=5120 K=6144** | 210.7 us | **84.0** |
-| `atlas_nvfp4_mmq16_nc` | 40 | ffn_down N=5120 K=17408 | 285.5 us | **175.6** |
-| `atlas_nvfp4_mmq16_nc` | 136 | ffn gate/up N=17408 K=5120 | 289.5 us | **173.2** |
+| `avarok_nvfp4_mmq16_nc` | 40 | ffn_down N=5120 K=17408 | 285.5 us | **175.6** |
+| `avarok_nvfp4_mmq16_nc` | 136 | ffn gate/up N=17408 K=5120 | 289.5 us | **173.2** |
 
 ★ A blended "projections run at 102 GB/s" figure is WRONG and cost an agent-hour: qkvz and
 fused-qkv are already efficient (151/139). **The entire projection deficit is out_proj/o_proj
@@ -1051,7 +1051,7 @@ MMQ is **W4A4** (activations quantized to FP4).
   exists anywhere in the repo; dense_ffn's down-proj 0.9961 does NOT transfer. Memory records
   FP16 h_state causing ~25% trajectory divergence, so the recurrence is precision-sensitive.
 - Debt is UNDISCHARGEABLE while [[feedback_no_accuracy_gate_until_vllm_parity]] stands, and it
-  STACKS on the existing `ATLAS_SSM_TC_PROJ` W4A8 debt (ssm_batched.rs:28-32 already records
+  STACKS on the existing `AVAROK_SSM_TC_PROJ` W4A8 debt (ssm_batched.rs:28-32 already records
   "a BFCL gate is owed before this merges").
 
 ### Also unexplained, worth 1.4 ms: 11.3 extra `w4a16_gemm_t` launches/step
@@ -1077,7 +1077,7 @@ The gate exists only because `wide_verify_gemm` early-returns on its GEMV arms f
 ignores `w_t`; calling `ops::w4a16_gemm_n128` DIRECTLY removes the need for it. The work
 reduction is real — nsys prices the split path at 279 us (q, gridX 96) + 218.5 + 218.5 (k/v,
 gridX 8) = **716 us vs ~273 us fused**.
-Measured 4 reps/leg, byte-identical, control pinned via a new `ATLAS_FUSED_QKV_MIN_N=9`:
+Measured 4 reps/leg, byte-identical, control pinned via a new `AVAROK_FUSED_QKV_MIN_N=9`:
 OLD **106.60** vs NEW **106.45** => -0.14%, ranges OVERLAP. NULL, reverted and rebuilt.
 ★ WHY, and the sizing error to avoid repeating: I derived "~1.4 ms/step" by dividing 1024
 split-path instances by ~175 steps. Those instances are NOT spread across steps — they are
@@ -1280,7 +1280,7 @@ let cold_prefill_ok = p >= 2 && captured >= p && seq_tokens.len() >= p;
 `captured` is `mtp_prefill_capture_len`: positions whose hidden states were captured DURING THE
 MAIN MODEL'S PREFILL. A Marconi snapshot restore SKIPS that prefill, so nothing is captured,
 `captured >= p` is false, `cold_prefill_ok` is false, and **`prefill_drafter` never runs**. If
-the cross-turn carry (`ATLAS_MTP_CARRY_DRAFTER`) does not also apply, the proposer starts empty.
+the cross-turn carry (`AVAROK_MTP_CARRY_DRAFTER`) does not also apply, the proposer starts empty.
 
 **Complete causal chain, every link measured:**
 snapshot restore -> prefill skipped -> hidden-state capture skipped -> drafter prefill disabled
@@ -1341,7 +1341,7 @@ It also PRE-REFUTES the obvious remedy with numbers: a full warm-turn `prefill_d
 **1136 ms** against a **1134 ms** warm TTFT — it doubles TTFT to buy ~10% of decode, a
 wall-clock LOSS. Do not propose the rebuild.
 
-**What is NEW tonight is the SCOPE.** The shipped fix (`ATLAS_MTP_CARRY_DRAFTER`, on by
+**What is NEW tonight is the SCOPE.** The shipped fix (`AVAROK_MTP_CARRY_DRAFTER`, on by
 default) carries the drafter's KV across turns OF THE SAME SESSION, and its premise is that
 "a turn's prompt is a strict extension of the previous turn's full sequence". That covers
 multi-turn resumes. It does NOT cover a **preamble-only hit**: a fresh request matching the
@@ -1413,7 +1413,7 @@ C=16 112.6 -> 112.37 (unchanged, as expected).** C=1 is now STABLE across reps
 ★ NOT byte-identical, deliberately: short-match hits now take the KV-only path instead of
 restoring a snapshot, which changes the greedy trajectory. The new path is the one that
 matches full recompute, so it is the more faithful of the two.
-`ATLAS_MARCONI_MIN_TOKENS=<n>` overrides; 0 restores always-restore.
+`AVAROK_MARCONI_MIN_TOKENS=<n>` overrides; 0 restores always-restore.
 
 ### ★ BEFORE THE NEXT MLPerf-edge RUN: check this interacts as expected
 MLPerf-edge runs WITH prefix caching, and `mtp_carry.rs` records **987 of 1007 scored samples
@@ -1438,10 +1438,10 @@ the serve log.
 | 16 | 59.9 | **112.4** | 168.9 | 0.35x -> **0.67x** |
 
 ## 2026-07-28 — ★ ROLLBACK VERIFIED, and the accounting closes exactly
-All seven kill switches engaged simultaneously (`ATLAS_NO_W4A16_K64=1`,
-`ATLAS_NO_ATTN_BATCH_CACHE_WRITE=1`, `ATLAS_NO_FUSED_QKV=1`,
-`ATLAS_NO_THINKENDED_GPU_ARGMAX=1`, `ATLAS_NO_ARGMAX_BATCH=1`, `ATLAS_NO_GDN_HALF_REG=1`,
-`ATLAS_MARCONI_MIN_TOKENS=0`):
+All seven kill switches engaged simultaneously (`AVAROK_NO_W4A16_K64=1`,
+`AVAROK_NO_ATTN_BATCH_CACHE_WRITE=1`, `AVAROK_NO_FUSED_QKV=1`,
+`AVAROK_NO_THINKENDED_GPU_ARGMAX=1`, `AVAROK_NO_ARGMAX_BATCH=1`, `AVAROK_NO_GDN_HALF_REG=1`,
+`AVAROK_MARCONI_MIN_TOKENS=0`):
 ```
 ALL WINS ON   112.6 tok/s   sha bf3a0b07...   coherent
 ALL OFF        95.4 tok/s   sha bf3a0b07...   coherent
@@ -1517,8 +1517,8 @@ address differs, and no cross-row interaction is introduced.
 RoPE clears the measured 0.8% harness floor and matches its 1.18 ms prediction (0.9%) almost
 exactly. **The q/k-norm result is SUB-FLOOR and is NOT claimed as a win** — kept default-on only
 because it is byte-identical, strictly less work (484 fewer launches/step), and the point estimate
-is positive with 7 of 8 reps favouring. Kill switches: `ATLAS_NO_ROPE_STRIDED=1`,
-`ATLAS_NO_QK_NORM_STRIDED=1`.
+is positive with 7 of 8 reps favouring. Kill switches: `AVAROK_NO_ROPE_STRIDED=1`,
+`AVAROK_NO_QK_NORM_STRIDED=1`.
 
 **C=16 now ~113.2 tok/s** (from 112.2), ratio 0.67x vs vLLM 168.9.
 
@@ -1545,7 +1545,7 @@ Hypotheses 7-12 now dead, all by measurement:
    the ladder tops at 16; the store is guarded `r0 < M`.
 10. non-NULL streams / cross-stream argmax race / concurrent prefill GEMM+memset / M changing
     between launches — NO, 3000 iterations clean.
-11. the `ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1` elimination — VALID (the check is value-based,
+11. the `AVAROK_NO_DECODE_GRAPHS_MULTISEQ=1` elimination — VALID (the check is value-based,
     `decode_a2.rs:30`, not presence-based), so hypothesis 4 stands eliminated.
 12. an output overrun masquerading as 716 — NO. A DELIBERATE 5.7 MB overrun (undersized C) yields a
     sticky **700 ILLEGAL_ADDRESS, not 716**. So the serve's 716 cannot be an epilogue overrun.
@@ -1596,7 +1596,7 @@ moves the FP8-vs-lossless gap from an assumed 0.25% of step to a real **1.05%**.
 226 GB/s = 98.3% of peak = 1.02x the roofline floor.** It is not a broken kernel at low M; there is
 NOTHING to win there, and BOTH tile GEMMs REGRESS it (lossless by ~1960 us/call, FP8 by ~450).
 A C=1 step is ~39 ms, so the lossless kernel with no threshold is a several-percent regression at
-the ONE concurrency where Atlas already beats vLLM 1.79x (25.4 vs 14.2). Crossover is M ~= 8.
+the ONE concurrency where Avarok already beats vLLM 1.79x (25.4 vs 14.2). Crossover is M ~= 8.
 => "repack-and-replace, no threshold, all M" would trade C=1 away to win C=16.
 
 ★★ HOW TO READ THE GEMV COLUMNS — `w4a16_gemv_batchm_impl<MAX_M>` bounds its row loop
@@ -1691,7 +1691,7 @@ must go via repack-and-REPLACE (single layout), which also needs a transposed-la
 `padded_n <= 4` (where the row-major GEMV measures 98.3% of the roofline and must not be lost).
 
 ### Status
-Twin implementation is BUILT and reverted-in-place (kill switch `ATLAS_NO_LMHEAD_TGEMM=1`
+Twin implementation is BUILT and reverted-in-place (kill switch `AVAROK_NO_LMHEAD_TGEMM=1`
 defaults ON => must be left OFF/removed). Not shipped. Next: the padded-stride fix + the
 transposed GEMV, per the repack-and-replace plan.
 
@@ -1728,7 +1728,7 @@ vs vLLM: C=1 **1.79x WIN** · C=2 0.91x · C=4 0.91x · C=8 0.72x · C=16 **0.71
   through one implementation).
 - `lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>` — ADDITIVE twin, never replaces or aliases the
   original, so `draft_lm_head_nvfp4`'s copy stays valid. Built once, immutable.
-- Dispatch at `padded_n >= 5` only. Default ON, kill switch `ATLAS_NO_LMHEAD_TGEMM=1`.
+- Dispatch at `padded_n >= 5` only. Default ON, kill switch `AVAROK_NO_LMHEAD_TGEMM=1`.
 
 ### ★★ CORRECTION: the twin does NOT cost KV. My earlier "4757 -> 2957 blocks" was CONTAMINATED.
 With the twin active the pool reads **4759 blocks vs 4757 without it** — no measurable impact, and
@@ -1753,7 +1753,7 @@ different accumulation order. `padded_n <= 4` is unaffected and byte-identical.
 
 ### lm_head FP8 accuracy debt — CHARACTERIZED (not a substitute for BFCL)
 8 concurrent prompts (padded_n >= 5, so the tile GEMM IS active), temp 0.0 seed 42, tile GEMM vs
-`ATLAS_NO_LMHEAD_TGEMM=1`, same binary:
+`AVAROK_NO_LMHEAD_TGEMM=1`, same binary:
 
 | | result |
 |---|---|
@@ -1769,7 +1769,7 @@ repetition, no collapse, no truncation, no degradation. This is the expected sig
 tiebreak flips propagating (cf. `spec_not_output_neutral`).
 
 ★ This does NOT establish accuracy parity — only BFCL/IoU can, and those stay embargoed until
-Atlas >= vLLM at C=1..16. It bounds the RISK, it does not discharge the DEBT.
+Avarok >= vLLM at C=1..16. It bounds the RISK, it does not discharge the DEBT.
 ★ MEASUREMENT TRAP hit while doing this: the first comparison parsed the capture line-by-line, so
 it only compared FIRST LINES and reported "7/8 identical". The hashes (computed over full
 responses) said 6/8 DIFFER. When a hash comparison and a text diff disagree, the DIFF is the one
@@ -1829,10 +1829,10 @@ saturate LPDDR5X); occupancy hints (+0.27%, null); M-tile size (flat — kernel 
 
 Remedies, ranked: (1) cp.async 2-stage double-buffer in `mul_mat_q_process_tile` — smem
 2x(38.9+3) KiB ~= 84 KiB <= 99 KiB/CTA, numerics UNCHANGED, est. 4-5 ms/step; (2) SoA weight
-relayout in `atlas_nvfp4_repack` (Atlas owns the layout) so the x-tile fill vectorizes 16-B,
+relayout in `avarok_nvfp4_repack` (Avarok owns the layout) so the x-tile fill vectorizes 16-B,
 bit-identical, ~1-2 ms and the natural enabler of (1); (3) fuse gate+up into one N=34816 launch,
 bit-identical, ~0.5-1.5 ms. Upstream llama.cpp has NO faster variant to pull — mainline MMQ has
-the identical phase-serial loop and no cp.async either, so this would be Atlas-original work.
+the identical phase-serial loop and no cp.async either, so this would be Avarok-original work.
 
 ## 2026-07-28 — ★ W4A4 IS DEAD WEIGHT AT DECODE (external evidence, converging)
 - QServe/QoQ (arXiv 2405.04532): W4A4 beats W4A8 only above ~78 concurrent sequences. We run 1-16.
@@ -1867,7 +1867,7 @@ fallback).
 I recorded (above, same night) that 4-bit activations buy nothing at decode and proposed A8/A16
 decode activations as a free accuracy reclaim. **That lever is already REFUTED by an A/B in this
 very file** (2026-07-27, STATE.md:95-101): the bf16-activation path against the same NVFP4 weights
-is `ATLAS_NO_FFN_NVFP4_MMQ`, and it measures **MMQ off 55.0/54.8/54.8 (mean 54.9) vs MMQ on
+is `AVAROK_NO_FFN_NVFP4_MMQ`, and it measures **MMQ off 55.0/54.8/54.8 (mean 54.9) vs MMQ on
 61.4/59.1/61.2 (mean 60.6) = +10.4% for MMQ, ranges NON-OVERLAPPING, output identical.**
 So dropping W4A4 at decode is a **10.4% REGRESSION**, not a free accuracy reclaim.
 
@@ -1885,7 +1885,7 @@ throughput-justified at +10.4%; revisit only at vLLM parity, in the accuracy-deb
 
 ## 2026-07-28 — ★ SHIPPED: SoA weight layout for the FFN MMQ tile load (+4.6% C=16)
 
-`atlas_nvfp4_repack` emitted an array of 36-byte `block_nvfp4`, which INTERLEAVES 4 scale bytes
+`avarok_nvfp4_repack` emitted an array of 36-byte `block_nvfp4`, which INTERLEAVES 4 scale bytes
 with 32 nibble bytes. The tile loader therefore issued **NINE 4-byte global loads per block**
 (8 qs + 1 d). Splitting each row into `[qs: bpr*32][d: bpr*4]` makes the 32 qs bytes contiguous:
 two 16-byte loads + one 4-byte load. **9 global ops -> 3 at identical total bytes.**
@@ -1911,10 +1911,10 @@ mmq.cuh:3640) — it is NOT a pure k-offset. A per-ROW layout must decompose it 
 already DECOMPOSED. A linear index silently mixes the dimensions you are trying to separate.
 
 Alignment: row stride `bpr*36` is 16-B aligned iff `bpr % 4 == 0` i.e. `K % 256 == 0`; both live K
-qualify (5120->80, 17408->272) and MMQ already requires K % 512 == 0. Safe because Atlas exposes
+qualify (5120->80, 17408->272) and MMQ already requires K % 512 == 0. Safe because Avarok exposes
 NO MMVQ entry point, so the MMQ kernels are the buffer's only consumer (`vecdotq.cuh`'s nvfp4 path
 is unreachable). No independent kill switch — the layout is internal and bit-identical; the escape
-hatch is the existing `ATLAS_NO_FFN_NVFP4_MMQ`.
+hatch is the existing `AVAROK_NO_FFN_NVFP4_MMQ`.
 
 ★ THE ESTIMATE WAS 4x LOW: this was sized at "~1-2 ms, mostly subsumed by the cp.async pipeline".
 It delivered ~5.5 ms ALONE — i.e. the load-ISSUE path, not load LATENCY, was the dominant limiter.
@@ -1976,9 +1976,9 @@ The existing `K64_ISSUE_LOADS(buf,kb)` / `K64_DEQUANT(buf)` / `K64_COMPUTE_MMA` 
 1. Add `w4a16_gemm_t_k64_p3` BELOW the existing kernel (ADDITIVE — the old one keeps working if
    this is abandoned). Move the macro `#undef`s below it.
 2. Resolve the new handle at `qwen3_ssm/init.rs:122` and `qwen3_attention/init.rs:419`, falling
-   back to `w4a16_gemm_t_k64` under **`ATLAS_NO_K64_PIPELINE3`** (PRESENCE check — `=0` is NOT off).
+   back to `w4a16_gemm_t_k64` under **`AVAROK_NO_K64_PIPELINE3`** (PRESENCE check — `=0` is NOT off).
    Call sites untouched.
-3. Gates: build with `ATLAS_TARGET_MODEL=qwen3.6-27b` and **md5 the binary vs previous** or the A/B
+3. Gates: build with `AVAROK_TARGET_MODEL=qwen3.6-27b` and **md5 the binary vs previous** or the A/B
    is fake; add the `_p3` row to `examples/w4a16_parity_microtest.rs` and ASSERT bit-identity;
    `w4a16_m17_bench` on the two out_proj shapes (relative only — that bench overstates ~1.5x from
    L2 reuse) expecting 153/164 us -> ~110; then coherence smoke + C=16/C=8 >=3 reps per leg vs the
@@ -1994,7 +1994,7 @@ a load pipeline does not fix. Do D first.
 
 ## 2026-07-28 — ★ SHIPPED: 3-deep weight pipeline in `w4a16_gemm_t_k64` (+1.81% C=16)
 C=16 **124.62 -> 126.88** (4 reps/leg, 126.6-127.1 vs 124.5-124.7, DISJOINT), byte-identical
-(`bf3a0b07...` on both legs). Default ON, kill `ATLAS_NO_K64_PIPELINE3` (PRESENCE, not value).
+(`bf3a0b07...` on both legs). Default ON, kill `AVAROK_NO_K64_PIPELINE3` (PRESENCE, not value).
 All three handle sites resolve through ONE `layers::k64_kernel` helper (SSOT).
 
 ★ MEASURED +1.81%, vs the ~5.3% the drain model predicted. The MECHANISM was right (disjoint,
@@ -2035,7 +2035,7 @@ single-prompt output hash the lever originally shipped on. Full gate: PASS.
 ## 2026-07-28 — ★ SHIPPED: 3-deep weight pipeline for `w4a16_gemm_t` (+2.57% C=16)
 Same change as the k64 sibling, applied to TWICE the surface (26.5 ms/step vs 13.4).
 C=16 **126.47 -> 129.72** (4 reps/leg, 129.6-129.9 vs 126.0-126.8, DISJOINT), byte-identical
-(`bf3a0b07...` both legs). Default ON, kill `ATLAS_NO_TGEMM_PIPELINE3` (PRESENCE). Three qwen3
+(`bf3a0b07...` both legs). Default ON, kill `AVAROK_NO_TGEMM_PIPELINE3` (PRESENCE). Three qwen3
 handle sites route through one `layers::tgemm_kernel` helper, which falls back automatically on
 targets that do not ship `_p3`.
 
@@ -2093,7 +2093,7 @@ projects to **169-221 at C=16**, i.e. meeting or beating vLLM's 169.
 ★ Published GB10 envelope: NO source exceeds ~170 agg tok/s at C=16 for any model >=27B, and NONE
 of those runs used speculation at batch.
 
-### ★ MEASURED: `ATLAS_MTP_MAX_SEQS` is a GUARD, NOT A KNOB — raising it HALVES throughput
+### ★ MEASURED: `AVAROK_MTP_MAX_SEQS` is a GUARD, NOT A KNOB — raising it HALVES throughput
 | cap | C=2 | C=4 |
 |---|---|---|
 | **2 (default)** | 25.3 | **48.5** |
@@ -2129,12 +2129,12 @@ forward, `--mtp-quantization bf16`). Three fixes on binary 4d01c9a4:
    `dense_gemm_bf16_pipelined` (microbenched 2.7x the 4x-GEMV loop at M=4: 5.1 vs 14.4 ms per
    position; scalar `dense_gemm_bf16` only 1.8x — measure before wiring), LM head on
    `w4a16_gemv_batch4`, everything small looped per row with `forward_one`'s exact kernels.
-   A/B alone: 46.3-46.8 vs 42.9-43.6 kill-switch (`ATLAS_NO_MTP_BATCH_PROPOSE`), disjoint.
+   A/B alone: 46.3-46.8 vs 42.9-43.6 kill-switch (`AVAROK_NO_MTP_BATCH_PROPOSE`), disjoint.
 2. **out_proj M>8 dispatch** (m_dispatch class strikes again, in reverse): R=16 verify rows fell
    into the pre-dequanted-FP8 PREFILL arm — fp8_fp8_gemm_ldmab 379 us vs 182 us for the SAME
    shape on w4a16_gemm_t_k64_p3 (2x weight bytes, bandwidth-bound at M=16) — x48 layers =
    ~9.5 ms/step. Attention o_proj at the same M was ALREADY on the k64 tile GEMM, which is what
-   fingered the SSM arm. New arm via `deep_k_gemm`, kill `ATLAS_NO_VERIFY_OUTPROJ_TGEMM`.
+   fingered the SSM arm. New arm via `deep_k_gemm`, kill `AVAROK_NO_VERIFY_OUTPROJ_TGEMM`.
 3. **Batched argmax** in R-row verify + batched propose (~2 ms/step; the single-row argmax is a
    one-CTA scan, R serial calls = R single-SM passes).
 
@@ -2166,7 +2166,7 @@ scheduler dispatch (`eb85ce41`), batched cross-sequence propose + an out_proj M>
 errors, though statistically at PARITY with the 48.5 MTP-off bar at N=8, mean 47.65).
 
 ### Validated sweep (cap default = 2, commit `f49e00c9`)
-| C | Atlas | vLLM | ratio |
+| C | Avarok | vLLM | ratio |
 |---|---|---|---|
 | 1 | 25.60 | 14.2 | **1.803x MET** |
 | 2 | **29.40** | 27.8 | **1.058x MET** — first time, +13% over the 26.4 MTP-off number |
@@ -2196,7 +2196,7 @@ to the FUNCTION, never to the literal.
 ## 2026-07-28 — ★★★ FINALIZED: adaptive policy = cap 4 DEFAULT (`dafd990d`). C=4 crosses vLLM — three of five levels MET.
 
 The per-C policy needs no new mechanism: `active.len() <= mtp_max_seqs()` already IS the adaptive
-gate. Batched K=4 MTP at C<=4, bit-for-bit MTP-off fallback at C>4. `ATLAS_MTP_MAX_SEQS` default
+gate. Batched K=4 MTP at C<=4, bit-for-bit MTP-off fallback at C>4. `AVAROK_MTP_MAX_SEQS` default
 2 -> 4 (`speculative.rs`, anchored to the function); `=1` restores single-seq-only.
 
 ### Validated sweep at PURE DEFAULTS (binary 472ed410 = 7f4ffd6c + the default constant; no env
@@ -2259,7 +2259,7 @@ scored drives after one discarded warmup per serve)
   all serve logs.
 - ★ C=2 slow-mode finding: after ~4+ drives on one serve, C=2 bimodally drops to ~32-33 tok/s
   (+1.1 s wall; log shows "Prefix cache hit ... but no SSM snapshot — recomputing all KV").
-  REPRODUCED EXACTLY with `ATLAS_NO_MTP_K_LADDER=1` (control serve: 35.7/35.0/35.4/35.4 then
+  REPRODUCED EXACTLY with `AVAROK_NO_MTP_K_LADDER=1` (control serve: 35.7/35.0/35.4/35.4 then
   32.1/32.0) — pre-existing SSM-snapshot/prefix-anchor drift (the ssm_miss_anchor class), NOT
   the ladder; at n=2 the ladder is behaviorally identical to the floor config anyway (3 drafts
   either way). Fresh-serve C=2 mode is 35.2-35.4 = the floor.
@@ -2303,7 +2303,7 @@ through `decode_batch`, which disables graphs at n>=2), plus n small argmax D2H 
 the single next lever if C=16 is attacked again; depth at n=16 is decisively dead (16:2 = 94.1).
 
 ### Validated sweep at PURE DEFAULTS (binary md5 `e65c232d49732d409339a1dccad00ae8`,
-`ATLAS_TARGET_MODEL=qwen3.6-27b cargo build -p spark-server --release --features cuda`;
+`AVAROK_TARGET_MODEL=qwen3.6-27b cargo build -p spark-server --release --features cuda`;
 ONE FRESH SERVE PER C, `vm.drop_caches=3` + all containers removed + `:8888` asserted dead
 before each, first drive per serve discarded as warmup)
 | C | scored reps (tok/s) | mean | floor | vLLM | ratio | verdict |
@@ -2352,7 +2352,7 @@ while a doubled forward can.
 - `48fb8a11` fix(mtp): chunk cap -> row-buffer bound (`rows=4` 4 -> 8 seqs). Provably a NO-OP at
   the pre-existing default ladder, where `rows=4` occurred only at n<=4 and every chunk was <= 4.
 - `3313a733` perf(mtp): default ladder `4:3,8:2` -> `4:3,8:3`. Kill switch
-  `ATLAS_MTP_K_LADDER=4:3,8:2`. Unit tests updated (3 pass), rustfmt clean.
+  `AVAROK_MTP_K_LADDER=4:3,8:2`. Unit tests updated (3 pass), rustfmt clean.
 - `d4633f09` docs: the stale `8:2` prose in `ladder.rs` / `mtp_step.rs` (three comments still
   described the superseded default). Doc-only.
 
@@ -2362,7 +2362,7 @@ So C=1/2/4/16 are unchanged code paths and their rows below are variance measure
 regression risk.
 
 ### Validated sweep at PURE DEFAULTS (binary md5 `f134f6fa267cdc257197d092f113089a`, built with
-`ATLAS_TARGET_MODEL=qwen3.6-27b cargo build -p spark-server --release --features cuda`; ONE FRESH
+`AVAROK_TARGET_MODEL=qwen3.6-27b cargo build -p spark-server --release --features cuda`; ONE FRESH
 SERVE PER C, all containers removed + `:8888` asserted dead + `vm.drop_caches=3` + a MemAvailable
 >= 108GB settle gate before each; first drive per serve DISCARDED as warmup; 5 scored drives)
 | C | scored reps (tok/s) | mean | floor | vLLM | ratio | verdict |
@@ -2410,7 +2410,7 @@ Both levels are serve-to-serve variance around their floors, not movement.
   cost 1.797x and the measured implied cost is ~1.79x — sitting exactly on it. Clearing 168.9
   needs <= 1.40x. Depth at n=16 remains dead (16:2 = 94.1).
 
-### Accept telemetry by width (`ATLAS_MTP_ACCEPT_DEBUG`)
+### Accept telemetry by width (`AVAROK_MTP_ACCEPT_DEBUG`)
 | width | p1 | mean_na | tok_step |
 |---|---|---|---|
 | n=4, k_drafts=3 | 0.776 | 1.533 | 2.533 |
@@ -2478,7 +2478,7 @@ measurable, and worth paying.
 ### The raise is inert at n ≤ 8 BY CONSTRUCTION
 The cap only gates dispatch above 8 (`active.len() <= mtp_max_seqs()`) and the `16:1` rung only
 matches above 8 (the `n<=8` rung is found first). So C=1/2/4/8 run unchanged code paths; their
-rows below are variance measurements, not regression risk. Kill switch `ATLAS_MTP_MAX_SEQS=8`.
+rows below are variance measurements, not regression risk. Kill switch `AVAROK_MTP_MAX_SEQS=8`.
 
 ### D-Cut: the full bucket sweep, and the one bucket that wins
 Ranked prefix-product survival scores across the batch, top-`ratio` retained (arXiv 2607.14647).
@@ -2495,7 +2495,7 @@ All at C=8, one fresh serve per leg, 5 scored reps:
 The mechanism is visible in telemetry: tok_step degrades monotonically as rows are pruned while
 rows fall, and 0.75 is the ONLY point where the row saving outruns the token loss. The ratio-1.0
 control being statistically identical to OFF is the proof that the ragged-row plumbing itself is
-free. Kill switch `ATLAS_NO_MTP_DCUT` (presence).
+free. Kill switch `AVAROK_NO_MTP_DCUT` (presence).
 
 ★ **D-Cut contributes exactly NOTHING at C=16, and the logs prove it rather than infer it.** Its
 v1 floor of one mandatory draft per sequence means every sequence gets ≥2 rows; 16 × 2 = 32 = the
@@ -2506,18 +2506,18 @@ forced back to k=1 anyway while the propose still pays for 3 drafts.
 
 ### Landed
 - `mtp_max_seqs` default 8 → 16, anchored in the function body (`speculative/ladder.rs`).
-  Kill switch `ATLAS_MTP_MAX_SEQS=8`.
+  Kill switch `AVAROK_MTP_MAX_SEQS=8`.
 - Default ladder `4:3,8:3` → `4:3,8:3,16:1`, anchored in `mtp_ladder_steps`'s body (NOT a bare
-  literal regex — the burned-twice trap). Kill switch `ATLAS_MTP_K_LADDER=4:3,8:3`.
-- D-Cut `dcut_enabled` OFF-by-presence → ON-by-default with `ATLAS_NO_MTP_DCUT`; `dcut_ratio`
+  literal regex — the burned-twice trap). Kill switch `AVAROK_MTP_K_LADDER=4:3,8:3`.
+- D-Cut `dcut_enabled` OFF-by-presence → ON-by-default with `AVAROK_NO_MTP_DCUT`; `dcut_ratio`
   default 0.5 → 0.75.
 - Ladder unit test updated for the new rung (9 → 1 draft, 16 → 1, 32 → 1). 3 ladder + 9 D-Cut
   tests pass; both edited crates rustfmt-clean.
 
 ### Validated sweep at PURE DEFAULTS (binary md5 `fae54de95627212898f51d5a0303d61d`, built with
-`ATLAS_TARGET_MODEL=qwen3.6-27b cargo build -p spark-server --release --features cuda`)
-ONE FRESH SERVE PER C; no `ATLAS_MTP_DCUT` / `ATLAS_MTP_MAX_SEQS` / `ATLAS_MTP_K_LADDER` anywhere
-in the environment (only `ATLAS_MTP_ACCEPT_DEBUG=1` for the telemetry columns) — the binary's own
+`AVAROK_TARGET_MODEL=qwen3.6-27b cargo build -p spark-server --release --features cuda`)
+ONE FRESH SERVE PER C; no `AVAROK_MTP_DCUT` / `AVAROK_MTP_MAX_SEQS` / `AVAROK_MTP_K_LADDER` anywhere
+in the environment (only `AVAROK_MTP_ACCEPT_DEBUG=1` for the telemetry columns) — the binary's own
 defaults produce these numbers. All containers removed + `:8888` asserted dead + double
 `vm.drop_caches=3` + MemAvailable ≥ 108GB settle + a ≥4300-block KV-pool gate before each; first
 drive per serve DISCARDED as warmup; 5 scored drives.
@@ -2614,17 +2614,17 @@ Two resolutions worth remembering:
 
 ### 2. Env → CLI
 
-`ATLAS_SSM_H_FP16` was decoded independently in TWO places (the kernel accessor and the
+`AVAROK_SSM_H_FP16` was decoded independently in TWO places (the kernel accessor and the
 preflight check), which is how a preflight could pass on a reading the kernels did not
 share. It is now one accessor behind one flag. The five knobs the best config needs:
 
 | was | is | default |
 |---|---|---|
-| `ATLAS_SSM_H_FP16` | `--ssm-h-dtype {f32,f16}` | `f32` |
-| `ATLAS_GDN_FUSED_NORM=1` | `--gdn-fused-norm` | off |
-| `ATLAS_SSM_BATCHED_RECURRENT=1` | `--ssm-batched-recurrent` | off |
-| `ATLAS_SSM_TAIL_MIDCHUNK=0` | `--ssm-tail-midchunk <bool>` | on |
-| `ATLAS_MTP_GATE_FORCE=1` | `--mtp-gate {auto,force}` | `auto` |
+| `AVAROK_SSM_H_FP16` | `--ssm-h-dtype {f32,f16}` | `f32` |
+| `AVAROK_GDN_FUSED_NORM=1` | `--gdn-fused-norm` | off |
+| `AVAROK_SSM_BATCHED_RECURRENT=1` | `--ssm-batched-recurrent` | off |
+| `AVAROK_SSM_TAIL_MIDCHUNK=0` | `--ssm-tail-midchunk <bool>` | on |
+| `AVAROK_MTP_GATE_FORCE=1` | `--mtp-gate {auto,force}` | `auto` |
 
 ★ **The clap defaults sealed all five under `spark serve`. That is fixed now — but every
 number this campaign recorded was measured before the fix.** Each knob is read once
@@ -2642,7 +2642,7 @@ are published together only when at least one of them is given
 switches still mean on; `--gdn-fused-norm false` is the newly expressible explicit off.
 
 Consequence for this campaign's frozen configs, which the fix does NOT undo: every launch
-script that set `-e ATLAS_SSM_TAIL_MIDCHUNK=0` **without** also passing
+script that set `-e AVAROK_SSM_TAIL_MIDCHUNK=0` **without** also passing
 `--ssm-tail-midchunk false` ran with mid-chunk capture **ON**, and every ladder measured
 before the fix ran with the other four at their clap defaults whatever the environment
 said. `grep -rn 'ssm-tail-midchunk'` over `scripts/`, `docker/`, `docs/` and the root
@@ -2651,12 +2651,12 @@ said. `grep -rn 'ssm-tail-midchunk'` over `scripts/`, `docker/`, `docs/` and the
 `--ssm-h-dtype f16` without `--gdn-fused-norm` is now a startup ERROR (it used to be a
 silent FP32-kernel-over-FP16-pool, i.e. fluent garbage).
 
-**The other six of the ten did nothing.** `ATLAS_MTP_CATCHUP=0`, `ATLAS_MTP_DRAFT_CONF=0.0`,
-`ATLAS_SSM_TAIL_PROTECT=1`, `ATLAS_SSM_TAIL_LEASE_TTL=128`, `ATLAS_BF16_TC_PREFILL=1`
-(shadowed by the MMQ arm) and `ATLAS_MTP_ACCEPT_DEBUG=1` (a log line) were each already the
+**The other six of the ten did nothing.** `AVAROK_MTP_CATCHUP=0`, `AVAROK_MTP_DRAFT_CONF=0.0`,
+`AVAROK_SSM_TAIL_PROTECT=1`, `AVAROK_SSM_TAIL_LEASE_TTL=128`, `AVAROK_BF16_TC_PREFILL=1`
+(shadowed by the MMQ arm) and `AVAROK_MTP_ACCEPT_DEBUG=1` (a log line) were each already the
 compiled default, inert, or unread. Every ladder from wave 17 on carried all ten.
 
-### 3. `ATLAS_GDN_FUSED_NORM` / `ATLAS_SSM_BATCHED_RECURRENT` were NOT promoted to defaults
+### 3. `AVAROK_GDN_FUSED_NORM` / `AVAROK_SSM_BATCHED_RECURRENT` were NOT promoted to defaults
 
 Wave 53's bitwise legs could not certify output-equivalence, because **the CONTROL failed**:
 two identical serves differed on 7 of 42 completions (C=4 and C=16). The flag legs differ on
@@ -2668,13 +2668,13 @@ retires the whole gate, not just the failing arm.**
 ## 2026-08-03 — C=1..128 sweep re-verification on the final image (8c #4, CLOSED)
 
 Leg results land in `/workspace/w55_sweep/results/` (driver `/workspace/w55_sweep/w55_conc_ladder.py`,
-sha256 6412b12d). Image `avarok/atlas-gb10:7241a95` = gate image = this branch modulo bench-only
+sha256 6412b12d). Image `avarok/avarok-gb10:7241a95` = gate image = this branch modulo bench-only
 harness deltas, so this IS the #388 binary's sweep. Recipe-derived serve
-(`serve_atlas.sh` ← `recipes/qwen3.6/qwen3.6-27b-w55-sweep-dev.yaml`): util 0.85, bs 128, bf16 KV,
+(`serve_avarok.sh` ← `recipes/qwen3.6/qwen3.6-27b-w55-sweep-dev.yaml`): util 0.85, bs 128, bf16 KV,
 spec-on num-drafts 3, ssm-h f16 + fused-norm, thinking OFF on BOTH engines
 (`chat_template_kwargs:{"enable_thinking":false}`), prompt parity 200=200, temp 0.
 
-| C | Atlas | vLLM | ratio | prev(2026-08-02) |
+| C | Avarok | vLLM | ratio | prev(2026-08-02) |
 |---|---|---|---|---|
 | 1 | 24.34 | 14.69 | **1.656x** | 1.694x |
 | 2 | 35.79 | 28.63 | **1.250x** | 1.281x |
@@ -2685,11 +2685,11 @@ spec-on num-drafts 3, ssm-h f16 + fused-norm, thinking OFF on BOTH engines
 | 64 | 360.82 | 355.04 | **1.016x** | 1.021x |
 | 128 | 429.52 | 423.49 | **1.014x** | 1.040x |
 
-**8/8 rungs reconfirmed** — Atlas wins every rung on tok/s. Atlas absolute tok/s
+**8/8 rungs reconfirmed** — Avarok wins every rung on tok/s. Avarok absolute tok/s
 within ±0.6% at C≤2, −1.5..−2.7% at C=4..32, −5.3% at C=64, −9.0% at C=128 vs the
-2026-08-02 ladder. Spread: vLLM 0.05–0.63%; Atlas 1.0–4.1% (C=1 rep spread 9%).
+2026-08-02 ladder. Spread: vLLM 0.05–0.63%; Avarok 1.0–4.1% (C=1 rep spread 9%).
 Two confounds on the original ladder are now explained, not denied:
-1. The C=128 "timeout" finish-reason in the Atlas leg traces to `--request-timeout 300s`
-   (Atlas default; vLLM runs no comparable deadline). Control leg reran C=128 with
+1. The C=128 "timeout" finish-reason in the Avarok leg traces to `--request-timeout 300s`
+   (Avarok default; vLLM runs no comparable deadline). Control leg reran C=128 with
    REQ_TIMEOUT=0: 439.43 tok/s vs spec-on 429.52 — the deadline was costing ~2%, not the engine.
-2. Clock probe healthy on every rung (2236–2457 MHz Atlas, 2463–2483 vLLM) — no 513 MHz clamp.
+2. Clock probe healthy on every rung (2236–2457 MHz Avarok, 2463–2483 vLLM) — no 513 MHz clamp.

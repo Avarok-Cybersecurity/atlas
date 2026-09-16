@@ -4,7 +4,7 @@
 //! norm, lm_head, mtp, kv_layer_dims).
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 

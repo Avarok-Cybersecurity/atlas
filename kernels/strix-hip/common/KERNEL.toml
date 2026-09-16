@@ -16,7 +16,7 @@ extra_nvcc_flags = ["--fmad=false"]
 # Both entries are the same two SUPERSEDED entry points gb10 and strix already
 # declare, with the same reasons — this hardware set was simply never given the
 # block, so its two model shadows reported drift that its siblings did not.
-# Found by `atlas-kernels/tests/kernel_shadow_detector.rs`, which compares every
+# Found by `avarok-kernels/tests/kernel_shadow_detector.rs`, which compares every
 # hardware set the same way.
 #
 #   w4a16::w4a16_dequant
@@ -27,7 +27,7 @@ extra_nvcc_flags = ["--fmad=false"]
 #       The original expert-offsets grouped GEMM, replaced everywhere by the
 #       `_ptrtable` family (`..._ptrtable`, `..._ptrtable_t`, `..._ptrtable_t_k64`
 #       and their `_e8m0` twins), which every model shadow implements. The only
-#       remaining reference is `atlas-spark-bench/benches/moe.rs`, a benchmark —
+#       remaining reference is `avarok-spark-bench/benches/moe.rs`, a benchmark —
 #       no production dispatch path resolves it.
 [shadow_exempt]
 w4a16 = ["w4a16_dequant"]

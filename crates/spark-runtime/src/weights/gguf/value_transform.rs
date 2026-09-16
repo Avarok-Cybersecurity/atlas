@@ -4,7 +4,7 @@
 //! transforms.
 //!
 //! llama.cpp's `qwen35` converter stores three families of GDN / norm tensors
-//! with a *different encoding* than the HF checkpoint Atlas's kernels expect.
+//! with a *different encoding* than the HF checkpoint Avarok's kernels expect.
 //! The name map ([`super::names`]) already lands each tensor under its HF name;
 //! this module fixes the VALUES (never re-quantizing — every transform runs on
 //! the dequantized F32 host values, then rounds to BF16 once at the end, so
@@ -15,13 +15,13 @@
 //! Three inverse transforms, diagnosed byte-for-byte against
 //! `nvidia/Qwen3.6-27B-NVFP4`:
 //!
-//! 1. **RMSNorm +1 offset.** llama.cpp stores the raw norm weight; Atlas
+//! 1. **RMSNorm +1 offset.** llama.cpp stores the raw norm weight; Avarok
 //!    computes `x*(1+w)`, so it needs `w_hf = w_gguf - 1`. Applied to
 //!    `input_layernorm`, `post_attention_layernorm`, `self_attn.q_norm`,
 //!    `self_attn.k_norm` and the final `model.norm`. NOT the GDN `linear_attn.
 //!    norm` (that one matches the reference untouched).
 //!
-//! 2. **SSM A recovery.** llama.cpp stores `ssm_a = -exp(A_log)`; Atlas's GDN
+//! 2. **SSM A recovery.** llama.cpp stores `ssm_a = -exp(A_log)`; Avarok's GDN
 //!    wants the raw `A_log`, so `A_log = ln(-ssm_a)` (element-wise; `ssm_a` is
 //!    negative). Applied to `linear_attn.A_log`.
 //!
@@ -168,7 +168,7 @@ pub fn needs(hf_name: &str) -> bool {
     classify(hf_name).is_some()
 }
 
-/// For the native keep-packed Q2_0 path (`ATLAS_GGUF_NATIVE_Q2=1`): tensors whose
+/// For the native keep-packed Q2_0 path (`AVAROK_GGUF_NATIVE_Q2=1`): tensors whose
 /// value transform is a *pure whole-row* value-head reorder ([`Op::ReorderRows`]
 /// with `head_dim_rows = true`) can stay 2-bit — the permutation moves whole
 /// `value_head_dim`-row blocks, and one row is an integer number of `block_q2_0`
@@ -359,14 +359,14 @@ fn reorder_out_cols(
 
 // ── Vision (mmproj / `general.architecture = "clip"`) transforms ──
 //
-// The Qwen3-VL ViT tensors already land in Atlas's expected HF layout under the
+// The Qwen3-VL ViT tensors already land in Avarok's expected HF layout under the
 // loader's normal GGUF→HF dim reversal: every `v.blk.*` projection (fused
 // `attn_qkv` [1152,3456]→[3456,1152], `attn_out`, `ffn_up`/`ffn_down`), every
 // LayerNorm + bias, `v.post_ln.*` (→ merger.norm — a plain BIASED LayerNorm, NO
 // +1 offset) and `v.position_embd.weight` [1152,2304]→[2304,1152] is a plain
 // copy. The ONE tensor needing custom shape work is the patch embedding:
 // llama.cpp splits Qwen3-VL's Conv3d (temporal_patch_size = 2) into TWO per-frame
-// Conv2d tensors that Atlas wants fused into a single
+// Conv2d tensors that Avarok wants fused into a single
 // [out_ch, in_ch·T·patch·patch] linear weight.
 
 /// True if `arch` is a CLIP/mmproj vision tower (`general.architecture="clip"`).
@@ -374,7 +374,7 @@ pub fn is_clip(arch: &str) -> bool {
     arch == "clip"
 }
 
-/// The Atlas HF name the fused patch-embed weight is stored under (the name the
+/// The Avarok HF name the fused patch-embed weight is stored under (the name the
 /// vision consumer `Qwen35WeightLoader::load_vision_encoder` reads).
 pub const VISION_PATCH_EMBED_HF: &str = "model.visual.patch_embed.proj.weight";
 
@@ -423,7 +423,7 @@ pub fn vision_patch_frame(gguf_name: &str) -> Option<usize> {
     rest.strip_prefix('.').and_then(|n| n.parse::<usize>().ok())
 }
 
-/// Fuse the per-temporal-frame Conv2d patch-embed tensors into Atlas's
+/// Fuse the per-temporal-frame Conv2d patch-embed tensors into Avarok's
 /// `[out_ch, in_ch·T·patch·patch]` linear weight (row-major F32).
 ///
 /// `frames[t]` is one dequantized `v.patch_embd.weight{,.1,…}`, row-major in the

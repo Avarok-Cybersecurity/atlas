@@ -148,7 +148,7 @@ const rows = subject.rungs.map((row) => {
   const m = perBaseline.find((b) => b.id === matched.id);
   return {
     c: row.c,
-    atlas: row.tok_s,
+    avarok: row.tok_s,
     baselines: perBaseline,
     best_baseline_id: m.id,
     ratio_vs_best: r3(row.tok_s / m.tok_s),

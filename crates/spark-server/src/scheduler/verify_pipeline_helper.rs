@@ -62,11 +62,11 @@ use crate::scheduler::helpers::bf16_to_f32;
 use crate::scheduler::logit_processors::LogitsContext;
 use spark_model::traits::Model;
 
-// `ATLAS_DISABLE_FAST_GREEDY` is now `SchedLevers::fast_greedy_grammar`,
+// `AVAROK_DISABLE_FAST_GREEDY` is now `SchedLevers::fast_greedy_grammar`,
 // read off `LogitsContext::sampling` at the one site that gated on it.
 
 // The DFlash verify statics are now `SchedLevers::dflash_*`.
-// The `ATLAS_NO_MTP_VERIFY_SAMPLE` kill switch is now
+// The `AVAROK_NO_MTP_VERIFY_SAMPLE` kill switch is now
 // `SchedLevers::mtp_verify_sample`, carried on `LogitsContext`.
 
 /// Per-position verify logits, dequantised + processed through the full
@@ -177,13 +177,13 @@ pub fn verify_pick_with_pipeline(
     //     internal `apply_penalties_and_bias` is a no-op) + the sequence's
     //     temperature / top_k / top_p / top_n_sigma / min_p. min_p is the
     //     resolved request+MODEL.toml-floor value, subject to the P1-4
-    //     ATLAS_NO_MTP_MINP kill-switch. The seed advances per emitted
+    //     AVAROK_NO_MTP_MINP kill-switch. The seed advances per emitted
     //     position (`output_tokens.len() + verify_pos`) — the same offset
     //     FinalDecode would use if this position is accepted and emitted.
-    //     Unreachable under ATLAS_FORCE_TEMP_ZERO (the bypass in
+    //     Unreachable under AVAROK_FORCE_TEMP_ZERO (the bypass in
     //     `process_position_logits` returns Some(argmax) before this point);
     //     the guard is kept as documentation. Kill-switch:
-    //     ATLAS_NO_MTP_VERIFY_SAMPLE=1 reverts to the pinned argmax below.
+    //     AVAROK_NO_MTP_VERIFY_SAMPLE=1 reverts to the pinned argmax below.
     if ctx.sampling.mtp_verify_sample && a.temperature > 0.0 && !ctx.sampling.force_temp_zero {
         let t_sample = std::time::Instant::now();
         let step_seed = a
@@ -275,9 +275,9 @@ pub fn verify_pick_all_with_pipeline(
     // [K, vocab] logits, CPU-dequants 248k BF16→F32 per position, and runs the
     // 8-stage pipeline + argmax — ~1-3 ms/token of host/PCIe serialization on
     // the dominant MTP verify path, the structural reason vLLM (GPU sampling)
-    // out-decodes Atlas on tool/grammar workloads.
+    // out-decodes Avarok on tool/grammar workloads.
     //
-    // But when decoding is GREEDY (temp=0 or ATLAS_FORCE_TEMP_ZERO), penalties
+    // But when decoding is GREEDY (temp=0 or AVAROK_FORCE_TEMP_ZERO), penalties
     // are neutral, and we're not inside <think>, the masked-greedy pick at each
     // verify position is EXACTLY the GPU argmax (`argmax_ids[i]`, already
     // computed by decode_verify_graphed*) WHENEVER that argmax is grammar-
@@ -294,7 +294,7 @@ pub fn verify_pick_all_with_pipeline(
     // Skipped in this fast path: the WS/AM/think/forced quality nudges. Those
     // are either no-ops in the content/greedy/neutral regime or acceptable
     // speed-for-quality trades (we hold a measured accuracy margin over vLLM).
-    // Kill-switch: ATLAS_DISABLE_FAST_GREEDY=1.
+    // Kill-switch: AVAROK_DISABLE_FAST_GREEDY=1.
     //
     // #237 (fix 4a): the all-penalties-neutral requirement is relaxed to the
     // SSOT `fast_greedy` gate — reduce-only penalties (rep>=1.0, presence/
@@ -424,7 +424,7 @@ pub fn verify_pick_all_with_pipeline(
     // Same behavioral trade #237 shipped for grammar sequences: GPU-argmax
     // tie-breaking near equal logits can differ from the host FP32 scan, so
     // emitted tokens are NOT byte-invariant vs the slow path at near-ties.
-    // Kill switch: ATLAS_NO_FAST_GREEDY_CHAT=1 restores the slow path.
+    // Kill switch: AVAROK_NO_FAST_GREEDY_CHAT=1 restores the slow path.
     let chat_fast_gate = if ctx.sampling.fast_greedy_chat
         && a.grammar_state.is_none()
         && !a.inside_thinking

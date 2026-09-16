@@ -6,7 +6,7 @@
 //! no `Serialize` derive and this does not give it one: nothing here promises
 //! that a flag will keep its name, and a rename shows up as a diff in whatever
 //! consumes the snapshot rather than as a silent break. That is the point —
-//! `atlas-recipes` currently hand-transcribes this surface from a *Python*
+//! `avarok-recipes` currently hand-transcribes this surface from a *Python*
 //! launcher that predates the Rust one, and the drift is invisible until a
 //! launch dies inside a container.
 //!
@@ -137,7 +137,7 @@ pub fn build() -> Manifest {
 
     Manifest {
         schema_version: SCHEMA_VERSION,
-        spark_version: super::ATLAS_VERSION.to_owned(),
+        spark_version: super::AVAROK_VERSION.to_owned(),
         flags,
     }
 }

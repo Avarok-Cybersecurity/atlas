@@ -42,7 +42,7 @@ pub(super) enum ConvSite {
 impl BlockDiffusionDraftHead {
     /// True when the DFlash2 conv+selector path should run: checkpoint
     /// shipped the components, kernels compiled for this target, and the
-    /// operator hasn't disabled it (`ATLAS_DFLASH2=0`).
+    /// operator hasn't disabled it (`AVAROK_DFLASH2=0`).
     pub(super) fn dflash2_active(&self) -> bool {
         self.selector_pred.is_some()
             && self.selector_succ.is_some()

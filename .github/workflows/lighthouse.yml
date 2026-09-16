@@ -76,11 +76,11 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Checkout atlas-recipes (model SSOT)
+      - name: Checkout avarok-recipes (model SSOT)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: Avarok-Cybersecurity/atlas-recipes
-          path: atlas-recipes-src
+          path: avarok-recipes-src
 
       - name: Install dependencies
         working-directory: site
@@ -89,18 +89,18 @@ jobs:
       # Mirrors the deploy build, including the installer the front page's
       # headline command is served from — auditing a page that differs from
       # what ships would measure the wrong thing.
-      - name: Copy the installer from atlas-recipes
+      - name: Copy the installer from avarok-recipes
         working-directory: site
         run: |
-          src="${{ github.workspace }}/atlas-recipes-src/scripts/install.sh"
+          src="${{ github.workspace }}/avarok-recipes-src/scripts/install.sh"
           if [ -f "$src" ]; then cp "$src" static/install.sh; chmod 0755 static/install.sh; fi
 
       - name: Build
         working-directory: site
         run: bun x --bun vite build
         env:
-          ATLAS_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
-          ATLAS_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
+          AVAROK_RECIPES_ROOT: ${{ github.workspace }}/avarok-recipes-src/recipes
+          AVAROK_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
 
       - name: Audit
         uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12

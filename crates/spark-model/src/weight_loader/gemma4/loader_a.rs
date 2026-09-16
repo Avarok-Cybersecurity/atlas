@@ -3,7 +3,7 @@
 //! Gemma-4 weight loader: per-layer construction (`load_layers`).
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -25,11 +25,11 @@ use crate::weight_map::{
 /// as layers load, so a per-layer probe transposes the early layers and skips the
 /// late ones, leaving prefill straddling two dispatch arms.
 ///
-/// `ATLAS_GEMMA4_FFN_TRANSPOSE=0` forces the fallback — an A/B lever, and an
+/// `AVAROK_GEMMA4_FFN_TRANSPOSE=0` forces the fallback — an A/B lever, and an
 /// escape hatch for a box under external memory pressure the probe cannot see.
 fn ffn_transpose_fits(config: &ModelConfig, gpu: &dyn GpuBackend) -> bool {
-    if std::env::var("ATLAS_GEMMA4_FFN_TRANSPOSE").ok().as_deref() == Some("0") {
-        tracing::info!("ATLAS_GEMMA4_FFN_TRANSPOSE=0: dense FFN prefill uses the w4a16 fallback");
+    if std::env::var("AVAROK_GEMMA4_FFN_TRANSPOSE").ok().as_deref() == Some("0") {
+        tracing::info!("AVAROK_GEMMA4_FFN_TRANSPOSE=0: dense FFN prefill uses the w4a16 fallback");
         return false;
     }
     let h = config.hidden_size;
@@ -164,7 +164,7 @@ pub(super) fn load_layers_impl(
             tracing::debug!("L{i}: sliding attention (Q_dim={q_out_dim}, K_dim={kv_out_dim})");
         }
 
-        // Attention quantization choice for Gemma-4. Atlas's runtime
+        // Attention quantization choice for Gemma-4. Avarok's runtime
         // BF16→NVFP4 path uses a single per-tensor absmax for scale2,
         // which loses precision in low-magnitude rows when the tensor
         // has a few outlier rows (Gemma-4-31B's calibration boost
@@ -173,7 +173,7 @@ pub(super) fn load_layers_impl(
         // 60 dense layers flips a 0.125-logit-gap argmax tiebreak at
         // decode step 1 on creative prompts, after which the wrong
         // KV cache state self-reinforces a stopword loop ("Crystals a
-        // a a a a..."). Bisected via ATLAS_DIAG_GEMMA4=1 logits dump.
+        // a a a a..."). Bisected via AVAROK_DIAG_GEMMA4=1 logits dump.
         //
         // Default for Gemma-4 dense (31B): use BF16 attention via
         // dense_gemv fallback (qwen3_attention/decode.rs:622-699). This
@@ -184,8 +184,8 @@ pub(super) fn load_layers_impl(
         // token activation is naturally lower-precision-tolerant and
         // it works correctly on creative prompts already.
         //
-        // Override via ATLAS_GEMMA4_BF16_ATTN=0 to force NVFP4 for A/B
-        // testing; ATLAS_GEMMA4_BF16_ATTN=1 to force BF16 even on MoE.
+        // Override via AVAROK_GEMMA4_BF16_ATTN=0 to force NVFP4 for A/B
+        // testing; AVAROK_GEMMA4_BF16_ATTN=1 to force BF16 even on MoE.
         // Default to BF16 attention for ALL Gemma-4 variants (dense AND MoE).
         // The 31B-dense creative-collapse fix from 2026-05-01 lands here
         // because attention NVFP4 quantization noise compounds across 60
@@ -197,7 +197,7 @@ pub(super) fn load_layers_impl(
         // of the first one. 26B has ~28 GB total in BF16-attn mode,
         // well under the 119 GB single-GPU budget.
         let bf16_attn_default = true;
-        let bf16_attn = match std::env::var("ATLAS_GEMMA4_BF16_ATTN").ok().as_deref() {
+        let bf16_attn = match std::env::var("AVAROK_GEMMA4_BF16_ATTN").ok().as_deref() {
             Some("0") => false,
             Some("1") => true,
             _ => bf16_attn_default,
@@ -222,10 +222,10 @@ pub(super) fn load_layers_impl(
         // Memory cost when on: 60 layers × 3 weights × hidden(5376) ×
         // intermediate(21504) × 2 bytes = ~41 GB extra. Does fit in
         // 119 GB but increases swap-out risk. Leaving infrastructure
-        // wired for future bisection (`ATLAS_GEMMA4_BF16_MLP=1`
+        // wired for future bisection (`AVAROK_GEMMA4_BF16_MLP=1`
         // re-enables; `=0` is the default).
         let bf16_mlp_default = false;
-        let bf16_mlp = match std::env::var("ATLAS_GEMMA4_BF16_MLP").ok().as_deref() {
+        let bf16_mlp = match std::env::var("AVAROK_GEMMA4_BF16_MLP").ok().as_deref() {
             Some("0") => false,
             Some("1") => true,
             _ => bf16_mlp_default,
@@ -321,7 +321,7 @@ pub(super) fn load_layers_impl(
             (Some(q), Some(k), Some(v))
         };
         // Honor Nvidia ModelOpt's official ignore list for Gemma-4:
-        // ALL self_attn projections (q/k/v/o) stay BF16. Atlas
+        // ALL self_attn projections (q/k/v/o) stay BF16. Avarok
         // previously quantized o_proj unconditionally, losing ~7 bits
         // per layer to per-tensor absmax across 60 layers — a major
         // contributor to the creative-collapse drift. When bf16_attn
@@ -509,7 +509,7 @@ pub(super) fn load_layers_impl(
         // `Gemma4RMSNorm(head_dim, with_scale=False)` for v_norm AND
         // line 1220 applies `value_states = self.v_norm(value_states)`
         // unconditionally on every layer that owns its own KV state).
-        // Atlas previously only allocated this for K=V (full-attention)
+        // Avarok previously only allocated this for K=V (full-attention)
         // layers, leaving the 50/60 sliding layers without v_norm.
         // Missing v_norm leaves V un-rescaled — over 50 layers the
         // attention output drifts enough to flip greedy argmax tiebreaks

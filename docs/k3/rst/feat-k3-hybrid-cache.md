@@ -18,7 +18,7 @@ KNOWN-BAD (instrument actually failed)
 - `wrong_mla_kv_row_after_append_diverges`: swap last packed K/V row with row 0 → tensors move.
 
 TEST NOTES
-`cargo test -p atlas-core --lib -- kimi_k3::cache kimi_k3::layer`
+`cargo test -p avarok-core --lib -- kimi_k3::cache kimi_k3::layer`
 
 Prefill-then-decode logits (C2) still need `cpu_forward` on the umbrella until that graph is extracted.
 

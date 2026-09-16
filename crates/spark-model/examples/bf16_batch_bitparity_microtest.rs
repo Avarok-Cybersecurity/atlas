@@ -31,13 +31,13 @@
 //! from this target's module set.
 //!
 //! Run:
-//!   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=nemotron-3-nano-30b-a3b \
-//!   ATLAS_TARGET_QUANT=nvfp4 cargo run -p spark-model --release \
+//!   AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=nemotron-3-nano-30b-a3b \
+//!   AVAROK_TARGET_QUANT=nvfp4 cargo run -p spark-model --release \
 //!     --features cuda,gpu-examples --example bf16_batch_bitparity_microtest
 
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -237,7 +237,7 @@ fn reference(
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
 
     let (gemm_k, gemv_k, batchm_k) = match (

@@ -1,21 +1,21 @@
-// Atlas <-> FlashInfer GDN bridge: wraps the static-inline C-ABI header into real
+// Avarok <-> FlashInfer GDN bridge: wraps the static-inline C-ABI header into real
 // extern "C" symbols Rust can link. Shape-generic (head_dim D=128 fixed for Holo).
 #include "gdn_holo_0.h"
 #include <cuda_runtime.h>
 
 // Per-head k<->v transpose of the output state (gdn_transpose.cu): FlashInfer writes
-// S[v][k]; Atlas's decode kernel reads S[k][v]. Stream-ordered after the FI kernel.
-extern "C" void atlas_transpose_heads(float* S, int nheads, int N, void* stream);
+// S[v][k]; Avarok's decode kernel reads S[k][v]. Stream-ordered after the FI kernel.
+extern "C" void avarok_transpose_heads(float* S, int nheads, int N, void* stream);
 
 static gdn_holo_0_Kernel_Module_t g_module;
 static int g_loaded = 0;
 
-extern "C" void atlas_gdn_load() {
+extern "C" void avarok_gdn_load() {
   if (!g_loaded) { gdn_holo_0_Kernel_Module_Load(&g_module); g_loaded = 1; }
 }
 
 // q,k,v,o: fp16 device ptrs; alpha,beta,state,init_state: fp32; tensormaps: scratch; cu_seqlens: int64.
-extern "C" int atlas_gdn_prefill(
+extern "C" int avarok_gdn_prefill(
     void* q, void* k, void* v, void* o,
     void* alpha, void* beta, void* state, void* init_state,
     void* tensormaps, void* cu_seqlens,
@@ -38,12 +38,12 @@ extern "C" int atlas_gdn_prefill(
       scale, num_q_heads, num_k_heads, num_v_heads, num_sab_heads, num_seqs, 1, 0, grid_x, (cudaStream_t)stream);
 }
 
-// Atlas-NATIVE entry: takes Atlas's packed QKV ([Q(key_dim)|K(key_dim)|V(value_dim)] bf16,
+// Avarok-NATIVE entry: takes Avarok's packed QKV ([Q(key_dim)|K(key_dim)|V(value_dim)] bf16,
 // row stride = conv_dim) + interleaved gate_beta ([gate(nv)|beta(nv)] fp32, row stride gb_stride),
 // + contiguous output [T,value_dim]. Deinterleaves gate/beta internally; q/k/v passed via
-// conv_dim strides (no copy). This is what Atlas's prefill_gdn_full_inner will call directly.
+// conv_dim strides (no copy). This is what Avarok's prefill_gdn_full_inner will call directly.
 static void* s_alpha=nullptr; static void* s_beta=nullptr; static size_t s_cap=0;
-extern "C" int atlas_gdn_prefill_packed(
+extern "C" int avarok_gdn_prefill_packed(
     void* qkv, void* gate_beta, void* output, void* h_state, void* init_state,
     void* tensormaps, void* cu_seqlens,
     float scale, int total_seqlen, int nk, int nv, int kd, int vd,
@@ -70,22 +70,22 @@ extern "C" int atlas_gdn_prefill_packed(
   gdn_holo_0_Tensor_cu_seqlens_t   g_cu={cu_seqlens,{num_seqs+1}};
   int ret = cute_dsl_gdn_holo_0_wrapper(&g_module,&g_q,&g_k,&g_v,&g_o,&g_al,&g_be,&g_st,&g_in,&g_tm,&g_cu,
       scale, nk, nk, nv, num_sab, num_seqs, 1, 0, grid_x, st);
-  // FI wrote h_state (g_st) as S[v][k]; Atlas decode reads S[k][v]. Transpose last two
+  // FI wrote h_state (g_st) as S[v][k]; Avarok decode reads S[k][v]. Transpose last two
   // dims per head (num_seqs*nv heads of vd x vd). Same stream => runs after the FI kernel.
-  atlas_transpose_heads((float*)h_state, num_seqs * nv, vd, st);
+  avarok_transpose_heads((float*)h_state, num_seqs * nv, vd, st);
   return ret;
 }
 
 // Managed entry: caches tensormaps + init_state + cu_seqlens internally (no per-call
 // alloc/free/sync -> no async use-after-free). MULTI-CHUNK CORRECT: the incoming h_state
-// (Atlas layout S[k][v], = carried state across chunked-prefill steps; zero on chunk 0) is
+// (Avarok layout S[k][v], = carried state across chunked-prefill steps; zero on chunk 0) is
 // copied into init and transposed to FI layout S[v][k] before the scan; FI writes the new
 // state to h_state (S[v][k]), which the post-kernel transpose returns to S[k][v]. cu rebuilt
 // only when total changes.
 static void* m_tm=nullptr; static size_t m_tm_cap=0;
 static void* m_init=nullptr; static size_t m_init_cap=0;
 static void* m_cu=nullptr; static long long m_cu_total=-1;
-extern "C" int atlas_gdn_prefill_packed_managed(
+extern "C" int avarok_gdn_prefill_packed_managed(
     void* qkv, void* gate_beta, void* output, void* h_state,
     float scale, int total_seqlen, int nk, int nv, int kd, int vd,
     int conv_dim, int gb_stride, int num_seqs, void* stream)
@@ -95,11 +95,11 @@ extern "C" int atlas_gdn_prefill_packed_managed(
   if(tmn>m_tm_cap){ if(m_tm)cudaFree(m_tm); cudaMalloc(&m_tm,tmn); m_tm_cap=tmn; }
   size_t in=(size_t)num_seqs*nv*kd*vd*4;
   if(in>m_init_cap){ if(m_init)cudaFree(m_init); cudaMalloc(&m_init,in); m_init_cap=in; }
-  // init = incoming h_state transposed Atlas S[k][v] -> FI S[v][k] (chunk 0: h_state=0 -> 0).
+  // init = incoming h_state transposed Avarok S[k][v] -> FI S[v][k] (chunk 0: h_state=0 -> 0).
   cudaMemcpyAsync(m_init, h_state, in, cudaMemcpyDeviceToDevice, st);
-  atlas_transpose_heads((float*)m_init, num_seqs*nv, vd, st);
+  avarok_transpose_heads((float*)m_init, num_seqs*nv, vd, st);
   if((long long)total_seqlen!=m_cu_total){ if(!m_cu) cudaMalloc(&m_cu,(size_t)(num_seqs+1)*8);
     long long h[2]={0,(long long)total_seqlen}; cudaMemcpy(m_cu,h,16,cudaMemcpyHostToDevice); m_cu_total=total_seqlen; }
-  return atlas_gdn_prefill_packed(qkv,gate_beta,output,h_state,m_init,m_tm,m_cu,
+  return avarok_gdn_prefill_packed(qkv,gate_beta,output,h_state,m_init,m_tm,m_cu,
       scale,total_seqlen,nk,nv,kd,vd,conv_dim,gb_stride,num_seqs,stream);
 }

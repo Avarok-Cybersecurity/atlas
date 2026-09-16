@@ -5,7 +5,7 @@
   //
   // The modal shows the recipe's own values as a read-only base and tracks only
   // what the user changed. Start sends that sparse diff, so an untouched modal
-  // launches byte-identically to `atlasctl run <recipe>`.
+  // launches byte-identically to `avarokctl run <recipe>`.
   //
   // The Review tab shows the exact command, rendered by the agent's own
   // renderer — the same function the launch will use. Preview and execution
@@ -172,7 +172,7 @@
           Your agent does not understand {unapplied.length} setting(s) this recipe
           carries, so they will <strong>not</strong> be applied:
           <code class="mono">{unapplied.join(', ')}</code>.
-          Updating atlasctl may fix this.
+          Updating avarokctl may fix this.
         </p>
       {/if}
     {:else}

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-//! ATLAS_DUMP_EXPERT_IDS=1 — per-MoE-fire diagnostic dumps shared by
+//! AVAROK_DUMP_EXPERT_IDS=1 — per-MoE-fire diagnostic dumps shared by
 //! both the FP8 (`forward_prefill_fp8.rs`) and NVFP4
 //! (`forward_prefill.rs`) routed-expert prefill paths.
 //!
@@ -16,14 +16,14 @@
 //! and verifying the fix landed it in [0.977, 1.021] of HF baseline
 //! across all 40 layers. See `project_qwen36_moe_v2_fix` memory.
 //!
-//! Toggle on a running server with `-e ATLAS_DUMP_EXPERT_IDS=1`.
+//! Toggle on a running server with `-e AVAROK_DUMP_EXPERT_IDS=1`.
 
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 #[inline]
 pub fn enabled() -> bool {
-    std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1")
+    std::env::var("AVAROK_DUMP_EXPERT_IDS").ok().as_deref() == Some("1")
 }
 
 /// Read a `[num_elements]` BF16 row at `ptr + offset_bytes` to a host
@@ -68,7 +68,7 @@ pub fn dump_gate_input(
     gpu.synchronize(stream)?;
     let (mag, first5) = last_tok_stats(gpu, router_in, n as usize, h as usize);
     tracing::info!(
-        "ATLAS_GATE_INPUT last_tok: |x|={:.4}  first5={:?}",
+        "AVAROK_GATE_INPUT last_tok: |x|={:.4}  first5={:?}",
         mag,
         first5
     );
@@ -95,7 +95,7 @@ pub fn dump_gate_logits(
     let mean: f32 = logits.iter().sum::<f32>() / logits.len() as f32;
     let var: f32 = logits.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / logits.len() as f32;
     tracing::info!(
-        "ATLAS_GATE_LOGITS last_tok: top10_(idx,val)={:?} mean={:.4} std={:.4}",
+        "AVAROK_GATE_LOGITS last_tok: top10_(idx,val)={:?} mean={:.4} std={:.4}",
         top10,
         mean,
         var.sqrt()
@@ -131,7 +131,7 @@ pub fn dump_expert_ids(
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
     tracing::info!(
-        "ATLAS_EXPERT_IDS last_tok: indices={:?} weights={:?} sum={:.4}",
+        "AVAROK_EXPERT_IDS last_tok: indices={:?} weights={:?} sum={:.4}",
         ids,
         ws,
         ws.iter().sum::<f32>()
@@ -154,7 +154,7 @@ pub fn dump_expert_load(
     if !enabled() {
         return;
     }
-    // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+    // Log-once latch (see `avarok_core::scope`). It holds no model-derived
     // value — the message is rebuilt from the arguments every call — so a
     // stale entry cannot produce a wrong answer, only a suppressed duplicate
     // line after a model swap. Scoping it would thread a logging concern
@@ -179,7 +179,7 @@ pub fn dump_expert_load(
         let max_idx = counts.iter().position(|&x| x == max_cnt).unwrap_or(0);
         let kernel_max = max_m_tiles * 64;
         tracing::info!(
-            "ATLAS_EXPERT_LOAD: n_tokens={} avg={} max={} (expert {}) min={} max_m_tiles={} kernel_cap={} truncated={}",
+            "AVAROK_EXPERT_LOAD: n_tokens={} avg={} max={} (expert {}) min={} max_m_tiles={} kernel_cap={} truncated={}",
             num_tokens,
             avg_per_expert,
             max_cnt,
@@ -207,7 +207,7 @@ pub fn dump_routed_only(
     gpu.synchronize(stream)?;
     let (mag, first5) = last_tok_stats(gpu, output, n as usize, h as usize);
     tracing::info!(
-        "ATLAS_ROUTED_ONLY last_tok: |x|={:.4} first5={:?}",
+        "AVAROK_ROUTED_ONLY last_tok: |x|={:.4} first5={:?}",
         mag,
         first5
     );
@@ -228,7 +228,7 @@ pub fn dump_shared_out(
     gpu.synchronize(stream)?;
     let (mag, first5) = last_tok_stats(gpu, shared_down_out, n as usize, h as usize);
     tracing::info!(
-        "ATLAS_SHARED_OUT last_tok: |x|={:.4} first5={:?}",
+        "AVAROK_SHARED_OUT last_tok: |x|={:.4} first5={:?}",
         mag,
         first5
     );
@@ -254,7 +254,7 @@ pub fn dump_shared_gate(
     let dot: f32 = v_in.iter().zip(v_g.iter()).map(|(a, b)| a * b).sum();
     let sig = 1.0 / (1.0 + (-dot).exp());
     tracing::info!(
-        "ATLAS_SHARED_GATE last_tok: dot={:.4} sigmoid={:.6}",
+        "AVAROK_SHARED_GATE last_tok: dot={:.4} sigmoid={:.6}",
         dot,
         sig
     );
@@ -275,6 +275,6 @@ pub fn dump_moe_out(
     }
     gpu.synchronize(stream)?;
     let (mag, first5) = last_tok_stats(gpu, output, n as usize, h as usize);
-    tracing::info!("ATLAS_MOE_OUT last_tok: |x|={:.4} first5={:?}", mag, first5);
+    tracing::info!("AVAROK_MOE_OUT last_tok: |x|={:.4} first5={:?}", mag, first5);
     Ok(())
 }

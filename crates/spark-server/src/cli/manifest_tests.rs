@@ -36,7 +36,7 @@ fn presence_only_is_reported_per_flag_not_guessed() {
 
 /// A closed value set must come from the module the validator enforces, or a
 /// picker will offer something the launch refuses. This is the `fcfs` bug in
-/// test form: atlas-recipes offered a policy the engine never accepted.
+/// test form: avarok-recipes offered a policy the engine never accepted.
 #[test]
 fn enumerated_values_come_from_the_validator_not_from_prose() {
     let m = build();

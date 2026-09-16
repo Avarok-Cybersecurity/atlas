@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Fused MoE Expert+Shared GEMV — K=3 multi-token batch variant.
+// Avarok Fused MoE Expert+Shared GEMV — K=3 multi-token batch variant.
 //
 // Processes 3 tokens through MoE in single kernel launches by expanding
 // blockIdx.y to accommodate 3 sets of (top_k routed + 1 shared) experts.

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Per-layer divergence comparator: Atlas (ATLAS_NEMO_DUMP) vs HF oracle.
+"""Per-layer divergence comparator: Avarok (AVAROK_NEMO_DUMP) vs HF oracle.
 
 Both sides write headerless little-endian f32 .bin of the LAST token's
 post-layer residual-stream hidden vector. This computes flat cosine,
 relative L2, and max-abs-diff per layer, flags the first divergent layer,
 and characterizes the growth curve.
 
-Usage: nemotron_layer_diff.py <atlas_dir> <hf_dir>
+Usage: nemotron_layer_diff.py <avarok_dir> <hf_dir>
 """
 import json
 import pathlib
@@ -42,7 +42,7 @@ def metrics(a, b):
 def main():
     nlayers = len(PATTERN)
     print(f"{'layer':>6} {'kind':>6} {'cosine':>10} {'relL2':>10} "
-          f"{'maxdiff':>10} {'|atlas|':>10} {'|hf|':>10}")
+          f"{'maxdiff':>10} {'|avarok|':>10} {'|hf|':>10}")
     print("-" * 70)
     first_div = None
     rows = []
@@ -51,13 +51,13 @@ def main():
     # post-norm_f as the final entry instead), so hf_L{nlayers-1}.bin is
     # intentionally absent -- compare the final-norm output instead.
     for i in range(nlayers):
-        a = rd(A / f"atlas_L{i}.bin")
+        a = rd(A / f"avarok_L{i}.bin")
         b = rd(H / f"hf_L{i}.bin")
         if a is None or b is None:
             note = ("  (HF exposes no pre-norm residual for the last layer "
                     "-- see final_norm row)" if i == nlayers - 1 else "")
             print(f"{i:>6} {KIND.get(PATTERN[i],'?'):>6}   MISSING "
-                  f"atlas={a is not None} hf={b is not None}{note}")
+                  f"avarok={a is not None} hf={b is not None}{note}")
             continue
         cos, rel, maxd, na, nb = metrics(a, b)
         k = KIND.get(PATTERN[i], "?")
@@ -72,24 +72,24 @@ def main():
     print("-" * 70)
     # final norm + logits
     for name in ("final_norm", "logits"):
-        a = rd(A / f"atlas_{name}.bin")
+        a = rd(A / f"avarok_{name}.bin")
         b = rd(H / f"hf_{name}.bin")
         if a is not None and b is not None:
             cos, rel, maxd, na, nb = metrics(a, b)
             print(f"{name:>13} cos={cos:.6f} relL2={rel:.6f} "
-                  f"maxdiff={maxd:.4f} |atlas|={na:.2f} |hf|={nb:.2f}")
+                  f"maxdiff={maxd:.4f} |avarok|={na:.2f} |hf|={nb:.2f}")
 
     # top token agreement
-    af = A / "atlas_logits.bin"
+    af = A / "avarok_logits.bin"
     hf = H / "hf_logits.bin"
     if af.exists() and hf.exists():
         al = rd(af)
         hl = rd(hf)
         at = np.argsort(-al)[:10]
         ht = np.argsort(-hl)[:10]
-        print(f"\natlas top-10 token ids: {at.tolist()}")
+        print(f"\navarok top-10 token ids: {at.tolist()}")
         print(f"hf    top-10 token ids: {ht.tolist()}")
-        print(f"argmax match: atlas={int(at[0])} hf={int(ht[0])} "
+        print(f"argmax match: avarok={int(at[0])} hf={int(ht[0])} "
               f"-> {'SAME' if at[0]==ht[0] else 'DIFFERENT'}")
         overlap = len(set(at.tolist()) & set(ht.tolist()))
         print(f"top-10 overlap: {overlap}/10")

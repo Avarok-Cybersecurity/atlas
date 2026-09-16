@@ -19,7 +19,7 @@
  * deployment carrying the concatenated-header defect. The first Pages
  * deployment of the blog still does, and is kept for exactly this reason:
  *
- *   bun blog/e2e/check-headers.mjs https://05ca5569.atlas-blog-3ja.pages.dev
+ *   bun blog/e2e/check-headers.mjs https://05ca5569.avarok-blog-3ja.pages.dev
  *
  * (The earlier control, docs.atlasinference.io with its location-level
  * add_header, is a 301 to the new domain now and no longer serves anything.)

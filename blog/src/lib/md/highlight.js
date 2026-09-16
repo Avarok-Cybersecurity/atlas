@@ -9,7 +9,7 @@
 
 import katex from 'katex';
 import { createHighlighter } from 'shiki';
-import { COLOR_REPLACEMENTS, LANGS, atlasTheme } from './atlas-shiki-theme.js';
+import { COLOR_REPLACEMENTS, LANGS, avarokTheme } from './avarok-shiki-theme.js';
 
 let cached = null;
 
@@ -19,13 +19,13 @@ let cached = null;
  */
 export async function makeHighlighter() {
   if (!cached) {
-    cached = createHighlighter({ themes: [atlasTheme], langs: LANGS }).then((shiki) => ({
+    cached = createHighlighter({ themes: [avarokTheme], langs: LANGS }).then((shiki) => ({
       /** @returns {string} HTML with `var(--token)` colours */
       code(code, lang) {
         const known = LANGS.includes(lang) ? lang : 'text';
         return shiki.codeToHtml(code, {
           lang: known,
-          theme: 'atlas',
+          theme: 'avarok',
           colorReplacements: COLOR_REPLACEMENTS
         });
       }

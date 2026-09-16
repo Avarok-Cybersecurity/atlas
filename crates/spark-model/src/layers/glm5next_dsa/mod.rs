@@ -43,7 +43,7 @@
 //!   memory became "token indices".
 
 use anyhow::{Result, bail};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 
 pub mod attend;
@@ -130,7 +130,7 @@ pub struct Glm5NextDsaKernels {
 ///   backend serving our own frozen oracle is the SM90 NoPE sparse-MLA path over a plain
 ///   bf16 paged cache.
 ///
-/// ⇒ Atlas's serve path is `mla_paged_decode{,_fp8}` — block-table paged, online
+/// ⇒ Avarok's serve path is `mla_paged_decode{,_fp8}` — block-table paged, online
 /// softmax, **no `S` term in shared memory** — taught to walk a selected-index row
 /// instead of `0..seq_len`. That kernel variant is NOT yet written; until it is, DSA
 /// decode has no production consumer and these two handles must stay test-only.

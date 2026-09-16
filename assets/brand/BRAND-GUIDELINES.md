@@ -1,6 +1,6 @@
 # Avarok — brand guidelines
 
-The same rules as `Atlas-Brand-Guidelines.pdf`, in text, for pasting into a wiki
+The same rules as `Avarok-Brand-Guidelines.pdf`, in text, for pasting into a wiki
 or a contributor doc. The mark is the three chevrons. The wordmark is Avarok,
 with the signature A (arrow shaft).
 

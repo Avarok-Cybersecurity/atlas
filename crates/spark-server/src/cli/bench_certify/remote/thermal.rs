@@ -45,7 +45,7 @@
 use std::time::Duration;
 
 use super::node::Node;
-use atlas_plugin::hardware::limits::ThermalEnvelope;
+use avarok_plugin::hardware::limits::ThermalEnvelope;
 
 /// How often a parked node is re-read.
 pub const RECHECK: Duration = Duration::from_secs(60);
@@ -111,15 +111,15 @@ pub trait Probe: Send + Sync {
 }
 
 /// The real probe: this box through `HardwareState`, a remote node through
-/// `atlasctl bench nodes`.
+/// `avarokctl bench nodes`.
 pub struct FleetProbe {
-    pub atlasctl: std::sync::Arc<dyn super::atlasctl::Atlasctl>,
+    pub avarokctl: std::sync::Arc<dyn super::avarokctl::Avarokctl>,
 }
 
 impl Probe for FleetProbe {
     fn read(&self, node: &Node) -> Reading {
         if node.local {
-            let s = atlas_plugin::hardware::HardwareState::collect();
+            let s = avarok_plugin::hardware::HardwareState::collect();
             return Reading {
                 chassis_c: s.hottest_chassis_c(),
                 throttled: s.throttle_active.thermal(),
@@ -129,7 +129,7 @@ impl Probe for FleetProbe {
             chassis_c: None,
             throttled: None,
         };
-        let Ok(rows) = self.atlasctl.nodes(std::slice::from_ref(&node.addr)) else {
+        let Ok(rows) = self.avarokctl.nodes(std::slice::from_ref(&node.addr)) else {
             return blind;
         };
         let Some(info) = rows

@@ -149,11 +149,11 @@ pub fn load_pass(
             Some(t) => t,
         };
 
-        // GGUF dims are ggml-order; Atlas/HF shape is the reverse.
+        // GGUF dims are ggml-order; Avarok/HF shape is the reverse.
         let hf_shape: Vec<usize> = tensor.dims.iter().rev().copied().collect();
 
         // ── Native keep-packed Q2_0 short-circuit ──
-        // When `ATLAS_GGUF_NATIVE_Q2=1`, upload the raw `block_q2_0` bytes for
+        // When `AVAROK_GGUF_NATIVE_Q2=1`, upload the raw `block_q2_0` bytes for
         // the big transform-free FFN projections UNCHANGED and tag them
         // `PackedQ2_0` so the model's `q2_0_gemv` decode path dequants in-kernel
         // (no BF16 expansion, no downstream NVFP4 requant). This is the whole

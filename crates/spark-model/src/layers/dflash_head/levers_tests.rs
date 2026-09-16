@@ -47,20 +47,20 @@ fn every_opt_in_is_off_until_it_is_exactly_one() {
     // single shared helper would not catch one field wired to the wrong
     // variable name — which is the failure this table exists to find.
     let cases: [(&str, fn(&DFlashLevers) -> bool); 14] = [
-        ("ATLAS_DFLASH_DEBUG_DUMP", |l| l.debug_dump),
-        ("ATLAS_DFLASH_DEBUG_DUMP_FULL", |l| l.debug_dump_full),
-        ("ATLAS_DFLASH_LOG_DRAFTS", |l| l.log_drafts),
-        ("ATLAS_DFLASH_BLOCK_DUMP", |l| l.block_dump),
-        ("ATLAS_DFLASH_OPTION_B_DIAG", |l| l.option_b_diag),
-        ("ATLAS_DFLASH_DEBUG_FORCE_PATTERN", |l| l.force_pattern),
-        ("ATLAS_DFLASH_PRECOMPUTE", |l| l.precompute),
-        ("ATLAS_DSPARK_CONF_TRACE", |l| l.dspark_conf_trace),
-        ("ATLAS_DFLASH_OPTION_B_NO_CTX", |l| l.option_b_no_ctx),
-        ("ATLAS_DFLASH_VERIFY_TRACE", |l| l.verify_trace),
-        ("ATLAS_DFLASH_PRECOMPUTE_DUMP", |l| l.precompute_dump),
-        ("ATLAS_DFLASH_CTX_PARITY_DUMP", |l| l.ctx_parity_dump),
-        ("ATLAS_DFLASH_DEBUG_FULL_PRECOMPUTE", |l| l.full_precompute),
-        ("ATLAS_DFLASH_CTXLEN_PROBE", |l| l.ctxlen_probe),
+        ("AVAROK_DFLASH_DEBUG_DUMP", |l| l.debug_dump),
+        ("AVAROK_DFLASH_DEBUG_DUMP_FULL", |l| l.debug_dump_full),
+        ("AVAROK_DFLASH_LOG_DRAFTS", |l| l.log_drafts),
+        ("AVAROK_DFLASH_BLOCK_DUMP", |l| l.block_dump),
+        ("AVAROK_DFLASH_OPTION_B_DIAG", |l| l.option_b_diag),
+        ("AVAROK_DFLASH_DEBUG_FORCE_PATTERN", |l| l.force_pattern),
+        ("AVAROK_DFLASH_PRECOMPUTE", |l| l.precompute),
+        ("AVAROK_DSPARK_CONF_TRACE", |l| l.dspark_conf_trace),
+        ("AVAROK_DFLASH_OPTION_B_NO_CTX", |l| l.option_b_no_ctx),
+        ("AVAROK_DFLASH_VERIFY_TRACE", |l| l.verify_trace),
+        ("AVAROK_DFLASH_PRECOMPUTE_DUMP", |l| l.precompute_dump),
+        ("AVAROK_DFLASH_CTX_PARITY_DUMP", |l| l.ctx_parity_dump),
+        ("AVAROK_DFLASH_DEBUG_FULL_PRECOMPUTE", |l| l.full_precompute),
+        ("AVAROK_DFLASH_CTXLEN_PROBE", |l| l.ctxlen_probe),
     ];
     for (var, read) in cases {
         assert!(!read(&resolve(&[])), "{var} armed with nothing set");
@@ -75,16 +75,16 @@ fn every_opt_in_is_off_until_it_is_exactly_one() {
 
 /// Every opt-OUT lever, each of which ships ON and is disabled only by an
 /// exact `0`. Separate from the opt-in table because getting one of these
-/// backwards is the expensive direction: `ATLAS_DFLASH_OPTION_B` had its
+/// backwards is the expensive direction: `AVAROK_DFLASH_OPTION_B` had its
 /// polarity flipped by a merge in 2026-08 and propose went 19.8 -> 618.7 ms
 /// with nothing logged.
 #[test]
 fn every_opt_out_ships_on_and_only_zero_disables_it() {
     let cases: [(&str, fn(&DFlashLevers) -> bool); 4] = [
-        ("ATLAS_DSPARK_ANCHOR_BIAS", |l| l.dspark_anchor_bias),
-        ("ATLAS_DFLASH_OPTION_B", |l| l.option_b),
-        ("ATLAS_DFLASH2", |l| l.dflash2),
-        ("ATLAS_DSPARK_MARKOV", |l| l.dspark_markov),
+        ("AVAROK_DSPARK_ANCHOR_BIAS", |l| l.dspark_anchor_bias),
+        ("AVAROK_DFLASH_OPTION_B", |l| l.option_b),
+        ("AVAROK_DFLASH2", |l| l.dflash2),
+        ("AVAROK_DSPARK_MARKOV", |l| l.dspark_markov),
     ];
     for (var, read) in cases {
         assert!(read(&resolve(&[])), "{var} must ship ON");
@@ -107,11 +107,11 @@ fn the_numeric_path_levers_default_to_unbounded() {
     assert_eq!(resolve(&[]).batch_propose_width, usize::MAX);
     assert_eq!(resolve(&[]).draft_cap, None);
     assert_eq!(
-        resolve(&[("ATLAS_DFLASH_BATCH_PROPOSE", "2")]).batch_propose_width,
+        resolve(&[("AVAROK_DFLASH_BATCH_PROPOSE", "2")]).batch_propose_width,
         2
     );
     assert_eq!(
-        resolve(&[("ATLAS_DFLASH_DRAFT_CAP", "1")]).draft_cap,
+        resolve(&[("AVAROK_DFLASH_DRAFT_CAP", "1")]).draft_cap,
         Some(1)
     );
 }
@@ -121,45 +121,45 @@ fn conf_tau_is_off_until_a_positive_threshold_is_given() {
     // 0.0 is the reference's `threshold <= 0.0 -> full block`, so an
     // unparseable value must land there rather than arming the head.
     assert_eq!(resolve(&[]).conf_tau, 0.0);
-    assert_eq!(resolve(&[("ATLAS_DSPARK_CONF_TAU", "junk")]).conf_tau, 0.0);
-    assert_eq!(resolve(&[("ATLAS_DSPARK_CONF_TAU", "0.7")]).conf_tau, 0.7);
+    assert_eq!(resolve(&[("AVAROK_DSPARK_CONF_TAU", "junk")]).conf_tau, 0.0);
+    assert_eq!(resolve(&[("AVAROK_DSPARK_CONF_TAU", "0.7")]).conf_tau, 0.7);
 }
 
 #[test]
 fn dspark_shift_defers_to_the_checkpoint_unless_spelled() {
     assert_eq!(resolve(&[]).dspark_shift, None);
     assert_eq!(
-        resolve(&[("ATLAS_DSPARK_SHIFT", "1")]).dspark_shift,
+        resolve(&[("AVAROK_DSPARK_SHIFT", "1")]).dspark_shift,
         Some(true)
     );
     assert_eq!(
-        resolve(&[("ATLAS_DSPARK_SHIFT", "0")]).dspark_shift,
+        resolve(&[("AVAROK_DSPARK_SHIFT", "0")]).dspark_shift,
         Some(false)
     );
     // Anything else is not an override — the drafter config still decides.
-    assert_eq!(resolve(&[("ATLAS_DSPARK_SHIFT", "yes")]).dspark_shift, None);
+    assert_eq!(resolve(&[("AVAROK_DSPARK_SHIFT", "yes")]).dspark_shift, None);
 }
 
 #[test]
 fn numeric_levers_fall_back_when_unparseable() {
     assert_eq!(
-        resolve(&[("ATLAS_DFLASH_PROPOSE_WARMUP_N", "5")]).propose_warmup_n,
+        resolve(&[("AVAROK_DFLASH_PROPOSE_WARMUP_N", "5")]).propose_warmup_n,
         5
     );
     assert_eq!(
-        resolve(&[("ATLAS_DFLASH_PROPOSE_WARMUP_N", "x")]).propose_warmup_n,
+        resolve(&[("AVAROK_DFLASH_PROPOSE_WARMUP_N", "x")]).propose_warmup_n,
         2
     );
     assert_eq!(
-        resolve(&[("ATLAS_DFLASH_BLOCK_DUMP_AT_POS", "64")]).block_dump_at_pos,
+        resolve(&[("AVAROK_DFLASH_BLOCK_DUMP_AT_POS", "64")]).block_dump_at_pos,
         64
     );
     assert_eq!(
-        resolve(&[("ATLAS_DFLASH_DEBUG_CTX_USED", "7")]).force_ctx_used,
+        resolve(&[("AVAROK_DFLASH_DEBUG_CTX_USED", "7")]).force_ctx_used,
         Some(7)
     );
     assert_eq!(
-        resolve(&[("ATLAS_DFLASH_DEBUG_CTX_USED", "-1")]).force_ctx_used,
+        resolve(&[("AVAROK_DFLASH_DEBUG_CTX_USED", "-1")]).force_ctx_used,
         None
     );
 }
@@ -186,23 +186,23 @@ fn a_diagnostic_set_to_zero_still_suppresses_graphs() {
         );
     }
     // …and nothing else does. An unrelated DFlash variable must not cost the
-    // graphs: `ATLAS_DFLASH2=0` and `ATLAS_DFLASH_OPTION_B=0` are path
+    // graphs: `AVAROK_DFLASH2=0` and `AVAROK_DFLASH_OPTION_B=0` are path
     // selectors, not diagnostics.
-    assert!(!resolve(&[("ATLAS_DFLASH2", "0")]).any_diagnostic_armed);
-    assert!(!resolve(&[("ATLAS_DFLASH_OPTION_B", "0")]).any_diagnostic_armed);
-    assert!(!resolve(&[("ATLAS_DFLASH_PROPOSE_WARMUP_N", "4")]).any_diagnostic_armed);
+    assert!(!resolve(&[("AVAROK_DFLASH2", "0")]).any_diagnostic_armed);
+    assert!(!resolve(&[("AVAROK_DFLASH_OPTION_B", "0")]).any_diagnostic_armed);
+    assert!(!resolve(&[("AVAROK_DFLASH_PROPOSE_WARMUP_N", "4")]).any_diagnostic_armed);
 }
 
 #[test]
 fn the_block_dump_arms_only_at_or_past_its_position() {
     let armed = resolve(&[
-        ("ATLAS_DFLASH_BLOCK_DUMP", "1"),
-        ("ATLAS_DFLASH_BLOCK_DUMP_AT_POS", "64"),
+        ("AVAROK_DFLASH_BLOCK_DUMP", "1"),
+        ("AVAROK_DFLASH_BLOCK_DUMP_AT_POS", "64"),
     ]);
     assert!(!armed.block_dump_armed_at(63));
     assert!(armed.block_dump_armed_at(64));
     assert!(armed.block_dump_armed_at(65));
     // Position alone never arms it.
-    let off = resolve(&[("ATLAS_DFLASH_BLOCK_DUMP_AT_POS", "0")]);
+    let off = resolve(&[("AVAROK_DFLASH_BLOCK_DUMP_AT_POS", "0")]);
     assert!(!off.block_dump_armed_at(1_000_000));
 }

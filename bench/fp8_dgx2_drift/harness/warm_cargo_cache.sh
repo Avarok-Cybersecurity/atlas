@@ -14,21 +14,21 @@
 #   model's generations actually use (axum, tokio, serde, serde_json, tower,
 #   hyper, reqwest, tracing*). The build populates two shared artifacts:
 #     1. ${CARGO_HOME}/registry  — downloaded + extracted crate sources.
-#     2. ${ATLAS_WARM_TARGET_DIR} — COMPILED dependency rlibs (the slow part).
-#   The scorer exports CARGO_TARGET_DIR=${ATLAS_WARM_TARGET_DIR} so every
+#     2. ${AVAROK_WARM_TARGET_DIR} — COMPILED dependency rlibs (the slow part).
+#   The scorer exports CARGO_TARGET_DIR=${AVAROK_WARM_TARGET_DIR} so every
 #   per-project build reuses the already-compiled deps and only recompiles
 #   the project's own tiny crate — seconds, not minutes.
 #
 # SSOT
-#   ATLAS_WARM_TARGET_DIR is the single source of truth for the warm target
+#   AVAROK_WARM_TARGET_DIR is the single source of truth for the warm target
 #   path; both this script and score_run.py read the same env var (with the
 #   same explicit default), so the two never drift.
 #
 # Idempotent: re-running is a fast no-op once the cache is warm.
 set -euo pipefail
 
-WARM_TARGET_DIR="${ATLAS_WARM_TARGET_DIR:-${HOME}/.cargo/atlas-warm-target}"
-TEMPLATE_DIR="${ATLAS_WARM_TEMPLATE_DIR:-${HOME}/.cargo/atlas-warm-template}"
+WARM_TARGET_DIR="${AVAROK_WARM_TARGET_DIR:-${HOME}/.cargo/avarok-warm-target}"
+TEMPLATE_DIR="${AVAROK_WARM_TEMPLATE_DIR:-${HOME}/.cargo/avarok-warm-template}"
 
 echo "[warm] warm target dir : ${WARM_TARGET_DIR}" >&2
 echo "[warm] template project: ${TEMPLATE_DIR}" >&2
@@ -41,7 +41,7 @@ mkdir -p "${TEMPLATE_DIR}/src"
 # the leaf crate version differs slightly.
 cat > "${TEMPLATE_DIR}/Cargo.toml" <<'TOML'
 [package]
-name = "atlas-warm-template"
+name = "avarok-warm-template"
 version = "0.1.0"
 edition = "2021"
 
@@ -82,7 +82,7 @@ async fn main() {
     let _ = serde_json::json!({"ok": true});
     let _v: tower::ServiceBuilder<tower::layer::util::Identity> = tower::ServiceBuilder::new();
     let app = Router::new().route("/ping", get(ping));
-    let port: u16 = std::env::var("ATLAS_HARNESS_PORT")
+    let port: u16 = std::env::var("AVAROK_HARNESS_PORT")
         .unwrap_or_else(|_| "3001".to_string())
         .parse()
         .unwrap();

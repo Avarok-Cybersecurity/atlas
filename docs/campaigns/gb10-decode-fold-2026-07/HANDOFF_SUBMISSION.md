@@ -12,8 +12,8 @@ Branch `perf/decode-fold-2026-07-24` == `feat/tree-spec-decode` == **`1dcf2755`*
 | 1 | **`n==4` FFN arm** (the big one) | `layers/qwen3_attention/trait_impl/multi_seq/ffn.rs` | K=4 verify's dense FFN on the 16 full-attn layers was falling through to the MMQ prefill GEMM (`forward_prefill`) instead of the batched `forward_k4` GEMV. `forward_k4` existed and served the 48 GDN layers, but the attention path had no `n==4` arm. **This is the entire source of every historical "K=4 regresses" result** (54.8ms → ~31ms per the kernel's own docstring). |
 | 2 | **`w4a16_gemv_batch8`** | `kernels/gb10/common/w4a16_gemv.cu` | New NVFP4 batched verify GEMV (E2M1 + FP8 group scales), instantiating the existing `w4a16_gemv_batchm_impl<8>`. Removes the M=5..8 tile-GEMM cliff. lm_head M=8: **19.4ms → 4.7ms**. |
 | 3 | **M≤8 gate widening** | `model/impl_a3.rs` (lm_head), `multi_seq/qkv.rs`, `multi_seq/ffn.rs`, `layers/dense_ffn*.rs`, `qwen3_ssm/*` | Routes lm_head / QKV+O / dense-FFN / **GDN qkvz + out_proj** through batched GEMV at M≤8. Bonus find: the **GDN out_proj had no `==4` NVFP4 arm at all**. |
-| 4 | **`wy5`–`wy8` batched GDN verify** | `kernels/gb10/common/gated_delta_rule_wyn.cu` (K-templated) + dispatch | Replaces the serial per-token GDN fallback at K=5..8. Kill-switch `ATLAS_GDN_WYN=0`. |
-| 5 | shadow top-k instrumentation | `mtp_head/forward.rs`, `verify_k3/k4_step.rs`, `scripts/` | `ATLAS_MTP_SHADOW_TOPK=k`, observational only (default off). Produced the 19k-sample acceptance measurement that drove the design. |
+| 4 | **`wy5`–`wy8` batched GDN verify** | `kernels/gb10/common/gated_delta_rule_wyn.cu` (K-templated) + dispatch | Replaces the serial per-token GDN fallback at K=5..8. Kill-switch `AVAROK_GDN_WYN=0`. |
+| 5 | shadow top-k instrumentation | `mtp_head/forward.rs`, `verify_k3/k4_step.rs`, `scripts/` | `AVAROK_MTP_SHADOW_TOPK=k`, observational only (default off). Produced the 19k-sample acceptance measurement that drove the design. |
 
 **Not shipped (measured dead, documented in the ledger):** W4A8 int8-activation GEMV (the strix
 trick — 0.99–1.01× on GB10 + 0.5% accuracy cost), native FP4-MMA verify (M≤8 too small for the
@@ -74,19 +74,19 @@ the baseline and vLLM. Perf-phase duration 4104.0 s; BFCL-phase duration 4781.5 
 # 1. code
 git fetch avarok && git checkout 1dcf2755        # perf/decode-fold-2026-07-24
 
-# 2. build (the ATLAS_TARGET_MODEL is load-bearing — without it you get a wrong binary)
-PATH=/usr/local/cuda/bin:$PATH ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.6-27b \
+# 2. build (the AVAROK_TARGET_MODEL is load-bearing — without it you get a wrong binary)
+PATH=/usr/local/cuda/bin:$PATH AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=qwen3.6-27b \
   cargo build --release -p spark-server --bin spark --features cuda
 # expect: "compiled 157 kernels for target 0 (gb10, qwen3.6-27b, nvfp4)"
 
 # 3. serve — GOLDEN CONFIG, frozen c2final env; ONLY --num-drafts differs from the golden run (2 -> 3)
-sudo docker run -d --name atlas-golden-e2e --network host --gpus all --ipc=host \
-  -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1 \
-  -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 \
+sudo docker run -d --name avarok-golden-e2e --network host --gpus all --ipc=host \
+  -e AVAROK_NO_FFN_NVFP4_MMQ=1 -e AVAROK_SSM_TAIL_MIDCHUNK=0 -e AVAROK_MTP_CATCHUP=0 \
+  -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 -e AVAROK_SSM_TAIL_PROTECT=1 \
+  -e AVAROK_SSM_TAIL_LEASE_TTL=128 -e AVAROK_BF16_TC_PREFILL=1 \
   -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
   -v "<worktree>/target/release/spark:/usr/local/bin/spark:ro" \
-  atlas-gb10:followups serve centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf \
+  avarok-gb10:followups serve centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf \
   --host 0.0.0.0 --port 8888 --model-name centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf \
   --max-seq-len 32768 --max-batch-size 1 --kv-cache-dtype bf16 --gpu-memory-utilization 0.70 \
   --enable-prefix-caching --ssm-cache-slots 128 --ssm-checkpoint-interval 32 \
@@ -97,7 +97,7 @@ sudo docker run -d --name atlas-golden-e2e --network host --gpus all --ipc=host 
 cd /workspace/endpoints-fresh && \
   ./.venv/bin/inference-endpoint benchmark from-config -c <worktree>/golden_e2e.yaml --mode both -v
 # or simply (the one reproduce entry point -- see REPLICATE.md):
-#   ATLAS_BIN=$PWD/target/release/spark HARNESS_DIR=/workspace/endpoints-fresh \
+#   AVAROK_BIN=$PWD/target/release/spark HARNESS_DIR=/workspace/endpoints-fresh \
 #   BASE_CONFIG=/workspace/endpoints-fresh/results/defaults_20260721_173342/config.yaml \
 #     ND=3 bash scripts/mlperf-edge/run_golden_e2e.sh
 ```

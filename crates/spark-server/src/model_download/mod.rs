@@ -3,7 +3,7 @@
 //! Downloading a model from HuggingFace, and telling whether the local copy is
 //! current.
 //!
-//! Atlas could previously only *consume* a model that was already in the HF
+//! Avarok could previously only *consume* a model that was already in the HF
 //! cache; a recipe naming a checkpoint you did not have dead-ended with advice
 //! to go and run `huggingface-cli`. This is the missing half.
 //!
@@ -19,7 +19,7 @@
 //!
 //! The dashboard's rule holds here: the render thread never polls a future, it
 //! only `try_recv`s. The work runs on a plain `std::thread` named
-//! `atlas-download`, and progress arrives on a `std::sync::mpsc`. See
+//! `avarok-download`, and progress arrives on a `std::sync::mpsc`. See
 //! `recipe/fetch.rs` for the full statement and
 //! `.github/workflows/tui-threading.yml` for its enforcement.
 //!
@@ -40,7 +40,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 pub(crate) const HOST: &str = "https://huggingface.co";
-pub(crate) const AGENT: &str = concat!("atlas-spark/", env!("CARGO_PKG_VERSION"));
+pub(crate) const AGENT: &str = concat!("avarok-spark/", env!("CARGO_PKG_VERSION"));
 
 /// Progress from a running download. Terminal messages are `Done`, `Failed`
 /// and `Cancelled`; exactly one of them is sent.
@@ -95,7 +95,7 @@ pub enum DownloadError {
         need: u64,
         free: u64,
     },
-    /// The repo publishes nothing Atlas can load.
+    /// The repo publishes nothing Avarok can load.
     NoSafetensors {
         repo: String,
     },
@@ -137,7 +137,7 @@ impl DownloadError {
                 *free as f64 / 1e9
             ),
             Self::NoSafetensors { repo } => {
-                format!("{repo} publishes no safetensors — Atlas cannot load it")
+                format!("{repo} publishes no safetensors — Avarok cannot load it")
             }
             Self::Http { repo, status } => format!("the Hub answered {status} for {repo}"),
             Self::Io(e) => format!("could not write to the cache: {e}"),
@@ -170,7 +170,7 @@ pub fn start(repo: &str, cache_root: PathBuf) -> Handle {
     let cancel = Arc::new(AtomicBool::new(false));
     let owned = repo.to_string();
     let spawned = std::thread::Builder::new()
-        .name("atlas-download".into())
+        .name("avarok-download".into())
         .spawn({
             let tx = tx.clone();
             let cancel = Arc::clone(&cancel);

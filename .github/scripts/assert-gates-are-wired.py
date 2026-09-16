@@ -173,8 +173,8 @@ def check_required_context(entry: tuple) -> None:
 # A gate must not disable the thing it is gating.
 # ---------------------------------------------------------------------------
 # `cargo test --features metal (macOS aarch64)` inherited ci.yml's
-# workflow-level `ATLAS_SKIP_BUILD: "1"` -- which exists so the ubuntu jobs can
-# type-check without nvcc. atlas-kernels' build.rs honours it before anything
+# workflow-level `AVAROK_SKIP_BUILD: "1"` -- which exists so the ubuntu jobs can
+# type-check without nvcc. avarok-kernels' build.rs honours it before anything
 # else and emits a stub whose `metallib_modules()` is `Vec::new()`, so
 # `MetalGpuBackend::new` built an EMPTY library cache and all 35 parity tests
 # died with `Metal: unknown module`. The required check was red about the stub,
@@ -188,8 +188,8 @@ STUB_FREE_STEPS = [
         "workflow": "ci.yml",
         "job": "test-macos-metal",
         "step": "cargo test -p spark-runtime --features metal",
-        "var": "ATLAS_SKIP_BUILD",
-        "also": {"ATLAS_TARGET_HW": "metal"},
+        "var": "AVAROK_SKIP_BUILD",
+        "also": {"AVAROK_TARGET_HW": "metal"},
     },
 ]
 
@@ -215,7 +215,7 @@ def check_stub_free(spec: dict) -> None:
     if env.get(var) in SKIP_TRUTHY:
         problems.append(
             f"{spec['workflow']} `{spec['job']}` runs {spec['step']!r} with {var}="
-            f"{env[var]!r}, so atlas-kernels emits a stub and `metallib_modules()` is "
+            f"{env[var]!r}, so avarok-kernels emits a stub and `metallib_modules()` is "
             f"empty; the suite can only report `Metal: unknown module` and its verdict "
             f"is about the stub, not the kernels"
         )

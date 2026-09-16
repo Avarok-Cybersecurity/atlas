@@ -13,7 +13,7 @@ title: A post
 dek: One line.
 categories: [engineering]
 date: 2026-08-30
-keywords: [atlasctl]
+keywords: [avarokctl]
 og-image: ''
 ---
 `;
@@ -160,7 +160,7 @@ describe('rules the compiler enforces before emitting', () => {
 
 describe('slugify', () => {
   test('matches the anchors readers expect', () => {
-    expect(slugify('Running atlasctl')).toBe('running-atlasctl');
+    expect(slugify('Running avarokctl')).toBe('running-avarokctl');
     expect(slugify('A/B, then C?')).toBe('ab-then-c');
     expect(slugify('  Spaced   Out  ')).toBe('spaced-out');
   });

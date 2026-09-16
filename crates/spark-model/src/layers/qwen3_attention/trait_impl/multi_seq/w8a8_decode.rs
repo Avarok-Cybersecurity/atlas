@@ -52,7 +52,7 @@ use crate::weight_map::Fp8Weight;
 
 /// The [`ops::CublasScope`] slice that arms this family, as ONE function so a
 /// test and the dispatch site cannot disagree about which bit is read.
-/// `ATLAS_CUBLAS_GEMM=ffn` must NOT reach the attention projections — that
+/// `AVAROK_CUBLAS_GEMM=ffn` must NOT reach the attention projections — that
 /// exact confusion is what cost 10.3 GiB of unledgered BF16 weight copies in
 /// #917 and is why the lever became a family set.
 pub(super) fn attn_decode_family_armed(scope: ops::CublasScope) -> bool {
@@ -203,10 +203,10 @@ impl Qwen3AttentionLayer {
         };
         if fwd.stats.once(key) {
             tracing::info!(
-                "[atlas] attention {what} decode (n={rows} rows, K={k}): W8A8 block-scaled via \
+                "[avarok] attention {what} decode (n={rows} rows, K={k}): W8A8 block-scaled via \
                  cuBLASLt (per-token 1x128 act scales x 128x128 weight scales, FP32 epilogue; \
                  vLLM-equivalent FP8 numerics), replacing w8a16_gemv_batch16. \
-                 ATLAS_NO_W8A8_DECODE_PROJ restores the GEMV tier; M=1 decode is untouched."
+                 AVAROK_NO_W8A8_DECODE_PROJ restores the GEMV tier; M=1 decode is untouched."
             );
         }
     }

@@ -18,7 +18,7 @@
 //! forward hooks in `crate::model::token_overlay`.
 
 use anyhow::{Result, bail};
-use atlas_core::config::PeftAdapterConfig;
+use avarok_core::config::PeftAdapterConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::WeightStore;
 

@@ -82,7 +82,7 @@ required only once it is.
 
 The classifier reads PR title, body, changed paths, and — where
 `GH_ORGANIZATION_READ_TOKEN` is available — recipe content from the separate
-public `atlas-recipes` repository. That means **text in another repository can
+public `avarok-recipes` repository. That means **text in another repository can
 influence this repository's gate**.
 
 This is safe for exactly one reason, and it is the same reason as everything
@@ -114,7 +114,7 @@ read it against the following.
 **1. "Any code change already invalidates all five gates" was never true.**
 Reason 2 under *What this does NOT buy* claimed the union is vacuous for code
 PRs because `PERF_PATHS` contains a bare `crates`. It does — but
-`GATE_MACHINERY` excludes the whole `crates/atlas-plugin/src/gate` prefix
+`GATE_MACHINERY` excludes the whole `crates/avarok-plugin/src/gate` prefix
 from **every** gate, so paths under it invalidate nothing and intent is their
 only source of coverage. The union was live inside `crates/` from day one; it
 was never waiting on the closure-hash narrowing.
@@ -122,7 +122,7 @@ was never waiting on the closure-hash narrowing.
 pins both halves of the corrected claim.
 
 **2. The `recipes/` "live case" is unreachable from this repository.** This
-repo tracks zero `recipes/` files — they live in the separate `atlas-recipes`
+repo tracks zero `recipes/` files — they live in the separate `avarok-recipes`
 repo, and `invalidating_paths` diffs *this* one, so a `recipes/` path can
 never appear in the diff the gate filters. The reachable
 off-the-floor classes are `docker/`, `docs/`, `.github/`, `scripts/`,

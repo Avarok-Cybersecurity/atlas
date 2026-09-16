@@ -4,7 +4,7 @@
 //! startup with an actionable message — never a silent no-op — while capable
 //! models and the no-env default path are untouched.
 
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 
 use super::*;
 
@@ -46,11 +46,11 @@ fn capability_predicates_are_honest() {
 
 #[test]
 fn dense_model_with_ssm_tier_var_is_rejected() {
-    let err = ensure_ssm_tier_capability_from(&dense(), &["ATLAS_SSM_TIER"]).unwrap_err();
+    let err = ensure_ssm_tier_capability_from(&dense(), &["AVAROK_SSM_TIER"]).unwrap_err();
     let msg = format!("{err:#}");
     // Actionable: names the model and the exact var(s) to unset.
     assert!(msg.contains("qwen3"), "names the model: {msg}");
-    assert!(msg.contains("ATLAS_SSM_TIER"), "names the var: {msg}");
+    assert!(msg.contains("AVAROK_SSM_TIER"), "names the var: {msg}");
     assert!(msg.contains("no recurrent state"), "says why: {msg}");
 }
 
@@ -59,7 +59,7 @@ fn attention_only_moe_with_ssm_tier_var_is_rejected() {
     let mut moe = dense();
     moe.model_type = "attention-moe".to_string();
     moe.num_experts = 512;
-    let err = ensure_ssm_tier_capability_from(&moe, &["ATLAS_SSM_TIER"]).unwrap_err();
+    let err = ensure_ssm_tier_capability_from(&moe, &["AVAROK_SSM_TIER"]).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("attention-moe"), "names the model: {msg}");
     assert!(
@@ -71,11 +71,11 @@ fn attention_only_moe_with_ssm_tier_var_is_rejected() {
 #[test]
 fn dense_model_rejects_every_tier_selector_var() {
     for var in [
-        "ATLAS_SSM_TIER",
-        "ATLAS_SSM_RDMA_TIER",
-        "ATLAS_SSM_SWAP",
-        "ATLAS_SSM_DECODE_TIER",
-        "ATLAS_SSM_DECODE_RING_ROLL",
+        "AVAROK_SSM_TIER",
+        "AVAROK_SSM_RDMA_TIER",
+        "AVAROK_SSM_SWAP",
+        "AVAROK_SSM_DECODE_TIER",
+        "AVAROK_SSM_DECODE_RING_ROLL",
     ] {
         let err = ensure_ssm_tier_capability_from(&dense(), &[var]).unwrap_err();
         assert!(
@@ -88,10 +88,10 @@ fn dense_model_rejects_every_tier_selector_var() {
 #[test]
 fn dense_model_error_lists_all_set_vars() {
     let err =
-        ensure_ssm_tier_capability_from(&dense(), &["ATLAS_SSM_TIER", "ATLAS_SSM_DECODE_TIER"])
+        ensure_ssm_tier_capability_from(&dense(), &["AVAROK_SSM_TIER", "AVAROK_SSM_DECODE_TIER"])
             .unwrap_err();
     let msg = format!("{err:#}");
-    assert!(msg.contains("ATLAS_SSM_TIER") && msg.contains("ATLAS_SSM_DECODE_TIER"));
+    assert!(msg.contains("AVAROK_SSM_TIER") && msg.contains("AVAROK_SSM_DECODE_TIER"));
 }
 
 // ── The unchanged paths: no-env default and capable models ─────────────
@@ -107,11 +107,11 @@ fn hybrid_model_with_all_tier_vars_is_ok() {
     ensure_ssm_tier_capability_from(
         &hybrid(),
         &[
-            "ATLAS_SSM_TIER",
-            "ATLAS_SSM_RDMA_TIER",
-            "ATLAS_SSM_SWAP",
-            "ATLAS_SSM_DECODE_TIER",
-            "ATLAS_SSM_DECODE_RING_ROLL",
+            "AVAROK_SSM_TIER",
+            "AVAROK_SSM_RDMA_TIER",
+            "AVAROK_SSM_SWAP",
+            "AVAROK_SSM_DECODE_TIER",
+            "AVAROK_SSM_DECODE_RING_ROLL",
         ],
     )
     .unwrap();

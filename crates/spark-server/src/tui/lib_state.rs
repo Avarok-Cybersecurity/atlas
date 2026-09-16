@@ -83,7 +83,7 @@ pub struct LibState {
     /// There is no recipe store to attach, and there will not be one.
     ///
     /// `ArtifactStore::discover()` fails only on process-lifetime facts —
-    /// neither `ATLAS_HOME` nor `HOME` set, or `ATLAS_HOME` empty — so a retry
+    /// neither `AVAROK_HOME` nor `HOME` set, or `AVAROK_HOME` empty — so a retry
     /// cannot succeed. Without this the tick saw `!attached()` and tried again
     /// ten times a second, warning each time; see `events_rules::tick_work`.
     pub(super) recipes_unavailable: bool,
@@ -323,11 +323,11 @@ impl LibState {
         let Some(recipe) = self.selected_card() else {
             return Err("nothing selected".into());
         };
-        if !recipe.is_atlas() {
+        if !recipe.is_avarok() {
             return Err(format!(
                 "{} is a {} recipe and cannot be configured here",
                 recipe.id,
-                recipe.runtime.as_deref().unwrap_or("non-atlas")
+                recipe.runtime.as_deref().unwrap_or("non-avarok")
             ));
         }
         self.overrides.clear();
@@ -386,7 +386,7 @@ impl LibState {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         self.launch_result = Some(rx);
         std::thread::Builder::new()
-            .name("atlas-swap".into())
+            .name("avarok-swap".into())
             .spawn(move || {
                 if let Err(e) = crate::main_modules::model_swap::swap(&host, args) {
                     // The host reports the failure honestly (503, /health
@@ -427,7 +427,7 @@ impl LibState {
 /// Reduce a validation report to the one line a form field can show.
 ///
 /// The validator's report is a header, then `  [1] <what>` / `why:` / `fix:`.
-/// Taking the FIRST line yields only "Atlas CLI: 1 invalid flag combination",
+/// Taking the FIRST line yields only "Avarok CLI: 1 invalid flag combination",
 /// which tells the reader nothing they did not already know — the actionable
 /// part is `what`, and `fix` when it fits. clap's own errors have no `[1]`
 /// block, so those fall back to their first `error:` line.
@@ -446,7 +446,7 @@ pub(crate) fn problem_line(s: &str) -> String {
         (Some(what), None) => what.to_string(),
         (None, _) => lines
             .iter()
-            .find(|l| !l.is_empty() && !l.starts_with("Atlas CLI:"))
+            .find(|l| !l.is_empty() && !l.starts_with("Avarok CLI:"))
             .unwrap_or(&"invalid")
             .to_string(),
     }

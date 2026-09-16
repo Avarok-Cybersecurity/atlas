@@ -18,7 +18,7 @@
 //! 🪤 Historically it ran WITHOUT one and on RANK 0 ONLY (`run_mtp_propose_multi_dispatch`:
 //! *"Rank 1 does not participate in MTP propose"*), which is correct for V4 and wrong here: the
 //! drafter proposed from half the routed sum and half the attention output. Lossless — the
-//! target verifies every draft — so the only symptom was acceptance. `ATLAS_MTP_EP_PROPOSE=1`
+//! target verifies every draft — so the only symptom was acceptance. `AVAROK_MTP_EP_PROPOSE=1`
 //! turns on BOTH halves of the fix: the worker executes propose on `EP_CMD_MTP_PROPOSE`, and
 //! `needs_comm()` then hands the block a comm. Turning on only the second half is `t58`, which
 //! deadlocked.
@@ -100,7 +100,7 @@ pub struct Glm5NextMtpHead {
     /// the NVFP4 `mtp_lm_head` decouple already makes in `factory::lm_head_setup`.
     ///
     /// Worth 2.66 -> ~1.33 ms per draft sweep, twice a K=3 step, against the 8.14 ms/step
-    /// the whole drafter costs (nsys 2026-08-29). Kill switch `ATLAS_GLM_MTP_HEAD_FP8=0`.
+    /// the whole drafter costs (nsys 2026-08-29). Kill switch `AVAROK_GLM_MTP_HEAD_FP8=0`.
     head_fp8: Option<crate::weight_map::Fp8DenseWeight>,
     gemv_fp8w_k: KernelHandle,
 }
@@ -123,7 +123,7 @@ impl Glm5NextMtpHead {
         module: Glm5NextMtpModule,
         embed_tokens: DenseWeight,
         lm_head: DenseWeight,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         max_seq_len: usize,
     ) -> Result<Self> {
@@ -166,7 +166,7 @@ impl Glm5NextMtpHead {
         let blocks = max_seq_len / kv_config.block_size + 2;
         let kv_cache = PagedKvCache::new(kv_config, blocks, gpu)?;
         // 🔴 THE DRAFTER'S OWN `lm_head` IS 7.3 OF ITS 8.84 ms (measured 2026-08-29,
-        // `ATLAS_GLM_MTP_SKIP=head`: propose 8.84 -> 1.52 ms). It is a 1.27 GB BF16 sweep
+        // `AVAROK_GLM_MTP_SKIP=head`: propose 8.84 -> 1.52 ms). It is a 1.27 GB BF16 sweep
         // (154,880 x 4,096) and the block around it is only 1.5 ms.
         //
         // Both ranks now run propose in lockstep, so split the sweep by VOCAB: each reads its
@@ -187,7 +187,7 @@ impl Glm5NextMtpHead {
         // Quantise ONLY the rows this rank sweeps: `head_n * hidden` bytes, not the whole
         // vocab. A failure here is not fatal — fall back to the BF16 sweep.
         let gemv_fp8w_k = crate::layers::try_kernel(gpu, "gemv_fp8w", "dense_gemv_fp8w");
-        let head_fp8 = if std::env::var("ATLAS_GLM_MTP_HEAD_FP8").as_deref() == Ok("0")
+        let head_fp8 = if std::env::var("AVAROK_GLM_MTP_HEAD_FP8").as_deref() == Ok("0")
             || gemv_fp8w_k.0 == 0
         {
             None
@@ -324,7 +324,7 @@ impl Glm5NextMtpHead {
             st.seq_len += 1;
         }
 
-        // TIMING ARM `ATLAS_GLM_MTP_SKIP=head`: everything from `shared_head.norm` on is
+        // TIMING ARM `AVAROK_GLM_MTP_SKIP=head`: everything from `shared_head.norm` on is
         // skipped and the draft is a constant. Drafts become garbage (p1 -> ~0) — the point is
         // the `propose` ms, which then reads as "the block alone". `=block` is the mirror arm.
         // Neither is a deployment; both are byte-safe because the target verifies every draft.
@@ -464,7 +464,7 @@ impl Glm5NextMtpHead {
         }
         let gpu = ctx.gpu;
         let dbg = crate::speculative::mtp_refeed_debug();
-        let prefill_full = std::env::var("ATLAS_GLM_MTP_PREFILL_FULL").ok().as_deref() == Some("1");
+        let prefill_full = std::env::var("AVAROK_GLM_MTP_PREFILL_FULL").ok().as_deref() == Some("1");
         let mut kv = self.kv_cache.lock();
         let Glm5NextMtpProposerState {
             dsa,
@@ -499,7 +499,7 @@ impl Glm5NextMtpHead {
                 stream,
             )?;
             let dsa_state: &mut dyn LayerState = dsa;
-            // DIAGNOSTIC ARM `ATLAS_GLM_MTP_PREFILL_FULL=1`: build the row through the SAME
+            // DIAGNOSTIC ARM `AVAROK_GLM_MTP_PREFILL_FULL=1`: build the row through the SAME
             // full-block path a propose uses, so "the KV-only shortcut is wrong" and "the
             // drafter's attention over real context is wrong" become separable. The shortcut
             // is the shipping path; this arm exists to convict or clear it.
@@ -747,7 +747,7 @@ impl DraftProposer for Glm5NextMtpHead {
         //
         // 🪤 At `num_drafts >= 2` a partial accept still trims, which DOES leave the dense row
         // space one key short of the sequence — the catch-up feed refills it from the ring, so
-        // K>=3 must run with `ATLAS_MTP_CATCHUP=1`.
+        // K>=3 must run with `AVAROK_MTP_CATCHUP=1`.
         let keep = st.last_drafted.min(num_accepted + 1);
         let trim = st.last_drafted - keep;
         if trim > 0 {
@@ -758,17 +758,17 @@ impl DraftProposer for Glm5NextMtpHead {
     }
 }
 
-/// `ATLAS_GLM_MTP_SKIP=head`: stop the drafter after the block, before `shared_head.norm`,
+/// `AVAROK_GLM_MTP_SKIP=head`: stop the drafter after the block, before `shared_head.norm`,
 /// the `lm_head` gemv, the argmax and the D2H. Timing arm only — see `forward_one`.
 fn skip_head() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_GLM_MTP_SKIP").ok().as_deref() == Some("head"))
+    *ON.get_or_init(|| std::env::var("AVAROK_GLM_MTP_SKIP").ok().as_deref() == Some("head"))
 }
 
-/// `ATLAS_GLM_MTP_SKIP=block`: skip `layers.45` itself and run only the head. Timing arm.
+/// `AVAROK_GLM_MTP_SKIP=block`: skip `layers.45` itself and run only the head. Timing arm.
 fn skip_block() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_GLM_MTP_SKIP").ok().as_deref() == Some("block"))
+    *ON.get_or_init(|| std::env::var("AVAROK_GLM_MTP_SKIP").ok().as_deref() == Some("block"))
 }
 
 #[cfg(test)]

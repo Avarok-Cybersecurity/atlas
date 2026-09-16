@@ -105,7 +105,7 @@ fn selected_at_prefill_m_with_the_ssm_scope_armed() {
 
 #[test]
 fn not_selected_without_the_ssm_scope() {
-    // The whole point of the scoped lever: `ATLAS_CUBLAS_GEMM=ffn` must leave
+    // The whole point of the scoped lever: `AVAROK_CUBLAS_GEMM=ffn` must leave
     // this projection exactly where it was.
     assert!(!selected(
         false,
@@ -127,7 +127,7 @@ fn not_selected_without_the_ssm_scope() {
 
 #[test]
 fn kill_switch_refuses_even_with_the_scope_armed() {
-    // ATLAS_SSM_OUT_W8A16_ONLY.
+    // AVAROK_SSM_OUT_W8A16_ONLY.
     assert!(!selected(
         true,
         true,
@@ -148,7 +148,7 @@ fn kill_switch_refuses_even_with_the_scope_armed() {
 
 #[test]
 fn single_scale_kill_switch_refuses() {
-    // ATLAS_FP8_SINGLE_SCALE clears `dispatch.fp8_blockscaled_prefill`.
+    // AVAROK_FP8_SINGLE_SCALE clears `dispatch.fp8_blockscaled_prefill`.
     assert!(!selected(
         true,
         false,
@@ -302,7 +302,7 @@ fn missing_handles_fall_back() {
         "quantizer"
     );
     // The k-major clauses only bite in the default layout; guard the assert on
-    // it so `ATLAS_CUBLAS_SCALE_LAYOUT=rowmajor` in the environment does not
+    // it so `AVAROK_CUBLAS_SCALE_LAYOUT=rowmajor` in the environment does not
     // turn this into a spurious failure.
     if crate::layers::ops::cublas_scale_layout_kmajor() {
         assert!(!case(QUANT_K, KernelHandle(0), KMAJOR_BUF), "kmajor kernel");

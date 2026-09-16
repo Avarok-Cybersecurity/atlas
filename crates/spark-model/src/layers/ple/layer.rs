@@ -200,7 +200,7 @@ impl PleLayer {
         anyhow::ensure!(
             num_tokens <= self.max_tokens,
             "PLE: {num_tokens} tokens exceeds the {} this layer was sized for. \
-             Raise ATLAS_PLE_MAX_TOKENS (costs tokens*10240*14 bytes of \
+             Raise AVAROK_PLE_MAX_TOKENS (costs tokens*10240*14 bytes of \
              scratch) or lower the prefill chunk size.",
             self.max_tokens
         );

@@ -6,7 +6,7 @@
   // mobile.css is the SSOT for every viewport rule and must land last.
   import '../app.css';
   import ChevronField from '$shared/components/ChevronField.svelte';
-  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
+  import AvarokLockup from '$shared/components/AvarokLockup.svelte';
   import '../styles/news.css';
   import '../styles/dashboard.css';
   import '../styles/chat.css';
@@ -136,7 +136,7 @@
 {#if !marketingPage}<ChevronField />{/if}
 
 <!-- The brand vector, defined once and <use>d by the nav and the footer. -->
-<AtlasLockup kind="defs" />
+<AvarokLockup kind="defs" />
 
 <!-- Everything else goes above the canvas. Without this wrapper, only the
      POSITIONED elements would: a fixed canvas at z-index 0 paints above the

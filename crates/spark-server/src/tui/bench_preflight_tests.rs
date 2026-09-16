@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::*;
-use atlas_plugin::TargetEndpoint;
-use atlas_plugin::coherence::Answer;
+use avarok_plugin::TargetEndpoint;
+use avarok_plugin::coherence::Answer;
 
 fn target() -> TargetEndpoint {
     TargetEndpoint::local(8888, "m")
@@ -140,7 +140,7 @@ fn a_server_with_nothing_loaded_says_so_and_says_how_to_load_one() {
 
 #[test]
 fn a_server_holding_a_different_model_says_the_numbers_will_still_come() {
-    // Atlas answers whatever model name it is sent, so this run WILL produce
+    // Avarok answers whatever model name it is sent, so this run WILL produce
     // plausible numbers for the wrong checkpoint — which is the trap.
     let text = concern_for(Report {
         served_instead: Some(vec!["org/other".into()]),

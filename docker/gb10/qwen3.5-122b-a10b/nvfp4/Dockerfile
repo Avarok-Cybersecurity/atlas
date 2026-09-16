@@ -1,17 +1,17 @@
-# Atlas Spark — Qwen3.5-122B-A10B-NVFP4 on GB10
+# Avarok Spark — Qwen3.5-122B-A10B-NVFP4 on GB10
 #
 # Build from repo root:
-#   docker build -f docker/gb10/qwen3.5-122b-a10b/nvfp4/Dockerfile -t atlas-122b .
+#   docker build -f docker/gb10/qwen3.5-122b-a10b/nvfp4/Dockerfile -t avarok-122b .
 #
 # Run (single node):
 #   docker run --gpus all --ipc=host -p 8888:8888 \
 #     -v ~/.cache/huggingface:/root/.cache/huggingface \
-#     atlas-122b serve Sehyo/Qwen3.5-122B-A10B-NVFP4
+#     avarok-122b serve Sehyo/Qwen3.5-122B-A10B-NVFP4
 #
 # Run (EP=2 — see scripts/start-ep2.sh):
 #   docker run --gpus all --ipc=host --network host \
 #     -v ~/.cache/huggingface:/root/.cache/huggingface \
-#     atlas-122b serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
+#     avarok-122b serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
 #       --rank 0 --world-size 2 --master-addr <head-node-ip> \
 #       --speculative --kv-cache-dtype nvfp4 --mtp-quantization nvfp4
 
@@ -33,9 +33,9 @@ COPY crates/ crates/
 COPY vendor/ vendor/
 COPY kernels/ kernels/
 
-ENV ATLAS_TARGET_HW=gb10
-ENV ATLAS_TARGET_MODEL=qwen3.5-122b-a10b
-ENV ATLAS_TARGET_QUANT=nvfp4
+ENV AVAROK_TARGET_HW=gb10
+ENV AVAROK_TARGET_MODEL=qwen3.5-122b-a10b
+ENV AVAROK_TARGET_QUANT=nvfp4
 
 RUN cargo build --release -p spark-server
 

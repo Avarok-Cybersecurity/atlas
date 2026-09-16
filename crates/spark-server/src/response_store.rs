@@ -3,18 +3,18 @@
 //! LRU + TTL store for stateful Responses API resume
 //! (`previous_response_id`) and opt-in Chat-Completions storage (`store:
 //! true`). Pluggable persistence backend — defaults to in-memory only;
-//! set `ATLAS_STORE_DIR` to persist entries to disk.
+//! set `AVAROK_STORE_DIR` to persist entries to disk.
 //!
 //! Design notes
 //! ------------
 //! - **Kind-typed.** Every entry declares `Response` or `ChatCompletion`
 //!   so a cross-kind lookup (chatcmpl-id passed to previous_response_id)
 //!   returns None instead of leaking.
-//! - **Two eviction pressures.** TTL (`ATLAS_STORE_TTL_SECONDS`, default
+//! - **Two eviction pressures.** TTL (`AVAROK_STORE_TTL_SECONDS`, default
 //!   24 h) reclaims idle entries lazily on get/insert; capacity
-//!   (`ATLAS_STORE_MAX_ENTRIES`, default 10 000) reclaims the coldest
+//!   (`AVAROK_STORE_MAX_ENTRIES`, default 10 000) reclaims the coldest
 //!   LRU entry when the map would exceed its bound.
-//! - **Persistence (optional).** When `ATLAS_STORE_DIR=/path/to/dir` is
+//! - **Persistence (optional).** When `AVAROK_STORE_DIR=/path/to/dir` is
 //!   set, each `insert` writes a `<id>.json` file and each eviction
 //!   (capacity or TTL) deletes it. On startup, the directory is
 //!   replayed into memory, skipping files whose `persisted_at_unix`
@@ -170,7 +170,7 @@ impl FilesystemBackend {
         let (tx, rx) = std::sync::mpsc::sync_channel::<DiskOp>(DISK_QUEUE_DEPTH);
         let worker_dir = dir.clone();
         let worker = std::thread::Builder::new()
-            .name("atlas-respstore".into())
+            .name("avarok-respstore".into())
             .spawn(move || {
                 while let Ok(op) = rx.recv() {
                     match op {

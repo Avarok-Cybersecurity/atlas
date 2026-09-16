@@ -49,7 +49,7 @@ pub(super) fn run_standard_chunk_loop(
     // requests (Q12: avoids back-to-back chunked prefill monopolising
     // the scheduler).
     let remaining = p.prompt_tokens.len() - p.chunk_offset;
-    // MLA correctness gate: Atlas has no `prefill_attention_paged_mla_*`
+    // MLA correctness gate: Avarok has no `prefill_attention_paged_mla_*`
     // kernel; the existing MLA prefill at qwen3_attention/prefill.rs:1723
     // only attends over the current chunk's K/V, so multi-chunk prefill
     // silently corrupts attention output. Force single-chunk until a
@@ -61,7 +61,7 @@ pub(super) fn run_standard_chunk_loop(
         max_prefill_tokens
     };
     // Step 2 (spec): cap the chunk to the policy's prefill slice budget so a
-    // fused mixed step stays under the TBT target. With ATLAS_HOLO_ALWAYS_MIXED
+    // fused mixed step stays under the TBT target. With AVAROK_HOLO_ALWAYS_MIXED
     // OFF the caller passes slice_budget == max_prefill_tokens, so this `.min`
     // is a no-op and the chunk cap is unchanged (byte-identical resting path).
     // MLA keeps its forced full-remaining chunk (correctness gate above) — the
@@ -77,7 +77,7 @@ pub(super) fn run_standard_chunk_loop(
     // looks up — otherwise the warm restore falls back to the coarse
     // --ssm-checkpoint-interval grid and replays ~254 SSM tokens per turn.
     // Suppressed when mid-chunk capture is ON (it captures in-pass, no clamp
-    // needed) and when the abandoned ATLAS_SSM_TAIL_CKPT is OFF (default).
+    // needed) and when the abandoned AVAROK_SSM_TAIL_CKPT is OFF (default).
     if spark_runtime::ssm_tail_ckpt_enabled()
         && !spark_runtime::ssm_tail_midchunk_enabled()
         && let Some(bs) = model.kv_block_size()
@@ -94,11 +94,11 @@ pub(super) fn run_standard_chunk_loop(
     }
 
     // ── Mixed forward: fuse prefill chunk + decode in one pass ──
-    // ATLAS_BISECT_NO_MIX=1 forces this branch to false so we can
+    // AVAROK_BISECT_NO_MIX=1 forces this branch to false so we can
     // diagnose whether the chunked-prefill+concurrent CUDA-700 lives
     // inside `mixed_forward` (active+prefill fused) vs the pure
     // decode-batch path.
-    let no_mix_bisect = std::env::var("ATLAS_BISECT_NO_MIX")
+    let no_mix_bisect = std::env::var("AVAROK_BISECT_NO_MIX")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
     // The spec gate here used to be the process-GLOBAL flags (`!use_mtp && ...`),
@@ -191,7 +191,7 @@ pub(super) fn run_standard_chunk_loop(
                     // matcher); no-op without a grammar.
                     // P1-4 (2026-07-09): thread the resolved `min_p` —
                     // previously a hardcoded 0.0 inside the sampler.
-                    // Kill-switch: ATLAS_NO_MTP_MINP=1.
+                    // Kill-switch: AVAROK_NO_MTP_MINP=1.
                     match sample_first_token(
                         model,
                         result.prefill_logits,
@@ -332,7 +332,7 @@ pub(super) fn run_standard_chunk_loop(
                 // matcher); no-op without a grammar.
                 // P1-4 (2026-07-09): thread the resolved `min_p` —
                 // previously a hardcoded 0.0 inside the sampler.
-                // Kill-switch: ATLAS_NO_MTP_MINP=1.
+                // Kill-switch: AVAROK_NO_MTP_MINP=1.
                 match sample_first_token(
                     model,
                     logits,

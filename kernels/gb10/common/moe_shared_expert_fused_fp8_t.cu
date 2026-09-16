@@ -18,7 +18,7 @@
 // is NON-STANDARD (same bug fixed in moe_sorted_prefill.cu / the decode GEMVs) —
 // software scl_fp8 there; NVIDIA path is the verbatim cast.
 #if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+__device__ __forceinline__ float avarok_dec_e4m3(unsigned char b) {
     unsigned int s = (b >> 7) & 1u, e = (b >> 3) & 0xFu, m = b & 0x7u; float v;
     if (e == 0u)               v = (float)m * 0.001953125f;
     else if (e == 15u && m == 7u) v = 0.0f;
@@ -26,7 +26,7 @@ __device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
     return s ? -v : v;
 }
 #else
-__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+__device__ __forceinline__ float avarok_dec_e4m3(unsigned char b) {
     __nv_fp8_e4m3 f; *(unsigned char*)&f = b; return (float)f;
 }
 #endif
@@ -97,7 +97,7 @@ extern "C" __global__ void moe_expert_gate_up_shared_fp8_t(
         #pragma unroll 8
         for (unsigned int k = k_start; k < k_end; k++) {
             unsigned char w_byte = B_weight[(unsigned long long)k * N + n];
-            float wf = atlas_dec_e4m3(w_byte) * sc;
+            float wf = avarok_dec_e4m3(w_byte) * sc;
             float af = __bfloat162float(A[k]);
             acc += wf * af;
         }
@@ -171,7 +171,7 @@ extern "C" __global__ void moe_expert_silu_down_shared_fp8_t(
         #pragma unroll 8
         for (unsigned int k = k_start; k < k_end; k++) {
             unsigned char w_byte = B_weight[(unsigned long long)k * N + n];
-            acc += atlas_dec_e4m3(w_byte) * sc * s_act[k];
+            acc += avarok_dec_e4m3(w_byte) * sc * s_act[k];
         }
     }
 

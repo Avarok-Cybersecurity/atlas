@@ -2,7 +2,7 @@
 
 //! SSOT for what `usage.prompt_tokens_details.cached_tokens` reports.
 //!
-//! Atlas #919 (part 2): a chat completion reported `cached_tokens: 48` while
+//! Avarok #919 (part 2): a chat completion reported `cached_tokens: 48` while
 //! the server log for the same request showed a full prefill and no reuse.
 //! The field was stamped from `PrefixMatch::matched_tokens` — the LOOKUP
 //! result — at `prefix_lookup.rs` / `prefill_a.rs` / `prefill_c.rs`, before the
@@ -13,7 +13,7 @@
 //! * a hybrid-SSM model with no usable SSM snapshot
 //!   (`"…but no SSM snapshot — recomputing all KV"`),
 //! * the exact-leaf snapshot shortcut bypass (default ON,
-//!   `ATLAS_MARCONI_EXACT=1` re-enables the shortcut),
+//!   `AVAROK_MARCONI_EXACT=1` re-enables the shortcut),
 //! * a Marconi restore declined below `marconi_min_tokens()` or by the session
 //!   gate.
 //!

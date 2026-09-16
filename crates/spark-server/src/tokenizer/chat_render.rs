@@ -23,7 +23,7 @@ pub(crate) struct RenderFlags<'a> {
     /// `max_thinking_budget` rung), `"none"` when off. Every template
     /// maps/validates from there — Qwen3.8 accepts `medium` verbatim and
     /// injects no directive; Mistral has no medium tier, so its
-    /// Atlas-owned override maps `medium`→`high` (its standard thinking
+    /// Avarok-owned override maps `medium`→`high` (its standard thinking
     /// mode) and only ever sees `none` when thinking is off; Qwen3.5/3.6
     /// ignore the variable entirely. Until 2026-08-15 the thinking-on
     /// fallback was `"high"`, which Qwen3.8's template remaps to `xhigh`
@@ -45,7 +45,7 @@ pub(crate) struct RenderFlags<'a> {
     pub allow_continue_final: bool,
 }
 
-/// Apply Atlas preprocessing and render the chat template to a string.
+/// Apply Avarok preprocessing and render the chat template to a string.
 ///
 /// This is the single place production prompt bytes are produced for
 /// Jinja-encoded models; both `apply_chat_template_jinja_with_effort` and
@@ -60,7 +60,7 @@ pub(crate) fn render_chat(
         .get_template("chat")
         .context("Failed to get compiled template")?;
 
-    // Atlas cross-cutting preprocessing (F76 arg-parse + autoclose-think
+    // Avarok cross-cutting preprocessing (F76 arg-parse + autoclose-think
     // + think-control), applied to the model's OWN template so the
     // per-model jinja overrides that used to encode these are no longer
     // required. Inline `<|think_on|>`/`<|think_off|>` tokens, when
@@ -91,7 +91,7 @@ pub(crate) fn render_chat(
     // rung — so a client that never heard of reasoning_effort gets the
     // model's natural behavior, not the most expensive directive. This is
     // ALSO why Qwen3.8's in-template `default('xhigh')` can never fire
-    // from Atlas: we always pass an explicit string, never UNDEFINED, so
+    // from Avarok: we always pass an explicit string, never UNDEFINED, so
     // the template's own (most-expensive) default is unreachable and the
     // effective unset default lives in exactly one place — here.
     // Operators override per-serve via

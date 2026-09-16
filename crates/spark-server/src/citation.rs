@@ -40,7 +40,7 @@
 //! surface converts it to its own wire annotation shape (e.g.
 //! `openai::Annotation`).
 //!
-//! This is still post-hoc parsing — Atlas has no web-search tool, so
+//! This is still post-hoc parsing — Avarok has no web-search tool, so
 //! "model-sourced" here means "the model emitted a structured citation
 //! pattern we recognize". The shape clients receive is identical to
 //! what a real web-search backend would produce.

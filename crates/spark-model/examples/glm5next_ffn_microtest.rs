@@ -4,22 +4,22 @@
 //! **Gate 3** — the ModelOpt NVFP4 path, at PRODUCTION dims, on real layer-3 expert tensors.
 //! "The kernel already works for another model" is explicitly not accepted as proof, so every
 //! floor is measured here against a reference written from the OCP MX / ModelOpt spec rather
-//! than from Atlas's own LUT.
+//! than from Avarok's own LUT.
 //!
 //! **Gate 4** — the dense FFN of layer 0 and the BF16 shared expert of layer 3.
 //!
 //! Floors, separated:
 //!   **A** reference math — fp32 activations, dequantised fp32 weights. The trusted answer.
 //!   **B** BF16 activation floor — |A(bf16 acts) − A(fp32 acts)|, from the golden itself.
-//!   **C** quantisation/dequant floor — Atlas's CUDA `dequant_nvfp4_to_bf16` vs the independent
+//!   **C** quantisation/dequant floor — Avarok's CUDA `dequant_nvfp4_to_bf16` vs the independent
 //!         Python ModelOpt dequant. 🪤 This is NOT "quantisation error": the pre-quantisation
 //!         weights do not exist in this checkpoint, so the error of NVFP4 *as a representation*
 //!         is unmeasurable here. What IS measurable — and what actually protects us — is that
 //!         two independent implementations decode the same bits to the same numbers.
-//!   **D** GPU kernel residual — Atlas `w4a16_gemm` vs A.
+//!   **D** GPU kernel residual — Avarok `w4a16_gemm` vs A.
 //!   **E** integrated FFN residual — the whole gate/up → clamp → silu·mul → down chain vs A.
 //!
-//!   MOE_PACKET_DIR=/home/msi1/atlas-scratch/moe-family \
+//!   MOE_PACKET_DIR=/home/msi1/avarok-scratch/moe-family \
 //!   cargo run -p spark-model --release --example glm5next_ffn_microtest \
 //!       --features cuda,gpu-examples
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas W8A16 Transposed GEMM — FP8 E4M3 block-scaled with coalesced weight reads.
+// Avarok W8A16 Transposed GEMM — FP8 E4M3 block-scaled with coalesced weight reads.
 //
 // C[M,N] = A[M,K] (BF16) * dequant(B_t[K,N] (FP8 E4M3, transposed at load time))
 //

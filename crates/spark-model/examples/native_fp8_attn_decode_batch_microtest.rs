@@ -4,7 +4,7 @@
 //! (`w8a16_gemv_batch{4,16}[_strided]`) and the N-COLUMN-BLOCKED tier
 //! (`w8a16_gemv_batch16_ncol{2,4}[_strided]`, #927) on identical inputs.
 //!
-//! This is the receipt the `ATLAS_ATTN_NCOL_GEMV` lever is waiting on. It
+//! This is the receipt the `AVAROK_ATTN_NCOL_GEMV` lever is waiting on. It
 //! answers two questions and refuses to guess either:
 //!
 //!   1. BITS. Every route must reproduce the scalar loop's BF16 output byte for
@@ -30,7 +30,7 @@
 use anyhow::{Result, ensure};
 use half::bf16;
 use spark_model::layers::ops;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use std::time::Instant;
 
@@ -270,7 +270,7 @@ fn run_oproj(
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let k = Kernels {
         scalar: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
         batch4_s: gpu.kernel("w8a16_gemv_batch4", "w8a16_gemv_batch4_strided")?,

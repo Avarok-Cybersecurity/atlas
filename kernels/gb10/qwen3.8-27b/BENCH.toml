@@ -2,7 +2,7 @@
 #
 # Sibling of MODEL.toml so the numbers sit beside the thing they describe;
 # hardware and model are implied by the path and cannot disagree with the
-# contents. Read by `atlas_plugin::gate::bench`.
+# contents. Read by `avarok_plugin::gate::bench`.
 #
 # ★ This file may land BEFORE the model's MODEL.toml/kernels do (they arrive in
 # a sibling change adding the qwen3.8-27b kernel target via a `kernel_source`
@@ -52,7 +52,7 @@ must pin): --gpu-memory-utilization 0.85 --max-batch-size 1 --max-seq-len \
 auto, thinking ON. The 35B Gate-A profile (0.70 util, batch 2) CANNOT serve \
 this model at all — it dies at boot with no memory left for KV cache — so the \
 recipe is part of the variant, not a detail. The recipe id above now EXISTS in \
-atlas-recipes (merged 2026-08-14 as atlas-recipes#19, commit 20ac6e8), \
+avarok-recipes (merged 2026-08-14 as avarok-recipes#19, commit 20ac6e8), \
 pinning exactly the profile stated above, so this variant can self-start \
 under --pull-request-gate. ★ Note the recipe pins `num_drafts: 3` (K=4), \
 matching the reference run; the qwen3.8-27b target deliberately omits \
@@ -123,7 +123,7 @@ note = """\
 The DENSE 3.8 leg of the BFCL gate. Exists so a Qwen3.8-27B score can be read \
 directly against the recorded Qwen3.6-27B results — same golden ST-995 draw \
 (62/10/10, floor 25, n=995, seed 42, temp 0), same scorer, and a serve recipe \
-whose defaults are byte-identical to the 3.6 sibling's (atlas-recipes#20; only \
+whose defaults are byte-identical to the 3.6 sibling's (avarok-recipes#20; only \
 the checkpoint differs). That identity is load-bearing: BFCL's normalized \
 score moves with serve config as well as with the draw, so the two legs must \
 share a config or the generation-over-generation delta means nothing. \
@@ -545,7 +545,7 @@ max_model_len = "4096"
 [benchmarks.param_overrides]
 # The gate's instrument — see the block comment above. Values are parsed by
 # each parameter's own schema kind, exactly like --param KEY=VALUE.
-# 1..128 as of 2026-08-29: the published Atlas-vs-vLLM ladder quotes C=1..128,
+# 1..128 as of 2026-08-29: the published Avarok-vs-vLLM ladder quotes C=1..128,
 # and a certification that stopped at 16 left the four widest rungs of the
 # claim ungated. C=2 is in because it is the thinnest margin on that ladder
 # and the one most easily lost silently.
@@ -565,7 +565,7 @@ osl = "320"
 # only fires below 48 when the engine normally does 60 will not catch a 15%
 # regression at that rung -- but a tighter bar on this variance fails on noise,
 # and a gate that cries wolf gets switched off. The mid-ladder variance is the
-# same phenomenon atlas#812 is chasing; when that is root-caused these two can
+# same phenomenon avarok#812 is chasing; when that is root-caused these two can
 # be re-cut much tighter. Stated here so nobody reads C=8 as well-guarded.
 
 [benchmarks.metrics.c1_aggregate_tok_s]
@@ -602,7 +602,7 @@ osl = "320"
 #   C4   mean 49.56 sigma 1.495 — formula bar 45.07 against a current-regime
 #        minimum of 45.4. 0.7% is not a margin.
 #   C8   mean 63.05 sigma 1.609 — the block above defers this rung explicitly
-#        until atlas#812 is root-caused, and nothing here root-caused it.
+#        until avarok#812 is root-caused, and nothing here root-caused it.
 #   C16  mean 89.95 sigma 0.206 — looks tight in a fresh set, but its own
 #        history dips to 82.4 with NO regime change, so the formula bar (85.45)
 #        would have failed a run that was healthy. This is the rung that proves
@@ -748,7 +748,7 @@ its own committed history; crossing them is meaningless."""
 # trained block_size is 8.
 #
 # Three things that look like levers and are not:
-#   * ATLAS_MTP_MAX_SEQS cannot shrink the slot count. `mtp_state_slots_with`
+#   * AVAROK_MTP_MAX_SEQS cannot shrink the slot count. `mtp_state_slots_with`
 #     is `max_batch_size.min(cap.max(VERIFY_WY_TABLE_SEQS))` and that floor is
 #     32. Setting it to 8 changed nothing (verified). The floor only lifts
 #     BELOW bs=32, where max_batch_size becomes the binding term -- which is
@@ -1010,7 +1010,7 @@ min = 1.0
 #   * the KV cache -- --kv-cache-dtype bf16 changed nothing, byte for byte;
 #   * this checkpoint's double-quantisation (see the loader note below) --
 #     Qwen/Qwen3.8-27B-FP8, the same weights in the block-scaled FP8 format
-#     Atlas loads natively, failed the same way.
+#     Avarok loads natively, failed the same way.
 #
 # The cause: the fixture's green was HTML green #008000, the one HALF-bright
 # colour among three full-bright ones, because ffmpeg resolves the NAME
@@ -1025,7 +1025,7 @@ min = 1.0
 #
 # ★ SEPARATE FINDING, NOT FIXED: this checkpoint is `format = mixed-precision`
 # -- attention q/k/v/o, the GDN projections and lm_head are FP8 with a
-# PER-CHANNEL scale, and only the MLP is NVFP4. Atlas's native w8a16 path
+# PER-CHANNEL scale, and only the MLP is NVFP4. Avarok's native w8a16 path
 # needs a [N/128, K/128] block grid, so a per-row scale is deliberately
 # refused (it would read another row's multiplier and produce garbage
 # logits) and those tensors are dequantised to BF16 and RE-quantised to
@@ -1098,7 +1098,7 @@ label = "Qwen3.8-27B dense (NVFP4, unsloth)"
 # This entry is also served by the AGENTIC recipe (thinking on, num_drafts 3,
 # util 0.85), whose own metadata says "do not cross-use" it with the vision /
 # tool profile. There is no vision-profile recipe for this checkpoint; adding
-# one upstream in atlas-recipes is the real fix, after which this can take
+# one upstream in avarok-recipes is the real fix, after which this can take
 # the default back with a measured run behind it.
 default = false
 status = "measured"

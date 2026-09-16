@@ -8,7 +8,7 @@
 
 use std::num::NonZeroU64;
 
-use atlas_core::config::{LayerType, ModelConfig, QuantizationConfig};
+use avarok_core::config::{LayerType, ModelConfig, QuantizationConfig};
 
 use super::*;
 
@@ -205,7 +205,7 @@ fn every_fingerprint_field_is_load_bearing() {
         .unwrap()
         .get();
     assert_ne!(b2, base, "blob_bytes dropped from the fingerprint");
-    // Optional ATLAS_MODEL_ID salt (fine-tune with identical geometry).
+    // Optional AVAROK_MODEL_ID salt (fine-tune with identical geometry).
     let salted = ModelFingerprint::derive_with_id(&hybrid(), BLOB, "ft-v2")
         .unwrap()
         .get();
@@ -256,7 +256,7 @@ fn underivable_config_fails_fast() {
     let err = ModelFingerprint::derive_with_id(&c, BLOB, "").unwrap_err();
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("ATLAS_SSM_SWAP_NS"),
+        msg.contains("AVAROK_SSM_SWAP_NS"),
         "actionable message: {msg}"
     );
 }
@@ -270,7 +270,7 @@ fn decode_ns_mixes_fingerprint_domain_and_client_salt() {
     let other_client = derive_decode_ns_salted(fa.get(), 0x2222).get();
     let other_model = derive_decode_ns_salted(fb.get(), 0x1111).get();
     assert_ne!(da, fa.get(), "decode must not alias Marconi for one model");
-    assert_ne!(da, atlas_kernels::DECODE_DOMAIN, "model-blind constant");
+    assert_ne!(da, avarok_kernels::DECODE_DOMAIN, "model-blind constant");
     assert_ne!(da, other_client, "client salt must partition processes");
     assert_ne!(da, other_model, "fingerprint must partition models");
 }

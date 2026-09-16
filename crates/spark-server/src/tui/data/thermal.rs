@@ -22,7 +22,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use atlas_plugin::hardware::throttle_monitor::{ThrottleMonitor, ThrottleWindow};
+use avarok_plugin::hardware::throttle_monitor::{ThrottleMonitor, ThrottleWindow};
 
 /// How often the background thread re-reads the counters.
 const SAMPLE_EVERY: Duration = Duration::from_secs(2);
@@ -68,12 +68,12 @@ impl ThermalProbe {
         let probe = Self::default();
         let sink = Arc::clone(&probe.inner);
         std::thread::Builder::new()
-            .name("atlas-thermal".into())
+            .name("avarok-thermal".into())
             .spawn(move || {
                 let mut monitor = ThrottleMonitor::new();
                 loop {
                     let started = Instant::now();
-                    let state = atlas_plugin::hardware::collect::collect();
+                    let state = avarok_plugin::hardware::collect::collect();
                     let now_ms = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map(|d| d.as_millis() as u64)

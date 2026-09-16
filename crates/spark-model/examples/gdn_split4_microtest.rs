@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Oracle for gated_delta_rule_prefill_split4 (atlas_scale-forced GDN prefill,
+//! Oracle for gated_delta_rule_prefill_split4 (avarok_scale-forced GDN prefill,
 //! never cross-validated — gb10 uses wy32). Reuses the gdn_fla_e2e_gateb
 //! recurrent SSOT (split4 takes the SAME gate=exp(g)/beta inputs). cos<0.999 =
 //! split4 is the cascade-seeding bug.
 //!   cargo run -p spark-model --release --example gdn_split4_microtest --features cuda,gpu-examples
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 const KD: usize = 128;
@@ -57,7 +57,7 @@ fn cmp(a: &[f32], b: &[f32]) -> (f32, f64) {
     (md, dot / (na.sqrt() * nb.sqrt() + 1e-12))
 }
 fn main() -> Result<()> {
-    let g0 = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let g0 = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &g0;
     let k4 = g.kernel("gated_delta_rule", "gated_delta_rule_prefill_split4")?;
     let mut all_ok = true;

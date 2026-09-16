@@ -186,7 +186,7 @@ export class LaunchSession {
     // opened much earlier by the nav's FleetPill and is never re-probed on
     // demand, so its snapshot can predate a Docker permission the operator
     // fixed a minute ago; the agent re-probes its own capability now
-    // (atlasctl `LocalFleet::launchability`), so its answer is the current one.
+    // (avarokctl `LocalFleet::launchability`), so its answer is the current one.
     //
     // Gated on `phase === 'ready'` rather than written as `agent.canLaunch ??
     // fleet.localCanLaunch`, because `canLaunch` initialises to `false`, not

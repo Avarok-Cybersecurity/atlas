@@ -28,7 +28,7 @@
 //!
 //! `#[ignore]`d: requires a GB10 GPU + the compiled kernel set. CI builds it
 //! against the libcuda stubs (signature drift guard) but never runs it:
-//!   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL='*' ATLAS_TARGET_QUANT='*' \
+//!   AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL='*' AVAROK_TARGET_QUANT='*' \
 //!     cargo test -p spark-model --test moe_lora_delta_parity -- --ignored --nocapture
 
 use anyhow::Result;

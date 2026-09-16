@@ -5,7 +5,7 @@
 //
 // Reads 1-byte-per-element FP8 K/V from paged cache, dequantizes to BF16 in
 // shared memory using per-group BF16 scales, then runs Flash Attention with
-// contiguous BF16 Q. Replaces upstream Atlas behavior of routing turbo8
+// contiguous BF16 Q. Replaces upstream Avarok behavior of routing turbo8
 // through the NVFP4_64 prefill kernel, which read the FP8 data section at a
 // 4-bit row stride (half of every block's rows aliased) and the BF16 scale
 // section as 1-byte E4M3 at half stride — unbounded-magnitude garbage on

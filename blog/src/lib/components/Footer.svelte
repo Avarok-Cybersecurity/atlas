@@ -1,6 +1,6 @@
 <script>
   import { footerCols, blog, MAIN_SITE } from '$lib/content.js';
-  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
+  import AvarokLockup from '$shared/components/AvarokLockup.svelte';
   const year = 2026; // prerendered: a live clock would bake the build date in
 </script>
 
@@ -8,7 +8,7 @@
   <div class="shell ftr-grid">
     <div class="ftr-col ftr-brand">
       <a class="ftr-logo" href={MAIN_SITE} aria-label="Avarok Inference Engine">
-        <AtlasLockup kind="full" label="Avarok Inference Engine" />
+        <AvarokLockup kind="full" label="Avarok Inference Engine" />
       </a>
       <p>Zero-trust inference on hardware you own. Pure Rust and CUDA, built in North Carolina.</p>
     </div>

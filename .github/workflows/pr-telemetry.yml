@@ -124,14 +124,14 @@ jobs:
 
       - name: Render the comment body
         env:
-          # atlas-plugin is host-only and CUDA-free, so the runner needs no
-          # toolchain and no GPU. The skip flag stops atlas-kernels' build
+          # avarok-plugin is host-only and CUDA-free, so the runner needs no
+          # toolchain and no GPU. The skip flag stops avarok-kernels' build
           # script looking for nvcc.
-          ATLAS_SKIP_BUILD: "1"
+          AVAROK_SKIP_BUILD: "1"
           CUDARC_CUDA_VERSION: "13000"
         run: |
           set -euo pipefail
-          cargo run --quiet -p atlas-plugin --bin pr_telemetry -- . < facts.json > body.md
+          cargo run --quiet -p avarok-plugin --bin pr_telemetry -- . < facts.json > body.md
           # The body is the artifact the next job posts. Also echoed into the
           # run summary so the view is readable even when no tracking issue is
           # configured and nothing gets posted anywhere.
@@ -166,7 +166,7 @@ jobs:
           # and the step says so and exits 0 rather than guessing an issue and
           # commenting on something arbitrary.
           ISSUE: ${{ vars.PR_TELEMETRY_ISSUE }}
-          MARKER: "<!-- atlas-pr-telemetry:start -->"
+          MARKER: "<!-- avarok-pr-telemetry:start -->"
         run: |
           set -euo pipefail
           if [ -z "${ISSUE:-}" ]; then

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas MoE element-wise SiLU activation + multiply, WITH DeepSeek-V4's
+// Avarok MoE element-wise SiLU activation + multiply, WITH DeepSeek-V4's
 // configured SwiGLU clamp. Shadows `common/moe_silu_mul.cu` for this model
 // only.
 //

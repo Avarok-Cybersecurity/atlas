@@ -4,7 +4,7 @@ The canonical references are [`CONTRIBUTING.md`](https://github.com/Avarok-Cyber
 
 ## The AI-first policy
 
-Atlas is explicitly an AI-first codebase. From `CONTRIBUTING.md`:
+Avarok is explicitly an AI-first codebase. From `CONTRIBUTING.md`:
 
 > - **All PRs are expected to be AI-generated.** Use the best AI tools available to write your kernels, Rust code, and benchmarks.
 > - **Human-written code must be justified.** Indicate which parts are human-authored and explain why.
@@ -16,7 +16,7 @@ This is not branding — it's the operational consequence of the specialization 
 
 The [README's Contributing](https://github.com/Avarok-Cybersecurity/atlas/blob/main/README.md#contributing) section lists four categories:
 
-- **New `(H, M_q)` targets.** Porting Atlas kernels to new hardware (H100, B200, MI300X, Apple M4, Intel) or new models. Each target is a self-contained body of work. See the [Adding a new hardware target](https://github.com/Avarok-Cybersecurity/atlas/blob/main/README.md#adding-a-new-hardware-target) and [Adding a new model](https://github.com/Avarok-Cybersecurity/atlas/blob/main/README.md#adding-a-new-model) guides.
+- **New `(H, M_q)` targets.** Porting Avarok kernels to new hardware (H100, B200, MI300X, Apple M4, Intel) or new models. Each target is a self-contained body of work. See the [Adding a new hardware target](https://github.com/Avarok-Cybersecurity/atlas/blob/main/README.md#adding-a-new-hardware-target) and [Adding a new model](https://github.com/Avarok-Cybersecurity/atlas/blob/main/README.md#adding-a-new-model) guides.
 - **Kernel optimization.** Profile existing kernels, experiment with tiling strategies, register pressure, shared-memory layouts. If you can beat the numbers in the [Benchmarks](../operations/benchmarks.md) chapter, send the PR.
 - **Benchmark coverage.** Add shapes and configurations not yet tested. More data points sharpen the hypercompiler.
 - **Bug reports.** Include hardware details, repro steps, and kernel timings.
@@ -29,11 +29,11 @@ These are what CI runs (`.github/workflows/ci.yml`). Run them locally first:
 # 1. Formatting
 cargo fmt --all -- --check
 
-# 2. Lints. BOTH env vars are needed: ATLAS_SKIP_BUILD stubs the PTX build,
+# 2. Lints. BOTH env vars are needed: AVAROK_SKIP_BUILD stubs the PTX build,
 #    CUDARC_CUDA_VERSION stops cudarc shelling out to `nvcc --version`.
 #    Deny-warnings comes from [workspace.lints], so CI passes no -D flag
 #    and no --all-features. This is verbatim what ci.yml runs.
-ATLAS_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
+AVAROK_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
 
 # 3. License headers
 bash scripts/check-license-headers.sh
@@ -63,9 +63,9 @@ These are the classes of bug that have burned days. Know them; avoid introducing
 
 ## The cardinal rule
 
-> **Never assume the model is at fault.** Always look for the Atlas bug first.
+> **Never assume the model is at fault.** Always look for the Avarok bug first.
 
-The test matrix has caught many issues that would have looked like "model hallucination" in a lesser codebase. The heuristic is: if the model used to produce coherent output on this input and now doesn't, there's an Atlas bug, not a model bug.
+The test matrix has caught many issues that would have looked like "model hallucination" in a lesser codebase. The heuristic is: if the model used to produce coherent output on this input and now doesn't, there's an Avarok bug, not a model bug.
 
 ## The CLA
 
@@ -78,8 +78,8 @@ The `CLA Assistant` bot automatically comments on every PR. You must explicitly 
 High-level (full walkthrough in the repo README):
 
 1. `kernels/<hw>/HARDWARE.toml` with `vendor = "..."`.
-2. `impl ComputeTarget` in `atlas-core/src/compute.rs` (or inline in your crate).
-3. Arm in `atlas-kernels/build.rs` — `resolve_targets()` reads `ATLAS_TARGET_HW` (default `gb10`) and the leaf `HARDWARE.toml`'s `vendor` picks the `ComputeTarget`.
+2. `impl ComputeTarget` in `avarok-core/src/compute.rs` (or inline in your crate).
+3. Arm in `avarok-kernels/build.rs` — `resolve_targets()` reads `AVAROK_TARGET_HW` (default `gb10`) and the leaf `HARDWARE.toml`'s `vendor` picks the `ComputeTarget`.
 4. `impl GpuBackend` in `spark-runtime/src/<vendor>_backend.rs` — 27 methods, some optional.
 5. Kernel sources under `kernels/<hw>/common/` (the GB10 baseline is 160 `.cu` files / 318 `__global__` entry points), plus per-model shadows only where a target diverges.
 6. `MODEL.toml` + `KERNEL.toml` for at least one model.

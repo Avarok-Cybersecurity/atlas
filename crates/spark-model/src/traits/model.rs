@@ -57,7 +57,7 @@ pub struct BeamReq {
 /// The multi-sequence batch padding ladder — the SSOT for `padded_n`.
 ///
 /// Batched decode pads the live sequence count up to a small set of captured
-/// sizes so that (a) CUDA graphs (`ATLAS_DECODE_GRAPHS_MULTISEQ`) are keyed by
+/// sizes so that (a) CUDA graphs (`AVAROK_DECODE_GRAPHS_MULTISEQ`) are keyed by
 /// a handful of stable shapes instead of one per exact n, and (b) the batched
 /// kernels see a bounded set of widths. Padding rows point at the dummy SSM
 /// slot / dummy KV block and cost one wasted lane each.
@@ -103,7 +103,7 @@ pub trait Model: Send + Sync {
     /// scheduler has drained and the stream is synchronised — the only point at
     /// which a device free is safe on GB10, where a free interleaved with other
     /// allocation traffic corrupts neighbouring allocations. See
-    /// `atlas_core::scope` for why this is not `Drop`: `Drop` can express
+    /// `avarok_core::scope` for why this is not `Drop`: `Drop` can express
     /// neither the ordering nor the failure.
     ///
     /// Default: a no-op returning `Ok`, which is honest for the mock and
@@ -215,7 +215,7 @@ pub trait Model: Send + Sync {
     /// `is_last_chunk`, or `DevicePtr::NULL` otherwise.
     ///
     /// Tracks issue Q12 in
-    /// `/workspace/atlas-internal/qwen-refactor/notes.md`.
+    /// `/workspace/avarok-internal/qwen-refactor/notes.md`.
     fn prefill_batch_chunk(
         &self,
         streams: &mut [PrefillSlice<'_>],
@@ -395,7 +395,7 @@ pub trait Model: Send + Sync {
         _peer_addr: &str,
         _adapter_id: &str,
         _name: &str,
-        _peft: atlas_core::config::PeftAdapterConfig,
+        _peft: avarok_core::config::PeftAdapterConfig,
     ) -> Result<(usize, Option<String>)> {
         bail!("this model does not support LoRA peer promotion")
     }
@@ -785,7 +785,7 @@ pub trait Model: Send + Sync {
     /// overwrites shared buffers including `norm_output`.
     fn save_hidden_for_mtp(&self, token_idx: usize, stream: u64) -> Result<()>;
 
-    /// ATLAS_MTP_CATCHUP: ring-capture a serially decoded token's final
+    /// AVAROK_MTP_CATCHUP: ring-capture a serially decoded token's final
     /// hidden at `pos` for the drafter catch-up feed. Default no-op.
     fn save_hidden_for_catchup(&self, _token_idx: usize, _pos: usize) -> Result<()> {
         Ok(())
@@ -845,7 +845,7 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
-    /// Unified DFlash ctx commit (ATLAS_DFLASH_UNIFIED_CTX=1). Copies
+    /// Unified DFlash ctx commit (AVAROK_DFLASH_UNIFIED_CTX=1). Copies
     /// `num_committed` scratch rows (`dflash_hidden_save` rows
     /// `scratch_row..scratch_row+num_committed`) into `ctx_hidden_acc` at the
     /// CURRENT TAIL (`ctx_len`), stamping RoPE positions
@@ -971,7 +971,7 @@ pub trait Model: Send + Sync {
     /// buffer). Callers that consume those logits must read from
     /// [`Self::decode_logits_ptr`] using 4 bytes/element. Defaults false;
     /// only Gemma-4 dense overrides today (gated by
-    /// `ATLAS_GEMMA4_FP32_LMHEAD=1`).
+    /// `AVAROK_GEMMA4_FP32_LMHEAD=1`).
     fn decode_logits_fp32(&self) -> bool {
         false
     }
@@ -995,7 +995,7 @@ pub trait Model: Send + Sync {
     }
 
     /// Multi-head Latent Attention guard. When true, chunked prefill MUST run
-    /// as a single chunk — Atlas has no paged-MLA prefill kernel and
+    /// as a single chunk — Avarok has no paged-MLA prefill kernel and
     /// multi-chunk MLA silently corrupts attention output (see Mistral-Small-4
     /// 2026-05-01 sweep: 8K collapses to "The\nThe…").
     fn is_mla(&self) -> bool {

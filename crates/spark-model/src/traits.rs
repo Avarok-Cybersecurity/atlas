@@ -25,7 +25,7 @@ pub struct MixedForwardResult {
 /// One of these per concurrent prefilling stream — `prefill_batch_chunk` and
 /// `mixed_forward_batch` accept a `&mut [PrefillSlice<'_>]` and process all
 /// streams' chunks in a single forward pass. See Q12 in
-/// `/workspace/atlas-internal/qwen-refactor/notes.md` for the bug this
+/// `/workspace/avarok-internal/qwen-refactor/notes.md` for the bug this
 /// fixes (concurrent prefills serialized through `prefilling.first_mut()`
 /// in the scheduler, causing 5× asymmetric TTFT).
 pub struct PrefillSlice<'a> {
@@ -148,7 +148,7 @@ pub struct SequenceState {
     /// read by the scheduler to populate
     /// `usage.prompt_tokens_details.cached_tokens`.
     ///
-    /// Atlas #919: this used to be `cached_prefix_tokens`, which reports the
+    /// Avarok #919: this used to be `cached_prefix_tokens`, which reports the
     /// lookup result — so a request that matched 48 tokens and then recomputed
     /// all of them (no SSM snapshot / exact-leaf bypass / declined Marconi
     /// restore) advertised `cached_tokens: 48` next to a full-prefill log line.

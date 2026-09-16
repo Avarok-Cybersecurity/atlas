@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Atlas TUI — the ratatui dashboard for `spark serve`.
+//! Avarok TUI — the ratatui dashboard for `spark serve`.
 //!
 //! Activation is strictly opt-out-safe: [`plain_mode`] must return `false`
 //! before any TUI machinery is touched, and when it returns `true` the caller
@@ -15,7 +15,7 @@
 //!   log_ring        structured log capture + global ring for the log pane
 //!   capture_layer   typed startup-progress event decoding
 //!   progress        ProgressModel — phases/shards/layers/ETA state machine
-//!   events          input/tick event loop on the dedicated "atlas-tui" thread
+//!   events          input/tick event loop on the dedicated "avarok-tui" thread
 //!   events_rules    the loop's decisions as pure functions, so they are testable
 //!   help_state      Help section state + the issue-report phase machine
 //!   help_keys       Help section key handling, one function per phase
@@ -52,7 +52,7 @@
 //!
 //!   * ASYNC, on the SERVING runtime — work that is already async, or that
 //!     talks to this server over its own HTTP API. `chat` (loopback SSE) and
-//!     `bench_preflight` + `atlas-plugin`'s executor (benchmarks are async
+//!     `bench_preflight` + `avarok-plugin`'s executor (benchmarks are async
 //!     end to end). These take a `tokio::runtime::Handle` captured at start.
 //!   * SYNC, on a named `std::thread` — everything with no runtime need:
 //!     blocking HTTPS via `ureq` (recipe index, recipe dates, model downloads,
@@ -65,15 +65,15 @@
 //! There is no second idiom to learn and no third place to look.
 //!
 //! The threads, all named so a stack dump during an incident is attributable:
-//! `atlas-tui` (this render loop) · `atlas-recipes` · `atlas-recipe-date` ·
-//! `atlas-libscan` · `atlas-download` · `atlas-freshness` · `atlas-swap` ·
-//! `atlas-report` (GitHub device flow + issue submit).
+//! `avarok-tui` (this render loop) · `avarok-recipes` · `avarok-recipe-date` ·
+//! `avarok-libscan` · `avarok-download` · `avarok-freshness` · `avarok-swap` ·
+//! `avarok-report` (GitHub device flow + issue submit).
 //!
 //! The first five one-shot workers go through [`worker::spawn`], which owns the
 //! part that is easy to forget: answering anyway when the thread will not
 //! start, so a receiver cannot be polled forever. Two do not, for reasons:
-//! `atlas-download` is a STREAMING producer (many progress messages, not one
-//! result), and `atlas-swap` sends only on FAILURE — silence means "still
+//! `avarok-download` is a STREAMING producer (many progress messages, not one
+//! result), and `avarok-swap` sends only on FAILURE — silence means "still
 //! loading" — so an always-send helper would change what its silence means.
 
 pub mod capture_layer;
@@ -171,7 +171,7 @@ pub fn start(
     // writer to this terminal is the dashboard.
     init::TUI_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
     match std::thread::Builder::new()
-        .name("atlas-tui".into())
+        .name("avarok-tui".into())
         .spawn(move || {
             let port = args.port;
             let model = args
@@ -185,7 +185,7 @@ pub fn start(
             // the seam before the section can start a run; without it the
             // benchmark refuses to load and says why, which is the correct
             // behaviour for a harness with no server, not for this one.
-            atlas_plugin::benchmarks::serve_matrix::host::install(std::sync::Arc::new(
+            avarok_plugin::benchmarks::serve_matrix::host::install(std::sync::Arc::new(
                 bench_host::TuiServeHost::new(host.clone(), cache_dir),
             ));
             app.host = Some(host);
@@ -194,10 +194,10 @@ pub fn start(
             // that cannot be created (no HOME, read-only) is not fatal: the
             // section reports it when a run is started, rather than taking the
             // whole dashboard down at boot.
-            match atlas_plugin::ArtifactStore::discover() {
+            match avarok_plugin::ArtifactStore::discover() {
                 Ok(store) => app.bench.attach(
-                    atlas_plugin::BenchmarkExecutor::new(runtime, store),
-                    atlas_plugin::TargetEndpoint::local(port, model),
+                    avarok_plugin::BenchmarkExecutor::new(runtime, store),
+                    avarok_plugin::TargetEndpoint::local(port, model),
                 ),
                 Err(e) => tracing::warn!("benchmarks unavailable: {e:#}"),
             }
@@ -242,7 +242,7 @@ pub fn stop_and_join(timeout: std::time::Duration) {
 /// True when the TUI must NOT start and `main.rs` keeps the byte-identical
 /// plain fmt subscriber.
 ///
-/// Gates, in order: explicit `--no-tui`, `ATLAS_NO_TUI=1`, non-interactive
+/// Gates, in order: explicit `--no-tui`, `AVAROK_NO_TUI=1`, non-interactive
 /// stdout OR stdin (docker `-t` without `-i` therefore stays plain), and
 /// `TERM=dumb`. EP workers are additionally refused in `serve()` — belt and
 /// braces, since rank isn't parsed yet when this runs.
@@ -250,7 +250,7 @@ pub fn plain_mode(no_tui_flag: bool) -> bool {
     if no_tui_flag {
         return true;
     }
-    if std::env::var("ATLAS_NO_TUI").as_deref() == Ok("1") {
+    if std::env::var("AVAROK_NO_TUI").as_deref() == Ok("1") {
         return true;
     }
     if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {

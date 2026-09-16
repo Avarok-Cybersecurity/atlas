@@ -86,7 +86,7 @@ impl BlockDiffusionDraftHead {
 
         // Allocate the drafter's paged FP8 KV cache. One multi-layer cache,
         // sized for `max_seq_len + γ + 1` positions (prompt + γ drafts +
-        // 1 bonus). Block size 16 matches the rest of Atlas.
+        // 1 bonus). Block size 16 matches the rest of Avarok.
         let block_size = 16;
         let kv_config = KvCacheConfig {
             block_size,
@@ -126,19 +126,19 @@ impl BlockDiffusionDraftHead {
         // Resolve kernel handles. All BF16 paths since drafter weights are
         // BF16 (DflashQuantization::Bf16); FP8 cache uses the FP8 reshape +
         // FP8-aware paged-attention kernel. Module/function names verified
-        // against existing Atlas resolutions in `qwen3_attention/mod.rs` and
+        // against existing Avarok resolutions in `qwen3_attention/mod.rs` and
         // `mtp_head.rs` plus the `extern "C" __global__` declarations under
         // `kernels/gb10/common/`.
         let kernels = DflashKernels {
             // DFlash drafter uses HF's vanilla RMSNorm convention
-            // (`out = x * w / RMS(x)`), NOT Atlas's default offset-from-1
-            // form (`out = x * (1 + w) / RMS(x)`). Atlas's standard
+            // (`out = x * w / RMS(x)`), NOT Avarok's default offset-from-1
+            // form (`out = x * (1 + w) / RMS(x)`). Avarok's standard
             // `rms_norm` kernel includes the `+1` for Qwen3-Next-style
             // checkpoints; we must use `rms_norm_vanilla` for the drafter
             // to match the drafter's HF-trained weights exactly.
             rms_norm: gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?,
             // `rms_norm_residual` lands the post-attn / post-MLP add+norm in
-            // a single launch. Atlas exposes this as a separate kernel — see
+            // a single launch. Avarok exposes this as a separate kernel — see
             // `mtp_head.rs:469` for the established lookup.
             residual_rms_norm: gpu
                 .kernel("norm", "rms_norm_residual")
@@ -148,7 +148,7 @@ impl BlockDiffusionDraftHead {
             w4a16_gemm: super::super::try_kernel(gpu, "w4a16", "w4a16_gemm"),
             dense_gemm_pipelined: gpu.kernel("gemm", "dense_gemm_bf16_pipelined")?,
             // Qwen3.6-DFlash uses yarn RoPE — confirmed in the drafter
-            // `config.json:rope_scaling.rope_type="yarn"`. Atlas's yarn
+            // `config.json:rope_scaling.rope_type="yarn"`. Avarok's yarn
             // kernel is `rope::rope_forward_yarn`.
             rope_qwen3: gpu.kernel("rope", "rope_forward_yarn")?,
             // FP8 KV cache writeback. Module name is the .cu stem
@@ -210,12 +210,12 @@ impl BlockDiffusionDraftHead {
             // dense_gemv_fp8w.cu:36 under namespace "gemv_fp8w". Used at
             // load time only.
             quantize_bf16_to_fp8: gpu.kernel("gemv_fp8w", "quantize_bf16_to_fp8")?,
-            // Phase G — Row-scaled BF16 × FP8 → BF16 GEMM. Atlas custom
+            // Phase G — Row-scaled BF16 × FP8 → BF16 GEMM. Avarok custom
             // kernel `fp8_gemm_t_row_scaled` appended to w4a16_gemm.cu
             // for Phase G (module namespace "w4a16").
             // try_kernel: absent on targets whose w4a16 module predates
             // Phase G — the FP8 drafter path is then skipped at the
-            // ATLAS_DFLASH_DRAFTER_FP8 gate below (BF16 fallback).
+            // AVAROK_DFLASH_DRAFTER_FP8 gate below (BF16 fallback).
             fp8_gemm_n128_row_scaled: crate::layers::try_kernel(
                 gpu,
                 "w4a16",
@@ -272,11 +272,11 @@ impl BlockDiffusionDraftHead {
         // Phase 2.5n: ctx_window controls how many captured target positions
         // the drafter attends to per step. The drafter was trained over the
         // FULL captured prefix (paper §A.1), but capping at γ=16 cripples it
-        // on prompts past a tiny window — Atlas's 6-10% acceptance vs the
+        // on prompts past a tiny window — Avarok's 6-10% acceptance vs the
         // paper's 70% is dominated by this cap. Default raised 512 → 4096
         // (2026-07-08): long generations (MinHeap ~2.6k tok) blow past 512
         // captured rows → truncated prefix → accept collapse + droop.
-        // ATLAS_DFLASH_CTX_WINDOW overrides at construction time.
+        // AVAROK_DFLASH_CTX_WINDOW overrides at construction time.
         //
         // Memory cost: attention-path scratch scales linearly with
         // `n_attn = γ + cw`. At cw=4096: stream/norm/acc ≈ 16.8 MB each;
@@ -285,12 +285,12 @@ impl BlockDiffusionDraftHead {
         // precompute_ctx_kv borrows mlp_intermediate as all_k_stage
         // [L×n×kv_dim ≈ 21 MB]); fused_kv_out ≈ 42 MB. logits is γ-rows
         // only (see alloc below). Total scratch ≈ 250 MB per head.
-        let ctx_window: usize = std::env::var("ATLAS_DFLASH_CTX_WINDOW")
+        let ctx_window: usize = std::env::var("AVAROK_DFLASH_CTX_WINDOW")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(4096);
         tracing::info!(
-            "DFlash ctx_window = {} (set ATLAS_DFLASH_CTX_WINDOW to override; \
+            "DFlash ctx_window = {} (set AVAROK_DFLASH_CTX_WINDOW to override; \
              drafter trained on full captured prefix — larger is better, \
              scratch grows linearly)",
             ctx_window
@@ -465,7 +465,7 @@ impl BlockDiffusionDraftHead {
                 }
                 Some(other) => {
                     tracing::warn!(
-                        "DFlash drafter config has rope_scaling.rope_type={other:?} which Atlas \
+                        "DFlash drafter config has rope_scaling.rope_type={other:?} which Avarok \
                          doesn't recognise — falling back to plain RoPE (theta={rope_theta})."
                     );
                     rope_kind = "plain (unknown rope_type)";
@@ -577,7 +577,7 @@ impl BlockDiffusionDraftHead {
                     gate_proj: l.gate_proj,
                     up_proj: l.up_proj,
                     down_proj: l.down_proj,
-                    // Phase G — populated below if ATLAS_DFLASH_DRAFTER_FP8=1.
+                    // Phase G — populated below if AVAROK_DFLASH_DRAFTER_FP8=1.
                     q_proj_fp8: None,
                     k_proj_fp8: None,
                     v_proj_fp8: None,
@@ -703,12 +703,12 @@ impl BlockDiffusionDraftHead {
         // Default ON since the 54.5 record config (2026-08-19): FP8 drafter
         // weights are the proven speed lane (accept gate held). `=0` reverts
         // to the BF16 drafter path.
-        let fp8_requested = std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0");
+        let fp8_requested = std::env::var("AVAROK_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0");
         let fp8_kernels_present = head.kernels.fp8_gemm_n128_row_scaled.0 != 0
             && head.kernels.fp8_gemm_n128_row_scaled_m16.0 != 0;
         if fp8_requested && !fp8_kernels_present {
             tracing::warn!(
-                "ATLAS_DFLASH_DRAFTER_FP8=1 but fp8_gemm_t_row_scaled(_m16) kernels are \
+                "AVAROK_DFLASH_DRAFTER_FP8=1 but fp8_gemm_t_row_scaled(_m16) kernels are \
                  not in this target's w4a16 PTX module — staying on the BF16 drafter path. \
                  Port the Phase G kernels from kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu."
             );
@@ -822,7 +822,7 @@ impl BlockDiffusionDraftHead {
             head.quant = DflashQuantization::Fp8Weights;
             tracing::info!(
                 "DFlash Phase G: drafter weights ready as FP8 (quant = Fp8Weights). \
-                 Set ATLAS_DFLASH_DRAFTER_FP8=0 to revert to BF16."
+                 Set AVAROK_DFLASH_DRAFTER_FP8=0 to revert to BF16."
             );
         }
 

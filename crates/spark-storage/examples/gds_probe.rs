@@ -3,7 +3,7 @@
 // Phase-0 probe binary. Run with:
 //
 //     cargo run --release -p spark-storage --example gds-probe -- \
-//         --dir /workspace/atlas-swap-probe
+//         --dir /workspace/avarok-swap-probe
 //
 // Reports whether cuFile/GDS is available on the current host and benchmarks
 // the candidate backends. Output is human-readable and ends with a single
@@ -51,7 +51,7 @@ fn main() -> Result<()> {
         .with_target(false)
         .init();
     let cfg = parse_args()?;
-    eprintln!("== Atlas storage probe ==");
+    eprintln!("== Avarok storage probe ==");
     eprintln!("dir            : {}", cfg.dir.display());
     eprintln!(
         "test file size : {} MiB",

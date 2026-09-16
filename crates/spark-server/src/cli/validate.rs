@@ -61,7 +61,7 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     if let Some(dtype) = &args.ssm_h_dtype {
         check_enum(&mut v, "--ssm-h-dtype", dtype, SSM_H_DTYPES);
     }
-    // Only when it was given: absent means "let ATLAS_MTP_GATE_FORCE decide",
+    // Only when it was given: absent means "let AVAROK_MTP_GATE_FORCE decide",
     // and validating an unwritten value would reject nothing but confuse the
     // reader of this list.
     if let Some(gate) = &args.mtp_gate {
@@ -396,7 +396,7 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
                 "--gpu-memory-utilization {} is outside (0.0, 1.0].",
                 args.gpu_memory_utilization
             ),
-            "the value is the fraction of total GPU memory Atlas may claim.",
+            "the value is the fraction of total GPU memory Avarok may claim.",
             "use a fraction in (0.0, 1.0], e.g. 0.90.",
         ));
     }
@@ -432,7 +432,7 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     // docs/GB10_DEPLOYMENT_GUIDE.md each tell the reader to pass it. So an
     // operator following the quickstart passes a path, measures the same cold
     // TTFT, and has no way to tell that the flag is inert rather than
-    // ineffective — the diagnosis lands on Atlas being slow.
+    // ineffective — the diagnosis lands on Avarok being slow.
     //
     // Refused rather than warned, for this module's usual reason: a warning
     // scrolls off, and command lines get copied and published. Refused rather
@@ -469,7 +469,7 @@ fn check_enum(v: &mut Vec<Violation>, flag: &str, value: &str, allowed: &[&str])
 
 fn format_violations(v: &[Violation]) -> String {
     let mut out = format!(
-        "Atlas CLI: {} invalid flag combination{} — fix before serving:\n",
+        "Avarok CLI: {} invalid flag combination{} — fix before serving:\n",
         v.len(),
         if v.len() == 1 { "" } else { "s" }
     );

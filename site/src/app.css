@@ -4,10 +4,10 @@
    instruments. The signature element is the gate receipt (.receipt). Boldness
    is spent there; the rest stays disciplined. Theme is committed dark.
    ========================================================================== */
-/* The :root token block lives in web-shared/atlas-tokens.css, which the blog
+/* The :root token block lives in web-shared/avarok-tokens.css, which the blog
    imports too. One copy, so atlascybernetics.ai and blog.atlascybernetics.ai
    cannot drift apart. Property-specific rules stay below. */
-@import '../../web-shared/atlas-tokens.css';
+@import '../../web-shared/avarok-tokens.css';
 
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 

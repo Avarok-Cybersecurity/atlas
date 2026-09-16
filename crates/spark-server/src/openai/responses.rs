@@ -6,7 +6,7 @@ use super::*;
 
 // ── Responses API (2026 stable) — adapter types ──
 //
-// The Responses API is OpenAI's newer agentic-first surface. Atlas
+// The Responses API is OpenAI's newer agentic-first surface. Avarok
 // implements a thin adapter: requests are translated into a
 // ChatCompletionRequest, run through the existing pipeline, and the
 // result re-serialized in the Responses shape.
@@ -14,7 +14,7 @@ use super::*;
 // Stateful resume (`previous_response_id`) is supported via the in-memory
 // [`crate::response_store`]: the prior turn's transcript is prepended to
 // the current input. Built-in tools (web_search, file_search, computer_
-// use) are **not** supported — those require NSFW tool integrations Atlas
+// use) are **not** supported — those require NSFW tool integrations Avarok
 // does not ship.
 
 #[derive(Debug, Deserialize)]
@@ -61,7 +61,7 @@ pub struct ResponsesRequest {
     /// OpenAI's 2026 Responses API). `false` opts out of storage.
     #[serde(default)]
     pub store: Option<bool>,
-    /// Run the response asynchronously. Atlas completes responses
+    /// Run the response asynchronously. Avarok completes responses
     /// synchronously (no background queue), so this flag is **accepted
     /// and ignored** — the call returns the finished response directly.
     /// Cancel via `POST /v1/responses/{id}/cancel` therefore returns a
@@ -69,12 +69,12 @@ pub struct ResponsesRequest {
     #[serde(default)]
     pub background: Option<bool>,
     /// `include: ["reasoning.encrypted_content", ...]` — additional
-    /// payloads to embed in the response. Atlas accepts and ignores
+    /// payloads to embed in the response. Avarok accepts and ignores
     /// this; the base response already carries reasoning and tool data.
     #[serde(default)]
     pub include: Option<Vec<String>>,
     /// `truncation: "auto" | "disabled"` — OpenAI's auto-compaction
-    /// hint. Atlas has its own auto-compaction (`--auto-compact` CLI
+    /// hint. Avarok has its own auto-compaction (`--auto-compact` CLI
     /// flag) so this is accepted and ignored.
     #[serde(default)]
     pub truncation: Option<String>,
@@ -84,17 +84,17 @@ pub struct ResponsesRequest {
     /// to the conversation after completion.
     #[serde(default)]
     pub conversation: Option<serde_json::Value>,
-    /// `parallel_tool_calls: bool` — Atlas emits one tool call per
+    /// `parallel_tool_calls: bool` — Avarok emits one tool call per
     /// turn regardless; accepted for compat.
     #[serde(default)]
     pub parallel_tool_calls: Option<bool>,
-    /// Top-level `max_tool_calls` cap. Accepted for compat; Atlas
+    /// Top-level `max_tool_calls` cap. Accepted for compat; Avarok
     /// already bounds tool calls by the scheduler.
     #[serde(default)]
     pub max_tool_calls: Option<u32>,
     /// Advanced text-output config (`{format: {...}, verbosity: ...}`)
     /// per the 2026 Responses spec. Accepted; verbosity is ignored
-    /// (Atlas honors `max_output_tokens` only).
+    /// (Avarok honors `max_output_tokens` only).
     #[serde(default)]
     pub text: Option<serde_json::Value>,
 }
@@ -133,7 +133,7 @@ pub enum ResponsesOutputItem {
         status: &'static str,
     },
     /// Reasoning/thinking trace as a first-class Responses output item.
-    /// Atlas serves the raw `<think>` body as the item's `summary` (no
+    /// Avarok serves the raw `<think>` body as the item's `summary` (no
     /// separate summarizer) — this is the spec representation for
     /// reasoning, so Responses-API clients see the thought instead of
     /// the stream silently dropping it.
@@ -175,7 +175,7 @@ pub struct ResponsesUsage {
 // ── Streaming Responses API event types ──
 //
 // The 2026-stable Responses streaming model emits typed events wrapped in
-// SSE frames. Atlas maps the existing chat-completions `StreamEvent`
+// SSE frames. Avarok maps the existing chat-completions `StreamEvent`
 // channel into these events as it flushes tokens:
 //
 //   response.created                → once, on admission
@@ -278,7 +278,7 @@ pub enum ResponsesStreamEvent {
     // single `summary_text` part streams through these four events.
     // SDKs (OpenAI .NET/Python) surface them as
     // ReasoningSummaryTextDelta updates; `summary_index` is the
-    // position inside the item's `summary` array (always 0 on Atlas).
+    // position inside the item's `summary` array (always 0 on Avarok).
     #[serde(rename = "response.reasoning_summary_part.added")]
     ReasoningSummaryPartAdded {
         sequence_number: u64,

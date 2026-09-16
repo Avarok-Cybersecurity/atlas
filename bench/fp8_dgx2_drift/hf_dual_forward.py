@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Run HF[BF16-unquant] AND HF[FP8->BF16] forward on a freshly-dumped Atlas
+"""Run HF[BF16-unquant] AND HF[FP8->BF16] forward on a freshly-dumped Avarok
 prompt-token sequence, emitting per-layer hidden states for both.
 
 Output layout:
-  /workspace/atlas-dumps/fp8native_dgx2/hf_bf16_L{0..39}.bin
-  /workspace/atlas-dumps/fp8native_dgx2/hf_fp8dq_L{0..39}.bin
+  /workspace/avarok-dumps/fp8native_dgx2/hf_bf16_L{0..39}.bin
+  /workspace/avarok-dumps/fp8native_dgx2/hf_fp8dq_L{0..39}.bin
 
 Inputs:
-  /tmp/atlas_tokens_dgx2.json  — tokens dumped by Atlas via ATLAS_DFLASH_DEBUG_DUMP_FULL=1
+  /tmp/avarok_tokens_dgx2.json  — tokens dumped by Avarok via AVAROK_DFLASH_DEBUG_DUMP_FULL=1
 
 Usage: python3 hf_dual_forward.py [bf16|fp8|both]
 """
@@ -25,8 +25,8 @@ from transformers import AutoModelForCausalLM
 
 BF16_SNAP = "/workspace/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0"
 FP8DQ_SNAP = "/workspace/.cache/huggingface/Qwen3.6-35B-A3B-FP8-dequanted-BF16"
-TOKENS_PATH = pathlib.Path("/tmp/atlas_tokens_dgx2.json")
-OUT_DIR = pathlib.Path("/workspace/atlas-dumps/fp8native_dgx2")
+TOKENS_PATH = pathlib.Path("/tmp/avarok_tokens_dgx2.json")
+OUT_DIR = pathlib.Path("/workspace/avarok-dumps/fp8native_dgx2")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

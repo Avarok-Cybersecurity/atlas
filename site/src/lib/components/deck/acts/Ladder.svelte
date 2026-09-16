@@ -37,7 +37,7 @@
         `spark benchmark run concurrency-sweep \\`,
         `  --url http://127.0.0.1:8888 --model ${claim.checkpoint} \\`,
         `  --param concurrencies=1,4,8,16 --param isls=512 --param osl=320 \\`,
-        `  --format json > atlas.json`
+        `  --format json > avarok.json`
       ]}
       note="http:// only. stdout carries the record and stderr the progress, so the redirect gives a clean file. Those --param values are the ones the gate pins; an unknown key is an error, never a silent no-op."
     />
@@ -76,7 +76,7 @@
           ``,
           `.venv/bin/python ${claim.harnessFile} \\`,
           `  --url http://127.0.0.1:8888 --model ${claim.checkpoint} \\`,
-          `  --label atlas --out atlas_ladder.json \\`,
+          `  --label avarok --out avarok_ladder.json \\`,
           `  --concs ${claim.concsArg} \\`,
           `  --reps ${claim.reps} --isl ${claim.isl} --osl ${claim.osl} --warmup ${claim.warmup}`
         ]}
@@ -88,7 +88,7 @@
       <p>
         The driver prints its own <code class="mono">sha256</code> on the first line and writes it
         into the output as <code class="mono">driver_sha256</code>. The published Avarok legs carry
-        <code class="mono">{claim.harnessShaAtlas}</code>; the copy in the repository today hashes
+        <code class="mono">{claim.harnessShaAvarok}</code>; the copy in the repository today hashes
         <code class="mono">{claim.harnessShaRepo}</code>.
       </p>
       <p>

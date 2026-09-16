@@ -38,9 +38,9 @@ if (!withItems.length) {
   process.exit(1);
 }
 
-const body = `# The Atlas Book
+const body = `# The Avarok Book
 
-> Documentation for Atlas — an open source, pure Rust and CUDA LLM inference
+> Documentation for Avarok — an open source, pure Rust and CUDA LLM inference
 > engine. One ~75 MB binary, no Python, no PyTorch.
 
 This is the reference documentation. It covers installing and running the
@@ -57,7 +57,7 @@ ${withItems.map((p) => `## ${p.name}\n\n${p.items.join('\n')}`).join('\n\n')}
 
 ## Optional
 
-- [Atlas Inference](https://atlascybernetics.ai): the project site — also at https://atlascybernetics.ai/llms.txt
+- [Avarok Inference](https://atlascybernetics.ai): the project site — also at https://atlascybernetics.ai/llms.txt
 - [Engineering blog](https://blog.atlascybernetics.ai): measured notes — also at https://blog.atlascybernetics.ai/llms.txt
 - [Source](https://github.com/Avarok-Cybersecurity/atlas): pure Rust and CUDA, AGPL-3.0-only
 - [Recipes](https://github.com/Avarok-Cybersecurity/atlas-recipes): the model SSOT

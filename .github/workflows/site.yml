@@ -29,7 +29,7 @@ on:
     - cron: '17 6 * * *'
   # Manual redeploy. Without this the only ways to refresh production are a push
   # touching the paths above and the 06:17 cron -- so a fix that ships from
-  # another repo (the installers, copied from atlas-recipes main at build time)
+  # another repo (the installers, copied from avarok-recipes main at build time)
   # cannot be published on demand. An operator who needs one live has to wait
   # for the cron or fabricate an unrelated site commit to trigger a deploy.
   workflow_dispatch:
@@ -192,30 +192,30 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Checkout atlas-recipes (model SSOT)
+      - name: Checkout avarok-recipes (model SSOT)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: Avarok-Cybersecurity/atlas-recipes
-          path: atlas-recipes-src
+          path: avarok-recipes-src
 
       # install.sh is versioned alongside the binaries it installs, in
-      # atlas-recipes, and copied in here rather than duplicated. It embeds no
+      # avarok-recipes, and copied in here rather than duplicated. It embeds no
       # version — it always resolves releases/latest — so a cached copy stays
       # correct even when it predates the release it installs. Failing the build
       # is right: serving a 404 for the headline command on the front page would
       # be worse than a red pipeline.
-      - name: Copy the installers from atlas-recipes
+      - name: Copy the installers from avarok-recipes
         run: |
           # Both, and both required. The page picks between them by detected
           # OS, so a missing install.ps1 is a 404 served to exactly the
           # visitors who have no other command to fall back to.
           for f in install.sh install.ps1; do
-            src="${{ github.workspace }}/atlas-recipes-src/scripts/$f"
+            src="${{ github.workspace }}/avarok-recipes-src/scripts/$f"
             if [ ! -f "$src" ]; then
-              echo "::error::scripts/$f is not on atlas-recipes main yet."
+              echo "::error::scripts/$f is not on avarok-recipes main yet."
               echo "The front page's install command is served from that file, so building"
               echo "without it would ship a 404 for the headline instruction. Merge the"
-              echo "atlasctl launcher PR in Avarok-Cybersecurity/atlas-recipes first, then"
+              echo "avarokctl launcher PR in Avarok-Cybersecurity/atlas-recipes first, then"
               echo "re-run this build."
               exit 1
             fi
@@ -223,20 +223,20 @@ jobs:
             chmod 0755 "static/$f"
           done
 
-      # Before the build, against the atlas-recipes checkout above — the corpus
+      # Before the build, against the avarok-recipes checkout above — the corpus
       # this deploy actually ships against, not whatever a local mirror is on.
-      # The front page prints `atlasctl run <flagship>` as its headline
+      # The front page prints `avarokctl run <flagship>` as its headline
       # instruction, and nothing else ties that name to a recipe that exists.
       - name: The advertised recipe exists
         run: bun scripts/check-flagship.mjs
         env:
-          ATLAS_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
+          AVAROK_RECIPES_ROOT: ${{ github.workspace }}/avarok-recipes-src/recipes
 
       - name: Build
         run: bun x --bun vite build
         env:
-          ATLAS_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
-          ATLAS_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
+          AVAROK_RECIPES_ROOT: ${{ github.workspace }}/avarok-recipes-src/recipes
+          AVAROK_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
           GH_TOKEN: ${{ github.token }}
 
       # A page's <title> can vanish while the rest of its head survives: a layout
@@ -268,7 +268,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      # The blog. Same toolchain, no atlas-recipes dependency — it renders its
+      # The blog. Same toolchain, no avarok-recipes dependency — it renders its
       # own posts and nothing else.
       - name: Install blog dependencies
         working-directory: blog
@@ -396,7 +396,7 @@ jobs:
           node-version: '24'
 
       # Direct Upload, not Pages' own git integration. The build above needs an
-      # atlas-recipes checkout and a GH token, and carries four gates a
+      # avarok-recipes checkout and a GH token, and carries four gates a
       # Pages-native build would bypass — the flagship recipe check, both
       # per-route title checks, and the blog/site cross-link check. Uploading
       # the already-gated output keeps every one of them.
@@ -416,7 +416,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           npx --yes wrangler@4 pages deploy site \
-            --project-name=atlas-site \
+            --project-name=avarok-site \
             --branch=main \
             --commit-dirty=true
 
@@ -427,7 +427,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           npx --yes wrangler@4 pages deploy blog \
-            --project-name=atlas-blog \
+            --project-name=avarok-blog \
             --branch=main \
             --commit-dirty=true
 

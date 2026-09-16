@@ -9,7 +9,7 @@
 //! still missing:
 //!
 //! * **PLE n-gram injection** — refused at LOAD unless
-//!   `ATLAS_QWEN4EXP_NO_PLE=1`, because skipping it does not crash and does
+//!   `AVAROK_QWEN4EXP_NO_PLE=1`, because skipping it does not crash and does
 //!   not look wrong. It produces fluent text from a model missing an input.
 //! * **The QSA indexer** — provably inert at or below `indexer_budget`, which
 //!   is the context this fits today; required above it, and refused there.
@@ -35,7 +35,7 @@
 //!    the model-level `hyper_connection_mixer` — which collapses the streams
 //!    back to one before `lm_head` — carries the final norm. A loader that
 //!    "helpfully" defaults these would be inventing weights.
-//! 2. **mHC is 4 residual streams**, mixed low-rank (rank 320). Atlas's mHC
+//! 2. **mHC is 4 residual streams**, mixed low-rank (rank 320). Avarok's mHC
 //!    plumbing is DeepSeek-V4's, whose mixer is Sinkhorn-normalized — same
 //!    stream layout, different math.
 //! 3. **A QSA indexer** on the 12 full-attention layers.
@@ -43,7 +43,7 @@
 //!    from NVMe rather than resident.
 
 use anyhow::{Context, Result};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -203,13 +203,13 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
         // 2048 covers the chunk sizes this model runs at; a larger chunk gets
         // the layer's refusal, which names this variable, rather than a
         // silent overrun.
-        let max_ple_tokens: usize = std::env::var("ATLAS_PLE_MAX_TOKENS")
+        let max_ple_tokens: usize = std::env::var("AVAROK_PLE_MAX_TOKENS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(2048);
         // With PLE disabled for bisection, skip the 21 MB arena and the
         // 128-shard open entirely rather than building what we will not run.
-        let ple_off = std::env::var("ATLAS_QWEN4EXP_NO_PLE").as_deref() == Ok("1");
+        let ple_off = std::env::var("AVAROK_QWEN4EXP_NO_PLE").as_deref() == Ok("1");
         // GDN projections stay BF16 by DEFAULT on this checkpoint. Measured,
         // both arms, same prompt, util 0.85 / 16K / bf16 KV:
         //
@@ -229,13 +229,13 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
         // quantized in this checkpoint. The GDN projections ship BF16, so
         // requantizing them was a lossy round trip we chose, on 36 of 48
         // layers. `=0` opts back into it for A/B.
-        let bf16_gdn = std::env::var("ATLAS_QWEN4EXP_BF16_GDN").as_deref() != Ok("0");
+        let bf16_gdn = std::env::var("AVAROK_QWEN4EXP_BF16_GDN").as_deref() != Ok("0");
         tracing::info!(
             "GDN projections: {} on the {} linear-attention layers",
             if bf16_gdn {
                 "BF16 as shipped (no runtime NVFP4 requantization)"
             } else {
-                "requantized to NVFP4 (ATLAS_QWEN4EXP_BF16_GDN=0)"
+                "requantized to NVFP4 (AVAROK_QWEN4EXP_BF16_GDN=0)"
             },
             config
                 .layer_types
@@ -356,10 +356,10 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
         // in `ops/ple_tests.rs`. The escape hatch stays, inverted: it now
         // DISABLES a mechanism that is present, for bisecting, and says so.
         if !config.ple_layer_ids.is_empty()
-            && std::env::var("ATLAS_QWEN4EXP_NO_PLE").as_deref() == Ok("1")
+            && std::env::var("AVAROK_QWEN4EXP_NO_PLE").as_deref() == Ok("1")
         {
             tracing::warn!(
-                "ATLAS_QWEN4EXP_NO_PLE=1: PLE n-gram injection at model layer {} \
+                "AVAROK_QWEN4EXP_NO_PLE=1: PLE n-gram injection at model layer {} \
                  is DISABLED. Output is wrong by construction — this arm exists \
                  to bisect the mHC spine, nothing else.",
                 config.ple_layer_ids[0].saturating_sub(1),
@@ -457,7 +457,7 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
     ) -> Result<Option<MtpWeights>> {
         // Dropped for v1 (#753 item I). The MTP block is effectively a second
         // model: its own 512-expert MoE, its own hyper-connection mixer, its
-        // own QSA indexer, and `fc_embedding`/`fc_hidden` where Atlas's
+        // own QSA indexer, and `fc_embedding`/`fc_hidden` where Avarok's
         // `MtpWeights` wants a fused `eh_proj`. Wiring it before the main
         // forward path works would be building on sand.
         Ok(None)

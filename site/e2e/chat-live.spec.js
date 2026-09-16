@@ -28,7 +28,7 @@ test.describe('@live real corpus', () => {
   test('a real question comes back cited when a key is provided', async ({ page }) => {
     test.skip(!LIVE_KEY, 'OPENROUTER_API_KEY not set — skipping the real-key leg');
     test.setTimeout(300_000);
-    await page.addInitScript((k) => localStorage.setItem('atlas-openrouter-key', k), LIVE_KEY);
+    await page.addInitScript((k) => localStorage.setItem('avarok-openrouter-key', k), LIVE_KEY);
     await page.goto('/engine');
     if (page.viewportSize().width <= 860) await page.locator('.nav-toggle').click();
     await page.locator('.nav-chat-btn:visible').first().click();
@@ -45,7 +45,7 @@ test.describe('@live real corpus', () => {
     // Free-tier models can rate-limit; sources are the part the site controls.
     await expect(card.locator('.cm-src').first()).toBeVisible({ timeout: 120_000 });
     expect(await card.locator('.cm-src').first().getAttribute('href')).toMatch(
-      /^https:\/\/github\.com\/Avarok-Cybersecurity\/atlas\/blob\/[0-9a-f]{40}\/.+#L\d+-L\d+$/
+      /^https:\/\/github\.com\/Avarok-Cybersecurity\/avarok\/blob\/[0-9a-f]{40}\/.+#L\d+-L\d+$/
     );
   });
 });

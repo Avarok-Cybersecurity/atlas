@@ -40,12 +40,12 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
-      - name: Install atlasctl the way the website tells people to
+      - name: Install avarokctl the way the website tells people to
         run: |
           set -euo pipefail
           # A private prefix: the canary must prove the installer works, not
           # inherit whatever a runner image happens to have on PATH.
-          prefix="$RUNNER_TEMP/atlasctl-bin"
+          prefix="$RUNNER_TEMP/avarokctl-bin"
           mkdir -p "$prefix"
           # EXPORTED, not prefixed onto the pipeline. `VAR=x curl ... | sh` sets
           # VAR for CURL, which does not read it -- `sh` runs in a separate
@@ -53,12 +53,12 @@ jobs:
           # private prefix entirely and installed to ~/.local/bin, which is on a
           # runner's PATH, so the next step found *a* binary and the job passed.
           # The isolation this prefix exists to provide was never in effect.
-          export ATLASCTL_INSTALL_DIR="$prefix"
+          export AVAROKCTL_INSTALL_DIR="$prefix"
           curl --fail --silent --show-error --location --retry 3 --retry-delay 5 \
             https://atlascybernetics.ai/install.sh | sh
           # Prove it landed where we asked, rather than inferring it from PATH.
-          [ -x "$prefix/atlasctl" ] || {
-            echo "::error::the installer did not honour ATLASCTL_INSTALL_DIR=$prefix"
+          [ -x "$prefix/avarokctl" ] || {
+            echo "::error::the installer did not honour AVAROKCTL_INSTALL_DIR=$prefix"
             ls -la "$prefix" || true
             exit 1
           }
@@ -80,33 +80,33 @@ jobs:
       - name: Re-running the installer over a differing build REPLACES it
         run: |
           set -euo pipefail
-          prefix="$RUNNER_TEMP/atlasctl-bin"
-          before_version=$("$prefix/atlasctl" --version)
+          prefix="$RUNNER_TEMP/avarokctl-bin"
+          before_version=$("$prefix/avarokctl" --version)
           # Replace by RENAME, not by appending in place. The install above
           # starts the agent, so the binary is being executed and a write to it
           # fails with ETXTBSY ("Text file busy"). install.sh has the same
           # constraint and solves it the same way -- `install` to a temp name
           # then `mv -f` -- because a rename swaps the directory entry while the
           # running process keeps the old inode.
-          cp "$prefix/atlasctl" "$prefix/.atlasctl.tampered"
-          printf '\n# canary marker\n' >> "$prefix/.atlasctl.tampered"
-          chmod 0755 "$prefix/.atlasctl.tampered"
-          mv -f "$prefix/.atlasctl.tampered" "$prefix/atlasctl"
-          tampered=$(sha256sum "$prefix/atlasctl" | cut -d" " -f1)
+          cp "$prefix/avarokctl" "$prefix/.avarokctl.tampered"
+          printf '\n# canary marker\n' >> "$prefix/.avarokctl.tampered"
+          chmod 0755 "$prefix/.avarokctl.tampered"
+          mv -f "$prefix/.avarokctl.tampered" "$prefix/avarokctl"
+          tampered=$(sha256sum "$prefix/avarokctl" | cut -d" " -f1)
           # Still runnable, and still claiming the same version: without that the
           # test would be exercising the ordinary upgrade path instead.
-          after_tamper=$("$prefix/atlasctl" --version)
+          after_tamper=$("$prefix/avarokctl" --version)
           [ "$before_version" = "$after_tamper" ] || {
             echo "::error::tampering changed the reported version ($before_version -> $after_tamper);"
             echo "this test can no longer reach the same-version/different-content branch"
             exit 1
           }
 
-          export ATLASCTL_INSTALL_DIR="$prefix"
+          export AVAROKCTL_INSTALL_DIR="$prefix"
           curl --fail --silent --show-error --location --retry 3 --retry-delay 5 \
             https://atlascybernetics.ai/install.sh | sh
 
-          restored=$(sha256sum "$prefix/atlasctl" | cut -d" " -f1)
+          restored=$(sha256sum "$prefix/avarokctl" | cut -d" " -f1)
           if [ "$restored" = "$tampered" ]; then
             echo "::error::the installer left the modified binary in place."
             echo "It decided an upgrade was unnecessary, or announced one and did not perform it."
@@ -114,19 +114,19 @@ jobs:
             exit 1
           fi
           echo "replaced: $tampered -> $restored"
-          "$prefix/atlasctl" --version
+          "$prefix/avarokctl" --version
 
       - name: It runs, and it knows its recipes
         run: |
           set -euo pipefail
-          atlasctl --version
+          avarokctl --version
           # `recipe list` exercises the vendored corpus, so an installer that
           # shipped a binary without its recipes fails here rather than in a
           # user's terminal.
-          count=$(atlasctl recipe list | tail -n +2 | grep -c . || echo 0)
+          count=$(avarokctl recipe list | tail -n +2 | grep -c . || echo 0)
           echo "recipes: $count"
           [ "$count" -ge 10 ] || {
-            echo "::error::atlasctl shipped only $count recipes; the vendored corpus is missing or truncated"
+            echo "::error::avarokctl shipped only $count recipes; the vendored corpus is missing or truncated"
             exit 1
           }
 

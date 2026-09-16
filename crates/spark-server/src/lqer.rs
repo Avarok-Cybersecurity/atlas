@@ -13,7 +13,7 @@
 //! Then at inference, output ← Q(W) · x + (U_k Σ_k V_k^T) · x. The
 //! second term is a small BF16 GEMM applied in parallel; rank=10%
 //! closes >50% of the quantization gap, rank=30% fully closes it.
-//! Atlas-kernels already has BF16 GEMM, so this is loader + dispatch
+//! Avarok-kernels already has BF16 GEMM, so this is loader + dispatch
 //! work, not a new kernel.
 //!
 //! ## Scope
@@ -131,7 +131,7 @@ pub fn suggest_rank(rows: usize, cols: usize, fraction: f32) -> usize {
 /// ```text
 /// offset  size  field
 /// ────────────────────────────────────
-/// 0       8     magic = b"ATLASLQE"
+/// 0       8     magic = b"AVAROKLQE"
 /// 8       4     format version (u32 little-endian) — currently 1
 /// 12      4     rank          (u32 LE)
 /// 16      4     rows          (u32 LE)
@@ -149,7 +149,7 @@ pub fn suggest_rank(rows: usize, cols: usize, fraction: f32) -> usize {
 /// representation), no compression. Files are produced by the
 /// offline calibration script (TBD `scripts/lqer_compute.py`)
 /// alongside the regular weight checkpoint.
-const LQER_MAGIC: &[u8; 8] = b"ATLASLQE";
+const LQER_MAGIC: &[u8; 8] = b"AVAROKLQE";
 const LQER_VERSION: u32 = 1;
 
 /// Errors from LQER file I/O. Each variant names the failed
@@ -168,7 +168,7 @@ impl std::fmt::Display for LqerLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(e) => write!(f, "io: {e}"),
-            Self::BadMagic => write!(f, "bad magic — expected ATLASLQE"),
+            Self::BadMagic => write!(f, "bad magic — expected AVAROKLQE"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported version: {v}"),
             Self::Truncated { expected, got } => {
                 write!(f, "truncated: expected {expected} bytes, got {got}")
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn load_from_dir_reads_multiple_lqer_files() {
         let tmp = std::env::temp_dir().join(format!(
-            "atlas_lqer_test_{}",
+            "avarok_lqer_test_{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

@@ -18,7 +18,7 @@ const unmatched = ladder.series.find((s) => s.id === 'vllm-nospec');
 const pct = (r) => `${((r - 1) * 100).toFixed(1)}%`;
 const x = (r) => `${r.toFixed(3)}×`;
 
-export const stamp = `atlas ${bench.generated_sha} · ${ladder.generated_utc.slice(0, 10)}`;
+export const stamp = `avarok ${bench.generated_sha} · ${ladder.generated_utc.slice(0, 10)}`;
 
 export const claim = {
   engine: subject.engine,
@@ -47,11 +47,11 @@ export const claim = {
   // The --concs argument, from the same rung list the chart is drawn from, so a
   // lost rung shortens the command as well as the ladder.
   concsArg: ladder.concurrencies.join(','),
-  // The driver hash the published Atlas legs carry, beside the one a reader will
+  // The driver hash the published Avarok legs carry, beside the one a reader will
   // actually get from the tree. Both derived: the first is the manifest key whose
-  // note names the Atlas legs, the second is hashed from the file at build time.
-  harnessShaAtlas: Object.keys(ladder.harness_shas).find((k) =>
-    /Atlas legs/i.test(ladder.harness_shas[k])
+  // note names the Avarok legs, the second is hashed from the file at build time.
+  harnessShaAvarok: Object.keys(ladder.harness_shas).find((k) =>
+    /Avarok legs/i.test(ladder.harness_shas[k])
   ),
   harnessShaRepo: ladder.harness_repo_sha256.slice(0, 10),
   resultsUrl: ladder.results_doc_url,
@@ -60,7 +60,7 @@ export const claim = {
 
 // Step 4's serve command, rendered FROM THE RECORD rather than hand-abridged.
 //
-// It used to be a shortened list with a note pointing at series[atlas].cli for
+// It used to be a shortened list with a note pointing at series[avarok].cli for
 // "the full flag list, including the SSM cache and scheduling knobs". That
 // pointer was not enough: the abridged command omits thirteen flags, six of
 // which are kernel and scheduling knobs whose defaults are the OPPOSITE of the
@@ -121,7 +121,7 @@ export const fingerprint = [
   ['box', `${ladder.box.name} — ${ladder.box.gpu}`, ladder.box.note],
   ['checkpoint', ladder.workload.checkpoint, ladder.workload.checkpoint_note],
   ['harness', ladder.workload.harness, `campaign driver for the published ladder, sha256 pinned per leg; the gate's own instrument is \`spark benchmark run concurrency-sweep\``],
-  ['atlas', `${subject.engine} @ ${subject.build}`, subject.build_note],
+  ['avarok', `${subject.engine} @ ${subject.build}`, subject.build_note],
   ['baseline', matched.engine, 'container digest pinned in RESULTS.md'],
   ['aggregate', ladder.aggregate, `${ladder.workload.warmup} warmup discarded`]
 ];
@@ -178,7 +178,7 @@ export const audit = [
     state: 'clear',
     risk: 'Best-of instead of representative',
     // C=8 is the case that actually answers this, and C=2 is not: C=2's
-    // published pair IS the better Atlas number (41.02, over round 11's 40.42)
+    // published pair IS the better Avarok number (41.02, over round 11's 40.42)
     // — defensible because both legs were re-measured back to back that day and
     // the pair replaced the pair, but it is not an example of declining a
     // better number. C=8 is: re-measured at a HIGHER ratio and the lower one

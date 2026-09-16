@@ -1,6 +1,6 @@
 ---
 name: oracle_certification_state_check
-description: "O.R.A.C.L.E::certification_state_check — BLOCKING pre-flight, in-flight and post-flight oracle for a benchmark certification campaign (~4.5-5 GPU-hours). Invoke BEFORE starting a certification campaign, running the gates, `spark benchmark run … --pull-request-gate`, or `queue-perf-pr.sh`; between and DURING gates; and AFTER the campaign before committing `.benchmarks/` records, commenting `/stamp` or `/seal`, or believing `stamp status` / `seal status` / `PR Benchmark Certifications`. Also invoke when a stamp or seal check looks red, when asking whether the box or GPU is free, whether the tree is frozen, whether a signer is committed, or whether records agree. Fourteen litmus tests — clean PERF_PATHS tree, frozen sha, binary built from it, ATLAS_HOME and signer, stray shard dirs, subjects and hermetic pins, BFCL scorer imports, box free with a self-filtered pgrep, campaign-guard, other PRs mid-certification, top of stack, stamp/seal job sequencing, one git_sha across added records, one Speed-class signer — each tied to the code that enforces it. Hard block with advisory overrides recorded in the gitignored lockfile `.oracle_should_begin_cert`, read on start to detect a concurrent campaign and removed on release. Born from the 2026-08-28 nine-hour campaign invalidated twenty minutes before its end, and from two same-day false reds where a /stamp or /seal status was evaluated before the bot processed the command."
+description: "O.R.A.C.L.E::certification_state_check — BLOCKING pre-flight, in-flight and post-flight oracle for a benchmark certification campaign (~4.5-5 GPU-hours). Invoke BEFORE starting a certification campaign, running the gates, `spark benchmark run … --pull-request-gate`, or `queue-perf-pr.sh`; between and DURING gates; and AFTER the campaign before committing `.benchmarks/` records, commenting `/stamp` or `/seal`, or believing `stamp status` / `seal status` / `PR Benchmark Certifications`. Also invoke when a stamp or seal check looks red, when asking whether the box or GPU is free, whether the tree is frozen, whether a signer is committed, or whether records agree. Fourteen litmus tests — clean PERF_PATHS tree, frozen sha, binary built from it, AVAROK_HOME and signer, stray shard dirs, subjects and hermetic pins, BFCL scorer imports, box free with a self-filtered pgrep, campaign-guard, other PRs mid-certification, top of stack, stamp/seal job sequencing, one git_sha across added records, one Speed-class signer — each tied to the code that enforces it. Hard block with advisory overrides recorded in the gitignored lockfile `.oracle_should_begin_cert`, read on start to detect a concurrent campaign and removed on release. Born from the 2026-08-28 nine-hour campaign invalidated twenty minutes before its end, and from two same-day false reds where a /stamp or /seal status was evaluated before the bot processed the command."
 argument-hint: "<pre | begin | during | post | release | status> [--pr <N>] [--branch <name>] [--session <id>] [--override T<n>[,T<n>] --reason \"…\"] [--abandon]"
 allowed-tools: Bash, Read, Grep, Glob, Agent
 ---
@@ -23,10 +23,10 @@ reported as one. Everything below either prevents the first or dates the second.
 | question | answered by | not by |
 |---|---|---|
 | did a perf path move? | `scripts/campaign-guard.sh <anchor> <branch>` (0/1/2) | a sha compare |
-| can the box write, sign, find recipes? | `./target/release/spark doctor` | `ls -ld ~/.atlas` |
+| can the box write, sign, find recipes? | `./target/release/spark doctor` | `ls -ld ~/.avarok` |
 | what got recorded? | `spark benchmark --pull-request-gate-check --pr <N>` — read the words | the gate's `rc` |
-| what counts as a perf path? | `sed -n '/pub const PERF_PATHS/,/];/p' crates/atlas-plugin/src/gate/coverage.rs` | a list copied here |
-| is another PR mid-certification? | the bot's `<!-- atlas-certification-state: -->` marker, `isInMergeQueue`, added records | a guess from titles |
+| what counts as a perf path? | `sed -n '/pub const PERF_PATHS/,/];/p' crates/avarok-plugin/src/gate/coverage.rs` | a list copied here |
+| is another PR mid-certification? | the bot's `<!-- avarok-certification-state: -->` marker, `isInMergeQueue`, added records | a guess from titles |
 | were the stamp/seal jobs stale? | `gh api …/actions/runs/<id>/jobs` vs the `Stamp`/`Seal` check-run times | the colour of the check |
 
 The one thing this skill adds is the lockfile, because none of the above remembers that a
@@ -95,11 +95,11 @@ sid=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ); tmp="$lock.$$.tmp"
 jq -n --arg sid "$sid" --arg now "$now" --arg host "$(hostname)" --arg user "$(id -un)" \
       --arg cwd "$root" --arg br "$BRANCH" --arg sha "$(git rev-parse HEAD)" \
-      --arg home "${ATLAS_HOME:-$HOME/.atlas}" '{
+      --arg home "${AVAROK_HOME:-$HOME/.avarok}" '{
   schema:"oracle_should_begin_cert/v1", status:"evaluating",
   created_at:$now, updated_at:$now, expires_at:null,
   owner:{session_id:$sid, hostname:$host, user:$user, cwd:$cwd},
-  campaign:{pr:null, branch:$br, anchor_sha:$sha, atlas_home:$home, driver_pid:null,
+  campaign:{pr:null, branch:$br, anchor_sha:$sha, avarok_home:$home, driver_pid:null,
             driver_cmdline:null, started_at:null, current_gate:null, gates_done:[],
             heartbeat_at:null, guard_last_rc:null},
   oracle:null, overrides:[], history:[], superseded:null }' > "$tmp"
@@ -110,7 +110,7 @@ else rm -f "$tmp"; echo "LOST THE RACE"; jq . "$lock"; exit 1; fi
 Keep `$sid` — every later verb passes `--session $sid`.
 
 **Spawn the oracle** (`Agent`, `subagent_type: oracle_cert`) with, verbatim: the phase; the
-lockfile contents; `$sid`; PR, branch, anchor sha, `$ATLAS_HOME`; your own `$$` and the
+lockfile contents; `$sid`; PR, branch, anchor sha, `$AVAROK_HOME`; your own `$$` and the
 launcher line you will use; the exact override claim if any.
 
 **Record**: re-read the lock, confirm `owner.session_id` is still `$sid` (if not, another
@@ -188,7 +188,7 @@ Returned to the caller and stored unchanged under `oracle` in the lockfile. ISO-
   "subject": {
     "repo_root": "…", "pr": 951, "branch": "…", "head_sha": "…",
     "origin_branch_sha": "…", "origin_main_sha": "…", "merge_base": "…",
-    "atlas_home": "…", "signer_fingerprint": "…", "signer_committed": true,
+    "avarok_home": "…", "signer_fingerprint": "…", "signer_committed": true,
     "hostname": "dgx2", "caller_pid": 412233, "caller_launcher": "…"
   },
   "tests": [{

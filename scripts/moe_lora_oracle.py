@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""moe_lora_oracle.py — numpy delta-parity oracle for the Atlas MoE/attn/overlay
+"""moe_lora_oracle.py — numpy delta-parity oracle for the Avarok MoE/attn/overlay
 LoRA fold (PR #335 gate: docs/design/lora-moe-embed.md §E "Only after an oracle
 passes do we build the fused/S-LoRA kernels").
 
@@ -15,7 +15,7 @@ THE ORACLE CONTRACT (what the Rust/CUDA fold must equal, per adapted surface):
 SCALE CONVENTION (read from adapter_config.json, NEVER defaulted):
     scale = lora_alpha / r                 (use_rslora == false)
     scale = lora_alpha / sqrt(r)           (use_rslora == true)
-  Source: crates/atlas-core/src/config/parsers/lora.rs:85-91
+  Source: crates/avarok-core/src/config/parsers/lora.rs:85-91
   (`PeftAdapterConfig::scaling()`); `use_rslora` is HARD-REQUIRED by the parser
   (lora.rs:200-205) and is hard-required here too. The scale is uniform across
   every surface of one adapter (attn q/k/v/o, dense/expert gate/up/down,
@@ -146,7 +146,7 @@ def scaling(cfg):
     """The Rust loader's scale — parsers/lora.rs:85-91. use_rslora required."""
     if "use_rslora" not in cfg:
         raise SystemExit(
-            "REJECT(use_rslora): adapter_config.json lacks use_rslora — the Atlas "
+            "REJECT(use_rslora): adapter_config.json lacks use_rslora — the Avarok "
             "parser hard-requires it (parsers/lora.rs:200) and so does this oracle"
         )
     r, alpha = int(cfg["r"]), float(cfg["lora_alpha"])
@@ -363,7 +363,7 @@ def main():
     ap.add_argument("--adapter", help="adapter dir (adapter_config.json + adapter_model.safetensors)")
     ap.add_argument("--capture", help=".npz with x/, y_base/, [y_adapted/, ids/] keys")
     ap.add_argument("--selftest", action="store_true", help="synthetic internal-consistency audit")
-    ap.add_argument("--base-url", help="live mode: Atlas server URL")
+    ap.add_argument("--base-url", help="live mode: Avarok server URL")
     ap.add_argument("--base-model", help="live mode: base model name")
     ap.add_argument("--adapter-name", help="live mode: resident adapter name")
     ap.add_argument("--prompt", default="The capital of France is Paris. The capital of Italy is")

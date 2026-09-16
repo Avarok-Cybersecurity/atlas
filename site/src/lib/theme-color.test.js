@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
  * It did: the palette move swept every stylesheet and missed both app.html
  * files, leaving the chrome the old violet #14111f above a #0F1216 page.
  */
-const tokens = readFileSync(new URL('../../../web-shared/atlas-tokens.css', import.meta.url), 'utf8');
+const tokens = readFileSync(new URL('../../../web-shared/avarok-tokens.css', import.meta.url), 'utf8');
 const bg = tokens.match(/:root\s*\{[\s\S]*?--bg:\s*(#[0-9a-fA-F]{6})/)?.[1];
 const lightBg = tokens.match(/\[data-theme="light"\]\s*\{[\s\S]*?--bg:\s*(#[0-9a-fA-F]{6})/)?.[1];
 

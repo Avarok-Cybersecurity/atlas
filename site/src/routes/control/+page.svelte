@@ -324,7 +324,7 @@
               <p class="ld-watching">Reconnecting…</p>
               <p>
                 If it does not come back, the agent may have stopped. Check it with
-                <code class="mono">atlasctl agent status</code>, or start it again with
+                <code class="mono">avarokctl agent status</code>, or start it again with
                 <code class="mono">{startAgentCommand}</code>.
               </p>
             </div>
@@ -341,7 +341,7 @@
               {/if}
               <p>
                 An agent is running, but it has not seen this browser before. Run
-                <code class="mono">atlasctl agent token</code> and paste the value into the
+                <code class="mono">avarokctl agent token</code> and paste the value into the
                 launch dialog on the <a href="/engine#models">engine page</a> — that is where the token
                 field lives, not here. This page notices on its own once you have; it keeps
                 looking. This is separate from pairing machines to each other.

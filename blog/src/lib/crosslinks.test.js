@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 const script = fileURLToPath(new URL('../../e2e/check-crosslinks.mjs', import.meta.url));
 
 function check(sitePages, blogHtml) {
-  const root = mkdtempSync(join(tmpdir(), 'atlas-crosslinks-'));
+  const root = mkdtempSync(join(tmpdir(), 'avarok-crosslinks-'));
   const site = join(root, 'site');
   const blog = join(root, 'blog');
   try {

@@ -2,7 +2,7 @@
    Avarok blog — blog.atlascybernetics.ai
 
    The design system is atlascybernetics.ai's, not a second one. Every colour and
-   both type stacks come from web-shared/atlas-tokens.css, the same file the
+   both type stacks come from web-shared/avarok-tokens.css, the same file the
    marketing site imports, so the two properties cannot drift.
 
    What this file adds on top is *editorial* structure the marketing site has no
@@ -14,7 +14,7 @@
    faintest text token still clears WCAG AA over it — see that file for the
    working.
    ========================================================================== */
-@import '../../web-shared/atlas-tokens.css';
+@import '../../web-shared/avarok-tokens.css';
 
 /* ---- the reading face -------------------------------------------------- */
 /* Self-hosted rather than fetched from a font CDN: a third-party origin costs
@@ -54,7 +54,7 @@
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
-  /* color-scheme comes from atlas-tokens.css so light/dark follow data-theme. */
+  /* color-scheme comes from avarok-tokens.css so light/dark follow data-theme. */
 
   /* --- Editorial aliases over the shared tokens. -------------------------
      These are names, not new values: every one resolves to a shared token or
@@ -86,7 +86,7 @@
   --mono: var(--font-mono);
   /* The reading face. Charter is what Medium sets its articles in, and its
      fallback chain is Medium's own — a reader without the webfont still gets
-     the same shape of page. Not in web-shared/atlas-tokens.css because the
+     the same shape of page. Not in web-shared/avarok-tokens.css because the
      marketing site does not ship Charter: this is an addition, not a second
      copy of a shared value. */
   --serif: Charter, 'Charter-fallback', Georgia, Cambria, 'Times New Roman', Times, serif;

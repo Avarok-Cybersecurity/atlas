@@ -39,7 +39,7 @@ die() { echo "campaign-guard: $1" >&2; exit 2; }
 # PERF_PATHS is read from the gate's own source rather than copied here. A
 # second list would drift, and the moment it did this guard would report safe
 # for a path the gate counts.
-COVERAGE=crates/atlas-plugin/src/gate/coverage.rs
+COVERAGE=crates/avarok-plugin/src/gate/coverage.rs
 [ -f "$COVERAGE" ] || die "run me from the repo root; $COVERAGE not found"
 paths=$(sed -n '/pub const PERF_PATHS/,/];/p' "$COVERAGE" | grep -oE '"[^"]+"' | tr -d '"')
 [ -n "$paths" ] || die "could not read PERF_PATHS out of $COVERAGE"

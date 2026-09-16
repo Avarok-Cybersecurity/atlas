@@ -176,7 +176,7 @@ test('a mid-stream error surfaces the rate card without any retry', async ({ pag
   await waitReady(page);
   // Backoff shrunk to ~0: if the engine wrongly retried after first byte, all
   // three attempts would land before the card shows and the count would say so.
-  await page.evaluate(() => window.__atlasChatSetRetryBaseMs(1));
+  await page.evaluate(() => window.__avarokChatSetRetryBaseMs(1));
 
   await askQuestion(page, 'how do NVFP4 kernels dispatch?');
   const card = page.locator('.cc-error[role="alert"]');

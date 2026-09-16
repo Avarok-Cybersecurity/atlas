@@ -18,7 +18,7 @@ Old loader: `supports_tp` false. This slice asserts true.
 Rank 0 vs rank 1 `tp_rank` must differ; full tensor_plan sizes must match.
 
 TEST NOTES
-`cargo test -p spark-model --lib -- kimi_k3::tp` (Linux). Atlas-core plan tests run wherever spark-model compiles.
+`cargo test -p spark-model --lib -- kimi_k3::tp` (Linux). Avarok-core plan tests run wherever spark-model compiles.
 Do not put lab IPs in git. Pin `enp1s0f1np1` / `rocep1s0f1`.
 
 BUGS

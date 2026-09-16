@@ -10,7 +10,7 @@
 //     the C++ `DynamicBitset::GetBufferSize`;
 //   * [`TokenBitmask`] — an owned, vocab-sized packed mask;
 //   * helpers to view / fill a caller-supplied `&mut [i32]` slice so
-//     Atlas's W7 shim can hand the matcher whatever buffer it owns.
+//     Avarok's W7 shim can hand the matcher whatever buffer it owns.
 //
 // Bit `t` of the mask is set iff token id `t` is grammar-legal for the
 // next decode position. Word `t / 32`, bit `t % 32` (LSB-first), the
@@ -95,7 +95,7 @@ impl TokenBitmask {
         self.vocab_size
     }
 
-    /// The packed `i32` words — the layout Atlas hands to the kernel.
+    /// The packed `i32` words — the layout Avarok hands to the kernel.
     #[must_use]
     pub fn as_words(&self) -> &[i32] {
         &self.words
@@ -158,7 +158,7 @@ impl TokenBitmask {
 
 /// A mutable, vocab-sized view over a caller-owned `i32` slice.
 ///
-/// `FillNextTokenBitmask` in the C++ takes a `DLTensor*`; Atlas owns
+/// `FillNextTokenBitmask` in the C++ takes a `DLTensor*`; Avarok owns
 /// the backing buffer. This newtype lets the matcher fill that buffer
 /// directly without copying through a [`TokenBitmask`]. The slice must
 /// be at least `bitmask_size(vocab_size)` words long.

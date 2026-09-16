@@ -10,7 +10,7 @@ repository.workspace = true
 
 # Self-contained CPU reference runtime for NLLB-200 / M2M-100 encoder-decoder
 # (seq2seq) translation. Deliberately independent of the CUDA/Metal GpuBackend
-# so it builds and runs on a plain CPU host — Atlas's main engine is decoder-
+# so it builds and runs on a plain CPU host — Avarok's main engine is decoder-
 # only + GPU-only, so seq2seq lives here until a GPU path is wired.
 [[bin]]
 name = "nllb-translate"

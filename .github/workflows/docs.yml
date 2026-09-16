@@ -31,10 +31,10 @@ concurrency:
 
 env:
   # Skip CUDA/nvcc in build.rs so rustdoc can run on hosts without a GPU.
-  # - ATLAS_SKIP_BUILD=1: atlas-kernels emits a stub target_ptx.rs
+  # - AVAROK_SKIP_BUILD=1: avarok-kernels emits a stub target_ptx.rs
   # - CUDARC_CUDA_VERSION=13000: short-circuits cudarc's `nvcc --version`
-  #   probe. Format is {major}0{minor}0 — 13000 == CUDA 13.0, Atlas's minimum.
-  ATLAS_SKIP_BUILD: "1"
+  #   probe. Format is {major}0{minor}0 — 13000 == CUDA 13.0, Avarok's minimum.
+  AVAROK_SKIP_BUILD: "1"
   CUDARC_CUDA_VERSION: "13000"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -170,10 +170,10 @@ jobs:
       # are what stop that returning quietly.
       - name: Every page carries a card, and the tokens are the shared file
         run: |
-          test -L book/theme/css/atlas-tokens.css
-          cmp web-shared/atlas-tokens.css book/output/theme/css/atlas-tokens.css
+          test -L book/theme/css/avarok-tokens.css
+          cmp web-shared/avarok-tokens.css book/output/theme/css/avarok-tokens.css
           grep -q 'content="#0F1216"' book/theme/head.hbs
-          grep -q -- '--bg: #0F1216' book/output/theme/css/atlas-tokens.css
+          grep -q -- '--bg: #0F1216' book/output/theme/css/avarok-tokens.css
           grep -q 'property="og:image" content="https://docs.atlascybernetics.ai/og-image.png"' \
             book/output/index.html
           grep -q 'rel="canonical"' book/output/getting-started/quickstart.html
@@ -194,14 +194,14 @@ jobs:
         run: |
           mkdir -p book/output/api
           cp -a target/doc/. book/output/api/
-          # Friendly index inside /api/ pointing at atlas_core
+          # Friendly index inside /api/ pointing at avarok_core
           cat > book/output/api/index.html <<'EOF'
           <!DOCTYPE html>
           <html><head><meta charset="utf-8">
           <title>Avarok API Reference</title>
-          <meta http-equiv="refresh" content="0; url=atlas_core/index.html">
+          <meta http-equiv="refresh" content="0; url=avarok_core/index.html">
           </head><body>
-          <p>Redirecting to <a href="atlas_core/index.html">atlas_core</a>…</p>
+          <p>Redirecting to <a href="avarok_core/index.html">avarok_core</a>…</p>
           </body></html>
           EOF
 
@@ -271,7 +271,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           npx --yes wrangler@4 pages deploy docs-site \
-            --project-name=atlas-docs \
+            --project-name=avarok-docs \
             --branch=main \
             --commit-dirty=true
 

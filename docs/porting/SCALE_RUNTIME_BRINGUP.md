@@ -1,4 +1,4 @@
-# Atlas → Strix Halo (SCALE/gfx1151) — Runtime Bring-Up Status
+# Avarok → Strix Halo (SCALE/gfx1151) — Runtime Bring-Up Status
 
 **Date:** 2026-05-21  **Branch:** `port/amd-strix-halo`
 
@@ -16,10 +16,10 @@ On native Ubuntu (the WSL `/dev/kfd` blocker is gone), `spark-server`
    `--no-default-features --features cuda`. `init_nccl_comm` gains a
    cuda-without-nccl fail-fast variant. (spark-comm, spark-server)
 2. **SCALE `cuGraphInstantiate`** — SCALE's libcuda exports the 3-arg
-   `cuGraphInstantiate` (no `WithFlags` alias). `atlas_scale` cfg
-   (emitted by spark-runtime/build.rs from `ATLAS_TARGET_HW=strix`)
+   `cuGraphInstantiate` (no `WithFlags` alias). `avarok_scale` cfg
+   (emitted by spark-runtime/build.rs from `AVAROK_TARGET_HW=strix`)
    selects the right symbol. NVIDIA path unchanged.
-3. **Binary-kernel registry** — `atlas-kernels` codegen previously
+3. **Binary-kernel registry** — `avarok-kernels` codegen previously
    stubbed `all_ptx_sets()` empty for any non-text-PTX backend (it
    conflated "binary kernels" with "Metal"). SCALE is binary-kernels +
    CUDA-API; `ComputeTarget::uses_cuda_module_api()` now drives a real
@@ -29,7 +29,7 @@ On native Ubuntu (the WSL `/dev/kfd` blocker is gone), `spark-server`
    (`vendor/cudarc`, `[patch.crates-io]`). cudarc eagerly resolves the
    whole CUDA driver API and hard-panics on the first missing symbol;
    SCALE implements a subset. All 483 `.expect("Expected symbol…")`
-   now fall back to a panic-stub — symbols Atlas never calls are fine;
+   now fall back to a panic-stub — symbols Avarok never calls are fine;
    NVIDIA (all present) is unaffected.
 5. **SCALE device-link** — `ScaleTarget::compile` now device-links the
    relocatable (`--cuda-device-only -c`) into a loadable `ELF DYN`
@@ -60,8 +60,8 @@ code-object-version; (c) ask Spectral what `cuModuleLoadData` consumes.
 
 ## Reproduce
 
-Build: `bash /workspace/atlas/run-build.sh` (env: SCALE_HOME,
-ATLAS_TARGET_HW=strix, ATLAS_TARGET_MODEL=qwen3.6-27b,
-ATLAS_TARGET_QUANT=fp8, CUDARC_CUDA_VERSION=12080, CUDA_HOME +
+Build: `bash /workspace/avarok/run-build.sh` (env: SCALE_HOME,
+AVAROK_TARGET_HW=strix, AVAROK_TARGET_MODEL=qwen3.6-27b,
+AVAROK_TARGET_QUANT=fp8, CUDARC_CUDA_VERSION=12080, CUDA_HOME +
 LIBRARY_PATH → SCALE gfx1151 lib).
-Serve: `bash /workspace/atlas/run-serve.sh`.
+Serve: `bash /workspace/avarok/run-serve.sh`.

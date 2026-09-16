@@ -5,7 +5,7 @@
 //! dispatcher. Split from `nemotron_moe.rs` (500-LoC cap).
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::NemotronMoeLayer;
@@ -115,12 +115,12 @@ impl NemotronMoeLayer {
         // of decode, which is memory-bandwidth-bound on this box. Same-binary A/B,
         // 10 runs each, verified on a cold server (not thermal). The SSM copies
         // (4.3 GB, allocated during the load itself) cost nothing measurable, so the
-        // two are gated separately. Set ATLAS_SHARED_FP8_PREFILL=1 to take the trade.
+        // two are gated separately. Set AVAROK_SHARED_FP8_PREFILL=1 to take the trade.
         // Under native FP8 the NVFP4 shared weights are `QuantizedWeight::null()`
         // and every derived copy below is built FROM them, so build nothing.
         let native_shared =
             self.weights.shared_up_fp8.is_some() || self.weights.shared_down_fp8.is_some();
-        let fp8_prefill = !native_shared && std::env::var("ATLAS_SHARED_FP8_PREFILL").is_ok();
+        let fp8_prefill = !native_shared && std::env::var("AVAROK_SHARED_FP8_PREFILL").is_ok();
         if fp8_prefill
             && self.fp8_gemm_m128_k.0 != 0
             && let Ok(pdq_k) = gpu.kernel("w4a16", "predequant_nvfp4_to_fp8")

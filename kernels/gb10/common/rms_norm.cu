@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas RMS Normalization kernel for SM121.
+// Avarok RMS Normalization kernel for SM121.
 //
 // Qwen3-Next uses offset-from-1 normalization:
 //   RMSNorm(x) = x * (1 + weight) / sqrt(mean(x^2) + eps)
@@ -506,7 +506,7 @@ extern "C" __global__ void residual_add_rms_norm_vanilla(
     }
 }
 
-// Dual-output variant of residual_add_rms_norm for the ATLAS_FP32_ROUTING path.
+// Dual-output variant of residual_add_rms_norm for the AVAROK_FP32_ROUTING path.
 // Identical math to residual_add_rms_norm (bf16 hidden/residual stream UNCHANGED),
 // but ALSO writes the normed output in FP32 (`output_f32`) for the MoE router GEMM,
 // so the gate logits are computed from an unrounded normed value — removing the

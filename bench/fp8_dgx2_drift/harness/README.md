@@ -1,6 +1,6 @@
-# Atlas FP8 Drift — Statistical Harness
+# Avarok FP8 Drift — Statistical Harness
 
-A small harness for measuring opencode drift modes on a running Atlas
+A small harness for measuring opencode drift modes on a running Avarok
 container with statistical reliability (N≥10 per tier; bootstrap 95% CI;
 Mann-Whitney U for tier comparison).
 
@@ -8,7 +8,7 @@ Mann-Whitney U for tier comparison).
 
 Single-probe comparisons (`n=1`) are unreliable on FP8 Qwen3.6 — three
 back-to-back probes routinely produce three different drift modes. Any
-A/B claim about an Atlas intervention must rest on a statistical
+A/B claim about an Avarok intervention must rest on a statistical
 comparison or it is noise.
 
 ## Layout
@@ -26,8 +26,8 @@ harness/
 ## Workflow
 
 ```bash
-# 1. Ensure atlas container is live & serving on localhost:8888.
-sudo docker ps --filter name=atlas-qwen-final
+# 1. Ensure avarok container is live & serving on localhost:8888.
+sudo docker ps --filter name=avarok-qwen-final
 
 # 2. Run N=10 probes against a tier. Each probe is the same canonical
 #    rust-axum agentic prompt; targets are namespaced by tier+run idx.
@@ -58,11 +58,11 @@ Per run, score_run.py extracts:
 | **Drift #11** | `drift_toml_newlines_collapsed` | section header on same line as a key=value |
 | **Drift #5** | `drift_xml_attr_leak` | content has `filePath="…"` or `content="…"` (XML-attr style) |
 | **Drift #X** | `drift_bash_as_content` | content starts with a shell verb (`cargo `, `ls `, `rm `, etc) |
-| **Atlas** | `atlas_ws1_mask_fires` | diagnostic INFO log `ws1/am1 mask active` |
-| **Atlas** | `atlas_b1_drift_fires` | B1 margin-ratio drift gauge summary lines |
-| **Atlas** | `atlas_tier5c_retries` | Tier 5c retry success count |
-| **Atlas** | `atlas_a2_fuzzy_fires` | A2 fuzzy_repair rescue count |
-| **Atlas** | `atlas_tool_call_lines` | total Atlas-side tool_call log lines |
+| **Avarok** | `avarok_ws1_mask_fires` | diagnostic INFO log `ws1/am1 mask active` |
+| **Avarok** | `avarok_b1_drift_fires` | B1 margin-ratio drift gauge summary lines |
+| **Avarok** | `avarok_tier5c_retries` | Tier 5c retry success count |
+| **Avarok** | `avarok_a2_fuzzy_fires` | A2 fuzzy_repair rescue count |
+| **Avarok** | `avarok_tool_call_lines` | total Avarok-side tool_call log lines |
 
 ## Statistical interpretation
 
@@ -82,10 +82,10 @@ A row is significant iff `p_bonf < alpha`.
 
 ## Caveats
 
-- One probe ≈ 3-6 min wall time. Atlas serves single agentic requests
+- One probe ≈ 3-6 min wall time. Avarok serves single agentic requests
   sequentially (max_batch_size=4 means concurrent prefill is supported,
   but opencode sessions step through tool calls serially). Wall time
-  dominated by atlas decoding, not opencode logic.
+  dominated by avarok decoding, not opencode logic.
 - The prompt is one specific opencode task. Drift profile may differ
   for other tasks — broaden the prompt set before generalizing claims.
 - `cargo_toml_valid` is syntactic only; not a guarantee the project

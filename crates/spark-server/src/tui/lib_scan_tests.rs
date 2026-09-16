@@ -29,7 +29,7 @@ fn repo_dir(root: &Path, id: &str) -> PathBuf {
     root.join(format!("models--{}", id.replace('/', "--")))
 }
 
-/// A checkpoint written the way Atlas's own downloader writes it: files
+/// A checkpoint written the way Avarok's own downloader writes it: files
 /// directly in the snapshot, no `blobs/`.
 fn checkpoint(root: &Path, id: &str, config: Option<&str>, shard_bytes: usize) -> PathBuf {
     let dir = repo_dir(root, id);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit COMPACTED n-gram test data for the Atlas GPU unit test.
+"""Emit COMPACTED n-gram test data for the Avarok GPU unit test.
 
 The real tables are ~5.2 GB each; the GPU parity test only needs the rows
 the fixture tokens actually touch. For each table we emit just those rows

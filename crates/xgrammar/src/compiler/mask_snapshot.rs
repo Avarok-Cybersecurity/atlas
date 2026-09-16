@@ -46,8 +46,8 @@ use bitvec::vec::BitVec;
 use super::mask::{AdaptiveTokenMask, StoreType};
 use super::rule_cache::{RuleLevelCache, RuleMaskKey};
 
-/// File magic — `ATLAS` + "grammar masks", version 1.
-const MAGIC: &[u8; 8] = b"ATLASGM1";
+/// File magic — `AVAROK` + "grammar masks", version 1.
+const MAGIC: &[u8; 8] = b"AVAROKGM1";
 /// Bumped whenever the encoding or the mask semantics change, so a
 /// snapshot written by an older build is a miss, never a mis-decode.
 const FORMAT_VERSION: u32 = 1;

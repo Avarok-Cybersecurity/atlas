@@ -2,7 +2,7 @@
 
 //! Phase 7 — the kernel-resolution audit and the fail-closed boot gate.
 //!
-//! Every kernel lookup in Atlas is EAGER: each `.kernel(…)` / `try_kernel(…)`
+//! Every kernel lookup in Avarok is EAGER: each `.kernel(…)` / `try_kernel(…)`
 //! site sits in a constructor on the `build_model` path. By the time this runs,
 //! the audit therefore holds the COMPLETE `(module, func)` set this model asks
 //! for — which is what makes ONE BOOT yield the whole list for a target, and
@@ -30,7 +30,7 @@ const MAX_EXIT_CODE: usize = 255;
 ///
 /// Constructing the backend loads every PTX module, and a driver-side arch
 /// rejection names neither the arch nor the GPU. The compiled arch is only
-/// knowable at the call site, because `AtlasCudaBackend::new` takes module
+/// knowable at the call site, because `AvarokCudaBackend::new` takes module
 /// blobs — but WHICH arch string to judge is `preflight_arch`'s decision and
 /// not the caller's: `ptx_set.target.arch` is the base SM with the feature
 /// suffix stripped, and judging that would wave `sm_90a` kernels onto a
@@ -38,7 +38,7 @@ const MAX_EXIT_CODE: usize = 255;
 #[cfg(feature = "cuda")]
 pub(crate) fn gate_device_arch(
     checking: bool,
-    ptx_set: &atlas_kernels::TargetPtxSet,
+    ptx_set: &avarok_kernels::TargetPtxSet,
     gpu_ordinal: usize,
 ) -> Result<()> {
     use spark_runtime::cuda_backend::arch_preflight;
@@ -54,7 +54,7 @@ pub(crate) fn gate_device_arch(
 #[cfg(feature = "cuda")]
 pub(crate) fn gate_arch_preflight(
     checking: bool,
-    ptx_set: &atlas_kernels::TargetPtxSet,
+    ptx_set: &avarok_kernels::TargetPtxSet,
     result: Result<()>,
 ) -> Result<()> {
     if let Err(error) = &result
@@ -81,16 +81,16 @@ fn arch_refusal_json(
     modules_embedded: usize,
     error: &anyhow::Error,
 ) -> Option<String> {
-    let mismatch = error.downcast_ref::<atlas_core::arch::ArchMismatch>()?;
+    let mismatch = error.downcast_ref::<avarok_core::arch::ArchMismatch>()?;
     checking.then(|| {
         serde_json::json!({
-            "atlas_kernel_check": {
+            "avarok_kernel_check": {
                 "model": model,
                 "arch": mismatch.compiled_arch,
                 "compiled_arch": mismatch.compiled_arch,
                 "device_cc": mismatch.device_cc,
                 "quant": quant,
-                "kernel_set_hash": atlas_kernels::KERNEL_SET_HASH,
+                "kernel_set_hash": avarok_kernels::KERNEL_SET_HASH,
                 "modules_embedded": modules_embedded,
                 "lookups": null,
                 "unresolved": null,
@@ -114,13 +114,13 @@ fn arch_refusal_json(
 /// collapse every count to anyhow's 1.
 pub(crate) fn audit_and_gate(
     args: &cli::ServeArgs,
-    ptx_set: &atlas_kernels::TargetPtxSet,
+    ptx_set: &avarok_kernels::TargetPtxSet,
 ) -> Result<()> {
     tracing::info!(
         "{}",
         spark_runtime::kernel_audit::render_kernel_table(
             &ptx_set.modules,
-            atlas_kernels::KERNEL_SET_HASH,
+            avarok_kernels::KERNEL_SET_HASH,
             ptx_set.shadowed_dropped,
             ptx_set.expected_absent,
         )
@@ -163,7 +163,7 @@ pub(crate) fn audit_and_gate(
 fn check_and_exit(
     rows: &[spark_runtime::kernel_audit::AuditRow],
     split: &spark_runtime::kernel_audit::FailureSplit,
-    ptx_set: &atlas_kernels::TargetPtxSet,
+    ptx_set: &avarok_kernels::TargetPtxSet,
 ) -> ! {
     use std::io::Write as _;
 
@@ -249,13 +249,13 @@ struct CheckSummary<'a> {
 /// beside it in the same object.
 fn check_json_from(summary: &CheckSummary) -> String {
     serde_json::json!({
-        "atlas_kernel_check": {
+        "avarok_kernel_check": {
             "model": summary.model,
             "arch": summary.compiled_arch,
             "compiled_arch": summary.compiled_arch,
             "device_cc": summary.device_cc,
             "quant": summary.quant,
-            "kernel_set_hash": atlas_kernels::KERNEL_SET_HASH,
+            "kernel_set_hash": avarok_kernels::KERNEL_SET_HASH,
             "modules_embedded": summary.modules_embedded,
             "lookups": summary.lookups,
             "unresolved": summary.unresolved.len(),
@@ -290,7 +290,7 @@ fn current_device_cc() -> Option<(u32, u32)> {
 fn check_json(
     rows: &[spark_runtime::kernel_audit::AuditRow],
     split: &spark_runtime::kernel_audit::FailureSplit,
-    ptx_set: &atlas_kernels::TargetPtxSet,
+    ptx_set: &avarok_kernels::TargetPtxSet,
     exit_code: usize,
 ) -> String {
     let unresolved: Vec<serde_json::Value> = split
@@ -348,7 +348,7 @@ mod tests {
     fn the_check_line_reports_the_compiled_arch_and_the_device() {
         let v: serde_json::Value =
             serde_json::from_str(&check_json_from(&a_clean_gb10_check())).expect("valid JSON");
-        let c = &v["atlas_kernel_check"];
+        let c = &v["avarok_kernel_check"];
         assert_eq!(c["compiled_arch"], "sm_121f");
         assert_eq!(c["device_cc"], serde_json::json!([12, 1]));
         // The pre-existing name for the same value, kept for existing sweeps.
@@ -366,8 +366,8 @@ mod tests {
         };
         let v: serde_json::Value =
             serde_json::from_str(&check_json_from(&summary)).expect("valid JSON");
-        assert!(v["atlas_kernel_check"]["device_cc"].is_null());
-        assert_eq!(v["atlas_kernel_check"]["compiled_arch"], "sm_121f");
+        assert!(v["avarok_kernel_check"]["device_cc"].is_null());
+        assert_eq!(v["avarok_kernel_check"]["compiled_arch"], "sm_121f");
     }
 
     /// The fields that were already there must survive the shape change —
@@ -381,7 +381,7 @@ mod tests {
         };
         let v: serde_json::Value =
             serde_json::from_str(&check_json_from(&summary)).expect("valid JSON");
-        let c = &v["atlas_kernel_check"];
+        let c = &v["avarok_kernel_check"];
         assert_eq!(c["model"], "qwen3.6-27b");
         assert_eq!(c["quant"], "nvfp4");
         assert_eq!(c["modules_embedded"], 42);
@@ -406,7 +406,7 @@ mod tests {
             let line = arch_refusal_json(true, "nano", "nvfp4", 42, &error)
                 .expect("--check-kernels must retain preflight mismatch JSON");
             let value: serde_json::Value = serde_json::from_str(&line).unwrap();
-            let check = &value["atlas_kernel_check"];
+            let check = &value["avarok_kernel_check"];
             assert_eq!(check["compiled_arch"], arch);
             assert_eq!(check["arch"], arch);
             assert_eq!(check["device_cc"], serde_json::json!([12, 1]));

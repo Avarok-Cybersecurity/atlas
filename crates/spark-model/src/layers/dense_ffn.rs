@@ -50,7 +50,7 @@ pub struct DenseFfnWeightsFp8 {
 }
 
 /// Native keep-packed ternary Q2_0 dense MLP weights — loaded directly from a
-/// PrismML Q2_0 GGUF (`ATLAS_GGUF_NATIVE_Q2=1`) with NO dequant / NVFP4 requant.
+/// PrismML Q2_0 GGUF (`AVAROK_GGUF_NATIVE_Q2=1`) with NO dequant / NVFP4 requant.
 /// Each projection is a raw `block_q2_0` buffer (2-bit codes + inline fp16 scale
 /// per group). When installed via `set_q2_weights`, decode dispatches
 /// `q2_0_gemv` (BF16 act × 2-bit weight, dequant-in-dot-product), mirroring the
@@ -69,7 +69,7 @@ pub enum FfnActivation {
 }
 
 /// A per-projection int8 W4A8 weight, built lazily from the NVFP4 weight on the
-/// first `ATLAS_INT8_PREFILL` prefill (see `DenseFfnLayer::ensure_int8_weight`).
+/// first `AVAROK_INT8_PREFILL` prefill (see `DenseFfnLayer::ensure_int8_weight`).
 /// `w_i8` is `[N, K]` signed int8; `w_scale` is `[N, K/32]` F32. Cached for the
 /// process lifetime in a `OnceLock`, so the requant kernel runs once per weight.
 #[derive(Debug, Clone, Copy)]
@@ -79,13 +79,13 @@ struct Int8Weight {
 }
 
 /// Q4_K-quantized FFN weight (GGML block_q4_K layout), materialized once at first
-/// `ATLAS_FFN_MMQ` prefill and cached for process lifetime in a `OnceLock`.
+/// `AVAROK_FFN_MMQ` prefill and cached for process lifetime in a `OnceLock`.
 #[derive(Debug, Clone, Copy)]
 struct Q4kWeight {
     w_q4k: DevicePtr,
 }
 
-/// block_nvfp4-repacked FFN weight for the `ATLAS_FFN_NVFP4_MMQ` W4A4 prefill arm.
+/// block_nvfp4-repacked FFN weight for the `AVAROK_FFN_NVFP4_MMQ` W4A4 prefill arm.
 /// Raw bit shuffle of the checkpoint's NVFP4 (same e2m1 codes + e4m3 scale bytes,
 /// same total bytes) — materialized once and cached for process lifetime.
 #[derive(Debug, Clone, Copy)]
@@ -104,7 +104,7 @@ pub struct DenseFfnLayer {
     // LOSSLESS single-warp-per-output decode variants (8 outputs/block, no smem
     // cross-warp reduce). Bit-identical to the 64-thread kernels (proven by the
     // w4a16_gemv_sw microtest). Default ON via `ModelLevers::gemv_sw`;
-    // `ATLAS_NO_GEMV_SW=1` restores the 64-thread kernels. KernelHandle(0) on
+    // `AVAROK_NO_GEMV_SW=1` restores the 64-thread kernels. KernelHandle(0) on
     // miss → fall back to base kernels.
     w4a16_gemv_dual_sw: KernelHandle,
     w4a16_gemv_silu_input_sw: KernelHandle,
@@ -130,7 +130,7 @@ pub struct DenseFfnLayer {
     // default NVIDIA t_m128 uses. The FP8 path perturbs generation (measured
     // length-truncations / accuracy risk on Qwen3.6-27B); this kernel keeps prefill
     // outputs bit-for-bit vs the base `w4a16_gemm`. OPT-IN only, gated by
-    // ATLAS_BF16_TC_PREFILL (default off → dispatch unchanged). KernelHandle(0) on miss.
+    // AVAROK_BF16_TC_PREFILL (default off → dispatch unchanged). KernelHandle(0) on miss.
     w4a16_gemm_t_m128_bf16_k: KernelHandle,
     // v2 of the LOSSLESS BF16 128x128 prefill kernel: same MMA instruction order
     // (so BIT-IDENTICAL to bf16_k, proven by w4a16_bf16_v2_microtest) but a
@@ -142,10 +142,10 @@ pub struct DenseFfnLayer {
     // operands cut shared-memory load instructions ~4x (the v2 BF16 path is
     // smem-bandwidth-bound, L1/TEX 90% per ncu), and M64's lower register pressure
     // lifts occupancy → measured ~44 TFLOP/s vs ~30 for v2 (~1.47x prefill) on dgx1.
-    // LOSSY (FP8 E4M3, cosine ~0.9997) — OPT-IN via ATLAS_FP8_M64_PREFILL, gated on
+    // LOSSY (FP8 E4M3, cosine ~0.9997) — OPT-IN via AVAROK_FP8_M64_PREFILL, gated on
     // quality. KernelHandle(0) on miss → dispatch unchanged.
     w4a16_gemm_t_k: KernelHandle,
-    // int8 W4A8 prefill (ATLAS_INT8_PREFILL): the validated requant→faith2
+    // int8 W4A8 prefill (AVAROK_INT8_PREFILL): the validated requant→faith2
     // pipeline (cosine 0.999978). `int8_gemm_faith2` is an int8×int8 MMA with
     // per-32 block scales, so BOTH operands must be int8 — unlike the FP8 path
     // (mixed BF16×FP8). At first int8 prefill we requant the NVFP4 gate/up/down
@@ -154,25 +154,25 @@ pub struct DenseFfnLayer {
     // into `int8_a_scratch`). KernelHandle(0) on miss → arm never taken.
     int8_faith2_k: KernelHandle,
     // faith5: int32 per-sb accumulation (breaks the MMA→scale dependency chain).
-    // Opt-in via ATLAS_INT8_FAITH5=1 (replaces faith2 for int8 prefill GEMMs).
+    // Opt-in via AVAROK_INT8_FAITH5=1 (replaces faith2 for int8 prefill GEMMs).
     int8_faith5_k: KernelHandle,
     requant_w_int8_k: KernelHandle,
     requant_a_int8_k: KernelHandle,
     // Lazily-built, process-lifetime int8 weight copies (one per projection),
     // requanted from `self.weights.{gate,up,down}_proj`. Only ever touched when
-    // ATLAS_INT8_PREFILL is set → default-off path is byte-identical.
+    // AVAROK_INT8_PREFILL is set → default-off path is byte-identical.
     int8_gate: std::sync::OnceLock<Int8Weight>,
     int8_up: std::sync::OnceLock<Int8Weight>,
     int8_down: std::sync::OnceLock<Int8Weight>,
     // Activation-requant scratch for the int8/NVFP4/Q4_K prefill GEMMs is now
     // shared, arena-owned (BufferArena::ffn_act_{q8,a,scale}), sized once for
     // max_batch_tokens × max(h, inter) — no per-layer allocation.
-    // W4A4 native-FP4 prefill (ATLAS_FP4_PREFILL): NVFP4 weights consumed directly
+    // W4A4 native-FP4 prefill (AVAROK_FP4_PREFILL): NVFP4 weights consumed directly
     // (no requant), BF16 activations quantized to NVFP4 each call into ffn_act_a/scale.
     // KernelHandle(0) on miss → arm never taken (default-off byte-identical).
     w4a4_gemm_k: KernelHandle,
     quantize_nvfp4_k: KernelHandle,
-    // Q4_K MMQ prefill (ATLAS_FFN_MMQ): vendored llama Q4_K W4A8 GEMM. Weights
+    // Q4_K MMQ prefill (AVAROK_FFN_MMQ): vendored llama Q4_K W4A8 GEMM. Weights
     // materialized NVFP4→bf16→Q4_K once (lazy, cached in the OnceLocks); activations
     // quantized to q8_1_mmq each call into ffn_act_q8. KernelHandle(0) → arm skipped.
     q4k_mmq_nc_k: KernelHandle,
@@ -183,7 +183,7 @@ pub struct DenseFfnLayer {
     q4k_gate: std::sync::OnceLock<Q4kWeight>,
     q4k_up: std::sync::OnceLock<Q4kWeight>,
     q4k_down: std::sync::OnceLock<Q4kWeight>,
-    // NVFP4 W4A4 MMQ prefill (ATLAS_FFN_NVFP4_MMQ): vendored llama Blackwell block-scale
+    // NVFP4 W4A4 MMQ prefill (AVAROK_FFN_NVFP4_MMQ): vendored llama Blackwell block-scale
     // FP4 MMA (80 TFLOP/s vs t_m128 ~51 on GB10). Gate/up weights repacked ONCE at load
     // (raw bit shuffle, checkpoint layout → block_nvfp4, zero requantization); activations
     // quantized per call into the shared ffn_act_q8 scratch; the per-tensor scale2 is
@@ -243,7 +243,7 @@ pub struct DenseFfnLayer {
     /// (#927). KernelHandle(0) on a shadow that lacks the entry point, which
     /// puts those widths back on the tile GEMMs. Rule: `batch16_decode.rs`.
     w8a16_gemv_batch16_k: KernelHandle,
-    /// Whether that tier is ARMED — `ATLAS_FFN_BATCH16=1`, latched once here
+    /// Whether that tier is ARMED — `AVAROK_FFN_BATCH16=1`, latched once here
     /// at construction. DEFAULT FALSE: the tier measured a net LOSS in serving
     /// on H100 (-5.4% aggregate at C=16, +50 ms TTFT) and has never been
     /// measured on GB10, where the handle resolves just the same. Receipt and
@@ -254,16 +254,16 @@ pub struct DenseFfnLayer {
     /// capture, and the dispatch tests can pin BOTH polarities without a
     /// process-global `OnceLock` that latches on whichever test runs first.
     batch16_enabled: bool,
-    /// Tensor-core 16-row-M-tile GEMM (#927) — the `ATLAS_FFN_M16_TC` tier
+    /// Tensor-core 16-row-M-tile GEMM (#927) — the `AVAROK_FFN_M16_TC` tier
     /// that sits AHEAD of `w8a16_gemv_batch16_k` at 5..=32 rows when the lever
     /// is set. KernelHandle(0) on a shadow that lacks the entry point, which
     /// leaves the ladder exactly as #927 shipped it. Rule: `dense_ffn_m16_tc.rs`.
     w8a16_gemm_m16_k: KernelHandle,
-    /// The `N_TILE=64` twin (`ATLAS_FFN_M16_TC_NTILE=64`). KernelHandle(0) on a
+    /// The `N_TILE=64` twin (`AVAROK_FFN_M16_TC_NTILE=64`). KernelHandle(0) on a
     /// shadow built before the wide arm existed, which silently keeps the
     /// 32-wide kernel. Rule: `m16_tc::m16_tc_kernel`.
     w8a16_gemm_m16_n64_k: KernelHandle,
-    /// `ATLAS_FFN_M16_TC` (or the `ATLAS_M16_TC` umbrella), cached at
+    /// `AVAROK_FFN_M16_TC` (or the `AVAROK_M16_TC` umbrella), cached at
     /// construction. Since round 6 this lever reaches ONLY the FFN arm — the
     /// attention tiers have their own, because the H100 measured them moving in
     /// opposite directions. A FIELD rather than a per-call accessor for two
@@ -305,7 +305,7 @@ pub struct DenseFfnLayer {
     /// that did not build it — the arm is optional at runtime, not assumed.
     fp8_gate_up_fused: Option<Fp8Weight>,
     /// Whether the compiled target ARMS the fused arm (`[defaults]
-    /// ffn_gateup_fused`, overridable with `ATLAS_FFN_GATEUP_FUSED`), cached at
+    /// ffn_gateup_fused`, overridable with `AVAROK_FFN_GATEUP_FUSED`), cached at
     /// construction for the two reasons `batch16_tier` is: the selector runs
     /// per layer per step, and the dispatch tests drive both polarities without
     /// racing the process-global `OnceLock`.
@@ -336,7 +336,7 @@ pub struct DenseFfnLayer {
     /// community LoRAs for it put 67-78% of their parameter mass in the FFN.
     lora: Option<ops::lora_delta::LoraFfnWeights>,
 
-    /// Native keep-packed ternary Q2_0 dense MLP weights (`ATLAS_GGUF_NATIVE_Q2`).
+    /// Native keep-packed ternary Q2_0 dense MLP weights (`AVAROK_GGUF_NATIVE_Q2`).
     /// When installed via `set_q2_weights`, decode dispatches `q2_0_gemv_vec`
     /// (BF16 activation × packed 2-bit weight, dequant-in-dot-product) — the
     /// weights stay 2-bit resident (no NVFP4 requant). Highest-priority forward
@@ -355,7 +355,7 @@ pub struct DenseFfnLayer {
     // buffer, run the normal BF16 GEMM, free the scratch — the resident weight
     // stays 2-bit. Decode uses the native `q2_0_gemv` (no dequant). Tier-1 path.
     dequant_q2_0_gn_k: KernelHandle,
-    // Native Q2_0 MMQ prefill (Tier-2, `ATLAS_GGUF_NATIVE_Q2_MMQ=1`): keeps the
+    // Native Q2_0 MMQ prefill (Tier-2, `AVAROK_GGUF_NATIVE_Q2_MMQ=1`): keeps the
     // 2-bit weight packed and runs a tensor-core int8 MMA (dequant-in-register)
     // against a q8_1 activation — no BF16 weight scratch, no dequant tax, no race.
     // The q8_1 activation quantizer is SHARED with Q4_K (`q4k_quant_act_k`).
@@ -364,19 +364,19 @@ pub struct DenseFfnLayer {
     q2_0_mmq_wc_k: KernelHandle,
 }
 
-/// M-sized MMQ tiles: **ON by default**, disabled by `ATLAS_NO_MMQ_SMALL_TILE=1`.
-/// Strict `== "1"` on an `ATLAS_NO_*` name — presence flags here are enabled by `=0`.
+/// M-sized MMQ tiles: **ON by default**, disabled by `AVAROK_NO_MMQ_SMALL_TILE=1`.
+/// Strict `== "1"` on an `AVAROK_NO_*` name — presence flags here are enabled by `=0`.
 fn mmq_small_tile_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_MMQ_SMALL_TILE").as_deref() != Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_MMQ_SMALL_TILE").as_deref() != Ok("1"))
 }
 
-/// The m=64 MMQ tile: **ON by default**, disabled by `ATLAS_NO_MMQ_TILE64=1`. Separate
-/// from `ATLAS_NO_MMQ_SMALL_TILE` so this arm can be A/B'd without also reverting the
+/// The m=64 MMQ tile: **ON by default**, disabled by `AVAROK_NO_MMQ_TILE64=1`. Separate
+/// from `AVAROK_NO_MMQ_SMALL_TILE` so this arm can be A/B'd without also reverting the
 /// already-shipped 16/32 tiles. Strict `== "1"`, matching the sibling above.
 fn mmq_tile64_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_MMQ_TILE64").as_deref() != Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_MMQ_TILE64").as_deref() != Ok("1"))
 }
 impl DenseFfnLayer {
     pub fn new(weights: DenseFfnWeights, gpu: &dyn GpuBackend) -> Result<Self> {
@@ -444,9 +444,9 @@ impl DenseFfnLayer {
             int8_down: std::sync::OnceLock::new(),
             w4a4_gemm_k: super::try_kernel(gpu, "w4a4", "w4a4_gemm"),
             quantize_nvfp4_k: super::try_kernel(gpu, "quantize_nvfp4", "quantize_bf16_to_nvfp4"),
-            q4k_mmq_nc_k: super::try_kernel(gpu, "q4k_mmq", "atlas_q4k_mmq128_nc"),
-            q4k_mmq_wc_k: super::try_kernel(gpu, "q4k_mmq", "atlas_q4k_mmq128_wc"),
-            q4k_quant_act_k: super::try_kernel(gpu, "q4k_mmq", "atlas_q8_1_quantize_ds4_bf16"),
+            q4k_mmq_nc_k: super::try_kernel(gpu, "q4k_mmq", "avarok_q4k_mmq128_nc"),
+            q4k_mmq_wc_k: super::try_kernel(gpu, "q4k_mmq", "avarok_q4k_mmq128_wc"),
+            q4k_quant_act_k: super::try_kernel(gpu, "q4k_mmq", "avarok_q8_1_quantize_ds4_bf16"),
             q4k_quant_w_k: super::try_kernel(gpu, "q4k_quantize", "q4k_quantize"),
             dequant_nvfp4_bf16_k: super::try_kernel(
                 gpu,
@@ -456,19 +456,19 @@ impl DenseFfnLayer {
             q4k_gate: std::sync::OnceLock::new(),
             q4k_up: std::sync::OnceLock::new(),
             q4k_down: std::sync::OnceLock::new(),
-            nvfp4_mmq_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq128_nc"),
-            nvfp4_mmq_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq128_wc"),
-            nvfp4_mmq16_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq16_nc"),
-            nvfp4_mmq16_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq16_wc"),
-            nvfp4_mmq32_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq32_nc"),
-            nvfp4_mmq32_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq32_wc"),
-            nvfp4_mmq64_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq64_nc"),
-            nvfp4_mmq64_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_mmq64_wc"),
-            nvfp4_quant_act_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_quantize_bf16"),
-            nvfp4_repack_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_repack"),
-            nvfp4_silu_scaled_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_silu_mul_scaled"),
-            nvfp4_silu_quant_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_silu_mul_quant"),
-            nvfp4_scale_k: super::try_kernel(gpu, "nvfp4_mmq", "atlas_nvfp4_scale_bf16"),
+            nvfp4_mmq_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_mmq128_nc"),
+            nvfp4_mmq_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_mmq128_wc"),
+            nvfp4_mmq16_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_mmq16_nc"),
+            nvfp4_mmq16_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_mmq16_wc"),
+            nvfp4_mmq32_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_mmq32_nc"),
+            nvfp4_mmq32_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_mmq32_wc"),
+            nvfp4_mmq64_nc_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_mmq64_nc"),
+            nvfp4_mmq64_wc_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_mmq64_wc"),
+            nvfp4_quant_act_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_quantize_bf16"),
+            nvfp4_repack_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_repack"),
+            nvfp4_silu_scaled_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_silu_mul_scaled"),
+            nvfp4_silu_quant_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_silu_mul_quant"),
+            nvfp4_scale_k: super::try_kernel(gpu, "nvfp4_mmq", "avarok_nvfp4_scale_bf16"),
             fp4mmq_gate: std::sync::OnceLock::new(),
             fp4mmq_up: std::sync::OnceLock::new(),
             fp4mmq_down: std::sync::OnceLock::new(),
@@ -550,7 +550,7 @@ impl DenseFfnLayer {
         Ok(layer)
     }
 
-    /// Load-time finalize for the Q4_K MMQ prefill path (`ATLAS_FFN_MMQ`). MUST run at
+    /// Load-time finalize for the Q4_K MMQ prefill path (`AVAROK_FFN_MMQ`). MUST run at
     /// load, BEFORE the KV cache is sized, so the net FFN footprint is correct when the KV
     /// cache claims free memory. Order is critical: (1) eagerly materialize the Q4_K weights
     /// (+9.63 GB) so they are accounted for now rather than lazily on first prefill (which
@@ -565,7 +565,7 @@ impl DenseFfnLayer {
         inter: u32,
         stream: u64,
     ) -> Result<()> {
-        // Packed-Q2 (ATLAS_GGUF_NATIVE_Q2) FFN keeps its NVFP4 source weights
+        // Packed-Q2 (AVAROK_GGUF_NATIVE_Q2) FFN keeps its NVFP4 source weights
         // NULL — the Q4_K prefill copy is built by dequant-ing those (NULL) NVFP4
         // blocks, so running it here is a null-ptr kernel launch (CUDA 700).
         // Packed-Q2 has its own prefill path (transient dequant), so skip.
@@ -584,7 +584,7 @@ impl DenseFfnLayer {
             && self.q4k_quant_act_k.0 != 0
             && self.q4k_quant_w_k.0 != 0
             && self.dequant_nvfp4_bf16_k.0 != 0
-            && std::env::var_os("ATLAS_FFN_MMQ").is_some();
+            && std::env::var_os("AVAROK_FFN_MMQ").is_some();
         if !q4k_active {
             return Ok(());
         }
@@ -603,7 +603,7 @@ impl DenseFfnLayer {
         self.ensure_q4k_weight(&self.q4k_up, gpu, &self.weights.up_proj, inter, h, stream)?;
         let down_faith2 = self.int8_faith2_k.0 != 0
             && self.requant_a_int8_k.0 != 0
-            && std::env::var_os("ATLAS_FFN_MMQ_DOWN_Q4K").is_none();
+            && std::env::var_os("AVAROK_FFN_MMQ_DOWN_Q4K").is_none();
         if down_faith2 {
             self.ensure_int8_weight(
                 &self.int8_down,
@@ -641,7 +641,7 @@ impl DenseFfnLayer {
             *wt = None;
         }
         if freed > 0 {
-            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // Log-once latch (see `avarok_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
@@ -652,14 +652,14 @@ impl DenseFfnLayer {
             // decision.
             if gpu.op_cache().once("log:ffn_mmq_freed_twins") {
                 tracing::info!(
-                    "[atlas] ATLAS_FFN_MMQ: freed transposed FFN `_t` copies (dead under Q4_K prefill) — Q4_K weights net to ~0 vs NVFP4 baseline"
+                    "[avarok] AVAROK_FFN_MMQ: freed transposed FFN `_t` copies (dead under Q4_K prefill) — Q4_K weights net to ~0 vs NVFP4 baseline"
                 );
             }
         }
         Ok(())
     }
 
-    /// Eagerly materialize the block_nvfp4 gate/up copies for the `ATLAS_FFN_NVFP4_MMQ`
+    /// Eagerly materialize the block_nvfp4 gate/up copies for the `AVAROK_FFN_NVFP4_MMQ`
     /// W4A4 prefill arm at LOAD time (before KV sizing), then free the now-dead gate/up
     /// transposed `_t` copies so net FFN footprint stays at the NVFP4 baseline. Down is
     /// untouched (hybrid: it stays on the default t_m128 path for accuracy → keeps its
@@ -671,7 +671,7 @@ impl DenseFfnLayer {
         inter: u32,
         stream: u64,
     ) -> Result<()> {
-        // Packed-Q2 (ATLAS_GGUF_NATIVE_Q2) FFN keeps its NVFP4 source weights
+        // Packed-Q2 (AVAROK_GGUF_NATIVE_Q2) FFN keeps its NVFP4 source weights
         // NULL. This W4A4-MMQ finalize is active by DEFAULT (SiLU + kernels
         // present) and repacks the NVFP4 gate/up — over NULL pointers that's a
         // CUDA-700 illegal access. Packed-Q2 uses its own decode/prefill path.
@@ -690,7 +690,7 @@ impl DenseFfnLayer {
             && self.nvfp4_repack_k.0 != 0
             && self.nvfp4_silu_scaled_k.0 != 0
             && matches!(self.activation, FfnActivation::SiLU)
-            && std::env::var_os("ATLAS_NO_FFN_NVFP4_MMQ").is_none();
+            && std::env::var_os("AVAROK_NO_FFN_NVFP4_MMQ").is_none();
         if !active {
             return Ok(());
         }
@@ -710,7 +710,7 @@ impl DenseFfnLayer {
             h,
             stream,
         )?;
-        let down_mmq = std::env::var_os("ATLAS_NO_FFN_NVFP4_MMQ_DOWN").is_none();
+        let down_mmq = std::env::var_os("AVAROK_NO_FFN_NVFP4_MMQ_DOWN").is_none();
         if down_mmq {
             self.ensure_nvfp4_mmq_weight(
                 &self.fp4mmq_down,
@@ -745,7 +745,7 @@ impl DenseFfnLayer {
             *wt = None;
         }
         if freed > 0 {
-            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // Log-once latch (see `avarok_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
@@ -756,7 +756,7 @@ impl DenseFfnLayer {
             // decision.
             if gpu.op_cache().once("log:ffn_fp4mmq_freed_twins") {
                 tracing::info!(
-                    "[atlas] ATLAS_FFN_NVFP4_MMQ: freed gate/up `_t` copies (dead under FP4-MMQ prefill) — block_nvfp4 copies net to ~0 vs NVFP4 baseline"
+                    "[avarok] AVAROK_FFN_NVFP4_MMQ: freed gate/up `_t` copies (dead under FP4-MMQ prefill) — block_nvfp4 copies net to ~0 vs NVFP4 baseline"
                 );
             }
         }
@@ -971,8 +971,8 @@ impl DenseFfnLayer {
         // Resolved here, not in the constructor: these ship only in
         // GGUF-serving targets and the boot audit fails closed on an
         // unconditional probe everywhere else.
-        self.q2_0_mmq_nc_k = super::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_nc");
-        self.q2_0_mmq_wc_k = super::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_wc");
+        self.q2_0_mmq_nc_k = super::try_kernel(gpu, "q2_0_mmq", "avarok_q2_0_mmq128_nc");
+        self.q2_0_mmq_wc_k = super::try_kernel(gpu, "q2_0_mmq", "avarok_q2_0_mmq128_wc");
     }
 
     /// Install BF16 dense MLP weights. After this call, the forward paths
@@ -1097,7 +1097,7 @@ impl DenseFfnLayer {
             if self.q2_0_gemv_k.0 == 0 {
                 anyhow::bail!(
                     "q2_0_gemv kernel missing in this target build — packed-Q2 decode \
-                     (ATLAS_GGUF_NATIVE_Q2) is unavailable"
+                     (AVAROK_GGUF_NATIVE_Q2) is unavailable"
                 );
             }
             if self.activation != FfnActivation::SiLU {
@@ -1148,7 +1148,7 @@ impl DenseFfnLayer {
         // per-projection `w8a16_gemv` path when the fused kernels or a non-SiLU
         // activation make the fast path unavailable.
         //
-        // SPLIT SiLU+down (DEFAULT; kill-switch ATLAS_NO_DECODE_SPLIT_SILU) —
+        // SPLIT SiLU+down (DEFAULT; kill-switch AVAROK_NO_DECODE_SPLIT_SILU) —
         // #928. The NVFP4 arm below has staged `silu(gate)*up` once since the
         // ncu receipt quoted there; the FP8 arm never got the same treatment
         // and paid for it. `w8a16_gemv_silu_input` recomputes the SwiGLU PER
@@ -1171,7 +1171,7 @@ impl DenseFfnLayer {
         // `(g/(1+e^-g))*u` in FP32 all the way into the dot product — a BF16
         // round plus a reciprocal-vs-divide difference on the activation. It
         // IS the numerics prefill runs, and the same trade the NVFP4 arm has
-        // shipped by default; `ATLAS_NO_DECODE_SPLIT_SILU` restores the fused
+        // shipped by default; `AVAROK_NO_DECODE_SPLIT_SILU` restores the fused
         // kernel bit-for-bit.
         if let Some(ref fp8w) = self.fp8_weights {
             let output = ctx.buffers.moe_output();
@@ -1329,7 +1329,7 @@ impl DenseFfnLayer {
             return Ok(output);
         }
 
-        // ATLAS_DECODE_FFN_VIA_GEMM=1: route decode's M=1 FFN projections
+        // AVAROK_DECODE_FFN_VIA_GEMM=1: route decode's M=1 FFN projections
         // through the SAME transposed-weight GEMM kernels the DFlash verify
         // path uses (`w4a16_prefill_gemm` → w4a16_gemm_t / _t_k64), instead
         // of the dedicated GEMV kernels. Purpose: bit-identical FFN numerics
@@ -1351,14 +1351,14 @@ impl DenseFfnLayer {
             let wt_alive =
                 |w: &Option<QuantizedWeight>| w.as_ref().is_some_and(|w| !w.weight.is_null());
             if wt_alive(&self.weights.gate_proj_t) && wt_alive(&self.weights.up_proj_t) {
-                // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+                // Log-once latch (see `avarok_core::scope`). It holds no model-derived
                 // value — the message is rebuilt from the arguments every call — so a
                 // stale entry cannot produce a wrong answer, only a suppressed duplicate
                 // line after a model swap. Scoping it would thread a logging concern
                 // through the call path to prevent one repeated INFO line.
                 if ctx.stats.once("log:decode_ffn_via_gemm") {
                     tracing::info!(
-                        "decode FFN via verify GEMM path (ATLAS_DECODE_FFN_VIA_GEMM=1): \
+                        "decode FFN via verify GEMM path (AVAROK_DECODE_FFN_VIA_GEMM=1): \
                          gate/up/down through w4a16_prefill_gemm at M=1"
                     );
                 }
@@ -1407,14 +1407,14 @@ impl DenseFfnLayer {
                 )?;
                 return Ok(output);
             }
-            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // Log-once latch (see `avarok_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
             // through the call path to prevent one repeated INFO line.
             if ctx.stats.once("log:decode_ffn_no_twins") {
                 tracing::warn!(
-                    "ATLAS_DECODE_FFN_VIA_GEMM=1 requested but transposed FFN copies \
+                    "AVAROK_DECODE_FFN_VIA_GEMM=1 requested but transposed FFN copies \
                      are freed/absent (NVFP4-MMQ prefill arm?) — falling back to GEMV; \
                      the unification experiment is NOT active"
                 );
@@ -1457,7 +1457,7 @@ impl DenseFfnLayer {
         }
 
         let output = ctx.buffers.moe_output();
-        // Split SiLU+down (DEFAULT; kill-switch ATLAS_NO_DECODE_SPLIT_SILU): the fused
+        // Split SiLU+down (DEFAULT; kill-switch AVAROK_NO_DECODE_SPLIT_SILU): the fused
         // silu_input kernel recomputes the SiLU transcendentals per OUTPUT ROW (N/4
         // blocks × redundant __expf) and measures COMPUTE-bound — ncu: SM 57% vs
         // memory 23%, 186 GB/s vs the dual GEMV's 266. Staging silu(gate)*up once
@@ -1588,7 +1588,7 @@ impl DenseFfnLayer {
         if self.q2_0_gemv_batchm_k.0 == 0 {
             anyhow::bail!(
                 "q2_0_gemv_vec_batchm kernel missing in this target build — packed-Q2 \
-                 batched decode (ATLAS_GGUF_NATIVE_Q2, C>=2) is unavailable"
+                 batched decode (AVAROK_GGUF_NATIVE_Q2, C>=2) is unavailable"
             );
         }
         if self.activation != FfnActivation::SiLU {
@@ -1737,7 +1737,7 @@ impl DenseFfnLayer {
     /// Batchm-GEMV kernel for `m` verify rows: the narrowest resolved tier in
     /// `w4a16_gemv_batch{4,5,6,7,8}` that covers `m`. 0-handle when out of
     /// range or absent. See `layers::w4a16_gemv_tiers` for the decision and
-    /// the `ATLAS_NO_GEMV_EXACT_M_TIERS=1` kill switch.
+    /// the `AVAROK_NO_GEMV_EXACT_M_TIERS=1` kill switch.
     fn batchm_kernel(&self, m: u32) -> KernelHandle {
         self.w4a16_batchm.kernel(m)
     }
@@ -1848,7 +1848,7 @@ impl DenseFfnLayer {
     ///   - No transposed copy: base `w4a16_gemm` (9-12x the bandwidth floor —
     ///     last resort).
     ///
-    /// Kill-switch: ATLAS_FFN_SMALLM=0 restores the m128-only dispatch for A/B.
+    /// Kill-switch: AVAROK_FFN_SMALLM=0 restores the m128-only dispatch for A/B.
     #[allow(clippy::too_many_arguments)]
     fn w4a16_prefill_gemm(
         &self,
@@ -1995,7 +1995,7 @@ impl DenseFfnLayer {
                 );
             }
 
-            // Tier-2 native MMQ prefill (ATLAS_GGUF_NATIVE_Q2_MMQ=1): quantize the
+            // Tier-2 native MMQ prefill (AVAROK_GGUF_NATIVE_Q2_MMQ=1): quantize the
             // activation to q8_1 ONCE per projection-input (gate/up share `input`;
             // down re-quantizes `gate_out`), then run the packed 2-bit MMQ GEMM —
             // no BF16 weight dequant, no shared `q2_dequant_scratch`. Requires the
@@ -2010,7 +2010,7 @@ impl DenseFfnLayer {
                 static Q2MMQ_LOG: std::sync::Once = std::sync::Once::new();
                 Q2MMQ_LOG.call_once(|| {
                     eprintln!(
-                        "[atlas] ATLAS_GGUF_NATIVE_Q2_MMQ=1: dense-FFN prefill via native packed Q2_0 MMQ (W2A8, keep-packed)"
+                        "[avarok] AVAROK_GGUF_NATIVE_Q2_MMQ=1: dense-FFN prefill via native packed Q2_0 MMQ (W2A8, keep-packed)"
                     );
                 });
                 let a_q8 = ctx.buffers.q2_act_q8();
@@ -2060,7 +2060,7 @@ impl DenseFfnLayer {
             if self.dequant_q2_0_gn_k.0 == 0 {
                 anyhow::bail!(
                     "dequant_q2_0_gn_to_bf16 kernel missing in this target build — \
-                     packed-Q2 (ATLAS_GGUF_NATIVE_Q2) prefill is unavailable"
+                     packed-Q2 (AVAROK_GGUF_NATIVE_Q2) prefill is unavailable"
                 );
             }
             let tc = self.dense_gemm_tc_k.0 != 0;
@@ -2139,10 +2139,10 @@ impl DenseFfnLayer {
         // 🔴 ARM ORDER IS THE DISPATCH RULE — decode rungs first, widest last:
         //
         //   1. m <= 4      w8a16_gemv_batch4        one weight pass, 4-row tier
-        //   2. m 5..=16    w8a16_gemm_m16           MMA, ATLAS_FFN_M16_TC only
-        //   3. m 17..=32   w8a16_gemm_m16 x2        MMA, ATLAS_FFN_M16_TC only
-        //      (ATLAS_FFN_M16_TC reaches THIS arm only; the attention tiers
-        //       take ATLAS_ATTN_M16_TC, and ATLAS_M16_TC is both. Round 6
+        //   2. m 5..=16    w8a16_gemm_m16           MMA, AVAROK_FFN_M16_TC only
+        //   3. m 17..=32   w8a16_gemm_m16 x2        MMA, AVAROK_FFN_M16_TC only
+        //      (AVAROK_FFN_M16_TC reaches THIS arm only; the attention tiers
+        //       take AVAROK_ATTN_M16_TC, and AVAROK_M16_TC is both. Round 6
         //       measured them moving in opposite directions: attention -21.7%,
         //       this arm +13.7%. WHY: `dense_ffn_m16_tc.rs`.)
         //   4. m 5..=16    w8a16_gemv_batch16       OPT-IN, off by default
@@ -2151,15 +2151,15 @@ impl DenseFfnLayer {
         //   7. transposed / pipelined / base W8A16 tile GEMMs
         //
         // Rungs 2-3 are the TENSOR-CORE tier and are OFF unless
-        // `ATLAS_FFN_M16_TC` is set. `ATLAS_FFN_M16_TC` reaches THIS arm only;
-        // the attention tiers take `ATLAS_ATTN_M16_TC`, and `ATLAS_M16_TC` is
+        // `AVAROK_FFN_M16_TC` is set. `AVAROK_FFN_M16_TC` reaches THIS arm only;
+        // the attention tiers take `AVAROK_ATTN_M16_TC`, and `AVAROK_M16_TC` is
         // both. They are the only arm here that does NOT reproduce the scalar
         // `w8a16_gemv` bit-for-bit: an m16n8k16 MMA reassociates the K
         // reduction (<= 2 BF16 ULP), which is the same reassociation the
         // pre-#927 tile GEMMs had at these widths. WHY, the H100 numbers and
         // the seam: `dense_ffn_m16_tc.rs`.
         //
-        // Rungs 4-5 are #927, and they are DISARMED unless `ATLAS_FFN_BATCH16=1`
+        // Rungs 4-5 are #927, and they are DISARMED unless `AVAROK_FFN_BATCH16=1`
         // — so a stock serve runs rungs 1, 6, 7 exactly as it did before #927.
         // The cliff they answer is real (the rung-7 tile GEMMs pad M to a
         // 128-row MMA tile, 5-12 TFLOP/s on these shapes), but the tier as a
@@ -2197,7 +2197,7 @@ impl DenseFfnLayer {
                         }
                         // 2-3. TENSOR-CORE tier, 5..=16 (one launch) and
                         // 17..=32 (two halves). `Some(plan)` already encodes the
-                        // handle, the `ATLAS_FFN_M16_TC` lever (default OFF) and
+                        // handle, the `AVAROK_FFN_M16_TC` lever (default OFF) and
                         // the K % 128 guard, so this arm is inert until an
                         // operator opts in. It REASSOCIATES — see the rule above.
                         _ if m16_tc($k).is_some() => self.w8a16_m16_tc_proj(
@@ -2213,7 +2213,7 @@ impl DenseFfnLayer {
                         )?,
                         // 4-5. m 5..=16 (one launch) and 17..=32 (two halves).
                         // `Some(plan)` already encodes the handle and the
-                        // `ATLAS_FFN_BATCH16=1` opt-in, so this is `None` on a
+                        // `AVAROK_FFN_BATCH16=1` opt-in, so this is `None` on a
                         // stock serve and the match falls through to rung 4.
                         _ if batch16.is_some() => self.w8a16_batch16_proj(
                             ctx,
@@ -2382,7 +2382,7 @@ impl DenseFfnLayer {
             // N=12288/3072, K=3072) — nsys measured its 3 launches at ~100 ms
             // EACH = 33% of the whole C=1 prefill. cuBLASLt runs the identical
             // BF16×BF16→FP32 GEMM at 90+ TFLOP/s (~65× faster), the same path
-            // q/k/v/o and the head-gate already use. Gated on ATLAS_CUBLAS_GEMM.
+            // q/k/v/o and the head-gate already use. Gated on AVAROK_CUBLAS_GEMM.
             macro_rules! ffn_gemm {
                 ($a:expr, $b:expr, $c:expr, $n:expr, $k:expr) => {
                     if ctx.dispatch.cublas.ffn {
@@ -2437,7 +2437,7 @@ impl DenseFfnLayer {
         // load (decode keeps the non-transposed weights via gemv → TPOT/
         // coherence unaffected). Falls back to base when no transposed copy /
         // kernel is present.
-        // LOSSLESS prefill opt-in: when ATLAS_BF16_TC_PREFILL is set AND the
+        // LOSSLESS prefill opt-in: when AVAROK_BF16_TC_PREFILL is set AND the
         // BF16 128x128 kernel is present, route prefill GEMMs through the
         // bit-equivalent BF16 tensor-core path instead of the default FP8-E4M3
         // `t_m128`. The FP8 crush is fast but perturbs generation (measured
@@ -2455,7 +2455,7 @@ impl DenseFfnLayer {
         // → highest priority when set, so it overrides the BF16/FP8 t_m128 arms.
         // PCND: explicit opt-in, default off = byte-for-byte prior behavior.
         let fp8_m64_prefill = self.w4a16_gemm_t_k.0 != 0 && ctx.levers.fp8_m64_prefill;
-        // int8 W4A8 fast-prefill opt-in (ATLAS_INT8_PREFILL): route prefill GEMMs
+        // int8 W4A8 fast-prefill opt-in (AVAROK_INT8_PREFILL): route prefill GEMMs
         // through the validated requant→`int8_gemm_faith2` pipeline (cosine
         // 0.999978 vs the host full-precision dequant GEMM). HIGHEST priority when
         // set, so it overrides every other prefill arm. Needs both operands int8:
@@ -2467,22 +2467,22 @@ impl DenseFfnLayer {
         // arm is a no-op (and no buffers are built) unless the kernels are loaded.
         let int8_prefill = self.int8_faith2_k.0 != 0 && ctx.levers.int8_prefill;
         if int8_prefill {
-            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // Log-once latch (see `avarok_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
             // through the call path to prevent one repeated INFO line.
             if ctx.stats.once("log:ffn_int8_prefill") {
                 tracing::info!(
-                    "[atlas] ATLAS_INT8_PREFILL=1: dense-FFN prefill via int8_gemm_faith2 (W4A8 requant→int8 MMA, lossy ~0.99998 cosine)"
+                    "[avarok] AVAROK_INT8_PREFILL=1: dense-FFN prefill via int8_gemm_faith2 (W4A8 requant→int8 MMA, lossy ~0.99998 cosine)"
                 );
             }
         }
-        // NVFP4 W4A4 MMQ prefill (ATLAS_FFN_NVFP4_MMQ) — vendored llama Blackwell
+        // NVFP4 W4A4 MMQ prefill (AVAROK_FFN_NVFP4_MMQ) — vendored llama Blackwell
         // block-scale FP4 MMA, gate/up ONLY (hybrid: down stays on the default t_m128
         // path — SiLU(gate)*up is heavy-tailed and accuracy-critical). SiLU models only
         // (the scale2 fold lives in the scaled SiLU-mul). Mutually exclusive with
-        // ATLAS_FFN_MMQ (both use the shared ffn_act_q8 scratch); this arm wins.
+        // AVAROK_FFN_MMQ (both use the shared ffn_act_q8 scratch); this arm wins.
         //
         // An installed LoRA adapter turns this arm OFF. The MMQ path leaves
         // gate_out/up_out holding UNSCALED products and folds each
@@ -2501,18 +2501,18 @@ impl DenseFfnLayer {
             && self.lora.is_none()
             && ctx.levers.ffn_nvfp4_mmq;
         if fp4mmq_prefill {
-            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // Log-once latch (see `avarok_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
             // through the call path to prevent one repeated INFO line.
             if ctx.stats.once("log:ffn_fp4_mmq_prefill") {
                 tracing::info!(
-                    "[atlas] ATLAS_FFN_NVFP4_MMQ=1: dense-FFN gate/up prefill via vendored llama NVFP4 W4A4 MMQ (block-scale FP4 MMA, ~80 TFLOP/s vs t_m128 ~51)"
+                    "[avarok] AVAROK_FFN_NVFP4_MMQ=1: dense-FFN gate/up prefill via vendored llama NVFP4 W4A4 MMQ (block-scale FP4 MMA, ~80 TFLOP/s vs t_m128 ~51)"
                 );
             }
         }
-        // Down-projection MMQ arm (DEFAULT ON; kill-switch ATLAS_NO_FFN_NVFP4_MMQ_DOWN=1): route down through
+        // Down-projection MMQ arm (DEFAULT ON; kill-switch AVAROK_NO_FFN_NVFP4_MMQ_DOWN=1): route down through
         // the same MMQ arm (t_m128 runs the narrow-N down at only ~34 TFLOP/s in-model).
         // Accuracy note: down W4A4 cosine 0.9961 (random) — better than the previously
         // coherence-validated all-W4A4 config (0.991) — but still the heavy-tailed
@@ -2522,7 +2522,7 @@ impl DenseFfnLayer {
         // HYBRID: route the accuracy-critical down_proj OFF Q4_K onto the near-lossless faith2
         // NVFP4 path (W4A8 requant, cos 0.99998). down=SiLU(gate)*up is heavy-tailed; Q4_K
         // superblock scaling clips it (BFCL `multiple` -4.0%; llama promotes only down→Q6_K for
-        // this reason). gate/up stay on Q4_K. Default ON when MMQ active; ATLAS_FFN_MMQ_DOWN_Q4K=1
+        // this reason). gate/up stay on Q4_K. Default ON when MMQ active; AVAROK_FFN_MMQ_DOWN_Q4K=1
         // = lossy all-Q4_K (A/B only). Defined here (self-fields+env, no q4k_prefill var dep) so the
         // int8 scratch below can size for the hybrid down.
         let down_faith2 = self.q4k_mmq_nc_k.0 != 0
@@ -2546,20 +2546,20 @@ impl DenseFfnLayer {
         } else {
             (DevicePtr::NULL, DevicePtr::NULL)
         };
-        // W4A4 native-FP4 prefill (ATLAS_FP4_PREFILL) — HIGHEST priority. NVFP4 weights
+        // W4A4 native-FP4 prefill (AVAROK_FP4_PREFILL) — HIGHEST priority. NVFP4 weights
         // used directly (no requant); BF16 activations quantized to NVFP4 each GEMM into
         // the shared scratch. Native FP4 tensor cores (sm_121a). Lossy (cos ~0.99 vs fp32).
         let fp4_prefill =
             self.w4a4_gemm_k.0 != 0 && self.quantize_nvfp4_k.0 != 0 && ctx.levers.fp4_prefill;
         if fp4_prefill {
-            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // Log-once latch (see `avarok_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
             // through the call path to prevent one repeated INFO line.
             if ctx.stats.once("log:ffn_fp4_prefill") {
                 tracing::info!(
-                    "[atlas] ATLAS_FP4_PREFILL=1: dense-FFN prefill via w4a4_gemm (native FP4 MMA sm_121a, W4A4)"
+                    "[avarok] AVAROK_FP4_PREFILL=1: dense-FFN prefill via w4a4_gemm (native FP4 MMA sm_121a, W4A4)"
                 );
             }
         }
@@ -2571,7 +2571,7 @@ impl DenseFfnLayer {
         } else {
             (DevicePtr::NULL, DevicePtr::NULL)
         };
-        // Q4_K MMQ prefill (ATLAS_FFN_MMQ) — vendored llama Q4_K W4A8 GEMM. Highest priority
+        // Q4_K MMQ prefill (AVAROK_FFN_MMQ) — vendored llama Q4_K W4A8 GEMM. Highest priority
         // when enabled. Lossy (Q4_K weight format ≠ NVFP4); gate via BFCL before relying on it.
         let q4k_prefill = self.q4k_mmq_nc_k.0 != 0
             && self.q4k_quant_act_k.0 != 0
@@ -2580,14 +2580,14 @@ impl DenseFfnLayer {
             && !fp4mmq_prefill
             && ctx.levers.ffn_mmq;
         if q4k_prefill {
-            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // Log-once latch (see `avarok_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
             // through the call path to prevent one repeated INFO line.
             if ctx.stats.once("log:ffn_q4k_prefill") {
                 tracing::info!(
-                    "[atlas] ATLAS_FFN_MMQ=1: dense-FFN prefill via vendored llama Q4_K MMQ (W4A8, +25%/+10% gate·down vs faith2)"
+                    "[avarok] AVAROK_FFN_MMQ=1: dense-FFN prefill via vendored llama Q4_K MMQ (W4A8, +25%/+10% gate·down vs faith2)"
                 );
             }
         }
@@ -2619,7 +2619,7 @@ impl DenseFfnLayer {
         macro_rules! w4_gemm {
             ($w:expr, $wt:expr, $cell:expr, $qcell:expr, $fp4cell:expr, $allow_fp4:expr, $in:expr, $out:expr, $n:expr, $k:expr, $allow_q4k:expr) => {
                 match $wt {
-                    // NVFP4 W4A4 MMQ prefill (ATLAS_FFN_NVFP4_MMQ) — HIGHEST priority.
+                    // NVFP4 W4A4 MMQ prefill (AVAROK_FFN_NVFP4_MMQ) — HIGHEST priority.
                     // `$allow_fp4` = fp4mmq_prefill for gate/up, fp4mmq_down for down.
                     // Activation pre-quantized into `fp4_y` by the caller; the output is
                     // missing ×scale2, folded downstream (scaled SiLU-mul / scale_bf16).
@@ -2653,7 +2653,7 @@ impl DenseFfnLayer {
                             ctx.gpu, tk_nc, tk_wc, tile, fp4_y, qw.w, $out, m, $n, $k, stream,
                         )?;
                     }
-                    // Q4_K MMQ prefill (ATLAS_FFN_MMQ) — next priority, gated per-GEMM by
+                    // Q4_K MMQ prefill (AVAROK_FFN_MMQ) — next priority, gated per-GEMM by
                     // `$allow_q4k` (false for down in the hybrid → falls to the faith2 arm).
                     // Activation `$in` is pre-quantized to q8_1 in `q4k_a` by the caller.
                     _ if q4k_prefill && $allow_q4k => {
@@ -2671,7 +2671,7 @@ impl DenseFfnLayer {
                             stream,
                         )?;
                     }
-                    // W4A4 native-FP4 prefill (ATLAS_FP4_PREFILL) — HIGHEST priority.
+                    // W4A4 native-FP4 prefill (AVAROK_FP4_PREFILL) — HIGHEST priority.
                     // The activation is PRE-quantized into the NVFP4 scratch by the caller
                     // (`input` once for gate+up which share it; `gate_out` for down) — opt #1,
                     // avoids the redundant re-quant. This arm just runs w4a4_gemm against the
@@ -2691,7 +2691,7 @@ impl DenseFfnLayer {
                             stream,
                         )?;
                     }
-                    // int8 W4A8 fast prefill (ATLAS_INT8_PREFILL) — next priority.
+                    // int8 W4A8 fast prefill (AVAROK_INT8_PREFILL) — next priority.
                     // Independent of `$wt`/the transposed copies: requant reads the
                     // non-transposed NVFP4 `$w` directly. Builds (once) + caches the
                     // int8 weight in `$cell`, then requant_a + faith2 via the shared
@@ -2699,7 +2699,7 @@ impl DenseFfnLayer {
                     // (down_faith2 && !$allow_q4k): down falls here instead of Q4_K.
                     _ if int8_prefill || (down_faith2 && !$allow_q4k) => {
                         let iw = self.ensure_int8_weight($cell, ctx.gpu, $w, $n, $k, stream)?;
-                        // faith5 (ATLAS_INT8_FAITH5=1): int32 per-sb accumulation
+                        // faith5 (AVAROK_INT8_FAITH5=1): int32 per-sb accumulation
                         // breaks the MMA→scale dependency chain. Same kernel signature
                         // + grid/block as faith2 — just a different KernelHandle.
                         let int8_kernel = if self.int8_faith5_k.0 != 0 && ctx.levers.int8_faith5 {
@@ -2725,11 +2725,11 @@ impl DenseFfnLayer {
                     }
                     // Lossless opt-in: BF16 128x128 tensor-core prefill (bit-equivalent
                     // to base `w4a16_gemm`). Preferred over the FP8 t_m128/v2 paths only
-                    // when ATLAS_BF16_TC_PREFILL is set and the kernel is loaded. Within
+                    // when AVAROK_BF16_TC_PREFILL is set and the kernel is loaded. Within
                     // the lossless path, prefer the higher-occupancy v2 kernel (3 CTAs/SM,
                     // bit-identical to v1) when it is loaded; else the proven v1 kernel.
                     // Both go through the same launch helper (identical grid/block/args).
-                    // FP8 M64 fast prefill (ATLAS_FP8_M64_PREFILL) — highest priority,
+                    // FP8 M64 fast prefill (AVAROK_FP8_M64_PREFILL) — highest priority,
                     // M64 grid via the w4a16_gemm_n128 launcher.
                     Some(wt) if fp8_m64_prefill => ops::w4a16_gemm_n128(
                         ctx.gpu,
@@ -2777,7 +2777,7 @@ impl DenseFfnLayer {
                     // `w4a16_prefill_gemm`, which picks `w4a16_gemm_t` /
                     // `w4a16_gemm_t_k64` per the w4a16_m17_bench numbers and
                     // falls back to the same v2/m128 kernels below.
-                    // ATLAS_FFN_SMALLM=0 disables. Sits after the opt-in
+                    // AVAROK_FFN_SMALLM=0 disables. Sits after the opt-in
                     // quant arms so explicit MMQ/int8/FP8 experiments keep
                     // priority.
                     Some(wt) if m <= 64 => {
@@ -3061,7 +3061,7 @@ pub mod w8a8_prefill;
 #[path = "dense_ffn_batch16_decode.rs"]
 pub mod batch16_decode;
 
-/// The TENSOR-CORE 5..=32-row decode tier (`ATLAS_FFN_M16_TC`, #927) — same
+/// The TENSOR-CORE 5..=32-row decode tier (`AVAROK_FFN_M16_TC`, #927) — same
 /// child-module reason as the two above: it reads this layer's private kernel
 /// handles, and its rule, lever and the numerics seam it opens need room.
 #[path = "dense_ffn_m16_tc.rs"]

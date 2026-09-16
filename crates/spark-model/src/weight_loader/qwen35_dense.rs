@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use anyhow::Result;
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::{WeightDtype, WeightStore};
@@ -27,7 +27,7 @@ use crate::weight_map::{
 /// NVFP4. Mirrors `qwen35::load_layers::proj_is_native_fp8`.
 /// The Q2_0 group size if `{prefix}.weight` is a keep-packed ternary tensor
 /// (`WeightDtype::PackedQ2_0`, produced by the GGUF loader under
-/// `ATLAS_GGUF_NATIVE_Q2=1`), else `None`. When `None` for every projection the
+/// `AVAROK_GGUF_NATIVE_Q2=1`), else `None`. When `None` for every projection the
 /// FFN takes the unchanged BF16→NVFP4 path, so the default (flag-off) behavior
 /// is byte-identical.
 fn proj_q2_group(store: &WeightStore, prefix: &str) -> Option<u16> {
@@ -162,9 +162,9 @@ fn concat_fp8_block_scaled(
 /// engage). Vision prefill additionally hits a CUDA-700. Making FP8 pay off
 /// here needs dedicated dense-FP8 kernels (fused FP8 dual-GEMV + fast
 /// transposed FP8 prefill GEMM), not loader wiring. Until then NVFP4 autoquant
-/// is the better dense runtime. `ATLAS_DENSE_FP8=1` opts in for that kernel work.
+/// is the better dense runtime. `AVAROK_DENSE_FP8=1` opts in for that kernel work.
 fn dense_fp8_enabled() -> bool {
-    std::env::var("ATLAS_DENSE_FP8").as_deref() == Ok("1")
+    std::env::var("AVAROK_DENSE_FP8").as_deref() == Ok("1")
 }
 
 /// Whether the native block-scaled FP8 GDN arm runs for this SSM layer.
@@ -176,10 +176,10 @@ fn dense_fp8_enabled() -> bool {
 /// part of the condition (#915).
 fn gdn_fp8_arm_selected(store: &WeightStore, la: &str, tp_size: usize) -> bool {
     let q2 = tp_size.max(1) == 1
-        && std::env::var_os("ATLAS_NO_Q2_GDN").is_none()
+        && std::env::var_os("AVAROK_NO_Q2_GDN").is_none()
         && proj_q2_group(store, &format!("{la}.in_proj_qkv")).is_some()
         && proj_q2_group(store, &format!("{la}.in_proj_z")).is_some();
-    !q2 && std::env::var_os("ATLAS_NO_GDN_FP8").is_none()
+    !q2 && std::env::var_os("AVAROK_NO_GDN_FP8").is_none()
         && proj_is_fp8_any_scale(store, &format!("{la}.in_proj_qkv"))
         && proj_is_fp8_any_scale(store, &format!("{la}.in_proj_z"))
         && proj_is_fp8_any_scale(store, &format!("{la}.out_proj"))
@@ -313,7 +313,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         );
 
         // Native FP8 SSM prefill GEMM (Qwen3.6-27B-FP8 root-cause fix,
-        // commit 3ebc08a). Atlas's prior SSM in_proj_qkv path was
+        // commit 3ebc08a). Avarok's prior SSM in_proj_qkv path was
         // FP8 → BF16 → NVFP4 → BF16 (in `w4a16_gemm` dequant) → MMA — a
         // double-quant chain whose NVFP4 hop's ~4-bit per-group precision
         // is dominated by signal at q/v but attenuated into a k-direction
@@ -323,7 +323,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         // bypassing the NVFP4 intermediate. Prefill dispatches via the
         // existing `fp8_gemm_n128` (BF16 act × FP8 weight) — same path
         // the MoE shared-expert FP8 prefill uses. Decode/GEMV unchanged.
-        // Originally env-gated `ATLAS_FP8_SSM_PREFILL=1`; promoted to
+        // Originally env-gated `AVAROK_FP8_SSM_PREFILL=1`; promoted to
         // unconditional 2026-05-20 after live verification (commit
         // dfb4e8a era, tokens_to_first_degeneration 1,196 → 16,968).
         // 2026-07-03 precision policy: GDN projections stay ≥FP8 — the
@@ -331,8 +331,8 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         // checkpoint toolchains deliberately keep high-precision (modelopt
         // sensitivity analysis ships them FP8; unsloth ships BF16). Applies
         // to ALL NVFP4 variants now, not just Fp8Dequanted. Kill-switch
-        // ATLAS_NO_GDN_FP8_PREFILL restores the pre-policy behavior for A/B.
-        let fp8_ssm_prefill = std::env::var_os("ATLAS_NO_GDN_FP8_PREFILL").is_none();
+        // AVAROK_NO_GDN_FP8_PREFILL restores the pre-policy behavior for A/B.
+        let fp8_ssm_prefill = std::env::var_os("AVAROK_NO_GDN_FP8_PREFILL").is_none();
         let bf16_to_fp8_k = if fp8_ssm_prefill {
             tracing::info!(
                 // The old wording — "NVFP4 kept as structural fallback for
@@ -353,10 +353,10 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             None
         };
 
-        // ATLAS_MEM_PROFILE: per-phase GPU-free trace to pin the strix/APU
+        // AVAROK_MEM_PROFILE: per-phase GPU-free trace to pin the strix/APU
         // load-time footprint (FP8-source persistence vs NVFP4 steady-state vs
         // BF16 requant transients). Gated env so it's a no-op in production.
-        let mem_profile = std::env::var("ATLAS_MEM_PROFILE").is_ok();
+        let mem_profile = std::env::var("AVAROK_MEM_PROFILE").is_ok();
         let log_free = |tag: &str| {
             if mem_profile && let Ok(free) = gpu.free_memory() {
                 tracing::info!("MEM_PROFILE[{tag}]: {:.2} GB GPU-free", free as f64 / 1e9);
@@ -406,7 +406,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // grid=[div_ceil(intermediate_size,64),..] on the first prefill.
             // Snapshot fresh D2D copies BEFORE the free (the clone is an
             // independent allocation the layer owns for its lifetime).
-            // Native keep-packed ternary Q2_0 (ATLAS_GGUF_NATIVE_Q2=1): when the
+            // Native keep-packed ternary Q2_0 (AVAROK_GGUF_NATIVE_Q2=1): when the
             // GGUF loader tagged gate/up/down as `PackedQ2_0`, DON'T requant to
             // NVFP4 — install the raw 2-bit blocks and dispatch `q2_0_gemv` at
             // decode. Requires tp_size=1 (packed-block sharding is unimplemented).
@@ -562,10 +562,10 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     dffn.set_fp8_gate_up_fused(fused);
                 }
             }
-            // ATLAS_FFN_MMQ: eagerly materialize Q4_K + free the dead `_t` copies at load,
+            // AVAROK_FFN_MMQ: eagerly materialize Q4_K + free the dead `_t` copies at load,
             // BEFORE KV cache sizing, so net FFN footprint == NVFP4 baseline (no decode OOM-throttle).
             dffn.finalize_q4k_load(gpu, h as u32, config.intermediate_size as u32, stream)?;
-            // ATLAS_FFN_NVFP4_MMQ: same discipline for the W4A4 FP4-MMQ arm — repack
+            // AVAROK_FFN_NVFP4_MMQ: same discipline for the W4A4 FP4-MMQ arm — repack
             // gate/up to block_nvfp4 + free their `_t` copies (net ~0 footprint).
             //
             // SKIPPED when a LoRA adapter is pending. The forward-time FP4-MMQ
@@ -618,11 +618,11 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // at prefill — no NVFP4 requant, no `_t` copies. Requires
                     // tp_size=1 (packed-block sharding is unimplemented). Bonsai
                     // has no kill-switch here; the whole path is gated upstream
-                    // by ATLAS_GGUF_NATIVE_Q2 (else these tensors are BF16 and
-                    // `attn_q2` is false). ATLAS_NO_Q2_ATTN forces the BF16 path
+                    // by AVAROK_GGUF_NATIVE_Q2 (else these tensors are BF16 and
+                    // `attn_q2` is false). AVAROK_NO_Q2_ATTN forces the BF16 path
                     // for A/B bisection.
                     let attn_q2 = tp_size == 1
-                        && std::env::var_os("ATLAS_NO_Q2_ATTN").is_none()
+                        && std::env::var_os("AVAROK_NO_Q2_ATTN").is_none()
                         && proj_q2_group(store, &format!("{p}.q_proj")).is_some()
                         && proj_q2_group(store, &format!("{p}.k_proj")).is_some()
                         && proj_q2_group(store, &format!("{p}.v_proj")).is_some()
@@ -757,8 +757,8 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         Nvfp4Variant::Standard | Nvfp4Variant::Fp8Dequanted if !attn_nvfp4 => {
                             // #915: the FP8 overlay below replaces q/k/v/o, and
                             // nothing reads the NVFP4 copies afterwards — the
-                            // transposed twins only under `ATLAS_CUTLASS_NVFP4_*`
-                            // and the base `o_proj` only under `ATLAS_ATTN_W4A4`,
+                            // transposed twins only under `AVAROK_CUTLASS_NVFP4_*`
+                            // and the base `o_proj` only under `AVAROK_ATTN_W4A4`,
                             // both of which `RouteEnv::attn_nvfp4` accounts for.
                             // Skipping the build also skips the BF16 dequant of
                             // every FP8 projection that fed `quantize_to_nvfp4`.
@@ -866,7 +866,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             // fed to the GPU quantize_to_nvfp4 above. Prefill AND decode
                             // always dispatch the NVFP4 weights, so the BF16 copies are
                             // dead once quantized. Free them instead of retaining a full
-                            // second copy of every projection (Atlas issue #A1).
+                            // second copy of every projection (Avarok issue #A1).
                             gpu.free(q_dense.weight)?;
                             gpu.free(k_dense.weight)?;
                             gpu.free(v_dense.weight)?;
@@ -1023,7 +1023,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // route the NVFP4 weights above are not a fallback — they
                     // are unreachable, which is why `attn_nvfp4` skipped
                     // building them (#915). The paths that could still read
-                    // NVFP4 (`ATLAS_CUTLASS_NVFP4_*`, `ATLAS_ATTN_W4A4`) are
+                    // NVFP4 (`AVAROK_CUTLASS_NVFP4_*`, `AVAROK_ATTN_W4A4`) are
                     // exactly what `RouteEnv::attn_nvfp4` checks.
                     if attn_fp8 {
                         let load_fp8_proj = |name: &str,
@@ -1104,9 +1104,9 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // / transient-dequant at prefill. `out_proj` (a within-row
                     // COLUMN reorder) is NOT packed here — it stays NVFP4. a/b/
                     // conv1d/norm/A_log stay BF16/F32. Requires tp_size=1.
-                    // ATLAS_NO_Q2_GDN forces the BF16/NVFP4 path for A/B bisection.
+                    // AVAROK_NO_Q2_GDN forces the BF16/NVFP4 path for A/B bisection.
                     let gdn_q2 = config.tp_world_size.max(1) == 1
-                        && std::env::var_os("ATLAS_NO_Q2_GDN").is_none()
+                        && std::env::var_os("AVAROK_NO_Q2_GDN").is_none()
                         && proj_q2_group(store, &format!("{la}.in_proj_qkv")).is_some()
                         && proj_q2_group(store, &format!("{la}.in_proj_z")).is_some();
                     if gdn_q2 {
@@ -1230,7 +1230,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // stays fast (FP8 = half BF16's weight bytes). MUST run
                     // BEFORE `load_ssm_proj` consumes the store tensors.
                     // Internal opt-out for the FP8-vs-NVFP4 GDN A/B + KL-drift
-                    // gate (not a user choice; mirrors the `ATLAS_NO_*` debug
+                    // gate (not a user choice; mirrors the `AVAROK_NO_*` debug
                     // levers). Default engages native FP8.
                     if gdn_fp8_arm_selected(store, &la, config.tp_world_size) {
                         let in_proj_a = dense(store, &format!("{la}.in_proj_a.weight"))?;
@@ -1438,7 +1438,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     }
 
                     // PER-ROW FP8 for the row-wise cuBLASLt PREFILL arm
-                    // (`ATLAS_FP8_ROWWISE=1`). Read from the store BEFORE the
+                    // (`AVAROK_FP8_ROWWISE=1`). Read from the store BEFORE the
                     // dequant below, though the bytes are store-owned either
                     // way; the NVFP4 build continues underneath because decode
                     // still needs it — `w8a16_gemv` cannot index a per-row
@@ -1475,7 +1475,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     let qkvz_dense =
                         gpu_concat_rows(&qkv_dense, qkv_rows, &z_dense, z_rows, h, gpu)?;
                     // qkv/z BF16 are only inputs to the concat above; free them now
-                    // rather than leaking them for the layer's lifetime (Atlas issue #A1).
+                    // rather than leaking them for the layer's lifetime (Avarok issue #A1).
                     gpu.free(qkv_dense.weight)?;
                     gpu.free(z_dense.weight)?;
 
@@ -1588,7 +1588,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // arm (qwen35/load_layers/linear_attn_arms.rs). Gated for a
                     // clean A/B + KL-drift gate before flipping the default.
                     let gdn_bf16 = matches!(
-                        std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
+                        std::env::var("AVAROK_GDN_BF16_WEIGHTS").ok().as_deref(),
                         Some("1")
                     );
                     if gdn_bf16 {
@@ -1618,7 +1618,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         )?;
                         layer.out_proj_dense = Some(out_proj_dense);
                         tracing::info!(
-                            "SSM[{lp}] ATLAS_GDN_BF16_WEIGHTS: qkvz + out_proj kept BF16 \
+                            "SSM[{lp}] AVAROK_GDN_BF16_WEIGHTS: qkvz + out_proj kept BF16 \
                              (≥FP8; NVFP4 requant skipped)"
                         );
                         layers.push(Box::new(layer));
@@ -1688,7 +1688,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // SSM prefill/decode always dispatch qkvz_nvfp4/_t and the NVFP4
                     // out_proj; the BF16 qkvz_dense / out_proj_dense were only quantize
                     // inputs. Free them rather than keep a third full-precision copy of
-                    // the largest SSM tensor across every layer (Atlas issue #A1).
+                    // the largest SSM tensor across every layer (Avarok issue #A1).
                     gpu.free(qkvz_dense.weight)?;
                     gpu.free(out_proj_dense.weight)?;
 
@@ -1732,7 +1732,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         layer.set_fp8_rowwise_prefill_weights(qkvz_rowwise, out_proj_rowwise);
                         if i == 0 {
                             tracing::info!(
-                                "SSM[{lp}] ATLAS_FP8_ROWWISE: qkvz + out_proj prefill via \
+                                "SSM[{lp}] AVAROK_FP8_ROWWISE: qkvz + out_proj prefill via \
                                  native per-row FP8 (no BF16 dequant, no NVFP4 requant); \
                                  decode keeps NVFP4"
                             );

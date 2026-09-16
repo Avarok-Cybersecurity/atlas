@@ -1,6 +1,6 @@
 # The Merge Lattice
 
-Atlas gates every pull request on five benchmarks. Two of them are BFCL accuracy
+Avarok gates every pull request on five benchmarks. Two of them are BFCL accuracy
 legs that take about three and a half GPU-hours each, on hardware there is not
 much of. So the question *"which of these does this change actually need?"* is
 worth several hours of a person's day, every time it is answered wrongly.
@@ -197,7 +197,7 @@ system. This one owed — and paid — the full bill.
 
 ```
 NONE  bfcl-subset — latest record is for fe99349724 (2026-08-08-fe99349724.json)
-      — invalidated by crates/atlas-kernels/tests/kernel_arity.rs,
+      — invalidated by crates/avarok-kernels/tests/kernel_arity.rs,
         crates/spark-model/src/layers/mtp_head.rs, … and 16 more
 ```
 

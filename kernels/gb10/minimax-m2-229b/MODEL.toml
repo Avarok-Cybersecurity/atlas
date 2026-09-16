@@ -48,7 +48,7 @@ vision = false
 # max_tokens wandering on agentic clients (lesson from Qwen3.6).
 # Lowered temp=0.6 thinking, 0.7 non-thinking, kept temp=0.4 coding/tools
 # (MiniMax's own benchmark value). Kept top_k=40 (MiniMax convention).
-# Renamed from `[sampling.default]`/`[coding]` to Atlas-standard
+# Renamed from `[sampling.default]`/`[coding]` to Avarok-standard
 # {thinking_text, thinking_coding, non_thinking, tools} so the parser
 # actually picks up these values.
 [sampling.thinking_text]
@@ -86,7 +86,7 @@ dry_multiplier = 0.5
 
 [behavior]
 # MiniMax M2's native HF chat_template.jinja appends `<think>\n`
-# unconditionally at `add_generation_prompt`. Atlas uses an OpenAI-
+# unconditionally at `add_generation_prompt`. Avarok uses an OpenAI-
 # variant template that gates this generation prompt on the resolved
 # per-request thinking setting. `max_thinking_budget` still caps explicit
 # or spontaneous thinking: when the scheduler detects `<think>` without
@@ -112,7 +112,7 @@ hidden_size = 3072
 # Wildcard for hidden_sizes other than 3072. Needed so the tiny-random test
 # variant (yujiepan/minimax-m2.7-tiny-random, hidden_size=8) routes to this
 # target for dispatch-layer smoke tests. Exact-match 3072 wins for the
-# real checkpoint per atlas_kernels::ptx_for_config resolution order.
+# real checkpoint per avarok_kernels::ptx_for_config resolution order.
 [[model_types]]
 model_type = "minimax_m2"
 
@@ -149,7 +149,7 @@ w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin of w4a16_gemm_t_m128; pre
 [expected_absent.w4a4]
 w4a4_gemm_mfast = """
 Shipped only in nemotron-labs-3-puzzle-75b-a9b's shadow. The attention
-W4A4 prefill path is additionally OPT-IN ONLY (ATLAS_ATTN_W4A4 env) and
+W4A4 prefill path is additionally OPT-IN ONLY (AVAROK_ATTN_W4A4 env) and
 dispatch gates on handle != 0 (paged_qkv.rs:49, paged_oproj.rs:32).
 UNMEASURED."""
 

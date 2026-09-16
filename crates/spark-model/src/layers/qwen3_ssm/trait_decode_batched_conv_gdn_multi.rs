@@ -40,7 +40,7 @@
 //! (`upload_verify_wy_tables`, verify_e2.rs) into a fixed device buffer
 //! refreshed pre-replay, so both launches are CUDA-graph-stable.
 //!
-//! Kill switch `ATLAS_NO_VERIFY_GDN_BATCH` (PRESENCE check per the house
+//! Kill switch `AVAROK_NO_VERIFY_GDN_BATCH` (PRESENCE check per the house
 //! convention — `=0` is NOT off) forces the per-sequence loop for A/B.
 
 use anyhow::Result;
@@ -70,7 +70,7 @@ fn first_for_k(mask: &std::sync::atomic::AtomicU32, k: usize) -> bool {
 }
 
 /// Periodic engaged-vs-declined RATE at INFO, under the existing
-/// `ATLAS_MTP_ACCEPT_DEBUG` gate (checked FIRST — a default serve pays one
+/// `AVAROK_MTP_ACCEPT_DEBUG` gate (checked FIRST — a default serve pays one
 /// `OnceLock` load and nothing else).
 ///
 /// The per-`k` first-occurrence lines above prove WHICH widths ever took
@@ -102,7 +102,7 @@ fn record_multi_rate(n: usize, kk: usize) {
 /// Kill switch, PRESENCE check (`=0` is NOT off), read once per process.
 fn verify_gdn_batch_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_VERIFY_GDN_BATCH").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_VERIFY_GDN_BATCH").is_none())
 }
 
 impl Qwen3SsmLayer {
@@ -150,7 +150,7 @@ impl Qwen3SsmLayer {
             4 => self.wy4_kernel(),
             _ => return Ok(false),
         };
-        // ATLAS_SSM_H_FP16: a zero handle below turns into `Ok(false)` and the
+        // AVAROK_SSM_H_FP16: a zero handle below turns into `Ok(false)` and the
         // caller runs the per-sequence FP32 loop — which, over an FP16 pool,
         // is silent corruption rather than an error. Refuse first.
         self.require_wy_f16(kk, wy_k)?;

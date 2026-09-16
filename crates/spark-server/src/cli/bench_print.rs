@@ -9,8 +9,8 @@
 //! then a clean file rather than a log with JSON in it.
 
 use anyhow::Result;
-use atlas_plugin::headless::{RunReporter, RunRequest};
-use atlas_plugin::{
+use avarok_plugin::headless::{RunReporter, RunRequest};
+use avarok_plugin::{
     BenchmarkResult, PluginEvent, RunRecord, VerdictKind, params::ParamSpec, registry,
 };
 
@@ -30,7 +30,7 @@ pub fn print_suite(format: OutputFormat) -> Result<()> {
                     "intended_for": d.intended_for.map(|e| e.families),
                     // Explicit: a group is certified by a partition of shard
                     // runs of this same benchmark (`--param shard=i/n`).
-                    "group": atlas_plugin::gate::group::find(d.id).is_some(),
+                    "group": avarok_plugin::gate::group::find(d.id).is_some(),
                 })
             })
             .collect();
@@ -40,7 +40,7 @@ pub fn print_suite(format: OutputFormat) -> Result<()> {
     let width = all.iter().map(|d| d.id.len() + 2).max().unwrap_or(0);
     for d in all {
         let mark = if d.needs_confirmation { " (--yes)" } else { "" };
-        let group = if atlas_plugin::gate::group::find(d.id).is_some() {
+        let group = if avarok_plugin::gate::group::find(d.id).is_some() {
             " [group: certified by shards, --param shard=i/n]"
         } else {
             ""
@@ -98,7 +98,7 @@ fn print_variants(benchmark_id: &str) {
     let Ok(root) = super::bench_run::repo_root() else {
         return;
     };
-    let Ok(baseline) = atlas_plugin::gate::read_baseline(&root, benchmark_id) else {
+    let Ok(baseline) = avarok_plugin::gate::read_baseline(&root, benchmark_id) else {
         return;
     };
     for (hardware, hw) in &baseline.hardware {
@@ -176,8 +176,8 @@ pub fn print_record(record: &RunRecord, format: OutputFormat) -> Result<()> {
     println!("  when     {} ({})", record.recorded_at, record.age_text());
     println!("  target   {} · {}", record.target_url, record.target_model);
     println!(
-        "  source   {:?} · atlas {}",
-        record.source, record.atlas_version
+        "  source   {:?} · avarok {}",
+        record.source, record.avarok_version
     );
     if !record.params.is_empty() {
         println!("  params");
@@ -263,7 +263,7 @@ impl RunReporter for StdoutReporter {
                 if !self.quiet
                     || matches!(
                         line.level,
-                        atlas_plugin::LogLevel::Warn | atlas_plugin::LogLevel::Error
+                        avarok_plugin::LogLevel::Warn | avarok_plugin::LogLevel::Error
                     ) =>
             {
                 eprintln!("  {:?}: {}", line.level, line.text);
@@ -292,7 +292,7 @@ impl RunReporter for StdoutReporter {
             if !self.quiet
                 || matches!(
                     line.level,
-                    atlas_plugin::LogLevel::Warn | atlas_plugin::LogLevel::Error
+                    avarok_plugin::LogLevel::Warn | avarok_plugin::LogLevel::Error
                 )
             {
                 let text = format!("  {:?}: {}", line.level, line.text);

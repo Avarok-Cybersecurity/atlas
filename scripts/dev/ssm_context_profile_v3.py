@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SSM State Quality Degradation Profiler v3 for Atlas.
+SSM State Quality Degradation Profiler v3 for Avarok.
 
 Focused deep-dive:
 1. Needle reliability: repeat needle test 3x at each failing length
@@ -103,7 +103,7 @@ def get_diag_norms(n: int = 50) -> list:
     """Extract recent DIAG lines from docker logs."""
     try:
         result = subprocess.run(
-            ["sudo", "docker", "logs", "atlas-35b", "--tail", str(n)],
+            ["sudo", "docker", "logs", "avarok-35b", "--tail", str(n)],
             capture_output=True, text=True, timeout=10
         )
         lines = (result.stderr + result.stdout).split("\n")

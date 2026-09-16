@@ -86,7 +86,7 @@ test('an unnameable code never reaches the UI as an object', () => {
 });
 
 test('the codes the agent actually sends still read as sentences', () => {
-  expect(describeError({ code: 'not_paired' })).toContain('atlasctl agent token');
+  expect(describeError({ code: 'not_paired' })).toContain('avarokctl agent token');
   expect(describeError({ code: 'unknown_recipe', recipe: 'qwen' })).toContain('qwen');
   expect(describeError({ code: 'docker_unavailable', detail: 'no socket' })).toContain('no socket');
   expect(describeError({ code: 'already_running' })).toContain('already running');

@@ -154,7 +154,7 @@ impl HintInjector for EditMismatchHint {
 /// Per A4 research: Anthropic's documented retry budget is "2-3 times
 /// with corrections then apologise" — RL-trained, not server-enforced.
 /// `cargo: command not found` / `Exit code 127` is structurally a
-/// PERMANENT failure (the binary isn't installed). Atlas's previous
+/// PERMANENT failure (the binary isn't installed). Avarok's previous
 /// behaviour waited for `consecutive_errors >= 3` (the GenericErrorHint
 /// path) before escalating; this injector fires at N=1 with a soft
 /// "do not retry" hint and at N>=2 with a CRITICAL stop directive.
@@ -304,7 +304,7 @@ pub fn looks_like_error(text: &str) -> bool {
 // file(s) — the run finishes with a valid Cargo.toml but no real src/main.rs,
 // so webserver_ok never fires. This steering nudge fires when the agent has
 // made many tool calls with NO productive file output yet, redirecting it to
-// write + verify. Env-gated (PCND): ATLAS_BASH_WANDER_WATCHDOG=1.
+// write + verify. Env-gated (PCND): AVAROK_BASH_WANDER_WATCHDOG=1.
 
 /// Classify a tool call as PRODUCTIVE (produces/verifies a deliverable) vs
 /// exploratory. `write`/`edit`/`create` tools are productive; a `bash` call is

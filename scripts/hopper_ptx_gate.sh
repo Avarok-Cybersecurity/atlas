@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# Does every Atlas kernel compile for a given SM architecture? Answered with
+# Does every Avarok kernel compile for a given SM architecture? Answered with
 # nvcc alone — no H100, no B200, no GPU of any kind.
 #
 # Named for the campaign it was written for; it is not Hopper-specific and
@@ -46,7 +46,7 @@
 # evidence.
 #
 # The NEGATIVE fixture is chosen per arch, because no one instruction is absent
-# from every architecture Atlas targets. `redux.sync.max.abs.f32` is absent
+# from every architecture Avarok targets. `redux.sync.max.abs.f32` is absent
 # everywhere EXCEPT sm_100a; the warp-level `mma ... kind::mxf4nvf4
 # .block_scale` is absent on sm_90a and sm_100a and present on sm_120/sm_121.
 # An arch with no registered negative fixture is REFUSED, not waved through:
@@ -73,7 +73,7 @@ if [ "${1:-}" = "--compile-one" ]; then
   arch="$6"
   ptx="$work/ptx/$key.ptx"
   strict=()
-  if [ "${ATLAS_GATE_STRICT:-0}" = 1 ]; then
+  if [ "${AVAROK_GATE_STRICT:-0}" = 1 ]; then
     strict=(--Werror all-warnings)
   fi
   inc=()
@@ -174,7 +174,7 @@ fi
 # (build_flags.rs `merge_extra_flags` + build_parse.rs `parse_kernel_toml`).
 #
 # The hardware layer is what makes this gate answer the question it claims to.
-# kernels/hopper and kernels/b200 define -DATLAS_NO_WARP_BLOCKSCALE_MMA there,
+# kernels/hopper and kernels/b200 define -DAVAROK_NO_WARP_BLOCKSCALE_MMA there,
 # compiling out a W4A4 region neither ISA can assemble; a gate that ignored
 # that layer would keep reporting a failure the real build does not have.
 #
@@ -207,7 +207,7 @@ def flags(d):
 def kernel_source(model_dir):
     """`[model] kernel_source` from MODEL.toml, or None.
 
-    Mirrors crates/atlas-kernels/build_parse.rs::parse_kernel_source: the
+    Mirrors crates/avarok-kernels/build_parse.rs::parse_kernel_source: the
     value names ANOTHER kernel-target directory whose per-quant kernel tree
     this target compiles instead of shipping its own copies. Everything else
     in MODEL.toml still belongs to the redirecting target.
@@ -228,7 +228,7 @@ def kernel_source(model_dir):
 def resolve_kernel_dir(model):
     """The directory whose quant trees supply this model's kernels.
 
-    build.rs (`kernel_src_dir`, crates/atlas-kernels/build.rs:1065) validates
+    build.rs (`kernel_src_dir`, crates/avarok-kernels/build.rs:1065) validates
     the referent is a kernel target directory and REFUSES chains -- a source
     has to own its sources. Both refusals are reproduced here, because a gate
     that resolved a redirect the build would reject is not predicting the
@@ -395,7 +395,7 @@ generate_tasks 0
 
 # ── Compile ──
 echo "compiling for $ARCH with $JOBS job(s), strict=$STRICT — $NVCC_VERSION"
-ATLAS_GATE_STRICT="$STRICT" \
+AVAROK_GATE_STRICT="$STRICT" \
 xargs -a "$WORK/tasks.tsv" -d '\n' -P "$JOBS" -I LINE \
   bash "${BASH_SOURCE[0]}" --compile-one LINE "$WORK" "$NVCC" "$PTXAS" "$ARCH"
 
@@ -542,7 +542,7 @@ with open(out, "w") as f:
 
 md = os.path.splitext(out)[0] + ".md"
 L = []
-L.append(f"# Atlas PTX gate — `{hw}` @ `{arch}`\n")
+L.append(f"# Avarok PTX gate — `{hw}` @ `{arch}`\n")
 L.append(f"* generated: {ledger['generated_utc']} on `{ledger['host']}`")
 L.append(f"* toolchain: {nvcc_version}")
 L.append(f"* strict (`--Werror all-warnings`, as build.rs): {ledger['strict']}")

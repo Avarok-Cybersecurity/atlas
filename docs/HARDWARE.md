@@ -1,6 +1,6 @@
 # Adding a new hardware target or model family
 
-Atlas's compute stack is structured around **(hardware, model, quant) tuples**.
+Avarok's compute stack is structured around **(hardware, model, quant) tuples**.
 Each tuple is a self-contained body of work: kernels are written, tuned, and
 tested per-tuple. This document explains how to extend the matrix.
 
@@ -18,7 +18,7 @@ kernels/
             └── *.cu               e.g. qwen3.6-35b-a3b/nvfp4/inferspark_prefill_h128.cu
 ```
 
-The build script (`crates/atlas-kernels/build.rs`) walks this tree and
+The build script (`crates/avarok-kernels/build.rs`) walks this tree and
 compiles every `.cu` to PTX. Model-specific files override shared
 files when a name collision occurs.
 
@@ -55,7 +55,7 @@ Qwen3.5/3.6 family), the mechanical recipe is:
    # build.rs FAILS if colliding targets omit this, and a tie the needles
    # cannot break to exactly one target is a hard startup error (never a
    # build-order pick; `--kernel-target` pins explicitly). Rules + rationale:
-   # crates/atlas-kernels/src/resolve.rs.
+   # crates/avarok-kernels/src/resolve.rs.
    # match_names = ["qwen3.7-XXb"]
 
    # Architecturally-identical sibling (zero new kernels)? Reuse another
@@ -86,12 +86,12 @@ Qwen3.5/3.6 family), the mechanical recipe is:
 
 5. **Build with the wildcard target**:
    ```
-   ATLAS_TARGET_MODEL='*' cargo build --release -p spark-server
+   AVAROK_TARGET_MODEL='*' cargo build --release -p spark-server
    ```
    The new target compiles into the binary; runtime selects it via
    `model_type` + `hidden_size` matching, with `match_names` breaking any
    tie between config-identical checkpoints (see
-   `crates/atlas-kernels/src/resolve.rs`).
+   `crates/avarok-kernels/src/resolve.rs`).
 
 If your model is genuinely new (different attention pattern, novel SSM
 variant, etc.), you'll also need to:
@@ -103,14 +103,14 @@ variant, etc.), you'll also need to:
 
 ## Adding a new hardware target
 
-Atlas's NVIDIA targets are **GB10 (Blackwell, sm_121)**, **Hopper
+Avarok's NVIDIA targets are **GB10 (Blackwell, sm_121)**, **Hopper
 (H100/H200, sm_90a)** and **B200 (B200/GB200, sm_100a)**; `strix`/`strix-hip`
 (AMD gfx1151) and `metal` are the non-NVIDIA sets. Adding another — say sm_120
 for a consumer Blackwell board, or sm_103 for Blackwell Ultra (B300/GB300) —
 requires:
 
 1. **`kernels/<new-hw>/HARDWARE.toml`**. The keys are exactly the ones
-   `crates/atlas-kernels/build.rs` reads, plus documentation:
+   `crates/avarok-kernels/build.rs` reads, plus documentation:
    ```toml
    [hardware]
    name = "gb10"                   # matches the directory name
@@ -128,9 +128,9 @@ requires:
    per-vendor KERNEL.toml flag key (`extra_nvcc_flags` vs `extra_metal_flags`).
 
    `compute_capability` has ONE reader, and it is a test:
-   `crates/atlas-kernels/tests/target_hints.rs` asserts that every
-   `vendor = "nvidia"` set's declared CC is what `atlas_core::arch::target_hint`
-   maps back to that directory name — so the "rebuild with `ATLAS_TARGET_HW=…`"
+   `crates/avarok-kernels/tests/target_hints.rs` asserts that every
+   `vendor = "nvidia"` set's declared CC is what `avarok_core::arch::target_hint`
+   maps back to that directory name — so the "rebuild with `AVAROK_TARGET_HW=…`"
    line an operator gets on an arch mismatch cannot drift from the tree. Get it
    right; it is no longer decoration.
 
@@ -146,13 +146,13 @@ requires:
    siblings, each with instructions the other lacks (see the B200 section
    below).
 
-   The value also has to be reachable: `crates/atlas-kernels/tests/target_hints.rs`
-   asserts that `atlas_core::arch::target_hint` maps this file's
+   The value also has to be reachable: `crates/avarok-kernels/tests/target_hints.rs`
+   asserts that `avarok_core::arch::target_hint` maps this file's
    `compute_capability` back to the directory name, so an operator whose GPU
    fails the arch preflight is told which target to rebuild.
 
    **Benchmark limits** (`[benchmarks.limits.{thermal,memory,timing,equivalence}]`,
-   `atlas_plugin::hardware::limits`): what `spark bench certify` and the
+   `avarok_plugin::hardware::limits`): what `spark bench certify` and the
    record policies judge a box of this class by — the chassis temperature it
    is parked at and resumed at, the chassis delta and clock/memory spreads
    under which two boxes are "one box" for a Speed record, the die ceiling a
@@ -173,7 +173,7 @@ requires:
    shapes, SMEM budget and tensor-core MMA instructions are what usually
    needs tuning.
 
-3. **`atlas-kernels/build.rs`**: usually no changes needed — the build
+3. **`avarok-kernels/build.rs`**: usually no changes needed — the build
    script auto-discovers new `kernels/<hw>/` directories.
 
 4. **`spark-runtime/src/cuda_backend.rs`**: if the hardware has different
@@ -184,7 +184,7 @@ requires:
    `NCCL_SOCKET_IFNAME=enp1s0f0np0` (GB10's RDMA NIC). Update for the
    new hardware's interconnect.
 
-6. **CI**: GitHub Actions runs on `ubuntu-latest` with `ATLAS_SKIP_BUILD=1`
+6. **CI**: GitHub Actions runs on `ubuntu-latest` with `AVAROK_SKIP_BUILD=1`
    so no GPU is needed. The new target compiles via the wildcard build
    on a host with the right SM.
 
@@ -266,7 +266,7 @@ same gap as the CUTLASS wrappers above reached through a hand-written kernel.
 `moe_w4a16_fused_gate_up_t_k64_fp4` and `moe_w4a16_down_t_k64_fp4`).
 Everything above them is W4A16 — 4-bit weights dequantised to BF16, plain
 `mma.sync` — and assembles at the SM80 floor. The tail sits inside
-`#ifndef ATLAS_NO_WARP_BLOCKSCALE_MMA`, and `kernels/hopper/HARDWARE.toml`
+`#ifndef AVAROK_NO_WARP_BLOCKSCALE_MMA`, and `kernels/hopper/HARDWARE.toml`
 defines that macro in `[build] extra_nvcc_flags`, so it is compiled out here
 and compiled in on GB10, whose PTX for the file is byte-identical across the
 change (sha256 `137b44c2762d1996c9a1551a906a692cb067edae0b4ee4beee9098d303de4b3a`,
@@ -275,8 +275,8 @@ The two absent entry points are declared in
 `kernels/hopper/qwen3.6-35b-a3b/MODEL.toml` `[expected_absent.moe_w4a16]` with
 the ptxas error as the reason, so the boot audit reports them as an expected
 absence rather than refusing to serve. Both are `try_kernel` lookups fired only
-behind a default-off opt-in (`ATLAS_HOLO_MOE_GATEUP_FP4` /
-`ATLAS_HOLO_MOE_DOWN_FP4`); what Hopper loses is the FP4 escape hatch, and the
+behind a default-off opt-in (`AVAROK_HOLO_MOE_GATEUP_FP4` /
+`AVAROK_HOLO_MOE_DOWN_FP4`); what Hopper loses is the FP4 escape hatch, and the
 FP8 path serves. 173/173 under `--strict`, i.e. with the
 `--Werror all-warnings` the real build adds. `nemotron-super-120b-a12b`
 passes `--strict` too.
@@ -298,7 +298,7 @@ to report results. A gate whose failure path has never executed is not
 evidence.
 
 The negative fixture is chosen **per arch**, because no single instruction is
-absent from every architecture Atlas targets:
+absent from every architecture Avarok targets:
 
 | arch under test | negative fixture | why it fails there |
 |---|---|---|
@@ -335,7 +335,7 @@ built exactly like `kernels/hopper/`: 225 relative symlinks into
 `kernels/gb10/` (the 188-entry `common/` plus each of the five P0 models'
 `nvfp4/`), with a real `MODEL.toml` per model whose header records that its
 `[expected_absent]` tables were harvested on GB10 and **not** re-harvested on a
-B200. `crates/atlas-kernels/tests/inherited_targets.rs` holds both trees to the
+B200. `crates/avarok-kernels/tests/inherited_targets.rs` holds both trees to the
 same assertions.
 
 **sm_100a, and why it is not a step up from sm_121.** The `a` suffix opts into
@@ -370,7 +370,7 @@ because sm_90a has no `cvt .e2m1x2` at all; on sm_100a that conversion is fine
 and the *warp-level block-scaled MMA* is what is missing.
 
 **It is now 173/173 here too**, by the same mechanism as Hopper:
-`kernels/b200/HARDWARE.toml` defines `-DATLAS_NO_WARP_BLOCKSCALE_MMA`, the
+`kernels/b200/HARDWARE.toml` defines `-DAVAROK_NO_WARP_BLOCKSCALE_MMA`, the
 W4A4 tail of that file is compiled out, and its two entry points are declared
 `[expected_absent.moe_w4a16]` in `kernels/b200/qwen3.6-35b-a3b/MODEL.toml`,
 under `--strict`. Re-derived 2026-09-11 across all five b200 model targets:
@@ -412,16 +412,16 @@ needs `cutlass::arch::Sm100` collectives behind
 `CUTLASS_ARCH_MMA_SM100_SUPPORTED`; that is not done here.
 
 B300 and GB300 are **sm_103a** and are NOT this target. `sm_100a` PTX does not
-run on CC 10.3, `atlas_core::arch::target_hint` returns `None` for it on
+run on CC 10.3, `avarok_core::arch::target_hint` returns `None` for it on
 purpose, and `hardware_id_from_gpu_name` maps neither part — a B300 gets "no
 shipped target" rather than a rebuild instruction that would fail the same way.
 
 ## Adding a new quantization scheme
 
-Atlas supports NVFP4 (E2M1 + FP8 scales), FP8 block-scaled, BF16 raw.
+Avarok supports NVFP4 (E2M1 + FP8 scales), FP8 block-scaled, BF16 raw.
 To add a new scheme (e.g., MX4, INT4):
 
-1. **`crates/atlas-core/src/config.rs`**: extend the quant detection
+1. **`crates/avarok-core/src/config.rs`**: extend the quant detection
    logic to recognize the new format from `quantization_config` in
    `config.json`.
 2. **`crates/spark-model/src/weight_map/`**: add a loader function
@@ -464,7 +464,7 @@ than something to change while adding a target.
 
 ### PTX emission is not assembly validation
 
-`crates/atlas-kernels/build.rs` runs `nvcc --ptx` only (`NvidiaTarget::compile`
+`crates/avarok-kernels/build.rs` runs `nvcc --ptx` only (`NvidiaTarget::compile`
 in `build_target.rs`); nothing assembles the PTX until the runtime hands it to
 `cuModuleLoadData`. A green `cargo build` therefore proves that every kernel
 *emits* PTX, not that every entry *assembles* for the target. Static
@@ -491,7 +491,7 @@ Once compiled:
 # Smoke test
 docker run --gpus all --ipc=host -p 8888:8888 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  atlas-gb10:latest \
+  avarok-gb10:latest \
   serve <new-model-hf-id> --max-seq-len 4096 --max-batch-size 1
 
 curl http://localhost:8888/v1/chat/completions -d '{"model":"...","messages":[{"role":"user","content":"hi"}]}'

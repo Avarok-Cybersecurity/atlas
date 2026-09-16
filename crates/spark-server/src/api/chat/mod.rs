@@ -140,7 +140,7 @@ pub async fn chat_completions(
             // off the runtime — the decision needs the index, and the index is
             // on disk.
             let outcome = tokio::task::spawn_blocking(move || {
-                let catalogue = atlas_plugin::ArtifactStore::discover()
+                let catalogue = avarok_plugin::ArtifactStore::discover()
                     .ok()
                     .map(|s| crate::recipe::fetch::cached(s.root()).recipes)
                     .unwrap_or_default();
@@ -219,7 +219,7 @@ pub(crate) async fn chat_completions_inner(
 ) -> ChatOutcome {
     crate::metrics::REQUESTS_TOTAL.inc();
     // RAII: decrements on EVERY exit path, including this future being dropped
-    // when the client disconnects (see ActiveRequestGuard / atlas#368). Moved
+    // when the client disconnects (see ActiveRequestGuard / avarok#368). Moved
     // into the SSE stream for streaming requests so it outlives this function.
     let active_guard = crate::metrics::ActiveRequestGuard::new();
 

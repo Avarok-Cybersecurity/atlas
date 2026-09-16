@@ -34,7 +34,7 @@ pub(super) enum PositionKind {
 
 impl PositionKind {
     /// AdaDec diagnostic path label — only tags the env-gated
-    /// `ATLAS_ADADEC_DIAGNOSTIC` JSONL record; never alters a transform.
+    /// `AVAROK_ADADEC_DIAGNOSTIC` JSONL record; never alters a transform.
     pub(super) fn adadec_label(self) -> &'static str {
         match self {
             PositionKind::FinalDecode => "decode",
@@ -103,7 +103,7 @@ pub(super) fn strip_in_tool_opener_bias(
 ///
 /// Those literals bypassed the exact FP8/NVFP4 argmax-flip safety net the
 /// floor exists for. Threading the resolved value is the SSOT wiring fix and
-/// is on by default; `ATLAS_NO_MTP_MINP=1` restores the literals. The switch
+/// is on by default; `AVAROK_NO_MTP_MINP=1` restores the literals. The switch
 /// is `SchedLevers::mtp_minp`, read off the run's levers rather than a static.
 pub(super) fn effective_min_p(
     min_p: f32,
@@ -178,7 +178,7 @@ pub(super) fn penalty_params_for(
     // `</think>` suppressed — the turn-ending mass reroutes to
     // <|im_end|>/<|im_start|> and sampled runs EOS inside think (empty
     // body) or simulate new template turns (measured on qwen4_exp,
-    // 2026-08-26, via ATLAS_LOGIT_DUMP).
+    // 2026-08-26, via AVAROK_LOGIT_DUMP).
     let floor = min_reasoning_floor();
     if floor > 0
         && a.inside_thinking
@@ -289,7 +289,7 @@ pub fn verify_resample(model: &dyn Model, argmax_tokens: &[u32], temperature: f3
 /// internal `SamplingParams`, so the only stochastic first-token sample
 /// under MTP bypassed the FP8 argmax-flip safety net the floor documents
 /// (min_p_floor = 0.05 on this model family). Kill-switch:
-/// `ATLAS_NO_MTP_MINP=1` restores the old 0.0 literal via [`effective_min_p`].
+/// `AVAROK_NO_MTP_MINP=1` restores the old 0.0 literal via [`effective_min_p`].
 pub fn sample_token(
     model: &dyn Model,
     logits: DevicePtr,
@@ -328,11 +328,11 @@ pub fn sample_token(
             })
             .collect()
     };
-    // Raw-logits dump for numerics triage (`ATLAS_DUMP_LOGITS_PATH=/dir`):
+    // Raw-logits dump for numerics triage (`AVAROK_DUMP_LOGITS_PATH=/dir`):
     // appends this step's FP32 logits to a flat binary. The reporting APIs
     // only expose post-softmax values, which cannot distinguish flat from
     // mis-scaled from stale; raw rows across consecutive steps can.
-    if let Ok(dir) = std::env::var("ATLAS_DUMP_LOGITS_PATH") {
+    if let Ok(dir) = std::env::var("AVAROK_DUMP_LOGITS_PATH") {
         use std::io::Write;
         let path = std::path::Path::new(&dir).join("logits_stok.bin");
         if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -419,11 +419,11 @@ pub fn sample_token_with_grammar(
     // ── FAST PATH (#3, 2026-06-02): on-GPU greedy pick under grammar ──
     // The MTP bootstrap sample (~1 token/step) otherwise D2Hs + dequants the
     // full 248k vocab + applies the bitmask on host. When greedy (temp=0 or
-    // ATLAS_FORCE_TEMP_ZERO), penalties neutral, and no suppress list, the
+    // AVAROK_FORCE_TEMP_ZERO), penalties neutral, and no suppress list, the
     // masked-greedy pick == the GPU argmax whenever that argmax is grammar-
     // allowed (global max ∩ allowed-set = the max). Emit it directly; fall back
     // to the host path below only when the argmax is grammar-disallowed.
-    // Mirrors the verify-path fast path. Kill-switch ATLAS_DISABLE_FAST_GREEDY=1.
+    // Mirrors the verify-path fast path. Kill-switch AVAROK_DISABLE_FAST_GREEDY=1.
     //
     // #237 (fix 4a): penalty-neutrality relaxed to the SSOT `fast_greedy`
     // gate shared with the verify helper — reduce-only penalties cannot flip
@@ -517,7 +517,7 @@ pub fn sample_token_with_grammar(
             // hardcoded 0.0, so the MTP BOOTSTRAP token — one of only two
             // stochastic sample points under MTP — bypassed the FP8
             // argmax-flip safety net the floor documents. Kill-switch:
-            // ATLAS_NO_MTP_MINP=1 restores the 0.0 literal.
+            // AVAROK_NO_MTP_MINP=1 restores the 0.0 literal.
             min_p: effective_min_p(penalties.min_p, levers),
             logit_bias: Vec::new(),
             repetition_penalty: 1.0,
@@ -566,7 +566,7 @@ pub fn sample_token_with_grammar(
 /// the only two stochastic sample points under MTP (with the bootstrap),
 /// so the unfloored min_p let the FP8/NVFP4 degenerate logit tail be
 /// sampled exactly where the floor was designed to block it. Kill-switch:
-/// `ATLAS_NO_MTP_MINP=1` restores the 0.0 literals via [`effective_min_p`].
+/// `AVAROK_NO_MTP_MINP=1` restores the 0.0 literals via [`effective_min_p`].
 ///
 /// `policy` (2026-09-06): whether the grammar may act on token 0 at all.
 /// A sequence born inside `<think>` keeps its matcher paused until
@@ -630,7 +630,7 @@ pub fn sample_first_token(
 #[cfg(test)]
 mod penalty_scope_tests {
     //! #192: the per-tool-call-segment penalty history scope and the in-tool
-    //! opener-bias strip — the two levers that stop Atlas's own sampling
+    //! opener-bias strip — the two levers that stop Avarok's own sampling
     //! machinery from garbling the SECOND parallel tool call (live 2026-07-02,
     //! hermes on Qwen3.6-27B-NVFP4: call 2 scaffold flipped to space-prefixed
     //! BPE variants `Berlin </ parameter >` + a spurious mid-value

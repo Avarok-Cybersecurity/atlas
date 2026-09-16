@@ -14,7 +14,7 @@
 //! All expert dispatch is device-side (pointer tables) — zero D2H sync.
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
 

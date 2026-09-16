@@ -74,7 +74,7 @@ pub struct DflashKernels {
     pub prefill_attn: KernelHandle,
     /// Phase G — BF16 → FP8 E4M3 per-row weight quantization. Used at
     /// model load time to convert the seven dense-GEMM drafter weights
-    /// (q/k/v/o/gate/up/down) when `ATLAS_DFLASH_DRAFTER_FP8=1`. Never
+    /// (q/k/v/o/gate/up/down) when `AVAROK_DFLASH_DRAFTER_FP8=1`. Never
     /// on the hot path.
     pub quantize_bf16_to_fp8: KernelHandle,
     /// Phase G — Row-scaled BF16 × FP8 → BF16 GEMM. Consumes the
@@ -98,7 +98,7 @@ pub struct DflashKernels {
     /// BOTH tile GEMMs above at M<=8 (they pad 87%/50% of their M-tile;
     /// ~100 GB/s measured vs 180+ for the rt family, nsys 2026-08-19).
     /// `.0 == 0` on targets without the `fp8_gemv_rt` module → tile path.
-    /// Kill-switch: ATLAS_NO_DFLASH_FP8_RT=1. provenance-id:
+    /// Kill-switch: AVAROK_NO_DFLASH_FP8_RT=1. provenance-id:
     /// 526f6e616c6420522e205374657369616b
     pub fp8_gemv_rt2: KernelHandle,
     /// MAX_M=16 sibling of `fp8_gemv_rt2` for the γ>8 propose window
@@ -222,7 +222,7 @@ pub struct DflashScratch {
 }
 
 /// Drafter-side weight precision. Defaults to BF16. **Phase G (2026-05-28)**
-/// adds `Fp8Weights`, gated by env var `ATLAS_DFLASH_DRAFTER_FP8`. The
+/// adds `Fp8Weights`, gated by env var `AVAROK_DFLASH_DRAFTER_FP8`. The
 /// historical SM12.x acceptance collapse note applied to drafter FP8 KV
 /// cache (different concern — bidirectional attention math); Phase G
 /// targets weight FP8 only, so the risk surface is dynamic-range loss
@@ -239,7 +239,7 @@ pub enum DflashQuantization {
 
 /// Per-drafter-layer Qwen3-style weights. Phase 1 is BF16-only; **Phase G**
 /// (2026-05-28) adds optional FP8 weight fields populated at model load
-/// when `ATLAS_DFLASH_DRAFTER_FP8=1`. The BF16 fields are always present
+/// when `AVAROK_DFLASH_DRAFTER_FP8=1`. The BF16 fields are always present
 /// (Fp8 path falls back to them for any GEMM whose Fp8 weight is None).
 #[allow(dead_code)]
 pub struct DflashLayer {
@@ -259,7 +259,7 @@ pub struct DflashLayer {
     pub down_proj: DenseWeight,
 
     // Phase G — optional FP8 mirrors of the seven dense-GEMM weights.
-    // Populated at load time when `ATLAS_DFLASH_DRAFTER_FP8=1`, consumed
+    // Populated at load time when `AVAROK_DFLASH_DRAFTER_FP8=1`, consumed
     // by forward_block_layer_pre_attn / _post_attn when self.quant ==
     // DflashQuantization::Fp8Weights. None when BF16 path is active.
     pub q_proj_fp8: Option<crate::weight_map::Fp8DenseWeight>,
@@ -319,7 +319,7 @@ pub struct DflashProposerState {
     /// decode-append because the verify step (K=2 accept) already appended
     /// row 0 + row 1 in EAGLE order before calling propose. Consumed (reset to
     /// false) by propose. Set on the EAGLE-fix path, which is DEFAULT-ON
-    /// (`ATLAS_DFLASH_EAGLE_FIX=0` is the kill switch, not `=1` the opt-in ,
+    /// (`AVAROK_DFLASH_EAGLE_FIX=0` is the kill switch, not `=1` the opt-in ,
     /// see verify_k2_step.rs and verify_dflash_step.rs, both `!= Some("0")`).
     pub skip_next_decode_append: bool,
     /// Allocation cap for `ctx_hidden_acc` (in slot count). Mirrors the
@@ -421,7 +421,7 @@ pub struct BlockDiffusionDraftHead {
     pub lm_head_nvfp4: Option<QuantizedWeight>,
     /// Phase G — optional FP8 mirror of the shared lm_head weight,
     /// `[vocab_size, hidden_size]` FP8 E4M3 + per-row f32 scales.
-    /// Built at model load when `ATLAS_DFLASH_DRAFTER_FP8=1`. Owned by
+    /// Built at model load when `AVAROK_DFLASH_DRAFTER_FP8=1`. Owned by
     /// the drafter (separate allocation from the shared BF16 ptr) since
     /// it must not mutate the target model's lm_head. `None` on the
     /// BF16 path.
@@ -463,7 +463,7 @@ pub struct BlockDiffusionDraftHead {
     /// Paged FP8 KV cache. One cache holding all `num_layers` drafter layers,
     /// laid out the same way the target's KV cache is — block-table-keyed,
     /// `num_layers × num_kv_heads × head_dim` per slot. Allocating a single
-    /// multi-layer cache (vs. one per drafter layer) matches Atlas's existing
+    /// multi-layer cache (vs. one per drafter layer) matches Avarok's existing
     /// `PagedKvCache` ABI and lets us reuse the existing `reshape_and_cache`
     /// kernel without per-layer dispatch overhead.
     pub kv_cache: Mutex<PagedKvCache>,
@@ -524,7 +524,7 @@ pub struct BlockDiffusionDraftHead {
     /// these instead of the environment — see [`levers::DFlashLevers`].
     pub levers: levers::DFlashLevers,
     /// How many eager warm-up calls we've executed against the graph path.
-    /// Default warmup target is 2 (override via `ATLAS_DFLASH_PROPOSE_WARMUP_N`).
+    /// Default warmup target is 2 (override via `AVAROK_DFLASH_PROPOSE_WARMUP_N`).
     /// Two eager passes warm the PTX→SASS cache, ramp GB10 clocks to steady
     /// state, and bring hot weight tiles into L2 before the capture freezes
     /// SASS variants the driver picks. Shared across all subgraphs — every
@@ -555,8 +555,8 @@ pub struct BlockDiffusionDraftHead {
     /// SpecForge shifted row convention (drafter config
     /// `dflash_config.projector_type == "dspark"`): row j's output is the
     /// token at position j+1, so the returned draft vector is rotated right
-    /// by one to line up with Atlas's z-lab-convention verify indexing.
-    /// Overridable for A/B via `ATLAS_DSPARK_SHIFT=0|1`.
+    /// by one to line up with Avarok's z-lab-convention verify indexing.
+    /// Overridable for A/B via `AVAROK_DSPARK_SHIFT=0|1`.
     pub shifted_rows: bool,
 
     // === DFlash2 (None/0 ⇒ plain DFlash behavior) ===
@@ -579,7 +579,7 @@ pub struct BlockDiffusionDraftHead {
 
 mod dflash2;
 /// Whether the Option-B paged drafter cache is on. Default ON since the 54.5
-/// record config (#649); `ATLAS_DFLASH_OPTION_B=0` is the kill switch.
+/// record config (#649); `AVAROK_DFLASH_OPTION_B=0` is the kill switch.
 ///
 /// Split into a reader and a pure predicate because the POLARITY is the whole
 /// point and it has already been flipped by accident: a merge on 2026-08-30
@@ -681,12 +681,12 @@ impl DraftProposer for BlockDiffusionDraftHead {
     fn propose_batch_max(
         &self,
         _buffers: &spark_runtime::buffers::BufferArena,
-        _config: &atlas_core::config::ModelConfig,
+        _config: &avarok_core::config::ModelConfig,
     ) -> usize {
         if !self.dflash2_active() {
             return 1;
         }
-        // DEFAULT-ON. `ATLAS_DFLASH_BATCH_PROPOSE=<width>` overrides: `1`
+        // DEFAULT-ON. `AVAROK_DFLASH_BATCH_PROPOSE=<width>` overrides: `1`
         // (or `0`) disables and restores the per-sequence loop, `N` caps the
         // batch at N sequences. Numeric rather than boolean because
         // bisecting the WIDTH against acceptance is what localises a banding
@@ -885,12 +885,12 @@ impl DraftProposer for BlockDiffusionDraftHead {
     }
 }
 
-/// ATLAS_NO_DFLASH_FP8_RT=1 restores the tile-GEMM propose path for A/B
-/// (strict `== "1"`, matching the sibling ATLAS_NO_* levers). OnceLock so
+/// AVAROK_NO_DFLASH_FP8_RT=1 restores the tile-GEMM propose path for A/B
+/// (strict `== "1"`, matching the sibling AVAROK_NO_* levers). OnceLock so
 /// the kernel choice is stable across CUDA-graph capture.
 pub(crate) fn fp8_rt_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_DFLASH_FP8_RT").as_deref() != Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_DFLASH_FP8_RT").as_deref() != Ok("1"))
 }
 
 /// The DFlash context-window bound, in tokens: the most recent target
@@ -903,9 +903,9 @@ pub(crate) fn fp8_rt_enabled() -> bool {
 /// memory. Letting the two drift is exactly the ceiling-vs-need bug this
 /// bound exists to close.
 ///
-/// `ATLAS_DFLASH_CTX_CAP=<tokens>`; `0` disables the cap entirely.
+/// `AVAROK_DFLASH_CTX_CAP=<tokens>`; `0` disables the cap entirely.
 pub fn dflash_ctx_cap() -> usize {
-    std::env::var("ATLAS_DFLASH_CTX_CAP")
+    std::env::var("AVAROK_DFLASH_CTX_CAP")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(16384)
@@ -913,7 +913,7 @@ pub fn dflash_ctx_cap() -> usize {
 
 impl BlockDiffusionDraftHead {
     /// Allocate proposer state with the ctx accumulator sized to the smallest
-    /// of: this request's token budget, the ATLAS_DFLASH_CTX_CAP window, and
+    /// of: this request's token budget, the AVAROK_DFLASH_CTX_CAP window, and
     /// `--max-seq-len`.
     fn alloc_state_windowed(
         &self,
@@ -938,7 +938,7 @@ impl BlockDiffusionDraftHead {
         // accumulator fills, keeping the NEWEST half and re-stamping
         // ctx_positions, so a smaller window is an already-exercised path —
         // the drafter conditions on recent context instead of the whole
-        // history. Raise with ATLAS_DFLASH_CTX_CAP=<tokens> (0 = uncapped,
+        // history. Raise with AVAROK_DFLASH_CTX_CAP=<tokens> (0 = uncapped,
         // the pre-cap behaviour) if you have the memory and want the drafter
         // to see further back.
         let cap = dflash_ctx_cap();
@@ -960,7 +960,7 @@ impl BlockDiffusionDraftHead {
                     "DFlash ctx window capped to {} of --max-seq-len {} ({} MB/seq instead of \
                      {} MB): the accumulator is PER SEQUENCE, so the uncapped size is what \
                      OOMs a high-concurrency long-context serve. Override with \
-                     ATLAS_DFLASH_CTX_CAP=<tokens> (0 = uncapped).",
+                     AVAROK_DFLASH_CTX_CAP=<tokens> (0 = uncapped).",
                     ceiling,
                     self.max_seq_len,
                     ceiling * ctx_slot_bytes / (1024 * 1024),
@@ -984,7 +984,7 @@ impl BlockDiffusionDraftHead {
             max_ctx_len: window,
             ctx_slot_bytes,
             // Phase 2 Option B: lazily allocated on first propose when
-            // ATLAS_DFLASH_OPTION_B=1. None until then to keep alloc_state
+            // AVAROK_DFLASH_OPTION_B=1. None until then to keep alloc_state
             // cheap for sequences that never use Option B.
             block_table_dev: None,
             ctx_count_drafter: 0,

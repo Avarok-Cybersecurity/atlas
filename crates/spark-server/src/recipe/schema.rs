@@ -3,7 +3,7 @@
 //! Recipe `defaults:` keys → `spark serve` flags.
 //!
 //! **clap stays the single source of truth for the flag surface.** `ServeArgs`
-//! is not given a `Serialize` derive: `atlas-recipes` is a separate repo that
+//! is not given a `Serialize` derive: `avarok-recipes` is a separate repo that
 //! cannot be renamed atomically with this one, so making the CLI a public
 //! serialization format would turn every future flag rename into a compat
 //! break. Instead a recipe is converted to argv and handed back through

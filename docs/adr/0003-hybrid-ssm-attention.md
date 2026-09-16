@@ -25,12 +25,12 @@ The candidate approaches:
    leaks.
 2. **Two layer kinds.** Distinguish `FullAttention | LinearAttention` (and
    sub-kinds for SSM variants) at the type level, exposed via a `LayerType`
-   enum in `atlas-core`. Scheduler and verify path branch explicitly on
+   enum in `avarok-core`. Scheduler and verify path branch explicitly on
    the kind.
 
 ## Decision
 
-Atlas defines `LayerType` in `atlas-core` as a closed enum:
+Avarok defines `LayerType` in `avarok-core` as a closed enum:
 
 ```rust
 pub enum LayerType {

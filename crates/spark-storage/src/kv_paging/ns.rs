@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! KV paging namespace + wire-key derivation (`ATLAS_KV_PAGING`, part of
+//! KV paging namespace + wire-key derivation (`AVAROK_KV_PAGING`, part of
 //! the tiered-cache consolidation).
 //!
-//! The paging peer (atlas-cache-peer) keys its KV arena purely by the u64 the
+//! The paging peer (avarok-cache-peer) keys its KV arena purely by the u64 the
 //! client sends, so the namespace folded into every key is the ONLY thing
 //! preventing (a) two MODELS and (b) two same-model CLIENTS from silently
 //! serving each other's KV blocks. Unlike the SSM tier's content-derived
@@ -13,7 +13,7 @@
 //! would cross-serve with certainty (every colliding block id), not 2^-64,
 //! and a restarted client would hit its own stale pre-restart blocks. The
 //! namespace therefore folds a per-client `client_salt` (fresh random per
-//! connect; `ATLAS_KV_PAGING_SALT` pins it for tests/harness). Consequence,
+//! connect; `AVAROK_KV_PAGING_SALT` pins it for tests/harness). Consequence,
 //! stated honestly: the KV paging win is peer residency + NVMe depth +
 //! capacity pooling, NOT cross-client warm hits (those need content-addressed
 //! keys — a separate chunk, same seam as the SSM decode-ns residual).
@@ -50,17 +50,17 @@ pub const KV_NS_VERSION: u64 = 1;
 /// its own residency map + swap file — this fold makes cross-kind aliasing
 /// unrepresentable even if that registry keying were ever collapsed).
 /// Frozen; mnemonic `"KV"` + `"PAGE"` + 1. The SSM decode tier's analog is
-/// `atlas_kernels::DECODE_DOMAIN`.
+/// `avarok_kernels::DECODE_DOMAIN`.
 pub const KV_DOMAIN: u64 = 0x4B56_5041_4745_0001;
 
 /// Vendored FNV-1a/64 — byte-identical to spark-model's `fingerprint.rs`
 /// copy; both are pinned to the published FNV reference vectors.
-pub(crate) use atlas_tier::hash::{FNV_OFFSET, fnv1a_64};
+pub(crate) use avarok_tier::hash::{FNV_OFFSET, fnv1a_64};
 
 // SSOT: this was a FOURTH transcription of the splitmix64 constants — its own doc
 // comment asserted it was "byte-identical to spark-model's mix64", which is the
-// violation stating itself. One definition, in atlas_tier::hash.
-pub(crate) use atlas_tier::hash::mix64;
+// violation stating itself. One definition, in avarok_tier::hash.
+pub(crate) use avarok_tier::hash::mix64;
 
 fn put_u64(buf: &mut Vec<u8>, tag: u8, v: u64) {
     buf.push(tag);
@@ -78,7 +78,7 @@ fn put_u64(buf: &mut Vec<u8>, tag: u8, v: u64) {
 /// | 0x02 | KV_DOMAIN       | 0x06 | num_layers     | 0x0a | group_stride  |
 /// | 0x03 | elem_bytes      | 0x07 | num_blocks     | 0x0b | client_salt   |
 ///
-/// `model_fp` carries the quant identity + model_type + `ATLAS_MODEL_ID`
+/// `model_fp` carries the quant identity + model_type + `AVAROK_MODEL_ID`
 /// salt (`ModelFingerprint::derive_kv` in spark-model); the geometry fields
 /// make the layout identity explicit because `group_id` numbering is
 /// layout-relative. Zero-avoidance falls back to `FNV_OFFSET` (p = 2^-64),
@@ -133,17 +133,17 @@ pub fn parse_u64_strict(var: &str, raw: &str) -> Result<u64> {
     parsed.map_err(|e| anyhow!("{var}={raw:?} is not a valid u64 (decimal or 0x-hex): {e}"))
 }
 
-/// `ATLAS_KV_PAGING_NS` override (env-free core): strict parse, 0 rejected —
+/// `AVAROK_KV_PAGING_NS` override (env-free core): strict parse, 0 rejected —
 /// a shared peer must always be namespaced (the ns=0 passthrough is
 /// unrepresentable, mirroring the landed SSM fix). `None` ⇒ the derived ns.
 pub fn resolve_kv_ns_from(override_raw: Option<&str>, derived: NonZeroU64) -> Result<NonZeroU64> {
     match override_raw {
         None => Ok(derived),
         Some(raw) => {
-            let v = parse_u64_strict("ATLAS_KV_PAGING_NS", raw)?;
+            let v = parse_u64_strict("AVAROK_KV_PAGING_NS", raw)?;
             NonZeroU64::new(v).ok_or_else(|| {
                 anyhow!(
-                    "ATLAS_KV_PAGING_NS=0 is invalid: ns=0 is unrepresentable (it would \
+                    "AVAROK_KV_PAGING_NS=0 is invalid: ns=0 is unrepresentable (it would \
                      cross-serve KV state on a shared peer); unset it to use the derived \
                      namespace (logged at INFO on connect)"
                 )
@@ -152,16 +152,16 @@ pub fn resolve_kv_ns_from(override_raw: Option<&str>, derived: NonZeroU64) -> Re
     }
 }
 
-/// `ATLAS_KV_PAGING_SALT` override (env-free core): strict; `Ok(None)` ⇒ the
+/// `AVAROK_KV_PAGING_SALT` override (env-free core): strict; `Ok(None)` ⇒ the
 /// caller generates a fresh random per-connect salt (client isolation +
 /// self-healing restart staleness — old-salt peer entries become unreachable
 /// and LRU-age out), INFO-logging it for reproducibility.
 pub fn resolve_salt_from(raw: Option<&str>) -> Result<Option<u64>> {
-    raw.map(|r| parse_u64_strict("ATLAS_KV_PAGING_SALT", r))
+    raw.map(|r| parse_u64_strict("AVAROK_KV_PAGING_SALT", r))
         .transpose()
 }
 
-/// `ATLAS_KV_PAGING` selection (env-free core): unset or `0` ⇒ the raw dumb
+/// `AVAROK_KV_PAGING` selection (env-free core): unset or `0` ⇒ the raw dumb
 /// one-sided `RdmaKvBackend` path (client-owned allocator; its
 /// handshake is the v2 header with `blob_bytes == 0`); `1` ⇒ the peer-owned
 /// paging backend. Anything else is a startup ERROR (PCND — a typo must never
@@ -171,13 +171,13 @@ pub fn kv_paging_selected(raw: Option<&str>) -> Result<bool> {
         None | Some("0") => Ok(false),
         Some("1") => Ok(true),
         Some(other) => Err(anyhow!(
-            "ATLAS_KV_PAGING={other:?} is invalid: 1 = peer-owned paging KV, 0/unset = the \
+            "AVAROK_KV_PAGING={other:?} is invalid: 1 = peer-owned paging KV, 0/unset = the \
              raw one-sided KV blade"
         )),
     }
 }
 
-/// `ATLAS_KV_PAGING_ARENA_GB` (REQUIRED when the flag is on — no implicit
+/// `AVAROK_KV_PAGING_ARENA_GB` (REQUIRED when the flag is on — no implicit
 /// default, PCND): the peer warm-arena size in GiB (fractional accepted),
 /// floored to a multiple of `block_bytes` and required to hold ≥ 1 block.
 /// The raw path sized the peer to `num_groups × group_stride` (every group
@@ -186,31 +186,31 @@ pub fn kv_paging_selected(raw: Option<&str>) -> Result<bool> {
 pub fn resolve_arena_bytes_from(raw: Option<&str>, block_bytes: u64) -> Result<u64> {
     let raw = raw.ok_or_else(|| {
         anyhow!(
-            "ATLAS_KV_PAGING=1 requires ATLAS_KV_PAGING_ARENA_GB (peer warm-arena size in \
+            "AVAROK_KV_PAGING=1 requires AVAROK_KV_PAGING_ARENA_GB (peer warm-arena size in \
              GiB, fractional ok) — explicit config or fail fast (PCND)"
         )
     })?;
     let gb: f64 = raw
         .trim()
         .parse()
-        .map_err(|e| anyhow!("ATLAS_KV_PAGING_ARENA_GB={raw:?} is not a number: {e}"))?;
+        .map_err(|e| anyhow!("AVAROK_KV_PAGING_ARENA_GB={raw:?} is not a number: {e}"))?;
     if !gb.is_finite() || gb <= 0.0 {
         return Err(anyhow!(
-            "ATLAS_KV_PAGING_ARENA_GB={raw:?} must be a finite value > 0"
+            "AVAROK_KV_PAGING_ARENA_GB={raw:?} must be a finite value > 0"
         ));
     }
     let bb = block_bytes.max(1);
     let arena = ((gb * (1u64 << 30) as f64) as u64 / bb) * bb;
     if arena == 0 {
         return Err(anyhow!(
-            "ATLAS_KV_PAGING_ARENA_GB={raw} is smaller than one KV block ({bb} B) — the \
+            "AVAROK_KV_PAGING_ARENA_GB={raw} is smaller than one KV block ({bb} B) — the \
              warm arena must hold at least one block"
         ));
     }
     Ok(arena)
 }
 
-/// Startup guard (env-free core): the cascade T1 (`ATLAS_KV_LOCAL_GB > 0`)
+/// Startup guard (env-free core): the cascade T1 (`AVAROK_KV_LOCAL_GB > 0`)
 /// flushes evictions DOWN via per-head `write_from_host`, which the
 /// block-record paging backend refuses — that combination must fail fast at
 /// construction (PCND), never bail mid-decode on the first T1 eviction.

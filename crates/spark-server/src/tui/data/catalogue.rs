@@ -39,13 +39,13 @@ impl Entry {
 
     /// The recipe to describe the row by, when only one can be shown.
     ///
-    /// The first Atlas recipe, falling back to the first of any kind: a vLLM
+    /// The first Avarok recipe, falling back to the first of any kind: a vLLM
     /// recipe still carries the description and params worth rendering, it just
     /// cannot be launched from here.
     pub fn primary(&self) -> Option<&Recipe> {
         self.recipes
             .iter()
-            .find(|r| r.is_atlas())
+            .find(|r| r.is_avarok())
             .or_else(|| self.recipes.first())
     }
 
@@ -65,7 +65,7 @@ impl Entry {
 
     /// Ready to serve with a validated config and no download.
     pub fn runnable_now(&self) -> bool {
-        self.has_weights() && self.recipes.iter().any(Recipe::is_atlas)
+        self.has_weights() && self.recipes.iter().any(Recipe::is_avarok)
     }
 
     /// Sort key: runnable, then recipe-without-weights, then local-only.

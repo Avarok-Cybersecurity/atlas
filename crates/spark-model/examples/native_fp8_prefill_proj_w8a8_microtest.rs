@@ -4,7 +4,7 @@
 //! W8A8 block-scaled cuBLASLt arm this change adds (#917/#928).
 //!
 //! WHY. nsys on 1xH100, 2026-09-11 round 9, `Qwen/Qwen3.8-27B-FP8`, recipe
-//! `ATLAS_CUBLAS_GEMM=ffn,ssm,attn` (`nsys-r9-prefill`). A 1193-token prefill
+//! `AVAROK_CUBLAS_GEMM=ffn,ssm,attn` (`nsys-r9-prefill`). A 1193-token prefill
 //! is **368.263 ms** of GPU-busy union. `w8a16_gemm_pipelined` is **100.582 ms
 //! = 27.31%** over **112 launches** and `w8a16_gemm_t_m128` a further
 //! **12.012 ms** over 32. The kernels' launchers make the grid a shape decoder
@@ -35,7 +35,7 @@
 //!      product of independent terms. The EXPECTED `rel_rms` is ~2-2.6e-2 —
 //!      3e-2 is one notch of headroom over the floor, not a loose tolerance,
 //!      and cosine is the robust metric. Same floor the FFN and decode-proj
-//!      microtests state. `ATLAS_W8A8_REL_RMS_GATE` overrides it.
+//!      microtests state. `AVAROK_W8A8_REL_RMS_GATE` overrides it.
 //!
 //!   2. THE PHANTOM ROWS. cuBLASLt is handed `ceil16(M)` and WRITES rows
 //!      `M..ceil16(M)`. At M=1193 that is 1200, i.e. 7 rows past the real
@@ -50,14 +50,14 @@
 //!
 //! Run (H100): `cargo run --release -p spark-model --features cuda,gpu-examples
 //! --example native_fp8_prefill_proj_w8a8_microtest`. The example calls
-//! cuBLASLt directly, so `ATLAS_CUBLAS_GEMM` is not required here — the serve
+//! cuBLASLt directly, so `AVAROK_CUBLAS_GEMM` is not required here — the serve
 //! spelling is printed at the end for copy-paste.
 
 use anyhow::{Result, ensure};
 use half::bf16;
 use spark_model::layers::ops;
 use spark_model::weight_map::{Fp8Weight, WeightQuantFormat};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use std::time::Instant;
 
@@ -303,14 +303,14 @@ impl Rng {
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let k = Kernels {
         pipelined: gpu.kernel("w8a16_gemm_pipelined", "w8a16_gemm_pipelined")?,
         t_m128: gpu.kernel("w8a16_gemm_t_m128", "w8a16_gemm_t_m128")?,
         quant: ops::Fp8ActQuant::resolve(&gpu),
         kmajor: gpu.kernel("fp8_scale_transpose", "fp8_act_scale_to_kmajor")?,
     };
-    let gate: f64 = std::env::var("ATLAS_W8A8_REL_RMS_GATE")
+    let gate: f64 = std::env::var("AVAROK_W8A8_REL_RMS_GATE")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(REL_RMS_GATE);
@@ -468,8 +468,8 @@ fn main() -> Result<()> {
         "\nALL PASS: Qwen3.8-27B prefill projections at M in {ROWS:?} — W8A8 cuBLASLt within \
          cosine {COSINE_GATE} / rel_rms {gate:.1e} of the W8A16 reference, phantom rows finite \
          and confined to ceil16(M).\n\
-         Serve spelling: ATLAS_CUBLAS_GEMM=ffn,ssm,attn \
-         (ATLAS_SSM_OUT_W8A16_ONLY / ATLAS_ATTN_QKV_W8A16_ONLY revert per site)."
+         Serve spelling: AVAROK_CUBLAS_GEMM=ffn,ssm,attn \
+         (AVAROK_SSM_OUT_W8A16_ONLY / AVAROK_ATTN_QKV_W8A16_ONLY revert per site)."
     );
     Ok(())
 }

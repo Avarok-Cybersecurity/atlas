@@ -13,7 +13,7 @@ trees and filter for `PERF_PATHS`.
 
 The first step is unsound in this repository, and it took main down.
 
-**Atlas squash-merges.** A record is always written on a PR branch, against a
+**Avarok squash-merges.** A record is always written on a PR branch, against a
 commit on that branch — it cannot be written *at* `HEAD`, because committing
 it moves `HEAD`. The squash then lands a brand-new commit on main with a
 different sha and no parent link back to the branch. So every record a PR
@@ -89,7 +89,7 @@ merge, and the gate would have gone red again immediately.
 
 **Bootstrapping is unavoidable and should be stated, not hidden.** There is no
 way to fix the gate without touching the gate. Any future change to
-`atlas-plugin`'s coverage logic will read red on its own PR for the same
+`avarok-plugin`'s coverage logic will read red on its own PR for the same
 reason. That is the rule working, not a defect in it.
 
 **What this does not fix.** Coverage is still coarse for host code: a

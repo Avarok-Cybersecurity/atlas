@@ -2,7 +2,7 @@
 """Deterministic multi-turn warm-vs-cold divergence repro for the Marconi
 warm-hit corruption (2026-06-10).
 
-Drives N chained "turns" against a single running Atlas server at temp 0:
+Drives N chained "turns" against a single running Avarok server at temp 0:
 each turn appends the previous assistant reply plus a new user message, so
 turn k>=2 produces a Marconi warm hit (intermediate or leaf restore) when
 prefix caching is enabled. Run once against a prefix-caching server and once

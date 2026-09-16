@@ -69,7 +69,7 @@ pub struct MlaWeights {
     /// raw-arm Q/K rope on `sliding_attention` layers (compressor==None): the
     /// reference gives sliding layers the "main" rope (θ=rope_theta=10000, no
     /// yarn) while CSA/HCA layers use "compress" (θ=compress_rope_theta=160000
-    /// + yarn). Atlas previously applied the single yarn table to every layer.
+    /// + yarn). Avarok previously applied the single yarn table to every layer.
     pub main_inv_freq: spark_runtime::gpu::DevicePtr,
     pub q_lora_rank: usize,
     pub kv_lora_rank: usize,
@@ -240,7 +240,7 @@ pub struct HcWeights {
 ///   dispatch chain has **no W8A8 arm at all** — and `cache_skip` is the
 ///   first-chunk path (`trait_impl/prefill_inner.rs:138`, `seq_len_start == 0`)
 ///   taken by every request. Their twins are never dead.
-/// * **Q** on that chain is behind `ATLAS_ATTN_PREFILL_Q_T=1`
+/// * **Q** on that chain is behind `AVAROK_ATTN_PREFILL_Q_T=1`
 ///   (`cache_skip_qkv.rs:142`); otherwise it is reached only after the W8A8
 ///   arm in `prefill/paged_qkv.rs:220` declines.
 /// * **O** is routed to `prefill/paged_oproj.rs` from both chains, so it is

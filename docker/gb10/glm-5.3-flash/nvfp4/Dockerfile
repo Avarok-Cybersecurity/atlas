@@ -1,7 +1,7 @@
-# Atlas Spark — GLM-5.3-Flash-NVFP4 on GB10 (2-node, TP=2 + EP=2)
+# Avarok Spark — GLM-5.3-Flash-NVFP4 on GB10 (2-node, TP=2 + EP=2)
 #
 # Build from repo root:
-#   docker build -f docker/gb10/glm-5.3-flash/nvfp4/Dockerfile -t atlas-glm53:<sha> .
+#   docker build -f docker/gb10/glm-5.3-flash/nvfp4/Dockerfile -t avarok-glm53:<sha> .
 #
 # Run — this is a 2-node deployment. The text model is ~176 GiB against a ~121 GB
 # node, so a single-node run is PHYSICALLY IMPOSSIBLE and there is no TP=1 config
@@ -15,7 +15,7 @@
 # 87 % of decode bandwidth is replicated. The TP=2 roofline matches our own frozen
 # vLLM oracle (24.856 median) and Tony's public 2x Spark run.
 #
-# Launch both ranks with scripts/launch-atlas-glm53-tp2ep2.sh (rank 0 on n1,
+# Launch both ranks with scripts/launch-avarok-glm53-tp2ep2.sh (rank 0 on n1,
 # rank 1 on n2). Verify NET/IB dual-rail RoCE in rank 0's NCCL log before trusting
 # ANY number; NET/Socket means the fabric fell back to sockets — STOP.
 
@@ -41,21 +41,21 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
 COPY vendor/ vendor/
 COPY kernels/ kernels/
-# 🪤 REQUIRED, and every other gb10 Dockerfile is missing it. `atlas-plugin` pulls the
+# 🪤 REQUIRED, and every other gb10 Dockerfile is missing it. `avarok-plugin` pulls the
 # benchmark prompts in with `include_str!("../../../../tests/fixtures/bench_prompt_*.txt")`,
 # so a build without repo-root `tests/` dies at COMPILE time with four "couldn't read"
 # errors — after the CUDA kernels have already built, which makes it look like a kernel
 # problem. 784 KB.
 COPY tests/ tests/
 
-ENV ATLAS_TARGET_HW=gb10
+ENV AVAROK_TARGET_HW=gb10
 # 🪤 This must be the kernel-target directory name, `glm-5.3-flash` — the same
 # string `all_ptx_sets()` matches on. Two of the kernels the composite layer
 # resolves (`glm5next_dsa_mla_decode`, `glm5next_mla_latent_write`) live ONLY in
 # this target; building any other target yields an image whose GLM layer cannot
 # construct, and the failure is at first layer build, not at compile time.
-ENV ATLAS_TARGET_MODEL=glm-5.3-flash
-ENV ATLAS_TARGET_QUANT=nvfp4
+ENV AVAROK_TARGET_MODEL=glm-5.3-flash
+ENV AVAROK_TARGET_QUANT=nvfp4
 
 RUN cargo build --release -p spark-server
 

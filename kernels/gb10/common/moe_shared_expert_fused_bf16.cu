@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Fused MoE Expert+Shared GEMV — BF16 weight variant.
+// Avarok Fused MoE Expert+Shared GEMV — BF16 weight variant.
 //
 // For models loaded via the FP8-dequant-on-load path. Same grid layout and
 // shared-expert-as-extra-blockIdx.y trick as the FP8 / NVFP4 variants:

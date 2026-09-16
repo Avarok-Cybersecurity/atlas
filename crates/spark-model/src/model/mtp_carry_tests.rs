@@ -470,7 +470,7 @@ fn the_store_ticket_never_draws_from_the_capture_generation() {
 #[test]
 fn the_advertised_default_is_the_one_the_reader_falls_back_to() {
     assert_eq!(DEFAULT_MARCONI_MIN_TOKENS, 256);
-    let fallback = std::env::var("ATLAS_MARCONI_MIN_TOKENS")
+    let fallback = std::env::var("AVAROK_MARCONI_MIN_TOKENS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(DEFAULT_MARCONI_MIN_TOKENS);

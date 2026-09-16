@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Multi-turn agentic coherence test for Atlas.
+"""Multi-turn agentic coherence test for Avarok.
 Simulates a real coding agent session: write code → save → execute → modify → verify.
 Each turn carries the FULL conversation history (system prompt + all prior turns).
 Usage: python3 test_multiturn_agentic.py [host:port]
@@ -23,11 +23,11 @@ with open(os.path.join(FIXTURES, "claude_code_system_prompt.txt")) as f:
 def chat(messages, max_tokens=500):
     """Send a chat completion request and return the assistant's content."""
     payload = json.dumps({"model": MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": 0})
-    with open("/tmp/atlas_mt_payload.json", "w") as f:
+    with open("/tmp/avarok_mt_payload.json", "w") as f:
         f.write(payload)
     result = subprocess.run(
         ["curl", "-s", "--max-time", "180", f"http://{HOST}/v1/chat/completions",
-         "-H", "Content-Type: application/json", "-d", "@/tmp/atlas_mt_payload.json"],
+         "-H", "Content-Type: application/json", "-d", "@/tmp/avarok_mt_payload.json"],
         capture_output=True, text=True)
     r = json.loads(result.stdout)
     if "error" in r:
@@ -54,7 +54,7 @@ def run_session(name, system_prompt):
     
     passed = 0
     failed = 0
-    tmpdir = tempfile.mkdtemp(prefix="atlas_test_")
+    tmpdir = tempfile.mkdtemp(prefix="avarok_test_")
 
     # ── Turn 1: Write fibonacci ──
     messages.append({"role": "user", "content":

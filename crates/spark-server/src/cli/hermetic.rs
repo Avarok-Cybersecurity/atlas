@@ -4,7 +4,7 @@
 //!
 //! A KAT asserts that a given input produces a given output. That assertion is
 //! only meaningful if the output is a function of THAT input — so no state
-//! produced while serving one request may reach another. Several Atlas
+//! produced while serving one request may reach another. Several Avarok
 //! subsystems exist precisely to carry state across requests, because carrying
 //! it is usually the whole point; under a KAT they are the bug.
 //!
@@ -64,18 +64,18 @@
 ///
 /// `hermetic_closures_match_the_resolvers` pins this table against the
 /// resolvers so the disclosure cannot come to disagree with the enforcement.
-/// Re-exported, NOT redeclared. The table lives in `atlas_plugin::gate::hermetic`
+/// Re-exported, NOT redeclared. The table lives in `avarok_plugin::gate::hermetic`
 /// because `gate::bench` needs it too — it refuses a BENCH.toml entry that pins
-/// `hermetic=true` without these — and atlas-plugin cannot depend on this
+/// `hermetic=true` without these — and avarok-plugin cannot depend on this
 /// crate. Two copies would drift, and the failure mode of drift here is a gate
 /// that cannot be discharged by the run it asks for.
-pub(crate) use atlas_plugin::gate::hermetic::CLOSED_KEYS;
+pub(crate) use avarok_plugin::gate::hermetic::CLOSED_KEYS;
 
 /// Fill in the keys `--hermetic` closes, for any the caller did not name.
 pub(crate) fn expand(
     mut requested: std::collections::BTreeMap<String, String>,
 ) -> std::collections::BTreeMap<String, String> {
-    if !atlas_plugin::gate::hermetic::is_requested(&requested) {
+    if !avarok_plugin::gate::hermetic::is_requested(&requested) {
         return requested;
     }
     for (k, v) in CLOSED_KEYS {
@@ -97,7 +97,7 @@ pub(crate) fn prefix_caching_enabled(requested: bool, hermetic: bool) -> bool {
 
 /// What the MTP throughput gate is set to, as `set_mtp_gate_force` wants it.
 ///
-/// `None` means "no flag was given, so `ATLAS_MTP_GATE_FORCE` decides" — the
+/// `None` means "no flag was given, so `AVAROK_MTP_GATE_FORCE` decides" — the
 /// documented fallback, and why this is not a plain `bool`.
 ///
 /// Channel M1: the gate does not only SWITCH arms, it PROBES. `tokens_since_event`
@@ -108,7 +108,7 @@ pub(crate) fn prefix_caching_enabled(requested: bool, hermetic: bool) -> bool {
 /// served before it. `force` disarms the arbiter, so no probe ever fires.
 ///
 /// Returns `Some(true)` under `--hermetic` rather than deferring to the
-/// environment: leaving it as `None` would let `ATLAS_MTP_GATE_FORCE=0`
+/// environment: leaving it as `None` would let `AVAROK_MTP_GATE_FORCE=0`
 /// reopen the channel from outside the recorded regime, and the record would
 /// still say `hermetic`.
 pub(crate) fn mtp_gate_force(requested: Option<&str>, hermetic: bool) -> Option<bool> {

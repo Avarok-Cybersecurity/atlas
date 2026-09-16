@@ -14,7 +14,7 @@ impl Dir {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or_default();
-        let p = std::env::temp_dir().join(format!("atlas-recipes-{tag}-{n}"));
+        let p = std::env::temp_dir().join(format!("avarok-recipes-{tag}-{n}"));
         std::fs::create_dir_all(&p).expect("scratch");
         Self(p)
     }
@@ -26,7 +26,7 @@ impl Drop for Dir {
 }
 
 fn a_recipe() -> String {
-    "recipe_version: \"2\"\nmodel: Qwen/Qwen3.6-27B\nruntime: atlas\ncontainer: c\n\
+    "recipe_version: \"2\"\nmodel: Qwen/Qwen3.6-27B\nruntime: avarok\ncontainer: c\n\
      metadata:\n  description: test\n  maintainer: avarok\ndefaults:\n  port: 8888\n"
         .to_string()
 }
@@ -185,12 +185,12 @@ fn live_fetch_against_github() {
     let index = refresh(&dir.0, &std::sync::atomic::AtomicBool::new(false));
     assert!(index.offline.is_none(), "fetch failed: {:?}", index.offline);
     assert_eq!(index.recipes.len(), 25, "the corpus is 25 recipes");
-    assert_eq!(index.recipes.iter().filter(|r| r.is_atlas()).count(), 23);
+    assert_eq!(index.recipes.iter().filter(|r| r.is_avarok()).count(), 23);
     assert_eq!(index.tree_sha.len(), 40, "a full tree sha");
-    // Every Atlas recipe upstream must still produce a valid serve config —
+    // Every Avarok recipe upstream must still produce a valid serve config —
     // this is the guard the vendored fixtures cannot give, because it sees the
     // LIVE repo rather than the snapshot.
-    for r in index.recipes.iter().filter(|r| r.is_atlas()) {
+    for r in index.recipes.iter().filter(|r| r.is_avarok()) {
         r.serve_args(&BTreeMap::new())
             .unwrap_or_else(|e| panic!("live recipe {} is not servable: {e:#}", r.id));
     }
@@ -294,7 +294,7 @@ fn measure_refresh_wall_time() {
 
 /// An index that EXISTS and cannot be read is not an empty index.
 ///
-/// The measured failure: `$HOME/.atlas` created by uid 1000 while the server
+/// The measured failure: `$HOME/.avarok` created by uid 1000 while the server
 /// runs as uid 996. `cached` swallowed the `EACCES` into `Index::default()`,
 /// so `bench_selfstart` reported "not in the local index (0 cached)" and told
 /// the operator to run `spark sync-recipes` — which fetches from GitHub and

@@ -370,7 +370,7 @@ pub fn conv1d_update_prefill(
     output_stride: u32,
     stream: u64,
 ) -> Result<()> {
-    // TOKEN-PARALLEL prefill conv1d is the default (`ATLAS_CONV1D_TP=0` disables).
+    // TOKEN-PARALLEL prefill conv1d is the default (`AVAROK_CONV1D_TP=0` disables).
     //
     // The serial kernel runs one thread per channel walking `for t in 0..seq_len`,
     // so it launches only ceil(dim/256) CTAs — tens of blocks on a 48-SM part —
@@ -385,7 +385,7 @@ pub fn conv1d_update_prefill(
     // [t*stride + ch] loads stay coalesced; 8 tokens per thread give a rolling
     // window (11 input reads per 8 outputs instead of 32).
     let tp =
-        std::env::var("ATLAS_CONV1D_TP").ok().as_deref() != Some("0") && conv1d_prefill_tp_k.0 != 0;
+        std::env::var("AVAROK_CONV1D_TP").ok().as_deref() != Some("0") && conv1d_prefill_tp_k.0 != 0;
     let (k, grid, block) = if tp {
         (
             conv1d_prefill_tp_k,

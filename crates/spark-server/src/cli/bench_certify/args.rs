@@ -67,18 +67,18 @@ pub struct CertifyArgs {
     /// Where the per-gate logs go. Default `<repo>/.certify/<anchor>/`.
     #[arg(long, value_name = "DIR")]
     pub out: Option<PathBuf>,
-    /// atlasctl-reachable nodes to run on, in parallel with this one:
+    /// avarokctl-reachable nodes to run on, in parallel with this one:
     /// `ip[:port]`, `host.local[:port]` or `dns.name[:port]`; port omitted
-    /// means atlasctl's peer port.
+    /// means avarokctl's peer port.
     #[arg(long, value_delimiter = ',', value_name = "NODE,...")]
     pub with_nodes: Vec<String>,
     /// Do not run anything on this machine — dispatch everything to
     /// `--with-nodes` (a laptop that cannot serve a model).
     #[arg(long, requires = "with_nodes")]
     pub remote_only: bool,
-    /// The `atlasctl` binary to drive nodes with. Default: the one on PATH.
+    /// The `avarokctl` binary to drive nodes with. Default: the one on PATH.
     #[arg(long, value_name = "PATH")]
-    pub atlasctl: Option<PathBuf>,
+    pub avarokctl: Option<PathBuf>,
     /// Start a fresh server for every unit on this box instead of keeping
     /// one up across consecutive units that serve the same recipe the same
     /// way (`spark benchmark run --serve-reuse`). Reuse is the default: a
@@ -112,10 +112,10 @@ impl CertifyArgs {
             return Err("--shards must be at least 1".into());
         }
         for g in &self.gates {
-            if !atlas_plugin::gate::REQUIRED_GATES.contains(&g.as_str()) {
+            if !avarok_plugin::gate::REQUIRED_GATES.contains(&g.as_str()) {
                 return Err(format!(
                     "--gates names {g}, which is not a required gate ({})",
-                    atlas_plugin::gate::REQUIRED_GATES.join(", ")
+                    avarok_plugin::gate::REQUIRED_GATES.join(", ")
                 ));
             }
         }

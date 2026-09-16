@@ -1,7 +1,7 @@
 # governance/ — the PR journey ledger
 
 One file per pull request, `pr-<n>.jsonl`, each line one
-`atlas_governance::Event`. `.benchmarks/` answers *"did this commit pass?"*;
+`avarok_governance::Event`. `.benchmarks/` answers *"did this commit pass?"*;
 this directory answers *"how did this pull request get here?"* — what the
 advisory classifier thought, with what status, at what time.
 
@@ -81,7 +81,7 @@ normally. Configure the App once and the loop is unattended.
    - Where can this GitHub App be installed: **Only on this account**.
 2. Note the **Client ID**, then **Generate a private key** and keep the
    downloaded `.pem`.
-3. **Install App**, scoped to the `atlas` repository only.
+3. **Install App**, scoped to the `avarok` repository only.
 4. Register it with the repository:
    ```bash
    gh variable set GOVERNANCE_APP_CLIENT_ID --repo Avarok-Cybersecurity/atlas --body '<client id>'

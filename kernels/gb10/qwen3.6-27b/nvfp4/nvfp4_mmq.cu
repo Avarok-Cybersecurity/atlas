@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// ATLAS FFN prefill GEMM via vendored llama.cpp NVFP4 W4A4 MMQ (Blackwell block-scale
+// AVAROK FFN prefill GEMM via vendored llama.cpp NVFP4 W4A4 MMQ (Blackwell block-scale
 // warp-level block-scale MMA with E2M1 operands and UE4M3 scales).
 // De-risk bench (libggml, GB10): 114 TFLOP/s gate/up · 88 down at the 27B FFN shapes — vs
 // faith2 int8 44 and the hand-written w4a4_gemm 52 (see MMQ_PORT_HANDOFF.md).
@@ -10,7 +10,7 @@
 //
 // Weight format: llama block_nvfp4 = { uint8 d[4] (UE4M3 per-16 scales); uint8 qs[32]
 // (e2m1 nibbles: byte j of sub-block s = val[16s+j] | val[16s+8+j]<<4) } per 64 weights.
-// atlas_nvfp4_repack converts the checkpoint layout (packed [N,K/2] low=even/high=odd +
+// avarok_nvfp4_repack converts the checkpoint layout (packed [N,K/2] low=even/high=odd +
 // e4m3 [N,K/16] row-major scales) into block_nvfp4 rows — a pure bit shuffle, zero
 // requantization. The per-tensor FP32 scale2 (and the ue4m3-vs-e4m3 decode convention
 // factor) is folded downstream by the caller (see ops/nvfp4_mmq.rs).
@@ -22,12 +22,12 @@
 // A symbol must not resolve to the vendor's NO_DEVICE_CODE trap. Use its
 // capability predicate (SM 12.x, not datacentre Blackwell SM 10.x). Absent
 // handles keep DenseFfn's W4A16 fallback and its transposed weights intact.
-#if defined(BLACKWELL_MMA_AVAILABLE) // Atlas optional module
+#if defined(BLACKWELL_MMA_AVAILABLE) // Avarok optional module
 
 // Conventional-tiling setup mirroring mul_mat_q's pre-VOLTA path, specialized: no ids,
 // nchannels_y=nsamples_y=1 (blockIdx.z==0). Calls the existing __device__ process_tile.
 template <int mmq_x, bool need_check>
-static __device__ __forceinline__ void atlas_nvfp4_tile(
+static __device__ __forceinline__ void avarok_nvfp4_tile(
         const char * __restrict__ x, const int * __restrict__ y, __nv_bfloat16 * __restrict__ dst,
         const int nrows_x, const int ncols_dst, const int ncols_x,
         const int stride_row_x, const int ncols_y, const int stride_col_dst) {
@@ -64,45 +64,45 @@ static __device__ __forceinline__ void atlas_nvfp4_tile(
 }
 
 // mmq_x=128 entries (need_check = nrows_x not a multiple of mmq_y=128).
-extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq128_nc(
+extern "C" __global__ void __launch_bounds__(256, 1) avarok_nvfp4_mmq128_nc(
         const char* x, const int* y, __nv_bfloat16* dst,
         int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
-    atlas_nvfp4_tile<128, false>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+    avarok_nvfp4_tile<128, false>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
 }
-extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq128_wc(
+extern "C" __global__ void __launch_bounds__(256, 1) avarok_nvfp4_mmq128_wc(
         const char* x, const int* y, __nv_bfloat16* dst,
         int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
-    atlas_nvfp4_tile<128, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+    avarok_nvfp4_tile<128, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
 }
 
 // SMALL-M entries. `mmq_x` is the M (token) tile and is a free template parameter --
 // the vendored MMA path's granularity is 8 (mmq_get_granularity_device), and the
 // hardware quantum is the m16n8k64 B-fragment's 8 columns, so any multiple of 8 is
-// legal. Atlas only ever instantiated 128, which meant DECODE at M=16 issued MMAs for
+// legal. Avarok only ever instantiated 128, which meant DECODE at M=16 issued MMAs for
 // all 128 tile columns and threw away 112 of them in the write-back predicate --
 // 87.5% of the MMA issue slots. Predicted cost of that padding at n=16 across the 48
 // SSM layers was 41.1 ms against a 42.0 ms measurement, so it is the dominant term.
 // Prefill keeps 128: grid.y = ceil(M/mmq_x), so a small tile would re-stream the
 // weights once per M-tile there.
-extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq16_nc(
+extern "C" __global__ void __launch_bounds__(256, 1) avarok_nvfp4_mmq16_nc(
         const char* x, const int* y, __nv_bfloat16* dst,
         int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
-    atlas_nvfp4_tile<16, false>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+    avarok_nvfp4_tile<16, false>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
 }
-extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq16_wc(
+extern "C" __global__ void __launch_bounds__(256, 1) avarok_nvfp4_mmq16_wc(
         const char* x, const int* y, __nv_bfloat16* dst,
         int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
-    atlas_nvfp4_tile<16, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+    avarok_nvfp4_tile<16, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
 }
-extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq32_nc(
+extern "C" __global__ void __launch_bounds__(256, 1) avarok_nvfp4_mmq32_nc(
         const char* x, const int* y, __nv_bfloat16* dst,
         int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
-    atlas_nvfp4_tile<32, false>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+    avarok_nvfp4_tile<32, false>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
 }
-extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq32_wc(
+extern "C" __global__ void __launch_bounds__(256, 1) avarok_nvfp4_mmq32_wc(
         const char* x, const int* y, __nv_bfloat16* dst,
         int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
-    atlas_nvfp4_tile<32, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+    avarok_nvfp4_tile<32, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
 }
 
 // m=64 tile. The ladder used to step 16 -> 32 -> 128, so every batch in 33..127 took the
@@ -115,21 +115,21 @@ extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq32_wc(
 // each output element accumulates the same K in the same order; only the discarded
 // column count changes. Do NOT widen this past m=64 -- at m=96/128 grid.y becomes 2 and
 // the weights are re-streamed once per M tile (measured 1.6x SLOWER).
-extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq64_nc(
+extern "C" __global__ void __launch_bounds__(256, 1) avarok_nvfp4_mmq64_nc(
         const char* x, const int* y, __nv_bfloat16* dst,
         int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
-    atlas_nvfp4_tile<64, false>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+    avarok_nvfp4_tile<64, false>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
 }
-extern "C" __global__ void __launch_bounds__(256, 1) atlas_nvfp4_mmq64_wc(
+extern "C" __global__ void __launch_bounds__(256, 1) avarok_nvfp4_mmq64_wc(
         const char* x, const int* y, __nv_bfloat16* dst,
         int nrows_x, int ncols_dst, int ncols_x, int stride_row_x, int ncols_y, int stride_col_dst) {
-    atlas_nvfp4_tile<64, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
+    avarok_nvfp4_tile<64, true>(x, y, dst, nrows_x, ncols_dst, ncols_x, stride_row_x, ncols_y, stride_col_dst);
 }
 
 // Activation quantizer: bf16 [ne1=M rows, ne00=K] -> block_fp4_mmq (e2m1 + ue4m3 group-16
 // scales, ±2 exhaustive scale search). One thread per 16-value sub-block.
 // grid (ne1, ceil(ne0/(16*128)), 1), block (128). Mirrors llama's host launcher.
-extern "C" __global__ void atlas_nvfp4_quantize_bf16(
+extern "C" __global__ void avarok_nvfp4_quantize_bf16(
         const __nv_bfloat16* x, void* vy, long ne00, long s01, long ne0, int ne1) {
     quantize_mmq_nvfp4_worker<__nv_bfloat16>(x, nullptr, vy, ne00, s01, 0, 0, ne0, ne1, 1);
 }
@@ -139,7 +139,7 @@ extern "C" __global__ void atlas_nvfp4_quantize_bf16(
 // Pure bit shuffle + scale byte copy: the e2m1 codes and e4m3 scale bytes are reused
 // verbatim (both sides are OCP encodings; scale-decode convention handled by the caller's
 // scale2 fold). One thread per 64-value output block.
-extern "C" __global__ void atlas_nvfp4_repack(
+extern "C" __global__ void avarok_nvfp4_repack(
         const uint8_t* __restrict__ packed, const uint8_t* __restrict__ scales,
         block_nvfp4* __restrict__ out, int n_rows, int k) {
     const int64_t nblocks = (int64_t) n_rows * (k / QK_NVFP4);
@@ -162,7 +162,7 @@ extern "C" __global__ void atlas_nvfp4_repack(
     // tile loader had to issue NINE 4-byte loads per block (8 qs + 1 d). With qs
     // contiguous, the same 32 bytes are TWO 16-byte loads, and `d` is one more —
     // 9 global ops -> 3. The consumer is `load_tiles_nvfp4_nvfp4` in
-    // q4k_vendor/mmq.cuh, which is the ONLY reader of this buffer (Atlas exposes
+    // q4k_vendor/mmq.cuh, which is the ONLY reader of this buffer (Avarok exposes
     // no MMVQ entry point, so vecdotq.cuh's nvfp4 path is unreachable).
     //
     // The SHARED-memory tile layout is unchanged, so `vec_dot` and the MMA path
@@ -211,14 +211,14 @@ extern "C" __global__ void atlas_nvfp4_repack(
 // In-place ×scale for the down-projection MMQ output (its scale2 has no SiLU-mul to
 // ride; the consumer is the residual add). [M, H] bf16, ~0.3ms at M=4096 vs the ~6ms
 // the MMQ down GEMM saves.
-extern "C" __global__ void atlas_nvfp4_scale_bf16(
+extern "C" __global__ void avarok_nvfp4_scale_bf16(
     __nv_bfloat16* __restrict__ data, float scale, unsigned int total_elements) {
     unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= total_elements) return;
     data[idx] = __float2bfloat16(__bfloat162float(data[idx]) * scale);
 }
 
-extern "C" __global__ void atlas_nvfp4_silu_mul_scaled(
+extern "C" __global__ void avarok_nvfp4_silu_mul_scaled(
     const __nv_bfloat16* __restrict__ gate, const __nv_bfloat16* __restrict__ up,
     __nv_bfloat16* __restrict__ output, float gate_scale, float up_scale,
     unsigned int total_elements) {
@@ -230,8 +230,8 @@ extern "C" __global__ void atlas_nvfp4_silu_mul_scaled(
     output[idx] = __float2bfloat16(g * sigmoid_g * u);
 }
 
-// FUSED SiLU-mul + block_fp4_mmq quantize for the down-MMQ path (ATLAS_FFN_NVFP4_MMQ_DOWN).
-// Replaces atlas_nvfp4_silu_mul_scaled + atlas_nvfp4_quantize_bf16: computes
+// FUSED SiLU-mul + block_fp4_mmq quantize for the down-MMQ path (AVAROK_FFN_NVFP4_MMQ_DOWN).
+// Replaces avarok_nvfp4_silu_mul_scaled + avarok_nvfp4_quantize_bf16: computes
 // v = SiLU(clamp(gate·gs)) · clamp(up·us) for a 16-value group and quantizes it straight
 // into the y-format the down MMQ consumes — the intermediate [M, inter] bf16 tensor is
 // never written or re-read (saves ~2 full activation-tensor round-trips per layer; this
@@ -239,7 +239,7 @@ extern "C" __global__ void atlas_nvfp4_silu_mul_scaled(
 // ue4m3 ±2 scale search as quantize_mmq_nvfp4_worker (one thread = one 16-value group);
 // the value source is the SiLU-mul instead of a memory load. Grid (M, ceil(kpad/(16·128))),
 // block 128. kpad = inter rounded up to 256.
-extern "C" __global__ void atlas_nvfp4_silu_mul_quant(
+extern "C" __global__ void avarok_nvfp4_silu_mul_quant(
         const __nv_bfloat16* __restrict__ gate, const __nv_bfloat16* __restrict__ up,
         void* __restrict__ vy, float gate_scale, float up_scale,
         long ne00 /*inter*/, long ne0 /*kpad*/, int ne1 /*M rows*/) {
@@ -316,4 +316,4 @@ extern "C" __global__ void atlas_nvfp4_silu_mul_quant(
 #endif
 }
 
-#endif // Atlas optional module
+#endif // Avarok optional module

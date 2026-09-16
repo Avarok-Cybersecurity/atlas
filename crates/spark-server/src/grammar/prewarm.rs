@@ -37,7 +37,7 @@
 //! serial walk off the request thread. No two workers ever touch one
 //! grammar.
 //!
-//! Kill switch: `ATLAS_GRAMMAR_ASYNC_PREWARM=0` restores the synchronous
+//! Kill switch: `AVAROK_GRAMMAR_ASYNC_PREWARM=0` restores the synchronous
 //! prewarm.
 
 use std::sync::Arc;
@@ -183,11 +183,11 @@ pub(super) fn overlap_enabled_for_serve() -> bool {
 fn overlap_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        overlap_from_env(std::env::var("ATLAS_GRAMMAR_ASYNC_PREWARM").ok().as_deref())
+        overlap_from_env(std::env::var("AVAROK_GRAMMAR_ASYNC_PREWARM").ok().as_deref())
     })
 }
 
-/// `ATLAS_GRAMMAR_ASYNC_PREWARM=0` (or `false`/`off`/`no`) restores the
+/// `AVAROK_GRAMMAR_ASYNC_PREWARM=0` (or `false`/`off`/`no`) restores the
 /// synchronous prewarm. Anything else — including unset — overlaps.
 pub(super) fn overlap_from_env(value: Option<&str>) -> bool {
     !matches!(

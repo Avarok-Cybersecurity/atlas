@@ -23,7 +23,7 @@ export const githubUrl = 'https://github.com/Avarok-Cybersecurity/atlas';
 // Must match site/src/lib/data.js. An invite code is not derivable from
 // anything, so a wrong one is a dead link that looks entirely plausible.
 export const discordUrl = 'https://discord.gg/RQcGakU2jW';
-export const xUrl = 'https://x.com/AtlasInferenceX';
+export const xUrl = 'https://x.com/AvarokInferenceX';
 
 export const blog = {
   name: 'Avarok blog',

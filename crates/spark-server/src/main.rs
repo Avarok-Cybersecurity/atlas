@@ -9,12 +9,12 @@
 #![allow(clippy::doc_lazy_continuation)]
 #![allow(clippy::doc_overindented_list_items)]
 
-//! Atlas Spark — pure Rust LLM inference server.
+//! Avarok Spark — pure Rust LLM inference server.
 //!
 //! Startup sequence:
 //! 1. Parse CLI args
 //! 2. Load model config
-//! 3. Initialize GPU backend (AtlasCudaBackend)
+//! 3. Initialize GPU backend (AvarokCudaBackend)
 //! 4. Load model weights (SafetensorsLoader)
 //! 5. Build model via factory
 //! 6. Load tokenizer
@@ -76,7 +76,7 @@ use crate::main_modules::serve;
 pub(crate) use crate::main_modules::AppState;
 
 /// Re-export for convenience in api.rs / anthropic.rs.
-pub type ModelBehavior = atlas_kernels::ModelBehavior;
+pub type ModelBehavior = avarok_kernels::ModelBehavior;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -205,9 +205,9 @@ async fn main() -> Result<()> {
                     // so this exit needs the same status mapping as the one
                     // below — otherwise the escape hatch silently reports a
                     // poisoned context as a clean stop.
-                    std::process::exit(atlas_core::fault::exit_code(
+                    std::process::exit(avarok_core::fault::exit_code(
                         true,
-                        atlas_core::fault::global().fault(),
+                        avarok_core::fault::global().fault(),
                     ));
                 }
             }
@@ -226,7 +226,7 @@ async fn main() -> Result<()> {
     // (issue #429), so without this the two are indistinguishable to a
     // supervisor and `restart: on-failure` leaves the endpoint down. Returning
     // `result` unchanged when healthy keeps every other exit byte-identical.
-    match atlas_core::fault::global().fault() {
+    match avarok_core::fault::global().fault() {
         Some(reason) => {
             if let Err(e) = &result {
                 tracing::error!("{e:#}");
@@ -235,7 +235,7 @@ async fn main() -> Result<()> {
                 "Exiting after a fatal GPU fault ({reason}). The CUDA context is \
                  destroyed and cannot be recovered in-process; restart the server."
             );
-            std::process::exit(atlas_core::fault::exit_code(result.is_ok(), Some(reason)));
+            std::process::exit(avarok_core::fault::exit_code(result.is_ok(), Some(reason)));
         }
         None => result,
     }

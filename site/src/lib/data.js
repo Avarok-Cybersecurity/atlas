@@ -28,7 +28,7 @@ export const CONTROL = '/control';
 export const githubUrl = 'https://github.com/Avarok-Cybersecurity/atlas';
 export const discordUrl = 'https://discord.gg/RQcGakU2jW';
 export const blogUrl = 'https://blog.atlascybernetics.ai';
-export const xUrl = 'https://x.com/AtlasInferenceX';
+export const xUrl = 'https://x.com/AvarokInferenceX';
 export const xHandle = '@AtlasInferenceX';
 export const redditUrl = 'https://www.reddit.com/r/LocalLLaMA/comments/1rmvxo3/';
 export const firstPostUrl =
@@ -77,7 +77,7 @@ export const tagline =
 // `llms.txt` needs no such care: gen-llms.mjs emits `data.runCommandRaw`, so it
 // follows this constant on its own.
 export const flagshipRecipe = 'qwen3.6-35b-a3b-fp8-mtp';
-export const quickInstall = 'cargo install atlasctl';
+export const quickInstall = 'cargo install avarokctl';
 /// Where install.sh is served from. One authority: the join one-liner in
 /// `joincommand.js` builds on this too, and a second copy is how the two drift.
 export const installerUrl = 'https://atlascybernetics.ai/install.sh';
@@ -92,14 +92,14 @@ export const runCommand = `curl -fsSL ${installerUrl} | sh`;
 /// Install the agent as a service — deliberately `install`, not `run`: a bare
 /// `run` dies with the terminal that started it, and the machine silently
 /// leaves the fleet the next time someone closes an ssh session.
-export const startAgentCommand = 'atlasctl agent install';
+export const startAgentCommand = 'avarokctl agent install';
 /// Built from `flagshipRecipe`, not repeating it. The constant existed and was
 /// referenced by nothing while its value sat hardcoded eleven lines below —
 /// so changing the flagship recipe would have updated the obvious place and
 /// left the command the site tells people to copy pointing at the old one.
 /// `installerUrl` above already states this rule: "a second copy is how the two
 /// drift".
-export const runCommandRaw = `atlasctl run ${flagshipRecipe}`;
+export const runCommandRaw = `avarokctl run ${flagshipRecipe}`;
 
 // --- hardware acknowledgment (modest banner) ---------------------------------
 // --- announcement band (the strip above the hero) ----------------------------
@@ -117,7 +117,7 @@ export const announcement = {
   // "In active development" is stated rather than implied — an operator who
   // reads this and then finds an unfinished fleet manager was misled by us, not
   // by their own optimism.
-  note: 'Sparkrun has been retired: Avarok now ships atlasctl, our own control plane for enterprise fleet management and telemetry. In active development.',
+  note: 'Sparkrun has been retired: Avarok now ships avarokctl, our own control plane for enterprise fleet management and telemetry. In active development.',
   // A third row rather than a longer second one, for the same reason the note
   // is its own row: the launcher change and the browser client are separate
   // pieces of news, and running them together reads as one long sentence about
@@ -153,7 +153,7 @@ export const hero = {
     claim: 'First token in under 90 seconds on a DGX Spark.',
     lead: 'Do not take our word for it.',
     fine:
-      'Median of our GB10 runs, model cached, atlas 59616dc, Jul 2026. Same command below, run it and time it yourself.'
+      'Median of our GB10 runs, model cached, avarok 59616dc, Jul 2026. Same command below, run it and time it yourself.'
   },
   primaryCta: 'Star on GitHub',
   secondaryCta: 'Start Avarok',
@@ -230,7 +230,7 @@ export const testimonials = [
   },
   {
     quote:
-      'Testing Atlas on a DGX Spark in an agentic workflow for over an hour. Super impressed. Spark is actually awesome with Atlas.',
+      'Testing Avarok on a DGX Spark in an agentic workflow for over an hour. Super impressed. Spark is actually awesome with Avarok.',
     author: 'PersonWhoThinks',
     source: 'r/LocalLLaMA',
     sourceUrl: redditUrl
@@ -330,7 +330,7 @@ export const models = {
   label: '// 05 · models',
   title: 'Every model here has a recipe.',
   sub:
-    'Pick a vendor, then a family. Every card maps to one recipe in atlas-recipes, so the site cannot list a model we do not ship. Copy the command and run it as is. Qwen3.6 leads because it is our flagship.',
+    'Pick a vendor, then a family. Every card maps to one recipe in avarok-recipes, so the site cannot list a model we do not ship. Copy the command and run it as is. Qwen3.6 leads because it is our flagship.',
   qwen: {
     kernel: 'Our fused Qwen3.6 Gated DeltaNet kernel ships in Hugging Face Transformers.',
     kernelUrl: transformersPrUrl,
@@ -348,10 +348,10 @@ export const getRunning = {
   sub:
     'This is the first 60 seconds. Everything after, per model recipes, EP=2, tuning, lives in the docs.',
   inspectNote:
-    'Rather not pipe curl to a shell. Install atlasctl from crates.io, then run the flagship recipe direct.',
+    'Rather not pipe curl to a shell. Install avarokctl from crates.io, then run the flagship recipe direct.',
   docsCta: 'Read the deployment guide',
   quickstartHint:
-    'The script downloads a prebuilt atlasctl, verifies its checksum, and installs it to ~/.local/bin. No Python, no Rust toolchain. Run it with --uninstall to reverse it.'
+    'The script downloads a prebuilt avarokctl, verifies its checksum, and installs it to ~/.local/bin. No Python, no Rust toolchain. Run it with --uninstall to reverse it.'
 };
 
 // --- mission -----------------------------------------------------------------
@@ -380,8 +380,8 @@ export const contribute = {
     },
     {
       title: 'Add or tune a recipe',
-      body: 'Recipes are the model SSOT. Add a model, tune a quant, open a PR against atlas-recipes.',
-      cta: 'atlas-recipes',
+      body: 'Recipes are the model SSOT. Add a model, tune a quant, open a PR against avarok-recipes.',
+      cta: 'avarok-recipes',
       url: recipesUrl
     },
     {
@@ -477,11 +477,11 @@ export const faq = {
     },
     {
       q: 'How do I install it?',
-      a: 'One command: curl -fsSL https://atlascybernetics.ai/install.sh | sh. It downloads a prebuilt atlasctl, verifies its checksum, and installs to ~/.local/bin. If you would rather not pipe curl to a shell, cargo install atlasctl does the same thing from source.'
+      a: 'One command: curl -fsSL https://atlascybernetics.ai/install.sh | sh. It downloads a prebuilt avarokctl, verifies its checksum, and installs to ~/.local/bin. If you would rather not pipe curl to a shell, cargo install avarokctl does the same thing from source.'
     },
     {
       q: 'Which models can I run?',
-      a: 'Every model on this page maps to a recipe in the atlas-recipes repository, which is the single source of truth — the site cannot list a model that has no recipe. Qwen3.6 is the flagship family, alongside Gemma, Nemotron, Mistral, MiniMax and DeepSeek.'
+      a: 'Every model on this page maps to a recipe in the avarok-recipes repository, which is the single source of truth — the site cannot list a model that has no recipe. Qwen3.6 is the flagship family, alongside Gemma, Nemotron, Mistral, MiniMax and DeepSeek.'
     },
     {
       q: 'What does “verified” mean here?',
@@ -541,7 +541,7 @@ export const codeChat = {
   sub:
     'The whole Avarok repo is embedded into a vector lattice that runs right here in your browser. Ask a question, get an answer with file and line receipts.',
   boot: [
-    'atlas code lattice online',
+    'avarok code lattice online',
     'retrieval runs locally in wasm, only the model call leaves this page',
     'pick a question or type your own'
   ],

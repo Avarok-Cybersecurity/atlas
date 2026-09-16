@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Sampled expert-union telemetry for MTP verify batches
-//! (`ATLAS_MOE_UNION_STATS=1`, default off = zero cost).
+//! (`AVAROK_MOE_UNION_STATS=1`, default off = zero cost).
 //!
 //! MoE verify cost scales with the UNION of experts activated across the
 //! verify batch's tokens, not with token count (measured verify_multiplier

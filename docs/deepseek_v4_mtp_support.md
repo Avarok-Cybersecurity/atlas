@@ -133,7 +133,7 @@ Implement `DraftProposer` for `DeepseekV4MtpHead`:
 **Loader — nvidia/DeepSeek-V4-Flash-NVFP4 now LOADS + SERVES EP=2** (was blocked):
 - Fixed (committed): `I8` dtype; per-expert format dispatch (`load_expert_proj`): Standard NVFP4
   routed (`quantized`) + FP8 block-scaled shared experts (`quantized_from_fp8`); container rename
-  `atlas-ds-ep*` (env reaper kills `atlas-deepseek-ep*`); start script → new model + explicit paths.
+  `avarok-ds-ep*` (env reaper kills `avarok-deepseek-ep*`); start script → new model + explicit paths.
 - Verified empirically via repeated EP=2 load tests: all 46 shards load, NCCL rendezvous OK, model
   builds, server answers at ~11.7 tok/s.
 
@@ -146,4 +146,4 @@ shared-expert re-quant, or the NVFP4 routed `weight_scale` (E4M3 block) handling
 **MTP routed experts** (`mtp.0.ffn.experts.*` = NVFP4 U8/I8 + E8M0 `.scale`) still bail — need an
 E8M0-block-scaled NVFP4 GEMM path or a dequant-to-BF16/NVFP4 at load. Then the proposer.
 
-Best image: `atlas-deepseek-v4:mtpload4` (loads+serves, incoherent). Branch deepseek-v4-clean.
+Best image: `avarok-deepseek-v4:mtpload4` (loads+serves, incoherent). Branch deepseek-v4-clean.

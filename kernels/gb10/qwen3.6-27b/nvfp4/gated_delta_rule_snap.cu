@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas GDN decode `_snap` twins — issue #435 route (a): make the MTP-verify
+// Avarok GDN decode `_snap` twins — issue #435 route (a): make the MTP-verify
 // path BITWISE match sequential decode.
 //
 // These are the fused-norm decode kernels (`gated_delta_rule_decode_f32_norm`

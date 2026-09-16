@@ -116,9 +116,9 @@
         label="clone, image, binary"
         lines={[
           `git clone https://github.com/Avarok-Cybersecurity/atlas.git`,
-          `cd atlas && git checkout ${claim.buildPublic}`,
+          `cd avarok && git checkout ${claim.buildPublic}`,
           ``,
-          `docker build -f docker/gb10/Dockerfile -t atlas-gb10 .`,
+          `docker build -f docker/gb10/Dockerfile -t avarok-gb10 .`,
           ``,
           `sudo apt-get install -y build-essential pkg-config \\`,
           `  cmake clang libclang-dev`,
@@ -139,7 +139,7 @@
       />
       <p class="after">
         The gate's self-start also reads a cached recipe index at
-        <code class="mono">~/.atlas/atlas-recipes/index.json</code>. Open the TUI library once to
+        <code class="mono">~/.avarok/avarok-recipes/index.json</code>. Open the TUI library once to
         populate it, or Step 6 stops with exactly that message.
       </p>
     </div>

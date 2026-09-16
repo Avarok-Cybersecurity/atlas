@@ -229,7 +229,7 @@ fn committing_an_edit_with_nothing_selected_is_a_no_op() {
 }
 
 #[test]
-fn a_non_atlas_recipe_is_listed_and_readable_but_refuses_the_form() {
+fn a_non_avarok_recipe_is_listed_and_readable_but_refuses_the_form() {
     // A vLLM recipe still carries the description and params worth rendering;
     // it just cannot be launched from here, and the refusal has to say which
     // runtime it is rather than "no".
@@ -239,7 +239,7 @@ fn a_non_atlas_recipe_is_listed_and_readable_but_refuses_the_form() {
     assert!(s.current().expect("a row").has_recipe());
     assert!(
         !s.current().expect("a row").runnable_now(),
-        "weights plus a non-atlas recipe is not runnable here"
+        "weights plus a non-avarok recipe is not runnable here"
     );
     s.open_cards().expect("the card still opens");
 
@@ -250,9 +250,9 @@ fn a_non_atlas_recipe_is_listed_and_readable_but_refuses_the_form() {
 }
 
 #[test]
-fn the_row_is_described_by_its_atlas_recipe_when_it_has_a_choice() {
+fn the_row_is_described_by_its_avarok_recipe_when_it_has_a_choice() {
     // `primary()` picks the recipe the list row and its detail pane describe.
-    // An Atlas recipe wins because it is the one that can actually be started.
+    // An Avarok recipe wins because it is the one that can actually be started.
     let mut vllm = mtp();
     vllm.runtime = Some("vllm".into());
     let s = state(vec![vllm, plain()]);

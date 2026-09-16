@@ -9,14 +9,14 @@ use crate::*;
 use anyhow::{Context, Result, bail};
 use half::bf16;
 use serde_json::Value;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 use std::collections::BTreeMap;
 
 pub(crate) fn run() -> Result<()> {
     let dir = std::env::var("MOE_PACKET_DIR")
-        .unwrap_or_else(|_| "/home/msi1/atlas-scratch/moe-family".to_string());
+        .unwrap_or_else(|_| "/home/msi1/avarok-scratch/moe-family".to_string());
     let g = Golden(serde_json::from_str(&GOLDEN)?);
     let hid = g.f("hidden")? as usize;
     let inter = g.f("intermediate")? as usize;
@@ -32,7 +32,7 @@ pub(crate) fn run() -> Result<()> {
          swiglu_limit={limit} group_size={gs} input_scale=NONE (W4A16)"
     );
 
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let k_w4a16 = gpu.kernel("w4a16", "w4a16_gemm")?;
     let k_deq = gpu.kernel("dequant_nvfp4_bf16", "dequant_nvfp4_to_bf16")?;
     let k_gemm = gpu.kernel("gemm", "dense_gemm_bf16")?;
@@ -121,7 +121,7 @@ pub(crate) fn run() -> Result<()> {
             }
             // 🔴 NEGATIVE CONTROL for the clamp asymmetry. Recompute the activation on the
             // host from the SAME gate/up the GPU produced, but with the WRONG (symmetric) gate
-            // clamp, and require Atlas to be far from it. Without this, a kernel that clamps
+            // clamp, and require Avarok to be far from it. Without this, a kernel that clamps
             // `gate` on both sides passes every positive check — the two agree exactly wherever
             // `gate > -limit`, which is everywhere at the default input scale.
             if rn == "clamp64" {
@@ -223,7 +223,7 @@ pub(crate) fn run() -> Result<()> {
             );
         }
 
-        // ── floor C: Atlas's CUDA dequant vs the independent ModelOpt reference ──
+        // ── floor C: Avarok's CUDA dequant vs the independent ModelOpt reference ──
         for proj in ["gate_proj", "up_proj", "down_proj"] {
             let &(pp, sp, s2, n, k) = &wp[proj];
             let d_out = gpu.alloc(n * k * 2)?;
@@ -240,7 +240,7 @@ pub(crate) fn run() -> Result<()> {
             gpu.synchronize(0)?;
             let got = down_bf16(&gpu, d_out, n * k)?;
             let want = g.get(&sec, &format!("deq_{proj}"))?;
-            // 🔴 Floor C is a BIT-EXACTNESS test, not a tolerance. Atlas writes bf16, so round
+            // 🔴 Floor C is a BIT-EXACTNESS test, not a tolerance. Avarok writes bf16, so round
             // the fp32 reference to bf16 FIRST and then demand equality: two independent decoders
             // of the same packed bits must produce the same numbers. Comparing an fp32 reference
             // against a bf16 result and calling the gap "the dequant floor" would hide a real
@@ -267,7 +267,7 @@ pub(crate) fn run() -> Result<()> {
             });
             if mismatches != 0 {
                 bail!(
-                    "expert {e} {proj}: Atlas's CUDA dequant disagrees with the ModelOpt \
+                    "expert {e} {proj}: Avarok's CUDA dequant disagrees with the ModelOpt \
                      reference on {mismatches} of {} sampled elements",
                     want_b.0.len()
                 );

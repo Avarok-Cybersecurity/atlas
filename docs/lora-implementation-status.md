@@ -1,4 +1,4 @@
-# Atlas LoRA v0 — Implementation Status (M0 + M1-attention)
+# Avarok LoRA v0 — Implementation Status (M0 + M1-attention)
 
 This is a **working POC**: a served, fine-tuned tiny model on GB10, verified end-to-end.
 
@@ -18,7 +18,7 @@ spark serve Hcompany/Holo-3.1-0.8B \
 ### M0 — load, validate, account
 - `--lora-adapter NAME=PATH_OR_HF_ID`, `--max-lora-rank` (64), `--max-loras` (8).
   Repeated flag → named reject (multi-adapter is M2).
-- PEFT `adapter_config.json` parser (`atlas-core`), hard-fail with `REJECT(...)` reasons
+- PEFT `adapter_config.json` parser (`avarok-core`), hard-fail with `REJECT(...)` reasons
   for every unsupported feature: non-LORA `peft_type`, DoRA, bias, rank/alpha patterns,
   `modules_to_save`, `all-linear`, absent `use_rslora`, `r=0`.
 - Dedicated adapter safetensors loader (`spark-runtime`) — host F16→BF16 (the base
@@ -39,7 +39,7 @@ spark serve Hcompany/Holo-3.1-0.8B \
   HF `k_norm(k_proj(x)+Δ)`).
 - Deltas contract at the **padded** `max_rank` (B is packed with `max_rank` row stride);
   a real-rank contraction would misread every B row past the first when `r < max_rank`.
-- `ATLAS_LORA_EAGER=1` disables decode-graph capture (debugging hatch); deltas are
+- `AVAROK_LORA_EAGER=1` disables decode-graph capture (debugging hatch); deltas are
   otherwise graph-safe (pool weights, arena scratch, and the f32 scale are load-time-fixed).
 - `/v1/models` advertises the adapter name first; base-name requests get adapted output
   with a one-line warn (v0 always-on wart; per-request routing is M2).
@@ -48,16 +48,16 @@ spark serve Hcompany/Holo-3.1-0.8B \
 
 - **Offline parity oracle** (`scripts/reference_deltas.py`): the loaded A/B/scale reproduce
   the PEFT-exported reference deltas — 36/36 modules, `scaling=2.0`, **0.0 rel-err**.
-- **`atlas-core` parser**: 11 unit tests (accept + every named reject) green.
+- **`avarok-core` parser**: 11 unit tests (accept + every named reject) green.
 - **Served, live**:
   - startup logs `LoRA adapter 'holo-tiny' installed on 6 layers (pool=117.0 MiB)`;
   - base output `"Paris."` → adapter output **differs** (delta is applied in the live
     decode path);
-  - **graph == eager** (`ATLAS_LORA_EAGER=1`) — byte-identical, so deltas capture
+  - **graph == eager** (`AVAROK_LORA_EAGER=1`) — byte-identical, so deltas capture
     correctly inside CUDA graphs.
 
 The test fixture (`test_data/lora-holo-tiny/`) is a **generated** PEFT adapter, deliberately
-strong so its effect is unambiguous — no community adapter exists for Atlas's custom
+strong so its effect is unambiguous — no community adapter exists for Avarok's custom
 NVFP4-packed bases, so a controllable fixture also exercises the reject/parity paths exactly.
 
 ## M2 — multi-adapter rotation over the RDMA weight tier (staged on this branch)
@@ -78,7 +78,7 @@ startup adapter with no rotation env is byte-identical to M1.
   single-adapter wrapper (slot 0, byte-identical).
 - **Runtime rotation (eager-on-rotate)** (`impl_b3.rs`, `decode_a{,2}.rs`): a
   new `TransformerModel::lora_rotatable` (true when `slots>1` /
-  `ATLAS_LORA_ROTATE=1` / `$ATLAS_LORA_PEER`) folds into the existing
+  `AVAROK_LORA_ROTATE=1` / `$AVAROK_LORA_PEER`) folds into the existing
   `lora_eager` gate, so an armed rotation runs decode **eager** — a
   `set_active_lora(name)` re-point is immediately live, never a stale graph
   replay. `Model::set_active_lora` (trait default: unsupported) re-installs the
@@ -90,8 +90,8 @@ startup adapter with no rotation env is byte-identical to M1.
   resident adapters are advertised by `/v1/models` (slot order, `data[0]` =
   default route).
 - **RDMA slot-staging** (`spark-storage/weight_lora_rdma.rs` +
-  `spark-model/lora/rdma_stage.rs`, gated `$ATLAS_LORA_PEER`): stage adapter dirs
-  on `atlas-weight-peer` and RDMA-load a named adapter's A/B straight into a pool
+  `spark-model/lora/rdma_stage.rs`, gated `$AVAROK_LORA_PEER`): stage adapter dirs
+  on `avarok-weight-peer` and RDMA-load a named adapter's A/B straight into a pool
   SLOT — landing byte-identical to the disk pack (same F16/F32→BF16 host convert
   as the disk adapter loader, same B row-repack). `TransformerModel::
   swap_lora_slot_from_peer` re-zeroes the slot, lands via
@@ -110,7 +110,7 @@ startup adapter with no rotation env is byte-identical to M1.
   BGMV (the dormant tables' direction). No per-request adapter auto-routing yet —
   `/v1/lora/active` sets ONE global active adapter; request `model` still routes
   by name for advertise, not per-request delta selection.
-- The RDMA verbs data path is gated on `atlas_rdma_verbs` (rdma-core); without it
+- The RDMA verbs data path is gated on `avarok_rdma_verbs` (rdma-core); without it
   `stage_into_slot` bails clearly. The pure convert/repack/offset logic is
   un-gated and unit-tested.
 

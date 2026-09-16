@@ -101,7 +101,7 @@ pub(super) fn handle_complete_tool_call(
             tool = %tc.function.name,
             "tool call validation error (hard): {e}; replacing with content and ending"
         );
-        let msg = format!("[atlas] Tool call rejected: {e}");
+        let msg = format!("[avarok] Tool call rejected: {e}");
         deltas.push(StreamDelta::Content {
             text: msg,
             token_ids: state.take_ids_if(ctx.req_return_token_ids),
@@ -153,7 +153,7 @@ pub(super) fn handle_complete_tool_call(
                 state.corrective_hint_sent = true;
                 let msg = format!(
                     "
-[atlas] The {} call above has EMPTY required parameter(s): {}.                      It will fail. Re-issue the call with real values for every                      required parameter (do not repeat it unchanged).",
+[avarok] The {} call above has EMPTY required parameter(s): {}.                      It will fail. Re-issue the call with real values for every                      required parameter (do not repeat it unchanged).",
                     tc.function.name,
                     if empties.is_empty() {
                         "<garbled parameter boundary>".to_string()
@@ -306,7 +306,7 @@ pub(super) fn handle_tool_call_delta(
             tool_parser::normalize_paths(std::slice::from_mut(&mut tc), cwd);
         }
         if let Err(issue) = tool_parser::assess_tool_call(&tc, &ctx.tool_defs_for_backfill) {
-            // Mid-stream validation rejections used to emit a `[atlas] Tool
+            // Mid-stream validation rejections used to emit a `[avarok] Tool
             // call rejected: …` content chunk and trip `stop_string_triggered`
             // — but `handle_tool_call_start` had already emitted the
             // `tool_calls[idx]` header to opencode, so suppressing the args
@@ -368,7 +368,7 @@ pub(super) fn handle_tool_call_delta(
                     tool = %name,
                     "tool call validation error (stream Δ, hard): {e}; replacing with content and ending"
                 );
-                let msg = format!("[atlas] Tool call rejected: {e}");
+                let msg = format!("[avarok] Tool call rejected: {e}");
                 deltas.push(StreamDelta::Content {
                     text: msg,
                     token_ids: Vec::new(),
@@ -458,7 +458,7 @@ fn advance_name_run(name_run: &mut Option<(String, u32)>, name: &str) -> u32 {
 /// guard tripped, by which point ~MB-long degenerate commands had
 /// already flooded the stream and the .git/ artifact pollution was
 /// already created. Three same-name calls is the empirical threshold
-/// at which opencode itself bails to the user for permission. Atlas
+/// at which opencode itself bails to the user for permission. Avarok
 /// matching this means we end the response slightly before opencode
 /// would surrender, giving the outer retry loop a clean signal.
 ///

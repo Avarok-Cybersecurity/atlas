@@ -22,7 +22,7 @@
 //   5. client does one-sided WRITE/READ; peer idles until the client hangs up,
 //      then unregisters + unmaps the blade.
 //
-// This module is split per the Atlas SDD file-size idiom:
+// This module is split per the Avarok SDD file-size idiom:
 //   `server_impl.rs` — accept loop, first-u64 dispatch, server-side rail
 //                      handshake holding the crate's SINGLE `reg_mr_rw` call
 //                      site (the access flag stays AT the call site — census-
@@ -31,18 +31,18 @@
 //   `registry.rs`    — peer POLICY: the process-global (kind, blob_bytes)
 //                      paging-arena registry, the disk-cap carve, and the anon
 //                      `Mmap` RAII the RDMA-registered arenas live in.
-// The peer's residency IS `atlas_tier::Residency` and its verbs ARE
-// `atlas_rdma::verbs`, imported directly — nothing tier- or verbs-shaped is
+// The peer's residency IS `avarok_tier::Residency` and its verbs ARE
+// `avarok_rdma::verbs`, imported directly — nothing tier- or verbs-shaped is
 // hand-rolled here.
 
-// The RW-blade handshake codec lives verbatim in the CUDA-free `atlas-rdma`
+// The RW-blade handshake codec lives verbatim in the CUDA-free `avarok-rdma`
 // crate; re-exported at its old path so the server below and both RW clients
 // are zero-diff. Byte layout golden-pinned in `tests/rdma_wire_golden.rs` —
 // it is what the fleet cache-peer binary speaks.
-pub use atlas_rdma::wire::CacheServerParams;
+pub use avarok_rdma::wire::CacheServerParams;
 
 // Peer paging policy — verbs-only, like the paging handshake it backs.
-#[cfg(atlas_rdma_verbs)]
+#[cfg(avarok_rdma_verbs)]
 mod registry;
 #[cfg(unix)]
 mod server_impl;
@@ -51,6 +51,6 @@ mod server_impl;
 pub use server_impl::{RdmaConfig, serve};
 
 // `kv_server_params_round_trip` lives WITH the codec in
-// `crates/atlas-rdma/tests/wire_roundtrip.rs`; the exact byte layout stays
+// `crates/avarok-rdma/tests/wire_roundtrip.rs`; the exact byte layout stays
 // pinned by `tests/rdma_wire_golden.rs` here. The `carve_disk_slots`
 // precedence pins live in `registry_tests.rs`.

@@ -135,13 +135,13 @@ impl MoeLayer {
         let mut cutlass_eoff: Option<Vec<i32>> = None;
         if max_m_tiles > 0 {
             // CUTLASS grouped NVFP4 gate_up reads the ORIGINAL [N,K/2] tables
-            // (CUTLASS B is ColumnMajor = K-contiguous), NOT the Atlas
+            // (CUTLASS B is ColumnMajor = K-contiguous), NOT the Avarok
             // transposed ones, so it must be reachable when gate_ptrs_t is
             // absent — that is exactly the originals-only layout a
             // checkpoint-native model runs in.
             if ctx.levers.moe_grouped_cutlass && self.cutlass_grouped_host.is_some() {
                 // ── SINGLE-LAUNCH CUTLASS grouped NVFP4 gate_up
-                // (ATLAS_HOLO_MOE_GROUPED_CUTLASS=1) ── one
+                // (AVAROK_HOLO_MOE_GROUPED_CUTLASS=1) ── one
                 // GemmUniversalMode::kGrouped launch over all active experts in
                 // place of the per-expert collective loop. Weights: the load-time
                 // host snapshot (`cutlass_grouped_host`) of the decode
@@ -194,7 +194,7 @@ impl MoeLayer {
                         stream,
                     )?;
                 } else if self.gateup_fp4 && self.moe_fused_gate_up_t_k64_fp4.0 != 0 {
-                    // ── FUSED FP4 gate_up (ATLAS_HOLO_MOE_GATEUP_FP4) ──
+                    // ── FUSED FP4 gate_up (AVAROK_HOLO_MOE_GATEUP_FP4) ──
                     // Block-scaled FP4 over the SHARED FAST_MOE=full [K/2,N] tables
                     // (gate_ptrs_t/up_ptrs_t — the SAME bytes the FP8 fused path
                     // reads, selected here only by kernel handle, so NO extra MoE
@@ -346,7 +346,7 @@ impl MoeLayer {
                 total_expanded * inter,
                 stream,
             )?;
-            // ── FP4 down (ATLAS_HOLO_MOE_DOWN_FP4) ── single block-scaled FP4
+            // ── FP4 down (AVAROK_HOLO_MOE_DOWN_FP4) ── single block-scaled FP4
             // MMA per k64 tile (mxf4nvf4.scale_vec::4X.m16n8k64), reading the
             // post-SiLU intermediate (expert_gate_out) and the per-expert FP4
             // down tables. Same sorted layout + null sorted_token_ids as the
@@ -361,8 +361,8 @@ impl MoeLayer {
                     .and_then(|t| t.down.as_ref())
                 && ctx.levers.moe_grouped_down
             {
-                // ── CUTLASS grouped NVFP4 down (ATLAS_HOLO_MOE_GROUPED_CUTLASS
-                //    + ATLAS_HOLO_MOE_GROUPED_DOWN) ──
+                // ── CUTLASS grouped NVFP4 down (AVAROK_HOLO_MOE_GROUPED_CUTLASS
+                //    + AVAROK_HOLO_MOE_GROUPED_DOWN) ──
                 // A = post-SiLU expert_gate_out, already expert-contiguous (the grouped
                 // gate_up wrote it sorted), so NO gather. Weights = the load-time host
                 // snapshot of decode down_ptrs packed [N=hidden,K/2] + swizzled SFB +
@@ -404,7 +404,7 @@ impl MoeLayer {
                         stream,
                     )?;
                 } else if self.down_fp4 && self.moe_down_t_k64_fp4.0 != 0 {
-                    // ── FP4 down (ATLAS_HOLO_MOE_DOWN_FP4) over the SHARED down_ptrs_t
+                    // ── FP4 down (AVAROK_HOLO_MOE_DOWN_FP4) over the SHARED down_ptrs_t
                     // [K/2,N] table (real per-expert scale2; coalesced K-major load +
                     // on-chip DN4_TRANSPOSE). Same sorted layout + null
                     // sorted_token_ids as the FP8/w4a16 down kernels, so unpermute is

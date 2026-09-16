@@ -42,7 +42,7 @@ At the end of the stack `hyper_connection_mixer` (L1330, `use_combine=False`)
 runs the same collapse and returns `mixed_input` only — **that is the final
 norm**, which is why the checkpoint has no `model.norm.weight`.
 
-### Why Atlas's existing mHC kernels are the wrong ones
+### Why Avarok's existing mHC kernels are the wrong ones
 
 `ops/hyper_connection.rs` is DeepSeek-V4's: its `hc_pre` mixes with a
 **Sinkhorn-normalized** matrix over `hc_fn`/`hc_scale`/`hc_base`. The stream
@@ -107,7 +107,7 @@ Notes that bite:
 
 On the 12 full-attention layers only; `indexer_budget = 2048`,
 `compress_ratio = 4`, 4 heads × 128, `index_qk_proj [640, 2560]` fused as
-q(4×128) + k(1×128). Atlas has DeepSeek-V4's CSA machinery
+q(4×128) + k(1×128). Avarok has DeepSeek-V4's CSA machinery
 (`index_n_heads` / `index_head_dim` / `index_topk` / `compress_ratios`, plus
 `csa_compress` and `prefill_attn_compressed`); the open question is whether
 the selection semantics match. Read L611 onward before wiring.
@@ -211,7 +211,7 @@ The checkpoint confirms it — plain-RMSNorm tensors centre near 0
 (`hc_norm` −0.06, `q_norm` 0.28, `ple.norm_key` −0.11) and the gated GDN norm
 centres at 0.97.
 
-Atlas already dispatches this globally via `ships_vanilla_norm_weights`
+Avarok already dispatches this globally via `ships_vanilla_norm_weights`
 (`crates/spark-model/src/lib.rs`), which lists only `deepseek_v4` and
 `laguna` as vanilla and therefore leaves `qwen4_exp` on the offset-from-1
 kernel. That is correct and needs no change.

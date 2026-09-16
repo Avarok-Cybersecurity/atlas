@@ -161,5 +161,5 @@ gdn_verify_fused_conv_kn_f32 = "FP32 fused verify conv for the exact-verify chai
 [expected_absent.gated_delta_rule]
 gated_delta_rule_decode_f16_norm = "FP16 h-state twin; see honesty note above. F32 fused-norm arm resolves."
 gated_delta_rule_decode_f16_strided_norm_half = "FP16 h-state twin; see honesty note above. F32 strided-norm arm resolves."
-gated_delta_rule_decode_f32_strided_norm_half = "Half-register twin; selected only under the resolved half-register gate (ATLAS_GDN_HALF_REG presence, off as shipped)."
-gated_delta_rule_decode_f32_strided_norm_smem = "SMEM-staged twin; gated behind ATLAS_GDN_SMEM_STAGE (off as shipped) AND the half-register gate."
+gated_delta_rule_decode_f32_strided_norm_half = "Half-register twin; selected only under the resolved half-register gate (AVAROK_GDN_HALF_REG presence, off as shipped)."
+gated_delta_rule_decode_f32_strided_norm_smem = "SMEM-staged twin; gated behind AVAROK_GDN_SMEM_STAGE (off as shipped) AND the half-register gate."

@@ -64,7 +64,7 @@ fn cutlass_nvfp4_projection_numeric_comparator() {
             copy_h2d(act_dev, &act_bf16);
         }
 
-        // Pack the weight to Atlas transposed NVFP4 exactly as the runtime does.
+        // Pack the weight to Avarok transposed NVFP4 exactly as the runtime does.
         pack_bf16_weight_to_nvfp4_t(
             weight_dev as u64,
             packed_dev as u64,

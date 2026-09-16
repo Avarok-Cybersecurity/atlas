@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! A deliberately small YAML reader for `atlas-recipes`.
+//! A deliberately small YAML reader for `avarok-recipes`.
 //!
-//! Atlas has no YAML dependency and this is not a reason to add one: the
+//! Avarok has no YAML dependency and this is not a reason to add one: the
 //! recipes use six constructs, and a general parser would accept a great deal
 //! more than the format actually is.
 //!

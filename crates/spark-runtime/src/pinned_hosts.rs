@@ -13,7 +13,7 @@
 //!   after the call returns. Dropping or rewriting the source is a
 //!   use-after-free / torn transfer.
 //!
-//! Almost every `copy_h2d_async` call site in Atlas hands over a stack array or
+//! Almost every `copy_h2d_async` call site in Avarok hands over a stack array or
 //! a local `Vec` that dies on the next line. Those are sound today purely
 //! because they are pageable. Nothing recorded that dependency, so pinning any
 //! one of those buffers — a normal, desirable optimisation, and one this tree
@@ -22,7 +22,7 @@
 //! runtime complaint.
 //!
 //! This registry is what makes that fail loudly instead. Every page-locked
-//! allocation Atlas makes is recorded here; the CUDA backend consults it on the
+//! allocation Avarok makes is recorded here; the CUDA backend consults it on the
 //! `copy_h2d_async` path and, for a pinned source, adds the synchronisation the
 //! pageable path was getting from the driver for free. The cost of pinning a
 //! buffer that a call site then drops is a stalled stream and a one-time

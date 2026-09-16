@@ -2,8 +2,8 @@ name: Kernel compile
 
 # CI COMPILED NO CUDA AT ALL until this job existed.
 #
-# `ci.yml` sets `ATLAS_SKIP_BUILD: "1"` repo-wide, which makes
-# `atlas-kernels/build.rs` emit a stub `target_ptx.rs` and invoke nvcc zero
+# `ci.yml` sets `AVAROK_SKIP_BUILD: "1"` repo-wide, which makes
+# `avarok-kernels/build.rs` emit a stub `target_ptx.rs` and invoke nvcc zero
 # times. That is the right default for the Rust jobs — they need no GPU and no
 # toolchain, and a 3583-invocation kernel build would dominate every PR — but it
 # means a `.cu` change was never compiled by anything before a human ran it on a
@@ -31,7 +31,7 @@ on:
     branches: [main]
     paths:
       - 'kernels/**'
-      - 'crates/atlas-kernels/**'
+      - 'crates/avarok-kernels/**'
   # Merge queue: queue commits (temporary gh-readonly-queue/** merge-commits)
   # fire none of the events above, and this check is required — without this
   # trigger it is never reported and the entry hangs until the queue's
@@ -141,7 +141,7 @@ jobs:
       - name: Compile every gb10 kernel target
         env:
           # ★ NOT set to 1. That is the whole point of this job.
-          ATLAS_TARGET_MODEL: "*"
+          AVAROK_TARGET_MODEL: "*"
           CUDARC_CUDA_VERSION: "13000"
           PATH_CUDA: /usr/local/cuda/bin
         run: |
@@ -155,7 +155,7 @@ jobs:
           # promotion ("clippy for kernels"). Reimplementing any of that here
           # would create a second source of truth that drifts silently — and
           # would be a weaker check than the one it imitates.
-          cargo build -p atlas-kernels 2>&1 | tail -40
+          cargo build -p avarok-kernels 2>&1 | tail -40
 
       - name: Confirm kernels were actually compiled
         run: |
@@ -169,7 +169,7 @@ jobs:
           #     too (returning an empty Vec), so it passes on a skipped build.
           #   * "no stub is present" — cargo keeps one `out/` per build-script
           #     fingerprint and never prunes the old ones, so a tree that has
-          #     ever been built with ATLAS_SKIP_BUILD=1 keeps those stubs
+          #     ever been built with AVAROK_SKIP_BUILD=1 keeps those stubs
           #     forever. On a DGX this failed a build that had in fact just
           #     compiled 14,342 PTX modules.
           #
@@ -181,7 +181,7 @@ jobs:
                    | grep -c 'do not edit' || true)
           if [ "${real:-0}" -eq 0 ]; then
             echo "::error::every generated target_ptx.rs is build.rs's SKIP STUB — nvcc was never invoked."
-            echo "::error::ATLAS_SKIP_BUILD must not be set for this job."
+            echo "::error::AVAROK_SKIP_BUILD must not be set for this job."
             exit 1
           fi
           ptx=$(find target -name '*.ptx' | wc -l)
@@ -195,18 +195,18 @@ jobs:
 
       - name: Run the PTX registry tests that have never had a runner
         env:
-          ATLAS_TARGET_MODEL: "*"
+          AVAROK_TARGET_MODEL: "*"
           CUDARC_CUDA_VERSION: "13000"
           PATH_CUDA: /usr/local/cuda/bin
         run: |
           set -euo pipefail
           export PATH="$PATH_CUDA:$PATH"
-          # Run every registry test marked "requires nvcc and ATLAS_SKIP_BUILD
+          # Run every registry test marked "requires nvcc and AVAROK_SKIP_BUILD
           # unset". They assert more than the file count above: every module
           # is non-empty, every module carries a `.version` directive, each
           # resolved target has at least 31 modules, and default-model lookup
           # resolves.
-          cargo test -p atlas-kernels -- --ignored
+          cargo test -p avarok-kernels -- --ignored
 
   # The second NVIDIA architecture. `kernels/hopper/` is 241 symlinks into
   # `kernels/gb10/`, so nothing above compiles a single line of it for sm_90a —
@@ -251,15 +251,15 @@ jobs:
       - name: Compile the hopper Nemotron-Super target
         env:
           # ★ NOT set to 1, same as the gb10 job.
-          ATLAS_TARGET_HW: hopper
-          ATLAS_TARGET_MODEL: nemotron-super-120b-a12b
+          AVAROK_TARGET_HW: hopper
+          AVAROK_TARGET_MODEL: nemotron-super-120b-a12b
           CUDARC_CUDA_VERSION: "13000"
           PATH_CUDA: /usr/local/cuda/bin
         run: |
           set -euo pipefail
           export PATH="$PATH_CUDA:$PATH"
           nvcc --version | tail -2
-          cargo build -p atlas-kernels 2>&1 | tail -40
+          cargo build -p avarok-kernels 2>&1 | tail -40
 
       - name: Confirm kernels were actually compiled
         run: |
@@ -282,7 +282,7 @@ jobs:
             exit 1
           fi
 
-      # Deliberately NOT `cargo test -p atlas-kernels -- --ignored` here. Those
+      # Deliberately NOT `cargo test -p avarok-kernels -- --ignored` here. Those
       # registry tests pin a gb10 MULTI-target build by name — `ptx_for_model`
       # expects a compiled qwen3-next target, and the dense-27B tie-break case
       # expects qwen3.6-27b and qwen3.8-27b. Running them against a
@@ -335,15 +335,15 @@ jobs:
       - name: Compile the b200 Nemotron-Super target
         env:
           # ★ NOT set to 1, same as the gb10 and hopper jobs.
-          ATLAS_TARGET_HW: b200
-          ATLAS_TARGET_MODEL: nemotron-super-120b-a12b
+          AVAROK_TARGET_HW: b200
+          AVAROK_TARGET_MODEL: nemotron-super-120b-a12b
           CUDARC_CUDA_VERSION: "13000"
           PATH_CUDA: /usr/local/cuda/bin
         run: |
           set -euo pipefail
           export PATH="$PATH_CUDA:$PATH"
           nvcc --version | tail -2
-          cargo build -p atlas-kernels 2>&1 | tail -40
+          cargo build -p avarok-kernels 2>&1 | tail -40
 
       - name: Confirm kernels were actually compiled
         run: |
@@ -364,6 +364,6 @@ jobs:
             exit 1
           fi
 
-      # Deliberately NOT `cargo test -p atlas-kernels -- --ignored`, for the
+      # Deliberately NOT `cargo test -p avarok-kernels -- --ignored`, for the
       # same reason as the hopper job: those registry tests pin a gb10
       # MULTI-target build by name.

@@ -74,7 +74,7 @@ Neither throws. Both are on the list below as part of phase B.
    For `w ≈ 0` the missing offset is a near-null mix: finite, plausible,
    wrong. Measured against the reference it is `max|diff| = 4.65`.
 
-   Atlas already dispatches this globally through
+   Avarok already dispatches this globally through
    `ships_vanilla_norm_weights`, which correctly leaves `qwen4_exp` on the
    offset-from-1 path — so `q_norm`/`k_norm` were never affected. Only the
    hand-rolled norm inside this kernel was. **The same offset applies to
@@ -111,7 +111,7 @@ files. Three reasons not to.
    the attention half and nothing runs; finish only the GDN half and nothing
    runs. Two workstreams that cannot each be verified are one workstream with
    a merge conflict in the middle.
-2. **One GPU, one Atlas instance.** `--gpu-memory-utilization` reserves its
+2. **One GPU, one Avarok instance.** `--gpu-memory-utilization` reserves its
    whole fraction, and this model fits at 0.80 with ~0.4 GB of KV to spare.
    Any two streams that need to *serve* the model are serialized by the box
    whatever the branch topology says.
@@ -263,12 +263,12 @@ already read `normed` and write `out_proj_buf` and touch the residual nowhere.
 - [x] `decode_batched` / `decode_multi_seq` / `decode_verify_multi` refuse via
       `refuse_batched_under_hc` — C=1 only, stated
 - [x] `ensure_no_unwired_hc` retired; what is left is the batched refusal
-- [x] **PLE refused at LOAD** unless `ATLAS_QWEN4EXP_NO_PLE=1`, with the
+- [x] **PLE refused at LOAD** unless `AVAROK_QWEN4EXP_NO_PLE=1`, with the
       warning naming what is wrong and why
 
 **Milestone: greedy generation with PLE stubbed.** Output is *wrong* — model
 layer 1's injection is missing — so it stays behind an explicit
-`ATLAS_QWEN4EXP_NO_PLE=1` that logs a loud warning and is refused by default.
+`AVAROK_QWEN4EXP_NO_PLE=1` that logs a loud warning and is refused by default.
 It is a diagnostic that proves the mHC spine end to end, not a result.
 
 ### D — PLE n-gram injection · large
@@ -314,8 +314,8 @@ Runs in tandem from the start — it is a reference read, not an edit:
 - [ ] Read `Qwen4ExpTextQSAIndexer` (`ref/modeling_qwen4_exp.py` L611
       onward) and write the selection semantics down beside §3 of
       `ARCHITECTURE.md`, the way §1 and §2 were written down
-- [ ] **Answer the open question: does Atlas's DeepSeek CSA selection match
-      Qwen's?** Atlas has `index_n_heads` / `index_head_dim` / `index_topk`,
+- [ ] **Answer the open question: does Avarok's DeepSeek CSA selection match
+      Qwen's?** Avarok has `index_n_heads` / `index_head_dim` / `index_topk`,
       `csa_compress`, `prefill_attn_compressed` and `prefill/cache_skip_v4.rs`.
       If the block scoring and top-k semantics agree, G is wiring; if they
       differ, G needs its own kernel and that must be known before F lands,

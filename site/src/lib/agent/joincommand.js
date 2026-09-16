@@ -22,7 +22,7 @@ import { installerUrl, powershellInstallerUrl } from '../data.js';
  * — the right answer for another DGX, and unreachable from a laptop on the
  * ordinary LAN. Naming only the first worked for whichever machine we guessed
  * and failed on the other, remotely, after a clean install. The joiner walks
- * the list; `atlasctl` stops the walk as soon as a machine actually answers,
+ * the list; `avarokctl` stops the walk as soon as a machine actually answers,
  * so the alternatives never cost the code its limited attempts.
  *
  * @param {{code: string, addresses: string[]}|null} join

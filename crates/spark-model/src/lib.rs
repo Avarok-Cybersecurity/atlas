@@ -64,7 +64,7 @@ pub mod weight_map;
 /// with sign flips on the compressor norms.
 ///
 /// This is an explicit model dispatch, NOT an inference from weight statistics.
-pub fn ships_vanilla_norm_weights(config: &atlas_core::config::ModelConfig) -> bool {
+pub fn ships_vanilla_norm_weights(config: &avarok_core::config::ModelConfig) -> bool {
     model_type_ships_vanilla_norm_weights(&config.model_type)
 }
 

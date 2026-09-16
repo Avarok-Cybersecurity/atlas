@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! GGUF tensor-name → Atlas HF tensor-name translation.
+//! GGUF tensor-name → Avarok HF tensor-name translation.
 //!
 //! GGUF names decoder weights as `blk.N.<sub>` plus a handful of top-level
-//! tensors (`token_embd`, `output_norm`, `output`). Atlas per-arch loaders ask
+//! tensors (`token_embd`, `output_norm`, `output`). Avarok per-arch loaders ask
 //! the [`crate::weights::WeightStore`] for HuggingFace names
 //! (`model.layers.N.self_attn.q_proj.weight`, …). This module is the pure,
 //! side-effect-free bridge between the two. It emits standard HF names for the
 //! `weight_prefix = "model"` convention (see `ModelConfig::layer_prefix`).
 //!
 //! Expert-stacked GGUF tensors (`blk.N.ffn_{gate,up,down}_exps.weight`) are a
-//! single `[n_expert, …]` tensor that Atlas expects as `num_experts` separate
+//! single `[n_expert, …]` tensor that Avarok expects as `num_experts` separate
 //! `…experts.{E}.*` tensors. A 1:1 name map cannot express that fan-out, so
 //! those names resolve to [`GgufName::ExpertStack`] and the loader is
 //! responsible for slicing + naming each expert. Everything else resolves to
@@ -31,17 +31,17 @@ pub enum GgufName {
         /// `{proj}_proj`.
         proj: &'static str,
     },
-    /// Tensor carries no learnable weight for Atlas (e.g. precomputed rope
+    /// Tensor carries no learnable weight for Avarok (e.g. precomputed rope
     /// frequencies); the loader should skip it.
     Drop,
 }
 
-/// The HF weight prefix Atlas defaults to when `weight_prefix` is empty
+/// The HF weight prefix Avarok defaults to when `weight_prefix` is empty
 /// (`ModelConfig::layer_prefix` → `model.layers.N`). Kept as a constant so the
 /// non-layer names below stay in sync with the per-layer names.
 const HF_PREFIX: &str = "model";
 
-/// Translate a GGUF tensor name to its Atlas HF equivalent for architecture
+/// Translate a GGUF tensor name to its Avarok HF equivalent for architecture
 /// `arch` (the value of GGUF metadata key `general.architecture`, already
 /// lower-cased by the caller — e.g. `"llama"`, `"qwen2"`, `"qwen3"`,
 /// `"gemma2"`). Returns `None` for names this translator does not recognize, so
@@ -157,14 +157,14 @@ fn translate_nllb(gguf_name: &str) -> Option<GgufName> {
     )))
 }
 
-/// HF prefix Atlas's Qwen3.6 ViT tower loads its tensors under. See
+/// HF prefix Avarok's Qwen3.6 ViT tower loads its tensors under. See
 /// `Qwen35WeightLoader::load_vision_encoder`, which probes
 /// `model.visual.patch_embed.proj.weight`. The mmproj GGUF path always produces
 /// the flat form, so we emit `model.visual.*`.
 const VISION_PREFIX: &str = "model.visual";
 
 /// Translate an mmproj (`general.architecture = clip`) tensor name to the
-/// `model.visual.*` HF name Atlas's Qwen3.6 vision encoder expects.
+/// `model.visual.*` HF name Avarok's Qwen3.6 vision encoder expects.
 ///
 /// llama.cpp's `clip` writer (projector `qwen3vl_merger`) names the tower:
 ///   * per-block  `v.blk.N.{attn_qkv,attn_out,ffn_up,ffn_down,ln1,ln2}.{w,b}`
@@ -235,7 +235,7 @@ fn translate_clip(gguf_name: &str) -> Option<GgufName> {
 /// layers carry `attn_qkv` (fused Q|K|V), `attn_gate` (the Z gate) and the
 /// `ssm_*` family. So a pure name map suffices — no layer-index arithmetic.
 ///
-/// GDN → Atlas HF mapping (`model.layers.N.linear_attn.*`, consumed by
+/// GDN → Avarok HF mapping (`model.layers.N.linear_attn.*`, consumed by
 /// `Qwen35DenseWeightLoader`'s `LinearAttention` arm):
 ///   * `attn_qkv`   → `in_proj_qkv`   (fused Q|K|V, rows = ssm_qkv_size)
 ///   * `attn_gate`  → `in_proj_z`     (Z gate, rows = ssm_z_size)
@@ -289,7 +289,7 @@ fn translate_default(gguf_name: &str) -> Option<GgufName> {
         }
         // Untied LM head. (Tied models omit this tensor and reuse token_embd.)
         "output.weight" => return Some(GgufName::Direct("lm_head.weight".to_string())),
-        // Precomputed rope frequency table — Atlas builds rope itself.
+        // Precomputed rope frequency table — Avarok builds rope itself.
         "rope_freqs.weight" => return Some(GgufName::Drop),
         _ => {}
     }
@@ -358,7 +358,7 @@ fn translate_layer_sub(layer: usize, sub: &str) -> Option<GgufName> {
 }
 
 /// True if a mapped HF tensor name is a "big" dense projection that the native
-/// keep-packed Q2_0 decode path (`ATLAS_GGUF_NATIVE_Q2=1`) can serve without
+/// keep-packed Q2_0 decode path (`AVAROK_GGUF_NATIVE_Q2=1`) can serve without
 /// dequantizing — i.e. its weight stays a raw `block_q2_0` buffer in VRAM.
 ///
 /// Scoped for Tier-1 (decode) to the dense **FFN** projections only

@@ -2,7 +2,7 @@
 // =============================================================================
 // gen-benchmarks.mjs — generate src/lib/benchmarks.generated.json from baselines
 // -----------------------------------------------------------------------------
-// SSOT: the atlas test harness writes throughput baselines to tests/baselines/
+// SSOT: the avarok test harness writes throughput baselines to tests/baselines/
 //   (one *.json per gated model). Those files are the single source of truth for
 //   the "verified" throughput a shipped Avarok image is held to. An EMPTY
 //   tests/baselines/ (only .gitkeep + README.md) is the EXPECTED "pending"
@@ -32,7 +32,7 @@ import { execFileSync } from 'node:child_process';
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, '..', '..');
 const BASELINES_ROOT =
-  process.env.ATLAS_BASELINES_ROOT || resolve(REPO, 'tests', 'baselines');
+  process.env.AVAROK_BASELINES_ROOT || resolve(REPO, 'tests', 'baselines');
 const OUT = resolve(here, '..', 'src', 'lib', 'benchmarks.generated.json');
 
 // --- git stamp (sha + committer date) ---------------------------------------

@@ -9,10 +9,10 @@
 # ask for is the reason the launcher changed.
 set -eu
 
-printf '\033[1;33m[atlas]\033[0m %s\n' "quickstart.sh has been replaced." >&2
+printf '\033[1;33m[avarok]\033[0m %s\n' "quickstart.sh has been replaced." >&2
 cat >&2 <<'MSG'
 
-  Avarok is now launched with `atlasctl`, which replaces sparkrun.
+  Avarok is now launched with `avarokctl`, which replaces sparkrun.
 
   Install it with:
 
@@ -25,7 +25,7 @@ cat >&2 <<'MSG'
   Why the change: sparkrun redirects the Avarok recipe registry to a repository
   Avarok does not control, and marks it trusted — which lets recipe-supplied
   shell commands run on your host. If you have sparkrun installed, run
-  `atlasctl doctor` after installing, or see:
+  `avarokctl doctor` after installing, or see:
 
       https://github.com/Avarok-Cybersecurity/atlas-recipes/blob/main/SECURITY.md
 

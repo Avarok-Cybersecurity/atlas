@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Server initialization and runtime: phases 0-11 of the Atlas startup sequence.
+//! Server initialization and runtime: phases 0-11 of the Avarok startup sequence.
 //!
 //! Refactor wave-4f extracted the bulk of each phase to `serve_phases.rs`
 //! (resolve_topology, preflight_reserve, load_weight_store,
@@ -108,7 +108,7 @@ fn startup(
     tui_progress: Option<std::sync::mpsc::Receiver<crate::tui::capture_layer::ProgressEvent>>,
     host: Arc<crate::main_modules::model_host::ModelHost>,
 ) -> Result<Startup> {
-    tracing::info!("Atlas Spark starting...");
+    tracing::info!("Avarok Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
     // Before anything writes: a nearly-full disk shows up later as a download
     // that dies mid-shard or as page-cache thrashing that reads like a
@@ -147,7 +147,7 @@ fn startup(
     }
 
     // Publish the kernel-path flags the command line owns, BEFORE anything can
-    // read them. Each of these used to be an `ATLAS_*` variable read at its own
+    // read them. Each of these used to be an `AVAROK_*` variable read at its own
     // call site; they are configuration, so they belong on the command line
     // where `--help` lists them, `ps` shows them, and a recipe can be read
     // without a ten-line env preamble. The environment stays honoured as a
@@ -320,11 +320,11 @@ pub(super) fn resolve_vision_max_pixels(
     if args.vision_max_pixels > 0 {
         return Ok(Some(args.vision_max_pixels));
     }
-    if let Ok(raw) = std::env::var("ATLAS_VISION_MAX_PIXELS") {
+    if let Ok(raw) = std::env::var("AVAROK_VISION_MAX_PIXELS") {
         let trimmed = raw.trim();
         if !trimmed.is_empty() && trimmed != "0" {
             let parsed = trimmed.parse::<usize>().with_context(|| {
-                format!("ATLAS_VISION_MAX_PIXELS must be a positive integer, got {raw:?}")
+                format!("AVAROK_VISION_MAX_PIXELS must be a positive integer, got {raw:?}")
             })?;
             if parsed > 0 {
                 return Ok(Some(parsed));
@@ -409,7 +409,7 @@ pub(super) fn read_preprocessor_max_pixels(model_dir: &std::path::Path) -> Optio
 /// the heuristics needed across ModelOpt + compressed-tensors checkpoints.
 /// Returns `"bf16"` when no quant config is present (the HF default for
 /// unquantized BF16 weights).
-pub(super) fn canonicalize_model_quant(config: &atlas_core::config::ModelConfig) -> String {
+pub(super) fn canonicalize_model_quant(config: &avarok_core::config::ModelConfig) -> String {
     let Some(qc) = config.quantization_config.as_ref() else {
         return "bf16".to_string();
     };
@@ -445,7 +445,7 @@ pub(super) fn canonicalize_model_quant(config: &atlas_core::config::ModelConfig)
         return "fp8".into();
     }
     // compressed-tensors with no FP8/NVFP4 marker is usually GPTQ/AWQ —
-    // we don't currently dispatch those on Atlas; report verbatim so
+    // we don't currently dispatch those on Avarok; report verbatim so
     // the bail message is precise.
     if !algo.is_empty() {
         return algo;
@@ -459,7 +459,7 @@ pub(super) fn canonicalize_model_quant(config: &atlas_core::config::ModelConfig)
 /// QV1 helper: short debug string of where the quant declaration came
 /// from, used in the bail message so the operator can locate the
 /// mis-declared field quickly.
-pub(super) fn describe_quant_source(config: &atlas_core::config::ModelConfig) -> String {
+pub(super) fn describe_quant_source(config: &avarok_core::config::ModelConfig) -> String {
     match config.quantization_config.as_ref() {
         Some(qc) => format!(
             "quant_method={:?}, quant_algo={:?}, format={:?}",
@@ -472,9 +472,9 @@ pub(super) fn describe_quant_source(config: &atlas_core::config::ModelConfig) ->
 /// QV1: returns `true` iff the kernel target's declared quant string is
 /// known to handle the model's canonicalized quant.
 ///
-/// The current Atlas build emits one bundle per (hw, model) regardless
+/// The current Avarok build emits one bundle per (hw, model) regardless
 /// of how many quant variants it dispatches at runtime: the bundle
-/// label is whichever `ATLAS_TARGET_QUANT` value the build script
+/// label is whichever `AVAROK_TARGET_QUANT` value the build script
 /// happened to record first (today: always `"nvfp4"`). Each bundle
 /// nonetheless contains native FP8 / native NVFP4 / BF16-dequant code
 /// paths for the same model. This compat table makes that explicit.

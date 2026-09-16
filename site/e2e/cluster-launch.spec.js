@@ -2,16 +2,16 @@
 
 // The cluster-launch flow against a real local agent.
 //
-// @live because it needs `atlasctl agent run` on this machine with at least one
+// @live because it needs `avarokctl agent run` on this machine with at least one
 // paired peer. Without that there is nothing to launch across, and a mocked
 // agent would only prove the mock agrees with itself.
 //
-// Run it as:  atlasctl agent run --dev-origins
+// Run it as:  avarokctl agent run --dev-origins
 //
 // The --dev-origins flag is not optional here and its absence does not look
 // like a configuration problem. The agent's origin allowlist is
 // ALLOWED_ORIGINS = ["https://atlascybernetics.ai"] and nothing else unless that
-// flag is passed (atlasctl-agent/src/guard.rs). Playwright serves this suite
+// flag is passed (avarokctl-agent/src/guard.rs). Playwright serves this suite
 // from http://127.0.0.1:4173, which is in DEV_ORIGINS but gated behind the
 // flag -- so a default agent answers the WebSocket upgrade with 403 before any
 // token is read. The browser cannot expose a handshake response body, so the
@@ -20,19 +20,19 @@
 
 import { expect, test } from '@playwright/test';
 
-const TOKEN = process.env.ATLASCTL_TOKEN ?? '';
+const TOKEN = process.env.AVAROKCTL_TOKEN ?? '';
 
 test.describe('@live cluster launch', () => {
-  test.skip(!TOKEN, 'needs ATLASCTL_TOKEN and a running agent');
+  test.skip(!TOKEN, 'needs AVAROKCTL_TOKEN and a running agent');
 
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((t) => {
       // The key the app actually reads (`TOKEN_KEY` in protocol.js). It was
-      // 'atlasctl.token' here, which stores a value nothing looks for: the page
+      // 'avarokctl.token' here, which stores a value nothing looks for: the page
       // never dials, `fleet.mode` never reaches 'live', and every assertion
       // below times out waiting for a surface that cannot mount. A @live spec
       // that cannot pass is worse than no spec, because it reads as coverage.
-      window.localStorage.setItem('atlas.agent.token', t);
+      window.localStorage.setItem('avarok.agent.token', t);
     }, TOKEN);
   });
 

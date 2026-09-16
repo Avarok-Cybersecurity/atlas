@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Batched MoE Expert GEMV — All top-K experts in one kernel launch.
+// Avarok Batched MoE Expert GEMV — All top-K experts in one kernel launch.
 //
 // Replaces 10 individual w4a16_gemv + 10 scaled_add with:
 //   1 batched GEMV (gate) + 1 batched GEMV (up) + 1 SiLU + 1 batched GEMV (down) + 1 weighted sum

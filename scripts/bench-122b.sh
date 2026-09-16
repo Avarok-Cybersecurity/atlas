@@ -11,7 +11,7 @@ API="http://localhost:8888/v1"
 MODEL="Sehyo/Qwen3.5-122B-A10B-NVFP4"
 
 echo "=========================================="
-echo "  Atlas 122B-NVFP4 Benchmark Suite"
+echo "  Avarok 122B-NVFP4 Benchmark Suite"
 echo "=========================================="
 echo ""
 

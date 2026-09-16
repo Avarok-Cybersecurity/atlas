@@ -7,7 +7,7 @@
 //! H100 round 12 (`h100-round12-report.md`, stage 2c and 4b): the serve logged
 //!
 //! ```text
-//! GDN state spine: gated_delta_rule_chunk_delta_h_tcfuse (ATLAS_GDN_PREFILL_TC; …)
+//! GDN state spine: gated_delta_rule_chunk_delta_h_tcfuse (AVAROK_GDN_PREFILL_TC; …)
 //! ```
 //!
 //! while the nsys trace of the same cell showed launches of
@@ -35,8 +35,8 @@ pub const GDN_TC_SPINE_ENTRY: &str = "gated_delta_rule_chunk_delta_h_tcfuse_x2";
 /// gated_delta_rule_chunk_tc.cu`, shared, not relocated to `kernels/hopper`.
 pub const GDN_TC_SPINE_MODULE: &str = "gated_delta_rule_chunk_tc";
 
-/// The SCALAR spine entries `qwen3_ssm::init` can bind — `ATLAS_GDN_PIPE=1`,
-/// `ATLAS_GDN_VTILE=1`, and the default. Named here beside the tensor-core
+/// The SCALAR spine entries `qwen3_ssm::init` can bind — `AVAROK_GDN_PIPE=1`,
+/// `AVAROK_GDN_VTILE=1`, and the default. Named here beside the tensor-core
 /// entry for the same reason that one is: the init route line and the handle
 /// are built from the same string or they drift apart.
 pub const GDN_SCALAR_SPINE_PIPE: &str = "gated_delta_rule_chunk_delta_h_pipe";
@@ -91,7 +91,7 @@ pub fn gdn_init_spine_line(tc_spine_bound: bool, scalar_entry: &str) -> String {
 /// which is the defect this file exists to close.
 pub fn gdn_tc_spine_route_line(num_v_heads: u32, batch_size: u32, smem_bytes: u32) -> String {
     format!(
-        "GDN state spine: {GDN_TC_SPINE_ENTRY} (ATLAS_GDN_PREFILL_TC; bf16 mma.sync \
+        "GDN state spine: {GDN_TC_SPINE_ENTRY} (AVAROK_GDN_PREFILL_TC; bf16 mma.sync \
          operands, f32 accumulator = the recurrent state, h stays f32) \
          grid=[{num_v_heads},{batch_size}] block=256 smem={smem_bytes}B"
     )
@@ -126,7 +126,7 @@ mod tests {
             "grid=[48,2]",
             "block=256",
             "smem=88324B",
-            "ATLAS_GDN_PREFILL_TC",
+            "AVAROK_GDN_PREFILL_TC",
         ] {
             assert!(line.contains(field), "missing `{field}` in:\n{line}");
         }

@@ -22,16 +22,16 @@ We will acknowledge receipt within **48 hours** and provide an initial assessmen
 
 ## Scope
 
-Atlas is an inference server that runs locally with GPU access. The primary threat surface includes:
+Avarok is an inference server that runs locally with GPU access. The primary threat surface includes:
 
 - **CUDA kernel safety** — Out-of-bounds memory access, buffer overflows in GPU kernels
 - **HTTP API** — Input validation on the OpenAI-compatible endpoint (`spark-server`)
 - **Weight loading** — Malicious safetensor files, path traversal during model loading
-- **Unsafe Rust** — Atlas uses `unsafe` blocks for CUDA FFI; these are high-priority review targets
+- **Unsafe Rust** — Avarok uses `unsafe` blocks for CUDA FFI; these are high-priority review targets
 
 ## Automated Auditing
 
-Atlas runs one automated security check in CI:
+Avarok runs one automated security check in CI:
 
 - **`cargo deny`** — Audits dependencies for known advisories, license compliance, and banned crates. Runs on every pull request, on pushes to `main` that touch `Cargo.toml`/`Cargo.lock`/`deny.toml`, and weekly. See `.github/workflows/security.yml`.
 

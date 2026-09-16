@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SSM State Quality Degradation Profiler for Atlas.
+SSM State Quality Degradation Profiler for Avarok.
 
 Sends increasing context lengths to find the exact threshold where SSM state
 quality breaks down (garbled output, failure to stop at EOS, etc).
@@ -135,10 +135,10 @@ def check_coherence(text: str) -> str:
 
 
 def get_docker_logs_tail(n: int = 10) -> str:
-    """Get last N lines from atlas-35b docker logs."""
+    """Get last N lines from avarok-35b docker logs."""
     try:
         result = subprocess.run(
-            ["sudo", "docker", "logs", "atlas-35b", "--tail", str(n)],
+            ["sudo", "docker", "logs", "avarok-35b", "--tail", str(n)],
             capture_output=True, text=True, timeout=10
         )
         return result.stderr + result.stdout

@@ -482,7 +482,7 @@ test.describe('error states', () => {
     await page.goto('/engine');
     await openChat(page);
     await waitReady(page);
-    await page.evaluate(() => window.__atlasChatSetRetryBaseMs(1));
+    await page.evaluate(() => window.__avarokChatSetRetryBaseMs(1));
 
     await askQuestion(page, 'what schedules decode batches?');
     const card = page.locator('.cc-error[role="alert"]');
@@ -501,7 +501,7 @@ test.describe('error states', () => {
     await page.goto('/engine');
     await openChat(page);
     await waitReady(page);
-    await page.evaluate(() => window.__atlasChatSetRetryBaseMs(1));
+    await page.evaluate(() => window.__avarokChatSetRetryBaseMs(1));
 
     await askQuestion(page, 'how do NVFP4 kernels dispatch?');
     const card = page.locator('.cc-error[role="alert"]');

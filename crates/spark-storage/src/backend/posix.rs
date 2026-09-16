@@ -6,7 +6,7 @@
 // oracle the io_uring backend is compared against.
 //
 // Named "posix" for its history; it is now PORTABLE. The positional read/write
-// go through `atlas_tier::pio`, which is `pread`/`pwrite` on unix and
+// go through `avarok_tier::pio`, which is `pread`/`pwrite` on unix and
 // `seek_read`/`seek_write` on Windows, so this is the backend the Windows
 // build uses (io_uring has no Windows analogue).
 
@@ -44,7 +44,7 @@ impl StorageBackend for PosixBackend {
             // `group_bytes()`, owned by `self.bounce` for the lifetime of this
             // call and not aliased -- the loop serialises on `stream_sync`.
             let buf = unsafe { std::slice::from_raw_parts_mut(bounce_ptr as *mut u8, bytes) };
-            atlas_tier::pio::read_exact_at(self.layout.file(req.group.layer), buf, off)
+            avarok_tier::pio::read_exact_at(self.layout.file(req.group.layer), buf, off)
                 .with_context(|| format!("read {bytes}@{off}"))?;
             // The pinned bounce buffer is shared across all requests in this
             // call; we must let the H→D DMA complete before the next pread
@@ -73,7 +73,7 @@ impl StorageBackend for PosixBackend {
         let off = self.layout.offset(key);
         // SAFETY: as above -- pinned, group-sized, exclusively owned here.
         let buf = unsafe { std::slice::from_raw_parts(self.bounce.ptr as *const u8, bytes) };
-        atlas_tier::pio::write_all_at(self.layout.file(key.layer), buf, off)
+        avarok_tier::pio::write_all_at(self.layout.file(key.layer), buf, off)
             .with_context(|| format!("write {bytes}@{off}"))?;
         // fsync would be needed for crash durability; skipped for the test
         // path where the file is single-process / single-run.
@@ -112,7 +112,7 @@ mod tests {
     use crate::group::{GroupLayout, KvKind};
 
     fn tempdir(name: &str) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!("atlas-storage-{}-{}", name, std::process::id()));
+        let p = std::env::temp_dir().join(format!("avarok-storage-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p

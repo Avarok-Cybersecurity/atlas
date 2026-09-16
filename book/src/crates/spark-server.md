@@ -11,7 +11,7 @@ This crate is the only `bin` in the workspace — building `spark-server` produc
 2. **Resolve model path** — HF id via `HF_HUB_CACHE` / `~/.cache/huggingface/hub` or explicit `--model-from-path`.
 3. **Load `ModelConfig`** from `config.json`.
 4. **Resolve `KernelTarget`** from the config's `model_type` + `--kv-cache-dtype`.
-5. **Instantiate `GpuBackend`** — `AtlasCudaBackend::new(ordinal, &ptx_modules)`.
+5. **Instantiate `GpuBackend`** — `AvarokCudaBackend::new(ordinal, &ptx_modules)`.
 6. **Instantiate `CommBackend`** — `NcclBackend` if `--world-size > 1`, else `SingleGpuBackend`.
 7. **`factory::build(config, gpu, comm)` → `Arc<dyn Model>`** — the model weights land on the GPU.
 8. **Load the tokenizer** (`tokenizers` crate, optional chat template in `jinja-templates/<family>.j2`).
@@ -67,7 +67,7 @@ Models that emit `<think>...</think>` blocks (Qwen3.5, Nemotron-H, MiniMax) stre
 
 Several subtle fixes in this area were important:
 
-- **Template-forced thinking** — some models emit `<think>` seeded by the chat template; Atlas's detector had to distinguish that from the model's own `<think>`. The pass-16 fix required the opening `<think>` to be *unclosed* to count as the model's own.
+- **Template-forced thinking** — some models emit `<think>` seeded by the chat template; Avarok's detector had to distinguish that from the model's own `<think>`. The pass-16 fix required the opening `<think>` to be *unclosed* to count as the model's own.
 - **Closed empty thinking** — `<think>\n\n</think>\n\n` is a template no-op, not a reasoning block. Wave-4 fixed the false-positive.
 - **Multi-block reasoning** — models occasionally emit multiple `<think>` blocks; the extractor concatenates them.
 
@@ -87,7 +87,7 @@ Per-key token bucket. Wave-9 added a `MAX_KEYS` guard to prevent DoS via cardina
 
 ## Adding a new HTTP shape
 
-- A new API endpoint (e.g. an Atlas-native `/v1/sessions/create`) — one handler in `api.rs`, one route in the router bindings in `main.rs`.
+- A new API endpoint (e.g. an Avarok-native `/v1/sessions/create`) — one handler in `api.rs`, one route in the router bindings in `main.rs`.
 - A new tool-call format — one new parser module, one enum variant, one `--tool-call-parser` option.
 - A new reasoning tag (`<scratchpad>`, etc.) — extend `reasoning_parser.rs`.
 - A new chat template — a file in `jinja-templates/<model>.j2`, auto-picked up by the tokenizer layer if named after the HF repo.

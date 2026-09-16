@@ -388,14 +388,14 @@ fn w4a16_gemv_moe_batchm(
         .launch(stream)
 }
 
-/// Kill switch for the row-batched routed path: `ATLAS_NO_GLM_MOE_ROW_BATCH=1` restores the
+/// Kill switch for the row-batched routed path: `AVAROK_NO_GLM_MOE_ROW_BATCH=1` restores the
 /// one-launch-per-row grouped dispatch. Read once — this sits on the per-layer decode path.
 fn row_batch_disabled() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *F.get_or_init(|| std::env::var("ATLAS_NO_GLM_MOE_ROW_BATCH").as_deref() == Ok("1"))
+    *F.get_or_init(|| std::env::var("AVAROK_NO_GLM_MOE_ROW_BATCH").as_deref() == Ok("1"))
 }
 
-/// Widest tier `w4a16_gemv_sw_moe_batchm` may be dispatched at, `ATLAS_GLM_MOE_ROW_BATCH_MAX`.
+/// Widest tier `w4a16_gemv_sw_moe_batchm` may be dispatched at, `AVAROK_GLM_MOE_ROW_BATCH_MAX`.
 ///
 /// 🔬 An A/B lever, not a tuning knob: `=4` restores the pre-2026-08-31 cap exactly, so the
 /// width extension can be measured against itself in ONE image instead of one image per arm —
@@ -403,7 +403,7 @@ fn row_batch_disabled() -> bool {
 pub(crate) fn row_batch_max() -> usize {
     static M: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *M.get_or_init(|| {
-        let m = std::env::var("ATLAS_GLM_MOE_ROW_BATCH_MAX")
+        let m = std::env::var("AVAROK_GLM_MOE_ROW_BATCH_MAX")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(MOE_ROW_BATCH_MAX_ROWS)
@@ -418,7 +418,7 @@ pub(crate) fn row_batch_max() -> usize {
 }
 
 /// Widest compiled `w4a16_gemv_sw_moe_batchm_mR` tier. Mirror of the
-/// `ATLAS_MOE_BATCHM_ENTRY` list in `kernels/gb10/common/w4a16_gemv.cu` and of the
+/// `AVAROK_MOE_BATCHM_ENTRY` list in `kernels/gb10/common/w4a16_gemv.cu` and of the
 /// `[KernelHandle; 7]` in `Glm5NextMlpKernels`.
 ///
 /// 🔴 Since 2026-09-02 this is a **sub-group width, not a caller contract**. The prefill sub-chunk
@@ -438,7 +438,7 @@ pub const MOE_ROW_BATCH_MAX_ROWS: usize = 8;
 /// 🪤 A width-1 group is still REACHABLE at a small cap, where it is arithmetically forced (3 rows
 /// at cap 2 has no all->=2 split). That is not a correctness hole — the caller's gate requires
 /// every group to have a tier, so such a call simply runs the per-row arm — but it does mean
-/// `ATLAS_GLM_MOE_ROW_BATCH_MAX=2` silently disables row batching at odd widths. Only the A/B
+/// `AVAROK_GLM_MOE_ROW_BATCH_MAX=2` silently disables row batching at odd widths. Only the A/B
 /// lever can reach it.
 ///
 /// 🔴 Splitting is EXACT. A row's routed output is the sum over ITS OWN top-k slots, each slot a
@@ -484,11 +484,11 @@ fn announce_row_batch(batched: bool, rows: usize) {
     }
 }
 
-/// Kill switch for the grouped path: `ATLAS_GLM_MOE_HOST_DISPATCH=1` restores the
+/// Kill switch for the grouped path: `AVAROK_GLM_MOE_HOST_DISPATCH=1` restores the
 /// read-ids-to-host expert loop. Read once — this sits on the per-layer decode path.
 fn host_dispatch_forced() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *F.get_or_init(|| std::env::var("ATLAS_GLM_MOE_HOST_DISPATCH").as_deref() == Ok("1"))
+    *F.get_or_init(|| std::env::var("AVAROK_GLM_MOE_HOST_DISPATCH").as_deref() == Ok("1"))
 }
 
 /// Say once which expert-dispatch path this process took. A missing `w4a16_gemv_sw_moe`

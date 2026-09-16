@@ -9,7 +9,7 @@ use super::super::*;
 use super::streaming_frag::{args_from_outputs, collect_fragments, write_and_bash_tools};
 
 // `#[ignore]`: this test mutates the process-global env var
-// `ATLAS_BUFFER_TOOL_ARGS`, which `StreamingToolDetector::new_with_tools`
+// `AVAROK_BUFFER_TOOL_ARGS`, which `StreamingToolDetector::new_with_tools`
 // reads at construction. Under the default parallel test runner that read
 // races other tests in this binary that build detectors expecting the live
 // (default) path, so the var must not be set while they run. Run it
@@ -17,12 +17,12 @@ use super::streaming_frag::{args_from_outputs, collect_fragments, write_and_bash
 //   cargo test -p spark-server --bin spark -- --ignored --test-threads=1 \
 //       tool_parser::tests::streaming_frag::kill_switch
 #[test]
-#[ignore = "mutates process-global ATLAS_BUFFER_TOOL_ARGS; run serially with --ignored --test-threads=1"]
+#[ignore = "mutates process-global AVAROK_BUFFER_TOOL_ARGS; run serially with --ignored --test-threads=1"]
 fn kill_switch_buffers_full_args_no_fragments() {
-    // ATLAS_BUFFER_TOOL_ARGS=1 restores legacy buffer-until-close: a
+    // AVAROK_BUFFER_TOOL_ARGS=1 restores legacy buffer-until-close: a
     // single ToolCallDelta with the full args, and NO
     // ToolCallArgsFragment events.
-    let _guard = env_guard::set("ATLAS_BUFFER_TOOL_ARGS", "1");
+    let _guard = env_guard::set("AVAROK_BUFFER_TOOL_ARGS", "1");
     let mut det = StreamingToolDetector::new_with_tools(write_and_bash_tools());
     let chunks = [
         "<tool_call>",

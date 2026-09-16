@@ -24,7 +24,7 @@
 //! Default N=18048 K=4096 (Puzzle SSM in_proj). Also try 4096 8192 (out_proj).
 
 use anyhow::{Result, bail};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -255,7 +255,7 @@ fn main() -> Result<()> {
     if !k.is_multiple_of(16) {
         bail!("w8a16_gemv requires K%16==0");
     }
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let stream = gpu.default_stream();
     println!("w8a16_gemv numeric check (DECODE)");
     run(&gpu, stream, n, k, false)?;

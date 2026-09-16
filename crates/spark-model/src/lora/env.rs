@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! LoRA env/config leaves: the `$ATLAS_LORA_*` runtime hatches (eager / rotate /
+//! LoRA env/config leaves: the `$AVAROK_LORA_*` runtime hatches (eager / rotate /
 //! peer), the full-attention layer enumerator, and the build-time
 //! `validate_peft_config` gate. These sit on the model-integration side of the
 //! eventual `lora-core` carve. Split out of the former monolithic `lora/mod.rs`
 //! (SDD seam: ENV/CONFIG) — visibility unchanged.
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig, PeftAdapterConfig};
+use avarok_core::config::{LayerType, ModelConfig, PeftAdapterConfig};
 
 use super::LoraModule;
 
-/// Permanent LoRA debugging hatch: `ATLAS_LORA_EAGER=1` (or `true`) forces
+/// Permanent LoRA debugging hatch: `AVAROK_LORA_EAGER=1` (or `true`) forces
 /// eager decode (no CUDA-graph capture) when an adapter is active, so
 /// graph-vs-eager output parity can be compared in the field. Read ONCE —
 /// the decode graph gate runs per token.
@@ -23,7 +23,7 @@ pub fn lora_eager_env() -> bool {
     crate::layers::ops::ModelLevers::get().lora_eager
 }
 
-/// `ATLAS_LORA_ROTATE=1` (or `true`) ARMS runtime adapter rotation: it forces
+/// `AVAROK_LORA_ROTATE=1` (or `true`) ARMS runtime adapter rotation: it forces
 /// eager decode (no CUDA-graph capture) so a `set_active_lora` re-point is
 /// immediately live (eager-on-rotate — the graph would otherwise replay the
 /// previously-captured slot pointers). A pool with >1 resident adapter arms
@@ -36,17 +36,17 @@ pub fn lora_rotate_env() -> bool {
     crate::layers::ops::ModelLevers::get().lora_rotate
 }
 
-/// `$ATLAS_LORA_PEER` (host:port of an `atlas-weight-peer` staging a rotation
+/// `$AVAROK_LORA_PEER` (host:port of an `avarok-weight-peer` staging a rotation
 /// set) — when set, arms rotation (eager decode) even for a single resident
 /// slot, because an RDMA swap re-points that slot in place. Unset = disk path
 /// only, byte-identical to today.
 pub fn lora_peer_env() -> Option<String> {
-    std::env::var("ATLAS_LORA_PEER")
+    std::env::var("AVAROK_LORA_PEER")
         .ok()
         .filter(|s| !s.is_empty())
 }
 
-/// Feature-1 (MoE expert + router LoRA) master switch. `ATLAS_LORA_EXPERTS=1`
+/// Feature-1 (MoE expert + router LoRA) master switch. `AVAROK_LORA_EXPERTS=1`
 /// (or `true`) opts INTO loading + applying routed-expert / router deltas.
 /// DEFAULT OFF: an adapter that targets `mlp.experts.*` / `mlp.gate` is a NAMED
 /// reject at load unless this is set, so the base path stays byte-identical and
@@ -55,12 +55,12 @@ pub fn lora_peer_env() -> Option<String> {
 pub fn lora_experts_env() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
-        std::env::var("ATLAS_LORA_EXPERTS")
+        std::env::var("AVAROK_LORA_EXPERTS")
             .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
     })
 }
 
-/// Feature-1 padded expert/router LoRA rank cap (`ATLAS_LORA_EXPERT_RANK`,
+/// Feature-1 padded expert/router LoRA rank cap (`AVAROK_LORA_EXPERT_RANK`,
 /// default 16). Separate from `--max-lora-rank` (the attention pool) because the
 /// per-(layer,expert,proj) pool grows ~`num_experts × num_layers` faster, so a
 /// low cap bounds the expert-pool VRAM blow-up. An adapter with `r` above this
@@ -68,7 +68,7 @@ pub fn lora_experts_env() -> bool {
 pub fn max_lora_expert_rank() -> usize {
     static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
-        std::env::var("ATLAS_LORA_EXPERT_RANK")
+        std::env::var("AVAROK_LORA_EXPERT_RANK")
             .ok()
             .and_then(|v| v.parse().ok())
             .filter(|&r: &usize| r > 0)
@@ -76,7 +76,7 @@ pub fn max_lora_expert_rank() -> usize {
     })
 }
 
-/// `ATLAS_LORA_PREFILL_BGMV=1` — force prefill LoRA through the per-row BGMV
+/// `AVAROK_LORA_PREFILL_BGMV=1` — force prefill LoRA through the per-row BGMV
 /// instead of the tensor-core GEMM.
 ///
 /// Default OFF because the GEMM is ~4.8x faster on a 2K prompt (841 vs 176
@@ -88,10 +88,10 @@ pub fn max_lora_expert_rank() -> usize {
 /// (GEMV-per-row vs one GEMM).
 pub fn prefill_bgmv_forced() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_LORA_PREFILL_BGMV").as_deref() == Ok("1"))
+    *V.get_or_init(|| std::env::var("AVAROK_LORA_PREFILL_BGMV").as_deref() == Ok("1"))
 }
 
-/// `ATLAS_LORA_NO_BATCH_VERIFY=1` — restore the old refusal of cross-sequence
+/// `AVAROK_LORA_NO_BATCH_VERIFY=1` — restore the old refusal of cross-sequence
 /// batched speculative verify while a LoRA adapter is resident.
 ///
 /// Default OFF: the batched path applies the deltas on every op it batches,
@@ -101,7 +101,7 @@ pub fn prefill_bgmv_forced() -> bool {
 /// a batched-verify numerics difference is ever suspected under an adapter.
 pub fn no_batch_verify() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_LORA_NO_BATCH_VERIFY").as_deref() == Ok("1"))
+    *V.get_or_init(|| std::env::var("AVAROK_LORA_NO_BATCH_VERIFY").as_deref() == Ok("1"))
 }
 
 pub fn full_attention_layers(cfg: &ModelConfig) -> Vec<usize> {
@@ -112,7 +112,7 @@ pub fn full_attention_layers(cfg: &ModelConfig) -> Vec<usize> {
 
 /// Adapter-config gates that need build-time context (`--max-lora-rank`).
 /// Parse-time gates (peft_type/DoRA/bias/regex target_modules/…) already
-/// ran in `atlas_core::config::parse_peft_adapter_config`.
+/// ran in `avarok_core::config::parse_peft_adapter_config`.
 pub fn validate_peft_config(peft: &PeftAdapterConfig, max_lora_rank: usize) -> Result<()> {
     if peft.r > max_lora_rank {
         bail!(
@@ -137,7 +137,7 @@ pub fn validate_peft_config(peft: &PeftAdapterConfig, max_lora_rank: usize) -> R
             bail!(
                 "REJECT[unsupported-target]: target_modules {unsupported:?} \
                  (allowed: q_proj k_proj v_proj o_proj gate_proj up_proj down_proj gate). \
-                 Set ATLAS_LORA_ALLOW_PARTIAL=1 to load anyway, applying only the \
+                 Set AVAROK_LORA_ALLOW_PARTIAL=1 to load anyway, applying only the \
                  supported modules — the adapter will then be PARTIALLY applied and \
                  will not reproduce its training behaviour."
             );
@@ -149,7 +149,7 @@ pub fn validate_peft_config(peft: &PeftAdapterConfig, max_lora_rank: usize) -> R
         // (the SSM/GDN output projection, 48 of its 64 layers), which has no
         // LoraModule variant and no wiring in the SSM layers.
         tracing::warn!(
-            "LoRA PARTIAL LOAD (ATLAS_LORA_ALLOW_PARTIAL=1): target_modules \
+            "LoRA PARTIAL LOAD (AVAROK_LORA_ALLOW_PARTIAL=1): target_modules \
              {unsupported:?} are NOT supported and will be SKIPPED. Their \
              trained deltas will not be applied; output will differ from the \
              adapter's intent. Supported: q_proj k_proj v_proj o_proj \
@@ -159,12 +159,12 @@ pub fn validate_peft_config(peft: &PeftAdapterConfig, max_lora_rank: usize) -> R
     Ok(())
 }
 
-/// `ATLAS_LORA_ALLOW_PARTIAL=1` — load an adapter that names target modules
-/// Atlas cannot apply, skipping those and applying the rest.
+/// `AVAROK_LORA_ALLOW_PARTIAL=1` — load an adapter that names target modules
+/// Avarok cannot apply, skipping those and applying the rest.
 ///
-/// Delegates to the atlas-core definition rather than re-reading the env:
+/// Delegates to the avarok-core definition rather than re-reading the env:
 /// the parse-time allow-list down there is the FIRST gate an adapter meets,
 /// so the flag has to be defined below this layer. Two OnceLocks reading one
 /// variable is exactly the hand-synced drift this repo keeps getting bitten
 /// by (cf. the 384-vs-3072 thinking-budget bug).
-pub use atlas_core::config::allow_partial_targets;
+pub use avarok_core::config::allow_partial_targets;

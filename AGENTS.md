@@ -1,12 +1,12 @@
 # AGENTS.md
 
-A contributor guide for AI agents (and humans) working on Atlas. Read this
+A contributor guide for AI agents (and humans) working on Avarok. Read this
 alongside [CONTRIBUTING.md](CONTRIBUTING.md). The tone is practical: paths,
 commands, and the invariants that matter.
 
-## What Atlas is
+## What Avarok is
 
-Atlas is an AGPL-3.0 inference stack targeting NVIDIA GB10 / DGX Spark. The
+Avarok is an AGPL-3.0 inference stack targeting NVIDIA GB10 / DGX Spark. The
 moving parts:
 
 - **`crates/spark-server/`** — OpenAI-compatible HTTP server, request
@@ -16,16 +16,16 @@ moving parts:
   `src/factory.rs`.
 - **`crates/spark-runtime/`** — GPU backend, KV cache, kernel dispatch,
   process-group comms.
-- **`crates/atlas-kernels/`** — Rust glue over compiled PTX (one artefact
+- **`crates/avarok-kernels/`** — Rust glue over compiled PTX (one artefact
   per `(hw, model, quant)` target).
 - **`kernels/<hw>/<model>/<quant>/`** — CUDA kernels + `MODEL.toml`
   (sampling, behaviour defaults, kernel target registration).
-- **`crates/atlas-*`** — smaller shared primitives (quant, gemm, ssm, norm,
+- **`crates/avarok-*`** — smaller shared primitives (quant, gemm, ssm, norm,
   attention, reduce, activation, embed).
-- **`crates/atlas-spark-bench/`** — benchmark harness.
+- **`crates/avarok-spark-bench/`** — benchmark harness.
 
 Architecture decision records live in `docs/adr/`; the benchmark journey in
-`docs/ATLAS_SPARK_JOURNEY.md`; release notes in `docs/releases/`.
+`docs/AVAROK_SPARK_JOURNEY.md`; release notes in `docs/releases/`.
 
 ## Ground rules
 
@@ -51,7 +51,7 @@ cargo fmt --all -- --check
 
 # 2. Lints (the build-script gate lets clippy run without CUDA on the host;
 #    matches ci.yml — deny-warnings comes from [workspace.lints], not a flag)
-ATLAS_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
+AVAROK_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
 
 # 3. License headers (SPDX AGPL-3.0-only line 1; wraps the same apache/skywalking-eyes
 #    engine CI runs against .licenserc.yaml):
@@ -121,9 +121,9 @@ High-level walkthrough — the patterns to follow are already in-tree.
    `MODEL.toml` declaring the model-type matches, sampling presets, and
    behaviour defaults. The top-level `kernels/<hw>/HARDWARE.toml` picks up
    the new target automatically if you set
-   `ATLAS_TARGET_MODEL=*` at build time (default).
+   `AVAROK_TARGET_MODEL=*` at build time (default).
 3. **Behavioural knobs.** `MODEL.toml` is the SSOT for per-model
-   sampling/thinking/tool-use policy. `build.rs` in `atlas-kernels` parses
+   sampling/thinking/tool-use policy. `build.rs` in `avarok-kernels` parses
    it into `SamplingPresets` + `ModelBehavior` consumed by the server.
 4. **Jinja template.** If the model uses a chat template that's not
    covered by `jinja-templates/`, add one. Naming convention matches the
@@ -143,14 +143,14 @@ Concrete recent examples worth reading:
 ## The kernel target system
 
 Three dimensions: **hardware** × **model** × **quantization**. At build
-time, `atlas-kernels/build.rs` enumerates the `ATLAS_TARGET_*` env vars
+time, `avarok-kernels/build.rs` enumerates the `AVAROK_TARGET_*` env vars
 (with `*` meaning "all matching") and produces one PTX artefact per
 target. Runtime selects the correct target based on the model's
 `model_type` and loaded config.
 
-- `ATLAS_TARGET_HW=gb10` — currently the only implemented hardware.
-- `ATLAS_TARGET_MODEL=*` / `ATLAS_TARGET_QUANT=*` — wildcard compiles all.
-- `ATLAS_SKIP_BUILD=1` — emits a stub so clippy/fmt can run without nvcc.
+- `AVAROK_TARGET_HW=gb10` — currently the only implemented hardware.
+- `AVAROK_TARGET_MODEL=*` / `AVAROK_TARGET_QUANT=*` — wildcard compiles all.
+- `AVAROK_SKIP_BUILD=1` — emits a stub so clippy/fmt can run without nvcc.
 
 ## Writing commits
 
@@ -179,7 +179,7 @@ These aren't abstract — they're the classes of bug that have burned days:
   Verify against the current binary, not your memory.
 
 When you hit a regression, **never assume the model is at fault** — always
-look for the Atlas bug first.
+look for the Avarok bug first.
 
 ## Scope and escalation
 
@@ -190,12 +190,12 @@ it in the PR description so reviewers catch it.
 
 ## Code Principles & Agent Workflow
 
-To ensure high code quality, all agents contributing to Atlas must strictly adhere to these core programming principles:
+To ensure high code quality, all agents contributing to Avarok must strictly adhere to these core programming principles:
 
 ### Core Directives
 - **Minimal Edits:** Make the smallest edit necessary—sufficient but not excessive.
 - **TDD & Testing:** Test-driven development is required. Minimize test mocking; maximize production code coverage. Never add test-specific workarounds to production paths.
-- **File Size:** Keep Rust source files ≤500 LoC — this is the CI-enforced cap (`.github/workflows/file-size-cap.yml` is the SSOT). Split larger files into sub-modules per the Atlas idiom (see `crates/spark-model/src/layers/qwen3_attention/` for the compute-heavy template, `crates/spark-model/src/weight_loader/` for the variant-dispatch template).
+- **File Size:** Keep Rust source files ≤500 LoC — this is the CI-enforced cap (`.github/workflows/file-size-cap.yml` is the SSOT). Split larger files into sub-modules per the Avarok idiom (see `crates/spark-model/src/layers/qwen3_attention/` for the compute-heavy template, `crates/spark-model/src/weight_loader/` for the variant-dispatch template).
 - **Security:** Write secure code adhering to OWASP, CWE, and NIST standards.
 
 ### The "Big Three" Invariants (Always Apply)

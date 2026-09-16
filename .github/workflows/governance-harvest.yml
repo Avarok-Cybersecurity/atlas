@@ -60,8 +60,8 @@ env:
   CARGO_TERM_COLOR: always
   # Same two flags ci.yml sets for every cargo invocation on a GPU-less runner:
   # skip CUDA/nvcc in build.rs (stub target_ptx.rs) and short-circuit cudarc's
-  # nvcc probe (13000 == CUDA 13.0). atlas-plugin is host-only and CUDA-free.
-  ATLAS_SKIP_BUILD: "1"
+  # nvcc probe (13000 == CUDA 13.0). avarok-plugin is host-only and CUDA-free.
+  AVAROK_SKIP_BUILD: "1"
   CUDARC_CUDA_VERSION: "13000"
 
 jobs:
@@ -95,7 +95,7 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      # Same warm target/ as pr-categorize (both build only atlas-plugin's
+      # Same warm target/ as pr-categorize (both build only avarok-plugin's
       # host-only bins), so neither job pays the other's cold build.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -214,7 +214,7 @@ jobs:
               # of a rejected artifact in the working tree.
               rm -f "$tmp/dest.bak"
               if [ -f "$dest" ]; then cp "$dest" "$tmp/dest.bak"; fi
-              if cargo run --quiet --locked -p atlas-plugin --bin ledger_harvest -- \
+              if cargo run --quiet --locked -p avarok-plugin --bin ledger_harvest -- \
                    --root . --pr "$pr" --from "$file"; then
                 echo "$run_id" >> harvested_runs.txt
               else
@@ -301,7 +301,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
         run: |
           set -euo pipefail
-          d="__ATLAS_HARVEST_EOF_$RANDOM$RANDOM"
+          d="__AVAROK_HARVEST_EOF_$RANDOM$RANDOM"
           emit_landed() { printf 'landed<<%s\n%s\n%s\n' "$d" "$1" "$d" >> "$GITHUB_OUTPUT"; }
 
           if [ -z "$(git status --porcelain governance/)" ]; then

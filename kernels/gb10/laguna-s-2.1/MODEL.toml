@@ -124,7 +124,7 @@ tool_call_parser = "poolside_v1"
 # generic generation_config.json retains 1.0 / 1.0 evaluation defaults.
 use_sampling_presets_for_core = true
 # OpenCode already supplies its cwd in the native system prompt. Reinjecting a
-# second Atlas-specific environment block made Laguna fixate on path discovery.
+# second Avarok-specific environment block made Laguna fixate on path discovery.
 disable_cwd_hint_injection = true
 
 [[model_types]]
@@ -154,24 +154,24 @@ moe_w4a16_down_t_k64_fp4 = "FP4-scale down-projection twin; scale-format-gated; 
 
 
 [expected_absent.nvfp4_mmq]
-atlas_nvfp4_mmq128_nc = """
+avarok_nvfp4_mmq128_nc = """
 Keep-packed NVFP4 MMQ family (dense-FFN prefill for runtime-quantized
 GGUF/BF16 checkpoints). DenseFfnLayer probes the whole family and gates
 every dispatch on handle != 0; Laguna's single dense FFN (layer 0) loads
 from safetensors NVFP4 and takes the w4a16/dense arms, which resolve from
 this target's own w4a16_gemm.cu. UNMEASURED here — candidate, not loss."""
-atlas_nvfp4_mmq128_wc = "Same family; handle-gated, w4a16 arm resolves."
-atlas_nvfp4_mmq16_nc = "Same family; handle-gated, w4a16 arm resolves."
-atlas_nvfp4_mmq16_wc = "Same family; handle-gated, w4a16 arm resolves."
-atlas_nvfp4_mmq32_nc = "Same family; handle-gated, w4a16 arm resolves."
-atlas_nvfp4_mmq32_wc = "Same family; handle-gated, w4a16 arm resolves."
-atlas_nvfp4_mmq64_nc = "Same family; handle-gated, w4a16 arm resolves."
-atlas_nvfp4_mmq64_wc = "Same family; handle-gated, w4a16 arm resolves."
-atlas_nvfp4_quantize_bf16 = "MMQ-family activation quantizer; only reached from the MMQ arms above."
-atlas_nvfp4_repack = "MMQ-family weight repacker; only reached from the MMQ arms above."
-atlas_nvfp4_scale_bf16 = "MMQ-family scale conversion; only reached from the MMQ arms above."
-atlas_nvfp4_silu_mul_quant = "MMQ-family fused epilogue; only reached from the MMQ arms above."
-atlas_nvfp4_silu_mul_scaled = "MMQ-family fused epilogue; only reached from the MMQ arms above."
+avarok_nvfp4_mmq128_wc = "Same family; handle-gated, w4a16 arm resolves."
+avarok_nvfp4_mmq16_nc = "Same family; handle-gated, w4a16 arm resolves."
+avarok_nvfp4_mmq16_wc = "Same family; handle-gated, w4a16 arm resolves."
+avarok_nvfp4_mmq32_nc = "Same family; handle-gated, w4a16 arm resolves."
+avarok_nvfp4_mmq32_wc = "Same family; handle-gated, w4a16 arm resolves."
+avarok_nvfp4_mmq64_nc = "Same family; handle-gated, w4a16 arm resolves."
+avarok_nvfp4_mmq64_wc = "Same family; handle-gated, w4a16 arm resolves."
+avarok_nvfp4_quantize_bf16 = "MMQ-family activation quantizer; only reached from the MMQ arms above."
+avarok_nvfp4_repack = "MMQ-family weight repacker; only reached from the MMQ arms above."
+avarok_nvfp4_scale_bf16 = "MMQ-family scale conversion; only reached from the MMQ arms above."
+avarok_nvfp4_silu_mul_quant = "MMQ-family fused epilogue; only reached from the MMQ arms above."
+avarok_nvfp4_silu_mul_scaled = "MMQ-family fused epilogue; only reached from the MMQ arms above."
 
 [expected_absent.w4a16]
 int8_gemm_faith2 = "Int8 requant experiment probed by dense_ffn; handle-gated, w4a16 arm resolves."
@@ -191,19 +191,19 @@ w4a16_gemm_t_m128_bf16_v2 = "Same family — v2 twin; handle-gated."
 [expected_absent.w4a4]
 w4a4_gemm = """
 Direct FP4-activation GEMM probed by dense_ffn; opt-in path
-(ATLAS_ATTN_W4A4-family), handle-gated, never default-dispatched."""
+(AVAROK_ATTN_W4A4-family), handle-gated, never default-dispatched."""
 w4a4_gemm_mfast = """
 Shipped only in nemotron-labs-3-puzzle-75b-a9b. qwen3_attention::init
 probes it; opt-in, handle-gated. UNMEASURED."""
 
 [expected_absent.q4k_mmq]
-atlas_q4k_mmq128_nc = """
+avarok_q4k_mmq128_nc = """
 Q4_K keep-packed MMQ (dense-FFN prefill for GGUF Q4_K checkpoints).
 DenseFfnLayer probes the family and gates every dispatch on handle != 0;
 a safetensors NVFP4 checkpoint never installs packed-Q4K weights, so the
 arm is unreachable here."""
-atlas_q4k_mmq128_wc = "Same family — unreachable without packed-Q4K weights."
-atlas_q8_1_quantize_ds4_bf16 = "MMQ-family activation quantizer; only reached from the Q4K MMQ arms above."
+avarok_q4k_mmq128_wc = "Same family — unreachable without packed-Q4K weights."
+avarok_q8_1_quantize_ds4_bf16 = "MMQ-family activation quantizer; only reached from the Q4K MMQ arms above."
 
 [expected_absent.q4k_quantize]
 q4k_quantize = "Q4_K runtime quantizer probed by dense_ffn for GGUF paths; handle-gated, unreachable here."

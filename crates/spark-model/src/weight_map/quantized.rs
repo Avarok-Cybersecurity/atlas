@@ -35,7 +35,7 @@ pub enum WeightQuantFormat {
     /// Consumed by `w8a16_gemv` / `w8a16_gemm`.
     Fp8PerRow,
     /// FP8 E4M3 weight + per-block BF16 dequant scale (`[N/BS, K/BS]` BF16).
-    /// Standard Qwen-team FP8 release format (BS=128). NO Atlas kernel
+    /// Standard Qwen-team FP8 release format (BS=128). NO Avarok kernel
     /// currently consumes this directly for SSM — kernels expect either
     /// dequant-to-BF16-then-NVFP4 (current path) or single-scale FP8.
     /// **Block-scaled FP8 GEMV/GEMM is the missing kernel** (open task).
@@ -87,7 +87,7 @@ impl WeightQuantFormat {
 /// group of `group` elements) — there is no companion scale tensor, unlike
 /// NVFP4/FP8. Consumed by the native `q2_0_gemv` decode kernel, which reads the
 /// scale from each block. Built from a `WeightDtype::PackedQ2_0` store tensor
-/// under `ATLAS_GGUF_NATIVE_Q2=1`; the buffer is owned by the `WeightStore`, so
+/// under `AVAROK_GGUF_NATIVE_Q2=1`; the buffer is owned by the `WeightStore`, so
 /// this struct only borrows the pointer (no free on drop).
 #[derive(Debug, Clone, Copy)]
 pub struct PackedQ2Weight {
@@ -212,10 +212,10 @@ impl QuantizedWeight {
 
     /// Resolve the `transpose_u8` GPU kernel for the load-time transpose
     /// paths, or `None` to use the host byte-loop fallback. `None` when the
-    /// target's kernel set lacks it, or when `ATLAS_HOST_TRANSPOSE=1` forces
+    /// target's kernel set lacks it, or when `AVAROK_HOST_TRANSPOSE=1` forces
     /// the host path (parity/debug kill switch).
     fn host_transpose_kernel(gpu: &dyn GpuBackend) -> Option<spark_runtime::gpu::KernelHandle> {
-        if std::env::var("ATLAS_HOST_TRANSPOSE").as_deref() == Ok("1") {
+        if std::env::var("AVAROK_HOST_TRANSPOSE").as_deref() == Ok("1") {
             return None;
         }
         let k = crate::layers::try_kernel(gpu, "transpose_u8", "transpose_u8");
@@ -255,7 +255,7 @@ impl QuantizedWeight {
 
         // GPU path: two transpose_u8 launches instead of D2H -> host
         // O(N*K) byte loop -> H2D (the cold-load host bounce; ~13.6 GB at
-        // 27B). ATLAS_HOST_TRANSPOSE=1 forces the host path (parity/debug);
+        // 27B). AVAROK_HOST_TRANSPOSE=1 forces the host path (parity/debug);
         // targets without the kernel fall back to it silently.
         if let Some(tk) = Self::host_transpose_kernel(gpu) {
             let new_weight = gpu.alloc(packed_size)?;

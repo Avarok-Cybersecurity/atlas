@@ -243,7 +243,7 @@ const header = {
   format: 'lattice-jsonl',
   version: 1,
   config: {
-    name: 'atlas-code',
+    name: 'avarok-code',
     vectors: { size: DIM, distance: 'Cosine' },
     hnsw: { m: 16, m0: 32, ml: 0.36067376022224085, ef: 50, ef_construction: 200 },
     relations: {},

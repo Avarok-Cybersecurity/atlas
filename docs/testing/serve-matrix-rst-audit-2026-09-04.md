@@ -100,7 +100,7 @@ September 5 Avarok revalidation below:
   production mutations survived the old suite and failed the repaired checks.
 - Python syntax compilation, workflow YAML parsing, `git diff --check`,
   `cargo fmt --all -- --check`, and the repository SPDX check passed.
-- Workspace Clippy was attempted with `ATLAS_SKIP_BUILD=1`,
+- Workspace Clippy was attempted with `AVAROK_SKIP_BUILD=1`,
   `CUDARC_CUDA_VERSION=13000`, two build jobs, and an isolated Cargo target.
   It exited 101 because `spark-storage`'s `streaming_attention_e2e` target
   references Linux-only `IoUringBackend` on macOS.

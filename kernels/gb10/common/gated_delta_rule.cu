@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Gated Delta Rule — Core SSM for Qwen3-Next linear attention layers.
+// Avarok Gated Delta Rule — Core SSM for Qwen3-Next linear attention layers.
 //
 // Implements the recurrent gated delta rule update for DECODE mode
 // (single token per step). This is the critical path for autoregressive

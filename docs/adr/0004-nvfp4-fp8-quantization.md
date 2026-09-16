@@ -22,7 +22,7 @@ late-2025 were:
   for production use when calibrated.
 - **MX4 / MX6**: open MX-format spec. Less hardware support today.
 
-Atlas's target hardware is GB10 (Blackwell, sm_121). Critically:
+Avarok's target hardware is GB10 (Blackwell, sm_121). Critically:
 - sm_121 has *cooperative-only* CUTLASS NVFP4 MoE GEMM (no Pingpong
   scheduler tile shapes — see `project_fp4_mma_gb10`), so we are not
   at the bleeding edge of NVFP4 perf. But the format itself is fine.
@@ -35,14 +35,14 @@ Atlas's target hardware is GB10 (Blackwell, sm_121). Critically:
 
 ## Decision
 
-Atlas commits to **NVFP4** and **FP8 block-scaled** as the primary quant
+Avarok commits to **NVFP4** and **FP8 block-scaled** as the primary quant
 formats, with **BF16** as a raw-precision fallback for prototypes and
 sanity checks. Everything else (W4A16 Marlin, AWQ, GPTQ, MX4) is
 explicitly out of scope for the first wave; future ADRs may revisit.
 
 Implementation:
 
-- `crates/atlas-core/src/config.rs` recognizes the format from the
+- `crates/avarok-core/src/config.rs` recognizes the format from the
   model's `quantization_config` block in `config.json`.
 - `crates/spark-model/src/weight_map/` per-format loaders produce a
   typed `QuantizedWeight` enum.

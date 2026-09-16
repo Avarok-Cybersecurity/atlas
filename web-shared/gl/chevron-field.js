@@ -1,5 +1,5 @@
 /**
- * Atlas chevron field — raw WebGL2, no dependencies.
+ * Avarok chevron field — raw WebGL2, no dependencies.
  *
  * Renders one fullscreen triangle with one fragment shader. That is the
  * entire scene, which is why it needs no scene graph, no camera, no
@@ -26,7 +26,7 @@ void main(){
 
 // Only the two numbers that are properties of the RENDERER have defaults here.
 // The five colours deliberately do not: they are design tokens, they live in
-// web-shared/atlas-tokens.css, and a copy of them in this file is a second
+// web-shared/avarok-tokens.css, and a copy of them in this file is a second
 // source of truth that goes stale silently — the canvas paints its own ground,
 // so a drifted value shows up as a seam between the canvas and the page rather
 // than as an error. The caller reads them from the cascade and passes them in.

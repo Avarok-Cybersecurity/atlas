@@ -13,7 +13,7 @@
 //!   HF   `g_i = g[:, i][..., None].exp()`
 //!   vLLM `b_state *= exp(b_gate[None, :])`
 //!   CPU  `let decay = gate[base + kd].exp();`
-//! Atlas's own GDN is the OPPOSITE on both axes — `compute_gdn_gates` stores `__expf(g)`
+//! Avarok's own GDN is the OPPOSITE on both axes — `compute_gdn_gates` stores `__expf(g)`
 //! and `gated_delta_rule_decode` takes `exp(g_t)`, one scalar per head. Mixing the two
 //! conventions is a silent double-exp or missing-exp.
 //!
@@ -36,7 +36,7 @@ use anyhow::{Result, bail};
 use half::bf16;
 use serde_json::Value;
 use spark_model::layers::glm5next_kda_ref::{KdaDims, kda_recurrent_prenorm};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -377,7 +377,7 @@ impl Lcg {
 // ───────────────────────────────────────────────────────────────── main
 
 fn main() -> Result<()> {
-    let g = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let g = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &g;
     let rec = Rec {
         g: gpu,

@@ -5,7 +5,7 @@ params = "27B"
 active_params = "27B"
 architecture = "Hybrid Attention + SSM (Dense FFN)"
 
-# Kernel-target resolution needles (atlas-kernels/src/resolve.rs). This
+# Kernel-target resolution needles (avarok-kernels/src/resolve.rs). This
 # target collides with qwen3.6-27b on the belt-and-braces (qwen3_6_moe,
 # 5120) entry below, and build.rs requires every colliding target to
 # declare its needles explicitly. NOTE: in the standard multi-target build
@@ -103,7 +103,7 @@ max_thinking_budget = 2048
 
 # ── expected_absent ────────────────────────────────────────────────────────
 # Harvested 2026-08-04 from a SINGLE-TARGET `--check-kernels` run
-# (ATLAS_TARGET_MODEL=qwen3.5-27b build, Kbenkhaled checkpoint): 222 lookups,
+# (AVAROK_TARGET_MODEL=qwen3.5-27b build, Kbenkhaled checkpoint): 222 lookups,
 # 33 unresolved, kernel_set_hash 978c5c9c93d2. NOTE: this target's own kernel
 # set is NOT what the standard multi-target build serves for this checkpoint —
 # `ptx_for_config` prefers the exact `(qwen3_5, 5120)` match on qwen3.6-27b
@@ -123,8 +123,8 @@ max_thinking_budget = 2048
 [expected_absent.gated_delta_rule]
 gated_delta_rule_decode_f16_norm = "FP16 h-state twin; see honesty note above. F32 fused-norm arm resolves."
 gated_delta_rule_decode_f16_strided_norm_half = "FP16 h-state twin; see honesty note above. F32 strided-norm arm resolves."
-gated_delta_rule_decode_f32_strided_norm_half = "Half-register twin; selected only under the resolved half-register gate (ATLAS_GDN_HALF_REG presence, off as shipped)."
-gated_delta_rule_decode_f32_strided_norm_smem = "SMEM-staged twin; gated behind ATLAS_GDN_SMEM_STAGE (off as shipped) AND the half-register gate."
+gated_delta_rule_decode_f32_strided_norm_half = "Half-register twin; selected only under the resolved half-register gate (AVAROK_GDN_HALF_REG presence, off as shipped)."
+gated_delta_rule_decode_f32_strided_norm_smem = "SMEM-staged twin; gated behind AVAROK_GDN_SMEM_STAGE (off as shipped) AND the half-register gate."
 
 [expected_absent.gated_delta_rule_wy17]
 gated_delta_rule_wy17 = """
@@ -139,33 +139,33 @@ gated_delta_rule_decode_f32_strided_norm_snap = "Batched exact-verify snapshot t
 gdn_verify_fused_conv_kn_f32 = "FP32 fused verify conv for the exact-verify chain (#435/#438), shipped only in qwen3.6-27b/nvfp4; probed handle != 0, absent keeps the per-token conv launches (same bits, more launches)."
 
 [expected_absent.nvfp4_mmq]
-atlas_nvfp4_mmq128_nc = """
+avarok_nvfp4_mmq128_nc = """
 Vendored llama Blackwell block-scale FP4 MMQ dense-FFN prefill family —
 no nvfp4_mmq source ships in THIS target's set (only qwen3.6-27b's).
 finalize gates on ALL family handles != 0 and only fires for
-ATLAS_FFN_NVFP4_MMQ opt-in SiLU models (dense_ffn.rs:473); the resolved
+AVAROK_FFN_NVFP4_MMQ opt-in SiLU models (dense_ffn.rs:473); the resolved
 t_m128 prefill path serves by default. UNMEASURED."""
-atlas_nvfp4_mmq128_wc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
-atlas_nvfp4_mmq16_nc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
-atlas_nvfp4_mmq16_wc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
-atlas_nvfp4_mmq32_nc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
-atlas_nvfp4_mmq32_wc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
-atlas_nvfp4_mmq64_nc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
-atlas_nvfp4_mmq64_wc = "Same MMQ family — family-wide handle gate plus ATLAS_FFN_NVFP4_MMQ opt-in."
-atlas_nvfp4_quantize_bf16 = "MMQ activation-quantize helper — only materialized when the MMQ family resolves and is opted in."
-atlas_nvfp4_repack = "MMQ weight-repack helper — same family-wide gating."
-atlas_nvfp4_scale_bf16 = "MMQ scale helper — same family-wide gating."
-atlas_nvfp4_silu_mul_quant = "MMQ fused SiLU-mul-quant helper — same family-wide gating."
-atlas_nvfp4_silu_mul_scaled = "MMQ fused scaled-SiLU-mul helper — same family-wide gating."
+avarok_nvfp4_mmq128_wc = "Same MMQ family — family-wide handle gate plus AVAROK_FFN_NVFP4_MMQ opt-in."
+avarok_nvfp4_mmq16_nc = "Same MMQ family — family-wide handle gate plus AVAROK_FFN_NVFP4_MMQ opt-in."
+avarok_nvfp4_mmq16_wc = "Same MMQ family — family-wide handle gate plus AVAROK_FFN_NVFP4_MMQ opt-in."
+avarok_nvfp4_mmq32_nc = "Same MMQ family — family-wide handle gate plus AVAROK_FFN_NVFP4_MMQ opt-in."
+avarok_nvfp4_mmq32_wc = "Same MMQ family — family-wide handle gate plus AVAROK_FFN_NVFP4_MMQ opt-in."
+avarok_nvfp4_mmq64_nc = "Same MMQ family — family-wide handle gate plus AVAROK_FFN_NVFP4_MMQ opt-in."
+avarok_nvfp4_mmq64_wc = "Same MMQ family — family-wide handle gate plus AVAROK_FFN_NVFP4_MMQ opt-in."
+avarok_nvfp4_quantize_bf16 = "MMQ activation-quantize helper — only materialized when the MMQ family resolves and is opted in."
+avarok_nvfp4_repack = "MMQ weight-repack helper — same family-wide gating."
+avarok_nvfp4_scale_bf16 = "MMQ scale helper — same family-wide gating."
+avarok_nvfp4_silu_mul_quant = "MMQ fused SiLU-mul-quant helper — same family-wide gating."
+avarok_nvfp4_silu_mul_scaled = "MMQ fused scaled-SiLU-mul helper — same family-wide gating."
 
 [expected_absent.q4k_mmq]
-atlas_q4k_mmq128_nc = """
-Q4_K FFN MMQ family (ATLAS_FFN_MMQ opt-in) — no q4k source ships in
+avarok_q4k_mmq128_nc = """
+Q4_K FFN MMQ family (AVAROK_FFN_MMQ opt-in) — no q4k source ships in
 THIS target's set. finalize_q4k_load gates on ALL four q4k handles
 != 0 AND the env flag (dense_ffn.rs:382). The resolved NVFP4 path
 serves by default. UNMEASURED."""
-atlas_q4k_mmq128_wc = "Same Q4_K family — family-wide handle gate plus ATLAS_FFN_MMQ opt-in."
-atlas_q8_1_quantize_ds4_bf16 = "Q4_K activation-quantize helper — only materialized under the same family-wide gating."
+avarok_q4k_mmq128_wc = "Same Q4_K family — family-wide handle gate plus AVAROK_FFN_MMQ opt-in."
+avarok_q8_1_quantize_ds4_bf16 = "Q4_K activation-quantize helper — only materialized under the same family-wide gating."
 
 [expected_absent.q4k_quantize]
 q4k_quantize = "Q4_K weight-quantize helper — same family-wide gating as the q4k_mmq arms above."
@@ -173,10 +173,10 @@ q4k_quantize = "Q4_K weight-quantize helper — same family-wide gating as the q
 [expected_absent.w4a16]
 int8_gemm_faith2 = """
 Lossy W4A8 dense-FFN prefill twin. Dispatch is DOUBLE-GATED: handle != 0
-AND the ATLAS_INT8_PREFILL env opt-in (dense_ffn.rs:1512), so the
+AND the AVAROK_INT8_PREFILL env opt-in (dense_ffn.rs:1512), so the
 resolved NVFP4 prefill path serves by default. UNMEASURED."""
-int8_gemm_i32acc = "i32-accumulator variant of the same opt-in int8 family (ATLAS_INT8_PREFILL); handle != 0 gate in dense_ffn.rs."
-requant_w_nvfp4_int8 = "Weight requant helper for the opt-in int8 family — only materialized when ATLAS_INT8_PREFILL is set and the int8 GEMM handles resolve."
+int8_gemm_i32acc = "i32-accumulator variant of the same opt-in int8 family (AVAROK_INT8_PREFILL); handle != 0 gate in dense_ffn.rs."
+requant_w_nvfp4_int8 = "Weight requant helper for the opt-in int8 family — only materialized when AVAROK_INT8_PREFILL is set and the int8 GEMM handles resolve."
 requant_a_bf16_int8 = "Activation requant helper for the same opt-in int8 family; identical gating."
 w4a16_gemm_t_p3 = """
 3-deep weight-pipeline twin shipped ONLY in qwen3.6-27b's shadow.
@@ -189,11 +189,11 @@ w4a16_gemm_t_m128_bf16_v2 = "Second-generation BF16-projection twin (w4a16_v2_ke
 
 [expected_absent.w4a4]
 w4a4_gemm = """
-Dense-FFN native-FP4 prefill arm (ATLAS_FP4_PREFILL env opt-in, lossy
+Dense-FFN native-FP4 prefill arm (AVAROK_FP4_PREFILL env opt-in, lossy
 cos~0.99). Dispatch gates on handle != 0 AND the env flag
 (dense_ffn.rs:1585). UNMEASURED."""
 w4a4_gemm_mfast = """
 Shipped only in nemotron-labs-3-puzzle-75b-a9b's shadow. The attention
-W4A4 prefill path is additionally OPT-IN ONLY (ATLAS_ATTN_W4A4 env) and
+W4A4 prefill path is additionally OPT-IN ONLY (AVAROK_ATTN_W4A4 env) and
 dispatch gates on handle != 0 (paged_qkv.rs:49, paged_oproj.rs:32).
 UNMEASURED."""

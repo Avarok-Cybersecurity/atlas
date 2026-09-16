@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -213,7 +213,7 @@ impl TransformerModel {
     /// their independent local prefix caches disagree. Implemented via
     /// `world_size` rooted broadcasts (one rooted at each rank), each
     /// rank min-reducing the values it observes. NCCL has a native
-    /// allreduce-MIN but Atlas's spark-comm trait only exposes SUM
+    /// allreduce-MIN but Avarok's spark-comm trait only exposes SUM
     /// allreduce; the rooted-broadcast loop is portable and adds at
     /// most 2 NCCL ops per chunk-0 cache hit (negligible vs the prefill
     /// compute it unblocks).
@@ -335,7 +335,7 @@ impl TransformerModel {
         }
         debug_assert!(
             self.ep_protocol_v2,
-            "ep_broadcast_decode_batch_dispatch called without ATLAS_EP_PROTOCOL=v2"
+            "ep_broadcast_decode_batch_dispatch called without AVAROK_EP_PROTOCOL=v2"
         );
         debug_assert_eq!(
             seq_ids.len(),
@@ -388,7 +388,7 @@ impl TransformerModel {
     ///
     /// Returns false when the worker should shut down.
     ///
-    /// Protocol (`ATLAS_EP_PROTOCOL=v2`): rank 0 broadcasts the slot
+    /// Protocol (`AVAROK_EP_PROTOCOL=v2`): rank 0 broadcasts the slot
     /// identifier first (worker uses it to pick the right `SequenceState`
     /// from `slots`), then the command code, then any per-command follow-on
     /// data. With v1 (the default) the preamble is skipped and every

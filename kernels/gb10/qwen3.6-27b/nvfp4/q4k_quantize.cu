@@ -2,14 +2,14 @@
 //
 // GPU Q4_K weight quantizer — faithful port of llama.cpp quantize_q4_K (null-imatrix path:
 // make_qkx3_quants + make_qp_quants, default weights av_x+|x|). One thread per 256-weight
-// superblock. Input bf16 [nrows, n_per_row] (n_per_row % 256 == 0), output GGML atlas_bq4k
+// superblock. Input bf16 [nrows, n_per_row] (n_per_row % 256 == 0), output GGML avarok_bq4k
 // row-major [nrows][n_per_row/256] — the exact layout the vendored MMQ kernel reads.
 // Validated bit-equivalent to ggml_quantize_chunk in test (q4k_quantize gate).
 #include <cuda_bf16.h>
 #include <cstdint>
 
 #define QK_K 256
-struct atlas_bq4k { uint16_t d; uint16_t dmin; uint8_t scales[12]; uint8_t qs[128]; }; // 144 B
+struct avarok_bq4k { uint16_t d; uint16_t dmin; uint8_t scales[12]; uint8_t qs[128]; }; // 144 B
 
 __device__ __forceinline__ int nearest_int(float fval) {
     float val = fval + 12582912.f;
@@ -78,7 +78,7 @@ __device__ __forceinline__ void get_scale_min_k4(int j, const uint8_t* q, uint8_
     else { *d=(q[j+4]&0xF)|((q[j-4]>>6)<<4); *m=(q[j+4]>>4)|((q[j-0]>>6)<<4); }
 }
 
-extern "C" __global__ void q4k_quantize(const __nv_bfloat16* __restrict__ x, atlas_bq4k* __restrict__ y,
+extern "C" __global__ void q4k_quantize(const __nv_bfloat16* __restrict__ x, avarok_bq4k* __restrict__ y,
                                         int nrows, int n_per_row) {
     const long sb_per_row = n_per_row / QK_K;
     const long total = (long)nrows * sb_per_row;
@@ -93,7 +93,7 @@ extern "C" __global__ void q4k_quantize(const __nv_bfloat16* __restrict__ x, atl
     float sigma2 = 2*sum_x2/QK_K, av_x = sqrtf(sigma2);
 
     float weights[32], scales[8], mins[8], sw[8]; uint8_t Laux[32], Ls[8], Lm[8];
-    atlas_bq4k yb;
+    avarok_bq4k yb;
     for (int j=0;j<8;++j){
         float sumw=0;
         for (int l=0;l<32;++l){ float wl=av_x+fabsf(xf[32*j+l]); weights[l]=wl; sumw+=wl; }

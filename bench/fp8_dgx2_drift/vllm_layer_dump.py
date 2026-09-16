@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""vLLM-FP8 per-layer residual-stream dump for Atlas vs vLLM cosine diff.
+"""vLLM-FP8 per-layer residual-stream dump for Avarok vs vLLM cosine diff.
 
 Runs the NATIVE FP8 Qwen3.6-35B-A3B-FP8 model offline in vLLM with
 enforce_eager=True so torch forward hooks fire during prefill. For each of the
@@ -38,7 +38,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-OUT_DIR = pathlib.Path("/workspace/atlas-dumps/fp8native_dgx2")
+OUT_DIR = pathlib.Path("/workspace/avarok-dumps/fp8native_dgx2")
 REF_TOKENS = OUT_DIR / "ref_tokens.json"
 MODEL = "Qwen/Qwen3.6-35B-A3B-FP8"
 

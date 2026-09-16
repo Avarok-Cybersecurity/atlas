@@ -31,8 +31,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use atlas_plugin::hardware::equivalence::EquivalencePolicy;
-use atlas_plugin::{ArtifactStore, gate, history};
+use avarok_plugin::hardware::equivalence::EquivalencePolicy;
+use avarok_plugin::{ArtifactStore, gate, history};
 
 use self::args::CertifyArgs;
 use self::local::drive_local;
@@ -78,7 +78,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     // ── the plan, from the SSOT ──
     let statuses = gate::check_gates(&root, &anchor);
     let gates = plan::remaining(&statuses, &args.gates)?;
-    let store = ArtifactStore::discover().context("locating ATLAS_HOME")?;
+    let store = ArtifactStore::discover().context("locating AVAROK_HOME")?;
     let measured = |id: &str| measured_secs(&store, id);
     let boxes = args.with_nodes.len() + usize::from(!args.remote_only);
     let wanted = args.shards.unwrap_or_else(|| plan::shard_count(boxes));
@@ -87,7 +87,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     let hardware = match &args.hardware {
         Some(h) => h.clone(),
         None => {
-            let k = atlas_plugin::hardware::Hardware::probe().gate_key();
+            let k = avarok_plugin::hardware::Hardware::probe().gate_key();
             if k == "unknown" {
                 bail!("cannot probe this box's hardware class; pass --hardware (e.g. gb10)");
             }
@@ -101,7 +101,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     // half alone may be waived by the operator (`--dangerous-ignore-thermals`);
     // the rest has no waiver, because a deadline or a memory floor from
     // another card is not a measurement of this one.
-    let Some(limits) = atlas_plugin::hardware::limits::limits(&root, &hardware)? else {
+    let Some(limits) = avarok_plugin::hardware::limits::limits(&root, &hardware)? else {
         bail!(
             "kernels/{hardware}/HARDWARE.toml declares no [benchmarks.limits]: the campaign has \
              no thermal envelope, memory floor or timing allowances for this class. Measure them \
@@ -181,7 +181,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     emit.event(
         "preflight",
         serde_json::json!({
-            "signer": facts.signer, "atlas_home": facts.atlas_home,
+            "signer": facts.signer, "avarok_home": facts.avarok_home,
             "findings": findings.iter().map(|f| f.0.clone()).collect::<Vec<_>>(),
         }),
     );
@@ -197,7 +197,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     let fleet = if args.with_nodes.is_empty() {
         None
     } else {
-        let atlasctl = remote::atlasctl::SubprocessAtlasctl::locate(args.atlasctl.as_deref())?;
+        let avarokctl = remote::avarokctl::SubprocessAvarokctl::locate(args.avarokctl.as_deref())?;
         let wanted = remote::node::Wanted {
             hardware: &hardware,
             committed_signers: &facts.committed_signers,
@@ -205,7 +205,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
             min_free_fraction: limits.memory.min_free_fraction,
         };
         let f = remote::assemble(
-            &atlasctl,
+            &avarokctl,
             &args.with_nodes,
             args.remote_only,
             &wanted,
@@ -254,7 +254,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
             pr: args.pr,
             branch: branch.clone(),
             anchor_sha: anchor.clone(),
-            atlas_home: facts.atlas_home.clone(),
+            avarok_home: facts.avarok_home.clone(),
             driver_pid: Some(std::process::id()),
             driver_cmdline: Some(std::env::args().collect::<Vec<_>>().join(" ")),
             started_at: Some(lockfile::rfc3339(now)),
@@ -302,13 +302,13 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
             campaign,
         )?,
         Some(f) => {
-            let atlasctl: Arc<dyn remote::atlasctl::Atlasctl> = Arc::new(
-                remote::atlasctl::SubprocessAtlasctl::locate(args.atlasctl.as_deref())?,
+            let avarokctl: Arc<dyn remote::avarokctl::Avarokctl> = Arc::new(
+                remote::avarokctl::SubprocessAvarokctl::locate(args.avarokctl.as_deref())?,
             );
             let run_id = format!("{}-{}", &anchor[..anchor.len().min(10)], now);
             let runners = remote::runners(
                 f,
-                atlasctl.clone(),
+                avarokctl.clone(),
                 &run_id,
                 &anchor_full,
                 cancel.clone(),
@@ -316,7 +316,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
                 args.no_serve_reuse,
             )?;
             let thermal = remote::thermal::FleetProbe {
-                atlasctl: atlasctl.clone(),
+                avarokctl: avarokctl.clone(),
             };
             let envelope = f.envelope;
             let shared = remote::Shared {
@@ -401,7 +401,7 @@ fn finish(emit: &Emit, root: &Path, anchor: &str, campaign: Option<&Campaign>) -
 fn measured_secs(store: &ArtifactStore, id: &str) -> Option<(u64, u64)> {
     history::load(store, id)
         .into_iter()
-        .find(|r| r.frame.status == atlas_plugin::result::RunStatus::Completed)
+        .find(|r| r.frame.status == avarok_plugin::result::RunStatus::Completed)
         .map(|r| {
             (
                 whole_draw_secs(r.frame.elapsed.as_secs(), &r.params),

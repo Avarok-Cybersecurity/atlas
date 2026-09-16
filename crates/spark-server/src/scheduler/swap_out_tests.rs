@@ -28,7 +28,7 @@ use std::sync::atomic::Ordering;
 /// exists only because the signature demands one.
 fn spill(name: &str) -> KvSpillManager {
     let dir = std::env::temp_dir().join(format!(
-        "atlas-swap-out-tests-{}-{name}",
+        "avarok-swap-out-tests-{}-{name}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);

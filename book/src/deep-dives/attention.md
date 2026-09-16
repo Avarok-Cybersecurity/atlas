@@ -1,6 +1,6 @@
 # Attention & Paged KV Cache
 
-The attention path is where Atlas's biggest speedups land — up to **6.02×** vs PyTorch decode, up to **4.95×** vs PyTorch prefill. This chapter walks the kernels, the KV cache allocation model, and the pieces that make them fast on GB10.
+The attention path is where Avarok's biggest speedups land — up to **6.02×** vs PyTorch decode, up to **4.95×** vs PyTorch prefill. This chapter walks the kernels, the KV cache allocation model, and the pieces that make them fast on GB10.
 
 ## Two kernels, two shapes
 
@@ -42,7 +42,7 @@ The `_fp8kv` variant adds one extra step: the K/V tiles are E4M3 in memory, not 
 
 Prefill numbers on Qwen3-Next-80B shapes (hidden=2048, 16Q / 2KV heads, head_dim=256):
 
-| seq_len | Atlas (ms) | PyTorch (ms) | Speedup |
+| seq_len | Avarok (ms) | PyTorch (ms) | Speedup |
 |---:|---:|---:|---:|
 | 32 | 0.0062 | 0.0077 | 1.26× |
 | 128 | 0.0184 | 0.0205 | 1.11× |
@@ -55,7 +55,7 @@ The dramatic win at seq=256 is the kernel hitting its sweet spot where the `cp.a
 
 Decode attention is a different kernel because the shapes are different. For each new token, we need Q (one row) × K (full history). The hot axis is K — thousands of elements of history per head, dozens of heads.
 
-Atlas's decode kernel parallelises across **two** axes:
+Avarok's decode kernel parallelises across **two** axes:
 
 1. **Head** — one warp per (Q-head, KV-head) pair.
 2. **Split-K** — the full K/V history is chopped into `N` chunks; each chunk gets a CTA that produces a partial softmax + partial attention output. A second pass reduces across chunks.
@@ -68,7 +68,7 @@ The online softmax pattern survives from prefill but with a different shape: eac
 
 Decode numbers (same Qwen3-Next-80B shapes):
 
-| history | Atlas (ms) | PyTorch (ms) | Speedup | Effective BW |
+| history | Avarok (ms) | PyTorch (ms) | Speedup | Effective BW |
 |---:|---:|---:|---:|---:|
 | 64 | 0.0061 | 0.0077 | 1.25× | 22.7 GB/s |
 | 256 | 0.0123 | 0.0164 | 1.33× | 43.3 GB/s |
@@ -79,7 +79,7 @@ At 4k history we're at ~63% of GB10's 273 GB/s peak — tight but well below the
 
 ## The paged KV cache
 
-Atlas follows vLLM's paged-attention model: KV is allocated in fixed-size blocks (default 16 tokens per block) from a pool, not per-sequence. Key advantages:
+Avarok follows vLLM's paged-attention model: KV is allocated in fixed-size blocks (default 16 tokens per block) from a pool, not per-sequence. Key advantages:
 
 - **No fragmentation.** A completed request returns its blocks to the pool; a new request claims fresh ones. No moving, no compaction.
 - **Copy-on-write prefix sharing.** When prefix-caching hits, the prefix's blocks are shared between the cached and new sequence until divergence.

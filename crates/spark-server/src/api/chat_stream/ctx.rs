@@ -11,7 +11,7 @@ use crate::AppState;
 use crate::tool_parser;
 
 pub(super) struct StreamCtx {
-    /// Holds `atlas_requests_active` for the stream's whole lifetime. `StreamCtx`
+    /// Holds `avarok_requests_active` for the stream's whole lifetime. `StreamCtx`
     /// is moved into the SSE `flat_map` closure, so this drops — releasing the
     /// gauge exactly once — on normal completion, on error, AND when the client
     /// disconnects and axum drops the stream. Never read; existence is the point.

@@ -24,8 +24,8 @@ spark bench certify --with-nodes 10.10.10.2 --remote-only # from a laptop: nodes
 ## `--with-nodes`
 
 The same campaign, on several machines at once. Every address is asked
-through `atlasctl bench nodes` (`ip[:port]`, `[v6]:port`, `host.local`,
-`dns.name`; port omitted → atlasctl's peer port), and a node is **admitted**
+through `avarokctl bench nodes` (`ip[:port]`, `[v6]:port`, `host.local`,
+`dns.name`; port omitted → avarokctl's peer port), and a node is **admitted**
 only when it can sign records this repository will accept: bench enabled, the
 box class being certified, a signer committed in `.github/record-signers/`,
 not busy, nothing queued, memory and disk above the floors, a GPU it can
@@ -48,7 +48,7 @@ the arguments it was started with; the unit renders its own recipe with its
 own overrides (a hermetic `kat-equality-gate` and an open `bfcl-subset` are
 different renderings) and compares. A match is reused; anything else is
 stopped and replaced; a unit never takes a server this mode did not start
-(`<ATLAS_HOME>/serve-lease.json` names the one it may). The campaign stops
+(`<AVAROK_HOME>/serve-lease.json` names the one it may). The campaign stops
 the last one when it ends, and a lease whose campaign died is stopped by
 the next campaign before its preflight. `--no-serve-reuse` restores a fresh
 server per unit; `spark benchmark serve-release` stops a leased server by
@@ -105,13 +105,13 @@ key. A record that fails any of those is removed again and never retried on
 that node. A node that fails twice in a row is retired for the campaign.
 Ctrl-C or a drift on the guarded branch cancels every node's job.
 
-**What atlasctl must have.** Each node runs an `atlasctl agent` with a
-`bench.yaml` (atlas-recipes `docs/BENCH.md`) and has granted this machine
-`bench` (`atlasctl peer grant-bench <fingerprint>` there); this machine
-needs `atlasctl` on `PATH` or `--atlasctl PATH`, paired with each node.
-`atlasctl` is run with this process's environment, so a submitter identity
+**What avarokctl must have.** Each node runs an `avarokctl agent` with a
+`bench.yaml` (avarok-recipes `docs/BENCH.md`) and has granted this machine
+`bench` (`avarokctl peer grant-bench <fingerprint>` there); this machine
+needs `avarokctl` on `PATH` or `--avarokctl PATH`, paired with each node.
+`avarokctl` is run with this process's environment, so a submitter identity
 kept outside the default directory is selected with
-`ATLASCTL_CONFIG_DIR=/path spark bench certify …`.
+`AVAROKCTL_CONFIG_DIR=/path spark bench certify …`.
 
 ## What it does, in order
 
@@ -120,12 +120,12 @@ kept outside the default directory is selected with
    `gate::shards_owed`, the verdict's own answer, so a shard the gate already
    accepts at the anchor is not re-measured; every unit carries
    the descriptor's `expected_secs`, refined by the newest completed run in
-   `~/.atlas/runs` when there is one. The local order is the long shard sets
+   `~/.avarok/runs` when there is one. The local order is the long shard sets
    first (a failure there must not wait five hours to be seen), then the
    Speed class shortest-first, then the rest.
 2. **Preflight.** Refuses to spend a GPU minute unless: HEAD is the anchor, no
-   `PERF_PATHS` file is uncommitted, the signing identity in `ATLAS_HOME` is
-   committed in `.github/record-signers/`, `ATLAS_HOME` is writable, no other
+   `PERF_PATHS` file is uncommitted, the signing identity in `AVAROK_HOME` is
+   committed in `.github/record-signers/`, `AVAROK_HOME` is writable, no other
    `spark` is running, host memory is at least as free as a self-start
    requires, there is a branch to guard (or `--no-guard`), and any gate that
    needs confirmation has `--yes`. Every refusal names its remedy.

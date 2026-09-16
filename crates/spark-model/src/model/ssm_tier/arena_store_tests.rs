@@ -102,7 +102,7 @@ fn rdma_overwrite_in_place_no_slot_leak() {
 // ── Decode rolling tier: FileSnapshotArena (local NVMe) ───────────────
 #[test]
 fn file_arena_round_trip_bit_identical() {
-    let dir = std::env::temp_dir().join(format!("atlas-decode-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("avarok-decode-test-{}", std::process::id()));
     let dir = dir.to_str().unwrap();
     let store = ArenaSnapshotStore::new(
         Box::new(FileSnapshotArena::create(dir, 4 * BLOB as u64).unwrap()),
@@ -127,7 +127,7 @@ fn file_arena_round_trip_bit_identical() {
 
 #[test]
 fn file_arena_write_past_capacity_errs_not_corrupts() {
-    let dir = std::env::temp_dir().join(format!("atlas-decode-cap-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("avarok-decode-cap-{}", std::process::id()));
     let dir = dir.to_str().unwrap();
     let arena = FileSnapshotArena::create(dir, BLOB as u64).unwrap();
     assert!(arena.write_blob(0, &[1; BLOB]).is_ok());

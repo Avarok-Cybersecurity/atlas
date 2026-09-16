@@ -63,8 +63,8 @@ jobs:
           allow_list=(
             # 2026-08-15 concurrency cycle (#525): grew past 500 in this stack's
             # instrumentation work. Reduce when feasible.
-            "crates/atlas-plugin/src/benchmarks/concurrency.rs"
-            "crates/atlas-plugin/src/gate/record.rs"
+            "crates/avarok-plugin/src/benchmarks/concurrency.rs"
+            "crates/avarok-plugin/src/gate/record.rs"
             "crates/spark-server/src/scheduler/lifecycle.rs"
             "crates/spark-server/src/scheduler/mtp_gate.rs"
             # 2026-08-16: 510 LoC — crossed 500 by the regression-pin tests
@@ -75,10 +75,10 @@ jobs:
             # 2026-08-15 stack merge (#516 video + #514 batch6 + reasoning-effort):
             # these crossed 500 in the merged stacks; splitting them mid-campaign
             # was judged riskier than shipping. Reduce when feasible.
-            "crates/atlas-plugin/src/benchmarks/video/driver.rs"
-            "crates/atlas-plugin/src/benchmarks/vision/driver.rs"
-            "crates/atlas-plugin/src/benchmarks/media_integrity.rs"
-            "crates/atlas-plugin/src/http.rs"
+            "crates/avarok-plugin/src/benchmarks/video/driver.rs"
+            "crates/avarok-plugin/src/benchmarks/vision/driver.rs"
+            "crates/avarok-plugin/src/benchmarks/media_integrity.rs"
+            "crates/avarok-plugin/src/http.rs"
             "crates/spark-server/src/api/chat/msg_entry.rs"
             "crates/spark-server/src/openai/chat_request.rs"
             "crates/spark-server/src/api/chat/mod.rs"
@@ -209,8 +209,8 @@ jobs:
             # The overnight coherence-debugging work grew these past 500 LoC
             # (19 newly over-cap + impl_a2/compile_tools inherited from main).
             # Allow-listed to unblock the PR; clean splits tracked as follow-up
-            # (per-file Ctx/State or sub-module extraction, Atlas idiom).
-            "crates/atlas-kernels/build.rs"
+            # (per-file Ctx/State or sub-module extraction, Avarok idiom).
+            "crates/avarok-kernels/build.rs"
             "crates/spark-model/examples/gdn_fla_e2e_gateb.rs"
             "crates/spark-model/src/layers/moe/forward_prefill_fp8.rs"
             "crates/spark-model/src/layers/moe/forward.rs"
@@ -304,8 +304,8 @@ jobs:
             "crates/spark-model/src/weight_loader/deepseek_v4/assemble.rs"
             "crates/spark-model/src/layers/deepseek_v4_mtp.rs"
             "crates/spark-model/src/factory/build.rs"
-            "crates/atlas-core/src/config/tests.rs"
-            "crates/atlas-core/src/config.rs"
+            "crates/avarok-core/src/config/tests.rs"
+            "crates/avarok-core/src/config.rs"
             "crates/spark-model/src/model/impl_b1.rs"
             "crates/spark-model/src/model/trait_impl/prefill_b/batch_kernel.rs"
             # ── #203 (Holo/Ornith GB10 enablement) carry-over ──
@@ -443,7 +443,7 @@ jobs:
             # a split commit in this PR. A clean split (per-gate EXCLUDES
             # arrays -> sibling module) is tracked as follow-up; this entry
             # lands with the PR that tipped it.
-            "crates/atlas-plugin/src/gate/coverage.rs"
+            "crates/avarok-plugin/src/gate/coverage.rs"
             # -- PR #464 (batch4 stack: #400/#401/#402/#350/#403) --
             # Three files the restack tipped marginally over, each of which sat
             # JUST under the cap on main (498/489/499 -> 509/501/501). The
@@ -465,7 +465,7 @@ jobs:
             # ── GLM-5.3-Flash (`glm5_next`) native port — 2026-09-06 ──
             #
             # SHARED RATIONALE for the 25 entries below. Every one of them is on
-            # the execution path of `atlas-glm53:integ1`, the image that passed
+            # the execution path of `avarok-glm53:integ1`, the image that passed
             # the ten-phase GB10 qualification of integration candidate
             # 4d0fef93 on 2026-09-06: six-probe byte-identity against the sealed
             # reference (6/6 EXACT), a bracketed control-candidate-control A/B
@@ -520,7 +520,7 @@ jobs:
             # field, each with the checkpoint key it reads and the refusal it
             # raises. Splitting it by field group would put the layer-type
             # derivation in a different file from the fields it derives from.
-            "crates/atlas-core/src/config/parsers/glm5_next.rs"
+            "crates/avarok-core/src/config/parsers/glm5_next.rs"
             # 840 LoC — the KDA attention block as a bound production
             # component: TP shard copies, the recurrent 1R+1W decode, the
             # chunked prefill, and the SSM state contract. The decode and
@@ -653,7 +653,7 @@ jobs:
               if [[ $allowed -eq 1 ]]; then
                 echo "::warning file=$normalized::Allow-listed: $lines LoC (>500). Reduce when feasible."
               else
-                echo "::error file=$normalized::$lines LoC exceeds 500-line cap. Split into sub-modules per Atlas idiom (see crates/spark-model/src/layers/qwen3_attention/ for compute-heavy template, crates/spark-model/src/weight_loader/ for variant-dispatch template)."
+                echo "::error file=$normalized::$lines LoC exceeds 500-line cap. Split into sub-modules per Avarok idiom (see crates/spark-model/src/layers/qwen3_attention/ for compute-heavy template, crates/spark-model/src/weight_loader/ for variant-dispatch template)."
                 violations=$((violations + 1))
               fi
             fi
@@ -661,7 +661,7 @@ jobs:
 
           if [[ $violations -gt 0 ]]; then
             echo ""
-            echo "❌ $violations file(s) exceed the 500-line cap. Split them per Atlas idiom."
+            echo "❌ $violations file(s) exceed the 500-line cap. Split them per Avarok idiom."
             echo ""
             echo "Quick fix: extract a cohesive cluster (impl block, related fns, tests)"
             echo "to a sibling file:"

@@ -1,25 +1,25 @@
-# Atlas Spark — B200 / GB200 (sm_100a), all five datacentre models
+# Avarok Spark — B200 / GB200 (sm_100a), all five datacentre models
 #
 # WHY THIS FILE EXISTS. Renting a B200 box by the hour and then compiling
-# Atlas on it burns the expensive resource on work that needs no GPU:
+# Avarok on it burns the expensive resource on work that needs no GPU:
 # `nvcc --ptx -arch=sm_100a` is a cross-compile, and the kernels ship as PTX
 # embedded in the binary. Everything below runs on any x86_64 Linux host with
 # Docker. The rental box only pulls.
 #
 # Build from repo root (no GPU required, ~1 h cold):
-#   docker build -f docker/b200/Dockerfile -t atlas-b200:latest .
+#   docker build -f docker/b200/Dockerfile -t avarok-b200:latest .
 #
 #   # one model instead of all five (much faster; the binary then only serves it)
 #   docker build -f docker/b200/Dockerfile \
-#     --build-arg ATLAS_TARGET_MODEL=nemotron-super-120b-a12b \
-#     -t atlas-b200:nemotron .
+#     --build-arg AVAROK_TARGET_MODEL=nemotron-super-120b-a12b \
+#     -t avarok-b200:nemotron .
 #
 # Run — FIRST BOOT SHOULD BE `--check-kernels`. It resolves every kernel the
 # model needs against the PTX actually compiled in, prints the unresolved
 # ones, and exits with that count. Do this before timing anything:
 #   docker run --gpus all --ipc=host --network host \
 #     -v ~/.cache/huggingface:/root/.cache/huggingface \
-#     atlas-b200:latest \
+#     avarok-b200:latest \
 #     serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8 --check-kernels --no-tui
 #
 # Then serve. On a multi-GPU node run ONE CONTAINER PER RANK with rank i
@@ -38,7 +38,7 @@
 # an image that cannot serve is better than one that JITs garbage.
 #
 # This file is deliberately parallel to docker/hopper/Dockerfile — the only
-# functional difference is the ATLAS_TARGET_HW default. docker/
+# functional difference is the AVAROK_TARGET_HW default. docker/
 # datacenter_dockerfiles_test.sh holds both to the same assertions.
 
 # ── Build stage ──────────────────────────────────────────────────
@@ -50,17 +50,17 @@
 # and the GB10, Hopper and B200 images stay on one pinned base.
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d AS builder
 
-# Which kernel targets get compiled into the binary. `ATLAS_TARGET_HW` is an
+# Which kernel targets get compiled into the binary. `AVAROK_TARGET_HW` is an
 # ARG rather than a bare ENV so this file and docker/hopper/Dockerfile differ
 # in their default and nothing else; override it and you get the other image.
-ARG ATLAS_TARGET_HW=b200
+ARG AVAROK_TARGET_HW=b200
 # '*' = every model under kernels/<hw>/ — deepseek-v4-flash,
 # nemotron-3-nano-30b-a3b, nemotron-super-120b-a12b, qwen3.6-35b-a3b,
 # qwen3-next-80b-a3b. Narrow it to one slug for a faster build.
-ARG ATLAS_TARGET_MODEL="*"
+ARG AVAROK_TARGET_MODEL="*"
 # Named, not '*': nvfp4 is the only quant directory these targets have, and
 # PCND says state it rather than let a wildcard imply a choice.
-ARG ATLAS_TARGET_QUANT=nvfp4
+ARG AVAROK_TARGET_QUANT=nvfp4
 
 RUN apt-get update -qq && \
     apt-get install -y -qq curl build-essential pkg-config git cmake libclang-dev libibverbs-dev && \
@@ -91,14 +91,14 @@ COPY crates/ crates/
 COPY vendor/ vendor/
 COPY kernels/ kernels/
 COPY jinja-templates/ jinja-templates/
-# quick-speed-bench (atlas-plugin) include_str!'s its ISL prompt fixtures from
+# quick-speed-bench (avarok-plugin) include_str!'s its ISL prompt fixtures from
 # tests/fixtures — without this line the release build fails in-container while
 # every full-tree local build succeeds. Copy just the fixtures, not all tests/.
 COPY tests/fixtures/ tests/fixtures/
 
-ENV ATLAS_TARGET_HW=${ATLAS_TARGET_HW}
-ENV ATLAS_TARGET_MODEL=${ATLAS_TARGET_MODEL}
-ENV ATLAS_TARGET_QUANT=${ATLAS_TARGET_QUANT}
+ENV AVAROK_TARGET_HW=${AVAROK_TARGET_HW}
+ENV AVAROK_TARGET_MODEL=${AVAROK_TARGET_MODEL}
+ENV AVAROK_TARGET_QUANT=${AVAROK_TARGET_QUANT}
 
 # `--no-default-features --features cuda,nccl` is the same set spark-server's
 # `default` names today, spelled out so a change to that default cannot
@@ -113,12 +113,12 @@ RUN cargo build --release -p spark-server --bin spark \
 FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863257b06137c84f34a87f38de970d5cd035d3
 
 LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
-LABEL org.opencontainers.image.description="Atlas Spark, kernels compiled for NVIDIA datacentre Blackwell (sm_100a) — B200 / GB200"
+LABEL org.opencontainers.image.description="Avarok Spark, kernels compiled for NVIDIA datacentre Blackwell (sm_100a) — B200 / GB200"
 
 # Stamp the source commit into the image so ":latest" provenance is answerable:
 #   docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' <tag>
-ARG ATLAS_GIT_SHA=unknown
-LABEL org.opencontainers.image.revision="${ATLAS_GIT_SHA}"
+ARG AVAROK_GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${AVAROK_GIT_SHA}"
 
 # NCCL for multi-GPU (EP/TP), RDMA userspace for RoCE transport.
 # NCCL >= 2.28 is required for `ncclMemAlloc`/`ncclMemFree` symmetric memory

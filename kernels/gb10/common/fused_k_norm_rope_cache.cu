@@ -49,7 +49,7 @@ __device__ __forceinline__ float warp_reduce_sum_fkv(float v) {
 /// `slot_mapping`: i64 `[num_tokens]`, paged slot index per token (=-1 → skip).
 /// `rotary_dim`: number of leading dims to rotate (e.g., 64 for Qwen3.6).
 ///   Pairs: (d0, d0+rotary_dim/2) for d0 in [0, rotary_dim/2).
-/// `block_size`: cache page size (Atlas: 16).
+/// `block_size`: cache page size (Avarok: 16).
 extern "C" __global__ void fused_k_norm_rope_cache_write_bf16(
     const __nv_bfloat16* __restrict__ k_in,
     const __nv_bfloat16* __restrict__ k_norm_weight,
@@ -117,7 +117,7 @@ extern "C" __global__ void fused_k_norm_rope_cache_write_bf16(
         const unsigned int pair_idx = is_d0 ? t : (t - half_rot);
         const float x0 = is_d0 ? smem_normed[t] : smem_normed[t - half_rot];
         const float x1 = is_d0 ? smem_normed[t + half_rot] : smem_normed[t];
-        // Use FP64 pow to match Atlas's existing rope.cu (precision at high pos).
+        // Use FP64 pow to match Avarok's existing rope.cu (precision at high pos).
         const double freq_exp_d = (double)(2u * pair_idx) / (double)rotary_dim;
         const float freq = (float)(1.0 / pow((double)theta, freq_exp_d));
         const unsigned int pos = positions[token_idx];

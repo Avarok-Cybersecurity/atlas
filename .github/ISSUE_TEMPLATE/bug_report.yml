@@ -11,10 +11,10 @@ body:
         the faster we can land a fix.
 
   - type: input
-    id: atlas-version
+    id: avarok-version
     attributes:
       label: Avarok version / docker tag
-      description: e.g. `avarok/atlas-gb10:alpha-2.44` or `git rev-parse HEAD`
+      description: e.g. `avarok/avarok-gb10:alpha-2.44` or `git rev-parse HEAD`
       placeholder: alpha-2.44
     validations:
       required: true

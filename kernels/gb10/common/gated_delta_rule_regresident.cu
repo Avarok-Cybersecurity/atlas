@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Gated Delta Rule — REGISTER-RESIDENT sequential prefill recurrence.
+// Avarok Gated Delta Rule — REGISTER-RESIDENT sequential prefill recurrence.
 //
 // Drop-in alternative to `gated_delta_rule_prefill_persistent_wy4` for the
 // WARM Marconi-replay path (short suffix after a restored snapshot). Same

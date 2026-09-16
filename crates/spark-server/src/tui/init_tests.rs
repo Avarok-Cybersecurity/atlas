@@ -35,7 +35,7 @@ fn the_writer_reports_every_byte_as_written_and_never_fails() {
     let restore = RestoreActive(TUI_ACTIVE.load(Ordering::Relaxed));
     TUI_ACTIVE.store(true, Ordering::Relaxed);
 
-    let line = b"INFO atlas: a log line\n";
+    let line = b"INFO avarok: a log line\n";
     assert_eq!(
         SwitchableIo.write(line).expect("the writer cannot fail"),
         line.len()
@@ -93,10 +93,10 @@ fn with_no_tee_installed_there_is_nothing_to_name_and_no_fd_to_redirect() {
 
 #[test]
 fn the_tee_path_follows_its_environment_override_when_one_is_set() {
-    // `$ATLAS_TUI_LOG_FILE` is how a benchmark driver puts the log where it can
+    // `$AVAROK_TUI_LOG_FILE` is how a benchmark driver puts the log where it can
     // collect it; without it the file lands under the cache dir, named by pid
     // so two runs cannot overwrite each other.
-    match std::env::var("ATLAS_TUI_LOG_FILE") {
+    match std::env::var("AVAROK_TUI_LOG_FILE") {
         Ok(explicit) => assert_eq!(tee_path(), std::path::PathBuf::from(explicit)),
         Err(_) => {
             let p = tee_path();
@@ -108,7 +108,7 @@ fn the_tee_path_follows_its_environment_override_when_one_is_set() {
             );
             assert!(name.ends_with(".log"), "{name}");
             assert!(
-                p.parent().expect("a parent").ends_with(".cache/atlas/logs"),
+                p.parent().expect("a parent").ends_with(".cache/avarok/logs"),
                 "{}",
                 p.display()
             );
@@ -120,7 +120,7 @@ fn the_tee_path_follows_its_environment_override_when_one_is_set() {
 fn two_tee_paths_taken_in_the_same_second_are_the_same_file() {
     // The name carries a pid and a timestamp and nothing else random: a second
     // call must not invent a second log file for the same process.
-    if std::env::var("ATLAS_TUI_LOG_FILE").is_err() {
+    if std::env::var("AVAROK_TUI_LOG_FILE").is_err() {
         let a = tee_path();
         let b = tee_path();
         assert_eq!(

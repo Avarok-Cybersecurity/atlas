@@ -6,7 +6,7 @@ name: TUI threading contract
 # That rule was previously stated in prose in two module docs — and they
 # contradicted each other: `recipe/fetch.rs` said "no spawn_blocking, no
 # block_on, no future in this file", while `tui/chat.rs` and
-# `atlas-plugin/src/executor.rs` legitimately DO spawn tokio tasks and hand
+# `avarok-plugin/src/executor.rs` legitimately DO spawn tokio tasks and hand
 # results back over a std channel. Prose that disagrees with itself is not a
 # contract. This is the version a machine can check.
 #

@@ -22,7 +22,7 @@
 //!
 //! # The fix
 //!
-//! Two halves, both behind `ATLAS_NO_MTP_EAGER_DRAFTER` (PRESENCE):
+//! Two halves, both behind `AVAROK_NO_MTP_EAGER_DRAFTER` (PRESENCE):
 //!
 //! 1. `try_mtp_prefill_capture_from` — the capture body, parameterised by the
 //!    SOURCE pointer, so the mixed path can hand it the prefill rows (which
@@ -55,16 +55,16 @@ use super::super::types::TransformerModel;
 use crate::layer::ForwardContext;
 use crate::traits::SequenceState;
 
-/// `ATLAS_NO_MTP_EAGER_DRAFTER` (PRESENCE): restore the propose-site-only
+/// `AVAROK_NO_MTP_EAGER_DRAFTER` (PRESENCE): restore the propose-site-only
 /// consume, i.e. the pre-fix behaviour where only the last-prefilled sequence
 /// of a concurrent group can prefill its drafter.
 pub fn eager_drafter_disabled() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var("ATLAS_NO_MTP_EAGER_DRAFTER").is_ok())
+    *OFF.get_or_init(|| std::env::var("AVAROK_NO_MTP_EAGER_DRAFTER").is_ok())
 }
 
 impl TransformerModel {
-    /// ATLAS_MTP_DRAFTER_PREFILL: copy this prefill chunk's final-layer
+    /// AVAROK_MTP_DRAFTER_PREFILL: copy this prefill chunk's final-layer
     /// hiddens (`[proc_count, h]` BF16, contiguous at the head of the hidden
     /// buffer) into the whole-prompt capture at row `chunk_start`.
     ///
@@ -129,7 +129,7 @@ impl TransformerModel {
         } else {
             None
         };
-        // ATLAS_MTP_CARRY_DRAFTER: a warm turn's chunk starts at the reused-
+        // AVAROK_MTP_CARRY_DRAFTER: a warm turn's chunk starts at the reused-
         // prefix boundary, which the contiguous-from-zero tracker above must
         // reject (its consumer prefills the drafter from row 0). The carry
         // path consumes the SAME buffer position-indexed, so it wants the

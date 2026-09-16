@@ -1,5 +1,5 @@
 # Proving Benchmark Work to a GPU-less Verifier
-## A layered design for the Atlas gate record pipeline
+## A layered design for the Avarok gate record pipeline
 
 ---
 
@@ -93,7 +93,7 @@ The README claim — *"Records are Ed25519-signed against the commit that produc
 
 ## 5. Concrete Implementation Plan for This Repo
 
-**Phase 0 (bug fixes, `crates/atlas-plugin/src/gate/check.rs`):**
+**Phase 0 (bug fixes, `crates/avarok-plugin/src/gate/check.rs`):**
 1. Reject `Verified::Exempt` for any record *added in the PR diff* regardless of `recorded_at` (grandfather only pre-existing committed records).
 2. Cross-check filename date (`YYYY-MM-DD-<sha>.json`) against `recorded_at` (±48 h).
 3. Change `record_is_for` mismatch from *skipped* to *failed* for records added in the diff.
@@ -113,7 +113,7 @@ The README claim — *"Records are Ed25519-signed against the commit that produc
 
 **Phase 4 (TOPLOC):**
 - Serve-path hook: top-128 of last hidden state per 32 decode tokens → per-sample blob → same Merkle tree. Calibration run: dgx1 vs. dgx2 replay of a known-good record to set NVFP4 tolerances; commit thresholds to `BENCH.toml`.
-- Ship `atlas bench audit <record>`: any GB10 replays k samples via prefill and checks commitments.
+- Ship `avarok bench audit <record>`: any GB10 replays k samples via prefill and checks commitments.
 
 **Phase 5 (co-sign):**
 - `gate/signing.rs`: accept a second detached signature over identical record bytes; peer derives k=16 indices as `HMAC(nonce, "audit") mod N`, re-runs, checks TOPLOC agreement, signs. `check.rs`: require two distinct registered fingerprints for records after a new cutover constant.
@@ -239,7 +239,7 @@ report is `Undecidable`, which is **not** equivalent: the safe answer to "are
 these the same box?" is never "probably".
 
 **Where it is decided, twice, by the same code.** The scheduler asks it before
-spreading, from the nodes' live reports (atlasctl states facts; it decides
+spreading, from the nodes' live reports (avarokctl states facts; it decides
 nothing), and either spreads or bundles every Speed unit onto the single node
 with the most headroom, saying why. CI asks it again in `gate::agreement`,
 from the RECORDS' own `hardware` and `hardware_state` captures — so what is

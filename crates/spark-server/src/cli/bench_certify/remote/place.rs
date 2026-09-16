@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! A fetched record becomes a repository record only after it is checked.
 //!
-//! atlasctl already verified size and sha256 against what the node
+//! avarokctl already verified size and sha256 against what the node
 //! promised; this side verifies what MATTERS to certification: the record is
 //! for this unit, at the anchor, on the class being certified, completed and
 //! clean, and its signature checks under a committed key. Anything else is
@@ -11,9 +11,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use atlas_plugin::gate::{self, signing};
+use avarok_plugin::gate::{self, signing};
 
-use super::atlasctl::FetchedFile;
+use super::avarokctl::FetchedFile;
 
 /// The record and its sidecar, where the repository keeps them.
 #[derive(Clone, Debug, PartialEq, Eq)]

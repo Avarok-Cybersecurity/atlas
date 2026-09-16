@@ -2,7 +2,7 @@
 
 # Apple Metal Backend
 
-Atlas can build and run on Apple Silicon (M1/M2/M3/M4) under the
+Avarok can build and run on Apple Silicon (M1/M2/M3/M4) under the
 `metal` cargo feature. The build links zero CUDA / NCCL and uses
 `objc2-metal` bindings against the system Metal framework.
 
@@ -26,8 +26,8 @@ otool -L target/debug/spark | grep -i nccl    # → no output
   "apple"`) drives the existing `ComputeTarget` abstraction
   through `xcrun -sdk macosx metal -c → xcrun metallib`. Compiled
   metallib bytes are embedded into the runtime via
-  `include_bytes!()`. Set `ATLAS_TARGET_HW=metal
-  ATLAS_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 ATLAS_TARGET_QUANT=mlx_int8`
+  `include_bytes!()`. Set `AVAROK_TARGET_HW=metal
+  AVAROK_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 AVAROK_TARGET_QUANT=mlx_int8`
   to compile the Qwen3.5-4B kernel set; macOS builds without
   these env vars auto-skip the kernel build (empty registry stub)
   so `cargo check` doesn't require a model directory.
@@ -94,7 +94,7 @@ Every kernel has an FP32 CPU-reference parity test
 The Metal contiguous cache supports the TurboQuant dtypes from the
 CUDA backend's `--kv-cache-dtype` family, selected per `LayerKvCache`
 via `MetalKvDtype` (the `metal_qwen35_inference` example exposes it as
-`ATLAS_KV_DTYPE={bf16,turbo8,turbo4,turbo3,turbo2}`):
+`AVAROK_KV_DTYPE={bf16,turbo8,turbo4,turbo3,turbo2}`):
 
 | dtype  | storage                                   | vs bf16 |
 |--------|-------------------------------------------|---------|
@@ -123,7 +123,7 @@ Mechanics, mirroring the CUDA write path and decode bookends:
   appended/winning per key) — model targets inherit `-ffast-math` and
   `-DTQ_PLUS_SIGNS` automatically.
 
-Quality eval: `ATLAS_LOGITS_OUT=path` dumps per-step bf16 logits;
+Quality eval: `AVAROK_LOGITS_OUT=path` dumps per-step bf16 logits;
 `tests/metal_kv_kld_compare.py` reports KLD + top-1 agreement between
 two runs.
 
@@ -139,7 +139,7 @@ cargo test -p spark-runtime --no-default-features --features metal \
 
 The tests skip gracefully if the model isn't at
 `~/models/Qwen3.5-4B-MLX-8bit` (override via
-`$ATLAS_MLX_MODEL_DIR`):
+`$AVAROK_MLX_MODEL_DIR`):
 
 - `metal_mlx_int8_dequant_real_model` — embed_tokens triplet.
 - `metal_mlx_int8_gemv_real_model_q_proj` — layer-3 q_proj
@@ -177,5 +177,5 @@ are complete. What remains is integration shape:
 |---|---|
 | Metal-side `Model` impl wiring spark-model's layer dispatch through the metal kernels | spark-model currently has CUDA-specific layer impls; a `MetalQwen35Model` parallel implementation is the next big lift |
 | Qwen3.5-VL-specific weight loader handling MLX-int8 + vision_tower | Currently routes to existing `Qwen3VLWeightLoader` via `is_qwen3_vl()` detection — exact tensor-name handling for the MLX-quant trunk is the gap |
-| Token-level parity vs `mlx_lm.generate` reference | Run greedy decode of "The capital of France is" on both Atlas Metal + MLX-LM; first ≥5 tokens must match |
+| Token-level parity vs `mlx_lm.generate` reference | Run greedy decode of "The capital of France is" on both Avarok Metal + MLX-LM; first ≥5 tokens must match |
 EOF

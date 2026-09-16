@@ -127,7 +127,7 @@ runs:
         # file without the allowlist, so "the values are closed-set" is not a
         # property this function may assume about its own arguments.
         emit() {  # status, path, depth, reason
-          local d="__ATLAS_EOF_$RANDOM$RANDOM"
+          local d="__AVAROK_EOF_$RANDOM$RANDOM"
           {
             printf 'status<<%s\n%s\n%s\n' "$d" "$1" "$d"
             printf 'path<<%s\n%s\n%s\n'   "$d" "$2" "$d"

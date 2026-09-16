@@ -14,7 +14,7 @@ use super::batch_kernel::{
 /// (chunk_len, chunk_start, is_last_chunk)
 fn s(chunk_len: usize, chunk_start: usize, is_last: bool) -> (usize, usize, usize, bool) {
     // eff == chunk_len: the conservative charge used when no prefix hit is
-    // proven, i.e. exactly the pre-`ATLAS_Q12_EFFECTIVE_ARENA` behaviour.
+    // proven, i.e. exactly the pre-`AVAROK_Q12_EFFECTIVE_ARENA` behaviour.
     (chunk_len, chunk_len, chunk_start, is_last)
 }
 
@@ -457,7 +457,7 @@ fn effective_charge_rejects_zero_length_stream() {
 /// test passed the bool directly. This test fails under that sabotage.
 #[test]
 fn mistral_config_is_rejected_as_mla() {
-    let mut cfg = atlas_core::config::ModelConfig::qwen3_next_80b_nvfp4();
+    let mut cfg = avarok_core::config::ModelConfig::qwen3_next_80b_nvfp4();
     // Non-MLA baseline: the derivation says no, and an otherwise-eligible
     // batch is admitted — proving the rejection below comes from MLA alone.
     assert!(!config_is_mla(&cfg));

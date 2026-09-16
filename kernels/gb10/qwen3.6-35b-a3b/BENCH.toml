@@ -2,7 +2,7 @@
 #
 # Sibling of MODEL.toml so the numbers sit beside the thing they describe;
 # hardware and model are implied by the path and cannot disagree with the
-# contents. Read by `atlas_plugin::gate::bench`.
+# contents. Read by `avarok_plugin::gate::bench`.
 #
 # Thresholds are per CHECKPOINT, not per model: two checkpoints of one model
 # can differ by several BFCL points, so they cannot share a bar.
@@ -172,7 +172,7 @@ and a 251-sample shard sits inside it with more room, so the aggregate is expect
 above the whole-draw number, not below it. ★ RE-CUT 2026-09-14 (owner decision, issue #1083, \
 discussion #1084): overall 86.50 -> 84.56, normalized 86.90 -> 85.77 — the first sharded \
 measurement, 84.96/86.17 at 45cd3b1550, minus the 0.40 band. The reason is RECORDED, as \
-this note demands: until #1043/#1071 Atlas sent this checkpoint its tool prompt TWICE (the \
+this note demands: until #1043/#1071 Avarok sent this checkpoint its tool prompt TWICE (the \
 template's and its own injected one) and the duplicate was worth +1.5 on the aggregate, \
 +2.8 on shard c — proven by a same-node control, 45cd3b1550 with only #1071 reverted, \
 scoring shard c 87.60/87.49 to the hundredth of the pre-#1071 record. Duplicating a prompt \
@@ -335,7 +335,7 @@ unpublished as of 2026-08-13: mlcommons/endpoints@7935df4 ships an empty dataset
 its README says "MLCommons storage (link TBD)". No run has ever happened, so there are NO \
 metrics here and none may be guessed in. The scorer is a Rust port of the upstream inline \
 scorer at that same commit, pinned by executed-upstream parity fixtures \
-(crates/atlas-plugin/assets/mlperf-agentic/parity_fixtures.json). || CHECKPOINT CAVEAT: \
+(crates/avarok-plugin/assets/mlperf-agentic/parity_fixtures.json). || CHECKPOINT CAVEAT: \
 MLCommons specifies Qwen/Qwen3.6-35B-A3B (BF16). This entry serves the official FP8 \
 sibling -- rules-legal quantization under MLPerf closed-division 8.1, but NOT the named \
 checkpoint, and its accuracy validity is unproven until the official three-part gate is \
@@ -376,7 +376,7 @@ status = "measured"
 note = """\
 SSM State Poisoning Gate — mandatory since 2026-08-11. Replays a fixed 4-turn \
 script 12 times against one prefix-cached server at temperature 0 and demands \
-byte-identical transcripts every round. Atlas is bitwise-deterministic at batch \
+byte-identical transcripts every round. Avarok is bitwise-deterministic at batch \
 1, so ANY divergence is accumulated engine-state corruption — the exact class \
 the batch4 stack shipped (Marconi SSM-snapshot restore poisoned runs 8/9 of the \
 agentic gate into early-EOS). It is REQUIRED, not a promotion candidate, \

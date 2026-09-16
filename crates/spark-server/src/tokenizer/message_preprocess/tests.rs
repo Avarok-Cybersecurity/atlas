@@ -181,7 +181,7 @@ fn render_holo_model_template(messages: &[Value], enable_thinking: bool) -> Stri
     // The Holo template is the model's OWN, raw transformers jinja —
     // so it MUST go through the same conversion the production loader
     // applies (proving we render off the model template, not a
-    // pre-massaged Atlas override).
+    // pre-massaged Avarok override).
     let converted = super::super::jinja_helpers::convert_python_jinja_to_minijinja(&raw);
     let env = super::super::jinja_helpers::build_jinja_env(&converted).expect("template compiles");
     let tmpl = env.get_template("chat").unwrap();

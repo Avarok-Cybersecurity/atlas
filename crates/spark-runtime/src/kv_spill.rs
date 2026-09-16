@@ -121,7 +121,7 @@ mod tests {
 
     fn temp_dir() -> PathBuf {
         std::env::temp_dir().join(format!(
-            "atlas_spill_test_{}",
+            "avarok_spill_test_{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -237,7 +237,7 @@ mod dir_cleanup_tests {
         // strands one empty directory per server start, forever. 28 had
         // collected on the test box before this was noticed.
         let dir = std::env::temp_dir().join(format!(
-            "atlas_spill_cleanup_{}_{:?}",
+            "avarok_spill_cleanup_{}_{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -254,7 +254,7 @@ mod dir_cleanup_tests {
         // `remove_dir` refuses a non-empty directory, which is the behaviour to
         // want: anything not ours is not ours to delete.
         let dir = std::env::temp_dir().join(format!(
-            "atlas_spill_shared_{}_{:?}",
+            "avarok_spill_shared_{}_{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

@@ -1,4 +1,4 @@
-# Atlas LoRA — status report (2026-07-06)
+# Avarok LoRA — status report (2026-07-06)
 
 Where the LoRA effort stands on `feat/streaming-experts-mvp` (PR #9): what's built,
 what's validated live on GB10, the concurrency benchmark, the known cut lines, and

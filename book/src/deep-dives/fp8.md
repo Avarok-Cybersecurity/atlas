@@ -1,10 +1,10 @@
 # FP8 Native Serving
 
-FP8 is the second-most-common quantization format in Atlas after NVFP4. It's also the format where the most recent engineering work has landed — Qwen3.6 ships FP8-native, Nemotron's checkpoints are FP8, and Atlas now runs them end-to-end without a BF16 upcast on the critical paths.
+FP8 is the second-most-common quantization format in Avarok after NVFP4. It's also the format where the most recent engineering work has landed — Qwen3.6 ships FP8-native, Nemotron's checkpoints are FP8, and Avarok now runs them end-to-end without a BF16 upcast on the critical paths.
 
 ## The two FP8 checkpoint shapes
 
-Atlas sees two layouts on disk, both handled by the format modules under `spark-model/src/quant_format/`:
+Avarok sees two layouts on disk, both handled by the format modules under `spark-model/src/quant_format/`:
 
 1. **Per-tensor scaled** — `weight` (FP8 E4M3 bytes) + `weight_scale` (one `f32` scalar per tensor). Common in vLLM-exported checkpoints.
 2. **Block-scaled** — `weight` (FP8 E4M3) + `weight_scale_inv` (BF16, one scale per `block_size × block_size` tile, typically `128 × 128`). Used by `compressed-tensors` FP8 checkpoints from Qwen and Nemotron.
@@ -15,7 +15,7 @@ Per-tensor scaled checkpoints can be read as a degenerate block case (`block_siz
 
 E4M3 is `sign(1) | exp(4) | mantissa(3)`, bias 7. Finite range is `[-448, +448]`. There is no infinity encoding; `0xFF` / `0x7F` are NaNs. The per-tensor scale maps the activation's dynamic range into E4M3's representable window.
 
-Atlas ships a 256-entry `FP8_E4M3_LUT` in `atlas-core/src/numeric.rs` for CPU sanity checks and scale-inversion arithmetic at weight-load time. That module is also where the `f32_to_bf16` round-to-nearest-even cast lives, byte-exact against PyTorch's `float32 → bfloat16`. The GPU hot path does not use the LUT — it uses the PTX instruction `cvt.rn.bf16.e4m3` (FP8 → BF16 on the fragment boundary), which is available on SM121 unlike the NVFP4 instruction.
+Avarok ships a 256-entry `FP8_E4M3_LUT` in `avarok-core/src/numeric.rs` for CPU sanity checks and scale-inversion arithmetic at weight-load time. That module is also where the `f32_to_bf16` round-to-nearest-even cast lives, byte-exact against PyTorch's `float32 → bfloat16`. The GPU hot path does not use the LUT — it uses the PTX instruction `cvt.rn.bf16.e4m3` (FP8 → BF16 on the fragment boundary), which is available on SM121 unlike the NVFP4 instruction.
 
 ## Native FP8 vs dequant-to-BF16
 
@@ -33,7 +33,7 @@ Typical deployment: `--kv-cache-dtype fp8 --fp8-kv-calibration-tokens 256`. 256 
 
 ## The Qwen3.6 FP8 story
 
-Qwen3.6-35B-A3B is FP8-native: weights, KV, MTP head, vision tower all FP8. Atlas's support here was a sequence of fixes logged across several bug sweeps:
+Qwen3.6-35B-A3B is FP8-native: weights, KV, MTP head, vision tower all FP8. Avarok's support here was a sequence of fixes logged across several bug sweeps:
 
 - **FP8 weight loading for native MTP** (wave-6) — the NVFP4 MTP loader was force-BF16 when `ignore_modules` listed `mtp.*`; fixed to fall through to FP8 dequant when the scales were BF16-block rather than NVFP4-group.
 - **FP8 prefill shared-experts allreduce reorder** (wave-6) — the shared-expert path was all-reducing FP8 activations across EP=2 *before* the final BF16 downcast, which silently dropped precision. Reordered so the allreduce sees BF16.
@@ -69,13 +69,13 @@ The full list:
 | `turbo4` | 0.5 | 4-bit WHT + Lloyd-Max — ~2× lower MSE than NVFP4 at same bit rate |
 | `turbo8` | 1 | WHT + FP8 — outlier-resistant FP8 |
 
-The Turbo family is Atlas-specific: Walsh-Hadamard rotates out the outlier structure typical of transformer K/V activations before quantizing with an optimally-placed codebook. For the same bit count, turbo4 gives measurably lower per-token error than NVFP4 on models with large RMSNorm weights. It is purely additive — you opt in via `--kv-cache-dtype turbo4`; the NVFP4 path is unchanged. See `docs/turboquant-plus.md`.
+The Turbo family is Avarok-specific: Walsh-Hadamard rotates out the outlier structure typical of transformer K/V activations before quantizing with an optimally-placed codebook. For the same bit count, turbo4 gives measurably lower per-token error than NVFP4 on models with large RMSNorm weights. It is purely additive — you opt in via `--kv-cache-dtype turbo4`; the NVFP4 path is unchanged. See `docs/turboquant-plus.md`.
 
 ## Files to read
 
 - `kernels/gb10/<model>/fp8/` — per-model FP8 kernel sets (Qwen3.6 has its own leaf).
 - `kernels/gb10/<model>/<quant>/paged_decode_attn_fp8.cu` — native FP8 KV attention.
-- `crates/atlas-core/src/numeric.rs` — the FP8 E4M3 LUT and the f32 → BF16 RNE cast, with the PyTorch-parity vectors.
+- `crates/avarok-core/src/numeric.rs` — the FP8 E4M3 LUT and the f32 → BF16 RNE cast, with the PyTorch-parity vectors.
 - `crates/spark-model/src/quant_format/` — per-format descriptors and runtime dispatch.
 - `crates/spark-runtime/src/kv_cache.rs` — `KvCacheDtype::Fp8` sizing + calibration plumbing.
 - `docs/adr/0004-nvfp4-fp8-quantization.md` — the authoritative quantization decision record.

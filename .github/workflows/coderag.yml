@@ -1,14 +1,14 @@
 name: CodeRAG
 
-# Builds the "Ask the codebase" corpus. Every merge to main that touches Atlas
+# Builds the "Ask the codebase" corpus. Every merge to main that touches Avarok
 # source chunks + embeds the changed code (incremental against the previously
 # published corpus, so steady state embeds only what moved) and publishes a
 # self-verifying lattice-jsonl corpus — gzip twin + metadata — for the website
 # to load into an in-browser lattice-db.
 #
 # Stable URLs this produces (no TTL, fetchable directly from the browser):
-#   https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.gz
-#   https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.meta.json
+#   https://avarok-cybersecurity.github.io/avarok/coderag/avarok-coderag.jsonl.gz
+#   https://avarok-cybersecurity.github.io/avarok/coderag/avarok-coderag.jsonl.meta.json
 #
 # Why gh-pages and not the alternatives: GitHub Pages serves with
 # `Access-Control-Allow-Origin: *` (verified 2026-08-16), so the site can fetch
@@ -81,13 +81,13 @@ jobs:
         continue-on-error: true
         uses: Avarok-Cybersecurity/AutoRepoRAG@f35cc9788aab8cd863d6af24a368d4a2fa37be93 # v0.1.1
         with:
-          collection: atlas-coderag
+          collection: avarok-coderag
           # output-name is a basename: the action writes <name>.jsonl,
-          # <name>.jsonl.gz and <name>.meta.json. "atlas-coderag.jsonl" is
-          # deliberate — it makes the metadata file atlas-coderag.jsonl.meta.json,
+          # <name>.jsonl.gz and <name>.meta.json. "avarok-coderag.jsonl" is
+          # deliberate — it makes the metadata file avarok-coderag.jsonl.meta.json,
           # the exact name the site's OPFS preflight fetches; the doubled
           # .jsonl.jsonl(.gz) intermediates are renamed at publish below.
-          output-name: atlas-coderag.jsonl
+          output-name: avarok-coderag.jsonl
           paths: |
             crates/**/*.rs
             crates/**/*.cu
@@ -121,7 +121,7 @@ jobs:
           embedding-api-key: ${{ secrets.OPENROUTER_API_KEY_FREE }}
           # The first run 404s here -> the action warns and does a full embed.
           # Every later run reuses vectors for unchanged chunks by chunk_hash.
-          previous-corpus-url: https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.gz
+          previous-corpus-url: https://avarok-cybersecurity.github.io/avarok/coderag/avarok-coderag.jsonl.gz
           # Slower than the action's 2500ms default: OPENROUTER_API_KEY_FREE
           # rides the free tier, and a merge-time batch job has no latency SLO.
           request-interval-ms: '3000'
@@ -130,7 +130,7 @@ jobs:
         if: steps.rag.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: atlas-coderag
+          name: avarok-coderag
           path: |
             ${{ steps.rag.outputs.corpus-gz-file }}
             ${{ steps.rag.outputs.metadata-file }}
@@ -168,15 +168,15 @@ jobs:
           set -euo pipefail
           site="$(mktemp -d)"
           mkdir -p "$site/coderag"
-          cp "$CORPUS_GZ" "$site/coderag/atlas-coderag.jsonl.gz"
+          cp "$CORPUS_GZ" "$site/coderag/avarok-coderag.jsonl.gz"
           # One meta file, two published names, one per consumer:
-          #   atlas-coderag.jsonl.meta.json — the site's OPFS preflight name.
-          #   atlas-coderag.meta.json       — the sibling AutoRepoRAG derives
+          #   avarok-coderag.jsonl.meta.json — the site's OPFS preflight name.
+          #   avarok-coderag.meta.json       — the sibling AutoRepoRAG derives
           #     from previous-corpus-url (strip .gz, strip .jsonl, append
           #     .meta.json); without it the model check 404s and every run
           #     falls back to a full re-embed.
-          cp "$META" "$site/coderag/atlas-coderag.jsonl.meta.json"
-          cp "$META" "$site/coderag/atlas-coderag.meta.json"
+          cp "$META" "$site/coderag/avarok-coderag.jsonl.meta.json"
+          cp "$META" "$site/coderag/avarok-coderag.meta.json"
           touch "$site/.nojekyll"
           cd "$site"
           git init -q -b gh-pages
@@ -210,5 +210,5 @@ jobs:
           else
             echo "### CodeRAG corpus published" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Live at https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.gz for commit \`$SHA\`." >> "$GITHUB_STEP_SUMMARY"
+            echo "Live at https://avarok-cybersecurity.github.io/avarok/coderag/avarok-coderag.jsonl.gz for commit \`$SHA\`." >> "$GITHUB_STEP_SUMMARY"
           fi

@@ -207,7 +207,7 @@ fn parse_shard_header(
         // be published to RDMA peers as a remote read length, so it must not
         // survive staging.
         let span =
-            atlas_core::safetensors::tensor_span(name, &info["data_offsets"], data_start, file_len)
+            avarok_core::safetensors::tensor_span(name, &info["data_offsets"], data_start, file_len)
                 .with_context(|| format!("{}", path.display()))?;
         out.push(WeightTensorRecord {
             name: name.clone(),

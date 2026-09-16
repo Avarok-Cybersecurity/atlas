@@ -30,7 +30,7 @@ pub(super) enum OpenBlock {
     None,
     /// A text content block is open at index `block_idx`.
     Text,
-    /// A `thinking` content block is open at index `block_idx`. Atlas
+    /// A `thinking` content block is open at index `block_idx`. Avarok
     /// emits its reasoning trace as `delta.reasoning_content` chunks
     /// inside the OpenAI stream; we map those to Anthropic's
     /// `content_block_start{type:"thinking"}` + `content_block_delta

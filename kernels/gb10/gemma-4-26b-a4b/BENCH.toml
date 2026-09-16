@@ -1,7 +1,7 @@
 # Benchmarks for this model, and the thresholds its gate records must meet.
 #
 # Sibling of MODEL.toml so the numbers sit beside the thing they describe;
-# hardware and model are implied by the path. Read by `atlas_plugin::gate::bench`.
+# hardware and model are implied by the path. Read by `avarok_plugin::gate::bench`.
 #
 # Deliberately OUTSIDE the closure hash, so ratcheting a threshold does not
 # invalidate the record that justified the ratchet.

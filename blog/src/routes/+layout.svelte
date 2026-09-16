@@ -2,7 +2,7 @@
   import '../app.css';
   import { page } from '$app/state';
   import ChevronField from '$shared/components/ChevronField.svelte';
-  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
+  import AvarokLockup from '$shared/components/AvarokLockup.svelte';
   import Header from '$lib/components/Header.svelte';
   import Footer from '$lib/components/Footer.svelte';
   import { SITE, blog, cleanSlug } from '$lib/content.js';
@@ -33,7 +33,7 @@
 <ChevronField />
 
 <!-- The brand vector, defined once and <use>d by every lockup below. -->
-<AtlasLockup kind="defs" />
+<AvarokLockup kind="defs" />
 
 <a class="skip" href="#main">Skip to content</a>
 <div class="page">

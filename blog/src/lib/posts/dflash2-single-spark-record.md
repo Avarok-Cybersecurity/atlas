@@ -104,7 +104,7 @@ output above. The full flag list and per-flag rationale are in the PR.
 Serve line:
 
 ```bash
-ATLAS_TARGET_MODEL=qwen3.8-27b ./target/release/spark serve <Qwen3.8-27B-NVFP4> \
+AVAROK_TARGET_MODEL=qwen3.8-27b ./target/release/spark serve <Qwen3.8-27B-NVFP4> \
   --dflash --draft-model <Qwen3.8-27B-DFlash2> \
   --max-seq-len 4096 --gpu-memory-utilization 0.55 --max-batch-size 1 \
   --ssm-cache-slots 0 --kv-cache-dtype bf16 --scheduling-policy slai \

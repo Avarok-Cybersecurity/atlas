@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Generate a tiny PEFT-format LoRA adapter for Hcompany/Holo-3.1-0.8B (Atlas LoRA MVP test fixture).
+"""Generate a tiny PEFT-format LoRA adapter for Hcompany/Holo-3.1-0.8B (Avarok LoRA MVP test fixture).
 
 Builds lora_A [r, in] / lora_B [out, r] tensors (NONZERO B — small normal init, unlike PEFT's
 default B=0) for k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj on ONLY the 6
@@ -10,7 +10,7 @@ q_proj is deliberately excluded: attn_output_gate=true makes it gated/interleave
 Per-module shapes are read from the base checkpoint's safetensors header (never assumed) and
 asserted against the expected hidden=1024 / kv=512 / q-out=2048 / intermediate=3584 geometry.
 
-Output (default /home/ms/atlas/.claude/worktrees/lora-mvp-e0877873/test_data/lora-holo-tiny):
+Output (default /home/ms/avarok/.claude/worktrees/lora-mvp-e0877873/test_data/lora-holo-tiny):
   adapter_model.safetensors   BF16 A/B pairs, PEFT save_pretrained key format
   adapter_config.json         written by peft.LoraConfig.save_pretrained (guaranteed PEFT-valid)
 
@@ -19,7 +19,7 @@ Key style (--key-style):
                  -- what PEFT 0.19.1 actually saves when wrapping Qwen3_5ForConditionalGeneration
                  (verified via get_peft_model_state_dict on the real class, meta device)
   text           base_model.model.model.layers.{i}....lora_A.weight
-                 -- the text-tower-only form; the Atlas remapper must accept both
+                 -- the text-tower-only form; the Avarok remapper must accept both
 
 Run:
   /home/ms/nemotron-diffusion-playground/.venv/bin/python scripts/gen_lora_adapter.py
@@ -69,7 +69,7 @@ def main() -> None:
     ap.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("/home/ms/atlas/.claude/worktrees/lora-mvp-e0877873/test_data/lora-holo-tiny"),
+        default=Path("/home/ms/avarok/.claude/worktrees/lora-mvp-e0877873/test_data/lora-holo-tiny"),
     )
     ap.add_argument("--rank", type=int, default=8)
     ap.add_argument("--alpha", type=float, default=16.0)

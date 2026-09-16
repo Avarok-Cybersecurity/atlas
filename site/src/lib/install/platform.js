@@ -73,7 +73,7 @@ export function installCommandFor(os, urls) {
       prompt: 'PS>',
       // Where install.ps1 actually puts it. Printed beside the command, so a
       // caller cannot narrate a path the installer never writes to.
-      installDir: '%LOCALAPPDATA%\\Programs\\atlasctl',
+      installDir: '%LOCALAPPDATA%\\Programs\\avarokctl',
       note: 'Needs Docker Desktop to run a model; the control page works without it.',
     };
   }

@@ -21297,23 +21297,23 @@ mod loaded {
             let cuArray3DCreate_v2 = __library
                 .get(b"cuArray3DCreate_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuArray3DGetDescriptor_v2 = __library
                 .get(b"cuArray3DGetDescriptor_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuArrayCreate_v2 = __library
                 .get(b"cuArrayCreate_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuArrayDestroy = __library
                 .get(b"cuArrayDestroy\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuArrayGetDescriptor_v2 = __library
                 .get(b"cuArrayGetDescriptor_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11060",
                 feature = "cuda-11070",
@@ -21333,15 +21333,15 @@ mod loaded {
             let cuArrayGetMemoryRequirements = __library
                 .get(b"cuArrayGetMemoryRequirements\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuArrayGetPlane = __library
                 .get(b"cuArrayGetPlane\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuArrayGetSparseProperties = __library
                 .get(b"cuArrayGetSparseProperties\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12010",
                 feature = "cuda-12020",
@@ -21357,7 +21357,7 @@ mod loaded {
             let cuCoredumpGetAttribute = __library
                 .get(b"cuCoredumpGetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12010",
                 feature = "cuda-12020",
@@ -21373,7 +21373,7 @@ mod loaded {
             let cuCoredumpGetAttributeGlobal = __library
                 .get(b"cuCoredumpGetAttributeGlobal\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12010",
                 feature = "cuda-12020",
@@ -21389,7 +21389,7 @@ mod loaded {
             let cuCoredumpSetAttribute = __library
                 .get(b"cuCoredumpSetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12010",
                 feature = "cuda-12020",
@@ -21405,11 +21405,11 @@ mod loaded {
             let cuCoredumpSetAttributeGlobal = __library
                 .get(b"cuCoredumpSetAttributeGlobal\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxAttach = __library
                 .get(b"cuCtxAttach\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -21429,7 +21429,7 @@ mod loaded {
             let cuCtxCreate_v2 = __library
                 .get(b"cuCtxCreate_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -21449,23 +21449,23 @@ mod loaded {
             let cuCtxCreate_v3 = __library
                 .get(b"cuCtxCreate_v3\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxDestroy_v2 = __library
                 .get(b"cuCtxDestroy_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxDetach = __library
                 .get(b"cuCtxDetach\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxDisablePeerAccess = __library
                 .get(b"cuCtxDisablePeerAccess\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxEnablePeerAccess = __library
                 .get(b"cuCtxEnablePeerAccess\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -21478,19 +21478,19 @@ mod loaded {
             let cuCtxFromGreenCtx = __library
                 .get(b"cuCtxFromGreenCtx\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxGetApiVersion = __library
                 .get(b"cuCtxGetApiVersion\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxGetCacheConfig = __library
                 .get(b"cuCtxGetCacheConfig\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxGetCurrent = __library
                 .get(b"cuCtxGetCurrent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -21503,24 +21503,24 @@ mod loaded {
             let cuCtxGetDevResource = __library
                 .get(b"cuCtxGetDevResource\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxGetDevice = __library
                 .get(b"cuCtxGetDevice\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13000", feature = "cuda-13010"))]
             let cuCtxGetDevice_v2 = __library
                 .get(b"cuCtxGetDevice_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxGetExecAffinity = __library
                 .get(b"cuCtxGetExecAffinity\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxGetFlags = __library
                 .get(b"cuCtxGetFlags\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -21537,27 +21537,27 @@ mod loaded {
             let cuCtxGetId = __library
                 .get(b"cuCtxGetId\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxGetLimit = __library
                 .get(b"cuCtxGetLimit\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxGetSharedMemConfig = __library
                 .get(b"cuCtxGetSharedMemConfig\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxGetStreamPriorityRange = __library
                 .get(b"cuCtxGetStreamPriorityRange\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxPopCurrent_v2 = __library
                 .get(b"cuCtxPopCurrent_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxPushCurrent_v2 = __library
                 .get(b"cuCtxPushCurrent_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12050",
                 feature = "cuda-12060",
@@ -21569,19 +21569,19 @@ mod loaded {
             let cuCtxRecordEvent = __library
                 .get(b"cuCtxRecordEvent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxResetPersistingL2Cache = __library
                 .get(b"cuCtxResetPersistingL2Cache\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxSetCacheConfig = __library
                 .get(b"cuCtxSetCacheConfig\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxSetCurrent = __library
                 .get(b"cuCtxSetCurrent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12010",
                 feature = "cuda-12020",
@@ -21597,24 +21597,24 @@ mod loaded {
             let cuCtxSetFlags = __library
                 .get(b"cuCtxSetFlags\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxSetLimit = __library
                 .get(b"cuCtxSetLimit\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxSetSharedMemConfig = __library
                 .get(b"cuCtxSetSharedMemConfig\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuCtxSynchronize = __library
                 .get(b"cuCtxSynchronize\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13000", feature = "cuda-13010"))]
             let cuCtxSynchronize_v2 = __library
                 .get(b"cuCtxSynchronize_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12050",
                 feature = "cuda-12060",
@@ -21626,15 +21626,15 @@ mod loaded {
             let cuCtxWaitEvent = __library
                 .get(b"cuCtxWaitEvent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDestroyExternalMemory = __library
                 .get(b"cuDestroyExternalMemory\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDestroyExternalSemaphore = __library
                 .get(b"cuDestroyExternalSemaphore\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -21647,12 +21647,12 @@ mod loaded {
             let cuDevResourceGenerateDesc = __library
                 .get(b"cuDevResourceGenerateDesc\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13010"))]
             let cuDevSmResourceSplit = __library
                 .get(b"cuDevSmResourceSplit\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -21664,40 +21664,40 @@ mod loaded {
             let cuDevSmResourceSplitByCount = __library
                 .get(b"cuDevSmResourceSplitByCount\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13010"))]
             let cuDevSmResourceSplitByCount = __library
                 .get(b"cuDevSmResourceSplitByCount\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceCanAccessPeer = __library
                 .get(b"cuDeviceCanAccessPeer\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceComputeCapability = __library
                 .get(b"cuDeviceComputeCapability\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGet = __library
                 .get(b"cuDeviceGet\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetAttribute = __library
                 .get(b"cuDeviceGetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetByPCIBusId = __library
                 .get(b"cuDeviceGetByPCIBusId\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetCount = __library
                 .get(b"cuDeviceGetCount\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetDefaultMemPool = __library
                 .get(b"cuDeviceGetDefaultMemPool\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -21710,53 +21710,53 @@ mod loaded {
             let cuDeviceGetDevResource = __library
                 .get(b"cuDeviceGetDevResource\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetExecAffinitySupport = __library
                 .get(b"cuDeviceGetExecAffinitySupport\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetGraphMemAttribute = __library
                 .get(b"cuDeviceGetGraphMemAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13000", feature = "cuda-13010"))]
             let cuDeviceGetHostAtomicCapabilities = __library
                 .get(b"cuDeviceGetHostAtomicCapabilities\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetLuid = __library
                 .get(b"cuDeviceGetLuid\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetMemPool = __library
                 .get(b"cuDeviceGetMemPool\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetName = __library
                 .get(b"cuDeviceGetName\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13000", feature = "cuda-13010"))]
             let cuDeviceGetP2PAtomicCapabilities = __library
                 .get(b"cuDeviceGetP2PAtomicCapabilities\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetP2PAttribute = __library
                 .get(b"cuDeviceGetP2PAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetPCIBusId = __library
                 .get(b"cuDeviceGetPCIBusId\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetProperties = __library
                 .get(b"cuDeviceGetProperties\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetTexture1DLinearMaxWidth = __library
                 .get(b"cuDeviceGetTexture1DLinearMaxWidth\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -21776,35 +21776,35 @@ mod loaded {
             let cuDeviceGetUuid = __library
                 .get(b"cuDeviceGetUuid\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGetUuid_v2 = __library
                 .get(b"cuDeviceGetUuid_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceGraphMemTrim = __library
                 .get(b"cuDeviceGraphMemTrim\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDevicePrimaryCtxGetState = __library
                 .get(b"cuDevicePrimaryCtxGetState\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDevicePrimaryCtxRelease_v2 = __library
                 .get(b"cuDevicePrimaryCtxRelease_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDevicePrimaryCtxReset_v2 = __library
                 .get(b"cuDevicePrimaryCtxReset_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDevicePrimaryCtxRetain = __library
                 .get(b"cuDevicePrimaryCtxRetain\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDevicePrimaryCtxSetFlags_v2 = __library
                 .get(b"cuDevicePrimaryCtxSetFlags_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -21817,19 +21817,19 @@ mod loaded {
             let cuDeviceRegisterAsyncNotification = __library
                 .get(b"cuDeviceRegisterAsyncNotification\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceSetGraphMemAttribute = __library
                 .get(b"cuDeviceSetGraphMemAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceSetMemPool = __library
                 .get(b"cuDeviceSetMemPool\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDeviceTotalMem_v2 = __library
                 .get(b"cuDeviceTotalMem_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -21842,19 +21842,19 @@ mod loaded {
             let cuDeviceUnregisterAsyncNotification = __library
                 .get(b"cuDeviceUnregisterAsyncNotification\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuDriverGetVersion = __library
                 .get(b"cuDriverGetVersion\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuEventCreate = __library
                 .get(b"cuEventCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuEventDestroy_v2 = __library
                 .get(b"cuEventDestroy_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -21874,7 +21874,7 @@ mod loaded {
             let cuEventElapsedTime = __library
                 .get(b"cuEventElapsedTime\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12080",
                 feature = "cuda-12090",
@@ -21884,43 +21884,43 @@ mod loaded {
             let cuEventElapsedTime_v2 = __library
                 .get(b"cuEventElapsedTime_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuEventQuery = __library
                 .get(b"cuEventQuery\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuEventRecord = __library
                 .get(b"cuEventRecord\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuEventRecordWithFlags = __library
                 .get(b"cuEventRecordWithFlags\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuEventSynchronize = __library
                 .get(b"cuEventSynchronize\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuExternalMemoryGetMappedBuffer = __library
                 .get(b"cuExternalMemoryGetMappedBuffer\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuExternalMemoryGetMappedMipmappedArray = __library
                 .get(b"cuExternalMemoryGetMappedMipmappedArray\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuFlushGPUDirectRDMAWrites = __library
                 .get(b"cuFlushGPUDirectRDMAWrites\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuFuncGetAttribute = __library
                 .get(b"cuFuncGetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuFuncGetModule = __library
                 .get(b"cuFuncGetModule\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12030",
                 feature = "cuda-12040",
@@ -21934,7 +21934,7 @@ mod loaded {
             let cuFuncGetName = __library
                 .get(b"cuFuncGetName\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -21947,7 +21947,7 @@ mod loaded {
             let cuFuncGetParamInfo = __library
                 .get(b"cuFuncGetParamInfo\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -21960,7 +21960,7 @@ mod loaded {
             let cuFuncIsLoaded = __library
                 .get(b"cuFuncIsLoaded\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -21973,39 +21973,39 @@ mod loaded {
             let cuFuncLoad = __library
                 .get(b"cuFuncLoad\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuFuncSetAttribute = __library
                 .get(b"cuFuncSetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuFuncSetBlockShape = __library
                 .get(b"cuFuncSetBlockShape\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuFuncSetCacheConfig = __library
                 .get(b"cuFuncSetCacheConfig\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuFuncSetSharedMemConfig = __library
                 .get(b"cuFuncSetSharedMemConfig\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuFuncSetSharedSize = __library
                 .get(b"cuFuncSetSharedSize\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGetErrorName = __library
                 .get(b"cuGetErrorName\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGetErrorString = __library
                 .get(b"cuGetErrorString\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGetExportTable = __library
                 .get(b"cuGetExportTable\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -22016,7 +22016,7 @@ mod loaded {
             let cuGetProcAddress = __library
                 .get(b"cuGetProcAddress\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -22033,7 +22033,7 @@ mod loaded {
             let cuGetProcAddress_v2 = __library
                 .get(b"cuGetProcAddress_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11070",
                 feature = "cuda-11080",
@@ -22052,11 +22052,11 @@ mod loaded {
             let cuGraphAddBatchMemOpNode = __library
                 .get(b"cuGraphAddBatchMemOpNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphAddChildGraphNode = __library
                 .get(b"cuGraphAddChildGraphNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -22076,7 +22076,7 @@ mod loaded {
             let cuGraphAddDependencies = __library
                 .get(b"cuGraphAddDependencies\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12030",
                 feature = "cuda-12040",
@@ -22090,31 +22090,31 @@ mod loaded {
             let cuGraphAddDependencies_v2 = __library
                 .get(b"cuGraphAddDependencies_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphAddEmptyNode = __library
                 .get(b"cuGraphAddEmptyNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphAddEventRecordNode = __library
                 .get(b"cuGraphAddEventRecordNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphAddEventWaitNode = __library
                 .get(b"cuGraphAddEventWaitNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphAddExternalSemaphoresSignalNode = __library
                 .get(b"cuGraphAddExternalSemaphoresSignalNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphAddExternalSemaphoresWaitNode = __library
                 .get(b"cuGraphAddExternalSemaphoresWaitNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphAddHostNode = __library
                 .get(b"cuGraphAddHostNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -22125,7 +22125,7 @@ mod loaded {
             let cuGraphAddKernelNode = __library
                 .get(b"cuGraphAddKernelNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -22142,23 +22142,23 @@ mod loaded {
             let cuGraphAddKernelNode_v2 = __library
                 .get(b"cuGraphAddKernelNode_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphAddMemAllocNode = __library
                 .get(b"cuGraphAddMemAllocNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphAddMemFreeNode = __library
                 .get(b"cuGraphAddMemFreeNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphAddMemcpyNode = __library
                 .get(b"cuGraphAddMemcpyNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphAddMemsetNode = __library
                 .get(b"cuGraphAddMemsetNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12020",
                 feature = "cuda-12030",
@@ -22171,7 +22171,7 @@ mod loaded {
             let cuGraphAddNode = __library
                 .get(b"cuGraphAddNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12030",
                 feature = "cuda-12040",
@@ -22185,7 +22185,7 @@ mod loaded {
             let cuGraphAddNode_v2 = __library
                 .get(b"cuGraphAddNode_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11070",
                 feature = "cuda-11080",
@@ -22204,7 +22204,7 @@ mod loaded {
             let cuGraphBatchMemOpNodeGetParams = __library
                 .get(b"cuGraphBatchMemOpNodeGetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11070",
                 feature = "cuda-11080",
@@ -22223,15 +22223,15 @@ mod loaded {
             let cuGraphBatchMemOpNodeSetParams = __library
                 .get(b"cuGraphBatchMemOpNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphChildGraphNodeGetGraph = __library
                 .get(b"cuGraphChildGraphNodeGetGraph\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphClone = __library
                 .get(b"cuGraphClone\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12030",
                 feature = "cuda-12040",
@@ -22245,39 +22245,39 @@ mod loaded {
             let cuGraphConditionalHandleCreate = __library
                 .get(b"cuGraphConditionalHandleCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphCreate = __library
                 .get(b"cuGraphCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphDebugDotPrint = __library
                 .get(b"cuGraphDebugDotPrint\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphDestroy = __library
                 .get(b"cuGraphDestroy\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphDestroyNode = __library
                 .get(b"cuGraphDestroyNode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphEventRecordNodeGetEvent = __library
                 .get(b"cuGraphEventRecordNodeGetEvent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphEventRecordNodeSetEvent = __library
                 .get(b"cuGraphEventRecordNodeSetEvent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphEventWaitNodeGetEvent = __library
                 .get(b"cuGraphEventWaitNodeGetEvent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphEventWaitNodeSetEvent = __library
                 .get(b"cuGraphEventWaitNodeSetEvent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11070",
                 feature = "cuda-11080",
@@ -22296,31 +22296,31 @@ mod loaded {
             let cuGraphExecBatchMemOpNodeSetParams = __library
                 .get(b"cuGraphExecBatchMemOpNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphExecChildGraphNodeSetParams = __library
                 .get(b"cuGraphExecChildGraphNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphExecDestroy = __library
                 .get(b"cuGraphExecDestroy\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphExecEventRecordNodeSetEvent = __library
                 .get(b"cuGraphExecEventRecordNodeSetEvent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphExecEventWaitNodeSetEvent = __library
                 .get(b"cuGraphExecEventWaitNodeSetEvent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphExecExternalSemaphoresSignalNodeSetParams = __library
                 .get(b"cuGraphExecExternalSemaphoresSignalNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphExecExternalSemaphoresWaitNodeSetParams = __library
                 .get(b"cuGraphExecExternalSemaphoresWaitNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -22337,16 +22337,16 @@ mod loaded {
             let cuGraphExecGetFlags = __library
                 .get(b"cuGraphExecGetFlags\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13010"))]
             let cuGraphExecGetId = __library
                 .get(b"cuGraphExecGetId\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphExecHostNodeSetParams = __library
                 .get(b"cuGraphExecHostNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -22357,7 +22357,7 @@ mod loaded {
             let cuGraphExecKernelNodeSetParams = __library
                 .get(b"cuGraphExecKernelNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -22374,15 +22374,15 @@ mod loaded {
             let cuGraphExecKernelNodeSetParams_v2 = __library
                 .get(b"cuGraphExecKernelNodeSetParams_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphExecMemcpyNodeSetParams = __library
                 .get(b"cuGraphExecMemcpyNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphExecMemsetNodeSetParams = __library
                 .get(b"cuGraphExecMemsetNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12020",
                 feature = "cuda-12030",
@@ -22397,7 +22397,7 @@ mod loaded {
             let cuGraphExecNodeSetParams = __library
                 .get(b"cuGraphExecNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -22408,7 +22408,7 @@ mod loaded {
             let cuGraphExecUpdate = __library
                 .get(b"cuGraphExecUpdate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -22425,23 +22425,23 @@ mod loaded {
             let cuGraphExecUpdate_v2 = __library
                 .get(b"cuGraphExecUpdate_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphExternalSemaphoresSignalNodeGetParams = __library
                 .get(b"cuGraphExternalSemaphoresSignalNodeGetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphExternalSemaphoresSignalNodeSetParams = __library
                 .get(b"cuGraphExternalSemaphoresSignalNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphExternalSemaphoresWaitNodeGetParams = __library
                 .get(b"cuGraphExternalSemaphoresWaitNodeGetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphExternalSemaphoresWaitNodeSetParams = __library
                 .get(b"cuGraphExternalSemaphoresWaitNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -22461,7 +22461,7 @@ mod loaded {
             let cuGraphGetEdges = __library
                 .get(b"cuGraphGetEdges\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12030",
                 feature = "cuda-12040",
@@ -22475,32 +22475,32 @@ mod loaded {
             let cuGraphGetEdges_v2 = __library
                 .get(b"cuGraphGetEdges_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13010"))]
             let cuGraphGetId = __library
                 .get(b"cuGraphGetId\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphGetNodes = __library
                 .get(b"cuGraphGetNodes\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphGetRootNodes = __library
                 .get(b"cuGraphGetRootNodes\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphHostNodeGetParams = __library
                 .get(b"cuGraphHostNodeGetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphHostNodeSetParams = __library
                 .get(b"cuGraphHostNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphInstantiateWithFlags = __library
                 .get(b"cuGraphInstantiateWithFlags\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -22517,7 +22517,7 @@ mod loaded {
             let cuGraphInstantiateWithParams = __library
                 .get(b"cuGraphInstantiateWithParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -22528,15 +22528,15 @@ mod loaded {
             let cuGraphInstantiate_v2 = __library
                 .get(b"cuGraphInstantiate_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphKernelNodeCopyAttributes = __library
                 .get(b"cuGraphKernelNodeCopyAttributes\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphKernelNodeGetAttribute = __library
                 .get(b"cuGraphKernelNodeGetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -22547,7 +22547,7 @@ mod loaded {
             let cuGraphKernelNodeGetParams = __library
                 .get(b"cuGraphKernelNodeGetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -22564,11 +22564,11 @@ mod loaded {
             let cuGraphKernelNodeGetParams_v2 = __library
                 .get(b"cuGraphKernelNodeGetParams_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphKernelNodeSetAttribute = __library
                 .get(b"cuGraphKernelNodeSetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -22579,7 +22579,7 @@ mod loaded {
             let cuGraphKernelNodeSetParams = __library
                 .get(b"cuGraphKernelNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -22596,44 +22596,44 @@ mod loaded {
             let cuGraphKernelNodeSetParams_v2 = __library
                 .get(b"cuGraphKernelNodeSetParams_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphLaunch = __library
                 .get(b"cuGraphLaunch\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphMemAllocNodeGetParams = __library
                 .get(b"cuGraphMemAllocNodeGetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphMemFreeNodeGetParams = __library
                 .get(b"cuGraphMemFreeNodeGetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphMemcpyNodeGetParams = __library
                 .get(b"cuGraphMemcpyNodeGetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphMemcpyNodeSetParams = __library
                 .get(b"cuGraphMemcpyNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphMemsetNodeGetParams = __library
                 .get(b"cuGraphMemsetNodeGetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphMemsetNodeSetParams = __library
                 .get(b"cuGraphMemsetNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphNodeFindInClone = __library
                 .get(b"cuGraphNodeFindInClone\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13010"))]
             let cuGraphNodeGetContainingGraph = __library
                 .get(b"cuGraphNodeGetContainingGraph\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -22653,7 +22653,7 @@ mod loaded {
             let cuGraphNodeGetDependencies = __library
                 .get(b"cuGraphNodeGetDependencies\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12030",
                 feature = "cuda-12040",
@@ -22667,7 +22667,7 @@ mod loaded {
             let cuGraphNodeGetDependencies_v2 = __library
                 .get(b"cuGraphNodeGetDependencies_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -22687,7 +22687,7 @@ mod loaded {
             let cuGraphNodeGetDependentNodes = __library
                 .get(b"cuGraphNodeGetDependentNodes\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12030",
                 feature = "cuda-12040",
@@ -22701,7 +22701,7 @@ mod loaded {
             let cuGraphNodeGetDependentNodes_v2 = __library
                 .get(b"cuGraphNodeGetDependentNodes_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11060",
                 feature = "cuda-11070",
@@ -22721,21 +22721,21 @@ mod loaded {
             let cuGraphNodeGetEnabled = __library
                 .get(b"cuGraphNodeGetEnabled\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13010"))]
             let cuGraphNodeGetLocalId = __library
                 .get(b"cuGraphNodeGetLocalId\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13010"))]
             let cuGraphNodeGetToolsId = __library
                 .get(b"cuGraphNodeGetToolsId\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphNodeGetType = __library
                 .get(b"cuGraphNodeGetType\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11060",
                 feature = "cuda-11070",
@@ -22755,7 +22755,7 @@ mod loaded {
             let cuGraphNodeSetEnabled = __library
                 .get(b"cuGraphNodeSetEnabled\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12020",
                 feature = "cuda-12030",
@@ -22770,11 +22770,11 @@ mod loaded {
             let cuGraphNodeSetParams = __library
                 .get(b"cuGraphNodeSetParams\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphReleaseUserObject = __library
                 .get(b"cuGraphReleaseUserObject\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -22794,7 +22794,7 @@ mod loaded {
             let cuGraphRemoveDependencies = __library
                 .get(b"cuGraphRemoveDependencies\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12030",
                 feature = "cuda-12040",
@@ -22808,43 +22808,43 @@ mod loaded {
             let cuGraphRemoveDependencies_v2 = __library
                 .get(b"cuGraphRemoveDependencies_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphRetainUserObject = __library
                 .get(b"cuGraphRetainUserObject\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphUpload = __library
                 .get(b"cuGraphUpload\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphicsMapResources = __library
                 .get(b"cuGraphicsMapResources\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphicsResourceGetMappedMipmappedArray = __library
                 .get(b"cuGraphicsResourceGetMappedMipmappedArray\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphicsResourceGetMappedPointer_v2 = __library
                 .get(b"cuGraphicsResourceGetMappedPointer_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphicsResourceSetMapFlags_v2 = __library
                 .get(b"cuGraphicsResourceSetMapFlags_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphicsSubResourceGetMappedArray = __library
                 .get(b"cuGraphicsSubResourceGetMappedArray\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphicsUnmapResources = __library
                 .get(b"cuGraphicsUnmapResources\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuGraphicsUnregisterResource = __library
                 .get(b"cuGraphicsUnregisterResource\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -22857,7 +22857,7 @@ mod loaded {
             let cuGreenCtxCreate = __library
                 .get(b"cuGreenCtxCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -22870,7 +22870,7 @@ mod loaded {
             let cuGreenCtxDestroy = __library
                 .get(b"cuGreenCtxDestroy\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -22883,12 +22883,12 @@ mod loaded {
             let cuGreenCtxGetDevResource = __library
                 .get(b"cuGreenCtxGetDevResource\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13000", feature = "cuda-13010"))]
             let cuGreenCtxGetId = __library
                 .get(b"cuGreenCtxGetId\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -22901,7 +22901,7 @@ mod loaded {
             let cuGreenCtxRecordEvent = __library
                 .get(b"cuGreenCtxRecordEvent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12050",
                 feature = "cuda-12060",
@@ -22913,7 +22913,7 @@ mod loaded {
             let cuGreenCtxStreamCreate = __library
                 .get(b"cuGreenCtxStreamCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -22926,39 +22926,39 @@ mod loaded {
             let cuGreenCtxWaitEvent = __library
                 .get(b"cuGreenCtxWaitEvent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuImportExternalMemory = __library
                 .get(b"cuImportExternalMemory\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuImportExternalSemaphore = __library
                 .get(b"cuImportExternalSemaphore\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuInit = __library
                 .get(b"cuInit\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuIpcCloseMemHandle = __library
                 .get(b"cuIpcCloseMemHandle\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuIpcGetEventHandle = __library
                 .get(b"cuIpcGetEventHandle\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuIpcGetMemHandle = __library
                 .get(b"cuIpcGetMemHandle\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuIpcOpenEventHandle = __library
                 .get(b"cuIpcOpenEventHandle\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuIpcOpenMemHandle_v2 = __library
                 .get(b"cuIpcOpenMemHandle_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -22975,7 +22975,7 @@ mod loaded {
             let cuKernelGetAttribute = __library
                 .get(b"cuKernelGetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -22992,7 +22992,7 @@ mod loaded {
             let cuKernelGetFunction = __library
                 .get(b"cuKernelGetFunction\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12050",
                 feature = "cuda-12060",
@@ -23004,7 +23004,7 @@ mod loaded {
             let cuKernelGetLibrary = __library
                 .get(b"cuKernelGetLibrary\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12030",
                 feature = "cuda-12040",
@@ -23018,7 +23018,7 @@ mod loaded {
             let cuKernelGetName = __library
                 .get(b"cuKernelGetName\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -23031,7 +23031,7 @@ mod loaded {
             let cuKernelGetParamInfo = __library
                 .get(b"cuKernelGetParamInfo\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -23048,7 +23048,7 @@ mod loaded {
             let cuKernelSetAttribute = __library
                 .get(b"cuKernelSetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -23065,35 +23065,35 @@ mod loaded {
             let cuKernelSetCacheConfig = __library
                 .get(b"cuKernelSetCacheConfig\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuLaunch = __library
                 .get(b"cuLaunch\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuLaunchCooperativeKernel = __library
                 .get(b"cuLaunchCooperativeKernel\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuLaunchCooperativeKernelMultiDevice = __library
                 .get(b"cuLaunchCooperativeKernelMultiDevice\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuLaunchGrid = __library
                 .get(b"cuLaunchGrid\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuLaunchGridAsync = __library
                 .get(b"cuLaunchGridAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuLaunchHostFunc = __library
                 .get(b"cuLaunchHostFunc\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuLaunchKernel = __library
                 .get(b"cuLaunchKernel\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11080",
                 feature = "cuda-12000",
@@ -23111,7 +23111,7 @@ mod loaded {
             let cuLaunchKernelEx = __library
                 .get(b"cuLaunchKernelEx\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -23124,7 +23124,7 @@ mod loaded {
             let cuLibraryEnumerateKernels = __library
                 .get(b"cuLibraryEnumerateKernels\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -23141,7 +23141,7 @@ mod loaded {
             let cuLibraryGetGlobal = __library
                 .get(b"cuLibraryGetGlobal\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -23158,7 +23158,7 @@ mod loaded {
             let cuLibraryGetKernel = __library
                 .get(b"cuLibraryGetKernel\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -23171,7 +23171,7 @@ mod loaded {
             let cuLibraryGetKernelCount = __library
                 .get(b"cuLibraryGetKernelCount\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -23188,7 +23188,7 @@ mod loaded {
             let cuLibraryGetManaged = __library
                 .get(b"cuLibraryGetManaged\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -23205,7 +23205,7 @@ mod loaded {
             let cuLibraryGetModule = __library
                 .get(b"cuLibraryGetModule\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -23222,7 +23222,7 @@ mod loaded {
             let cuLibraryGetUnifiedFunction = __library
                 .get(b"cuLibraryGetUnifiedFunction\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -23239,7 +23239,7 @@ mod loaded {
             let cuLibraryLoadData = __library
                 .get(b"cuLibraryLoadData\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -23256,7 +23256,7 @@ mod loaded {
             let cuLibraryLoadFromFile = __library
                 .get(b"cuLibraryLoadFromFile\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -23273,60 +23273,60 @@ mod loaded {
             let cuLibraryUnload = __library
                 .get(b"cuLibraryUnload\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuLinkAddData_v2 = __library
                 .get(b"cuLinkAddData_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuLinkAddFile_v2 = __library
                 .get(b"cuLinkAddFile_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuLinkComplete = __library
                 .get(b"cuLinkComplete\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuLinkCreate_v2 = __library
                 .get(b"cuLinkCreate_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuLinkDestroy = __library
                 .get(b"cuLinkDestroy\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-12090", feature = "cuda-13000", feature = "cuda-13010"))]
             let cuLogsCurrent = __library
                 .get(b"cuLogsCurrent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-12090", feature = "cuda-13000", feature = "cuda-13010"))]
             let cuLogsDumpToFile = __library
                 .get(b"cuLogsDumpToFile\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-12090", feature = "cuda-13000", feature = "cuda-13010"))]
             let cuLogsDumpToMemory = __library
                 .get(b"cuLogsDumpToMemory\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-12090", feature = "cuda-13000", feature = "cuda-13010"))]
             let cuLogsRegisterCallback = __library
                 .get(b"cuLogsRegisterCallback\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-12090", feature = "cuda-13000", feature = "cuda-13010"))]
             let cuLogsUnregisterCallback = __library
                 .get(b"cuLogsUnregisterCallback\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemAddressFree = __library
                 .get(b"cuMemAddressFree\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemAddressReserve = __library
                 .get(b"cuMemAddressReserve\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -23346,7 +23346,7 @@ mod loaded {
             let cuMemAdvise = __library
                 .get(b"cuMemAdvise\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12020",
                 feature = "cuda-12030",
@@ -23361,31 +23361,31 @@ mod loaded {
             let cuMemAdvise_v2 = __library
                 .get(b"cuMemAdvise_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemAllocAsync = __library
                 .get(b"cuMemAllocAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemAllocFromPoolAsync = __library
                 .get(b"cuMemAllocFromPoolAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemAllocHost_v2 = __library
                 .get(b"cuMemAllocHost_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemAllocManaged = __library
                 .get(b"cuMemAllocManaged\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemAllocPitch_v2 = __library
                 .get(b"cuMemAllocPitch_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemAlloc_v2 = __library
                 .get(b"cuMemAlloc_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12080",
                 feature = "cuda-12090",
@@ -23395,58 +23395,58 @@ mod loaded {
             let cuMemBatchDecompressAsync = __library
                 .get(b"cuMemBatchDecompressAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemCreate = __library
                 .get(b"cuMemCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13000", feature = "cuda-13010"))]
             let cuMemDiscardAndPrefetchBatchAsync = __library
                 .get(b"cuMemDiscardAndPrefetchBatchAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13000", feature = "cuda-13010"))]
             let cuMemDiscardBatchAsync = __library
                 .get(b"cuMemDiscardBatchAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemExportToShareableHandle = __library
                 .get(b"cuMemExportToShareableHandle\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemFreeAsync = __library
                 .get(b"cuMemFreeAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemFreeHost = __library
                 .get(b"cuMemFreeHost\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemFree_v2 = __library
                 .get(b"cuMemFree_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemGetAccess = __library
                 .get(b"cuMemGetAccess\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemGetAddressRange_v2 = __library
                 .get(b"cuMemGetAddressRange_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemGetAllocationGranularity = __library
                 .get(b"cuMemGetAllocationGranularity\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemGetAllocationPropertiesFromHandle = __library
                 .get(b"cuMemGetAllocationPropertiesFromHandle\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13000", feature = "cuda-13010"))]
             let cuMemGetDefaultMemPool = __library
                 .get(b"cuMemGetDefaultMemPool\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11070",
                 feature = "cuda-11080",
@@ -23465,92 +23465,92 @@ mod loaded {
             let cuMemGetHandleForAddressRange = __library
                 .get(b"cuMemGetHandleForAddressRange\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemGetInfo_v2 = __library
                 .get(b"cuMemGetInfo_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13000", feature = "cuda-13010"))]
             let cuMemGetMemPool = __library
                 .get(b"cuMemGetMemPool\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemHostAlloc = __library
                 .get(b"cuMemHostAlloc\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemHostGetDevicePointer_v2 = __library
                 .get(b"cuMemHostGetDevicePointer_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemHostGetFlags = __library
                 .get(b"cuMemHostGetFlags\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemHostRegister_v2 = __library
                 .get(b"cuMemHostRegister_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemHostUnregister = __library
                 .get(b"cuMemHostUnregister\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemImportFromShareableHandle = __library
                 .get(b"cuMemImportFromShareableHandle\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemMap = __library
                 .get(b"cuMemMap\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemMapArrayAsync = __library
                 .get(b"cuMemMapArrayAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemPoolCreate = __library
                 .get(b"cuMemPoolCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemPoolDestroy = __library
                 .get(b"cuMemPoolDestroy\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemPoolExportPointer = __library
                 .get(b"cuMemPoolExportPointer\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemPoolExportToShareableHandle = __library
                 .get(b"cuMemPoolExportToShareableHandle\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemPoolGetAccess = __library
                 .get(b"cuMemPoolGetAccess\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemPoolGetAttribute = __library
                 .get(b"cuMemPoolGetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemPoolImportFromShareableHandle = __library
                 .get(b"cuMemPoolImportFromShareableHandle\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemPoolImportPointer = __library
                 .get(b"cuMemPoolImportPointer\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemPoolSetAccess = __library
                 .get(b"cuMemPoolSetAccess\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemPoolSetAttribute = __library
                 .get(b"cuMemPoolSetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemPoolTrimTo = __library
                 .get(b"cuMemPoolTrimTo\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -23570,7 +23570,7 @@ mod loaded {
             let cuMemPrefetchAsync = __library
                 .get(b"cuMemPrefetchAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12020",
                 feature = "cuda-12030",
@@ -23585,217 +23585,217 @@ mod loaded {
             let cuMemPrefetchAsync_v2 = __library
                 .get(b"cuMemPrefetchAsync_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13000", feature = "cuda-13010"))]
             let cuMemPrefetchBatchAsync = __library
                 .get(b"cuMemPrefetchBatchAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemRangeGetAttribute = __library
                 .get(b"cuMemRangeGetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemRangeGetAttributes = __library
                 .get(b"cuMemRangeGetAttributes\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemRelease = __library
                 .get(b"cuMemRelease\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemRetainAllocationHandle = __library
                 .get(b"cuMemRetainAllocationHandle\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemSetAccess = __library
                 .get(b"cuMemSetAccess\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13000", feature = "cuda-13010"))]
             let cuMemSetMemPool = __library
                 .get(b"cuMemSetMemPool\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemUnmap = __library
                 .get(b"cuMemUnmap\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpy = __library
                 .get(b"cuMemcpy\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpy2DAsync_v2 = __library
                 .get(b"cuMemcpy2DAsync_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpy2DUnaligned_v2 = __library
                 .get(b"cuMemcpy2DUnaligned_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpy2D_v2 = __library
                 .get(b"cuMemcpy2D_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpy3DAsync_v2 = __library
                 .get(b"cuMemcpy3DAsync_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-12080", feature = "cuda-12090"))]
             let cuMemcpy3DBatchAsync = __library
                 .get(b"cuMemcpy3DBatchAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13000", feature = "cuda-13010"))]
             let cuMemcpy3DBatchAsync_v2 = __library
                 .get(b"cuMemcpy3DBatchAsync_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpy3DPeer = __library
                 .get(b"cuMemcpy3DPeer\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpy3DPeerAsync = __library
                 .get(b"cuMemcpy3DPeerAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpy3D_v2 = __library
                 .get(b"cuMemcpy3D_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyAsync = __library
                 .get(b"cuMemcpyAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyAtoA_v2 = __library
                 .get(b"cuMemcpyAtoA_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyAtoD_v2 = __library
                 .get(b"cuMemcpyAtoD_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyAtoHAsync_v2 = __library
                 .get(b"cuMemcpyAtoHAsync_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyAtoH_v2 = __library
                 .get(b"cuMemcpyAtoH_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-12080", feature = "cuda-12090"))]
             let cuMemcpyBatchAsync = __library
                 .get(b"cuMemcpyBatchAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13000", feature = "cuda-13010"))]
             let cuMemcpyBatchAsync_v2 = __library
                 .get(b"cuMemcpyBatchAsync_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyDtoA_v2 = __library
                 .get(b"cuMemcpyDtoA_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyDtoDAsync_v2 = __library
                 .get(b"cuMemcpyDtoDAsync_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyDtoD_v2 = __library
                 .get(b"cuMemcpyDtoD_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyDtoHAsync_v2 = __library
                 .get(b"cuMemcpyDtoHAsync_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyDtoH_v2 = __library
                 .get(b"cuMemcpyDtoH_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyHtoAAsync_v2 = __library
                 .get(b"cuMemcpyHtoAAsync_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyHtoA_v2 = __library
                 .get(b"cuMemcpyHtoA_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyHtoDAsync_v2 = __library
                 .get(b"cuMemcpyHtoDAsync_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyHtoD_v2 = __library
                 .get(b"cuMemcpyHtoD_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyPeer = __library
                 .get(b"cuMemcpyPeer\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemcpyPeerAsync = __library
                 .get(b"cuMemcpyPeerAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemsetD16Async = __library
                 .get(b"cuMemsetD16Async\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemsetD16_v2 = __library
                 .get(b"cuMemsetD16_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemsetD2D16Async = __library
                 .get(b"cuMemsetD2D16Async\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemsetD2D16_v2 = __library
                 .get(b"cuMemsetD2D16_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemsetD2D32Async = __library
                 .get(b"cuMemsetD2D32Async\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemsetD2D32_v2 = __library
                 .get(b"cuMemsetD2D32_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemsetD2D8Async = __library
                 .get(b"cuMemsetD2D8Async\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemsetD2D8_v2 = __library
                 .get(b"cuMemsetD2D8_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemsetD32Async = __library
                 .get(b"cuMemsetD32Async\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemsetD32_v2 = __library
                 .get(b"cuMemsetD32_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemsetD8Async = __library
                 .get(b"cuMemsetD8Async\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMemsetD8_v2 = __library
                 .get(b"cuMemsetD8_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMipmappedArrayCreate = __library
                 .get(b"cuMipmappedArrayCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMipmappedArrayDestroy = __library
                 .get(b"cuMipmappedArrayDestroy\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMipmappedArrayGetLevel = __library
                 .get(b"cuMipmappedArrayGetLevel\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11060",
                 feature = "cuda-11070",
@@ -23815,11 +23815,11 @@ mod loaded {
             let cuMipmappedArrayGetMemoryRequirements = __library
                 .get(b"cuMipmappedArrayGetMemoryRequirements\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuMipmappedArrayGetSparseProperties = __library
                 .get(b"cuMipmappedArrayGetSparseProperties\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -23832,11 +23832,11 @@ mod loaded {
             let cuModuleEnumerateFunctions = __library
                 .get(b"cuModuleEnumerateFunctions\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuModuleGetFunction = __library
                 .get(b"cuModuleGetFunction\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -23849,11 +23849,11 @@ mod loaded {
             let cuModuleGetFunctionCount = __library
                 .get(b"cuModuleGetFunctionCount\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuModuleGetGlobal_v2 = __library
                 .get(b"cuModuleGetGlobal_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11070",
                 feature = "cuda-11080",
@@ -23872,35 +23872,35 @@ mod loaded {
             let cuModuleGetLoadingMode = __library
                 .get(b"cuModuleGetLoadingMode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuModuleGetSurfRef = __library
                 .get(b"cuModuleGetSurfRef\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuModuleGetTexRef = __library
                 .get(b"cuModuleGetTexRef\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuModuleLoad = __library
                 .get(b"cuModuleLoad\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuModuleLoadData = __library
                 .get(b"cuModuleLoadData\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuModuleLoadDataEx = __library
                 .get(b"cuModuleLoadDataEx\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuModuleLoadFatBinary = __library
                 .get(b"cuModuleLoadFatBinary\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuModuleUnload = __library
                 .get(b"cuModuleUnload\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12010",
                 feature = "cuda-12020",
@@ -23916,7 +23916,7 @@ mod loaded {
             let cuMulticastAddDevice = __library
                 .get(b"cuMulticastAddDevice\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12010",
                 feature = "cuda-12020",
@@ -23932,12 +23932,12 @@ mod loaded {
             let cuMulticastBindAddr = __library
                 .get(b"cuMulticastBindAddr\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13010"))]
             let cuMulticastBindAddr_v2 = __library
                 .get(b"cuMulticastBindAddr_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12010",
                 feature = "cuda-12020",
@@ -23953,12 +23953,12 @@ mod loaded {
             let cuMulticastBindMem = __library
                 .get(b"cuMulticastBindMem\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13010"))]
             let cuMulticastBindMem_v2 = __library
                 .get(b"cuMulticastBindMem_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12010",
                 feature = "cuda-12020",
@@ -23974,7 +23974,7 @@ mod loaded {
             let cuMulticastCreate = __library
                 .get(b"cuMulticastCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12010",
                 feature = "cuda-12020",
@@ -23990,7 +23990,7 @@ mod loaded {
             let cuMulticastGetGranularity = __library
                 .get(b"cuMulticastGetGranularity\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12010",
                 feature = "cuda-12020",
@@ -24006,19 +24006,19 @@ mod loaded {
             let cuMulticastUnbind = __library
                 .get(b"cuMulticastUnbind\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuOccupancyAvailableDynamicSMemPerBlock = __library
                 .get(b"cuOccupancyAvailableDynamicSMemPerBlock\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuOccupancyMaxActiveBlocksPerMultiprocessor = __library
                 .get(b"cuOccupancyMaxActiveBlocksPerMultiprocessor\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags = __library
                 .get(b"cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11080",
                 feature = "cuda-12000",
@@ -24036,15 +24036,15 @@ mod loaded {
             let cuOccupancyMaxActiveClusters = __library
                 .get(b"cuOccupancyMaxActiveClusters\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuOccupancyMaxPotentialBlockSize = __library
                 .get(b"cuOccupancyMaxPotentialBlockSize\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuOccupancyMaxPotentialBlockSizeWithFlags = __library
                 .get(b"cuOccupancyMaxPotentialBlockSizeWithFlags\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11080",
                 feature = "cuda-12000",
@@ -24062,63 +24062,63 @@ mod loaded {
             let cuOccupancyMaxPotentialClusterSize = __library
                 .get(b"cuOccupancyMaxPotentialClusterSize\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuParamSetSize = __library
                 .get(b"cuParamSetSize\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuParamSetTexRef = __library
                 .get(b"cuParamSetTexRef\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuParamSetf = __library
                 .get(b"cuParamSetf\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuParamSeti = __library
                 .get(b"cuParamSeti\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuParamSetv = __library
                 .get(b"cuParamSetv\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuPointerGetAttribute = __library
                 .get(b"cuPointerGetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuPointerGetAttributes = __library
                 .get(b"cuPointerGetAttributes\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuPointerSetAttribute = __library
                 .get(b"cuPointerSetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuProfilerInitialize = __library
                 .get(b"cuProfilerInitialize\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuProfilerStart = __library
                 .get(b"cuProfilerStart\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuProfilerStop = __library
                 .get(b"cuProfilerStop\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuSignalExternalSemaphoresAsync = __library
                 .get(b"cuSignalExternalSemaphoresAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamAddCallback = __library
                 .get(b"cuStreamAddCallback\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamAttachMemAsync = __library
                 .get(b"cuStreamAttachMemAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -24129,7 +24129,7 @@ mod loaded {
             let cuStreamBatchMemOp = __library
                 .get(b"cuStreamBatchMemOp\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11070",
                 feature = "cuda-11080",
@@ -24148,7 +24148,7 @@ mod loaded {
             let cuStreamBatchMemOp_v2 = __library
                 .get(b"cuStreamBatchMemOp_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12030",
                 feature = "cuda-12040",
@@ -24162,35 +24162,35 @@ mod loaded {
             let cuStreamBeginCaptureToGraph = __library
                 .get(b"cuStreamBeginCaptureToGraph\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamBeginCapture_v2 = __library
                 .get(b"cuStreamBeginCapture_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamCopyAttributes = __library
                 .get(b"cuStreamCopyAttributes\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamCreate = __library
                 .get(b"cuStreamCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamCreateWithPriority = __library
                 .get(b"cuStreamCreateWithPriority\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamDestroy_v2 = __library
                 .get(b"cuStreamDestroy_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamEndCapture = __library
                 .get(b"cuStreamEndCapture\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamGetAttribute = __library
                 .get(b"cuStreamGetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -24201,7 +24201,7 @@ mod loaded {
             let cuStreamGetCaptureInfo = __library
                 .get(b"cuStreamGetCaptureInfo\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -24221,7 +24221,7 @@ mod loaded {
             let cuStreamGetCaptureInfo_v2 = __library
                 .get(b"cuStreamGetCaptureInfo_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12030",
                 feature = "cuda-12040",
@@ -24235,11 +24235,11 @@ mod loaded {
             let cuStreamGetCaptureInfo_v3 = __library
                 .get(b"cuStreamGetCaptureInfo_v3\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamGetCtx = __library
                 .get(b"cuStreamGetCtx\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12050",
                 feature = "cuda-12060",
@@ -24251,12 +24251,12 @@ mod loaded {
             let cuStreamGetCtx_v2 = __library
                 .get(b"cuStreamGetCtx_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(feature = "cuda-13010"))]
             let cuStreamGetDevResource = __library
                 .get(b"cuStreamGetDevResource\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12080",
                 feature = "cuda-12090",
@@ -24266,11 +24266,11 @@ mod loaded {
             let cuStreamGetDevice = __library
                 .get(b"cuStreamGetDevice\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamGetFlags = __library
                 .get(b"cuStreamGetFlags\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12040",
                 feature = "cuda-12050",
@@ -24283,7 +24283,7 @@ mod loaded {
             let cuStreamGetGreenCtx = __library
                 .get(b"cuStreamGetGreenCtx\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -24300,27 +24300,27 @@ mod loaded {
             let cuStreamGetId = __library
                 .get(b"cuStreamGetId\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamGetPriority = __library
                 .get(b"cuStreamGetPriority\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamIsCapturing = __library
                 .get(b"cuStreamIsCapturing\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamQuery = __library
                 .get(b"cuStreamQuery\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamSetAttribute = __library
                 .get(b"cuStreamSetAttribute\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamSynchronize = __library
                 .get(b"cuStreamSynchronize\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -24340,7 +24340,7 @@ mod loaded {
             let cuStreamUpdateCaptureDependencies = __library
                 .get(b"cuStreamUpdateCaptureDependencies\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12030",
                 feature = "cuda-12040",
@@ -24354,11 +24354,11 @@ mod loaded {
             let cuStreamUpdateCaptureDependencies_v2 = __library
                 .get(b"cuStreamUpdateCaptureDependencies_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuStreamWaitEvent = __library
                 .get(b"cuStreamWaitEvent\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -24369,7 +24369,7 @@ mod loaded {
             let cuStreamWaitValue32 = __library
                 .get(b"cuStreamWaitValue32\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11070",
                 feature = "cuda-11080",
@@ -24388,7 +24388,7 @@ mod loaded {
             let cuStreamWaitValue32_v2 = __library
                 .get(b"cuStreamWaitValue32_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -24399,7 +24399,7 @@ mod loaded {
             let cuStreamWaitValue64 = __library
                 .get(b"cuStreamWaitValue64\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11070",
                 feature = "cuda-11080",
@@ -24418,7 +24418,7 @@ mod loaded {
             let cuStreamWaitValue64_v2 = __library
                 .get(b"cuStreamWaitValue64_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -24429,7 +24429,7 @@ mod loaded {
             let cuStreamWriteValue32 = __library
                 .get(b"cuStreamWriteValue32\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11070",
                 feature = "cuda-11080",
@@ -24448,7 +24448,7 @@ mod loaded {
             let cuStreamWriteValue32_v2 = __library
                 .get(b"cuStreamWriteValue32_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11040",
                 feature = "cuda-11050",
@@ -24459,7 +24459,7 @@ mod loaded {
             let cuStreamWriteValue64 = __library
                 .get(b"cuStreamWriteValue64\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-11070",
                 feature = "cuda-11080",
@@ -24478,27 +24478,27 @@ mod loaded {
             let cuStreamWriteValue64_v2 = __library
                 .get(b"cuStreamWriteValue64_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuSurfObjectCreate = __library
                 .get(b"cuSurfObjectCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuSurfObjectDestroy = __library
                 .get(b"cuSurfObjectDestroy\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuSurfObjectGetResourceDesc = __library
                 .get(b"cuSurfObjectGetResourceDesc\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuSurfRefGetArray = __library
                 .get(b"cuSurfRefGetArray\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuSurfRefSetArray = __library
                 .get(b"cuSurfRefSetArray\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -24515,7 +24515,7 @@ mod loaded {
             let cuTensorMapEncodeIm2col = __library
                 .get(b"cuTensorMapEncodeIm2col\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12080",
                 feature = "cuda-12090",
@@ -24525,7 +24525,7 @@ mod loaded {
             let cuTensorMapEncodeIm2colWide = __library
                 .get(b"cuTensorMapEncodeIm2colWide\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -24542,7 +24542,7 @@ mod loaded {
             let cuTensorMapEncodeTiled = __library
                 .get(b"cuTensorMapEncodeTiled\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             #[cfg(any(
                 feature = "cuda-12000",
                 feature = "cuda-12010",
@@ -24559,155 +24559,155 @@ mod loaded {
             let cuTensorMapReplaceAddress = __library
                 .get(b"cuTensorMapReplaceAddress\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexObjectCreate = __library
                 .get(b"cuTexObjectCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexObjectDestroy = __library
                 .get(b"cuTexObjectDestroy\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexObjectGetResourceDesc = __library
                 .get(b"cuTexObjectGetResourceDesc\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexObjectGetResourceViewDesc = __library
                 .get(b"cuTexObjectGetResourceViewDesc\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexObjectGetTextureDesc = __library
                 .get(b"cuTexObjectGetTextureDesc\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefCreate = __library
                 .get(b"cuTexRefCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefDestroy = __library
                 .get(b"cuTexRefDestroy\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefGetAddressMode = __library
                 .get(b"cuTexRefGetAddressMode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefGetAddress_v2 = __library
                 .get(b"cuTexRefGetAddress_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefGetArray = __library
                 .get(b"cuTexRefGetArray\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefGetBorderColor = __library
                 .get(b"cuTexRefGetBorderColor\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefGetFilterMode = __library
                 .get(b"cuTexRefGetFilterMode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefGetFlags = __library
                 .get(b"cuTexRefGetFlags\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefGetFormat = __library
                 .get(b"cuTexRefGetFormat\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefGetMaxAnisotropy = __library
                 .get(b"cuTexRefGetMaxAnisotropy\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefGetMipmapFilterMode = __library
                 .get(b"cuTexRefGetMipmapFilterMode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefGetMipmapLevelBias = __library
                 .get(b"cuTexRefGetMipmapLevelBias\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefGetMipmapLevelClamp = __library
                 .get(b"cuTexRefGetMipmapLevelClamp\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefGetMipmappedArray = __library
                 .get(b"cuTexRefGetMipmappedArray\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefSetAddress2D_v3 = __library
                 .get(b"cuTexRefSetAddress2D_v3\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefSetAddressMode = __library
                 .get(b"cuTexRefSetAddressMode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefSetAddress_v2 = __library
                 .get(b"cuTexRefSetAddress_v2\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefSetArray = __library
                 .get(b"cuTexRefSetArray\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefSetBorderColor = __library
                 .get(b"cuTexRefSetBorderColor\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefSetFilterMode = __library
                 .get(b"cuTexRefSetFilterMode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefSetFlags = __library
                 .get(b"cuTexRefSetFlags\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefSetFormat = __library
                 .get(b"cuTexRefSetFormat\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefSetMaxAnisotropy = __library
                 .get(b"cuTexRefSetMaxAnisotropy\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefSetMipmapFilterMode = __library
                 .get(b"cuTexRefSetMipmapFilterMode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefSetMipmapLevelBias = __library
                 .get(b"cuTexRefSetMipmapLevelBias\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefSetMipmapLevelClamp = __library
                 .get(b"cuTexRefSetMipmapLevelClamp\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuTexRefSetMipmappedArray = __library
                 .get(b"cuTexRefSetMipmappedArray\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuThreadExchangeStreamCaptureMode = __library
                 .get(b"cuThreadExchangeStreamCaptureMode\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuUserObjectCreate = __library
                 .get(b"cuUserObjectCreate\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuUserObjectRelease = __library
                 .get(b"cuUserObjectRelease\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuUserObjectRetain = __library
                 .get(b"cuUserObjectRetain\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             let cuWaitExternalSemaphoresAsync = __library
                 .get(b"cuWaitExternalSemaphoresAsync\0")
                 .map(|sym| *sym)
-                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__atlas_missing_cuda_sym as extern "C" fn()) as usize) });
+                .unwrap_or_else(|_| unsafe { ::core::mem::transmute::<usize, _>((__avarok_missing_cuda_sym as extern "C" fn()) as usize) });
             Ok(Self {
                 __library,
                 cuArray3DCreate_v2,
@@ -26732,17 +26732,17 @@ mod loaded {
 #[cfg(feature = "dynamic-loading")]
 pub use loaded::*;
 
-// ── Atlas patch: tolerant CUDA-driver symbol loading ─────────────────
+// ── Avarok patch: tolerant CUDA-driver symbol loading ─────────────────
 // cudarc resolves the entire CUDA driver API eagerly at load. SCALE
-// (gfx1151) implements a subset of that API. Symbols Atlas never calls
+// (gfx1151) implements a subset of that API. Symbols Avarok never calls
 // (CUDA arrays, coredump, sparse, …) resolve to this stub instead of
 // hard-panicking the whole process at startup; if one is genuinely
 // invoked, it panics with a clear message. On NVIDIA every symbol is
 // present, so this fallback is never taken — behaviour is identical.
-extern "C" fn __atlas_missing_cuda_sym() {
+extern "C" fn __avarok_missing_cuda_sym() {
     panic!(
-        "Atlas/SCALE: a CUDA driver symbol absent from the loaded libcuda \
+        "Avarok/SCALE: a CUDA driver symbol absent from the loaded libcuda \
          was invoked. SCALE implements a subset of the CUDA driver API; \
-         this symbol is one Atlas does not exercise on NVIDIA either."
+         this symbol is one Avarok does not exercise on NVIDIA either."
     );
 }

@@ -22,7 +22,7 @@ fn selecting_past_the_end_of_the_registry_lands_on_the_last_benchmark() {
     // `select` is called with a raw index from the list cursor and from `d`.
     let mut s = state();
     s.select(usize::MAX);
-    assert_eq!(s.selected, atlas_plugin::registry::all().len() - 1);
+    assert_eq!(s.selected, avarok_plugin::registry::all().len() - 1);
     assert!(s.descriptor().is_some(), "and a descriptor still resolves");
 }
 
@@ -47,7 +47,7 @@ fn every_row_of_every_benchmark_has_something_to_draw() {
     // The detail pane renders all three of these for each row; an empty hint or
     // label is a blank cell in the form.
     let mut s = state();
-    for i in 0..atlas_plugin::registry::all().len() {
+    for i in 0..avarok_plugin::registry::all().len() {
         s.select(i);
         for row in 0..s.row_count() {
             let (label, help, hint) = s.row_meta(row);
@@ -64,7 +64,7 @@ fn an_empty_value_is_refused_for_every_parameter_of_every_benchmark() {
     // that fell back to a default would run a different sweep than the form
     // shows.
     let mut s = state();
-    for i in 0..atlas_plugin::registry::all().len() {
+    for i in 0..avarok_plugin::registry::all().len() {
         s.select(i);
         for row in 0..s.specs.len() {
             let key = s.specs[row].key;
@@ -91,7 +91,7 @@ fn a_number_outside_its_domain_names_the_bound_it_broke() {
     let row = s
         .specs
         .iter()
-        .position(|spec| matches!(spec.kind, atlas_plugin::ParamKind::Int { .. }))
+        .position(|spec| matches!(spec.kind, avarok_plugin::ParamKind::Int { .. }))
         .expect("the sweep has an integer parameter");
     let key = s.specs[row].key;
     let before = s.values.get(key).cloned();
@@ -169,7 +169,7 @@ fn following_the_model_already_targeted_changes_nothing() {
 fn a_start_with_the_probe_switched_off_still_refuses_for_the_real_reason() {
     // `begin_start` with `Skip` IS `start`; the refusal must be the same one.
     let mut s = state();
-    s.coherence = atlas_plugin::CoherencePolicy::Skip;
+    s.coherence = avarok_plugin::CoherencePolicy::Skip;
     let err = s.begin_start().unwrap_err();
     assert!(err.contains("executor"), "{err}");
     assert!(s.preflight.is_none(), "and no check was opened");
@@ -290,11 +290,11 @@ fn the_detail_pane_has_something_to_say_before_anything_is_selected() {
 #[test]
 fn a_selected_benchmark_reports_its_own_provenance() {
     let mut s = state();
-    for i in 0..atlas_plugin::registry::all().len() {
+    for i in 0..avarok_plugin::registry::all().len() {
         s.select(i);
         let meta = s.plugin_metadata();
         assert_ne!(meta.description, "no benchmark selected");
-        assert!(meta.official, "everything in the registry ships with Atlas");
+        assert!(meta.official, "everything in the registry ships with Avarok");
         assert!(!meta.bug_report_url.is_empty());
     }
 }

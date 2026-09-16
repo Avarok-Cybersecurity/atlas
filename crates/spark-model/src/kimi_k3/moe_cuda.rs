@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, bail, ensure};
-use atlas_core::kimi_k3::{LatentMoeConfig, situ_glu_vec};
+use avarok_core::kimi_k3::{LatentMoeConfig, situ_glu_vec};
 use half::bf16;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
@@ -87,7 +87,7 @@ pub fn launch_k3_moe_e8m0_ptrtable(
     run
 }
 
-/// Packed w1/w2/w3 SiTU mix. Same contract as [`atlas_core::kimi_k3::mix_routed_experts`].
+/// Packed w1/w2/w3 SiTU mix. Same contract as [`avarok_core::kimi_k3::mix_routed_experts`].
 #[allow(clippy::too_many_arguments)]
 pub fn launch_k3_latent_moe_experts(
     gpu: &dyn GpuBackend,

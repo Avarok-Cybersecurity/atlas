@@ -2,7 +2,7 @@
 
 State-Space Models (SSMs) are the non-attention half of every hybrid model in the support matrix: Qwen3.5 (GDN), Qwen3-Next (SSM), Nemotron-H (Mamba-2), Qwen3.6 (GDN + vision). Their speedups vs PyTorch are the largest in the whole kernel suite — up to **9.95× on conv1d prefill**, **7.89× on GDR prefill**.
 
-## The three variants in Atlas
+## The three variants in Avarok
 
 | Variant | Models | Core op |
 |---|---|---|
@@ -12,17 +12,17 @@ State-Space Models (SSMs) are the non-attention half of every hybrid model in th
 
 All three share structure: a QKVZ projection (expanded 4-way linear), a causal conv1d, a selective linear recurrence, and a gated output normalisation. The differences are in the recurrence and the gating.
 
-## Why SSMs are fast on Atlas
+## Why SSMs are fast on Avarok
 
 Three things:
 
-1. **Fused QKVZ preprocess.** The `ssm_preprocess.cu` kernel deinterleaves the 4-way projection output (Q, K, V, Z) and computes the GDN gate (softplus + sigmoid) in one pass. PyTorch does this in three separate kernels plus a reshape; Atlas does it in one.
+1. **Fused QKVZ preprocess.** The `ssm_preprocess.cu` kernel deinterleaves the 4-way projection output (Q, K, V, Z) and computes the GDN gate (softplus + sigmoid) in one pass. PyTorch does this in three separate kernels plus a reshape; Avarok does it in one.
 2. **Fused Gated Delta Rule (GDR).** The linear recurrence itself is hand-written — one warp per (batch, head) walks the token sequence, maintaining the hidden state in registers. Causal conv1d is fused into the same pass.
 3. **Hand-rolled causal conv1d.** The conv1d kernel takes advantage of the fixed small filter size (kernel width 4) to hold the entire filter in registers and stream inputs through.
 
 Benchmark numbers (dim=8192):
 
-| Op | Atlas (ms) | PyTorch (ms) | Speedup |
+| Op | Avarok (ms) | PyTorch (ms) | Speedup |
 |---|---:|---:|---:|
 | Conv1d prefill seq=32 | 0.0112 | 0.0205 | 1.82× |
 | Conv1d prefill seq=128 | 0.0143 | 0.0776 | 5.41× |
@@ -32,7 +32,7 @@ Benchmark numbers (dim=8192):
 | GDR prefill seq=32 | 0.3612 | 2.7849 | 7.71× |
 | GDR prefill seq=128 | 1.4111 | 11.1267 | **7.89×** |
 
-The 9.95× at conv1d seq=512 is the largest compute speedup in the whole repo. PyTorch's `causal_conv1d_fn` on this shape walks the full sequence per batch element; Atlas's kernel fuses the whole thing into one launch with shared-memory tiling.
+The 9.95× at conv1d seq=512 is the largest compute speedup in the whole repo. PyTorch's `causal_conv1d_fn` on this shape walks the full sequence per batch element; Avarok's kernel fuses the whole thing into one launch with shared-memory tiling.
 
 ## The SSM state
 
@@ -56,7 +56,7 @@ See `docs/adr/0003-hybrid-ssm-attention.md` for the chunked-SSM-prefill design (
 
 A naive prefix cache on an SSM model reads the attention KV for the prefix and — because it doesn't have the SSM state — recomputes the SSM layers from scratch. That defeats most of the win.
 
-Atlas's **Marconi** (inside-joke name for the SSM snapshot cache) stores the SSM state at the end of each cached prefix alongside the KV. A warm prefix-cache hit restores both the attention KV *and* the SSM state. Output is byte-identical to the cold run.
+Avarok's **Marconi** (inside-joke name for the SSM snapshot cache) stores the SSM state at the end of each cached prefix alongside the KV. A warm prefix-cache hit restores both the attention KV *and* the SSM state. Output is byte-identical to the cold run.
 
 Costs: an extra ~GB of snapshot storage per top-level cache entry. Worth it for repeat agent workloads. Controlled by `--ssm-cache-slots` (default 16) and `--ssm-checkpoint-interval` (default 256). See the `marconi.md` note and `crates/spark-runtime/src/prefix_cache.rs`.
 
@@ -68,14 +68,14 @@ Gated Delta Rule does a per-token gate computation:
 g = softplus(dt) * sigmoid(beta)
 ```
 
-where `dt` is the delta-time projection. The gate is used both to attenuate the state update and to form the output. Atlas fuses this into `ssm_preprocess.cu` — the gate appears as a byproduct of the QKVZ deinterleave.
+where `dt` is the delta-time projection. The gate is used both to attenuate the state update and to form the output. Avarok fuses this into `ssm_preprocess.cu` — the gate appears as a byproduct of the QKVZ deinterleave.
 
-Numerically, softplus is the chronic problem: `softplus(large x) = x`, but `softplus(very large x)` can overflow in FP32 if you compute naively. Atlas uses the standard `max(0, x) + log1p(exp(-|x|))` stable form.
+Numerically, softplus is the chronic problem: `softplus(large x) = x`, but `softplus(very large x)` can overflow in FP32 if you compute naively. Avarok uses the standard `max(0, x) + log1p(exp(-|x|))` stable form.
 
 ## Known gotchas (lessons from the bug sweeps)
 
 - **SSM catastrophic forgetting** — an older version had a bug where the snapshot state was sometimes restored with a stale conv1d buffer, causing a slow drift of coherence over long agentic sessions. Fixed by also snapshotting the conv1d tail-buffer.
-- **Upstream Mamba bug on chunked prefill** — the vLLM fix approach (different from Mamba-2 reference) is what Atlas uses; the reference implementation has a subtle boundary issue at chunk seams.
+- **Upstream Mamba bug on chunked prefill** — the vLLM fix approach (different from Mamba-2 reference) is what Avarok uses; the reference implementation has a subtle boundary issue at chunk seams.
 - **GDN register-tile experiments** — the bench `gdn_regtile_results.md` tracks a long tail of tile-shape experiments. The current production choice is a middle ground; alternate shapes win on specific seq_len ranges but fail the full regression suite.
 
 ## What the code looks like
@@ -94,4 +94,4 @@ Each step calls into `spark-runtime::GpuBackend` via the layer's cached `KernelH
 - `kernels/gb10/<model>/<quant>/ssm_preprocess.cu`, `gdr.cu`, `causal_conv1d.cu`
 - `crates/spark-model/src/layers/qwen3_ssm.rs`, `nemotron_mamba2.rs`
 - `crates/spark-runtime/src/prefix_cache.rs` (Marconi SSM snapshot)
-- README "Atlas Spark" section — the SSM/GDN story in narrative form
+- README "Avarok Spark" section — the SSM/GDN story in narrative form

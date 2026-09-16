@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Diff Atlas's ViT output against an HF transformers reference.
+"""Diff Avarok's ViT output against an HF transformers reference.
 
 Pipeline:
-  1. Run Atlas serving a vision model with `ATLAS_DUMP_VIT=/tmp/atlas_vit`.
+  1. Run Avarok serving a vision model with `AVAROK_DUMP_VIT=/tmp/avarok_vit`.
      One image request produces `patch_embed.bin`, `block00.bin`,
      `block01.bin`, …, `block26.bin`, `final.bin`. All are BF16.
   2. Run this script. It loads the SAME checkpoint into HF transformers on
      CPU, runs the same Mona Lisa JPEG through HF's vision tower, and
      per-checkpoint dumps parallel .bin files at the same layer names.
   3. For each layer, compute cosine similarity + max-abs-diff against
-     Atlas's dump. Print a table; any layer below cosine 0.90 is the
+     Avarok's dump. Print a table; any layer below cosine 0.90 is the
      first divergence and worth investigating.
 
-The goal is NOT bit-exact match (Atlas does FP8 dequant + BF16 GEMM, HF
-does all-BF16 or FP16); it's to localize the FIRST block where Atlas
+The goal is NOT bit-exact match (Avarok does FP8 dequant + BF16 GEMM, HF
+does all-BF16 or FP16); it's to localize the FIRST block where Avarok
 diverges noticeably from HF, so we can focus on fixing that block's
 kernel rather than guessing.
 
 Usage:
-  # on Atlas host, start server with dump:
-  sudo docker run -d --name atlas-vit-debug ... \
-      -e ATLAS_DUMP_VIT=/tmp/atlas_vit ...
+  # on Avarok host, start server with dump:
+  sudo docker run -d --name avarok-vit-debug ... \
+      -e AVAROK_DUMP_VIT=/tmp/avarok_vit ...
 
   # send one image request (the preprocess fires + writes dumps):
   python3 tests/vit_reference_check.py --mode=trigger
@@ -29,7 +29,7 @@ Usage:
   # compute HF reference + diff:
   python3 tests/vit_reference_check.py --mode=diff \
       --hf-id Qwen/Qwen3-VL-2B-Instruct \
-      --atlas-dump /tmp/atlas_vit
+      --avarok-dump /tmp/avarok_vit
 """
 from __future__ import annotations
 
@@ -53,8 +53,8 @@ def bf16_bytes_to_f32(data: bytes):
     return f32_bits.view(np.float32).copy()
 
 
-def load_atlas_dumps(dump_dir: Path):
-    """Load Atlas's per-layer BF16 dumps; return {label: f32 tensor}."""
+def load_avarok_dumps(dump_dir: Path):
+    """Load Avarok's per-layer BF16 dumps; return {label: f32 tensor}."""
     import numpy as np
     out = {}
     for p in sorted(dump_dir.glob("*.bin")):
@@ -63,7 +63,7 @@ def load_atlas_dumps(dump_dir: Path):
     return out
 
 
-def encode_image_for_atlas(max_dim: int = 320) -> tuple[str, int, int]:
+def encode_image_for_avarok(max_dim: int = 320) -> tuple[str, int, int]:
     from PIL import Image
     img = Image.open(FIXTURE).convert("RGB")
     w, h = img.size
@@ -79,11 +79,11 @@ def encode_image_for_atlas(max_dim: int = 320) -> tuple[str, int, int]:
     )
 
 
-def trigger_atlas(base_url: str, model_id: str) -> None:
-    """Send one Mona Lisa request to an already-running Atlas server that
-    was launched with ATLAS_DUMP_VIT set. The dump happens as a side
+def trigger_avarok(base_url: str, model_id: str) -> None:
+    """Send one Mona Lisa request to an already-running Avarok server that
+    was launched with AVAROK_DUMP_VIT set. The dump happens as a side
     effect of the ViT forward pass."""
-    data_url, w, h = encode_image_for_atlas()
+    data_url, w, h = encode_image_for_avarok()
     body = {
         "model": model_id,
         "messages": [{"role": "user", "content": [
@@ -94,13 +94,13 @@ def trigger_atlas(base_url: str, model_id: str) -> None:
         "reasoning_effort": "none",
     }
     r = httpx.post(f"{base_url}/chat/completions", timeout=300, json=body)
-    print(f"atlas response {r.status_code}: "
+    print(f"avarok response {r.status_code}: "
           f"{(r.json().get('choices', [{}])[0].get('message', {}).get('content', '')[:200]) or r.text[:200]}")
 
 
 def compute_hf_reference(hf_id: str, out_dir: Path) -> None:
     """Load HF model on CPU, run Mona Lisa through vision tower, dump
-    per-block outputs so we can diff against Atlas."""
+    per-block outputs so we can diff against Avarok."""
     import numpy as np
     import torch
     from PIL import Image
@@ -174,22 +174,22 @@ def compute_hf_reference(hf_id: str, out_dir: Path) -> None:
         print(f"  wrote {label}.bin  shape={list(tensor.shape)}", flush=True)
 
 
-def diff_dumps(atlas_dir: Path, hf_dir: Path) -> None:
-    """Compare Atlas's BF16 dumps against HF's layer-by-layer. Emit a
+def diff_dumps(avarok_dir: Path, hf_dir: Path) -> None:
+    """Compare Avarok's BF16 dumps against HF's layer-by-layer. Emit a
     cosine-similarity / max-abs-diff table."""
     import numpy as np
-    atlas = load_atlas_dumps(atlas_dir)
-    hf = load_atlas_dumps(hf_dir)
-    labels = sorted(set(atlas) & set(hf),
+    avarok = load_avarok_dumps(avarok_dir)
+    hf = load_avarok_dumps(hf_dir)
+    labels = sorted(set(avarok) & set(hf),
                     key=lambda s: (s != "patch_embed",
                                    s != "final",
                                    int(s[5:]) if s.startswith("block") else 999))
 
-    print(f"\n{'layer':15s} {'atlas#':>9s} {'hf#':>9s} "
+    print(f"\n{'layer':15s} {'avarok#':>9s} {'hf#':>9s} "
           f"{'cos_sim':>9s} {'max|d|':>10s} {'rel_l2':>9s}")
     print("-" * 70)
     for label in labels:
-        a = atlas[label]
+        a = avarok[label]
         b = hf[label]
         n = min(a.size, b.size)
         a1 = a[:n]
@@ -210,16 +210,16 @@ def main() -> int:
     p.add_argument("--hf-id", default="Qwen/Qwen3-VL-2B-Instruct",
                    help="BF16 checkpoint to use as reference (must share the "
                         "ViT architecture with --model-id).")
-    p.add_argument("--atlas-dump", default="/tmp/atlas_vit")
+    p.add_argument("--avarok-dump", default="/tmp/avarok_vit")
     p.add_argument("--hf-dump", default="/tmp/hf_vit")
     args = p.parse_args()
 
     if args.mode in ("trigger", "full"):
-        trigger_atlas(args.base_url, args.model_id)
+        trigger_avarok(args.base_url, args.model_id)
     if args.mode in ("hf", "full"):
         compute_hf_reference(args.hf_id, Path(args.hf_dump))
     if args.mode in ("diff", "full"):
-        diff_dumps(Path(args.atlas_dump), Path(args.hf_dump))
+        diff_dumps(Path(args.avarok_dump), Path(args.hf_dump))
     return 0
 
 

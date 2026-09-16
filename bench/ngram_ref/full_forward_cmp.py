@@ -13,9 +13,9 @@ This script closes that gap on the full model:
 Each CHECKPOINT layer is TWO engine sublayers, so checkpoint layer K's output
 is the input of engine sublayer 2K+2:
 
-  gold['input']      <-> atlas_op_L0_input_norm_in
-  gold['layer0_out'] <-> atlas_op_L2_input_norm_in
-  gold['layerK_out'] <-> atlas_op_L{2K+2}_input_norm_in
+  gold['input']      <-> avarok_op_L0_input_norm_in
+  gold['layer0_out'] <-> avarok_op_L2_input_norm_in
+  gold['layerK_out'] <-> avarok_op_L{2K+2}_input_norm_in
 
 A high cosine on the FIRST row (the embedding) is the n-gram wiring working;
 the later rows say whether that stays true through all 28 sublayers.
@@ -53,10 +53,10 @@ pairs = [('input', 0)]
 for k in range(n_ckpt - 1):
     pairs.append((f'layer{k}_out', 2 * k + 2))
 
-print(f'\n{"stage":16s} {"sublayer":>9s} {"|ref|":>9s} {"|atlas|":>9s} {"cos":>8s} {"relerr":>8s}')
+print(f'\n{"stage":16s} {"sublayer":>9s} {"|ref|":>9s} {"|avarok|":>9s} {"cos":>8s} {"relerr":>8s}')
 worst = (1.0, '')
 for key, sub in pairs:
-    path = f'{D}/atlas_op_L{sub}_input_norm_in.bin'
+    path = f'{D}/avarok_op_L{sub}_input_norm_in.bin'
     if not os.path.exists(path):
         print(f'{key:16s} {sub:9d}   MISSING  (dump layer {sub} not enabled?)')
         continue

@@ -16,7 +16,7 @@
 //!
 //! That is the rule, and not "this module is synchronous" — which is what it
 //! used to say, and which contradicted `tui/chat.rs` and
-//! `atlas-plugin/src/executor.rs`, both of which legitimately spawn tokio
+//! `avarok-plugin/src/executor.rs`, both of which legitimately spawn tokio
 //! tasks and answer over a `std::sync::mpsc`. Two documented contracts that
 //! disagree are worse than one that is merely narrow.
 //!
@@ -53,10 +53,10 @@ use super::Recipe;
 use super::fetch_github::{self, try_refresh};
 
 pub(super) const REPO: &str = "Avarok-Cybersecurity/atlas-recipes";
-pub(super) const CACHE: &str = "atlas-recipes";
+pub(super) const CACHE: &str = "avarok-recipes";
 pub(super) const INDEX: &str = "index.json";
 /// GitHub rejects a request with no User-Agent.
-pub(super) const AGENT: &str = concat!("atlas-spark/", env!("CARGO_PKG_VERSION"));
+pub(super) const AGENT: &str = concat!("avarok-spark/", env!("CARGO_PKG_VERSION"));
 pub(super) const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// What the Library renders: the recipes, and how fresh they are.
@@ -122,7 +122,7 @@ impl Index {
         {
             "This machine has no route to github.com. Set HTTPS_PROXY to a host \
              that does — recipes are then fetched through it — or copy \
-             ~/.atlas/atlas-recipes/index.json from a machine that can reach it."
+             ~/.avarok/avarok-recipes/index.json from a machine that can reach it."
         } else if lowered.contains("403") || lowered.contains("rate") {
             "GitHub is rate-limiting this IP. The listing costs one API call per \
              refresh; the cached recipes below are still usable."
@@ -158,7 +158,7 @@ pub fn cached(root: &Path) -> Index {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Index::default(),
         // Anything ELSE is a fact about this machine, not an empty index, and
         // collapsing the two is how a box spends an hour on the wrong problem.
-        // Measured case: `$HOME/.atlas` created by uid 1000 while the server
+        // Measured case: `$HOME/.avarok` created by uid 1000 while the server
         // runs as uid 996. The index was complete and unreadable; `cached`
         // answered "no recipes", and `bench_selfstart` therefore told the
         // operator to run `spark sync-recipes` to populate a file that was
@@ -250,7 +250,7 @@ pub fn refresh_in_background(root: &Path) -> (std::sync::mpsc::Receiver<Index>, 
     let owned = root.to_path_buf();
     let cancel = Arc::new(AtomicBool::new(false));
     let rx = crate::tui::worker::spawn(
-        "atlas-recipes",
+        "avarok-recipes",
         {
             let cancel = Arc::clone(&cancel);
             move || refresh(&owned, &cancel)
@@ -296,7 +296,7 @@ pub fn updated_in_background(id: &str) -> std::sync::mpsc::Receiver<(String, Opt
     let owned = id.to_string();
     let fallback_id = id.to_string();
     crate::tui::worker::spawn(
-        "atlas-recipe-date",
+        "avarok-recipe-date",
         move || {
             let date = fetch_github::commit_date(&owned)
                 .map_err(|e| {

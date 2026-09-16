@@ -3,13 +3,13 @@
 //!
 //! The plan comes from the same SSOT as the local run and the verdict is
 //! read the same way; what this module adds is a set of nodes (this box
-//! unless `--remote-only`, plus every address that atlasctl reaches and
+//! unless `--remote-only`, plus every address that avarokctl reaches and
 //! [`node::admit`] accepts), one worker per node that keeps taking the
 //! longest eligible unit until nothing is left, a guard tick on the main
 //! thread that cancels every worker on drift, and the Speed-mode decision
 //! that keeps a box-dependent number on one box unless the boxes are one.
 
-pub mod atlasctl;
+pub mod avarokctl;
 pub mod node;
 pub mod place;
 pub mod runner;
@@ -25,8 +25,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use atlas_plugin::gate::signing;
-use atlas_plugin::hardware::{Hardware, HardwareState};
+use avarok_plugin::gate::signing;
+use avarok_plugin::hardware::{Hardware, HardwareState};
 
 use super::guard;
 use super::lockfile::LockGuard;
@@ -34,8 +34,8 @@ use super::plan::Unit;
 use super::runner::{GateRunner, LocalChild, RepoRecords, RunCtx, RunOutcome};
 use super::state::{Campaign, Phase};
 use super::{Emit, GUARD_EVERY};
-use atlas_plugin::hardware::equivalence::EquivalencePolicy;
-use atlas_plugin::hardware::limits::ThermalEnvelope;
+use avarok_plugin::hardware::equivalence::EquivalencePolicy;
+use avarok_plugin::hardware::limits::ThermalEnvelope;
 use node::Node;
 use schedule::SpeedMode;
 
@@ -52,9 +52,9 @@ pub struct Fleet {
 /// Ask every address, admit what qualifies, decide the Speed mode.
 ///
 /// # Errors
-/// When atlasctl cannot be run, or no node at all is admitted.
+/// When avarokctl cannot be run, or no node at all is admitted.
 pub fn assemble(
-    atlasctl: &dyn atlasctl::Atlasctl,
+    avarokctl: &dyn avarokctl::Avarokctl,
     addrs: &[String],
     remote_only: bool,
     wanted: &node::Wanted,
@@ -62,7 +62,7 @@ pub fn assemble(
     envelope: Option<ThermalEnvelope>,
     policy: Option<EquivalencePolicy>,
 ) -> Result<Fleet> {
-    let rows = atlasctl.nodes(addrs)?;
+    let rows = avarokctl.nodes(addrs)?;
     let mut nodes = Vec::new();
     let mut rejected = Vec::new();
     if !remote_only {
@@ -78,7 +78,7 @@ pub fn assemble(
             },
             None => rejected.push(node::Rejection {
                 addr: addr.clone(),
-                why: "atlasctl returned no row for it".into(),
+                why: "avarokctl returned no row for it".into(),
             }),
         }
     }
@@ -126,7 +126,7 @@ pub struct Shared<'a> {
 /// One runner per node: this box's child spawner, or a remote driver.
 pub fn runners(
     fleet: &Fleet,
-    atlasctl: Arc<dyn atlasctl::Atlasctl>,
+    avarokctl: Arc<dyn avarokctl::Avarokctl>,
     run_id: &str,
     anchor_full: &str,
     cancel: Arc<AtomicBool>,
@@ -147,7 +147,7 @@ pub fn runners(
                 }))
             } else {
                 Ok(Box::new(runner::RemoteRunner {
-                    atlasctl: atlasctl.clone(),
+                    avarokctl: avarokctl.clone(),
                     node: n.clone(),
                     run_id: run_id.to_owned(),
                     anchor_full: anchor_full.to_owned(),
@@ -160,8 +160,8 @@ pub fn runners(
 }
 
 /// This machine's signing fingerprint, for the local node.
-pub fn local_signer(atlas_home: &std::path::Path) -> Result<String> {
-    Ok(signing::load_or_create(atlas_home)?
+pub fn local_signer(avarok_home: &std::path::Path) -> Result<String> {
+    Ok(signing::load_or_create(avarok_home)?
         .fingerprint()
         .to_owned())
 }

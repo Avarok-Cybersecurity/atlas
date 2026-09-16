@@ -5,7 +5,7 @@
 // llms.txt is what an answer engine reads when it wants the short version of a
 //   site. That makes it a claim surface, so it is generated rather than typed:
 //   the model list comes from models.generated.json (itself generated from
-//   atlas-recipes), the competitive numbers from ladder.generated.json, and the
+//   avarok-recipes), the competitive numbers from ladder.generated.json, and the
 //   MLPerf status from mlperf.json. Nothing here can drift from the page,
 //   because there is no second copy to drift.
 //
@@ -86,7 +86,7 @@ push(
 );
 for (const r of ladder.rows) {
   const best = r.baselines.find((b) => b.id === r.best_baseline_id);
-  push(`| ${r.c} | ${r.atlas.toFixed(2)} | ${best.tok_s.toFixed(2)} (${best.label}) | ${fmt(r.ratio_vs_best)}x |`);
+  push(`| ${r.c} | ${r.avarok.toFixed(2)} | ${best.tok_s.toFixed(2)} (${best.label}) | ${fmt(r.ratio_vs_best)}x |`);
 }
 push(
   '',
@@ -102,8 +102,8 @@ push('## Install', '', '```sh', data.runCommand, '```', '', 'Or without piping t
 push(
   `## Models (${recipes.length} recipes)`,
   '',
-  'Every model below maps to one recipe in atlas-recipes; the site cannot list a',
-  'model that has no recipe. Run any of them with `atlasctl run <id>`.',
+  'Every model below maps to one recipe in avarok-recipes; the site cannot list a',
+  'model that has no recipe. Run any of them with `avarokctl run <id>`.',
   ''
 );
 for (const vendor of [...new Set(recipes.map((r) => r.vendor))]) {

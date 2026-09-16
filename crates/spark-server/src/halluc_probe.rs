@@ -10,7 +10,7 @@
 //!
 //! ## Scope
 //!
-//! Atlas's residual stream lives on the GPU; exposing it for a
+//! Avarok's residual stream lives on the GPU; exposing it for a
 //! per-token linear probe needs (a) the kernel to dump the last-
 //! layer hidden state to host every step, OR (b) the probe weights
 //! cooperate with a fused GPU kernel. Either is a kernel change.
@@ -20,7 +20,7 @@
 //! to extract the hidden state is documented as a future activation.
 //!
 //! Per-token AUC ≈ 0.90 is high but not perfect; ship as a
-//! READ-ONLY side signal (`x-atlas-confidence` SSE channel) that
+//! READ-ONLY side signal (`x-avarok-confidence` SSE channel) that
 //! clients can use for display or down-stream gating, NOT as a
 //! generation-time mask. False positives at decode would harm
 //! quality; false positives in a confidence display do not.
@@ -73,7 +73,7 @@ impl LinearProbe {
 }
 
 /// Per-token confidence record streamed to clients on the
-/// `x-atlas-confidence` SSE channel.
+/// `x-avarok-confidence` SSE channel.
 #[derive(Debug, Clone)]
 pub struct ConfidenceSample {
     pub token_id: u32,

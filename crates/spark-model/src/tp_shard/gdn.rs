@@ -4,7 +4,7 @@
 //! linear-attention) layers. Split out of `tp_shard.rs` (file-size cap).
 
 use anyhow::{Result, ensure};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::{BF16_BYTES, TpShardKind, shard_dense_bf16};

@@ -141,19 +141,19 @@ mkdir -p "$TMP/wf/.github/workflows"; cp .github/scripts/assert-cmd-runner-safe.
 # CONTROL x3: each shape that would let a fork run code on our hardware.
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request: { types: [opened] } }
-jobs: { j: { runs-on: atlas-cmd, steps: [{ uses: actions/checkout@v4, with: { ref: main } }] } }
+jobs: { j: { runs-on: avarok-cmd, steps: [{ uses: actions/checkout@v4, with: { ref: main } }] } }
 Y
 want_rc 1 "control: pull_request trigger on the command runner" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request_target: { types: [opened] } }
-jobs: { j: { runs-on: [self-hosted, atlas-cmd], steps: [{ uses: actions/checkout@v4, with: { ref: "${{ github.event.pull_request.head.sha }}" } }] } }
+jobs: { j: { runs-on: [self-hosted, avarok-cmd], steps: [{ uses: actions/checkout@v4, with: { ref: "${{ github.event.pull_request.head.sha }}" } }] } }
 Y
 want_rc 1 "control: checks out the PR head on the command runner" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { issue_comment: { types: [created] } }
-jobs: { j: { runs-on: atlas-cmd, steps: [{ uses: actions/checkout@v4 }] } }
+jobs: { j: { runs-on: avarok-cmd, steps: [{ uses: actions/checkout@v4 }] } }
 Y
 want_rc 1 "control: checkout with no explicit ref on the command runner" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
@@ -162,7 +162,7 @@ want_rc 1 "control: checkout with no explicit ref on the command runner" \
 # same-repo comparison in `runs-on`. These three controls are that property.
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request: { types: [opened] } }
-jobs: { j: { runs-on: atlas-pr-cheap, steps: [{ uses: actions/checkout@v4 }] } }
+jobs: { j: { runs-on: avarok-pr-cheap, steps: [{ uses: actions/checkout@v4 }] } }
 Y
 want_rc 1 "control: cheap pool on pull_request with no same-repo guard" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
@@ -178,7 +178,7 @@ cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request: { types: [opened] } }
 jobs:
   j:
-    runs-on: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'atlas-pr-cheap' || 'ubuntu-latest' }}"
+    runs-on: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'avarok-pr-cheap' || 'ubuntu-latest' }}"
     steps: [{ uses: actions/checkout@v4, with: { ref: "${{ github.event.pull_request.head.sha }}" } }]
 Y
 want_rc 1 "control: cheap pool guarded but checking out a fork ref" \
@@ -675,7 +675,7 @@ if [ -s "$TMP/oc.sh" ]; then
   # the registry knows a benchmark's Sensitivity and the rule is now
   # class-conditional. This selftest step is deliberately pure-Python with NO
   # Rust toolchain, so it cannot and must not run that half; the verdict has ten
-  # tests with red/green controls under `cargo test -p atlas-plugin agreement`,
+  # tests with red/green controls under `cargo test -p avarok-plugin agreement`,
   # including the two that matter — a Speed set spanning signers is refused, a
   # Correctness set spanning signers is allowed.
   #
@@ -1139,7 +1139,7 @@ STUB
   # filter. Grepping for the marker alone matched the lookup and reported a
   # certificate that was never posted -- the assertion could not tell "asked
   # whether one exists" from "posted one". Require the POST too.
-  certed()  { grep -qE 'POST.*issues/1/comments.*atlas-certificate' "$TMP/bcalls"; }
+  certed()  { grep -qE 'POST.*issues/1/comments.*avarok-certificate' "$TMP/bcalls"; }
 
   # CONTROL: the render tools are installed with `|| true`, so ask what happens
   # when that install fails. Before the guard, `rsvg-convert` was then missing,
@@ -1220,8 +1220,8 @@ PY
   # The marker is both the lookup key and the memory of the previous state, and
   # BOTH halves live in the state it carries. A substring grep of the step's
   # source could not see that: deleting the `:$STATE` leaves the string
-  # `atlas-certification-state` in the file, so this check stayed green while
-  # the lookup's `contains("<!-- atlas-certification-state:")` matched nothing,
+  # `avarok-certification-state` in the file, so this check stayed green while
+  # the lookup's `contains("<!-- avarok-certification-state:")` matched nothing,
   # `prev` was empty on every run, and the bot posted a fresh comment per event
   # instead of editing one -- the thread of stale states the marker exists to
   # prevent. Assert the marker the bot actually EMITS, and that the lookup's own
@@ -1230,7 +1230,7 @@ PY
   LOOKUP=$(python3 - <<'PY'
 import re, pathlib
 t = pathlib.Path(".github/workflows/certification-bot.yml").read_text()
-m = re.search(r'contains\("(<!-- atlas-certification-state[^"]*)"\)', t)
+m = re.search(r'contains\("(<!-- avarok-certification-state[^"]*)"\)', t)
 print(m.group(1) if m else "")
 PY
 )
@@ -1305,7 +1305,7 @@ STUB
   ( PATH="$TMP/bin:$PATH" BCALLS="$TMP/bcalls" REPO=o/r PR=1 DEFAULT_BRANCH=main \
     STATE=pr-certification-merged HEADLINE=h COMMENT_ID= HEAD_SHA=abc1234567 \
     bash "$TMP/bot.sh" >/dev/null 2>&1 )
-  if grep -qE 'POST.*issues/1/comments.*atlas-certificate' "$TMP/bcalls"; then
+  if grep -qE 'POST.*issues/1/comments.*avarok-certificate' "$TMP/bcalls"; then
     if grep -q 'bot-cards/pr-1-' "$TMP/bcalls"; then
       bad "control: it linked an image that was never uploaded"
     else
@@ -1394,8 +1394,8 @@ want_rc_msg 1 "leaves the required context uncreated" "control: renaming a requi
 # A required check whose verdict is not about the thing it claims to test
 # ---------------------------------------------------------------------------
 # `cargo test --features metal (macOS aarch64)` inherited ci.yml's
-# workflow-level ATLAS_SKIP_BUILD=1 (there so the ubuntu jobs type-check
-# without nvcc). atlas-kernels' build.rs honours it first and emits a stub
+# workflow-level AVAROK_SKIP_BUILD=1 (there so the ubuntu jobs type-check
+# without nvcc). avarok-kernels' build.rs honours it first and emits a stub
 # whose `metallib_modules()` is Vec::new(), so MetalGpuBackend loaded ZERO
 # libraries and all 35 parity tests died with `Metal: unknown module`. The
 # check was permanently red about a stub, and the merge queue was impassable
@@ -1417,24 +1417,24 @@ want_rc 0 "every required context resolves to a live job that a failed dependenc
   python3 .github/scripts/assert-gates-are-wired.py
 
 # The regression itself: put the stub env back on the metal test step.
-sg_sabotage ci.yml "$rc_metal_env"'env["ATLAS_SKIP_BUILD"] = "1"'
+sg_sabotage ci.yml "$rc_metal_env"'env["AVAROK_SKIP_BUILD"] = "1"'
 want_rc_msg 1 "is about the stub, not the kernels" \
   "control: running the metal suite against a kernel-build stub is caught" \
   python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
 
 # Inheritance, not just the step: deleting the step override lets ci.yml's
-# workflow-level ATLAS_SKIP_BUILD=1 reach the job again. A guard that only
+# workflow-level AVAROK_SKIP_BUILD=1 reach the job again. A guard that only
 # looked at the step's own env would pass here.
-sg_sabotage ci.yml "$rc_metal_env"'env.pop("ATLAS_SKIP_BUILD")'
+sg_sabotage ci.yml "$rc_metal_env"'env.pop("AVAROK_SKIP_BUILD")'
 want_rc_msg 1 "is about the stub, not the kernels" \
   "control: dropping the override so the workflow-level stub env is inherited is caught" \
   python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
 
-# Without ATLAS_TARGET_HW, build.rs takes its macOS auto-skip and embeds
-# nothing even with ATLAS_SKIP_BUILD=0 -- the same empty set by another route.
-sg_sabotage ci.yml "$rc_metal_env"'env.pop("ATLAS_TARGET_HW")'
+# Without AVAROK_TARGET_HW, build.rs takes its macOS auto-skip and embeds
+# nothing even with AVAROK_SKIP_BUILD=0 -- the same empty set by another route.
+sg_sabotage ci.yml "$rc_metal_env"'env.pop("AVAROK_TARGET_HW")'
 want_rc_msg 1 "build.rs takes the macOS auto-skip" \
-  "control: dropping ATLAS_TARGET_HW from the metal suite is caught" \
+  "control: dropping AVAROK_TARGET_HW from the metal suite is caught" \
   python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
 
 # The other half of the family: a required job that a FAILED dependency
@@ -2283,7 +2283,7 @@ case "\$url" in
   */control)      [ "$1" = break ] && { printf '000'; exit 7; }; printf '200'; exit 0 ;;
   */control.html) printf '<title>Control plane</title>' ;;
   */install.sh)   printf '#!/bin/sh\nexit 0\n' ;;
-  */install.ps1)  printf '# atlas installer\n' ;;
+  */install.ps1)  printf '# avarok installer\n' ;;
   *)              printf '<title>Avarok, pure Rust inference</title>' ;;
 esac
 exit 0
@@ -2412,7 +2412,7 @@ dl_tree() {  # build a miniature repo the checker can be pointed at
   printf 'PNG' > "$TMP/dl/blog/static/images/hero.webp"
   printf '[ok](target.md)\n'          > "$TMP/dl/docs/good.md"
   printf '![h](/images/hero.webp)\n'  > "$TMP/dl/blog/src/post.md"
-  printf '[api](/api/atlas_core/)\n'  > "$TMP/dl/book/src/redirect.md"
+  printf '[api](/api/avarok_core/)\n'  > "$TMP/dl/book/src/redirect.md"
 }
 dl_run() { python3 "$TMP/dl/.github/scripts/assert-doc-links.py"; }
 

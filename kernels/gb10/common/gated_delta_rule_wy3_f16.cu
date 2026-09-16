@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// FP16 h-state twin of `gated_delta_rule_wy3` — stage 2 of `ATLAS_SSM_H_FP16`.
+// FP16 h-state twin of `gated_delta_rule_wy3` — stage 2 of `AVAROK_SSM_H_FP16`.
 //
 // MECHANICALLY DERIVED from the FP32 parent: every float expression, gate
 // clamp, accumulation order and reduction below is the parent's, unchanged.
@@ -34,7 +34,7 @@
 #include "gdn_f16_state.cuh"
 #define BLOCK_SIZE 128
 
-// Reduction primitives (atlas_block_reduce_sum) from gdn_reduce.cuh match
+// Reduction primitives (avarok_block_reduce_sum) from gdn_reduce.cuh match
 // the per-token baseline bit-exactly.
 
 extern "C" __global__ void gated_delta_rule_wy3_f16(
@@ -116,19 +116,19 @@ extern "C" __global__ void gated_delta_rule_wy3_f16(
     // ── Compute 3 k_dot products via block reduction ──
     {
         float p = (tid<k_dim) ? sk1[tid]*sk0[tid] : 0.0f;
-        float r = atlas_block_reduce_sum(p, smem_warp, tid);
+        float r = avarok_block_reduce_sum(p, smem_warp, tid);
         if (tid==0) kd10 = r;
     }
     __syncthreads();
     {
         float p = (tid<k_dim) ? sk2[tid]*sk0[tid] : 0.0f;
-        float r = atlas_block_reduce_sum(p, smem_warp, tid);
+        float r = avarok_block_reduce_sum(p, smem_warp, tid);
         if (tid==0) kd20 = r;
     }
     __syncthreads();
     {
         float p = (tid<k_dim) ? sk2[tid]*sk1[tid] : 0.0f;
-        float r = atlas_block_reduce_sum(p, smem_warp, tid);
+        float r = avarok_block_reduce_sum(p, smem_warp, tid);
         if (tid==0) kd21 = r;
     }
     __syncthreads();

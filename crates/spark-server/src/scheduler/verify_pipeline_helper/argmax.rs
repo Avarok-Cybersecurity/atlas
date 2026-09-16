@@ -13,7 +13,7 @@
 /// running index. That blocks vectorisation and leaves one long dependency
 /// chain: measured 1.19 ms per verify step for 4 x 248k f32 (~840 MB/s, far
 /// under memory bandwidth) and 70% of the whole host logits pipeline
-/// (`ATLAS_MTP_TIMING`, K=4, 150 steps).
+/// (`AVAROK_MTP_TIMING`, K=4, 150 steps).
 ///
 /// Two passes instead:
 ///   1. max only, over 8 independent accumulators — no index dependency, so

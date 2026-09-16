@@ -5,12 +5,12 @@ what the negative control proved. Newest entries at the bottom.
 
 ## The gate
 
-`/workspace/atlas-blog/.gate.sh` (untracked; mirrors what `.github/workflows/site.yml`
+`/workspace/avarok-blog/.gate.sh` (untracked; mirrors what `.github/workflows/site.yml`
 runs in CI) — for each of `site/` and `blog/`:
 
 1. `bun test src/lib` — unit tests
-2. `bun x --bun vite build` — the SvelteKit build, with `ATLAS_RECIPES_ROOT`
-   pointed at a local `atlas-recipes` checkout
+2. `bun x --bun vite build` — the SvelteKit build, with `AVAROK_RECIPES_ROOT`
+   pointed at a local `avarok-recipes` checkout
 3. the chevron-field contrast check (`.contrast-check.mjs`), which re-derives the
    field's luminance budget against the ground it is actually painted on
 
@@ -33,7 +33,7 @@ Green. Any red after this point belongs to this work until proven otherwise.
 
 **Found.** Two premises needed correcting before any code was written.
 
-1. *The working tree was stale.* `/workspace/atlas` sits on
+1. *The working tree was stale.* `/workspace/avarok` sits on
    `fix/ssm-rollback-hardening` and its `site/` is the old **light** "warm
    workshop" system (`--bg: #f4f0e8`, copper `#b5622f`). `origin/main` has since
    moved to the **deep violet workstation** system (`--bg: #14111f`, accent
@@ -41,7 +41,7 @@ Green. Any red after this point belongs to this work until proven otherwise.
    `--ch-violet #BE9DF8`, `--ch-cyan #49C3DB`, `--ch-green #12B981`,
    `--ch-gold #EFB338`. Those are *byte-identical* to the four chevron constants
    in the supplied scaffold. All work happens in a clean worktree at
-   `/workspace/atlas-blog` cut from `origin/main`, never in `/workspace/atlas`.
+   `/workspace/avarok-blog` cut from `origin/main`, never in `/workspace/avarok`.
 
 2. *Consequently the brief's ambiguity dissolves.* "Use the look and feel of the
    main website" and "the same color scheme" are already 90% satisfied by the
@@ -125,7 +125,7 @@ been easy to go debugging server_name matching for an hour.
 (adapter-static, bun, Vite 8, Svelte 5 runes), prerendered to static files.
 
 **Design system: one, not two.** The `:root` token block moved out of
-`site/src/app.css` into `web-shared/atlas-tokens.css`, which both apps now
+`site/src/app.css` into `web-shared/avarok-tokens.css`, which both apps now
 import. This is the SSOT the brief implies when it says "the same colour
 scheme" — with two copies, "the same" survives exactly until the first edit.
 `blog/src/app.css` defines only editorial structure (reading column, chevron
@@ -260,10 +260,10 @@ artwork. Two things were wrong:
 
 1. The blog was on `#14111f` — the marketing site's ramp — not the reference's
    `#0F1216`.
-2. The blog's header and footer used `favicon.svg` plus the word "Atlas" set in
+2. The blog's header and footer used `favicon.svg` plus the word "Avarok" set in
    the UI font. The reference uses the **real lockup**: the mark, the wordmark
    outlines including the Avarok signature "A" with its arrow shaft, and the
-   tagline. Confirmed by the user: *"the Atlas 'A' does not have an arrow on the
+   tagline. Confirmed by the user: *"the Avarok 'A' does not have an arrow on the
    current blog, yet the inputted reference does use it."*
 
 **Decided with the user:** both properties move onto the reference ramp, so
@@ -271,7 +271,7 @@ there is one palette rather than two.
 
 ### The palette move
 
-`web-shared/atlas-tokens.css` now holds the reference ramp under the marketing
+`web-shared/avarok-tokens.css` now holds the reference ramp under the marketing
 site's token names, so nothing downstream had to be renamed. The work that was
 not a hex swap:
 
@@ -295,7 +295,7 @@ so white gains contrast rather than losing it"*, and the hovers now use it.
 
 ### The artwork
 
-`web-shared/components/AtlasLockup.svelte` carries the reference `<defs>`
+`web-shared/components/AvarokLockup.svelte` carries the reference `<defs>`
 verbatim — mark, wordmark, tagline — with one substitution: the literal brand
 greys and chevron hues became the tokens holding those same values, so the
 lockup follows the palette instead of pinning a second copy of it. Both

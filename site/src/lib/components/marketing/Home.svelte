@@ -13,7 +13,7 @@
   const benchmark = benchmarkHighlight(ladder);
   const featuredModels = models.filter(model => ['Qwen', 'Gemma', 'Mistral', 'Nemotron'].includes(model.vendor));
   function forwardLegacyFragment({ hash, search }) {
-    if (hash === '#why-atlas') {
+    if (hash === '#why-avarok') {
       window.location.replace(`${window.location.pathname}${search}#why-avarok`);
       return;
     }
@@ -46,7 +46,7 @@
     </header>
     <main id="main">
       <section class="m-hero">
-        <div class="m-hero-art"><img src="/brand/atlas-hero.png" alt="" fetchpriority="high" width="1536" height="1024" /></div>
+        <div class="m-hero-art"><img src="/brand/avarok-hero.png" alt="" fetchpriority="high" width="1536" height="1024" /></div>
         <div class="m-hero-copy">
           <a class="m-eyebrow m-hero-announcement" href={REPO} target="_blank" rel="noreferrer"><span class="m-status-dot"/> OPEN SOURCE. OPEN POSSIBILITIES. <Icon name="ArrowUpRight" size={13}/></a>
           <h1>Intelligence,<br/>on your <em>terms.</em></h1>
@@ -73,7 +73,7 @@
       </section>
       <section id="verified" class="m-section m-evidence">
         <div class="m-evidence-copy"><p class="m-eyebrow m-section-label">03 / REAL ENGINE. REAL EVIDENCE.</p><h2>Confidence,<br/><span class="m-soft-text">built right in.</span></h2><p>Big promises need something solid underneath. Avarok publishes its benchmarks, names the hardware, and checks every release against a committed baseline.</p><a class="m-text-link" href={ladder.results_doc_url} target="_blank" rel="noreferrer">See the work behind the numbers <Icon name="ArrowUpRight" size={17}/></a></div>
-        <div class="m-evidence-card"><div class="m-evidence-kicker"><span class="m-status-dot"/> PUBLISHED GB10 BENCHMARK</div><div class="m-big-number">{benchmark.ratio.toFixed(3)}<span>×</span></div><h3>{benchmark.improved ? "More throughput" : "Relative throughput"} at {benchmark.concurrency} concurrent requests.</h3><div class="m-benchmark-bars"><div><span>Avarok</span><b style:width={`${benchmark.atlasWidth}%`}>{benchmark.atlas.toFixed(2)} tok/s</b></div><div><span>vLLM</span><b style:width={`${benchmark.baselineWidth}%`}>{benchmark.baseline.toFixed(2)} tok/s</b></div></div><p class="m-benchmark-note">{ladder.workload.checkpoint} · {ladder.box.gpu} · {ladder.aggregate} · {ladder.workload.isl_tokens} input / {ladder.workload.osl_tokens.toLocaleString("en-US")} output tokens. Compared with the matched vLLM + MTP configuration at C={benchmark.concurrency}. <a href={`${ENGINE}#verified`} target="_blank" rel="noreferrer">Full methodology ↗</a></p></div>
+        <div class="m-evidence-card"><div class="m-evidence-kicker"><span class="m-status-dot"/> PUBLISHED GB10 BENCHMARK</div><div class="m-big-number">{benchmark.ratio.toFixed(3)}<span>×</span></div><h3>{benchmark.improved ? "More throughput" : "Relative throughput"} at {benchmark.concurrency} concurrent requests.</h3><div class="m-benchmark-bars"><div><span>Avarok</span><b style:width={`${benchmark.avarokWidth}%`}>{benchmark.avarok.toFixed(2)} tok/s</b></div><div><span>vLLM</span><b style:width={`${benchmark.baselineWidth}%`}>{benchmark.baseline.toFixed(2)} tok/s</b></div></div><p class="m-benchmark-note">{ladder.workload.checkpoint} · {ladder.box.gpu} · {ladder.aggregate} · {ladder.workload.isl_tokens} input / {ladder.workload.osl_tokens.toLocaleString("en-US")} output tokens. Compared with the matched vLLM + MTP configuration at C={benchmark.concurrency}. <a href={`${ENGINE}#verified`} target="_blank" rel="noreferrer">Full methodology ↗</a></p></div>
       </section>
       <section id="run" class="m-start-section"><span id="start"></span>
         <div class="m-start-top"><p class="m-eyebrow">THE FUTURE IS OPEN. MAKE IT YOURS.</p><span class="m-large-plus">+</span></div>

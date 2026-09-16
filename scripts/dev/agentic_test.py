@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Atlas Agentic Multi-Turn Session Tester
+Avarok Agentic Multi-Turn Session Tester
 
 Simulates a Claude Code / OpenCode style agentic session:
 - Multi-turn tool calling (write_file, read_file, run_command)
@@ -15,7 +15,7 @@ from pathlib import Path
 
 PORT = 8888
 BASE_URL = f"http://localhost:{PORT}"
-WORK_DIR = Path("/tmp/atlas-agentic-test")
+WORK_DIR = Path("/tmp/avarok-agentic-test")
 MAX_TURNS = 15
 
 TOOLS = [
@@ -216,7 +216,7 @@ def main():
     results = []
 
     print(f"{'='*60}")
-    print(f"Atlas Agentic Multi-Turn Session Tester")
+    print(f"Avarok Agentic Multi-Turn Session Tester")
     print(f"Duration: {args.hours}h, Test cases: {len(test_cases)}")
     print(f"{'='*60}\n")
 
@@ -262,9 +262,9 @@ def main():
             break
 
     # Save results
-    with open("/workspace/atlas/agentic_test_results.json", "w") as f:
+    with open("/workspace/avarok/agentic_test_results.json", "w") as f:
         json.dump(results, f, indent=2)
-    print(f"\nResults saved to /workspace/atlas/agentic_test_results.json")
+    print(f"\nResults saved to /workspace/avarok/agentic_test_results.json")
 
 if __name__ == "__main__":
     main()

@@ -171,7 +171,7 @@
           <span class="ld-step-n">1</span>
           <div>
             <p class="ld-step-t">On {node.name}, open its control page and mint a code</p>
-            <!-- NOT `atlasctl agent pair`. That command binds the peer port,
+            <!-- NOT `avarokctl agent pair`. That command binds the peer port,
                  and {node.name}'s agent is already holding it — which is the
                  only reason this machine can see it at all. The code has to
                  come from the running agent, and its control page is what asks

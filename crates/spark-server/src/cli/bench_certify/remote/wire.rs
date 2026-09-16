@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The shapes `atlasctl bench … --json` writes, as this side reads them
-//! (atlas-recipes `docs/BENCH.md`). Every optional fact defaults, so an
-//! atlasctl one version away still parses — and admission treats an absent
+//! The shapes `avarokctl bench … --json` writes, as this side reads them
+//! (avarok-recipes `docs/BENCH.md`). Every optional fact defaults, so an
+//! avarokctl one version away still parses — and admission treats an absent
 //! fact as a refusal, never as a pass.
 
 use std::path::PathBuf;
 
 use serde::Deserialize;
 
-/// atlasctl's exit codes, by name.
+/// avarokctl's exit codes, by name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Exit {
     Done,
@@ -41,7 +41,7 @@ impl Exit {
     }
 }
 
-/// atlasctl's error document.
+/// avarokctl's error document.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Default)]
 pub struct ErrorObj {
     pub code: String,
@@ -136,7 +136,7 @@ pub struct BuiltSha {
 }
 
 /// What a node says about itself. Every field defaults, so a newer or older
-/// atlasctl that adds or drops one still parses — and the admission rules
+/// avarokctl that adds or drops one still parses — and the admission rules
 /// treat an absent fact as a refusal, never as a pass.
 #[derive(Clone, Debug, Deserialize, PartialEq, Default)]
 pub struct NodeInfo {
@@ -157,9 +157,10 @@ pub struct NodeInfo {
     #[serde(default)]
     pub hardware_class: Option<String>,
     #[serde(default)]
-    pub atlas_repo: Option<RepoInfo>,
-    #[serde(default)]
-    pub atlas_home: Option<String>,
+    #[serde(alias = "atlas_repo")]
+    pub avarok_repo: Option<RepoInfo>,
+    #[serde(default, alias = "atlas_home")]
+    pub avarok_home: Option<String>,
     #[serde(default)]
     pub signer_fp: Option<String>,
     #[serde(default)]
@@ -254,7 +255,7 @@ pub enum AttachEnd {
     Cancelled,
     /// Exit 7: the stream could not be re-established; resume from here.
     StreamLost { last_seq: u64 },
-    /// atlasctl refused, or could not reach or authenticate.
+    /// avarokctl refused, or could not reach or authenticate.
     Failed { exit: Exit, error: Option<ErrorObj> },
 }
 

@@ -61,7 +61,7 @@ pub use qwen35_dense::predicted_residency;
 pub use step3p7::Step3p7WeightLoader;
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -84,14 +84,14 @@ use crate::weight_map::{DenseWeight, MtpWeights, Nvfp4Variant, detect_nvfp4_vari
 /// other MoE loader either hard-coded its own copy or (qwen3_vl, gemma4,
 /// step3p7) silently never transposed at all. One reader, one lever.
 ///
-/// `ATLAS_MOE_PREFILL_COPIES=0` forces the fallback — an A/B lever and an
+/// `AVAROK_MOE_PREFILL_COPIES=0` forces the fallback — an A/B lever and an
 /// escape hatch for a box under external memory pressure that the free-memory
 /// probe cannot see. Any other value (or unset) means "build them if they fit":
 /// PCND-wise the decision is *derived* from measured free memory, never a
 /// silent constant.
 pub(crate) fn moe_prefill_copies_fit(config: &ModelConfig, gpu: &dyn GpuBackend) -> bool {
-    if std::env::var("ATLAS_MOE_PREFILL_COPIES").ok().as_deref() == Some("0") {
-        tracing::info!("ATLAS_MOE_PREFILL_COPIES=0: MoE prefill uses the fallback grouped GEMM");
+    if std::env::var("AVAROK_MOE_PREFILL_COPIES").ok().as_deref() == Some("0") {
+        tracing::info!("AVAROK_MOE_PREFILL_COPIES=0: MoE prefill uses the fallback grouped GEMM");
         return false;
     }
     let inter = config.moe_intermediate_size;
@@ -155,7 +155,7 @@ impl QuantFormat {
 /// Checkpoint weight format, detected from safetensors metadata.
 ///
 /// Determines how raw weight bytes are interpreted and transformed into
-/// the runtime NVFP4 format used by Atlas GEMM kernels.
+/// the runtime NVFP4 format used by Avarok GEMM kernels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeightFormat {
     /// NVFP4 E2M1 on disk (nvidia ModelOpt or compressed-tensors).
@@ -286,7 +286,7 @@ pub trait ModelWeightLoader {
     /// `gpu` is passed so model-specific loaders can do on-device weight
     /// transforms at load time (e.g. Gemma-4 shifts the learned absolute-
     /// scale weight by -1 into the offset-from-1 convention expected by
-    /// Atlas's rms_norm kernel). Loaders that don't need it should ignore
+    /// Avarok's rms_norm kernel). Loaders that don't need it should ignore
     /// the argument.
     fn load_final_norm(
         &self,

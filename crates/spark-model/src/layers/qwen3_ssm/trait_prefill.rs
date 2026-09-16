@@ -27,7 +27,7 @@ impl Qwen3SsmLayer {
         let bf16 = 2usize;
         let fp32 = 4usize;
 
-        // Per-SSM-layer-prefill counter — used by ATLAS_GDN_DUMP hooks
+        // Per-SSM-layer-prefill counter — used by AVAROK_GDN_DUMP hooks
         // to attribute a captured intermediate to a specific SSM layer
         // index. The N SSM layers in the model are called in order
         // during one prefill, so layer N-1 sees counter == N-1.
@@ -38,7 +38,7 @@ impl Qwen3SsmLayer {
         // the `SsmLayerState` downcast moved into `prefill_block` with the
         // body that reads them; only the residual bookkeeping is left here.
 
-        // Profiling helper: sync + timestamp when ATLAS_PROFILE=1
+        // Profiling helper: sync + timestamp when AVAROK_PROFILE=1
         macro_rules! prof {
             ($label:expr, $t0:expr) => {
                 if ctx.profile {
@@ -65,7 +65,7 @@ impl Qwen3SsmLayer {
                 .map_err(|e| anyhow::anyhow!("SSM prefill ENTRY: stream broken (k={k}): {e}"))?;
         }
 
-        // ATLAS_GDN_DUMP hook #0a: pre-input-norm hidden state for THIS
+        // AVAROK_GDN_DUMP hook #0a: pre-input-norm hidden state for THIS
         // layer (= last layer's output + residual). If this matches HF
         // byte-perfectly while gnorm doesn't, drift originates INSIDE
         // the current layer's compute (norm/qkv/conv/recur/gnorm).
@@ -94,7 +94,7 @@ impl Qwen3SsmLayer {
             eps,
             stream,
         )?;
-        // ATLAS_GDN_DUMP hook #0b: post-input-norm (input to in_proj_qkv).
+        // AVAROK_GDN_DUMP hook #0b: post-input-norm (input to in_proj_qkv).
         super::debug::maybe_dump_gdn_buf(
             ctx.gpu,
             normed,
@@ -122,8 +122,8 @@ impl Qwen3SsmLayer {
         let out_proj_buf =
             self.prefill_block(normed, num_tokens, state, ssm_layer_idx, ctx, stream)?;
 
-        // ATLAS_DUMP_EXPERT_IDS=1: also dumps residual_add_rms_norm INPUTS (hidden + out_proj_buf) for drift attribution.
-        if std::env::var("ATLAS_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
+        // AVAROK_DUMP_EXPERT_IDS=1: also dumps residual_add_rms_norm INPUTS (hidden + out_proj_buf) for drift attribution.
+        if std::env::var("AVAROK_DUMP_EXPERT_IDS").ok().as_deref() == Some("1") {
             ctx.gpu.synchronize(stream)?;
             let offset = (num_tokens - 1) * h * 2;
             // Read hidden
@@ -149,12 +149,12 @@ impl Qwen3SsmLayer {
                 .collect();
             let n_o = v_o.iter().map(|x| x * x).sum::<f32>().sqrt();
             tracing::info!(
-                "ATLAS_PRENORM_HIDDEN last_tok: |x|={:.4} first5={:?}",
+                "AVAROK_PRENORM_HIDDEN last_tok: |x|={:.4} first5={:?}",
                 n_h,
                 &v_h[..5]
             );
             tracing::info!(
-                "ATLAS_PRENORM_OUTPROJ last_tok: |x|={:.4} first5={:?}",
+                "AVAROK_PRENORM_OUTPROJ last_tok: |x|={:.4} first5={:?}",
                 n_o,
                 &v_o[..5]
             );
@@ -162,7 +162,7 @@ impl Qwen3SsmLayer {
             let v_sum: Vec<f32> = v_h.iter().zip(v_o.iter()).map(|(a, b)| a + b).collect();
             let n_sum = v_sum.iter().map(|x| x * x).sum::<f32>().sqrt();
             tracing::info!(
-                "ATLAS_PRENORM_SUM (hidden+out_proj): |x|={:.4} first5={:?}",
+                "AVAROK_PRENORM_SUM (hidden+out_proj): |x|={:.4} first5={:?}",
                 n_sum,
                 &v_sum[..5]
             );
@@ -186,7 +186,7 @@ impl Qwen3SsmLayer {
         // Batched MoE: 5 kernel launches for all N tokens
         self.ffn
             .forward_prefill(ctx.buffers.norm_output(), num_tokens, ctx, stream)?;
-        // ATLAS_GDN_DUMP hook: MoE output — KEY drift attribution test.
+        // AVAROK_GDN_DUMP hook: MoE output — KEY drift attribution test.
         // If this matches HF byte-perfectly, MoE quant is not the source.
         // If it drifts, MoE expert quantization is the confirmed cause.
         super::debug::maybe_dump_gdn_buf(

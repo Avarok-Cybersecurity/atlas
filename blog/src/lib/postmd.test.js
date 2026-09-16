@@ -13,7 +13,7 @@ const FRONT = {
   dek: 'One line about it.',
   categories: '[engineering, design]',
   date: '2026-08-30',
-  keywords: '[atlasctl, nvfp4]',
+  keywords: '[avarokctl, nvfp4]',
   'og-image': "''"
 };
 /** Build a post source, overriding or deleting frontmatter fields. */
@@ -31,7 +31,7 @@ describe('frontmatter', () => {
     const { meta } = analysePost(post(), V);
     expect(meta.title).toBe('A post');
     expect(meta.categories).toEqual(['engineering', 'design']);
-    expect(meta.keywords).toEqual(['atlasctl', 'nvfp4']);
+    expect(meta.keywords).toEqual(['avarokctl', 'nvfp4']);
     expect(meta['og-image']).toBe('');
   });
 

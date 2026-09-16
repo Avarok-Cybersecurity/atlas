@@ -53,7 +53,7 @@ one was invisible to isolated numeric checks and caught only by task gates).
 
 ## Which gates want `mtp_gate=force`, and which must not have it
 
-`atlas-recipes#16` pinned `mtp_gate: force` on the recipes backing the gates,
+`avarok-recipes#16` pinned `mtp_gate: force` on the recipes backing the gates,
 because in `auto` the MTP gate is a bandit arbiter that switches MTP↔serial at
 runtime on wall-clock tok/s, and speculation is not output-neutral at
 temperature 0. A campaign on 2026-08-28 confirmed the effect end to end:

@@ -7,9 +7,9 @@ use std::os::raw::{c_void, c_int, c_float};
     fn cudaStreamCreate(s:*mut *mut c_void)->c_int;
     fn cudaDeviceSynchronize()->c_int;
 }
-#[link(name="atlasgdn")] extern "C" {
-    fn atlas_gdn_load();
-    fn atlas_gdn_prefill(q:*mut c_void,k:*mut c_void,v:*mut c_void,o:*mut c_void,
+#[link(name="avarokgdn")] extern "C" {
+    fn avarok_gdn_load();
+    fn avarok_gdn_prefill(q:*mut c_void,k:*mut c_void,v:*mut c_void,o:*mut c_void,
         alpha:*mut c_void,beta:*mut c_void,state:*mut c_void,init_state:*mut c_void,
         tensormaps:*mut c_void,cu:*mut c_void, scale:c_float, total_seqlen:c_int,
         nq:c_int,nk:c_int,nv:c_int,nsab:c_int,nseqs:c_int,grid_x:c_int, stream:*mut c_void)->c_int;
@@ -27,7 +27,7 @@ fn h2f(h:u16)->f32{ // ieee half -> f32
 }
 fn main(){ unsafe{
     let (t,hv,d)=(2048usize,32usize,128usize);
-    atlas_gdn_load();
+    avarok_gdn_load();
     let q=up(&rd("/tmp/gdn_ref/q.bin")); let k=up(&rd("/tmp/gdn_ref/k.bin"));
     let v=up(&rd("/tmp/gdn_ref/v.bin")); let al=up(&rd("/tmp/gdn_ref/g.bin"));
     let be=up(&rd("/tmp/gdn_ref/beta.bin"));
@@ -35,10 +35,10 @@ fn main(){ unsafe{
     let cu_host:[i64;2]=[0, t as i64];
     let cu={ let mut p=std::ptr::null_mut(); cudaMalloc(&mut p,16); cudaMemcpy(p,cu_host.as_ptr() as *const c_void,16,H2D); p };
     let mut stream=std::ptr::null_mut(); cudaStreamCreate(&mut stream);
-    let ret=atlas_gdn_prefill(q,k,v,o,al,be,st,ini,tm,cu, 0.08838834764831843f32, t as c_int,
+    let ret=avarok_gdn_prefill(q,k,v,o,al,be,st,ini,tm,cu, 0.08838834764831843f32, t as c_int,
         16,16,32,32,1, 32, stream);
     cudaDeviceSynchronize();
-    println!("Rust->shim->AOT kernel: atlas_gdn_prefill ret={}", ret);
+    println!("Rust->shim->AOT kernel: avarok_gdn_prefill ret={}", ret);
     // read o (fp16) + o_ref (fp32) and compare
     let n=t*hv*d; let mut ho=vec![0u8; n*2];
     cudaMemcpy(ho.as_mut_ptr() as *mut c_void, o, n*2, D2H);

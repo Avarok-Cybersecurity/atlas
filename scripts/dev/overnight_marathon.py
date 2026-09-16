@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Atlas Overnight Marathon Test Suite
+Avarok Overnight Marathon Test Suite
 Runs all models in parallel across 2 DGX Spark nodes for 7+ hours.
 Self-repairs issues and produces a final summary table.
 
-Usage: python3 overnight_marathon.py 2>&1 | tee /workspace/atlas/overnight_results.log
+Usage: python3 overnight_marathon.py 2>&1 | tee /workspace/avarok/overnight_results.log
 """
 import subprocess, json, time, re, os, sys, urllib.request, traceback
 from datetime import datetime, timedelta
@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 # Configuration
 # ═══════════════════════════════════════════════════════════════
 MARATHON_HOURS = 7
-IMAGE = "atlas-gb10:latest"
+IMAGE = "avarok-gb10:latest"
 HF_CACHE_DGX1 = "/workspace/.cache/huggingface/hub"
 HF_CACHE_DGX2 = "/workspace/.cache/huggingface/hub"
 DGX1_IP = __import__("os").environ.get("DGX1_IP", "127.0.0.1")
@@ -190,7 +190,7 @@ def main():
     all_results = []
     iteration = 0
 
-    log(f"═══ ATLAS OVERNIGHT MARATHON ═══")
+    log(f"═══ AVAROK OVERNIGHT MARATHON ═══")
     log(f"Duration: {MARATHON_HOURS} hours")
     log(f"End time: {datetime.fromtimestamp(end_time).strftime('%Y-%m-%d %H:%M:%S')}")
     log(f"Models: {len(SINGLE_GPU_MODELS)} single-GPU + {len(EP2_MODELS)} EP=2")
@@ -220,7 +220,7 @@ def main():
 
             # Stop all containers
             for _, _, node in pair:
-                cname = f"atlas-{'ep0' if node == 'dgx1' else 'ep1'}"
+                cname = f"avarok-{'ep0' if node == 'dgx1' else 'ep1'}"
                 host = None if node == "dgx1" else DGX2_IP
                 docker_stop(cname, host)
 
@@ -230,7 +230,7 @@ def main():
                 host = None if node == "dgx1" else DGX2_IP
                 hf = HF_CACHE_DGX1 if node == "dgx1" else HF_CACHE_DGX2
                 port = 8888 if node == "dgx1" else 8888
-                cname = f"atlas-{'ep0' if node == 'dgx1' else 'ep1'}"
+                cname = f"avarok-{'ep0' if node == 'dgx1' else 'ep1'}"
                 short = model.split("/")[-1][:30]
                 log(f"  Starting {short} on {node}...")
                 ok = docker_start(cname, model, port, extra, host, hf)
@@ -272,16 +272,16 @@ def main():
                 short = model.split("/")[-1][:30]
                 log(f"  EP=2: {short}")
 
-                docker_stop("atlas-ep0")
-                docker_stop("atlas-ep1", DGX2_IP)
+                docker_stop("avarok-ep0")
+                docker_stop("avarok-ep1", DGX2_IP)
 
                 # Head
                 ep_head = f"--master-addr {DGX1_IP} --world-size 2 --rank 0"
-                ok0 = docker_start("atlas-ep0", model, 8888, extra, None, HF_CACHE_DGX1, 16384, ep_head)
+                ok0 = docker_start("avarok-ep0", model, 8888, extra, None, HF_CACHE_DGX1, 16384, ep_head)
 
                 # Wait for NCCL listener
                 for _ in range(84):
-                    logs, _ = run("sudo docker logs atlas-ep0 2>&1 | tail -5", timeout=10)
+                    logs, _ = run("sudo docker logs avarok-ep0 2>&1 | tail -5", timeout=10)
                     if "waiting for" in logs:
                         break
                     if "Error:" in logs and "FP8" not in logs:
@@ -290,9 +290,9 @@ def main():
 
                 # Worker
                 ep_worker = f"--master-addr {DGX1_IP} --world-size 2 --rank 1"
-                ok1 = docker_start("atlas-ep1", model, 8889, extra, DGX2_IP, HF_CACHE_DGX2, 16384, ep_worker)
+                ok1 = docker_start("avarok-ep1", model, 8889, extra, DGX2_IP, HF_CACHE_DGX2, 16384, ep_worker)
 
-                if ok0 and ok1 and wait_ready("atlas-ep0", timeout_s=480):
+                if ok0 and ok1 and wait_ready("avarok-ep0", timeout_s=480):
                     log(f"  EP=2 {short} ready")
                     try:
                         results = run_model_suite(model + " (EP=2)", 8888, is_niah=True)
@@ -306,8 +306,8 @@ def main():
                     log(f"  EP=2 {short}: FAILED TO START")
                     all_results.append({"model": model + " (EP=2)", "summary": {"std": "FAIL", "niah": "FAIL", "tok_s": 0}, "timestamp": datetime.now().isoformat()})
 
-                docker_stop("atlas-ep0")
-                docker_stop("atlas-ep1", DGX2_IP)
+                docker_stop("avarok-ep0")
+                docker_stop("avarok-ep1", DGX2_IP)
 
         iter_elapsed = time.time() - iter_start
         log(f"  Iteration {iteration} complete in {timedelta(seconds=int(iter_elapsed))}")
@@ -384,9 +384,9 @@ def main():
         log(f"  [{ts}] {m}: std={s.get('std','?')} niah={s.get('niah','?')} {s.get('tok_s',0)} tok/s{detail}")
 
     # Save JSON
-    with open("/workspace/atlas/overnight_results.json", "w") as f:
+    with open("/workspace/avarok/overnight_results.json", "w") as f:
         json.dump({"elapsed": str(elapsed), "iterations": iteration, "results": all_results}, f, indent=2)
-    log(f"\nJSON saved to /workspace/atlas/overnight_results.json")
+    log(f"\nJSON saved to /workspace/avarok/overnight_results.json")
 
 if __name__ == "__main__":
     main()

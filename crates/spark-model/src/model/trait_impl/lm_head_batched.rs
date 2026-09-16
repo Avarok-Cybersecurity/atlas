@@ -30,14 +30,14 @@ use super::super::types::TransformerModel;
 use crate::layers::ops;
 
 /// Batched-GEMV decode lm_head: **ON by default**, disabled by
-/// `ATLAS_NO_LM_HEAD_BATCH_GEMV=1`.
+/// `AVAROK_NO_LM_HEAD_BATCH_GEMV=1`.
 ///
-/// Strict `== "1"` on an `ATLAS_NO_*` name, not a presence check — presence
+/// Strict `== "1"` on an `AVAROK_NO_*` name, not a presence check — presence
 /// flags in this codebase are ENABLED by `=0`. Read once; this is a per-step
 /// site.
 pub(super) fn lm_head_batch_gemv_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_LM_HEAD_BATCH_GEMV").as_deref() != Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_LM_HEAD_BATCH_GEMV").as_deref() != Ok("1"))
 }
 
 /// Legacy BF16-head switch: only the exact value "0" disables it.
@@ -59,7 +59,7 @@ fn bf16_batch_gemv_from_value(value: Option<&str>) -> bool {
 /// ★ THE DEFAULT IS NO LONGER A LITERAL. It is the compiled target's
 /// (`kernels/<hw>/HARDWARE.toml` `[defaults] lm_head_batchm_max`), so a target
 /// that has measured a different edge declares it beside its arch facts
-/// instead of exporting `ATLAS_LM_HEAD_BATCHM_MAX` from a launch script —
+/// instead of exporting `AVAROK_LM_HEAD_BATCHM_MAX` from a launch script —
 /// which is the arrangement the 2026-09-11 maintainer review called
 /// "discipline rather than structure". Every target in the tree declares the
 /// frozen 8 today, so this site's behaviour is unchanged. The variable still
@@ -85,13 +85,13 @@ pub(super) struct LmHeadM16Tc {
     pub narrow: KernelHandle,
     /// `dense_gemm_m16_bf16_n64` (N_TILE=64). 0 when absent.
     pub wide: KernelHandle,
-    /// `ATLAS_LM_HEAD_M16_TC` present.
+    /// `AVAROK_LM_HEAD_M16_TC` present.
     pub enabled: bool,
     /// Requested CTA width: 32 (default) or 64.
     pub n_tile: u32,
 }
 
-/// `ATLAS_LM_HEAD_M16_TC_NTILE` — 32 (default) or 64. An unrecognised value
+/// `AVAROK_LM_HEAD_M16_TC_NTILE` — 32 (default) or 64. An unrecognised value
 /// falls back to 32 rather than failing the boot: the tile is a perf A/B knob,
 /// and the route log names the tile that actually ran.
 fn m16_tc_n_tile_from_value(value: Option<&str>) -> u32 {
@@ -108,11 +108,11 @@ fn m16_tc_n_tile_from_value(value: Option<&str>) -> u32 {
 fn lm_head_m16_tc_env() -> (bool, u32) {
     static ENV: std::sync::OnceLock<(bool, u32)> = std::sync::OnceLock::new();
     *ENV.get_or_init(|| {
-        let n_tile = std::env::var("ATLAS_LM_HEAD_M16_TC_NTILE").ok();
+        let n_tile = std::env::var("AVAROK_LM_HEAD_M16_TC_NTILE").ok();
         (
             // ★ THE TARGET'S DECLARATION, environment second. `lm_head_m16_tc`
             // is a `[defaults]` row, so an H100 serve reproduces round 9 cell
-            // Y with an empty environment; `ATLAS_LM_HEAD_M16_TC=0` is the A/B
+            // Y with an empty environment; `AVAROK_LM_HEAD_M16_TC=0` is the A/B
             // that pins the bit-exact tier back.
             ops::target_defaults::resolved().lm_head_m16_tc.value,
             m16_tc_n_tile_from_value(n_tile.as_deref()),
@@ -137,7 +137,7 @@ fn lm_head_m16_tc_env() -> (bool, u32) {
 /// cp.async pipeline advances 64 elements per step and its 16-byte weight-row
 /// chunks need `k % 8 == 0` anyway, so a K that is not a whole number of steps
 /// has no correct route and the tier must decline rather than launch and be
-/// wrong. Every Atlas BF16 head satisfies it (Qwen3.8-27B: K=5120).
+/// wrong. Every Avarok BF16 head satisfies it (Qwen3.8-27B: K=5120).
 ///
 /// Returns the launcher, its handle and the CTA width that will actually run —
 /// a shadow built before the wide arm existed has no `_n64`, so a `=64` request
@@ -173,7 +173,7 @@ fn lm_head_m16_tc_route(
 fn lmhead_batch_gemv_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        bf16_batch_gemv_from_value(std::env::var("ATLAS_LMHEAD_BATCH_GEMV").ok().as_deref())
+        bf16_batch_gemv_from_value(std::env::var("AVAROK_LMHEAD_BATCH_GEMV").ok().as_deref())
     })
 }
 
@@ -214,7 +214,7 @@ fn project_bf16_lm_head(
     // 🔴 It REASSOCIATES the K reduction, so it is NOT bit-identical to the
     // batched GEMV (which is bit-identical to M serial `dense_gemv_bf16`
     // calls). At the LM head that is a token-visible seam, which is why the arm
-    // is behind `ATLAS_LM_HEAD_M16_TC` and defaults OFF. With the lever unset
+    // is behind `AVAROK_LM_HEAD_M16_TC` and defaults OFF. With the lever unset
     // this whole block vanishes and the ladder is exactly what round 7 measured.
     if let Some((gemm, kernel, n_tile)) = lm_head_m16_tc_route(m16_tc, m, k) {
         log_m16_tc_head_route(n_tile, m16_tc.n_tile);
@@ -244,7 +244,7 @@ fn project_bf16_lm_head(
 /// cancelled that far — never a bare 2-ULP bound on every element.
 fn m16_tc_head_route_message(n_tile: u32, asked: u32) -> String {
     format!(
-        "[atlas] BF16 lm_head decode: ATLAS_LM_HEAD_M16_TC — tensor-core \
+        "[avarok] BF16 lm_head decode: AVAROK_LM_HEAD_M16_TC — tensor-core \
          dense_gemm_m16_bf16 N_TILE={n_tile} (asked {asked}) for 5..=16 rows, ahead of \
          dense_gemv_bf16_batchm. One weight pass, m16n8k16 MMA, so logits are \
          REASSOCIATED vs the scalar dense_gemv_bf16 — within 2 ordinal BF16 ULP, OR the \

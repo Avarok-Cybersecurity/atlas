@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Single-launch Sm120 NVFP4 grouped GEMM for Holo MoE Phase-2.
-// Replaces the per-expert dense-collective loop (atlas_cutlass_nvfp4_grouped_gate_up)
+// Replaces the per-expert dense-collective loop (avarok_cutlass_nvfp4_grouped_gate_up)
 // with one GemmUniversalMode::kGrouped launch over all active experts.
 //
 // Style/types mirror the dense binding cutlass_nvfp4_gemm.cu: same Sm120 /
@@ -142,7 +142,7 @@ __device__ __forceinline__ unsigned char float_to_e2m1_g(float x) {
 }
 
 // ─── per-group activation pack into the GROUPED SFA atom ───
-// Identical body to dense atlas_cutlass_pack_bf16_act_nvfp4 (cu:125-161) but the
+// Identical body to dense avarok_cutlass_pack_bf16_act_nvfp4 (cu:125-161) but the
 // kernel receives the per-group layout_sfa built from THAT group's {m,n,k}.
 template <class LayoutSFA_t>
 __global__ void pack_act_group(
@@ -254,16 +254,16 @@ __global__ void pack_act_grouped_batched(
 }
 
 // ─── per-{n,k} SFB swizzle pack (load-time helper) ───
-// Reads Atlas-transposed E4M3 weight scale [K/16, N] (the pack_bf16_weight_to_nvfp4_t
+// Reads Avarok-transposed E4M3 weight scale [K/16, N] (the pack_bf16_weight_to_nvfp4_t
 // layout) and writes it into the grouped/dense SFB atom for one expert. SFB depends
 // ONLY on N,K (not M), so a single load-time call is valid for all per-group M.
 template <class LayoutSFB_t>
 __global__ void pack_weight_sfb_group(
-    const unsigned char* __restrict__ atlas_scales,  // [K/16,N] (K-major) or [N,K/16] (N-major)
+    const unsigned char* __restrict__ avarok_scales,  // [K/16,N] (K-major) or [N,K/16] (N-major)
     unsigned char* __restrict__ cutlass_scales,      // swizzled SFB out
     int n,
     int k,
-    int src_n_major,  // 0 = Atlas-transposed [K/16,N]; 1 = checkpoint-native [N,K/16]
+    int src_n_major,  // 0 = Avarok-transposed [K/16,N]; 1 = checkpoint-native [N,K/16]
     LayoutSFB_t layout_sfb) {
   int col = blockIdx.x;
   int group = blockIdx.y * blockDim.x + threadIdx.x;
@@ -273,12 +273,12 @@ __global__ void pack_weight_sfb_group(
   }
   // SFB output layout is unchanged; only the SOURCE indexing differs. N-major
   // lets a checkpoint that ships [N,K/16] scales (Laguna) build SFB without
-  // materialising an Atlas-transposed copy first.
-  unsigned char atlas_scale =
-      src_n_major ? atlas_scales[(unsigned long long)col * groups + group]
-                  : atlas_scales[(unsigned long long)group * n + col];
+  // materialising an Avarok-transposed copy first.
+  unsigned char avarok_scale =
+      src_n_major ? avarok_scales[(unsigned long long)col * groups + group]
+                  : avarok_scales[(unsigned long long)group * n + col];
   __nv_fp8_e4m3 in;
-  *reinterpret_cast<unsigned char*>(&in) = atlas_scale;
+  *reinterpret_cast<unsigned char*>(&in) = avarok_scale;
   float scale = static_cast<float>(in);
   cutlass::float_ue4m3_t sf(scale);
   cutlass_scales[layout_sfb(col, group * 16, 0)] = *reinterpret_cast<unsigned char*>(&sf);
@@ -288,11 +288,11 @@ __global__ void pack_weight_sfb_group(
 
 // ════════════════════════════════════════════════════════════════════════════
 // Load-time SFB swizzle pack — produces the grouped/dense SFB atom for one expert
-// from the Atlas-transposed [K/16,N] E4M3 weight scale. SFB is M-independent, so
+// from the Avarok-transposed [K/16,N] E4M3 weight scale. SFB is M-independent, so
 // this is a one-time-per-expert call (gated by FAST_MOE_MODE at the Rust layer).
 // ════════════════════════════════════════════════════════════════════════════
-extern "C" int atlas_cutlass_pack_weight_sfb(
-    const void* scale_in,  // [K/16,N] E4M3 (Atlas transposed) or [N,K/16] when src_n_major
+extern "C" int avarok_cutlass_pack_weight_sfb(
+    const void* scale_in,  // [K/16,N] E4M3 (Avarok transposed) or [N,K/16] when src_n_major
     void* scale_out,       // swizzled SFB (ue4m3)
     int n,
     int k,
@@ -379,12 +379,12 @@ static GroupedAPrep prep_grouped_a(
     int k,
     unsigned char* ws,
     cudaStream_t stream) {
-  // A/B arm: ATLAS_CUTLASS_EP_NULL_GUARD=0 restores the pre-fix behaviour
+  // A/B arm: AVAROK_CUTLASS_EP_NULL_GUARD=0 restores the pre-fix behaviour
   // (group every expert with rows, null B included). Off EP the two arms are
   // identical; under EP the disabled arm faults, which is what makes this a
   // usable experiment rather than just a switch.
   static const bool null_guard = [] {
-    const char* v = getenv("ATLAS_CUTLASS_EP_NULL_GUARD");
+    const char* v = getenv("AVAROK_CUTLASS_EP_NULL_GUARD");
     return !(v != nullptr && v[0] == '0');
   }();
   // Both passes below must apply the SAME predicate or the per-group staging
@@ -634,7 +634,7 @@ static int launch_projection(
 // gate and up kGrouped launches. *_packed_ptrs[e]=[N,K/2] e2m1, *_sfb_ptrs[e]=
 // swizzled SFB, *_scale2_vals=HOST f32[num_experts]. C_*=[M_total,N] sorted output.
 // ════════════════════════════════════════════════════════════════════════════
-extern "C" int atlas_cutlass_nvfp4_grouped_gate_up_fused(
+extern "C" int avarok_cutlass_nvfp4_grouped_gate_up_fused(
     const void* A_bf16,
     const int* sorted_token_ids,
     const unsigned long long* gate_packed_ptrs,
@@ -705,7 +705,7 @@ extern "C" int atlas_cutlass_nvfp4_grouped_gate_up_fused(
 // PUBLIC ENTRY — grouped DOWN. A = post-SiLU intermediate [M_total, K=inter],
 // ALREADY expert-contiguous (sorted_token_ids=null). B = down_proj [N=hidden,K/2].
 // ════════════════════════════════════════════════════════════════════════════
-extern "C" int atlas_cutlass_nvfp4_grouped_down(
+extern "C" int avarok_cutlass_nvfp4_grouped_down(
     const void* A_bf16,
     const unsigned long long* packed_ptrs,
     const unsigned long long* sfb_ptrs,

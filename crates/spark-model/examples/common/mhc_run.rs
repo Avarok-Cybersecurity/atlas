@@ -10,13 +10,13 @@ use anyhow::{Context, Result, bail};
 use half::bf16;
 use serde_json::Value;
 use spark_model::layers::ops::{Glm5NextMhcKernels, hc_head_mean, hc_post, hc_pre};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use std::collections::BTreeMap;
 
 pub(crate) fn run() -> Result<()> {
     let dir = std::env::var("MHC_PACKET_DIR")
-        .unwrap_or_else(|_| "/home/msi1/atlas-scratch/mhc-family".to_string());
+        .unwrap_or_else(|_| "/home/msi1/avarok-scratch/mhc-family".to_string());
     let g = Golden::load()?;
     let hid = g.fixture("hidden")? as usize;
     let hc = g.fixture("hc_mult")? as usize;
@@ -32,7 +32,7 @@ pub(crate) fn run() -> Result<()> {
          hc_eps={hc_eps:e} rms_norm_eps={norm_eps:e}"
     );
 
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     // Two mHC entry points, deliberately separate:
     //   `hyper_connection::hc_pre`   — DeepSeek-V4's, frozen, ends on an EXACT column projection.
     //   `glm5next_mhc::glm5next_hc_pre` — GLM's, same signature, that block removed.
@@ -85,7 +85,7 @@ pub(crate) fn run() -> Result<()> {
 
         for &(regime, t) in REGIMES.iter() {
             for &(arm, k_pre, k_post) in arms.iter() {
-                // The f32 arm isolates ARITHMETIC: Atlas's highway is f32, so feeding the raw f32
+                // The f32 arm isolates ARITHMETIC: Avarok's highway is f32, so feeding the raw f32
                 // stream and comparing against the f32 golden asks only "is the math the same".
                 let mut rng = Lcg::new(0x0E1C_0DE5);
                 let streams: Vec<f32> = rng.t(t * hc * hid).iter().map(|x| x * 0.5).collect();
@@ -155,7 +155,7 @@ pub(crate) fn run() -> Result<()> {
                     // ── Attribution, not assertion ──
                     // `hc_pre` ends its Sinkhorn with an EXACT column projection that GLM's reference
                     // does NOT have: HF divides by `(colsum + hc_eps)` on every pass, so its columns
-                    // settle at `1 - O(hc_eps)`, while Atlas pins them to exactly 1. If that single
+                    // settle at `1 - O(hc_eps)`, while Avarok pins them to exactly 1. If that single
                     // deviation is the WHOLE story, then re-normalising the reference's own `comb`
                     // columns to exactly 1 must collapse the residual onto the activation floor.
                     // A residual that stays put here would mean a second, unexplained difference.
@@ -423,7 +423,7 @@ pub(crate) fn run() -> Result<()> {
          be: this checkpoint carries zero hc_head tensors."
     );
     println!(
-        "⛔ historical note: hc_head. Atlas's is DeepSeek-V4's LEARNED sigmoid-weighted sum; \
+        "⛔ historical note: hc_head. Avarok's is DeepSeek-V4's LEARNED sigmoid-weighted sum; \
          GLM's Glm5NextTextHyperHead is a parameterless MEAN and the checkpoint carries ZERO \
          hc_head tensors. That one is ADAPT, not REUSE."
     );

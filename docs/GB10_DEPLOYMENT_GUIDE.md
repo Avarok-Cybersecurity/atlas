@@ -1,6 +1,6 @@
-# Atlas on DGX Spark GB10 — Deployment & Compatibility Guide
+# Avarok on DGX Spark GB10 — Deployment & Compatibility Guide
 
-New to Atlas on a Spark? Start here. Read this **before** you pick a model: which
+New to Avarok on a Spark? Start here. Read this **before** you pick a model: which
 model and quant fit your box and your goal, what to do when it OOMs, and the
 gotchas that cost an evening — then it points you at the exact copy-paste recipe.
 
@@ -9,13 +9,13 @@ elsewhere:
 
 | For… | Read |
 |------|------|
-| Copy-paste per-model `docker run` recipes | [`QUICKSTART.md`](../QUICKSTART.md) · the `@atlas` [recipe registry](https://github.com/Avarok-Cybersecurity/atlas-recipes) |
+| Copy-paste per-model `docker run` recipes | [`QUICKSTART.md`](../QUICKSTART.md) · the `@avarok` [recipe registry](https://github.com/Avarok-Cybersecurity/atlas-recipes) |
 | Deployment *modes* (single-GPU, EP=2/TP=2, NVMe swap) | [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) |
-| Release/image pipeline, and the native binary | the `atlas-release` skill (`.claude/skills/atlas-release/`) |
+| Release/image pipeline, and the native binary | the `avarok-release` skill (`.claude/skills/avarok-release/`) |
 | Adding a new model/hardware target | [`docs/HARDWARE.md`](HARDWARE.md) · [`AGENTS.md`](../AGENTS.md) |
 
 **Serve config SSOT:** the `defaults:` block of the matching
-[`atlas-recipes`](https://github.com/Avarok-Cybersecurity/atlas-recipes) recipe is
+[`avarok-recipes`](https://github.com/Avarok-Cybersecurity/atlas-recipes) recipe is
 the authoritative launch config for each model — continuously tuned, pinning the
 flags that hold the quality gates. **If a flag here and a recipe disagree, the
 recipe wins.** This guide is the *why*; the recipe is the exact *what*.
@@ -31,16 +31,16 @@ recipe wins.** This guide is the *why*; the recipe is the exact *what*.
 | CPU arch | aarch64 |
 | **Min driver** | **580** (CUDA 13.0). The engine embeds PTX and re-JITs to your SM at launch — no `nvcc` at runtime, but the driver floor is hard. |
 | Multi-node | 2× DGX Spark over RoCEv2 (`enp1s0f0np0`) for EP=2 |
-| Image | `avarok/atlas-gb10:latest` — one **multi-model** binary; the right kernel set is auto-selected at startup from the model's `config.json` |
+| Image | `avarok/avarok-gb10:latest` — one **multi-model** binary; the right kernel set is auto-selected at startup from the model's `config.json` |
 
 **Prerequisites**, in order:
 1. NVIDIA driver ≥ 580 — verify: `nvidia-smi` shows CUDA 13.0+. (There is no
-   driver-version gate in the engine and **no `ATLAS_SKIP_DRIVER_CHECK` escape
+   driver-version gate in the engine and **no `AVAROK_SKIP_DRIVER_CHECK` escape
    hatch** — that variable has no read site. Below the floor you get a CUDA
    driver/PTX-load error at startup, not a friendly message.)
 2. NVIDIA Container Toolkit (for the Docker path).
 3. A clean GPU before launch: `nvidia-smi` should show no other process holding
-   VRAM. Atlas sizes its KV cache from *free* memory at boot.
+   VRAM. Avarok sizes its KV cache from *free* memory at boot.
 4. HuggingFace cache mounted (`-v ~/.cache/huggingface:/root/.cache/huggingface`).
    Weights download on first run — **plan disk**: checkpoints range ~15 GB (27–35B
    NVFP4) to ~81 GB (122B). See §5 for the one download gotcha.
@@ -50,7 +50,7 @@ recipe wins.** This guide is the *why*; the recipe is the exact *what*.
 
 ## 2. Model × quant compatibility matrix
 
-Every model below runs on the **same** `avarok/atlas-gb10:latest` image. "Quant"
+Every model below runs on the **same** `avarok/avarok-gb10:latest` image. "Quant"
 is the **weight** format of the HuggingFace checkpoint you point `serve` at; the
 nvfp4 kernel bundle carries native FP8 and BF16 paths too, so an FP8 checkpoint
 serves correctly on the same image (runtime gate:
@@ -88,7 +88,7 @@ at conc=1; it trades against batch size and KV dtype (see §4).
 
 **"registry-only"** = the kernels are in the multi-model image and it serves fine,
 but there's no turnkey per-model `docker/gb10/<m>/` Dockerfile — run it against
-`avarok/atlas-gb10:latest` with the recipe flags.
+`avarok/avarok-gb10:latest` with the recipe flags.
 
 **⚠️ SSOT drifts to be aware of** (registry `MODEL.toml` vs the deployable recipe
 id; tracked for reconciliation — the recipe id is what to pull):
@@ -125,7 +125,7 @@ launch with the recipe's `max_model_len`; trade context against batch/KV via §4
 | **Smallest / dense reasoning** | `Qwen3.5-27B-NVFP4` or `Qwen3.6-27B-FP8` | Dense hybrids; ~14–15 tok/s, low VRAM |
 
 Then copy that model's recipe from [`QUICKSTART.md`](../QUICKSTART.md) or run
-`sparkrun run @atlas/<recipe-stem>`. Deviate from the flagship only with a reason —
+`sparkrun run @avarok/<recipe-stem>`. Deviate from the flagship only with a reason —
 the recipe defaults encode gate-passing choices.
 
 ---
@@ -195,7 +195,7 @@ The gotchas that cost people an evening, in one place:
    path:
    ```bash
    hf download Sehyo/Qwen3.5-35B-A3B-NVFP4 --local-dir /models/qwen3.5-35b
-   docker run ... -v /models/qwen3.5-35b:/model avarok/atlas-gb10:latest \
+   docker run ... -v /models/qwen3.5-35b:/model avarok/avarok-gb10:latest \
      serve --model-from-path /model --speculative --num-drafts 1
    ```
 2. **High-speed swap silently does nothing / permission errors.** `io_uring`
@@ -209,7 +209,7 @@ The gotchas that cost people an evening, in one place:
    the spec flags verbatim. (See §7.)
 4. **Native binary: driver / glibc errors.** The tarball needs driver 580
    (CUDA 13.0) and is built against glibc 2.39 (Ubuntu 24.04). Older distro →
-   use the Docker image. There is no bypass env var; `ATLAS_SKIP_DRIVER_CHECK`
+   use the Docker image. There is no bypass env var; `AVAROK_SKIP_DRIVER_CHECK`
    is not read anywhere and setting it does nothing.
 5. **First request hangs for 5–30 s.** That's cold-start CUDA-graph capture +
    autotuner + prefix-cache init, not a hang. Move the cost off your first real
@@ -233,7 +233,7 @@ curl http://localhost:8888/health           # liveness
 curl http://localhost:8888/metrics          # Prometheus exposition
 # Coherence smoke — deterministic, should print exactly "4":
 curl -s http://localhost:8888/v1/chat/completions -H 'Content-Type: application/json' -d \
-  '{"model":"atlas","messages":[{"role":"user","content":"What is 2+2? Reply with just the number."}],"max_tokens":16,"temperature":0}'
+  '{"model":"avarok","messages":[{"role":"user","content":"What is 2+2? Reply with just the number."}],"max_tokens":16,"temperature":0}'
 ```
 Logs go to stdout (`docker logs <container>`); `RUST_LOG` controls verbosity
 (`info` default, `debug` for kernel traces).
@@ -277,9 +277,9 @@ is rare and OOM-prone for these models. The 397B needs **EP=4** (4 nodes).
 
 ## 8. What "verified" means (so you can trust an image)
 
-An Atlas image is only cut after it passes the **serve matrix** — every model×quant
+An Avarok image is only cut after it passes the **serve matrix** — every model×quant
 in §2 boots, stays coherent, and holds four quality signals. If you're evaluating
-Atlas or reproducing a claim, these are the signals and where they live:
+Avarok or reproducing a claim, these are the signals and where they live:
 
 | Signal | What it proves | How it's checked |
 |--------|----------------|------------------|
@@ -290,7 +290,7 @@ Atlas or reproducing a claim, these are the signals and where they live:
 
 The full gate spec — exactly what each script asserts, and how the release
 pipeline turns it into a pass/fail before an image ships — is in the maintainer
-`atlas-release` skill (`references/verify-matrix.md`). *Note:* the ST-subset /
+`avarok-release` skill (`references/verify-matrix.md`). *Note:* the ST-subset /
 BFCL accuracy harness currently runs outside this repo; reproducing that specific
 number needs the external gorilla setup. Everything else in the table runs from a
 clean checkout against a running server.
@@ -301,4 +301,4 @@ clean checkout against a running server.
 - [`QUICKSTART.md`](../QUICKSTART.md) — the copy-paste recipes this guide routes to.
 - [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) — deployment modes + NVMe swap internals.
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md) · [`AGENTS.md`](../AGENTS.md) — building & contributing.
-- [`atlas-recipes`](https://github.com/Avarok-Cybersecurity/atlas-recipes) — the serve-config SSOT (`sparkrun run @atlas/<recipe>`).
+- [`avarok-recipes`](https://github.com/Avarok-Cybersecurity/atlas-recipes) — the serve-config SSOT (`sparkrun run @avarok/<recipe>`).

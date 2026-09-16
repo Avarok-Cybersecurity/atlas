@@ -287,7 +287,7 @@ pub fn sanitize_content_chunk(
 //
 // ── F7 (2026-04-26): cross-turn tool-arg-path stall guard ──
 //
-// Live evidence from `/workspace/atlas-opencode-dump-fix28.jsonl`
+// Live evidence from `/workspace/avarok-opencode-dump-fix28.jsonl`
 // showed the model writing the same `Cargo.toml` 7 times across 17
 // turns when cargo wasn't installed and F6 (is_error capture) made
 // it correctly recognise but futilely retry. F1-F5 catch per-
@@ -299,7 +299,7 @@ pub fn sanitize_content_chunk(
 
 // F14 (2026-04-26): raised from 3 → 4. AR2's survey: Gemini-CLI
 // uses 5-consecutive, Anthropic's documented per-turn ceiling is
-// ~10. Atlas at 3 was too aggressive — false-positives on
+// ~10. Avarok at 3 was too aggressive — false-positives on
 // legitimate "build / fix / build" cycles. 4 sits between the
 // production references while still preventing the fix28
 // 7-rewrite scenario.
