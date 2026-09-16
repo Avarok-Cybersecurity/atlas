@@ -4,6 +4,7 @@ pub mod deepseek_v41_ref;
 pub mod deepseek_v4_mtp;
 pub mod dense_ffn;
 pub mod dflash_head;
+pub mod engram_v41;
 pub mod ep_dispatch;
 pub mod fp8_calibration;
 mod gemv_tier;
