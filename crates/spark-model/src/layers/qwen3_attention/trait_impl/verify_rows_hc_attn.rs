@@ -49,8 +49,31 @@ impl Qwen3AttentionLayer {
         // now issues that reduction over all R rows at once, so the arm is
         // TP-correct and the term has nothing left to guard.
         //
-        // `ms_qsa_selection_active` STAYS: the select+attend path is not wired
-        // into this arm yet, so at ISL >= 2051 (inert_bound) it still declines.
+        // ★ `ms_qsa_selection_active` STAYS, AND HERE IS THE PROOF IT MUST.
+        //
+        // 2026-09-16 I removed it, reasoning that this arm only owns the
+        // BRACKETS (hc_pre + QKV before the loop, o_proj + hc_post + the TP
+        // all-reduce after) and that the caller's per-sequence loop does the
+        // per-row QSA work either way. THAT IS WRONG. Under a batched core the
+        // caller takes `ms_qsa_ingest_only`, which is the INERT-path sweep, and
+        // it refuses loudly when any row's selection is active:
+        //
+        //   ERROR verify_k4_batch_step: decode_verify_batched (n=4 ks=[3,3,3,3]):
+        //   QSA selection active for seq 0 on the ingest-only batched ms path
+        //   (seq_len 2051, inert bound 2051)
+        //
+        // Nine of those in one agentic run, every one at the inert bound. It
+        // fails CLOSED — refusing beats serving dense-past-budget, which is a
+        // different model from the reference — so output stayed correct and the
+        // gate still passed 3/3. But the arm errors and falls back on every
+        // QSA-active batch, so it delivers nothing at real context: s/turn 6.09
+        // against a 6.00 baseline.
+        //
+        // To lift this for real, the CALLER's batched-core path needs the
+        // select+attend body (`ms_qsa_phase_paged_decode`) the way 043bb5cab
+        // gave it to the K-row arm — including that arm's ascending-order and
+        // row-0-stash handling, since `decode_select` asserts
+        // `pos == st.ingested`. That is the work; the gate is not the obstacle.
         if !verify_attn_rows_qkv_enabled()
             || r < 2
             || self.mla.is_some()
