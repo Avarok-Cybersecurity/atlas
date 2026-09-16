@@ -49,17 +49,9 @@ const ALL: &[&BenchmarkDescriptor] = &[
     &bfcl::SUBSET_DESCRIPTOR,
     &bfcl::SUBSET_ECHOLP_DESCRIPTOR,
     &bfcl::FULL_DESCRIPTOR,
-    // The two gates above are also benchmark GROUPS; these are their members.
-    // Members are not required gates — `gate::group::GROUPS` names them and
-    // `coverage::REQUIRED` still lists only the group ids.
-    &bfcl::SUBSET_A,
-    &bfcl::SUBSET_B,
-    &bfcl::SUBSET_C,
-    &bfcl::SUBSET_D,
-    &bfcl::ECHOLP_A,
-    &bfcl::ECHOLP_B,
-    &bfcl::ECHOLP_C,
-    &bfcl::ECHOLP_D,
+    // The two subset gates above are also benchmark GROUPS: a certification
+    // runs each as `--param shard=i/n` slices that `gate::group` recombines.
+    // A shard is not a benchmark of its own — see `gate::group::GROUPS`.
     // Unrunnable until MLCommons publishes its dataset; listed after the BFCL
     // legs it will eventually sit beside so the pane shows it exists.
     &mlperf_agentic::SUBSET_DESCRIPTOR,
@@ -120,16 +112,14 @@ mod tests {
             }
             assert!(d.expected_secs > 0, "{}: expected_secs is 0", d.id);
         }
-        // The required gates and every group member are the ones the planner
-        // will actually see; pin them by name so a new entry cannot slip in
-        // with the field forgotten.
+        // The required gates are the ones the planner will actually see; pin
+        // them by name so a new entry cannot slip in with the field
+        // forgotten. A group's shards plan with the group's own figure.
         for id in crate::gate::REQUIRED_GATES {
             assert!(find(id).unwrap().expected_secs > 0, "{id}");
         }
         for g in crate::gate::group::GROUPS {
-            for m in g.members {
-                assert!(find(m).unwrap().expected_secs > 0, "{m}");
-            }
+            assert!(find(g.id).unwrap().expected_secs > 0, "{}", g.id);
         }
     }
 

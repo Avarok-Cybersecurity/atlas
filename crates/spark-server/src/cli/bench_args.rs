@@ -81,6 +81,9 @@ pub enum BenchmarkCommand {
     Aggregate(AggregateArgs),
     /// Past runs, from `~/.atlas/runs`.
     History(HistoryArgs),
+    /// Stop the server a `run --pull-request-gate --serve-reuse` left running
+    /// on this box, if any.
+    ServeRelease,
     /// Run every required gate this commit still owes, and say whether the
     /// tree is certified when they are done. See `certify --help`.
     Certify(super::bench_certify::args::CertifyArgs),
@@ -241,6 +244,19 @@ pub struct RunArgs {
     /// exact failure this whole record format exists to prevent.
     #[arg(long = "serve-override", value_name = "KEY=VALUE")]
     pub serve_override: Vec<String>,
+    /// Reuse the server an earlier `--serve-reuse` run left on this box, if it
+    /// is the one this run would start (same binary, same recipe rendering,
+    /// same checkpoint — `GET /serve-config`); otherwise start one as a
+    /// separate process and LEAVE IT RUNNING for the next run. A campaign
+    /// running several gates on one recipe pays for one model load instead of
+    /// one per gate. `spark benchmark serve-release` stops it.
+    #[arg(long, requires = "pull_request_gate")]
+    pub serve_reuse: bool,
+    /// The process the leased server belongs to (the campaign driver). A
+    /// lease whose owner is gone is released by the next run rather than
+    /// kept warm for nobody. Default: this run.
+    #[arg(long, value_name = "PID", requires = "serve_reuse")]
+    pub serve_lease_owner: Option<u32>,
     /// Write a shareable result card beside the run.
     ///
     /// Takes a NAME (`my-run` -> `./my-run.svg`) or a PATH (`/tmp/x.svg`,
@@ -344,8 +360,7 @@ mod tests;
 /// `spark benchmark aggregate <group>`.
 #[derive(clap::Args, Debug)]
 pub struct AggregateArgs {
-    /// The GROUP id, e.g. `bfcl-subset`. Not a member id — a shard has no
-    /// aggregate of its own.
+    /// The group id, e.g. `bfcl-subset`.
     pub id: String,
     /// The commit the records must cover. Defaults to HEAD.
     #[arg(long)]

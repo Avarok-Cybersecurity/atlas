@@ -25,7 +25,7 @@ pub fn fleet_json(f: &Fleet, units: &[Unit], plan: &Plan) -> serde_json::Value {
         },
         "queues": plan.queues.iter().enumerate().map(|(k, q)| serde_json::json!({
             "node": f.nodes[k].addr,
-            "units": q.iter().map(|&i| units[i].id).collect::<Vec<_>>(),
+            "units": q.iter().map(|&i| units[i].label()).collect::<Vec<_>>(),
             "finish_at_secs": plan.finish_at[k],
         })).collect::<Vec<_>>(),
         "makespan_secs": plan.makespan_secs,
@@ -50,7 +50,7 @@ pub fn print_fleet(f: &Fleet, units: &[Unit], plan: &Plan) {
         );
         let q: Vec<String> = plan.queues[k]
             .iter()
-            .map(|&i| format!("{} ({})", units[i].id, human(units[i].secs())))
+            .map(|&i| format!("{} ({})", units[i].label(), human(units[i].secs())))
             .collect();
         eprintln!(
             "    plan: {}  → done at ~{}",

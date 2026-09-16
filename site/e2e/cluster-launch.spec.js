@@ -10,7 +10,7 @@
 //
 // The --dev-origins flag is not optional here and its absence does not look
 // like a configuration problem. The agent's origin allowlist is
-// ALLOWED_ORIGINS = ["https://atlasinference.io"] and nothing else unless that
+// ALLOWED_ORIGINS = ["https://atlascybernetics.ai"] and nothing else unless that
 // flag is passed (atlasctl-agent/src/guard.rs). Playwright serves this suite
 // from http://127.0.0.1:4173, which is in DEV_ORIGINS but gated behind the
 // flag -- so a default agent answers the WebSocket upgrade with 403 before any

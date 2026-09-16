@@ -26,16 +26,16 @@ function check(sitePages, blogHtml) {
 test('a fragment on the engine page cannot satisfy a homepage link', () => {
   const result = check(
     { 'index.html': '<main id="home"></main>', 'engine.html': '<section id="verified"></section>' },
-    '<a href="https://atlasinference.io/#verified">Benchmarks</a>'
+    '<a href="https://atlascybernetics.ai/#verified">Benchmarks</a>'
   );
   expect(result.status).toBe(1);
-  expect(result.stderr).toContain('https://atlasinference.io/#verified');
+  expect(result.stderr).toContain('https://atlascybernetics.ai/#verified');
 });
 
 test('homepage fragments resolve in built markup, including no-JS links', () => {
   const result = check(
     { 'index.html': '<section id="verified"></section><noscript><a id="run" href="/engine.html#run">Install Atlas</a></noscript>' },
-    '<a href="https://atlasinference.io/#verified">Benchmarks</a><a href="https://atlasinference.io/index.html#run">Install Atlas</a>'
+    '<a href="https://atlascybernetics.ai/#verified">Benchmarks</a><a href="https://atlascybernetics.ai/index.html#run">Install Atlas</a>'
   );
   expect(result.status).toBe(0);
   expect(result.stdout).toContain('all 2 cross-property fragment links resolve');
@@ -44,7 +44,7 @@ test('homepage fragments resolve in built markup, including no-JS links', () => 
 test('explicit engine links resolve against their own built page', () => {
   const result = check(
     { 'index.html': '<main id="home"></main>', 'engine.html': '<section id="verified"></section>' },
-    '<a href="https://atlasinference.io/engine.html?source=blog#verified">Benchmarks</a>'
+    '<a href="https://atlascybernetics.ai/engine.html?source=blog#verified">Benchmarks</a>'
   );
   expect(result.status).toBe(0);
   expect(result.stdout).toContain('all 1 cross-property fragment links resolve');
@@ -53,7 +53,7 @@ test('explicit engine links resolve against their own built page', () => {
 test('URL-encoded fragments match the browser destination', () => {
   const result = check(
     { 'index.html': '<section id="model-detail"></section>' },
-    '<a href="https://atlasinference.io/#model%2Ddetail">Models</a>'
+    '<a href="https://atlascybernetics.ai/#model%2Ddetail">Models</a>'
   );
   expect(result.status).toBe(0);
 });
@@ -61,17 +61,17 @@ test('URL-encoded fragments match the browser destination', () => {
 test('an extensionless URL is not silently rewritten to an HTML filename', () => {
   const result = check(
     { 'index.html': '<main id="home"></main>', 'engine.html': '<section id="verified"></section>' },
-    '<a href="https://atlasinference.io/engine#verified">Benchmarks</a>'
+    '<a href="https://atlascybernetics.ai/engine#verified">Benchmarks</a>'
   );
   expect(result.status).toBe(1);
-  expect(result.stderr).toContain('https://atlasinference.io/engine#verified');
+  expect(result.stderr).toContain('https://atlascybernetics.ai/engine#verified');
 });
 
 test('removing every cross-property fragment link still fails the guard', () => {
   const result = check(
     { 'index.html': '<main id="home"></main>' },
-    '<a href="https://atlasinference.io">Atlas</a><a href="/#verified">Local section</a>'
+    '<a href="https://atlascybernetics.ai">Atlas</a><a href="/#verified">Local section</a>'
   );
   expect(result.status).toBe(1);
-  expect(result.stderr).toContain('No https://atlasinference.io');
+  expect(result.stderr).toContain('No https://atlascybernetics.ai');
 });

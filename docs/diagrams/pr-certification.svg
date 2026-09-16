@@ -177,8 +177,8 @@
 
   <line x1="64" y1="830" x2="1136" y2="830" stroke="#22282F"/>
   <text x="64" y="852" font-size="11" fill="#82868F">Copyright 2026 Atlas Cybernetics Corp</text>
-  <a href="https://atlasinference.io" xlink:href="https://atlasinference.io" target="_blank" rel="noopener">
-    <text x="1136" y="852" font-size="11" fill="#49C3DB" text-anchor="end">atlasinference.io</text>
+  <a href="https://atlascybernetics.ai" xlink:href="https://atlascybernetics.ai" target="_blank" rel="noopener">
+    <text x="1136" y="852" font-size="11" fill="#49C3DB" text-anchor="end">atlascybernetics.ai</text>
   </a>
 
 </svg>

@@ -17,7 +17,7 @@
     <nav class="col links" aria-label="Project links">
       <h2 class="eyebrow">Atlas</h2>
       <a href={LINKS.atlasRepo} rel="noopener noreferrer">GitHub repository</a>
-      <a href={LINKS.atlasSite} rel="noopener noreferrer">atlasinference.io</a>
+      <a href={LINKS.atlasSite} rel="noopener noreferrer">atlascybernetics.ai</a>
       <a href={LINKS.discord} rel="noopener noreferrer">Community Discord</a>
     </nav>
 

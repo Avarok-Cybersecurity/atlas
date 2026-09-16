@@ -6,19 +6,29 @@ use atlas_plugin::hardware::policy::Sensitivity;
 use std::path::PathBuf;
 
 fn unit(id: &'static str, group: Option<&'static str>) -> Unit {
+    unit_shard(id, group, group.map(|_| (0, 4)))
+}
+
+fn unit_shard(
+    id: &'static str,
+    group: Option<&'static str>,
+    shard: Option<(usize, usize)>,
+) -> Unit {
     Unit {
         id,
         group,
+        shard,
         class: Sensitivity::Correctness,
         estimate: Estimate::Declared(10),
         needs_confirmation: false,
+        serve_allowance_s: 600,
     }
 }
 
 fn four() -> Vec<Unit> {
     vec![
-        unit("bfcl-subset-a", Some("bfcl-subset")),
-        unit("bfcl-subset-b", Some("bfcl-subset")),
+        unit_shard("bfcl-subset", Some("bfcl-subset"), Some((0, 2))),
+        unit_shard("bfcl-subset", Some("bfcl-subset"), Some((1, 2))),
         unit("decode-floor", None),
         unit("vision-fidelity", None),
     ]
@@ -35,7 +45,7 @@ fn a_clean_campaign_runs_every_unit_in_order_and_exits_zero() {
     let mut c = Campaign::new(four(), false);
     let mut ran = Vec::new();
     while let Some(i) = c.next_to_start() {
-        ran.push(c.units[i].id);
+        ran.push(c.units[i].label());
         let out = if c.units[i].group.is_some() {
             RunOutcome::MemberDone {
                 record: PathBuf::from("r"),
@@ -48,14 +58,14 @@ fn a_clean_campaign_runs_every_unit_in_order_and_exits_zero() {
     assert_eq!(
         ran,
         [
-            "bfcl-subset-a",
-            "bfcl-subset-b",
+            "bfcl-subset[0/2]",
+            "bfcl-subset[1/2]",
             "decode-floor",
             "vision-fidelity"
         ]
     );
     let s = c.summary();
-    assert_eq!(s.member_done, ["bfcl-subset-a", "bfcl-subset-b"]);
+    assert_eq!(s.member_done, ["bfcl-subset[0/2]", "bfcl-subset[1/2]"]);
     assert_eq!(s.passed, ["decode-floor", "vision-fidelity"]);
     assert_eq!(c.exit_code(true), 0);
     // The final gate check has the last word: a clean run whose records the

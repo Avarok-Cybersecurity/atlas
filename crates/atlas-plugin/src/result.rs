@@ -370,6 +370,7 @@ mod tests {
             .with_hardware_state(crate::hardware::HardwareStateReport::opened(
                 crate::hardware::Sensitivity::Correctness,
                 crate::hardware::HardwareState::default(),
+                None,
             ));
         r.dataset_fingerprint = Some("file-sha256:abc".into());
         let json = serde_json::to_string(&r).unwrap();

@@ -2142,12 +2142,12 @@ SGSTUB
 import pathlib, sys, re
 t = pathlib.Path(sys.argv[1]).read_text()
 new = re.sub(
-    r'if ! git diff --name-only --diff-filter=AM "\$base"\.\.\.HEAD -- \.benchmarks \\\n'
+    r'if ! git diff --name-only (?:--no-renames )?--diff-filter=AM "\$base"\.\.\.HEAD -- \.benchmarks \\\n'
     r' *> added_all\.txt; then\n.*?\n *exit 1\n *fi\n',
     '', t, count=1, flags=re.S)
 new = new.replace(
     "mapfile -t added < <(grep '\\.json$' added_all.txt || true)",
-    "mapfile -t added < <(git diff --name-only --diff-filter=AM \"$base\"...HEAD "
+    "mapfile -t added < <(git diff --name-only --no-renames --diff-filter=AM \"$base\"...HEAD "
     "-- .benchmarks | grep '\\.json$' || true)", 1)
 assert new != t, "sabotage did not change the step -- it would measure nothing"
 pathlib.Path(sys.argv[2]).write_text(new)
@@ -2312,8 +2312,8 @@ if [ -s "$TMP/ic/step.sh" ]; then
   python3 - "$TMP/ic/step.sh" "$TMP/ic/step-sab.sh" <<'ICSAB'
 import pathlib, sys
 t = pathlib.Path(sys.argv[1]).read_text()
-old = "--location --max-time 20 https://atlasinference.io/control) || true"
-new = "--location --max-time 20 https://atlasinference.io/control || echo 000)"
+old = "--location --max-time 20 https://atlascybernetics.ai/control) || true"
+new = "--location --max-time 20 https://atlascybernetics.ai/control || echo 000)"
 pathlib.Path(sys.argv[2]).write_text(t.replace(old, new, 1))
 ICSAB
   if ! cmp -s "$TMP/ic/step.sh" "$TMP/ic/step-sab.sh"; then
@@ -2348,9 +2348,9 @@ mkdir -p "$TMP/vh/.github/scripts"
 cp .github/scripts/assert-vhost-headers.py "$TMP/vh/.github/scripts/"
 
 vh_sabotage() {  # $1 = vhost path, $2 = python edit over the file text as `t`
-  for f in site/deploy/nginx/atlasinference.io.conf \
-           blog/deploy/nginx/blog.atlasinference.io.conf \
-           book/deploy/nginx/docs.atlasinference.io.conf; do
+  for f in site/deploy/nginx/atlascybernetics.ai.conf \
+           blog/deploy/nginx/blog.atlascybernetics.ai.conf \
+           book/deploy/nginx/docs.atlascybernetics.ai.conf; do
     mkdir -p "$TMP/vh/$(dirname "$f")"; cp "$f" "$TMP/vh/$f"
   done
   [ -n "${1:-}" ] || return 0
@@ -2365,24 +2365,24 @@ PY
 
 # The docs incident, reconstructed: a location that declares any add_header
 # drops every inherited one for that path.
-vh_sabotage book/deploy/nginx/docs.atlasinference.io.conf \
+vh_sabotage book/deploy/nginx/docs.atlascybernetics.ai.conf \
   't = t.replace("    location / {", "    location ~* \\\\.html$ {\n        add_header Cache-Control \"no-store\" always;\n    }\n\n    location / {", 1)'
 want_rc_msg 1 "inside a location" "control: an add_header inside a location is caught" \
   python3 "$TMP/vh/.github/scripts/assert-vhost-headers.py"
 
 # The site incident: one vhost quietly lacking a header the other two send.
-vh_sabotage blog/deploy/nginx/blog.atlasinference.io.conf \
+vh_sabotage blog/deploy/nginx/blog.atlascybernetics.ai.conf \
   't = t.replace("    add_header Referrer-Policy", "    # add_header Referrer-Policy", 1)'
 want_rc_msg 1 "does not declare Referrer-Policy" "control: a vhost missing a core header is caught" \
   python3 "$TMP/vh/.github/scripts/assert-vhost-headers.py"
 
-vh_sabotage blog/deploy/nginx/blog.atlasinference.io.conf \
+vh_sabotage blog/deploy/nginx/blog.atlascybernetics.ai.conf \
   't = t.replace("    add_header Referrer-Policy", "    # add_header Referrer-Policy", 1)'
 want_rc_msg 1 "have drifted" "control: drift between the vhosts is named as drift" \
   python3 "$TMP/vh/.github/scripts/assert-vhost-headers.py"
 
-# The value that was live on atlasinference.io when this was written.
-vh_sabotage site/deploy/nginx/atlasinference.io.conf \
+# The value that was live on atlascybernetics.ai when this was written.
+vh_sabotage site/deploy/nginx/atlascybernetics.ai.conf \
   't = t.replace("X-XSS-Protection \"0\"", "X-XSS-Protection \"1; mode=block\"", 1)'
 want_rc_msg 1 "OWASP" "control: re-enabling the legacy XSS auditor is caught" \
   python3 "$TMP/vh/.github/scripts/assert-vhost-headers.py"

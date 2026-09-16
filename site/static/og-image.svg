@@ -29,7 +29,7 @@
 
   <rect x="96" y="516" width="1008" height="1" fill="#3a3252"/>
   <text x="96" y="574" fill="#8a83af" font-size="28" font-weight="600"
-        font-family="ui-monospace, 'DejaVu Sans Mono', Menlo, monospace">atlasinference.io</text>
+        font-family="ui-monospace, 'DejaVu Sans Mono', Menlo, monospace">atlascybernetics.ai</text>
   <text x="1104" y="574" fill="#51cdb0" font-size="28" font-weight="700" text-anchor="end"
         font-family="ui-monospace, 'DejaVu Sans Mono', Menlo, monospace">verified on DGX Spark · GB10</text>
 </svg>

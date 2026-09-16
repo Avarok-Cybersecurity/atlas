@@ -165,7 +165,7 @@ def certificate(authors, **kw):
         + '  <text x="964" y="612" font-size="9.5" fill="#82868F" font-weight="600" letter-spacing="1.5" text-anchor="end">THE MERGED PR</text>\n'
         + G.stamp_group(*o["stamp"], transform="translate(1078 352) rotate(-5) scale(1.15)")
         + G.seal_group(*o["seal"], transform="translate(952 150) rotate(3.5) scale(1.25)")
-        + '  <text x="520" y="642" font-size="10.5" fill="#82868F" text-anchor="middle">Issued by Atlas Cybernetics Corp &#183; <tspan fill="#49C3DB">atlasinference.io</tspan></text>\n'
+        + '  <text x="520" y="642" font-size="10.5" fill="#82868F" text-anchor="middle">Issued by Atlas Cybernetics Corp &#183; <tspan fill="#49C3DB">atlascybernetics.ai</tspan></text>\n'
         + qr
         + '</svg>\n')
 
@@ -230,7 +230,7 @@ def certificate_square(authors, **kw):
         + G.stamp_group(*o["stamp"], transform="translate(780 812) rotate(-5) scale(1.25)")
         + cells
         + '  <text x="1148" y="968" font-size="9.5" fill="#82868F" font-weight="600" letter-spacing="1.5" text-anchor="end">SCAN TO READ THE MERGED PR</text>\n'
-        + '  <text x="600" y="1132" font-size="10.5" fill="#82868F" text-anchor="middle">Issued by Atlas Cybernetics Corp &#183; <tspan fill="#49C3DB">atlasinference.io</tspan></text>\n'
+        + '  <text x="600" y="1132" font-size="10.5" fill="#82868F" text-anchor="middle">Issued by Atlas Cybernetics Corp &#183; <tspan fill="#49C3DB">atlascybernetics.ai</tspan></text>\n'
         + qr
         + '</svg>\n')
 

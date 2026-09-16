@@ -1,20 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! `check_one`'s group path: aggregate a benchmark group's member records
+//! `check_one`'s group path: aggregate a benchmark group's shard records
 //! into one verdict.
 //!
 //! Split out of `check.rs` to keep that file under the repository's 500-LoC
-//! cap. The rules it enforces — all members present, one commit, a real
-//! shard partition, no transport-degraded member, every member judged by the
+//! cap. The rules it enforces — a complete partition at one commit, a real
+//! shard partition, no transport-degraded shard, every shard judged by the
 //! same per-record rules as a plain gate — are documented on
 //! [`super::group`], which owns them.
 //!
 //! ★ Since 2026-09-13 this is the ONLY path a group has. A whole-draw record
 //! under the group's own id no longer satisfies it, so every per-record check
-//! `check_one` applies to a plain gate is applied HERE, per member: subject,
+//! `check_one` applies to a plain gate is applied HERE, per shard: subject,
 //! frame status, dirty tree, signature. Before that date the whole-draw arm
 //! ran first and masked the fact that a shard was never asked those
 //! questions; a forged or dirty-tree shard would have passed.
+//!
+//! ★ Since 2026-09-15 the shard COUNT is whatever the campaign chose: shards
+//! are the group's own benchmark run with `--param shard=i/n`, filed under
+//! the group's directory with `-s<i>of<n>` in the name, and the verdict
+//! takes the newest complete partition the standing records form at one
+//! commit ([`super::group::select_partition`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,16 +29,68 @@ use super::check::{
     GateStatus, record_is_for, record_is_required_subject, record_still_stands,
     records_newest_first,
 };
+use super::group::ShardRecord;
 use super::record::{GateBaseline, GateRecord, read_baseline, read_record};
 
-/// A benchmark group: every member must have a covering record at this commit,
-/// and their combined tallies must clear the GROUP's thresholds.
-///
-/// Reuses `records_newest_first`, `record_still_stands` and `check_record`
-/// unchanged — a group changes where the metrics come FROM, not how a gate is
-/// judged. What it adds is the all-or-nothing rule: three members of four is
-/// not 75% measured, it is an aggregate over a sample set the group's
-/// thresholds were never drawn against.
+/// A group's shard records at `sha` that pass every predicate `check_one`
+/// applies to a plain gate's record: for this benchmark, the required
+/// subject, still standing — and carrying a shard identity. Whole-draw
+/// records are skipped here and mentioned by [`whole_draw_note`].
+fn standing_shards(
+    root: &Path,
+    baseline: &GateBaseline,
+    group: &'static str,
+    sha: &str,
+    gate: &super::coverage::GateCoverage,
+) -> Vec<(GateRecord, PathBuf)> {
+    records_newest_first(root, group)
+        .into_iter()
+        .filter_map(|path| {
+            let r = read_record(&path).ok()?;
+            (r.shard().is_some()
+                && record_is_for(&r, group, &path)
+                && record_is_required_subject(baseline, &r, group, &path)
+                && record_still_stands(root, sha, &r, gate))
+            .then_some((r, path))
+        })
+        .collect()
+}
+
+/// The per-record rules `check_one` applies to a plain gate, asked of one
+/// shard. A shard is a gate record like any other; being one slice of the
+/// measurement does not exempt it from any of them. Empty means the record
+/// counts.
+fn shard_problems(root: &Path, label: &str, record: &GateRecord, path: &Path) -> Vec<String> {
+    let mut problems = Vec::new();
+    if record.frame_status_failed() {
+        problems.push(format!(
+            "{label}: the run itself failed: {}",
+            record.verdict_reason
+        ));
+    }
+    if !record.dirty_paths.is_empty() {
+        problems.push(format!(
+            "{label}: measured from a dirty tree — {} uncommitted invalidation-set \
+             file(s) when the run started ({}), so the binary was not {}",
+            record.dirty_paths.len(),
+            record.dirty_paths.join(", "),
+            record.git_sha
+        ));
+    }
+    if let Err(why) = super::signing::verify_record(root, path, &record.git_sha, record.recorded_at)
+    {
+        problems.push(format!("{label}: {why}"));
+    }
+    problems
+}
+
+fn label(group: &str, shard: (usize, usize)) -> String {
+    format!("{group}[{}/{}]", shard.0, shard.1)
+}
+
+/// A group: the newest complete partition of shard records at `sha`, every
+/// shard clean, aggregated over COUNTS and judged against the group's
+/// thresholds.
 pub(super) fn check_group(
     root: &Path,
     group: &'static super::group::BenchmarkGroup,
@@ -44,39 +102,58 @@ pub(super) fn check_group(
         Ok(b) => b,
         Err(e) => return GateStatus::Missing(format!("baseline unreadable: {e:#}")),
     };
+    let Some(gate) = super::coverage::find(group.id) else {
+        return GateStatus::Missing(format!("{} has no coverage entry", group.id));
+    };
 
-    let mut shards: Vec<BTreeMap<String, aggregate::Tally>> = Vec::new();
-    let mut members: Vec<super::group::MemberRecord> = Vec::new();
-    let mut newest: Option<GateRecord> = None;
-    let mut missing: Vec<&str> = Vec::new();
-    let mut why_missing: Vec<String> = Vec::new();
-    let mut declared: Vec<(usize, usize)> = Vec::new();
+    let candidates = standing_shards(root, &baseline, group.id, sha, gate);
+    let shards: Vec<ShardRecord> = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(handle, (r, _))| {
+            let (index, count) = r.shard()?;
+            Some(ShardRecord {
+                index,
+                count,
+                git_sha: r.git_sha.clone(),
+                recorded_at: r.recorded_at,
+                handle,
+            })
+        })
+        .collect();
+    let partition = match super::group::select_partition(group.id, &shards) {
+        Ok(p) => p,
+        Err(fault) => {
+            let mut why = vec![fault.to_string()];
+            if let Some(note) = whole_draw_note(root, group) {
+                why.push(note);
+            }
+            if let Some(note) = why_stale(root, group.id, sha, gate) {
+                why.push(note);
+            }
+            return GateStatus::Missing(why.join(" "));
+        }
+    };
+
+    let count = partition.count;
+    let mut tallies: Vec<BTreeMap<String, aggregate::Tally>> = Vec::new();
     let mut problems: Vec<String> = Vec::new();
-
-    for member in group.members {
-        let Some(member_gate) =
-            super::coverage::find(member).or_else(|| super::coverage::find(group.id))
-        else {
-            return GateStatus::Missing(format!("{member} has no coverage entry"));
-        };
-        let Some((record, path)) = covering_member(root, &baseline, member, sha, member_gate)
-        else {
-            missing.push(member);
-            why_missing.push(why_member_missing(root, member, sha, member_gate));
-            continue;
-        };
-        problems.extend(member_problems(root, member, &record, &path));
-        // A member that ran but carries no per-subset tallies cannot be folded
+    let mut newest: Option<GateRecord> = None;
+    for handle in partition.handles {
+        let (record, path) = &candidates[handle];
+        let lbl = label(group.id, record.shard().unwrap_or((0, count)));
+        problems.extend(shard_problems(root, &lbl, record, path));
+        // A shard that ran but carries no per-subset tallies cannot be folded
         // in. Counting it as an empty contribution would shrink the union and
         // score the group over fewer samples than the draw.
         let Some(t) = aggregate::tallies_from_metrics(&record.metrics) else {
             return GateStatus::Missing(format!(
-                "{member} has a covering record but no per-subset tallies — it was \
+                "{lbl} has a covering record but no per-subset tallies — it was \
                  measured by a binary older than the shard split, so the group \
-                 cannot be aggregated. Re-run {member} at this commit."
+                 cannot be aggregated. Re-run it at this commit."
             ));
         };
-        // A member that lost samples to transport failures scored them as
+        // A shard that lost samples to transport failures scored them as
         // "no call" — the correct answer for most irrelevance rows — so a
         // degraded shard can score BETTER while measuring less. Refuse it
         // rather than fold it in.
@@ -87,62 +164,31 @@ pub(super) fn check_group(
             .unwrap_or(0.0);
         if errs > 0.0 {
             return GateStatus::Fail(vec![format!(
-                "{member} recorded {errs:.0} transport failures. Each was scored as \
+                "{lbl} recorded {errs:.0} transport failures. Each was scored as \
                  \"made no call\", which is the CORRECT answer on the irrelevance \
                  subsets, so a degraded shard can raise the aggregate while \
-                 measuring less of the draw. Re-run {member}."
+                 measuring less of the draw. Re-run it."
             )]);
         }
-        // What this record says it ran. Absent on a pre-shard binary, which
-        // cannot be folded in for the same reason a missing tally cannot.
-        let (Some(idx), Some(cnt)) = (
-            record.metrics.get("shard.index").copied(),
-            record.metrics.get("shard.count").copied(),
-        ) else {
-            return GateStatus::Missing(format!(
-                "{member} has a covering record that does not say which shard it \
-                 ran — it was measured by a binary older than the shard identity \
-                 metric. Re-run {member} at this commit."
-            ));
-        };
-        declared.push((idx as usize, cnt as usize));
-        members.push(super::group::MemberRecord {
-            id: (*member).to_string(),
-            git_sha: record.git_sha.clone(),
-        });
-        shards.push(t);
-        newest = Some(record);
-    }
-
-    if !missing.is_empty() {
-        let fault = super::group::GroupFault::Missing {
-            group: group.id,
-            missing,
-        };
-        if let Some(note) = whole_draw_note(root, group) {
-            why_missing.push(note);
+        tallies.push(t);
+        if newest
+            .as_ref()
+            .is_none_or(|n| record.recorded_at > n.recorded_at)
+        {
+            newest = Some(record.clone());
         }
-        return GateStatus::Missing(format!("{fault} {}", why_missing.join(" ")));
     }
     if !problems.is_empty() {
         return GateStatus::Fail(problems);
     }
-    if let Err(fault) = super::group::composition_ok(group, &members) {
-        return GateStatus::Fail(vec![fault.to_string()]);
-    }
-    // The members exist and agree on the commit; do they actually cover the
-    // draw exactly once between them?
-    if let Err(fault) = super::group::partition_ok(group.id, &declared) {
-        return GateStatus::Fail(vec![fault.to_string()]);
-    }
 
-    let agg = aggregate::aggregate(&aggregate::union(&shards));
+    let agg = aggregate::aggregate(&aggregate::union(&tallies));
     let Some(mut record) = newest else {
-        return GateStatus::Missing(format!("{} has no members", group.id));
+        return GateStatus::Missing(format!("{} has no shards", group.id));
     };
-    // Judge the AGGREGATE, carrying one member's provenance (checkpoint, serve
-    // overrides, hardware) — composition_ok has already established they agree
-    // on the commit, and `check_record` needs a record shape, not a new one.
+    // Judge the AGGREGATE, carrying one shard's provenance (checkpoint, serve
+    // overrides, hardware) — the shards agree on the commit, and
+    // `check_record` needs a record shape, not a new one.
     record.benchmark_id = group.id.to_string();
     record
         .metrics
@@ -154,6 +200,7 @@ pub(super) fn check_group(
     record
         .metrics
         .insert("samples".into(), agg.total_samples as f64);
+    record.metrics.insert("shard.count".into(), count as f64);
 
     match super::scoring::check_record(&record, &baseline) {
         None => GateStatus::Pass,
@@ -161,143 +208,125 @@ pub(super) fn check_group(
     }
 }
 
-/// The newest record for `member` that is FOR it, is the group's required
-/// subject, and still stands at `sha` — the same three predicates `check_one`
-/// uses to pick a plain gate's record. The PATH travels with the record
-/// because the signature sidecar lives beside it.
-fn covering_member(
-    root: &Path,
-    baseline: &GateBaseline,
-    member: &str,
-    sha: &str,
-    gate: &super::coverage::GateCoverage,
-) -> Option<(GateRecord, PathBuf)> {
-    records_newest_first(root, member)
-        .into_iter()
-        .find_map(|path| {
-            let r = read_record(&path).ok()?;
-            (record_is_for(&r, member, &path)
-                && record_is_required_subject(baseline, &r, member, &path)
-                && record_still_stands(root, sha, &r, gate))
-            .then_some((r, path))
-        })
-}
-
-/// The per-record rules `check_one` applies to a plain gate, asked of one
-/// member. A group member is a gate record like any other; being one quarter
-/// of the measurement does not exempt it from any of them. Empty means the
-/// record counts.
-fn member_problems(root: &Path, member: &str, record: &GateRecord, path: &Path) -> Vec<String> {
-    let mut problems = Vec::new();
-    if record.frame_status_failed() {
-        problems.push(format!(
-            "{member}: the run itself failed: {}",
-            record.verdict_reason
-        ));
-    }
-    if !record.dirty_paths.is_empty() {
-        problems.push(format!(
-            "{member}: measured from a dirty tree — {} uncommitted invalidation-set \
-             file(s) when the run started ({}), so the binary was not {}",
-            record.dirty_paths.len(),
-            record.dirty_paths.join(", "),
-            record.git_sha
-        ));
-    }
-    if let Err(why) = super::signing::verify_record(root, path, &record.git_sha, record.recorded_at)
-    {
-        problems.push(format!("{member}: {why}"));
-    }
-    problems
-}
-
-/// The members of `group` a certification at `sha` still OWES: those with no
-/// covering record, and those whose covering record would not count (failed
-/// frame, dirty tree, bad signature). The same two questions `check_group`
-/// asks, so a planner that skips the members not listed here skips exactly
-/// the shards the verdict will accept — a shard is re-measured only when the
-/// gate would refuse it.
+/// The shards of `group` a certification at `sha` still OWES, for a planner
+/// that wants `wanted` shards: nothing when a complete partition already
+/// stands at one commit; otherwise the indices missing from the most
+/// complete partition begun AT `sha` (finishing what was started, whatever
+/// its count — a partition is never assembled across commits, so one begun
+/// at another commit cannot be finished here); or `0..wanted` when nothing
+/// counts yet. A present shard whose record would be refused (failed frame,
+/// dirty tree, bad signature) is owed too. The same questions
+/// `check_group` asks, so a planner that skips what is not listed skips
+/// exactly what the verdict will accept.
 ///
-/// A group with no readable baseline owes every member: nothing can be
-/// judged, so nothing is banked.
-pub fn members_owed(
+/// A group with no readable baseline or coverage owes every shard: nothing
+/// can be judged, so nothing is banked.
+pub fn shards_owed(
     root: &Path,
     group: &'static super::group::BenchmarkGroup,
     sha: &str,
-) -> Vec<&'static str> {
-    let Ok(baseline) = read_baseline(root, group.id) else {
-        return group.members.to_vec();
+    wanted: usize,
+) -> Vec<(usize, usize)> {
+    let fresh = |n: usize| (0..n).map(|i| (i, n)).collect::<Vec<_>>();
+    let (Ok(baseline), Some(gate)) = (
+        read_baseline(root, group.id),
+        super::coverage::find(group.id),
+    ) else {
+        return fresh(wanted);
     };
-    group
-        .members
+    let candidates = standing_shards(root, &baseline, group.id, sha, gate);
+    // The shards that count: present and clean.
+    let clean: Vec<ShardRecord> = candidates
         .iter()
-        .copied()
-        .filter(|member| {
-            let Some(gate) =
-                super::coverage::find(member).or_else(|| super::coverage::find(group.id))
-            else {
-                return true;
-            };
-            match covering_member(root, &baseline, member, sha, gate) {
-                Some((record, path)) => !member_problems(root, member, &record, &path).is_empty(),
-                None => true,
-            }
+        .enumerate()
+        .filter_map(|(handle, (record, path))| {
+            let (index, count) = record.shard()?;
+            shard_problems(root, &label(group.id, (index, count)), record, path)
+                .is_empty()
+                .then(|| ShardRecord {
+                    index,
+                    count,
+                    git_sha: record.git_sha.clone(),
+                    recorded_at: record.recorded_at,
+                    handle,
+                })
         })
-        .collect()
+        .collect();
+    if super::group::select_partition(group.id, &clean).is_ok() {
+        return Vec::new();
+    }
+    // Finish the partition at THIS commit that is closest to done.
+    let held = super::group::held_by(&clean);
+    match held
+        .iter()
+        .filter(|((_, commit), _)| commit.starts_with(sha) || sha.starts_with(commit.as_str()))
+        .max_by_key(|((count, _), idx)| (idx.len() * 1000 / *count, *count))
+    {
+        Some(((count, _), idx)) => (0..*count)
+            .filter(|i| !idx.contains_key(i))
+            .map(|i| (i, *count))
+            .collect(),
+        None => fresh(wanted),
+    }
 }
 
-/// Why does `member` have no covering record? Names the perf-path files that
-/// re-opened its newest record, so that "your shards are missing" carries the
-/// same 20-second-fix property a plain gate's "invalidated by …" does. A
-/// member that has never run says so; a group whose directory holds only
-/// whole-draw records says that those stopped counting.
-fn why_member_missing(
+/// Why is the group's newest record not counting? Names the perf-path files
+/// that re-opened it, so that "your shards are missing" carries the same
+/// 20-second-fix property a plain gate's "invalidated by …" does.
+fn why_stale(
     root: &Path,
-    member: &str,
+    group: &str,
     sha: &str,
     gate: &super::coverage::GateCoverage,
-) -> String {
-    let paths = records_newest_first(root, member);
-    let Some(path) = paths.first() else {
-        return format!("{member}: no record has ever been committed.");
-    };
-    let Ok(newest) = read_record(path) else {
-        return format!("{member}: its newest record is unreadable.");
-    };
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let Some(why) = super::check_paths::invalidating_paths(root, sha, &newest.git_sha, gate) else {
-        return format!(
-            "{member}: newest record is for {} ({name}) — git cannot diff that commit \
-             against this one; is it in this clone?",
-            newest.git_sha
-        );
-    };
-    if why.is_empty() {
-        return format!(
-            "{member}: newest record is for {} ({name}) — its recorded build inputs \
-             do not match this commit.",
-            newest.git_sha
-        );
+) -> Option<String> {
+    let newest = records_newest_first(root, group)
+        .into_iter()
+        .find_map(|p| {
+            read_record(&p)
+                .ok()
+                .filter(|r| r.shard().is_some())
+                .map(|r| (r, p))
+        })?;
+    let (record, path) = newest;
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    if record_still_stands(root, sha, &record, gate) {
+        return None;
     }
-    format!(
-        "{member}: newest record is for {} ({name}) — invalidated by {}.",
-        newest.git_sha,
-        super::check_fmt::summarize_paths(&why)
-    )
+    let why = super::check_paths::invalidating_paths(root, sha, &record.git_sha, gate)?;
+    Some(if why.is_empty() {
+        format!(
+            "Newest shard record is for {} ({name}) — its recorded build inputs do not \
+             match this commit.",
+            record.git_sha
+        )
+    } else {
+        format!(
+            "Newest shard record is for {} ({name}) — invalidated by {}.",
+            record.git_sha,
+            super::check_fmt::summarize_paths(&why)
+        )
+    })
 }
 
-/// The one-line explanation appended when a group directory still holds
-/// whole-draw records but no member has one: since 2026-09-13 those are
+/// The one-line explanation appended when a group directory holds
+/// whole-draw records but no complete partition: since 2026-09-13 those are
 /// history, not evidence.
 fn whole_draw_note(root: &Path, group: &super::group::BenchmarkGroup) -> Option<String> {
-    let whole = records_newest_first(root, group.id);
+    let whole: Vec<PathBuf> = records_newest_first(root, group.id)
+        .into_iter()
+        .filter(|p| read_record(p).is_ok_and(|r| r.shard().is_none()))
+        .collect();
     let newest = whole.first()?;
     Some(format!(
         "The {} whole-draw record(s) under {} (newest {}) no longer satisfy the gate: since \
-         2026-09-13 a group is certified only by its {} shards — see gate::group.",
+         2026-09-13 a group is certified only by a complete partition of shards — see \
+         gate::group.",
         whole.len(),
         group.id,
         newest.file_name().unwrap_or_default().to_string_lossy(),
-        group.members.len()
     ))
 }
