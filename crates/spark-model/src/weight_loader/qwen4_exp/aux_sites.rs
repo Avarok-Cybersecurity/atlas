@@ -4,7 +4,7 @@
 //! placeholder story, split from `qwen4_exp.rs` for the ≤500 LoC cap.
 
 use anyhow::{Context, Result};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
@@ -13,7 +13,7 @@ use crate::layer::TransformerLayer;
 use crate::weight_map::DenseWeight;
 
 /// QSA indexer attach for a full-attention layer (#753 phase G).
-/// `ATLAS_QSA_DISABLE=1` skips (decode then runs DENSE past the budget,
+/// `AVAROK_QSA_DISABLE=1` skips (decode then runs DENSE past the budget,
 /// which is NOT the reference model); layers without the tensor are
 /// silently non-QSA.
 pub(super) fn attach_qsa(
@@ -26,10 +26,10 @@ pub(super) fn attach_qsa(
 ) -> Result<()> {
     // QSA indexer on the 12 full-attention layers (#753 phase G).
     // Decode-side selection; inert below the budget by arithmetic.
-    // ATLAS_QSA_DISABLE=1 skips the attach for A/B — decode then runs
+    // AVAROK_QSA_DISABLE=1 skips the attach for A/B — decode then runs
     // DENSE past the budget, which is NOT the reference model.
     if config.index_topk > 0
-        && std::env::var("ATLAS_QSA_DISABLE").as_deref() != Ok("1")
+        && std::env::var("AVAROK_QSA_DISABLE").as_deref() != Ok("1")
         && store.contains(&format!("{lp}.self_attn.indexer.index_qk_proj.weight"))
     {
         // Already device-resident in the store; the indexer holds the

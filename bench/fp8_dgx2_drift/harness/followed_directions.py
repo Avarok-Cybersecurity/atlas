@@ -17,14 +17,14 @@ early-stop from a run that genuinely performed the full agentic workflow.
 
 The harness PROMPT (run_tier.sh) instructs, verbatim:
   "create a pure rust Axum project ... ping/pong endpoint. The server MUST bind
-   to the port from the ATLAS_HARNESS_PORT env var ... Add tests, run them and
+   to the port from the AVAROK_HARNESS_PORT env var ... Add tests, run them and
    prove all tests pass, then run the server and use curl to prove it works.
    Finally, tear down the server."
 
 Each instruction becomes a checked sub-step. Evidence sources:
   - bash commands the agent ran (opencode tool_use events: state.input.command)
   - the filesystem the agent left behind (tests/ dir, #[test] in source,
-    ATLAS_HARNESS_PORT reference)
+    AVAROK_HARNESS_PORT reference)
 
 Pure-stdlib, no I/O beyond reading the target dir. Importable
 (`compute_followed_directions`) and runnable standalone for backfill.
@@ -102,7 +102,7 @@ def _has_tests(target: pathlib.Path) -> bool:
 def _reads_port_env(target: pathlib.Path) -> bool:
     for p in _source_files(target):
         try:
-            if "ATLAS_HARNESS_PORT" in p.read_text(errors="replace"):
+            if "AVAROK_HARNESS_PORT" in p.read_text(errors="replace"):
                 return True
         except Exception:
             continue

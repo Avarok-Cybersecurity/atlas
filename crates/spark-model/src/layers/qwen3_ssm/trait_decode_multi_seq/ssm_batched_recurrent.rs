@@ -20,7 +20,7 @@ impl Qwen3SsmLayer {
     /// when the SSM pool states are contiguous slots `[0..n)`.
     ///
     /// `detail_t0` / `detail_parts` thread the caller's profiling state through
-    /// so the `ATLAS_SSM_DETAIL` summary spans the whole mixer.
+    /// so the `AVAROK_SSM_DETAIL` summary spans the whole mixer.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_ms_ssm_recurrent<'a, 'b: 'a>(
         &self,
@@ -64,7 +64,7 @@ impl Qwen3SsmLayer {
             };
         }
 
-        // FP16 h-state (ATLAS_SSM_H_FP16). The conversion itself happens in
+        // FP16 h-state (AVAROK_SSM_H_FP16). The conversion itself happens in
         // `ssm_h_to_f16_dispatch` at the model's decode entry, outside the CUDA
         // graph; here we only verify the invariant and pick the kernel.
         let h_f16 = super::super::ssm_h_fp16_enabled();
@@ -78,7 +78,7 @@ impl Qwen3SsmLayer {
             }
             if kd != 128 || vd != 128 {
                 anyhow::bail!(
-                    "ATLAS_SSM_H_FP16 needs linear head dims 128/128 (the FP16 twins size their                      smem for k_dim==128); this model is {kd}/{vd}"
+                    "AVAROK_SSM_H_FP16 needs linear head dims 128/128 (the FP16 twins size their                      smem for k_dim==128); this model is {kd}/{vd}"
                 );
             }
         }
@@ -227,7 +227,7 @@ impl Qwen3SsmLayer {
                 fn gdn_half_reg_enabled() -> bool {
                     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
                     *ON.get_or_init(|| {
-                        std::env::var("ATLAS_NO_GDN_HALF_REG").ok().as_deref() != Some("1")
+                        std::env::var("AVAROK_NO_GDN_HALF_REG").ok().as_deref() != Some("1")
                     })
                 }
                 // SRAM-staged twin: bit-identical to the register-retention
@@ -243,12 +243,12 @@ impl Qwen3SsmLayer {
                 // predicted -10.6% never appeared, which refutes the wave-15
                 // roofline premise that the scan moves 2.5 DRAM passes over H:
                 // the extra half-read was evidently already served by L2.
-                // Enable with ATLAS_GDN_SMEM_STAGE (PRESENCE — `=0` is NOT
+                // Enable with AVAROK_GDN_SMEM_STAGE (PRESENCE — `=0` is NOT
                 // "on") to re-probe at wider batches, where the state grows
                 // past L2 and the balance may change.
                 fn gdn_smem_stage_enabled() -> bool {
                     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                    *ON.get_or_init(|| std::env::var("ATLAS_GDN_SMEM_STAGE").is_ok())
+                    *ON.get_or_init(|| std::env::var("AVAROK_GDN_SMEM_STAGE").is_ok())
                 }
                 let gdn_norm_k = if kd == 128
                     && vd == 128
@@ -336,8 +336,8 @@ impl Qwen3SsmLayer {
             } else {
                 if h_f16 {
                     anyhow::bail!(
-                        "ATLAS_SSM_H_FP16: the batched decode arm selected the FP32-only \
-                         gated_delta_rule_decode_f32_strided (ATLAS_GDN_FUSED_NORM is not 1)"
+                        "AVAROK_SSM_H_FP16: the batched decode arm selected the FP32-only \
+                         gated_delta_rule_decode_f32_strided (AVAROK_GDN_FUSED_NORM is not 1)"
                     );
                 }
                 let gdn_out = conv_out.offset(n * conv_dim as usize * 4);
@@ -502,7 +502,7 @@ impl Qwen3SsmLayer {
                 };
                 if h_f16 && (use_fused_conv || self.gdn_f32_norm_k.0 == 0) {
                     anyhow::bail!(
-                        "ATLAS_SSM_H_FP16: the per-seq decode arm selected an FP32-only kernel                          (fused_conv={use_fused_conv}, gdn_f32_norm={}). That would read the FP16                          pool as FP32. Unset ATLAS_GDN_FUSED_CONV and set ATLAS_GDN_FUSED_NORM=1.",
+                        "AVAROK_SSM_H_FP16: the per-seq decode arm selected an FP32-only kernel                          (fused_conv={use_fused_conv}, gdn_f32_norm={}). That would read the FP16                          pool as FP32. Unset AVAROK_GDN_FUSED_CONV and set AVAROK_GDN_FUSED_NORM=1.",
                         self.gdn_f32_norm_k.0
                     );
                 }

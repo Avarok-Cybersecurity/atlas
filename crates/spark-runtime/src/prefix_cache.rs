@@ -125,7 +125,7 @@ pub struct PrefixMatch {
     /// (not resident in HBM), `ssm_snapshot` is `None` and this holds the tier
     /// key (prefix hash). The caller faults the bytes into a fresh snapshot slot
     /// (`SsmSnapshotPool::fault_in_slot`), `promote_snapshot`s the entry, then
-    /// restores. `None` whenever nothing is tiered (i.e. `ATLAS_SSM_TIER` off) —
+    /// restores. `None` whenever nothing is tiered (i.e. `AVAROK_SSM_TIER` off) —
     /// so this field is inert on the default path.
     pub ssm_snapshot_tier_key: Option<u64>,
     /// Token depth covered by `ssm_snapshot_tier_key` (analogue of
@@ -365,7 +365,7 @@ pub trait PrefixCache: Send + Sync {
     /// `lookup_tiered` with no bytes behind it. Left in place, every warm turn
     /// on this prefix repeats the whole doomed cycle — spill a LIVE 66 MB
     /// victim D2H to free a slot, fault in, miss, free the slot — and then
-    /// recomputes anyway; under `ATLAS_SSM_TIER_DISK_GB` that doomed spill
+    /// recomputes anyway; under `AVAROK_SSM_TIER_DISK_GB` that doomed spill
     /// evicts one MORE tier record, so the cap's own pressure re-amplifies
     /// itself. Dropping the entry degrades the prefix to a plain recompute
     /// ONCE.

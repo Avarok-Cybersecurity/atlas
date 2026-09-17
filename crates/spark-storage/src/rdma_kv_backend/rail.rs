@@ -12,7 +12,7 @@ use std::ffi::c_void;
 use anyhow::{Context, Result};
 
 use crate::cuda_min::{CudaEvent, PinnedBuffer, copy_h_to_d_async};
-use atlas_rdma::verbs::Verbs;
+use avarok_rdma::verbs::Verbs;
 
 /// One registered pinned bounce in a rail's pipeline ring.
 pub(super) struct Bounce {

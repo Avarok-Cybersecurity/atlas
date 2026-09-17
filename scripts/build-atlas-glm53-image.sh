@@ -6,7 +6,7 @@
 # `/usr/bin/ld: cannot find -lnccl`. Changing RUSTFLAGS invalidates the whole build cache, so
 # always build through this script rather than a bare `cargo build`.
 #
-# 🪤 The three ATLAS_TARGET_* vars pick which kernel set is compiled in. Unset, the build prints
+# 🪤 The three AVAROK_TARGET_* vars pick which kernel set is compiled in. Unset, the build prints
 # "not set. Hardware targets available: ..." and silently takes target 0 — another model's
 # kernels, in a binary that still runs.
 #
@@ -21,7 +21,7 @@ NODES="${NODES:-10.10.10.1 10.10.10.2}"
 
 cd "$(dirname "$0")/.."
 RUSTFLAGS="-L $PWD/.ncclstub" \
-ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=glm-5.3-flash ATLAS_TARGET_QUANT=nvfp4 \
+AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=glm-5.3-flash AVAROK_TARGET_QUANT=nvfp4 \
   cargo build --release -p spark-server
 
 for n in $NODES; do

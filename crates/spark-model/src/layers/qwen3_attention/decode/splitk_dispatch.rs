@@ -11,7 +11,7 @@
 //! # What was wrong
 //!
 //! ```text
-//! use atlas_core::device::sm121::NUM_SMS;            // 48 — the GB10 constant
+//! use avarok_core::device::sm121::NUM_SMS;            // 48 — the GB10 constant
 //! let current_ctas = num_q_heads * split_ref_seqs(num_seqs, max_decode_seqs);
 //! let num_splits = if current_ctas >= NUM_SMS { 1 } else { NUM_SMS / current_ctas };
 //! ```
@@ -22,7 +22,7 @@
 //! KV = 42.9 GB/s = 1.28% of HBM, 22.7% of a C=1 decode step with its BF16
 //! sibling (nsys, round 13 cell T1N; `ATTN-DECODE-SPLITK-ATTRIBUTION.md`).
 //!
-//! Both halves are fixed in [`atlas_kernels::attn_splitk`]: the SM count is
+//! Both halves are fixed in [`avarok_kernels::attn_splitk`]: the SM count is
 //! the compiled target's (`[hardware] sm_count`), and the `auto` policy sizes
 //! for the SINGLE-STREAM shape, which is the one that starves. The policy is a
 //! pure function of configuration, so the non-associative split-merge sees a
@@ -31,7 +31,7 @@
 //! (`tasks/determinism_investigation.md`), preserved rather than relaxed.
 
 use anyhow::Result;
-use atlas_kernels::attn_splitk;
+use avarok_kernels::attn_splitk;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 use super::super::Qwen3AttentionLayer;
@@ -88,20 +88,20 @@ pub(super) fn num_splits(
     }
     attn_splitk::num_splits(
         policy,
-        atlas_kernels::TARGET_SM_COUNT,
+        avarok_kernels::TARGET_SM_COUNT,
         num_q_heads,
         super::super::split_ref_seqs(num_seqs, max_decode_seqs),
     )
 }
 
-/// `ATLAS_ATTN_DBG`: the split structure this layer resolved, printed once per
+/// `AVAROK_ATTN_DBG`: the split structure this layer resolved, printed once per
 /// layer per step when a batch is co-batched.
 ///
 /// Kept from the pre-#928 probe, and now able to answer the question it was
 /// asked: under `auto` the printed `num_splits` must be identical at
 /// `num_seqs=1` and `num_seqs=16`, which is the determinism claim.
 pub(super) fn trace_splits(layer_idx: usize, num_seqs: u32, num_q_heads: u32, num_splits: u32) {
-    if num_seqs != 1 && std::env::var("ATLAS_ATTN_DBG").is_ok() {
+    if num_seqs != 1 && std::env::var("AVAROK_ATTN_DBG").is_ok() {
         tracing::debug!(
             "ATTN_DBG L{layer_idx} num_seqs={num_seqs} num_splits={num_splits} \
              (policy={} sm_count={} nq={num_q_heads})",
@@ -109,7 +109,7 @@ pub(super) fn trace_splits(layer_idx: usize, num_seqs: u32, num_q_heads: u32, nu
                 .attn_decode_splitk
                 .value
                 .label(),
-            atlas_kernels::TARGET_SM_COUNT,
+            avarok_kernels::TARGET_SM_COUNT,
         );
     }
 }
@@ -133,7 +133,7 @@ pub(super) const ROUTE_NONSPLIT_NVFP4: &str = "paged_decode_attn_nvfp4";
 ///
 /// ```text
 /// paged decode attention: paged_decode_attn_splitk_fp8_hopper num_splits=11 \
-///   sm_count=132 policy=auto (ATLAS_ATTN_DECODE_SPLITK)
+///   sm_count=132 policy=auto (AVAROK_ATTN_DECODE_SPLITK)
 /// ```
 ///
 /// `num_splits` is the count the launch actually passes, `policy` is the
@@ -153,8 +153,8 @@ pub(super) fn route_line(
 ) -> String {
     format!(
         "paged decode attention: {kernel} num_splits={num_splits} sm_count={} policy={} \
-         (ATLAS_ATTN_DECODE_SPLITK)",
-        atlas_kernels::TARGET_SM_COUNT,
+         (AVAROK_ATTN_DECODE_SPLITK)",
+        avarok_kernels::TARGET_SM_COUNT,
         policy.label(),
     )
 }

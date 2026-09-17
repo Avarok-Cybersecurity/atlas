@@ -15,7 +15,7 @@
 //
 // Run:
 //   cargo run --release -p spark-storage --example long-context-bench -- \
-//       --dir /tmp/atlas-hsw-bench --context-blocks 256 --scratch-blocks 32 \
+//       --dir /tmp/avarok-hsw-bench --context-blocks 256 --scratch-blocks 32 \
 //       --steps 64
 
 use std::ffi::c_void;

@@ -7,7 +7,7 @@ discover the shadow set. This lists, per overridden file stem, the
 import os
 import re
 
-ROOT = '/home/ms/atlas/.claude/worktrees/nemo-behavior/kernels/gb10'
+ROOT = '/home/ms/avarok/.claude/worktrees/nemo-behavior/kernels/gb10'
 SHADOW = os.path.join(ROOT, 'qwen3.6-35b-a3b/nvfp4')
 COMMON = os.path.join(ROOT, 'common')
 

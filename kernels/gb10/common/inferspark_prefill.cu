@@ -63,19 +63,19 @@
 // FP8 chunked serving). Single-buffer smem_K/smem_K64 (+ BR64=32 below)
 // only need to fit LDS so the binary builds. NVIDIA #else verbatim.
 #if defined(__SCALE__)
-#define ATLAS_KBUFN 1
-#define ATLAS_KB(x) 0u
+#define AVAROK_KBUFN 1
+#define AVAROK_KB(x) 0u
 #else
-#define ATLAS_KBUFN 2
-#define ATLAS_KB(x) (x)
+#define AVAROK_KBUFN 2
+#define AVAROK_KB(x) (x)
 #endif
 
 // Entry name is overridable alongside the shape, so the two instantiations do
 // not collide when both are compiled into one module.
-#ifndef ATLAS_PREFILL_ENTRY
-#define ATLAS_PREFILL_ENTRY inferspark_prefill
+#ifndef AVAROK_PREFILL_ENTRY
+#define AVAROK_PREFILL_ENTRY inferspark_prefill
 #endif
-extern "C" __global__ void ATLAS_PREFILL_ENTRY(
+extern "C" __global__ void AVAROK_PREFILL_ENTRY(
     const __nv_bfloat16* __restrict__ Q,
     const __nv_bfloat16* __restrict__ K,
     const __nv_bfloat16* __restrict__ V,
@@ -115,7 +115,7 @@ extern "C" __global__ void ATLAS_PREFILL_ENTRY(
 
     // Shared memory — double-buffered K + separate V for full async overlap
     __shared__ __nv_bfloat16 smem_Q[BR][HDIM_PAD];
-    __shared__ __nv_bfloat16 smem_K[ATLAS_KBUFN][BC][HDIM_PAD];  // double-buffered
+    __shared__ __nv_bfloat16 smem_K[AVAROK_KBUFN][BC][HDIM_PAD];  // double-buffered
     __shared__ __nv_bfloat16 smem_V[BC][HDIM_PAD];
     __shared__ __nv_bfloat16 smem_P[BR][BC + PAD_P];
     __shared__ float smem_ml[BR][2]; // [row][0]=m, [row][1]=l
@@ -227,7 +227,7 @@ extern "C" __global__ void ATLAS_PREFILL_ENTRY(
             asm volatile("cp.async.commit_group;");  // V tile loading in background
         }
 
-        // K[kv_block] already in smem_K[ATLAS_KB(buf)] (preloaded or from prev iteration)
+        // K[kv_block] already in smem_K[AVAROK_KB(buf)] (preloaded or from prev iteration)
 
         // === QK^T (warps 0-1, register-based) ===
         // BC/8 n-tiles: each `mma.sync.m16n8k16` yields 8 score columns. `4` was
@@ -260,7 +260,7 @@ extern "C" __global__ void ATLAS_PREFILL_ENTRY(
                 // B fragments: iterate over 4 N-tiles of K^T
                 // SM121 workaround: manual B-operand register loading
                 // (ldmatrix.trans produces incorrect results on GB10)
-                const unsigned short* sK_u16 = (const unsigned short*)smem_K[ATLAS_KB(buf)];
+                const unsigned short* sK_u16 = (const unsigned short*)smem_K[AVAROK_KB(buf)];
                 #pragma unroll
                 for (int nt = 0; nt < (int)(BC / 8); nt++) {
                     unsigned int n_col = nt * 8 + group_id;
@@ -418,13 +418,13 @@ extern "C" __global__ void ATLAS_PREFILL_ENTRY(
                 unsigned int chunk = idx % chunks_per_row_k;
                 unsigned int col = chunk * 8;
                 unsigned int k_row = next_kv_start + row;
-                unsigned int smem_addr = __cvta_generic_to_shared(&smem_K[ATLAS_KB(1 - buf)][row][col]);
+                unsigned int smem_addr = __cvta_generic_to_shared(&smem_K[AVAROK_KB(1 - buf)][row][col]);
 
                 if (k_row < seq_len) {
                     const void* gmem = (const void*)&K_batch[k_row * kv_seq_stride + kv_head * head_dim + col];
                     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(smem_addr), "l"(gmem));
                 } else {
-                    *((uint4*)&smem_K[ATLAS_KB(1 - buf)][row][col]) = make_uint4(0, 0, 0, 0);
+                    *((uint4*)&smem_K[AVAROK_KB(1 - buf)][row][col]) = make_uint4(0, 0, 0, 0);
                 }
             }
             asm volatile("cp.async.commit_group;");  // K[i+1] loading in background
@@ -558,7 +558,7 @@ extern "C" __global__ void ATLAS_PREFILL_ENTRY(
 
 // Skipped by the HDIM=512 instantiation: this variant needs 120,064 B of shared
 // memory at that shape, over the 101,376 B cap. The 512 path does not use it.
-#ifndef ATLAS_SKIP_PREFILL_64
+#ifndef AVAROK_SKIP_PREFILL_64
 extern "C" __global__ void inferspark_prefill_64(
     const __nv_bfloat16* __restrict__ Q,
     const __nv_bfloat16* __restrict__ K,
@@ -598,7 +598,7 @@ extern "C" __global__ void inferspark_prefill_64(
     __nv_bfloat16* O_batch = O + batch * seq_len * q_seq_stride;
 
     __shared__ __nv_bfloat16 smem_Q[BR64][HDIM_PAD];
-    __shared__ __nv_bfloat16 smem_K64[ATLAS_KBUFN][BC][HDIM_PAD];
+    __shared__ __nv_bfloat16 smem_K64[AVAROK_KBUFN][BC][HDIM_PAD];
     __shared__ __nv_bfloat16 smem_V64[BC][HDIM_PAD];
     __shared__ __nv_bfloat16 smem_P64[BR64][BC + PAD_P];
     __shared__ float smem_ml64[BR64][2];
@@ -718,7 +718,7 @@ extern "C" __global__ void inferspark_prefill_64(
             }
 
             const unsigned short* sQ = (const unsigned short*)smem_Q;
-            const unsigned short* sK = (const unsigned short*)smem_K64[ATLAS_KB(buf)];
+            const unsigned short* sK = (const unsigned short*)smem_K64[AVAROK_KB(buf)];
 
             #pragma unroll
             for (unsigned int ks = 0; ks < (HDIM / 16); ks++) {
@@ -885,13 +885,13 @@ extern "C" __global__ void inferspark_prefill_64(
                 unsigned int chunk = idx % chunks_per_row_k;
                 unsigned int col = chunk * 8;
                 unsigned int k_row = next_kv_start + row;
-                unsigned int smem_addr = __cvta_generic_to_shared(&smem_K64[ATLAS_KB(1 - buf)][row][col]);
+                unsigned int smem_addr = __cvta_generic_to_shared(&smem_K64[AVAROK_KB(1 - buf)][row][col]);
 
                 if (k_row < seq_len) {
                     const void* gmem = (const void*)&K_batch[k_row * kv_seq_stride + kv_head * head_dim + col];
                     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(smem_addr), "l"(gmem));
                 } else {
-                    *((uint4*)&smem_K64[ATLAS_KB(1 - buf)][row][col]) = make_uint4(0, 0, 0, 0);
+                    *((uint4*)&smem_K64[AVAROK_KB(1 - buf)][row][col]) = make_uint4(0, 0, 0, 0);
                 }
             }
             asm volatile("cp.async.commit_group;");
@@ -987,4 +987,4 @@ extern "C" __global__ void inferspark_prefill_64(
         }
     }
 }
-#endif  // ATLAS_SKIP_PREFILL_64
+#endif  // AVAROK_SKIP_PREFILL_64

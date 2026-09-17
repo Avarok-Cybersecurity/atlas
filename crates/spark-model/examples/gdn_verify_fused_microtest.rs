@@ -28,7 +28,7 @@
 //!       --features cuda,gpu-examples
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -334,7 +334,7 @@ fn run_golden(g: &dyn GpuBackend, ins: &Inputs) -> Result<Golden> {
 }
 
 fn main() -> Result<()> {
-    let g0 = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let g0 = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &g0;
 
     let mut all_ok = true;
@@ -402,7 +402,7 @@ struct FusedStage1 {
 /// separate launch), then fused gated-RMS-norm ×2 in one launch.
 ///
 /// Drives `gdn_verify_fused_k2` the same way `decode_batched_conv_gdn` does
-/// under `ATLAS_GDN_FUSED_VERIFY`: the conv phase advances state 0→1 in
+/// under `AVAROK_GDN_FUSED_VERIFY`: the conv phase advances state 0→1 in
 /// registers and writes the position-0 conv-state snapshot once; WY2 consumes
 /// its conv output (unchanged); the norm phase produces the gated-norm output.
 fn run_fused_stage1(g: &dyn GpuBackend, ins: &Inputs) -> Result<FusedStage1> {

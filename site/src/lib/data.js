@@ -20,6 +20,11 @@
 // =============================================================================
 
 // --- canonical links ---------------------------------------------------------
+// Public developer URL. adapter-static still writes engine.html; Cloudflare
+// Pages pretty-URLs /engine (200) and 308s /engine.html → /engine. Vite
+// preview serves /engine from that file too. Do not put .html in hrefs.
+export const ENGINE = '/engine';
+export const CONTROL = '/control';
 export const githubUrl = 'https://github.com/Avarok-Cybersecurity/atlas';
 export const discordUrl = 'https://discord.gg/RQcGakU2jW';
 export const blogUrl = 'https://blog.atlascybernetics.ai';
@@ -126,17 +131,12 @@ export const announcement = {
 // --- nav (SSOT for both the desktop bar and the mobile drawer) ---------------
 export const nav = {
   links: [
-    { text: 'Verified', href: '/engine.html#verified' },
-    { text: 'News', href: '/engine.html#news' },
-    { text: 'Hardware', href: '/engine.html#hardware' },
-    { text: 'Models', href: '/engine.html#models' },
-    { text: 'Start Atlas', href: '/engine.html#run' },
-    // `.html`, not `/control`. adapter-static writes this route to
-    // control.html, and the deploy target serves files literally: no extension
-    // guessing, and no directory index outside the document root. /control is
-    // the SPA fallback at best and a 500 at worst. If the server ever gains
-    // `try_files $uri $uri.html`, this becomes '/control'.
-    { text: 'Control', href: '/control.html' },
+    { text: 'Verified', href: `${ENGINE}#verified` },
+    { text: 'News', href: `${ENGINE}#news` },
+    { text: 'Hardware', href: `${ENGINE}#hardware` },
+    { text: 'Models', href: `${ENGINE}#models` },
+    { text: 'Start Atlas', href: `${ENGINE}#run` },
+    { text: 'Control', href: CONTROL },
     { text: 'Blog', href: blogUrl }
   ],
   menuLabel: 'Menu',
@@ -473,7 +473,7 @@ export const faq = {
     },
     {
       q: 'Is Atlas faster than vLLM on a DGX Spark?',
-      a: 'On the published concurrency ladder, yes at every rung from C=1 to C=128, by 1.012x to 1.225x against whichever vLLM configuration is faster at that concurrency. The margin is widest at the top, because between C=64 and C=128 Atlas keeps scaling and the vLLM configuration that leads the mid-ladder stops. Same box, same checkpoint, same client, same prompts, greedy sampling with matched penalties. The full campaign log, including the rungs we lost on the way, is in the repo.'
+      a: 'On the published concurrency ladder, yes at every rung from C=1 to C=128, by 1.012x to 1.333x against the matched vLLM + MTP configuration. The margin is widest at the top, because between C=64 and C=128 Atlas keeps scaling and the matched vLLM configuration flattens. Same box, same checkpoint, same client, same prompts, greedy sampling with matched penalties. The full campaign log, including the rungs we lost on the way, is in the repo.'
     },
     {
       q: 'How do I install it?',

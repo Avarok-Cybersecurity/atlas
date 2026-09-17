@@ -2,4 +2,4 @@
 
 //! Latent down / sigmoid-noaux_tc router / SiTU experts / up CPU ref.
 
-pub use atlas_core::kimi_k3::latent_moe::*;
+pub use avarok_core::kimi_k3::latent_moe::*;

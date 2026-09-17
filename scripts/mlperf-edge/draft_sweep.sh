@@ -3,7 +3,7 @@
 # carry-context + lm_head-batchm are in main? Legs: --num-drafts 2 (shipping) vs 3.
 # GATE_FORCE=1 pins greedy output; capture real per-position draft-accept counters.
 set -u
-IMG=atlas-gb10:followups
+IMG=avarok-gb10:followups
 BIN=/workspace/.wt-decode-fold/target/release/spark
 MODEL=centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf
 HFCACHE=/workspace/.cache/huggingface
@@ -12,16 +12,16 @@ OUTDIR=/workspace/.wt-decode-fold/draft_sweep
 mkdir -p "$OUTDIR"
 
 BASE_ENV=(
-  -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0
-  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
-  -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1
-  -e ATLAS_MTP_CARRY_DEBUG=1   # surfaces draft/accept counters in the log
+  -e AVAROK_NO_FFN_NVFP4_MMQ=1 -e AVAROK_SSM_TAIL_MIDCHUNK=0 -e AVAROK_MTP_CATCHUP=0
+  -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 \
+  -e AVAROK_SSM_TAIL_LEASE_TTL=128 -e AVAROK_BF16_TC_PREFILL=1
+  -e AVAROK_MTP_CARRY_DEBUG=1   # surfaces draft/accept counters in the log
 )
 
 leg() {
   local nd="$1" tag="d${1}"
-  local CN="atlas-sweep-$tag"
-  for c in $(sudo docker ps -q --filter "name=atlas-sweep-"); do sudo docker rm -f "$c" >/dev/null 2>&1; done
+  local CN="avarok-sweep-$tag"
+  for c in $(sudo docker ps -q --filter "name=avarok-sweep-"); do sudo docker rm -f "$c" >/dev/null 2>&1; done
   sleep 4
   sudo docker run -d --name "$CN" --network host --gpus all --ipc=host \
     "${BASE_ENV[@]}" \

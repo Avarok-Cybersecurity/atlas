@@ -5,8 +5,8 @@
 
 /// Outcome of [`crate::prefix_cache::PrefixCache::evict_snapshot_to_tier`].
 ///
-/// The spill side of the tier has a cost gate (`ATLAS_SSM_SPILL_MIN_TOKENS`)
-/// mirroring the fault-in side's `ATLAS_SSM_FAULT_MIN_TOKENS`, and the gate has
+/// The spill side of the tier has a cost gate (`AVAROK_SSM_SPILL_MIN_TOKENS`)
+/// mirroring the fault-in side's `AVAROK_SSM_FAULT_MIN_TOKENS`, and the gate has
 /// to be applied at VICTIM SELECTION, not at the byte move. Gating only the
 /// byte move would leave the index entry marked `tiered` — findable by
 /// `lookup_tiered` — with no blob behind it, so every warm turn would pay a

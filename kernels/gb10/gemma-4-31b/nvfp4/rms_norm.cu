@@ -946,7 +946,7 @@ extern "C" __global__ void residual_add_rms_norm_f32(
     }
 }
 
-// Dual-output variant of residual_add_rms_norm for the ATLAS_FP32_ROUTING path.
+// Dual-output variant of residual_add_rms_norm for the AVAROK_FP32_ROUTING path.
 // Identical math to residual_add_rms_norm (bf16 hidden/residual stream UNCHANGED),
 // but ALSO writes the normed output in FP32 (`output_f32`) for the MoE router GEMM,
 // so the gate logits are computed from an unrounded normed value — removing the

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dispatch-selection contract for the tensor-core 5..=32-row native-FP8
-//! dense-FFN decode tier (`ATLAS_FFN_M16_TC`, #927). CPU tests on the mock
+//! dense-FFN decode tier (`AVAROK_FFN_M16_TC`, #927). CPU tests on the mock
 //! backend: they pin WHICH arm each row count takes with the lever on and off,
 //! that the tier sits AHEAD of the bit-exact `w8a16_gemv_batch16` rung, the row
 //! split and byte offsets of the two-launch rung, and the launch geometry
@@ -16,7 +16,7 @@ use crate::layers::dense_ffn::{DenseFfnLayer, DenseFfnWeights};
 use crate::layers::ops::{DerivedWeights, GemmDispatch, ModelLevers, ModelStats};
 use crate::layers::ops::{W8A16_GEMM_M16_N_TILE, W8A16_GEMM_M16_N_TILE_WIDE};
 use crate::weight_map::{Fp8Weight, QuantizedWeight, WeightQuantFormat};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::mock::{MockArg, MockGpuBackend};
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
@@ -26,7 +26,7 @@ use spark_runtime::gpu::{GpuBackend, KernelHandle};
 const BATCH4_K: u64 = 0xB004;
 const BATCH16_K: u64 = 0xB016;
 const M16TC_K: u64 = 0x167C;
-/// The `N_TILE=64` twin (`ATLAS_FFN_M16_TC_NTILE=64`).
+/// The `N_TILE=64` twin (`AVAROK_FFN_M16_TC_NTILE=64`).
 const M16TC_N64_K: u64 = 0x1640;
 /// Hidden/intermediate width for the mock layer. 128 is the smallest value that
 /// is a whole 128-wide FP8 scale block, which is what the tier's K guard wants.
@@ -143,7 +143,7 @@ fn run(m: u32, expect: Expect, configure: impl FnOnce(&mut DenseFfnLayer)) {
 }
 
 /// `tile` is the CTA N width the tensor-core arm is expected to launch with —
-/// the only thing `ATLAS_FFN_M16_TC_NTILE` changes, and therefore the only
+/// the only thing `AVAROK_FFN_M16_TC_NTILE` changes, and therefore the only
 /// thing worth asserting about it.
 fn run_tiled(m: u32, expect: Expect, tile: u32, configure: impl FnOnce(&mut DenseFfnLayer)) {
     let gpu = MockGpuBackend::new();
@@ -364,7 +364,7 @@ fn the_tier_takes_precedence_over_the_batch16_rung() {
     }
 }
 
-/// `ATLAS_FFN_M16_TC_NTILE=64` is a pure geometry swap: same arm, same rungs,
+/// `AVAROK_FFN_M16_TC_NTILE=64` is a pure geometry swap: same arm, same rungs,
 /// same row counts and offsets, half the CTAs.
 #[test]
 fn the_wide_tile_halves_the_cta_count_on_both_rungs() {
@@ -404,7 +404,7 @@ fn the_wide_tile_falls_back_to_the_default_arm_without_its_entry_point() {
     );
 }
 
-/// The tile lever is inert on its own: without `ATLAS_FFN_M16_TC` the arm is
+/// The tile lever is inert on its own: without `AVAROK_FFN_M16_TC` the arm is
 /// not reached at all, so 5..=32 stay on the bit-exact batch16 tier.
 #[test]
 fn the_wide_tile_does_not_turn_the_tier_on_by_itself() {

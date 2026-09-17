@@ -139,7 +139,7 @@ impl TransformerLayer for Qwen3SsmLayer {
         // v1 is C=1 only under an mHC highway: these paths keep their own
         // residual bookkeeping, which the highway replaces. Refusing is the
         // point — a batched GDN step running on an unmixed stream produces
-        // plausible, wrong activations. Avarok #753.
+        // plausible, wrong activations. Atlas #753.
         self.refuse_batched_under_hc("decode_batched")?;
         self.decode_batched_inner(
             hidden,

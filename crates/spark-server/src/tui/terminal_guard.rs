@@ -164,7 +164,7 @@ pub fn install_panic_hook() {
         restore();
         // 2. Recent context: the last lines the operator saw in the TUI.
         let mut err = std::io::stderr();
-        let _ = writeln!(err, "\n── atlas-tui: panic — last log lines ──");
+        let _ = writeln!(err, "\n── avarok-tui: panic — last log lines ──");
         super::log_ring::dump_to(&mut err, 50);
         if let Some(p) = super::init::tee_file_path() {
             let _ = writeln!(err, "── full log: {p} ──");

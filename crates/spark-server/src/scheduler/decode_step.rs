@@ -89,7 +89,7 @@ pub fn step_decode_only(
         return;
     }
 
-    // Ctx-holes fix (ATLAS_DFLASH_SERIAL_APPEND=1): think-gated stretches
+    // Ctx-holes fix (AVAROK_DFLASH_SERIAL_APPEND=1): think-gated stretches
     // route HERE (mod.rs sends `inside_thinking` seqs to step_decode_only,
     // never the mtp bootstrap), so their captured target hiddens were
     // overwritten and permanently lost — the dominant ctx hole: a 270-token

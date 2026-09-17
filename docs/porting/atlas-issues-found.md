@@ -59,7 +59,7 @@ fact. Deferred — bigger refactor than the port needs right now.
 ---
 
 ## #S1 — `ld.lld -shared` produced a module SCALE's loader rejects 🔧 Atlas-side
-**Where:** `crates/atlas-kernels/build_target.rs` (`ScaleTarget::compile`)
+**Where:** `crates/avarok-kernels/build_target.rs` (`ScaleTarget::compile`)
 The AMD path compiled each `.cu` to a relocatable, then ran `ld.lld -shared` to
 make an ELF DYN — on the (untested, no live runtime) assumption that
 `cuModuleLoadData` needs a linked code object. Empirically on SCALE 1.7.1 the
@@ -70,13 +70,13 @@ with `CUDA_ERROR_INVALID_IMAGE`**. SCALE links the relocatable itself at load.
 
 ## #S2 — Stale `common/` kernel silently shadowed the model override 🔧 Atlas-side
 **Where:** build kernel-set assembly + `run-build.sh`
-`run-build.sh` set `ATLAS_TARGET_QUANT=fp8`, but `model_kernel_dir =
+`run-build.sh` set `AVAROK_TARGET_QUANT=fp8`, but `model_kernel_dir =
 model_dir.join(quant)` and **no `qwen3.6-27b/fp8/` dir exists** (only `nvfp4/`;
 GB10 is the same). So the 4 model-specific overrides were skipped and the stale
 `common/w4a16_gemm.cu` (3 kernels, **no** `predequant_nvfp4_to_fp8`) shadowed the
 real 10-kernel `qwen3.6-27b/nvfp4/w4a16_gemm.cu` — same stem → same
 `t0__w4a16_gemm.o`. Result: `predequant_nvfp4_to_fp8` missing at runtime.
-**Fix:** `ATLAS_TARGET_QUANT=nvfp4` (matches GB10 + doc §5).
+**Fix:** `AVAROK_TARGET_QUANT=nvfp4` (matches GB10 + doc §5).
 **Open (📋):** `collect_cu_files` dedups common-vs-model by stem, but the build
 gives **no warning** when a requested quant dir is absent or when a `common/`
 file shadows nothing/everything. A missing quant dir should warn or fail fast
@@ -172,7 +172,7 @@ TTFT 2.7 s, no crashes. But output is incoherent from token 1
 a compute-kernel numerics bug, not the model.
 Ruled out: FP8 KV cache (gibberish persists with --kv-cache-dtype bf16).
 Prime suspects (in order):
-1. The e4m3 m16n8k32 -> BF16 MMA rewrite (atlas_mma_e4m3 in w4a16_gemm.cu,
+1. The e4m3 m16n8k32 -> BF16 MMA rewrite (avarok_mma_e4m3 in w4a16_gemm.cu,
    commit fde2620). The porting doc explicitly says this was NEVER GPU-verified
    ("a wrong thread/fragment mapping = silently wrong matmul"). It feeds every
    NVFP4 w4a16 GEMM (FFN + attention projections) -> pervasive gibberish.
@@ -187,7 +187,7 @@ path (bypass the e4m3 MMA) to confirm/deny suspect #1 cheaply.
 ### #A3 update (2026-06-01) — localized: GDN (LinearAttention) blows up the residual from L0
 
 Per-layer hidden[0] norm dump (widened the existing profile-gated diagnostic in
-`prefill_b/forward_layers.rs` to all layers under ATLAS_DUMP_LAYER_NORM):
+`prefill_b/forward_layers.rs` to all layers under AVAROK_DUMP_LAYER_NORM):
 - L0 (LinearAttention) hidden norm = **166,564** — already ~1000x too large after
   the first layer (first 64 BF16 elements average ~20,000 each). Healthy would be
   O(10-100).
@@ -205,7 +205,7 @@ the gated RMSNorm / output normalization, the qkvz NVFP4 GEMM scale handling, or
 conv1d. (The e4m3->BF16 MMA itself is EXONERATED: bit-exact on gfx1151.)
 
 Next steps to pin it:
-1. Run the same model on GB10 with ATLAS_FORCE_GLOBAL_GDN=1 (forces split4 there
+1. Run the same model on GB10 with AVAROK_FORCE_GLOBAL_GDN=1 (forces split4 there
    too). If GB10+split4 is coherent -> SCALE miscompiles split4 on gfx1151. If
    GB10+split4 is also garbage -> split4 kernel itself is buggy (fix benefits both).
 2. Dump the embedding norm (pre-L0) to confirm the input to L0 is sane (~O(10)),
@@ -224,13 +224,13 @@ inflation is hidden; the raw z-gate exposed it (gate_z=179k -> silu -> post_norm
 16769 -> out_proj 166k -> residual blows up from L0).
 
 PROOF: forcing the qkvz GEMM to the NON-pipelined base `w4a16_gemm` kernel
-(ATLAS_W4A16_NOPIPE=1, nulls qkvz_nvfp4_t) drops qkvz_q from 167422 -> 3.743
+(AVAROK_W4A16_NOPIPE=1, nulls qkvz_nvfp4_t) drops qkvz_q from 167422 -> 3.743
 (correct). So m128 is the culprit; the base kernel scales correctly. (Base is
 NOT a drop-in: its non-transposed [N,K] output layout mismatches the SSM
 deinterleave -> gdn_out=0, so the model still isn't coherent on that path.)
 
 EVERY primitive used by m128 was tested bit-exact on gfx1151 and PASSES:
-- atlas_mma_e4m3 (e4m3->bf16 MMA decomposition): max|cand-cpu|=0.0
+- avarok_mma_e4m3 (e4m3->bf16 MMA decomposition): max|cand-cpu|=0.0
 - (float)__nv_fp8_e4m3 cast, __nv_cvt_fp8_to_halfraw, __nv_cvt_float_to_fp8
 - cvt.f32.bf16 inline PTX (bf16x4_to_e4m3x4 A-conversion)
 - rsqrtf, __expf, warp_reduce_sum, __shared__/__syncthreads block reduction
@@ -243,7 +243,7 @@ So the defect emerges only in the ASSEMBLED m128 kernel — the double-buffered
 cp.async pipeline + unrolled DEQUANT_T macro. Difference vs the working base
 kernel: base reads block-scale from GLOBAL and dequants to BF16 (BF16 MMA);
 m128 reads block-scale from SMEM (cp.async-loaded smem_Bs), dequants
-`sv0=(float)f0*scale2; lo=LUT*sv0`, converts lo->FP8 (atlas_cvt_e4m3x2_f32),
+`sv0=(float)f0*scale2; lo=LUT*sv0`, converts lo->FP8 (avarok_cvt_e4m3x2_f32),
 FP8 MMA. The scale2 multiply in the pipelined/unrolled DEQUANT_T is what gets
 effectively lost (likely a SCALE -O3 miscompile of the macro, or the
 cp.async-loaded smem_Bs block-scale read). Single-shot cp.async tested fine;
@@ -255,8 +255,8 @@ then fix (candidates: apply scale2 to the FP32 accumulator at output instead of
 in the pipelined dequant; or read block-scale from global like the base kernel;
 or -O2 the kernel). Verify qkvz_q ~ O(10) and coherent generation. The fix must
 cover all w4a16_gemm_t_m128 callers (qkvz, attn q/k/v/o, FFN gate/up/down).
-Debug env flags left in tree (gated, harmless): ATLAS_DUMP_GDN, ATLAS_W4A16_NOPIPE,
-ATLAS_DUMP_LAYER_NORM. Probes in /tmp/modprobe/ (mma_gfx, gnorm, cvtbf16, argabi,
+Debug env flags left in tree (gated, harmless): AVAROK_DUMP_GDN, AVAROK_W4A16_NOPIPE,
+AVAROK_DUMP_LAYER_NORM. Probes in /tmp/modprobe/ (mma_gfx, gnorm, cvtbf16, argabi,
 consttest, cpasync, blockred, mathtest, fp8cast — all PASS).
 
 ### #A3 update-2 (2026-06-01) — m128 bug is the FP8-MMA path, NOT scale2-form
@@ -267,14 +267,14 @@ applied correctly; the m128 defect is elsewhere.
 
 Confirmed contrast:
 - base w4a16_gemm (BF16 dequant -> BF16 m16n8k16 MMA): qkvz_q=3.74 CORRECT.
-- m128 w4a16_gemm_t_m128 (FP8 dequant via atlas_cvt_e4m3x2_f32 -> FP8 MMA via
-  atlas_mma_e4m3 decomposition): qkvz_q=167422 WRONG (~45000x).
+- m128 w4a16_gemm_t_m128 (FP8 dequant via avarok_cvt_e4m3x2_f32 -> FP8 MMA via
+  avarok_mma_e4m3 decomposition): qkvz_q=167422 WRONG (~45000x).
 Both apply scale2 identically; both use exonerated primitives in isolation.
 
 => The bug is in the m128 FP8-MMA path as ASSEMBLED: either the in-kernel A->FP8
-(bf16x4_to_e4m3x4 on smem_A with its stride), the dequant->FP8 (atlas_cvt_e4m3x2_f32
-on small ~0.001-0.45 values), the FP8 fragment feeding of atlas_mma_e4m3, or the
-transposed weight tiling/accumulation. atlas_mma_e4m3 was only verified on inputs
+(bf16x4_to_e4m3x4 on smem_A with its stride), the dequant->FP8 (avarok_cvt_e4m3x2_f32
+on small ~0.001-0.45 values), the FP8 fragment feeding of avarok_mma_e4m3, or the
+transposed weight tiling/accumulation. avarok_mma_e4m3 was only verified on inputs
 ~[-3,3], NOT on the tiny dequanted-weight magnitudes the real kernel produces.
 
 HIGHEST-CONFIDENCE FIX (next session): convert w4a16_gemm_t_m128 to dequant->BF16
@@ -283,7 +283,7 @@ keeping m128's transposed tiling/layout — so the SSM deinterleave still gets t
 right layout (base kernel alone gives gdn_out=0 due to non-transposed layout).
 Then it covers all m128 callers (qkvz, attn q/k/v/o, FFN). Alternative: round-trip
 probe of w4a16_gemm_t_m128 (known A + CPU-quantized B vs CPU ref) to pin the exact
-FP8-path line. Also worth trying: the ATLAS_FP8_DEQUANT_*_TO_BF16 levers (route to
+FP8-path line. Also worth trying: the AVAROK_FP8_DEQUANT_*_TO_BF16 levers (route to
 BF16 dense_gemm) if 61GB memory allows at reduced ctx/batch — fastest coherence proof.
 Inline-scale2 attempt reverted; tree clean except debug env flags (gated).
 
@@ -299,14 +299,14 @@ bit-manipulation encoder works (2.0->2.0). (Earlier MMA probe used the encode on
 the HOST = correct; only DEVICE codegen is broken — that's why it passed.)
 
 Impact: the m128 NVFP4 GEMM (w4a16_gemm_t_m128) ENCODES both the dequanted weight
-(atlas_cvt_e4m3x2_f32, w4a16_gemm.cu ~line 24, #if __SCALE__) and the A input
+(avarok_cvt_e4m3x2_f32, w4a16_gemm.cu ~line 24, #if __SCALE__) and the A input
 (bf16x4_to_e4m3x4) to FP8 before the FP8 MMA -> all garbage (~16) -> qkvz_q
 167422 vs correct 3.74 -> gibberish. The base w4a16_gemm dequants straight to
 BF16 (no float->fp8 encode) -> correct. Used by ALL m128 callers (qkvz/attn/FFN).
 
 FIX (next session, two options):
   (A) Replace the broken __nv_cvt_float_to_fp8 in the #if __SCALE__ branch of
-      atlas_cvt_e4m3x2_f32 (and any float->fp8 encode) with a CORRECT software
+      avarok_cvt_e4m3x2_f32 (and any float->fp8 encode) with a CORRECT software
       e4m3 encoder. MUST match SCALE's __nv_cvt_fp8_to_halfraw decoder convention
       (decode 0x30->1.0, 0x38->1.5, 0x40->2.0 — derive exact format by decoding
       bytes 0x00-0xFF first, then write the inverting RNE encoder). Smallest blast
@@ -338,9 +338,9 @@ Two compounding SCALE/gfx1151 facts make the m128 NVFP4 GEMM's FP8 path unusable
 => FIX (decided): rewrite w4a16_gemm_t_m128 to dequant->BF16 + BF16 m16n8k16 MMA
 (exactly the base w4a16_gemm path, which is proven correct on SCALE: qkvz_q=3.74),
 keeping m128's transposed tiling + cp.async pipeline (those are fine). Replace the
-DEQUANT_T FP8 store (atlas_cvt_e4m3x2_f32 -> smem_B_fp8) with a BF16 store
+DEQUANT_T FP8 store (avarok_cvt_e4m3x2_f32 -> smem_B_fp8) with a BF16 store
 (__float2bfloat16(LUT*bs*scale2) -> smem_B_bf16), and COMPUTE_MMA's
-bf16x4_to_e4m3x4(A)+atlas_mma_e4m3 with a direct BF16 m16n8k16 MMA (A already
+bf16x4_to_e4m3x4(A)+avarok_mma_e4m3 with a direct BF16 m16n8k16 MMA (A already
 BF16 in smem_A). Apply to all w4a16_gemm_t* variants (qkvz/attn/FFN). This drops
 the broken float->fp8 encode entirely. Verify qkvz_q ~ O(10) + coherent gen.
 (GB10 keeps native FP8 e4m3 — guard the BF16 path under #if defined(__SCALE__).)
@@ -361,7 +361,7 @@ bug, NOT yet rewritten. Must apply the same BF16 conversion there for full coher
 NEXT BUG (#A4): with correct GDN inputs (qkvz_q=3.74, gate_z=4.38, conv_out=0.091,
 post_l2norm_q=0.399, v_in=0.090, decay[0..4]=[0.24,1.0,0.99,0.98],
 beta[0..4]=[0.07,0.94,0.26,0.99] — ALL valid), gdn_out=0.000. So the
-gated_delta_rule_prefill_split4 kernel (forced on gfx1151 by #A2 ATLAS_FORCE_GLOBAL_GDN
+gated_delta_rule_prefill_split4 kernel (forced on gfx1151 by #A2 AVAROK_FORCE_GLOBAL_GDN
 because the persistent GDN kernels exceed 64KB LDS) produces ~0 for normal-magnitude
 inputs on SCALE (it gave 10.17 earlier only because the inputs were the huge broken-qkvz
 garbage). split4 keeps H in a per-thread float H_reg[K_DIM] register array (likely
@@ -379,7 +379,7 @@ forward uses, and disabled the broken FP8 predequant:
    Used by SSM qkvz + SSM out_proj (via w4a16_gemm_n128). VERIFIED correct:
    qkvz_q=3.743251 == base w4a16_gemm (NOPIPE) 3.743 exactly.
 2. w4a16_gemm_t_m128 (line 960): same BF16 conversion, 2 M-chunks. (attention path)
-3. ATLAS_NO_FP8_PREDEQUANT=1 (init.rs predequant_for_prefill early-return): out_proj
+3. AVAROK_NO_FP8_PREDEQUANT=1 (init.rs predequant_for_prefill early-return): out_proj
    was using out_proj_fp8 -> fp8_gemm_t (broken encode) -> 168651; now uses BF16
    w4a16_gemm_t -> out_proj=0.274 (correct). FFN already used base w4a16_gemm (BF16, fine).
 
@@ -403,8 +403,8 @@ the first diverging layer/op — single-kernel probing has hit diminishing retur
 Quick checks first: (a) dump embedding for 2 different tokens (constant? -> embed bug);
 (b) standalone split4 recurrence vs CPU delta-rule on multi-token input; (c) RoPE
 cos/sin probe. Likely split4 (content not accumulating) given input-independence.
-Debug flags in run-serve.sh: ATLAS_W4A16_VARIANT=v1, ATLAS_NO_FP8_PREDEQUANT=1,
-ATLAS_FORCE_GLOBAL_GDN=1 (all needed); dumps gated off.
+Debug flags in run-serve.sh: AVAROK_W4A16_VARIANT=v1, AVAROK_NO_FP8_PREDEQUANT=1,
+AVAROK_FORCE_GLOBAL_GDN=1 (all needed); dumps gated off.
 
 ### #A6 (2026-06-01) — remaining bug LOCALIZED: context not propagating to last token
 
@@ -472,7 +472,7 @@ REMAINING (non-blocking): (1) reshape_and_cache.cu:128 float2_to_fp8x2 KV-write 
 still uses __NV_E4M3 — only hit on FP8 KV (we use bf16 KV); fix with paired scl_enc_fp8
 if FP8 KV needed. (2) Same SCALE decode bug exists in other models' kernels
 (qwen3.6-35b-a3b, nemotron-super-120b, all moe_*) — apply the same scl_fp8/scl_enc_fp8
-fix when porting those. (3) Debug dumps (ATLAS_DUMP_LAYER_NORM/GDN, qkvz_qLAST) still
+fix when porting those. (3) Debug dumps (AVAROK_DUMP_LAYER_NORM/GDN, qkvz_qLAST) still
 present, gated by env vars — remove for clean build.
 
 LESSON: when A/B-comparing two kernels on the SAME platform, both can share an
@@ -496,21 +496,21 @@ and out_proj [5120×6144] per SSM layer via bf16_to_fp8). That is 80 MB + 30 MB 
 110 MB × 48 SSM layers = ~5.3 GB of EXTRA weights the baseline never allocated.
 gfx1151 cannot even dispatch this path (no cp.async fp8_gemm_n128), so 6ca4665
 added HW flag `disable_fp8_ssm_prefill` (HARDWARE.toml) → build.rs emits
-`cargo:rustc-env=ATLAS_HW_DISABLE_FP8_SSM_PREFILL`, gated in qwen35_dense.rs via
+`cargo:rustc-env=AVAROK_HW_DISABLE_FP8_SSM_PREFILL`, gated in qwen35_dense.rs via
 `option_env!(...).is_none()`.
 
-THE GATE WAS DEAD. `cargo:rustc-env` from atlas-kernels/build.rs is CRATE-LOCAL —
+THE GATE WAS DEAD. `cargo:rustc-env` from avarok-kernels/build.rs is CRATE-LOCAL —
 it does not reach spark-model (which has no build.rs). So `option_env!` in
 spark-model was always None → fp8_ssm_prefill stayed true → the ~5.3 GB FP8 SSM
 prefill weights were allocated anyway. Serve log "SSM in_proj_qkv + out_proj via
 native FP8 prefill GEMM" fired (baseline-premerge log never prints it). This is
-the SAME dead-flag trap the SCALE-port notes warned about for ATLAS_HW_FORCE_BR32.
+the SAME dead-flag trap the SCALE-port notes warned about for AVAROK_HW_FORCE_BR32.
 
 FIX (additive, SSOT/PCND): added crates/spark-model/build.rs — resolves the SAME
-HARDWARE.toml (workspace/kernels/<ATLAS_TARGET_HW|gb10>/HARDWARE.toml, mirroring
-atlas-kernels resolution) and re-emits the `[hardware]` gating flags as
-cargo:rustc-env (disable_fp8_ssm_prefill → ATLAS_HW_DISABLE_FP8_SSM_PREFILL,
-force_br32_prefill → ATLAS_HW_FORCE_BR32). Emitted ONLY when the key is present
+HARDWARE.toml (workspace/kernels/<AVAROK_TARGET_HW|gb10>/HARDWARE.toml, mirroring
+avarok-kernels resolution) and re-emits the `[hardware]` gating flags as
+cargo:rustc-env (disable_fp8_ssm_prefill → AVAROK_HW_DISABLE_FP8_SSM_PREFILL,
+force_br32_prefill → AVAROK_HW_FORCE_BR32). Emitted ONLY when the key is present
 and true; gb10 omits both keys → no env → option_env! None → NVIDIA/GB10 unchanged.
 Added `toml = "0.8"` build-dependency (already in workspace lock). The single
 authoritative value still lives only in HARDWARE.toml.
@@ -521,6 +521,6 @@ post-construction free rose from 7.1 GB (pre-fix, tiny 158 MB arena) to 11.8 GB
 "Listening" with MTP K2 at ctx 16384, no OOM kill. Coherent: primes
 "2, 3, 5, 7, 11, 13, 17, 19" + "Paris". MTP K2 ~18 tok/s, K2 accept 90-96%.
 
-This fix ALSO un-deads ATLAS_HW_FORCE_BR32 → gfx1151 prefill now routes to the
+This fix ALSO un-deads AVAROK_HW_FORCE_BR32 → gfx1151 prefill now routes to the
 LDS-safe BR32 kernel (was dispatching the BR64 kernel that overflows the 64 KB
 LDS cap per the HARDWARE.toml rationale) — strictly safer on this hardware.

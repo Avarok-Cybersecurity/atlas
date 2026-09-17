@@ -15,7 +15,7 @@ Per-tensor scaled checkpoints can be read as a degenerate block case (`block_siz
 
 E4M3 is `sign(1) | exp(4) | mantissa(3)`, bias 7. Finite range is `[-448, +448]`. There is no infinity encoding; `0xFF` / `0x7F` are NaNs. The per-tensor scale maps the activation's dynamic range into E4M3's representable window.
 
-Atlas ships a 256-entry `FP8_E4M3_LUT` in `atlas-core/src/numeric.rs` for CPU sanity checks and scale-inversion arithmetic at weight-load time. That module is also where the `f32_to_bf16` round-to-nearest-even cast lives, byte-exact against PyTorch's `float32 → bfloat16`. The GPU hot path does not use the LUT — it uses the PTX instruction `cvt.rn.bf16.e4m3` (FP8 → BF16 on the fragment boundary), which is available on SM121 unlike the NVFP4 instruction.
+Atlas ships a 256-entry `FP8_E4M3_LUT` in `avarok-core/src/numeric.rs` for CPU sanity checks and scale-inversion arithmetic at weight-load time. That module is also where the `f32_to_bf16` round-to-nearest-even cast lives, byte-exact against PyTorch's `float32 → bfloat16`. The GPU hot path does not use the LUT — it uses the PTX instruction `cvt.rn.bf16.e4m3` (FP8 → BF16 on the fragment boundary), which is available on SM121 unlike the NVFP4 instruction.
 
 ## Native FP8 vs dequant-to-BF16
 
@@ -75,7 +75,7 @@ The Turbo family is Atlas-specific: Walsh-Hadamard rotates out the outlier struc
 
 - `kernels/gb10/<model>/fp8/` — per-model FP8 kernel sets (Qwen3.6 has its own leaf).
 - `kernels/gb10/<model>/<quant>/paged_decode_attn_fp8.cu` — native FP8 KV attention.
-- `crates/atlas-core/src/numeric.rs` — the FP8 E4M3 LUT and the f32 → BF16 RNE cast, with the PyTorch-parity vectors.
+- `crates/avarok-core/src/numeric.rs` — the FP8 E4M3 LUT and the f32 → BF16 RNE cast, with the PyTorch-parity vectors.
 - `crates/spark-model/src/quant_format/` — per-format descriptors and runtime dispatch.
 - `crates/spark-runtime/src/kv_cache.rs` — `KvCacheDtype::Fp8` sizing + calibration plumbing.
 - `docs/adr/0004-nvfp4-fp8-quantization.md` — the authoritative quantization decision record.

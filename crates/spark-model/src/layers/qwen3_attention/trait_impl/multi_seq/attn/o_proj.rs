@@ -156,7 +156,7 @@ impl Qwen3AttentionLayer {
                 ops::q2_0_gemv_vec(fwd.gpu, self.q2_0_gemv_k, attn_out_i, q2, o_out_i, stream)?;
             }
         } else if let Some(o_bf16) = self.o_dense_bf16.as_ref() {
-            // ATLAS_FP8_DEQUANT_ATTN_TO_BF16: O-proj dequanted to BF16 at load.
+            // AVAROK_FP8_DEQUANT_ATTN_TO_BF16: O-proj dequanted to BF16 at load.
             // attn_out is contiguous [n, q_dim] and o_out is [n, h], so a single
             // batched GEMM reads the BF16 o_proj weight ONCE for all n sequences
             // instead of once per sequence (per-seq dense_gemv re-read it N×).
@@ -223,8 +223,8 @@ impl Qwen3AttentionLayer {
                 && h % 128 == 0
                 && q_dim % 128 == 0;
             let wide = n > 4 && self.w8a16_gemv_batch16_k.0 != 0;
-            // #927 tensor-core tier, same 16-row group, `ATLAS_ATTN_M16_TC`
-            // (or the `ATLAS_M16_TC` umbrella) only — NOT the FFN's lever; the
+            // #927 tensor-core tier, same 16-row group, `AVAROK_ATTN_M16_TC`
+            // (or the `AVAROK_M16_TC` umbrella) only — NOT the FFN's lever; the
             // two split in round 6 because the H100 measured this tier -21.7%
             // and the FFN arm +13.7% in one serve:
             // `w8a16_gemm_m16` replaces the batch16 GEMV's 16 scalar FFMA per

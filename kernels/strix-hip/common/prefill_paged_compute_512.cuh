@@ -29,15 +29,15 @@
 // uint4 copies; commit/wait become no-ops. The NVIDIA/SCALE copy of this
 // header defines the same names as real cp.async. Per-tree behavior comes
 // purely from which header is included — no #if at the call sites.
-__device__ __forceinline__ void atlas_cp16(void* smem_dst, const void* gmem_src) {
+__device__ __forceinline__ void avarok_cp16(void* smem_dst, const void* gmem_src) {
     *reinterpret_cast<uint4*>(smem_dst) = *reinterpret_cast<const uint4*>(gmem_src);
 }
-__device__ __forceinline__ void atlas_cp16_pred(void* smem_dst, const void* gmem_src, bool pred) {
+__device__ __forceinline__ void avarok_cp16_pred(void* smem_dst, const void* gmem_src, bool pred) {
     if (pred) *reinterpret_cast<uint4*>(smem_dst) = *reinterpret_cast<const uint4*>(gmem_src);
     else      *reinterpret_cast<uint4*>(smem_dst) = make_uint4(0,0,0,0);
 }
-__device__ __forceinline__ void atlas_cp_commit() {}
-__device__ __forceinline__ void atlas_cp_wait()   {}
+__device__ __forceinline__ void avarok_cp_commit() {}
+__device__ __forceinline__ void avarok_cp_wait()   {}
 
 typedef __bf16 v16bf_512 __attribute__((ext_vector_type(16)));
 typedef float  v8f_512   __attribute__((ext_vector_type(8)));

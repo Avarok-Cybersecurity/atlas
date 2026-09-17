@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quick correctness probe for Qwen3.5-35B-A3B-FP8 with ATLAS_FP8_MOE_COALESCED=1.
+"""Quick correctness probe for Qwen3.5-35B-A3B-FP8 with AVAROK_FP8_MOE_COALESCED=1.
 
 Asks 5 short coherence / math / code prompts. Fails if any response is empty,
 repeats a 20-token pattern ≥3 times (fuzzy repetition regression), or contains

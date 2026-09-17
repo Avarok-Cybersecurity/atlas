@@ -10,7 +10,7 @@
 use super::*;
 use crate::layers::ops::GemmDispatch;
 
-/// The shape a native-FP8 dense serve boots in with no `ATLAS_*` set: FP8
+/// The shape a native-FP8 dense serve boots in with no `AVAROK_*` set: FP8
 /// overlays on both the FFN and attention, block-scaled prefill on, the W8A8
 /// kernels present.
 fn h100_default() -> DenseFp8Inputs {
@@ -111,7 +111,7 @@ fn the_ffn_and_attention_overlays_are_decided_independently() {
 
 #[test]
 fn single_scale_prefill_brings_the_q_and_o_fp8_twins_back() {
-    // ATLAS_FP8_SINGLE_SCALE clears `fp8_blockscaled_prefill`, which makes the
+    // AVAROK_FP8_SINGLE_SCALE clears `fp8_blockscaled_prefill`, which makes the
     // W8A8 arms in `paged_qkv.rs:220` / `paged_oproj.rs:94` decline — prefill
     // then lands on `w8a16_gemm_n128_m128`, which reads `weight_t`/`scale_t`.
     let p = DenseFp8Plan::resolve(DenseFp8Inputs {
@@ -140,7 +140,7 @@ fn a_target_without_the_w8a8_kernels_keeps_every_fp8_twin() {
 
 #[test]
 fn the_q_transpose_lever_keeps_only_the_q_twin() {
-    // `cache_skip_qkv.rs:142` reads ATLAS_ATTN_PREFILL_Q_T per prefill and is
+    // `cache_skip_qkv.rs:142` reads AVAROK_ATTN_PREFILL_Q_T per prefill and is
     // NOT memoised, so the loader has to mirror it or free a twin a later
     // getenv re-enables.
     let p = DenseFp8Plan::resolve(DenseFp8Inputs {
@@ -256,7 +256,7 @@ fn the_escape_hatch_restores_the_pre_915_loader() {
             attn_nvfp4: true,
             attn_fp8_twins: Fp8TwinSet::ALL,
         },
-        "ATLAS_DENSE_FP8_KEEP_NVFP4 must reproduce the old footprint exactly, \
+        "AVAROK_DENSE_FP8_KEEP_NVFP4 must reproduce the old footprint exactly, \
          or it is useless for bisecting a suspected gap in this table"
     );
 }

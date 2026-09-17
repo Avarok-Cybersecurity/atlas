@@ -20,7 +20,7 @@
 #define BLOCK_SIZE 128
 
 // Reduction primitives provided by gdn_reduce.cuh:
-//   atlas_warp_reduce_sum, atlas_block_reduce_sum
+//   avarok_warp_reduce_sum, avarok_block_reduce_sum
 // These match the per-token `gated_delta_rule.cu` baseline bit-exactly so
 // MTP verify outputs are numerically identical to single-token decode.
 
@@ -109,7 +109,7 @@ extern "C" __global__ void gated_delta_rule_wy2(
     // ── Compute kdot = k_1^T @ k_0 ──
     {
         float partial = (tid < k_dim) ? smem_k1[tid] * smem_k0[tid] : 0.0f;
-        float result = atlas_block_reduce_sum(partial, smem_warp, tid);
+        float result = avarok_block_reduce_sum(partial, smem_warp, tid);
         if (tid == 0) smem_kdot = result;
     }
     __syncthreads();

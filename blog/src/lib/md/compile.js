@@ -55,7 +55,7 @@ export const slugify = (text) =>
  * almost certainly a mistake — `compileMarkdown` refuses such a source rather
  * than silently mangling it.
  */
-export const MARK = '@@ATLASMD';
+export const MARK = '@@AVAROKMD';
 
 /** Raw HTML the body may contain: exactly the two components, nothing else. */
 const ALLOWED_TAGS = /^<\/?(Callout|Video)\b/;

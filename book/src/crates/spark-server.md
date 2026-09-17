@@ -11,7 +11,7 @@ This crate is the only `bin` in the workspace — building `spark-server` produc
 2. **Resolve model path** — HF id via `HF_HUB_CACHE` / `~/.cache/huggingface/hub` or explicit `--model-from-path`.
 3. **Load `ModelConfig`** from `config.json`.
 4. **Resolve `KernelTarget`** from the config's `model_type` + `--kv-cache-dtype`.
-5. **Instantiate `GpuBackend`** — `AtlasCudaBackend::new(ordinal, &ptx_modules)`.
+5. **Instantiate `GpuBackend`** — `AvarokCudaBackend::new(ordinal, &ptx_modules)`.
 6. **Instantiate `CommBackend`** — `NcclBackend` if `--world-size > 1`, else `SingleGpuBackend`.
 7. **`factory::build(config, gpu, comm)` → `Arc<dyn Model>`** — the model weights land on the GPU.
 8. **Load the tokenizer** (`tokenizers` crate, optional chat template in `jinja-templates/<family>.j2`).

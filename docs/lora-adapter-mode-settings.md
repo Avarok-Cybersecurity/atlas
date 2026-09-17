@@ -8,7 +8,7 @@ for the engine-internal contract.
 > **✅ Verified end-to-end (exact parity with `peft`/transformers).** A prior serve bug —
 > **F32 adapters read as BF16 → garbage** — is now fixed (`adapter.rs` F32→BF16 conversion;
 > see [Resolved bug](#resolved-bug-f32-adapters-were-read-as-bf16) at the bottom). Atlas now
-> reproduces the reference output verbatim (e.g. base *"...codeword is ATLAS"* → adapter
+> reproduces the reference output verbatim (e.g. base *"...codeword is AVAROK"* → adapter
 > *"The Atlas launch codeword is STARFALL-4728."*). A runtime parity microtest
 > (`examples/lora_apply_microtest.rs`) guards the apply kernels going forward.
 
@@ -70,7 +70,7 @@ LoRA-capable `spark` binary + the adapter + the host model cache. Run **detached
 
 ```bash
 # spark must be built WITH the model's kernels + LoRA support:
-#   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=holo-3.1-0.8b ATLAS_TARGET_QUANT=nvfp4 \
+#   AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=holo-3.1-0.8b AVAROK_TARGET_QUANT=nvfp4 \
 #     cargo build --release --bin spark
 docker run -d --name atlas-lora --gpus all --network host \
   -e LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib:/lib/aarch64-linux-gnu \

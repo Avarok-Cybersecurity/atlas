@@ -29,7 +29,7 @@ import urllib.request
 import os
 
 HEAD_URL = "http://localhost:8888"
-WORKER_URL = os.environ.get("ATLAS_WORKER_URL", "http://127.0.0.1:8888")
+WORKER_URL = os.environ.get("AVAROK_WORKER_URL", "http://127.0.0.1:8888")
 MODEL = "Qwen/Qwen3.5-35B-A3B-FP8"
 
 ALPHA_PROMPT = (

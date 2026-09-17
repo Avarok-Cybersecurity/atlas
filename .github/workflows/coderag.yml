@@ -7,8 +7,8 @@ name: CodeRAG
 # to load into an in-browser lattice-db.
 #
 # Stable URLs this produces (no TTL, fetchable directly from the browser):
-#   https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.gz
-#   https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.meta.json
+#   https://avarok-cybersecurity.github.io/avarok/coderag/atlas-coderag.jsonl.gz
+#   https://avarok-cybersecurity.github.io/avarok/coderag/atlas-coderag.jsonl.meta.json
 #
 # Why gh-pages and not the alternatives: GitHub Pages serves with
 # `Access-Control-Allow-Origin: *` (verified 2026-08-16), so the site can fetch
@@ -121,7 +121,7 @@ jobs:
           embedding-api-key: ${{ secrets.OPENROUTER_API_KEY_FREE }}
           # The first run 404s here -> the action warns and does a full embed.
           # Every later run reuses vectors for unchanged chunks by chunk_hash.
-          previous-corpus-url: https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.gz
+          previous-corpus-url: https://avarok-cybersecurity.github.io/avarok/coderag/atlas-coderag.jsonl.gz
           # Slower than the action's 2500ms default: OPENROUTER_API_KEY_FREE
           # rides the free tier, and a merge-time batch job has no latency SLO.
           request-interval-ms: '3000'
@@ -210,5 +210,5 @@ jobs:
           else
             echo "### CodeRAG corpus published" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Live at https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.gz for commit \`$SHA\`." >> "$GITHUB_STEP_SUMMARY"
+            echo "Live at https://avarok-cybersecurity.github.io/avarok/coderag/atlas-coderag.jsonl.gz for commit \`$SHA\`." >> "$GITHUB_STEP_SUMMARY"
           fi

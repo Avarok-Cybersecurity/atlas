@@ -36,8 +36,8 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   # Skip CUDA/nvcc in build.rs so clippy/check can run on hosts without a GPU.
-  # Emits a stub target_ptx.rs that satisfies the atlas-kernels include.
-  ATLAS_SKIP_BUILD: "1"
+  # Emits a stub target_ptx.rs that satisfies the avarok-kernels include.
+  AVAROK_SKIP_BUILD: "1"
   # Short-circuit cudarc's nvcc probe (format is {major}0{minor}0; 13000 == CUDA 13.0).
   # Required for `cargo test` on a runner without nvcc.
   CUDARC_CUDA_VERSION: "13000"
@@ -185,7 +185,7 @@ jobs:
   #
   # ★ READ LIVE FROM THE CHECK RUNS, never from a file. A stamp stored in the
   # repo would be settable by the branch it gates — the property
-  # `atlas-governance` protects for the ledger, for the same reason.
+  # `avarok-governance` protects for the ledger, for the same reason.
   #
   # FAIL OPEN, like `changes`: any error here emits `true` and the lane runs.
   # A broken stamp lookup must cost runner minutes, never wave a PR through.
@@ -541,6 +541,10 @@ jobs:
           || 'ubuntu-latest' }}
     permissions:
       contents: read
+      # Only the merge-to-main step uses this, and only to rewrite one comment
+      # whose id is pinned in a repository variable. A read-only token cannot
+      # keep the backlog, and the backlog is the part of CHKI worth keeping.
+      discussions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -590,6 +594,53 @@ jobs:
               # still run, so a tree that cannot be indexed fails here too.
               python3 scripts/check_cross_hardware.py --paths ;;
           esac
+
+      # The table's own rules, on every PR. Without this the renderer is only
+      # exercised on a merge, which is the one moment its failure cannot be
+      # fixed before it matters.
+      - name: The reach table's rules still fire
+        run: python3 scripts/chki_reach_table.py
+
+      # The verdict is advisory and scrolls away with the run; the BACKLOG does
+      # not. On a merge to main, append one row to the single comment that is
+      # the reach table -- which kernels landed, which hardware consumed them,
+      # and which of those hardware nothing in this repository compiles -- and
+      # rewrite its first row to the union of that last column. That union is
+      # the list of targets somebody has to build or measure by hand.
+      #
+      # Advisory here too: the step is `continue-on-error` by the job, and the
+      # table it would have written is printed to the run summary, so a token
+      # or permission problem loses a comment edit, never the record.
+      - name: Append this merge to the CHKI reach table
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # PCND: no default comment id. Unset means "not configured", and the
+          # step says so and exits 0 rather than editing an arbitrary comment.
+          CHKI_TABLE_COMMENT_ID: ${{ vars.CHKI_TABLE_COMMENT_ID }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          # The PR the merge commit names. A push that is not a PR merge (a
+          # direct push, a revert made locally) has nothing to attribute, and
+          # an unattributed row would be a backlog entry nobody could chase.
+          pr=$(git log -1 --format=%s "${GITHUB_SHA}" | grep -oE '\(#[0-9]+\)$' | tr -d '()' || true)
+          if [ -z "$pr" ]; then
+            echo "merge commit names no PR — nothing to record."; exit 0
+          fi
+          base="${PUSH_BEFORE}"
+          case "$base" in 0000000000000000000000000000000000000000|"") base="${GITHUB_SHA}~1" ;; esac
+          python3 scripts/check_cross_hardware.py --base "$base" --head "${GITHUB_SHA}" --json > chki.json
+          python3 scripts/chki_reach_table.py --pr "$pr" --chki-json chki.json --out table.md
+          {
+            echo "### CHKI reach table — the row for $pr"; echo; cat table.md;
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if [ -z "${CHKI_TABLE_COMMENT_ID:-}" ]; then
+            echo "CHKI_TABLE_COMMENT_ID is not set — rendered the row above and posted nothing."
+            exit 0
+          fi
+          python3 scripts/chki_reach_table.py --pr "$pr" --chki-json chki.json \
+                  --comment-id "${CHKI_TABLE_COMMENT_ID}"
 
   bench-threshold-prose:
     name: BENCH.toml threshold prose
@@ -691,7 +742,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # Default `cargo test` skips `#[ignore]`-gated tests, which is
       # exactly what we want — every test that requires a real GPU
-      # (spark-runtime, spark-storage, atlas-kernels, atlas-spark-bench
+      # (spark-runtime, spark-storage, avarok-kernels, avarok-spark-bench
       # correctness, spark-server integration) carries `#[ignore]` and
       # is run locally on GB10 hardware via `-- --ignored`.
       - run: cargo test --workspace --locked
@@ -713,7 +764,7 @@ jobs:
     # HOSTED, and this is a compromise with its reasoning written down.
     #
     # #901 moved this to the self-hosted Apple Silicon box. Then TheTom's
-    # ATLAS_SKIP_BUILD="0" (below) made the step actually BUILD the metal kernel
+    # AVAROK_SKIP_BUILD="0" (below) made the step actually BUILD the metal kernel
     # set instead of stubbing `metallib_modules()` to an empty list -- and the
     # build immediately failed there:
     #
@@ -743,7 +794,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # FAIL FAST on a runner without the Metal compiler. Without this the
       # absence surfaces as `failed to run custom build command for
-      # atlas-kernels` after minutes of dependency compilation, with the real
+      # avarok-kernels` after minutes of dependency compilation, with the real
       # cause one line inside a wall of cargo output.
       - name: the Metal compiler must be present
         run: |
@@ -752,7 +803,7 @@ jobs:
           find 'metal'. This runner has the Command Line Tools but not the Metal \
           compiler, which ships with Xcode. Install Xcode (or the Metal toolchain \
           component) on this machine, or route this job to a runner that has it. \
-          ATLAS_SKIP_BUILD=0 below needs it to compile kernels/metal/*.metal."
+          AVAROK_SKIP_BUILD=0 below needs it to compile kernels/metal/*.metal."
             exit 1
           fi
           echo "metal compiler: $(xcrun -f metal)"
@@ -764,7 +815,7 @@ jobs:
       # `-p spark-server --features metal` activates the metal
       # feature on every transitive workspace crate via spark-server's
       # forwarding feature flags. Single-flag spelling — no long
-      # `atlas-core/metal,spark-runtime/metal,...` comma list needed.
+      # `avarok-core/metal,spark-runtime/metal,...` comma list needed.
       - name: cargo check spark-server --features metal
         run: cargo check -p spark-server --no-default-features --features metal
       # Also check spark-runtime alone so a regression in the metal
@@ -777,15 +828,15 @@ jobs:
       # run on a developer machine; default `cargo test` skips them.
       - name: cargo test -p spark-runtime --features metal
         env:
-          # ★ ATLAS_SKIP_BUILD=0, overriding the workflow-level "1".
+          # ★ AVAROK_SKIP_BUILD=0, overriding the workflow-level "1".
           #
           # Reached independently three times (TheTom's #907, #909, #911); this
           # is #911's writeup, kept because it names the guards.
           #
-          # This job used to inherit `ATLAS_SKIP_BUILD: "1"` from the top of
+          # This job used to inherit `AVAROK_SKIP_BUILD: "1"` from the top of
           # this file, which exists so the ubuntu jobs can type-check without
-          # nvcc. atlas-kernels' build.rs honours it FIRST -- before the
-          # macOS/ATLAS_TARGET_HW logic -- and emits a stub whose
+          # nvcc. avarok-kernels' build.rs honours it FIRST -- before the
+          # macOS/AVAROK_TARGET_HW logic -- and emits a stub whose
           # `metallib_modules()` returns `Vec::new()`. `MetalGpuBackend::new`
           # then builds an EMPTY library cache (an empty module slice is not an
           # error to it) and every pipeline lookup dies with
@@ -811,10 +862,10 @@ jobs:
           # MTLCreateSystemDefaultDevice returns null and the tests skip
           # themselves. On a real Mac (the self-hosted M5) they run, and go
           # red. This step is the one place the metal kernel set is built.
-          ATLAS_SKIP_BUILD: "0"
-          ATLAS_TARGET_HW: metal
-          ATLAS_TARGET_MODEL: qwen3-5-4b-vlm-mlx-int8
-          ATLAS_TARGET_QUANT: mlx_int8
+          AVAROK_SKIP_BUILD: "0"
+          AVAROK_TARGET_HW: metal
+          AVAROK_TARGET_MODEL: qwen3-5-4b-vlm-mlx-int8
+          AVAROK_TARGET_QUANT: mlx_int8
         run: |
           cargo test -p spark-runtime --no-default-features \
             --features metal --locked metal_backend
@@ -876,10 +927,10 @@ jobs:
       # there is no point running it here rather than on hosted.
       - name: cargo test -p spark-runtime --features metal (real device)
         env:
-          ATLAS_SKIP_BUILD: "0"
-          ATLAS_TARGET_HW: metal
-          ATLAS_TARGET_MODEL: qwen3-5-4b-vlm-mlx-int8
-          ATLAS_TARGET_QUANT: mlx_int8
+          AVAROK_SKIP_BUILD: "0"
+          AVAROK_TARGET_HW: metal
+          AVAROK_TARGET_MODEL: qwen3-5-4b-vlm-mlx-int8
+          AVAROK_TARGET_QUANT: mlx_int8
         run: |
           cargo test -p spark-runtime --no-default-features \
             --features metal --locked metal_backend -- --nocapture
@@ -965,8 +1016,8 @@ jobs:
         with:
           fetch-depth: 0
       # This job runs TWO cargo binaries (`ledger_append`, `implied_benches`)
-      # and had no cache, so both paid a cold build on every PR. atlas-plugin is
-      # host-only and CUDA-free, so the workflow-level ATLAS_SKIP_BUILD=1 is all
+      # and had no cache, so both paid a cold build on every PR. avarok-plugin is
+      # host-only and CUDA-free, so the workflow-level AVAROK_SKIP_BUILD=1 is all
       # it needs besides a warm target/.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -989,7 +1040,7 @@ jobs:
           # $RANDOM$RANDOM is not cryptographic, but the forgery has to be
           # committed into the diff before the run picks the marker.
           emit_file() {  # output name, file — value is the file, verbatim
-            local d="__ATLAS_EOF_$RANDOM$RANDOM"
+            local d="__AVAROK_EOF_$RANDOM$RANDOM"
             {
               printf '%s<<%s\n' "$1" "$d"
               cat "$2"
@@ -1109,7 +1160,7 @@ jobs:
           echo "count=$(wc -l < recipes.txt)" >> "$GITHUB_OUTPUT"
           # Randomized marker, same reason as the diff step: recipe names come
           # from a sibling repo's tree listing, which is not this repo's data.
-          d="__ATLAS_EOF_$RANDOM$RANDOM"
+          d="__AVAROK_EOF_$RANDOM$RANDOM"
           { printf 'names<<%s\n' "$d"; cat recipes.txt; printf '\n%s\n' "$d"; } >> "$GITHUB_OUTPUT"
       - name: Test PR body sanitization
         run: python3 scripts/ci_pr_body_test.py
@@ -1136,7 +1187,7 @@ jobs:
           printf '%s' "${PR_BODY:-}" \
             | tr -d '\000-\010\013-\037\177' \
             | perl -0777 -pe 's/<!--.*?-->//gs; $_ = substr($_, 0, 2000)' > body.txt
-          d="__ATLAS_EOF_$RANDOM$RANDOM"
+          d="__AVAROK_EOF_$RANDOM$RANDOM"
           {
             printf 'text<<%s\n' "$d"
             cat body.txt
@@ -1187,7 +1238,7 @@ jobs:
             fi
           done < candidates.txt
           echo "count=$(wc -l < overrides.txt)" >> "$GITHUB_OUTPUT"
-          d="__ATLAS_EOF_$RANDOM$RANDOM"
+          d="__AVAROK_EOF_$RANDOM$RANDOM"
           { printf 'paths<<%s\n' "$d"; cat overrides.txt; printf '%s\n' "$d"; } >> "$GITHUB_OUTPUT"
       - name: Read the model id
         id: models
@@ -1307,7 +1358,7 @@ jobs:
           echo "path=$bucket" >> "$GITHUB_OUTPUT"
 
       - name: Append the classification to the PR journey ledger
-        # `crates/atlas-governance` shipped with a full event model, a grow-only
+        # `crates/avarok-governance` shipped with a full event model, a grow-only
         # Journey, deduplication and 16 tests — and ZERO WRITERS. Nothing had
         # ever appended a line. This is the first one.
         #
@@ -1341,7 +1392,7 @@ jobs:
           # `Event::identity()` excludes it so a re-run COLLAPSES, and a replay
           # has to be reproducible for that to mean anything.
           append() {  # value, status
-            cargo run --quiet -p atlas-plugin --bin ledger_append -- category \
+            cargo run --quiet -p avarok-plugin --bin ledger_append -- category \
               --root . --pr "$PR_NUMBER" --head-sha "$HEAD_SHA" \
               --run-id "$RUN_ID" --attempt "$ATTEMPT" --at "$(date +%s)" \
               --value "$1" --status "$2" || {
@@ -1452,7 +1503,7 @@ jobs:
           : > implied_all.txt
           while IFS= read -r p; do
             [ -n "$p" ] || continue
-            if IMPLIED_IDS=$(cargo run --quiet -p atlas-plugin --bin implied_benches -- \
+            if IMPLIED_IDS=$(cargo run --quiet -p avarok-plugin --bin implied_benches -- \
                                --root . --path "$p" 2>implied.stderr); then
               if [ -s implied.stderr ]; then
                 echo "::warning title=implied_benches::$(tr '\n' ' ' <implied.stderr)"
@@ -1712,11 +1763,11 @@ jobs:
           # This resolves the @human-review left above: the rule was in bash
           # only because editing crates/ would have invalidated the records of
           # the campaign then in flight. This PR is buying a campaign anyway.
-          cargo run --locked -q -p atlas-plugin --bin record_agreement -- "${added[@]}"
+          cargo run --locked -q -p avarok-plugin --bin record_agreement -- "${added[@]}"
 
       - name: Check committed benchmark records against their baselines
         env:
-          ATLAS_SKIP_BUILD: "1"
+          AVAROK_SKIP_BUILD: "1"
           CUDARC_CUDA_VERSION: "13000"
           # Keys the ADVISORY intent block of the gate check: with `--pr N`
           # the verdict is followed by what the COMMITTED governance ledger

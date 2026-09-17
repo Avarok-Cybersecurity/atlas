@@ -23,7 +23,7 @@
 #
 # THREE TRAPS the printed command now spells out, each of which cost hours on
 # 2026-08-28:
-#   * ATLAS_HOME must be writable. If it is not, every gate fails instantly
+#   * AVAROK_HOME must be writable. If it is not, every gate fails instantly
 #     with "recipe ... is not in the local index (0 cached)" and never says
 #     why.
 #   * The TTFT gates need TWO runs each on a box with no stored baseline. The
@@ -48,12 +48,12 @@ echo
 echo "FROZEN: $BRANCH @ $SHA"
 echo "Now run, on a GPU box with the repo checked out at exactly $SHA:"
 echo
-echo '  # ATLAS_HOME must be WRITABLE. The gates read the recipe index and the'
-echo '  # same-box baselines from $ATLAS_HOME/.., default ~/.atlas. If that'
+echo '  # AVAROK_HOME must be WRITABLE. The gates read the recipe index and the'
+echo '  # same-box baselines from $AVAROK_HOME/.., default ~/.avarok. If that'
 echo '  # directory cannot be created, every gate dies instantly with'
 echo '  # "recipe ... is not in the local index (0 cached)" and the cause is'
 echo '  # nowhere in the message.'
-echo '  export ATLAS_HOME=${ATLAS_HOME:-$HOME/.atlas}'
+echo '  export AVAROK_HOME=${AVAROK_HOME:-$HOME/.avarok}'
 echo
 echo '  # The TTFT gates compare against a stored SAME-BOX baseline. On a box'
 echo '  # that has none, run 1 only CREATES it and records verdict `info`,'

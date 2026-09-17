@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// Launchers for the vendored llama NVFP4 W4A4 MMQ FFN prefill GEMM (ATLAS_FFN_NVFP4_MMQ).
+// Launchers for the vendored llama NVFP4 W4A4 MMQ FFN prefill GEMM (AVAROK_FFN_NVFP4_MMQ).
 // Kernels in kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu (Blackwell block-scale MMA
 // kind::mxf4nvf4.m16n8k64, e2m1×e2m1, ue4m3 group-16 scales).
 // Microbench (GB10, M=4096): gate/up 80.2 TFLOP/s, down 79.7 — vs w4a16 t_m128 ~51 (1.57x).
 // Correctness: rel_err 1.6e-3 vs same-quant CPU ref (= bf16-output rounding); the hardware
 // decodes ue4m3 scales as STANDARD e4m3 on both operands, so the checkpoint's per-16 scale
 // bytes are byte-copy correct and the only missing factor is the per-tensor FP32 scale2 —
-// folded by the caller in atlas_nvfp4_silu_mul_scaled (empirical ratio 0.99 ≈ 1.0, see
+// folded by the caller in avarok_nvfp4_silu_mul_scaled (empirical ratio 0.99 ≈ 1.0, see
 // scratchpad nvfp4_mmq_bench.cu).
 // Pipeline: weights repacked ONCE at load (raw bit shuffle, checkpoint layout →
 // block_nvfp4); per prefill: activations bf16 → block_fp4_mmq (shared ffn_act_q8 scratch),
@@ -55,7 +55,7 @@ pub fn fp4_act_scratch_bytes(m: u32, k: u32) -> usize {
 /// codes and e4m3 scale bytes are reused verbatim (scale2 folded downstream).
 pub fn nvfp4_mmq_repack(
     gpu: &dyn GpuBackend,
-    kernel: KernelHandle, // atlas_nvfp4_repack
+    kernel: KernelHandle, // avarok_nvfp4_repack
     packed: DevicePtr,
     scales: DevicePtr,
     out_blocks: DevicePtr,
@@ -79,7 +79,7 @@ pub fn nvfp4_mmq_repack(
 /// search) into `out_y`. One thread per 16-value group; ne0 padded to 256.
 pub fn nvfp4_mmq_quantize_act(
     gpu: &dyn GpuBackend,
-    kernel: KernelHandle, // atlas_nvfp4_quantize_bf16
+    kernel: KernelHandle, // avarok_nvfp4_quantize_bf16
     input_bf16: DevicePtr,
     out_y: DevicePtr,
     m: u32,
@@ -103,8 +103,8 @@ pub fn nvfp4_mmq_quantize_act(
 /// NVFP4 W4A4 MMQ GEMM: C\[m,n\] (bf16, missing ×scale2) = A_fp4\[m,k\] x W_nvfp4\[n,k\].
 pub fn nvfp4_mmq_gemm(
     gpu: &dyn GpuBackend,
-    kernel_nc: KernelHandle, // atlas_nvfp4_mmq128_nc
-    kernel_wc: KernelHandle, // atlas_nvfp4_mmq128_wc
+    kernel_nc: KernelHandle, // avarok_nvfp4_mmq128_nc
+    kernel_wc: KernelHandle, // avarok_nvfp4_mmq128_wc
     a_fp4: DevicePtr,        // block_fp4_mmq activations
     w_nvfp4: DevicePtr,      // block_nvfp4 weights [n, k]
     out_bf16: DevicePtr,
@@ -192,7 +192,7 @@ pub fn nvfp4_mmq_gemm_tiled(
 #[allow(clippy::too_many_arguments)]
 pub fn nvfp4_silu_mul_quant(
     gpu: &dyn GpuBackend,
-    kernel: KernelHandle, // atlas_nvfp4_silu_mul_quant
+    kernel: KernelHandle, // avarok_nvfp4_silu_mul_quant
     gate: DevicePtr,
     up: DevicePtr,
     out_y: DevicePtr,
@@ -221,7 +221,7 @@ pub fn nvfp4_silu_mul_quant(
 /// In-place ×scale2 for the down-projection MMQ output ([m, h] bf16).
 pub fn nvfp4_scale_bf16(
     gpu: &dyn GpuBackend,
-    kernel: KernelHandle, // atlas_nvfp4_scale_bf16
+    kernel: KernelHandle, // avarok_nvfp4_scale_bf16
     data: DevicePtr,
     scale: f32,
     total: u32,
@@ -241,7 +241,7 @@ pub fn nvfp4_scale_bf16(
 #[allow(clippy::too_many_arguments)]
 pub fn nvfp4_silu_mul_scaled(
     gpu: &dyn GpuBackend,
-    kernel: KernelHandle, // atlas_nvfp4_silu_mul_scaled
+    kernel: KernelHandle, // avarok_nvfp4_silu_mul_scaled
     gate: DevicePtr,
     up: DevicePtr,
     out: DevicePtr,

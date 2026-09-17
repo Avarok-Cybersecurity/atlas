@@ -32,7 +32,7 @@ __device__ __constant__ float E2M1_LUT_FUSED[16] = {
 // is NON-STANDARD (same bug fixed in moe_sorted_prefill.cu / the decode GEMVs) —
 // software scl_fp8 there; NVIDIA path is the verbatim cast.
 #if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+__device__ __forceinline__ float avarok_dec_e4m3(unsigned char b) {
     unsigned int s = (b >> 7) & 1u, e = (b >> 3) & 0xFu, m = b & 0x7u; float v;
     if (e == 0u)               v = (float)m * 0.001953125f;
     else if (e == 15u && m == 7u) v = 0.0f;
@@ -40,7 +40,7 @@ __device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
     return s ? -v : v;
 }
 #else
-__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+__device__ __forceinline__ float avarok_dec_e4m3(unsigned char b) {
     __nv_fp8_e4m3 f; *(unsigned char*)&f = b; return (float)f;
 }
 #endif
@@ -126,7 +126,7 @@ extern "C" __global__ void moe_expert_gemv_gate_up(
 
         unsigned int scale_group = base_k / GROUP_SIZE;
         unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + scale_group];
-        float scale = atlas_dec_e4m3(scale_byte) * scale2;
+        float scale = avarok_dec_e4m3(scale_byte) * scale2;
 
         #pragma unroll
         for (int b = 0; b < 4; b++) {
@@ -239,14 +239,14 @@ extern "C" __global__ void moe_expert_gemv_gate_up_2x(
         unsigned int packed4_1 = *(const unsigned int*)(B_packed + (unsigned long long)n1 * half_K + k8 * 4);
         unsigned int scale_group = base_k / GROUP_SIZE;
         unsigned char sb1 = B_scale[(unsigned long long)n1 * num_groups + scale_group];
-        float scale_1 = atlas_dec_e4m3(sb1) * s2;
+        float scale_1 = avarok_dec_e4m3(sb1) * s2;
 
         // Load weights for row n2
         unsigned int packed4_2 = have_n2 ?
             *(const unsigned int*)(B_packed + (unsigned long long)n2 * half_K + k8 * 4) : 0;
         unsigned char sb2 = have_n2 ?
             B_scale[(unsigned long long)n2 * num_groups + scale_group] : 0;
-        float scale_2 = have_n2 ? atlas_dec_e4m3(sb2) * s2 : 0.0f;
+        float scale_2 = have_n2 ? avarok_dec_e4m3(sb2) * s2 : 0.0f;
 
         #pragma unroll
         for (int b = 0; b < 4; b++) {
@@ -362,7 +362,7 @@ extern "C" __global__ void moe_expert_gemv_silu_down(
 
         unsigned int scale_group = base_k / GROUP_SIZE;
         unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + scale_group];
-        float scale = atlas_dec_e4m3(scale_byte) * scale2;
+        float scale = avarok_dec_e4m3(scale_byte) * scale2;
 
         // Process 8 elements: silu(gate) * up * dequant(weight)
         const unsigned int g_raw[4] = {g_data.x, g_data.y, g_data.z, g_data.w};
@@ -479,14 +479,14 @@ extern "C" __global__ void moe_expert_gemv_silu_down_2x(
         unsigned int packed4_1 = *(const unsigned int*)(B_packed + (unsigned long long)n1 * half_K + k8 * 4);
         unsigned int scale_group = base_k / GROUP_SIZE;
         unsigned char sb1 = B_scale[(unsigned long long)n1 * num_groups + scale_group];
-        float scale_1 = atlas_dec_e4m3(sb1) * scale2;
+        float scale_1 = avarok_dec_e4m3(sb1) * scale2;
 
         // Load weights for row n2
         unsigned int packed4_2 = have_n2 ?
             *(const unsigned int*)(B_packed + (unsigned long long)n2 * half_K + k8 * 4) : 0;
         unsigned char sb2 = have_n2 ?
             B_scale[(unsigned long long)n2 * num_groups + scale_group] : 0;
-        float scale_2 = have_n2 ? atlas_dec_e4m3(sb2) * scale2 : 0.0f;
+        float scale_2 = have_n2 ? avarok_dec_e4m3(sb2) * scale2 : 0.0f;
 
         const unsigned int g_raw[4] = {g_data.x, g_data.y, g_data.z, g_data.w};
         const unsigned int u_raw[4] = {u_data.x, u_data.y, u_data.z, u_data.w};
@@ -612,7 +612,7 @@ extern "C" __global__ void moe_expert_gemv_silu_down_wide(
 
         unsigned int scale_group = base_k / GROUP_SIZE;
         unsigned char scale_byte = B_scale[(unsigned long long)n * num_groups + scale_group];
-        float scale = atlas_dec_e4m3(scale_byte) * scale2;
+        float scale = avarok_dec_e4m3(scale_byte) * scale2;
 
         const unsigned int g_raw[4] = {g_data.x, g_data.y, g_data.z, g_data.w};
         const unsigned int u_raw[4] = {u_data.x, u_data.y, u_data.z, u_data.w};

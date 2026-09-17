@@ -19,13 +19,13 @@
 //! currently-active sequences — a sequence in a K=2-sized slot must never
 //! receive K=4 drafts. Capacities come from the model's ACTUAL pool
 //! geometry (`Model::mtp_slot_draft_capacity`), not a re-derivation, so
-//! sizing and dispatch cannot disagree; `ATLAS_MTP_POOL_FULL_WIDTH`
+//! sizing and dispatch cannot disagree; `AVAROK_MTP_POOL_FULL_WIDTH`
 //! restores uniform full-K pools, which makes every capacity `num_drafts`
 //! and this clamp vacuous. Consequence worth knowing: under the tiered
 //! default the adaptive 16:2 lift is clamped back to K=2 whenever any
 //! active sequence sits in a capacity-1 slot — i.e. at every n >= 9 under
 //! contiguity — so re-enabling the lift requires the kill switch (or a
-//! deeper explicit `ATLAS_MTP_K_LADDER`, which widens the tier with it).
+//! deeper explicit `AVAROK_MTP_K_LADDER`, which widens the tier with it).
 
 /// Clamp a step's draft count to the minimum verify-slot capacity across
 /// the active sequences. `usize::MAX` entries (no SSM verify pools) are

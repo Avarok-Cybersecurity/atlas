@@ -9,14 +9,14 @@ TAG="$1"; BIN="$2"; TURNS="${3:-14}"
 OUT="/workspace/.wt-golden/ab_${TAG}"
 mkdir -p "$OUT"
 
-sudo docker rm -f atlas-ab-probe >/dev/null 2>&1; sleep 3
-sudo docker run -d --name atlas-ab-probe --network host --gpus all --ipc=host \
-  -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
-  -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 \
+sudo docker rm -f avarok-ab-probe >/dev/null 2>&1; sleep 3
+sudo docker run -d --name avarok-ab-probe --network host --gpus all --ipc=host \
+  -e AVAROK_NO_FFN_NVFP4_MMQ=1 -e AVAROK_SSM_TAIL_MIDCHUNK=0 -e AVAROK_MTP_CATCHUP=0 \
+  -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 \
+  -e AVAROK_SSM_TAIL_LEASE_TTL=128 -e AVAROK_BF16_TC_PREFILL=1 \
   -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
   -v "$BIN:/usr/local/bin/spark:ro" \
-  atlas-gb10:followups serve centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf \
+  avarok-gb10:followups serve centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf \
   --host 0.0.0.0 --port 8888 --model-name centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf \
   --max-seq-len 32768 --max-batch-size 1 --kv-cache-dtype bf16 --gpu-memory-utilization 0.70 \
   --enable-prefix-caching --ssm-cache-slots 128 --ssm-checkpoint-interval 32 \
@@ -24,7 +24,7 @@ sudo docker run -d --name atlas-ab-probe --network host --gpus all --ipc=host \
   --tool-call-parser qwen3_xml --disable-tool-grammar true --disable-thinking >/dev/null 2>&1
 
 for i in $(seq 1 150); do curl -sf -m4 http://localhost:8888/v1/models 2>/dev/null | grep -q Qwen && break
-  sudo docker ps --format '{{.Names}}' | grep -q atlas-ab-probe || { echo "SERVE_DIED tag=$TAG"; exit 1; }; sleep 5; done
+  sudo docker ps --format '{{.Names}}' | grep -q avarok-ab-probe || { echo "SERVE_DIED tag=$TAG"; exit 1; }; sleep 5; done
 echo "=== [$TAG] serve up (bin=$BIN) ==="
 
 # --- Gate C2: coherence + tool call (must pass BEFORE any timing is believed) ---
@@ -41,5 +41,5 @@ curl -sf -m60 http://localhost:8888/v1/chat/completions -H 'Content-Type: applic
 echo "--- [$TAG] warm probe (${TURNS} turns) ---"
 python3 $(dirname "$0")/warm_probe.py 8888 "$TAG" "$OUT/probe.json" --turns "$TURNS" --maxtok 300
 
-sudo docker rm -f atlas-ab-probe >/dev/null 2>&1
+sudo docker rm -f avarok-ab-probe >/dev/null 2>&1
 echo "AB_PROBE_DONE tag=$TAG out=$OUT"

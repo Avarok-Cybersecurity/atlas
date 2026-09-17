@@ -14,7 +14,7 @@
 //! comment above `record_alloc` described the `registry` field, not the
 //! method, on main.
 
-use super::AtlasCudaBackend;
+use super::AvarokCudaBackend;
 
 /// One live device allocation: how big it is and who asked for it.
 ///
@@ -28,7 +28,7 @@ pub(super) struct AllocRecord {
     pub(super) site: &'static std::panic::Location<'static>,
 }
 
-impl AtlasCudaBackend {
+impl AvarokCudaBackend {
     /// Enter an allocation in the ledger. `site` is the CALLER of
     /// `GpuBackend::alloc` (both allocating methods are `#[track_caller]`),
     /// which is what makes `alloc_report` name a file rather than this one.

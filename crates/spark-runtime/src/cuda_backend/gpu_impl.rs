@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! `impl GpuBackend for AtlasCudaBackend` — production CUDA backend trait body.
+//! `impl GpuBackend for AvarokCudaBackend` — production CUDA backend trait body.
 //!
 //! ## Safety contract for the `unsafe { cu*(...) }` calls below
 //!
@@ -8,7 +8,7 @@
 //! The invariants the driver requires are uniform:
 //!
 //! - **Context bound**: a CUDA primary context for the device is current
-//!   on the calling thread. `AtlasCudaBackend::new` binds it once via
+//!   on the calling thread. `AvarokCudaBackend::new` binds it once via
 //!   `cuCtxSetCurrent`, and we never run on a thread that hasn't been
 //!   bound.
 //! - **Pointer provenance**: every `DevicePtr` came from a prior
@@ -33,17 +33,17 @@ use std::ffi::c_void;
 use std::sync::OnceLock;
 
 use anyhow::{Result, bail};
-use atlas_core::registry::{RawCudaFunc, cuda_error_text};
+use avarok_core::registry::{RawCudaFunc, cuda_error_text};
 use cudarc::driver::LaunchConfig;
 
 use super::{
-    AtlasCudaBackend, cuMemAlloc_v2, cuMemAllocManaged, cuMemFree_v2, cuMemGetInfo_v2,
+    AvarokCudaBackend, cuMemAlloc_v2, cuMemAllocManaged, cuMemFree_v2, cuMemGetInfo_v2,
     cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuStreamSynchronize,
 };
 use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 
 /// D2H call counter + one-shot caller identification
-/// (`ATLAS_D2H_TRACE=<N>`: log a backtrace on the Nth call, and the running
+/// (`AVAROK_D2H_TRACE=<N>`: log a backtrace on the Nth call, and the running
 /// count on every 10000th).
 ///
 /// Every `copy_d2h*` below pairs its async copy with a `cuStreamSynchronize`,
@@ -64,7 +64,7 @@ fn d2h_trace_tick() {
     // keeps the original reading: SETTING the variable arms the 10,000th report.
     static TARGET: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
     let Some(target) = *TARGET.get_or_init(|| {
-        std::env::var("ATLAS_D2H_TRACE")
+        std::env::var("AVAROK_D2H_TRACE")
             .ok()
             .map(|v| v.parse().unwrap_or(0))
     }) else {
@@ -73,12 +73,12 @@ fn d2h_trace_tick() {
     let n = D2H_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
     if target != 0 && n == target {
         tracing::warn!(
-            "ATLAS_D2H_TRACE: call #{n} backtrace:\n{}",
+            "AVAROK_D2H_TRACE: call #{n} backtrace:\n{}",
             std::backtrace::Backtrace::force_capture()
         );
     }
     if n.is_multiple_of(10_000) {
-        tracing::warn!("ATLAS_D2H_TRACE: {n} D2H copies so far (each forces a stream sync)");
+        tracing::warn!("AVAROK_D2H_TRACE: {n} D2H copies so far (each forces a stream sync)");
     }
 }
 
@@ -114,12 +114,12 @@ fn warn_pinned_transient_source() {
     });
 }
 
-impl GpuBackend for AtlasCudaBackend {
+impl GpuBackend for AvarokCudaBackend {
     #[track_caller]
     fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
         let site = std::panic::Location::caller();
         let mut dptr: u64 = 0;
-        // A55 RED ZONE (`ATLAS_REDZONE=<bytes>`, default 0 = off). Over-allocate by `pad`
+        // A55 RED ZONE (`AVAROK_REDZONE=<bytes>`, default 0 = off). Over-allocate by `pad`
         // and hand the caller the base, so the buffer it sees is unchanged and correctly
         // aligned (cuMemAlloc is 256-byte aligned; padding the TAIL keeps that). The pad is
         // poisoned at birth and read back by `scan_redzones`.
@@ -150,12 +150,12 @@ impl GpuBackend for AtlasCudaBackend {
                 super::cuMemsetD8Async(dptr + bytes as u64, super::redzone_fill(), pad, 0)
             };
             if st != 0 {
-                bail!("ATLAS_REDZONE: poisoning the guard band failed: status {st}");
+                bail!("AVAROK_REDZONE: poisoning the guard band failed: status {st}");
             }
             self.record_redzone(dptr, bytes, pad, seq);
             // One line per guarded allocation, in creation order. The bisection reports an
             // INDEX; this is what turns that index into a buffer you can name by its size,
-            // and `ATLAS_REDZONE_TRACE_IDX` adds the call site for the one that matters.
+            // and `AVAROK_REDZONE_TRACE_IDX` adds the call site for the one that matters.
             tracing::info!("redzone: alloc#{seq} bytes={bytes} ptr={dptr:#x}");
             if super::redzone_trace_idx() == Some(seq) {
                 tracing::error!(
@@ -183,14 +183,14 @@ impl GpuBackend for AtlasCudaBackend {
         if super::redzone_bytes() == 0 {
             return Ok(0);
         }
-        AtlasCudaBackend::scan_redzones(self)
+        AvarokCudaBackend::scan_redzones(self)
     }
 
     fn poison_redzones(&self, lo: usize, hi: usize) -> Result<()> {
         if super::redzone_bytes() == 0 {
             return Ok(());
         }
-        AtlasCudaBackend::poison_redzones(self, lo, hi)
+        AvarokCudaBackend::poison_redzones(self, lo, hi)
     }
 
     #[track_caller]
@@ -228,36 +228,36 @@ impl GpuBackend for AtlasCudaBackend {
         // status 4 into `ERROR model teardown reported a failure` on every
         // clean exit — the exact species of false alarm this work set out to
         // remove.
-        if status != 0 && !atlas_core::registry::is_teardown_noop(status) {
+        if status != 0 && !avarok_core::registry::is_teardown_noop(status) {
             bail!("cuMemFree_v2 failed: status {status}, ptr {ptr}");
         }
         Ok(())
     }
 
     fn live_bytes(&self) -> Option<usize> {
-        Some(AtlasCudaBackend::live_bytes(self))
+        Some(AvarokCudaBackend::live_bytes(self))
     }
 
     fn alloc_report(&self, top_n: usize, min_mb: usize) -> Option<String> {
-        Some(AtlasCudaBackend::alloc_report(self, top_n, min_mb))
+        Some(AvarokCudaBackend::alloc_report(self, top_n, min_mb))
     }
 
     fn sweep_unreleased(&self) -> usize {
-        AtlasCudaBackend::sweep_unreleased(self)
+        AvarokCudaBackend::sweep_unreleased(self)
     }
 
     fn copy_h2d(&self, src: &[u8], dst: DevicePtr) -> Result<()> {
-        AtlasCudaBackend::copy_h2d_impl(self, src, dst)
+        AvarokCudaBackend::copy_h2d_impl(self, src, dst)
     }
 
     fn copy_d2h(&self, src: DevicePtr, dst: &mut [u8]) -> Result<()> {
         d2h_trace_tick();
-        AtlasCudaBackend::copy_d2h_impl(self, src, dst)
+        AvarokCudaBackend::copy_d2h_impl(self, src, dst)
     }
 
     fn copy_d2h_on_stream(&self, src: DevicePtr, dst: &mut [u8], stream: u64) -> Result<()> {
         d2h_trace_tick();
-        AtlasCudaBackend::copy_d2h_on_stream_impl(self, src, dst, stream)
+        AvarokCudaBackend::copy_d2h_on_stream_impl(self, src, dst, stream)
     }
 
     fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], stream: u64) -> Result<()> {
@@ -288,7 +288,7 @@ impl GpuBackend for AtlasCudaBackend {
                 args: vec![src.0, dst.0, bytes as u64],
             });
         }
-        AtlasCudaBackend::copy_d2d_impl(self, src, dst, bytes)
+        AvarokCudaBackend::copy_d2d_impl(self, src, dst, bytes)
     }
 
     fn launch(
@@ -321,12 +321,12 @@ impl GpuBackend for AtlasCudaBackend {
         // SCALE's libcuda does not export cuStreamIsCapturing; report
         // not-capturing there (gfx1151 telemetry taps then sample eagerly —
         // acceptable for a default-off measurement knob).
-        #[cfg(atlas_scale)]
+        #[cfg(avarok_scale)]
         {
             let _ = stream;
             false
         }
-        #[cfg(not(atlas_scale))]
+        #[cfg(not(avarok_scale))]
         {
             let mut status: u32 = 0;
             // CU_STREAM_CAPTURE_STATUS_NONE = 0; treat query failure as
@@ -353,10 +353,10 @@ impl GpuBackend for AtlasCudaBackend {
     }
 
     fn debug_sync_kernels(&self) -> bool {
-        AtlasCudaBackend::debug_sync_kernels(self)
+        AvarokCudaBackend::debug_sync_kernels(self)
     }
 
-    fn kernel_registry(&self) -> Option<std::sync::Arc<atlas_core::registry::AtlasRegistry>> {
+    fn kernel_registry(&self) -> Option<std::sync::Arc<avarok_core::registry::AvarokRegistry>> {
         Some(self.registry().clone())
     }
 

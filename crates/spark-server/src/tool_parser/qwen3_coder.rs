@@ -79,9 +79,9 @@ impl ToolCallParser for Qwen3CoderParser {
                 let mut t = tool.clone();
                 let suffix = " | After ONE failure with \"command not found\" or exit code 127, do NOT retry the same command — the binary is permanently unavailable in this environment. Choose a different approach or tell the user the dependency is missing.";
                 t.function.description = Some(match t.function.description {
-                    Some(d) if !d.contains("[atlas-f33]") => format!("{d}\n[atlas-f33]{suffix}"),
+                    Some(d) if !d.contains("[avarok-f33]") => format!("{d}\n[avarok-f33]{suffix}"),
                     Some(d) => d,
-                    None => format!("[atlas-f33]{suffix}"),
+                    None => format!("[avarok-f33]{suffix}"),
                 });
                 t
             })
@@ -125,9 +125,9 @@ multiple lines\n\
         // line 53). Atlas's expanded IMMEDIATE_TOOL_USE + 10-bullet IMPORTANT
         // diverges from that trained distribution and correlates with
         // malformed tool calls (empty {filePath,content} scaffolds, mixed
-        // <function_calls> tags). ATLAS_OFFICIAL_TOOL_PROMPT=1 swaps in the
+        // <function_calls> tags). AVAROK_OFFICIAL_TOOL_PROMPT=1 swaps in the
         // verbatim official 4-bullet reminder. Default = current Atlas block.
-        if std::env::var("ATLAS_OFFICIAL_TOOL_PROMPT").as_deref() == Ok("1") {
+        if std::env::var("AVAROK_OFFICIAL_TOOL_PROMPT").as_deref() == Ok("1") {
             prompt.push_str("\
 <IMPORTANT>\n\
 Reminder:\n\

@@ -260,7 +260,7 @@ impl GateRunner for RemoteRunner {
                 );
             }
         };
-        let facts = atlas_plugin::gate::read_record(&placed.record)
+        let facts = avarok_plugin::gate::read_record(&placed.record)
             .ok()
             .filter(|r| r.benchmark_id == unit.id && r.shard() == unit.shard)
             .map(|r| super::super::runner::facts_of(placed.record.clone(), &r));

@@ -9,7 +9,7 @@
 //!   [`ArenaSnapshotStore`]/[`PagingSnapshotStore`] over a [`SnapshotTransport`]/
 //!   [`PagingTransport`], proven on [`MockSnapshotTransport`]/[`FileSnapshotArena`]).
 //!   The env-driven store selection ([`build_tier_store`] / [`build_decode_tier_store`],
-//!   gated by `ATLAS_SSM_TIER`) picks a backend. The RDMA/peer arms bind to
+//!   gated by `AVAROK_SSM_TIER`) picks a backend. The RDMA/peer arms bind to
 //!   `spark_storage::RdmaSnapshotArena` — a `connect`-always-errors stub today
 //!   (so a requested RDMA tier degrades to host-RAM), whose real verbs data path
 //!   lands with the SSM-snapshot spill wiring in a follow-up PR.

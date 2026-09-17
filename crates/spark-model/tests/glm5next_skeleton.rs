@@ -12,7 +12,7 @@
 
 use std::collections::BTreeSet;
 
-use atlas_core::config::{LayerType, parse_config};
+use avarok_core::config::{LayerType, parse_config};
 use spark_model::layers::glm5next_skeleton::{
     FinalStep, Glm5NextTextSkeleton, Mixer, Mlp, ResidualStep, Site, StateKind,
 };

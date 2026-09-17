@@ -12,7 +12,7 @@ metadata:
     `scripts/start-minimax-ep2.sh` — KV cache stays at BF16 during
     bring-up (FP8/NVFP4 are not yet stable for MiniMax) and `--speculative`
     is OFF because the public checkpoint ships no MTP weights.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 230B
   model_dtype: nvfp4

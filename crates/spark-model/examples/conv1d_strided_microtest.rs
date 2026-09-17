@@ -31,7 +31,7 @@
 //!       --features cuda,gpu-examples
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -224,7 +224,7 @@ fn run_plain_batched(g: &dyn GpuBackend, k: KernelHandle, inp: &Inputs) -> Resul
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &gpu;
 
     let k_plain = g.kernel("causal_conv1d", "causal_conv1d_update_l2norm_f32")?;

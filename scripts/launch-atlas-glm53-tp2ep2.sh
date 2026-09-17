@@ -39,7 +39,7 @@ GPU_UTIL="${GPU_UTIL:-0.90}"
 # At 99.64 GB/rank the default 4 GB guard leaves the gate 1.7 GB short of a load that
 # fits. 🪤 This shrinks the LOAD-TIME margin only; the OOM watchdog still runs.
 OOM_GUARD_MB="${OOM_GUARD_MB:-1024}"
-# Extra `-e K=V` flags, space separated. Used for profiling (ATLAS_GLM_PROFILE=1) and for
+# Extra `-e K=V` flags, space separated. Used for profiling (AVAROK_GLM_PROFILE=1) and for
 # NCCL A/Bs (NCCL_MAX_NCHANNELS=...). Empty by default so the serve path is unchanged.
 EXTRA_ENV="${EXTRA_ENV:-}"
 # Extra `serve` flags, space separated (e.g. --ngram-speculative --num-drafts 1). Empty by

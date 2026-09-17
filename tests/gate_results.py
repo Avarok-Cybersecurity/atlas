@@ -24,7 +24,7 @@ result is a FAIL — not silently absent. Without this, a glob-only gate would
 score the survivors and report a false green when half the matrix crashed at
 boot. ("Serve all" means all planned, not all-that-happened-to-write.)
 
-Design (see .claude/skills/atlas-release/references/verify-matrix.md §Gate):
+Design (see .claude/skills/avarok-release/references/verify-matrix.md §Gate):
   * SBIO — the decision logic here is pure over the results JSON; the only I/O is
     reading the files. No server/host/port is baked in.
   * PCND — every bar is an explicit constant chosen up front, with a rationale.

@@ -6,16 +6,16 @@ prompt. vLLM passes the opencode harness 10/10; Atlas drifts. This finds the lay
 where Atlas's residual stream first diverges from vLLM's (the FP8 implementation gap,
 isolated from FP8 quant noise itself — both engines have the same quant noise).
 
-Inputs in /workspace/atlas-dumps/fp8native_dgx2/:
+Inputs in /workspace/avarok-dumps/fp8native_dgx2/:
   vllm_L{0..39}.bin   - vLLM-FP8 per-layer last-token residual (f32 LE, 2048)
-  atlas_L{0..39}.bin  - Atlas-FP8 per-layer last-token residual (f32 LE, 2048)
-  (optional) vllm_logits.bin / atlas_logits.bin - final logits over vocab
+  avarok_L{0..39}.bin  - Atlas-FP8 per-layer last-token residual (f32 LE, 2048)
+  (optional) vllm_logits.bin / avarok_logits.bin - final logits over vocab
 """
 from __future__ import annotations
 import pathlib, sys
 import numpy as np
 
-OUT = pathlib.Path("/workspace/atlas-dumps/fp8native_dgx2")
+OUT = pathlib.Path("/workspace/avarok-dumps/fp8native_dgx2")
 N_LAYERS = 40
 # Qwen3.6: layer types — 0-indexed. 10 full-attention layers, rest SSM/GDN.
 # (best-effort label; adjust if config differs)
@@ -35,16 +35,16 @@ def main():
     have = lambda pre: all((OUT/f"{pre}_L{i}.bin").exists() for i in range(N_LAYERS))
     if not have("vllm"):
         print("MISSING vllm_L*.bin — run the vLLM dump first"); sys.exit(1)
-    if not have("atlas"):
-        print("MISSING atlas_L*.bin — run the Atlas dump (ATLAS_NEMO_DUMP) next"); sys.exit(1)
-    print(f"{'layer':>5} {'type':>5} {'cos':>9} {'rel_l2':>9} {'|vllm|':>9} {'|atlas|':>9}")
+    if not have("avarok"):
+        print("MISSING avarok_L*.bin — run the Atlas dump (AVAROK_NEMO_DUMP) next"); sys.exit(1)
+    print(f"{'layer':>5} {'type':>5} {'cos':>9} {'rel_l2':>9} {'|vllm|':>9} {'|avarok|':>9}")
     print("-"*52)
     onset = None
     rows = []
     for i in range(N_LAYERS):
-        a = load(OUT/f"atlas_L{i}.bin"); v = load(OUT/f"vllm_L{i}.bin")
+        a = load(OUT/f"avarok_L{i}.bin"); v = load(OUT/f"vllm_L{i}.bin")
         if a.size != v.size:
-            print(f"{i:>5}  SIZE MISMATCH atlas={a.size} vllm={v.size}"); continue
+            print(f"{i:>5}  SIZE MISMATCH avarok={a.size} vllm={v.size}"); continue
         cos, rel, nv, na = cmp(a, v)
         typ = "attn" if i in ATTN_LAYERS else "ssm"
         rows.append((i, typ, cos, rel, nv, na))
@@ -61,8 +61,8 @@ def main():
     else:
         print("No layer below cos 0.999 — Atlas-FP8 matches vLLM-FP8; gap is NON-numerical (sampler/parser/scheduler)")
     # final logits / argmax overlap
-    if (OUT/"vllm_logits.bin").exists() and (OUT/"atlas_logits.bin").exists():
-        vl = load(OUT/"vllm_logits.bin"); al = load(OUT/"atlas_logits.bin")
+    if (OUT/"vllm_logits.bin").exists() and (OUT/"avarok_logits.bin").exists():
+        vl = load(OUT/"vllm_logits.bin"); al = load(OUT/"avarok_logits.bin")
         if vl.size == al.size:
             cos,rel,_,_ = cmp(al, vl)
             k=20

@@ -105,11 +105,11 @@ pub fn rms_norm_warp_row(
 }
 
 /// Gate for [`rms_norm_warp_row`]: short even rows, many of them.
-/// Disable with `ATLAS_RMS_NORM_WARP_ROW=0`.
+/// Disable with `AVAROK_RMS_NORM_WARP_ROW=0`.
 pub fn rms_norm_short_row_eligible(num_rows: u32, hidden_size: u32) -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    let on = *ON.get_or_init(|| std::env::var("ATLAS_RMS_NORM_WARP_ROW").as_deref() != Ok("0"));
+    let on = *ON.get_or_init(|| std::env::var("AVAROK_RMS_NORM_WARP_ROW").as_deref() != Ok("0"));
     on && hidden_size <= 256 && hidden_size.is_multiple_of(2) && num_rows >= 1024
 }
 
@@ -178,7 +178,7 @@ pub fn residual_add_rms_norm(
         .launch(stream)
 }
 
-/// Dual-output fused residual add + RMS norm (ATLAS_FP32_ROUTING).
+/// Dual-output fused residual add + RMS norm (AVAROK_FP32_ROUTING).
 ///
 /// Same as `residual_add_rms_norm` (bf16 hidden/residual/output unchanged) but
 /// ALSO writes the normed output in FP32 to `output_f32` for the MoE router GEMM,

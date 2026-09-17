@@ -8,7 +8,7 @@
 //! `Drop` that reaches the GPU and no `ModelResource`, so nothing frees them:
 //! `TransformerModel::release_pools` walks buffers, KV cache, SSM pools,
 //! `DerivedWeights` and the store, and every one of these falls through to
-//! `AtlasCudaBackend::sweep_unreleased`. On 1xH100, 2026-09-11,
+//! `AvarokCudaBackend::sweep_unreleased`. On 1xH100, 2026-09-11,
 //! `Qwen/Qwen3.8-27B-FP8`, that sweep reclaimed **28.01 GB across 1,980
 //! allocations** and warned that each was "memory whose owner is unaccounted
 //! for". The sweep is a backstop, not an owner: it cannot run before the

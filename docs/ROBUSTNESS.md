@@ -79,7 +79,7 @@ tested only in a scratch repo, by hand.
 **Found.** CI went red on `cargo deny` — the job wave 1 had just added the
 self-test to. Not a flake: the suite's three certificate-rendering checks failed
 on `ubuntu-latest` because `render-certificate.py` imports `segno`, which had
-been installed by hand on this box and on avarok but exists nowhere in CI.
+been installed by hand on this box and on atlas but exists nowhere in CI.
 
 The gate built to catch regressions was itself broken in a way that only CI
 could see. Worth stating plainly: wave 1 reported "19 passed" from a machine
@@ -583,7 +583,7 @@ fired*, and the machinery was landing in those very merges.
 
 **Then the verification found a defect.** The certificate comment shipped a
 broken image: `bot-cards/pr-843-112aac4b.png` is a **404**. `rsvg-convert` and
-`segno` are both present on avarok, the branch exists — but it still contains
+`segno` are both present on atlas, the branch exists — but it still contains
 only `README.md`. The upload never happened, almost certainly for want of
 `contents: write`, and the PUT is deliberately non-fatal so that a missing grant
 cannot swallow the certificate itself. Non-fatal made it **silent**.
@@ -716,7 +716,7 @@ The issue notes what this cost: a latching-state regression (#805) reached
 a `.svelte.js` rune module at all.
 
 **Verified.** Three consecutive `site.yml` runs on three different PR branches
-each show `Site unit tests: success` alongside `Deploy to avarok via rsync:
+each show `Site unit tests: success` alongside `Deploy to atlas via rsync:
 skipped` — the suite was demonstrably running and demonstrably not consulted.
 
 **Fixed.** `deploy` now needs `unit` as well as `build`, and `Site unit tests`
@@ -1162,7 +1162,7 @@ is the deliverable, because the alternative is re-digging it later.
 | installer is POSIX, as its `#!/bin/sh` claims | 606 lines | `dash -n` clean — no bashisms |
 | **served installer vs its source of truth** | 2 files | **byte-identical** |
 | committed secrets | 4500 tracked files, 6 patterns | none |
-| security reporting actually reachable | `security@avarok.net` | valid Protonmail MX; private reporting, secret scanning and push protection all enabled |
+| security reporting actually reachable | `security@atlas.net` | valid Protonmail MX; private reporting, secret scanning and push protection all enabled |
 | orphaned assets over 500 KB | whole tree | none; the 14 MB demo GIF and 6 MB MP4 are both referenced by the README |
 
 **One scare, resolved by looking.** Neither `install.sh` nor `install.ps1` is in
@@ -1476,8 +1476,8 @@ an arm is sharding:
 | arm | setting | whole vs its own 4 shards |
 |---|---|---|
 | baseline | shipped | **12 disagree** |
-| tail split off (`ATLAS_NO_TAIL_SPLIT=1`) | snapshot *producer* | 4 |
-| Marconi restore off (`ATLAS_MARCONI_MIN_TOKENS=1e8`) | snapshot *consumer* | **2** |
+| tail split off (`AVAROK_NO_TAIL_SPLIT=1`) | snapshot *producer* | 4 |
+| Marconi restore off (`AVAROK_MARCONI_MIN_TOKENS=1e8`) | snapshot *consumer* | **2** |
 
 The cause is cross-request **SSM snapshot reuse**. A snapshot saved by one
 request enters a shared, globally evicted pool (128 slots / 19392 MB on GB10);
@@ -1504,7 +1504,7 @@ an ordering effect, not run-to-run noise.
 `total = tokens.len()`, `cut` derives from `(total, block_size)`, and
 `chunk_start` walks a fixed stride from 0, so the split *condition* is
 deterministic on `(tokens, config)`. Sub-block prefix matching: with
-`ATLAS_PREFIX_SUBBLOCK=0` — lever verified armed in `/proc/PID/environ` — the
+`AVAROK_PREFIX_SUBBLOCK=0` — lever verified armed in `/proc/PID/environ` — the
 output was byte-identical to baseline, 0 of 251 samples moved.
 
 **Neither lever is a fix.** `NO_TAIL_SPLIT` changes 8.2% of all answers (61 of
@@ -1518,7 +1518,7 @@ arm rather than assumed.
 statement before they were caught.**
 
 1. **An A/B on a lever that was never armed.** `mtp_carry_drafter_enabled` is
-   `levers.drafter.carry && !mtp_multi_seq_mode()`, and `ATLAS_MTP_MAX_SEQS`
+   `levers.drafter.carry && !mtp_multi_seq_mode()`, and `AVAROK_MTP_MAX_SEQS`
    defaults to **32**, so the cross-turn carry is force-disabled on any serve
    that does not set it to 1 — while the startup line printed `carry=ON
    (default)`, because it reported the two env vars and never consulted the

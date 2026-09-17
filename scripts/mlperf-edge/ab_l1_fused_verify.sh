@@ -1,9 +1,9 @@
 #!/bin/bash
-# L1 decode A/B: ATLAS_GDN_FUSED_VERIFY (fuse K=2 conv/norm verify epilogue).
-# Leg A = base (flag off) ; Leg B = ATLAS_GDN_FUSED_VERIFY=1. Same binary/model/config.
+# L1 decode A/B: AVAROK_GDN_FUSED_VERIFY (fuse K=2 conv/norm verify epilogue).
+# Leg A = base (flag off) ; Leg B = AVAROK_GDN_FUSED_VERIFY=1. Same binary/model/config.
 # Bit-identical toggle -> combined_sha MUST match; TPOT delta is the signal.
 set -u
-IMG=atlas-gb10:followups
+IMG=avarok-gb10:followups
 BIN=/workspace/.wt-decode-fold/target/release/spark
 MODEL=centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf
 HFCACHE=/workspace/.cache/huggingface
@@ -13,9 +13,9 @@ mkdir -p "$OUTDIR"
 
 # Frozen c2final serve env (ARM=bare / drafter defaults on).
 BASE_ENV=(
-  -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0
-  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
-  -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1
+  -e AVAROK_NO_FFN_NVFP4_MMQ=1 -e AVAROK_SSM_TAIL_MIDCHUNK=0 -e AVAROK_MTP_CATCHUP=0
+  -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 \
+  -e AVAROK_SSM_TAIL_LEASE_TTL=128 -e AVAROK_BF16_TC_PREFILL=1
 )
 SERVE_FLAGS=(
   --host 0.0.0.0 --port "$PORT" --model-name qwen
@@ -28,8 +28,8 @@ SERVE_FLAGS=(
 leg() {
   local tag="$1"; shift
   local extra=("$@")
-  local CN="atlas-l1-$tag"
-  for c in $(sudo docker ps -q --filter "name=atlas-l1-"); do sudo docker rm -f "$c" >/dev/null 2>&1; done
+  local CN="avarok-l1-$tag"
+  for c in $(sudo docker ps -q --filter "name=avarok-l1-"); do sudo docker rm -f "$c" >/dev/null 2>&1; done
   # never touch the neighbour ollama on :8000
   if pgrep -f 'release/spark serve' | grep -qv $$; then :; fi
   sleep 4
@@ -52,7 +52,7 @@ leg() {
 
 echo "### L1 A/B: fused K=2 verify epilogue — $(date)"
 leg base_off                                   || exit 1
-leg fused_on -e ATLAS_GDN_FUSED_VERIFY=1       || exit 1
+leg fused_on -e AVAROK_GDN_FUSED_VERIFY=1       || exit 1
 
 python3 - <<'PY'
 import json

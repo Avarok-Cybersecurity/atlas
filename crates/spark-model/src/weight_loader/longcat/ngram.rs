@@ -17,7 +17,7 @@
 #[cfg(feature = "cuda")]
 use anyhow::Context;
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
@@ -34,7 +34,7 @@ const DEFAULT_SLOTS: usize = 65536;
 
 #[cfg(feature = "cuda")]
 fn slots_from_env() -> usize {
-    std::env::var("ATLAS_NGRAM_CACHE_SLOTS")
+    std::env::var("AVAROK_NGRAM_CACHE_SLOTS")
         .ok()
         .and_then(|s| s.trim().parse::<usize>().ok())
         .filter(|v| *v > 0)
@@ -50,13 +50,13 @@ pub(super) fn build(
     gpu: &dyn GpuBackend,
     max_tokens: usize,
 ) -> Result<Option<NgramEmbedding>> {
-    // Bisection lever: ATLAS_NGRAM_DISABLE=1 serves the plain `embed_tokens`
+    // Bisection lever: AVAROK_NGRAM_DISABLE=1 serves the plain `embed_tokens`
     // gather instead of the fused embedding. Output is WRONG (12/13 of the
     // signal is missing) but deterministic, which is exactly what is needed to
     // ask "is this concurrency bug mine, or does it predate the n-gram path?"
-    if std::env::var("ATLAS_NGRAM_DISABLE").is_ok() {
+    if std::env::var("AVAROK_NGRAM_DISABLE").is_ok() {
         tracing::warn!(
-            "ATLAS_NGRAM_DISABLE set — n-gram embedding NOT installed;              output will be incorrect. Diagnostic use only."
+            "AVAROK_NGRAM_DISABLE set — n-gram embedding NOT installed;              output will be incorrect. Diagnostic use only."
         );
         return Ok(None);
     }

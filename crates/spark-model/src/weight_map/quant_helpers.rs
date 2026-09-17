@@ -32,7 +32,7 @@ pub(super) fn dequant_fp8_bytes_to_bf16(fp8_buf: &[u8], scale: f32) -> Vec<u8> {
 /// fast weight loader). This launches `dequant_fp8_blockscaled_bf16` to do
 /// the conversion in-place on device — no D2H download, no host CPU loop,
 /// no H2D upload. Replaces the old per-element CPU loop that dominated load
-/// time for FP8-MoE models under ATLAS_FP8_DEQUANT_MOE_TO_BF16=1 (~30k calls,
+/// time for FP8-MoE models under AVAROK_FP8_DEQUANT_MOE_TO_BF16=1 (~30k calls,
 /// ~22 min total → ~seconds).
 ///
 /// Returns a BF16 DenseWeight on GPU.

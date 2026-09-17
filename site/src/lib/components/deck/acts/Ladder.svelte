@@ -88,7 +88,7 @@
       <p>
         The driver prints its own <code class="mono">sha256</code> on the first line and writes it
         into the output as <code class="mono">driver_sha256</code>. The published Atlas legs carry
-        <code class="mono">{claim.harnessShaAtlas}</code>; the copy in the repository today hashes
+        <code class="mono">{claim.harnessShaAvarok}</code>; the copy in the repository today hashes
         <code class="mono">{claim.harnessShaRepo}</code>.
       </p>
       <p>
@@ -243,7 +243,7 @@
     font-size: 0.74em;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--sx);
+    color: var(--sx-text);
     margin-bottom: 0.6em;
   }
   .side p {

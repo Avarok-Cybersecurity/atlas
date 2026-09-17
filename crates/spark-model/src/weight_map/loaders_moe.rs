@@ -15,7 +15,7 @@ pub(super) fn load_moe_inner(
     layer_prefix: &str,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     variant: Nvfp4Variant,
     qctx: QuantizeCtx,
     skip_routed_experts: bool,
@@ -113,7 +113,7 @@ pub(crate) fn load_moe_mistral(
     layer: usize,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
 ) -> Result<MoeWeights> {
     // Mistral weight names: layers.{i}.gate.weight, layers.{i}.experts.{e}.w1/w2/w3
     // No "model." prefix, no "feed_forward" or "block_sparse_moe" nesting.

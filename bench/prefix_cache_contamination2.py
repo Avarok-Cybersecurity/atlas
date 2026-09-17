@@ -23,7 +23,7 @@ import urllib.request
 import os
 
 HEAD = "http://localhost:8888"
-WORKER = os.environ.get("ATLAS_WORKER_URL", "http://127.0.0.1:8888")
+WORKER = os.environ.get("AVAROK_WORKER_URL", "http://127.0.0.1:8888")
 MODEL = "Qwen/Qwen3.5-35B-A3B-FP8"
 MAX_TOKENS = 48
 

@@ -51,7 +51,7 @@ impl BlockDiffusionDraftHead {
 
     /// True when the confidence head should also run inside the sequential
     /// chain: weights present, scratch allocated, and a positive threshold
-    /// configured via `ATLAS_DSPARK_CONF_TAU` (0/unset = off, matching the
+    /// configured via `AVAROK_DSPARK_CONF_TAU` (0/unset = off, matching the
     /// reference's `threshold <= 0.0 → full block`).
     pub(super) fn confidence_active(&self) -> bool {
         self.confidence_proj.is_some() && self.scratch.conf_out.0 != 0 && self.levers.conf_tau > 0.0
@@ -67,7 +67,7 @@ impl BlockDiffusionDraftHead {
     ///
     /// Bias-vs-anchor convention: the reference applies the bigram bias at
     /// every position, so row 0 (the anchor row, prev = `last_token`) is
-    /// biased by default. `ATLAS_DSPARK_ANCHOR_BIAS=0` exempts row 0
+    /// biased by default. `AVAROK_DSPARK_ANCHOR_BIAS=0` exempts row 0
     /// (Lightning's official DSpark convention) for A/B measurement.
     pub(super) fn markov_argmax_block(
         &self,

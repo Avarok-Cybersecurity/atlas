@@ -91,7 +91,7 @@ pub(crate) fn load_moe_qwen35(
     layer_prefix: &str,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     variant: Nvfp4Variant,
     absmax_k: spark_runtime::gpu::KernelHandle,
     quantize_k: spark_runtime::gpu::KernelHandle,
@@ -126,7 +126,7 @@ pub(crate) fn load_moe_qwen35(
     //     fused-FP8 with `*_scale_inv`, while attention/SSM/shared are BF16) →
     //     dequant each slice FP8→BF16 (reusing dequant_fp8_blockscaled_bf16)
     //     then quantize to NVFP4. Equivalent to the proven NVFP4 expert decode
-    //     path (cf. ATLAS_FORCE_NVFP4_MOE), so no native-FP8 fused-shared kernel
+    //     path (cf. AVAROK_FORCE_NVFP4_MOE), so no native-FP8 fused-shared kernel
     //     contract is involved. Detection is dtype-based, not variant-based, so
     //     it also covers a fused-BF16 layer inside a globally-FP8 checkpoint.
     let is_fused = store.contains(&fused_gate_up_key) && store.contains(&fused_down_key);
@@ -309,7 +309,7 @@ pub(crate) fn load_moe_qwen35_fp8_experts(
     layer_prefix: &str,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
 ) -> Result<Vec<Fp8ExpertWeight>> {
     let p = format!("{layer_prefix}.mlp");
     let mut fp8_experts = Vec::with_capacity(num_experts);
@@ -384,7 +384,7 @@ pub(crate) fn load_moe_no_shared(
     layer_prefix: &str,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     variant: Nvfp4Variant,
 ) -> Result<MoeWeights> {
     let p = format!("{layer_prefix}.mlp");

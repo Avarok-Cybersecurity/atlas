@@ -26,7 +26,7 @@
 
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 use std::time::Instant;
@@ -316,15 +316,15 @@ fn time_arm<F: FnMut() -> Result<()>>(g: &dyn GpuBackend, mut f: F) -> Result<f6
 }
 
 fn main() -> Result<()> {
-    let set = atlas_kernels::ptx_for_model("qwen3.6-27b")
+    let set = avarok_kernels::ptx_for_model("qwen3.6-27b")
         .or_else(|| {
-            atlas_kernels::ptx_for_config("qwen3_5_text", 5120, &[], None)
+            avarok_kernels::ptx_for_config("qwen3_5_text", 5120, &[], None)
                 .ok()
                 .flatten()
         })
         .expect("no qwen3.6-27b ptx set");
     eprintln!("kernel set: {}", set.target.model);
-    let g0 = AtlasCudaBackend::new(0, &set.modules)?;
+    let g0 = AvarokCudaBackend::new(0, &set.modules)?;
     let g: &dyn GpuBackend = &g0;
     let kit = Kit {
         conv_b: g.kernel("causal_conv1d", "causal_conv1d_update_l2norm")?,

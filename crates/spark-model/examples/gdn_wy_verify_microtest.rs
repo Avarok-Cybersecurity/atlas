@@ -30,7 +30,7 @@
 //!       --features cuda,gpu-examples
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 // Qwen3-Next GDN head config (matches gdn_split4_microtest / production).
@@ -312,7 +312,7 @@ fn run_wyn(
 }
 
 fn main() -> Result<()> {
-    let g0 = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let g0 = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &g0;
     let wy = [
         (

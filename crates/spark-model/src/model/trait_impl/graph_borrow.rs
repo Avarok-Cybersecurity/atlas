@@ -51,13 +51,13 @@
 //! graphs per family instead of ~29 (only the ladder's `k_drafts`
 //! deepening below n≈13 still forces new verify shapes).
 //!
-//! Kill switch: `ATLAS_NO_GRAPH_BORROW` (PRESENCE disables, house
+//! Kill switch: `AVAROK_NO_GRAPH_BORROW` (PRESENCE disables, house
 //! convention — `=0` is NOT off). Read once per process.
 
-/// Borrowing enabled unless `ATLAS_NO_GRAPH_BORROW` is present.
+/// Borrowing enabled unless `AVAROK_NO_GRAPH_BORROW` is present.
 pub(super) fn graph_borrow_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_GRAPH_BORROW").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_GRAPH_BORROW").is_none())
 }
 
 /// Widest captured graph an `n`-active batch may borrow: twice its
@@ -68,7 +68,7 @@ pub(super) fn graph_borrow_enabled() -> bool {
 /// the canonical key for later drains).
 ///
 /// This was `2 * padded_batch_n(n)` in the first cut, which the 2026-08-16
-/// dgx2 validation run (`/tmp/atlas-dtval-serve.log`) caught declining the
+/// dgx2 validation run (`/tmp/avarok-dtval-serve.log`) caught declining the
 /// clean n=12-under-n=32 borrow: 12 is itself a padding-ladder rung, so its
 /// padded bucket is 12 and the cap (24) rejected the only cached wider key
 /// (32) — the engine then CAPTURED a fresh n=12 verify graph at 21:04:56

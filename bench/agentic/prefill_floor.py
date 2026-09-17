@@ -17,7 +17,7 @@ decides it — the floor's share of a full chunk.
 """
 import os, json, random, statistics as st, string, sys, time, urllib.request
 
-URL = os.environ.get("ATLAS_URL", "http://localhost:8888/v1/chat/completions")
+URL = os.environ.get("AVAROK_URL", "http://localhost:8888/v1/chat/completions")
 MODEL = sys.argv[1] if len(sys.argv) > 1 else "laguna-s-2.1"
 REPEATS = int(sys.argv[2]) if len(sys.argv) > 2 else 3
 # ~1.4 tokens per word for this filler; sizes chosen to stay in one chunk.

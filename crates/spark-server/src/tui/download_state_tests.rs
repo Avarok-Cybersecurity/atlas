@@ -3,7 +3,7 @@
 use super::*;
 
 fn root() -> std::path::PathBuf {
-    let p = std::env::temp_dir().join("atlas-dlstate");
+    let p = std::env::temp_dir().join("avarok-dlstate");
     std::fs::create_dir_all(&p).unwrap();
     p
 }
@@ -129,7 +129,7 @@ fn a_failed_download_settles_and_explains_itself() {
 #[test]
 #[ignore = "network"]
 fn a_real_download_settles_as_finished() {
-    let cache = std::env::temp_dir().join("atlas-dlstate-real");
+    let cache = std::env::temp_dir().join("avarok-dlstate-real");
     let _ = std::fs::remove_dir_all(&cache);
     std::fs::create_dir_all(&cache).unwrap();
 

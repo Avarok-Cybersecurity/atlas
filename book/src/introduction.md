@@ -1,6 +1,6 @@
 # Introduction
 
-<div class="atlas-headline">Atlas is a pure-Rust LLM inference engine, built around the belief that every <code>(Hardware, Model<sub>q</sub>)</code> tuple deserves its own hand-tuned kernel set.</div>
+<div class="avarok-headline">Atlas is a pure-Rust LLM inference engine, built around the belief that every <code>(Hardware, Model<sub>q</sub>)</code> tuple deserves its own hand-tuned kernel set.</div>
 
 On an NVIDIA GB10 Grace-Blackwell Superchip, Atlas reaches **131 tok/s on Qwen3.5-35B-A3B** — **3.6× faster than NVIDIA's vLLM on the same model, same hardware**. It reaches **104 tok/s on Qwen3-Next-80B-A3B** and **46 tok/s on Qwen3.5-122B-A10B** (EP=2, two nodes). On a head-to-head suite of 32 micro-benchmarks against PyTorch — attention, GEMM, SSM, RoPE, RMSNorm — Atlas wins **32 out of 32**, with speedups from 1.04× up to 18.2×.
 

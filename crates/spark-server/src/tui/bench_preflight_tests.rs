@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::*;
-use atlas_plugin::TargetEndpoint;
-use atlas_plugin::coherence::Answer;
+use avarok_plugin::TargetEndpoint;
+use avarok_plugin::coherence::Answer;
 
 fn target() -> TargetEndpoint {
     TargetEndpoint::local(8888, "m")

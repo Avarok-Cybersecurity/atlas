@@ -60,9 +60,9 @@
 //!
 //! CONTROL, which makes that a statement about the GEMM and not about per-row
 //! weights: the BLOCK-scaled `Qwen/Qwen3.8-27B-FP8` served with
-//! `ATLAS_CUBLAS_FP8=1`, this module inert, reaches the same call through the
+//! `AVAROK_CUBLAS_FP8=1`, this module inert, reaches the same call through the
 //! requant path and fails identically. Its sibling is worse —
-//! `ATLAS_FP8_W8A8=1` passes the heuristic and returns "kililililil…". Both
+//! `AVAROK_FP8_W8A8=1` passes the heuristic and returns "kililililil…". Both
 //! sit behind default-off flags nothing in the repo sets, which is why the
 //! whole cuBLASLt FP8 prefill family had never been noticed as dead code.
 //!
@@ -82,7 +82,7 @@
 //!   token match 82.5%, mean KL 0.0054, p99 0.039
 //!   vision-fidelity 14/14 + 3/3, video-fidelity 13/13, both control held
 //!
-//! For contrast, `ATLAS_GDN_BF16_WEIGHTS=1` buys the same precision back
+//! For contrast, `AVAROK_GDN_BF16_WEIGHTS=1` buys the same precision back
 //! through the hand-written `dense_gemm` and costs 72.9% of prefill. The GEMM
 //! is what separates them, not the precision.
 //!
@@ -101,7 +101,7 @@ use spark_runtime::weights::{WeightDtype, WeightStore};
 /// changes the numerics of every GDN prefill projection on the checkpoints it
 /// fires for.
 pub(super) fn rowwise_fp8_enabled() -> bool {
-    std::env::var("ATLAS_FP8_ROWWISE").as_deref() == Ok("1")
+    std::env::var("AVAROK_FP8_ROWWISE").as_deref() == Ok("1")
 }
 
 /// True when `{prefix}.weight` is FP8 E4M3 with a PER-ROW scale — `[N]` or

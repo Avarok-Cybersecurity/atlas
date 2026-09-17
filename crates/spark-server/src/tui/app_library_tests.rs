@@ -84,7 +84,7 @@ fn cancelling_when_nothing_is_downloading_is_not_an_error() {
 #[test]
 fn a_second_download_opens_the_question_instead_of_refusing() {
     let mut a = library();
-    let root = std::env::temp_dir().join("atlas-switch");
+    let root = std::env::temp_dir().join("avarok-switch");
     std::fs::create_dir_all(&root).ok();
     a.download.start("org/first", root);
     a.download_switch = None;
@@ -105,7 +105,7 @@ fn a_second_download_opens_the_question_instead_of_refusing() {
 #[test]
 fn the_affirmative_queues_the_second_download_it_does_not_race_it() {
     let mut a = library();
-    let root = std::env::temp_dir().join("atlas-switch2");
+    let root = std::env::temp_dir().join("avarok-switch2");
     std::fs::create_dir_all(&root).ok();
     a.download.start("org/first", root);
     a.download_switch = Some(("org/first".to_string(), "org/second".to_string()));

@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use atlas_plugin::gate::agreement::{self, AddedRecord, Disagreement};
-use atlas_plugin::gate::{self, GateStatus};
+use avarok_plugin::gate::agreement::{self, AddedRecord, Disagreement};
+use avarok_plugin::gate::{self, GateStatus};
 
 /// Every `.benchmarks/**/*.json` that git does not track — the records a
 /// commit would add. Includes what this campaign wrote and what a previous,
@@ -66,7 +66,7 @@ pub fn added_records(root: &Path, anchor: &str, paths: &[PathBuf]) -> Vec<AddedR
             Some(AddedRecord {
                 path: p.display().to_string(),
                 hardware: Some(
-                    atlas_plugin::hardware::equivalence::HardwareFingerprint::from_record(&r),
+                    avarok_plugin::hardware::equivalence::HardwareFingerprint::from_record(&r),
                 ),
                 hardware_class: r.hardware.gate_key(),
                 standing: agreement::standing_at(root, anchor, &r),

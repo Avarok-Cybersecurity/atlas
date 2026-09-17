@@ -17,7 +17,7 @@ first, and the traps that cost us real time.
 | hardware | DGX Spark GB10, sm_121a, 121 GB unified memory |
 | model | `centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf` (dense, already all-NVFP4 including GDN) |
 | harness | MLCommons edge-agentic (`inference-endpoint`), 1007 perf + 995 BFCL |
-| container | `atlas-gb10:followups` (any image with the CUDA runtime; the binary is bind-mounted in) |
+| container | `avarok-gb10:followups` (any image with the CUDA runtime; the binary is bind-mounted in) |
 | determinism | temp 0.0, seed 42 |
 
 The harness checkout must already have a base `config.yaml` to derive from — the campaign used
@@ -30,16 +30,16 @@ used for every leg you intend to compare.
 
 ```bash
 PATH=/usr/local/cuda/bin:$PATH \
-ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.6-27b \
+AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=qwen3.6-27b \
   cargo build --release -p spark-server --bin spark --features cuda
 ```
 
-**`ATLAS_TARGET_MODEL=qwen3.6-27b` is not optional.** Without it the build defaults to
+**`AVAROK_TARGET_MODEL=qwen3.6-27b` is not optional.** Without it the build defaults to
 `qwen3-next-80b` and compiles a different kernel set, so a kernel edit produces an
 md5-identical binary and you measure nothing. Confirm the build log says:
 
 ```
-atlas-kernels: compiled 158 kernels for target 0 (gb10, qwen3.6-27b, nvfp4)
+avarok-kernels: compiled 158 kernels for target 0 (gb10, qwen3.6-27b, nvfp4)
 ```
 
 ---
@@ -49,7 +49,7 @@ atlas-kernels: compiled 158 kernels for target 0 (gb10, qwen3.6-27b, nvfp4)
 One entry point:
 
 ```bash
-ATLAS_BIN=$PWD/target/release/spark \
+AVAROK_BIN=$PWD/target/release/spark \
 HARNESS_DIR=/workspace/endpoints-fresh \
 BASE_CONFIG=/workspace/endpoints-fresh/results/defaults_20260721_173342/config.yaml \
   ND=3 bash scripts/mlperf-edge/run_golden_e2e.sh
@@ -90,18 +90,18 @@ with the recorded results.
 ### Environment
 
 ```
-ATLAS_NO_FFN_NVFP4_MMQ=1     ATLAS_SSM_TAIL_MIDCHUNK=0    ATLAS_MTP_CATCHUP=0
-ATLAS_MTP_DRAFT_CONF=0.0     ATLAS_MTP_GATE_FORCE=1       ATLAS_SSM_TAIL_PROTECT=1
-ATLAS_SSM_TAIL_LEASE_TTL=128 ATLAS_BF16_TC_PREFILL=1
+AVAROK_NO_FFN_NVFP4_MMQ=1     AVAROK_SSM_TAIL_MIDCHUNK=0    AVAROK_MTP_CATCHUP=0
+AVAROK_MTP_DRAFT_CONF=0.0     AVAROK_MTP_GATE_FORCE=1       AVAROK_SSM_TAIL_PROTECT=1
+AVAROK_SSM_TAIL_LEASE_TTL=128 AVAROK_BF16_TC_PREFILL=1
 ```
 
-**Trap — presence flags.** Several `ATLAS_*` flags are read with `is_some()` / `is_none()`, so
-setting one to `0` still turns it **on**. `ATLAS_NO_FFN_NVFP4_MMQ` and `ATLAS_BF16_TC_PREFILL`
+**Trap — presence flags.** Several `AVAROK_*` flags are read with `is_some()` / `is_none()`, so
+setting one to `0` still turns it **on**. `AVAROK_NO_FFN_NVFP4_MMQ` and `AVAROK_BF16_TC_PREFILL`
 are presence-checked; to disable them you must unset them, not set them to zero. Others
-(`ATLAS_SSM_TAIL_MIDCHUNK`, `ATLAS_MTP_CATCHUP`) do compare against `"0"`/`"1"`. Check the
+(`AVAROK_SSM_TAIL_MIDCHUNK`, `AVAROK_MTP_CATCHUP`) do compare against `"0"`/`"1"`. Check the
 callsite before assuming.
 
-Kill-switches that are deliberately left at their defaults: `ATLAS_GDN_WYN=0` disables the
+Kill-switches that are deliberately left at their defaults: `AVAROK_GDN_WYN=0` disables the
 wy5–wy8 batched GDN verify and falls back to the serial path.
 
 ---
@@ -137,7 +137,7 @@ apply_chat_template failed for Qwen/Qwen3.6-27B (TypeError);
 This is client-side: the metrics aggregator probes the chat template with a tool-call message
 shape the Qwen3.6-27B jinja template does not accept. It fires twice, at startup, not per
 sample, and it is identical in the 4104 s reference run — so it does not break comparability
-between legs. It is not an Atlas fault and not a signal that anything regressed. If you see a
+between legs. It is not an Avarok fault and not a signal that anything regressed. If you see a
 count other than 2, that *is* worth investigating.
 
 ---

@@ -13,7 +13,7 @@ metadata:
     KV pool on a single GB10; cells at depth=65535/100000 in
     spark-arena-v2 will be skipped because they exceed max_model_len.
     Use --tp 2 / EP=2 to get the full long-context sweep. No MTP.
-  maintainer: avarok
+  maintainer: atlas
   category: chat
   model_params: 27B
   model_dtype: fp8

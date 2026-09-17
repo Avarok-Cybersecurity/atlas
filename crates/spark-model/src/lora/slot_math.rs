@@ -7,7 +7,7 @@
 //! Split out of the former monolithic `lora/mod.rs` (SDD seam: SLOT/OFFSET
 //! MATH) — visibility unchanged.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use super::*;
 use crate::layers::ops::lora_delta::LoraPair;

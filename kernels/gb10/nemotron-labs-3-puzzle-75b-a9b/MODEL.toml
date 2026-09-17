@@ -6,7 +6,7 @@ architecture = "hybrid_mamba2_latent_moe_attention_puzzle"
 parameters = "75B"
 active_parameters = "9B"
 
-# Kernel-target resolution needles (atlas-kernels/src/resolve.rs).
+# Kernel-target resolution needles (avarok-kernels/src/resolve.rs).
 # nemotron-super-120b-a12b also declares (nemotron_h_puzzle, 4096) so its
 # single-target build can serve Puzzle checkpoints; in the multi-target
 # build that is a collision, and build.rs requires both sides to declare
@@ -102,7 +102,7 @@ cap_thinking_at_max_tokens = false
 # /v1/completions with no template and no Atlas thinking logic, purely by
 # appending `<think>\n` to the prompt (which the model's OWN template does).
 # `<think>` tokenizes correctly as the single special token id 12, and
-# ATLAS_DISABLE_WATCHDOGS=1 does not help. Clients can still opt in per request.
+# AVAROK_DISABLE_WATCHDOGS=1 does not help. Clients can still opt in per request.
 thinking_default = false
 
 # ── Kernel lookups this model may legitimately fail to resolve ──

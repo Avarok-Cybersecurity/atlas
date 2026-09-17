@@ -15,7 +15,7 @@
 
 Required methods have no default; optional methods have default panics/no-ops so a partial backend (e.g. a Metal backend without CUDA-graph support yet) still compiles. The trait's [SBIO role](../architecture/sbio.md) is discussed in Part II.
 
-## The production impl: `AtlasCudaBackend`
+## The production impl: `AvarokCudaBackend`
 
 In `cuda_backend.rs`. Built on `cudarc` (Rust bindings over the CUDA driver API). On construction:
 

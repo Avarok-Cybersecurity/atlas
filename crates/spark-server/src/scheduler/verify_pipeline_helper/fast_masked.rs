@@ -42,7 +42,7 @@
 //! same fixed state — eligibility is uniform across positions and the
 //! equivalence is per-call exact. Any ineligible position falls through
 //! to the unmodified slow path for the whole call.
-//! Kill-switch: `ATLAS_DISABLE_FAST_MASKED=1`.
+//! Kill-switch: `AVAROK_DISABLE_FAST_MASKED=1`.
 
 use crate::scheduler::ActiveSeq;
 use crate::scheduler::logit_processors::LogitsContext;
@@ -64,7 +64,7 @@ pub(super) fn try_chat_fast_path(
     row_base: usize,
 ) -> Option<Vec<u32>> {
     // DFlash masked-verify mode ONLY. The fast path exists to make
-    // ATLAS_DFLASH_MASKED_VERIFY affordable; it must never run for MTP:
+    // AVAROK_DFLASH_MASKED_VERIFY affordable; it must never run for MTP:
     // returning the GPU argmax where the slow path computes a host-side
     // argmax over dequantized F32 logits changes tie-breaking on
     // near-tie tokens — measured 2026-07-11 as temp-0 MTP output drift
@@ -157,7 +157,7 @@ pub(super) fn try_chat_fast_path(
         if ctx.stats.once("log:verify_chat_fast_path") {
             tracing::info!(
                 "verify chat fast path ACTIVE: masked-greedy == raw argmax, no D2H \
-                 (kill-switch: ATLAS_DISABLE_FAST_MASKED=1)"
+                 (kill-switch: AVAROK_DISABLE_FAST_MASKED=1)"
             );
         }
         return Some(argmax_ids.to_vec());

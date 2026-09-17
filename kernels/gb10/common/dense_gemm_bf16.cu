@@ -76,7 +76,7 @@ extern "C" __global__ void dense_gemm_bf16(
 
 // FP32-output twin of dense_gemm_bf16: identical math, but writes the FP32
 // accumulator directly instead of rounding to BF16. Used by the
-// ATLAS_FP32_GATE routing path for the MoE router GEMM so the gate logits
+// AVAROK_FP32_GATE routing path for the MoE router GEMM so the gate logits
 // keep full precision into top-K (a BF16 store would round two near-tied
 // experts to the same value and flip routing). Inputs stay BF16.
 //
@@ -124,7 +124,7 @@ extern "C" __global__ void dense_gemm_bf16_f32out(
 
 // FP32-input, FP32-output variant: A is FP32 activations (the FP32 router_in from
 // residual_add_rms_norm_gatef32), B is BF16 weights (the router gate), C is FP32.
-// The ATLAS_FP32_ROUTING gate GEMM: full-precision activation × bf16 gate weight
+// The AVAROK_FP32_ROUTING gate GEMM: full-precision activation × bf16 gate weight
 // → unrounded gate logits, so top-K selection no longer flips on a bf16 store.
 //
 // Grid: (ceil(N/TILE_N), ceil(M/TILE_M))   Block: (TILE_N, TILE_M)

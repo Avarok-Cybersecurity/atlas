@@ -2,13 +2,13 @@
 //
 // Launcher for the native Ternary-Bonsai Q2_0 MMQ prefill GEMM (Tier-2).
 // Kernel: kernels/gb10/qwen3.6-27b/nvfp4/q2_0_mmq.cu (module `q2_0_mmq`,
-// entries `atlas_q2_0_mmq128_nc/_wc`). Keeps the 2-bit weight PACKED and does
+// entries `avarok_q2_0_mmq128_nc/_wc`). Keeps the 2-bit weight PACKED and does
 // the prefill matmul as a tensor-core int8 MMA with dequant-in-register
 // (`(code-1)*d`) against a q8_1-quantized activation, producing BF16 — no BF16
 // weight scratch, no dequant tax, no co-dispatch race.
 //
 // The q8_1 activation quantize is SHARED with Q4_K: reuse
-// `super::quantize_act_q8_1` (kernel `atlas_q8_1_quantize_ds4_bf16`, DS4 layout)
+// `super::quantize_act_q8_1` (kernel `avarok_q8_1_quantize_ds4_bf16`, DS4 layout)
 // and `super::q8_1_scratch_bytes` — Q2_0 also uses DS4 (the `(code-1)*d` dequant
 // never reads q8_1's `s` term). The only Q2_0-specific launch difference vs
 // `q4k_mmq_gemm` is `stride_row_x = k/QK2_0` (K/128, not K/256).
@@ -23,12 +23,12 @@ pub const QK2_0: u32 = 128;
 /// sizeof(block_q2_0) bytes: fp16 scale d (2) + 128 codes @ 4/byte (32) = 34.
 pub const Q2_0_BLOCK_BYTES: usize = 34;
 
-/// Sub-flag gating the native Q2_0 MMQ prefill path (`ATLAS_GGUF_NATIVE_Q2_MMQ=1`).
+/// Sub-flag gating the native Q2_0 MMQ prefill path (`AVAROK_GGUF_NATIVE_Q2_MMQ=1`).
 /// Default off: keep the transient-dequant stopgap so the two can be A/B'd on GPU.
-/// (`ATLAS_GGUF_NATIVE_Q2` still gates keep-packing overall — this only chooses
+/// (`AVAROK_GGUF_NATIVE_Q2` still gates keep-packing overall — this only chooses
 /// how the kept-packed weight is consumed in PREFILL.)
 pub fn native_q2_mmq_enabled() -> bool {
-    std::env::var("ATLAS_GGUF_NATIVE_Q2_MMQ").ok().as_deref() == Some("1")
+    std::env::var("AVAROK_GGUF_NATIVE_Q2_MMQ").ok().as_deref() == Some("1")
 }
 
 /// Bytes for the packed `block_q2_0` form of an `[n, k]` weight (`k % 128 == 0`).
@@ -45,8 +45,8 @@ pub fn q2_0_weight_bytes(n: u32, k: u32) -> usize {
 #[allow(clippy::too_many_arguments)]
 pub fn q2_0_mmq_gemm(
     gpu: &dyn GpuBackend,
-    kernel_nc: KernelHandle, // atlas_q2_0_mmq128_nc
-    kernel_wc: KernelHandle, // atlas_q2_0_mmq128_wc
+    kernel_nc: KernelHandle, // avarok_q2_0_mmq128_nc
+    kernel_wc: KernelHandle, // avarok_q2_0_mmq128_wc
     a_q8: DevicePtr,         // q8_1_mmq activations
     w_q2_0: DevicePtr,       // block_q2_0 weights [n, k]
     out_bf16: DevicePtr,
@@ -232,8 +232,8 @@ mod tests {
         let vendor =
             include_str!("../../../../../kernels/gb10/qwen3.6-27b/nvfp4/q4k_vendor/mmq.cuh");
         assert!(launcher.contains("constexpr ggml_type type = GGML_TYPE_Q2_0;"));
-        assert!(launcher.contains("atlas_q2_0_tile<128, false>"));
-        assert!(launcher.contains("atlas_q2_0_tile<128, true>"));
+        assert!(launcher.contains("avarok_q2_0_tile<128, false>"));
+        assert!(launcher.contains("avarok_q2_0_tile<128, true>"));
         assert!(vendor.contains("load_tiles   = load_tiles_q2_0<mmq_y, need_check>;"));
         assert!(vendor.contains(
             "vec_dot_mma  = vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_DS4>;"

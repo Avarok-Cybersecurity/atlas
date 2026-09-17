@@ -83,9 +83,9 @@ __device__ __constant__ float E2M1_LUT[16] = {
 // guessed at, for the same reason the strix-hip batched-prefill argument shift
 // was left to someone with the hardware.
 #if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-#define ATLAS_WARP_LUT_STAGED 0
+#define AVAROK_WARP_LUT_STAGED 0
 #else
-#define ATLAS_WARP_LUT_STAGED 1
+#define AVAROK_WARP_LUT_STAGED 1
 #endif
 
 // WARP-SCOPED variant, for the single-warp kernels: they early-return on a
@@ -93,7 +93,7 @@ __device__ __constant__ float E2M1_LUT[16] = {
 // divergent barrier. Lanes 0..15 fill their own warp's copy; __syncwarp()
 // publishes it. The reduction below stays barrier-free, as documented.
 __device__ __forceinline__ void stage_e2m1_lut_warp(float* s_lut, unsigned int lane) {
-#if ATLAS_WARP_LUT_STAGED
+#if AVAROK_WARP_LUT_STAGED
     if (lane < 16u) s_lut[lane] = E2M1_LUT[lane];
     __syncwarp();
 #else
@@ -214,7 +214,7 @@ extern "C" __global__ void w4a16_gemv(
 }
 
 // ============================================================
-// W4A16 GEMV — SINGLE-WARP-PER-OUTPUT variant (lossless; default ON, kill ATLAS_NO_GEMV_SW=1).
+// W4A16 GEMV — SINGLE-WARP-PER-OUTPUT variant (lossless; default ON, kill AVAROK_NO_GEMV_SW=1).
 //
 // Bit-identical to w4a16_gemv: same `w4a16_gemv_partial` per orig-lane. 32
 // threads (1 warp) per output instead of 64 (2 warps). 8 outputs per 256-thread
@@ -252,7 +252,7 @@ extern "C" __global__ void w4a16_gemv_sw(
     // barrier is unavailable here (warp-uniform early return above).
     __shared__ float s_lut[N_PER_BLOCK_SW][16];
     stage_e2m1_lut_warp(s_lut[local_out], lane);
-#if ATLAS_WARP_LUT_STAGED
+#if AVAROK_WARP_LUT_STAGED
     const float* __restrict__ warp_lut = s_lut[local_out];
 #else
     const float* __restrict__ warp_lut = E2M1_LUT;
@@ -333,7 +333,7 @@ extern "C" __global__ void w4a16_gemv_sw_moe(
 
     __shared__ float s_lut[N_PER_BLOCK_SW][16];
     stage_e2m1_lut_warp(s_lut[local_out], lane);
-#if ATLAS_WARP_LUT_STAGED
+#if AVAROK_WARP_LUT_STAGED
     const float* __restrict__ warp_lut = s_lut[local_out];
 #else
     const float* __restrict__ warp_lut = E2M1_LUT;
@@ -769,7 +769,7 @@ extern "C" __global__ void w4a16_gemv_batch4(
 // asking for 6 CTA spills 32 B at MAX_M=8 and 8 B at MAX_M=5.
 //
 // Dispatch picks the narrowest RESOLVED tier >= M
-// (`spark-model/src/layers/w4a16_gemv_tiers.rs`); `ATLAS_NO_GEMV_EXACT_M_TIERS=1`
+// (`spark-model/src/layers/w4a16_gemv_tiers.rs`); `AVAROK_NO_GEMV_EXACT_M_TIERS=1`
 // hides 5/6/7 and restores the batch4/batch8-only decision.
 //
 // Bit-parity: same template, same `MAX_M`-independent FMA chain per row, so
@@ -2353,7 +2353,7 @@ __device__ __forceinline__ void w4a16_gemv_sw_moe_batchm_body(
 
     __shared__ float s_lut[N_PER_BLOCK_SW][16];
     stage_e2m1_lut_warp(s_lut[local_out], lane);
-#if ATLAS_WARP_LUT_STAGED
+#if AVAROK_WARP_LUT_STAGED
     const float* __restrict__ warp_lut = s_lut[local_out];
 #else
     const float* __restrict__ warp_lut = E2M1_LUT;
@@ -2385,7 +2385,7 @@ __device__ __forceinline__ void w4a16_gemv_sw_moe_batchm_body(
     }
 }
 
-#define ATLAS_MOE_BATCHM_ENTRY(R)                                                  \
+#define AVAROK_MOE_BATCHM_ENTRY(R)                                                  \
 extern "C" __global__ void w4a16_gemv_sw_moe_batchm_m##R(                          \
     const __nv_bfloat16* __restrict__ A,                                           \
     const unsigned long long* __restrict__ packed_ptrs,                            \
@@ -2401,15 +2401,15 @@ extern "C" __global__ void w4a16_gemv_sw_moe_batchm_m##R(                       
         u_eid, u_slot, N, K, num_experts, a_row_stride, a_slot_stride, c_row_stride); \
 }
 
-ATLAS_MOE_BATCHM_ENTRY(2)
-ATLAS_MOE_BATCHM_ENTRY(3)
-ATLAS_MOE_BATCHM_ENTRY(4)
+AVAROK_MOE_BATCHM_ENTRY(2)
+AVAROK_MOE_BATCHM_ENTRY(3)
+AVAROK_MOE_BATCHM_ENTRY(4)
 // 🔴 5..8 exist because the batched PREFILL sub-chunk is 8 rows wide (ANOMALIES A65), and the
 // stop at 4 was the compiled tier family, NOT a limit of the union: `glm5next_moe_row_union`
 // resolves `rows * top_k` ids in ONE 64-thread block, and GLM-5.3 is `8 * 8 == 64` exactly.
 // 🪤 The caller MUST refuse `rows * top_k > 64` — the union kernel would silently drop the
 // entries past the block.
-ATLAS_MOE_BATCHM_ENTRY(5)
-ATLAS_MOE_BATCHM_ENTRY(6)
-ATLAS_MOE_BATCHM_ENTRY(7)
-ATLAS_MOE_BATCHM_ENTRY(8)
+AVAROK_MOE_BATCHM_ENTRY(5)
+AVAROK_MOE_BATCHM_ENTRY(6)
+AVAROK_MOE_BATCHM_ENTRY(7)
+AVAROK_MOE_BATCHM_ENTRY(8)

@@ -106,11 +106,11 @@ fn draw_form(f: &mut Frame, app: &App, area: Rect) {
     // The probe is a run option rather than a form field, so it gets a status
     // line instead of a row — but it must be visible, or `p` is a secret.
     let (probe_text, probe_style) = match app.bench.coherence {
-        atlas_plugin::CoherencePolicy::Probe => (
+        avarok_plugin::CoherencePolicy::Probe => (
             " endpoint check  on — warns if the model answers unexpectedly",
             theme::dim(),
         ),
-        atlas_plugin::CoherencePolicy::Skip => (
+        avarok_plugin::CoherencePolicy::Skip => (
             " endpoint check  OFF — the model will not be asked anything",
             theme::warn(),
         ),
@@ -258,7 +258,7 @@ fn draw_confirm(f: &mut Frame, app: &App, area: Rect) {
     ))];
     lines.push(Line::default());
     lines.extend(wrap(
-        "Commands run inside a fresh sandbox directory under ~/.atlas/runs, with a per-command \
+        "Commands run inside a fresh sandbox directory under ~/.avarok/runs, with a per-command \
          timeout and a capped turn count. They are not otherwise restricted: building and \
          running the code the model wrote is the measurement.",
         inner.width.saturating_sub(2) as usize,
