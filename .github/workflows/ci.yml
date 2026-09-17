@@ -949,6 +949,45 @@ jobs:
           Line Tools but not the Metal compiler; install Xcode or the Metal \
           toolchain component and this job can become required."
           fi
+      # ★ FIVE OF THESE TESTS SKIP THEMSELVES WHEN THE MODEL IS ABSENT, AND A
+      # SKIP HERE LOOKS EXACTLY LIKE A PASS. `real_model_{gemv,attention,
+      # vision,misc}` read $AVAROK_MLX_MODEL_DIR, else $HOME/models/
+      # Qwen3.5-4B-MLX-8bit, and on a miss they `eprintln!("skipping: ...")`
+      # and return — libtest still counts them as passed. So the whole point of
+      # running on a real device can be absent while the check is green.
+      #
+      # This step resolves the model, including the Hugging Face cache layout
+      # that `hf download mlx-community/Qwen3.5-4B-MLX-8bit` actually writes
+      # (snapshots/<sha>/, not ~/models/), and exports the directory it found.
+      # When it finds nothing it says so as a warning naming the legs that will
+      # not run — the log has to distinguish "device parity passed" from
+      # "device parity did not look".
+      - name: locate the MLX model, or say which legs will not run
+        run: |
+          set -uo pipefail
+          find_model() {
+            [ -n "${AVAROK_MLX_MODEL_DIR:-}" ] && [ -f "$AVAROK_MLX_MODEL_DIR/model.safetensors" ] \
+              && { echo "$AVAROK_MLX_MODEL_DIR"; return 0; }
+            [ -f "$HOME/models/Qwen3.5-4B-MLX-8bit/model.safetensors" ] \
+              && { echo "$HOME/models/Qwen3.5-4B-MLX-8bit"; return 0; }
+            # The HF cache: one snapshot dir per revision, newest first.
+            local hub="$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-8bit/snapshots"
+            [ -d "$hub" ] || return 1
+            local d
+            d=$(find "$hub" -maxdepth 2 -name model.safetensors -print 2>/dev/null | head -1) || true
+            [ -n "$d" ] && { dirname "$d"; return 0; }
+            return 1
+          }
+          if dir=$(find_model); then
+            echo "AVAROK_MLX_MODEL_DIR=$dir" >> "$GITHUB_ENV"
+            echo "real-model legs will run against $dir"
+          else
+            echo "::warning title=No MLX model on this runner::the four \
+          real_model_* parity legs will SKIP (libtest still reports them as \
+          passed). Fetch it with: hf download mlx-community/Qwen3.5-4B-MLX-8bit \
+          --local-dir ~/models/Qwen3.5-4B-MLX-8bit"
+          fi
+
       # A REAL device must be present, or this job is measuring nothing and
       # there is no point running it here rather than on hosted.
       - name: cargo test -p spark-runtime --features metal (real device)
@@ -958,8 +997,18 @@ jobs:
           AVAROK_TARGET_MODEL: qwen3-5-4b-vlm-mlx-int8
           AVAROK_TARGET_QUANT: mlx_int8
         run: |
+          set -uo pipefail
           cargo test -p spark-runtime --no-default-features \
-            --features metal --locked metal_backend -- --nocapture
+            --features metal --locked metal_backend -- --nocapture 2>&1 | tee metal.log
+          rc=${PIPESTATUS[0]}
+          skipped=$(grep -c '^skipping: ' metal.log || true)
+          echo "real-model legs skipped: ${skipped:-0}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${skipped:-0}" -gt 0 ]; then
+            echo "::warning title=${skipped} parity leg(s) skipped::green here \
+          does not mean the device was exercised on those legs; see the \
+          model-locating step above."
+          fi
+          exit "$rc"
 
   release-matrix:
     name: release matrix
