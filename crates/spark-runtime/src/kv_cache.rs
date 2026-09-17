@@ -10,6 +10,58 @@ use anyhow::{Result, bail};
 
 pub(crate) const NVFP4_GROUP_SIZE: usize = 16;
 
+/// KV block-pool occupancy, published for `/metrics`.
+///
+/// ★ THE POOL HAD NO GAUGE AT ALL UNTIL 2026-09-17.
+///
+/// `/metrics` carried prefix-cache hit counters and nothing about blocks, so
+/// the one resource a long run actually exhausts was invisible right up to the
+/// moment it ran out — a BFCL shard wedged two ranks and the only evidence was
+/// a bare "no free blocks". A gauge turns that into something you can watch
+/// climb and alert on before it bites.
+///
+/// Published from the few places that change the free list, so it costs two
+/// relaxed stores on paths that were already mutating a Vec.
+pub mod stats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// `total << 32 | free`. ONE word, because two words tear.
+    ///
+    /// 🪤 Read as two separate atomics this reported `used=1` while
+    /// `free=65543` of a 77808-block pool — arithmetic that cannot happen,
+    /// because the pair came from two different reads. Packing them makes
+    /// every read self-consistent by construction.
+    static PACKED: AtomicU64 = AtomicU64::new(0);
+
+    pub(crate) fn publish(total: usize, free: usize) {
+        PACKED.store(
+            ((total as u64) << 32) | (free as u64 & 0xFFFF_FFFF),
+            Ordering::Relaxed,
+        );
+    }
+
+    fn read() -> (usize, usize) {
+        let v = PACKED.load(Ordering::Relaxed);
+        ((v >> 32) as usize, (v & 0xFFFF_FFFF) as usize)
+    }
+
+    /// Blocks in the primary pool. 0 before any KV cache is built.
+    pub fn total_blocks() -> usize {
+        read().0
+    }
+
+    /// Blocks currently on the primary pool's free list.
+    pub fn free_blocks() -> usize {
+        read().1
+    }
+
+    /// Blocks held by a sequence or the prefix cache.
+    pub fn used_blocks() -> usize {
+        let (t, f) = read();
+        t.saturating_sub(f)
+    }
+}
+
 /// KV cache quantization dtype.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KvCacheDtype {
@@ -424,6 +476,10 @@ pub struct PagedKvCache {
     config: KvCacheConfig,
     /// Per-block refcount event history (`ATLAS_KV_TRACE=1`; inert otherwise).
     trace: block_trace::BlockTrace,
+    /// Whether this pool feeds the `/metrics` gauge. Set by `mark_primary`
+    /// on the sequence-serving cache only — the MTP and DFlash heads build
+    /// their own pools and must not overwrite it.
+    publishes_stats: bool,
 }
 
 mod block_trace;

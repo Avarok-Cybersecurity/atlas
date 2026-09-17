@@ -95,6 +95,35 @@ pub async fn metrics_handler() -> impl IntoResponse {
         atlas_prefix_cache_hit_rate {hit_rate:.4}\n"
     );
 
+    // KV block pool. The resource a long run actually exhausts, and until
+    // 2026-09-17 the only one with no gauge: a BFCL shard wedged two ranks and
+    // /metrics could not have shown it coming. `used` is the one to watch —
+    // it includes blocks held by the prefix cache, which is what fills up.
+    let kv_total = spark_runtime::kv_cache::stats::total_blocks();
+    let kv_free = spark_runtime::kv_cache::stats::free_blocks();
+    let kv_used = spark_runtime::kv_cache::stats::used_blocks();
+    let kv_used_frac = if kv_total > 0 {
+        kv_used as f64 / kv_total as f64
+    } else {
+        0.0
+    };
+    let _ = write!(
+        text,
+        "\
+        # HELP atlas_kv_blocks_total KV cache blocks in the pool\n\
+        # TYPE atlas_kv_blocks_total gauge\n\
+        atlas_kv_blocks_total {kv_total}\n\
+        # HELP atlas_kv_blocks_free KV cache blocks on the free list\n\
+        # TYPE atlas_kv_blocks_free gauge\n\
+        atlas_kv_blocks_free {kv_free}\n\
+        # HELP atlas_kv_blocks_used KV blocks held by a sequence or the prefix cache\n\
+        # TYPE atlas_kv_blocks_used gauge\n\
+        atlas_kv_blocks_used {kv_used}\n\
+        # HELP atlas_kv_blocks_used_ratio Fraction of the KV block pool in use (0-1)\n\
+        # TYPE atlas_kv_blocks_used_ratio gauge\n\
+        atlas_kv_blocks_used_ratio {kv_used_frac:.4}\n"
+    );
+
     // Entropy monitoring (global atomics from spark-runtime sampler)
     let entropy = spark_runtime::sampler::last_entropy();
     let low_entropy = spark_runtime::sampler::low_entropy_token_count();

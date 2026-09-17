@@ -31,7 +31,42 @@ impl TransformerModel {
         let last_pos = seq.seq_len + k - 1;
         let blocks_needed = (last_pos / bs) + 1;
         while seq.block_table.len() < blocks_needed {
-            let blk = kv_cache.alloc_block()?;
+            // ★ EVICT BEFORE GIVING UP — the prefill path always did, this one
+            // did not, and that asymmetry is what took two GB10s down.
+            //
+            // A long run fills the pool with prefix-cache blocks that are
+            // EVICTABLE: a finished sequence hands its blocks to the cache
+            // (`cache_sequence`) and then drops its own ref (`free_sequence`),
+            // leaving them at ref 1 — exactly what `evict` reclaims. Prefill
+            // goes through `alloc_block_evicting` and keeps serving. This site
+            // called the raw allocator, so it failed the instant the free list
+            // emptied, with the pool full of blocks it was entitled to take.
+            //
+            // Reproduced 2026-09-17: ~250 distinct prompts filled a
+            // 77,808-block pool, then every request died here with the bare
+            // "KV cache exhausted: no free blocks" while the gauge read
+            // used=77808 free=0 — and the server never recovered, because
+            // nothing on this path ever asks for a reclaim. It is also the
+            // same bare message rank 1 logged when it wedged the pair.
+            //
+            // No new staleness risk: `return_evicted_block` puts evicted
+            // blocks back on the free list, so `alloc_block` was already
+            // handing out previously-used blocks.
+            let blk = crate::model::block_mgmt::alloc_block_evicting(
+                &mut kv_cache,
+                self.prefix_cache.as_ref(),
+            )
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "KV cache exhausted in verify after eviction (blocks total={} free={}, \
+                     this seq holds {} of {} needed) — every prefix-cache node left is \
+                     still referenced by a live sequence",
+                    kv_cache.num_blocks(),
+                    kv_cache.num_free_blocks(),
+                    seq.block_table.len(),
+                    blocks_needed,
+                )
+            })?;
             seq.block_table.push(blk);
         }
 
