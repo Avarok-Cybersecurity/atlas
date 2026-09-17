@@ -59,7 +59,7 @@ pub fn kquant_q8_1_rows(
     stream: u64,
 ) -> Result<()> {
     anyhow::ensure!(
-        k % 32 == 0,
+        k.is_multiple_of(32),
         "kquant_q8_1_rows: k={k} is not a multiple of 32"
     );
     let warps = m * (k / 32);
@@ -87,9 +87,9 @@ pub fn kquant_mmvq(
     m: u32,
     stream: u64,
 ) -> Result<()> {
-    anyhow::ensure!(m >= 1 && m <= 8, "kquant_mmvq: m={m} outside 1..=8");
+    anyhow::ensure!((1..=8).contains(&m), "kquant_mmvq: m={m} outside 1..=8");
     anyhow::ensure!(
-        k % QK_K == 0,
+        k.is_multiple_of(QK_K),
         "kquant_mmvq: k={k} is not a multiple of {QK_K}"
     );
     KernelLaunch::new(gpu, kernel)
@@ -122,7 +122,7 @@ pub fn kquant_mmq_gemm(
     stream: u64,
 ) -> Result<()> {
     anyhow::ensure!(
-        k % QK_K == 0,
+        k.is_multiple_of(QK_K),
         "kquant_mmq_gemm: k={k} is not a multiple of {QK_K}"
     );
     let kernel = if n.is_multiple_of(128) {
