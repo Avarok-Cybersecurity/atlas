@@ -235,14 +235,18 @@ pub(crate) fn cublas_wide_proj() -> bool {
 }
 
 /// Batch the DSA indexer `wq_b` projection across all prefill rows in one cuBLASLt GEMM
-/// instead of one M=1 GEMV per row. `ATLAS_GLM_DSA_BATCH_QIDX=0` is the kill-switch.
+/// instead of one M=1 GEMV per row. `ATLAS_GLM_DSA_BATCH_QIDX=1` opts in.
 ///
-/// 🔴 DEFAULT ON. Prefill-only (see the call site in `glm5next_dsa::layer`), so decode and
-/// the speculative verify keep their bit-exact M=1 GEMV.
+/// 🟡 DEFAULT OFF. Prefill-only (see the call site in `glm5next_dsa::layer`), so decode and
+/// the speculative verify already keep their bit-exact M=1 GEMV regardless of this flag. The
+/// batched GEMM changes prefill numerics enough to flip a tool-calling scenario (tool-eval
+/// TC-08) on GLM-5.3-Flash NVFP4 from pass to a partial call, so it ships opt-in rather than
+/// on-by-default; the M=1-per-row GEMV fallback is the default path and is the numerically
+/// reference-matching one.
 pub(crate) fn dsa_batch_qidx() -> bool {
     static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *E.get_or_init(|| {
-        let on = std::env::var("ATLAS_GLM_DSA_BATCH_QIDX").as_deref() != Ok("0");
+        let on = std::env::var("ATLAS_GLM_DSA_BATCH_QIDX").as_deref() == Ok("1");
         tracing::warn!(
             "ATLAS_GLM_DSA_BATCH_QIDX: prefill DSA indexer q uses {}",
             if on {
