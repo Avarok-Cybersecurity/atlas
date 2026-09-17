@@ -441,7 +441,7 @@ impl TransformerModel {
                 )
                 .map_err(|e| anyhow::anyhow!("Prefill layer {i} failed: {e}"))?;
             // Activation steering on this layer's highway output.
-            self.cvec_after_layer(&ctx, i, proc_count, stream)?;
+            self.cvec_after_layer(&ctx, "prefill", i, proc_count, stream)?;
             // DFlash prefill capture: writes layer i's hidden output for
             // all `proc_count` tokens into the seq's accumulator at slots
             // [layer_kv_write_start .. layer_kv_write_start + proc_count].

@@ -211,7 +211,7 @@ impl TransformerModel {
             // Activation steering: this layer's output is on the highway and
             // the next layer has not read it yet. No-op unless a control
             // vector is installed and covers layer `i`.
-            self.cvec_after_layer(&ctx, i, proc_count, stream)?;
+            self.cvec_after_layer(&ctx, "prefill_chunked", i, proc_count, stream)?;
             if let Some(t) = t_pf {
                 t_in_prefill += t.elapsed();
             }

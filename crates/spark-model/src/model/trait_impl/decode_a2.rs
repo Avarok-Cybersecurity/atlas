@@ -567,7 +567,7 @@ impl TransformerModel {
                 // graph to replay at a different batch size, and the padded
                 // rows are never committed, so steering them costs nothing
                 // and changes nothing.
-                self.cvec_after_layer(&ctx, layer_idx, padded_n, stream)?;
+                self.cvec_after_layer(&ctx, "decode_batched", layer_idx, padded_n, stream)?;
                 if let Some(t0) = t0 {
                     self.gpu.synchronize(stream).ok();
                     let dt = t0.elapsed().as_micros();

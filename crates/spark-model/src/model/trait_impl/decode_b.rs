@@ -554,7 +554,7 @@ impl TransformerModel {
                     stream,
                 )?;
                 // Activation steering, decode half: rows [0, padded_n).
-                self.cvec_after_layer(&decode_ctx, layer_idx, padded_n, stream)?;
+                self.cvec_after_layer(&decode_ctx, "mixed_decode", layer_idx, padded_n, stream)?;
 
                 // 6b. Prefill: 1 sequence × M tokens on hidden[padded_n*H..]
                 layer.prefill(
@@ -577,7 +577,7 @@ impl TransformerModel {
                 // offsets, and `prefill_ctx.hc_row_offset` is what moves the
                 // base. A single call at offset 0 would steer the decode rows
                 // twice and the prefill rows not at all.
-                self.cvec_after_layer(&prefill_ctx, layer_idx, proc_count, stream)?;
+                self.cvec_after_layer(&prefill_ctx, "mixed_prefill", layer_idx, proc_count, stream)?;
             }
 
             // ── Step 0 (spec blocker B1): per-chunk SSM state normalize ──

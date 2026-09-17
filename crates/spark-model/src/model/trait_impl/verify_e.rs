@@ -1060,7 +1060,7 @@ impl TransformerModel {
                 // per-row/per-seq contexts steer nothing themselves, because
                 // the highway is only complete for this layer once they have
                 // all run.
-                self.cvec_after_layer(&ctx, layer_idx, r_total, stream)?;
+                self.cvec_after_layer(&ctx, "verify_batched", layer_idx, r_total, stream)?;
 
                 if let Some(t0) = t_layer {
                     // SYNC: the launches above are async, so without this the

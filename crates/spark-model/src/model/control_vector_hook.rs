@@ -82,10 +82,18 @@ impl TransformerModel {
     /// layer falls outside the active range. Graph-capture legal: one
     /// stream-ordered launch against a boot-time allocation, no synchronize
     /// and no environment read.
+    /// `path` names the calling forward path (`"decode"`, `"verify_batched"`,
+    /// …). It is REQUIRED, and it is what makes the probe a coverage proof
+    /// rather than a spot check: with `AVAROK_CVEC_PROBE=1` the log lists
+    /// which paths actually applied the vector, so a path nobody wired simply
+    /// never appears. That is the only way to catch the failure this feature
+    /// is most exposed to — partially-steered output that every correctness
+    /// gate passes.
     #[inline]
     pub(crate) fn cvec_after_layer(
         &self,
         ctx: &ForwardContext<'_>,
+        path: &'static str,
         layer_idx: usize,
         num_tokens: usize,
         stream: u64,
@@ -101,6 +109,20 @@ impl TransformerModel {
         // K-row verify — and the highway is row-major `[row, hc_mult, H]` FP32.
         let stride = ctx.config.hc_mult * ctx.config.hidden_size * 4;
         let highway = DevicePtr(ctx.buffers.hc_streams().0 + (ctx.hc_row_offset * stride) as u64);
+
+        let pre = if cv.probe_enabled() {
+            cv.cos_probe(
+                ctx.gpu,
+                highway,
+                layer_idx,
+                num_tokens,
+                ctx.config.hc_mult,
+                stream,
+            )?
+        } else {
+            0.0
+        };
+
         cv.apply(
             ctx.gpu,
             highway,
@@ -109,7 +131,27 @@ impl TransformerModel {
             ctx.config.hc_mult,
             stream,
         )
-        .with_context(|| format!("control vector at layer {layer_idx}"))
+        .with_context(|| format!("control vector at layer {layer_idx} ({path})"))?;
+
+        if cv.probe_enabled() {
+            let post = cv.cos_probe(
+                ctx.gpu,
+                highway,
+                layer_idx,
+                num_tokens,
+                ctx.config.hc_mult,
+                stream,
+            )?;
+            // `post` must be ~0 and `pre` clearly non-zero. A `post` that
+            // equals `pre` means the launch did not touch these rows — the
+            // row-offset bug, not a missing call.
+            tracing::info!(
+                "CVEC_PROBE path={path} layer={layer_idx} rows={num_tokens} \
+                 row_offset={} pre={pre:.6} post={post:.6}",
+                ctx.hc_row_offset
+            );
+        }
+        Ok(())
     }
 
     /// Mean `|cos(h, v)|` over layer `layer_idx`'s highway — the validation

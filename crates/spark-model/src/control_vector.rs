@@ -82,6 +82,16 @@ pub struct ControlVector {
     /// SHA-256 of the vector file. Logged at boot so an EP/TP rank that loaded
     /// a different file is detectable rather than silently divergent.
     pub sha256: String,
+    /// `AVAROK_CVEC_PROBE=1`: log `mean|cos(h, v)|` either side of every
+    /// application. Resolved ONCE here and carried, per the levers rule — the
+    /// consumer runs per layer per forward pass, which is exactly where an
+    /// environment read is forbidden.
+    ///
+    /// The probe synchronizes and copies D2H, so it is illegal inside CUDA
+    /// graph capture. Run it with `AVAROK_DEBUG_NO_GRAPH=1`; on GB10 that
+    /// costs essentially nothing, because decode graphs measured
+    /// speed-neutral on this model (16.4 replay vs 16.5 eager).
+    probe: bool,
 }
 
 /// The host half of the load: parse the GGUF and build the `[n_layer, hidden]`
@@ -254,7 +264,15 @@ impl ControlVector {
             add_k: gpu.kernel("control_vector", "cvec_add_highway")?,
             cos_k: gpu.kernel("control_vector", "cvec_cos_highway")?,
             sha256,
+            probe: std::env::var("AVAROK_CVEC_PROBE").as_deref() == Ok("1"),
         })
+    }
+
+    /// Whether the cosine probe is armed. Read per layer, so this must stay a
+    /// field access and never become an environment read.
+    #[inline]
+    pub fn probe_enabled(&self) -> bool {
+        self.probe
     }
 
     /// Whether this layer takes an intervention. Cheap enough to call per

@@ -55,7 +55,7 @@ impl TransformerModel {
             // legal: a stream-ordered launch against a boot-time allocation,
             // which is why it sits here and not behind the `!use_graphs`
             // guard the probes below need.
-            self.cvec_after_layer(ctx, i, 1, stream)?;
+            self.cvec_after_layer(ctx, "decode", i, 1, stream)?;
             // CBD per-layer hidden fingerprint at decode step 0 (eager only).
             // Localizes the FIRST layer whose post-layer hidden diverges
             // cold-vs-ON / ON-vs-ON → pins the bug to that layer's read set.
