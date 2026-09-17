@@ -23,8 +23,13 @@
 // target's KERNEL.toml. Oracle: `ops/kquant_mmq_tests.rs` (CPU dequant + f32).
 
 #include <cuda_bf16.h>
-#include "../../qwen3.6-27b/nvfp4/q4k_vendor/mmq.cuh"
-#include "../../qwen3.6-27b/nvfp4/q4k_vendor/quantize_impl.cuh"
+// Spelled from kernels/, not from this hardware set: kernels/hopper and
+// kernels/b200 compile this file through a per-file symlink, and a quoted
+// include resolves against the symlink's own directory, where no
+// qwen3.6-27b tree exists on b200. The vendor headers live in gb10's tree
+// for every hardware set that inherits it.
+#include "../../../gb10/qwen3.6-27b/nvfp4/q4k_vendor/mmq.cuh"
+#include "../../../gb10/qwen3.6-27b/nvfp4/q4k_vendor/quantize_impl.cuh"
 
 // ── prefill: MMQ tiles with the K-quant types ────────────────────────────────
 
