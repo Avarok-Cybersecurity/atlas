@@ -1,1 +1,1 @@
-../../strix/common/lora_bgmv.cu
+../../gb10/common/lora_bgmv.cu

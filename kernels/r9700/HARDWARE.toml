@@ -32,11 +32,23 @@ memory_gb = 32
 # they are load-bearing facts about gfx1201 now, not gfx1151 decisions that
 # happen to still be sitting here.
 #
-#   * The kernel set compiles. All 97 .cu reached by this target build clean
-#     with the SCALE nvcc, and `cargo build --release -p spark-server
-#     --no-default-features --features cuda` under ATLAS_TARGET_HW=r9700,
-#     ATLAS_TARGET_MODEL=qwen3.8-27b, ATLAS_TARGET_QUANT=nvfp4 exits 0 with
-#     94 kernels built.
+#   * The kernel set compiles. All 97 .cu the CURATED strix-shaped tree
+#     reached built clean with the SCALE nvcc, and `cargo build --release -p
+#     spark-server --no-default-features --features cuda` under
+#     ATLAS_TARGET_HW=r9700, ATLAS_TARGET_MODEL=qwen3.8-27b,
+#     ATLAS_TARGET_QUANT=nvfp4 exited 0 with 94 kernels built.
+#
+#     That tree is GONE as of 2026-09-17. It compiled a smaller inventory than
+#     the model dispatches, and the qwen3.8-27b serve died in model build at
+#     `Kernel lookup dense_gemv_bf16_batch2::dense_gemv_bf16_batch2: Module
+#     load failed`. What replaced it is the subtractive gb10 mirror described
+#     below (169 common .cu plus 12 model .cu), sized by a per-file SCALE
+#     compile census over ALL of kernels/gb10/common and
+#     kernels/gb10/qwen3.6-27b/nvfp4. The census reported 180 of 193 files
+#     clean. The twelve names this tree drops account for twelve of those
+#     thirteen failures, so ONE census failure is unaccounted for here and the
+#     next build on the board is what names it. The 94-kernel build line above
+#     is the old tree's and has not been re-measured.
 #
 #   * The 64 KB LDS cap is REAL on RDNA 4, so the `#define BR64 32` prefill
 #     pin is REQUIRED here rather than inherited. A 73728-byte workgroup
@@ -91,3 +103,91 @@ memory_gb = 32
 # class needs measured thermal/memory/timing/equivalence facts, and nobody
 # has measured them. A target that declares none cannot be campaigned, which
 # is the correct state for a target that has never booted.
+
+# ── The kernel set: a SUBTRACTIVE mirror of kernels/gb10 ──────────────────
+# `common/` and `qwen3.6-27b/nvfp4/` are whole-directory relative-symlink
+# mirrors of the gb10 tree, the same shape `kernels/hopper` and `kernels/b200`
+# use, MINUS the sources SCALE 1.7.1 `targets/gfx1201` cannot compile. The
+# rule is the DIRECTORY, not a list: a kernel added to `kernels/gb10/common/`
+# needs a link here, or this target silently compiles a smaller inventory than
+# GB10 does. That is exactly how `dense_gemv_bf16_batch2` came to be missing
+# from the curated 99-entry set this replaces, which took the qwen3.8-27b
+# model build down at `Module 'dense_gemv_bf16_batch2' not loaded`.
+#
+# The subtraction is the census, not taste. Every name in `[kernels] absent`
+# below FAILED to compile on a real R9700 (ROCm 7.2.0, SCALE 1.7.1), and all
+# 15 dropped entry points are declared `[expected_absent]` in both
+# MODEL.tomls, so the boot audit reports a stated absence instead of refusing
+# to serve. Twelve sources are dropped in all: ten from `common/` (nine
+# asymmetric-KV prefill kernels plus `gated_delta_rule_fla.cu`), one header
+# that only those nine include, and two from `qwen3.6-27b/nvfp4/`
+# (`w4a16_gemm_v2.cu`, `w4a4_gemm.cu`).
+
+[build]
+# SCALE is clang-19 based, so nvcc's `--fmad=false`, which the shared
+# `common/KERNEL.toml` passes and which SCALE's nvcc DOES accept (97 .cu
+# compiled with it on the board), is spelled `-ffp-contract=off` in clang's
+# own vocabulary. Both are passed: `merge_extra_flags` dedupes, and asking for
+# the same "no FP multiply-add contraction" twice is free.
+#
+# It lives at the HARDWARE layer rather than in a model KERNEL.toml for the
+# reason `crates/atlas-kernels/build_flags.rs` gives for
+# `ATLAS_NO_WARP_BLOCKSCALE_MMA` on hopper/b200: every KERNEL.toml on this
+# target is now a relative symlink into `kernels/gb10`, so a per-model
+# declaration would mean forking a shared file once per model, and again for
+# every model added later. This is a TOOLCHAIN fact and it is stated once, for
+# every model on the target. It replaces the `extra_nvcc_flags =
+# ["-ffp-contract=off"]` line that the strix copy of
+# `qwen3.6-27b/nvfp4/KERNEL.toml` carried before that file became a symlink.
+extra_nvcc_flags = ["-ffp-contract=off"]
+
+[kernels]
+# Entries of `kernels/gb10/common/` this mirror deliberately does NOT carry.
+# Read by `scripts/check_kernel_shadows.py` (RULE 3), which fails if the set
+# of gb10 entries missing here is not exactly this list, so a gb10 kernel
+# added tomorrow shows up as an undeclared omission instead of vanishing from
+# the AMD build in silence.
+#
+# All ten `.cu` are gfx1201 COMPILE failures, measured with SCALE 1.7.1
+# `targets/gfx1201/bin/nvcc` on an R9700 (ROCm 7.2.0):
+#
+#   * the nine `inferspark_prefill_paged_*turbo*v` asymmetric-KV prefill
+#     kernels. All of them fail identically inside the header they share:
+#     `prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or
+#     70432) exceeds limit (65536)`. RDNA 4 has the same 64 KB per-workgroup
+#     LDS cap as RDNA 3.5, and unlike `prefill_paged_compute.cuh` this header
+#     has NO `#if defined(__SCALE__) #define BR64 32` pin: it hardcodes
+#     `#define BR64 64` at line 449. Pinning it, with the matching host grid
+#     stride, is the FOLLOW-UP that would bring these nine back; that is a
+#     kernel-side change with its own A/B and is not part of this mirror.
+#
+#   * `gated_delta_rule_fla.cu`, at `114:19: error: unknown opcode:
+#     fence.proxy.async.shared::cta`. The async-proxy fence is an sm_90
+#     feature SCALE does not lower, and the file issues it unconditionally, so
+#     no flag compiles the rest of it.
+#
+# `prefill_paged_compute_asym.cuh` is the eleventh name and the only HEADER.
+# It is never compiled on its own, and once the nine `.cu` above are gone
+# NOTHING in this target's tree includes it (`grep -rln
+# prefill_paged_compute_asym kernels/gb10` lists exactly those nine). It comes
+# back when they do.
+#
+# The `qwen3.6-27b/nvfp4/` mirror drops two more: `w4a16_gemm_v2.cu`
+# (`241:5: error`, the e4m3 MMA path SCALE has no codegen for on gfx1201, the
+# same gap that pins `ATLAS_W4A16_VARIANT=v1`) and `w4a4_gemm.cu` (`41:8:
+# error: unknown opcode`). They are NOT listed here: this key is scoped to
+# `common/`, which is what RULE 3 checks. Both are declared
+# `[expected_absent]` in the two MODEL.tomls.
+absent = [
+  "gated_delta_rule_fla.cu",
+  "inferspark_prefill_paged_bf16k_turbo2v.cu",
+  "inferspark_prefill_paged_bf16k_turbo3v.cu",
+  "inferspark_prefill_paged_bf16k_turbo4v.cu",
+  "inferspark_prefill_paged_fp8k_turbo2v.cu",
+  "inferspark_prefill_paged_fp8k_turbo3v.cu",
+  "inferspark_prefill_paged_fp8k_turbo4v.cu",
+  "inferspark_prefill_paged_turbo3k_turbo8v.cu",
+  "inferspark_prefill_paged_turbo4k_turbo3v.cu",
+  "inferspark_prefill_paged_turbo4k_turbo8v.cu",
+  "prefill_paged_compute_asym.cuh",
+]

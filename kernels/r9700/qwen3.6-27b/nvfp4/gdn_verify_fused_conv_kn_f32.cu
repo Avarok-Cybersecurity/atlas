@@ -1,0 +1,1 @@
+../../../gb10/qwen3.6-27b/nvfp4/gdn_verify_fused_conv_kn_f32.cu

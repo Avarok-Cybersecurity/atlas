@@ -1,1 +1,1 @@
-../../strix/common/dequant_fp8_blockscaled_bf16.cu
+../../gb10/common/dequant_fp8_blockscaled_bf16.cu
