@@ -142,3 +142,5 @@ mod norm_convention_tests {
         }
     }
 }
+
+pub use layers::vision_encoder::VisionCapacity;

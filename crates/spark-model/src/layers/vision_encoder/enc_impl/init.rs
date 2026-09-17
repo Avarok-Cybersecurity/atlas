@@ -77,6 +77,24 @@ impl VisionEncoder {
         // Derived from the SAME resolved bound the CPU preprocessor uses, so
         // the two can no longer disagree. See `derive_max_patches`.
         let (p_max, asked_for) = derive_max_patches(max_pixels, patch_size);
+        // Row budget for `buf_out`. Linear in rows (see `VisionEncoder::out_rows`),
+        // so it is the one bound that can be raised cheaply — 4 KB per row at
+        // this checkpoint's out_hidden_size. Defaults to `p_max`: without the
+        // override NOTHING about the allocation or the refusal changes.
+        let out_rows = std::env::var("ATLAS_VISION_OUT_ROWS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|v| *v >= p_max)
+            .unwrap_or(p_max);
+        if out_rows != p_max {
+            tracing::info!(
+                p_max,
+                out_rows,
+                extra_mb = ((out_rows - p_max) * 2048 * 2) as f64 / 1e6,
+                "ATLAS_VISION_OUT_ROWS: buf_out raised above the per-image patch \
+                 ceiling — a long video is bounded by ROWS, not by one frame"
+            );
+        }
         match asked_for {
             Some(wanted) => tracing::warn!(
                 "Vision encoder capacity {p_max} patches ({}x{} px) — the resolved area bound \
@@ -173,6 +191,7 @@ impl VisionEncoder {
             out_hidden_size,
             intermediate_size,
             p_max,
+            out_rows,
             num_grid_per_side,
             scratch: std::sync::OnceLock::new(),
             pos_embed_host_f32,
@@ -186,6 +205,7 @@ impl VisionEncoder {
     /// load — see `VisionEncoder::scratch`.
     fn build_scratch(&self, gpu: &dyn GpuBackend) -> Result<VisionScratch> {
         let p_max = self.p_max;
+        let out_rows = self.out_rows;
         let hidden_size = self.hidden_size;
         let intermediate_size = self.intermediate_size;
         let out_hidden_size = self.out_hidden_size;
@@ -200,7 +220,7 @@ impl VisionEncoder {
         let buf_wide = gpu.alloc(p_max * intermediate_size * 2)?;
         let buf_merge_in = gpu.alloc((p_max / 4) * merger_in_dim * 2)?;
         let buf_merge_fc1 = gpu.alloc((p_max / 4) * merger_in_dim * 2)?;
-        let buf_out = gpu.alloc(p_max * out_hidden_size * 2)?;
+        let buf_out = gpu.alloc(out_rows * out_hidden_size * 2)?;
         let buf_pos_resampled = gpu.alloc(p_max * hidden_size * 2)?;
         let buf_rope_cos = gpu.alloc(p_max * head_dim * 2)?;
         let buf_rope_sin = gpu.alloc(p_max * head_dim * 2)?;

@@ -288,6 +288,7 @@ mod json_message_tests {
         let out = super::super::msg_entry::build_msg_entries(
             None,
             None,
+            None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &crate::api::chat::msg_entry::VideoDecode {
                 ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
@@ -295,6 +296,7 @@ mod json_message_tests {
                     ..Default::default()
                 },
                 fps: 2.0,
+                fit_policy: Default::default(),
             },
             &msgs,
             true,

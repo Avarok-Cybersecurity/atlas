@@ -197,7 +197,7 @@ fn gif_magic_wins_over_a_mislabelled_mime() {
 #[test]
 fn grouping_produces_correctly_shaped_buffers() {
     let uri = make_gif(8, 64);
-    let v = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg()).expect("preprocess");
+    let v = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg(), None).expect("preprocess");
     assert_eq!(v.grid_h, 4, "64px / 16 = 4 patches");
     assert_eq!(v.grid_w, 4);
     assert_eq!(v.grid_t, 4, "8 frames at tp=2 = 4 groups");
@@ -212,7 +212,7 @@ fn grouping_produces_correctly_shaped_buffers() {
 #[test]
 fn pad_count_is_groups_times_the_merged_plane() {
     let uri = make_gif(8, 64);
-    let v = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg()).expect("preprocess");
+    let v = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg(), None).expect("preprocess");
     // 4 groups × (4/2 × 4/2) = 4 × 4 = 16
     assert_eq!(v.pad_count(2), 16);
     assert_eq!(v.pad_count(1), 4 * 16);
@@ -225,7 +225,7 @@ fn pad_count_is_groups_times_the_merged_plane() {
 #[test]
 fn the_two_frames_of_a_group_are_actually_different() {
     let uri = make_gif(4, 64);
-    let v = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg()).expect("preprocess");
+    let v = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg(), None).expect("preprocess");
     let ps = 16usize;
     let g = &v.groups[0];
     // Offsets of t=0 and t=1 within channel 0 of patch 0.
@@ -241,7 +241,7 @@ fn the_two_frames_of_a_group_are_actually_different() {
 #[test]
 fn consecutive_groups_hold_different_frames() {
     let uri = make_gif(4, 64);
-    let v = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg()).expect("preprocess");
+    let v = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg(), None).expect("preprocess");
     assert_eq!(v.groups.len(), 2);
     assert_ne!(v.groups[0][0], v.groups[1][0], "group 1 repeated group 0");
 }
@@ -252,8 +252,9 @@ fn consecutive_groups_hold_different_frames() {
 #[test]
 fn the_area_bound_shrinks_the_grid() {
     let uri = make_gif(4, 256);
-    let big = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg()).expect("unbounded");
-    let small = preprocess_video(&uri, &cfg(), Some(64 * 64), 10.0, &no_ffmpeg()).expect("bounded");
+    let big = preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg(), None).expect("unbounded");
+    let small =
+        preprocess_video(&uri, &cfg(), Some(64 * 64), 10.0, &no_ffmpeg(), None).expect("bounded");
     assert!(
         small.grid_h < big.grid_h,
         "bound {}x{} did not shrink {}x{}",
@@ -290,7 +291,7 @@ fn a_single_frame_gif_is_refused_rather_than_treated_as_a_still() {
     let uri = make_gif(1, 64);
     let err = format!(
         "{:#}",
-        preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg()).unwrap_err()
+        preprocess_video(&uri, &cfg(), None, 10.0, &no_ffmpeg(), None).unwrap_err()
     );
     assert!(err.contains("temporal group"), "{err}");
 }
@@ -306,8 +307,8 @@ fn invalid_geometry_is_refused_before_dividing_by_it() {
     let uri = make_gif(4, 64);
     let mut c = cfg();
     c.temporal_patch_size = 0;
-    assert!(preprocess_video(&uri, &c, None, 10.0, &no_ffmpeg()).is_err());
+    assert!(preprocess_video(&uri, &c, None, 10.0, &no_ffmpeg(), None).is_err());
     let mut c = cfg();
     c.patch_size = 0;
-    assert!(preprocess_video(&uri, &c, None, 10.0, &no_ffmpeg()).is_err());
+    assert!(preprocess_video(&uri, &c, None, 10.0, &no_ffmpeg(), None).is_err());
 }

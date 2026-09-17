@@ -1055,6 +1055,22 @@ pub trait Model: Send + Sync {
     /// (0,0,0) to reset to the legacy single-request behaviour. Default: no-op.
     fn set_vision_slice_base(&self, _row_base: usize, _grid_base: usize, _owned_images: usize) {}
 
+    /// The ViT scratch bounds, or `None` on a model with no vision encoder.
+    ///
+    /// Exists so the HTTP layer can refuse an oversized request AT THE DOOR
+    /// rather than deep in the forward pass. Today the only refusal is
+    /// `check_packed_rows` inside the encoder, which fires after decode, after
+    /// preprocessing, and after the scheduler has admitted the request — the
+    /// client gets a 500 for something knowable from the request alone.
+    ///
+    /// 🪤 Returns the ENCODER's own numbers. Never recompute them from
+    /// `max_pixels / patch^2`: that is a second source of truth, and it
+    /// silently disagrees the moment the `CEILING_MAX_PATCHES` clamp bites
+    /// (which it does on this checkpoint — it asks for more than 16384).
+    fn vision_capacity(&self) -> Option<crate::layers::vision_encoder::VisionCapacity> {
+        None
+    }
+
     /// EP worker step: receive a (seq_id, cmd) preamble from rank 0 and
     /// execute the command in the addressed slot.
     ///

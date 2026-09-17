@@ -869,6 +869,52 @@ pub(crate) fn load_model(
     }
     let model = model_opt.expect("head retains model on rank 0");
 
+    // Read the ViT scratch bounds ONCE, here, while the model is in scope and
+    // before it is handed to the scheduler. The encoder is the only authority:
+    // `max_pixels` is what was ASKED for and `CEILING_MAX_PATCHES` may have
+    // clamped it (it does on this checkpoint), so deriving the bound from
+    // config would disagree with the buffer that actually exists.
+    let vision_capacity = model.vision_capacity().map(|c| {
+        // ── A row the context cannot hold is not capacity ──
+        //
+        // Every merged row becomes exactly one prompt token, so the encoder's
+        // row budget is only real up to the context length. Raising
+        // ATLAS_VISION_OUT_ROWS past what the context can hold would admit a
+        // clip the buffer fits and the SEQUENCE cannot — the failure then
+        // lands mid-prefill, after decode, preprocessing and scheduling have
+        // all been paid for, which is the late-failure shape this whole
+        // feature exists to remove.
+        //
+        // Half the context is the cap. A video that fills the entire window
+        // leaves no room for the question about it, and at 720p/1fps (450
+        // rows per second of clip) half of a 256K window is still ~4.9
+        // minutes of native-resolution video.
+        let ctx_cap = (args.max_seq_len / 2).max(1);
+        let out_rows = c.out_rows.min(ctx_cap);
+        if out_rows != c.out_rows {
+            tracing::warn!(
+                asked = c.out_rows,
+                ctx_cap,
+                max_seq_len = args.max_seq_len,
+                "vision row budget clamped to half the context — the encoder \
+                 buffer is larger than any sequence could carry"
+            );
+        }
+        spark_model::VisionCapacity { out_rows, ..c }
+    });
+    if let Some(c) = vision_capacity {
+        tracing::info!(
+            p_max = c.p_max,
+            out_rows = c.out_rows,
+            secs_720p = c.out_rows / 450,
+            "Vision capacity: {} patches per image, {} merged rows per batch \
+             (~{}s of 720p at 1fps)",
+            c.p_max,
+            c.out_rows,
+            c.out_rows / 450
+        );
+    }
+
     // Build EOS token list from generation_config.json (authoritative) or config.json fallback
     let mut eos_tokens = serve_phases::load_eos_tokens(&model_dir, &config);
 
@@ -1298,6 +1344,7 @@ pub(crate) fn load_model(
         .unwrap_or_default();
 
     let state = Arc::new(AppState {
+        vision_capacity,
         tokenizer,
         model_name,
         adapter_name: nllb_adapter_name

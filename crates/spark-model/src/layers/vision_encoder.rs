@@ -78,6 +78,30 @@ pub struct MergerLayer {
     pub fc2_b: DevicePtr,
 }
 
+/// What the ViT scratch can actually hold, as ONE value read from the encoder.
+///
+/// Two different bounds, and conflating them is how a request gets refused deep
+/// in the forward pass instead of at the door:
+///
+/// * `p_max` bounds ONE image's pre-merge patches. It sizes the quadratic
+///   attention scratch (`buf_scores`/`buf_probs` are `p_i * p_i`), so it is set
+///   by the LARGEST single image, never by the sum across a batch.
+/// * `out_rows` bounds the TOTAL merged rows a batch may pack into `buf_out`.
+///   A video defeats a per-item cap because all of its temporal groups arrive
+///   as one media item and encode as one batch, so this is the bound that a
+///   long clip actually hits.
+///
+/// 🪤 Read this from the encoder, never recomputed from `max_pixels / patch^2`.
+/// A second derivation is exactly the two-sources bug the config layer already
+/// exists to prevent, and it would drift the moment the ceiling clamp bites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisionCapacity {
+    /// Pre-merge patches for ONE image.
+    pub p_max: usize,
+    /// Merged rows for the WHOLE batch.
+    pub out_rows: usize,
+}
+
 pub struct VisionEncoder {
     pub patch_embed_w: DevicePtr,      // [1152, 1536] BF16
     pub patch_embed_b: DevicePtr,      // [1152] BF16
@@ -109,6 +133,18 @@ pub struct VisionEncoder {
     pub out_hidden_size: usize,    // 2048
     pub intermediate_size: usize,  // 4304
     pub p_max: usize,              // 6400 (80×80 patches for 1280×1280 image)
+    /// Merged rows `buf_out` can hold — the bound a VIDEO actually hits.
+    ///
+    /// ★ SEPARATE FROM `p_max` BECAUSE THE ECONOMICS ARE NOTHING ALIKE.
+    /// `p_max` sizes the ViT attention scratch, which is `p*p`: raising it to
+    /// 131072 would cost 68.7 GB and is simply not available. `buf_out` is
+    /// `rows * out_hidden * 2` — LINEAR — so the same 131072 rows cost 537 MB.
+    /// A long clip is bounded by rows, not by any one frame's patches, so this
+    /// is the number that can move and `p_max` is the one that cannot.
+    ///
+    /// Defaults to `p_max`, i.e. exactly the previous behaviour, and is raised
+    /// with `ATLAS_VISION_OUT_ROWS`.
+    pub out_rows: usize,
     // num_grid_per_side = sqrt(num_position_embeddings) = 48 for Qwen3-VL/3.6.
     pub num_grid_per_side: usize,
     /// ViT scratch, allocated on the FIRST IMAGE rather than at load.

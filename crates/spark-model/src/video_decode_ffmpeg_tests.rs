@@ -448,3 +448,57 @@ fn a_stream_of_two_pngs_splits_into_two_frames() {
     assert_eq!(frames[0].get_pixel(0, 0).0, [1, 2, 3]);
     assert_eq!(frames[1].get_pixel(0, 0).0, [4, 5, 6]);
 }
+
+/// The duration probe is an OPTIMISATION, and an optimisation may not change
+/// what `timeout_secs` means.
+///
+/// The probe spawns a second ffmpeg with a second watchdog. When that watchdog
+/// ran BESIDE the decoder's instead of inside it, a hung input paid both: a
+/// 1-second policy took 3.0-3.1s, flaky 2 runs in 3 against the sibling test's
+/// 3s bound, and a caller who configured 120s would have waited ~150s. The
+/// flag would have been telling them something untrue.
+///
+/// Below a four-second budget the quarter-slice rounds to zero and the probe
+/// declines outright, which is what this pins: it must return None promptly,
+/// NOT burn a rounded-up second first.
+#[cfg(unix)]
+#[test]
+fn the_probe_never_extends_the_callers_timeout() {
+    use std::os::unix::fs::PermissionsExt;
+
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("atlas-probe-budget-{}-{seq}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let binary = dir.join("hanging-ffmpeg");
+    std::fs::write(&binary, "#!/bin/sh\nexec sleep 10\n").unwrap();
+    let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&binary, permissions).unwrap();
+
+    // Every budget whose quarter rounds to zero must decline without spawning
+    // anything that can hang. A second here is a second the decode never gets.
+    for timeout_secs in 1..=3 {
+        let policy = FfmpegPolicy {
+            enabled: true,
+            binary: binary.display().to_string(),
+            timeout_secs,
+            ..Default::default()
+        };
+        let started = std::time::Instant::now();
+        let got = crate::video_decode_ffmpeg::probe_duration_secs(b"input", &policy);
+        let elapsed = started.elapsed();
+        assert!(
+            got.is_none(),
+            "a budget of {timeout_secs}s cannot afford a probe, so it must decline"
+        );
+        // Generous: the point is "did not wait for a watchdog", and the
+        // pre-fix code sat here for a full second.
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "declining took {elapsed:?} at timeout_secs={timeout_secs} — the probe \
+             spawned and waited out a rounded-up watchdog instead of declining"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
