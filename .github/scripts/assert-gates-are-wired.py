@@ -193,6 +193,42 @@ STUB_FREE_STEPS = [
     },
 ]
 
+# A step whose whole job is to record something AFTER a verdict must not be
+# skipped by that verdict. The CHKI reach table shipped without `always()`: on a
+# merge the verdict step is red by construction (a push event carries no PR body
+# and so no `Hardware:` trailer), so the append never ran and #1101 — 146 kernel
+# paths reaching strix and strix-hip — left no row in the backlog it exists to
+# keep.
+ALWAYS_STEPS = [
+    {
+        "workflow": "ci.yml",
+        "job": "cross-hardware-reach",
+        "step": "Append this merge to the CHKI reach table",
+        "why": "the verdict step before it is red on every merge that touches a shared kernel path",
+    },
+]
+
+
+def check_always(spec: dict) -> None:
+    doc = _doc(spec["workflow"])
+    job = (doc.get("jobs") or {}).get(spec["job"])
+    if job is None:
+        problems.append(f"{spec['workflow']} has no `{spec['job']}` job")
+        return
+    steps = [s for s in (job.get("steps") or []) if s.get("name") == spec["step"]]
+    if len(steps) != 1:
+        problems.append(
+            f"{spec['workflow']} `{spec['job']}` has {len(steps)} steps named "
+            f"{spec['step']!r}; this guard is pinned to exactly one"
+        )
+        return
+    cond = str(steps[0].get("if", ""))
+    if "always()" not in cond:
+        problems.append(
+            f"{spec['workflow']} `{spec['job']}` step {spec['step']!r} has no `always()` in its "
+            f"`if:`, so a failing earlier step skips it — and {spec['why']}"
+        )
+
 
 def check_stub_free(spec: dict) -> None:
     doc = _doc(spec["workflow"])
@@ -276,6 +312,8 @@ def main() -> None:
         check_required_context(entry)
     for spec in STUB_FREE_STEPS:
         check_stub_free(spec)
+    for spec in ALWAYS_STEPS:
+        check_always(spec)
     if problems:
         for p in problems:
             print(f"REFUSE: {p}", file=sys.stderr)
@@ -287,6 +325,8 @@ def main() -> None:
           f"and none can be skipped by a dependency's failure")
     for spec in STUB_FREE_STEPS:
         print(f"ok: {spec['workflow']} `{spec['job']}` runs {spec['step']!r} against real kernels, not a build stub")
+    for spec in ALWAYS_STEPS:
+        print(f"ok: {spec['workflow']} `{spec['job']}` records {spec['step']!r} even when the step before it fails")
 
 
 if __name__ == "__main__":
